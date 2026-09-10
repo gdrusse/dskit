@@ -95,6 +95,7 @@ __all__ = [
     "CHUNKER_KINDS",
     "Calibration",
     "Chunker",
+    "Completeness",
     "Constant",
     "Count",
     "Coverage",
@@ -2476,6 +2477,59 @@ class Coverage(OperationalMonitor):
         return statistics.fmean(values)
 
 
+class Completeness(OperationalMonitor):
+    """How much of the input a tick expected actually arrived: the window's worst.
+
+    The event catalogue's data category asks
+    ``expected``/``received``/``missing``/``late`` of whatever a layer
+    takes in, and no monitor answered it: ``Coverage`` reads a LEG's
+    abstaining side, which is a different question about a different
+    record. The reduction is the window's minimum for the reason
+    ``Staleness`` takes its maximum — the safety question is the worst
+    tick in the window, not the average one.
+
+    A tick that expected nothing is not an observation: ``0/0`` is not
+    complete and is not incomplete, and scoring it either way would let a
+    quiet session either raise an alarm or hide one.
+
+    Parameters
+    ----------
+    params : dict
+        The four common knobs (see ``Monitor``). It adds none: what counts
+        as too little is the document's threshold, never this class's.
+    name : str or None, keyword-only
+        The owner's name for this instance.
+
+    Examples
+    --------
+    ::
+
+        monitor = Completeness(
+            {"window": {"kind": "count", "n": 2}, "threshold": {"kind": "constant", "min": 0.9},
+             "min_n": 1}
+        )
+        monitor.observe({"kind": "tick", "expected_inputs": 10, "received_inputs": 8})
+        monitor.verdict().statistic  # 0.8
+        monitor.verdict().status  # 'warn'
+    """
+
+    _FIELDS = ("expected_inputs", "received_inputs")
+
+    def _value(self, candidate):
+        """Return the received fraction, or None when either count is null or nothing was expected."""
+        expected, received = candidate["expected_inputs"], candidate["received_inputs"]
+        if expected is None or received is None:
+            return None
+        expected = _number(expected, "expected_inputs")
+        if expected <= 0:
+            return None
+        return _number(received, "received_inputs") / expected
+
+    def _reduce(self, values):
+        """Take the least complete tick in the window — the safety question."""
+        return min(values)
+
+
 class LatencyPercentiles(OperationalMonitor):
     """A percentile of tick latency: the §6 ``latency_ms`` phase map summed to one number per tick.
 
@@ -4198,6 +4252,7 @@ MONITOR_KINDS = Registry("monitor", Monitor)
 MONITOR_KINDS.register("staleness", Staleness)
 MONITOR_KINDS.register("decision_rate", DecisionRate)
 MONITOR_KINDS.register("coverage", Coverage)
+MONITOR_KINDS.register("completeness", Completeness)
 MONITOR_KINDS.register("latency", LatencyPercentiles)
 MONITOR_KINDS.register("refusals", RefusalCount)
 MONITOR_KINDS.register("page_hinkley", PageHinkley)
