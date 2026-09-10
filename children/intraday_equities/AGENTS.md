@@ -51,9 +51,11 @@ Agent orientation — see README.md for operator commands.
   Per-name H (one pooled tree); book collapse deferred (`docs/adhoc/deferred_decisions.md`
   at the repo root).
   Training framework: `docs/decisioning/framework.md`.
-- Every run document tracks to one local MLflow experiment
+- Every market-data run document tracks to one local MLflow experiment
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
-  Fill rate / delay decay wait on a fill model.
+  `configs/run-development-replay.json` is not a market-data run: no
+  tracking sink, `deployment_eligible=false`, fill knobs in
+  `configs/fill-policy.json`.
 - The stopped asset-local P13 remains reproducible in
   `configs/run-p13-model-zoo.json`. ADR-0102's active replacement is
   `configs/run-p13-pooled-model-zoo.json`: pooled LightGBM and embedding Torch
@@ -85,8 +87,8 @@ Agent orientation — see README.md for operator commands.
 ## Layout
 
 ```
-intraday_equities/   # auth, connectors, nodes, models, live, testing
-configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train
+intraday_equities/   # auth, connectors, nodes, models, live, testing, replay
+configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # topic folders; <date>-synthesis.md + dated notes

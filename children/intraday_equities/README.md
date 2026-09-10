@@ -171,13 +171,14 @@ intraday_equities/
 │   ├── nodes.py         # bars, universe, features, H/L + no-info scan, portfolio
 │   ├── feature_cache.py # verified read-only feature-array cache
 │   ├── final_model.py   # final-HPO selection and fail-closed refit contract
+│   ├── replay.py        # next-bar-open fill + multi-horizon overlap book
 │   ├── modelability.py  # staged P10 gate orchestration
 │   ├── modelability_study.py # the asset-local study over any declared cohort (ADR-0094)
 │   ├── modelability_p11.py # P11: the frozen 25 as a pinned study
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles
-├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train
+├── configs/             # universe, sources, suites, model zoo, scan/action/HPO/train, fill-policy, development-replay
 ├── docs/decisioning/    # framework.md + one file per decision
 ├── docs/explanations/   # standalone worked explanations
 ├── docs/plans/          # owner-reviewed implementation plans and hard stops

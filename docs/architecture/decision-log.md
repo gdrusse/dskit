@@ -6585,9 +6585,12 @@ verbatim as the plan's authoritative list).** No agent may infer these.
    untouched test.
 5. First replay horizon policy: h1-only/non-overlapping as the memo
    recommends, or mixed confirmed caps; precise exit/expiry and overlap
-   semantics.
+   semantics. Owner ruled mixed caps (2026-09-10); overlap/expiry
+   mechanics are proposed in ADR-0117 (not accepted).
 6. Fill model: order type, decision/fill bar, latency, partial fills,
    rejections, spread/slippage, halts, forced exits, and mark source.
+   Owner ruled next-bar-open, config-driven (2026-09-10); the fill-policy
+   bundle is proposed in ADR-0117 (not accepted).
 7. Performance-monitor minimum counts, windows, thresholds, and when a
    warning becomes a hold. Hard-stop invariant categories are already
    locked.
@@ -6858,3 +6861,75 @@ as the same release.
 **Scope.** Synthetic contract tests and validate/plan refusal only. No market
 data, HPO/refit execution, pre-March read, `path.csv` edit, or model-policy
 change is authorized.
+
+---
+
+## ADR-0117 — Phase 5 replay policies: mixed-horizon overlap and a config-driven next-bar-open fill (Gate 5)
+
+**Status:** proposed (2026-09-10). Extends ADR-0114 Phase 5. Does **not**
+self-accept. Items 5 and 6 of the plan's §11 are owner-ruled as to SHAPE
+(below); the overlap/expiry mechanics this ADR names are proposed, not
+ruled.
+
+**Context.** Gate 5a (`cursor/gate5a-replay-conformance-1656`, A18857)
+proved by test that existing `ServeLoop` + `ReplayFeed` + `ReplayClock` +
+`PaperExecutor` + the ledger already drive deterministic historical ticks.
+No generic production hook is missing; children must not subclass
+`ServeLoop`. ADR-0114 still blocked `replay.py`'s equity policies on §11
+items 5 and 6. The owner ruled those items on 2026-09-10 (kickoff
+`docs/plans/2026-09-10-gate5-replay-kickoff.md`): mixed confirmed caps
+across all horizons, not h1-only; next-bar-open market fill as a
+config-driven policy, nothing hardcoded. Precise overlap semantics were
+explicitly not decided. Real deployment-eligible caps do not exist yet
+(§11 item 4 / Gate 4).
+
+**Decision (owner-ruled shape, 2026-09-10).**
+
+1. Replay handles overlapping multi-horizon decisions generically.
+   Exercise only against development-only/synthetic caps with
+   `deployment_eligible=false`. Never claim a real mixed-cap result
+   (plan §8).
+2. Fill model: decide at bar close `t` on data known by `t`; fill at bar
+   `t+1`'s open. Reuse `nodes_capital.SchwabCostModel` for spread/fees.
+   No partial fills or rejections (full simulated fill). A halted symbol
+   is skipped, not queued. Forced exit at horizon expiry using that
+   bar's open. Every fill-model value is a named field of
+   `configs/fill-policy.json` (sibling of Gate 3's `capital-policy.json`,
+   which this phase does not own), pinned by digest, never a Python
+   literal.
+
+**Decision (proposed overlap/expiry rule — needs owner acceptance).**
+Grounded in plan §3's one decision graph and one account:
+
+- Lot identity is `(symbol, lead)`. Different leads on the same name MAY
+  be open concurrently (the mixed-cap ladder). A new decision for an
+  already-open `(symbol, lead)` is refused; it does not override.
+- Same-tick order: forced exits whose expiry bar is this fill bar, then
+  new entries. An h1 expiry and an h10 hold never compete; an h1
+  re-entry on the same tick sees a vacant lot after the exit.
+- Expiry bar = fill bar + lead (hold `lead` bars after the next-bar-open
+  entry; exit at that bar's open). Literal `t+h` from the decision bar
+  would make h=1 fill and exit on the same open; this proposal rejects
+  that reading. Config field `forced_exit_horizon_basis` pins `"fill"`.
+- Halt: skip every action for that symbol on that tick; do not queue.
+
+Closed vocabularies the config must spell (code refuses any other
+member; the shipped `fill-policy.json` carries the ruled/proposed
+values): `order_type=market`, `partial_fills=false`, `rejections=none`,
+`halt_handling=skip`, `forced_exit_at=horizon_expiry`,
+`forced_exit_horizon_basis=fill`, `same_lead_overlap=refuse`,
+`different_lead_overlap=concurrent`, `same_tick_order=exits_then_entries`,
+`mark_source=fill_bar_open`, `paper_fill_rule=touch`, `paper_fees=none`.
+
+**Files.** `intraday_equities/replay.py` (new, tier 3) composes
+`PaperExecutor` + injected clock; it does not own clocks, ledgers,
+account folds, or performance math. `configs/fill-policy.json` (new).
+`configs/run-development-replay.json` (new) — P16 evidence ending
+2025-10-16, `deployment_eligible=false`, fill-policy digest pin. No
+`dskit.production` hook. `path.csv` untouched.
+
+**Consequences.** Implementation may proceed against synthetic caps
+only. Changing a fill-model value is a config edit (identity moves).
+The overlap/expiry rule stays proposed until the owner accepts this
+ADR; a different ruling is a config-vocabulary change, not a silent
+code default.

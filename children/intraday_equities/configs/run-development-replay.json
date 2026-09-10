@@ -1,0 +1,17 @@
+{
+  "name": "intraday-equities-development-replay",
+  "notes": "Developmental replay of already-spent P16 evidence ending 2025-10-16. Forced deployment_eligible=false: this document exists to find code and accounting defects, not to estimate returns (plan §6 Phase 7 item 5, §8). Caps are development-only/synthetic; real confirmed caps do not exist yet. Fill-model knobs live in fill-policy.json (digest pinned below) so a policy change is a config edit. No market-data read is authorized merely because this file exists — tests drive the mechanism with synthetic bars.",
+  "pipeline": {
+    "replay": {
+      "uses": "intraday_equities.replay:DevelopmentReplay",
+      "params": {
+        "deployment_eligible": false,
+        "evidence_end": "2025-10-16",
+        "fill_policy": "configs/fill-policy.json",
+        "fill_policy_sha256": "a67539e9a425cd6969ab20b207f1d0ead180d66a038486cffd4e41bf7c260359",
+        "caps": "development-only"
+      },
+      "notes": "Same decision-graph contract as production (one graph, one account) with only the fill/clock/feed boundary replaced. Import path is the adapter; this node composes PaperExecutor and does not subclass ServeLoop (Gate 5a: no missing generic hook)."
+    }
+  }
+}
