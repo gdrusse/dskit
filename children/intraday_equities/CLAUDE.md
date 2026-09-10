@@ -68,7 +68,11 @@ Agent orientation — see README.md for operator commands.
   artifacts) and `FinalistCandidate` builds THAT candidate's document. It
   restates no model name and refuses a selection it has no recipe for. One
   fit, not a walk — the phase declares no fold schedule. Constructed and
-  validated (`ee674709…`); it has NOT been run.
+  validated (`2db8e95a…`); it has NOT been run.
+- `configs/run-final-refit.json` is a non-executable contract. The driver has
+  no immutable completed-run attestation and no content-derived identity for
+  ten labelled input wires. Filling its pins cannot enable planning;
+  `final_model.FinalRefit` fails closed until those upstream contracts exist.
 
 ## Machine knobs
 

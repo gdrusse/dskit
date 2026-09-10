@@ -1,24 +1,28 @@
 # Re-entry
 
-## Current wrap: Gate 2 deliverable 3 closed (2026-09-10)
+## Current wrap: Gate 2 deliverable 4 pending architecture re-review (2026-09-10)
 
 Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (not pushed by this
-closeout). Deliverable 3 is review-closed: method/API PASS at `7c0ba3d`
-(0 Critical, 0 Major, 1 accepted Minor) and architecture/governance PASS at
-`d61b86a` (0 Critical, 0 Major, 0 Minor).
+correction). Deliverable 4 adds `configs/run-final-refit.json` and
+`intraday_equities.final_model.FinalRefit`, but is deliberately non-executable.
+The driver does not yet provide an immutable completed-run attestation or
+content-derived identities for the ten labelled input wires. Filling config
+pins cannot enable planning; `FinalRefit` fails closed until those generic
+upstream contracts exist. No HPO, refit, bundle write, or market-data run has
+occurred.
 
-The correction chain now preserves complete per-lead HPO evidence as an
-atomic content-addressed JSON artifact with a strict public resolver, and
-fails closed before fitting when evidence cannot be produced. Focused checks:
-62 generic tests passed; child checks reported 260 passed, 11 skipped, and the
-same five named unrelated baseline failures. Ruff and correction-range
-`git diff --check` passed. No full suite, real HPO, or market-data run occurred.
+Method/API review passed through cycle 3 at `585012a` (0 Critical, 0 Major,
+0 Minor). Architecture/governance review at `57b0e74` failed with one Major:
+the durable handoff and child package documents misstated the current D4 tree
+and boundary. This correction refreshes those documents; architecture closure
+still requires a clean re-review.
 
-Closeout memo:
-`children/intraday_equities/docs/memos/2026-09-10-final-model-replay-gate2-deliverable3-closeout.md`.
+Architecture review memo:
+`docs/memos/2026-09-10-final-model-replay-gate2-deliverable4-skeptic-architecture.md`.
 
-**Next:** Gate 2 deliverable 4, `configs/run-final-refit.json`; it remains
-uncreated and unrun.
+**Next:** re-run the D4 architecture/governance review. Separately, the generic
+driver needs immutable completed-run attestation and producer-derived identities
+for all ten labelled input wires before final refit can become executable.
 
 ## Prior wrap: Gate 2 — final refit and one bundle (2026-09-09)
 
