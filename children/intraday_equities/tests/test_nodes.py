@@ -1245,6 +1245,16 @@ def test_no_information_scan_hpo_evidence_builds_a_ledger_and_leaves_the_default
     )
     spec = _mini_spec()
     spec["features"] = ["ret_lag_0"]
+    spec["scan"] = {
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+            "n_estimators": 5,
+            "min_child_samples": 1,
+            "n_jobs": 1,
+            "random_state": 0,
+            "verbosity": -1,
+        },
+    }
     bars, rows = [], []
     for symbol in ("AAPL", "JPM"):
         px = 100.0
@@ -1273,20 +1283,27 @@ def test_no_information_scan_hpo_evidence_builds_a_ledger_and_leaves_the_default
         "train_end_ms": train_end,
         "val_start_ms": val_start,
         "val_end_ms": val_end,
-        "estimator": "lightgbm.LGBMRegressor",
-        "estimator_params": {
-            "n_estimators": 5,
-            "min_child_samples": 1,
-            "n_jobs": 1,
-            "random_state": 0,
-            "verbosity": -1,
-        },
         "hpo_trials": 4,
         "hpo_seed": 0,
         "hpo_val_days": 2,
         "hpo_embargo_days": 0,
     }
     inputs = {"records": rows, "bars": bars, "spec": spec}
+
+    malformed = NoInformationScan(
+        "scan",
+        {
+            **base_params,
+            "estimator": "lightgbm.LGBMRegressor",
+            "hpo_objective": "squared_error_improvement",
+            "hpo_evidence": True,
+            "hpo_space": {"num_leaves": [4]},
+        },
+    )
+    for bad_estimator in ("", 17, "missing_package.MissingEstimator"):
+        malformed.params["estimator"] = bad_estimator
+        with pytest.raises(ValueError, match="hpo_evidence requires.*estimator"):
+            malformed.run(None, inputs)
 
     baseline = NoInformationScan(
         "scan",
@@ -1877,35 +1894,20 @@ def test_hpo_evidence_is_additive_and_opt_in():
             dict(base, hpo_evidence=True, hpo_objective="squared_error_improvement")
         )
     )
-    assert any(
-        "hpo_evidence requires estimator" in problem
-        for problem in NoInformationScan.validate_params(
-            dict(
-                base,
-                hpo_evidence=True,
-                hpo_trials=1,
-                hpo_seed=0,
-                hpo_val_days=2,
-                hpo_embargo_days=0,
-                hpo_objective="squared_error_improvement",
-                hpo_space={"num_leaves": [4]},
-            )
+    # Static validation cannot see the universe's scan.estimator. The
+    # effective estimator is resolved and checked by run().
+    assert NoInformationScan.validate_params(
+        dict(
+            base,
+            hpo_evidence=True,
+            hpo_trials=1,
+            hpo_seed=0,
+            hpo_val_days=2,
+            hpo_embargo_days=0,
+            hpo_objective="squared_error_improvement",
+            hpo_space={"num_leaves": [4]},
         )
-    )
-    with pytest.raises(ValueError, match="hpo_evidence requires estimator"):
-        NoInformationScan(
-            "scan",
-            dict(
-                base,
-                hpo_evidence=True,
-                hpo_trials=1,
-                hpo_seed=0,
-                hpo_val_days=2,
-                hpo_embargo_days=0,
-                hpo_objective="squared_error_improvement",
-                hpo_space={"num_leaves": [4]},
-            ),
-        ).run(None, {})
+    ) == []
     # The one supported shape is clean.
     assert (
         NoInformationScan.validate_params(

@@ -3164,6 +3164,21 @@ def _combo_ic(train_x, train_y, val_x, val_y, names, top_k):
     )
 
 
+def _resolve_estimator(path):
+    """Resolve a declared estimator import path without fitting it."""
+    import importlib
+
+    if not isinstance(path, str) or not path or "." not in path:
+        raise ValueError(f"scan.estimator {path!r} is not a dotted import path")
+    module_name, _, attr = path.rpartition(".")
+    try:
+        return getattr(importlib.import_module(module_name), attr)
+    except (ImportError, AttributeError) as exc:
+        raise ValueError(
+            f"scan.estimator {path!r} could not be imported ({exc})"
+        ) from exc
+
+
 def _fit_estimator(train_x, train_y, scan, categorical=None, feature_names=None):
     """Fit ``scan.estimator``, or a least-squares fallback (tests).
 
@@ -3173,19 +3188,11 @@ def _fit_estimator(train_x, train_y, scan, categorical=None, feature_names=None)
     NAME, and guessing that split by position is how a lag window
     silently becomes a feature vector).
     """
-    import importlib
-
     import numpy as np
 
     path = scan.get("estimator")
     if path:
-        module_name, _, attr = path.rpartition(".")
-        try:
-            cls = getattr(importlib.import_module(module_name), attr)
-        except (ImportError, AttributeError) as exc:
-            raise ValueError(
-                f"scan.estimator {path!r} could not be imported ({exc})"
-            ) from exc
+        cls = _resolve_estimator(path)
         params = dict(scan.get("estimator_params") or {})
         params.pop("categorical_feature", None)
         model = cls(**params)
@@ -5462,11 +5469,6 @@ class NoInformationScan(Node):
                 "hpo_objective squared_error_improvement requires "
                 "hpo_evidence=true; the legacy tuner supports only 'mspe' or 'ic'"
             )
-        if evidence and estimator is None:
-            problems.append(
-                "hpo_evidence requires estimator to be a declared import path; "
-                "implicit least-squares fits cannot produce HPO evidence"
-            )
         trials = params.get("hpo_trials")
         if trials is not None:
             check_int_param(problems, "hpo_trials", trials, ge=0)
@@ -5662,11 +5664,6 @@ class NoInformationScan(Node):
             ``hpo_evidence: true`` actually ran one; every other caller's
             return dict has exactly the two keys above, unchanged.
         """
-        if self.params.get("hpo_evidence") and self.params.get("estimator") is None:
-            raise ValueError(
-                "hpo_evidence requires estimator to be a declared import path; "
-                "refusing an unauditable implicit least-squares fit"
-            )
         spec = inputs["spec"]
         horizon = spec["horizon"]
         features = _feature_names_for_rows(spec, inputs["records"])
@@ -5752,6 +5749,14 @@ class NoInformationScan(Node):
             base_scan["estimator_params"] = dict(self.params["estimator_params"])
         hpo_trials = int(self.params.get("hpo_trials") or 0)
         hpo_evidence = bool(self.params.get("hpo_evidence"))
+        if hpo_evidence:
+            try:
+                _resolve_estimator(base_scan.get("estimator"))
+            except ValueError as exc:
+                raise ValueError(
+                    "hpo_evidence requires a valid resolved estimator; "
+                    "refusing an unauditable implicit least-squares fit"
+                ) from exc
         combos = ()
         inventory = None
         if hpo_trials and base_scan.get("estimator"):
