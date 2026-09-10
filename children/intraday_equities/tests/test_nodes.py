@@ -1345,6 +1345,54 @@ def test_no_information_scan_hpo_evidence_builds_a_ledger_and_leaves_the_default
     assert math.isfinite(evidence["metrics"]["hpo_squared_error_improvement"])
 
 
+def test_no_information_scan_hpo_evidence_refuses_an_insufficient_inner_split():
+    """Required evidence may not silently fall back to base parameters."""
+    pytest.importorskip("lightgbm")
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    bars, rows = [], []
+    for symbol in ("AAPL", "JPM"):
+        px = 100.0
+        for i in range(12):
+            ret = 0.001 * ((i % 3) - 1)
+            px *= math.exp(ret)
+            bars.append({"symbol": symbol, "asof_ms": _ms(i), "close": px})
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "asof_ms": _ms(i),
+                    "ret_lag_0": ret,
+                    "close": px,
+                }
+            )
+    params = {
+        "split": "val",
+        "train_end_ms": _ms(7),
+        "val_start_ms": _ms(9),
+        "val_end_ms": _ms(11),
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+            "n_estimators": 5,
+            "min_child_samples": 1,
+            "n_jobs": 1,
+            "random_state": 0,
+            "verbosity": -1,
+        },
+        "hpo_trials": 1,
+        "hpo_seed": 0,
+        "hpo_val_days": 100,
+        "hpo_embargo_days": 0,
+        "hpo_objective": "squared_error_improvement",
+        "hpo_space": {"num_leaves": [4]},
+    }
+    inputs = {"records": rows, "bars": bars, "spec": spec}
+
+    legacy = NoInformationScan("scan", params).run(None, inputs)
+    assert set(legacy) == {"records", "metrics"}
+    with pytest.raises(ValueError, match="hpo_evidence.*inner split"):
+        NoInformationScan("scan", {**params, "hpo_evidence": True}).run(None, inputs)
+
+
 def test_hpo_evidence_selection_reports_the_selected_candidates_own_score_not_the_argmax(
     monkeypatch,
 ):

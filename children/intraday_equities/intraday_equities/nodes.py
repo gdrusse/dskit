@@ -5819,6 +5819,11 @@ class NoInformationScan(Node):
         model = None
         hpo_ledger_obj = None
         fold_predictions = {} if fold_parts is not None else None
+        if inventory is not None and tr_x.shape[0] < 2:
+            raise ValueError(
+                "hpo_evidence inner split cannot run because the outer train "
+                f"fold has fewer than 2 rows, got train={tr_x.shape[0]}"
+            )
         if tr_x.shape[0] >= 2:
             if inventory is not None:
                 in_x, in_y, ho_x, ho_y, ho_stamps = _scan_fold_stamped(
@@ -5832,32 +5837,37 @@ class NoInformationScan(Node):
                     label=label,
                     scramble=scramble,
                 )
-                if in_x.shape[0] >= 2 and ho_x.shape[0] >= 2:
-                    chosen, inner_score, ledger_obj, selection_obj = (
-                        _hpo_evidence_selection(
-                            scan,
-                            inventory,
-                            in_x,
-                            in_y,
-                            ho_x,
-                            ho_y,
-                            ho_stamps,
-                            spec["session"]["tz"],
-                            (inner_train_end, inner_val_start, inner_val_end),
-                            int(self.params["hpo_seed"]),
-                            categorical=categorical,
-                            feature_names=column_names,
-                        )
+                if in_x.shape[0] < 2 or ho_x.shape[0] < 2:
+                    raise ValueError(
+                        "hpo_evidence inner split requires at least 2 train and "
+                        f"2 holdout rows, got train={in_x.shape[0]} "
+                        f"holdout={ho_x.shape[0]}"
                     )
-                    scan["estimator_params"] = chosen
-                    metrics["hpo_squared_error_improvement"] = inner_score
-                    hpo_ledger_obj = {"ledger": ledger_obj, "selection": selection_obj}
-                    self.log.info(
-                        "hpo evidence: %d candidate(s), 1-SE winner "
-                        "squared_error_improvement=%.6g",
-                        len(inventory.combinations),
-                        inner_score,
+                chosen, inner_score, ledger_obj, selection_obj = (
+                    _hpo_evidence_selection(
+                        scan,
+                        inventory,
+                        in_x,
+                        in_y,
+                        ho_x,
+                        ho_y,
+                        ho_stamps,
+                        spec["session"]["tz"],
+                        (inner_train_end, inner_val_start, inner_val_end),
+                        int(self.params["hpo_seed"]),
+                        categorical=categorical,
+                        feature_names=column_names,
                     )
+                )
+                scan["estimator_params"] = chosen
+                metrics["hpo_squared_error_improvement"] = inner_score
+                hpo_ledger_obj = {"ledger": ledger_obj, "selection": selection_obj}
+                self.log.info(
+                    "hpo evidence: %d candidate(s), 1-SE winner "
+                    "squared_error_improvement=%.6g",
+                    len(inventory.combinations),
+                    inner_score,
+                )
             elif combos:
                 in_x, in_y, ho_x, ho_y, _ = _scan_fold_stamped(
                     prepared,

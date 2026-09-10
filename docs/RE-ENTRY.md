@@ -1,18 +1,19 @@
 # Re-entry
 
-## Current wrap: Gate 2 deliverable 3 blocked by bounded review (2026-09-10)
+## Current wrap: Gate 2 deliverable 3 correction resumed (2026-09-10)
 
-Branch: `claude/phase1-recovery-seven-gates-ao4zdj`. It must remain distinct
-from `main`; this code is **not eligible to close or merge**.
+Branch: `claude/phase1-recovery-seven-gates-ao4zdj`. The owner corrected the
+review bound to **15 correction cycles, not 2**, so deliverable 3 is back in
+correction rather than permanently blocked.
 
 - Architecture cycle 1's Major was fixed by `d9eb132`.
 - Method cycle 3's Major was fixed by `03a03ac`.
 - Method cycle 4 at `a926a2b` found a new Major: with insufficient inner data,
   `hpo_evidence: true` silently falls back without producing a ledger.
-- The agreed two-correction-cycle bound therefore blocks Gate 2 deliverable 3.
-  No third correction was attempted.
+- Correction cycle 3 now fixes that fail-closed evidence requirement. Further
+  review remains required before deliverable 3 can close.
 
-Journal action: `A18860`.
+Journal action `A18860` records the superseded two-cycle handoff.
 
 ## Prior wrap: Gate 2 — final refit and one bundle (2026-09-09)
 
