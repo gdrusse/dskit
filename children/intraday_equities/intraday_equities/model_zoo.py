@@ -71,6 +71,7 @@ _MODEL_FIELDS = frozenset(
         "hpo_val_days",
         "hpo_embargo_days",
         "hpo_objective",
+        "hpo_evidence",
         "hpo_space",
     }
 )

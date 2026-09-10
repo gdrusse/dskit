@@ -57,9 +57,10 @@ REAL_LEAN_DROP = (
 # ---------------------------------------------------------------------------
 
 #: The real five-dimension LightGBM HPO grid, verbatim from
-#: configs/run-final-hpo.json's "lgbm" finalist template (independently
-#: transcribed here, the same discipline REAL_LEAN_DROP above uses, so
-#: the test asserts something hpo_space() could not merely echo back).
+#: configs/run-final-hpo.json's "lean" (family "pooled-lightgbm")
+#: finalist template (independently transcribed here, the same
+#: discipline REAL_LEAN_DROP above uses, so the test asserts something
+#: hpo_space() could not merely echo back).
 REAL_HPO_SPACE = {
     "learning_rate": [0.003, 0.01, 0.03],
     "num_leaves": [4, 8, 16],
@@ -82,7 +83,7 @@ def test_hpo_space_reads_the_real_five_dimension_grid_from_its_one_source():
     assert total == 324
 
 
-def test_hpo_space_refuses_a_config_with_no_lgbm_template(tmp_path):
+def test_hpo_space_refuses_a_config_with_no_pooled_lightgbm_template(tmp_path):
     bad = tmp_path / "run-final-hpo.json"
     bad.write_text('{"stages": {"finalist": {"params": {"templates": []}}}}')
     with pytest.raises(ValueError, match="exactly one"):
@@ -94,14 +95,17 @@ def test_hpo_space_refuses_a_missing_file(tmp_path):
         hpo_space(str(tmp_path / "nope.json"))
 
 
-def test_hpo_space_refuses_duplicate_lgbm_templates(tmp_path):
+def test_hpo_space_refuses_duplicate_pooled_lightgbm_templates(tmp_path):
+    # Matched by FAMILY, not id (ADR-0115) — two templates with different
+    # ids but the same family still collide, which is exactly the point:
+    # id is the finalist's candidate-name component, never a lookup key.
     import json
 
     dup = tmp_path / "dup.json"
     dup.write_text(json.dumps({"stages": {"finalist": {"params": {
         "templates": [
-            {"id": "lgbm", "family": "pooled-lightgbm", "model": {"hpo_space": REAL_HPO_SPACE}},
-            {"id": "lgbm", "family": "pooled-lightgbm", "model": {"hpo_space": REAL_HPO_SPACE}},
+            {"id": "lean", "family": "pooled-lightgbm", "model": {"hpo_space": REAL_HPO_SPACE}},
+            {"id": "other", "family": "pooled-lightgbm", "model": {"hpo_space": REAL_HPO_SPACE}},
         ]
     }}}}))
     with pytest.raises(ValueError, match="exactly one"):
@@ -114,7 +118,7 @@ def test_hpo_space_refuses_the_wrong_family(tmp_path):
     bad = tmp_path / "wrong_family.json"
     bad.write_text(json.dumps({"stages": {"finalist": {"params": {
         "templates": [
-            {"id": "lgbm", "family": "wrong-family", "model": {"hpo_space": REAL_HPO_SPACE}},
+            {"id": "lean", "family": "wrong-family", "model": {"hpo_space": REAL_HPO_SPACE}},
         ]
     }}}}))
     with pytest.raises(ValueError, match="pooled-lightgbm"):
@@ -125,7 +129,7 @@ def test_hpo_space_refuses_a_missing_or_malformed_grid(tmp_path):
     import json
 
     for bad_space in (None, {}, {"learning_rate": []}, {"learning_rate": "not-a-list"}):
-        template = {"id": "lgbm", "family": "pooled-lightgbm", "model": {}}
+        template = {"id": "lean", "family": "pooled-lightgbm", "model": {}}
         if bad_space is not None:
             template["model"]["hpo_space"] = bad_space
         bad = tmp_path / "malformed.json"

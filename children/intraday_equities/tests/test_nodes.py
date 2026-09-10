@@ -5,6 +5,7 @@ import json
 import math
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
@@ -1212,6 +1213,137 @@ def test_no_information_scan_refuses_a_constant_forecast():
         ).run(None, {"records": rows, "bars": bars, "spec": spec})
 
 
+def test_no_information_scan_hpo_evidence_builds_a_ledger_and_leaves_the_default_path_untouched():
+    """ADR-0115: hpo_evidence=True scores every candidate through a real
+    CandidateInventory/TrialLedger/OneStandardErrorSelector selection.
+
+    The single most important assertion here is the FIRST one:
+    ``hpo_evidence`` absent (every existing P13/P14/P15 caller's shape)
+    returns EXACTLY the historical two-key ``{"records", "metrics"}``
+    dict — no ``hpo_ledger`` key at all, not even ``None`` — proving the
+    new capability is additive, not a restated contract every caller now
+    carries.
+    """
+    pytest.importorskip("lightgbm")
+    ny = ZoneInfo("America/New_York")
+
+    def stamp(date_text, minute_offset):
+        year, month, day = (int(part) for part in date_text.split("-"))
+        instant = datetime(year, month, day, 9, 30, tzinfo=ny) + timedelta(
+            minutes=minute_offset
+        )
+        return int(instant.timestamp() * 1000)
+
+    days = (
+        "2026-01-05",
+        "2026-01-06",
+        "2026-01-07",
+        "2026-01-08",
+        "2026-01-09",
+        "2026-01-12",
+        "2026-01-13",
+    )
+    spec = _mini_spec()
+    spec["features"] = ["ret_lag_0"]
+    bars, rows = [], []
+    for symbol in ("AAPL", "JPM"):
+        px = 100.0
+        for day in days:
+            for minute in (0, 1, 2):
+                ret = 0.001 * ((minute % 3) - 1) + (0.01 if symbol == "AAPL" else -0.01)
+                px *= math.exp(ret)
+                ts = stamp(day, minute)
+                bars.append({"symbol": symbol, "asof_ms": ts, "close": px})
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "asof_ms": ts,
+                        "ret_lag_0": ret,
+                        "close": px,
+                    }
+                )
+    train_end = stamp(days[4], 2)
+    val_start = stamp(days[5], 0)
+    val_end = stamp(days[6], 2)
+    # Inner cuts (hpo_val_days=2, hpo_embargo_days=0) land the holdout on
+    # days[3]/days[4] (two distinct trading days — cluster_bootstrap_t's
+    # minimum) and the inner train on days[0..2].
+    base_params = {
+        "split": "val",
+        "train_end_ms": train_end,
+        "val_start_ms": val_start,
+        "val_end_ms": val_end,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {
+            "n_estimators": 5,
+            "min_child_samples": 1,
+            "n_jobs": 1,
+            "random_state": 0,
+            "verbosity": -1,
+        },
+        "hpo_trials": 4,
+        "hpo_seed": 0,
+        "hpo_val_days": 2,
+        "hpo_embargo_days": 0,
+    }
+    inputs = {"records": rows, "bars": bars, "spec": spec}
+
+    baseline = NoInformationScan(
+        "scan",
+        {
+            **base_params,
+            "hpo_objective": "ic",
+            "hpo_space": {"learning_rate": [0.01, 0.05], "num_leaves": [4, 8]},
+        },
+    ).run(None, inputs)
+    assert set(baseline) == {"records", "metrics"}
+    assert "hpo_ic" in baseline["metrics"]
+
+    evidence_space = {
+        "learning_rate": [0.01, 0.05],
+        "num_leaves": [4, 8],
+        "min_child_samples": [1, 2],
+        "reg_lambda": [0.0],
+        "reg_alpha": [0.0],
+    }
+    evidence = NoInformationScan(
+        "scan",
+        {
+            **base_params,
+            "hpo_objective": "squared_error_improvement",
+            "hpo_evidence": True,
+            "hpo_space": evidence_space,
+        },
+    ).run(None, inputs)
+    assert set(evidence) == {"records", "metrics", "hpo_ledger"}
+    ledger = evidence["hpo_ledger"]["ledger"]
+    selection = evidence["hpo_ledger"]["selection"]
+    assert len(ledger["rows"]) == 4  # every drawn candidate, none dropped
+    required = {
+        "overrides",
+        "score",
+        "se",
+        "diagnostics",
+        "on_boundary",
+        "fit_seed",
+        "cuts",
+        "n_rows",
+        "train_val_gap",
+        "collapsed_prediction_variance",
+    }
+    for row in ledger["rows"]:
+        assert required <= set(row)
+        assert row["se"] >= 0.0
+        # Two holdout days x three bars x two symbols, minus the window's
+        # own last bar (its lead-1 label would reach past inner_val_end,
+        # same boundary rule _scan_fold_stamped already applies to every
+        # fold — not new to the evidence path).
+        assert row["n_rows"] == 10
+    winner = selection["selected_candidate"]
+    assert winner in [dict(row["overrides"]) for row in ledger["rows"]]
+    assert math.isfinite(evidence["metrics"]["hpo_squared_error_improvement"])
+
+
 def test_lead_labels_drop_rows_whose_label_lands_after_the_cut():
     spec = _mini_spec()
     spec["features"] = ["ret_lag_0"]
@@ -1564,6 +1696,80 @@ def test_scan_validates_the_label_knobs():
         for problem in NoInformationScan.validate_params(
             dict(base, label_residual=None)
         )
+    )
+
+
+def test_hpo_objective_accepts_squared_error_improvement():
+    """ADR-0115: a third enum value, additive alongside 'mspe'/'ic'."""
+    base = {"split": "val", "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3}
+    assert (
+        NoInformationScan.validate_params(
+            dict(base, hpo_objective="squared_error_improvement")
+        )
+        == []
+    )
+    assert any(
+        "hpo_objective" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(base, hpo_objective="rmse")
+        )
+    )
+
+
+def test_hpo_evidence_is_additive_and_opt_in():
+    """hpo_evidence defaults to unset/False and is refused outside its one
+    supported shape — objective 'squared_error_improvement' with
+    hpo_trials > 0 — never silently reinterpreted.
+    """
+    base = {"split": "val", "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3}
+    assert "hpo_evidence" in NoInformationScan._PARAMS
+    assert NoInformationScan.validate_params(base) == []
+    assert any(
+        "hpo_evidence must be a bool" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(base, hpo_evidence="yes")
+        )
+    )
+    # hpo_evidence=True with the old objectives is refused by name, never
+    # silently scored by the raw-argmin/argmax tuner that has no evidence
+    # recipe for it.
+    for objective in ("mspe", "ic", None):
+        params = dict(base, hpo_evidence=True, hpo_trials=4)
+        if objective is not None:
+            params["hpo_objective"] = objective
+        assert any(
+            "hpo_evidence requires hpo_objective" in problem
+            for problem in NoInformationScan.validate_params(params)
+        )
+    # hpo_evidence=True with hpo_trials absent/0 is refused — there is no
+    # candidate to build evidence over.
+    assert any(
+        "hpo_evidence requires hpo_trials > 0" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(base, hpo_evidence=True, hpo_objective="squared_error_improvement")
+        )
+    )
+    # The one supported shape is clean.
+    assert (
+        NoInformationScan.validate_params(
+            dict(
+                base,
+                hpo_evidence=True,
+                hpo_trials=4,
+                hpo_seed=0,
+                hpo_val_days=2,
+                hpo_embargo_days=0,
+                hpo_objective="squared_error_improvement",
+                hpo_space={
+                    "learning_rate": [0.01, 0.05],
+                    "num_leaves": [4, 8],
+                    "min_child_samples": [1, 2],
+                    "reg_lambda": [0.0],
+                    "reg_alpha": [0.0],
+                },
+            )
+        )
+        == []
     )
 
 

@@ -24,6 +24,7 @@ from dskit.onboarding.observations import (
     stream_dir,
 )
 from dskit.pipeline.document import is_node_ref
+from dskit.pipeline.kinds_search import CandidateInventory
 from dskit.pipeline.libs.numpy import (
     ReturnWindows,
     log_return,
@@ -99,6 +100,11 @@ _NO_INFO_ALPHA = 0.05
 #: the tree is a stump, ŷ is the mean, and every horizon scores IC=0 —
 #: a mean-only model cannot answer a no-information test (A0013).
 _DEGENERATE_YHAT_REL = 1e-8
+
+#: Bootstrap replicates for the ADR-0115 evidence path's cluster-robust
+#: standard error (:func:`_hpo_evidence_selection`) — matches
+#: :mod:`intraday_equities.final_model`'s own worked example.
+_HPO_EVIDENCE_N_BOOT = 200
 _DAY_MS = 24 * 60 * 60 * 1000
 #: Rolling windows the label transform reads, in 1-minute RTH bars
 #: (ADR-0059). One session of vol; ten sessions of beta — long enough to
@@ -3381,6 +3387,148 @@ def _tune_estimator(
     return best_params, float(-best if objective == "ic" else best)
 
 
+def _hpo_evidence_selection(
+    scan,
+    inventory,
+    in_x,
+    in_y,
+    ho_x,
+    ho_y,
+    ho_stamps,
+    session_tz,
+    inner_cuts,
+    fit_seed,
+    categorical=None,
+    feature_names=None,
+    n_boot=_HPO_EVIDENCE_N_BOOT,
+    alpha=0.05,
+):
+    """Score every ``inventory`` candidate on the inner holdout and select the 1-SE winner (ADR-0115).
+
+    Fits ``scan``'s estimator once per candidate on the SAME inner
+    train/holdout split :func:`_tune_estimator` already carves (``in_x``/
+    ``in_y`` is fold-train's inner train, ``ho_x``/``ho_y``/``ho_stamps``
+    its held-out slice; the fold's own ``val`` split is never read here,
+    same as the existing tuner). Every candidate's holdout decisions are
+    grouped by trading day
+    (:func:`intraday_equities.final_model.cluster_scores_by_day`) and
+    handed with the rest of its evidence to
+    :func:`intraday_equities.final_model.run_lead_selection`, which owns
+    the cluster-robust standard error, the complete
+    :class:`~dskit.pipeline.kinds_search.TrialLedger`, and the
+    one-standard-error simplicity selection — nothing generic is
+    re-derived here.
+
+    Parameters
+    ----------
+    scan : dict
+        The base scan spec (``estimator`` plus its template
+        ``estimator_params``) every candidate's overrides are merged
+        onto, exactly as :func:`_tune_estimator` already does per trial.
+    inventory : dskit.pipeline.kinds_search.CandidateInventory
+        The frozen candidate set this lead must score exhaustively.
+    in_x, in_y : numpy.ndarray
+        The inner-holdout TRAIN fold.
+    ho_x, ho_y, ho_stamps : numpy.ndarray
+        The inner holdout's features, labels, and aligned epoch-ms
+        timestamps — :func:`_scan_fold_stamped`'s fifth return value.
+    session_tz : str
+        The universe's session IANA timezone, for the trading-day
+        cluster key (:func:`_ny_date_minutes`).
+    inner_cuts : tuple of int
+        ``(inner_train_end, inner_val_start, inner_val_end)``, recorded
+        into every row's ``cuts`` evidence field.
+    fit_seed : int
+        The run's declared ``hpo_seed`` — recorded as every row's
+        ``fit_seed`` and used as the bootstrap base seed.
+    categorical : list of int, optional
+        Forwarded to :func:`_fit_estimator`.
+    feature_names : list of str, optional
+        Forwarded to :func:`_fit_estimator`.
+    n_boot : int
+        Bootstrap replicates for the cluster standard error.
+    alpha : float
+        Bootstrap-t interval level (default 0.05).
+
+    Returns
+    -------
+    tuple
+        ``(chosen_params, best_score, ledger_obj, selection_obj)`` — the
+        winning full ``estimator_params`` override (template params plus
+        the winner's searched dimensions), its selection score, and the
+        ledger/selection as JSON-safe dicts
+        (:meth:`~dskit.pipeline.kinds_search.TrialLedger.to_obj`,
+        :meth:`~dskit.pipeline.kinds_search.SelectionRecord.to_obj`).
+
+    Raises
+    ------
+    ValueError
+        Fewer than two distinct trading days land in the holdout (no
+        cluster-robust standard error is possible from one), or a
+        candidate's fit/predict raises.
+    """
+    import numpy as np
+
+    from intraday_equities import final_model
+
+    base = dict(scan.get("estimator_params") or {})
+    mu = float(np.mean(in_y)) if in_y.size else 0.0
+
+    def evaluate(candidate):
+        trial_scan = dict(scan)
+        trial_scan["estimator_params"] = {**base, **candidate}
+        model = _fit_estimator(
+            in_x,
+            in_y,
+            trial_scan,
+            categorical=categorical,
+            feature_names=feature_names,
+        )
+        hat = np.asarray(model.predict(ho_x), dtype=np.float64)
+        train_hat = np.asarray(model.predict(in_x), dtype=np.float64)
+        rows = [
+            {
+                "day": _ny_date_minutes(int(ho_stamps[i]), session_tz)[0],
+                "y": float(ho_y[i]),
+                "yhat": float(hat[i]),
+                "mu": mu,
+            }
+            for i in range(ho_y.shape[0])
+        ]
+        cluster_scores = final_model.cluster_scores_by_day(rows)
+        train_sei = [
+            final_model.squared_error_improvement(y, yhat_, mu)
+            for y, yhat_ in zip(in_y, train_hat)
+        ]
+        holdout_sei = [
+            final_model.squared_error_improvement(row["y"], row["yhat"], row["mu"])
+            for row in rows
+        ]
+        train_mean = float(np.mean(train_sei)) if train_sei else 0.0
+        holdout_mean = float(np.mean(holdout_sei)) if holdout_sei else 0.0
+        label_sd = float(np.std(in_y)) if in_y.size else 0.0
+        return {
+            "cluster_scores": cluster_scores,
+            "fit_seed": fit_seed,
+            "cuts": {
+                "inner_train_end_ms": inner_cuts[0],
+                "inner_val_start_ms": inner_cuts[1],
+                "inner_val_end_ms": inner_cuts[2],
+            },
+            "n_rows": int(ho_x.shape[0]),
+            "train_val_gap": abs(train_mean - holdout_mean),
+            "collapsed_prediction_variance": bool(
+                np.std(hat) <= _DEGENERATE_YHAT_REL * label_sd
+            ),
+        }
+
+    ledger, selection = final_model.run_lead_selection(
+        inventory, evaluate, n_boot=n_boot, seed=fit_seed, alpha=alpha
+    )
+    chosen = {**base, **selection.selected_candidate}
+    return chosen, float(selection.best_score), ledger.to_obj(), selection.to_obj()
+
+
 def _model_ic(train_x, train_y, val_x, val_y, names, scan):
     """Fit the declared estimator and score Spearman IC on both folds."""
     import numpy as np
@@ -5110,7 +5258,20 @@ class NoInformationScan(Node):
         ``estimator_params`` override the universe's ``scan`` block.
         Optional ``hpo_trials``, ``hpo_seed``, ``hpo_val_days``,
         ``hpo_embargo_days``, ``hpo_space`` run a discrete random search
-        on an inner train holdout. Optional ``lead_start``, ``lead_step``
+        on an inner train holdout; ``hpo_objective`` picks the winner by
+        ``"mspe"`` (default), ``"ic"``, or ``"squared_error_improvement"``
+        (ADR-0115 — the last requires ``hpo_evidence: true``). Optional
+        ``hpo_evidence`` (bool, default ``False``) is additive only: when
+        ``True``, the inner search draws a
+        :class:`~dskit.pipeline.kinds_search.CandidateInventory` instead
+        of ``_hpo_combos``' random draw, scores every candidate under
+        squared-error improvement with a per-day cluster-robust standard
+        error, and selects the winner via
+        :class:`~dskit.pipeline.kinds_search.OneStandardErrorSelector`
+        rather than a raw argmin/argmax — emitting the complete evidence
+        as a new ``hpo_ledger`` output. ``False`` (the default) leaves
+        every existing caller's behavior and output shape unchanged.
+        Optional ``lead_start``, ``lead_step``
         and ``lead_stop`` override the universe's grid (ADR-0062);
         ``lead_start`` is the training label. Optional ``label_scale``
         (``"raw"`` default, or ``"vol"``), ``label_residual`` (a
@@ -5142,6 +5303,14 @@ class NoInformationScan(Node):
     """
 
     role = "score"
+    # The historical two-key contract stays declared (the conformance bar
+    # requires a non-empty `outputs` tuple on every registered kind — see
+    # tests/pipeline/conformance.py's TestConformance — so `None` is not
+    # an option here). `validate_outputs` is overridden below to ALSO
+    # accept this contract plus the ADR-0115 `hpo_ledger` key, which is
+    # present only when `hpo_evidence: true` actually ran one: every
+    # existing caller keeps the exact same, exactly-two-key check it has
+    # always had.
     outputs = ("records", "metrics")
     _PARAMS = (
         (
@@ -5158,6 +5327,7 @@ class NoInformationScan(Node):
             "hpo_embargo_days",
             "hpo_space",
             "hpo_objective",
+            "hpo_evidence",
             "score_symbols",
             "fit_symbols",
             "common_lead_stop",
@@ -5252,11 +5422,33 @@ class NoInformationScan(Node):
                     f"strings, got {symbols!r}"
                 )
         objective = params.get("hpo_objective")
-        if objective is not None and objective not in ("mspe", "ic"):
-            problems.append(f"hpo_objective must be 'mspe' or 'ic', got {objective!r}")
+        if objective is not None and objective not in (
+            "mspe",
+            "ic",
+            "squared_error_improvement",
+        ):
+            problems.append(
+                "hpo_objective must be 'mspe', 'ic' or "
+                f"'squared_error_improvement', got {objective!r}"
+            )
+        evidence = params.get("hpo_evidence")
+        if evidence is not None and not isinstance(evidence, bool):
+            problems.append(f"hpo_evidence must be a bool, got {evidence!r}")
+        if evidence and objective != "squared_error_improvement":
+            # The evidence path (ADR-0115) selects only through
+            # intraday_equities.final_model's squared-error-improvement
+            # score and simplicity key; it has no "mspe"/"ic" recipe, and
+            # silently scoring one of those under it would be a wrong
+            # answer, not a missing feature.
+            problems.append(
+                "hpo_evidence requires hpo_objective='squared_error_improvement' "
+                f"(the evidence path scores only that objective), got {objective!r}"
+            )
         trials = params.get("hpo_trials")
         if trials is not None:
             check_int_param(problems, "hpo_trials", trials, ge=0)
+        if evidence and not trials:
+            problems.append("hpo_evidence requires hpo_trials > 0")
         if trials:
             for knob in ("hpo_seed", "hpo_val_days", "hpo_embargo_days"):
                 ge = 1 if knob == "hpo_val_days" else 0
@@ -5351,6 +5543,42 @@ class NoInformationScan(Node):
             problems.extend(_universe_problems(spec))
         return problems
 
+    def validate_outputs(self, outputs):
+        """Accept the historical two-key shape, or that plus ``hpo_ledger``.
+
+        Stricter than the base's exact-match check, never looser (ADR-0115):
+        a caller that never sets ``hpo_evidence`` still sees exactly
+        ``{"records", "metrics"}`` refused for anything else, exactly as
+        before this node had an opt-in evidence path; the one additional
+        shape this allows is that pair plus ``hpo_ledger``, emitted only
+        when ``hpo_evidence: true`` actually ran a selection.
+
+        Parameters
+        ----------
+        outputs : object
+            ``run``'s return value.
+
+        Returns
+        -------
+        list of str
+            Empty when ``outputs`` is one of the two allowed key sets.
+        """
+        if not isinstance(outputs, dict) or any(
+            not isinstance(k, str) or not k for k in outputs
+        ):
+            return [
+                f"run must return a dict of named outputs, got {type(outputs).__name__}"
+            ]
+        allowed = ({"records", "metrics"}, {"records", "metrics", "hpo_ledger"})
+        got = set(outputs)
+        if got not in allowed:
+            return [
+                "outputs do not match the declared contract "
+                f"{sorted(allowed[0])} (optionally plus 'hpo_ledger'): "
+                f"got {sorted(got)}"
+            ]
+        return []
+
     def _open_predictions(self, ctx, prepared, period_minutes, val_start):
         """Open this fold's per-row prediction file (ADR-0064), or None.
 
@@ -5405,7 +5633,11 @@ class NoInformationScan(Node):
             ``records`` (one row per ``(symbol, lead)``) and ``metrics``
             (``n_series``, ``n_go``, ``go_frac``, pooled train/val MSPE
             and IC, plus ``go_<sym>``, ``h_star_<sym>``,
-            ``p_value_<sym>``).
+            ``p_value_<sym>``). Also carries ``hpo_ledger`` (ADR-0115) —
+            the complete per-candidate evidence and 1-SE selection, as
+            ``{"ledger": ..., "selection": ...}`` — but ONLY when
+            ``hpo_evidence: true`` actually ran one; every other caller's
+            return dict has exactly the two keys above, unchanged.
         """
         spec = inputs["spec"]
         horizon = spec["horizon"]
@@ -5491,19 +5723,32 @@ class NoInformationScan(Node):
         if self.params.get("estimator_params") is not None:
             base_scan["estimator_params"] = dict(self.params["estimator_params"])
         hpo_trials = int(self.params.get("hpo_trials") or 0)
+        hpo_evidence = bool(self.params.get("hpo_evidence"))
         combos = ()
+        inventory = None
         if hpo_trials and base_scan.get("estimator"):
-            combos = _hpo_combos(
-                dict(base_scan.get("estimator_params") or {}),
-                self.params["hpo_space"],
-                hpo_trials,
-                int(self.params["hpo_seed"]),
-            )
             inner_train_end, inner_val_start, inner_val_end = _hpo_cuts(
                 train_end,
                 int(self.params["hpo_val_days"]),
                 int(self.params["hpo_embargo_days"]),
             )
+            if hpo_evidence:
+                # ADR-0115: the frozen, ordered CandidateInventory replaces
+                # _hpo_combos' random draw for THIS path only — _hpo_combos
+                # itself is untouched below and still serves every existing
+                # (hpo_evidence=False) caller unchanged.
+                inventory = CandidateInventory(
+                    self.params["hpo_space"],
+                    n_trials=hpo_trials,
+                    seed=int(self.params["hpo_seed"]),
+                )
+            else:
+                combos = _hpo_combos(
+                    dict(base_scan.get("estimator_params") or {}),
+                    self.params["hpo_space"],
+                    hpo_trials,
+                    int(self.params["hpo_seed"]),
+                )
         curve = []
         n_go = 0
         metrics = {
@@ -5559,9 +5804,48 @@ class NoInformationScan(Node):
         )
         scan = dict(base_scan)
         model = None
+        hpo_ledger_obj = None
         fold_predictions = {} if fold_parts is not None else None
         if tr_x.shape[0] >= 2:
-            if combos:
+            if inventory is not None:
+                in_x, in_y, ho_x, ho_y, ho_stamps = _scan_fold_stamped(
+                    prepared,
+                    train_lead,
+                    inner_train_end,
+                    inner_val_start,
+                    inner_val_end,
+                    train_start=train_start,
+                    common_lead_stop=common_lead_stop,
+                    label=label,
+                    scramble=scramble,
+                )
+                if in_x.shape[0] >= 2 and ho_x.shape[0] >= 2:
+                    chosen, inner_score, ledger_obj, selection_obj = (
+                        _hpo_evidence_selection(
+                            scan,
+                            inventory,
+                            in_x,
+                            in_y,
+                            ho_x,
+                            ho_y,
+                            ho_stamps,
+                            spec["session"]["tz"],
+                            (inner_train_end, inner_val_start, inner_val_end),
+                            int(self.params["hpo_seed"]),
+                            categorical=categorical,
+                            feature_names=column_names,
+                        )
+                    )
+                    scan["estimator_params"] = chosen
+                    metrics["hpo_squared_error_improvement"] = inner_score
+                    hpo_ledger_obj = {"ledger": ledger_obj, "selection": selection_obj}
+                    self.log.info(
+                        "hpo evidence: %d candidate(s), 1-SE winner "
+                        "squared_error_improvement=%.6g",
+                        len(inventory.combinations),
+                        inner_score,
+                    )
+            elif combos:
                 in_x, in_y, ho_x, ho_y, _ = _scan_fold_stamped(
                     prepared,
                     train_lead,
@@ -5714,7 +5998,15 @@ class NoInformationScan(Node):
             n_series,
             metrics["go_frac"],
         )
-        return {"records": curve, "metrics": metrics}
+        outputs = {"records": curve, "metrics": metrics}
+        if hpo_ledger_obj is not None:
+            # ADR-0115: emitted only when an evidence-mode search actually
+            # ran (hpo_evidence=True with a big-enough inner fold) — never
+            # for any existing caller, which never sets hpo_evidence at
+            # all, so its return dict is byte-for-byte the historical
+            # two-key shape.
+            outputs["hpo_ledger"] = hpo_ledger_obj
+        return outputs
 
 
 class LookbackScan(Node):

@@ -1018,6 +1018,88 @@ def test_the_finalist_names_no_model_and_takes_the_selectors_winner():
     assert "pooled-h" not in declared
 
 
+def test_run_final_hpo_selects_the_one_pinned_p16_source():
+    """ADR-0115: one pinned P16 compare.json replaces the P13/P14/P15 trio.
+
+    ``BenchmarkSelect``'s existing max-mean-score mechanism is unchanged;
+    with exactly one source it deterministically names that source's own
+    winner, so this is a config-only change (docs/decisioning/actions.csv
+    row A18850 — the canonical, non-ephemeral path repair).
+    """
+    sources = _raw("run-final-hpo.json")["stages"]["select"]["params"]["sources"]
+    assert len(sources) == 1
+    assert sources[0] == {
+        "id": "p16-lean",
+        "path": (
+            "../pipeline_runs/p16-feature-mask-zoo-staged-2026-02-28-98635601"
+            "/stages/compare.json"
+        ),
+        "sha256": (
+            "f29bbfa51b1c84bf5e686d9c63c39637d0b1e8f70116ab2a69f6d894a729061c"
+        ),
+    }
+
+
+def test_run_final_hpo_declares_one_lean_lgbm_recipe_with_the_locked_objective():
+    """ADR-0115: torch-mlp is gone; the sole recipe wraps ColumnSubsetEstimator,
+    scores squared-error improvement, and opts into evidence-mode selection.
+
+    The template's id is "lean" (not "lgbm") to match P16's own winning
+    candidate name, so FinalistCandidate's "{id}-pooled-h{horizon}" recipe
+    lookup resolves "lean-pooled-h10" once BenchmarkSelect reports it as
+    the real winner.
+    """
+    templates = _raw("run-final-hpo.json")["stages"]["finalist"]["params"]["templates"]
+    assert [t["id"] for t in templates] == ["lean"]
+    assert [t["family"] for t in templates] == ["pooled-lightgbm"]
+    model = templates[0]["model"]
+    assert model["estimator"] == "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator"
+    assert model["estimator_params"]["estimator"] == "lightgbm.LGBMRegressor"
+    assert model["hpo_objective"] == "squared_error_improvement"
+    assert model["hpo_evidence"] is True
+    # hpo_trials/seed/val_days/embargo_days/space are UNCHANGED from the
+    # prior 'ic'-objective recipe — same 24-of-324 frozen inventory.
+    assert model["hpo_trials"] == 24
+    assert model["hpo_seed"] == 0
+    assert model["hpo_val_days"] == 63
+    assert model["hpo_embargo_days"] == 5
+    assert set(model["hpo_space"]) == {
+        "learning_rate",
+        "num_leaves",
+        "min_child_samples",
+        "reg_lambda",
+        "reg_alpha",
+    }
+
+
+def test_run_final_hpo_drop_mask_matches_lean_feature_drop():
+    """Root CLAUDE.md's duplication rule: the config's literal 33-column
+    drop (JSON cannot import a Python function) must agree with
+    :func:`intraday_equities.final_model.lean_feature_drop`'s real return
+    — an independent transcription pinned against its one real source,
+    never the other way around.
+    """
+    from intraday_equities.final_model import lean_feature_drop
+
+    templates = _raw("run-final-hpo.json")["stages"]["finalist"]["params"]["templates"]
+    drop = templates[0]["model"]["estimator_params"]["drop"]
+    assert len(drop) == 33
+    assert tuple(drop) == lean_feature_drop()
+
+
+def test_run_final_hpo_validates_and_plans_never_runs():
+    """ADR-0115 verification boundary: validate/plan only, no execution —
+    the P16 artifact this document selects does not exist here.
+    """
+    from dskit.pipeline.document import load_document
+    from dskit.pipeline.stages import plan_stages
+
+    document = load_document(_path("run-final-hpo.json"))
+    assert document.hash
+    resolved = plan_stages(document)
+    assert resolved.to_obj()["order"] == ["calendar", "select", "memory", "finalist"]
+
+
 def test_p16_feature_mask_zoo_masks_are_real_and_isolate_the_feature_set():
     """ADR-0108: five candidates, one estimator family, one hpo_space —
     the declared column mask is the only thing that differs between them.

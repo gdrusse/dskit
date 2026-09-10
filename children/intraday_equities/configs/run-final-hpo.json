@@ -263,23 +263,13 @@
         "select": "max",
         "sources": [
           {
-            "id": "p13-pooled",
-            "path": "../pipeline_runs/p13-pooled-model-zoo-staged-2026-02-28-b017ea1b/stages/compare.json",
-            "sha256": "924e630dbb41bae0d4baae3c6538512a9bca56aaffd6d4d37604d1d3db60dfb1"
-          },
-          {
-            "id": "p14-recurrent",
-            "path": "../pipeline_runs/p14-recurrent-fusion-zoo-staged-2026-02-28-70b5a399/stages/compare.json",
-            "sha256": "12b893e4706919018ecdf15837b4c4abc4acaaeea94c6f6afa9c36d70dacfe75"
-          },
-          {
-            "id": "p15-temporal",
-            "path": "../pipeline_runs/p15-temporal-fusion-zoo-staged-2026-02-28-5e88726b/stages/compare.json",
-            "sha256": "47bfa13576dc3bf14d8e2a09617e5b2630f8252435c166d659b5495f37104738"
+            "id": "p16-lean",
+            "path": "../pipeline_runs/p16-feature-mask-zoo-staged-2026-02-28-98635601/stages/compare.json",
+            "sha256": "f29bbfa51b1c84bf5e686d9c63c39637d0b1e8f70116ab2a69f6d894a729061c"
           }
         ]
       },
-      "notes": "The max selector: argmax of each candidate's mean path score across the three completed zoos, every source pinned by SHA-256. Read-only and never promoting. Its winner is the only input that decides WHICH model the finalist stage trains."
+      "notes": "ADR-0115: the ONE pinned P16 feature-mask-zoo comparison (docs/decisioning/actions.csv row A18850, the canonical non-ephemeral path repair superseding the earlier /tmp-rooted A18839 reference), replacing the prior three-zoo (P13/P14/P15) comparison now that model-family and feature-mask selection are closed (master plan Sec.2: `lean-pooled-h10` is locked). With exactly one source, BenchmarkSelect's existing max-mean-score mechanism deterministically names it — no new selection code. Read-only and never promoting."
     },
     "memory": {
       "uses": "intraday_equities.modelability_study:MemoryPreflightStage",
@@ -335,18 +325,54 @@
         ],
         "templates": [
           {
-            "id": "lgbm",
+            "id": "lean",
             "family": "pooled-lightgbm",
             "representation": "pooled-tabular-native-category",
-            "feature_policy": "all frozen P12 features; symbol_code is native categorical",
+            "feature_policy": "all frozen P12 features except the exact P16 lean-mask drop (33 columns, pinned below and by tests/test_configs.py against intraday_equities.final_model.lean_feature_drop()); symbol_code is native categorical",
             "feature_source": "tabular",
-            "seed_policy": "fixed seed 0 with a 24-trial purged inner random search",
+            "seed_policy": "fixed seed 0; ADR-0115 evidence-mode selection over the same 24-trial purged inner CandidateInventory draw",
             "compute_class": "cpu-medium",
             "compute_rank": 1,
             "enabled": true,
             "model": {
-              "estimator": "lightgbm.LGBMRegressor",
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
               "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": [
+                  "after_holiday",
+                  "amihud_3s",
+                  "dow_cos",
+                  "dow_sin",
+                  "mom_1w",
+                  "mom_2s",
+                  "mom_3s",
+                  "month_cos",
+                  "month_sin",
+                  "range_3s",
+                  "ret_1w",
+                  "ret_2s",
+                  "ret_3s",
+                  "ret_lag_10",
+                  "ret_lag_11",
+                  "ret_lag_12",
+                  "ret_lag_13",
+                  "ret_lag_14",
+                  "ret_lag_15",
+                  "ret_lag_16",
+                  "ret_lag_17",
+                  "ret_lag_18",
+                  "ret_lag_19",
+                  "ret_lag_5",
+                  "ret_lag_6",
+                  "ret_lag_7",
+                  "ret_lag_8",
+                  "ret_lag_9",
+                  "rv_1w",
+                  "rv_2s",
+                  "rv_3s",
+                  "session_gap_days",
+                  "vol_3s"
+                ],
                 "n_estimators": 600,
                 "learning_rate": 0.01,
                 "num_leaves": 8,
@@ -365,7 +391,8 @@
               "hpo_seed": 0,
               "hpo_val_days": 63,
               "hpo_embargo_days": 5,
-              "hpo_objective": "ic",
+              "hpo_objective": "squared_error_improvement",
+              "hpo_evidence": true,
               "hpo_space": {
                 "learning_rate": [
                   0.003,
@@ -395,63 +422,7 @@
                 ]
               }
             },
-            "notes": "Space rebuilt on the 2026-09-06 research (docs/research/zoo-feature-selection-and-hpo/): learning_rate is the most tunable non-structural knob and was absent from P13's; max_depth and colsample_bytree were two of six dimensions and rank near the bottom, so they stay pinned at P13's values instead of searched. Ladders are log-spaced because that is the scale these knobs act on. 324 combinations, 24 drawn: P13's 4 draws covered 18.5 percent of the top-5-percent region and left about 3.6 of 18 knob-level cells unvisited; 24 covers 71 percent. n_estimators stays pinned \u2014 searching it against learning_rate needs the monitored early stop the torch pack has and this scan node does not."
-          },
-          {
-            "id": "torch-mlp",
-            "family": "pooled-torch-mlp",
-            "representation": "standardized-tabular-plus-symbol-embedding",
-            "feature_policy": "all frozen P12 continuous features plus learned symbol embedding",
-            "feature_source": "tabular",
-            "seed_policy": "fixed seed 0 with a 24-trial purged inner random search",
-            "compute_class": "gpu-medium",
-            "compute_rank": 2,
-            "enabled": true,
-            "model": {
-              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalEmbeddingMLPRegressor",
-              "estimator_params": {
-                "hidden_size": 64,
-                "hidden_depth": 2,
-                "embedding_dim": 8,
-                "epochs": 8,
-                "lr": 0.001,
-                "weight_decay": 0.0001,
-                "batch_size": 4096,
-                "dropout": 0.1,
-                "seed": 0,
-                "standardize": true
-              },
-              "hpo_trials": 24,
-              "hpo_seed": 0,
-              "hpo_val_days": 63,
-              "hpo_embargo_days": 5,
-              "hpo_objective": "ic",
-              "hpo_space": {
-                "lr": [
-                  0.0003,
-                  0.001,
-                  0.003
-                ],
-                "weight_decay": [
-                  1e-05,
-                  0.0001,
-                  0.001,
-                  0.01
-                ],
-                "dropout": [
-                  0.0,
-                  0.1,
-                  0.2,
-                  0.3
-                ],
-                "epochs": [
-                  5,
-                  10,
-                  20
-                ]
-              }
-            },
-            "notes": "Capacity pinned at P13's winning width and depth, shrinkage searched. The research reads this family's 2.3x fold-variance against LightGBM as the symptom of a net fed near-duplicate columns, so the target here is variance, not mean, and weight_decay/dropout/epochs are the knobs that act on it. epochs in the space IS early stopping chosen on purged data."
+            "notes": "ADR-0115: model-family and feature-mask selection are closed (master plan Sec.2), so the torch-mlp candidate is removed and this is the ONLY finalist recipe. estimator wraps ColumnSubsetEstimator around the same LightGBM the space was built for (2026-09-06 research, docs/research/zoo-feature-selection-and-hpo/), applying the exact P16 lean drop (docs/memos/p16-feature-mask-and-final-gate-results.md) so training reads the identical 33-fewer-column feature set P16 selected on. hpo_objective is squared_error_improvement (never IC, master plan Sec.2) with hpo_evidence=true, so per-lead selection runs ADR-0114 SS11 item 1's one-standard-error rule over a complete trial ledger instead of a raw argmin/argmax; hpo_trials/hpo_seed/hpo_val_days/hpo_embargo_days/hpo_space are UNCHANGED from the prior 'ic'-objective recipe \u2014 same 24-of-324 frozen inventory, same inner cuts. This template's id is 'lean' (not the prior 'lgbm'), matching P16's own winning candidate's mask-family component (P16 memo line 37) so FinalistCandidate's own id-plus-horizon-suffix recipe lookup resolves to the real winner BenchmarkSelect names -- this document restates no full candidate name itself. intraday_equities.final_model.hpo_space() was updated in the same change to match this template by family == 'pooled-lightgbm' rather than a fixed id, since id is now the finalist's candidate-name component, not a stable lookup key for the generic HPO-grid reader."
           }
         ],
         "path_protocol": {

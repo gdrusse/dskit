@@ -251,8 +251,8 @@ def hpo_space(config_path=None) -> dict:
     ValueError
         The config is missing, unreadable, or its finalist template's
         shape does not match ADR-0114 (not exactly one
-        ``id == "lgbm"``/``family == "pooled-lightgbm"`` template, or no
-        non-empty ``hpo_space`` mapping of dimension -> value list).
+        ``family == "pooled-lightgbm"`` template, or no non-empty
+        ``hpo_space`` mapping of dimension -> value list).
 
     Examples
     --------
@@ -274,21 +274,26 @@ def hpo_space(config_path=None) -> dict:
         .get("params", {})
         .get("templates", [])
     )
+    # Matched by FAMILY, not `id`: `id` is the finalist's candidate-name
+    # component (ADR-0115 — it must read "lean" to match
+    # FinalistCandidate's own "{id}-pooled-h{horizon}" recipe lookup
+    # against the real P16 winner "lean-pooled-h10"), so pinning this
+    # read to one fixed `id` string would refuse the very config it
+    # exists to serve the moment that name changed for an unrelated
+    # reason. `family == "pooled-lightgbm"` is the stable identity of
+    # "the one LightGBM HPO recipe" this function's caller cares about.
     matches = [
-        t for t in templates if isinstance(t, dict) and t.get("id") == "lgbm"
+        t for t in templates
+        if isinstance(t, dict) and t.get("family") == "pooled-lightgbm"
     ]
     if len(matches) != 1:
         raise ValueError(
             f"hpo_space: {path!r} must declare exactly one "
-            f"templates[].id == 'lgbm', found {len(matches)}"
+            f"templates[] entry with family == 'pooled-lightgbm', found "
+            f"{len(matches)}"
         )
     template = matches[0]
     model = template.get("model", {})
-    if template.get("family") != "pooled-lightgbm":
-        raise ValueError(
-            f"hpo_space: {path!r}'s 'lgbm' template does not declare "
-            "family == 'pooled-lightgbm'"
-        )
     space = model.get("hpo_space")
     if (
         not isinstance(space, dict)
