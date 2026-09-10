@@ -6784,6 +6784,15 @@ carry. `NoInformationScan` wraps only evidence-mode `hpo_ledger`; its default
 two-output path remains unchanged. This is content-addressed, auditable, and
 does not turn carry into bulk storage.
 
+The driver's in-memory manifest is internally tagged, so an ordinary output
+dict cannot acquire manifest-specific record treatment by imitating its keys.
+The public `resolve_json_artifact(run_dir, manifest)` boundary accepts the
+serialized form only after requiring its canonical
+`artifacts/json/<sha256>.json` path and validating the lowercase SHA-256,
+declared byte count, file presence, actual byte count, and actual digest before
+decoding JSON. Absolute, traversal, and otherwise non-canonical paths are
+therefore refused rather than resolved.
+
 **Scope.** This ADR covers exactly the `nodes.py`/`model_zoo.py` additive
 changes and the `run-final-hpo.json`/`run-final-refit.json` edits named
 above. It does not touch P13/P14/P15's existing behavior, does not

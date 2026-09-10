@@ -113,6 +113,7 @@ __all__ = [
     "aggregate_folds",
     "apply_param_override",
     "is_summary",
+    "resolve_json_artifact",
     "run_document",
     "run_walk_forward",
     "winner_names",
@@ -1075,19 +1076,53 @@ def _summarize(value):
     return {"type": type(value).__name__}
 
 
+class _JsonArtifactManifest(dict):
+    """Internal tag: only driver materialization earns special treatment."""
+
+
 def _is_json_artifact_manifest(value):
-    """Recognize the exact small manifest emitted by artifact materialization."""
-    return (
-        isinstance(value, dict)
-        and set(value) == {"path", "sha256", "bytes", "media_type"}
-        and value.get("media_type") == "application/json"
-        and isinstance(value.get("path"), str)
-        and isinstance(value.get("sha256"), str)
-        and len(value["sha256"]) == 64
-        and isinstance(value.get("bytes"), int)
-        and not isinstance(value.get("bytes"), bool)
-        and value["bytes"] >= 0
+    """Recognize a manifest produced in this live driver execution."""
+    return isinstance(value, _JsonArtifactManifest)
+
+
+def resolve_json_artifact(run_dir, manifest):
+    """Verify and decode one serialized driver JSON-artifact manifest.
+
+    The manifest may have crossed a JSON boundary and therefore need not retain
+    the driver's internal tag. Its canonical content-addressed path, size, and
+    digest are all checked before any JSON value is returned.
+    """
+    keys = {"path", "sha256", "bytes", "media_type"}
+    valid_shape = (
+        isinstance(manifest, dict)
+        and set(manifest) == keys
+        and manifest.get("media_type") == "application/json"
+        and isinstance(manifest.get("path"), str)
+        and isinstance(manifest.get("sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", manifest["sha256"]) is not None
+        and isinstance(manifest.get("bytes"), int)
+        and not isinstance(manifest.get("bytes"), bool)
+        and manifest["bytes"] >= 0
     )
+    if not valid_shape:
+        raise ValueError("invalid JSON artifact manifest")
+    expected = f"artifacts/json/{manifest['sha256']}.json"
+    if manifest["path"] != expected:
+        raise ValueError("invalid JSON artifact manifest path")
+    path = os.path.join(os.fspath(run_dir), *expected.split("/"))
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except FileNotFoundError as exc:
+        raise ValueError("JSON artifact is missing") from exc
+    if len(raw) != manifest["bytes"]:
+        raise ValueError("JSON artifact byte count does not match manifest")
+    if hashlib.sha256(raw).hexdigest() != manifest["sha256"]:
+        raise ValueError("JSON artifact digest does not match manifest")
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("JSON artifact content is not valid JSON") from exc
 
 
 def _json_text(value):
@@ -1761,12 +1796,14 @@ def _persist_json_artifacts(run_dir, node_key, outputs):
                     )
         else:
             atomic_write(path, raw)
-        outputs[name] = {
-            "path": relative.replace(os.sep, "/"),
-            "sha256": digest,
-            "bytes": len(raw),
-            "media_type": "application/json",
-        }
+        outputs[name] = _JsonArtifactManifest(
+            {
+                "path": relative.replace(os.sep, "/"),
+                "sha256": digest,
+                "bytes": len(raw),
+                "media_type": "application/json",
+            }
+        )
 
 
 def _apply_verdict(run, key, the_plan, outputs):

@@ -32,6 +32,7 @@ from dskit.pipeline.driver import (
     _node_metrics,
     _summarize,
     _too_big_to_carry,
+    resolve_json_artifact,
     run_document,
 )
 from dskit.pipeline.node import Node, NodeKindRegistry
@@ -1090,9 +1091,92 @@ def test_explicit_json_artifact_survives_driver_recording_with_digest_manifest(t
     assert _file_digest(artifact_path) == manifest["sha256"]
     with open(artifact_path, encoding="utf-8") as handle:
         assert len(json.load(handle)["ledger"]["rows"]) == 24
+    assert len(resolve_json_artifact(result.run_dir, manifest)["ledger"]["rows"]) == 24
     record = read_json(result.run_dir, "nodes/01-scan_h01.json")
     assert record["outputs"]["hpo_ledger"] == manifest
     assert read_json(result.run_dir, "carry.json")["scan_h01"]["hpo_ledger"] == manifest
+
+
+def test_json_artifact_resolver_refuses_tampered_bytes(tmp_path):
+    registry = NodeKindRegistry()
+    registry.register("hpo-evidence-src", HpoEvidenceSource)
+    document = PipelineDocument(
+        name="durable-hpo-evidence",
+        pipeline={"scan_h01": NodeSpec(uses="hpo-evidence-src")},
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+    result = run_document(document, asof=ASOF, registry=registry, journal=False)
+    manifest = result.outputs["scan_h01"]["hpo_ledger"]
+    artifact_path = os.path.join(result.run_dir, manifest["path"])
+    with open(artifact_path, "ab") as handle:
+        handle.write(b" ")
+
+    with pytest.raises(ValueError, match="byte count"):
+        resolve_json_artifact(result.run_dir, manifest)
+
+
+def test_forged_manifest_is_not_special_and_resolver_refuses_it(tmp_path):
+    class ForgedManifestSource(Node):
+        role = "data"
+        outputs = ("payload",)
+
+        def run(self, ctx, inputs):
+            return {"payload": forged}
+
+    forged = {
+        "path": "../../forged.json",
+        "sha256": "z" * 64,
+        "bytes": 0,
+        "media_type": "application/json",
+    }
+    registry = NodeKindRegistry()
+    registry.register("forged-manifest-src", ForgedManifestSource)
+    document = PipelineDocument(
+        name="forged-manifest",
+        pipeline={"src": NodeSpec(uses="forged-manifest-src")},
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+    result = run_document(document, asof=ASOF, registry=registry, journal=False)
+
+    assert _summarize(forged) == {"type": "dict", "len": 4}
+    record = read_json(result.run_dir, "nodes/01-src.json")
+    assert record["outputs"]["payload"] == {"type": "dict", "len": 4}
+    assert read_json(result.run_dir, "carry.json")["src"]["payload"] == forged
+    with pytest.raises(ValueError, match="manifest"):
+        resolve_json_artifact(tmp_path, forged)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ("/tmp/foreign.json", "artifacts/json/../foreign.json", "artifacts\\json\\x.json"),
+)
+def test_json_artifact_resolver_refuses_noncanonical_paths(tmp_path, path):
+    manifest = {
+        "path": path,
+        "sha256": "0" * 64,
+        "bytes": 0,
+        "media_type": "application/json",
+    }
+    with pytest.raises(ValueError, match="manifest path"):
+        resolve_json_artifact(tmp_path, manifest)
+
+
+def test_json_artifact_resolver_refuses_missing_and_digest_drift(tmp_path):
+    digest = "0" * 64
+    manifest = {
+        "path": f"artifacts/json/{digest}.json",
+        "sha256": digest,
+        "bytes": 3,
+        "media_type": "application/json",
+    }
+    with pytest.raises(ValueError, match="missing"):
+        resolve_json_artifact(tmp_path, manifest)
+
+    directory = tmp_path / "artifacts" / "json"
+    directory.mkdir(parents=True)
+    (directory / f"{digest}.json").write_bytes(b"{}\n")
+    with pytest.raises(ValueError, match="digest"):
+        resolve_json_artifact(tmp_path, manifest)
 
 
 def _file_digest(path):
