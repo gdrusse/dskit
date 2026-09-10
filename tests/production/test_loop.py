@@ -37,7 +37,12 @@ from decimal import Decimal
 import pytest
 
 import dskit.production.loop as loop_module
+from dskit.production.accounting import PaperAccounting
+from dskit.production.arming import ConjunctionResult
 from dskit.production.base import ProductionError, canonical_hash
+from dskit.production.clock import ReplayClock
+from dskit.production.executor import PaperExecutor
+from dskit.production.feed import ReplayFeed
 from dskit.production.bundles import (
     Data,
     Decision,
@@ -52,7 +57,7 @@ from dskit.production.cadence import FixedInterval, Overrun
 from dskit.production.health import InstanceLock
 from dskit.production.ids import ReleaseIdSource
 from dskit.production.ledger import Checkpoint, JsonlLedger, ServeRoot
-from dskit.production.leg import LegResult
+from dskit.production.leg import LegPipeline, LegResult, SimulatedAuthority
 from dskit.production.document import ServeDocument
 from dskit.production.loop import ServeLoop, Tick
 from dskit.production.monitors import MONITOR_KINDS
@@ -65,8 +70,10 @@ from dskit.production.records import (
     ExecutionScope,
     FeedAge,
     FeedResult,
+    Fill,
     Finding,
     InputWatermark,
+    Intent,
     Outcome,
     Proposal,
     Quote,
@@ -74,10 +81,11 @@ from dskit.production.records import (
     ReductionIntent,
     ReductionPlan,
     RiskVersion,
+    ScopeVerdict,
     TickResult,
 )
 from dskit.production.sessions import AlwaysOpen
-from dskit.production.state import SeriesState, TickState
+from dskit.production.state import Recovery, SeriesState, TickState
 from dskit.production.vocab import (
     EXIT_CODES,
     LEG_LATENCY_BUCKETS,
@@ -2813,3 +2821,598 @@ def test_the_loop_tells_the_heartbeat_it_is_stopping_before_it_closes_it(
         assert order.index("heartbeat.stopping") < order.index("heartbeat.close")
     finally:
         made.close()
+
+
+# ==========================================================================
+# Gate 5a — Phase 5 replay conformance / hook discovery (ADR-0114)
+# ==========================================================================
+#
+# Deliberately narrow: prove by test whether existing `ServeLoop` +
+# `ReplayFeed`/`ReplayClock` + `PaperExecutor` + the ledger can drive
+# deterministic historical ticks with synthetic, domain-blind fixtures.
+# Policy (bar choice, fill model, exit rules) is out of scope — every
+# fixture below is an injected caller value, never an inferred equity
+# adapter behaviour.
+#
+# Item-by-item (items 2-5 live in `test_executor.py`; item 1's tape
+# consumption also in `test_feed.py` / `test_clock.py`):
+#
+# 1. Decision-time as-of / no lookahead — the loop threads one
+#    `tick_at_ms` into `fetch` and `read_entry`. CURRENT `ReplayFeed`
+#    ignores that argument and yields the next tape entry, advancing
+#    the shared `ReplayClock` to the entry's `at_ms`. A caller decider
+#    slices bars by the instant it was given. No hook added.
+# 6. Crash/restart — persist to `JsonlLedger`, close the writer, abandon
+#    RAM, reopen from disk, run `Recovery`, compare positions, balances,
+#    NAV (`PaperAccounting.value`) and fold metrics. Empty `snapshot`
+#    bodies still fold; the checkpoint boundary also writes a real
+#    `ledger.snapshot(state.to_snapshot_obj())` so restore has a payload.
+#
+# GAP documented, not built: `Position` carries no `opened_ms` (state.py
+# and records.py are out of scope). Holding duration and forced exit of a
+# filled position live in `test_executor.py`.
+
+
+class AsOfBarDecider:
+    """A synthetic decider whose `read_entry` never surfaces a bar dated
+    after the `tick_at_ms` it is given — proving the loop's threaded
+    as-of is sufficient for a CALLER to enforce no-lookahead. Which bar
+    an equity adapter would then pick from what is visible is policy
+    this fixture does not decide."""
+
+    def __init__(self, calls, bars):
+        self.calls = calls
+        self._bars = bars
+        self.proposer = FakeProposer(calls)
+        self.serving_hash = "s" * 64
+
+    def read_entry(self, tick_at_ms):
+        self.calls.add("decider.read_entry", tick_at_ms)
+        visible = tuple(bar for bar in self._bars if bar[0] <= tick_at_ms)
+        watermark_ms = visible[-1][0] if visible else tick_at_ms
+        # `coverage` (§5.13) demands exactly the release's required keys,
+        # regardless of what a bar series is keyed by — the release's
+        # UNIVERSE is what this fixture must cover, not the bar payload.
+        watermarks = {
+            key: InputWatermark(key=key, latest_asof_ms=watermark_ms, source_digest="w" * 64)
+            for key in UNIVERSE
+        }
+        return EntryBatch(
+            outputs={"records": [{"ms": ms, "value": value} for ms, value in visible]},
+            watermarks_by_key=watermarks,
+            required_keys_digest=canonical_hash(list(UNIVERSE)),
+            coverage_digest="c" * 64,
+            data_asof_ms=watermark_ms,
+            inputs_digest="d" * 64,
+            source_config_hash="e" * 64,
+        )
+
+    def evaluate(self, batch):
+        self.calls.add("decider.evaluate", batch)
+        return {"picks": {"records": []}}, "h" * 64
+
+
+def test_the_loop_threads_the_same_tick_at_ms_into_fetch_and_read_entry(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """§5.13: `fetch(tick_at_ms)` and `read_entry(tick_at_ms)` both take
+    the ONE instant `Tick.run` received. A caller building an as-of
+    filter (item 1's mechanism) needs the loop to hand it the SAME
+    instant it was asked to decide at, not a value the loop invented or
+    staggered between phases."""
+    made = make_harness(tmp_path, serve_document, release_manifest, clock, calls)
+    try:
+        distinct_tick_at_ms = NOW_MS - 12_345
+        made.tick().run(distinct_tick_at_ms)
+        assert calls.first("feed.pull") == ((distinct_tick_at_ms,), {})
+        assert calls.first("decider.read_entry") == ((distinct_tick_at_ms,), {})
+    finally:
+        made.close()
+
+
+def test_a_caller_decider_can_enforce_no_lookahead_from_the_threaded_tick_at_ms(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """Item 1's mechanism claim: a synthetic bar series with T0 < T1 < T2
+    proves a caller-supplied decider can use the loop's threaded
+    `tick_at_ms` to keep T2 invisible while deciding at T1. This tests
+    the MECHANISM only — which bar an equity adapter would then choose
+    from what is visible is §11 policy, not this test's business."""
+    t0, t1, t2 = NOW_MS - 20_000, NOW_MS - 10_000, NOW_MS
+    bars = ((t0, "bar-0"), (t1, "bar-1"), (t2, "bar-2"))
+    decider = AsOfBarDecider(calls, bars)
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls, decider=decider
+    )
+    try:
+        made.tick().run(t1)
+        (batch,), _kwargs = calls.first("decider.evaluate")
+        seen_ms = tuple(row["ms"] for row in batch.outputs["records"])
+        assert seen_ms == (t0, t1)
+        assert t2 not in seen_ms
+    finally:
+        made.close()
+
+
+def _a_risk_version():
+    """A zeroed `RiskVersion` — the session tokens the fold never carries."""
+    return RiskVersion(economic_seq=0, executor_token=None, accounting_tokens=None)
+
+
+def _a_sized_proposal(candidate_id, instrument, side, qty):
+    """`a_proposal` with a caller-chosen `qty`, so the scenario controls sizes."""
+    return dataclasses.replace(a_proposal(candidate_id, instrument, side), qty=qty, notional=qty * 10)
+
+
+def _an_intent(client_ref, proposal, created_ms):
+    """An `Intent` around `proposal`, minted the way a leg would."""
+    return Intent(
+        client_ref=client_ref,
+        decision_plan_id="plan-1",
+        decision_plan_digest="p" * 64,
+        proposal=proposal,
+        created_ms=created_ms,
+        authority_id=None,
+        release_hash=RELEASE_HASH,
+        inputs_asof_ms=created_ms,
+        inputs_digest="d" * 64,
+        coverage_digest="c" * 64,
+        quote_asof_ms=created_ms,
+        quote_digest="q" * 64,
+        evidence_asof_ms=created_ms,
+        evidence_digest="v" * 64,
+        risk_version=_a_risk_version(),
+        risk_state_digest="r" * 64,
+    )
+
+
+def _a_fill(fill_id, client_ref, side, qty, price, ts_ms):
+    """A `Fill` on the conftest universe's first instrument."""
+    return Fill(
+        fill_id=fill_id, venue_ref=f"v-{fill_id}", client_ref=client_ref, instrument=UNIVERSE[0],
+        side=side, qty=qty, price=price, fee=Decimal("0.01") * qty, fee_currency="USD",
+        liquidity="taker", status="final", ts_ms=ts_ms, native=None,
+    )
+
+
+_CRASH_SERIES = "018f0f4e-7b21-7d3a-9c31-6d8f36d806a1"
+_NAMED_BOUNDARIES = frozenset({
+    "cash_flow", "decision", "intent", "fill", "outcome", "snapshot",
+})
+
+
+class _EmptyHistory:
+    """PaperAccounting.value does not read history; the constructor still requires it."""
+
+    def fills(self, since_ms):
+        return ()
+
+    def cash_flows(self, since_ms):
+        return ()
+
+    def marks(self, since_ms):
+        return ()
+
+
+class _SilentExecutor:
+    """Recovery's only verb is `order`; None means the venue cannot say."""
+
+    def order(self, ref):
+        return None
+
+
+def _nav_of(view, clock, at_ms):
+    """Mark the fold through PaperAccounting.value — cash + fresh mids."""
+    accounting = PaperAccounting(
+        {}, clock=clock, history=_EmptyHistory(), max_valuation_age_ms=86_400_000,
+    )
+    return accounting.value(view, a_quote_set(asof_ms=at_ms), at_ms)
+
+
+def _fold_metrics(view):
+    """The fold's own metrics: economic_seq plus sizes of the economic collections."""
+    return {
+        "economic_seq": view.risk_version.economic_seq,
+        "n_positions": len(view.positions),
+        "n_working": len(view.working),
+        "n_pending": len(view.pending),
+    }
+
+
+def _economic(view, clock):
+    """Positions, cash, NAV and fold metrics at `clock.now_ms()`."""
+    at_ms = clock.now_ms()
+    return {
+        "positions": view.positions,
+        "balances": dict(view.balances),
+        "nav": _nav_of(view, clock, at_ms),
+        "metrics": _fold_metrics(view),
+    }
+
+
+def _crash_restart_scenario():
+    """One order opened and filled, reduced, then closed flat — one
+    record of every kind item 6 names as a boundary. The tick is closed
+    after the decision so Recovery is a no-op closer at later
+    boundaries; `_real_snapshot` is a sentinel the writer turns into
+    `ledger.snapshot(state.to_snapshot_obj())`."""
+    t0 = NOW_MS - 100_000
+    buy_ref, reduce_ref, close_ref = "cref-buy", "cref-reduce", "cref-close"
+    instrument = UNIVERSE[0]
+    buy = _a_sized_proposal("cand-buy", instrument, "buy", Decimal(5))
+    reduce = _a_sized_proposal("cand-reduce", instrument, "sell", Decimal(2))
+    close = _a_sized_proposal("cand-close", instrument, "sell", Decimal(3))
+    return (
+        ("tick_start", "ts-1", {"tick_id": "tick-1", "tick_at_ms": t0}),
+        ("cash_flow", "cf-deposit", {"currency": "USD", "amount": "100000"}),
+        ("decision", "dec-1", {"tick_id": "tick-1", "legs": []}),
+        ("tick", "tick-1-term", {"tick_id": "tick-1"}),
+        ("intent", "intent-buy", _an_intent(buy_ref, buy, t0).to_obj()),
+        ("order_event", "oe-buy-open",
+         {"client_ref": buy_ref, "venue_ref": "v-buy", "status": "open", "recv_at_ms": t0}),
+        ("fill", "fill-buy", _a_fill("fill-buy", buy_ref, "buy", Decimal(5), Decimal(10), t0 + 1_000).to_obj()),
+        ("order_event", "oe-buy-filled",
+         {"client_ref": buy_ref, "venue_ref": "v-buy", "status": "filled", "recv_at_ms": t0 + 1_000}),
+        ("outcome", "out-1", {"tick_id": "tick-1"}),
+        ("cash_flow", "cf-buy-cost", {"currency": "USD", "amount": "-50"}),
+        ("intent", "intent-reduce", _an_intent(reduce_ref, reduce, t0 + 2_000).to_obj()),
+        ("order_event", "oe-reduce-open",
+         {"client_ref": reduce_ref, "venue_ref": "v-reduce", "status": "open", "recv_at_ms": t0 + 2_000}),
+        ("fill", "fill-reduce",
+         _a_fill("fill-reduce", reduce_ref, "sell", Decimal(2), Decimal(11), t0 + 3_000).to_obj()),
+        ("order_event", "oe-reduce-filled",
+         {"client_ref": reduce_ref, "venue_ref": "v-reduce", "status": "filled", "recv_at_ms": t0 + 3_000}),
+        ("cash_flow", "cf-reduce-proceeds", {"currency": "USD", "amount": "22"}),
+        ("intent", "intent-close", _an_intent(close_ref, close, t0 + 4_000).to_obj()),
+        ("order_event", "oe-close-open",
+         {"client_ref": close_ref, "venue_ref": "v-close", "status": "open", "recv_at_ms": t0 + 4_000}),
+        ("fill", "fill-close",
+         _a_fill("fill-close", close_ref, "sell", Decimal(3), Decimal(12), t0 + 5_000).to_obj()),
+        ("order_event", "oe-close-filled",
+         {"client_ref": close_ref, "venue_ref": "v-close", "status": "filled", "recv_at_ms": t0 + 5_000}),
+        ("cash_flow", "cf-close-proceeds", {"currency": "USD", "amount": "36"}),
+        ("snapshot", "snap-empty", {}),
+        ("_real_snapshot", "snap-real", None),
+    )
+
+
+def _write_crash_records(root, clock, records, process_id="proc-1"):
+    """Persist `records` to a new JsonlLedger; return serve, ledger, state, prefixes."""
+    serve = ServeRoot(str(root / "serve"), _CRASH_SERIES)
+    state = SeriesState(_CRASH_SERIES)
+    ledger = JsonlLedger(serve, process_id, RELEASE_HASH, clock=clock, state=state)
+    prefixes = []
+    try:
+        for kind, record_id, body in records:
+            if kind == "_real_snapshot":
+                ledger.snapshot(state.to_snapshot_obj())
+                kind = "snapshot"
+            else:
+                ledger.append({"kind": kind, "id": record_id, "body": body})
+            view = state.snapshot()
+            prefixes.append(
+                (kind, record_id, _economic(view, clock), tuple(view.pending), state.open_ticks())
+            )
+        ledger.barrier()
+    except Exception:
+        ledger.close()
+        raise
+    return serve, ledger, state, prefixes
+
+
+def _reopen_and_recover(serve, clock):
+    """Close-equivalent restart: fresh fold, reopen the same serve root, Recovery."""
+    state = SeriesState(_CRASH_SERIES)
+    ledger = JsonlLedger(serve, "proc-restart", RELEASE_HASH, clock=clock, state=state)
+    report = Recovery(
+        ledger, state, ReleaseIdSource(RELEASE_HASH), _SilentExecutor()
+    ).run(clock)
+    return ledger, state, report
+
+
+def test_an_empty_snapshot_body_still_folds(tmp_path, clock):
+    """CURRENT: a `snapshot` whose body is `{}` is accepted by the fold
+    (`_fold_nothing`). Recovery.restore cannot use it — the checkpoint
+    boundary below therefore also writes a real snapshot payload."""
+    serve, ledger, state, prefixes = _write_crash_records(
+        tmp_path, clock, (("snapshot", "snap-empty", {}),)
+    )
+    try:
+        assert prefixes[-1][0] == "snapshot"
+        assert list(ledger.scan())[-1]["body"] == {}
+        assert state.snapshot().positions == ()
+    finally:
+        ledger.close()
+
+
+def test_replaying_the_ledger_from_any_boundary_reproduces_the_uninterrupted_fold(
+    tmp_path, clock
+):
+    """Item 6: crash/restart at every named boundary. Persist the prefix,
+    capture uninterrupted positions/balances/NAV/metrics, close the
+    writer, abandon RAM, reopen from disk, run Recovery.
+
+    Positions, cash and NAV always match the uninterrupted prefix.
+    CURRENT Recovery behaviour at a pending-intent boundary: it queries
+    the venue, records an `unknown` `order_event`, and `_fold_order_event`
+    then advances `economic_seq`, pops the ref from pending, and — because
+    ``unknown`` is not terminal — adds it to working. Metrics are NOT
+    identical there; the assertions below pin that three-field
+    divergence (`economic_seq` +1, `n_working` +1, `n_pending` -1 per
+    pending ref) rather than skip it. Where nothing is pending, fold
+    metrics (economic_seq, working, pending) match. A `recovered`
+    process record is not economic."""
+    scenario = _crash_restart_scenario()
+    named_indexes = [
+        i for i, (kind, rid, _body) in enumerate(scenario, start=1)
+        if rid != "snap-empty" and (kind in _NAMED_BOUNDARIES or kind == "_real_snapshot")
+    ]
+    saw_pending_intent = False
+    saw_exit = False
+    for bound in named_indexes:
+        prefix = scenario[:bound]
+        serve, ledger, live, prefixes = _write_crash_records(
+            tmp_path / f"b{bound}", clock, prefix
+        )
+        kind, rid, expected, pending_before, _open_ticks = prefixes[-1]
+        if rid == "fill-close":
+            saw_exit = True
+        ledger.close()
+        reopened, restarted, report = _reopen_and_recover(serve, clock)
+        try:
+            got = _economic(restarted.snapshot(), clock)
+            assert got["positions"] == expected["positions"]
+            assert got["balances"] == expected["balances"]
+            assert got["nav"] == expected["nav"]
+            if pending_before:
+                saw_pending_intent = True
+                assert kind == "intent"
+                n_pending = len(pending_before)
+                assert got["metrics"]["economic_seq"] == (
+                    expected["metrics"]["economic_seq"] + n_pending
+                )
+                assert got["metrics"]["n_working"] == (
+                    expected["metrics"]["n_working"] + n_pending
+                )
+                assert got["metrics"]["n_pending"] == (
+                    expected["metrics"]["n_pending"] - n_pending
+                )
+                assert got["metrics"]["n_positions"] == expected["metrics"]["n_positions"]
+                assert set(report.queried_refs) == set(pending_before)
+                recovered = [
+                    env for env in reopened.scan(kind="order_event")
+                    if str(env.get("id", "")).startswith("recovered-order_event-")
+                ]
+                assert len(recovered) == len(pending_before)
+                assert all(env["body"]["status"] == "unknown" for env in recovered)
+            else:
+                assert got["metrics"] == expected["metrics"]
+            assert report.replayed >= 1
+        finally:
+            reopened.close()
+    assert saw_pending_intent
+    assert saw_exit
+
+    serve, ledger, live, prefixes = _write_crash_records(tmp_path / "full", clock, scenario)
+    expected = prefixes[-1][2]
+    assert live.snapshot().positions == ()
+    assert dict(live.snapshot().balances) == {"USD": Decimal("100008")}
+    assert expected["nav"] == Decimal("100008")
+    ledger.close()
+    reopened, restarted, report = _reopen_and_recover(serve, clock)
+    try:
+        got = _economic(restarted.snapshot(), clock)
+        assert got == expected
+        assert tuple(report.closed_ticks) == ()
+        assert tuple(report.queried_refs) == ()
+    finally:
+        reopened.close()
+
+
+def test_a_tick_over_replay_feed_and_replay_clock_keeps_later_tape_unconsumed(
+    tmp_path, serve_document, release_manifest, clock, calls
+):
+    """Item 1 against the REAL `ReplayFeed`/`ReplayClock`. Tape T0<T1<T2;
+    one `Tick.run(t1)` pulls the next tape entry (CURRENT: `tick_at_ms`
+    is ignored), the shared clock becomes that entry's `at_ms`, and T2
+    stays on the tape. The caller decider still slices bars by the
+    threaded `tick_at_ms`."""
+    t0, t1, t2 = NOW_MS - 20_000, NOW_MS - 10_000, NOW_MS
+    tape = (
+        FeedResult(status="live", acq_id="acq-0", records_added=1,
+                   source_config_hash="e" * 64, at_ms=t0),
+        FeedResult(status="live", acq_id="acq-1", records_added=1,
+                   source_config_hash="e" * 64, at_ms=t1),
+        FeedResult(status="live", acq_id="acq-2", records_added=1,
+                   source_config_hash="e" * 64, at_ms=t2),
+    )
+    replay_clock = ReplayClock(manual_time=clock.time)
+    feed = ReplayFeed({}, tape=tape, time=clock.time)
+    decider = AsOfBarDecider(calls, ((t0, "bar-0"), (t1, "bar-1"), (t2, "bar-2")))
+    made = make_harness(
+        tmp_path, serve_document, release_manifest, clock, calls,
+        feed=feed, decider=decider,
+    )
+    try:
+        made.tick().run(t1)
+        assert replay_clock.now_ms() == t0
+        leftover = feed.pull(t1)
+        assert leftover.at_ms == t1
+        assert leftover.acq_id == "acq-1"
+        assert feed.pull(0).at_ms == t2
+        (batch,), _kwargs = calls.first("decider.evaluate")
+        seen_ms = tuple(row["ms"] for row in batch.outputs["records"])
+        assert seen_ms == (t0, t1)
+        assert t2 not in seen_ms
+    finally:
+        made.close()
+
+
+class _PassThroughGuards:
+    """Test-local guards: check_all is identity so a real LegPipeline can run."""
+
+    def __init__(self, calls):
+        self.calls = calls
+        self.guards = {}
+
+    def requirements(self, candidates, at_ms, calendar):
+        self.calls.add("guards.requirements", candidates, at_ms, calendar)
+        return ()
+
+    def check_all(self, proposal, state):
+        self.calls.add("guards.check_all", proposal)
+        return proposal, ()
+
+    def check_authority_scope(self, proposal, state, arm):
+        return ScopeVerdict(allowed=True, scope_key=proposal.instrument, reason="")
+
+    def new_holds(self, findings, state_view, at_ms, calendar):
+        return ()
+
+
+class _ReplayArming(FakeArming):
+    """Shadow/paper: no arm in force, conjunction satisfied, scope not_armed."""
+
+    def apply_scope(self, proposal, arming_state):
+        return ScopeVerdict(allowed=False, scope_key=proposal.instrument, reason="not_armed")
+
+    def check_conjunction(self, invocation, view, origin, reduction, rung, at_ms):
+        return ConjunctionResult(satisfied=True, reason="")
+
+
+class _SimulatedTable:
+    """`for_origin` returns the one SimulatedAuthority the test constructed."""
+
+    def __init__(self, authority):
+        self._authority = authority
+
+    def for_origin(self, origin, breaker):
+        return self._authority
+
+
+class _ReplayAccounting(FakeAccounting):
+    """FakeAccounting whose evidence_digest is a real 64-hex so the digest gate passes."""
+
+    def snapshot(self, state_view, executor, quotes, at_ms, requirements, calendar):
+        self.calls.add("accounting.snapshot", at_ms, requirements)
+        return dataclasses.replace(self._account, asof_ms=at_ms, evidence_digest="a" * 64)
+
+
+class _OneFillProposer(FakeProposer):
+    """One IOC buy on UNIVERSE[0], quotes the paper venue is also fed."""
+
+    def candidates(self, head_outputs):
+        self.calls.add("proposer.candidates", head_outputs)
+        return (Candidate(id="cand-INS1", instrument=UNIVERSE[0], scope_keys=(UNIVERSE[0],)),)
+
+    def quotes(self, head_outputs):
+        self.calls.add("proposer.quotes", head_outputs)
+        return list(a_quote_set().quotes)
+
+    def proposals(self, head_outputs, candidates, state, provenance):
+        self.calls.add("proposer.proposals", head_outputs, candidates, state, provenance)
+        quotes = a_quote_set().quotes
+        digest = canonical_hash([quote.to_obj() for quote in quotes])
+        return (
+            dataclasses.replace(
+                a_proposal("cand-INS1", UNIVERSE[0], "buy"),
+                quote_digest=digest,
+            ),
+        )
+
+
+def _paper_venue(clock, document):
+    """PaperExecutor on the document's scope, already quoted."""
+    venue = PaperExecutor(
+        {"fill_rule": "touch", "latency_ms": {"submit": 0, "cancel": 0}},
+        clock=clock,
+        scope=document.coordination.scope,
+    )
+    for quote in a_quote_set(asof_ms=clock.now_ms()).quotes:
+        venue.on_quote(quote)
+    return venue
+
+
+def test_serve_loop_with_replay_feed_clock_paper_executor_and_ledger_is_deterministic(
+    tmp_path, serve_document, release_manifest, clock, calls, monkeypatch
+):
+    """ADR-0114: construct ServeLoop + ReplayFeed + ReplayClock +
+    PaperExecutor + JsonlLedger together, restore real LegPipeline,
+    SimulatedAuthority, Invocation(once=True). Two identical dirs must
+    produce identical fill/ack. If a collaborator the loop needs is
+    missing from the allowed files, this test names it — that is Gate 5a
+    evidence, not a reason to edit compose.py."""
+    monkeypatch.setattr(loop_module, "LegPipeline", LegPipeline)
+    t0 = clock.now_ms()
+    tape = (
+        FeedResult(status="live", acq_id="acq-0", records_added=1,
+                   source_config_hash="e" * 64, at_ms=t0),
+    )
+
+    def once(root):
+        replay_clock = ReplayClock(manual_time=clock.time)
+        feed = ReplayFeed({}, tape=tape, time=clock.time)
+        venue = _paper_venue(replay_clock, serve_document)
+        local = Calls()
+        made = make_harness(
+            root, serve_document, release_manifest, replay_clock, local,
+            feed=feed,
+            decider=FakeDecider(local, proposer=_OneFillProposer(local)),
+            guards=_PassThroughGuards(local),
+            arming=_ReplayArming(local),
+            accounting=_ReplayAccounting(local),
+            executor=venue,
+            invocation=Invocation(
+                armed=False, env_release_hash=None, once=True, max_ticks=None
+            ),
+        )
+        authority = SimulatedAuthority(
+            replay_clock, made.parts["calendar"], made.parts["arming"], made.parts["lease"],
+            made.parts["health"], venue, serve_document, release_manifest,
+            made.ledger, made.inbox,
+        )
+        made.safety = Safety(
+            breaker=made.parts["breaker"],
+            arming=made.parts["arming"],
+            authorities=_SimulatedTable(authority),
+            readiness=made.parts["readiness"],
+            invocation=made.parts["invocation"],
+            action_policy=ActionPolicy(),
+            transition_policy=TransitionPolicy(),
+            submission_verifier=made.parts["submission_verifier"],
+        )
+        made.execution = Execution(
+            executor=venue,
+            accounting=made.parts["accounting"],
+            lease=made.parts["lease"],
+            resilience=object(),
+        )
+        try:
+            code = made.loop().run()
+            fills = list(venue.fills(0)[0])
+            acks = [env["body"] for env in made.records("order_event")]
+            ticks = [env["body"] for env in made.records("tick")]
+            decisions = [env["body"] for env in made.records("decision")]
+            plans = [env["body"] for env in made.records("decision_plan")]
+            return (
+                code,
+                [fill.to_obj() for fill in fills],
+                acks,
+                replay_clock.now_ms(),
+                ticks,
+                decisions,
+                plans,
+            )
+        finally:
+            made.close()
+
+    first = once(tmp_path / "a")
+    clock.time.set(t0)
+    second = once(tmp_path / "b")
+    assert first[0] == second[0] == EXIT_CODES["stopped"]
+    assert first[1] == second[1]
+    assert first[2] == second[2]
+    assert first[1], (
+        "ServeLoop + real LegPipeline + PaperExecutor produced no fill. "
+        f"ticks={first[4]!r} decisions={first[5]!r} plans={first[6]!r} order_events={first[2]!r}"
+    )

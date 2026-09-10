@@ -67,6 +67,7 @@ from dskit.production.records import (
     Intent,
     OrderState,
     Permit,
+    Position,
     Proposal,
     Quote,
     RiskVersion,
@@ -1702,6 +1703,180 @@ def test_the_release_scope_is_a_value_not_a_string():
     assert canonical_hash(SCOPE.to_obj()) == canonical_hash(
         ExecutionScope(venue="paper", account="strategy-a").to_obj()
     )
+
+
+# ==========================================================================
+# Gate 5a — Phase 5 replay conformance / hook discovery (ADR-0114)
+# ==========================================================================
+#
+# Items 2-5 (item 1's feed/clock/loop pins and item 6's crash/restart pin
+# live in `test_feed.py` / `test_clock.py` / `test_loop.py`). Every check
+# below is PASS-EXISTING: no hook was added to `executor.py`. Each
+# documents CURRENT `PaperExecutor` behaviour with a caller-injected
+# knob — never a bar choice, fill model, or exit policy this task does
+# not own.
+#
+# 2. Order timestamp, fill timestamp, price and fee — already
+#    deterministic under `seed` + injected clock + declared latency
+#    (`test_the_ack_is_stamped_from_the_injected_clock_plus_the_declared_
+#    latency`, `coin_flip_run`'s two-instance-same-seed pin above). The
+#    two tests below restate the claim directly against a SYNCHRONOUS
+#    fill (ack and fill share one clock instant) and as a whole-run
+#    byte-identical replay.
+# 3. Rejection / partial-fill — `PaperExecutor` already expresses every
+#    caller-injected rule the existing `no_quote`/`size_cap`/
+#    `partial_fills`/`fok` tests exercise separately; the pin below ties
+#    them into one assertion documenting that a caller does NOT get an
+#    assume-every-order-fills-completely venue.
+# 4. Holding clock, forced exit — `Position` is `(instrument, qty,
+#    avg_cost, source, native)`; GAP documented, not built: no
+#    `opened_ms` (`records.py` is out of scope for this task). Holding
+#    duration is proven from fill timestamps. A forced exit of a FILLED
+#    position is caller-injected: after `clock.advance(holding_ms)` the
+#    caller submits an opposite-side close. TIF expiry of an UNFILLED
+#    order is a different mechanism and is not this item.
+# 5. Overlapping signals — `PaperExecutor` already holds two working
+#    orders from two decisions before either resolves; there is no
+#    overlap-refusal policy, and this task does not decide whether one
+#    is needed.
+
+
+def test_a_synchronous_fill_stamps_the_ack_and_the_fill_from_the_same_clock_instant():
+    """Item 2: a `touch` fill happens ON `submit` (§5.7) — there is no
+    separate venue-side fill event to disagree with the ack, so both
+    must carry the identical clock instant, price and fee."""
+    clock = TestClock(start_ms=NOW_MS)
+    venue = paper({"fill_rule": "touch", "latency_ms": {"submit": 3, "cancel": 5}}, clock=clock)
+    ack = venue.submit(intent(), simulated(), tick_state())
+    (page, _cursor) = venue.fills(0)
+    fill = page[0]
+    assert ack.status == "filled"
+    assert ack.ts_ms == fill.ts_ms == NOW_MS + 3
+    assert (fill.price, fill.fee) == (ASK, ack.fee)
+
+
+def test_two_full_synthetic_runs_of_the_same_scenario_produce_byte_identical_acks_and_fills():
+    """Item 2, restated as a whole-run pin: the same claim
+    `coin_flip_run` proves for resting orders above, here for a
+    synchronous fill under caller-injected fee and latency knobs."""
+
+    def run():
+        clock = TestClock(start_ms=NOW_MS)
+        venue = paper(
+            {"fill_rule": "touch", "fees": {"kind": "bps", "bps": 5},
+             "latency_ms": {"submit": 3, "cancel": 5}},
+            clock=clock,
+        )
+        ack = venue.submit(intent(), simulated(), tick_state())
+        (page, _cursor) = venue.fills(0)
+        return ack.to_obj(), [fill.to_obj() for fill in page]
+
+    assert run() == run()
+
+
+def test_the_executor_already_expresses_caller_injected_rejection_and_partial_fill_rules():
+    """Item 3: rejection / partial-fill. `no_quote` rejection, a
+    `size_cap` partial fill, an all-or-nothing venue (`partial_fills:
+    False`) and `fok`'s stricter all-or-nothing already exist as
+    caller-injected knobs — pinned together so this conformance item
+    has ONE test rather than an assumption stitched from others'."""
+    no_quote = PaperExecutor(PAPER_PARAMS, clock=TestClock(start_ms=NOW_MS)).submit(
+        intent(), simulated(), tick_state()
+    )
+    assert (no_quote.status, no_quote.reason) == ("rejected", "no_quote")
+
+    partial = paper({"fill_rule": "touch", "size_cap": {"kind": "frac", "frac": 0.5}}).submit(
+        intent(proposal=proposal(tif="gtc")), simulated(), tick_state()
+    )
+    assert (partial.status, partial.filled_qty) == ("partial", Decimal("5"))
+
+    all_or_nothing = paper(
+        {"fill_rule": "touch", "size_cap": {"kind": "frac", "frac": 0.5}, "partial_fills": False}
+    ).submit(intent(proposal=proposal(tif="gtc")), simulated(), tick_state())
+    assert all_or_nothing.filled_qty == Decimal("0")
+
+    fok = paper({"fill_rule": "touch", "size_cap": {"kind": "frac", "frac": 0.5}}).submit(
+        intent(proposal=proposal(tif="fok")), simulated(), tick_state()
+    )
+    assert (fok.status, fok.filled_qty) == ("cancelled", Decimal("0"))
+
+
+def test_position_carries_no_opened_ms_but_holding_duration_is_derivable_from_timestamps():
+    """Item 4: holding clock. GAP documented, not built — `Position`'s
+    five fields carry no `opened_ms`, and adding one would touch
+    `records.py`, out of scope for this task. What the CURRENT
+    machinery already gives a caller: `Fill.ts_ms` minus
+    `OrderState.created_ms`, both stamped from the one injected clock,
+    is the holding duration."""
+    assert tuple(f.name for f in dataclasses.fields(Position)) == (
+        "instrument", "qty", "avg_cost", "source", "native",
+    )
+    clock = TestClock(start_ms=NOW_MS)
+    venue = paper(
+        {"fill_rule": "cross", "resting_rule": "touch", "p_fill_on_touch": 1.0,
+         "latency_ms": {"submit": 0, "cancel": 0}},
+        clock=clock,
+    )
+    venue.submit(intent(proposal=proposal(limit="0.42", tif="gtc")), simulated(), tick_state())
+    resting = venue.order("ref-1")
+    assert resting.status == "open"
+    clock.advance(3_600_000)
+    venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + 3_600_000))
+    assert venue.order("ref-1").status == "filled"
+    (page, _cursor) = venue.fills(0)
+    fill = page[0]
+    holding_ms = fill.ts_ms - resting.created_ms
+    assert holding_ms == 3_600_000
+
+
+def test_a_caller_can_force_exit_a_filled_position_after_a_holding_duration():
+    """Item 4: forced exit of a FILLED position. CURRENT mechanism — the
+    caller advances the injected clock by a holding duration, then
+    submits an opposite-side close. `PaperExecutor` has no holding-limit
+    policy of its own; TIF expiry of an unfilled order is not this. The
+    duration is the close fill's `ts_ms` minus the open fill's `ts_ms`.
+    Which holding limit an equity adapter would choose is §11 policy
+    this test does not decide."""
+    holding_ms = 3_600_000
+    clock = TestClock(start_ms=NOW_MS)
+    venue = paper({"fill_rule": "touch", "latency_ms": {"submit": 0, "cancel": 0}}, clock=clock)
+    opened = venue.submit(intent(), simulated(), tick_state())
+    assert opened.status == "filled"
+    (page, _cursor) = venue.fills(0)
+    open_fill = page[0]
+    clock.advance(holding_ms)
+    venue.on_quote(dataclasses.replace(QUOTE, asof_ms=NOW_MS + holding_ms))
+    closed = venue.submit(
+        intent("close", proposal=proposal(side="sell", tif="ioc", limit="0.40")),
+        simulated("close"),
+        tick_state(),
+    )
+    assert closed.status == "filled"
+    (page, _cursor) = venue.fills(0)
+    close_fill = page[-1]
+    book = PositionBook()
+    for fill in page:
+        book.apply(fill)
+    assert book.net_qty(INSTRUMENT) == Decimal("0")
+    assert close_fill.ts_ms - open_fill.ts_ms == holding_ms
+
+
+def test_two_working_orders_from_separate_decisions_coexist_before_either_resolves():
+    """Item 5: overlapping signals — two decisions submit before either
+    resolves. `PaperExecutor` has no overlap-refusal policy, so both
+    rest side by side; this documents CURRENT behaviour only — whether
+    an equity adapter SHOULD refuse an overlapping signal is §11 policy
+    this test does not decide."""
+    venue = paper({"fill_rule": "touch"})
+    first = venue.submit(
+        intent("first", proposal=proposal(limit="0.30", tif="gtc")), simulated("first"), tick_state()
+    )
+    second = venue.submit(
+        intent("second", proposal=proposal(limit="0.31", tif="gtc")), simulated("second"), tick_state()
+    )
+    assert first.status == "open"
+    assert second.status == "open"
+    assert sorted(order.client_ref for order in venue.open_orders()) == ["first", "second"]
 
 
 TestShadowConformance = executor_conformance_suite(

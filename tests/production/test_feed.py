@@ -43,7 +43,7 @@ import pytest
 import dskit.onboarding.acquire as acquire_mod
 import dskit.onboarding.observations as observations_mod
 from dskit.production.base import ProductionError, canonical_hash
-from dskit.production.clock import ReplayClock, TestClock
+from dskit.production.clock import ManualTime, ReplayClock, TestClock
 from dskit.production.feed import (
     DEFAULT_PULL_MODE,
     DEFAULT_QUEUE_MAX,
@@ -836,6 +836,37 @@ class TestReplayFeed:
         assert replay_clock.now_ms() == NOW_MS
         feed.pull(NOW_MS)
         assert replay_clock.now_ms() == NOW_MS + 1
+
+    def test_pull_returns_the_next_tape_entry_and_ignores_tick_at_ms(self):
+        """Gate 5a item 1, CURRENT `ReplayFeed` behaviour: `pull(tick_at_ms)`
+        does not filter the tape by as-of. It returns the next recorded
+        `FeedResult` in order, even when `tick_at_ms` is a later instant,
+        and advances the shared `ReplayClock` to that entry's own
+        `at_ms`. After the T1 pull, T2 remains unconsumed. No-lookahead
+        over dated BARS is the caller's (a decider slicing by the
+        threaded `tick_at_ms` / the clock the feed just set)."""
+        t0, t1, t2 = NOW_MS, NOW_MS + 10_000, NOW_MS + 20_000
+        tape = [
+            FeedResult(status="live", acq_id="acq-0", records_added=0,
+                       source_config_hash="s" * 64, at_ms=t0),
+            FeedResult(status="live", acq_id="acq-1", records_added=0,
+                       source_config_hash="s" * 64, at_ms=t1),
+            FeedResult(status="live", acq_id="acq-2", records_added=0,
+                       source_config_hash="s" * 64, at_ms=t2),
+        ]
+        manual = ManualTime(now_ms=t0)
+        replay_clock = ReplayClock(manual_time=manual)
+        feed = ReplayFeed({}, tape=tape, time=manual)
+        first = feed.pull(t2)
+        assert first.at_ms == t0
+        assert first.acq_id == "acq-0"
+        assert replay_clock.now_ms() == t0
+        second = feed.pull(t2)
+        assert second.at_ms == t1
+        assert replay_clock.now_ms() == t1
+        leftover = feed.pull(0)
+        assert leftover.at_ms == t2
+        assert leftover.acq_id == "acq-2"
 
     def test_a_tape_carrying_anything_but_a_feed_result_refuses(self):
         """The rows are NOT on the tape: §5.13 gives `read_entry` to the
