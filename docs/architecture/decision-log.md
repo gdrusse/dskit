@@ -6829,6 +6829,19 @@ serialization, hashing, estimator implementation, or row construction.
 plan time until a real HPO run supplies all ten manifests plus the frozen
 feature/category/checksum inputs.
 
+Evidence acceptance is failure-closed: each manifest must be named as the
+`hpo_ledger` output by its completed `scan_hNN` node record and by that same
+completed run's carry, whose result metadata binds the pinned HPO document.
+The consumer reconstructs the pinned 24-candidate inventory and complete
+ledger and reruns the ruled one-standard-error selector; self-consistent but
+incomplete, out-of-grid, or differently selected evidence is refused.
+
+The refit pin also names content-derived source and cache identities plus the
+training-window start, exclusive lockbox boundary, and exact embargo interval.
+Those values are copied into every head's hashed bundle training identity, so
+otherwise identical fitted bytes over different data/cache/cuts cannot attest
+as the same release.
+
 **Scope.** Synthetic contract tests and validate/plan refusal only. No market
 data, HPO/refit execution, pre-March read, `path.csv` edit, or model-policy
 change is authorized.

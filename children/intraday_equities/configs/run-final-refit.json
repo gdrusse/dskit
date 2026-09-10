@@ -23,6 +23,14 @@
         "categorical_feature": [],
         "categorical_encoding": {},
         "predict_fixture": [],
+        "refit_identity": {
+          "source": {},
+          "cache": {},
+          "train_start_ms": "PENDING",
+          "refit_end_ms": 1772323200000,
+          "embargo_start_ms": 1764547200000,
+          "embargo_end_ms": 1764633600000
+        },
         "seed": 0
       },
       "notes": "This node is the sole child owner of final refit orchestration. It resolves each HPO JsonArtifact through the generic verified reader, requires the same inventory across exactly h01..h10, calls final_model.refit_heads once with frozen winners, then calls the generic write_bundle seam once. No search knob exists."

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dskit.pipeline.kinds_search import CandidateInventory
+from dskit.pipeline.kinds_search import CandidateInventory, OneStandardErrorSelector, TrialLedger
 from dskit.pipeline.node import ConfigError, NodeContext
 import intraday_equities.final_model as final_model
 
@@ -105,6 +105,14 @@ def test_final_refit_binds_verified_per_head_winners_to_one_bundle(tmp_path, mon
 
     monkeypatch.setattr("intraday_equities.final_model.refit_heads", fake_refit)
     monkeypatch.setattr("intraday_equities.final_model.write_bundle", fake_bundle)
+    monkeypatch.setattr(
+        "intraday_equities.final_model.FinalRefit._verified_hpo_outputs",
+        lambda self: {head: evidence[head] for head in HEADS},
+    )
+    monkeypatch.setattr(
+        "intraday_equities.final_model.FinalRefit._winner_from_evidence",
+        lambda self, head, payload: winners[head],
+    )
     base = {"n_estimators": 600}
     monkeypatch.setattr(
         "intraday_equities.final_model.load_document",
@@ -125,6 +133,11 @@ def test_final_refit_binds_verified_per_head_winners_to_one_bundle(tmp_path, mon
         "categorical_feature": [],
         "categorical_encoding": {},
         "predict_fixture": [[0.0, 0.0]],
+        "refit_identity": {
+            "source": {"sha256": "1" * 64}, "cache": {"sha256": "2" * 64},
+            "train_start_ms": 1, "refit_end_ms": LOCKBOX_START_MS,
+            "embargo_start_ms": EMBARGO_START_MS, "embargo_end_ms": EMBARGO_END_MS,
+        },
     })
     rows = {head: [{"x": 1.0, "drop": 2.0, "label": 0.1, "ts_ms": 1}]
             for head in HEADS}
@@ -134,6 +147,10 @@ def test_final_refit_binds_verified_per_head_winners_to_one_bundle(tmp_path, mon
         head: {**base, **winners[head]} for head in HEADS
     }
     assert calls["bundle"][1] == HEADS
+    assert all(identity["source"] == {"sha256": "1" * 64}
+               for identity in calls["bundle"][3]["training_identities"].values())
+    assert all(identity["refit_end_ms"] == LOCKBOX_START_MS
+               for identity in calls["bundle"][3]["training_identities"].values())
     assert calls["bundle"][3]["head_params"] == {
         head: {
             "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
@@ -173,9 +190,99 @@ def test_final_refit_refuses_reused_or_wrong_head_evidence(tmp_path, monkeypatch
         "hpo_evidence": {head: manifest for head in HEADS},
         "feature_order": ["x"], "categorical_feature": [],
         "categorical_encoding": {}, "predict_fixture": [[0.0]],
+        "refit_identity": {"source": {"sha256": "1" * 64},
+                           "cache": {"sha256": "2" * 64},
+                           "train_start_ms": 1, "refit_end_ms": LOCKBOX_START_MS,
+                           "embargo_start_ms": EMBARGO_START_MS,
+                           "embargo_end_ms": EMBARGO_END_MS},
+    })
+    monkeypatch.setattr(node, "_verified_hpo_outputs", lambda: {
+        head: manifest for head in HEADS
     })
     with pytest.raises(ValueError, match="distinct|producer"):
         node._winners()
+
+
+def test_final_refit_requires_complete_data_cache_and_cut_identity():
+    params = {
+        "hpo_run_dir": "/real/run", "hpo_document_sha256": "d" * 64,
+        "hpo_evidence": {head: {} for head in HEADS}, "feature_order": ["x"],
+        "categorical_feature": [], "categorical_encoding": {},
+        "predict_fixture": [[0.0]],
+    }
+    with pytest.raises(ConfigError, match="refit_identity"):
+        final_model.FinalRefit("refit", params)
+
+
+def test_final_refit_refuses_hash_valid_artifact_absent_from_producer_record(tmp_path, monkeypatch):
+    manifest = _json_artifact(tmp_path, {"forged": True})
+    (tmp_path / "result.json").write_text(
+        '{"document_hash":"' + "d" * 64 + '","run_hash":"' + "e" * 64
+        + '","state":"ran","exit_code":0}'
+    )
+    (tmp_path / "carry.json").write_text("{}")
+    (tmp_path / "nodes").mkdir()
+    monkeypatch.setattr(
+        "intraday_equities.final_model.load_document",
+        lambda path: type("Document", (), {"hash": "d" * 64, "to_obj": lambda self: {}})(),
+    )
+    node = object.__new__(final_model.FinalRefit)
+    node.params = {"hpo_run_dir": str(tmp_path), "hpo_document_sha256": "d" * 64,
+                   "hpo_evidence": {head: manifest for head in HEADS}}
+    with pytest.raises(ValueError, match="producer record|carry"):
+        node._verified_hpo_outputs()
+
+
+def test_final_refit_refuses_cross_run_manifest_substitution(tmp_path):
+    own = _json_artifact(tmp_path, {"run": "own"})
+    other_dir = tmp_path / "other"
+    other = _json_artifact(other_dir, {"run": "other"})
+    (tmp_path / "result.json").write_text(
+        '{"document_hash":"' + "d" * 64 + '","run_hash":"' + "e" * 64
+        + '","state":"ran","exit_code":0}'
+    )
+    carry = {f"scan_{head}": {"hpo_ledger": own} for head in HEADS}
+    import json
+    (tmp_path / "carry.json").write_text(json.dumps(carry))
+    (tmp_path / "nodes").mkdir()
+    for index, head in enumerate(HEADS, 1):
+        record = {"node": f"scan_{head}", "status": "ok",
+                  "outputs": {"hpo_ledger": own}}
+        (tmp_path / "nodes" / f"{index:02d}-scan_{head}.json").write_text(json.dumps(record))
+    node = object.__new__(final_model.FinalRefit)
+    node.params = {"hpo_run_dir": str(tmp_path), "hpo_document_sha256": "d" * 64,
+                   "hpo_evidence": {head: other for head in HEADS}}
+    with pytest.raises(ValueError, match="producer record/carry"):
+        node._verified_hpo_outputs()
+
+
+def test_final_refit_recomputes_complete_pinned_one_se_selection():
+    inventory = CandidateInventory(REAL_HPO_SPACE, n_trials=24, seed=0)
+    ledger = TrialLedger(inventory, evidence_fields=EVIDENCE_FIELDS)
+    for index, candidate in enumerate(inventory.combinations):
+        ledger.record(candidate, float(index), se=0.0, diagnostics={},
+                      on_boundary={}, fit_seed=0, cuts={}, n_rows={},
+                      train_val_gap=0.0, collapsed_prediction_variance=False)
+    selection = OneStandardErrorSelector(
+        select="max", simplicity_key=simplicity_key
+    ).select(ledger).to_obj()
+    evidence = {"ledger": ledger.to_obj(), "selection": selection}
+    node = object.__new__(final_model.FinalRefit)
+    node._hpo_document = {"stages": {"finalist": {"params": {"templates": [{
+        "family": "pooled-lightgbm", "model": {"hpo_space": REAL_HPO_SPACE,
+        "hpo_trials": 24, "hpo_seed": 0, "estimator_params": {}}
+    }]}}}}
+    assert node._winner_from_evidence("h01", evidence) == selection["selected_candidate"]
+
+    incomplete = {"inventory_digest": inventory.digest,
+                  "evidence_fields": list(EVIDENCE_FIELDS),
+                  "rows": ledger.to_obj()["rows"][:-1]}
+    with pytest.raises(ValueError, match="incomplete|noncanonical"):
+        node._winner_from_evidence("h01", {"ledger": incomplete, "selection": selection})
+    wrong = dict(selection)
+    wrong["selected_candidate"] = dict(inventory.combinations[0])
+    with pytest.raises(ValueError, match="one-standard-error"):
+        node._winner_from_evidence("h01", {"ledger": ledger.to_obj(), "selection": wrong})
 
 # ---------------------------------------------------------------------------
 # The real P16 lean mask — the exact 33-column drop list, verbatim from

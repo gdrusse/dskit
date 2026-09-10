@@ -30,7 +30,7 @@ artifact.
 
 from __future__ import annotations
 
-import hashlib
+import glob
 import json
 import os
 from collections.abc import Mapping
@@ -84,6 +84,7 @@ class FinalRefit(Node):
         "categorical_feature",
         "categorical_encoding",
         "predict_fixture",
+        "refit_identity",
         "seed",
     )
 
@@ -126,6 +127,31 @@ class FinalRefit(Node):
         fixture = params.get("predict_fixture")
         if not isinstance(fixture, list) or not fixture:
             problems.append("predict_fixture must be a non-empty list")
+        identity = params.get("refit_identity")
+        identity_fields = {
+            "source", "cache", "train_start_ms", "refit_end_ms",
+            "embargo_start_ms", "embargo_end_ms",
+        }
+        if not isinstance(identity, dict) or set(identity) != identity_fields:
+            problems.append(f"refit_identity must carry exactly {sorted(identity_fields)!r}")
+        else:
+            for field in ("source", "cache"):
+                value = identity[field]
+                digest = value.get("sha256") if isinstance(value, dict) else None
+                if (not isinstance(value, dict) or not value or type(digest) is not str
+                        or len(digest) != 64
+                        or any(char not in "0123456789abcdef" for char in digest)):
+                    problems.append(f"refit_identity.{field} must be a non-empty identity with sha256")
+            if type(identity["train_start_ms"]) is not int or identity["train_start_ms"] < 0:
+                problems.append("refit_identity.train_start_ms must be a nonnegative integer")
+            expected = {
+                "refit_end_ms": LOCKBOX_START_MS,
+                "embargo_start_ms": EMBARGO_START_MS,
+                "embargo_end_ms": EMBARGO_END_MS,
+            }
+            for field, value in expected.items():
+                if identity[field] != value:
+                    problems.append(f"refit_identity.{field} must equal {value}")
         seed = params.get("seed", 0)
         if type(seed) is not int or seed < 0:
             problems.append("seed must be a nonnegative integer")
@@ -135,8 +161,90 @@ class FinalRefit(Node):
         """Require exactly one labelled-row stream for every frozen head."""
         if not isinstance(inputs, dict) or set(inputs) != set(HEADS):
             return [f"inputs must be keyed by exactly {list(HEADS)!r}"]
-        return [f"{head} must be a list of labelled rows"
-                for head in HEADS if not isinstance(inputs[head], list)]
+        problems = [f"{head} must be a list of labelled rows"
+                    for head in HEADS if not isinstance(inputs[head], list)]
+        identity = self.params.get("refit_identity")
+        if isinstance(identity, dict) and type(identity.get("train_start_ms")) is int:
+            start = identity["train_start_ms"]
+            for head in HEADS:
+                if isinstance(inputs[head], list) and any(
+                    not isinstance(row, Mapping) or type(row.get("ts_ms")) is not int
+                    or row["ts_ms"] < start for row in inputs[head]
+                ):
+                    problems.append(f"{head} contains a row before refit_identity.train_start_ms")
+        return problems
+
+    def _verified_hpo_outputs(self):
+        """Return manifests attested by this completed run's records and carry."""
+        run_dir = self.params["hpo_run_dir"]
+        try:
+            with open(os.path.join(run_dir, "result.json"), encoding="utf-8") as handle:
+                result = json.load(handle)
+            with open(os.path.join(run_dir, "carry.json"), encoding="utf-8") as handle:
+                carry = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            raise ValueError("FinalRefit: final-HPO run metadata is missing or invalid") from None
+        run_hash = result.get("run_hash")
+        if (result.get("document_hash") != self.params["hpo_document_sha256"]
+                or result.get("state") != "ran" or result.get("exit_code") != 0
+                or type(run_hash) is not str or len(run_hash) != 64
+                or any(char not in "0123456789abcdef" for char in run_hash)):
+            raise ValueError("FinalRefit: final-HPO run identity is not complete and pinned")
+        outputs = {}
+        for head in HEADS:
+            key = f"scan_{head}"
+            matches = []
+            for path in glob.glob(os.path.join(run_dir, "nodes", f"*-{key}.json")):
+                try:
+                    with open(path, encoding="utf-8") as handle:
+                        record = json.load(handle)
+                except (OSError, ValueError, TypeError):
+                    continue
+                if (record.get("node") == key and record.get("status") == "ok"):
+                    matches.append(record)
+            expected = self.params["hpo_evidence"][head]
+            carried = carry.get(key, {}).get("hpo_ledger") if isinstance(carry, dict) else None
+            if (len(matches) != 1
+                    or matches[0].get("outputs", {}).get("hpo_ledger") != expected
+                    or carried != expected):
+                raise ValueError(f"FinalRefit: {key} producer record/carry does not attest evidence")
+            outputs[head] = expected
+        return outputs
+
+    def _winner_from_evidence(self, head, evidence):
+        """Rebuild the frozen inventory, ledger, and 1-SE ruling."""
+        template = self._hpo_template()
+        model = template["model"]
+        inventory = CandidateInventory(
+            model["hpo_space"], n_trials=model["hpo_trials"], seed=model["hpo_seed"]
+        )
+        ledger_obj, selection = evidence["ledger"], evidence["selection"]
+        if not isinstance(ledger_obj, dict) or set(ledger_obj) != {
+            "inventory_digest", "evidence_fields", "rows",
+        }:
+            raise ValueError(f"FinalRefit: {head} ledger has the wrong shape")
+        if ledger_obj["inventory_digest"] != inventory.digest:
+            raise ValueError(f"FinalRefit: {head} ledger inventory differs from pinned HPO")
+        if tuple(ledger_obj["evidence_fields"]) != EVIDENCE_FIELDS:
+            raise ValueError(f"FinalRefit: {head} ledger evidence fields differ from contract")
+        ledger = TrialLedger(inventory, evidence_fields=EVIDENCE_FIELDS)
+        for row in ledger_obj["rows"]:
+            ledger.record(row["overrides"], row["score"], **{
+                key: value for key, value in row.items() if key not in {"overrides", "score"}
+            })
+        if ledger.to_obj() != ledger_obj:
+            raise ValueError(f"FinalRefit: {head} ledger is incomplete or noncanonical")
+        ruled = OneStandardErrorSelector(select="max", simplicity_key=simplicity_key).select(ledger)
+        if ruled.to_obj() != selection:
+            raise ValueError(f"FinalRefit: {head} selection is not the pinned one-standard-error ruling")
+        return ruled.selected_candidate
+
+    def _hpo_template(self):
+        templates = self._hpo_document["stages"]["finalist"]["params"]["templates"]
+        matches = [row for row in templates if row.get("family") == "pooled-lightgbm"]
+        if len(matches) != 1:
+            raise ValueError("FinalRefit: pinned HPO document has no unique LightGBM recipe")
+        return matches[0]
 
     def _winners(self):
         source_document = load_document(
@@ -147,13 +255,12 @@ class FinalRefit(Node):
         self._hpo_document = source_document.to_obj()
         winners = {}
         inventory_digest = None
-        seen_manifests = set()
+        attested = self._verified_hpo_outputs()
+        manifest_digests = [attested[head].get("sha256") for head in HEADS]
+        if len(set(manifest_digests)) != len(HEADS):
+            raise ValueError("FinalRefit: every head requires a distinct evidence manifest")
         for head in HEADS:
-            manifest = self.params["hpo_evidence"][head]
-            manifest_digest = manifest["sha256"]
-            if manifest_digest in seen_manifests:
-                raise ValueError("FinalRefit: every head requires a distinct evidence manifest")
-            seen_manifests.add(manifest_digest)
+            manifest = attested[head]
             evidence = resolve_json_artifact(
                 self.params["hpo_run_dir"], manifest
             )
@@ -168,40 +275,17 @@ class FinalRefit(Node):
                 raise ValueError(f"FinalRefit: {head} feature order differs from the pin")
             if evidence["categorical_feature"] != self.params["categorical_feature"]:
                 raise ValueError(f"FinalRefit: {head} category contract differs from the pin")
-            ledger, selection = evidence["ledger"], evidence["selection"]
-            if not isinstance(ledger, dict) or not isinstance(selection, dict):
-                raise ValueError(f"FinalRefit: {head} ledger/selection must be mappings")
-            digest = ledger.get("inventory_digest")
-            if selection.get("inventory_digest") != digest:
-                raise ValueError(f"FinalRefit: {head} selection is not bound to its ledger")
-            ledger_digest = hashlib.sha256(
-                json.dumps(
-                    ledger, sort_keys=True, separators=(",", ":"), allow_nan=False
-                ).encode()
-            ).hexdigest()
-            if selection.get("ledger_digest") != ledger_digest:
-                raise ValueError(f"FinalRefit: {head} selection ledger_digest is wrong")
+            ledger = evidence["ledger"]
+            digest = ledger.get("inventory_digest") if isinstance(ledger, dict) else None
             if inventory_digest is None:
                 inventory_digest = digest
             elif digest != inventory_digest:
                 raise ValueError("FinalRefit: every head must share one candidate inventory")
-            winner = selection.get("selected_candidate")
-            if not isinstance(winner, dict) or not winner:
-                raise ValueError(f"FinalRefit: {head} has no frozen selected_candidate")
-            rows = ledger.get("rows")
-            if not isinstance(rows, list) or not any(
-                row.get("overrides") == winner for row in rows if isinstance(row, dict)
-            ):
-                raise ValueError(f"FinalRefit: {head} winner is absent from its ledger")
-            winners[head] = dict(winner)
+            winners[head] = dict(self._winner_from_evidence(head, evidence))
         return winners
 
     def _base_params(self):
-        templates = self._hpo_document["stages"]["finalist"]["params"]["templates"]
-        matches = [row for row in templates if row.get("family") == "pooled-lightgbm"]
-        if len(matches) != 1:
-            raise ValueError("FinalRefit: pinned HPO document has no unique LightGBM recipe")
-        params = dict(matches[0]["model"]["estimator_params"])
+        params = dict(self._hpo_template()["model"]["estimator_params"])
         if params.pop("estimator", None) != "lightgbm.LGBMRegressor":
             raise ValueError("FinalRefit: pinned HPO document has the wrong estimator")
         params.pop("drop", None)
@@ -226,6 +310,10 @@ class FinalRefit(Node):
             seed=seed,
             categorical_feature=self.params["categorical_feature"],
         )
+        identities = {
+            head: {**identity, **self.params["refit_identity"]}
+            for head, identity in identities.items()
+        }
         head_params = {
             head: {
                 "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
