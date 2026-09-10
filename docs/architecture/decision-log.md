@@ -6656,3 +6656,135 @@ beyond the catalogue without §11 item 10. No phase's config with data still
 behind a calendar gate (`run-mean-confirmation.json`,
 `run-full-system-backtest.json`) may be read regardless of §11 rulings, until
 its named freeze milestone passes.
+
+---
+
+## ADR-0115 — Real per-lead HPO evidence inside `NoInformationScan`, additive only (Gate 2 deliverable 3)
+
+**Status:** accepted (2026-09-10; owner authorized ADR self-approval this
+session). Additive-only change: every existing caller of
+`NoInformationScan`'s `hpo_objective`/`hpo_trials`/`hpo_space` (P13, P14,
+P15's zoos) keeps its exact current behavior unchanged. Nothing here is
+read, planned, or executed against real market data.
+
+**Context.** ADR-0114 Phase 2 named `configs/run-final-hpo.json` a
+deliverable ("select the pinned P16 comparison, declare only the exact
+`lean-pooled-h10` recipe, freeze one 24-combination inventory, execute
+per-lead selection on the correct score, and emit complete ledgers") but
+did not authorize the code changes that turn out to be required to do it
+honestly. Investigation (this session, read-only) found:
+
+- `configs/run-final-hpo.json` already generates ONE document
+  (`lean-pooled-h10`, matching the plan's own naming and the P16 memo's
+  confirmed winning candidate ID verbatim — `docs/memos/p16-feature-mask-and-final-gate-results.md:37`)
+  containing TEN independent per-lead `scan_h01`..`scan_h10` nodes
+  (`intraday_equities/model_zoo.py:_pooled_document`, the `path_inputs`
+  loop) — the plan's "ten independent leads" structure is ALREADY
+  correct; no change to `model_zoo.py`'s document-generation shape is
+  needed.
+- Each `scan_hNN` node is `intraday_equities.nodes:NoInformationScan`
+  (`intraday_equities/nodes.py`), which already runs an INTERNAL inner-
+  holdout HPO when `hpo_trials > 0`: `_hpo_combos` (nodes.py:3305) draws
+  combos via `random.Random(seed)` rejection sampling — a DIFFERENT
+  algorithm than Phase 1's `CandidateInventory` (sha256-digest subsample)
+  — and `_tune_estimator` (nodes.py:3329) picks the single best combo by
+  raw argmin(`mspe`)/argmax(`ic`) and returns only `(params, score)`,
+  discarding every other candidate's evidence. This is exactly the gap
+  plan §4 item 2 already named: "supports only MSPE or IC, tunes each
+  scan independently, emits only the winning score, discards winning
+  parameters, and emits no full trial ledger."
+- Because every `scan_hNN` node receives the identical literal
+  `hpo_space`/`hpo_seed`/`hpo_trials` (copied verbatim per node by
+  `_pooled_document`'s `_MODEL_FIELDS` loop), `_hpo_combos`'s
+  `random.Random(seed)` draw is ALREADY byte-identical across all ten
+  leads today — "every lead receives byte-identical combinations" is not
+  actually broken. What is missing is the plan's required OBJECTIVE
+  (squared-error improvement vs. training-mean baseline — never MSPE or
+  IC), the ADR-0114 §11 item 1 SE/simplicity selection rule in place of
+  raw argmin/argmax, and the full per-candidate trial ledger.
+
+**Decision.** Add, to `children/intraday_equities/intraday_equities/nodes.py`
+only (no change to `dskit/`, no change to `_hpo_combos`'s existing
+behavior):
+
+1. A new `hpo_objective` enum value, `"squared_error_improvement"`,
+   alongside the existing `"mspe"`/`"ic"` (both untouched). Its score
+   function is `intraday_equities.final_model.squared_error_improvement`,
+   IMPORTED, never re-derived (root CLAUDE.md's duplication rule) — this
+   is the exact function Gate 2 already built and reviewed.
+2. A new opt-in boolean param, `hpo_evidence` (default `False` — every
+   existing caller keeps the old return shape unchanged). When `True`,
+   the scan node builds one `dskit.pipeline.kinds_search.CandidateInventory`
+   from `hpo_space`/`hpo_trials`/`hpo_seed` (replacing `_hpo_combos`'s
+   random draw for this path only — `_hpo_combos` itself is untouched
+   and still serves the `hpo_evidence=False` path), records every
+   candidate's score AND standard error into a
+   `dskit.pipeline.kinds_search.TrialLedger` (`evidence_fields` at least
+   covering the plan's named diagnostics), computes `se` via
+   `dskit.pipeline.stats.cluster_bootstrap_t` clustered by trading day
+   (ADR-0114 §11 item 1's ruled method — `intraday_equities.final_model.cluster_scores_by_day`
+   groups the inner-holdout rows), and selects the winner via
+   `dskit.pipeline.kinds_search.OneStandardErrorSelector` with
+   `intraday_equities.final_model.simplicity_key` (the ruled ordering) —
+   never a raw argmin/argmax. The complete ledger (as
+   `TrialLedger.to_obj()`) is emitted as a new `hpo_ledger` output
+   alongside the existing `signal`/`metrics` outputs, so a caller who
+   does not ask for it (`hpo_evidence=False`, the default) sees no output
+   shape change at all.
+3. `intraday_equities/model_zoo.py`'s `_MODEL_FIELDS` frozenset gains
+   `"hpo_evidence"` so `_pooled_document` copies it into every per-lead
+   scan node's params like every other model field already there — no
+   other change to `model_zoo.py`.
+
+**Configuration.** `configs/run-final-hpo.json` changes:
+
+- `stages.select.params.sources`: replaced with the ONE pinned P16
+  feature-mask-zoo `compare.json` (path + sha256 from
+  `docs/decisioning/actions.csv` row A18850 — the canonical, non-ephemeral
+  path repair), so `BenchmarkSelect`'s existing argmax-mean-score
+  mechanism deterministically names `lean-pooled-h10` (the ONLY
+  candidate P16 offers) rather than comparing across P13/P14/P15 as
+  before. This literally satisfies "select the pinned P16 comparison"
+  through the existing, already-reviewed `BenchmarkSelect` stage — no
+  new selection code.
+- `stages.finalist.params.templates`: the `torch-mlp` template is
+  REMOVED (the plan locks the family: "Model-family and feature-mask
+  selection are closed for this build" — only one recipe is declared,
+  so `FinalistCandidate`'s existing "refuse a selection it has no recipe
+  for" guard is what enforces the lock, not a new check). The remaining
+  `lgbm` template's `model.estimator` changes to
+  `dskit.pipeline.libs.sklearn.ColumnSubsetEstimator` with
+  `estimator_params.drop` set to the real 33-column P16 lean mask
+  (`children/intraday_equities/intraday_equities/final_model:lean_feature_drop()`'s
+  own source config, `configs/run-p16-feature-mask-zoo.json` — the
+  identical 33 names, copied here as a config literal because JSON config
+  cannot import a Python function; `tests/test_configs.py` must pin this
+  copy against `lean_feature_drop()`'s return so the two can never drift,
+  the same test-time pinning discipline `test_final_model.py`'s
+  `REAL_LEAN_DROP` already uses). `hpo_objective` changes to
+  `"squared_error_improvement"`; `hpo_evidence` is added, `true`.
+
+**Verification permitted this gate.** `validate`/`plan` on the modified
+document only — no `run`/`walkforward`. The P16 `compare.json` this
+config points at does not exist in this environment (it was produced on
+a different machine); `select`'s `run()` step (which reads it) is
+therefore never executed here, only shape-validated. `nodes.py`'s new
+code paths are tested with synthetic in-memory rows exactly as Gate 2's
+own tests were (`tests/test_final_model.py`'s discipline), never real
+market data.
+
+**Scope.** This ADR covers exactly the `nodes.py`/`model_zoo.py` additive
+changes and the `run-final-hpo.json`/`run-final-refit.json` edits named
+above. It does not touch P13/P14/P15's existing behavior, does not
+resolve any of the plan's remaining nine open §11 items, does not
+authorize any market-data read or real HPO execution, and does not touch
+`docs/decisioning/path.csv`.
+
+**Consequences.** `configs/run-final-hpo.json` becomes runnable (pending
+real data and the P16 artifact actually being present) as the exact
+Gate-2-designed final-model HPO scan: one document, ten leads, one frozen
+per-lead inventory each, the plan's own objective, and a complete,
+inspectable trial ledger per lead — closing Gate 2's deliverable 3.
+Existing P13/P14/P15 zoo configs are provably unaffected (their
+`hpo_evidence` param is simply absent, defaulting to `False`, and
+`_hpo_combos`/`_tune_estimator`'s bodies are untouched).
