@@ -1,5 +1,40 @@
 # Re-entry
 
+## Current wrap: Gate 6 — shared event/metric contract, skeptic-clean (2026-09-10)
+
+Branch: `claude/gate6-event-metric-contract-a8b7ea`, off
+`claude/phase1-recovery-seven-gates-ao4zdj` (not merged anywhere yet).
+
+Adds the generic event/metric contract from
+`docs/plans/2026-09-08-final-model-replay-and-monitoring.md` §6 Phase 6:
+`vocab.EVENT_SCHEMA_VERSION`/`EVENT_CATEGORIES`/`EVENT_FIELDS` (the plan's
+full eight-category catalogue, 108 fields), `metrics.EventCatalogue`/
+`EventAdapter`/`EventReadings`, a `Completeness` monitor, and
+`intraday_equities.metrics.EquityEventAdapter`/`SignalDecay`. Records every
+metric value now; no WARN/HOLD thresholds or alerting (§11 items 7/10 stay
+open, as scoped). ADR-0117 (`docs/architecture/decision-log.md`) is
+**proposed, not yet owner-accepted**.
+
+Five sequential independent skeptic rounds, single-agent-at-a-time per the
+plan's own protocol: round 1 found a real Major (money-safety unenforced on
+`EventAdapter.event()`, fixed), round 2 clean but flagged an ADR wording
+gap (fixed), round 3 found a real Critical (`drawdown` wrongly excluded from
+`MONEY_FIELDS` despite being `Decimal`-typed in `records.py`/`accounting.py`,
+fixed), round 4 clean with 2 Minor test-coverage gaps (fixed), round 5 —
+**0 Critical/0 Major/0 Minor, closing the loop** (two consecutive
+independent clean rounds, satisfying plan §1 rule 7).
+
+Verification: `tests/production/{test_metrics,test_monitors,test_vocab,
+test_purity,test_oop,test_producers}.py` + child `test_metrics.py` — 1160
+passed. Ruff clean on all touched files; `git diff --check` clean against
+base.
+
+**Next:** owner accepts or amends ADR-0117; then decide whether to merge
+this branch into `claude/phase1-recovery-seven-gates-ao4zdj` now or hold it
+until Gates 3-5 land. Emission wiring (`loop.py`/`leg.py`/`executor.py`/
+`ledger.py`/`report.py` actually calling `EventAdapter.event`) is
+deliberately out of this gate's scope and remains open.
+
 ## Current wrap: Gate 2 deliverable 4 review-closed, fail-closed (2026-09-10)
 
 Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (not pushed by this wrap;
