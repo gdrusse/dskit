@@ -1128,14 +1128,7 @@ def resolve_json_artifact(run_dir, manifest):
 
 
 def _read_run_json(run_dir, name):
-    """Read one JSON object from a run dir, or ``None`` on any problem.
-
-    The one owner of "read a run artifact and never raise" — every
-    :class:`RunAttestation` query shares this, so a missing file, a
-    non-UTF-8 file, invalid JSON, and a JSON array or scalar all collapse
-    to the same fail-closed signal instead of three different exceptions
-    a caller would have to catch separately.
-    """
+    """Read one JSON object from a run dir, or ``None`` on any problem — the one owner every ``RunAttestation`` query shares."""
     try:
         with open(os.path.join(os.fspath(run_dir), name), encoding="utf-8") as handle:
             obj = json.load(handle)
