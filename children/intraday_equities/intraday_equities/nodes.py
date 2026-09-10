@@ -3526,7 +3526,17 @@ def _hpo_evidence_selection(
         inventory, evaluate, n_boot=n_boot, seed=fit_seed, alpha=alpha
     )
     chosen = {**base, **selection.selected_candidate}
-    return chosen, float(selection.best_score), ledger.to_obj(), selection.to_obj()
+    # NOT selection.best_score: that is the unconstrained argmax across
+    # every candidate, which the one-SE rule may deliberately pass over
+    # in favor of a simpler, still-eligible candidate — reporting the
+    # argmax here would name a score no model this call actually trains
+    # achieved. The selected candidate's own recorded score is looked up
+    # from the ledger by its overrides, the same key identity the ledger
+    # and selection already share.
+    selected_row = next(
+        row for row in ledger.rows if dict(row["overrides"]) == selection.selected_candidate
+    )
+    return chosen, float(selected_row["score"]), ledger.to_obj(), selection.to_obj()
 
 
 def _model_ic(train_x, train_y, val_x, val_y, names, scan):

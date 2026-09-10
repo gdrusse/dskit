@@ -269,7 +269,7 @@
           }
         ]
       },
-      "notes": "ADR-0115: the ONE pinned P16 feature-mask-zoo comparison (docs/decisioning/actions.csv row A18850, the canonical non-ephemeral path repair superseding the earlier /tmp-rooted A18839 reference), replacing the prior three-zoo (P13/P14/P15) comparison now that model-family and feature-mask selection are closed (master plan Sec.2: `lean-pooled-h10` is locked). With exactly one source, BenchmarkSelect's existing max-mean-score mechanism deterministically names it — no new selection code. Read-only and never promoting."
+      "notes": "ADR-0115: the ONE pinned P16 feature-mask-zoo comparison (docs/decisioning/actions.csv row A18850, the canonical non-ephemeral path repair superseding the earlier /tmp-rooted A18839 reference), replacing the prior three-zoo (P13/P14/P15) comparison now that model-family and feature-mask selection are closed (master plan Sec.2). With exactly one source, BenchmarkSelect's existing max-mean-score mechanism deterministically names its own winner — no new selection code, and this document restates no model name of its own. Read-only and never promoting."
     },
     "memory": {
       "uses": "intraday_equities.modelability_study:MemoryPreflightStage",

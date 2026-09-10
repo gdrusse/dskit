@@ -303,8 +303,8 @@ def hpo_space(config_path=None) -> dict:
         )
     ):
         raise ValueError(
-            f"hpo_space: {path!r}'s 'lgbm' template hpo_space is not a "
-            "non-empty mapping of dimension -> non-empty value list"
+            f"hpo_space: {path!r}'s pooled-lightgbm template hpo_space is "
+            "not a non-empty mapping of dimension -> non-empty value list"
         )
     return {name: list(values) for name, values in space.items()}
 
