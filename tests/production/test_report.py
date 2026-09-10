@@ -863,14 +863,14 @@ def test_report_money_weighted_return_uses_the_cash_flows_effective_instant():
     assert found.money_weighted.quantize(Decimal("0.000000001")) == Decimal("-0.937500000")
 
 
-def test_backdated_correction_replaces_the_original_mwr_flow_date():
-    """A correction's final amount belongs wholly to its own effective instant."""
+def test_valid_correction_replaces_the_original_mwr_flow_and_date():
+    """A later correction's final amount wholly replaces the earlier flow."""
     ledger = a_ledger()
     record_cash_flow(
         ledger, "cash_flow:initial", amount="1000", external=True, at_ms=BASE_MS
     )
     record_tick(ledger, "tick-1", BASE_MS, [], nav="1000")
-    original_at = BASE_MS + YEAR_MS // 2
+    original_at = BASE_MS + YEAR_MS // 4
     record_cash_flow(
         ledger, "cash_flow:original", amount="100", external=True, at_ms=original_at
     )
@@ -879,10 +879,10 @@ def test_backdated_correction_replaces_the_original_mwr_flow_date():
         "cash_flow:correction",
         amount="200",
         external=True,
-        at_ms=BASE_MS + YEAR_MS // 4,
+        at_ms=BASE_MS + YEAR_MS // 2,
         supersedes="cash_flow:original",
     )
-    record_tick(ledger, "tick-2", BASE_MS + YEAR_MS, [], nav="87.5")
+    record_tick(ledger, "tick-2", BASE_MS + YEAR_MS, [], nav="112.5")
 
     found = a_report(ledger).performance(BASE_MS + YEAR_MS)
 

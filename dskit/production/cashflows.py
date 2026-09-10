@@ -388,10 +388,10 @@ class RecurringCashFlowSchedule:
     --------
     ::
 
-        zone = ZoneInfo("America/New_York")
+        zone = ZoneInfo("UTC")
         schedule = RecurringCashFlowSchedule(
-            "demo", datetime(2026, 1, 2, 9, 30, tzinfo=zone), 14,
-            "USD", Decimal("500"), zone,
+            "example", datetime(2031, 4, 9, 13, 17, tzinfo=zone), 13,
+            "XYZ", Decimal("37"), zone,
         )
         len(schedule.materialize(schedule.anchor, schedule.anchor + timedelta(days=1)))
         # -> 1

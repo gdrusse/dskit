@@ -137,6 +137,8 @@ _log = get_logger("state")
 
 _ZERO = Decimal(0)
 
+_REPLAY_CAPABILITY = object()
+
 #: The vocabulary members this module spells, each pinned to its tuple at
 #: import so a renamed member cannot leave a stale literal behind.
 _ACTIVE, _DERIVED, _ISSUE, _SUBMIT = "active", "derived", "issue", "submit"
@@ -169,7 +171,7 @@ _PLAN_KEYS = ("plan_id", "decision_plan_digest", "result", "client_ref")
 #: correction can net the amount it replaces back out (see
 #: ``SeriesState._fold_cash_flow``). Booked in the record's OWN currency,
 #: which is why the currency is kept beside the amount.
-_CASH_FLOW_KEYS = ("currency", "amount", "superseded_by")
+_CASH_FLOW_KEYS = ("currency", "amount", "effective_at_ms", "superseded_by")
 
 #: What the fold keeps of the latest ``trip`` (see ``SeriesState.last_trip``):
 #: the envelope's identity and instant — a reset acknowledges the id and
@@ -988,12 +990,15 @@ class SeriesState:
 
     def __init__(self, series_id, max_history=DEFAULT_MAX_HISTORY):
         problems = []
+        if type(self) is not SeriesState:
+            problems.append("SeriesState is sealed; replay capability comes from composition")
         _check_str(problems, "series_id", series_id)
         check_int_param(problems, "max_history", max_history, ge=1)
         if problems:
             raise ProductionError(problems)
         self._series_id = series_id
         self._max_history = max_history
+        self._replay_capability = None
         self._head_seq, self._head_hash = 0, GENESIS_HASH
         self._economic_seq = 0
         self._book = PositionBook()
@@ -1031,6 +1036,22 @@ class SeriesState:
     def series_id(self):
         """The series this fold belongs to."""
         return self._series_id
+
+    @classmethod
+    def _for_replay(cls, series_id, tape, max_history=DEFAULT_MAX_HISTORY):
+        """Construct the tape-bound scratch fold used only by composition."""
+        from dskit.production.bundles import ReplayTape
+
+        problems = []
+        if cls is not SeriesState:
+            problems.append("only SeriesState may bind replay capability")
+        if not isinstance(tape, ReplayTape):
+            problems.append("replay capability requires a ReplayTape")
+        if problems:
+            raise ProductionError(problems)
+        state = cls(series_id, max_history)
+        state._replay_capability = _REPLAY_CAPABILITY
+        return state
 
     # -- the fold -----------------------------------------------------------
 
@@ -1275,18 +1296,20 @@ class SeriesState:
             self._check_replay_cash_flow(problems, body, record_id)
         superseded = body.get("supersedes")
         if superseded is not None:
-            self._check_supersedable(problems, superseded)
+            self._check_supersedable(problems, superseded, body.get("effective_at_ms"))
         if problems:
             raise ProductionError(problems)
         if superseded is not None:
             self._unbook(superseded, record_id)
         currency = body["currency"]
         self._balances[currency] = self._balances.get(currency, _ZERO) + amount
-        self._cash_flows[record_id] = (currency, amount, None)
+        self._cash_flows[record_id] = (
+            currency, amount, body["effective_at_ms"], None
+        )
 
     def _check_replay_cash_flow(self, problems, body, record_id):
         """Validate the auditable shape a replay composer alone emits."""
-        if not self._accepts_replay_cash_flow():
+        if self._replay_capability is not _REPLAY_CAPABILITY:
             problems.append("replay cash requires an explicitly replay-enabled fold")
         if body.get("known_at_ms") != body.get("effective_at_ms"):
             problems.append(
@@ -1305,11 +1328,7 @@ class SeriesState:
                 f"replay cash_flow.id {record_id!r} disagrees with flow_id {flow_id!r}"
             )
 
-    def _accepts_replay_cash_flow(self):
-        """Return whether composition made this a replay scratch fold."""
-        return False
-
-    def _check_supersedable(self, problems, superseded):
+    def _check_supersedable(self, problems, superseded, effective_at_ms):
         """Why ``supersedes`` cannot be netted out, if it cannot."""
         if not isinstance(superseded, str):
             problems.append(
@@ -1321,16 +1340,21 @@ class SeriesState:
             problems.append(
                 f"cash_flow.supersedes names {superseded!r}, which this fold never booked"
             )
-        elif booked[2] is not None:
+        elif booked[3] is not None:
             problems.append(
-                f"cash_flow {superseded!r} was already superseded by {booked[2]!r}"
+                f"cash_flow {superseded!r} was already superseded by {booked[3]!r}"
             )
+        elif (
+            isinstance(effective_at_ms, int) and not isinstance(effective_at_ms, bool)
+            and effective_at_ms <= booked[2]
+        ):
+            problems.append("a correction must be effective after the flow it supersedes")
 
     def _unbook(self, superseded, record_id):
         """Reverse a booked cash flow in its own currency and mark who replaced it."""
-        currency, amount, _ = self._cash_flows[superseded]
+        currency, amount, effective_at_ms, _ = self._cash_flows[superseded]
         self._balances[currency] = self._balances.get(currency, _ZERO) - amount
-        self._cash_flows[superseded] = (currency, amount, record_id)
+        self._cash_flows[superseded] = (currency, amount, effective_at_ms, record_id)
 
     def _fold_authority(self, body, envelope):
         """Dispatch an authority event by role and event."""
@@ -1871,10 +1895,12 @@ class SeriesState:
         where = f"snapshot.state.cash_flows.{record_id}"
         _check_str(problems, f"{where}.currency", entry["currency"])
         amount = _money(problems, f"{where}.amount", entry["amount"])
+        effective_at_ms = entry["effective_at_ms"]
+        check_int_param(problems, f"{where}.effective_at_ms", effective_at_ms, ge=0)
         superseded_by = entry["superseded_by"]
         if superseded_by is not None:
             _check_str(problems, f"{where}.superseded_by", superseded_by)
-        return (entry["currency"], amount, superseded_by)
+        return (entry["currency"], amount, effective_at_ms, superseded_by)
 
 
 # ---------------------------------------------------------------------------

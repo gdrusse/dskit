@@ -254,13 +254,6 @@ _REDUCTION_AUTHORITY_TAG = "reduction-authority-v1"
 _MS_PER_S = 1000
 
 
-class _ReplaySeriesState(SeriesState):
-    """Composition-private state type for a replay scratch ledger."""
-
-    def _accepts_replay_cash_flow(self):
-        return True
-
-
 @dataclass(frozen=True)
 class _NoHeartbeat:
     """The heartbeat section a document that declares none still gets.
@@ -1135,7 +1128,10 @@ def bundles_for(
         rng=random.Random(DEFAULT_JITTER_SEED),
     )
 
-    state = (_ReplaySeriesState if tape is not None else SeriesState)(document.series_id)
+    state = (
+        SeriesState(document.series_id) if tape is None
+        else SeriesState._for_replay(document.series_id, tape)
+    )
     ledger = ledger_class(document)(
         serve_root,
         process_id,

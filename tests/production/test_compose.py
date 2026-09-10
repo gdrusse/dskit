@@ -2101,10 +2101,10 @@ class EmptyReplayTape(ReplayTape):
 
 def replay_cash_flow_composer():
     """One arbitrary placeholder schedule; no production policy is implied."""
-    timezone = ZoneInfo("America/New_York")
-    anchor = datetime(2026, 1, 2, 9, 30, tzinfo=timezone)
+    timezone = ZoneInfo("UTC")
+    anchor = datetime(2031, 4, 9, 13, 17, tzinfo=timezone)
     schedule = RecurringCashFlowSchedule(
-        "placeholder-biweekly", anchor, 14, "USD", Decimal("500"), timezone
+        "test-schedule", anchor, 13, "XYZ", Decimal("37"), timezone
     )
     return ReplayCashFlowComposer(schedule), anchor
 
@@ -2124,8 +2124,8 @@ def test_replay_cash_flow_composer_emits_existing_cash_flow_records():
         "effective_at_ms": int(anchor.timestamp() * 1000),
         "known_at_ms": int(anchor.timestamp() * 1000),
         "supersedes": None,
-        "currency": "USD",
-        "amount": "500",
+        "currency": "XYZ",
+        "amount": "37",
         "flow_kind": "deposit",
         "external": True,
         "source": "replay",
@@ -2169,4 +2169,4 @@ def test_replay_composition_accepts_declared_cash_flow_records(
     for record in cash_flows.due(anchor, anchor + timedelta(seconds=1)):
         bundles[5].ledger.append(record)
 
-    assert bundles[5].state.snapshot().balances == {"USD": Decimal("500")}
+    assert bundles[5].state.snapshot().balances == {"XYZ": Decimal("37")}

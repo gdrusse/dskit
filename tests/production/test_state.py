@@ -268,10 +268,16 @@ def fill_body(
     }
 
 
-def cash_flow_body(currency="USD", amount="250", external=True, flow_kind="deposit",
-                   supersedes=None):
+def cash_flow_body(
+    currency="USD", amount="250", external=True, flow_kind="deposit",
+    supersedes=None, effective_at_ms=None,
+):
+    effective_at_ms = (
+        BASE_MS - 86_400_000 + (1 if supersedes is not None else 0)
+        if effective_at_ms is None else effective_at_ms
+    )
     return {
-        "effective_at_ms": BASE_MS - 86_400_000,
+        "effective_at_ms": effective_at_ms,
         "known_at_ms": BASE_MS,
         "supersedes": supersedes,
         "currency": currency,
@@ -1181,6 +1187,21 @@ def test_series_state_has_no_public_replay_enable_switch():
         SeriesState(SERIES_ID, allow_replay_cash_flows=True)
 
 
+def test_internal_replay_binding_requires_a_real_tape():
+    with pytest.raises(ProductionError, match="ReplayTape"):
+        SeriesState._for_replay(SERIES_ID, object())
+
+
+def test_a_public_subclass_cannot_forge_replay_authorization():
+    """Overriding the old hook cannot make declared cash spendable."""
+    class ForgedReplayState(SeriesState):
+        def _accepts_replay_cash_flow(self):
+            return True
+
+    with pytest.raises(ProductionError, match="sealed|composition"):
+        ForgedReplayState(SERIES_ID)
+
+
 def test_a_production_fold_refuses_even_well_formed_replay_cash():
     """A source label cannot bypass the settlement-only production boundary."""
     st, chain = new_state()
@@ -1270,6 +1291,24 @@ def test_a_superseding_cash_flow_nets_against_the_record_it_replaces():
     assert view.head_seq == 2
 
 
+def test_a_backdated_cash_flow_correction_refuses():
+    """Corrections follow their booked target; they cannot create reverse time order."""
+    st, chain = new_state()
+    target_at = BASE_MS - 1_000
+    fold(
+        st, chain, "cash_flow",
+        cash_flow_body(amount="100", effective_at_ms=target_at), rid="cf-1",
+    )
+
+    with pytest.raises(ProductionError, match="before|predate|effective"):
+        fold(
+            st, chain, "cash_flow",
+            cash_flow_body(
+                amount="200", supersedes="cf-1", effective_at_ms=target_at - 1
+            ), rid="cf-2",
+        )
+
+
 def test_a_correction_can_itself_be_corrected_in_a_chain():
     # Netting is per record, so a second correction supersedes the FIRST
     # correction, not the original — the chain never re-adds what an
@@ -1279,7 +1318,9 @@ def test_a_correction_can_itself_be_corrected_in_a_chain():
     fold(st, chain, "cash_flow",
          cash_flow_body(amount="100", supersedes="cf-1"), rid="cf-2")
     fold(st, chain, "cash_flow",
-         cash_flow_body(amount="60", supersedes="cf-2"), rid="cf-3")
+         cash_flow_body(
+             amount="60", supersedes="cf-2", effective_at_ms=BASE_MS - 86_400_000 + 2
+         ), rid="cf-3")
     assert st.snapshot().balances["USD"] == Decimal("60")
 
 
@@ -1974,7 +2015,8 @@ def test_the_snapshot_carries_the_cash_flow_map_a_later_correction_nets_against(
     fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
     env = snapshot_env(st, chain)
     assert env["body"]["state"]["cash_flows"] == {
-        "cf-1": {"currency": "USD", "amount": "250", "superseded_by": None},
+        "cf-1": {"currency": "USD", "amount": "250",
+                 "effective_at_ms": BASE_MS - 86_400_000, "superseded_by": None},
     }
 
     restored = SeriesState(SERIES_ID)
@@ -1984,12 +2026,14 @@ def test_the_snapshot_carries_the_cash_flow_map_a_later_correction_nets_against(
          cash_flow_body(amount="100", supersedes="cf-1"), rid="cf-2")
     assert restored.snapshot().balances["USD"] == Decimal("100")
     assert restored.to_snapshot_obj()["cash_flows"] == {
-        "cf-1": {"currency": "USD", "amount": "250", "superseded_by": "cf-2"},
-        "cf-2": {"currency": "USD", "amount": "100", "superseded_by": None},
+        "cf-1": {"currency": "USD", "amount": "250",
+                 "effective_at_ms": BASE_MS - 86_400_000, "superseded_by": "cf-2"},
+        "cf-2": {"currency": "USD", "amount": "100",
+                 "effective_at_ms": BASE_MS - 86_400_000 + 1, "superseded_by": None},
     }
 
 
-def test_restore_refuses_a_cash_flow_entry_that_is_not_the_three_key_form():
+def test_restore_refuses_a_cash_flow_entry_that_is_not_the_four_key_form():
     st, chain = new_state()
     fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
     broken = copy.deepcopy(snapshot_env(st, chain))
