@@ -6773,6 +6773,17 @@ code paths are tested with synthetic in-memory rows exactly as Gate 2's
 own tests were (`tests/test_final_model.py`'s discipline), never real
 market data.
 
+**Accepted correction (2026-09-10).** The complete ledger cannot remain a
+plain output: spent-output recording summarizes dicts and `carry.json` caps
+state at 20 kB. `dskit.pipeline.node.JsonArtifact` is therefore the explicit,
+generic persistence seam. A producer opts in by wrapping one JSON value; after
+successful validation the driver atomically writes canonical bytes at
+`artifacts/json/<sha256>.json` and replaces the wrapper with a small manifest
+(`path`, `sha256`, `bytes`, `media_type`) retained in both the node record and
+carry. `NoInformationScan` wraps only evidence-mode `hpo_ledger`; its default
+two-output path remains unchanged. This is content-addressed, auditable, and
+does not turn carry into bulk storage.
+
 **Scope.** This ADR covers exactly the `nodes.py`/`model_zoo.py` additive
 changes and the `run-final-hpo.json`/`run-final-refit.json` edits named
 above. It does not touch P13/P14/P15's existing behavior, does not

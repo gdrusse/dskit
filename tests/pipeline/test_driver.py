@@ -6,6 +6,7 @@ import logging
 import os
 
 import pytest
+import dskit.pipeline.node as node_module
 
 from dskit.pipeline.base import (
     SINK_KINDS,
@@ -1045,6 +1046,60 @@ def _fat_doc(tmp_path, n, consumers=("kept",)):
         pipeline=pipeline,
         outputs=OutputsConfig(run_root=str(tmp_path)),
     )
+
+
+class HpoEvidenceSource(Node):
+    """Emit a realistically sized, explicitly durable 24-trial ledger."""
+
+    role = "data"
+    outputs = ("hpo_ledger",)
+
+    def run(self, ctx, inputs):
+        rows = [
+            {
+                "candidate_id": f"trial-{index:02d}",
+                "overrides": {"num_leaves": index + 2, "learning_rate": 0.01},
+                "score": index / 100.0,
+                "se": 0.01,
+                "diagnostics": {"bootstrap_scores": [index / 100.0] * 200},
+            }
+            for index in range(24)
+        ]
+        payload = {"ledger": {"rows": rows}, "selection": {"trial": 23}}
+        durable = getattr(node_module, "JsonArtifact", lambda value: value)
+        return {"hpo_ledger": durable(payload)}
+
+
+def test_explicit_json_artifact_survives_driver_recording_with_digest_manifest(tmp_path):
+    registry = NodeKindRegistry()
+    registry.register("hpo-evidence-src", HpoEvidenceSource)
+    document = PipelineDocument(
+        name="durable-hpo-evidence",
+        pipeline={"scan_h01": NodeSpec(uses="hpo-evidence-src")},
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+
+    result = run_document(document, asof=ASOF, registry=registry, journal=False)
+
+    manifest = result.outputs["scan_h01"]["hpo_ledger"]
+    assert set(manifest) == {"path", "sha256", "bytes", "media_type"}
+    assert manifest["media_type"] == "application/json"
+    assert manifest["bytes"] > 20_000
+    artifact_path = os.path.join(result.run_dir, manifest["path"])
+    assert os.path.isfile(artifact_path)
+    assert _file_digest(artifact_path) == manifest["sha256"]
+    with open(artifact_path, encoding="utf-8") as handle:
+        assert len(json.load(handle)["ledger"]["rows"]) == 24
+    record = read_json(result.run_dir, "nodes/01-scan_h01.json")
+    assert record["outputs"]["hpo_ledger"] == manifest
+    assert read_json(result.run_dir, "carry.json")["scan_h01"]["hpo_ledger"] == manifest
+
+
+def _file_digest(path):
+    import hashlib
+
+    with open(path, "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
 
 
 class TestSpentRelease:

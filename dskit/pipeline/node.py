@@ -49,6 +49,7 @@ from dskit.pipeline.document import MODES, ROLES
 
 __all__ = [
     "DEFAULT_NODE_KINDS",
+    "JsonArtifact",
     "Node",
     "NodeContext",
     "NodeKindRegistry",
@@ -67,6 +68,18 @@ __all__ = [
 
 _NODE_KEY_OK = r"^[a-z_][a-z0-9_]*$"
 _KIND_OK = r"^[a-z][a-z0-9_-]*$"
+
+
+@dataclass(frozen=True)
+class JsonArtifact:
+    """Opt one JSON value into durable, content-addressed run storage.
+
+    The driver replaces this wrapper with a small manifest after the node
+    succeeds. Ordinary outputs retain their historical recording and carry
+    behavior; persistence is explicit at the producer boundary.
+    """
+
+    value: object
 
 
 # ---------------------------------------------------------------------------
@@ -181,15 +194,9 @@ def atomic_write(path, raw) -> None:
     ``libs/sklearn.py`` (the multi-head bundle writer, ADR-0114 Phase 2)
     both already import from this module, so neither gains a new
     dependency by importing this too. ``driver.py``'s own
-    ``_atomic_write_text`` stays a SEPARATE, deliberately inlined copy —
-    NOT because of an import-graph barrier (``driver.py`` already imports
-    ``Node``/``NodeContext`` from this very module, so it could reach
-    this helper too), but because consolidating it is outside ADR-0114
-    Phase 2's authorized file list, and it serves an unrelated purpose
-    (writing one JSON node record/summary, not a multi-file model bundle
-    with a manifest). Two copies survive for now; a third would not, and
-    a future phase that touches ``driver.py`` for its own reasons should
-    finish the consolidation rather than add a fourth.
+    ``driver._atomic_write_text`` encodes text and delegates here too; the
+    ADR-0115 persistence correction completed that previously deferred
+    consolidation when it added generic JSON artifacts to the driver.
 
     Parameters
     ----------

@@ -452,6 +452,10 @@ on it without breaking its rulings.
   not-yet-run search still holds its objective's ancestors. `_carryable`
   never `json.dumps` those streams. `flags` is kept. Do not re-derive
   the length floor — `_RELEASE_MIN_LEN` is the one name.
+- **Durable JSON is explicit.** Wrap evidence in `node.JsonArtifact`; the
+  driver atomically writes canonical content-addressed bytes and substitutes
+  the small path/digest/size/media-type manifest before release and RECORD.
+  Never raise the carry ceiling or infer persistence from output size.
 - **An occupied run dir refuses** — reruns need a new asof or name.
 - **`runs.py` reads RECORDS, never `report.md`** — a `metrics` dict is
   summarized out of `nodes/NN-*.json` and recovered from `carry.json`;

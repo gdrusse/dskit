@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.kinds_flow import EventGrid
-from dskit.pipeline.node import NodeContext
+from dskit.pipeline.node import JsonArtifact, NodeContext
 
 from intraday_equities.nodes import (
     NODE_KINDS,
@@ -1316,8 +1316,9 @@ def test_no_information_scan_hpo_evidence_builds_a_ledger_and_leaves_the_default
         },
     ).run(None, inputs)
     assert set(evidence) == {"records", "metrics", "hpo_ledger"}
-    ledger = evidence["hpo_ledger"]["ledger"]
-    selection = evidence["hpo_ledger"]["selection"]
+    assert isinstance(evidence["hpo_ledger"], JsonArtifact)
+    ledger = evidence["hpo_ledger"].value["ledger"]
+    selection = evidence["hpo_ledger"].value["selection"]
     assert len(ledger["rows"]) == 4  # every drawn candidate, none dropped
     required = {
         "overrides",

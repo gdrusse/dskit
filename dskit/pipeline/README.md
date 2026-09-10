@@ -8,6 +8,10 @@ hashable document; same hash = same experiment. A run leaves `config.json`,
 per-node records under `nodes/`, and a verdict-first `report.md` in one run
 directory (`{name}-{asof}-{hash8}`; an occupied directory refuses).
 
+Nodes may wrap JSON evidence in `JsonArtifact`. The driver atomically stores
+its canonical bytes under `artifacts/json/<sha256>.json`; the output, node
+record, and carry retain only the path/digest/size/media-type manifest.
+
 ## The 60-second path
 
 ```bash

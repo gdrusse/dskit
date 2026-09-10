@@ -61,13 +61,13 @@ Import cost: stdlib only.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import math
 import os
 import re
 import sys
-import tempfile
 import time
 import traceback
 from collections import ChainMap
@@ -99,7 +99,7 @@ from dskit.pipeline.document import (
     parse_prev_ref,
 )
 from dskit.pipeline.env import load_env
-from dskit.pipeline.node import Node, NodeContext
+from dskit.pipeline.node import JsonArtifact, Node, NodeContext, atomic_write
 from dskit.pipeline.planner import unsearchable_space_why
 from dskit.pipeline.planner import plan as plan_document
 from dskit.pipeline.runs import _escape_pipe
@@ -162,22 +162,8 @@ _log = logging.getLogger("dskit.pipeline.driver")
 
 
 def _atomic_write_text(path, text) -> None:
-    """Write ``text`` to ``path`` atomically, never half-visible.
-
-    Via a same-directory temp file + ``os.replace``, so a reader never
-    sees a half-written artifact. (Inline by necessity: the purity rule
-    bars importing the application's own atomic-write helper here.)
-    """
-    directory = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".tmp-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        if os.path.exists(tmp):
-            os.unlink(tmp)
-        raise
+    """Encode text and delegate atomic placement to the shared owner."""
+    atomic_write(path, text.encode("utf-8"))
 
 
 def _write_json(path, payload) -> None:
@@ -1070,6 +1056,8 @@ def _release_spent(the_plan, run, resolved):
 
 
 def _summarize(value):
+    if _is_json_artifact_manifest(value):
+        return value
     if is_summary(value):
         return value
     if isinstance(value, bool) or value is None:
@@ -1085,6 +1073,21 @@ def _summarize(value):
     if isinstance(value, dict):
         return {"type": "dict", "len": len(value)}
     return {"type": type(value).__name__}
+
+
+def _is_json_artifact_manifest(value):
+    """Recognize the exact small manifest emitted by artifact materialization."""
+    return (
+        isinstance(value, dict)
+        and set(value) == {"path", "sha256", "bytes", "media_type"}
+        and value.get("media_type") == "application/json"
+        and isinstance(value.get("path"), str)
+        and isinstance(value.get("sha256"), str)
+        and len(value["sha256"]) == 64
+        and isinstance(value.get("bytes"), int)
+        and not isinstance(value.get("bytes"), bool)
+        and value["bytes"] >= 0
+    )
 
 
 def _json_text(value):
@@ -1732,6 +1735,40 @@ def _record_success(run, key, attempt, trackers, t0):
         )
 
 
+def _persist_json_artifacts(run_dir, node_key, outputs):
+    """Atomically materialize explicit JSON artifacts and return manifests."""
+    for name, value in tuple(outputs.items()):
+        if not isinstance(value, JsonArtifact):
+            continue
+        raw = (
+            json.dumps(
+                value.value,
+                sort_keys=True,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        ).encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        relative = os.path.join("artifacts", "json", f"{digest}.json")
+        path = os.path.join(run_dir, relative)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path):
+            with open(path, "rb") as handle:
+                if handle.read() != raw:
+                    raise ValueError(
+                        f"content-addressed JSON artifact collision for {node_key}.{name}"
+                    )
+        else:
+            atomic_write(path, raw)
+        outputs[name] = {
+            "path": relative.replace(os.sep, "/"),
+            "sha256": digest,
+            "bytes": len(raw),
+            "media_type": "application/json",
+        }
+
+
 def _apply_verdict(run, key, the_plan, outputs):
     """Halt every DAG descendant of a gate that said NO-GO.
 
@@ -1804,6 +1841,7 @@ def _execute_plan(document, the_plan, ctx, resolved, trackers):
         attempt = _NodeAttempt()
         try:
             _run_one_node(attempt, key, spec, the_plan, ctx, run, resolved.instances)
+            _persist_json_artifacts(ctx.run_dir, key, attempt.outputs)
         except Exception:  # noqa: BLE001 — recorded, then abort
             if attempt.seam is not None:
                 run.search_meta[key] = _search_record(

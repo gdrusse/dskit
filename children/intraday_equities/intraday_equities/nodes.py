@@ -36,6 +36,7 @@ from dskit.pipeline.libs.numpy import (
 )
 from dskit.pipeline.libs.pyomo import PyomoSolve
 from dskit.pipeline.node import (
+    JsonArtifact,
     Node,
     check_int_param,
     register_node_kind,
@@ -5646,8 +5647,8 @@ class NoInformationScan(Node):
             (``n_series``, ``n_go``, ``go_frac``, pooled train/val MSPE
             and IC, plus ``go_<sym>``, ``h_star_<sym>``,
             ``p_value_<sym>``). Also carries ``hpo_ledger`` (ADR-0115) —
-            the complete per-candidate evidence and 1-SE selection, as
-            ``{"ledger": ..., "selection": ...}`` — but ONLY when
+            the complete per-candidate evidence and 1-SE selection wrapped in
+            ``JsonArtifact`` for driver persistence — but ONLY when
             ``hpo_evidence: true`` actually ran one; every other caller's
             return dict has exactly the two keys above, unchanged.
         """
@@ -6017,7 +6018,7 @@ class NoInformationScan(Node):
             # for any existing caller, which never sets hpo_evidence at
             # all, so its return dict is byte-for-byte the historical
             # two-key shape.
-            outputs["hpo_ledger"] = hpo_ledger_obj
+            outputs["hpo_ledger"] = JsonArtifact(hpo_ledger_obj)
         return outputs
 
 
