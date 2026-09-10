@@ -6858,3 +6858,252 @@ as the same release.
 **Scope.** Synthetic contract tests and validate/plan refusal only. No market
 data, HPO/refit execution, pre-March read, `path.csv` edit, or model-policy
 change is authorized.
+
+---
+
+## ADR-0117 — The versioned event/metric contract: a catalogue, an adapter seam, and safe aggregates (Gate 6 / ADR-0114 Phase 6)
+
+**Status:** proposed (2026-09-10). Extends ADR-0114's "Phase 6 — shared event
+and metric contract" section; it does not modify, reinterpret, or reopen
+ADR-0113, ADR-0114, ADR-0115 or ADR-0116. **Additive only:** every existing
+caller of `metrics.py`, `monitors.py` and `vocab.py` keeps its exact current
+behaviour, with the one deliberate correction named under "Behaviour change"
+below. Nothing here is read, planned, or executed against real market data.
+
+**Base.** Written on the Gate 1/2 lane
+(`claude/phase1-recovery-seven-gates-ao4zdj`), which is where ADR-0113 through
+ADR-0116 live; `main` still tops out at ADR-0112. This entry is appended after
+ADR-0116, the highest existing number.
+
+### Inventory — what already exists (read, not guessed)
+
+Read this session: `dskit/production/README.md`, `CLAUDE.md`, `metrics.py`
+(877 lines), `monitors.py` (4,215 lines), `vocab.py` (663 lines),
+`tests/production/test_purity.py`, `test_monitors.py`,
+`children/intraday_equities/{README,CLAUDE,AGENTS}.md` and
+`intraday_equities/__init__.py`.
+
+- **`metrics.py` already owns:** `Metrics` (declare/record/snapshot/flush),
+  the three handle classes `Counter`/`Gauge`/`Histogram` (`inc`/`set`/
+  `observe`), `Reading` + `readings()`, `series_key`/`series_labels`, the
+  `MetricSink` exporter ABC and `METRIC_SINK_KINDS`, the reserved-value drop
+  rule, `DEFAULT_LABELS_MAX_CARDINALITY`, and the refusal of `Decimal` and
+  non-finite values. It declares **no metric of its own beyond its two
+  self-counters** — every name comes from `vocab.METRIC_LABEL_VALUES`.
+- **`vocab.METRIC_LABEL_VALUES` holds thirteen names:** `ticks_total`,
+  `tick_seconds`, `decisions_total`, `proposals_total`, `submits_total`,
+  `refusals_total`, `alert_sink_failures_total`, `metric_sink_failures_total`,
+  `alerts_suppressed_total`, `monitor_verdicts_total`, `recon_breaks_total`,
+  `ledger_append_seconds`, `metrics_label_cardinality_dropped_total`.
+- **`monitors.py` already owns eighteen registered kinds** in four families:
+  operational (`staleness`, `decision_rate`, `coverage`, `latency`,
+  `refusals`), stream/drift (`page_hinkley`, `tracking_signal`, `ddm`,
+  `adwin`, `psi`, `ks`, `jensen_shannon`, `linf`), outcome (`calibration`,
+  `brier`, `skill`, `prediction_bias`) and parity (`parity`), plus the
+  `Reference`/`Chunker`/`Threshold` strategy registries and the
+  `check_scoring`/`mean_score`/`dm_test`/`expected_calibration_error`
+  reducers. `OperationalMonitor`'s hooks are `_FIELDS`, `_value`, `_reduce`.
+- **There is no event schema anywhere in the package.** `ledger.SCHEMA_VERSION`
+  versions the ledger ENVELOPE (`prev_hash`, `recorded_at_ms`, …), not the
+  BODY a decision records; a search for `event_version`/`EVENT_` over
+  `dskit/production/` returns nothing.
+- **There is no event-field adapter seam.** The plan's phrase "equity
+  event-field adapters" has no generic counterpart to subclass today.
+
+Two facts from the inventory constrain everything below, and are stated
+because they decide what may become a metric at all:
+
+1. **Money can never be a metric.** `metrics._check_value` refuses `Decimal`
+   by design ("a `Decimal` in a counter is money that took a wrong turn"), and
+   `vocab.MONEY_FIELDS` makes every catalogue money field a `Decimal` at the
+   ledger boundary. So the catalogue's portfolio/capital amounts — starting
+   cash, settled external flow, cash, buying power, exposure, PnL, fees, NAV,
+   peak — are **event/ledger/report fields and never metric series.** This is
+   not a deferral; it is the existing money rule.
+2. **Symbol and lead can never be a metric label.** ADR-0114 Phase 6 and plan
+   §6 both say so, and `_declared_labels` has no rule that enforces it today.
+
+### Gaps this ADR closes
+
+- The versioned event schema itself does not exist (the whole of Phase 6's
+  first sentence).
+- `monitor_verdicts_total`'s `monitor` label declares only **nine** of the
+  eighteen registered monitor kinds, so `ddm`, `adwin`, `jensen_shannon`,
+  `linf`, `calibration`, `brier`, `skill`, `prediction_bias` and `parity`
+  verdicts currently export as the reserved value `other` and silently
+  increment `metrics_label_cardinality_dropped_total`. Pre-existing; found by
+  diffing `MONITOR_KINDS.kinds()` against the table.
+- Catalogue readings named by plan §6 that have no metric name and no
+  reducer: replay-versus-paper divergence by divergence class, retries,
+  dead-man heartbeat age, data stale age, feature completeness, reference
+  completeness, label/outcome coverage, fill rate, turnover, holding time,
+  decision-to-submit and decision-to-fill latency, MIO solve latency, and the
+  four MIO utilisation ratios.
+- The catalogue's data category has no reducer: `Coverage` measures ABSTAINING
+  LEGS, not input completeness, so "expected/received/missing/late" has no
+  monitor.
+
+### Decision
+
+**A. `dskit/production/vocab.py` (data only — the module holds no code).**
+
+- `EVENT_SCHEMA_VERSION = 1` — the version every emitted event body stamps.
+- `EVENT_CATEGORIES` — the eight of plan §6, in the plan's own order:
+  `("identity", "data", "model", "gates", "mio", "execution", "portfolio",
+  "operations")`.
+- `EVENT_FIELDS` — `{category: (field, …)}`, one snake_case token per item the
+  plan's §6 list names, verbatim and complete: nothing added, nothing removed,
+  nothing merged. `symbol` and `lead` are `identity` fields, as the plan puts
+  them.
+- `UNBOUNDED_LABEL_FIELDS = ("symbol", "lead")` — the field names that may
+  never become a closed telemetry label.
+- `UTILIZATION_RESOURCES = ("cash", "gross", "cardinality", "position")` — the
+  four the plan's MIO line names, so one bounded label carries all four.
+- `EVENT_READINGS` — `{metric name: (category, field)}`, the binding from a
+  catalogue field to the ONE safe aggregate derived from it. Every metric in
+  it is dimensionless or a duration; no money field appears.
+- New `METRIC_LABEL_VALUES` entries, every label value set reusing an existing
+  vocabulary: `divergences_total{class: DIVERGENCE_CLASSES}`, `retries_total`,
+  `heartbeat_age_seconds`, `stale_age_seconds`, `feature_completeness`,
+  `reference_completeness`, `label_coverage`, `fill_rate`, `turnover`,
+  `holding_seconds`, `decision_to_submit_seconds`,
+  `decision_to_fill_seconds`, `solve_seconds`, and
+  `utilization{resource: UTILIZATION_RESOURCES}`. Widest new metric: 7 series.
+- `monitor_verdicts_total`'s `monitor` values become all registered kind
+  names. Cardinality 20 × 5 = 100, well under
+  `DEFAULT_LABELS_MAX_CARDINALITY`.
+
+**B. `dskit/production/metrics.py`.**
+
+- `_Metric.record(value, **labels)` — one `@abstractmethod` on the private
+  handle base, implemented by `Counter.record` (delegates to `inc`),
+  `Gauge.record` (to `set`) and `Histogram.record` (to `observe`). It is the
+  polymorphic hook that lets a table-driven reducer write to any family
+  without asking which family it holds. `inc`/`set`/`observe` are untouched.
+- `class EventCatalogue` — the versioned schema as one value object.
+  `EventCatalogue()` (no params). Public surface: `version` (property, int),
+  `categories` (property, tuple), `fields(category)` → tuple,
+  `label_safe(field)` → bool, `validate(body)` → list of problems
+  (default-deny: an unknown category or an unknown field name is a problem; a
+  missing category or field is not, because no single event carries the whole
+  catalogue), and `stamp(fields)` → the event body with `schema_version` set.
+  It reads `vocab` and declares nothing of its own.
+- `class EventAdapter(ABC)` — the seam plan §5 calls "event-field adapters".
+  `cls(params=None)` with default-deny over `_PARAMS + ("notes",)` through the
+  shared `reject_unknown_params`, exactly as `MetricSink` does. One
+  `@abstractmethod`, `fields(record)` → `{category: {field: value}}`; one
+  concrete method, `event(record)`, which calls `fields`, validates the result
+  through its `EventCatalogue` and returns the stamped body — so replay and
+  paper production emit the SAME body by construction, from one adapter behind
+  two feeds. **No registry is created:** no document key selects an event
+  adapter, and `dskit/production/CLAUDE.md` is explicit that a registry no
+  document selects is a §4.3 family that should not exist.
+- `class EventReadings` — the generic reducer. `EventReadings(metrics,
+  catalogue=None)` declares exactly the `EVENT_READINGS` metrics on the given
+  `Metrics` registry at construction; `record(event)` walks the bindings and,
+  for each catalogue field the event carries, calls `handle.record`. A metric
+  with a declared label reads its field as `{label value: number}`; one
+  without reads a bare number. It records and nothing else: no threshold, no
+  verdict, no alert.
+- `__all__` gains `EventAdapter`, `EventCatalogue`, `EventReadings`.
+- `_declared_labels` gains one refusal: a label name in
+  `vocab.UNBOUNDED_LABEL_FIELDS` refuses at declaration.
+
+**C. `dskit/production/monitors.py`.**
+
+- `class Completeness(OperationalMonitor)`, registered as `"completeness"` —
+  `_FIELDS = ("expected_inputs", "received_inputs")`, `_value` the received
+  fraction (`None` when either is null or `expected_inputs` is zero, so a
+  quiet tick is skipped rather than scored 0/0), `_reduce` the window's
+  minimum — the safety question, the same shape `Staleness` uses with `max`.
+  It carries no new knob: the window, threshold, response and `min_n` are the
+  document's, exactly as for every other monitor. **This ADR sets no
+  threshold**; a threshold is a document value and §11 item 7 governs the
+  performance-monitor ones.
+- `__all__` gains `Completeness`; `MONITOR_KINDS` goes from eighteen kinds to
+  nineteen.
+
+**D. `children/intraday_equities/intraday_equities/metrics.py` (new, tier 3).**
+
+- `class EquityEventAdapter(EventAdapter)` — the child's only mapping from its
+  own §6 record bodies to catalogue fields. It supplies `symbol` and `lead`
+  into the `identity` category (where full per-name detail belongs), maps the
+  child's bar counts onto the generic `expected_inputs`/`received_inputs`/
+  `missing_inputs`/`late_inputs` data fields, and carries the domain digests.
+  It owns no schema, no validation and no hashing — `EventAdapter.event` does
+  all three.
+- `class SignalDecay` — the domain metric plan §6 names by example, "signal
+  decay over realized latency" / "signal decay by lead": given per-lead
+  realised scores it returns the decay profile keyed by lead. Per-lead detail
+  is returned as DATA for the ledger/report artifacts; it is never handed to a
+  metric label.
+- Registered in `intraday_equities/__init__.py` per the import-is-registration
+  rule; child README/CLAUDE/AGENTS trees updated.
+
+**E. Tests (new files named here per plan §10's requirement).**
+
+`tests/production/test_metrics.py` and `tests/production/test_monitors.py`
+extended in place; `children/intraday_equities/tests/test_metrics.py` is
+**new**.
+
+### Implemented now versus explicitly deferred
+
+**Implemented now — the value is recorded:** the whole §6 catalogue as
+`EVENT_FIELDS`, stamped and validated on every emitted body by
+`EventAdapter.event`, at full per-symbol/per-lead fidelity, destined for
+ledger and report artifacts. Plus the safe aggregates above as exportable
+metric series, and one new completeness reducer.
+
+**Explicitly deferred — named, not built:**
+
+- **§11 item 7 (WARN/HOLD thresholds, minimum counts, windows, the
+  warn-versus-hold boundary).** Nothing here compares a recorded value to a
+  bound. `Completeness` inherits the document-supplied threshold every monitor
+  has; this ADR proposes no numeric value for one anywhere.
+- **§11 item 10 (reporting/alerting beyond the catalogue).** No alert rule, no
+  report section, no `alerts.py` or `report.py` change.
+- **Emission wiring.** `loop.py`, `leg.py`, `executor.py`, `ledger.py` and
+  `report.py` are the modules that would CALL `EventAdapter.event` and
+  `EventReadings.record` on a real tick. They are outside Gate 6's file
+  ownership (ADR-0114 assigns disjoint files per gate) and outside this
+  session's scope; the seam is built and tested here, the call sites land with
+  Phase 5's replay work. This ADR claims a contract, not an end-to-end run.
+- **Money as telemetry.** Never, per the existing `Decimal` rule; the
+  portfolio/capital amounts live in the event body and the report.
+- **MIO solver internals** beyond `solve_seconds` and the four utilisation
+  ratios: `dskit.production` owns no solver, and `EquityKellyMIO`'s own
+  evidence is already ADR-0111's.
+
+### Behaviour change (the one, stated plainly)
+
+Widening `monitor_verdicts_total`'s `monitor` label from nine names to every
+registered kind means the drift/outcome/parity monitors' verdicts stop landing
+on the reserved value `other` and stop incrementing
+`metrics_label_cardinality_dropped_total`. That is a correction of a
+mis-declared table, and it is the only observable difference to an existing
+caller. Adding `Completeness` moves `MONITOR_KINDS.kinds()` from eighteen
+members to nineteen, which the existing pinning test in
+`tests/production/test_monitors.py` asserts by count; that test is updated to
+nineteen. No existing monitor, metric, handle or sink changes shape.
+
+### Scope
+
+Files: `docs/architecture/decision-log.md`,
+`dskit/production/{vocab.py,metrics.py,monitors.py,README.md,CLAUDE.md,AGENTS.md}`,
+`tests/production/{test_metrics.py,test_monitors.py}`,
+`children/intraday_equities/intraday_equities/{metrics.py,__init__.py}`,
+`children/intraday_equities/tests/test_metrics.py`, and the child's
+`README.md`/`CLAUDE.md`/`AGENTS.md` trees. No config document is added or
+modified. No market-data read, HPO, refit, replay execution, threshold, alert
+rule or real-money configuration is authorised. `docs/decisioning/path.csv` is
+not touched.
+
+### Consequences
+
+Replay and paper production have one versioned body to emit and one adapter
+seam to emit it through, so "the same versioned event bodies into the same
+ledger contract" (plan §3) becomes checkable rather than aspirational. Every
+catalogue value is recorded from the moment an adapter exists, with no
+threshold anywhere, so §11 item 7 can be ruled later without re-opening this
+contract. `EVENT_SCHEMA_VERSION` is the handle a future field addition turns:
+a field added to `EVENT_FIELDS` is a schema change and must move the version.

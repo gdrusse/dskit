@@ -53,6 +53,9 @@ from dskit.production.metrics import (
     METRIC_SINK_KINDS,
     METRICS_FILENAME,
     RESERVED_LABEL_VALUE,
+    EventAdapter,
+    EventCatalogue,
+    EventReadings,
     MetricSink,
     Metrics,
     readings,
@@ -187,7 +190,11 @@ def test_a_name_is_declarable_as_exactly_the_kind_its_suffix_promises(name):
 
 @pytest.mark.parametrize("name", OBSERVED_NAMES)
 def test_every_non_counter_name_carries_a_base_unit(name):
-    assert name.endswith("_seconds") or name.endswith("_bytes"), name
+    # `_ratio` is the third base unit and the dimensionless one: §5.11.1's
+    # own `WRONG_UNIT_SUFFIXES` rules out `_percent` and `_pct`, which is
+    # the same statement — a fraction of one is the base, a percentage is a
+    # scaled restatement of it (ADR-0117).
+    assert name.endswith(("_seconds", "_bytes", "_ratio")), name
 
 
 @pytest.mark.parametrize("name", vocab.METRIC_NAMES)
@@ -872,3 +879,214 @@ class TestReadings:
         counter.inc(status="decided")
         names = [(r.name, series_key(r.labels)) for r in readings(registry.snapshot())]
         assert names == sorted(names)
+
+
+# ---------------------------------------------------------------------------
+# ADR-0117 — the versioned event catalogue, its adapter seam, its reducer
+# ---------------------------------------------------------------------------
+
+
+class TestRecordIsTheOneHookEveryFamilyAnswers:
+    """A table-driven reducer writes to whatever family the table names, so
+    the three handles answer ONE verb; `inc`/`set`/`observe` stay the verbs a
+    caller who already knows the family reaches for."""
+
+    def test_the_hook_is_abstract_on_the_private_base(self):
+        assert "record" in metrics_module._Metric.__abstractmethods__
+
+    def test_a_counter_records_by_incrementing(self):
+        registry = Metrics()
+        counter = registry.counter("ticks_total", labels=("status",))
+        counter.record(2, status="decided")
+        counter.record(1, status="decided")
+        assert registry.snapshot()["ticks_total"] == {"status=decided": 3}
+
+    def test_a_gauge_records_by_setting(self):
+        registry = Metrics()
+        gauge = registry.gauge("ledger_append_seconds")
+        gauge.record(0.5)
+        gauge.record(0.25)
+        assert registry.snapshot()["ledger_append_seconds"] == {"": 0.25}
+
+    def test_a_histogram_records_by_observing(self):
+        registry = Metrics()
+        histogram = registry.histogram("ledger_append_seconds", buckets=(1.0,))
+        histogram.record(0.5)
+        assert registry.snapshot()["ledger_append_seconds"][""]["count"] == 1
+
+
+class TestSymbolAndLeadCanNeverBeALabel:
+    """Plan §6: full per-name detail belongs in ledger and report artifacts.
+    The refusal is at DECLARATION, where nothing is at stake, not on the hot
+    path where telemetry must never kill a tick."""
+
+    def test_an_unbounded_field_refuses_as_a_label_name(self, monkeypatch):
+        monkeypatch.setitem(
+            vocab.METRIC_LABEL_VALUES, "ticks_total", {"symbol": ("aaa", "bbb")}
+        )
+        with pytest.raises(ProductionError) as caught:
+            Metrics().counter("ticks_total", labels=("symbol",))
+        assert "symbol" in str(caught.value)
+
+    def test_no_shipped_metric_declares_one(self):
+        for name, labels in vocab.METRIC_LABEL_VALUES.items():
+            assert not set(labels) & set(vocab.UNBOUNDED_LABEL_FIELDS), name
+
+
+def _full_event():
+    """One event carrying every bound catalogue field, in the shape its
+    metric declares: a mapping per label value where the metric is labelled,
+    a bare number where it is not."""
+    body = {"schema_version": vocab.EVENT_SCHEMA_VERSION}
+    for name, (category, field, _family) in vocab.EVENT_READINGS.items():
+        values = vocab.METRIC_LABEL_VALUES[name]
+        if values:
+            label = next(iter(values))
+            value = {values[label][0]: 1}
+        else:
+            value = 1.0
+        body.setdefault(category, {})[field] = value
+    return body
+
+
+class TestTheEventCatalogueIsTheVersionedSchema:
+    """One body shape, stamped with the version that says what it is, so a
+    replay body and a paper body are the same body or neither is."""
+
+    def test_it_reports_the_version_and_the_categories_the_vocabulary_closes(self):
+        catalogue = EventCatalogue()
+        assert catalogue.version == vocab.EVENT_SCHEMA_VERSION
+        assert catalogue.categories == vocab.EVENT_CATEGORIES
+
+    def test_it_reports_a_categorys_fields_and_refuses_a_category_it_has_none_for(self):
+        catalogue = EventCatalogue()
+        assert catalogue.fields("data") == vocab.EVENT_FIELDS["data"]
+        with pytest.raises(ProductionError):
+            catalogue.fields("weather")
+
+    def test_a_body_carrying_a_subset_of_the_catalogue_is_valid(self):
+        """No single event carries the whole catalogue — a tick that reached
+        no solver has no `mio` reading — so absence is never a problem."""
+        assert EventCatalogue().validate({"data": {"stale_age": 3.0}}) == []
+
+    def test_an_unknown_category_or_field_is_a_problem_not_a_silent_default(self):
+        catalogue = EventCatalogue()
+        assert catalogue.validate({"weather": {}})
+        assert catalogue.validate({"data": {"sunshine": 1}})
+
+    def test_a_body_that_is_not_a_mapping_of_mappings_is_a_problem(self):
+        catalogue = EventCatalogue()
+        assert catalogue.validate("data")
+        assert catalogue.validate({"data": ("stale_age",)})
+
+    def test_stamping_writes_the_version_and_leaves_the_fields_alone(self):
+        catalogue = EventCatalogue()
+        body = catalogue.stamp({"data": {"stale_age": 3.0}})
+        assert body["schema_version"] == vocab.EVENT_SCHEMA_VERSION
+        assert body["data"] == {"stale_age": 3.0}
+
+    def test_symbol_and_lead_are_catalogue_fields_but_never_label_safe(self):
+        catalogue = EventCatalogue()
+        assert catalogue.label_safe("release_digest")
+        for field in vocab.UNBOUNDED_LABEL_FIELDS:
+            assert field in catalogue.fields("identity")
+            assert not catalogue.label_safe(field)
+
+
+class _Adapter(EventAdapter):
+    """A test adapter: whatever the record says, under the catalogue's names."""
+
+    _PARAMS = ("category",)
+
+    def _configure(self, params):
+        self._category = params.get("category", "data")
+
+    def fields(self, record):
+        return {self._category: dict(record)}
+
+
+class TestTheEventAdapterIsTheOneSeamAChildSupplies:
+    """Replay and paper production differ in feed, clock and executor and in
+    nothing else, so ONE adapter behind both is what makes their bodies the
+    same body by construction rather than by review."""
+
+    def test_the_field_hook_is_the_only_thing_a_subclass_must_supply(self):
+        assert EventAdapter.__abstractmethods__ == frozenset({"fields"})
+        with pytest.raises(TypeError):
+            EventAdapter({})
+
+    def test_params_are_default_deny_with_notes_allowed_everywhere(self):
+        assert _Adapter({"category": "data", "notes": "why"}) is not None
+        with pytest.raises(ProductionError):
+            _Adapter({"catgory": "data"})
+
+    def test_the_event_it_builds_is_stamped_and_validated(self):
+        event = _Adapter({}).event({"stale_age": 4.0})
+        assert event == {
+            "schema_version": vocab.EVENT_SCHEMA_VERSION,
+            "data": {"stale_age": 4.0},
+        }
+
+    def test_a_field_outside_the_catalogue_refuses_at_the_seam(self):
+        with pytest.raises(ProductionError) as caught:
+            _Adapter({}).event({"sunshine": 1})
+        assert "sunshine" in str(caught.value)
+
+    def test_two_feeds_that_see_the_same_record_emit_the_same_body(self):
+        replay, paper = _Adapter({}), _Adapter({})
+        assert replay.event({"stale_age": 1.0}) == paper.event({"stale_age": 1.0})
+
+
+class TestEventReadingsRecordsTheSafeAggregatesAndNothingElse:
+    """Plan §6 records every value before any threshold is ruled (§11 item 7),
+    and exporters see only what is bounded."""
+
+    def test_construction_declares_exactly_the_bound_metrics(self):
+        registry = Metrics()
+        EventReadings(registry)
+        assert set(registry.snapshot()) >= set(vocab.EVENT_READINGS)
+
+    def test_each_family_is_declared_as_the_binding_says(self):
+        """`readings()` decides a family the way an exporter sees it, so a
+        binding declared under the wrong family shows up as the wrong family
+        here rather than as a mislabelled series in someone's dashboard."""
+        registry = Metrics()
+        EventReadings(registry).record(_full_event())
+        families = {reading.name: reading.family for reading in readings(registry.snapshot())}
+        for name, (_category, _field, family) in vocab.EVENT_READINGS.items():
+            assert families[name] == family, name
+
+    def test_an_unlabelled_reading_takes_a_bare_number(self):
+        registry = Metrics()
+        EventReadings(registry).record(
+            {"schema_version": 1, "data": {"stale_age": 12.0}}
+        )
+        assert registry.snapshot()["stale_age_seconds"] == {"": 12.0}
+
+    def test_a_labelled_reading_takes_a_count_per_label_value(self):
+        registry = Metrics()
+        EventReadings(registry).record(
+            {"schema_version": 1, "operations": {"divergences": {"data": 2, "guard": 1}}}
+        )
+        assert registry.snapshot()["divergences_total"] == {
+            "class=data": 2,
+            "class=guard": 1,
+        }
+
+    def test_a_field_the_event_does_not_carry_records_nothing(self):
+        registry = Metrics()
+        EventReadings(registry).record({"schema_version": 1})
+        assert registry.snapshot()["stale_age_seconds"] == {"": 0.0}
+
+    def test_an_undeclared_label_value_drops_rather_than_killing_the_tick(self):
+        registry = Metrics()
+        EventReadings(registry).record(
+            {"schema_version": 1, "operations": {"divergences": {"weather": 1}}}
+        )
+        assert registry.snapshot()["divergences_total"] == {"class=other": 1}
+
+    def test_it_reaches_no_threshold_and_reads_no_bound(self):
+        """§11 item 7 is open: recording is all this does. A verdict, a
+        response or a severity here would be the threshold nobody ruled."""
+        for forbidden in ("threshold", "verdict", "response", "severity", "alert"):
+            assert not hasattr(EventReadings(Metrics()), forbidden)

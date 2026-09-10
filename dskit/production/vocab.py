@@ -47,6 +47,10 @@ __all__ = [
     "DIVERGENCE_CLASSES",
     "ECONOMIC_ATTRS",
     "ESCALATION_LEVELS",
+    "EVENT_CATEGORIES",
+    "EVENT_FIELDS",
+    "EVENT_READINGS",
+    "EVENT_SCHEMA_VERSION",
     "EXIT_CODES",
     "FEED_STATUSES",
     "FEE_KIND_NAMES",
@@ -110,6 +114,7 @@ __all__ = [
     "TIFS",
     "TRANSITION_CAUSES",
     "TRIP_REASONS",
+    "UNBOUNDED_LABEL_FIELDS",
     "UNWAIVABLE_ITEMS",
     "VERDICTS",
     "VERDICT_ORDER",
@@ -623,6 +628,192 @@ ESCALATION_LEVELS = ("primary", "secondary", "final")
 #: export do not each carry their own list of them.
 METRIC_FAMILIES = ("counter", "gauge", "histogram")
 
+# ---------------------------------------------------------------------------
+# The versioned event catalogue (ADR-0117; ADR-0114 "Phase 6")
+# ---------------------------------------------------------------------------
+
+#: What a body stamped against :data:`EVENT_FIELDS` claims to be. A field
+#: added to, removed from or renamed in the catalogue is a schema change and
+#: moves this number — a reader that cannot tell two shapes apart is a reader
+#: that mis-parses the older one in silence.
+EVENT_SCHEMA_VERSION = 1
+
+#: The eight categories one decision event is cut into, in catalogue order.
+EVENT_CATEGORIES = (
+    "identity",
+    "data",
+    "model",
+    "gates",
+    "mio",
+    "execution",
+    "portfolio",
+    "operations",
+)
+
+#: The catalogue: ``{category: (field, …)}``. One token per named reading,
+#: nothing merged and nothing invented — where the catalogue names a value
+#: with a domain noun (``bars``) the token is the domain-neutral one an
+#: adapter maps onto (``inputs``), because tier 1 holds no domain word.
+#: Money-named members (``cash``, ``nav``, ``fees``, ``…_pnl``) are
+#: ``Decimal`` at the ledger boundary by :data:`MONEY_FIELDS` and are
+#: therefore event and report values only: ``metrics.py`` refuses a
+#: ``Decimal``, so no money field is ever a metric series.
+EVENT_FIELDS = {
+    "identity": (
+        "release_digest",
+        "model_bundle_digest",
+        "feature_schema_digest",
+        "cap_digest",
+        "calibration_digest",
+        "scenario_digest",
+        "cost_policy_digest",
+        "capital_policy_digest",
+        "event_time",
+        "known_at_time",
+        "source_asof",
+        "lead",
+        "symbol",
+        "deployment_eligible",
+    ),
+    "data": (
+        "expected_inputs",
+        "received_inputs",
+        "missing_inputs",
+        "late_inputs",
+        "feature_completeness",
+        "reference_completeness",
+        "stale_age",
+        "label_coverage",
+        "outcome_coverage",
+        "corporate_action_gaps",
+    ),
+    "model": (
+        "count",
+        "baseline_sse",
+        "model_sse",
+        "r2_oos",
+        "ic",
+        "calibration_slope",
+        "prediction_bias",
+        "prediction_dispersion",
+        "residual_dispersion",
+        "weakest_slice",
+        "drift_statistic",
+        "refit_age",
+    ),
+    "gates": (
+        "candidate_count",
+        "survivor_count",
+        "cap",
+        "refusal_reasons",
+        "adjusted_p_value",
+        "evidence_count",
+        "hold_state",
+        "override_state",
+    ),
+    "mio": (
+        "bundle_age",
+        "scenario_count",
+        "effective_weight",
+        "eligible_names",
+        "routed_names",
+        "sized_names",
+        "build_latency",
+        "solve_latency",
+        "solver_status",
+        "objective",
+        "expected_return",
+        "cvar",
+        "hfdr_usage",
+        "cash_utilization",
+        "gross_utilization",
+        "cardinality_utilization",
+        "position_utilization",
+        "binding_constraints",
+        "unfunded_candidates",
+    ),
+    "execution": (
+        "proposals",
+        "orders",
+        "acknowledgements",
+        "fills",
+        "partials",
+        "rejections",
+        "cancels",
+        "decision_to_submit_latency",
+        "decision_to_fill_latency",
+        "arrival_to_fill_slippage",
+        "spread",
+        "fees",
+        "implementation_shortfall",
+        "fill_rate",
+        "turnover",
+        "holding_time",
+        "forced_exits",
+        "signal_decay",
+    ),
+    "portfolio": (
+        "starting_cash",
+        "settled_external_flow",
+        "cash",
+        "buying_power",
+        "gross_exposure",
+        "net_exposure",
+        "concentration",
+        "realized_pnl",
+        "unrealized_pnl",
+        "net_pnl",
+        "fees",
+        "nav",
+        "twr",
+        "mwr",
+        "peak",
+        "drawdown",
+        "risk_cap_utilization",
+    ),
+    "operations": (
+        "ticks",
+        "phase_latency",
+        "refusals",
+        "retries",
+        "exporter_failures",
+        "reconciliation_breaks",
+        "breaker_state",
+        "health",
+        "heartbeat_age",
+        "divergences",
+    ),
+}
+
+#: The catalogue fields whose value set no vocabulary bounds: a universe is
+#: as wide as the document names it and a lead as wide as the horizon. They
+#: are recorded at full fidelity in the event body and in the ledger and
+#: report artifacts built from it, and ``metrics.py`` refuses either as a
+#: metric label NAME, so no exporter can be handed an unbounded series.
+UNBOUNDED_LABEL_FIELDS = ("symbol", "lead")
+
+#: The safe aggregates: ``{metric name: (category, field, family)}``. Each
+#: entry binds ONE catalogue field to ONE declared metric, so a reading has
+#: a single owner on both sides. An entry whose metric declares a label
+#: reads its field as ``{label value: number}``; one whose metric declares
+#: none reads a bare number. Recording is all these do — no bound is
+#: compared and no verdict is reached here (plan §11 items 7 and 10).
+EVENT_READINGS = {
+    "stale_age_seconds": ("data", "stale_age", "gauge"),
+    "feature_completeness_ratio": ("data", "feature_completeness", "gauge"),
+    "reference_completeness_ratio": ("data", "reference_completeness", "gauge"),
+    "label_coverage_ratio": ("data", "label_coverage", "gauge"),
+    "fill_ratio": ("execution", "fill_rate", "gauge"),
+    "turnover_ratio": ("execution", "turnover", "gauge"),
+    "holding_seconds": ("execution", "holding_time", "histogram"),
+    "decision_to_submit_seconds": ("execution", "decision_to_submit_latency", "histogram"),
+    "decision_to_fill_seconds": ("execution", "decision_to_fill_latency", "histogram"),
+    "solve_seconds": ("mio", "solve_latency", "histogram"),
+    "heartbeat_age_seconds": ("operations", "heartbeat_age", "gauge"),
+    "retries_total": ("operations", "retries", "counter"),
+    "divergences_total": ("operations", "divergences", "counter"),
+}
+
 METRIC_LABEL_VALUES = {
     "ticks_total": {"status": TICK_STATUSES},
     "tick_seconds": {"phase": TICK_PHASES},
@@ -639,23 +830,54 @@ METRIC_LABEL_VALUES = {
     # path falls to the reserved value by the normal cardinality rule.
     "metric_sink_failures_total": {"sink": ("prometheus", "opentelemetry")},
     "alerts_suppressed_total": {"why": ALERT_SUPPRESSIONS},
+    # Every kind ``MONITOR_KINDS`` registers, not just the phase-1 nine: a
+    # kind missing here exports its verdicts under the reserved label value
+    # and increments the drop counter, which reads as telemetry noise rather
+    # than as the mis-declaration it is (ADR-0117).
     "monitor_verdicts_total": {
         "monitor": (
             "staleness",
             "decision_rate",
             "coverage",
+            "completeness",
             "latency",
             "refusals",
             "page_hinkley",
             "tracking_signal",
+            "ddm",
+            "adwin",
             "psi",
             "ks",
+            "jensen_shannon",
+            "linf",
+            "calibration",
+            "brier",
+            "skill",
+            "prediction_bias",
+            "parity",
         ),
         "status": MONITOR_STATUSES,
     },
     "recon_breaks_total": {"class": BREAK_CLASSES},
     "ledger_append_seconds": {},
     "metrics_label_cardinality_dropped_total": {},
+    # ADR-0117's safe aggregates: the catalogue readings of
+    # ``EVENT_READINGS``, each bounded or unlabelled. The full per-symbol,
+    # per-lead detail stays in the event body and the artifacts built from
+    # it; an exporter sees only what is bounded here.
+    "stale_age_seconds": {},
+    "feature_completeness_ratio": {},
+    "reference_completeness_ratio": {},
+    "label_coverage_ratio": {},
+    "fill_ratio": {},
+    "turnover_ratio": {},
+    "holding_seconds": {},
+    "decision_to_submit_seconds": {},
+    "decision_to_fill_seconds": {},
+    "solve_seconds": {},
+    "heartbeat_age_seconds": {},
+    "retries_total": {},
+    "divergences_total": {"class": DIVERGENCE_CLASSES},
 }
 
 #: The declared metric names — the keys of the table above, once.

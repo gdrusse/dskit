@@ -47,6 +47,9 @@ __all__ = [
     "Counter",
     "DEFAULT_BUCKETS",
     "DEFAULT_LABELS_MAX_CARDINALITY",
+    "EventAdapter",
+    "EventCatalogue",
+    "EventReadings",
     "Gauge",
     "Histogram",
     "INF_BUCKET",
@@ -260,6 +263,11 @@ def _declared_labels(problems, handle_cls, name, labels, max_cardinality):
         return ()
     for label in sorted(set(wanted) - set(declared)):
         problems.append(f"{name}: label {label!r} is not declared for this metric")
+    for label in sorted(set(wanted) & set(vocab.UNBOUNDED_LABEL_FIELDS)):
+        problems.append(
+            f"{name}: {label!r} names an unbounded field and may never be a metric "
+            "label — its full detail belongs in the ledger and report artifacts"
+        )
     if len(set(wanted)) != len(wanted):
         problems.append(f"{name}: duplicate label names in {wanted!r}")
     if set(wanted) != set(declared):
@@ -336,6 +344,29 @@ class _Metric(ABC):
     def _zero(self):
         """Return a fresh series value."""
 
+    @abstractmethod
+    def record(self, value, **labels):
+        """Take one reading, however this family takes one.
+
+        The three families record differently — a counter adds, a gauge
+        replaces, a histogram bins — so a caller that already knows which
+        it holds says ``inc``, ``set`` or ``observe``. A caller driven by
+        a TABLE (``vocab.EVENT_READINGS``) does not, and this is the verb
+        it says instead of asking.
+
+        Parameters
+        ----------
+        value : int or float
+            The reading, in the metric's base unit.
+        **labels
+            One value per declared label name.
+
+        Returns
+        -------
+        None
+            The reading was taken by this family's own rule.
+        """
+
     def _shape(self):
         """Return what a redeclaration must match exactly."""
         return (type(self), self._labels, self._buckets)
@@ -406,6 +437,23 @@ class Counter(_Metric):
             raise ProductionError([f"{self._name}: a counter never decreases, got {n!r}"])
         self._series[self._series_for(labels)] += n
 
+    def record(self, value, **labels):
+        """Add ``value`` — a counter takes a reading by incrementing.
+
+        Parameters
+        ----------
+        value : int or float
+            The increment, ``>= 0``.
+        **labels
+            One value per declared label name.
+
+        Returns
+        -------
+        None
+            As for :meth:`inc`, which this is.
+        """
+        self.inc(value, **labels)
+
 
 class Gauge(_Metric):
     """A gauge: ``set(value, **labels)`` holds the last value it was given.
@@ -443,6 +491,23 @@ class Gauge(_Metric):
         """
         _check_value(value)
         self._series[self._series_for(labels)] = value
+
+    def record(self, value, **labels):
+        """Set the series to ``value`` — a gauge takes a reading by replacing.
+
+        Parameters
+        ----------
+        value : int or float
+            The reading.
+        **labels
+            One value per declared label name.
+
+        Returns
+        -------
+        None
+            As for :meth:`set`, which this is.
+        """
+        self.set(value, **labels)
 
 
 class Histogram(_Metric):
@@ -496,6 +561,23 @@ class Histogram(_Metric):
             if value <= bound:
                 counts[str(bound)] += 1
         counts[INF_BUCKET] += 1
+
+    def record(self, value, **labels):
+        """Observe ``value`` — a histogram takes a reading by binning it.
+
+        Parameters
+        ----------
+        value : int or float
+            The observation, in the metric's base unit.
+        **labels
+            One value per declared label name.
+
+        Returns
+        -------
+        None
+            As for :meth:`observe`, which this is.
+        """
+        self.observe(value, **labels)
 
 
 class MetricSink(ABC):

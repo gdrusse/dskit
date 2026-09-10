@@ -133,6 +133,13 @@ CLOSED_SET_NAMES = (
     # in one.
     "OTEL_PROTOCOLS",
     "METRIC_FAMILIES",
+    # ADR-0117 (ADR-0114 "Phase 6"): the versioned event catalogue, the two
+    # fields no telemetry label may carry, and the safe-aggregate bindings.
+    "EVENT_SCHEMA_VERSION",
+    "EVENT_CATEGORIES",
+    "EVENT_FIELDS",
+    "EVENT_READINGS",
+    "UNBOUNDED_LABEL_FIELDS",
 )
 
 #: The names whose value is a MAP, not a tuple — checked by their own tests.
@@ -349,6 +356,20 @@ EXPECTED_METRIC_LABELS = {
     "recon_breaks_total": ("class",),
     "ledger_append_seconds": (),
     "metrics_label_cardinality_dropped_total": (),
+    # ADR-0117's safe aggregates, one per `EVENT_READINGS` binding.
+    "stale_age_seconds": (),
+    "feature_completeness_ratio": (),
+    "reference_completeness_ratio": (),
+    "label_coverage_ratio": (),
+    "fill_ratio": (),
+    "turnover_ratio": (),
+    "holding_seconds": (),
+    "decision_to_submit_seconds": (),
+    "decision_to_fill_seconds": (),
+    "solve_seconds": (),
+    "heartbeat_age_seconds": (),
+    "retries_total": (),
+    "divergences_total": ("class",),
 }
 
 
@@ -743,3 +764,75 @@ def test_vocab_defines_no_function_and_no_class():
         )
     ]
     assert not offenders, f"vocab.py must hold data only, found: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# ADR-0117 — the versioned event catalogue (plan §6 Phase 6)
+# ---------------------------------------------------------------------------
+
+#: The eight categories plan §6 names, in the plan's own order. Restated
+#: literally for the reason the module docstring gives: a suite that read
+#: its expectation from its subject would assert nothing.
+EXPECTED_EVENT_CATEGORIES = (
+    "identity",
+    "data",
+    "model",
+    "gates",
+    "mio",
+    "execution",
+    "portfolio",
+    "operations",
+)
+
+
+def test_the_event_schema_is_versioned_and_its_categories_are_the_plans_eight():
+    assert vocab.EVENT_SCHEMA_VERSION == 1
+    assert vocab.EVENT_CATEGORIES == EXPECTED_EVENT_CATEGORIES
+
+
+def test_every_event_category_declares_its_own_fields_and_no_other():
+    assert tuple(vocab.EVENT_FIELDS) == vocab.EVENT_CATEGORIES
+    for category, fields in vocab.EVENT_FIELDS.items():
+        assert isinstance(fields, tuple) and fields, category
+        assert len(set(fields)) == len(fields), category
+        for field in fields:
+            assert TOKEN.match(field), f"{category}.{field}"
+
+
+def test_symbol_and_lead_are_identity_fields_that_may_never_be_a_label():
+    """Plan §6: full per-name detail belongs in ledger/report artifacts, so
+    the two unbounded fields are named once, as data, where the metric
+    registry can refuse them."""
+    assert vocab.UNBOUNDED_LABEL_FIELDS == ("symbol", "lead")
+    for field in vocab.UNBOUNDED_LABEL_FIELDS:
+        assert field in vocab.EVENT_FIELDS["identity"]
+    for labels in vocab.METRIC_LABEL_VALUES.values():
+        assert not set(labels) & set(vocab.UNBOUNDED_LABEL_FIELDS)
+
+
+def test_every_safe_aggregate_binds_one_catalogue_field_to_one_declared_metric():
+    """`EVENT_READINGS` is the only place a catalogue field becomes an
+    exported series, so a binding that names a field, a metric or a family
+    nobody declares is a reading with no owner on one side."""
+    problems = []
+    for metric, binding in vocab.EVENT_READINGS.items():
+        category, field, family = binding
+        if metric not in vocab.METRIC_NAMES:
+            problems.append(f"{metric}: not a declared metric name")
+        if category not in vocab.EVENT_FIELDS:
+            problems.append(f"{metric}: {category!r} is not a catalogue category")
+        elif field not in vocab.EVENT_FIELDS[category]:
+            problems.append(f"{metric}: {category}.{field} is not a catalogue field")
+        if family not in vocab.METRIC_FAMILIES:
+            problems.append(f"{metric}: {family!r} is not a metric family")
+        if (family == "counter") != metric.endswith("_total"):
+            problems.append(f"{metric}: only a counter's name ends in '_total'")
+    assert not problems, problems
+
+
+def test_no_safe_aggregate_reads_a_money_field():
+    """`metrics.py` refuses a `Decimal`, and every `MONEY_FIELDS` name is one
+    at the ledger boundary — so a money reading is an event and report value,
+    never a series."""
+    for metric, (_category, field, _family) in vocab.EVENT_READINGS.items():
+        assert field not in vocab.MONEY_FIELDS, metric
