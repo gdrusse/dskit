@@ -6863,7 +6863,12 @@ change is authorized.
 
 ## ADR-0117 — The versioned event/metric contract: a catalogue, an adapter seam, and safe aggregates (Gate 6 / ADR-0114 Phase 6)
 
-**Status:** proposed (2026-09-10). Extends ADR-0114's "Phase 6 — shared event
+**Status:** accepted (2026-09-10; owner accepted after five sequential
+independent skeptic rounds closed clean — round 1 found a real Major
+[money-safety unenforced on `EventAdapter.event()`], round 3 found a real
+Critical [`drawdown` wrongly excluded from `MONEY_FIELDS`], both fixed;
+rounds 4 and 5 were two consecutive independent clean passes, 0
+Critical/Major/Minor on round 5). Extends ADR-0114's "Phase 6 — shared event
 and metric contract" section; it does not modify, reinterpret, or reopen
 ADR-0113, ADR-0114, ADR-0115 or ADR-0116. **Additive only:** every existing
 caller of `metrics.py`, `monitors.py` and `vocab.py` keeps its exact current
