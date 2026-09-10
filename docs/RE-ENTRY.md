@@ -1,40 +1,18 @@
 # Re-entry
 
-## Current wrap: Gate 2 deliverable 3 — ADR-0115 in review (2026-09-10)
+## Current wrap: Gate 2 deliverable 3 blocked by bounded review (2026-09-10)
 
-Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (pushed at `f67accd`;
-not merged to `main`, per this session's explicit branch instructions).
-Session ending on a context/rate limit, mid skeptic-review loop — **not a
-clean gate close**. State to pick up:
+Branch: `claude/phase1-recovery-seven-gates-ao4zdj`. It must remain distinct
+from `main`; this code is **not eligible to close or merge**.
 
-- **ADR-0115** (real per-lead HPO evidence in `NoInformationScan`,
-  closing Gate 2 deliverable 3) is accepted and implemented across
-  `e2fbd3b` → `73cbbc6` → `f67accd`:
-  `children/intraday_equities/intraday_equities/{nodes.py,final_model.py,model_zoo.py}`,
-  `configs/run-final-hpo.json` (pinned P16 source, lean template,
-  `hpo_objective`/`hpo_evidence`).
-- **Method/API-contract lens:** FAIL cycle 1 (1 Major — wrong score
-  reported for the one-SE-selected candidate; 2 Minor) → fixed in
-  `73cbbc6` → **PASS cycle 2** (0 Critical/Major, 2 new Minor — a
-  self-contradicting docstring label, no regression test for the fixed
-  bug) → both fixed in `f67accd`, including a test
-  (`test_hpo_evidence_selection_reports_the_selected_candidates_own_score_not_the_argmax`)
-  verified by hand to fail against the pre-fix code. Reports:
-  `docs/memos/2026-09-10-final-model-replay-gate2-deliverable3-skeptic-method{,-cycle2}.md`.
-- **Architecture/governance lens: LAUNCHED, RESULT UNKNOWN AT WRAP TIME.**
-  A fresh reviewer was dispatched against `f67accd` (its cycle 1 — this
-  lens has not reviewed ADR-0115 at all before) and had not reported back
-  when this session ended. **This is the actual next step** — see the
-  handoff prompt below.
-- Focused suite (`tests/test_nodes.py test_configs.py test_final_model.py`):
-  258 passed, 12 skipped, 5 pre-existing environmental failures (unrelated,
-  confirmed via `git stash` against baseline). Ruff clean, `git diff
-  --check` clean.
+- Architecture cycle 1's Major was fixed by `d9eb132`.
+- Method cycle 3's Major was fixed by `03a03ac`.
+- Method cycle 4 at `a926a2b` found a new Major: with insufficient inner data,
+  `hpo_evidence: true` silently falls back without producing a ledger.
+- The agreed two-correction-cycle bound therefore blocks Gate 2 deliverable 3.
+  No third correction was attempted.
 
-**Next:** see the handoff prompt in the Gate 2 deliverable 3 section below
-— read the architecture reviewer's report first, since it may already be
-sitting in `docs/memos/` unread, or may need re-launching if it never
-finished.
+Journal action: `A18860`.
 
 ## Prior wrap: Gate 2 — final refit and one bundle (2026-09-09)
 
