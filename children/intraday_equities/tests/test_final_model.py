@@ -54,6 +54,14 @@ def _json_artifact(run_dir, payload):
     }
 
 
+def test_module_contract_describes_wired_fail_closed_final_refit():
+    contract = " ".join(final_model.__doc__.split())
+    assert "wired by ``configs/run-final-refit.json``" in contract
+    assert "unconditionally refuses validation and runtime" in contract
+    assert "ten labelled input wires" in contract
+    assert "cannot enable a refit or bundle write" in contract
+
+
 def test_final_refit_refuses_pending_hpo_evidence_pins():
     with pytest.raises(ConfigError, match="pending"):
         final_model.FinalRefit("refit", {

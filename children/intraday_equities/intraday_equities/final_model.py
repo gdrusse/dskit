@@ -9,8 +9,8 @@ exact P16 lean-mask drop list (read from its one real source,
 time), the lead-specific outer-aligned forecast-accuracy score (squared-
 error improvement vs. the training-mean baseline — never Spearman IC,
 per the plan's §2), the ADR-0114 §11 item 1 ruling's simplicity order,
-and the frozen-winner refit that assembles ten fitted heads for
-:func:`dskit.pipeline.libs.sklearn.write_bundle`.
+and synthetic frozen-winner refit helpers that can assemble ten fitted heads
+for :func:`dskit.pipeline.libs.sklearn.write_bundle` when called directly.
 
 Every generic mechanism — the candidate inventory, the trial ledger, the
 one-standard-error selection rule, the cluster-robust standard error, the
@@ -18,14 +18,16 @@ multi-head bundle artifact — is IMPORTED, never re-derived: this file
 calls into :mod:`dskit.pipeline.kinds_search`, :mod:`dskit.pipeline.stats`
 and :mod:`dskit.pipeline.libs.sklearn`.
 
-**No pipeline execution and no real data here.** Every function in this
-module is a plain, directly-callable Python API — it is deliberately NOT
-wired as a document node in this build (ADR-0114 Phase 2 names no node
-class for it), so ``children/intraday_equities/tests/test_final_model.py``
-exercises it with synthetic rows and a synthetic ``evaluate`` callback
-standing in for a real per-candidate LightGBM fit. Nothing here reads
-market data, fits a real model against real history, or loads a real P16
-artifact.
+**No pipeline execution and no real data here.** The assembly helpers are
+plain, directly-callable Python APIs exercised with synthetic rows and a
+synthetic ``evaluate`` callback.  ``FinalRefit`` is wired by
+``configs/run-final-refit.json`` only as a fail-closed pipeline contract: its
+config is PENDING and the node unconditionally refuses validation and runtime
+until the driver owns immutable completed-run provenance, content-derived
+identities for the materialized refit rows, and ten labelled input wires.
+Filling the current evidence placeholders cannot enable a refit or bundle
+write.  Nothing here reads market data, fits a real model against real
+history, or loads a real P16 artifact.
 """
 
 from __future__ import annotations

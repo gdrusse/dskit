@@ -6800,6 +6800,12 @@ resolve any of the plan's remaining nine open §11 items, does not
 authorize any market-data read or real HPO execution, and does not touch
 `docs/decisioning/path.csv`.
 
+`run-final-refit.json` is only a syntactically valid, wired PENDING contract.
+Its `FinalRefit` node unconditionally fails closed; evidence placeholders
+cannot enable refitting or bundle production without driver-owned immutable
+completed-run provenance, content-derived identities for materialized refit
+rows, and ten labelled input wires.
+
 **Consequences.** `configs/run-final-hpo.json` becomes runnable (pending
 real data and the P16 artifact actually being present) as the exact
 Gate-2-designed final-model HPO scan: one document, ten leads, one frozen
@@ -6820,24 +6826,31 @@ generic sklearn bundle writer. Final HPO has not run, so real evidence pins do
 not yet exist and must not be fabricated.
 
 **Decision.** Add `intraday_equities.final_model.FinalRefit`, a train-role node
-whose only job is to verify the pinned final-HPO document identity, resolve
-exactly ten content-addressed winner/ledger manifests through
-`resolve_json_artifact`, require their shared inventory identity, call the
-existing domain refit once, and call `write_bundle` once. It owns no search,
-serialization, hashing, estimator implementation, or row construction.
-`run-final-refit.json` ships as an explicit PENDING template and refuses at
-plan time until a real HPO run supplies all ten manifests plus the frozen
-feature/category/checksum inputs.
+wired by `run-final-refit.json` solely as a fail-closed contract. The config is
+PENDING and the node unconditionally refuses both validation and runtime: the
+current driver owns neither immutable completed-run provenance nor
+content-derived identities for materialized refit rows, and the document has
+lacks the ten labelled input wires. Supplying final-HPO manifests or filling any
+current placeholder cannot enable a refit or bundle write.
 
-Evidence acceptance is failure-closed: each manifest must be named as the
+Only after those upstream driver APIs and ten wires exist may a future enabled
+implementation verify the pinned final-HPO document identity, resolve exactly
+ten content-addressed winner/ledger manifests through `resolve_json_artifact`,
+require their shared inventory identity, call the existing domain refit once,
+and call `write_bundle` once. That future path owns no search, serialization,
+hashing, estimator implementation, or row construction.
+
+In that conditional future path, evidence acceptance must be failure-closed:
+each manifest must be named as the
 `hpo_ledger` output by its completed `scan_hNN` node record and by that same
 completed run's carry, whose result metadata binds the pinned HPO document.
 The consumer reconstructs the pinned 24-candidate inventory and complete
 ledger and reruns the ruled one-standard-error selector; self-consistent but
 incomplete, out-of-grid, or differently selected evidence is refused.
 
-The refit pin also names content-derived source and cache identities plus the
-training-window start, exclusive lockbox boundary, and exact embargo interval.
+That future refit identity must also derive from source, cache, and materialized
+row content, and name the training-window start, exclusive lockbox boundary,
+and exact embargo interval.
 Those values are copied into every head's hashed bundle training identity, so
 otherwise identical fitted bytes over different data/cache/cuts cannot attest
 as the same release.
