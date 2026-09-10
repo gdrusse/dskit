@@ -253,6 +253,11 @@ FLOORS the freshness ladder — recovering is at best `stale`, an exhausted
 reconnect budget is `dead`, and a link that dropped and came back this tick is
 `degraded`.
 
+**Cash flows and returns** — `RecurringCashFlowSchedule` materializes
+immutable, idempotent declarations for replay only; production still books
+cash through reconciled settlement. `Report.performance()` computes generic
+TWR/MWR from recorded NAV and the value curve's separate external-flow column.
+
 **Scoring itself** — `outcomes` joins what happened onto each leg through the
 declared sources and appends it as a supersede chain; `report` prints
 attribution, calibration and the value curve at an explicit cut; `replay`
@@ -276,6 +281,7 @@ dskit/production/
 ├── clock.py           Clock ABC; WallClock, TestClock, ReplayClock
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite
 ├── cadence.py         Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun
+├── cashflows.py       replay-only recurring declarations; dated overrides; stable IDs
 ├── control.py         ControlInbox; CommandProcessor
 ├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed;
 │                      StreamTransport ABC + StreamFeed (`websocket`), the push source whose
@@ -312,7 +318,7 @@ dskit/production/
 │                      the names the series proves for itself (coverage, freshness,
 │                      calibration)
 ├── outcomes.py        forward_asof; OutcomeSource + registry; OutcomeJoin (D21)
-├── report.py          Report (attribution / calibration / value, each at an explicit
+├── report.py          Report (attribution / calibration / value / TWR / MWR, each at an explicit
 │                      cut); ReportView + ReportEmitter ABC + Markdown/Json; Tape +
 │                      Replay + ParityDiff — D20's parity, run against a scratch root
 ├── libs/              tier-2 packs — a library behind a seam this package owns

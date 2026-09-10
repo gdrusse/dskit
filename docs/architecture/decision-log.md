@@ -6863,9 +6863,9 @@ change is authorized.
 
 ## ADR-0117 — Proposed Gate 3 cash-flow schedule and return mechanisms
 
-**Status:** proposed. This entry extends ADR-0114's Phase 3 inventory. It is
-not accepted and authorizes no implementation, test addition, configuration,
-or production/replay execution.
+**Status:** accepted (2026-09-10; owner accepted the mechanism-only Gate 3
+pass). This entry extends ADR-0114's Phase 3 inventory. It authorizes only the
+mechanism, focused tests, and no configuration or production/replay execution.
 
 **Context and inventory.** Before this proposal, `dskit.production` has no
 recurring cash-flow schedule. `compose._Adopt` only asks `Reconciler.adopt()`

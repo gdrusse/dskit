@@ -101,6 +101,7 @@ from dskit.production.vocab import (
     AUTHORITY_EVENTS,
     AUTHORITY_ROLES,
     BREAKER_STATES,
+    CASH_FLOW_KINDS,
     FILL_STATUSES,
     GUARD_STATE_KINDS,
     ORDER_EVENTS,
@@ -1255,6 +1256,23 @@ class SeriesState:
         amount = _money(problems, "cash_flow.amount", body.get("amount"))
         record_id = envelope.get("id")
         _check_str(problems, "cash_flow.id", record_id)
+        check_int_param(
+            problems, "cash_flow.effective_at_ms", body.get("effective_at_ms"), ge=0
+        )
+        check_int_param(problems, "cash_flow.known_at_ms", body.get("known_at_ms"), ge=0)
+        _check_str(problems, "cash_flow.source", body.get("source"))
+        _check_dict(problems, "cash_flow.evidence", body.get("evidence"))
+        if body.get("flow_kind") not in CASH_FLOW_KINDS:
+            problems.append(
+                f"cash_flow.flow_kind must be one of {list(CASH_FLOW_KINDS)}, "
+                f"got {body.get('flow_kind')!r}"
+            )
+        if not isinstance(body.get("external"), bool):
+            problems.append(
+                f"cash_flow.external must be a bool, got {body.get('external')!r}"
+            )
+        if body.get("source") == "replay":
+            self._check_replay_cash_flow(problems, body, record_id)
         superseded = body.get("supersedes")
         if superseded is not None:
             self._check_supersedable(problems, superseded)
@@ -1265,6 +1283,26 @@ class SeriesState:
         currency = body["currency"]
         self._balances[currency] = self._balances.get(currency, _ZERO) + amount
         self._cash_flows[record_id] = (currency, amount, None)
+
+    @staticmethod
+    def _check_replay_cash_flow(problems, body, record_id):
+        """Validate the auditable shape a replay composer alone emits."""
+        if body.get("known_at_ms") != body.get("effective_at_ms"):
+            problems.append(
+                "a replay cash flow must be known at its declared effective instant"
+            )
+        if body.get("external") is not True:
+            problems.append("a replay cash flow must be external")
+        evidence = body.get("evidence")
+        if not isinstance(evidence, dict) or set(evidence) != {"flow_id"}:
+            problems.append("a replay cash flow evidence must contain exactly flow_id")
+            return
+        flow_id = evidence["flow_id"]
+        _check_str(problems, "cash_flow.evidence.flow_id", flow_id)
+        if isinstance(flow_id, str) and record_id != f"cash_flow:{flow_id}":
+            problems.append(
+                f"replay cash_flow.id {record_id!r} disagrees with flow_id {flow_id!r}"
+            )
 
     def _check_supersedable(self, problems, superseded):
         """Why ``supersedes`` cannot be netted out, if it cannot."""

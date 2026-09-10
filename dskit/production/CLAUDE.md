@@ -154,6 +154,7 @@ dskit/production/
 ├── base.py vocab.py redact.py         errors + Registry + hashing; closed sets; secrets
 ├── document.py release.py records.py  the serve document; the release; every value object
 ├── clock.py sessions.py cadence.py    when a tick may happen
+├── cashflows.py                       replay declarations and dated overrides
 ├── feed.py decider.py                 what enters the graph; the re-execution
 ├── guards.py breaker.py arming.py     what may pass; what stops it; who may arm it
 ├── executor.py accounting.py verifier.py coordination.py   the act and its gates
@@ -161,7 +162,7 @@ dskit/production/
 ├── ledger.py state.py reconcile.py     the chain; the sole fold; the venue truth
 ├── monitors.py metrics.py alerts.py health.py   what watches, counts, pages, probes
 ├── ids.py bundles.py compose.py leg.py loop.py  ids; the bundles; the root; steps; ticks
-├── readiness.py outcomes.py report.py  GO/NO-GO; what happened; what it was worth
+├── readiness.py outcomes.py report.py  GO/NO-GO; outcomes; value and TWR/MWR
 ├── libs/ (parquet.py sqlite.py         tier-2 packs: RunReference; SqliteLedger;
 │        exchange_calendars.py         ExchangeCalendar; PrometheusSink; OtelSink
 │        prometheus.py opentelemetry.py)

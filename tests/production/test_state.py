@@ -1175,6 +1175,48 @@ def test_one_fill_id_can_never_be_applied_twice():
     assert view.head_seq == 3
 
 
+def test_a_well_formed_replay_cash_flow_books_through_the_same_fold():
+    """Replay declarations share the cash-flow fold but carry replay evidence."""
+    st, chain = new_state()
+    body = cash_flow_body(amount="500")
+    body.update(
+        effective_at_ms=BASE_MS,
+        known_at_ms=BASE_MS,
+        source="replay",
+        evidence={"flow_id": "declared-1"},
+    )
+
+    fold(st, chain, "cash_flow", body, rid="cash_flow:declared-1")
+
+    assert st.snapshot().balances == {"USD": Decimal("500")}
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"known_at_ms": BASE_MS + 1},
+        {"external": False},
+        {"evidence": {}},
+    ],
+)
+def test_a_malformed_replay_declaration_never_becomes_spendable(change):
+    """Replay cash has one auditable declaration shape, never a loose source label."""
+    st, chain = new_state()
+    body = cash_flow_body(amount="500")
+    body.update(
+        effective_at_ms=BASE_MS,
+        known_at_ms=BASE_MS,
+        source="replay",
+        evidence={"flow_id": "declared-1"},
+    )
+    body.update(change)
+
+    with pytest.raises(ProductionError):
+        st.apply(chain.env("cash_flow", body, rid="cash_flow:declared-1"))
+
+    assert st.snapshot().balances == {}
+
+
 def test_a_cash_flow_adjusts_the_balance_and_is_economic():
     st, chain = new_state()
     fold(st, chain, "cash_flow", cash_flow_body(amount="250"))
