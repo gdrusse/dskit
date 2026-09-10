@@ -1,28 +1,28 @@
 # Re-entry
 
-## Current wrap: Gate 2 deliverable 4 pending architecture re-review (2026-09-10)
+## Current wrap: Gate 2 deliverable 4 review-closed, fail-closed (2026-09-10)
 
-Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (not pushed by this
-correction). Deliverable 4 adds `configs/run-final-refit.json` and
-`intraday_equities.final_model.FinalRefit`, but is deliberately non-executable.
-The driver does not yet provide an immutable completed-run attestation or
-content-derived identities for the ten labelled input wires. Filling config
-pins cannot enable planning; `FinalRefit` fails closed until those generic
-upstream contracts exist. No HPO, refit, bundle write, or market-data run has
-occurred.
+Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (not pushed by this wrap;
+never merge or push directly to `main`). Deliverable 4 is review-closed as a
+truthful PENDING, unconditionally fail-closed `FinalRefit` contract. Method/API
+passed at `4a7a28c`; architecture/governance passed at `a8f177b` (both 0
+Critical, 0 Major, 0 Minor).
 
-Method/API review passed through cycle 3 at `585012a` (0 Critical, 0 Major,
-0 Minor). Architecture/governance review at `57b0e74` failed with one Major:
-the durable handoff and child package documents misstated the current D4 tree
-and boundary. This correction refreshes those documents; architecture closure
-still requires a clean re-review.
+The generic driver still needs immutable per-run HPO attestations,
+producer-derived content identities for data/cache/the complete permitted
+window, and ten labelled materialized-row input wires before any refit can be
+enabled. Filling config pins cannot plan, refit, or write a bundle. No market
+data, HPO, refit, bundle write, or pipeline run occurred.
 
-Architecture review memo:
-`docs/memos/2026-09-10-final-model-replay-gate2-deliverable4-skeptic-architecture.md`.
+Focused closure checks: 43 final-model tests and 7 targeted final-HPO/refit
+config tests passed; validate accepted syntax, plan refused with the eight
+expected PENDING/non-executable problems; Ruff/diff checks were clean. The
+broader child check retained five unrelated registered configuration-policy
+baseline failures. Closeout:
+`children/intraday_equities/docs/memos/2026-09-10-final-model-replay-gate2-deliverable4-closeout.md`.
 
-**Next:** re-run the D4 architecture/governance review. Separately, the generic
-driver needs immutable completed-run attestation and producer-derived identities
-for all ten labelled input wires before final refit can become executable.
+**Next:** record and act on the remaining owner §11 rulings, then complete the
+remainder of Gates 3, 4, 5, 6, and 7.
 
 ## Prior wrap: Gate 2 — final refit and one bundle (2026-09-09)
 
