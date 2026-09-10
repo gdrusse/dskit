@@ -51,7 +51,7 @@ from pathlib import Path
 
 from dskit.pipeline.node import check_int_param, class_ref, reject_unknown_params
 from dskit.production import vocab
-from dskit.production.base import ProductionError, Registry, pin_members
+from dskit.production.base import ProductionError, Registry, pin_members, reject_money_floats
 from dskit.production.redact import get_logger
 
 __all__ = [
@@ -608,7 +608,14 @@ class EventCatalogue:
     unknown category or field is a problem, because it is a value nobody
     can read back, while a missing one is not, because no single event
     reaches every phase — a tick that never got to a solver has no ``mio``
-    reading, and demanding one would make the schema lie.
+    reading, and demanding one would make the schema lie. It is also
+    default-deny on MONEY: a ``float`` under any
+    :data:`~dskit.production.vocab.MONEY_FIELDS` name is a problem at any
+    depth of the body, via the same
+    :func:`~dskit.production.base.reject_money_floats` rule ``records.py``
+    and ``ledger.py`` already enforce — an adapter that hands a money field
+    a float is caught here, not waved through as an event value nobody
+    checked.
 
     Parameters
     ----------
@@ -692,8 +699,11 @@ class EventCatalogue:
         Returns
         -------
         list of str
-            One problem per unknown category, non-mapping category, and
-            unknown field.
+            One problem per unknown category, non-mapping category, unknown
+            field, and float under a :data:`~dskit.production.vocab.MONEY_FIELDS`
+            name — the same money rule ``records.py`` and ``ledger.py``
+            enforce on every other payload, applied here so an event body
+            cannot smuggle money past the catalogue as a float.
         """
         problems = []
         if not isinstance(body, dict):
@@ -709,6 +719,7 @@ class EventCatalogue:
                 continue
             for field in sorted(set(fields) - self._fields[category]):
                 problems.append(f"{category}.{field} is not a catalogue field")
+        reject_money_floats(problems, body, "event")
         return problems
 
     def stamp(self, fields):
@@ -834,7 +845,9 @@ class EventAdapter(ABC):
         ------
         ProductionError
             If :meth:`fields` returned a category or a field the catalogue
-            does not declare — a value nobody could read back.
+            does not declare — a value nobody could read back — or a
+            ``float`` under a :data:`~dskit.production.vocab.MONEY_FIELDS`
+            name — money that took a wrong turn on its way into the event.
         """
         fields = self.fields(record)
         problems = self._catalogue.validate(fields)

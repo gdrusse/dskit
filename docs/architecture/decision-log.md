@@ -6914,12 +6914,23 @@ Two facts from the inventory constrain everything below, and are stated
 because they decide what may become a metric at all:
 
 1. **Money can never be a metric.** `metrics._check_value` refuses `Decimal`
-   by design ("a `Decimal` in a counter is money that took a wrong turn"), and
-   `vocab.MONEY_FIELDS` makes every catalogue money field a `Decimal` at the
-   ledger boundary. So the catalogue's portfolio/capital amounts — starting
-   cash, settled external flow, cash, buying power, exposure, PnL, fees, NAV,
-   peak — are **event/ledger/report fields and never metric series.** This is
-   not a deferral; it is the existing money rule.
+   by design ("a `Decimal` in a counter is money that took a wrong turn"),
+   which is the existing money rule and needed no change. But at the time
+   this ADR was first drafted, `vocab.MONEY_FIELDS` named only `nav` among
+   the catalogue's portfolio/capital amounts, and nothing on the event path
+   called the existing float-refusal rule (`base.reject_money_floats`)
+   against an event body at all — so `EventCatalogue.validate` accepted a
+   plain `float` under `cash`, `starting_cash`, `settled_external_flow`,
+   `buying_power`, `gross_exposure`, `net_exposure`, `realized_pnl`,
+   `unrealized_pnl`, `net_pnl`, `fees` and `peak` with no refusal (a
+   skeptic review, 2026-09-10, proved this by construction). Both gaps are
+   now closed: `MONEY_FIELDS` names every one of those fields, and
+   `EventCatalogue.validate` calls `reject_money_floats` against the body,
+   refusing a `float` under any of them at any depth — the same rule
+   `records.py` and `ledger.py` already enforce on their own payloads,
+   applied here for the first time. With both in place, the catalogue's
+   portfolio/capital amounts are **event/ledger/report fields and never
+   metric series**, enforced rather than merely intended.
 2. **Symbol and lead can never be a metric label.** ADR-0114 Phase 6 and plan
    §6 both say so, and `_declared_labels` has no rule that enforces it today.
 
@@ -6950,10 +6961,15 @@ because they decide what may become a metric at all:
 - `EVENT_CATEGORIES` — the eight of plan §6, in the plan's own order:
   `("identity", "data", "model", "gates", "mio", "execution", "portfolio",
   "operations")`.
-- `EVENT_FIELDS` — `{category: (field, …)}`, one snake_case token per item the
-  plan's §6 list names, verbatim and complete: nothing added, nothing removed,
-  nothing merged. `symbol` and `lead` are `identity` fields, as the plan puts
-  them.
+- `EVENT_FIELDS` — `{category: (field, …)}`: a snake_case rendering of every
+  field the plan's §6 list names, complete — nothing added, nothing removed,
+  nothing merged — but not verbatim. Four items are renamed onto a
+  domain-neutral or shortened token: `bars` → `inputs` (tier 1 holds no
+  domain word), `cleared-but-unfunded candidates` → `unfunded_candidates`,
+  `per-name concentration` → `concentration`, and `dead-man heartbeat` →
+  `heartbeat_age`. No meaning is lost in any of the four; field counts per
+  category match the plan exactly (108 fields, 8 categories). `symbol` and
+  `lead` are `identity` fields, as the plan puts them.
 - `UNBOUNDED_LABEL_FIELDS = ("symbol", "lead")` — the field names that may
   never become a closed telemetry label.
 - `EVENT_READINGS` — `{metric name: (category, field, family)}`, the binding
@@ -6995,10 +7011,13 @@ else exactly as before. That is why the five ratio readings above are spelled
   `EventCatalogue()` (no params). Public surface: `version` (property, int),
   `categories` (property, tuple), `fields(category)` → tuple,
   `label_safe(field)` → bool, `validate(body)` → list of problems
-  (default-deny: an unknown category or an unknown field name is a problem; a
-  missing category or field is not, because no single event carries the whole
-  catalogue), and `stamp(fields)` → the event body with `schema_version` set.
-  It reads `vocab` and declares nothing of its own.
+  (default-deny: an unknown category or an unknown field name is a problem, a
+  `float` under any `vocab.MONEY_FIELDS` name is a problem at any depth via
+  `base.reject_money_floats` — the same rule `records.py` and `ledger.py`
+  already enforce — and a missing category or field is not, because no
+  single event carries the whole catalogue), and `stamp(fields)` → the event
+  body with `schema_version` set. It reads `vocab` and declares nothing of
+  its own.
 - `class EventAdapter(ABC)` — the seam plan §5 calls "event-field adapters".
   `cls(params=None)` with default-deny over `_PARAMS + ("notes",)` through the
   shared `reject_unknown_params`, exactly as `MetricSink` does. One
@@ -7105,6 +7124,22 @@ nineteen. `test_metrics.py`'s base-unit assertion admits `_ratio` beside
 `_seconds` and `_bytes`. No existing monitor, metric, handle or sink changes
 shape, and no shipped metric name, label name or label value is removed or
 renamed.
+
+**Correction (2026-09-10, post skeptic review).** This ADR originally
+asserted the money-safety claim in the inventory above as already true; a
+skeptic review proved it false — `MONEY_FIELDS` named only `nav` among the
+portfolio/capital fields, and nothing on the event path ever called the
+existing float-refusal rule against an event body. The fix, landed in this
+same change: `MONEY_FIELDS` gained `cash`, `starting_cash`,
+`settled_external_flow`, `buying_power`, `gross_exposure`, `net_exposure`,
+`realized_pnl`, `unrealized_pnl`, `net_pnl`, `fees` and `peak`, and
+`EventCatalogue.validate` now calls `base.reject_money_floats` against every
+event body. This is a SECOND behaviour change beyond the one above: because
+`MONEY_FIELDS` is read wherever `reject_money_floats` already runs
+(`records.py`, `ledger.py`), a `float` under any of those eleven names now
+refuses in a record or ledger body too, wherever it previously did not —
+the correct outcome, since every one of them is a currency amount, but a
+real widening of what those two already-shipped refusals catch.
 
 ### Scope
 

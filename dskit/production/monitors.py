@@ -2505,7 +2505,7 @@ class Completeness(OperationalMonitor):
     ::
 
         monitor = Completeness(
-            {"window": {"kind": "count", "n": 2}, "threshold": {"kind": "constant", "min": 0.9},
+            {"window": {"kind": "count", "n": 1}, "threshold": {"kind": "constant", "min": 0.9},
              "min_n": 1}
         )
         monitor.observe({"kind": "tick", "expected_inputs": 10, "received_inputs": 8})

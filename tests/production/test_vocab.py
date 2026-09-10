@@ -297,6 +297,7 @@ EXPECTED_MEMBERS = {
         "limit",
         "price",
         "fee",
+        "fees",
         "avg_price",
         "filled_qty",
         "remaining_qty",
@@ -311,6 +312,20 @@ EXPECTED_MEMBERS = {
         "bid",
         "ask",
         "mid",
+        # ADR-0117's portfolio/capital catalogue category (§6): every
+        # currency-amount field there; the ratio fields in the same
+        # category (twr, mwr, drawdown, concentration,
+        # risk_cap_utilization) are deliberately excluded.
+        "starting_cash",
+        "settled_external_flow",
+        "cash",
+        "buying_power",
+        "gross_exposure",
+        "net_exposure",
+        "realized_pnl",
+        "unrealized_pnl",
+        "net_pnl",
+        "peak",
     ),
     "CACHE_STATES": ("current", "stale"),
     "AUTHORITY_EVENTS": ("issue", "disarm", "revoke", "expire"),

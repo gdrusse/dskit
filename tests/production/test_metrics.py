@@ -1037,6 +1037,34 @@ class TestTheEventAdapterIsTheOneSeamAChildSupplies:
         assert replay.event({"stale_age": 1.0}) == paper.event({"stale_age": 1.0})
 
 
+class _PortfolioAdapter(EventAdapter):
+    """The skeptic's exact proof case (2026-09-10): a money-named catalogue
+    field carried straight through to an event body."""
+
+    def fields(self, record):
+        return {"portfolio": {"cash": record["cash"]}}
+
+
+class TestAMoneyFieldNeverTouchesFloatInAnEventBody:
+    """`EventCatalogue.validate` checked category/field NAMES only and never
+    called the existing money rule (`base.reject_money_floats`), so a float
+    under a `vocab.MONEY_FIELDS` name reached a stamped event body
+    unrefused. The rule is the same one `records.py` and `ledger.py` already
+    enforce on every other payload; the catalogue must call it too."""
+
+    def test_a_float_under_a_money_field_name_refuses(self):
+        assert "cash" in vocab.MONEY_FIELDS
+        adapter = _PortfolioAdapter({})
+        with pytest.raises(ProductionError) as caught:
+            adapter.event({"cash": 12345.67})
+        assert "cash" in str(caught.value)
+
+    def test_a_decimal_under_the_same_field_is_accepted(self):
+        adapter = _PortfolioAdapter({})
+        event = adapter.event({"cash": Decimal("12345.67")})
+        assert event["portfolio"]["cash"] == Decimal("12345.67")
+
+
 class TestEventReadingsRecordsTheSafeAggregatesAndNothingElse:
     """Plan §6 records every value before any threshold is ruled (§11 item 7),
     and exporters see only what is bounded."""

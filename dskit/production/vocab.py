@@ -568,6 +568,7 @@ MONEY_FIELDS = (
     "limit",
     "price",
     "fee",
+    "fees",
     "avg_price",
     "filled_qty",
     "remaining_qty",
@@ -582,6 +583,21 @@ MONEY_FIELDS = (
     "bid",
     "ask",
     "mid",
+    # ADR-0117's portfolio/capital catalogue category (§6): every field
+    # there that names a raw currency amount rather than a ratio. Ratio
+    # fields in the same category (`twr`, `mwr`, `drawdown`,
+    # `concentration`, `risk_cap_utilization`) are deliberately excluded —
+    # they are dimensionless and stay legal as float.
+    "starting_cash",
+    "settled_external_flow",
+    "cash",
+    "buying_power",
+    "gross_exposure",
+    "net_exposure",
+    "realized_pnl",
+    "unrealized_pnl",
+    "net_pnl",
+    "peak",
 )
 
 #: 3 keeps HALTED (operator action needed), 5 takes a readiness NO-GO or a
@@ -660,10 +676,14 @@ EVENT_CATEGORIES = (
 #: nothing merged and nothing invented — where the catalogue names a value
 #: with a domain noun (``bars``) the token is the domain-neutral one an
 #: adapter maps onto (``inputs``), because tier 1 holds no domain word.
-#: Money-named members (``cash``, ``nav``, ``fees``, ``…_pnl``) are
-#: ``Decimal`` at the ledger boundary by :data:`MONEY_FIELDS` and are
-#: therefore event and report values only: ``metrics.py`` refuses a
-#: ``Decimal``, so no money field is ever a metric series.
+#: Money-named members (``cash``, ``nav``, ``fees``, ``…_pnl``) are event
+#: and report values only, never a metric series, by two enforced rules:
+#: :data:`MONEY_FIELDS` names every one of them, and ``EventCatalogue.validate``
+#: calls :func:`~dskit.production.base.reject_money_floats` against that table
+#: on every event body, refusing a float there the same way ``records.py``
+#: and ``ledger.py`` already refuse one on their own payloads; separately,
+#: ``metrics.py`` refuses a ``Decimal`` in a counter/gauge/histogram, so a
+#: money field is structurally barred from becoming a metric series too.
 EVENT_FIELDS = {
     "identity": (
         "release_digest",
