@@ -7208,3 +7208,212 @@ catalogue value is recorded from the moment an adapter exists, with no
 threshold anywhere, so §11 item 7 can be ruled later without re-opening this
 contract. `EVENT_SCHEMA_VERSION` is the handle a future field addition turns:
 a field added to `EVENT_FIELDS` is a schema change and must move the version.
+
+---
+
+## ADR-0118 — Generic run attestation and content-derived multi-manifest identity (extends ADR-0116)
+
+**Status:** proposed.
+
+**Context.** ADR-0116 left `final_model.FinalRefit` fail-closed because "the
+current driver owns neither immutable completed-run provenance nor
+content-derived identities for materialized refit rows." This entry builds
+those two missing generic, domain-blind driver capabilities so a future,
+separately authorized `FinalRefit` implementation can eventually verify real
+evidence instead of trusting a path. It does not wire `FinalRefit` to
+anything and does not lift ADR-0116's refusal.
+
+### Inventory — what already exists (read, not guessed)
+
+Read this session: `dskit/pipeline/driver.py` (2,930 lines) in full,
+`dskit/pipeline/node.py`'s `JsonArtifact`, `dskit/pipeline/document.py`'s
+`PipelineDocument.hash`/`to_obj`/`from_obj`, `dskit/pipeline/base.py`'s
+`config_hash`/`_strip_notes`/`_strip_non_identity`, and
+`tests/pipeline/test_driver.py`.
+
+- **`JsonArtifact` (`node.py`) / `resolve_json_artifact` (`driver.py`)**:
+  a node opts one output into durable storage; `_persist_json_artifacts`
+  writes it as canonical, content-addressed bytes at
+  `artifacts/json/<sha256>.json` and replaces the output with a
+  `{path, sha256, bytes, media_type}` manifest. `resolve_json_artifact`
+  independently re-verifies the manifest's shape, its path against the
+  digest it claims, the file's byte count, and the file's digest, before
+  decoding — a single manifest's own internal binding is already checked.
+  There is no existing function that combines MULTIPLE manifests into one
+  identity; each is verified alone.
+- **`_write_node_records`**: one JSON record per node at
+  `nodes/<NN>-<key>.json`, carrying `node`, `uses`, `role`, `status`
+  (`"ok"`/`"halted"`/`"error"`/`"not_run"`), `seconds`, and `outputs`
+  (`_summarize`d, except a `JsonArtifact` manifest, which is recognized by
+  `_is_json_artifact_manifest` and passed through in full). This is where
+  "did this node complete" already lives, read as plain JSON off disk by
+  filename — nothing hashes or chains these records to one another or to
+  `resolved.json`, so a record file swapped for a different node's record
+  (or edited in place) is not detected by anything today. Building that
+  chain is NOT this ADR's job (see Non-goals); this ADR only reads the
+  field honestly and fails closed on anything that does not parse or does
+  not match the node key asked for.
+- **`result.json`**: written unconditionally by `_record_run`, which
+  every `run_document` call reaches once a run dir exists (`_execute_plan`
+  catches every per-node exception into a recorded `"error"` state rather
+  than propagating) — so a run that crashed mid-execution still leaves a
+  `result.json` naming `state`. It carries `name`, `asof`, `document_hash`,
+  `run_hash`, `state` (`"ran"`/`"halted"`/`"error"`), `exit_code`,
+  `halted_at`, `node_states`, `prev_run`.
+- **`resolved.json`**: written by `_resolve_run` BEFORE any node executes,
+  carrying `document_hash` (`document.hash`, computed once at RESOLVE) and
+  `run_hash` (`document_hash` plus the sources' data fingerprints); later
+  amended in place by `_record_run` with `prev_bindings`. Nothing today
+  re-derives `document_hash` from `config.json`'s own bytes to check that
+  the two agree — a caller can only read the stored field and trust it.
+- **`config.json`**: `document.to_obj()`, written once at RESOLVE.
+  `PipelineDocument.from_obj(obj)` (`document.py`) rebuilds a document from
+  exactly this shape, and `.hash` (`config_hash(self,
+  exclude=DOC_NON_IDENTITY_SECTIONS)`, `base.py`) recomputes the identity
+  hash from a document's own `to_obj()` — both pre-existing and reused
+  here unchanged, never reimplemented.
+- **`carry.json`**: run-over-run state a next run binds against via
+  `$prev`; a manifest survives inside it as an ordinary JSON-legal dict
+  (`_carryable` neither special-cases nor rejects the shape), so it names
+  what a run carried forward but binds no identity of its own beyond what
+  the manifest itself already carries.
+
+### The gap, precisely
+
+Nothing today lets a caller holding a run directory and a claimed document
+identity hash (1) attest the run completed end to end without re-deriving
+that from `result.json`'s raw shape by hand, (2) attest one named node
+completed without locating and parsing its record file by hand, (3) confirm
+`resolved.json`'s claimed `document_hash` is not merely a stored field but
+one `config.json`'s own bytes actually reproduce under the pinned hash
+recipe, or (4) compute one identity over a NAMED SET of JSON-artifact row
+manifests that changes when the underlying row CONTENT changes, not only
+when a manifest's path string does (path and content already move together
+under `resolve_json_artifact`'s own checks, but nothing combines several
+verified contents into one combined identity at all).
+
+### Decision
+
+Add to `dskit/pipeline/driver.py` — extending the existing module, which
+already owns `resolve_json_artifact`, `_canonical_hash`, and the RECORD-phase
+writers this reads back; a sibling module would duplicate the hash recipe and
+run-dir layout knowledge that already lives here privately (per root
+CLAUDE.md's "a tier-2 pack never restates tier-1 truth", the tier-1
+mirror of that rule: within one tier, don't restate a private recipe
+either):
+
+```python
+class RunAttestation:
+    """Read-only, fail-closed evidence reader over one run directory."""
+
+    def __init__(self, run_dir):
+        ...
+
+    def completed(self) -> bool:
+        """Whether the run reached RECORD with state == "ran"."""
+
+    def node_completed(self, node_key) -> bool:
+        """Whether ``node_key``'s own record shows status == "ok"."""
+
+    def binds_document_identity(self, document_hash) -> bool:
+        """Whether resolved.json AND config.json both independently
+        reproduce ``document_hash`` under the pinned identity recipe."""
+
+
+def content_identity(run_dir, manifests) -> str:
+    """sha256 over the VERIFIED, DECODED content of named JSON artifacts."""
+```
+
+Exact semantics:
+
+- **`RunAttestation(run_dir)`** — a plain constructor, no params tuple (it
+  reads a run directory, it does not accept knobs a document could set —
+  default-deny params apply to `Node` subclasses, not a read-only evidence
+  reader with a fixed contract). Every method below is FAIL-CLOSED: a
+  missing file, a file that is not valid JSON, or JSON of the wrong shape
+  returns `False` — it never raises, because a caller checking evidence
+  before trusting a run must not have "run I cannot read" look different
+  from "run that did not happen" only by exception type.
+- **`completed()`** — `True` iff `result.json` exists, parses to a JSON
+  object, and its `state` field equals exactly `"ran"`. `"halted"`,
+  `"error"`, a missing file, or a malformed one are all `False`.
+- **`node_completed(node_key)`** — locates `nodes/<NN>-<node_key>.json` by
+  suffix match (the ordinal prefix is plan-order, not known to a caller
+  outside the run), and returns `True` iff exactly one such file exists,
+  parses to a JSON object, its own `"node"` field equals `node_key` (a
+  swapped or misnamed file refuses rather than being read as if it were
+  the one asked for), and its `"status"` field equals exactly `"ok"`.
+  Zero or more-than-one matching file, a parse failure, a node-field
+  mismatch, or any other status all return `False`.
+- **`binds_document_identity(document_hash)`** — `True` iff ALL of: (1)
+  `resolved.json` exists, parses, and its `document_hash` field equals the
+  argument exactly; (2) `config.json` exists and parses to a JSON object;
+  (3) `PipelineDocument.from_obj` rebuilds a document from that object
+  without raising, and that document's own `.hash` property — recomputed
+  independently, never read off any stored field — ALSO equals the
+  argument. Both checks must hold: a `resolved.json` hand-edited to claim a
+  hash its own `config.json` does not actually produce is refused, and a
+  `config.json` substituted for a different document is refused even when
+  `resolved.json`'s stored claim was left untouched. Any parse, shape, or
+  reconstruction failure returns `False`.
+- **`content_identity(run_dir, manifests)`** — a module-level function, not
+  a method, because it is a pure rule with one owner and no state of its
+  own (root CLAUDE.md: "a module-level function is for a pure rule with ONE
+  owner that several classes import"), parallel to `resolve_json_artifact`
+  beside it. `manifests` is a `{name: manifest}` mapping; every manifest is
+  resolved (verified AND decoded) through the existing
+  `resolve_json_artifact` — never trusted by its own claimed `sha256` or
+  `path` alone — and the function returns `_canonical_hash({name: content,
+  ...})` over the DECODED CONTENT, keyed by name and sorted (the existing
+  canonical-JSON sha256 recipe this module already owns). Because the hash
+  is over verified content and not over the manifests' own path or digest
+  strings, two manifests naming byte-identical content under different
+  names produce different identities (the name is part of what was
+  materialized), and a manifest whose recorded digest does not match its
+  on-disk bytes cannot silently pass through into the combined identity —
+  `resolve_json_artifact` raises first. Raises `ValueError` (propagated,
+  never swallowed) for any manifest that fails verification: an identity
+  computed over content nobody could verify is not evidence, so this
+  function fails LOUD rather than closed, matching
+  `resolve_json_artifact`'s own contract exactly.
+
+Both `RunAttestation` and `content_identity` join `driver.__all__`.
+
+**Additive only.** No existing caller of `driver.py` changes behavior:
+`RunAttestation` and `content_identity` only READ state the current
+`run_document`/`_record_run`/`_persist_json_artifacts` pipeline already
+writes, unmodified. No document grammar, node lifecycle, hash recipe, or
+run-dir layout changes.
+
+**Non-goals (explicitly out of scope for this entry).** Node-record
+tamper-evidence beyond today's per-file JSON shape (e.g., hash-chaining
+`nodes/*.json` to `resolved.json` so a record cannot be silently
+regenerated after the run completed) is a real gap the inventory surfaced
+but the kickoff's own Scope section does not name it as one of the four
+capabilities to build, so it is not built here — a future ADR may propose
+it. Reconstructing the pinned 24-candidate inventory from ledger evidence
+is `kinds_search.py`'s existing job, reused, not rebuilt. Wiring
+`FinalRefit` to any of this, the ten labelled input wires, and the
+refit-identity's own source/cache/window-derived hash are ADR-0116's
+named future work and stay unauthorized here.
+
+### Scope
+
+Files: `docs/architecture/decision-log.md` (this entry),
+`dskit/pipeline/driver.py` (`RunAttestation`, `content_identity`, two new
+`__all__` entries), `dskit/pipeline/{README.md,CLAUDE.md}` (directory tree
+and API notes), `tests/pipeline/test_driver.py` (new tests). No config
+document is added or modified. No market data, HPO, or refit execution.
+`final_model.py` and everything under `children/` are untouched.
+`docs/decisioning/path.csv` is not touched.
+
+### Consequences
+
+A future, separately authorized `FinalRefit` implementation gains two of
+the primitives ADR-0116's conditional path names — real run/node
+completion attestation and a content-derived identity over a named set of
+materialized row artifacts — while ADR-0116's fail-closed refusal is
+untouched and this entry authorizes no change to it. The remaining pieces
+that same conditional path names (the ten labelled wires, the
+source/cache/window-derived refit identity, and wiring `FinalRefit` itself)
+remain explicitly unbuilt and unauthorized, for a later deliverable.
