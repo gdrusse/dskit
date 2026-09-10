@@ -513,6 +513,13 @@ class EquityReplay:
             row["asof_ms"] = int(row["asof_ms"])
             if halt_field in row:
                 row[halt_field] = _halt_flag(row[halt_field], halt_field, row["asof_ms"])
+            for field in (
+                policy.fill_price_field,
+                policy.forced_exit_price_field,
+                policy.decision_price_field,
+            ):
+                if field in row:
+                    _refuse_non_finite_price(row[field], field, row["asof_ms"])
             by_symbol[row[policy.symbol_field]].append(row)
         for seq in by_symbol.values():
             seq.sort(key=lambda row: row["asof_ms"])
@@ -645,10 +652,10 @@ class EquityReplay:
             failed = []
             for envelope in recording.ledger.scan(kind="tick"):
                 body = envelope.get("body") or {}
-                if body.get("status") == "failed":
+                if body.get("status") == "failed" or body.get("status") == "refused":
                     err = body.get("error") or {}
-                    cls = err.get("class") or "failed"
-                    text = err.get("text") or ""
+                    cls = err.get("class") or body.get("status") or "tick"
+                    text = err.get("text") or body.get("refusal_reason") or ""
                     failed.append(f"{cls}: {text}")
             leftover = list(self._queued) + list(self._pending_by_id)
             recording.ledger.close()
@@ -942,6 +949,23 @@ class EquityReplay:
             if self._fault is None:
                 self._fault = exc
             raise
+
+
+def _refuse_non_finite_price(value, field, asof_ms):
+    """Refuse a present non-finite price; None/'' stay for halt-skip quotes."""
+    if value is None or value == "":
+        return
+    if isinstance(value, Decimal):
+        ok = value.is_finite()
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        ok = number_ok(value)
+    else:
+        return
+    if ok:
+        return
+    raise ConfigError([
+        f"{field} must be a finite number, got {value!r} at asof_ms={asof_ms!r}"
+    ])
 
 
 def _halt_flag(value, field, asof_ms):

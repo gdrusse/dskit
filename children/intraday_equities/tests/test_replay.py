@@ -656,6 +656,29 @@ def test_empty_open_on_a_live_bar_raises():
         ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
 
 
+def test_non_finite_open_raises_instead_of_green_empty_peer():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        {"symbol": "AAA", "asof_ms": 2_000, "open": float("nan"), "close": 11.5, "halted": True},
+        _bar("BBB", 1_000, 20.0, 20.5),
+        _bar("BBB", 2_000, 21.0, 21.5),
+    ]
+    with pytest.raises(ConfigError, match="open"):
+        ReplayAdapter(policy).replay(
+            bars,
+            [_decision("AAA", 1_000, lead=1), _decision("BBB", 1_000, lead=1)],
+        )
+    live = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        {"symbol": "AAA", "asof_ms": 2_000, "open": float("inf"), "close": 11.5, "halted": False},
+        _bar("BBB", 1_000, 20.0, 20.5),
+        _bar("BBB", 2_000, 21.0, 21.5),
+    ]
+    with pytest.raises(ConfigError, match="open"):
+        ReplayAdapter(policy).replay(live, [_decision("BBB", 1_000, lead=1)])
+
+
 def test_fill_suffix_fields_are_graded_and_friday_monday_closes_lead_390():
     raw = _raw_fill_policy()
     assert raw["fill_suffix_bars"] == raw["fill_bar_offset"] + 1170
