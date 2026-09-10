@@ -1175,20 +1175,10 @@ def test_one_fill_id_can_never_be_applied_twice():
     assert view.head_seq == 3
 
 
-def test_a_well_formed_replay_cash_flow_books_through_the_same_fold():
-    """Replay declarations share the cash-flow fold but carry replay evidence."""
-    st, chain = SeriesState(SERIES_ID, allow_replay_cash_flows=True), Chain()
-    body = cash_flow_body(amount="500")
-    body.update(
-        effective_at_ms=BASE_MS,
-        known_at_ms=BASE_MS,
-        source="replay",
-        evidence={"flow_id": "declared-1"},
-    )
-
-    fold(st, chain, "cash_flow", body, rid="cash_flow:declared-1")
-
-    assert st.snapshot().balances == {"USD": Decimal("500")}
+def test_series_state_has_no_public_replay_enable_switch():
+    """Only composition may construct the private replay scratch fold."""
+    with pytest.raises(TypeError, match="allow_replay_cash_flows"):
+        SeriesState(SERIES_ID, allow_replay_cash_flows=True)
 
 
 def test_a_production_fold_refuses_even_well_formed_replay_cash():
@@ -1219,7 +1209,7 @@ def test_a_production_fold_refuses_even_well_formed_replay_cash():
 )
 def test_a_malformed_replay_declaration_never_becomes_spendable(change):
     """Replay cash has one auditable declaration shape, never a loose source label."""
-    st, chain = SeriesState(SERIES_ID, allow_replay_cash_flows=True), Chain()
+    st, chain = new_state()
     body = cash_flow_body(amount="500")
     body.update(
         effective_at_ms=BASE_MS,

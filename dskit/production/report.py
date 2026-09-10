@@ -1008,35 +1008,17 @@ def _external_total(flows, at_ms):
 
 
 def _external_cash_flow_events(flows, at_ms):
-    """Return external-balance deltas at each flow's own effective instant.
+    """Return final effective external flows at their own instants.
 
-    A correction is the difference between its new external contribution and
-    the contribution it supersedes, matching the state fold's unbook-then-book
-    effect without shifting the delta to the next NAV observation.
+    A correction replaces, rather than incrementally adjusts, its superseded
+    flow. Thus a backdated correction carries its whole final amount at the
+    correction instant and leaves no residual at the original instant.
     """
-    reported = tuple(flows)
-    effective_bodies(reported, at_ms, "cash_flows")  # validate the complete input
-    active, events = {}, []
-    for body in reported:
-        if body["known_at_ms"] > at_ms:
-            continue
-        contribution = (
-            _decimal_of(body["amount"], "cash_flow.amount")
-            if body.get("external")
-            else _ZERO
-        )
-        superseded = body.get("supersedes")
-        if superseded is not None:
-            contribution -= active.pop(superseded, _ZERO)
-        active[body["id"]] = (
-            _decimal_of(body["amount"], "cash_flow.amount")
-            if body.get("external")
-            else _ZERO
-        )
-        if contribution:
-            events.append((body["effective_at_ms"], contribution, body["id"]))
-    events.sort(key=lambda event: (event[0], event[2]))
-    return tuple((instant, amount) for instant, amount, _identifier in events)
+    return tuple(
+        (body["effective_at_ms"], _decimal_of(body["amount"], "cash_flow.amount"))
+        for body in effective_bodies(tuple(flows), at_ms, "cash_flows")
+        if body.get("external")
+    )
 
 
 # ---------------------------------------------------------------------------

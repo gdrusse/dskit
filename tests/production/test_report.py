@@ -288,7 +288,9 @@ def record_outcome(
     return identifier
 
 
-def record_cash_flow(ledger, flow_id, *, amount, external, at_ms=BASE_MS):
+def record_cash_flow(
+    ledger, flow_id, *, amount, external, at_ms=BASE_MS, supersedes=None
+):
     """Append one §6 `cash_flow`."""
     ledger.append(
         {
@@ -297,10 +299,10 @@ def record_cash_flow(ledger, flow_id, *, amount, external, at_ms=BASE_MS):
             "body": {
                 "effective_at_ms": at_ms,
                 "known_at_ms": at_ms,
-                "supersedes": None,
+                "supersedes": supersedes,
                 "currency": "USD",
                 "amount": amount,
-                "flow_kind": "deposit" if external else "fee",
+                "flow_kind": "adjustment" if supersedes else ("deposit" if external else "fee"),
                 "external": external,
                 "source": "venue",
                 "evidence": {},
@@ -855,6 +857,32 @@ def test_report_money_weighted_return_uses_the_cash_flows_effective_instant():
     )
     record_tick(ledger, "tick-2", BASE_MS + YEAR_MS // 2, [], nav="600")
     record_tick(ledger, "tick-3", BASE_MS + YEAR_MS, [], nav="125")
+
+    found = a_report(ledger).performance(BASE_MS + YEAR_MS)
+
+    assert found.money_weighted.quantize(Decimal("0.000000001")) == Decimal("-0.937500000")
+
+
+def test_backdated_correction_replaces_the_original_mwr_flow_date():
+    """A correction's final amount belongs wholly to its own effective instant."""
+    ledger = a_ledger()
+    record_cash_flow(
+        ledger, "cash_flow:initial", amount="1000", external=True, at_ms=BASE_MS
+    )
+    record_tick(ledger, "tick-1", BASE_MS, [], nav="1000")
+    original_at = BASE_MS + YEAR_MS // 2
+    record_cash_flow(
+        ledger, "cash_flow:original", amount="100", external=True, at_ms=original_at
+    )
+    record_cash_flow(
+        ledger,
+        "cash_flow:correction",
+        amount="200",
+        external=True,
+        at_ms=BASE_MS + YEAR_MS // 4,
+        supersedes="cash_flow:original",
+    )
+    record_tick(ledger, "tick-2", BASE_MS + YEAR_MS, [], nav="87.5")
 
     found = a_report(ledger).performance(BASE_MS + YEAR_MS)
 
