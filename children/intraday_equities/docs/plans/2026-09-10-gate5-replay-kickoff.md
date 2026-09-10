@@ -10,11 +10,14 @@ result this task builds on, on this exact surface. After that, fresh
 reviewer/rewriter agents run every skeptic round and every follow-up fix,
 one at a time, never in parallel.
 **Suggested branch:** `cursor/gate5-replay-<id>`, branched from
-`origin/claude/phase1-recovery-seven-gates-ao4zdj` — **not** `main`. ADR-0114
-and the completed Gate 1/Gate 2 work this plan builds on live only on that
-branch; `main`'s decision-log tops out at the unrelated ADR-0112. Verify
-ADR-0114 is actually present in `docs/architecture/decision-log.md` after
-checkout before doing anything else.
+`origin/claude/final-model-replay-gate-kickoffs` — **not** `main` and
+**not** `claude/phase1-recovery-seven-gates-ao4zdj` directly. That branch is
+`phase1-recovery-seven-gates-ao4zdj`'s tip (has ADR-0114 and the completed
+Gate 1/Gate 2 work) with all four Gate 3-6 kickoff docs already applied on
+top, so you don't need to hunt for this file on a branch that doesn't carry
+it. `main`'s decision-log tops out at the unrelated ADR-0112 — do not use
+it. Verify ADR-0114 is actually present in `docs/architecture/decision-log.md`
+after checkout before doing anything else.
 
 **Push every round.** Commit and `git push` after every commit — the first
 pass, every skeptic fix, everything. Do not batch pushes to the end; nobody
