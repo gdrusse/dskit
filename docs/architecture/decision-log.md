@@ -6858,3 +6858,158 @@ as the same release.
 **Scope.** Synthetic contract tests and validate/plan refusal only. No market
 data, HPO/refit execution, pre-March read, `path.csv` edit, or model-policy
 change is authorized.
+
+---
+
+## ADR-0117 — Gate 4: real forecast bundle and confirmed caps over the ruled §11 item 3 zero-drift inverse (ADR-0114 Phase 4)
+
+**Status:** proposed (2026-09-10, GLM 5.2 first implementer pass, Gate 4).
+Not self-accepted — this entry extends accepted ADR-0114's Phase 4 with the
+owner's §11 item 3 ruling and the class inventory that ruling enables, and
+waits for owner/skeptic review per root `CLAUDE.md`'s ADR discipline.
+
+**§11 item 3 — RULED (2026-09-10, owner; recorded in
+`children/intraday_equities/docs/plans/2026-09-10-gate4-forecast-bundle-kickoff.md`,
+which is the ruling's carrier).** The P16 label is
+`y(t,h) = [r_i(t,t+h) - beta_i,t * r_SPY(t,t+h)] / (sigma_i,t * sqrt(h))`
+per `intraday_equities/nodes.py`'s `_LeadLabel` (causal trailing
+`beta`/`sigma`, `beta_window` 3900 min, `vol_window` 390 min, `vol_floor`
+1e-8). `r_SPY(t,t+h)` is unknown at decision time `t`, so the owner rules a
+**zero-drift market reference** — `E[r_SPY(t,t+h)] ~= 0` over the model's
+short forecast horizons — making the point-in-time gross-return forecast:
+
+```
+gross_return_i(t,h) = yhat_i(t,h) * sigma_i,t * sqrt(h)
+```
+
+using the SAME causal `sigma_i,t` the label used at training/prediction
+time, read from the model bundle's manifest / the same feature pipeline,
+never recomputed with different parameters. No SPY-forecast model is
+authorized by the ruling or by ADR-0114's file inventory; none is proposed
+here. `configs/run-mean-confirmation.json` and every March-May row stay
+untouched and unreadable (§11 item 4 plus the plan's §8), independent of
+this ruling.
+
+**Context.** ADR-0114 Phase 4 blocked `forecast_bundle.py`'s core
+conversion on §11 item 3; that item is now ruled (above), unblocking this
+gate's scope exactly as the kickoff file states it: point-in-time
+conversion from label units to gross fractional returns plus
+assembly/validation of the ADR-0088/MIO bundle, and the capital node
+requiring the pinned confirmed `(symbol, lead)` cap. Phase 4's remaining
+unruled half — the March-May confirmation EVIDENCE that would produce a
+real deployable cap artifact, `pi_upper`, `U_mu`, and joint `U_r`
+calibration — stays blocked (§11 item 4): this gate builds the CONTRACTS
+(cap artifact validation, bundle assembly, unit conversion) and their
+synthetic tests only, never calibration and never a real cap.
+
+**Decision.**
+
+- `children/intraday_equities/intraday_equities/forecast_bundle.py` (new,
+  tier 3; no node kinds — plain, directly-callable value classes, the
+  `final_model.py` precedent):
+  - `gross_return(yhat, sigma, lead)` — the ruled inverse as one
+    module-level pure function (one owner; both the mean and every
+    scenario residual convert through it). Refuses non-finite inputs,
+    `sigma <= 0`, and a non-integer/`< 1` lead.
+  - `ForecastBundle(release_id, rows, label_contract=None)` — the
+    fail-closed bundle assembler. Each input row carries
+    `entity`, `decision_ts`, `lead`, `price`, `yhat`, `sigma_t`, `beta_t`,
+    `pi_upper`, `weights`, `scenarios` (label-unit residuals), `label`
+    (the contract that produced `sigma_t`), and `known_at` — a
+    default-deny map keyed EXACTLY by the closed point-in-time vocabulary
+    `{sigma, beta, reference, price, yhat, pi_upper, scenarios}`, every
+    value at or before `decision_ts`. An unknown `known_at` key — e.g. an
+    `outcome` — refuses: future knowledge has no path into this bundle
+    under the zero-drift ruling. `sigma_t` must exceed the pinned
+    contract's `vol_floor` (the label's own refusal bound). Every row's
+    `label` must equal the pinned contract exactly — sigma may never be
+    recomputed with different parameters. All rows must share one
+    `decision_ts`, one `lead`, one `weights` list, one unit, one release
+    identity (mixed horizons or mismatched scenario sets refuse, plan §6
+    Phase 4 item 3). The default pinned contract is the training label's
+    own knobs, READ from `nodes.py`'s `DEFAULT_VOL_WINDOW_MINUTES` /
+    `DEFAULT_BETA_WINDOW_MINUTES` / `DEFAULT_VOL_FLOOR` (never restated),
+    with reference `SPY` and scale `vol`. Output rows are the
+    `EquityKellyMIO` bundle shape (BUNDLE_FIELDS below) plus `mu_gross`,
+    `reference_policy`, and the `known_at` audit trail.
+  - `ConfirmedCaps(artifact)` + `ConfirmedCaps.problems(artifact)` — the
+    pinned confirmed-cap artifact validator: `schema_version` 1;
+    non-empty `model_release_id`; `deployment_eligible` must be true
+    (development caps always refuse deployment); `evidence_scope` must
+    not be the P16 development scope (`final_gates.py`'s own scope
+    constant, exported for this pin — caps must come from evidence not
+    used to choose the P16 mask); `evidence_end_ms < generated_ms` (every
+    confirming outcome realized before the artifact was pinned);
+    `caps` a list of unique `{symbol, capped_horizon}` rows with
+    `capped_horizon` an integer 0..10 — the contiguous-from-h1 encoding
+    (cap N confirms h1..hN; 0 confirms nothing and the capital node
+    routes that symbol's rows out). Answers `capped_horizon(symbol)` and
+    `allows(symbol, lead)`.
+  - Constants: `ZERO_DRIFT` (`"zero-drift"`, the ruled reference policy,
+    the only one), `BUNDLE_UNIT` (`"gross_fractional_return"`),
+    `DEFAULT_REFERENCE` (`"SPY"`).
+- `children/intraday_equities/intraday_equities/nodes_capital.py`
+  (modify, tier 3): `BUNDLE_FIELDS` gains `lead`, `model_release_id`, and
+  `unit` — the fuller reader ADR-0114's Phase 4 anticipated (additive).
+  `_bundle_problems` requires a valid shared `lead` (integer 1..10, the
+  ten-head vocabulary imported from `final_model.HEADS`), a shared
+  non-empty `model_release_id`, and `unit == "gross_fractional_return"`
+  — a vol-scaled SPY-residual prediction is never accepted as a gross
+  return (plan §6 Phase 4 item 1). New required param
+  `cap_max_staleness_ms` (int >= 0, no default — same shape as
+  `bundle_max_staleness_ms`). New REQUIRED input `cap`, validated
+  through `ConfirmedCaps.problems` (imported — the validator has one
+  owner). Hard refusals in `validate_inputs`: missing `cap` input,
+  malformed cap, development (ineligible) cap, stale or future-dated cap
+  against `portfolio.asof_ms`, and a cap whose `model_release_id`
+  differs from the bundle's shared release (wrong model release). Row
+  routing-out in `instruments()` (reasons recorded in `evidence`, the
+  `stat_test` precedent): no cap entry for the symbol (absent), a zero
+  `capped_horizon`, and a lead above the confirmed cap. The required
+  `stat_test` survivors wire is unchanged.
+- `children/intraday_equities/intraday_equities/nodes.py` (modify,
+  minimal): export the label-knob constants
+  (`DEFAULT_VOL_WINDOW_MINUTES`, `DEFAULT_BETA_WINDOW_MINUTES`,
+  `DEFAULT_VOL_FLOOR`, `LABEL_PARAMS`, `LABEL_SCALES`) via `__all__` so
+  the pinned contract reads the ONE name — no behavior change.
+- `children/intraday_equities/intraday_equities/final_gates.py` (modify,
+  minimal): export its development evidence-scope constant as
+  `DEVELOPMENT_EVIDENCE_SCOPE` so `ConfirmedCaps` refuses
+  P16-development-scoped caps without importing a private name — no
+  behavior change.
+- `children/intraday_equities/intraday_equities/testing.py` (modify):
+  `SyntheticMioSource` emits a `cap` output (a synthetic, clearly-marked
+  demo cap matching its synthetic bundle's release) and its bundle rows
+  gain `lead`, `model_release_id`, `unit` — the demo's
+  fabricate-everything design, never real evidence.
+- `configs/run-mio-demo.json` (modify): wire `"cap": "$source.cap"` and
+  declare `cap_max_staleness_ms`; its identity hash changes (a new
+  graded param on the capital node) — inherent to the contract change;
+  the demo has no pinned run history to orphan. `run-mean-confirmation.json`
+  is NOT created or touched.
+- Tests (plan §10): `children/intraday_equities/tests/test_forecast_bundle.py`
+  (new) and `test_nodes_capital.py` (extended), beside their owners.
+
+**Verification permitted this gate.** The focused suites above, plus a
+`test_configs.py` shape test for the modified demo document
+(validate/plan only), ruff over touched Python paths, and
+`git diff --check`. No market-data read, no March-May read, no
+`run-mean-confirmation.json`, no HPO/refit/replay execution, no
+`path.csv` edit, no real-money configuration.
+
+**Scope.** Exactly the files named above. Nothing graduates to `dskit/`
+in this gate: the conversion binds this child's label contract and the
+ruled zero-drift SPY reference policy (domain, tier 3), and no
+calibration estimator exists to graduate while §11 item 4 is open. No
+SPY-forecast model is built or proposed. This entry resolves no other
+§11 item and does not modify ADR-0088/0108/0111/0113/0114/0115/0116 —
+it extends ADR-0114's Phase 4 under its item 3 ruling.
+
+**Consequences.** Once accepted, `EquityKellyMIO` cannot size any name
+without a deployable, fresh, release-matching confirmed cap — fail-closed
+by construction until the owner's March-May confirmation phase later
+produces a real cap artifact. The demo document keeps running only
+because its synthetic source fabricates one, clearly marked as demo
+data. Bundle rows in label units (or without `unit`) refuse at the
+capital node; the assembler is the only sanctioned producer of
+gross-unit rows.
