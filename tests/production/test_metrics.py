@@ -1045,6 +1045,14 @@ class _PortfolioAdapter(EventAdapter):
         return {"portfolio": {"cash": record["cash"]}}
 
 
+class _PortfolioDrawdownAdapter(EventAdapter):
+    """The skeptic's second proof case (2026-09-10): `drawdown` was wrongly
+    excluded from `MONEY_FIELDS` as a dimensionless ratio."""
+
+    def fields(self, record):
+        return {"portfolio": {"drawdown": record["drawdown"]}}
+
+
 class TestAMoneyFieldNeverTouchesFloatInAnEventBody:
     """`EventCatalogue.validate` checked category/field NAMES only and never
     called the existing money rule (`base.reject_money_floats`), so a float
@@ -1063,6 +1071,24 @@ class TestAMoneyFieldNeverTouchesFloatInAnEventBody:
         adapter = _PortfolioAdapter({})
         event = adapter.event({"cash": Decimal("12345.67")})
         assert event["portfolio"]["cash"] == Decimal("12345.67")
+
+    def test_a_float_under_drawdown_refuses(self):
+        """A skeptic review (2026-09-10) found `drawdown` wrongly excluded
+        from `MONEY_FIELDS` as a supposed dimensionless ratio like `twr`/
+        `mwr`: records.ValuePoint.drawdown is Decimal (cumulative minus the
+        running peak, "never positive"), and Accounting.drawdown() returns
+        a Fraction that PaperAccounting._drawdown wraps in decimal_of(...)
+        — the same currency treatment as `peak`, its computed pair."""
+        assert "drawdown" in vocab.MONEY_FIELDS
+        adapter = _PortfolioDrawdownAdapter({})
+        with pytest.raises(ProductionError) as caught:
+            adapter.event({"drawdown": -1234.56})
+        assert "drawdown" in str(caught.value)
+
+    def test_a_decimal_under_drawdown_is_accepted(self):
+        adapter = _PortfolioDrawdownAdapter({})
+        event = adapter.event({"drawdown": Decimal("-1234.56")})
+        assert event["portfolio"]["drawdown"] == Decimal("-1234.56")
 
 
 class TestEventReadingsRecordsTheSafeAggregatesAndNothingElse:

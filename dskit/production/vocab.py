@@ -585,9 +585,14 @@ MONEY_FIELDS = (
     "mid",
     # ADR-0117's portfolio/capital catalogue category (§6): every field
     # there that names a raw currency amount rather than a ratio. Ratio
-    # fields in the same category (`twr`, `mwr`, `drawdown`,
-    # `concentration`, `risk_cap_utilization`) are deliberately excluded —
-    # they are dimensionless and stay legal as float.
+    # fields in the same category (`twr`, `mwr`, `concentration`,
+    # `risk_cap_utilization`) are deliberately excluded — they are
+    # dimensionless and stay legal as float. `drawdown` is NOT one of
+    # them: records.ValuePoint.drawdown is Decimal (cumulative minus the
+    # running peak, a currency amount, "never positive" — records.py),
+    # and Accounting.drawdown() returns a Fraction that
+    # PaperAccounting._drawdown wraps in decimal_of(...), the same
+    # treatment as `peak` below, with which it is computed as one pair.
     "starting_cash",
     "settled_external_flow",
     "cash",
@@ -598,6 +603,7 @@ MONEY_FIELDS = (
     "unrealized_pnl",
     "net_pnl",
     "peak",
+    "drawdown",
 )
 
 #: 3 keeps HALTED (operator action needed), 5 takes a readiness NO-GO or a

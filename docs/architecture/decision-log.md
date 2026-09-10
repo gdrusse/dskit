@@ -6924,7 +6924,9 @@ because they decide what may become a metric at all:
    `buying_power`, `gross_exposure`, `net_exposure`, `realized_pnl`,
    `unrealized_pnl`, `net_pnl`, `fees` and `peak` with no refusal (a
    skeptic review, 2026-09-10, proved this by construction). Both gaps are
-   now closed: `MONEY_FIELDS` names every one of those fields, and
+   now closed for that list, plus `drawdown` (a second skeptic pass,
+   2026-09-10, found it wrongly excluded — see the second correction
+   below): `MONEY_FIELDS` names every one of those fields, and
    `EventCatalogue.validate` calls `reject_money_floats` against the body,
    refusing a `float` under any of them at any depth — the same rule
    `records.py` and `ledger.py` already enforce on their own payloads,
@@ -7158,6 +7160,27 @@ event body. This is a SECOND behaviour change beyond the one above: because
 refuses in a record or ledger body too, wherever it previously did not —
 the correct outcome, since every one of them is a currency amount, but a
 real widening of what those two already-shipped refusals catch.
+
+**Second correction (2026-09-10, second skeptic review).** The first
+correction still left `drawdown` excluded, with a comment misclassifying
+it as a dimensionless ratio like `twr`/`mwr`/`concentration`/
+`risk_cap_utilization`. It is not: `records.ValuePoint.drawdown` is typed
+`Decimal` (cumulative minus the running peak — "never positive"), and
+`Accounting.drawdown()` returns a `Fraction` that `PaperAccounting._drawdown`
+wraps in `decimal_of(...)`, the same currency treatment as `peak`, its
+computed pair. Fixed: `MONEY_FIELDS` now also names `drawdown`. This
+narrows, but does not remove, the honest caveat here — the money-safety
+gap is closed for `MONEY_FIELDS`'s current membership and this same
+pattern happening again to `twr`/`mwr`/`concentration`/
+`risk_cap_utilization` was checked and rejected (each has no Decimal-typed
+precedent), not proven structurally impossible for a future field. A
+pinning test against `records.py`'s own Decimal-typed field names was
+considered and not added: those names (`realised`, `unrealised`,
+`cumulative`, `external`, …) are deliberately renamed at the event/vocab
+boundary (`realized_pnl`, `unrealized_pnl`, `net_pnl`,
+`settled_external_flow`, …), so a name-for-name pin would either misfire
+on every renamed field or require a mapping table — a redesign, not a
+small addition.
 
 ### Scope
 

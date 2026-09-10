@@ -314,8 +314,10 @@ EXPECTED_MEMBERS = {
         "mid",
         # ADR-0117's portfolio/capital catalogue category (§6): every
         # currency-amount field there; the ratio fields in the same
-        # category (twr, mwr, drawdown, concentration,
-        # risk_cap_utilization) are deliberately excluded.
+        # category (twr, mwr, concentration, risk_cap_utilization) are
+        # deliberately excluded. drawdown is a currency amount too (a
+        # second skeptic pass, 2026-09-10, found it wrongly excluded as
+        # a ratio) and belongs here, not with the ratios.
         "starting_cash",
         "settled_external_flow",
         "cash",
@@ -326,6 +328,7 @@ EXPECTED_MEMBERS = {
         "unrealized_pnl",
         "net_pnl",
         "peak",
+        "drawdown",
     ),
     "CACHE_STATES": ("current", "stale"),
     "AUTHORITY_EVENTS": ("issue", "disarm", "revoke", "expire"),
