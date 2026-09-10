@@ -470,9 +470,17 @@ class PerformanceCalculator:
             The supported root, or ``None`` below two observations or when
             the dated equation has no bracketed root.
         """
+        return self._money_weighted_return(self._observation_cash_flows())
+
+    def _money_weighted_return(self, external_flows):
+        """Solve MWR with ``(effective_at_ms, amount)`` external flows."""
         if len(self.observations) < 2:
             return None
-        cash_flows = self._cash_flows()
+        first, last = self.observations[0], self.observations[-1]
+        cash_flows = [(first.at_ms, -first.nav)]
+        cash_flows.extend((instant, -amount) for instant, amount in external_flows)
+        cash_flows.append((last.at_ms, last.nav))
+        cash_flows = tuple(cash_flows)
         lower, upper = _MWR_FLOOR, Decimal(1)
         low_value = self._present_value(cash_flows, lower)
         high_value = self._present_value(cash_flows, upper)
@@ -496,16 +504,13 @@ class PerformanceCalculator:
                 lower, low_value = middle, value
         return (lower + upper) / 2
 
-    def _cash_flows(self):
-        """Return investor-signed dated flows plus terminal account value."""
-        first = self.observations[0]
-        flows = [(first.at_ms, -first.nav)]
+    def _observation_cash_flows(self):
+        """Return external-flow deltas dated at their observation instants."""
+        flows = []
         for previous, current in zip(self.observations, self.observations[1:]):
             delta = current.external - previous.external
             if delta:
-                flows.append((current.at_ms, -delta))
-        last = self.observations[-1]
-        flows.append((last.at_ms, last.nav))
+                flows.append((current.at_ms, delta))
         return tuple(flows)
 
     def _present_value(self, cash_flows, rate):
@@ -841,14 +846,24 @@ class Report:
         PerformanceReturns
             Both returns over value points whose recorded NAV is present.
         """
+        flows = self._history.cash_flows(0)
         observations = tuple(
             PerformanceObservation(point.at_ms, point.nav, point.external)
             for point in self.value_curve(at_ms)
             if point.nav is not None
         )
         calculator = PerformanceCalculator(observations)
+        dated_flows = ()
+        if len(observations) >= 2:
+            first, last = observations[0].at_ms, observations[-1].at_ms
+            dated_flows = tuple(
+                (instant, amount)
+                for instant, amount in _external_cash_flow_events(flows, at_ms)
+                if first < instant <= last
+            )
         return PerformanceReturns(
-            calculator.time_weighted_return(), calculator.money_weighted_return()
+            calculator.time_weighted_return(),
+            calculator._money_weighted_return(dated_flows),
         )
 
     def _ticks(self, at_ms):
@@ -990,6 +1005,38 @@ def _external_total(flows, at_ms):
         ),
         _ZERO,
     )
+
+
+def _external_cash_flow_events(flows, at_ms):
+    """Return external-balance deltas at each flow's own effective instant.
+
+    A correction is the difference between its new external contribution and
+    the contribution it supersedes, matching the state fold's unbook-then-book
+    effect without shifting the delta to the next NAV observation.
+    """
+    reported = tuple(flows)
+    effective_bodies(reported, at_ms, "cash_flows")  # validate the complete input
+    active, events = {}, []
+    for body in reported:
+        if body["known_at_ms"] > at_ms:
+            continue
+        contribution = (
+            _decimal_of(body["amount"], "cash_flow.amount")
+            if body.get("external")
+            else _ZERO
+        )
+        superseded = body.get("supersedes")
+        if superseded is not None:
+            contribution -= active.pop(superseded, _ZERO)
+        active[body["id"]] = (
+            _decimal_of(body["amount"], "cash_flow.amount")
+            if body.get("external")
+            else _ZERO
+        )
+        if contribution:
+            events.append((body["effective_at_ms"], contribution, body["id"]))
+    events.sort(key=lambda event: (event[0], event[2]))
+    return tuple((instant, amount) for instant, amount, _identifier in events)
 
 
 # ---------------------------------------------------------------------------

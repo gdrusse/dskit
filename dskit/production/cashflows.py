@@ -146,6 +146,10 @@ class CashFlowOverride(ABC):
         """Return standalone flows supplied by this override; normally none."""
         return ()
 
+    def _validate(self, schedule):
+        """Validate schedule-relative facts unavailable to the value alone."""
+        return None
+
     def _target(self):
         """Return the base occurrence this override targets, or None."""
         return None
@@ -351,6 +355,13 @@ class CorrectCashFlow(CashFlowOverride):
             self.supersedes_flow_id,
         ),)
 
+    def _validate(self, schedule):
+        """Refuse a correction whose target cannot have been booked earlier."""
+        if self.supersedes_flow_id not in schedule._flow_ids_before(self.effective_at):
+            raise ValueError(
+                f"correction {self.override_id!r} must supersede an earlier flow"
+            )
+
 
 @dataclass(frozen=True)
 class RecurringCashFlowSchedule:
@@ -428,6 +439,7 @@ class RecurringCashFlowSchedule:
                 raise ValueError(f"override {override.override_id!r} targets no occurrence")
             for flow in override._standalone(self.schedule_id, self.currency):
                 self._check_emitted(flow)
+            override._validate(self)
 
     def materialize(self, start, end_exclusive):
         """Return declarations in the normalized half-open instant window."""
@@ -488,6 +500,18 @@ class RecurringCashFlowSchedule:
             return False
         return _utc(local, "override occurrence_at") == _utc(
             self._occurrence(days // self.interval_days), "occurrence"
+        )
+
+    def _flow_ids_before(self, instant):
+        """Return ids this schedule can emit strictly before ``instant``."""
+        end_utc = _utc(instant, "correction effective_at")
+        flows = list(self._recurrences(end_utc))
+        for override in self.overrides:
+            flows.extend(override._standalone(self.schedule_id, self.currency))
+        return frozenset(
+            flow.flow_id
+            for flow in flows
+            if _utc(flow.effective_at, "effective_at") < end_utc
         )
 
     def _check_emitted(self, flow):

@@ -157,7 +157,7 @@ def test_restarting_a_window_reuses_ids_and_orders_equal_instants_by_id():
         "placeholder-biweekly", anchor, 14, "USD", Decimal("500"), timezone,
         overrides=(
             WithdrawalCashFlow("z-withdrawal", anchor, Decimal("10")),
-            CorrectCashFlow("a-correction", anchor, "prior-flow", Decimal("25")),
+            WithdrawalCashFlow("a-withdrawal", anchor, Decimal("25")),
         ),
     )
 
@@ -232,3 +232,19 @@ def test_placeholder_initial_cash_replaces_only_the_first_occurrence():
 
     assert [flow.amount for flow in flows] == [Decimal("10000"), Decimal("500")]
     assert len({flow.flow_id for flow in flows}) == 2
+
+
+def test_a_correction_for_an_unbooked_schedule_flow_refuses_early():
+    """A schedule rejects arbitrary supersedes ids before replay reaches the fold."""
+    timezone = ZoneInfo("America/New_York")
+    anchor = datetime(2026, 1, 2, 9, 30, tzinfo=timezone)
+
+    with pytest.raises(ValueError, match="earlier flow"):
+        RecurringCashFlowSchedule(
+            "placeholder-biweekly", anchor, 14, "USD", Decimal("500"), timezone,
+            overrides=(
+                CorrectCashFlow(
+                    "correction", anchor + timedelta(days=1), "arbitrary", Decimal("450")
+                ),
+            ),
+        )

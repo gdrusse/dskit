@@ -2143,6 +2143,20 @@ def test_ordinary_composition_refuses_a_scheduled_cash_flow_composer(
         composer.build(shadow_document, cash_flow_composer=cash_flows)
 
 
+def test_ordinary_fold_refuses_a_directly_appended_replay_declaration(
+    shadow_document, composer
+):
+    """The replay-only boundary survives bypassing the composer argument guard."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(shadow_document)
+    record = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
+
+    with pytest.raises(ProductionError, match="replay-enabled"):
+        bundles[5].ledger.append(record)
+
+    assert bundles[5].state.snapshot().balances == {}
+
+
 def test_replay_composition_accepts_declared_cash_flow_records(
     shadow_document, composer
 ):

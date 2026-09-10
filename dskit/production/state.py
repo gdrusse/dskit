@@ -962,6 +962,9 @@ class SeriesState:
     max_history : int, default DEFAULT_MAX_HISTORY
         How many decision legs ``StateView.decision_history`` keeps
         (``>= 1``); the newest win.
+    allow_replay_cash_flows : bool, default False
+        Whether this is an explicitly replay-enabled scratch fold. Production
+        folds keep the default and accept settled cash only.
 
     Raises
     ------
@@ -986,14 +989,19 @@ class SeriesState:
         state.snapshot().breaker  # 'active'
     """
 
-    def __init__(self, series_id, max_history=DEFAULT_MAX_HISTORY):
+    def __init__(
+        self, series_id, max_history=DEFAULT_MAX_HISTORY, *, allow_replay_cash_flows=False
+    ):
         problems = []
         _check_str(problems, "series_id", series_id)
         check_int_param(problems, "max_history", max_history, ge=1)
+        if not isinstance(allow_replay_cash_flows, bool):
+            problems.append("allow_replay_cash_flows must be a bool")
         if problems:
             raise ProductionError(problems)
         self._series_id = series_id
         self._max_history = max_history
+        self._allow_replay_cash_flows = allow_replay_cash_flows
         self._head_seq, self._head_hash = 0, GENESIS_HASH
         self._economic_seq = 0
         self._book = PositionBook()
@@ -1284,9 +1292,10 @@ class SeriesState:
         self._balances[currency] = self._balances.get(currency, _ZERO) + amount
         self._cash_flows[record_id] = (currency, amount, None)
 
-    @staticmethod
-    def _check_replay_cash_flow(problems, body, record_id):
+    def _check_replay_cash_flow(self, problems, body, record_id):
         """Validate the auditable shape a replay composer alone emits."""
+        if not self._allow_replay_cash_flows:
+            problems.append("replay cash requires an explicitly replay-enabled fold")
         if body.get("known_at_ms") != body.get("effective_at_ms"):
             problems.append(
                 "a replay cash flow must be known at its declared effective instant"

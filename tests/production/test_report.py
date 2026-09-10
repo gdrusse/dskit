@@ -842,6 +842,25 @@ def test_report_performance_uses_the_value_curves_separated_external_column():
     assert a_report(ledger).value_curve(BASE_MS + YEAR_MS)[-1].cumulative == Decimal("0")
 
 
+def test_report_money_weighted_return_uses_the_cash_flows_effective_instant():
+    """A between-tick deposit is dated when effective, not at the next NAV tick."""
+    ledger = a_ledger()
+    record_cash_flow(
+        ledger, "cash_flow:initial", amount="1000", external=True, at_ms=BASE_MS
+    )
+    record_tick(ledger, "tick-1", BASE_MS, [], nav="1000")
+    record_cash_flow(
+        ledger, "cash_flow:deposit", amount="500", external=True,
+        at_ms=BASE_MS + YEAR_MS // 4,
+    )
+    record_tick(ledger, "tick-2", BASE_MS + YEAR_MS // 2, [], nav="600")
+    record_tick(ledger, "tick-3", BASE_MS + YEAR_MS, [], nav="125")
+
+    found = a_report(ledger).performance(BASE_MS + YEAR_MS)
+
+    assert found.money_weighted.quantize(Decimal("0.000000001")) == Decimal("-0.937500000")
+
+
 # ---------------------------------------------------------------------------
 # The divergence classifier — a table, and its deliberate default
 # ---------------------------------------------------------------------------

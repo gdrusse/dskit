@@ -1128,7 +1128,9 @@ def bundles_for(
         rng=random.Random(DEFAULT_JITTER_SEED),
     )
 
-    state = SeriesState(document.series_id)
+    state = SeriesState(
+        document.series_id, allow_replay_cash_flows=tape is not None
+    )
     ledger = ledger_class(document)(
         serve_root,
         process_id,
