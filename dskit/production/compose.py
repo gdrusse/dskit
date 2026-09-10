@@ -49,7 +49,7 @@ import inspect
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone as utc_timezone
+from datetime import datetime, timedelta, timezone as utc_timezone
 from types import MappingProxyType
 
 from dskit.onboarding import OnboardingRoot
@@ -149,10 +149,11 @@ _LOG = get_logger("compose")
 class ReplayCashFlowComposer:
     """Turn one declared schedule into existing replay ledger records.
 
-    This object only materializes declarations.  It has no settlement flag,
+    This object only materializes declarations. It has no settlement flag,
     does not append, and ordinary composition refuses it; the replay owner
     chooses a half-open window and writes the returned records to its scratch
-    ledger.
+    ledger. Instances are immutable so a bound authorization cannot change
+    schedules.
 
     Parameters
     ----------
@@ -168,12 +169,18 @@ class ReplayCashFlowComposer:
         # -> 'cash_flow'
     """
 
+    __slots__ = ("_schedule",)
+
     def __init__(self, schedule):
         if not isinstance(schedule, RecurringCashFlowSchedule):
             raise ProductionError(
                 [f"schedule must be a RecurringCashFlowSchedule, got {schedule!r}"]
             )
-        self._schedule = schedule
+        object.__setattr__(self, "_schedule", schedule)
+
+    def __setattr__(self, name, value):
+        """Refuse mutation after the schedule has been bound."""
+        raise AttributeError("ReplayCashFlowComposer is immutable")
 
     def due(self, start, end_exclusive):
         """Return deterministic cash-flow records in the requested window."""
@@ -205,6 +212,28 @@ class ReplayCashFlowComposer:
                 "evidence": {"flow_id": flow.flow_id},
             },
         }
+
+    def _authorizes(self, record):
+        """Return whether this exact record derives from the bound schedule."""
+        try:
+            if not isinstance(record, dict) or set(record) != {"kind", "id", "body"}:
+                return False
+            body = record.get("body")
+            if not isinstance(body, dict):
+                return False
+            at_ms = body.get("effective_at_ms")
+            if isinstance(at_ms, bool) or not isinstance(at_ms, int) or at_ms < 0:
+                return False
+            epoch = datetime(1970, 1, 1, tzinfo=utc_timezone.utc)
+            start = epoch + timedelta(milliseconds=at_ms)
+            expected = self.due(start, start + timedelta(milliseconds=1))
+        except (OverflowError, ProductionError, TypeError, ValueError):
+            return False
+        return any(
+            candidate["id"] == record["id"]
+            and canonical_hash(candidate) == canonical_hash(record)
+            for candidate in expected
+        )
 
     @staticmethod
     def _record_id(flow_id):
@@ -1096,7 +1125,7 @@ def bundles_for(
     problems = []
     resolved = _resolved_families(problems, document, row)
     if cash_flow_composer is not None:
-        if not isinstance(cash_flow_composer, ReplayCashFlowComposer):
+        if type(cash_flow_composer) is not ReplayCashFlowComposer:
             problems.append(
                 "cash_flow_composer must be a ReplayCashFlowComposer or None, "
                 f"got {cash_flow_composer!r}"
@@ -1130,7 +1159,7 @@ def bundles_for(
 
     state = (
         SeriesState(document.series_id) if tape is None
-        else SeriesState._for_replay(document.series_id, tape)
+        else SeriesState._for_replay(document.series_id, tape, cash_flow_composer)
     )
     ledger = ledger_class(document)(
         serve_root,

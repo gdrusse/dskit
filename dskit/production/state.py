@@ -137,8 +137,6 @@ _log = get_logger("state")
 
 _ZERO = Decimal(0)
 
-_REPLAY_CAPABILITY = object()
-
 #: The vocabulary members this module spells, each pinned to its tuple at
 #: import so a renamed member cannot leave a stale literal behind.
 _ACTIVE, _DERIVED, _ISSUE, _SUBMIT = "active", "derived", "issue", "submit"
@@ -998,7 +996,7 @@ class SeriesState:
             raise ProductionError(problems)
         self._series_id = series_id
         self._max_history = max_history
-        self._replay_capability = None
+        self._replay_authorizer = None
         self._head_seq, self._head_hash = 0, GENESIS_HASH
         self._economic_seq = 0
         self._book = PositionBook()
@@ -1038,19 +1036,28 @@ class SeriesState:
         return self._series_id
 
     @classmethod
-    def _for_replay(cls, series_id, tape, max_history=DEFAULT_MAX_HISTORY):
-        """Construct the tape-bound scratch fold used only by composition."""
+    def _for_replay(
+        cls, series_id, tape, cash_flow_composer, max_history=DEFAULT_MAX_HISTORY
+    ):
+        """Construct a tape-and-composer-bound scratch fold."""
         from dskit.production.bundles import ReplayTape
+        from dskit.production.compose import ReplayCashFlowComposer
 
         problems = []
         if cls is not SeriesState:
             problems.append("only SeriesState may bind replay capability")
         if not isinstance(tape, ReplayTape):
             problems.append("replay capability requires a ReplayTape")
+        if (
+            cash_flow_composer is not None
+            and type(cash_flow_composer) is not ReplayCashFlowComposer
+        ):
+            problems.append("replay cash authorization requires an exact composer")
         if problems:
             raise ProductionError(problems)
         state = cls(series_id, max_history)
-        state._replay_capability = _REPLAY_CAPABILITY
+        if cash_flow_composer is not None:
+            state._replay_authorizer = cash_flow_composer._authorizes
         return state
 
     # -- the fold -----------------------------------------------------------
@@ -1309,8 +1316,14 @@ class SeriesState:
 
     def _check_replay_cash_flow(self, problems, body, record_id):
         """Validate the auditable shape a replay composer alone emits."""
-        if self._replay_capability is not _REPLAY_CAPABILITY:
-            problems.append("replay cash requires an explicitly replay-enabled fold")
+        record = {"kind": "cash_flow", "id": record_id, "body": body}
+        if (
+            self._replay_authorizer is None
+            or not self._replay_authorizer(record)
+        ):
+            problems.append(
+                "replay cash requires an exact declaration from the bound composer"
+            )
         if body.get("known_at_ms") != body.get("effective_at_ms"):
             problems.append(
                 "a replay cash flow must be known at its declared effective instant"

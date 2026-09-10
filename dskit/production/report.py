@@ -1011,8 +1011,8 @@ def _external_cash_flow_events(flows, at_ms):
     """Return final effective external flows at their own instants.
 
     A correction replaces, rather than incrementally adjusts, its superseded
-    flow. Thus a backdated correction carries its whole final amount at the
-    correction instant and leaves no residual at the original instant.
+    flow. A valid later correction therefore carries its whole final amount at
+    the correction instant and leaves no residual at the original instant.
     """
     return tuple(
         (body["effective_at_ms"], _decimal_of(body["amount"], "cash_flow.amount"))

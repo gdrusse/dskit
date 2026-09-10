@@ -2151,7 +2151,7 @@ def test_ordinary_fold_refuses_a_directly_appended_replay_declaration(
     bundles = composer.build(shadow_document)
     record = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
 
-    with pytest.raises(ProductionError, match="replay-enabled"):
+    with pytest.raises(ProductionError, match="composer"):
         bundles[5].ledger.append(record)
 
     assert bundles[5].state.snapshot().balances == {}
@@ -2170,3 +2170,37 @@ def test_replay_composition_accepts_declared_cash_flow_records(
         bundles[5].ledger.append(record)
 
     assert bundles[5].state.snapshot().balances == {"XYZ": Decimal("37")}
+
+
+def test_a_tape_without_a_bound_composer_cannot_authorize_replay_cash(
+    shadow_document, composer
+):
+    """Tape shape alone grants no authority to mint a replay deposit."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(shadow_document, tape=EmptyReplayTape())
+    forged = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
+
+    with pytest.raises(ProductionError, match="composer|authorize"):
+        bundles[5].ledger.append(forged)
+
+    assert bundles[5].state.snapshot().balances == {}
+
+
+def test_a_bound_composer_authorizes_only_its_exact_derived_record(
+    shadow_document, composer
+):
+    """Changing a composer-derived amount invalidates its record identity."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(
+        shadow_document, tape=EmptyReplayTape(), cash_flow_composer=cash_flows
+    )
+    emitted = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
+    forged = {
+        **emitted,
+        "body": {**emitted["body"], "amount": "9999999"},
+    }
+
+    with pytest.raises(ProductionError, match="composer|authorize"):
+        bundles[5].ledger.append(forged)
+
+    assert bundles[5].state.snapshot().balances == {}

@@ -1189,7 +1189,7 @@ def test_series_state_has_no_public_replay_enable_switch():
 
 def test_internal_replay_binding_requires_a_real_tape():
     with pytest.raises(ProductionError, match="ReplayTape"):
-        SeriesState._for_replay(SERIES_ID, object())
+        SeriesState._for_replay(SERIES_ID, object(), None)
 
 
 def test_a_public_subclass_cannot_forge_replay_authorization():
@@ -1213,7 +1213,7 @@ def test_a_production_fold_refuses_even_well_formed_replay_cash():
         evidence={"flow_id": "declared-1"},
     )
 
-    with pytest.raises(ProductionError, match="replay-enabled"):
+    with pytest.raises(ProductionError, match="composer"):
         st.apply(chain.env("cash_flow", body, rid="cash_flow:declared-1"))
 
     assert st.snapshot().balances == {}
