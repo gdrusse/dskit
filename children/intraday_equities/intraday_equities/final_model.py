@@ -30,7 +30,6 @@ artifact.
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 from collections.abc import Mapping
@@ -43,7 +42,7 @@ from dskit.pipeline.kinds_search import (
 )
 from dskit.pipeline.driver import resolve_json_artifact
 from dskit.pipeline.document import load_document
-from dskit.pipeline.libs.sklearn import ColumnSubsetEstimator, write_bundle
+from dskit.pipeline.libs.sklearn import ColumnSubsetEstimator
 from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.stats import cluster_bootstrap_t
 
@@ -65,13 +64,14 @@ __all__ = [
 
 
 class FinalRefit(Node):
-    """Refit ten frozen lead winners and write one verified bundle.
+    """Non-executable contract for a future attested final refit.
 
-    The node deliberately accepts only content-addressed JSON-artifact
-    manifests emitted by the final-HPO run.  Its inputs are the already
-    labelled ``h01``..``h10`` row streams; row construction remains with the
-    existing feature/label nodes and generic persistence remains with
-    :func:`write_bundle`.
+    The current driver has neither an immutable completed-run manifest nor
+    content-derived identities for its materialized input rows.  Mutable
+    ``result.json``/node/carry sidecars and config-supplied source/cache hashes
+    cannot prove ADR-0116 provenance.  Validation therefore fails closed even
+    after placeholders are filled.  Keep the assembly helpers below for the
+    future owner that supplies both trustworthy contracts.
     """
 
     role = "train"
@@ -91,7 +91,10 @@ class FinalRefit(Node):
     @classmethod
     def validate_params(cls, params):
         """Return problems with evidence pins and bundle schema knobs."""
-        problems = []
+        problems = [
+            "FinalRefit is non-executable: no trustworthy run attestation or "
+            "content-derived input identity contract is available"
+        ]
         reject_unknown_params(problems, params, cls._PARAMS)
         run_dir = params.get("hpo_run_dir")
         if not isinstance(run_dir, str) or not run_dir:
@@ -175,41 +178,11 @@ class FinalRefit(Node):
         return problems
 
     def _verified_hpo_outputs(self):
-        """Return manifests attested by this completed run's records and carry."""
-        run_dir = self.params["hpo_run_dir"]
-        try:
-            with open(os.path.join(run_dir, "result.json"), encoding="utf-8") as handle:
-                result = json.load(handle)
-            with open(os.path.join(run_dir, "carry.json"), encoding="utf-8") as handle:
-                carry = json.load(handle)
-        except (OSError, ValueError, TypeError):
-            raise ValueError("FinalRefit: final-HPO run metadata is missing or invalid") from None
-        run_hash = result.get("run_hash")
-        if (result.get("document_hash") != self.params["hpo_document_sha256"]
-                or result.get("state") != "ran" or result.get("exit_code") != 0
-                or type(run_hash) is not str or len(run_hash) != 64
-                or any(char not in "0123456789abcdef" for char in run_hash)):
-            raise ValueError("FinalRefit: final-HPO run identity is not complete and pinned")
-        outputs = {}
-        for head in HEADS:
-            key = f"scan_{head}"
-            matches = []
-            for path in glob.glob(os.path.join(run_dir, "nodes", f"*-{key}.json")):
-                try:
-                    with open(path, encoding="utf-8") as handle:
-                        record = json.load(handle)
-                except (OSError, ValueError, TypeError):
-                    continue
-                if (record.get("node") == key and record.get("status") == "ok"):
-                    matches.append(record)
-            expected = self.params["hpo_evidence"][head]
-            carried = carry.get(key, {}).get("hpo_ledger") if isinstance(carry, dict) else None
-            if (len(matches) != 1
-                    or matches[0].get("outputs", {}).get("hpo_ledger") != expected
-                    or carried != expected):
-                raise ValueError(f"FinalRefit: {key} producer record/carry does not attest evidence")
-            outputs[head] = expected
-        return outputs
+        """Refuse mutable sidecars until the driver owns a run attestation."""
+        raise ValueError(
+            "FinalRefit: no trustworthy run attestation binds the HPO document, "
+            "run, node outputs, and carry"
+        )
 
     def _winner_from_evidence(self, head, evidence):
         """Rebuild the frozen inventory, ledger, and 1-SE ruling."""
@@ -292,56 +265,11 @@ class FinalRefit(Node):
         return params
 
     def run(self, ctx, inputs):
-        """Resolve winners, refit the ten heads, and write one bundle."""
-        problems = self.validate_inputs(inputs)
-        if problems:
-            raise ValueError(f"FinalRefit: {'; '.join(problems)}")
-        winners = self._winners()
-        base_params = self._base_params()
-        fitted_params = {head: {**base_params, **winners[head]} for head in HEADS}
-        features = list(self.params["feature_order"])
-        drop = list(lean_feature_drop())
-        seed = self.params.get("seed", 0)
-        estimators, identities = refit_heads(
-            inputs,
-            fitted_params,
-            feature_order=features,
-            lean_drop=drop,
-            seed=seed,
-            categorical_feature=self.params["categorical_feature"],
+        """Fail closed until run and input attestations have upstream owners."""
+        raise ValueError(
+            "FinalRefit is non-executable: trustworthy run and content-derived "
+            "input attestations are unavailable"
         )
-        identities = {
-            head: {**identity, **self.params["refit_identity"]}
-            for head, identity in identities.items()
-        }
-        head_params = {
-            head: {
-                "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
-                "estimator_params": {
-                    "estimator": "lightgbm.LGBMRegressor",
-                    "drop": drop,
-                    **fitted_params[head],
-                    **({} if "random_state" in fitted_params[head] else {"random_state": seed}),
-                },
-            }
-            for head in HEADS
-        }
-        path = os.path.join(self.artifact_dir(ctx), "final-model.joblib")
-        manifest = write_bundle(
-            path,
-            HEADS,
-            estimators,
-            head_params=head_params,
-            feature_order=features,
-            surviving_features={
-                head: [name for name in features if name not in set(drop)]
-                for head in HEADS
-            },
-            categorical_encoding=self.params["categorical_encoding"],
-            training_identities=identities,
-            predict_fixture=self.params["predict_fixture"],
-        )
-        return {"bundle_path": path, "manifest": manifest}
 
 #: The ten independent LightGBM lead heads (ADR-0114 §2): one per direct
 #: lead h=1..10, sharing feature schema, category rules, search space and

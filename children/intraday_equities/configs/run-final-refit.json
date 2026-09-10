@@ -1,6 +1,6 @@
 {
   "name": "final-refit",
-  "notes": "PENDING/non-executable Gate 2 template. A completed final-HPO run must replace all ten evidence placeholders with its content-addressed JsonArtifact manifests and supply the frozen feature schema plus ten labelled row inputs. Until then FinalRefit refuses at plan time; no market row, HPO fit, refit, or bundle write is permitted.",
+  "notes": "PENDING/non-executable Gate 2 contract. The current driver has no immutable attestation binding a completed HPO run to its node outputs/carry, and no content-derived source/cache/full-window identity producer or ten labelled input wires. Filling these placeholders cannot make this document executable: FinalRefit always refuses plan until those upstream contracts exist. No market row, HPO fit, refit, or bundle write is permitted.",
   "pipeline": {
     "refit": {
       "uses": "intraday_equities.final_model:FinalRefit",
@@ -33,7 +33,7 @@
         },
         "seed": 0
       },
-      "notes": "This node is the sole child owner of final refit orchestration. It resolves each HPO JsonArtifact through the generic verified reader, requires the same inventory across exactly h01..h10, calls final_model.refit_heads once with frozen winners, then calls the generic write_bundle seam once. No search knob exists."
+      "notes": "Non-executable specification only. The intended node would consume exactly ten immutable, identity-bearing labelled-row wires (h01..h10), verify one driver-owned completed-run attestation, refit frozen winners once, and call write_bundle once. Those producer and attestation APIs do not exist; mutable sidecars and config hashes are explicitly insufficient. No search knob exists."
     }
   },
   "splits": {

@@ -1116,6 +1116,9 @@ def test_run_final_refit_is_pending_ten_real_hpo_evidence_pins():
                refit["params"]["hpo_evidence"].values())
     assert not ({"hpo_trials", "hpo_space", "hpo_objective", "search"}
                 & set(refit["params"]))
+    assert "inputs" not in refit
+    assert "ten labelled input wires" in raw["notes"]
+    assert "Filling these placeholders cannot make this document executable" in raw["notes"]
 
 
 def test_run_final_refit_refuses_to_plan_while_pins_are_pending():
@@ -1123,7 +1126,7 @@ def test_run_final_refit_refuses_to_plan_while_pins_are_pending():
     from dskit.pipeline.node import ConfigError
 
     document = load_document(_path("run-final-refit.json"))
-    with pytest.raises(ConfigError, match="pending"):
+    with pytest.raises(ConfigError, match="non-executable"):
         plan_stages(document)
 
 

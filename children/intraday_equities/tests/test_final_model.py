@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from dskit.pipeline.kinds_search import CandidateInventory, OneStandardErrorSelector, TrialLedger
-from dskit.pipeline.node import ConfigError, NodeContext
+from dskit.pipeline.node import ConfigError
 import intraday_equities.final_model as final_model
 
 from intraday_equities.final_model import (
@@ -67,106 +67,6 @@ def test_final_refit_refuses_pending_hpo_evidence_pins():
         })
 
 
-def test_final_refit_binds_verified_per_head_winners_to_one_bundle(tmp_path, monkeypatch):
-    evidence = {}
-    winners = {}
-    for i, head in enumerate(HEADS):
-        import hashlib
-        import json
-
-        winner = {"num_leaves": i + 4}
-        winners[head] = winner
-        ledger = {"inventory_digest": "a" * 64, "rows": [{"overrides": winner}]}
-        ledger_digest = hashlib.sha256(
-            json.dumps(ledger, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        evidence[head] = _json_artifact(tmp_path, {
-            "producer_key": f"scan_{head}",
-            "feature_order": ["x", "drop"],
-            "categorical_feature": [],
-            "ledger": ledger,
-            "selection": {
-                "inventory_digest": "a" * 64,
-                "ledger_digest": ledger_digest,
-                "selected_candidate": winner,
-            },
-        })
-    calls = {}
-
-    def fake_refit(rows_by_head, selected, **kwargs):
-        calls["refit"] = (rows_by_head, selected, kwargs)
-        return ({head: object() for head in HEADS}, {
-            head: {"cut_ms": 1} for head in HEADS
-        })
-
-    def fake_bundle(path, heads, estimators, **kwargs):
-        calls["bundle"] = (path, heads, estimators, kwargs)
-        return {"sha256": "c" * 64}
-
-    monkeypatch.setattr("intraday_equities.final_model.refit_heads", fake_refit)
-    monkeypatch.setattr("intraday_equities.final_model.write_bundle", fake_bundle)
-    monkeypatch.setattr(
-        "intraday_equities.final_model.FinalRefit._verified_hpo_outputs",
-        lambda self: {head: evidence[head] for head in HEADS},
-    )
-    monkeypatch.setattr(
-        "intraday_equities.final_model.FinalRefit._winner_from_evidence",
-        lambda self, head, payload: winners[head],
-    )
-    base = {"n_estimators": 600}
-    monkeypatch.setattr(
-        "intraday_equities.final_model.load_document",
-        lambda path: type("Document", (), {
-            "hash": "2db8e95a420614a91101535bb21d1ca4cd2cb6536bdb13791307754ae2805219",
-            "to_obj": lambda self: {"stages": {"finalist": {"params": {"templates": [{
-                "family": "pooled-lightgbm", "model": {"estimator_params": {
-                    "estimator": "lightgbm.LGBMRegressor", "drop": ["drop"], **base,
-                }}
-            }]}}}},
-        })(),
-    )
-    node = final_model.FinalRefit("refit", {
-        "hpo_run_dir": str(tmp_path),
-        "hpo_document_sha256": "2db8e95a420614a91101535bb21d1ca4cd2cb6536bdb13791307754ae2805219",
-        "hpo_evidence": evidence,
-        "feature_order": ["x", "drop"],
-        "categorical_feature": [],
-        "categorical_encoding": {},
-        "predict_fixture": [[0.0, 0.0]],
-        "refit_identity": {
-            "source": {"sha256": "1" * 64}, "cache": {"sha256": "2" * 64},
-            "train_start_ms": 1, "refit_end_ms": LOCKBOX_START_MS,
-            "embargo_start_ms": EMBARGO_START_MS, "embargo_end_ms": EMBARGO_END_MS,
-        },
-    })
-    rows = {head: [{"x": 1.0, "drop": 2.0, "label": 0.1, "ts_ms": 1}]
-            for head in HEADS}
-    result = node.run(NodeContext("test", "2026-02-28", str(tmp_path)), rows)
-
-    assert calls["refit"][1] == {
-        head: {**base, **winners[head]} for head in HEADS
-    }
-    assert calls["bundle"][1] == HEADS
-    assert all(identity["source"] == {"sha256": "1" * 64}
-               for identity in calls["bundle"][3]["training_identities"].values())
-    assert all(identity["refit_end_ms"] == LOCKBOX_START_MS
-               for identity in calls["bundle"][3]["training_identities"].values())
-    assert calls["bundle"][3]["head_params"] == {
-        head: {
-            "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
-            "estimator_params": {
-                "estimator": "lightgbm.LGBMRegressor",
-                "drop": list(REAL_LEAN_DROP),
-                **base,
-                **winners[head],
-                "random_state": 0,
-            },
-        }
-        for head in HEADS
-    }
-    assert result["manifest"]["sha256"] == "c" * 64
-
-
 def test_final_refit_refuses_reused_or_wrong_head_evidence(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "intraday_equities.final_model.load_document",
@@ -185,7 +85,8 @@ def test_final_refit_refuses_reused_or_wrong_head_evidence(tmp_path, monkeypatch
             "selected_candidate": {"x": 1},
         },
     })
-    node = final_model.FinalRefit("refit", {
+    node = object.__new__(final_model.FinalRefit)
+    node.params = {
         "hpo_run_dir": str(tmp_path), "hpo_document_sha256": "d" * 64,
         "hpo_evidence": {head: manifest for head in HEADS},
         "feature_order": ["x"], "categorical_feature": [],
@@ -195,7 +96,7 @@ def test_final_refit_refuses_reused_or_wrong_head_evidence(tmp_path, monkeypatch
                            "train_start_ms": 1, "refit_end_ms": LOCKBOX_START_MS,
                            "embargo_start_ms": EMBARGO_START_MS,
                            "embargo_end_ms": EMBARGO_END_MS},
-    })
+    }
     monkeypatch.setattr(node, "_verified_hpo_outputs", lambda: {
         head: manifest for head in HEADS
     })
@@ -252,8 +153,58 @@ def test_final_refit_refuses_cross_run_manifest_substitution(tmp_path):
     node = object.__new__(final_model.FinalRefit)
     node.params = {"hpo_run_dir": str(tmp_path), "hpo_document_sha256": "d" * 64,
                    "hpo_evidence": {head: other for head in HEADS}}
-    with pytest.raises(ValueError, match="producer record/carry"):
+    with pytest.raises(ValueError, match="trustworthy run attestation"):
         node._verified_hpo_outputs()
+
+
+def test_final_refit_refuses_mutually_consistent_unbound_run_sidecars(tmp_path):
+    """Mutable result/record/carry agreement is not a run attestation."""
+    manifest = _json_artifact(tmp_path, {"forged": True})
+    import json
+
+    (tmp_path / "result.json").write_text(json.dumps({
+        "document_hash": "d" * 64, "run_hash": "e" * 64,
+        "state": "ran", "exit_code": 0,
+    }))
+    (tmp_path / "carry.json").write_text(json.dumps({
+        f"scan_{head}": {"hpo_ledger": manifest} for head in HEADS
+    }))
+    (tmp_path / "nodes").mkdir()
+    for index, head in enumerate(HEADS, 1):
+        (tmp_path / "nodes" / f"{index:02d}-scan_{head}.json").write_text(
+            json.dumps({"node": f"scan_{head}", "status": "ok",
+                        "outputs": {"hpo_ledger": manifest}})
+        )
+    node = object.__new__(final_model.FinalRefit)
+    node.params = {
+        "hpo_run_dir": str(tmp_path), "hpo_document_sha256": "d" * 64,
+        "hpo_evidence": {head: manifest for head in HEADS},
+    }
+    with pytest.raises(ValueError, match="trustworthy run attestation"):
+        node._verified_hpo_outputs()
+
+
+def test_final_refit_remains_non_executable_with_filled_asserted_identities():
+    """Config digests cannot attest the rows supplied to the node."""
+    params = {
+        "hpo_run_dir": "/completed/run", "hpo_document_sha256": "d" * 64,
+        "hpo_evidence": {head: {} for head in HEADS},
+        "feature_order": ["x"], "categorical_feature": [],
+        "categorical_encoding": {}, "predict_fixture": [[0.0]],
+        "refit_identity": {
+            "source": {"sha256": "1" * 64}, "cache": {"sha256": "2" * 64},
+            "train_start_ms": 1, "refit_end_ms": LOCKBOX_START_MS,
+            "embargo_start_ms": EMBARGO_START_MS,
+            "embargo_end_ms": EMBARGO_END_MS,
+        },
+    }
+    with pytest.raises(ConfigError, match="non-executable.*attestation"):
+        final_model.FinalRefit("refit", params)
+
+    node = object.__new__(final_model.FinalRefit)
+    node.params = params
+    with pytest.raises(ValueError, match="non-executable.*attestation"):
+        node.run(None, {head: [] for head in HEADS})
 
 
 def test_final_refit_recomputes_complete_pinned_one_se_selection():
