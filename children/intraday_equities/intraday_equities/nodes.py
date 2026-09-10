@@ -5457,6 +5457,16 @@ class NoInformationScan(Node):
                 "hpo_evidence requires hpo_objective='squared_error_improvement' "
                 f"(the evidence path scores only that objective), got {objective!r}"
             )
+        if objective == "squared_error_improvement" and evidence is not True:
+            problems.append(
+                "hpo_objective squared_error_improvement requires "
+                "hpo_evidence=true; the legacy tuner supports only 'mspe' or 'ic'"
+            )
+        if evidence and estimator is None:
+            problems.append(
+                "hpo_evidence requires estimator to be a declared import path; "
+                "implicit least-squares fits cannot produce HPO evidence"
+            )
         trials = params.get("hpo_trials")
         if trials is not None:
             check_int_param(problems, "hpo_trials", trials, ge=0)
@@ -5652,6 +5662,11 @@ class NoInformationScan(Node):
             ``hpo_evidence: true`` actually ran one; every other caller's
             return dict has exactly the two keys above, unchanged.
         """
+        if self.params.get("hpo_evidence") and self.params.get("estimator") is None:
+            raise ValueError(
+                "hpo_evidence requires estimator to be a declared import path; "
+                "refusing an unauditable implicit least-squares fit"
+            )
         spec = inputs["spec"]
         horizon = spec["horizon"]
         features = _feature_names_for_rows(spec, inputs["records"])

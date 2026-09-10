@@ -1387,7 +1387,9 @@ def test_no_information_scan_hpo_evidence_refuses_an_insufficient_inner_split():
     }
     inputs = {"records": rows, "bars": bars, "spec": spec}
 
-    legacy = NoInformationScan("scan", params).run(None, inputs)
+    legacy = NoInformationScan(
+        "scan", {**params, "hpo_objective": "mspe"}
+    ).run(None, inputs)
     assert set(legacy) == {"records", "metrics"}
     with pytest.raises(ValueError, match="hpo_evidence.*inner split"):
         NoInformationScan("scan", {**params, "hpo_evidence": True}).run(None, inputs)
@@ -1825,14 +1827,14 @@ def test_scan_validates_the_label_knobs():
     )
 
 
-def test_hpo_objective_accepts_squared_error_improvement():
-    """ADR-0115: a third enum value, additive alongside 'mspe'/'ic'."""
+def test_hpo_objective_accepts_squared_error_improvement_only_with_evidence():
+    """ADR-0115's objective must never be mislabeled legacy MSPE."""
     base = {"split": "val", "train_end_ms": 1, "val_start_ms": 2, "val_end_ms": 3}
-    assert (
-        NoInformationScan.validate_params(
+    assert any(
+        "squared_error_improvement requires hpo_evidence=true" in problem
+        for problem in NoInformationScan.validate_params(
             dict(base, hpo_objective="squared_error_improvement")
         )
-        == []
     )
     assert any(
         "hpo_objective" in problem
@@ -1875,12 +1877,42 @@ def test_hpo_evidence_is_additive_and_opt_in():
             dict(base, hpo_evidence=True, hpo_objective="squared_error_improvement")
         )
     )
+    assert any(
+        "hpo_evidence requires estimator" in problem
+        for problem in NoInformationScan.validate_params(
+            dict(
+                base,
+                hpo_evidence=True,
+                hpo_trials=1,
+                hpo_seed=0,
+                hpo_val_days=2,
+                hpo_embargo_days=0,
+                hpo_objective="squared_error_improvement",
+                hpo_space={"num_leaves": [4]},
+            )
+        )
+    )
+    with pytest.raises(ValueError, match="hpo_evidence requires estimator"):
+        NoInformationScan(
+            "scan",
+            dict(
+                base,
+                hpo_evidence=True,
+                hpo_trials=1,
+                hpo_seed=0,
+                hpo_val_days=2,
+                hpo_embargo_days=0,
+                hpo_objective="squared_error_improvement",
+                hpo_space={"num_leaves": [4]},
+            ),
+        ).run(None, {})
     # The one supported shape is clean.
     assert (
         NoInformationScan.validate_params(
             dict(
                 base,
                 hpo_evidence=True,
+                estimator="lightgbm.LGBMRegressor",
                 hpo_trials=4,
                 hpo_seed=0,
                 hpo_val_days=2,
