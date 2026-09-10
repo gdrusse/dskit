@@ -6963,13 +6963,31 @@ because they decide what may become a metric at all:
   "operations")`.
 - `EVENT_FIELDS` — `{category: (field, …)}`: a snake_case rendering of every
   field the plan's §6 list names, complete — nothing added, nothing removed,
-  nothing merged — but not verbatim. Four items are renamed onto a
-  domain-neutral or shortened token: `bars` → `inputs` (tier 1 holds no
-  domain word), `cleared-but-unfunded candidates` → `unfunded_candidates`,
-  `per-name concentration` → `concentration`, and `dead-man heartbeat` →
-  `heartbeat_age`. No meaning is lost in any of the four; field counts per
-  category match the plan exactly (108 fields, 8 categories). `symbol` and
-  `lead` are `identity` fields, as the plan puts them.
+  nothing merged — but not verbatim. **Nine items** are renamed onto a
+  domain-neutral or materially shortened token — more than a mechanical
+  snake_case rendering of the same words — not four as an earlier draft of
+  this entry claimed (a skeptic review, 2026-09-10, caught the
+  undercount): `bars` → `inputs` (tier 1 holds no domain word),
+  `cleared-but-unfunded candidates` → `unfunded_candidates`, `per-name
+  concentration` → `concentration`, `dead-man heartbeat` → `heartbeat_age`,
+  `time since last successful refit` → `refit_age` (a descriptive phrase
+  compressed to the same kind of `_age` token as `heartbeat_age`),
+  `weakest required slice` → `weakest_slice` (drops "required"),
+  `performance hold state` → `hold_state` (drops "performance"), `signal
+  decay over realized latency` → `signal_decay` (drops the
+  measurement-basis clause), and `replay-versus-paper divergence by
+  existing divergence class` → `divergences` (drops the comparison and the
+  classifying clause from the field name; the class survives elsewhere, as
+  `divergences_total`'s label dimension, not as part of the field name
+  itself). Every other apparent shortening in the catalogue (`R2OOS` →
+  `r2_oos`, `HFDR usage` → `hfdr_usage`, splitting a plan slash/list
+  phrase into one field per item — e.g. `baseline and model SSE` →
+  `baseline_sse`, `model_sse`; `cash/gross/cardinality/position
+  utilization` → the four `..._utilization` fields) is checked and is
+  ordinary snake_case rendering of the plan's own words, not a rename;
+  field counts per category match the plan exactly (108 fields, 8
+  categories). `symbol` and `lead` are `identity` fields, as the plan puts
+  them.
 - `UNBOUNDED_LABEL_FIELDS = ("symbol", "lead")` — the field names that may
   never become a closed telemetry label.
 - `EVENT_READINGS` — `{metric name: (category, field, family)}`, the binding
