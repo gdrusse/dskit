@@ -6858,3 +6858,100 @@ as the same release.
 **Scope.** Synthetic contract tests and validate/plan refusal only. No market
 data, HPO/refit execution, pre-March read, `path.csv` edit, or model-policy
 change is authorized.
+
+---
+
+## ADR-0117 — Proposed Gate 3 cash-flow schedule and return mechanisms
+
+**Status:** proposed. This entry extends ADR-0114's Phase 3 inventory. It is
+not accepted and authorizes no implementation, test addition, configuration,
+or production/replay execution.
+
+**Context and inventory.** Before this proposal, `dskit.production` has no
+recurring cash-flow schedule. `compose._Adopt` only asks `Reconciler.adopt()`
+to bank authenticated, reconciled cash breaks; it supplies `known_at_ms` from
+the consumed command and never treats a promise as money. `SeriesState` is the
+sole fold: `_fold_cash_flow()` moves exact `Decimal` balances, tracks an
+economic sequence, and nets an explicit `supersedes` correction. It neither
+reads schedules nor decides settlement. `Report.value_curve()` gets effective
+cash flows from `LedgerHistory`, keeps external flow in `ValuePoint.external`,
+and computes cumulative PnL and drawdown from realised plus unrealised PnL
+only. Existing focused owners are `test_compose.py`, `test_state.py`, and
+`test_report.py`; `tests/production/test_cashflows.py` does not exist.
+
+**Decision proposed for acceptance.** Add the stdlib-only tier-2 module
+`dskit.production.cashflows` with this public boundary (no annotations in
+implementation signatures):
+
+```
+DEFAULT_OVERRIDES = ()
+
+class DueCashFlow(flow_id, effective_at, currency, amount, flow_kind,
+                  supersedes=None)
+class CashFlowOverride(ABC)
+    apply(self, occurrence)
+class SkipCashFlow(override_id, occurrence_at)
+class MoveCashFlow(override_id, occurrence_at, effective_at)
+class ReplaceCashFlow(override_id, occurrence_at, amount)
+class WithdrawalCashFlow(override_id, effective_at, amount)
+class CorrectCashFlow(override_id, effective_at, supersedes_flow_id, amount)
+class RecurringCashFlowSchedule(schedule_id, anchor, interval_days, currency,
+                                amount, timezone, overrides=DEFAULT_OVERRIDES)
+    materialize(self, start, end_exclusive)
+```
+
+All values are frozen. `CashFlowOverride` is abstract; the schedule dispatches
+by that hook, never a `kind`/`mode` string. `anchor`, boundaries, and emitted
+instants are aware `datetime` values. The schedule validates a named
+`zoneinfo.ZoneInfo`, anchors recurrence on local calendar dates (not elapsed
+14-day seconds), converts comparison instants to UTC, rejects ambiguous or
+nonexistent local results instead of guessing, and uses `[start, end_exclusive)`.
+Its ordered output key is normalized instant then stable `flow_id`; IDs derive
+only from the explicit schedule/override identity and occurrence, so repeating
+the same materialization cannot create another flow. A move preserves the base
+occurrence identity; a replacement changes its amount; a withdrawal is a
+negative standalone flow; a correction names the prior flow through
+`supersedes_flow_id` and emits an adjustment. `DueCashFlow` materializes a
+declaration only: it has no settled flag and no authority to increase buying
+power.
+
+`compose.py` is proposed to add the replay-only
+`ReplayCashFlowComposer(schedule)` with `due(self, start, end_exclusive)` and
+to accept `cash_flow_composer=None` only on the existing replay (`tape`) path
+of `bundles_for(...)`; ordinary composition refuses it. The composer converts
+`DueCashFlow` values to the existing `cash_flow` record body, with a replay
+source and deterministic record id. `state.py` is proposed to extend only the
+cash-flow fold validation so that replay-scheduled bodies are accepted from
+that replay composition path while production continues to admit money only
+through its existing reconciled/adopted record path. It will retain correction
+netting and never make a scheduled body spendable in a production composition.
+
+`report.py` is proposed to add frozen `PerformanceObservation(at_ms, nav,
+external)`, `PerformanceReturns(time_weighted, money_weighted)`, and
+`PerformanceCalculator(observations)`, with
+`time_weighted_return(self)`, `money_weighted_return(self)`, and
+`Report.performance(self, at_ms)`. These use exact Decimal cash-flow deltas
+from the already-separated external column; TWR chains subperiod returns
+across external flows and MWR solves the dated external-flow equation. Neither
+changes `ValuePoint.cumulative`, realised/unrealised PnL, or drawdown
+attribution.
+
+**Tests proposed after acceptance.** Add `tests/production/test_cashflows.py`
+first, then touch only `test_compose.py`, `test_state.py`, and `test_report.py`
+as their current owners require. Cover arbitrary placeholder anchors, New York
+EST/EDT instants, half-open bounds, restart ID idempotence, and every override;
+cover replay composition versus production settlement-only adoption; and pin
+hand-calculated TWR/MWR paths with deposits and losses. Run only those files,
+the existing production purity/OOP/producer gates if their AST/API contracts
+are touched, Ruff on touched Python files, and `git diff --check`.
+
+**Open owner decision deliberately preserved.** Plan §11 item 2 still leaves
+the real biweekly-Friday anchor, holiday treatment, and 09:30 same-instant
+decision ordering undecided. This proposal therefore names no
+`capital-policy.json`, no real production values, and no decision-vs-flow
+ordering rule. The exact same-timestamp-ordering test in plan §6 Phase 3 item
+4 is explicitly not proposed as complete; tests may exercise only arbitrary
+placeholder anchor dates and deterministic flow-to-flow ordering.
+
+**Consequences.** Acceptance would authorize the mechanism-only TDD pass,
+not a policy. A production process remains settlement-driven; a replay can
