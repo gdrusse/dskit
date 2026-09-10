@@ -349,6 +349,10 @@ class ReplayAdapter:
         """Walk one name's bars: exits, then entries, through ``PaperExecutor``."""
         policy = self._policy
         index_of = {bar["asof_ms"]: i for i, bar in enumerate(seq)}
+        if len(index_of) != len(seq):
+            raise ConfigError([
+                f"duplicate asof_ms on {symbol!r}: each bar on a name must have a unique timestamp"
+            ])
         pending = defaultdict(list)
         for decision in decisions:
             if decision[policy.symbol_field] != symbol:
@@ -440,7 +444,13 @@ class ReplayAdapter:
         field = self._policy.halt_field
         if field not in bar:
             raise ConfigError([f"bar missing halt field {field!r} at asof_ms={bar.get('asof_ms')!r}"])
-        return bar[field] == self._policy.halted_true
+        flag = bar[field]
+        if not isinstance(flag, bool):
+            raise ConfigError([
+                f"halt field {field!r} must be a JSON bool, got {flag!r} "
+                f"at asof_ms={bar.get('asof_ms')!r}"
+            ])
+        return flag == self._policy.halted_true
 
     def _process_exits(self, symbol, bar, index, book, venue, digest, fills):
         """Force-exit lots whose expiry bar is this fill bar."""
@@ -662,10 +672,18 @@ class DevelopmentReplay(Node):
 
     def _exclusive_end_ms(self):
         """First UTC instant after ``evidence_end`` (epoch ms)."""
+        return self._utc_day_end_ms(1)
+
+    def _fill_only_end_ms(self):
+        """First UTC instant after the one fill-only day following evidence_end."""
+        return self._utc_day_end_ms(2)
+
+    def _utc_day_end_ms(self, extra_days):
+        """Midnight UTC ``extra_days`` after ``evidence_end``, as epoch ms."""
         day = datetime.strptime(self.params["evidence_end"], "%Y-%m-%d").replace(
             tzinfo=timezone.utc
         )
-        return int((day + timedelta(days=1)).timestamp() * 1000)
+        return int((day + timedelta(days=extra_days)).timestamp() * 1000)
 
     def validate_inputs(self, inputs):
         """Require ``bars`` and ``decisions`` lists."""
@@ -678,16 +696,26 @@ class DevelopmentReplay(Node):
         return problems
 
     def run(self, ctx, inputs):
-        """Refuse post-evidence bars, then replay through :class:`ReplayAdapter`."""
+        """Refuse out-of-window decisions/bars, then replay through :class:`ReplayAdapter`."""
         exclusive = self._exclusive_end_ms()
-        late = [
+        fill_end = self._fill_only_end_ms()
+        late_decisions = [
             row for row in inputs["decisions"]
             if int(row["asof_ms"]) >= exclusive
         ]
-        if late:
+        if late_decisions:
             raise ConfigError([
                 f"evidence_end {self.params['evidence_end']!r} excludes "
-                f"{len(late)} decision(s) at or after {exclusive}"
+                f"{len(late_decisions)} decision(s) at or after {exclusive}"
+            ])
+        late_bars = [
+            bar for bar in inputs["bars"]
+            if int(bar["asof_ms"]) >= fill_end
+        ]
+        if late_bars:
+            raise ConfigError([
+                f"evidence_end {self.params['evidence_end']!r} excludes "
+                f"{len(late_bars)} bar(s) at or after fill-only end {fill_end}"
             ])
         return ReplayAdapter(self._policy).replay(list(inputs["bars"]), list(inputs["decisions"]))
 

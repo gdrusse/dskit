@@ -172,16 +172,15 @@ def test_a_halted_expiry_bar_skips_the_forced_exit():
     assert delayed[0]["price"] == pytest.approx(13.0)
 
 
-def test_integer_halt_flag_is_compared_by_value_not_identity():
+def test_integer_halt_flag_is_refused_not_coerced():
     policy = _policy()
     bars = [
         _bar("AAA", 1_000, 10.0, 10.5),
         {"symbol": "AAA", "asof_ms": 2_000, "open": 11.0, "close": 11.5, "halted": 1},
         _bar("AAA", 3_000, 12.0, 12.5),
     ]
-    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
-    assert not any(row["kind"] == "entry" and row["asof_ms"] == 2_000 for row in out["fills"])
-    assert any(row["reason"] == "halted" for row in out["skipped"])
+    with pytest.raises(ConfigError, match="halt"):
+        ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
 
 
 def test_unknown_symbol_and_off_tape_fill_are_refused_not_silent():
@@ -208,6 +207,17 @@ def test_unclosed_lot_at_end_of_tape_is_refused():
     )
     assert [row["kind"] for row in out["fills"]] == ["entry"]
     assert any(row["reason"] == "expiry_past_tape" for row in out["refused"])
+
+
+def test_duplicate_asof_on_one_symbol_is_refused():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 1_000, 11.0, 11.5),
+        _bar("AAA", 2_000, 12.0, 12.5),
+    ]
+    with pytest.raises(ConfigError, match="asof"):
+        ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
 
 
 def test_lead_below_one_is_refused():
@@ -395,7 +405,7 @@ def test_development_replay_refuses_deployment_eligible_true():
         })
 
 
-def test_development_replay_refuses_bars_after_evidence_end():
+def test_development_replay_bounds_decisions_and_fill_only_trailing_bars():
     raw = _raw_fill_policy()
     node = DevelopmentReplay("replay", {
         "deployment_eligible": False,
@@ -406,7 +416,6 @@ def test_development_replay_refuses_bars_after_evidence_end():
     })
     last_day = 1_760_572_800_000  # 2025-10-16T00:00:00Z
     fill_only = 1_760_659_200_000  # 2025-10-17T00:00:00Z exclusive end
-    # A last-included-day decision may use a fill-only trailing bar.
     out = node.run(None, {
         "bars": [
             _bar("AAA", last_day, 10.0, 10.5),
@@ -421,6 +430,16 @@ def test_development_replay_refuses_bars_after_evidence_end():
         node.run(None, {
             "bars": [_bar("AAA", last_day, 10.0, 10.5)],
             "decisions": [_decision("AAA", fill_only, lead=1)],
+        })
+    y2026 = 1_767_225_600_000  # 2026-01-01T00:00:00Z
+    with pytest.raises(ConfigError, match="evidence_end"):
+        node.run(None, {
+            "bars": [
+                _bar("AAA", last_day, 10.0, 10.5),
+                _bar("AAA", y2026, 99.0, 99.5),
+                _bar("AAA", y2026 + 60_000, 100.0, 100.5),
+            ],
+            "decisions": [_decision("AAA", last_day, lead=1)],
         })
 
 
