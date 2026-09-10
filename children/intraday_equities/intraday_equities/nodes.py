@@ -5881,7 +5881,13 @@ class NoInformationScan(Node):
                 )
                 scan["estimator_params"] = chosen
                 metrics["hpo_squared_error_improvement"] = inner_score
-                hpo_ledger_obj = {"ledger": ledger_obj, "selection": selection_obj}
+                hpo_ledger_obj = {
+                    "producer_key": self.key,
+                    "feature_order": list(column_names),
+                    "categorical_feature": list(categorical or ()),
+                    "ledger": ledger_obj,
+                    "selection": selection_obj,
+                }
                 self.log.info(
                     "hpo evidence: %d candidate(s), 1-SE winner "
                     "squared_error_improvement=%.6g",

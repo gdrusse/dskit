@@ -5,6 +5,8 @@ import datetime
 import json
 import os
 
+import pytest
+
 from dskit.assets import load_model
 from dskit.onboarding import check_config, load_suite
 from dskit.pipeline.document import load_document
@@ -1098,6 +1100,31 @@ def test_run_final_hpo_validates_and_plans_never_runs():
     assert document.hash
     resolved = plan_stages(document)
     assert resolved.to_obj()["order"] == ["calendar", "select", "memory", "finalist"]
+
+
+def test_run_final_refit_is_pending_ten_real_hpo_evidence_pins():
+    """The template cannot plan until a real final-HPO run supplies all pins."""
+    raw = _raw("run-final-refit.json")
+    assert raw["stages"]["calendar"]["params"]["phase"] == "final_refit"
+    refit = raw["pipeline"]["refit"]
+    assert refit["uses"] == "intraday_equities.final_model:FinalRefit"
+    assert tuple(refit["params"]["hpo_evidence"]) == tuple(
+        f"h{i:02d}" for i in range(1, 11)
+    )
+    assert refit["params"]["hpo_run_dir"] == "PENDING-HPO-RUN"
+    assert all(value == "PENDING-HPO-EVIDENCE" for value in
+               refit["params"]["hpo_evidence"].values())
+    assert not ({"hpo_trials", "hpo_space", "hpo_objective", "search"}
+                & set(refit["params"]))
+
+
+def test_run_final_refit_refuses_to_plan_while_pins_are_pending():
+    from dskit.pipeline.stages import plan_stages
+    from dskit.pipeline.node import ConfigError
+
+    document = load_document(_path("run-final-refit.json"))
+    with pytest.raises(ConfigError, match="pending"):
+        plan_stages(document)
 
 
 def test_p16_feature_mask_zoo_masks_are_real_and_isolate_the_feature_set():

@@ -69,7 +69,11 @@ Agent orientation — see README.md for operator commands.
   artifacts) and `FinalistCandidate` builds THAT candidate's document. It
   restates no model name and refuses a selection it has no recipe for. One
   fit, not a walk — the phase declares no fold schedule. Constructed and
-  validated (`ee674709…`); it has NOT been run.
+  validated (`2db8e95a…`); it has NOT been run.
+- `configs/run-final-refit.json` is intentionally PENDING and cannot plan
+  until a real final-HPO run supplies ten content-addressed evidence manifests
+  plus the frozen feature/checksum contract. `final_model.FinalRefit` then
+  resolves those pins, refits exactly `h01..h10`, and writes one verified bundle.
 
 ## Machine knobs
 

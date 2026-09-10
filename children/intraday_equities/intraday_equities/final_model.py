@@ -30,6 +30,7 @@ artifact.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Mapping
@@ -40,11 +41,15 @@ from dskit.pipeline.kinds_search import (
     OneStandardErrorSelector,
     TrialLedger,
 )
-from dskit.pipeline.libs.sklearn import ColumnSubsetEstimator
+from dskit.pipeline.driver import resolve_json_artifact
+from dskit.pipeline.document import load_document
+from dskit.pipeline.libs.sklearn import ColumnSubsetEstimator, write_bundle
+from dskit.pipeline.node import Node, reject_unknown_params
 from dskit.pipeline.stats import cluster_bootstrap_t
 
 __all__ = [
     "EVIDENCE_FIELDS",
+    "FinalRefit",
     "HEADS",
     "boundary_flags",
     "build_candidate_inventory",
@@ -57,6 +62,198 @@ __all__ = [
     "simplicity_key",
     "squared_error_improvement",
 ]
+
+
+class FinalRefit(Node):
+    """Refit ten frozen lead winners and write one verified bundle.
+
+    The node deliberately accepts only content-addressed JSON-artifact
+    manifests emitted by the final-HPO run.  Its inputs are the already
+    labelled ``h01``..``h10`` row streams; row construction remains with the
+    existing feature/label nodes and generic persistence remains with
+    :func:`write_bundle`.
+    """
+
+    role = "train"
+    outputs = ("bundle_path", "manifest")
+    _PARAMS = (
+        "hpo_run_dir",
+        "hpo_document_sha256",
+        "hpo_evidence",
+        "feature_order",
+        "categorical_feature",
+        "categorical_encoding",
+        "predict_fixture",
+        "seed",
+    )
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return problems with evidence pins and bundle schema knobs."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        run_dir = params.get("hpo_run_dir")
+        if not isinstance(run_dir, str) or not run_dir:
+            problems.append("hpo_run_dir must be a non-empty path")
+        elif "PENDING" in run_dir.upper():
+            problems.append("hpo_run_dir is pending a real final-HPO run")
+        document_digest = params.get("hpo_document_sha256")
+        if (
+            not isinstance(document_digest, str)
+            or len(document_digest) != 64
+            or any(char not in "0123456789abcdef" for char in document_digest)
+        ):
+            problems.append("hpo_document_sha256 must be a lowercase sha256 digest")
+        evidence = params.get("hpo_evidence")
+        if not isinstance(evidence, dict) or set(evidence) != set(HEADS):
+            problems.append(f"hpo_evidence must be keyed by exactly {list(HEADS)!r}")
+        elif any(not isinstance(value, dict) for value in evidence.values()):
+            problems.append("hpo_evidence pins are pending real JSON-artifact manifests")
+        features = params.get("feature_order")
+        if (
+            not isinstance(features, list)
+            or not features
+            or len(features) != len(set(features))
+            or any(not isinstance(name, str) or not name for name in features)
+        ):
+            problems.append("feature_order must be a non-empty unique string list")
+        categories = params.get("categorical_feature")
+        if not isinstance(categories, list) or any(type(i) is not int for i in categories):
+            problems.append("categorical_feature must be a list of integer indices")
+        encoding = params.get("categorical_encoding")
+        if not isinstance(encoding, dict):
+            problems.append("categorical_encoding must be a mapping")
+        fixture = params.get("predict_fixture")
+        if not isinstance(fixture, list) or not fixture:
+            problems.append("predict_fixture must be a non-empty list")
+        seed = params.get("seed", 0)
+        if type(seed) is not int or seed < 0:
+            problems.append("seed must be a nonnegative integer")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require exactly one labelled-row stream for every frozen head."""
+        if not isinstance(inputs, dict) or set(inputs) != set(HEADS):
+            return [f"inputs must be keyed by exactly {list(HEADS)!r}"]
+        return [f"{head} must be a list of labelled rows"
+                for head in HEADS if not isinstance(inputs[head], list)]
+
+    def _winners(self):
+        source_document = load_document(
+            os.path.join(self.params["hpo_run_dir"], "config.json")
+        )
+        if source_document.hash != self.params["hpo_document_sha256"]:
+            raise ValueError("FinalRefit: final-HPO document identity does not match its pin")
+        self._hpo_document = source_document.to_obj()
+        winners = {}
+        inventory_digest = None
+        seen_manifests = set()
+        for head in HEADS:
+            manifest = self.params["hpo_evidence"][head]
+            manifest_digest = manifest["sha256"]
+            if manifest_digest in seen_manifests:
+                raise ValueError("FinalRefit: every head requires a distinct evidence manifest")
+            seen_manifests.add(manifest_digest)
+            evidence = resolve_json_artifact(
+                self.params["hpo_run_dir"], manifest
+            )
+            if not isinstance(evidence, dict) or set(evidence) != {
+                "producer_key", "feature_order", "categorical_feature",
+                "ledger", "selection",
+            }:
+                raise ValueError(f"FinalRefit: {head} evidence has the wrong shape")
+            if evidence["producer_key"] != f"scan_{head}":
+                raise ValueError(f"FinalRefit: {head} evidence has the wrong producer")
+            if evidence["feature_order"] != self.params["feature_order"]:
+                raise ValueError(f"FinalRefit: {head} feature order differs from the pin")
+            if evidence["categorical_feature"] != self.params["categorical_feature"]:
+                raise ValueError(f"FinalRefit: {head} category contract differs from the pin")
+            ledger, selection = evidence["ledger"], evidence["selection"]
+            if not isinstance(ledger, dict) or not isinstance(selection, dict):
+                raise ValueError(f"FinalRefit: {head} ledger/selection must be mappings")
+            digest = ledger.get("inventory_digest")
+            if selection.get("inventory_digest") != digest:
+                raise ValueError(f"FinalRefit: {head} selection is not bound to its ledger")
+            ledger_digest = hashlib.sha256(
+                json.dumps(
+                    ledger, sort_keys=True, separators=(",", ":"), allow_nan=False
+                ).encode()
+            ).hexdigest()
+            if selection.get("ledger_digest") != ledger_digest:
+                raise ValueError(f"FinalRefit: {head} selection ledger_digest is wrong")
+            if inventory_digest is None:
+                inventory_digest = digest
+            elif digest != inventory_digest:
+                raise ValueError("FinalRefit: every head must share one candidate inventory")
+            winner = selection.get("selected_candidate")
+            if not isinstance(winner, dict) or not winner:
+                raise ValueError(f"FinalRefit: {head} has no frozen selected_candidate")
+            rows = ledger.get("rows")
+            if not isinstance(rows, list) or not any(
+                row.get("overrides") == winner for row in rows if isinstance(row, dict)
+            ):
+                raise ValueError(f"FinalRefit: {head} winner is absent from its ledger")
+            winners[head] = dict(winner)
+        return winners
+
+    def _base_params(self):
+        templates = self._hpo_document["stages"]["finalist"]["params"]["templates"]
+        matches = [row for row in templates if row.get("family") == "pooled-lightgbm"]
+        if len(matches) != 1:
+            raise ValueError("FinalRefit: pinned HPO document has no unique LightGBM recipe")
+        params = dict(matches[0]["model"]["estimator_params"])
+        if params.pop("estimator", None) != "lightgbm.LGBMRegressor":
+            raise ValueError("FinalRefit: pinned HPO document has the wrong estimator")
+        params.pop("drop", None)
+        return params
+
+    def run(self, ctx, inputs):
+        """Resolve winners, refit the ten heads, and write one bundle."""
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError(f"FinalRefit: {'; '.join(problems)}")
+        winners = self._winners()
+        base_params = self._base_params()
+        fitted_params = {head: {**base_params, **winners[head]} for head in HEADS}
+        features = list(self.params["feature_order"])
+        drop = list(lean_feature_drop())
+        seed = self.params.get("seed", 0)
+        estimators, identities = refit_heads(
+            inputs,
+            fitted_params,
+            feature_order=features,
+            lean_drop=drop,
+            seed=seed,
+            categorical_feature=self.params["categorical_feature"],
+        )
+        head_params = {
+            head: {
+                "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+                "estimator_params": {
+                    "estimator": "lightgbm.LGBMRegressor",
+                    "drop": drop,
+                    **fitted_params[head],
+                    **({} if "random_state" in fitted_params[head] else {"random_state": seed}),
+                },
+            }
+            for head in HEADS
+        }
+        path = os.path.join(self.artifact_dir(ctx), "final-model.joblib")
+        manifest = write_bundle(
+            path,
+            HEADS,
+            estimators,
+            head_params=head_params,
+            feature_order=features,
+            surviving_features={
+                head: [name for name in features if name not in set(drop)]
+                for head in HEADS
+            },
+            categorical_encoding=self.params["categorical_encoding"],
+            training_identities=identities,
+            predict_fixture=self.params["predict_fixture"],
+        )
+        return {"bundle_path": path, "manifest": manifest}
 
 #: The ten independent LightGBM lead heads (ADR-0114 §2): one per direct
 #: lead h=1..10, sharing feature schema, category rules, search space and

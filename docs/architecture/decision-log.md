@@ -6808,3 +6808,27 @@ inspectable trial ledger per lead — closing Gate 2's deliverable 3.
 Existing P13/P14/P15 zoo configs are provably unaffected (their
 `hpo_evidence` param is simply absent, defaulting to `False`, and
 `_hpo_combos`/`_tune_estimator`'s bodies are untouched).
+
+## ADR-0116 — Final refit is one child orchestration node over verified seams
+
+**Status:** accepted (2026-09-10; owner granted self-approval for Gate 2
+deliverable 4).
+
+**Context.** ADR-0114 authorizes the final-refit config but no existing node
+wires per-lead `JsonArtifact` evidence into `final_model.refit_heads` and the
+generic sklearn bundle writer. Final HPO has not run, so real evidence pins do
+not yet exist and must not be fabricated.
+
+**Decision.** Add `intraday_equities.final_model.FinalRefit`, a train-role node
+whose only job is to verify the pinned final-HPO document identity, resolve
+exactly ten content-addressed winner/ledger manifests through
+`resolve_json_artifact`, require their shared inventory identity, call the
+existing domain refit once, and call `write_bundle` once. It owns no search,
+serialization, hashing, estimator implementation, or row construction.
+`run-final-refit.json` ships as an explicit PENDING template and refuses at
+plan time until a real HPO run supplies all ten manifests plus the frozen
+feature/category/checksum inputs.
+
+**Scope.** Synthetic contract tests and validate/plan refusal only. No market
+data, HPO/refit execution, pre-March read, `path.csv` edit, or model-policy
+change is authorized.

@@ -1,0 +1,62 @@
+{
+  "name": "final-refit",
+  "notes": "PENDING/non-executable Gate 2 template. A completed final-HPO run must replace all ten evidence placeholders with its content-addressed JsonArtifact manifests and supply the frozen feature schema plus ten labelled row inputs. Until then FinalRefit refuses at plan time; no market row, HPO fit, refit, or bundle write is permitted.",
+  "pipeline": {
+    "refit": {
+      "uses": "intraday_equities.final_model:FinalRefit",
+      "params": {
+        "hpo_run_dir": "PENDING-HPO-RUN",
+        "hpo_document_sha256": "2db8e95a420614a91101535bb21d1ca4cd2cb6536bdb13791307754ae2805219",
+        "hpo_evidence": {
+          "h01": "PENDING-HPO-EVIDENCE",
+          "h02": "PENDING-HPO-EVIDENCE",
+          "h03": "PENDING-HPO-EVIDENCE",
+          "h04": "PENDING-HPO-EVIDENCE",
+          "h05": "PENDING-HPO-EVIDENCE",
+          "h06": "PENDING-HPO-EVIDENCE",
+          "h07": "PENDING-HPO-EVIDENCE",
+          "h08": "PENDING-HPO-EVIDENCE",
+          "h09": "PENDING-HPO-EVIDENCE",
+          "h10": "PENDING-HPO-EVIDENCE"
+        },
+        "feature_order": [],
+        "categorical_feature": [],
+        "categorical_encoding": {},
+        "predict_fixture": [],
+        "seed": 0
+      },
+      "notes": "This node is the sole child owner of final refit orchestration. It resolves each HPO JsonArtifact through the generic verified reader, requires the same inventory across exactly h01..h10, calls final_model.refit_heads once with frozen winners, then calls the generic write_bundle seam once. No search knob exists."
+    }
+  },
+  "splits": {
+    "kind": "time",
+    "train_end_ms": 1764547199000,
+    "val_start_ms": 1764633600000,
+    "val_end_ms": 1772323199000,
+    "test_end_ms": 1772323199001,
+    "notes": "The refit consumes the permitted pre-HPO history and final-HPO validation block through 2026-02-28, excluding the 2025-12-01 embargo. FinalRefit independently refuses every row at or after 2026-03-01."
+  },
+  "stages": {
+    "calendar": {
+      "uses": "dskit.pipeline.program_calendar:ProgramCalendar",
+      "params": {
+        "path": "program-calendar.json",
+        "phase": "final_refit"
+      }
+    }
+  },
+  "tracking": {
+    "sinks": [
+      {
+        "kind": "dskit.pipeline.libs.mlflow:MlflowTracker",
+        "params": {
+          "tracking_uri": "sqlite:///mlruns.db",
+          "experiment": "intraday_equities"
+        }
+      }
+    ]
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  }
+}

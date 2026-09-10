@@ -15,6 +15,8 @@ from unittest.mock import patch
 import pytest
 
 from dskit.pipeline.kinds_search import CandidateInventory
+from dskit.pipeline.node import ConfigError, NodeContext
+import intraday_equities.final_model as final_model
 
 from intraday_equities.final_model import (
     EMBARGO_END_MS,
@@ -33,6 +35,147 @@ from intraday_equities.final_model import (
     simplicity_key,
     squared_error_improvement,
 )
+
+
+def _json_artifact(run_dir, payload):
+    import hashlib
+    import json
+
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(raw).hexdigest()
+    path = run_dir / "artifacts" / "json" / f"{digest}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return {
+        "path": f"artifacts/json/{digest}.json",
+        "sha256": digest,
+        "bytes": len(raw),
+        "media_type": "application/json",
+    }
+
+
+def test_final_refit_refuses_pending_hpo_evidence_pins():
+    with pytest.raises(ConfigError, match="pending"):
+        final_model.FinalRefit("refit", {
+            "hpo_run_dir": "PENDING-HPO-RUN",
+            "hpo_document_sha256": "2db8e95a420614a91101535bb21d1ca4cd2cb6536bdb13791307754ae2805219",
+            "hpo_evidence": {head: "PENDING-HPO-EVIDENCE" for head in HEADS},
+            "feature_order": ["x", "drop"],
+            "categorical_feature": [],
+            "categorical_encoding": {},
+            "predict_fixture": [[0.0, 0.0]],
+        })
+
+
+def test_final_refit_binds_verified_per_head_winners_to_one_bundle(tmp_path, monkeypatch):
+    evidence = {}
+    winners = {}
+    for i, head in enumerate(HEADS):
+        import hashlib
+        import json
+
+        winner = {"num_leaves": i + 4}
+        winners[head] = winner
+        ledger = {"inventory_digest": "a" * 64, "rows": [{"overrides": winner}]}
+        ledger_digest = hashlib.sha256(
+            json.dumps(ledger, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        evidence[head] = _json_artifact(tmp_path, {
+            "producer_key": f"scan_{head}",
+            "feature_order": ["x", "drop"],
+            "categorical_feature": [],
+            "ledger": ledger,
+            "selection": {
+                "inventory_digest": "a" * 64,
+                "ledger_digest": ledger_digest,
+                "selected_candidate": winner,
+            },
+        })
+    calls = {}
+
+    def fake_refit(rows_by_head, selected, **kwargs):
+        calls["refit"] = (rows_by_head, selected, kwargs)
+        return ({head: object() for head in HEADS}, {
+            head: {"cut_ms": 1} for head in HEADS
+        })
+
+    def fake_bundle(path, heads, estimators, **kwargs):
+        calls["bundle"] = (path, heads, estimators, kwargs)
+        return {"sha256": "c" * 64}
+
+    monkeypatch.setattr("intraday_equities.final_model.refit_heads", fake_refit)
+    monkeypatch.setattr("intraday_equities.final_model.write_bundle", fake_bundle)
+    base = {"n_estimators": 600}
+    monkeypatch.setattr(
+        "intraday_equities.final_model.load_document",
+        lambda path: type("Document", (), {
+            "hash": "2db8e95a420614a91101535bb21d1ca4cd2cb6536bdb13791307754ae2805219",
+            "to_obj": lambda self: {"stages": {"finalist": {"params": {"templates": [{
+                "family": "pooled-lightgbm", "model": {"estimator_params": {
+                    "estimator": "lightgbm.LGBMRegressor", "drop": ["drop"], **base,
+                }}
+            }]}}}},
+        })(),
+    )
+    node = final_model.FinalRefit("refit", {
+        "hpo_run_dir": str(tmp_path),
+        "hpo_document_sha256": "2db8e95a420614a91101535bb21d1ca4cd2cb6536bdb13791307754ae2805219",
+        "hpo_evidence": evidence,
+        "feature_order": ["x", "drop"],
+        "categorical_feature": [],
+        "categorical_encoding": {},
+        "predict_fixture": [[0.0, 0.0]],
+    })
+    rows = {head: [{"x": 1.0, "drop": 2.0, "label": 0.1, "ts_ms": 1}]
+            for head in HEADS}
+    result = node.run(NodeContext("test", "2026-02-28", str(tmp_path)), rows)
+
+    assert calls["refit"][1] == {
+        head: {**base, **winners[head]} for head in HEADS
+    }
+    assert calls["bundle"][1] == HEADS
+    assert calls["bundle"][3]["head_params"] == {
+        head: {
+            "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+            "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": list(REAL_LEAN_DROP),
+                **base,
+                **winners[head],
+                "random_state": 0,
+            },
+        }
+        for head in HEADS
+    }
+    assert result["manifest"]["sha256"] == "c" * 64
+
+
+def test_final_refit_refuses_reused_or_wrong_head_evidence(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "intraday_equities.final_model.load_document",
+        lambda path: type("Document", (), {"hash": "d" * 64, "to_obj": lambda self: {}})(),
+    )
+    ledger = {"inventory_digest": "a" * 64, "rows": [{"overrides": {"x": 1}}]}
+    import hashlib
+    import json
+    ledger_digest = hashlib.sha256(
+        json.dumps(ledger, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    manifest = _json_artifact(tmp_path, {
+        "producer_key": "scan_h01", "feature_order": ["x"],
+        "categorical_feature": [], "ledger": ledger, "selection": {
+            "inventory_digest": "a" * 64, "ledger_digest": ledger_digest,
+            "selected_candidate": {"x": 1},
+        },
+    })
+    node = final_model.FinalRefit("refit", {
+        "hpo_run_dir": str(tmp_path), "hpo_document_sha256": "d" * 64,
+        "hpo_evidence": {head: manifest for head in HEADS},
+        "feature_order": ["x"], "categorical_feature": [],
+        "categorical_encoding": {}, "predict_fixture": [[0.0]],
+    })
+    with pytest.raises(ValueError, match="distinct|producer"):
+        node._winners()
 
 # ---------------------------------------------------------------------------
 # The real P16 lean mask — the exact 33-column drop list, verbatim from
