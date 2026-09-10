@@ -3453,9 +3453,11 @@ def _hpo_evidence_selection(
     Returns
     -------
     tuple
-        ``(chosen_params, best_score, ledger_obj, selection_obj)`` — the
-        winning full ``estimator_params`` override (template params plus
-        the winner's searched dimensions), its selection score, and the
+        ``(chosen_params, selected_score, ledger_obj, selection_obj)`` —
+        the winning full ``estimator_params`` override (template params
+        plus the winner's searched dimensions), the SELECTED candidate's
+        own recorded score (never the unconstrained ``selection.best_score``
+        argmax, which the one-SE rule may deliberately pass over), and the
         ledger/selection as JSON-safe dicts
         (:meth:`~dskit.pipeline.kinds_search.TrialLedger.to_obj`,
         :meth:`~dskit.pipeline.kinds_search.SelectionRecord.to_obj`).

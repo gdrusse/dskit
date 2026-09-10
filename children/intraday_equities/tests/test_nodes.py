@@ -1344,6 +1344,83 @@ def test_no_information_scan_hpo_evidence_builds_a_ledger_and_leaves_the_default
     assert math.isfinite(evidence["metrics"]["hpo_squared_error_improvement"])
 
 
+def test_hpo_evidence_selection_reports_the_selected_candidates_own_score_not_the_argmax(
+    monkeypatch,
+):
+    """Pins ADR-0115 cycle-1's Major fix: the score reported alongside the
+    chosen candidate must be that candidate's OWN ledger row, never
+    ``selection.best_score`` (the unconstrained argmax the one-SE rule may
+    deliberately pass over).
+
+    A real fitted-model fixture where the one-SE rule provably picks a
+    non-argmax candidate is expensive to engineer (it needs two candidates
+    whose scores sit within one bootstrap standard error of each other,
+    which tiny deterministic LightGBM fits rarely produce by chance — see
+    the sibling ``..._builds_a_ledger...`` test, where winner and argmax
+    coincide). The defect this pins is a wiring bug, not a selection-rule
+    bug, so it is reproduced directly: ``final_model.run_lead_selection``
+    is monkeypatched to hand back a ledger/selection where the selected
+    candidate's own score is deliberately NOT the ledger's highest score,
+    and the old ``selection.best_score`` return would have silently
+    reported the wrong candidate's number.
+    """
+    import numpy as np
+    from intraday_equities import final_model as final_model_module
+    from intraday_equities import nodes as nodes_module
+
+    winner = {"learning_rate": 0.05, "num_leaves": 4}
+    runner_up = {"learning_rate": 0.05, "num_leaves": 8}
+    row_fields = {
+        "se": 0.1,
+        "diagnostics": {},
+        "on_boundary": {},
+        "fit_seed": 0,
+        "cuts": {},
+        "n_rows": 1,
+        "train_val_gap": 0.0,
+        "collapsed_prediction_variance": False,
+    }
+    ledger_rows = [
+        {"overrides": runner_up, "score": 0.99, **row_fields},
+        {"overrides": winner, "score": 0.5, **row_fields},
+    ]
+
+    class FakeLedger:
+        rows = ledger_rows
+
+        def to_obj(self):
+            return {"rows": ledger_rows}
+
+    class FakeSelection:
+        selected_candidate = winner
+        best_score = 0.99  # the runner_up's score: the pre-fix return value
+
+        def to_obj(self):
+            return {"selected_candidate": winner, "best_score": self.best_score}
+
+    def fake_run_lead_selection(inventory, evaluate, *, n_boot, seed, alpha):
+        return FakeLedger(), FakeSelection()
+
+    monkeypatch.setattr(final_model_module, "run_lead_selection", fake_run_lead_selection)
+
+    chosen, score, ledger_obj, selection_obj = nodes_module._hpo_evidence_selection(
+        {"estimator_params": {}},
+        object(),  # inventory: unused, run_lead_selection is faked
+        np.zeros((2, 1)),
+        np.zeros(2),
+        np.zeros((2, 1)),
+        np.zeros(2),
+        np.array([0, 1]),
+        "America/New_York",
+        (0, 0, 0),
+        0,
+    )
+
+    assert chosen == winner
+    assert score == 0.5
+    assert score != FakeSelection.best_score
+
+
 def test_lead_labels_drop_rows_whose_label_lands_after_the_cut():
     spec = _mini_spec()
     spec["features"] = ["ret_lag_0"]
