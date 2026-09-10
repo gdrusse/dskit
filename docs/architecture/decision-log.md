@@ -6936,9 +6936,8 @@ because they decide what may become a metric at all:
 - Catalogue readings named by plan §6 that have no metric name and no
   reducer: replay-versus-paper divergence by divergence class, retries,
   dead-man heartbeat age, data stale age, feature completeness, reference
-  completeness, label/outcome coverage, fill rate, turnover, holding time,
-  decision-to-submit and decision-to-fill latency, MIO solve latency, and the
-  four MIO utilisation ratios.
+  completeness, label coverage, fill rate, turnover, holding time,
+  decision-to-submit and decision-to-fill latency, and MIO solve latency.
 - The catalogue's data category has no reducer: `Coverage` measures ABSTAINING
   LEGS, not input completeness, so "expected/received/missing/late" has no
   monitor.
@@ -6957,21 +6956,33 @@ because they decide what may become a metric at all:
   them.
 - `UNBOUNDED_LABEL_FIELDS = ("symbol", "lead")` — the field names that may
   never become a closed telemetry label.
-- `UTILIZATION_RESOURCES = ("cash", "gross", "cardinality", "position")` — the
-  four the plan's MIO line names, so one bounded label carries all four.
-- `EVENT_READINGS` — `{metric name: (category, field)}`, the binding from a
-  catalogue field to the ONE safe aggregate derived from it. Every metric in
-  it is dimensionless or a duration; no money field appears.
-- New `METRIC_LABEL_VALUES` entries, every label value set reusing an existing
-  vocabulary: `divergences_total{class: DIVERGENCE_CLASSES}`, `retries_total`,
-  `heartbeat_age_seconds`, `stale_age_seconds`, `feature_completeness`,
-  `reference_completeness`, `label_coverage`, `fill_rate`, `turnover`,
-  `holding_seconds`, `decision_to_submit_seconds`,
-  `decision_to_fill_seconds`, `solve_seconds`, and
-  `utilization{resource: UTILIZATION_RESOURCES}`. Widest new metric: 7 series.
-- `monitor_verdicts_total`'s `monitor` values become all registered kind
-  names. Cardinality 20 × 5 = 100, well under
+- `EVENT_READINGS` — `{metric name: (category, field, family)}`, the binding
+  from ONE catalogue field to ONE exported series, with the metric family
+  stated rather than inferred from the name. Thirteen entries; every one is
+  dimensionless or a duration, and no money field appears.
+- Thirteen new `METRIC_LABEL_VALUES` entries, every label value set reusing an
+  existing vocabulary: `divergences_total{class: DIVERGENCE_CLASSES}`,
+  `retries_total`, `heartbeat_age_seconds`, `stale_age_seconds`,
+  `feature_completeness_ratio`, `reference_completeness_ratio`,
+  `label_coverage_ratio`, `fill_ratio`, `turnover_ratio`, `holding_seconds`,
+  `decision_to_submit_seconds`, `decision_to_fill_seconds`, `solve_seconds`.
+  Widest new metric: 6 series (`divergences_total`); every other is
+  unlabelled.
+- `monitor_verdicts_total`'s `monitor` values become all nineteen registered
+  kind names. Cardinality 20 × 5 = 100, well under
   `DEFAULT_LABELS_MAX_CARDINALITY`.
+
+The MIO utilisation ratios (`cash`, `gross`, `cardinality`, `position`) stay
+event and report values and get no metric: the plan names them as four
+separate readings, and folding four catalogue fields into one labelled series
+would be merging items the plan states apart. The catalogue keeps all four.
+
+**A naming rule this needs.** `metrics.py` fixes seconds and bytes as the base
+units, and `tests/production/test_metrics.py` refuses `_percent` and `_pct` as
+scaled restatements. A fraction of one is the third base unit and gets the
+third suffix, `_ratio`; the base-unit test admits it and rejects everything
+else exactly as before. That is why the five ratio readings above are spelled
+`..._ratio` while their catalogue fields keep the plan's own words.
 
 **B. `dskit/production/metrics.py`.**
 
@@ -7026,17 +7037,22 @@ because they decide what may become a metric at all:
 **D. `children/intraday_equities/intraday_equities/metrics.py` (new, tier 3).**
 
 - `class EquityEventAdapter(EventAdapter)` — the child's only mapping from its
-  own §6 record bodies to catalogue fields. It supplies `symbol` and `lead`
-  into the `identity` category (where full per-name detail belongs), maps the
-  child's bar counts onto the generic `expected_inputs`/`received_inputs`/
-  `missing_inputs`/`late_inputs` data fields, and carries the domain digests.
-  It owns no schema, no validation and no hashing — `EventAdapter.event` does
-  all three.
-- `class SignalDecay` — the domain metric plan §6 names by example, "signal
-  decay over realized latency" / "signal decay by lead": given per-lead
-  realised scores it returns the decay profile keyed by lead. Per-lead detail
-  is returned as DATA for the ledger/report artifacts; it is never handed to a
-  metric label.
+  own record fields to catalogue fields, written down once as the class
+  attribute `FIELD_MAP` (`{this project's field: (category, catalogue
+  field)}`). It supplies `symbol` and `lead` into the `identity` category
+  (where full per-name detail belongs), maps the child's bar counts onto the
+  generic `expected_inputs`/`received_inputs`/`missing_inputs`/`late_inputs`
+  data fields, and carries the domain digests. It owns no schema, no
+  validation and no hashing — `EventAdapter.event` does all three. A record
+  key the table does not map is not a reading and never reaches the body.
+- `class SignalDecay` plus `BASELINE_LEAD` — the domain metric plan §6 names
+  by example, "signal decay over realized latency" / "signal decay by lead".
+  `profile(scores)` returns `{lead: retained fraction of the baseline lead's
+  score}` over exactly the leads given, refusing an undeclared lead, a
+  non-finite score, and an absent or zero baseline (a profile without its
+  baseline is a row of `1.0`s, which reads as "no decay" — the one answer a
+  missing measurement must never give). Per-lead detail is returned as DATA
+  for the ledger/report artifacts; it is never handed to a metric label.
 - Registered in `intraday_equities/__init__.py` per the import-is-registration
   rule; child README/CLAUDE/AGENTS trees updated.
 
@@ -7070,9 +7086,10 @@ metric series, and one new completeness reducer.
   Phase 5's replay work. This ADR claims a contract, not an end-to-end run.
 - **Money as telemetry.** Never, per the existing `Decimal` rule; the
   portfolio/capital amounts live in the event body and the report.
-- **MIO solver internals** beyond `solve_seconds` and the four utilisation
-  ratios: `dskit.production` owns no solver, and `EquityKellyMIO`'s own
-  evidence is already ADR-0111's.
+- **MIO solver internals** beyond `solve_seconds`: `dskit.production` owns no
+  solver, and `EquityKellyMIO`'s own evidence is already ADR-0111's. The
+  utilisation ratios, the solver status, the objective and the binding
+  constraints are catalogue fields and report values.
 
 ### Behaviour change (the one, stated plainly)
 
@@ -7084,7 +7101,10 @@ mis-declared table, and it is the only observable difference to an existing
 caller. Adding `Completeness` moves `MONITOR_KINDS.kinds()` from eighteen
 members to nineteen, which the existing pinning test in
 `tests/production/test_monitors.py` asserts by count; that test is updated to
-nineteen. No existing monitor, metric, handle or sink changes shape.
+nineteen. `test_metrics.py`'s base-unit assertion admits `_ratio` beside
+`_seconds` and `_bytes`. No existing monitor, metric, handle or sink changes
+shape, and no shipped metric name, label name or label value is removed or
+renamed.
 
 ### Scope
 

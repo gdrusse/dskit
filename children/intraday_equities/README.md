@@ -174,6 +174,7 @@ intraday_equities/
 │   ├── modelability.py  # staged P10 gate orchestration
 │   ├── modelability_study.py # the asset-local study over any declared cohort (ADR-0094)
 │   ├── modelability_p11.py # P11: the frozen 25 as a pinned study
+│   ├── metrics.py       # equity event-field adapter + signal decay by lead
 │   ├── models.py        # empty bespoke-architecture seam
 │   ├── live.py          # paper intents from shipped configs
 │   └── testing.py       # network-free connector doubles

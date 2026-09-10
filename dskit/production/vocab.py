@@ -20,6 +20,12 @@ Three kinds of value live here:
 * **The metrics tables** ``METRIC_NAMES`` and ``METRIC_LABEL_VALUES``
   (§5.11.1), which reuse the vocabularies above rather than restate them;
   ``metrics.py`` reads them and declares nothing of its own.
+* **The event catalogue** ``EVENT_SCHEMA_VERSION``, ``EVENT_CATEGORIES``,
+  ``EVENT_FIELDS``, ``UNBOUNDED_LABEL_FIELDS`` and ``EVENT_READINGS``
+  (ADR-0117), which say what one decision event records, which two of its
+  fields no telemetry label may carry, and which single field feeds each
+  exported series. A schema is data for the same reason a vocabulary is:
+  one that could compute is one that could disagree with itself.
 
 ``TICK_STATUSES`` is the one vocabulary whose members are colon-qualified
 (``skipped:stale``, §5.13); every other member is a snake_case token.

@@ -23,10 +23,22 @@ those counts, and three rules keep it from becoming a hazard of its own:
   ``accounting.py`` never read a metric.
 
 Naming is Prometheus-shaped: ``snake_case``, ``_total`` on counters and
-only on counters, seconds and bytes as the base units. ``flush(at_ms,
-tick_id)`` appends one JSON object per tick to ``<log_dir>/metrics.jsonl``
-and is told the instant by the loop — nothing here reads a clock; a flush
-that cannot write is counted in ``flush_failures`` and swallowed.
+only on counters, seconds, bytes and ``_ratio`` as the base units (a
+fraction of one is the dimensionless base; ``_percent`` is a scaled
+restatement of it and is refused). ``flush(at_ms, tick_id)`` appends one
+JSON object per tick to ``<log_dir>/metrics.jsonl`` and is told the instant
+by the loop — nothing here reads a clock; a flush that cannot write is
+counted in ``flush_failures`` and swallowed.
+
+Phase 6 adds the EVENT contract on top of the registry (ADR-0117).
+:class:`EventCatalogue` is the versioned schema a replay and a paper run
+both record into; :class:`EventAdapter` is the one seam a layer subclasses
+to map its own records onto it; :class:`EventReadings` reduces one event
+into the bounded series an exporter may carry. Two limits are structural,
+not stylistic: money never becomes a series (a ``Decimal`` refuses, and
+every ``MONEY_FIELDS`` name is one), and ``symbol``/``lead`` never become a
+label (``vocab.UNBOUNDED_LABEL_FIELDS`` refuses them at declaration). Full
+per-name detail belongs in the event body and the artifacts built from it.
 """
 
 import copy

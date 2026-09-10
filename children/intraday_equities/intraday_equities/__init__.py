@@ -17,6 +17,7 @@ from dskit.pipeline.libs.torch_ts import register as _register_torch_ts
 
 from .connectors import AlpacaBars, SchwabBars
 from .feature_cache import SessionFeatureCache
+from .metrics import EquityEventAdapter, SignalDecay
 from .nodes import (
     NODE_KINDS,
     BarsFromStore,
@@ -38,6 +39,7 @@ __all__ = [
     "AlpacaBars",
     "BarsFromStore",
     "CAPITAL_NODE_KINDS",
+    "EquityEventAdapter",
     "EquityKellyMIO",
     "FeedParity",
     "FoldFeatureStats",
@@ -50,6 +52,7 @@ __all__ = [
     "PortfolioSelect",
     "SchwabBars",
     "SessionFeatureRows",
+    "SignalDecay",
     "Universe",
     "WindowRows",
 ]

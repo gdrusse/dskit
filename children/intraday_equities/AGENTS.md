@@ -74,6 +74,10 @@ Agent orientation — see README.md for operator commands.
   no immutable completed-run attestation and no content-derived identity for
   ten labelled input wires. Filling its pins cannot enable planning;
   `final_model.FinalRefit` fails closed until those upstream contracts exist.
+- Telemetry carries no symbol and no lead (ADR-0117). `metrics.py` maps this
+  project's field names onto the generic event catalogue and returns the
+  per-lead decay profile as artifact DATA; the metric registry refuses either
+  as a label. Nothing here sets a threshold — plan §11 item 7 is open.
 
 ## Machine knobs
 
@@ -85,7 +89,7 @@ Agent orientation — see README.md for operator commands.
 ## Layout
 
 ```
-intraday_equities/   # auth, connectors, nodes, models, live, testing
+intraday_equities/   # auth, connectors, nodes, metrics, models, live, testing
 configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
