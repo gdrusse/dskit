@@ -12,6 +12,18 @@ Nodes may wrap JSON evidence in `JsonArtifact`. The driver atomically stores
 its canonical bytes under `artifacts/json/<sha256>.json`; the output, node
 record, and carry retain only the path/digest/size/media-type manifest.
 
+A caller holding a run directory can verify what it claims before trusting
+it, rather than reading its files by hand: `RunAttestation(run_dir)` answers
+`completed()` (the run reached RECORD in state `"ran"`), `node_completed(key)`
+(that one node's own record shows `"ok"`), and
+`binds_document_identity(document_hash)` (`resolved.json`'s claim AND an
+independent re-hash of `config.json` both agree) — every method fails
+closed (`False`), never raises, on anything missing or malformed.
+`content_identity(run_dir, manifests)` combines a NAMED set of JSON-artifact
+manifests into one sha256 over their verified, decoded content — never over
+their paths or digests alone — so it changes if the underlying data changes
+even when a manifest's path does not.
+
 ## The 60-second path
 
 ```bash
@@ -69,6 +81,15 @@ kinds resolve. Two more verbs — `demo`
   in `_materialize_splits` off `Node.data_edge`, event policies bind in
   `_bind_event_bounds` (both `driver.py`) over `merge_event_bounds`
   (`split_policy.py`).
+- **Run attestation and content-derived identity** (ADR-0118) —
+  `RunAttestation(run_dir)` (`driver.py`) is a read-only, fail-closed
+  evidence reader over an already-recorded run: `completed()`,
+  `node_completed(key)`, `binds_document_identity(document_hash)` (the last
+  reconstructs `config.json` via `PipelineDocument.from_obj` and re-hashes
+  it independently of the stored `resolved.json` claim). `content_identity`
+  combines a NAMED set of verified `JsonArtifact` manifests (resolved
+  through `resolve_json_artifact`) into one sha256 over their decoded
+  content, not their paths. Read-only and additive; not wired into any node.
 - **The search seam** — `ctx.rerun` is `_SearchSeam` (`driver.py`, driven by
   `HpoGrid`, `kinds_search.py`), for `search` roles only and never an edge:
   each trial re-executes the dirty part of the objective's ancestry, then
@@ -595,7 +616,8 @@ dskit/pipeline/
 ├── node.py            Node + TrainableNode ABCs, NodeContext, NodeKindRegistry, register_node_kind
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
-│                      run_walk_forward (one derived run per fold + summary)
+│                      run_walk_forward (one derived run per fold + summary);
+│                      RunAttestation + content_identity (ADR-0118)
 ├── stages.py          journal-backed staged DAG execution and resume
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        per-(unit,horizon) quality gate: contiguous horizon cap

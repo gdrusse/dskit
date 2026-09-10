@@ -210,6 +210,25 @@ on it without breaking its rulings.
   import-graph barrier (`driver.py` already imports from `node.py`),
   just outside this ADR's authorized file list and serving an unrelated
   purpose (one JSON node record, not a multi-file bundle).
+- **Run attestation** — `RunAttestation` (`driver.py`, ADR-0118) is a
+  read-only, fail-closed reader over an already-recorded run dir:
+  `completed()`, `node_completed(key)`, `binds_document_identity(hash)`.
+  Every method returns `False` on anything missing or malformed — it never
+  raises, so "cannot read this run" never looks different from "this run
+  did not happen". `binds_document_identity` does not trust
+  `resolved.json`'s stored `document_hash` alone: it also rebuilds a
+  `PipelineDocument` from `config.json` via `from_obj` and recomputes
+  `.hash` independently, and both must agree. `content_identity(run_dir,
+  manifests)` is the sibling module-level function (one pure rule, no
+  state of its own): it resolves every named manifest through
+  `resolve_json_artifact` and hashes the DECODED CONTENT, sorted by name —
+  never the manifests' own paths or digests — so it changes when the
+  underlying data changes even if a path does not, and a manifest whose
+  digest does not match its file raises before it can enter the combined
+  identity. Both are read-only and additive: nothing in `run_document`'s
+  own lifecycle changed, and neither is wired into any node — building
+  that wiring (`FinalRefit`, or any other consumer) is separate,
+  unauthorized work.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there
@@ -496,7 +515,8 @@ dskit/pipeline/
 ├── node.py            Node + TrainableNode ABCs, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
-│                      (ADR-0056); run_walk_forward (ADR-0027)
+│                      (ADR-0056); run_walk_forward (ADR-0027);
+│                      RunAttestation + content_identity (ADR-0118)
 ├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        HorizonConquest: per-(unit,horizon) contiguous cap over
