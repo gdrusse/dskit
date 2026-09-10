@@ -1127,6 +1127,25 @@ class TestEventReadingsRecordsTheSafeAggregatesAndNothingElse:
             "class=guard": 1,
         }
 
+    def test_an_unlabelled_histogram_reading_bins_the_value_it_carries(self):
+        """The other three tests in this group already prove a gauge and a
+        counter reading land their VALUE, not just their declared family
+        (`test_each_family_is_declared_as_the_binding_says` above only
+        checks family name). The histogram family (`holding_time`,
+        `decision_to_submit_latency`, `decision_to_fill_latency`,
+        `solve_latency`) had no such proof, so this exercises `_apply`'s
+        histogram branch (`metrics.py`) directly: `holding_seconds` is
+        unlabelled (`vocab.METRIC_LABEL_VALUES["holding_seconds"] == {}`),
+        so one `record()` must count once and sum to exactly the value the
+        event carried, not merely report the right family."""
+        registry = Metrics()
+        EventReadings(registry).record(
+            {"schema_version": 1, "execution": {"holding_time": 42.0}}
+        )
+        series = registry.snapshot()["holding_seconds"][""]
+        assert series["count"] == 1
+        assert series["sum"] == 42.0
+
     def test_a_field_the_event_does_not_carry_records_nothing(self):
         registry = Metrics()
         EventReadings(registry).record({"schema_version": 1})

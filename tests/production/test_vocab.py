@@ -854,3 +854,22 @@ def test_no_safe_aggregate_reads_a_money_field():
     never a series."""
     for metric, (_category, field, _family) in vocab.EVENT_READINGS.items():
         assert field not in vocab.MONEY_FIELDS, metric
+
+
+def test_money_fields_covers_every_name_unchanged_valuepoint_decimal():
+    """Pins `MONEY_FIELDS` against `records.ValuePoint`'s `Decimal` fields —
+    the exact omission (`drawdown`) that let a money value slip past
+    `metrics._check_value` and reach `EVENT_READINGS` as a safe aggregate.
+
+    This is deliberately NOT a full-field pin: most of `ValuePoint`'s
+    `Decimal` fields are renamed on the event side (``realised`` ->
+    ``realized_pnl``, ``unrealised`` -> ``unrealized_pnl``, ``external`` ->
+    ``settled_external_flow``, ``cumulative`` -> ``net_pnl``), so a blind
+    name match would misfire on every one of those. ``nav`` and ``drawdown``
+    are the only two `ValuePoint` `Decimal` fields whose name is UNCHANGED
+    between the class and `MONEY_FIELDS`, so only those two admit a plain
+    membership pin. Do not widen this to the full field set without also
+    building the rename map — that is the reasoning a prior fixer declined
+    to generalize past, and this test is the narrower agreement it left
+    findable."""
+    assert {"nav", "drawdown"} <= set(vocab.MONEY_FIELDS)
