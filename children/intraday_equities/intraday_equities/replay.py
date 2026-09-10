@@ -642,10 +642,27 @@ class EquityReplay:
                 recording, observability, lock=lock, process_id="replay-1",
             )
             code = loop.run()
+            failed = []
+            for envelope in recording.ledger.scan(kind="tick"):
+                body = envelope.get("body") or {}
+                if body.get("status") == "failed":
+                    err = body.get("error") or {}
+                    cls = err.get("class") or "failed"
+                    text = err.get("text") or ""
+                    failed.append(f"{cls}: {text}")
+            leftover = list(self._queued) + list(self._pending_by_id)
             recording.ledger.close()
             lock.release()
             if self._fault is not None:
                 raise self._fault
+            if failed:
+                raise ConfigError([
+                    f"ServeLoop tick status failed: {failed[0]}"
+                ])
+            if leftover:
+                raise ConfigError([
+                    f"{len(leftover)} fill(s) queued but never submitted"
+                ])
             if code != 0:
                 raise ConfigError([
                     f"ServeLoop exited {code} state={loop.state!r}"
@@ -703,7 +720,7 @@ class EquityReplay:
             if self._fault is None:
                 self._fault = exc
             raise
-        except (KeyError, TypeError, ValueError, ProductionError) as exc:
+        except (KeyError, TypeError, ValueError, ArithmeticError, ProductionError) as exc:
             wrapped = ConfigError([str(exc)])
             if self._fault is None:
                 self._fault = wrapped
@@ -724,6 +741,8 @@ class EquityReplay:
                 if idx is None:
                     continue
                 bar = seq[idx]
+                if self._halted(bar):
+                    continue
                 if policy.fill_price_field not in bar:
                     raise ConfigError([
                         f"bar missing {policy.fill_price_field!r} at asof_ms={asof!r}"
@@ -737,7 +756,7 @@ class EquityReplay:
             if self._fault is None:
                 self._fault = exc
             raise
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             wrapped = ConfigError([str(exc)])
             if self._fault is None:
                 self._fault = wrapped

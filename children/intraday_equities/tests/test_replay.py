@@ -626,6 +626,36 @@ def test_missing_fill_price_and_string_qty_refuse():
         )
 
 
+def test_halted_unparseable_open_does_not_drop_a_peer_fill():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        {"symbol": "AAA", "asof_ms": 2_000, "open": None, "close": 11.5, "halted": True},
+        _bar("BBB", 1_000, 20.0, 20.5),
+        _bar("BBB", 2_000, 21.0, 21.5),
+    ]
+    out = ReplayAdapter(policy).replay(
+        bars,
+        [_decision("AAA", 1_000, lead=1), _decision("BBB", 1_000, lead=1)],
+    )
+    entries = [row for row in out["fills"] if row["kind"] == "entry"]
+    assert [(row["symbol"], row["asof_ms"], row["price"]) for row in entries] == [
+        ("BBB", 2_000, 21.0),
+    ]
+    assert any(row["reason"] == "halted" and row.get("symbol") == "AAA" for row in out["skipped"])
+
+
+def test_empty_open_on_a_live_bar_raises():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        {"symbol": "AAA", "asof_ms": 2_000, "open": "", "close": 11.5, "halted": False},
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    with pytest.raises(ConfigError):
+        ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+
+
 def test_fill_suffix_fields_are_graded_and_friday_monday_closes_lead_390():
     raw = _raw_fill_policy()
     assert raw["fill_suffix_bars"] == raw["fill_bar_offset"] + 1170
