@@ -1,9 +1,45 @@
 # Re-entry
 
-## Current wrap: Gate 6 — shared event/metric contract, skeptic-clean (2026-09-10)
+## Current wrap: Gate 2 deliverable 5 — run attestation & content identity, merged (2026-09-10)
 
-Branch: `claude/gate6-event-metric-contract-a8b7ea`, off
-`claude/phase1-recovery-seven-gates-ao4zdj` (not merged anywhere yet).
+Branch: `claude/gate2-run-provenance-01sjcpsy`, merged into
+`claude/phase1-recovery-seven-gates-ao4zdj`. ADR-0118 **accepted**.
+
+Adds the generic `dskit.pipeline` capability ADR-0116 said `FinalRefit` needs
+before it can ever be safely enabled: `driver.RunAttestation` (`completed`,
+`node_completed`, `binds_document_identity`, and the composed
+`node_output_for_document` that closes a real substitution gap the naive AND
+of the first three leaves open) plus module-level `content_identity` over a
+set of `JsonArtifact` manifests. `FinalRefit` itself is untouched and stays
+fail-closed exactly as ADR-0116 left it — this only builds the seam a future,
+separately-authorized deliverable could use.
+
+Three sequential independent skeptic rounds: round 1 found a real Major
+(node records weren't tied to the run's bound document identity, so a
+forged run directory could pass `completed()`/`node_completed()`/
+`binds_document_identity()` ANDed together while the node record's actual
+evidence was from a different document's run — fixed by the new
+`node_output_for_document`, which stamps and checks a `document_hash` on
+every node record); rounds 2 and 3 were two consecutive independent clean
+passes (round 3 flagged one trivial, non-blocking documentation note, folded
+into the ADR). The residual, disclosed limitation: nothing hash-chains node
+records to each other, so a direct hand-edit of a node record's
+`document_hash` field is still undetectable — closing that needs a
+write-time hash-chain/signature, left for a future ADR if a consumer's
+threat model needs it.
+
+Verification: `tests/pipeline/{test_driver,test_purity,test_method_lengths,
+test_kinds_search}.py` — 234 passed on the merged tree. Ruff clean; `git diff
+--check` clean.
+
+**Next:** a future deliverable to actually wire `FinalRefit` to this seam
+(not started, not scoped here) plus Gates 3-5, in flight on separate
+branches/model tracks.
+
+## Prior wrap: Gate 6 — shared event/metric contract, skeptic-clean, merged (2026-09-10)
+
+Branch: `claude/gate6-event-metric-contract-a8b7ea`, merged into
+`claude/phase1-recovery-seven-gates-ao4zdj`. ADR-0117 **accepted**.
 
 Adds the generic event/metric contract from
 `docs/plans/2026-09-08-final-model-replay-and-monitoring.md` §6 Phase 6:
@@ -12,8 +48,7 @@ full eight-category catalogue, 108 fields), `metrics.EventCatalogue`/
 `EventAdapter`/`EventReadings`, a `Completeness` monitor, and
 `intraday_equities.metrics.EquityEventAdapter`/`SignalDecay`. Records every
 metric value now; no WARN/HOLD thresholds or alerting (§11 items 7/10 stay
-open, as scoped). ADR-0117 (`docs/architecture/decision-log.md`) is
-**proposed, not yet owner-accepted**.
+open, as scoped).
 
 Five sequential independent skeptic rounds, single-agent-at-a-time per the
 plan's own protocol: round 1 found a real Major (money-safety unenforced on
