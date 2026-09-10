@@ -6928,12 +6928,17 @@ fill-only trailing window (session bars and UTC weekdays after
 `evidence_end`; weekend prints refuse). Changing either moves fill-policy
 identity.
 
-**Files.** `intraday_equities/replay.py` (new, tier 3) composes
-`ServeLoop` + `ReplayFeed` + one shared `ManualTime`/`ReplayClock` +
-`JsonlLedger` + `PaperExecutor` through `LegPipeline`. It does not
-subclass `ServeLoop` and adds no `dskit.production` hook (Gate 5a).
-`HorizonBook` is the equity `(symbol, lead)` identity overlay production
-positions do not key. `configs/fill-policy.json` (new).
+**Files.** `intraday_equities/replay.py` (new, tier 3) calls
+`compose.bundles_for(..., tape=BarTape)` then overlays tape cadence
+(`Cadence` subclass; `CADENCE_KINDS` has no tape-times member and Gate 5a
+forbids adding one), the equity decider, `ReleaseIdSource` (this is not
+a recorded series; `BarTape.id_allocations` is empty), and a
+`PaperVenue` around a `PaperExecutor` on compose's clock. The document
+stays `rung=shadow` because `fsync: none` is shadow-only; compose's
+`ShadowExecutor` is not the fill venue. Fills go through `LegPipeline`.
+It does not subclass `ServeLoop` and adds no `dskit.production` hook
+(Gate 5a). `HorizonBook` is the equity `(symbol, lead)` identity overlay
+production positions do not key. `configs/fill-policy.json` (new).
 `configs/run-development-replay.json` (new) — P16 evidence ending
 2025-10-16, `deployment_eligible=false`, fill-policy digest pin. No
 `dskit.production` hook. `path.csv` untouched.

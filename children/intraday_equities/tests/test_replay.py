@@ -498,8 +498,8 @@ def test_replay_py_composes_serveloop_replayfeed_tape_and_shared_clock():
     tree = ast.parse(walk_src)
     calls = _call_names(tree)
     assert "ServeLoop" in calls
-    assert "ReplayFeed" in calls
-    assert "ReplayClock" in calls
+    assert "bundles_for" in calls
+    assert "OnboardingRoot" in calls or "create" in calls
     tape_bases = [
         base.id
         for node in ast.walk(tree)
@@ -508,6 +508,10 @@ def test_replay_py_composes_serveloop_replayfeed_tape_and_shared_clock():
         if isinstance(base, ast.Name)
     ]
     assert "ReplayTape" in tape_bases
+    assert "Cadence" in tape_bases
+    assert "tape=tape" in walk_src.replace(" ", "")
+    assert "class _Ready" not in walk_src
+    assert "class _Accounting" not in walk_src
     assert "for index, bar in enumerate(seq)" not in walk_src
     assert 'digest = "a" * 64' not in walk_src
     assert "account=None" not in walk_src.replace(" ", "")
@@ -556,6 +560,11 @@ def test_same_lead_override_from_json_replaces_the_open_lot():
         (10, 2_000),
         (7, 3_000),
     ]
+    exits = [row for row in out["fills"] if row["kind"] == "exit"]
+    assert [(row["qty"], row["asof_ms"]) for row in exits] == [
+        (10, 3_000),
+        (7, 5_000),
+    ]
     assert not any(row["reason"] == "same_lead_open" for row in out["refused"])
 
 
@@ -572,6 +581,49 @@ def test_halt_queue_retries_the_entry_on_the_next_live_bar():
     assert len(entries) == 1
     assert entries[0]["asof_ms"] == 3_000
     assert entries[0]["price"] == pytest.approx(12.0)
+
+
+def test_halt_queue_past_the_tape_is_refused():
+    policy = _policy({"halt_handling": "queue"})
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5, halted=True),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    assert out["fills"] == []
+    assert any(row["reason"] == "fill_bar_past_tape" for row in out["refused"])
+
+
+def test_forced_exit_price_field_close_exits_at_close():
+    policy = _policy({"forced_exit_price_field": "close"})
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    exit_row = next(row for row in out["fills"] if row["kind"] == "exit")
+    assert exit_row["price"] == pytest.approx(12.5)
+
+
+def test_missing_fill_price_and_string_qty_refuse():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        {"symbol": "AAA", "asof_ms": 2_000, "close": 11.5, "halted": False},
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    with pytest.raises(ConfigError, match="open"):
+        ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    ok_bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    with pytest.raises(ConfigError, match="qty"):
+        ReplayAdapter(policy).replay(
+            ok_bars, [_decision("AAA", 1_000, lead=1, qty="10")]
+        )
 
 
 def test_fill_suffix_fields_are_graded_and_friday_monday_closes_lead_390():

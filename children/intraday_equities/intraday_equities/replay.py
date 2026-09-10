@@ -4,11 +4,11 @@ Gate 5a already proved ``ServeLoop`` + ``ReplayFeed`` + ``ReplayClock`` +
 ``PaperExecutor`` drive deterministic historical ticks; no generic hook
 is missing and this module does not subclass ``ServeLoop``. Equity policy
 (bar choice, next-bar-open quotes, ``(symbol, lead)`` identity, Schwab
-costs) is injected into those objects: a ``BarTape`` supplies recorded
-pulls, one shared ``ManualTime`` drives ``ReplayClock`` and
-``ReplayFeed``, ``ServeLoop`` is the scheduler, ``PaperExecutor`` submits
-through ``LegPipeline``, and the ledger is ``JsonlLedger``. Overlap/expiry
-is ADR-0117 **proposed**.
+costs) is injected into ``compose.bundles_for``: a ``BarTape`` is the
+D20 tape (clock + feed), ``ReleaseIdSource`` allocates because this is
+not a recorded series, ``_TapeCadence`` ticks at bar instants, this
+object is the decider, and ``_PaperVenue`` records fills from compose's
+``PaperExecutor``. Overlap/expiry is ADR-0117 **proposed**.
 
 Every fill-model value is a field of ``configs/fill-policy.json``. This
 file has no default for those knobs — a missing or unknown name refuses.
@@ -22,57 +22,40 @@ import shutil
 import tempfile
 import uuid
 from collections import defaultdict
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from dskit.onboarding import OnboardingRoot
 from dskit.pipeline.base import config_hash, import_ref
 from dskit.pipeline.node import (
     ConfigError,
     Node,
+    ServingContract,
     check_int_param,
     register_node_kind,
     reject_unknown_params,
 )
 from dskit.pipeline.records import number_ok
 from dskit.production.base import ProductionError, canonical_hash
-from dskit.production.bundles import (
-    Data,
-    Decision,
-    Execution,
-    Invocation,
-    Observability,
-    Recording,
-    ReplayTape,
-    Safety,
-    Schedule,
-)
-from dskit.production.cadence import Overrun
-from dskit.production.clock import ManualTime, ReplayClock
-from dskit.production.control import ControlInbox
+from dskit.production.bundles import Data, Invocation, ReplayTape
+from dskit.production.cadence import Cadence
+from dskit.production.compose import bundles_for
 from dskit.production.document import ServeDocument
 from dskit.production.executor import PaperExecutor
-from dskit.production.feed import ReplayFeed
 from dskit.production.health import InstanceLock
 from dskit.production.ids import ReleaseIdSource
-from dskit.production.ledger import Checkpoint, JsonlLedger, ServeRoot
-from dskit.production.leg import SimulatedAuthority
+from dskit.production.ledger import ServeRoot
 from dskit.production.loop import ServeLoop
-from dskit.production.policy import ActionPolicy, TransitionPolicy
-from dskit.production.arming import ConjunctionResult
-from dskit.production.coordination import LeasePermit
 from dskit.production.records import (
-    AccountState,
     EntryBatch,
     ExecutionScope,
     FeedResult,
     InputWatermark,
     Proposal,
     Quote,
-    ScopeVerdict,
 )
 from dskit.production.release import ReleaseManifest, RuntimeFingerprint, artifact_digest
-from dskit.production.sessions import AlwaysOpen
-from dskit.production.state import SeriesState
 
 from .nodes_capital import SchwabCostModel
 
@@ -358,10 +341,11 @@ class BarTape(ReplayTape):
         return ()
 
 
-class _TapeCadence:
+class _TapeCadence(Cadence):
     """Tick exactly at the tape's timestamps."""
 
     def __init__(self, times):
+        super().__init__({})
         self._times = tuple(times)
 
     def next_tick(self, after_ms, calendar):
@@ -372,235 +356,107 @@ class _TapeCadence:
         return None
 
 
-class _Ready:
-    """Health that is already ready so the gate may pass."""
+class _TapeEntry(Node):
+    """Source root so ``Decider.prepare`` can classify the developmental entry.
 
-    state = "ready"
+    Compose requires a serving run document with one ``entry_read``. The
+    tick never executes this node: ``EquityReplay`` overlays
+    ``Data.decider`` after ``bundles_for`` returns.
 
-    def evaluate(self, now_ms):
-        return "ready"
+    Parameters
+    ----------
+    params : dict
+        ``since_ms`` (int or null), ``root`` / ``source`` / ``stream``
+        (non-empty str) — the contract ``OnboardingRoot`` opens.
 
-    def can_act(self):
-        return True
+    Examples
+    --------
+    Construct the entry compose will classify::
 
-    def can_heartbeat(self):
-        return True
+        node = _TapeEntry("bars", {
+            "since_ms": None, "root": "/tmp/ob", "source": "replay", "stream": "bars",
+        })
+        node.role
+        # -> 'data'
+    """
 
-    def mark_unhealthy(self, cause, now_ms):
-        return None
+    role = "data"
+    outputs = ("records",)
+    _PARAMS = ("since_ms", "root", "source", "stream")
 
-    def stop(self):
-        self.state = "stopping"
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify as the tick's one mutable read."""
+        return "entry_read"
 
-
-class _Go:
-    """Readiness that always answers GO (shadow/paper developmental)."""
-
-    def verdict_for(self, view, at_ms):
-        return "go"
-
-
-class _Heart:
-    """Heartbeat that records nothing."""
-
-    def start(self):
-        return None
-
-    def ready(self):
-        return None
-
-    def stopping(self):
-        return None
-
-    def close(self):
-        return None
-
-    def beat(self, now_ms):
-        return True
-
-    def note_tick_completed(self, monotonic_s):
-        return None
-
-
-class _Metrics:
-    """Metrics sink that ignores every observation."""
-
-    def counter(self, name, labels=()):
-        return self
-
-    def gauge(self, name, labels=()):
-        return self
-
-    def histogram(self, name, labels=(), buckets=None):
-        return self
-
-    def inc(self, n=1, **labels):
-        return None
-
-    def set(self, value, **labels):
-        return None
-
-    def observe(self, value, **labels):
-        return None
-
-    def flush(self, at_ms, tick_id):
-        return True
-
-
-class _Alerts:
-    """Alert router that never pages."""
-
-    def raise_alert(self, alert):
-        return True
-
-    def process(self, now_ms):
-        return ()
-
-    def close(self):
-        return None
-
-
-class _Breaker:
-    """Series breaker that stays active unless tripped."""
-
-    def __init__(self):
-        self.state = "active"
-
-    def current(self, view):
-        return self.state
-
-    def halt_sentinel_present(self):
-        return False
-
-    def trip(self, reason, actor, control_request_id=None, principal_digest=None,
-             proof_digest=None, cause="trip"):
-        self.state = "halted"
-        return 1
-
-    def cancel_working(self, view, trip_id):
-        return None
-
-
-class _Arming:
-    """Paper arming: conjunction satisfied, scope not_armed."""
-
-    def current(self, view, at_ms):
-        return None
-
-    def expire_if_due(self, view, at_ms):
-        return None
-
-    def apply_scope(self, proposal, arming_state):
-        return ScopeVerdict(
-            allowed=True, scope_key=proposal.instrument, reason="shadow_unarmed"
+    @classmethod
+    def serving_contract(cls, params, verified_run_evidence):
+        """Bind the empty onboarding root compose opens, then overlays away."""
+        return ServingContract(
+            source_binding={
+                "kind": "onboarding-stream",
+                "root": params["root"],
+                "source": params["source"],
+                "stream": params["stream"],
+            },
+            entity_key_fields=("symbol",),
+            event_time_field="asof_ms",
+            digest_recipe={"kind": "stream-digest"},
         )
 
-    def check_conjunction(self, invocation, view, origin, reduction, rung, at_ms):
-        return ConjunctionResult(satisfied=True, reason="")
+    @classmethod
+    def validate_params(cls, params):
+        """Require the contract fields; ``since_ms`` may be JSON null."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        for name in ("root", "source", "stream"):
+            if not isinstance(params.get(name), str) or not params.get(name):
+                problems.append(f"{name} must be a non-empty string")
+        if params.get("since_ms") is not None:
+            check_int_param(problems, "since_ms", params.get("since_ms"), ge=0)
+        return problems
+
+    def run(self, ctx, inputs):
+        """Emit no rows — the overlay decider never asks this node to run."""
+        return {"records": []}
 
 
-class _Guards:
-    """Pass-through guards so equity proposals reach the paper venue."""
+class _TapeHead(Node):
+    """Pure head so the served graph has a descendant of the entry.
 
-    guards = {}
+    Parameters
+    ----------
+    params : dict
+        None. ``notes`` is allowed.
 
-    def requirements(self, candidates, at_ms, calendar):
-        return ()
+    Examples
+    --------
+    Wire the entry through::
 
-    def check_all(self, proposal, state):
-        return proposal, ()
+        node = _TapeHead("select", {})
+        node.run(None, {"records": [{"symbol": "AAA"}]})
+        # -> {'records': [{'symbol': 'AAA'}]}
+    """
 
-    def check_authority_scope(self, proposal, state, arm):
-        return ScopeVerdict(allowed=True, scope_key=proposal.instrument, reason="")
+    role = "transform"
+    outputs = ("records",)
+    _PARAMS = ()
 
-    def new_holds(self, findings, state_view, at_ms, calendar):
-        return ()
+    @classmethod
+    def serving_effect(cls, params, verified_run_evidence):
+        """Classify as a pure input reader."""
+        return "pure"
 
+    @classmethod
+    def validate_params(cls, params):
+        """Refuse unknown knobs."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        return problems
 
-class _Accounting:
-    """Snapshot with a real digest so the permit digest gate passes."""
-
-    def __init__(self, digest):
-        self._digest = digest
-
-    def snapshot(self, state_view, executor, quotes, at_ms, requirements, calendar):
-        return AccountState(
-            risk_version=state_view.risk_version,
-            asof_ms=at_ms,
-            evidence_digest=self._digest,
-            balances=(),
-            positions=(),
-            working=(),
-            measure_evidence={},
-            source_digests={},
-        )
-
-    def value(self, state_view, quotes, at_ms):
-        return Decimal("0")
-
-    def classify(self, proposal, state):
-        return "increase"
-
-
-class _Lease:
-    """Lease that never expires during a developmental tape."""
-
-    LIVE_CAPABLE = False
-
-    def __init__(self, expires_ms):
-        self.permit = None
-        self._expires = expires_ms
-
-    def acquire(self, scope, holder, ttl_ms):
-        self.permit = LeasePermit(
-            scope=scope, holder=holder, fencing_token=1, expires_ms=self._expires
-        )
-        return self.permit
-
-    def renew(self, permit):
-        return permit
-
-    def current(self, scope):
-        return self.permit
-
-    def release(self, permit):
-        self.permit = None
-
-
-class _Reconcile:
-    """Reconciler that is never due."""
-
-    def due(self, now, last):
-        return False
-
-    def run(self, *args, **kwargs):
-        return None
-
-    def apply_policy(self, report):
-        return None
-
-
-class _Verifier:
-    """Submission verifier that never disables the paper venue."""
-
-    def __init__(self):
-        self.disabled = False
-
-    def reset_after_reconcile(self):
-        self.disabled = False
-
-    def refuse_until_reconciled(self, reason):
-        self.disabled = True
-
-
-class _AuthorityTable:
-    """One SimulatedAuthority for every origin."""
-
-    def __init__(self, authority):
-        self._authority = authority
-
-    def for_origin(self, origin, breaker):
-        return self._authority
+    def run(self, ctx, inputs):
+        """Pass records through."""
+        return {"records": list(inputs.get("records") or [])}
 
 
 class _PaperVenue:
@@ -611,6 +467,12 @@ class _PaperVenue:
         self._owner = owner
 
     def submit(self, intent, permit, state):
+        meta = self._owner._pending_by_id.get(intent.proposal.id)
+        if meta is not None:
+            px = Decimal(str(meta["price"]))
+            self._inner.on_quote(Quote(
+                instrument=meta["symbol"], bid=px, ask=px, mid=px, asof_ms=meta["asof_ms"],
+            ))
         ack = self._inner.submit(intent, permit, state)
         self._owner._on_ack(intent, ack)
         return ack
@@ -620,7 +482,7 @@ class _PaperVenue:
 
 
 class EquityReplay:
-    """Compose ServeLoop + ReplayFeed + shared ReplayClock around the equity book."""
+    """Drive compose.bundles_for + ServeLoop around the equity book."""
 
     def __init__(self, policy):
         self._policy = policy
@@ -727,97 +589,60 @@ class EquityReplay:
         digest = policy.digest()
         tape = BarTape(bars, self._source)
         times = tape._times
-        shared = ManualTime(tape.start_ms())
-        clock = ReplayClock(manual_time=shared)
-        feed = ReplayFeed({}, tape=tape.feed_results(), time=shared)
-        inner = PaperExecutor(
-            policy.paper_params(),
-            clock=clock,
-            scope=ExecutionScope(venue="paper", account="replay"),
-        )
-        self._venue = _PaperVenue(inner, self)
+        symbols = sorted(self._by_symbol)
         work = tempfile.mkdtemp(prefix="gate5-replay-")
         series_id = str(uuid.uuid4())
         try:
-            run_dir = os.path.join(work, "run")
-            os.makedirs(run_dir, exist_ok=True)
-            artifact = os.path.join(run_dir, "policy")
-            with open(artifact, "w", encoding="utf-8") as fh:
-                json.dump(policy.to_obj(), fh)
+            run_dir, artifact, ob_root = _write_serving_run(work, policy)
             document = ServeDocument.from_obj(
-                _shadow_document(run_dir, series_id, sorted(self._by_symbol))
+                _serve_document(run_dir, series_id, symbols, times)
             )
             release = _release_for(
-                run_dir, artifact, sorted(self._by_symbol), digest, self._source,
-                document, tape.start_ms(),
+                run_dir, artifact, symbols, digest, self._source,
+                document, tape.start_ms(), ob_root,
             )
             serve = ServeRoot(os.path.join(work, "serve"), series_id)
             lock = InstanceLock(serve.lock_path)
             lock.acquire()
-            state = SeriesState(series_id)
-            ledger = JsonlLedger(
-                serve, "replay-1", release.release_hash, clock=clock, state=state, lock=lock,
+            invocation = Invocation(
+                armed=False, env_release_hash=None, once=False,
+                max_ticks=max(len(times), 1),
             )
-            inbox = ControlInbox(serve, clock)
-            calendar = AlwaysOpen({})
-            arming = _Arming()
-            health = _Ready()
-            lease = _Lease(tape.start_ms() + 86_400_000 * 3650)
-            venue = self._venue
-            authority = SimulatedAuthority(
-                clock, calendar, arming, lease, health, venue, document, release, ledger, inbox,
-            )
-            accounting = _Accounting(digest)
-            schedule = Schedule(
-                clock=clock,
-                calendar=calendar,
-                cadence=_TapeCadence(times),
-                overrun=Overrun({}),
-            )
-            data = Data(feed=feed, decider=self)
-            decision = Decision(guards=_Guards(), monitors={})
-            safety = Safety(
-                breaker=_Breaker(),
-                arming=arming,
-                authorities=_AuthorityTable(authority),
-                readiness=_Go(),
-                invocation=Invocation(
-                    armed=False, env_release_hash=None, once=False, max_ticks=len(times),
+            try:
+                schedule, data, decision, safety, execution, recording, observability = bundles_for(
+                    document,
+                    release,
+                    None,
+                    serve_root=serve,
+                    secrets={},
+                    invocation=invocation,
+                    process_id="replay-1",
+                    lock=lock,
+                    journal_hook=_journal_noop,
+                    tape=tape,
+                )
+            except ProductionError as exc:
+                raise ConfigError(list(exc.problems)) from exc
+            self._venue = _PaperVenue(
+                PaperExecutor(
+                    policy.paper_params(),
+                    clock=schedule.clock,
+                    scope=document.coordination.scope,
                 ),
-                action_policy=ActionPolicy(),
-                transition_policy=TransitionPolicy(),
-                submission_verifier=_Verifier(),
+                self,
             )
-            execution = Execution(
-                executor=venue, accounting=accounting, lease=lease, resilience=object(),
-            )
-            recording = Recording(
-                ledger=ledger,
-                state=state,
-                inbox=inbox,
-                reconciler=_Reconcile(),
-                checkpoint=Checkpoint(
-                    release_hash=release.release_hash,
-                    last_tick_at=None,
-                    last_completed_tick_at=None,
-                    pending=(),
-                    positions_snapshot_at=None,
-                    schema_version=1,
-                    head_seq=0,
-                    head_hash="0" * 64,
-                ),
-                journal_hook=_journal_noop,
-                id_source=ReleaseIdSource(release.release_hash),
-            )
-            observability = Observability(
-                metrics=_Metrics(), alerts=_Alerts(), health=health, heartbeat=_Heart(),
+            schedule = replace(schedule, cadence=_TapeCadence(times))
+            data = Data(feed=data.feed, decider=self)
+            execution = replace(execution, executor=self._venue)
+            recording = replace(
+                recording, id_source=ReleaseIdSource(release.release_hash),
             )
             loop = ServeLoop(
                 document, release, schedule, data, decision, safety, execution,
                 recording, observability, lock=lock, process_id="replay-1",
             )
             code = loop.run()
-            ledger.close()
+            recording.ledger.close()
             lock.release()
             if self._fault is not None:
                 raise self._fault
@@ -874,10 +699,15 @@ class EquityReplay:
                     continue
                 self._apply_bar(symbol, seq[idx], idx)
             return {"records": list(batch.outputs["records"])}, self._policy.digest()
-        except (ConfigError, ProductionError) as exc:
+        except ConfigError as exc:
             if self._fault is None:
                 self._fault = exc
             raise
+        except (KeyError, TypeError, ValueError, ProductionError) as exc:
+            wrapped = ConfigError([str(exc)])
+            if self._fault is None:
+                self._fault = wrapped
+            raise wrapped from exc
 
     def candidates(self, head_outputs):
         """No extra candidates — equity size is already on the queued proposals."""
@@ -885,18 +715,33 @@ class EquityReplay:
 
     def quotes(self, head_outputs):
         """Return next-bar-open quotes so the tick's QuoteSet is non-empty."""
-        policy = self._policy
-        asof = self._asof
-        found = []
-        for symbol, seq in self._by_symbol.items():
-            idx = self._index_of[symbol].get(asof)
-            if idx is None:
-                continue
-            price = Decimal(str(seq[idx][policy.fill_price_field]))
-            quote = Quote(instrument=symbol, bid=price, ask=price, mid=price, asof_ms=asof)
-            self._venue.on_quote(quote)
-            found.append(quote)
-        return found
+        try:
+            policy = self._policy
+            asof = self._asof
+            found = []
+            for symbol, seq in self._by_symbol.items():
+                idx = self._index_of[symbol].get(asof)
+                if idx is None:
+                    continue
+                bar = seq[idx]
+                if policy.fill_price_field not in bar:
+                    raise ConfigError([
+                        f"bar missing {policy.fill_price_field!r} at asof_ms={asof!r}"
+                    ])
+                price = Decimal(str(bar[policy.fill_price_field]))
+                quote = Quote(instrument=symbol, bid=price, ask=price, mid=price, asof_ms=asof)
+                self._venue.on_quote(quote)
+                found.append(quote)
+            return found
+        except ConfigError as exc:
+            if self._fault is None:
+                self._fault = exc
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            wrapped = ConfigError([str(exc)])
+            if self._fault is None:
+                self._fault = wrapped
+            raise wrapped from exc
 
     def proposals(self, head_outputs, candidates, account, provenance):
         """Return this tick's queued equity orders for LegPipeline."""
@@ -926,7 +771,17 @@ class EquityReplay:
                         "symbol": symbol, "asof_ms": bar["asof_ms"], "reason": "halted",
                     })
             elif policy.halt_handling == "queue":
-                pending[index + 1].extend(incoming)
+                nxt = index + 1
+                if nxt >= len(self._by_symbol[symbol]):
+                    for decision in incoming:
+                        self.refused.append({
+                            "symbol": symbol,
+                            "asof_ms": bar["asof_ms"],
+                            "lead": decision[self._policy.horizon_field],
+                            "reason": "fill_bar_past_tape",
+                        })
+                else:
+                    pending[nxt].extend(incoming)
             else:
                 raise ConfigError([f"halt_handling {policy.halt_handling!r} has no dispatch"])
             return
@@ -965,6 +820,26 @@ class EquityReplay:
             lead = decision[policy.horizon_field]
             qty = decision[policy.qty_field]
             side = decision[policy.side_field]
+            if isinstance(qty, bool) or isinstance(qty, str) or not number_ok(qty) or qty <= 0:
+                raise ConfigError([
+                    f"qty must be a positive number, got {qty!r} at asof_ms={bar['asof_ms']!r}"
+                ])
+            if policy.fill_price_field not in bar:
+                raise ConfigError([
+                    f"bar missing {policy.fill_price_field!r} at asof_ms={bar['asof_ms']!r}"
+                ])
+            if self._book.is_open(symbol, lead) and policy.same_lead_overlap == "override":
+                lot = self._book.close_lot(symbol, lead)
+                exit_side = "sell" if lot["side"] == "buy" else "buy"
+                exit_px = bar[policy.forced_exit_price_field]
+                exit_fee = (
+                    policy.costs.sell_per_share(exit_px) if exit_side == "sell"
+                    else policy.costs.buy_per_share(exit_px)
+                ) * lot["qty"]
+                self._queue_fill(
+                    "exit", symbol, lead, exit_side, lot["qty"], exit_px, bar["asof_ms"],
+                    exit_fee, index,
+                )
             if policy.costs.below_floor(price):
                 self.refused.append({
                     "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": "min_price",
@@ -1084,9 +959,45 @@ def _journal_noop(**kwargs):
     return None
 
 
-def _shadow_document(run_dir, series_id, symbols):
-    """Smallest shadow ServeDocument the loop will construct."""
+def _write_serving_run(work, policy):
+    """Write the run dir compose.Decider.prepare loads, plus an empty onboarding root."""
+    run_dir = os.path.join(work, "run")
+    os.makedirs(run_dir, exist_ok=True)
+    ob = OnboardingRoot.create(os.path.join(work, "ob"))
+    artifact = os.path.join(run_dir, "policy")
+    with open(artifact, "w", encoding="utf-8") as fh:
+        json.dump(policy.to_obj(), fh)
+    config = {
+        "name": "intraday-equities-development-replay-serving",
+        "pipeline": {
+            "bars": {
+                "uses": "intraday_equities.replay:_TapeEntry",
+                "params": {
+                    "since_ms": None,
+                    "root": ob.root,
+                    "source": "replay",
+                    "stream": "bars",
+                },
+            },
+            "select": {
+                "uses": "intraday_equities.replay:_TapeHead",
+                "inputs": {"records": "$bars.records"},
+            },
+        },
+    }
+    with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as fh:
+        json.dump(config, fh)
+    return run_dir, artifact, ob.root
+
+
+def _serve_document(run_dir, series_id, symbols, times):
+    """Shadow ServeDocument compose.bundles_for accepts; cadence is overlaid to the tape."""
     universe = list(symbols) or ["AAA"]
+    span = (int(times[-1]) - int(times[0]) + 1) if times else 1
+    horizon_ms = max(span * 2, 1)
+    renew_every_ms = 10_000
+    renew_timeout_ms = 2_000
+    ttl_ms = max(horizon_ms, 2 * (renew_every_ms + renew_timeout_ms) + 1)
     return {
         "name": "intraday-equities-development-replay-serve",
         "series_id": series_id,
@@ -1097,7 +1008,15 @@ def _shadow_document(run_dir, series_id, symbols):
             "entry": {"node": "bars", "param": "since_ms", "window_ms": 14400000},
             "heads": ["select"],
             "required_universe": universe,
-            "proposer": {"uses": "intent-rows"},
+            "proposer": {
+                "uses": "intent-rows",
+                "params": {
+                    "output": "records",
+                    "fields": {"instrument": "symbol", "side": "side", "qty": "qty"},
+                    "ttl_ms": 86400000,
+                    "default_tif": "ioc",
+                },
+            },
             "max_artifact_age": "P100000D",
         },
         "feed": {"uses": "replay"},
@@ -1105,20 +1024,20 @@ def _shadow_document(run_dir, series_id, symbols):
             "clock": {"uses": "replay"},
             "calendar": {"uses": "always-open"},
             "cadence": {"uses": "fixed-interval", "params": {"period_ms": 1000}},
-            "dead_after_ms": 600000,
-            "max_staleness_ms": 86_400_000,
-            "max_quote_age_ms": 86_400_000,
+            "dead_after_ms": horizon_ms,
+            "max_staleness_ms": horizon_ms,
+            "max_quote_age_ms": horizon_ms,
         },
         "guards": {},
         "execution": {"uses": "shadow", "submit_timeout_ms": 5000},
-        "accounting": {"uses": "paper", "max_valuation_age_ms": 86_400_000},
+        "accounting": {"uses": "paper", "max_valuation_age_ms": horizon_ms},
         "arming": {"max_duration_s": 14400, "approval": {"uses": "deny-all"}},
         "coordination": {
             "scope": {"venue": "paper", "account": "replay"},
             "lease": {"uses": "process"},
-            "ttl_ms": 86_400_000,
-            "renew_every_ms": 10_000,
-            "renew_timeout_ms": 2000,
+            "ttl_ms": ttl_ms,
+            "renew_every_ms": renew_every_ms,
+            "renew_timeout_ms": renew_timeout_ms,
         },
         "reconcile": {
             "on_start": False,
@@ -1171,9 +1090,10 @@ def _shadow_document(run_dir, series_id, symbols):
     }
 
 
-def _release_for(run_dir, artifact, symbols, digest, source_hash, document, created_ms):
-    """Build a ReleaseManifest verify_release accepts for this tape."""
+def _release_for(run_dir, artifact, symbols, digest, source_hash, document, created_ms, ob_root):
+    """Build a ReleaseManifest whose feed_spec matches ``_TapeEntry``'s contract."""
     hex64 = digest
+    keys = list(symbols) or ["AAA"]
     return ReleaseManifest(
         series_id=document.series_id,
         doc_hash=document.doc_hash,
@@ -1183,12 +1103,17 @@ def _release_for(run_dir, artifact, symbols, digest, source_hash, document, crea
         classes={"replay": {"ref": "intraday_equities.replay:FillPolicy", "code_digest": hex64}},
         adapter={"name": "intraday_equities", "digest": hex64},
         feed_spec={
-            "source_binding": {"source": "replay", "connector": "intraday_equities.replay:BarTape"},
+            "source_binding": {
+                "kind": "onboarding-stream",
+                "root": ob_root,
+                "source": "replay",
+                "stream": "bars",
+            },
             "entity_key_fields": ["symbol"],
             "event_time_field": "asof_ms",
             "digest_recipe": {"kind": "stream-digest"},
-            "required_keys": list(symbols),
-            "required_keys_digest": canonical_hash(list(symbols)),
+            "required_keys": keys,
+            "required_keys_digest": canonical_hash(keys),
             "source_config_hash": source_hash,
             "source_config_version": "1",
         },
@@ -1200,7 +1125,6 @@ def _release_for(run_dir, artifact, symbols, digest, source_hash, document, crea
         runtime_fingerprint=RuntimeFingerprint.capture(),
         created_ms=created_ms if created_ms > 0 else 1,
     )
-
 
 class ReplayAdapter:
     """Drive ServeLoop with next-bar-open quotes and the overlap book.
