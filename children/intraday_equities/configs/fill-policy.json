@@ -30,5 +30,7 @@
   "p_fill_on_touch": 1.0,
   "submit_latency_ms": 0,
   "cancel_latency_ms": 0,
-  "seed": 0
+  "seed": 0,
+  "fill_suffix_bars": 1171,
+  "fill_suffix_weekdays": 5
 }

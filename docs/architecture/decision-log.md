@@ -6919,24 +6919,30 @@ Grounded in plan §3's one decision graph and one account:
 Closed vocabularies the config must spell (code refuses any other
 member; the shipped `fill-policy.json` carries the ruled/proposed
 values): `order_type=market`, `partial_fills=false`, `rejections=none`,
-`halt_handling=skip`, `forced_exit_at=horizon_expiry`,
-`forced_exit_horizon_basis=fill`, `same_lead_overlap=refuse`,
+`halt_handling=skip|queue`, `forced_exit_at=horizon_expiry`,
+`forced_exit_horizon_basis=fill`, `same_lead_overlap=refuse|override`,
 `different_lead_overlap=concurrent`, `same_tick_order=exits_then_entries`,
 `mark_source=fill_bar_open`, `paper_fill_rule=touch`, `paper_fees=none`.
+`fill_suffix_bars` and `fill_suffix_weekdays` size the developmental
+fill-only trailing window (session bars and UTC weekdays after
+`evidence_end`; weekend prints refuse). Changing either moves fill-policy
+identity.
 
 **Files.** `intraday_equities/replay.py` (new, tier 3) composes
-`PaperExecutor` + injected clock; it does not own clocks, ledgers,
-account folds, or performance math. `configs/fill-policy.json` (new).
+`ServeLoop` + `ReplayFeed` + one shared `ManualTime`/`ReplayClock` +
+`JsonlLedger` + `PaperExecutor` through `LegPipeline`. It does not
+subclass `ServeLoop` and adds no `dskit.production` hook (Gate 5a).
+`HorizonBook` is the equity `(symbol, lead)` identity overlay production
+positions do not key. `configs/fill-policy.json` (new).
 `configs/run-development-replay.json` (new) — P16 evidence ending
 2025-10-16, `deployment_eligible=false`, fill-policy digest pin. No
 `dskit.production` hook. `path.csv` untouched.
 
-**Consequences.** Synthetic tests of the fill/overlap book may run against
-development-only caps. ``ReplayAdapter.replay`` is a policy driver, not
-``ServeLoop`` composition: Phase 5 items 3–5 (crash/restart ledger
-identity, post-fill solvency, observable unfunded candidates on the
-production graph) remain unbuilt. Changing a fill-model value is a
-config edit (identity moves). The overlap/expiry/halt-catch-up rule
-stays proposed until the owner accepts this ADR; a different ruling
-changes `_VOCAB` and the book, not a silent code default. Do not claim
-one production account or replay/paper metric identity from this node.
+**Consequences.** Owner-ruled 2026-09-10 shape: synthetic tests of the
+fill/overlap book may run against development-only caps with
+`deployment_eligible=false` while this ADR stays **proposed**. That is
+not a Status flip and not deployment authorization. Changing a
+fill-model value is a config edit (identity moves). A different overlap
+ruling changes `_VOCAB` and the book, not a silent code default. Phase 5
+items 3–5 (crash/restart ledger identity, post-fill solvency, observable
+unfunded candidates on a live graph) remain unbuilt.

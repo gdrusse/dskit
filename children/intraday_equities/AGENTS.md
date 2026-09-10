@@ -87,8 +87,8 @@ Agent orientation — see README.md for operator commands.
 ## Layout
 
 ```
-intraday_equities/   # auth, connectors, nodes, models, live, testing, replay
-configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy
+intraday_equities/   # auth, connectors, nodes, nodes_capital, models, live, testing, replay
+configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, development-replay
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated
 docs/research/       # topic folders; <date>-synthesis.md + dated notes

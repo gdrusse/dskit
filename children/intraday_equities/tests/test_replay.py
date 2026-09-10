@@ -11,6 +11,7 @@ import ast
 import copy
 import json
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -90,6 +91,8 @@ def test_shipped_fill_policy_names_every_fill_model_field_and_hashes():
     assert policy.same_lead_overlap == raw["same_lead_overlap"]
     assert policy.different_lead_overlap == raw["different_lead_overlap"]
     assert policy.same_tick_order == raw["same_tick_order"]
+    assert policy.fill_suffix_bars == raw["fill_suffix_bars"]
+    assert policy.fill_suffix_weekdays == raw["fill_suffix_weekdays"]
     assert policy.digest() == config_hash(_HashView(raw), exclude=())
 
 
@@ -107,9 +110,9 @@ def test_fill_policy_refuses_a_value_outside_the_closed_vocabulary():
     with pytest.raises(ConfigError, match="partial_fills"):
         _policy({"partial_fills": True})
     with pytest.raises(ConfigError, match="halt_handling"):
-        _policy({"halt_handling": "queue"})
+        _policy({"halt_handling": "cancel"})
     with pytest.raises(ConfigError, match="same_lead_overlap"):
-        _policy({"same_lead_overlap": "override"})
+        _policy({"same_lead_overlap": "stack"})
 
 
 def test_next_bar_open_fill_uses_only_the_config_offset_and_price_field():
@@ -474,3 +477,165 @@ def test_two_synthetic_replays_of_the_same_tape_are_byte_identical():
         return copy.deepcopy(ReplayAdapter(policy).replay(bars, decisions))
 
     assert run() == run()
+
+
+def _call_names(tree):
+    names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            names.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            names.add(func.attr)
+    return names
+
+
+def test_replay_py_composes_serveloop_replayfeed_tape_and_shared_clock():
+    with open(REPLAY_PY, encoding="utf-8") as fh:
+        walk_src = fh.read()
+    tree = ast.parse(walk_src)
+    calls = _call_names(tree)
+    assert "ServeLoop" in calls
+    assert "ReplayFeed" in calls
+    assert "ReplayClock" in calls
+    tape_bases = [
+        base.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+        for base in node.bases
+        if isinstance(base, ast.Name)
+    ]
+    assert "ReplayTape" in tape_bases
+    assert "for index, bar in enumerate(seq)" not in walk_src
+    assert 'digest = "a" * 64' not in walk_src
+    assert "account=None" not in walk_src.replace(" ", "")
+
+
+def test_numpy_bool_halt_flags_are_accepted():
+    np = pytest.importorskip("numpy")
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        {
+            "symbol": "AAA",
+            "asof_ms": 2_000,
+            "open": 11.0,
+            "close": 11.5,
+            "halted": np.True_,
+        },
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    assert out["fills"] == []
+    assert any(row["reason"] == "halted" and row["asof_ms"] == 2_000 for row in out["skipped"])
+    bars[1]["halted"] = np.False_
+    filled = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    assert any(row["kind"] == "entry" and row["asof_ms"] == 2_000 for row in filled["fills"])
+
+
+def test_same_lead_override_from_json_replaces_the_open_lot():
+    policy = _policy({"same_lead_overlap": "override"})
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5),
+        _bar("AAA", 4_000, 13.0, 13.5),
+        _bar("AAA", 5_000, 14.0, 14.5),
+    ]
+    out = ReplayAdapter(policy).replay(
+        bars,
+        [
+            _decision("AAA", 1_000, lead=2, qty=10),
+            _decision("AAA", 2_000, lead=2, qty=7),
+        ],
+    )
+    entries = [row for row in out["fills"] if row["kind"] == "entry"]
+    assert [(row["qty"], row["asof_ms"]) for row in entries] == [
+        (10, 2_000),
+        (7, 3_000),
+    ]
+    assert not any(row["reason"] == "same_lead_open" for row in out["refused"])
+
+
+def test_halt_queue_retries_the_entry_on_the_next_live_bar():
+    policy = _policy({"halt_handling": "queue"})
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5, halted=True),
+        _bar("AAA", 3_000, 12.0, 12.5),
+        _bar("AAA", 4_000, 13.0, 13.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    entries = [row for row in out["fills"] if row["kind"] == "entry"]
+    assert len(entries) == 1
+    assert entries[0]["asof_ms"] == 3_000
+    assert entries[0]["price"] == pytest.approx(12.0)
+
+
+def test_fill_suffix_fields_are_graded_and_friday_monday_closes_lead_390():
+    raw = _raw_fill_policy()
+    assert raw["fill_suffix_bars"] == raw["fill_bar_offset"] + 1170
+    assert raw["fill_suffix_weekdays"] >= 3
+    moved = dict(raw, fill_suffix_bars=raw["fill_suffix_bars"] + 1)
+    assert FillPolicy(moved).digest() != FillPolicy(raw).digest()
+    moved_days = dict(raw, fill_suffix_weekdays=raw["fill_suffix_weekdays"] + 1)
+    assert FillPolicy(moved_days).digest() != FillPolicy(raw).digest()
+
+    node = DevelopmentReplay("replay", {
+        "deployment_eligible": False,
+        "evidence_end": "2025-10-17",
+        "fill_policy": "configs/fill-policy.json",
+        "fill_policy_sha256": FillPolicy(raw).digest(),
+        "caps": "development-only",
+    })
+    friday_last = int(
+        datetime(2025, 10, 17, 19, 59, tzinfo=timezone.utc).timestamp() * 1000
+    )
+    monday = datetime(2025, 10, 20, 13, 30, tzinfo=timezone.utc)
+    suffix = [
+        _bar("AAA", int((monday + timedelta(minutes=i)).timestamp() * 1000),
+             10.0 + i, 10.5 + i)
+        for i in range(391)
+    ]
+    out = node.run(None, {
+        "bars": [_bar("AAA", friday_last, 9.0, 9.5), *suffix],
+        "decisions": [_decision("AAA", friday_last, lead=390)],
+    })
+    kinds = [row["kind"] for row in out["fills"]]
+    assert kinds[0] == "entry"
+    assert kinds[-1] == "exit"
+    saturday = int(datetime(2025, 10, 18, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    with pytest.raises(ConfigError, match="evidence_end"):
+        node.run(None, {
+            "bars": [
+                _bar("AAA", friday_last, 9.0, 9.5),
+                _bar("AAA", saturday, 11.0, 11.5),
+            ],
+            "decisions": [_decision("AAA", friday_last, lead=1)],
+        })
+    y2026 = 1_767_225_600_000
+    with pytest.raises(ConfigError, match="evidence_end"):
+        node.run(None, {
+            "bars": [
+                _bar("AAA", friday_last, 9.0, 9.5),
+                _bar("AAA", y2026, 99.0, 99.5),
+                _bar("AAA", y2026 + 60_000, 100.0, 100.5),
+            ],
+            "decisions": [_decision("AAA", friday_last, lead=1)],
+        })
+
+
+def test_mark_source_and_forced_exit_at_are_read():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    assert policy.mark_source == "fill_bar_open"
+    assert policy.forced_exit_at == "horizon_expiry"
+    exit_row = next(row for row in out["fills"] if row["kind"] == "exit")
+    assert exit_row["price"] == pytest.approx(12.0)

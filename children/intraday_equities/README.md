@@ -172,6 +172,7 @@ intraday_equities/
 │   ├── feature_cache.py # verified read-only feature-array cache
 │   ├── final_model.py   # final-HPO selection and fail-closed refit contract
 │   ├── replay.py        # next-bar-open fill + multi-horizon overlap book
+│   ├── nodes_capital.py # Schwab cost model + MIO/capital policy nodes
 │   ├── modelability.py  # staged P10 gate orchestration
 │   ├── modelability_study.py # the asset-local study over any declared cohort (ADR-0094)
 │   ├── modelability_p11.py # P11: the frozen 25 as a pinned study

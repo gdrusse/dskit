@@ -8,10 +8,10 @@
         "deployment_eligible": false,
         "evidence_end": "2025-10-16",
         "fill_policy": "configs/fill-policy.json",
-        "fill_policy_sha256": "a67539e9a425cd6969ab20b207f1d0ead180d66a038486cffd4e41bf7c260359",
+        "fill_policy_sha256": "696b1bcff532e0daeb3396c574021f87fc6cd6cda070827fc016231ffddc6b46",
         "caps": "development-only"
       },
-      "notes": "Synthetic equity-policy driver (FillPolicy + HorizonBook + PaperExecutor). Not ServeLoop, not a production account, not deployment evidence. Trailing bars after evidence_end may fill last-day decisions; new decisions at or after that bound refuse. Overlap/expiry remains ADR-0117 proposed."
+      "notes": "ServeLoop + ReplayFeed + shared ReplayClock + JsonlLedger. Equity policy (next-bar-open, (symbol, lead) lots, Schwab costs) is injected; LegPipeline submits. Trailing fill-only bars are sized by fill-policy fill_suffix_bars / fill_suffix_weekdays (session bars and weekdays after evidence_end, weekends refuse). New decisions at or after evidence_end refuse. Overlap/expiry remains ADR-0117 proposed. Not deployment evidence."
     }
   }
 }
