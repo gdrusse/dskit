@@ -1397,6 +1397,79 @@ class TestRunAttestationBindsDocumentIdentity:
         assert RunAttestation(result.run_dir).binds_document_identity(doc.hash) is False
 
 
+class TestRunAttestationNodeOutputForDocument:
+    """The composed guarantee ADR-0116 actually needs — see ADR-0118's follow-up."""
+
+    def test_a_clean_run_attests_the_composed_guarantee(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert (
+            RunAttestation(result.run_dir).node_output_for_document("market", doc.hash)
+            is True
+        )
+
+    def test_a_wrong_document_hash_does_not_attest(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        wrong = "0" * 64
+        assert (
+            RunAttestation(result.run_dir).node_output_for_document("market", wrong)
+            is False
+        )
+
+    def test_an_uncompleted_node_does_not_attest(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert (
+            RunAttestation(result.run_dir).node_output_for_document(
+                "no-such-node", doc.hash
+            )
+            is False
+        )
+
+    def test_the_skeptic_forgery_defeats_the_three_naive_checks_but_not_this_one(
+        self, tmp_path, registry
+    ):
+        """Reproduce the exact skeptic proof against ADR-0118's first cut.
+
+        Run two genuine documents. Take B's real completed run, hand-edit
+        its ``resolved.json`` to claim A's document identity, and
+        substitute A's own genuine ``config.json``. The three individual
+        primitives, composed naively, are then all fooled — that is the
+        finding. The node record inside B's run dir was stamped with B's
+        own ``document_hash`` honestly, at the moment B actually executed,
+        so the composed method catches what the naive composition misses.
+        """
+        doc_a = bdoc(tmp_path, name="document-a")
+        run_document(doc_a, asof=ASOF, registry=registry)
+        doc_b = bdoc(tmp_path, name="document-b")
+        result_b = run_document(doc_b, asof=ASOF, registry=registry)
+
+        resolved = read_json(result_b.run_dir, "resolved.json")
+        resolved["document_hash"] = doc_a.hash
+        with open(
+            os.path.join(result_b.run_dir, "resolved.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(resolved, fh)
+        with open(
+            os.path.join(result_b.run_dir, "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(doc_a.to_obj(), fh)
+
+        forged = RunAttestation(result_b.run_dir)
+        # The naive composition ADR-0116 names is fooled — the skeptic's finding.
+        assert forged.completed() is True
+        assert forged.node_completed("market") is True
+        assert forged.binds_document_identity(doc_a.hash) is True
+        # The composed method is not: "market"'s record was stamped with B's
+        # own document_hash when B actually ran, and it does not match A's —
+        # so the forgery is refused for BOTH identities, exactly as it must
+        # be: this run dir is neither trustworthy evidence for A (never ran)
+        # nor for B (its resolved.json no longer even claims B).
+        assert forged.node_output_for_document("market", doc_a.hash) is False
+        assert forged.node_output_for_document("market", doc_b.hash) is False
+
+
 class TwoArtifactsSource(Node):
     """Emit two independently named JsonArtifact payloads for one run."""
 

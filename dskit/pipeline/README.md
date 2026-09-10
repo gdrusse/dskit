@@ -18,7 +18,13 @@ it, rather than reading its files by hand: `RunAttestation(run_dir)` answers
 (that one node's own record shows `"ok"`), and
 `binds_document_identity(document_hash)` (`resolved.json`'s claim AND an
 independent re-hash of `config.json` both agree) — every method fails
-closed (`False`), never raises, on anything missing or malformed.
+closed (`False`), never raises, on anything missing or malformed. Those three
+checked in isolation and ANDed together are forgeable (a genuine
+`config.json`/`resolved.json` pair for one document, dropped over a
+genuinely-completed run of a different one, passes all three): use
+`node_output_for_document(key, document_hash)` for the actual composed
+guarantee, which additionally requires the node's own record to carry that
+`document_hash`, stamped honestly at the moment it ran.
 `content_identity(run_dir, manifests)` combines a NAMED set of JSON-artifact
 manifests into one sha256 over their verified, decoded content — never over
 their paths or digests alone — so it changes if the underlying data changes
@@ -86,10 +92,22 @@ kinds resolve. Two more verbs — `demo`
   evidence reader over an already-recorded run: `completed()`,
   `node_completed(key)`, `binds_document_identity(document_hash)` (the last
   reconstructs `config.json` via `PipelineDocument.from_obj` and re-hashes
-  it independently of the stored `resolved.json` claim). `content_identity`
-  combines a NAMED set of verified `JsonArtifact` manifests (resolved
-  through `resolve_json_artifact`) into one sha256 over their decoded
-  content, not their paths. Read-only and additive; not wired into any node.
+  it independently of the stored `resolved.json` claim), and
+  `node_output_for_document(key, document_hash)` — the atomic composed
+  guarantee, not those three ANDed by a caller. Each node record now
+  carries the run's own `document_hash`, stamped when the node actually
+  ran, so a record cannot be read as evidence for a document other than
+  the one that was resolving at the time — closing the exact forgery a
+  naive AND of the three individual checks allows (a genuine config/
+  resolved pair for document A dropped over a genuinely-completed run of
+  document B). `content_identity` combines a NAMED set of verified
+  `JsonArtifact` manifests (resolved through `resolve_json_artifact`) into
+  one sha256 over their decoded content, not their paths. Read-only and
+  additive; not wired into any node. Residual gap: nothing hash-chains
+  `nodes/*.json` records to each other or to `resolved.json`, so a
+  directly hand-edited node record (including its `document_hash` field)
+  is indistinguishable from genuine — closing that needs a write-time
+  chain/signature, out of scope here.
 - **The search seam** — `ctx.rerun` is `_SearchSeam` (`driver.py`, driven by
   `HpoGrid`, `kinds_search.py`), for `search` roles only and never an edge:
   each trial re-executes the dirty part of the objective's ancestry, then

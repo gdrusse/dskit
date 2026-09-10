@@ -212,23 +212,43 @@ on it without breaking its rulings.
   purpose (one JSON node record, not a multi-file bundle).
 - **Run attestation** — `RunAttestation` (`driver.py`, ADR-0118) is a
   read-only, fail-closed reader over an already-recorded run dir:
-  `completed()`, `node_completed(key)`, `binds_document_identity(hash)`.
-  Every method returns `False` on anything missing or malformed — it never
-  raises, so "cannot read this run" never looks different from "this run
-  did not happen". `binds_document_identity` does not trust
-  `resolved.json`'s stored `document_hash` alone: it also rebuilds a
-  `PipelineDocument` from `config.json` via `from_obj` and recomputes
-  `.hash` independently, and both must agree. `content_identity(run_dir,
-  manifests)` is the sibling module-level function (one pure rule, no
-  state of its own): it resolves every named manifest through
-  `resolve_json_artifact` and hashes the DECODED CONTENT, sorted by name —
-  never the manifests' own paths or digests — so it changes when the
-  underlying data changes even if a path does not, and a manifest whose
-  digest does not match its file raises before it can enter the combined
-  identity. Both are read-only and additive: nothing in `run_document`'s
-  own lifecycle changed, and neither is wired into any node — building
-  that wiring (`FinalRefit`, or any other consumer) is separate,
-  unauthorized work.
+  `completed()`, `node_completed(key)`, `binds_document_identity(hash)`,
+  `node_output_for_document(key, hash)`. Every method returns `False` on
+  anything missing or malformed — it never raises, so "cannot read this
+  run" never looks different from "this run did not happen".
+  `binds_document_identity` does not trust `resolved.json`'s stored
+  `document_hash` alone: it also rebuilds a `PipelineDocument` from
+  `config.json` via `from_obj` and recomputes `.hash` independently, and
+  both must agree. **A caller MUST NOT AND `completed()` +
+  `node_completed()` + `binds_document_identity()` together as a stand-in
+  for the composed guarantee** — a skeptic review (2026-09-10) proved that
+  naive composition forgeable: a genuine `config.json`/`resolved.json`
+  pair for document A, dropped wholesale into a genuinely-completed run
+  of a DIFFERENT document B, satisfies all three (each reads the
+  directory in isolation) while every node record inside is entirely B's
+  evidence. `node_output_for_document(key, document_hash)` is the actual
+  atomic composed check: it additionally requires `key`'s own record to
+  carry `document_hash` — a field `_write_node_records` now stamps on
+  every record from the SAME `document.hash` value `resolved.json` was
+  built from, at the moment the node actually ran, never re-derived from
+  `resolved.json`/`config.json` (which is exactly what the forgery
+  substitutes). **Residual, disclosed gap:** nothing hash-chains
+  `nodes/*.json` records to one another or to `resolved.json`, so an
+  attacker who directly hand-edits a node record's `document_hash` field
+  (rather than substituting `config.json`/`resolved.json` around a
+  genuine record) is undetectable by any method here — closing THAT needs
+  a write-time chain or signature over the node records themselves, out
+  of this fix's scope. `content_identity(run_dir, manifests)` is the
+  sibling module-level function (one pure rule, no state of its own): it
+  resolves every named manifest through `resolve_json_artifact` and
+  hashes the DECODED CONTENT, sorted by name — never the manifests' own
+  paths or digests — so it changes when the underlying data changes even
+  if a path does not, and a manifest whose digest does not match its file
+  raises before it can enter the combined identity. All of this is
+  read-only and additive to `run_document`'s own lifecycle (the one
+  write-side change is the new `document_hash` field on each node record);
+  none of it is wired into any node — building that wiring (`FinalRefit`,
+  or any other consumer) is separate, unauthorized work.
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there

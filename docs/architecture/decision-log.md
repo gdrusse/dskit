@@ -7417,3 +7417,81 @@ untouched and this entry authorizes no change to it. The remaining pieces
 that same conditional path names (the ten labelled wires, the
 source/cache/window-derived refit identity, and wiring `FinalRefit` itself)
 remain explicitly unbuilt and unauthorized, for a later deliverable.
+
+### Follow-up (2026-09-10): closing the composed-guarantee gap an independent skeptic found
+
+**Finding.** An independent skeptic review of the entry above proved a real
+Major defect: `binds_document_identity` and `node_completed` are each
+individually correct, but ADR-0116's own stated need is their COMPOSITION
+— "the manifest is genuinely the output of a node that completed... AND
+that run's result metadata binds the pinned document identity" — and that
+composition was forgeable. Proof: run document B for real (`run_dir_b`)
+and document A for real (`run_dir_a`); hand-edit `run_dir_b/resolved.json`'s
+`document_hash` to A's hash and copy A's genuine `config.json` over B's.
+The result: `completed()` → `True` (real), `node_completed('events')` →
+`True` (real, from B's execution), `binds_document_identity(A.hash)` →
+`True` (both file-level checks the original method makes now agree) — but
+every node record in that directory is entirely B's evidence, not A's. The
+"Non-goals" section above already disclosed the underlying mechanism gap
+("nothing hashes or chains these records to one another or to
+`resolved.json`"), but disclosure alone does not stop a caller from
+composing the three public methods naively and getting a false positive —
+exactly ADR-0116's named failure mode.
+
+**Decision.** Add `RunAttestation.node_output_for_document(node_key,
+document_hash)`, the atomic composed check ADR-0116 actually needs:
+`completed()` AND `binds_document_identity(document_hash)` AND `node_key`'s
+own record shows `status == "ok"` AND that SAME record carries
+`document_hash` itself. That last clause needs one small write-path
+change — the only write-path change in this follow-up: `_write_node_records`
+(`driver.py`) now stamps `"document_hash": document_hash` onto every node
+record, sourced from the exact same value (`resolved.payload
+["document_hash"]`, itself `document.hash`) that `resolved.json` already
+carries, at the moment the node actually ran — never re-derived from
+`resolved.json` or `config.json` on a later read, which is exactly what the
+skeptic's forgery substitutes. `node_completed` was refactored to share a
+new private `_node_record` lookup with the new method (one owner for the
+suffix-match + shape + node-field check, per root CLAUDE.md's duplication
+rule); its own observable behavior is unchanged and its existing tests
+pass unmodified.
+
+**What this closes.** Reproducing the skeptic's exact proof against the
+new method: `node_output_for_document('events', A.hash)` on the forged
+`run_dir_b` now correctly returns `False`, because `events`'s record
+carries B's own `document_hash` (stamped when B ran), not A's. This holds
+for ANY variant of the same attack shape — substituting `config.json` and/or
+hand-editing `resolved.json` for a directory whose node records were
+produced by a different document's real execution — because the record's
+`document_hash` was written honestly at execution time and is read back
+unmodified, never re-derived from the files the forgery edits.
+
+**What this does NOT close (honest residual gap, unchanged from the
+original Non-goals).** Nothing hash-chains `nodes/*.json` records to one
+another or to `resolved.json`. An attacker with write access to a run
+directory who edits a node record's `document_hash` field DIRECTLY
+(rather than substituting `config.json`/`resolved.json` around an
+untouched, genuine record) is undetectable by `node_output_for_document`
+or by any method in this class — a hand-edited `document_hash` reads
+exactly like a genuine one. Closing that fully needs a write-time
+hash-chain or signature binding every node record to `resolved.json` (and
+to its neighbors, so one record cannot be regenerated alone after the
+run), which touches the RECORD-phase write path more deeply than this
+narrow, single-field fix and is deliberately left for a future ADR should
+a consumer's threat model require defending against direct record
+tampering rather than directory-level substitution. `RunAttestation`'s own
+docstring now carries this same warning against naive composition of its
+three original methods, in the class and method docstrings, so a future
+reader of the code — not only of this log — sees it.
+
+**Scope of this follow-up.** Files: `docs/architecture/decision-log.md`
+(this entry), `dskit/pipeline/driver.py` (`_write_node_records` gains a
+`document_hash` parameter and field; `RunAttestation` gains `_node_record`
+and `node_output_for_document`; `node_completed` refactored onto the
+shared helper with unchanged behavior), `dskit/pipeline/{README.md,
+CLAUDE.md}` (updated API notes and the composition warning),
+`tests/pipeline/test_driver.py` (the regression test reproducing the
+skeptic's exact attack, plus direct tests of the new method),
+`tests/pipeline/test_kinds_search.py` (one pinning test's expected node-
+record key set widened to include `document_hash`, per root CLAUDE.md's
+"a pinning test that omits a knob is worse than none"). `FinalRefit` and
+everything under `children/` are untouched, same as the parent entry.
