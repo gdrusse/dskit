@@ -7483,6 +7483,19 @@ docstring now carries this same warning against naive composition of its
 three original methods, in the class and method docstrings, so a future
 reader of the code — not only of this log — sees it.
 
+`node_output_for_document` also makes no claim whatsoever about a node
+record's `outputs` field — it attests that the named node completed for
+the claimed document, nothing about the content of what it produced. A
+caller who separately trusts `content_identity` over that node's
+`JsonArtifact` outputs is verifying a DIFFERENT thing (that a given
+manifest's bytes are unmodified and content-addressed correctly), and
+composing the two does not itself attest that the specific manifest being
+hashed is the one the attested node actually emitted — the same
+write-access threat model above applies to `outputs` exactly as it does to
+`document_hash`. A future consumer needing that combined guarantee needs
+the same write-time chaining named above, not a read-side composition of
+today's two independent checks.
+
 **Scope of this follow-up.** Files: `docs/architecture/decision-log.md`
 (this entry), `dskit/pipeline/driver.py` (`_write_node_records` gains a
 `document_hash` parameter and field; `RunAttestation` gains `_node_record`
