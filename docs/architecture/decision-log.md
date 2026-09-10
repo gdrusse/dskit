@@ -6911,7 +6911,10 @@ Grounded in plan §3's one decision graph and one account:
   entry; exit at that bar's open). Literal `t+h` from the decision bar
   would make h=1 fill and exit on the same open; this proposal rejects
   that reading. Config field `forced_exit_horizon_basis` pins `"fill"`.
-- Halt: skip every action for that symbol on that tick; do not queue.
+- Halt: skip every action for that symbol on that tick (entries and
+  forced exits); do not queue. A due lot (`expiry_index <= index`)
+  that was halt-skipped fires on the next non-halt bar at that bar's
+  open. Still proposed.
 
 Closed vocabularies the config must spell (code refuses any other
 member; the shipped `fill-policy.json` carries the ruled/proposed
@@ -6928,8 +6931,12 @@ account folds, or performance math. `configs/fill-policy.json` (new).
 2025-10-16, `deployment_eligible=false`, fill-policy digest pin. No
 `dskit.production` hook. `path.csv` untouched.
 
-**Consequences.** Implementation may proceed against synthetic caps
-only. Changing a fill-model value is a config edit (identity moves).
-The overlap/expiry rule stays proposed until the owner accepts this
-ADR; a different ruling is a config-vocabulary change, not a silent
-code default.
+**Consequences.** Synthetic tests of the fill/overlap book may run against
+development-only caps. ``ReplayAdapter.replay`` is a policy driver, not
+``ServeLoop`` composition: Phase 5 items 3–5 (crash/restart ledger
+identity, post-fill solvency, observable unfunded candidates on the
+production graph) remain unbuilt. Changing a fill-model value is a
+config edit (identity moves). The overlap/expiry/halt-catch-up rule
+stays proposed until the owner accepts this ADR; a different ruling
+changes `_VOCAB` and the book, not a silent code default. Do not claim
+one production account or replay/paper metric identity from this node.

@@ -122,9 +122,23 @@ def test_next_bar_open_fill_uses_only_the_config_offset_and_price_field():
     out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
     entries = [row for row in out["fills"] if row["kind"] == "entry"]
     assert len(entries) == 1
-    assert entries[0]["price"] == pytest.approx(11.0)
-    assert entries[0]["asof_ms"] == 2_000
+    fill_px = bars[policy.fill_bar_offset][policy.fill_price_field]
+    assert entries[0]["price"] == pytest.approx(fill_px)
+    assert entries[0]["asof_ms"] == bars[policy.fill_bar_offset]["asof_ms"]
     assert entries[0]["symbol"] == "AAA"
+
+
+def test_fill_price_field_close_fills_at_close_not_open():
+    policy = _policy({"fill_price_field": "close"})
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    entry = next(row for row in out["fills"] if row["kind"] == "entry")
+    assert entry["price"] == pytest.approx(11.5)
+    assert entry["price"] != pytest.approx(11.0)
 
 
 def test_a_halted_symbol_is_skipped_not_queued():
@@ -139,6 +153,73 @@ def test_a_halted_symbol_is_skipped_not_queued():
     assert out["skipped"] == [
         {"symbol": "AAA", "asof_ms": 2_000, "reason": "halted"}
     ]
+
+
+def test_a_halted_expiry_bar_skips_the_forced_exit():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5, halted=True),
+        _bar("AAA", 4_000, 13.0, 13.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    assert not any(row["kind"] == "exit" and row["asof_ms"] == 3_000 for row in out["fills"])
+    assert any(row["reason"] == "halted" and row["asof_ms"] == 3_000 for row in out["skipped"])
+    delayed = [row for row in out["fills"] if row["kind"] == "exit"]
+    assert len(delayed) == 1
+    assert delayed[0]["asof_ms"] == 4_000
+    assert delayed[0]["price"] == pytest.approx(13.0)
+
+
+def test_integer_halt_flag_is_compared_by_value_not_identity():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        {"symbol": "AAA", "asof_ms": 2_000, "open": 11.0, "close": 11.5, "halted": 1},
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=1)])
+    assert not any(row["kind"] == "entry" and row["asof_ms"] == 2_000 for row in out["fills"])
+    assert any(row["reason"] == "halted" for row in out["skipped"])
+
+
+def test_unknown_symbol_and_off_tape_fill_are_refused_not_silent():
+    policy = _policy()
+    orphan = ReplayAdapter(policy).replay(
+        [_bar("AAA", 1_000, 10.0, 10.5), _bar("AAA", 2_000, 11.0, 11.5)],
+        [_decision("BBB", 1_000, lead=1)],
+    )
+    assert orphan["fills"] == []
+    assert any(row["reason"] == "unknown_symbol" for row in orphan["refused"])
+    off_tape = ReplayAdapter(policy).replay(
+        [_bar("AAA", 1_000, 10.0, 10.5)],
+        [_decision("AAA", 1_000, lead=1)],
+    )
+    assert off_tape["fills"] == []
+    assert any(row["reason"] == "fill_bar_past_tape" for row in off_tape["refused"])
+
+
+def test_unclosed_lot_at_end_of_tape_is_refused():
+    policy = _policy()
+    out = ReplayAdapter(policy).replay(
+        [_bar("AAA", 1_000, 10.0, 10.5), _bar("AAA", 2_000, 11.0, 11.5)],
+        [_decision("AAA", 1_000, lead=1)],
+    )
+    assert [row["kind"] for row in out["fills"]] == ["entry"]
+    assert any(row["reason"] == "expiry_past_tape" for row in out["refused"])
+
+
+def test_lead_below_one_is_refused():
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [_decision("AAA", 1_000, lead=0)])
+    assert out["fills"] == []
+    assert any(row["reason"] == "lead" for row in out["refused"])
 
 
 def test_forced_exit_is_fill_bar_plus_lead_at_that_bar_open():
@@ -323,11 +404,23 @@ def test_development_replay_refuses_bars_after_evidence_end():
         "fill_policy_sha256": FillPolicy(raw).digest(),
         "caps": "development-only",
     })
-    late = 1_760_688_000_000  # 2025-10-17T00:00:00Z
+    last_day = 1_760_572_800_000  # 2025-10-16T00:00:00Z
+    fill_only = 1_760_659_200_000  # 2025-10-17T00:00:00Z exclusive end
+    # A last-included-day decision may use a fill-only trailing bar.
+    out = node.run(None, {
+        "bars": [
+            _bar("AAA", last_day, 10.0, 10.5),
+            _bar("AAA", fill_only, 11.0, 11.5),
+            _bar("AAA", fill_only + 60_000, 12.0, 12.5),
+        ],
+        "decisions": [_decision("AAA", last_day, lead=1)],
+    })
+    entries = [row for row in out["fills"] if row["kind"] == "entry"]
+    assert entries[0]["asof_ms"] == fill_only
     with pytest.raises(ConfigError, match="evidence_end"):
         node.run(None, {
-            "bars": [_bar("AAA", late, 10.0, 10.5)],
-            "decisions": [],
+            "bars": [_bar("AAA", last_day, 10.0, 10.5)],
+            "decisions": [_decision("AAA", fill_only, lead=1)],
         })
 
 

@@ -2,10 +2,13 @@
 
 Gate 5a already proved ``ServeLoop`` + ``ReplayFeed`` + ``ReplayClock`` +
 ``PaperExecutor`` drive deterministic historical ticks; no generic hook
-is missing and this module does not subclass ``ServeLoop``. It owns only
-the equity fill/overlap book: bar choice, next-bar-open timing, forced
-exits, ``(symbol, lead)`` identity, and the Schwab cost adapter. Clocks,
-ledgers, account folds, and performance math stay in ``dskit.production``.
+is missing and this module does not subclass ``ServeLoop``. It owns the
+equity fill/overlap book (bar choice, next-bar-open timing, forced
+exits, ``(symbol, lead)`` identity, Schwab costs). A synthetic
+``ReplayAdapter.replay`` driver exists to exercise that book on bars;
+it is not the production scheduler, ledger, or account fold. Phase 5
+items 3–5 (crash/restart identity, post-fill solvency, ServeLoop
+composition) remain unbuilt. Overlap/expiry is ADR-0117 **proposed**.
 
 Every fill-model value is a field of ``configs/fill-policy.json``. This
 file has no default for those knobs — a missing or unknown name refuses.
@@ -19,7 +22,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from dskit.pipeline.base import config_hash
+from dskit.pipeline.base import config_hash, import_ref
 from dskit.pipeline.node import (
     ConfigError,
     Node,
@@ -28,7 +31,7 @@ from dskit.pipeline.node import (
     reject_unknown_params,
 )
 from dskit.pipeline.records import number_ok
-from dskit.production.clock import TestClock
+from dskit.production.clock import ReplayClock
 from dskit.production.executor import PaperExecutor
 from dskit.production.records import Intent, Proposal, Quote, RiskVersion, SimulatedPermit
 from dskit.production.state import TickState
@@ -133,7 +136,8 @@ class FillPolicy:
         self._params = dict(params)
         for name in self._PARAMS:
             setattr(self, name, params[name])
-        self.costs = SchwabCostModel({name: params[name] for name in SchwabCostModel._PARAMS})
+        cost_cls = import_ref(params["cost_model"])
+        self.costs = cost_cls({name: params[name] for name in SchwabCostModel._PARAMS})
 
     @classmethod
     def from_path(cls, path):
@@ -234,15 +238,22 @@ class HorizonBook:
         return (symbol, lead) in self._lots
 
     def open_lot(self, symbol, lead, qty, side, fill_index):
-        """Record a new lot. Return False when the same lead is already open."""
+        """Record a new lot. Return False when the same-lead rule refuses."""
         key = (symbol, lead)
-        if key in self._lots:
+        if self._policy.same_lead_overlap == "refuse" and key in self._lots:
             return False
+        if self._policy.forced_exit_horizon_basis == "fill":
+            expiry_index = fill_index + lead
+        else:
+            raise ConfigError([
+                f"forced_exit_horizon_basis {self._policy.forced_exit_horizon_basis!r} "
+                "has no expiry rule"
+            ])
         self._lots[key] = {
             "qty": qty,
             "side": side,
             "fill_index": fill_index,
-            "expiry_index": fill_index + lead,
+            "expiry_index": expiry_index,
         }
         return True
 
@@ -255,12 +266,16 @@ class HorizonBook:
         return self._lots.pop((symbol, lead))
 
     def expiring(self, symbol, index):
-        """Lots on ``symbol`` whose expiry bar is ``index``."""
+        """Lots on ``symbol`` whose expiry bar is due (``expiry_index <= index``)."""
         return [
             (lead, lot)
             for (sym, lead), lot in tuple(self._lots.items())
-            if sym == symbol and lot["expiry_index"] == index
+            if sym == symbol and lot["expiry_index"] <= index
         ]
+
+    def unclosed(self):
+        """Open lots still on the book, as ``((symbol, lead), lot)`` pairs."""
+        return tuple(self._lots.items())
 
 
 class ReplayAdapter:
@@ -314,6 +329,15 @@ class ReplayAdapter:
             seq.sort(key=lambda row: row["asof_ms"])
 
         fills, skipped, refused = [], [], []
+        for decision in decisions:
+            symbol = decision[policy.symbol_field]
+            if symbol not in by_symbol:
+                refused.append({
+                    "symbol": symbol,
+                    "asof_ms": decision["asof_ms"],
+                    "lead": decision[policy.horizon_field],
+                    "reason": "unknown_symbol",
+                })
         for symbol, seq in by_symbol.items():
             self._replay_symbol(symbol, seq, decisions, fills, skipped, refused)
         fills.sort(key=lambda row: (
@@ -329,26 +353,58 @@ class ReplayAdapter:
         for decision in decisions:
             if decision[policy.symbol_field] != symbol:
                 continue
+            lead = decision[policy.horizon_field]
+            if isinstance(lead, bool) or not isinstance(lead, int) or lead < 1:
+                refused.append({
+                    "symbol": symbol,
+                    "asof_ms": decision["asof_ms"],
+                    "lead": lead,
+                    "reason": "lead",
+                })
+                continue
             decision_index = index_of.get(decision["asof_ms"])
             if decision_index is None:
                 refused.append({
                     "symbol": symbol,
                     "asof_ms": decision["asof_ms"],
-                    "lead": decision[policy.horizon_field],
+                    "lead": lead,
                     "reason": "unknown_decision_bar",
                 })
                 continue
-            pending[decision_index + policy.fill_bar_offset].append(decision)
+            if policy.decision_price_field not in seq[decision_index]:
+                refused.append({
+                    "symbol": symbol,
+                    "asof_ms": decision["asof_ms"],
+                    "lead": lead,
+                    "reason": "decision_price_field",
+                })
+                continue
+            fill_index = decision_index + policy.fill_bar_offset
+            if fill_index >= len(seq):
+                refused.append({
+                    "symbol": symbol,
+                    "asof_ms": decision["asof_ms"],
+                    "lead": lead,
+                    "reason": "fill_bar_past_tape",
+                })
+                continue
+            pending[fill_index].append(decision)
 
-        clock = TestClock(start_ms=seq[0]["asof_ms"])
+        clock = ReplayClock()
         venue = PaperExecutor(policy.paper_params(), clock=clock)
         book = HorizonBook(policy)
         digest = "a" * 64
         for index, bar in enumerate(seq):
-            clock.set(bar["asof_ms"])
-            self._process_exits(symbol, bar, index, book, venue, digest, fills)
-            halted = bar.get(policy.halt_field) is policy.halted_true
-            if halted:
+            clock.time.set(bar["asof_ms"])
+            halted = self._halted(bar)
+            if halted and policy.halt_handling == "skip":
+                for lead, _lot in book.expiring(symbol, index):
+                    skipped.append({
+                        "symbol": symbol,
+                        "asof_ms": bar["asof_ms"],
+                        "lead": lead,
+                        "reason": "halted",
+                    })
                 for decision in pending.get(index, ()):
                     skipped.append({
                         "symbol": symbol,
@@ -356,9 +412,35 @@ class ReplayAdapter:
                         "reason": "halted",
                     })
                 continue
-            self._process_entries(
-                symbol, bar, index, pending.get(index, ()), book, venue, digest, fills, refused
-            )
+            if policy.same_tick_order == "exits_then_entries":
+                self._process_exits(symbol, bar, index, book, venue, digest, fills)
+                self._process_entries(
+                    symbol, bar, index, pending.get(index, ()), book, venue, digest, fills, refused
+                )
+            else:
+                raise ConfigError([
+                    f"same_tick_order {policy.same_tick_order!r} has no dispatch"
+                ])
+        if policy.different_lead_overlap != "concurrent":
+            raise ConfigError([
+                f"different_lead_overlap {policy.different_lead_overlap!r} has no dispatch"
+            ])
+        for (sym, lead), lot in book.unclosed():
+            refused.append({
+                "symbol": sym,
+                "asof_ms": seq[-1]["asof_ms"] if seq else None,
+                "lead": lead,
+                "qty": lot["qty"],
+                "reason": "expiry_past_tape",
+            })
+            book.close_lot(sym, lead)
+
+    def _halted(self, bar):
+        """Return whether ``bar`` is halted, comparing by value (not identity)."""
+        field = self._policy.halt_field
+        if field not in bar:
+            raise ConfigError([f"bar missing halt field {field!r} at asof_ms={bar.get('asof_ms')!r}"])
+        return bar[field] == self._policy.halted_true
 
     def _process_exits(self, symbol, bar, index, book, venue, digest, fills):
         """Force-exit lots whose expiry bar is this fill bar."""
@@ -599,13 +681,13 @@ class DevelopmentReplay(Node):
         """Refuse post-evidence bars, then replay through :class:`ReplayAdapter`."""
         exclusive = self._exclusive_end_ms()
         late = [
-            bar for bar in inputs["bars"]
-            if int(bar["asof_ms"]) >= exclusive
+            row for row in inputs["decisions"]
+            if int(row["asof_ms"]) >= exclusive
         ]
         if late:
             raise ConfigError([
                 f"evidence_end {self.params['evidence_end']!r} excludes "
-                f"{len(late)} bar(s) at or after {exclusive}"
+                f"{len(late)} decision(s) at or after {exclusive}"
             ])
         return ReplayAdapter(self._policy).replay(list(inputs["bars"]), list(inputs["decisions"]))
 

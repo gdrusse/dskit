@@ -11,7 +11,7 @@
         "fill_policy_sha256": "a67539e9a425cd6969ab20b207f1d0ead180d66a038486cffd4e41bf7c260359",
         "caps": "development-only"
       },
-      "notes": "Same decision-graph contract as production (one graph, one account) with only the fill/clock/feed boundary replaced. Import path is the adapter; this node composes PaperExecutor and does not subclass ServeLoop (Gate 5a: no missing generic hook)."
+      "notes": "Synthetic equity-policy driver (FillPolicy + HorizonBook + PaperExecutor). Not ServeLoop, not a production account, not deployment evidence. Trailing bars after evidence_end may fill last-day decisions; new decisions at or after that bound refuse. Overlap/expiry remains ADR-0117 proposed."
     }
   }
 }
