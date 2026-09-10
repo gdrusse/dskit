@@ -365,3 +365,137 @@ class TestTheCapitalNodeContractIsPinned:
         from intraday_equities.nodes_capital import _bundle_problems
 
         assert _bundle_problems(_bundle().rows) == []
+
+
+def _cap_artifact(**overrides):
+    """One hand-built, deployable confirmed-cap artifact."""
+    from intraday_equities.forecast_bundle import ConfirmedCaps
+
+    artifact = {
+        "schema_version": 1,
+        "model_release_id": RELEASE,
+        "deployment_eligible": True,
+        "evidence_scope": "mean_confirmation_2026_03_05",
+        "evidence_end_ms": ASOF_MS - 10_000_000,
+        "generated_ms": ASOF_MS - 1_000_000,
+        "caps": [
+            {"symbol": "AAPL", "capped_horizon": 4},
+            {"symbol": "MSFT", "capped_horizon": 2},
+            {"symbol": "XOM", "capped_horizon": 0},
+        ],
+    }
+    artifact.update(overrides)
+    return artifact
+
+
+class TestConfirmedCaps:
+    """The pinned, deployable (symbol, lead) cap artifact contract."""
+
+    def test_the_reference_artifact_validates(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        caps = ConfirmedCaps(_cap_artifact())
+        assert caps.model_release_id == RELEASE
+        assert caps.generated_ms == ASOF_MS - 1_000_000
+
+    def test_a_cap_is_contiguous_from_h1_by_encoding(self):
+        # capped_horizon N confirms h1..hN and nothing above it — the
+        # integer IS the contiguous-from-h1 encoding (plan §6 Phase 4
+        # item 4), so a non-integer (a lead list, a partial run) refuses.
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact(caps=[{"symbol": "AAPL", "capped_horizon": [2, 3]}])
+        with pytest.raises(ValueError, match="capped_horizon"):
+            ConfirmedCaps(bad)
+
+    def test_allows_covers_the_confirmed_run_and_refuses_above_it(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        caps = ConfirmedCaps(_cap_artifact())
+        assert caps.capped_horizon("AAPL") == 4
+        assert caps.allows("AAPL", 1)
+        assert caps.allows("AAPL", 4)
+        assert not caps.allows("AAPL", 5)
+        assert caps.capped_horizon("XOM") == 0
+        assert not caps.allows("XOM", 1)
+        assert caps.capped_horizon("NOPE") is None
+        assert not caps.allows("NOPE", 1)
+
+    def test_a_development_cap_always_refuses_deployment(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact(deployment_eligible=False)
+        with pytest.raises(ValueError, match="deployment_eligible"):
+            ConfirmedCaps(bad)
+
+    def test_a_cap_from_the_p16_development_evidence_scope_refuses(self):
+        # Confirmation caps must come from evidence NOT used to choose the
+        # P16 mask — the scope this child's own gates stamp on their
+        # development output is refused by name.
+        from intraday_equities.final_gates import DEVELOPMENT_EVIDENCE_SCOPE
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact(evidence_scope=DEVELOPMENT_EVIDENCE_SCOPE)
+        with pytest.raises(ValueError, match="evidence_scope"):
+            ConfirmedCaps(bad)
+
+    def test_evidence_not_yet_realized_when_the_cap_was_pinned_refuses(self):
+        # Point-in-time outcomes: every confirming outcome must realize
+        # strictly before the artifact's own generation instant.
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact(evidence_end_ms=ASOF_MS)  # == generated_ms order broken
+        with pytest.raises(ValueError, match="evidence_end_ms"):
+            ConfirmedCaps(bad)
+
+    def test_a_wrong_schema_version_refuses(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        with pytest.raises(ValueError, match="schema_version"):
+            ConfirmedCaps(_cap_artifact(schema_version=2))
+
+    def test_an_empty_release_identity_refuses(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        with pytest.raises(ValueError, match="model_release_id"):
+            ConfirmedCaps(_cap_artifact(model_release_id=""))
+
+    def test_a_capped_horizon_above_the_ten_heads_refuses(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact(caps=[{"symbol": "AAPL", "capped_horizon": 11}])
+        with pytest.raises(ValueError, match="capped_horizon"):
+            ConfirmedCaps(bad)
+
+    def test_duplicate_symbols_refuse(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact(
+            caps=[
+                {"symbol": "AAPL", "capped_horizon": 4},
+                {"symbol": "AAPL", "capped_horizon": 2},
+            ]
+        )
+        with pytest.raises(ValueError, match="duplicate"):
+            ConfirmedCaps(bad)
+
+    def test_an_unknown_artifact_field_refuses(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact(digest="sha256:abc")
+        with pytest.raises(ValueError, match="digest"):
+            ConfirmedCaps(bad)
+
+    def test_a_missing_artifact_field_refuses(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact()
+        del bad["generated_ms"]
+        with pytest.raises(ValueError, match="generated_ms"):
+            ConfirmedCaps(bad)
+
+    def test_problems_accumulates_without_raising(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        problems = ConfirmedCaps.problems(_cap_artifact(deployment_eligible=False))
+        assert any("deployment_eligible" in p for p in problems)

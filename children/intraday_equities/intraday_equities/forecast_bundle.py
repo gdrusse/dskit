@@ -32,6 +32,7 @@ import math
 
 from dskit.pipeline.records import number_ok
 
+from .final_gates import DEVELOPMENT_EVIDENCE_SCOPE
 from .final_model import HEADS
 from .nodes import (
     DEFAULT_BETA_WINDOW_MINUTES,
@@ -454,3 +455,227 @@ class ForecastBundle:
             "reference_policy": self.reference_policy,
             "known_at": dict(row["known_at"]),
         }
+
+
+_CAP_SCHEMA_FIELDS = frozenset(
+    (
+        "schema_version",
+        "model_release_id",
+        "deployment_eligible",
+        "evidence_scope",
+        "evidence_end_ms",
+        "generated_ms",
+        "caps",
+    )
+)
+
+#: The one schema version a confirmed-cap artifact may declare.
+_CAP_SCHEMA_VERSION = 1
+
+
+class ConfirmedCaps:
+    """The pinned, deployable ``(symbol, lead)`` confirmation-cap artifact.
+
+    Phase 4's cap contract (ADR-0117): confirmation caps are pinned,
+    deployable, contiguous from h1, and from evidence not used to choose
+    the P16 mask. Development caps always refuse deployment. No real
+    artifact exists yet — the March-May confirmation evidence (§11 item 4)
+    is unreadable — so this class only VALIDATES a caller-supplied
+    artifact; it never produces or calibrates one.
+
+    Parameters
+    ----------
+    artifact : dict
+        Exactly: ``schema_version`` (1), ``model_release_id`` (non-empty
+        str), ``deployment_eligible`` (must be ``True``),         ``evidence_scope``
+        (non-empty str, NOT this child's P16 development scope),
+        ``evidence_end_ms`` (epoch ms, strictly before ``generated_ms`` —
+        every confirming outcome realized before the artifact was pinned),
+        ``generated_ms`` (epoch ms), and ``caps`` — a list of unique
+        ``{"symbol": str, "capped_horizon": int}`` rows, ``capped_horizon``
+        in 0..10. The integer IS the contiguous-from-h1 encoding: a cap of
+        N confirms leads h1..hN; 0 confirms nothing (the capital node
+        routes that symbol's rows out).
+
+    Raises
+    ------
+    ValueError
+        Any artifact problem, joined and named.
+
+    Examples
+    --------
+    Validate one deployable cap artifact::
+
+        caps = ConfirmedCaps({
+            "schema_version": 1, "model_release_id": "rel-abc",
+            "deployment_eligible": True,
+            "evidence_scope": "mean_confirmation_2026_03_05",
+            "evidence_end_ms": 1_699_990_000_000,
+            "generated_ms": 1_699_999_000_000,
+            "caps": [{"symbol": "AAPL", "capped_horizon": 4}],
+        })
+        caps.allows("AAPL", 4)
+        # -> True
+        caps.allows("AAPL", 5)
+        # -> False
+    """
+
+    def __init__(self, artifact):
+        problems = self.problems(artifact)
+        if problems:
+            raise ValueError("ConfirmedCaps: " + "; ".join(problems))
+        self.model_release_id = artifact["model_release_id"]
+        self.deployment_eligible = artifact["deployment_eligible"]
+        self.evidence_scope = artifact["evidence_scope"]
+        self.evidence_end_ms = artifact["evidence_end_ms"]
+        self.generated_ms = artifact["generated_ms"]
+        self.caps = {
+            row["symbol"]: row["capped_horizon"] for row in artifact["caps"]
+        }
+
+    @classmethod
+    def problems(cls, artifact):
+        """Problems with a declared cap ``artifact``, empty when none.
+
+        Parameters
+        ----------
+        artifact : dict
+            The cap artifact to validate (see the class docstring for the
+            exact field contract).
+
+        Returns
+        -------
+        list of str
+            Every problem, named — so a node's ``validate_inputs`` can
+            accumulate them with its own rather than catch an exception.
+        """
+        if not isinstance(artifact, dict):
+            return [
+                f"cap must be a mapping (the pinned confirmed-cap "
+                f"artifact), got {type(artifact).__name__}"
+            ]
+        problems = []
+        unknown = sorted(set(artifact) - _CAP_SCHEMA_FIELDS)
+        if unknown:
+            problems.append(f"cap carries unknown field(s) {unknown}")
+        missing = sorted(_CAP_SCHEMA_FIELDS - set(artifact))
+        if missing:
+            problems.append(f"cap is missing required field(s) {missing}")
+            return problems
+        if artifact["schema_version"] != _CAP_SCHEMA_VERSION:
+            problems.append(
+                f"cap.schema_version must be {_CAP_SCHEMA_VERSION}, got "
+                f"{artifact['schema_version']!r}"
+            )
+        release = artifact["model_release_id"]
+        if not isinstance(release, str) or not release:
+            problems.append(
+                f"cap.model_release_id must be a non-empty string, got {release!r}"
+            )
+        if artifact["deployment_eligible"] is not True:
+            problems.append(
+                "cap.deployment_eligible must be true — development caps "
+                "always refuse deployment (plan §6 Phase 4 item 4)"
+            )
+        scope = artifact["evidence_scope"]
+        if not isinstance(scope, str) or not scope:
+            problems.append(
+                f"cap.evidence_scope must be a non-empty string, got {scope!r}"
+            )
+        elif scope == DEVELOPMENT_EVIDENCE_SCOPE:
+            problems.append(
+                "cap.evidence_scope is the P16 development scope "
+                f"{DEVELOPMENT_EVIDENCE_SCOPE!r} — confirmation caps must "
+                "come from evidence not used to choose the P16 mask"
+            )
+        evidence_end = artifact["evidence_end_ms"]
+        generated = artifact["generated_ms"]
+        for name, value in (("evidence_end_ms", evidence_end), ("generated_ms", generated)):
+            if not number_ok(value) or value < 0:
+                problems.append(
+                    f"cap.{name} must be a finite epoch-ms number >= 0, got "
+                    f"{value!r}"
+                )
+        if (
+            number_ok(evidence_end)
+            and number_ok(generated)
+            and evidence_end >= generated
+        ):
+            problems.append(
+                f"cap.evidence_end_ms ({evidence_end!r}) must be strictly "
+                f"before cap.generated_ms ({generated!r}) — every "
+                "confirming outcome realizes before the artifact is pinned"
+            )
+        caps = artifact["caps"]
+        if not isinstance(caps, (list, tuple)) or not caps:
+            problems.append(
+                "cap.caps must be a non-empty list of "
+                "{'symbol', 'capped_horizon'} rows"
+            )
+            return problems
+        seen = set()
+        for index, row in enumerate(caps):
+            if not isinstance(row, dict) or set(row) != {"symbol", "capped_horizon"}:
+                problems.append(
+                    f"cap.caps[{index}] must carry exactly "
+                    f"{{'symbol', 'capped_horizon'}}, got {row!r}"
+                )
+                continue
+            symbol = row["symbol"]
+            if not isinstance(symbol, str) or not symbol:
+                problems.append(
+                    f"cap.caps[{index}].symbol must be a non-empty string, "
+                    f"got {symbol!r}"
+                )
+            elif symbol in seen:
+                problems.append(f"cap.caps[{index}]: duplicate symbol {symbol!r}")
+            else:
+                seen.add(symbol)
+            horizon = row["capped_horizon"]
+            if (
+                isinstance(horizon, bool)
+                or not isinstance(horizon, int)
+                or not 0 <= horizon <= len(HEADS)
+            ):
+                problems.append(
+                    f"cap.caps[{index}] ({symbol!r}): capped_horizon must be "
+                    f"an integer 0..{len(HEADS)} — the contiguous-from-h1 "
+                    f"encoding (cap N confirms h1..hN), got {horizon!r}"
+                )
+        return problems
+
+    def capped_horizon(self, symbol):
+        """Return ``symbol``'s confirmed max lead, or ``None`` when absent.
+
+        Parameters
+        ----------
+        symbol : str
+            The bundle row's entity name.
+
+        Returns
+        -------
+        int or None
+            The ``capped_horizon`` this artifact pins for ``symbol``;
+            ``None`` when the artifact carries no entry for it.
+        """
+        return self.caps.get(symbol)
+
+    def allows(self, symbol, lead):
+        """Report whether the confirmed cap covers ``(symbol, lead)``.
+
+        Parameters
+        ----------
+        symbol : str
+            The bundle row's entity name.
+        lead : int
+            The bundle row's lead (bars).
+
+        Returns
+        -------
+        bool
+            ``True`` only when an entry exists and ``1 <= lead <=
+            capped_horizon`` — a zero cap or a lead above the confirmed
+            run both refuse.
+        """
+        horizon = self.caps.get(symbol)
+        return horizon is not None and 1 <= lead <= horizon

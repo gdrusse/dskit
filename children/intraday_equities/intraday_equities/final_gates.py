@@ -9,7 +9,11 @@ import os
 
 from dskit.pipeline.stages import Stage, reject_unknown_params
 
-__all__ = ["FinalModelGateInventory", "FinalModelGates"]
+__all__ = [
+    "DEVELOPMENT_EVIDENCE_SCOPE",
+    "FinalModelGateInventory",
+    "FinalModelGates",
+]
 
 _INVENTORY_PARAMS = (
     "run_artifact", "run_sha256", "compare_artifact", "compare_sha256"
@@ -19,6 +23,12 @@ _GATE_PARAMS = (
     "evidence_scope", "season_timezone", "season_months",
 )
 _SCOPE = "developmental_post_selection"
+#: The public name for the P16 development evidence scope — what this
+#: module stamps on every winner/cap it emits. Exported (ADR-0117) so the
+#: confirmed-cap validator can refuse any cap artifact claiming this same
+#: scope: confirmation caps must come from evidence NOT used to choose the
+#: P16 mask (plan §6 Phase 4 item 4).
+DEVELOPMENT_EVIDENCE_SCOPE = _SCOPE
 _SELECTION = "simplicity_heuristic_after_no_detected_difference"
 
 
