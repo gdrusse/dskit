@@ -172,7 +172,7 @@ class ReplayCashFlowComposer:
     __slots__ = ("_schedule",)
 
     def __init__(self, schedule):
-        if not isinstance(schedule, RecurringCashFlowSchedule):
+        if type(schedule) is not RecurringCashFlowSchedule:
             raise ProductionError(
                 [f"schedule must be a RecurringCashFlowSchedule, got {schedule!r}"]
             )

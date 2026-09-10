@@ -69,7 +69,7 @@ from dskit.production.compose import (
     outcome_join,
 )
 from dskit.production.control import CommandProcessor, ControlInbox
-from dskit.production.cashflows import RecurringCashFlowSchedule
+from dskit.production.cashflows import DueCashFlow, RecurringCashFlowSchedule
 from dskit.production.coordination import Lease, LeasePermit, ProcessLease
 from dskit.production.decider import Decider, IntentRows
 from dskit.production.document import ServeDocument
@@ -2204,3 +2204,28 @@ def test_a_bound_composer_authorizes_only_its_exact_derived_record(
         bundles[5].ledger.append(forged)
 
     assert bundles[5].state.snapshot().balances == {}
+
+
+def test_a_schedule_subclass_cannot_mint_replay_cash():
+    """Only the sealed schedule implementation may derive declarations."""
+    timezone = ZoneInfo("UTC")
+    anchor = datetime(2031, 4, 9, 13, 17, tzinfo=timezone)
+
+    class ForgedSchedule(RecurringCashFlowSchedule):
+        def materialize(self, start, end_exclusive):
+            return (
+                DueCashFlow(
+                    "forged",
+                    anchor,
+                    "XYZ",
+                    Decimal("9999999"),
+                    "deposit",
+                ),
+            )
+
+    forged = ForgedSchedule(
+        "test-schedule", anchor, 13, "XYZ", Decimal("37"), timezone
+    )
+
+    with pytest.raises(ProductionError, match="RecurringCashFlowSchedule"):
+        ReplayCashFlowComposer(forged)
