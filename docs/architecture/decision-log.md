@@ -7213,7 +7213,13 @@ a field added to `EVENT_FIELDS` is a schema change and must move the version.
 
 ## ADR-0118 — Generic run attestation and content-derived multi-manifest identity (extends ADR-0116)
 
-**Status:** proposed.
+**Status:** accepted (2026-09-10; owner accepted after three sequential
+independent skeptic rounds — round 1 found a real Major [node records
+weren't tied to the run's bound document identity, letting a forged
+directory pass three individually-correct checks ANDed together], fixed by
+`node_output_for_document`; rounds 2 and 3 were two consecutive independent
+clean passes, 0 Critical/Major on both, round 3's one trivial documentation
+note folded in above).
 
 **Context.** ADR-0116 left `final_model.FinalRefit` fail-closed because "the
 current driver owns neither immutable completed-run provenance nor
