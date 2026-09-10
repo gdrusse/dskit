@@ -1,19 +1,24 @@
 # Re-entry
 
-## Current wrap: Gate 2 deliverable 3 correction resumed (2026-09-10)
+## Current wrap: Gate 2 deliverable 3 closed (2026-09-10)
 
-Branch: `claude/phase1-recovery-seven-gates-ao4zdj`. The owner corrected the
-review bound to **15 correction cycles, not 2**, so deliverable 3 is back in
-correction rather than permanently blocked.
+Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (not pushed by this
+closeout). Deliverable 3 is review-closed: method/API PASS at `7c0ba3d`
+(0 Critical, 0 Major, 1 accepted Minor) and architecture/governance PASS at
+`d61b86a` (0 Critical, 0 Major, 0 Minor).
 
-- Architecture cycle 1's Major was fixed by `d9eb132`.
-- Method cycle 3's Major was fixed by `03a03ac`.
-- Method cycle 4 at `a926a2b` found a new Major: with insufficient inner data,
-  `hpo_evidence: true` silently falls back without producing a ledger.
-- Correction cycle 3 now fixes that fail-closed evidence requirement. Further
-  review remains required before deliverable 3 can close.
+The correction chain now preserves complete per-lead HPO evidence as an
+atomic content-addressed JSON artifact with a strict public resolver, and
+fails closed before fitting when evidence cannot be produced. Focused checks:
+62 generic tests passed; child checks reported 260 passed, 11 skipped, and the
+same five named unrelated baseline failures. Ruff and correction-range
+`git diff --check` passed. No full suite, real HPO, or market-data run occurred.
 
-Journal action `A18860` records the superseded two-cycle handoff.
+Closeout memo:
+`children/intraday_equities/docs/memos/2026-09-10-final-model-replay-gate2-deliverable3-closeout.md`.
+
+**Next:** Gate 2 deliverable 4, `configs/run-final-refit.json`; it remains
+uncreated and unrun.
 
 ## Prior wrap: Gate 2 — final refit and one bundle (2026-09-09)
 
