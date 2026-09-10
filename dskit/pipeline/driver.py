@@ -108,10 +108,12 @@ __all__ = [
     "DocumentRunResult",
     "FOLD_FIELDS",
     "FOLD_OPTIONAL_FIELDS",
+    "RunAttestation",
     "SubgraphRunner",
     "WalkForwardRunResult",
     "aggregate_folds",
     "apply_param_override",
+    "content_identity",
     "is_summary",
     "resolve_json_artifact",
     "run_document",
@@ -1125,6 +1127,267 @@ def resolve_json_artifact(run_dir, manifest):
         raise ValueError("JSON artifact content is not valid JSON") from exc
 
 
+def _read_run_json(run_dir, name):
+    """Read one JSON object from a run dir, or ``None`` on any problem — the one owner every ``RunAttestation`` query shares."""
+    try:
+        with open(os.path.join(os.fspath(run_dir), name), encoding="utf-8") as handle:
+            obj = json.load(handle)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+class RunAttestation:
+    """Read-only, fail-closed evidence over one already-recorded run.
+
+    Answers four questions a caller must be able to check BEFORE trusting
+    a run directory's outputs as evidence (ADR-0118, extending ADR-0116):
+    whether the run finished cleanly, whether one named node inside it
+    completed, whether the run's own recorded config genuinely reproduces
+    a claimed document identity rather than merely stating it, and — the
+    composed guarantee ADR-0116 actually names — whether THAT SAME node's
+    own record was produced while THAT SAME document was resolving. Every
+    method reads plain files this module already writes (``result.json``,
+    ``nodes/*.json``, ``resolved.json``, ``config.json``) and never
+    executes or mutates anything. Every method returns ``False`` on a
+    missing or malformed file rather than raising — a run this class
+    cannot read must never look different from a run that never happened.
+
+    **Never compose `completed()`, `node_completed()` and
+    `binds_document_identity()` naively as a substitute for
+    `node_output_for_document()`.** Each of those three checks the run
+    directory in isolation, so a directory built by copying a genuine
+    ``config.json``/``resolved.json`` pair for document A over a
+    genuinely-completed run of a DIFFERENT document B satisfies all
+    three — `completed()` and `node_completed()` are honestly true of
+    B's real execution, and `binds_document_identity(A.hash)` is
+    honestly true of the substituted files — while every node record in
+    that directory is entirely B's evidence. `node_output_for_document`
+    closes exactly that gap by also checking the node record's own
+    ``document_hash`` stamp, written at the moment the node actually ran
+    (ADR-0118 follow-up), against the identity being claimed. It cannot
+    defend against an attacker who edits `nodes/*.json` itself — no
+    hash-chain ties a node record to its neighbors or to
+    ``resolved.json`` (a real gap ADR-0118 disclosed and left open); a
+    forged record with a hand-edited ``document_hash`` field is
+    indistinguishable from a genuine one to every method here.
+
+    Parameters
+    ----------
+    run_dir : str or os.PathLike
+        The run directory to inspect — the same directory
+        :func:`run_document` wrote.
+
+    Examples
+    --------
+    Attest a run and one of its nodes before trusting either::
+
+        result = run_document(document, asof="2026-01-01")
+        attestation = RunAttestation(result.run_dir)
+        attestation.completed()                     # -> True
+        attestation.node_completed("scan_h01")       # -> True
+        attestation.binds_document_identity(document.hash)  # -> True
+        attestation.node_output_for_document("scan_h01", document.hash)
+        # -> True — the composed guarantee, not three separate reads
+    """
+
+    def __init__(self, run_dir):
+        self._run_dir = run_dir
+
+    def completed(self):
+        """Say whether the run reached RECORD in the clean ``"ran"`` state.
+
+        Returns
+        -------
+        bool
+            ``True`` only when ``result.json`` exists, parses as a JSON
+            object, and its ``state`` field is exactly ``"ran"``.
+            ``"halted"``, ``"error"``, a missing file, and a malformed one
+            all return ``False``.
+        """
+        result = _read_run_json(self._run_dir, "result.json")
+        return result is not None and result.get("state") == "ran"
+
+    def _node_record(self, node_key):
+        """Load ``node_key``'s own record, or ``None`` if it cannot be trusted as that node's."""
+        nodes_dir = os.path.join(os.fspath(self._run_dir), "nodes")
+        try:
+            entries = os.listdir(nodes_dir)
+        except OSError:
+            return None
+        suffix = f"-{node_key}.json"
+        matches = [name for name in entries if name.endswith(suffix)]
+        if len(matches) != 1:
+            return None
+        record = _read_run_json(self._run_dir, os.path.join("nodes", matches[0]))
+        if record is None or record.get("node") != node_key:
+            return None
+        return record
+
+    def node_completed(self, node_key):
+        """Say whether ``node_key``'s own record shows a clean completion.
+
+        Parameters
+        ----------
+        node_key : str
+            The node's key in the document that produced this run.
+
+        Returns
+        -------
+        bool
+            ``True`` only when exactly one ``nodes/<NN>-<node_key>.json``
+            record exists, parses as a JSON object, its own ``"node"``
+            field equals ``node_key`` (a record swapped for a different
+            node's is refused rather than read as if it were the one
+            asked for), and its ``"status"`` field is exactly ``"ok"``.
+            Zero or more than one matching file, a parse failure, a
+            node-field mismatch, or any other status all return
+            ``False``.
+        """
+        record = self._node_record(node_key)
+        return record is not None and record.get("status") == "ok"
+
+    def binds_document_identity(self, document_hash):
+        """Say whether ``resolved.json`` AND ``config.json`` both bind ``document_hash``.
+
+        Parameters
+        ----------
+        document_hash : str
+            The document identity a caller wants this run bound to.
+
+        Returns
+        -------
+        bool
+            ``True`` only when ``resolved.json``'s own ``document_hash``
+            field equals ``document_hash`` exactly AND ``config.json``,
+            rebuilt into a :class:`~dskit.pipeline.document.PipelineDocument`
+            and re-hashed INDEPENDENTLY of any stored field, ALSO equals
+            it. Both must agree: a ``resolved.json`` hand-edited to claim a
+            hash its own ``config.json`` does not reproduce is refused,
+            and a ``config.json`` substituted for a different document is
+            refused even when ``resolved.json``'s stored claim was left
+            alone. Any missing file, parse failure, or document
+            reconstruction failure returns ``False``.
+        """
+        resolved = _read_run_json(self._run_dir, "resolved.json")
+        if resolved is None or resolved.get("document_hash") != document_hash:
+            return False
+        config = _read_run_json(self._run_dir, "config.json")
+        if config is None:
+            return False
+        try:
+            recomputed = PipelineDocument.from_obj(config).hash
+        except (ConfigError, ValueError, TypeError):
+            return False
+        return recomputed == document_hash
+
+    def node_output_for_document(self, node_key, document_hash):
+        """Say whether ``node_key`` completed as part of the run that resolved ``document_hash``.
+
+        This is deliberately NOT the same thing as calling
+        :meth:`completed`, :meth:`node_completed` and
+        :meth:`binds_document_identity` separately and ANDing the
+        results: that naive composition is exactly what a skeptic review
+        (2026-09-10) proved forgeable — copying a genuine
+        ``config.json``/``resolved.json`` pair for one document over a
+        genuinely-completed run of a DIFFERENT document satisfies all
+        three individually, because none of them reads across to the
+        others. This method additionally requires that ``node_key``'s own
+        record carries ``document_hash`` itself, stamped at the moment
+        the node actually ran (never re-derived from ``resolved.json`` or
+        ``config.json``, which is exactly what the forgery substitutes) —
+        so a node record produced while a different document was
+        resolving is refused even when every file-level check above it
+        passes.
+
+        Parameters
+        ----------
+        node_key : str
+            The node's key in the document that produced this run.
+        document_hash : str
+            The document identity the caller wants ``node_key``'s
+            completion bound to.
+
+        Returns
+        -------
+        bool
+            ``True`` only when the run completed, ``node_key``'s record
+            shows ``status == "ok"``, ``resolved.json``/``config.json``
+            both independently reproduce ``document_hash`` (see
+            :meth:`binds_document_identity`), AND ``node_key``'s own
+            record carries that same ``document_hash``. ``False``
+            otherwise, including every failure mode the three underlying
+            checks already refuse on.
+
+        Examples
+        --------
+        Attest one node's output as evidence for a specific document,
+        atomically::
+
+            result = run_document(document, asof="2026-01-01")
+            attestation = RunAttestation(result.run_dir)
+            attestation.node_output_for_document("scan_h01", document.hash)
+            # -> True
+        """
+        if not self.completed():
+            return False
+        if not self.binds_document_identity(document_hash):
+            return False
+        record = self._node_record(node_key)
+        return (
+            record is not None
+            and record.get("status") == "ok"
+            and record.get("document_hash") == document_hash
+        )
+
+
+def content_identity(run_dir, manifests):
+    """sha256 over the VERIFIED, DECODED content of named JSON artifacts.
+
+    The identity a caller needs when several materialized row artifacts
+    together stand for one release: unlike a manifest's own ``sha256``
+    (which already covers one file's bytes alone), this combines many
+    verified contents into ONE identity that changes when any of their
+    underlying data changes — never a hash of the manifests' own
+    ``path``/``sha256`` strings taken on faith, which is exactly the
+    substitution this function exists to catch.
+
+    Parameters
+    ----------
+    run_dir : str or os.PathLike
+        The run directory every manifest's path is relative to.
+    manifests : dict
+        ``name -> manifest``, each manifest exactly the shape
+        :func:`resolve_json_artifact` accepts. Order-independent: the
+        result is built from ``manifests`` sorted by name, so re-supplying
+        the same set under a different insertion order returns the
+        identical digest.
+
+    Returns
+    -------
+    str
+        Hex sha256 of the canonical JSON of ``{name: content, ...}``,
+        where every ``content`` was read from disk and verified against
+        its own manifest — so two manifests naming byte-identical content
+        under different names produce different identities, and a
+        manifest whose recorded digest does not match its on-disk bytes
+        cannot silently enter the combined identity.
+
+    Raises
+    ------
+    ValueError
+        Propagated from :func:`resolve_json_artifact` for any manifest
+        that fails verification — an identity computed over content
+        nobody could verify is not evidence, so this function fails loud
+        rather than closed.
+    """
+    resolved = {
+        name: resolve_json_artifact(run_dir, manifest)
+        for name, manifest in manifests.items()
+    }
+    return _canonical_hash(resolved)
+
+
 def _json_text(value):
     """Render the value as canonical JSON, or None when JSON cannot hold it.
 
@@ -1894,8 +2157,8 @@ def _execute_plan(document, the_plan, ctx, resolved, trackers):
     return run
 
 
-def _write_node_records(run_dir, the_plan, run):
-    """Write one JSON record per node, in execution order."""
+def _write_node_records(run_dir, the_plan, run, document_hash):
+    """Write one JSON record per node, in execution order, each stamped with the run's own ``document_hash`` (ADR-0118 follow-up)."""
     nodes_dir = os.path.join(run_dir, "nodes")
     os.makedirs(nodes_dir, exist_ok=True)
     for i, key in enumerate(the_plan.order, start=1):
@@ -1905,6 +2168,7 @@ def _write_node_records(run_dir, the_plan, run):
             "role": the_plan.role_of(key),
             "status": run.node_states[key],
             "seconds": run.seconds.get(key),
+            "document_hash": document_hash,
             "outputs": {
                 name: _summarize(value)
                 for name, value in run.node_outputs.get(key, {}).items()
@@ -1979,7 +2243,9 @@ def _record_run(document, asof, the_plan, resolved, run):
     because from the moment the run dir exists every outcome is a RESULT,
     never a traceback lost to the caller.
     """
-    _write_node_records(resolved.run_dir, the_plan, run)
+    _write_node_records(
+        resolved.run_dir, the_plan, run, resolved.payload["document_hash"]
+    )
     _write_carry(resolved.run_dir, run.node_outputs)
     resolved.payload["prev_bindings"] = run.prev_bindings
     _write_json(os.path.join(resolved.run_dir, "resolved.json"), resolved.payload)

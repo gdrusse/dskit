@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 
 import pytest
 import dskit.pipeline.node as node_module
@@ -26,12 +27,14 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.driver import (
     DocumentRunResult,
+    RunAttestation,
     _RELEASE_MIN_LEN,
     _carryable,
     _is_summary,
     _node_metrics,
     _summarize,
     _too_big_to_carry,
+    content_identity,
     resolve_json_artifact,
     run_document,
 )
@@ -1240,3 +1243,298 @@ class TestSpentRelease:
             "metrics.loss": 0.2,
             "metrics.n": 96,
         }
+
+
+class TestRunAttestationCompleted:
+    def test_a_clean_run_attests_completed(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        assert RunAttestation(result.run_dir).completed() is True
+
+    def test_a_halted_run_does_not_attest_completed(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["family"] = NodeSpec(
+            uses="synth-eligibility",
+            inputs={"counts": "$bank.counts"},
+            params={"min_events": 10_000},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "halted"
+        assert RunAttestation(result.run_dir).completed() is False
+
+    def test_an_errored_run_does_not_attest_completed(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["qhat"] = NodeSpec(
+            uses="synth-train",
+            mode="train",
+            inputs={"events": "$clip.events"},
+            params={"min_train": 10_000},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.state == "error"
+        assert RunAttestation(result.run_dir).completed() is False
+
+    def test_a_missing_run_dir_does_not_attest_completed(self, tmp_path):
+        assert RunAttestation(tmp_path / "never-ran").completed() is False
+
+    def test_a_malformed_result_json_does_not_attest_completed(self, tmp_path):
+        run_dir = tmp_path / "half-written"
+        run_dir.mkdir()
+        (run_dir / "result.json").write_text("not json", encoding="utf-8")
+        assert RunAttestation(run_dir).completed() is False
+
+
+class TestRunAttestationNodeCompleted:
+    def test_an_ok_node_attests_completed(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        assert RunAttestation(result.run_dir).node_completed("market") is True
+
+    def test_an_errored_node_does_not_attest_completed(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["qhat"] = NodeSpec(
+            uses="synth-train",
+            mode="train",
+            inputs={"events": "$clip.events"},
+            params={"min_train": 10_000},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.node_states["qhat"] == "error"
+        assert RunAttestation(result.run_dir).node_completed("qhat") is False
+
+    def test_a_halted_node_does_not_attest_completed(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["family"] = NodeSpec(
+            uses="synth-eligibility",
+            inputs={"counts": "$bank.counts"},
+            params={"min_events": 10_000},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.node_states["report"] == "halted"
+        assert RunAttestation(result.run_dir).node_completed("report") is False
+
+    def test_a_not_run_node_does_not_attest_completed(self, tmp_path, registry):
+        pipeline = banking_pipeline()
+        pipeline["qhat"] = NodeSpec(
+            uses="synth-train",
+            mode="train",
+            inputs={"events": "$clip.events"},
+            params={"min_train": 10_000},
+        )
+        result = run_document(
+            bdoc(tmp_path, pipeline=pipeline), asof=ASOF, registry=registry
+        )
+        assert result.node_states["size"] == "not_run"
+        assert RunAttestation(result.run_dir).node_completed("size") is False
+
+    def test_an_unknown_node_key_does_not_attest_completed(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        assert RunAttestation(result.run_dir).node_completed("no-such-node") is False
+
+    def test_a_record_claiming_a_different_node_name_does_not_attest(self, tmp_path, registry):
+        result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
+        nodes_dir = os.path.join(result.run_dir, "nodes")
+        target = next(f for f in os.listdir(nodes_dir) if f.endswith("-market.json"))
+        record = read_json(nodes_dir, target)
+        assert record["status"] == "ok"
+        record["node"] = "not-market"
+        with open(os.path.join(nodes_dir, target), "w", encoding="utf-8") as fh:
+            json.dump(record, fh)
+        assert RunAttestation(result.run_dir).node_completed("market") is False
+
+
+class TestRunAttestationBindsDocumentIdentity:
+    def test_a_clean_run_binds_its_own_document_hash(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert RunAttestation(result.run_dir).binds_document_identity(doc.hash) is True
+
+    def test_a_wrong_document_hash_does_not_bind(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        wrong = "0" * 64
+        assert wrong != doc.hash
+        assert RunAttestation(result.run_dir).binds_document_identity(wrong) is False
+
+    def test_a_resolved_json_hand_edited_to_claim_a_hash_config_does_not_reproduce(
+        self, tmp_path, registry
+    ):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        resolved = read_json(result.run_dir, "resolved.json")
+        forged = "1" * 64
+        resolved["document_hash"] = forged
+        with open(
+            os.path.join(result.run_dir, "resolved.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(resolved, fh)
+        assert RunAttestation(result.run_dir).binds_document_identity(forged) is False
+
+    def test_a_config_json_substituted_for_a_different_document_does_not_bind(
+        self, tmp_path, registry
+    ):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        other = bdoc(tmp_path, name="a-different-document")
+        with open(
+            os.path.join(result.run_dir, "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(other.to_obj(), fh)
+        # resolved.json's claim is untouched, so it still names doc.hash —
+        # but config.json no longer reproduces it under the pinned recipe.
+        assert RunAttestation(result.run_dir).binds_document_identity(doc.hash) is False
+
+    def test_a_missing_config_json_does_not_bind(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        os.remove(os.path.join(result.run_dir, "config.json"))
+        assert RunAttestation(result.run_dir).binds_document_identity(doc.hash) is False
+
+
+class TestRunAttestationNodeOutputForDocument:
+    """The composed guarantee ADR-0116 actually needs — see ADR-0118's follow-up."""
+
+    def test_a_clean_run_attests_the_composed_guarantee(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert (
+            RunAttestation(result.run_dir).node_output_for_document("market", doc.hash)
+            is True
+        )
+
+    def test_a_wrong_document_hash_does_not_attest(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        wrong = "0" * 64
+        assert (
+            RunAttestation(result.run_dir).node_output_for_document("market", wrong)
+            is False
+        )
+
+    def test_an_uncompleted_node_does_not_attest(self, tmp_path, registry):
+        doc = bdoc(tmp_path)
+        result = run_document(doc, asof=ASOF, registry=registry)
+        assert (
+            RunAttestation(result.run_dir).node_output_for_document(
+                "no-such-node", doc.hash
+            )
+            is False
+        )
+
+    def test_the_skeptic_forgery_defeats_the_three_naive_checks_but_not_this_one(
+        self, tmp_path, registry
+    ):
+        """Reproduce the exact skeptic proof against ADR-0118's first cut.
+
+        Run two genuine documents. Take B's real completed run, hand-edit
+        its ``resolved.json`` to claim A's document identity, and
+        substitute A's own genuine ``config.json``. The three individual
+        primitives, composed naively, are then all fooled — that is the
+        finding. The node record inside B's run dir was stamped with B's
+        own ``document_hash`` honestly, at the moment B actually executed,
+        so the composed method catches what the naive composition misses.
+        """
+        doc_a = bdoc(tmp_path, name="document-a")
+        run_document(doc_a, asof=ASOF, registry=registry)
+        doc_b = bdoc(tmp_path, name="document-b")
+        result_b = run_document(doc_b, asof=ASOF, registry=registry)
+
+        resolved = read_json(result_b.run_dir, "resolved.json")
+        resolved["document_hash"] = doc_a.hash
+        with open(
+            os.path.join(result_b.run_dir, "resolved.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(resolved, fh)
+        with open(
+            os.path.join(result_b.run_dir, "config.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(doc_a.to_obj(), fh)
+
+        forged = RunAttestation(result_b.run_dir)
+        # The naive composition ADR-0116 names is fooled — the skeptic's finding.
+        assert forged.completed() is True
+        assert forged.node_completed("market") is True
+        assert forged.binds_document_identity(doc_a.hash) is True
+        # The composed method is not: "market"'s record was stamped with B's
+        # own document_hash when B actually ran, and it does not match A's —
+        # so the forgery is refused for BOTH identities, exactly as it must
+        # be: this run dir is neither trustworthy evidence for A (never ran)
+        # nor for B (its resolved.json no longer even claims B).
+        assert forged.node_output_for_document("market", doc_a.hash) is False
+        assert forged.node_output_for_document("market", doc_b.hash) is False
+
+
+class TwoArtifactsSource(Node):
+    """Emit two independently named JsonArtifact payloads for one run."""
+
+    role = "data"
+    outputs = ("a", "b")
+
+    def run(self, ctx, inputs):
+        durable = getattr(node_module, "JsonArtifact", lambda value: value)
+        return {"a": durable(self.params["a"]), "b": durable(self.params["b"])}
+
+
+def _two_artifact_run(run_root, a_value, b_value, name="content-identity"):
+    registry = NodeKindRegistry()
+    registry.register("two-artifacts-src", TwoArtifactsSource)
+    document = PipelineDocument(
+        name=name,
+        pipeline={
+            "src": NodeSpec(
+                uses="two-artifacts-src", params={"a": a_value, "b": b_value}
+            )
+        },
+        outputs=OutputsConfig(run_root=str(run_root)),
+    )
+    return run_document(document, asof=ASOF, registry=registry, journal=False)
+
+
+class TestContentIdentity:
+    def test_is_deterministic_and_order_independent(self, tmp_path):
+        result = _two_artifact_run(tmp_path, {"x": 1}, {"y": 2})
+        manifests = {"a": result.outputs["src"]["a"], "b": result.outputs["src"]["b"]}
+        first = content_identity(result.run_dir, manifests)
+        second = content_identity(result.run_dir, dict(reversed(list(manifests.items()))))
+        assert first == second
+        assert isinstance(first, str) and re.fullmatch(r"[0-9a-f]{64}", first)
+
+    def test_changed_row_content_changes_the_identity(self, tmp_path):
+        first_run = _two_artifact_run(tmp_path / "one", {"x": 1}, {"y": 2}, name="doc-a")
+        second_run = _two_artifact_run(
+            tmp_path / "two", {"x": 999}, {"y": 2}, name="doc-b"
+        )
+        first = content_identity(
+            first_run.run_dir,
+            {"a": first_run.outputs["src"]["a"], "b": first_run.outputs["src"]["b"]},
+        )
+        second = content_identity(
+            second_run.run_dir,
+            {"a": second_run.outputs["src"]["a"], "b": second_run.outputs["src"]["b"]},
+        )
+        assert first != second
+
+    def test_the_same_content_under_a_different_name_changes_the_identity(self, tmp_path):
+        result = _two_artifact_run(tmp_path, {"x": 1}, {"y": 2})
+        manifests = {"a": result.outputs["src"]["a"], "b": result.outputs["src"]["b"]}
+        renamed = {"a_renamed": manifests["a"], "b": manifests["b"]}
+        assert content_identity(result.run_dir, manifests) != content_identity(
+            result.run_dir, renamed
+        )
+
+    def test_a_tampered_manifest_is_refused_not_silently_combined(self, tmp_path):
+        result = _two_artifact_run(tmp_path, {"x": 1}, {"y": 2})
+        manifest = result.outputs["src"]["a"]
+        artifact_path = os.path.join(result.run_dir, manifest["path"])
+        with open(artifact_path, "ab") as handle:
+            handle.write(b" ")
+        with pytest.raises(ValueError, match="byte count"):
+            content_identity(
+                result.run_dir, {"a": manifest, "b": result.outputs["src"]["b"]}
+            )

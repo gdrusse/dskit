@@ -1762,6 +1762,7 @@ class TestNoSearchUntouched:
                 "role",
                 "status",
                 "seconds",
+                "document_hash",
                 "outputs",
             }, name
 
