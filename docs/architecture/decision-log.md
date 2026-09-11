@@ -6585,9 +6585,12 @@ verbatim as the plan's authoritative list).** No agent may infer these.
    untouched test.
 5. First replay horizon policy: h1-only/non-overlapping as the memo
    recommends, or mixed confirmed caps; precise exit/expiry and overlap
-   semantics.
+   semantics. Owner ruled mixed caps (2026-09-10); overlap/expiry
+   mechanics are proposed in ADR-0119 (not accepted).
 6. Fill model: order type, decision/fill bar, latency, partial fills,
    rejections, spread/slippage, halts, forced exits, and mark source.
+   Owner ruled next-bar-open, config-driven (2026-09-10); the fill-policy
+   bundle is proposed in ADR-0119 (not accepted).
 7. Performance-monitor minimum counts, windows, thresholds, and when a
    warning becomes a hold. Hard-stop invariant categories are already
    locked.
@@ -7514,3 +7517,90 @@ skeptic's exact attack, plus direct tests of the new method),
 record key set widened to include `document_hash`, per root CLAUDE.md's
 "a pinning test that omits a knob is worse than none"). `FinalRefit` and
 everything under `children/` are untouched, same as the parent entry.
+## ADR-0119 — Phase 5 replay policies: mixed-horizon overlap and a config-driven next-bar-open fill (Gate 5)
+
+**Status:** proposed (2026-09-10). Extends ADR-0114 Phase 5. Does **not**
+self-accept. Items 5 and 6 of the plan's §11 are owner-ruled as to SHAPE
+(below); the overlap/expiry mechanics this ADR names are proposed, not
+ruled.
+
+**Context.** Gate 5a (`cursor/gate5a-replay-conformance-1656`, A18857)
+proved by test that existing `ServeLoop` + `ReplayFeed` + `ReplayClock` +
+`PaperExecutor` + the ledger already drive deterministic historical ticks.
+No generic production hook is missing; children must not subclass
+`ServeLoop`. ADR-0114 still blocked `replay.py`'s equity policies on §11
+items 5 and 6. The owner ruled those items on 2026-09-10 (kickoff
+`docs/plans/2026-09-10-gate5-replay-kickoff.md`): mixed confirmed caps
+across all horizons, not h1-only; next-bar-open market fill as a
+config-driven policy, nothing hardcoded. Precise overlap semantics were
+explicitly not decided. Real deployment-eligible caps do not exist yet
+(§11 item 4 / Gate 4).
+
+**Decision (owner-ruled shape, 2026-09-10).**
+
+1. Replay handles overlapping multi-horizon decisions generically.
+   Exercise only against development-only/synthetic caps with
+   `deployment_eligible=false`. Never claim a real mixed-cap result
+   (plan §8).
+2. Fill model: decide at bar close `t` on data known by `t`; fill at bar
+   `t+1`'s open. Reuse `nodes_capital.SchwabCostModel` for spread/fees.
+   No partial fills or rejections (full simulated fill). A halted symbol
+   is skipped, not queued. Forced exit at horizon expiry using that
+   bar's open. Every fill-model value is a named field of
+   `configs/fill-policy.json` (sibling of Gate 3's `capital-policy.json`,
+   which this phase does not own), pinned by digest, never a Python
+   literal.
+
+**Decision (proposed overlap/expiry rule — needs owner acceptance).**
+Grounded in plan §3's one decision graph and one account:
+
+- Lot identity is `(symbol, lead)`. Different leads on the same name MAY
+  be open concurrently (the mixed-cap ladder). A new decision for an
+  already-open `(symbol, lead)` is refused; it does not override.
+- Same-tick order: forced exits whose expiry bar is this fill bar, then
+  new entries. An h1 expiry and an h10 hold never compete; an h1
+  re-entry on the same tick sees a vacant lot after the exit.
+- Expiry bar = fill bar + lead (hold `lead` bars after the next-bar-open
+  entry; exit at that bar's open). Literal `t+h` from the decision bar
+  would make h=1 fill and exit on the same open; this proposal rejects
+  that reading. Config field `forced_exit_horizon_basis` pins `"fill"`.
+- Halt: skip every action for that symbol on that tick (entries and
+  forced exits); do not queue. A due lot (`expiry_index <= index`)
+  that was halt-skipped fires on the next non-halt bar at that bar's
+  open. Still proposed.
+
+Closed vocabularies the config must spell (code refuses any other
+member; the shipped `fill-policy.json` carries the ruled/proposed
+values): `order_type=market`, `partial_fills=false`, `rejections=none`,
+`halt_handling=skip|queue`, `forced_exit_at=horizon_expiry`,
+`forced_exit_horizon_basis=fill`, `same_lead_overlap=refuse|override`,
+`different_lead_overlap=concurrent`, `same_tick_order=exits_then_entries`,
+`mark_source=fill_bar_open`, `paper_fill_rule=touch`, `paper_fees=none`.
+`fill_suffix_bars` and `fill_suffix_weekdays` size the developmental
+fill-only trailing window (session bars and UTC weekdays after
+`evidence_end`; weekend prints refuse). Changing either moves fill-policy
+identity.
+
+**Files.** `intraday_equities/replay.py` (new, tier 3) calls
+`compose.bundles_for(..., tape=BarTape)` then overlays tape cadence
+(`Cadence` subclass; `CADENCE_KINDS` has no tape-times member and Gate 5a
+forbids adding one), the equity decider, `ReleaseIdSource` (this is not
+a recorded series; `BarTape.id_allocations` is empty), and a
+`PaperVenue` around a `PaperExecutor` on compose's clock. The document
+stays `rung=shadow` because `fsync: none` is shadow-only; compose's
+`ShadowExecutor` is not the fill venue. Fills go through `LegPipeline`.
+It does not subclass `ServeLoop` and adds no `dskit.production` hook
+(Gate 5a). `HorizonBook` is the equity `(symbol, lead)` identity overlay
+production positions do not key. `configs/fill-policy.json` (new).
+`configs/run-development-replay.json` (new) — P16 evidence ending
+2025-10-16, `deployment_eligible=false`, fill-policy digest pin. No
+`dskit.production` hook. `path.csv` untouched.
+
+**Consequences.** Owner-ruled 2026-09-10 shape: synthetic tests of the
+fill/overlap book may run against development-only caps with
+`deployment_eligible=false` while this ADR stays **proposed**. That is
+not a Status flip and not deployment authorization. Changing a
+fill-model value is a config edit (identity moves). A different overlap
+ruling changes `_VOCAB` and the book, not a silent code default. Phase 5
+items 3–5 (crash/restart ledger identity, post-fill solvency, observable
+unfunded candidates on a live graph) remain unbuilt.

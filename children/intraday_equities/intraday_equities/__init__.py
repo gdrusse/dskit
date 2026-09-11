@@ -34,14 +34,17 @@ from .nodes import (
 )
 from .nodes_capital import NODE_KINDS as CAPITAL_NODE_KINDS
 from .nodes_capital import EquityKellyMIO
+from .replay import DevelopmentReplay, FillPolicy, ReplayAdapter
 
 __all__ = [
     "AlpacaBars",
     "BarsFromStore",
     "CAPITAL_NODE_KINDS",
+    "DevelopmentReplay",
     "EquityEventAdapter",
     "EquityKellyMIO",
     "FeedParity",
+    "FillPolicy",
     "FoldFeatureStats",
     "HorizonScan",
     "KeepSymbols",
@@ -50,6 +53,7 @@ __all__ = [
     "NODE_KINDS",
     "SessionFeatureCache",
     "PortfolioSelect",
+    "ReplayAdapter",
     "SchwabBars",
     "SessionFeatureRows",
     "SignalDecay",

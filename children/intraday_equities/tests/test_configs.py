@@ -373,7 +373,7 @@ def _universe_path(raw, name):
 
 
 def test_run_docs_do_not_restate_the_cohort():
-    for name in _run_docs():
+    for name in _market_run_docs():
         raw = _raw(name)
         path = _universe_path(raw, name)
         if path != "configs/universe.json":
@@ -475,9 +475,19 @@ def _run_docs():
     )
 
 
+# Gate 5 developmental replay is not a market-data training document:
+# no universe node, no tracking sink, no bars read (ADR-0119). Cohort,
+# MLflow, and store pins do not apply to it.
+_NON_MARKET_RUN_DOCS = frozenset({"run-development-replay.json"})
+
+
+def _market_run_docs():
+    return [name for name in _run_docs() if name not in _NON_MARKET_RUN_DOCS]
+
+
 def test_every_run_uses_one_local_mlflow_experiment():
     """Cadence and HPO compare in one local store, not per-run dirs."""
-    for name in _run_docs():
+    for name in _market_run_docs():
         sinks = _raw(name)["tracking"]["sinks"]
         assert len(sinks) == 1, name
         sink = sinks[0]
@@ -491,7 +501,7 @@ def test_the_child_installs_what_its_tracking_sinks_need():
 
     with open(os.path.join(CHILD_ROOT, "pyproject.toml"), "rb") as fh:
         declared = tomllib.load(fh)["project"]["dependencies"]
-    for name in _run_docs():
+    for name in _market_run_docs():
         for sink in _raw(name)["tracking"]["sinks"]:
             module = sink["kind"].split(":")[0]
             pack = module.rsplit(".", 1)[1]
@@ -579,7 +589,7 @@ def test_every_run_reads_the_split_adjusted_store_from_the_study_start():
                 assert params["start_ms"] > STUDY_START_MS, name
                 continue
             assert params["start_ms"] == STUDY_START_MS, name
-    assert seen >= len(_run_docs())
+    assert seen >= len(_market_run_docs())
 
 
 def test_the_study_start_puts_the_xlf_spin_off_out_of_reach():
@@ -1223,3 +1233,18 @@ def test_p16_feature_mask_zoo_masks_are_real_and_isolate_the_feature_set():
     assert approval["approved_inventory_sha256"] != (
         p13["stages"]["approval"]["params"]["approved_inventory_sha256"]
     )
+
+
+def test_run_development_replay_forces_ineligible_caps_and_pins_fill_policy():
+    """Gate 5: developmental replay is not deployment evidence."""
+    from intraday_equities.replay import FillPolicy
+
+    raw = _raw("run-development-replay.json")
+    params = raw["pipeline"]["replay"]["params"]
+    assert params["deployment_eligible"] is False
+    assert params["evidence_end"] == "2025-10-16"
+    assert params["caps"] == "development-only"
+    policy = FillPolicy.from_path(_path("fill-policy.json"))
+    assert params["fill_policy_sha256"] == policy.digest()
+    document = load_document(_path("run-development-replay.json"))
+    assert document.hash
