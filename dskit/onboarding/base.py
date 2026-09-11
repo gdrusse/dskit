@@ -85,6 +85,7 @@ def _check_segment(errors, name, value):
 
 
 def _check_mode(errors, mode):
+    """Append an error unless ``mode`` is one of :data:`MODES`."""
     if mode not in MODES:
         errors.append(f"mode must be one of {list(MODES)}, got {mode!r}")
 
@@ -195,6 +196,11 @@ def durable_write_bytes(path, data) -> None:
         Destination; its directory must exist.
     data : bytes
         The exact bytes to persist.
+
+    Raises
+    ------
+    AssetError
+        If ``path`` is not a non-empty string, or ``data`` is not bytes.
     """
     errors = []
     _check_str(errors, "path", path)
@@ -275,6 +281,13 @@ def durable_write_json(path, obj) -> None:
     Serialization is checked before anything touches disk; output is
     indented with sorted keys — outbox manifests and checkpoints are
     meant to be human-diffable, like store records.
+
+    Parameters
+    ----------
+    path : str
+        Destination; its directory must exist.
+    obj : object
+        A JSON-serializable value.
 
     Raises
     ------

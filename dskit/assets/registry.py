@@ -89,6 +89,7 @@ class Registry:
     # -- internal ----------------------------------------------------------
 
     def _spec(self, kind):
+        """Return ``kind``'s declared spec; refuse a kind the model never declared."""
         spec = self.model.kinds.get(kind)
         if spec is None:
             raise AssetError(
@@ -121,6 +122,13 @@ class Registry:
         str
             The version_id. Identical content returns the existing id
             with no new event — registration is idempotent.
+
+        Raises
+        ------
+        AssetError
+            If ``kind`` is undeclared, ``payload``/``refs`` fail the
+            model's field checks, or a ref does not resolve to a
+            present record of the declared kind.
         """
         spec = self._spec(kind)
         refs = {} if refs is None else refs
@@ -159,7 +167,24 @@ class Registry:
     # -- reads -------------------------------------------------------------
 
     def get(self, version_id) -> AssetRecord:
-        """Load one record; refuse records of kinds the model never declared."""
+        """Load one record; refuse records of kinds the model never declared.
+
+        Parameters
+        ----------
+        version_id : str
+            The record's identity hash.
+
+        Returns
+        -------
+        AssetRecord
+            The stored record.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent from the store, or its kind is
+            not declared by this registry's model (an out-of-band write).
+        """
         record = self.store.get_record(version_id)
         self._spec(record.kind)  # a foreign kind means an out-of-band write
         return record
@@ -168,6 +193,24 @@ class Registry:
         """Return version_ids of ``kind`` whose payload ``name`` equals ``name``.
 
         The alias lookup of ADR-0009 (aliases may have many versions).
+
+        Parameters
+        ----------
+        kind : str
+            A kind declared by the governing model.
+        name : str
+            The payload ``name`` to match.
+
+        Returns
+        -------
+        list of str
+            Matching version_ids; empty when none match.
+
+        Raises
+        ------
+        AssetError
+            If ``kind`` is not declared by the model, or ``name`` is not
+            a non-empty string.
         """
         self._spec(kind)
         errors = []
@@ -180,7 +223,23 @@ class Registry:
         ]
 
     def list(self, kind=None) -> list:
-        """Sorted version_ids, for one declared kind or the whole store."""
+        """Sorted version_ids, for one declared kind or the whole store.
+
+        Parameters
+        ----------
+        kind : str, optional
+            Restrict to one declared kind; ``None`` lists the whole store.
+
+        Returns
+        -------
+        list of str
+            Sorted version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``kind`` is given but not declared by the model.
+        """
         if kind is not None:
             self._spec(kind)
         return self.store.list_records(kind)
@@ -190,10 +249,22 @@ class Registry:
     def state(self, version_id):
         """Return the current lifecycle state, derived by replaying the event log.
 
+        Parameters
+        ----------
+        version_id : str
+            The record's identity hash.
+
         Returns
         -------
         str or None
             The state, or None for a record-only kind (no lifecycle).
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent, its kind is undeclared, its
+            event log has no register event, or it replays to a state
+            the model does not declare.
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)
@@ -223,6 +294,23 @@ class Registry:
         The move must be listed in the model's transition map for the
         asset's CURRENT state; everything else is refused. The move is an
         appended event — history is immutable, records never change.
+
+        Parameters
+        ----------
+        version_id : str
+            The record's identity hash.
+        to : str
+            The target state.
+        origin : str, optional
+            Provenance: who requested the move.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent or its kind is undeclared, if
+            ``to`` is not a non-empty string, if the kind is
+            record-only (no lifecycle), or if the model's transition map
+            does not allow the current state to move to ``to``.
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)

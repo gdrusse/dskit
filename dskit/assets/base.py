@@ -75,19 +75,53 @@ class AssetError(ValueError):
 
 
 def check_str(errors, name, value, *, non_empty=True):
-    """Append an error unless value is a non-empty string (or any string, when non_empty=False)."""
+    """Append an error unless value is a non-empty string (or any string, when non_empty=False).
+
+    Parameters
+    ----------
+    errors : list of str
+        The accumulator this call appends to.
+    name : str
+        The field name, used in the appended message.
+    value : object
+        The value to check.
+    non_empty : bool, optional
+        When ``False``, an empty string is accepted too.
+    """
     if not isinstance(value, str) or (non_empty and not value):
         errors.append(f"{name} must be a non-empty string, got {value!r}")
 
 
 def check_dict(errors, name, value):
-    """Append an error unless value is a dict with string-only keys."""
+    """Append an error unless value is a dict with string-only keys.
+
+    Parameters
+    ----------
+    errors : list of str
+        The accumulator this call appends to.
+    name : str
+        The field name, used in the appended message.
+    value : object
+        The value to check.
+    """
     if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
         errors.append(f"{name} must be a dict with string keys, got {value!r}")
 
 
 def check_unknown(errors, obj, allowed, where=""):
-    """Default-DENY on keys: a typo is an error, not a silent default."""
+    """Default-DENY on keys: a typo is an error, not a silent default.
+
+    Parameters
+    ----------
+    errors : list of str
+        The accumulator this call appends to.
+    obj : dict
+        The object whose keys are checked.
+    allowed : iterable of str
+        The keys ``obj`` may declare.
+    where : str, optional
+        A location prefix for the appended message.
+    """
     unknown = sorted(set(obj) - set(allowed))
     if unknown:
         prefix = f"{where}: " if where else ""
@@ -95,7 +129,18 @@ def check_unknown(errors, obj, allowed, where=""):
 
 
 def raise_if(errors):
-    """Raise :class:`AssetError` with every accumulated problem, if any."""
+    """Raise :class:`AssetError` with every accumulated problem, if any.
+
+    Parameters
+    ----------
+    errors : list of str
+        The accumulated problems; a no-op when empty.
+
+    Raises
+    ------
+    AssetError
+        If ``errors`` is non-empty.
+    """
     if errors:
         raise AssetError(errors)
 
@@ -118,6 +163,7 @@ _raise_if = raise_if
 
 
 def _strip_notes(obj):
+    """Recursively drop every ``notes`` key — documentation is never hash material."""
     if isinstance(obj, dict):
         return {k: _strip_notes(v) for k, v in obj.items() if k != "notes"}
     if isinstance(obj, list):
