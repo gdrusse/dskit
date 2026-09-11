@@ -104,11 +104,26 @@ class ResolvedPipeline:
     --------
     :func:`resolve` is the normal way to obtain one, from a config and an
     ``asof`` date; it returns the resolved pipeline paired with the
-    backend that produced it. Once resolved, ``to_dict()`` gives most of
-    the JSON body :func:`write_run_dir` writes to ``resolved.json``
-    (which additionally stamps ``pipeline_hash`` before writing)::
+    backend that produced it. Constructed directly here to show the
+    shape; once resolved, ``to_dict()`` gives most of the JSON body
+    :func:`write_run_dir` writes to ``resolved.json`` (which additionally
+    stamps ``pipeline_hash`` before writing)::
 
-        resolved, backend = resolve(config, asof="2026-01-31")
+        resolved = ResolvedPipeline(
+            config=PipelineConfig(
+                name="syn",
+                data=DataConfig(venue="synthetic", data_dir="/data",
+                                 instruments=("AAPL", "MSFT")),
+                splits=TimeSplitConfig(train_end_ms=1, val_end_ms=2,
+                                        test_end_ms=3),
+                model=ModelConfig(name="true-q", model_dir="/data/models"),
+            ),
+            asof="2026-01-31",
+            data_root="/data",
+            model_root="/data/models",
+            instruments=("AAPL", "MSFT"),
+            run_dir="/data/pipeline_runs/syn-2026-01-31-abcd1234",
+        )
         resolved.to_dict()["instruments"]
         # -> ['AAPL', 'MSFT']
     """
@@ -151,7 +166,10 @@ class ResolvedPipeline:
             )
 
     def to_dict(self) -> dict:
-        """Build the JSON-ready form — the hash input (minus exclusions) and most of the resolved.json body.
+        """Build the JSON-ready form.
+
+        The hash input (minus exclusions) and most of the resolved.json
+        body.
 
         Returns
         -------

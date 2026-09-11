@@ -257,9 +257,14 @@ REMAINING, in the plan's risk order:
       was execution-verified before its first commit — two rounds of
       independent skeptic review found and fixed a wrong `resolve()` call
       signature, a wrong list-repr in an expected-output line, and three
-      other factually-inaccurate reworded summaries; every `Examples`
-      block now IS execution-verified, but say so honestly rather than as
-      an original design choice.
+      other factually-inaccurate reworded summaries. `AssetError`'s,
+      `TrainingCurve`'s, `SampleConnector`'s, and `ResolvedPipeline`'s
+      `Examples` blocks are now genuinely execution-verified, byte-exact
+      output included. `LocalFilesConnector`'s and `AlpacaBarsConnector`'s
+      (the sibling it mirrors, pre-existing) are illustrative only, same
+      as every connector pack's example that names a plausible but
+      unreal path or symbol — they were never claimed to be runnable
+      as-is and are not.
       **27 of the original 57 drained; 30 remain**, each with 8+ D-rule
       findings and generally more classes needing full conversion — left
       for a future pass. Note also: several drained files (`metrics.py`
