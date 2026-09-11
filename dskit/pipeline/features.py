@@ -72,6 +72,7 @@ _OPS = {
 
 
 def _filter_validator(params):
+    """Return every problem with a ``filter`` step's declared params."""
     errors = []
     unknown = sorted(set(params) - {"require_usable", "where"})
     if unknown:
@@ -103,6 +104,7 @@ def _filter_validator(params):
 
 
 def _clause_holds(record, clause) -> bool:
+    """Say whether ``record`` satisfies one ``{field, op, value}`` clause."""
     value = getattr(record, clause["field"])
     if value is None:
         # a missing quote/lead satisfies nothing except an explicit null test
@@ -116,6 +118,7 @@ def _clause_holds(record, clause) -> bool:
 
 
 def _apply_filter(records, params):
+    """Yield only records passing ``require_usable`` and every ``where`` clause."""
     require_usable = params.get("require_usable", True)
     where = params.get("where", [])
     for rec in records:
@@ -126,6 +129,7 @@ def _apply_filter(records, params):
 
 
 def _regroup_validator(params):
+    """Return every problem with a ``regroup`` step's declared params."""
     errors = []
     unknown = sorted(set(params) - {"by"})
     if unknown:
@@ -139,6 +143,7 @@ def _regroup_validator(params):
 
 
 def _apply_regroup(records, params):
+    """Yield every record with ``group`` reassigned to its instrument or contract."""
     by = params["by"]
     for rec in records:
         target = rec.instrument if by == "instrument" else rec.contract

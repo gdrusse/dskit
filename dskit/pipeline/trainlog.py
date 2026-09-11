@@ -66,6 +66,17 @@ def is_binary(labels) -> bool:
     continuous target, and the toolkit's own metric functions REFUSE a
     non-binary ``y`` by name. Checking first is what lets one trainer
     serve both without either lying or crashing.
+
+    Parameters
+    ----------
+    labels : iterable of float
+        Realized outcomes to check.
+
+    Returns
+    -------
+    bool
+        ``True`` iff every label is exactly 0.0 or 1.0 and at least one
+        label was seen.
     """
     seen = False
     for y in labels:
@@ -224,6 +235,32 @@ class TrainingCurve:
 
         Returns the row, so a caller can early-stop on it without
         recomputing anything.
+
+        Parameters
+        ----------
+        epoch : int
+            The epoch number just completed.
+        train_loss : float
+            The epoch's training loss.
+        val_loss : float, optional
+            The epoch's validation loss, when computed.
+        metrics : dict, optional
+            Extra named values to record alongside the losses (e.g.
+            ``logloss``/``brier``/``ece``).
+        seconds : float, optional
+            Wall-clock time the epoch took.
+
+        Returns
+        -------
+        dict
+            The recorded row, including the computed ``"best"`` flag.
+
+        Raises
+        ------
+        ValueError
+            If :attr:`objective` is absent from the row this call would
+            record — a typo'd monitor or an adapter that emits no
+            beliefs, never silently selected around.
         """
         row = {"epoch": int(epoch), "train_loss": _num(train_loss)}
         if val_loss is not None:
@@ -261,6 +298,7 @@ class TrainingCurve:
         return row
 
     def _should_stream(self, row, improved) -> bool:
+        """Say whether this epoch's row earns a streamed log line."""
         if not self._max_lines:
             return False
         if row["epoch"] in (1, self.total_epochs):
@@ -270,6 +308,7 @@ class TrainingCurve:
         return row["epoch"] % self._log_every == 0
 
     def _stream(self, row, improved) -> None:
+        """Log one formatted line for ``row`` and count it as streamed."""
         parts = [f"train {_fmt(row.get('train_loss'))}"]
         if "val_loss" in row:
             parts.append(f"val {_fmt(row['val_loss'])}")
@@ -295,7 +334,15 @@ class TrainingCurve:
     # -- output ------------------------------------------------------------
 
     def summary(self) -> dict:
-        """Return the compact reduction for a node's ``metrics`` output."""
+        """Return the compact reduction for a node's ``metrics`` output.
+
+        Returns
+        -------
+        dict
+            ``epochs_run``, ``best_epoch``, ``objective``, and — when
+            present — ``best_<objective>`` plus each recorded
+            ``final_<name>`` from the last epoch.
+        """
         out = {
             "epochs_run": len(self.rows),
             "best_epoch": self.best_epoch if self.best_epoch is not None else -1,
@@ -312,7 +359,15 @@ class TrainingCurve:
         return {k: v for k, v in out.items() if v is not None}
 
     def payload(self) -> dict:
-        """Return the durable artifact body — every epoch, streamed or not."""
+        """Return the durable artifact body — every epoch, streamed or not.
+
+        Returns
+        -------
+        dict
+            ``node``, ``objective``, ``total_epochs``, ``epochs_run``,
+            ``best_epoch``, ``streamed_lines``, a fixed ``note``, and
+            ``epochs`` — every recorded row.
+        """
         return {
             "node": self.key,
             "objective": self.objective,
