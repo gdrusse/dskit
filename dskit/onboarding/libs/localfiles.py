@@ -101,6 +101,7 @@ class LocalFilesConnector(Connector):
     # -- internals ---------------------------------------------------------
 
     def _dir(self, config) -> str:
+        """Return ``config.path`` as an absolute, expanded directory path."""
         path = config.get("path")
         if not isinstance(path, str) or not path:
             raise AssetError([f"config.path must be a non-empty string, got {path!r}"])
@@ -145,14 +146,45 @@ class LocalFilesConnector(Connector):
     # -- the four verbs ----------------------------------------------------
 
     def check(self, config) -> None:
-        """Refuse a config whose directory is missing, unreadable, or empty of recognized files."""
+        """Refuse a config whose directory is missing or empty of recognized files.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`~dskit.onboarding.connector.check_config`.
+
+        Raises
+        ------
+        AssetError
+            If ``config.path`` does not exist, is not a directory, or
+            holds no ``*.csv``/``*.jsonl`` file.
+        """
         if not self._files(config):
             raise AssetError(
                 [f"no *.csv / *.jsonl files under {self._dir(config)!r}"]
             )
 
     def discover(self, config) -> list:
-        """One stream per file; schema = the first row's keys."""
+        """One stream per file; schema = the first row's keys.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`~dskit.onboarding.connector.check_config`.
+
+        Returns
+        -------
+        list of dict
+            ``{"stream": str, "schema": {"fields": list of str},
+            "primary_key": []}`` per file — this connector declares no
+            primary key.
+
+        Raises
+        ------
+        AssetError
+            If ``config.path`` does not exist, is not a directory, or a
+            stem exists as both a ``.csv`` and a ``.jsonl`` file.
+        """
         encoding = config.get("encoding", _DEFAULT_ENCODING)
         out = []
         for stream, path in sorted(self._files(config).items()):
@@ -173,6 +205,34 @@ class LocalFilesConnector(Connector):
         Rows are sorted by effective date before emission so the cursor
         ("everything before this is durable") is honest — an unsorted
         source must not checkpoint past unemitted rows.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`~dskit.onboarding.connector.check_config`.
+        streams : list of str
+            Which discovered streams to pull.
+        state : dict
+            The last persisted checkpoint, keyed by stream; ``{}`` on a
+            first pull.
+        mode : str
+            ``"backfill"`` or ``"live"`` — unused here: this connector's
+            cursor logic is identical in both modes (see the module
+            docstring).
+
+        Yields
+        ------
+        dict
+            One SCHEMA message per stream, then cursor-filtered RECORD
+            messages in ascending effective-date order, then one STATE
+            message carrying every stream's updated cursor.
+
+        Raises
+        ------
+        AssetError
+            If ``state`` is not a dict, ``streams`` is empty or not a
+            list, a requested stream was not discovered, or a row is
+            missing its effective-date field.
         """
         errors = []
         _check_dict(errors, "state", state)

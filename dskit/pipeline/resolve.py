@@ -196,6 +196,22 @@ def pipeline_hash(resolved) -> str:
     re-read resolved.json can be re-hashed byte-for-byte). Strips the
     provenance keys, ``run_dir``, and every ``notes`` key at every level
     (rule 4 — documentation never changes identity).
+
+    Parameters
+    ----------
+    resolved : ResolvedPipeline or dict
+        The resolved pipeline, or its ``to_dict()``/``resolved.json`` form.
+
+    Returns
+    -------
+    str
+        Hex sha256 of the canonical, identity-stripped JSON.
+
+    Raises
+    ------
+    ValueError
+        If the stripped content is not canonically serializable
+        (NaN/Infinity in an open dict or fingerprint).
     """
     d = resolved.to_dict() if hasattr(resolved, "to_dict") else dict(resolved)
     d = _strip_notes({k: v for k, v in d.items() if k not in _PROVENANCE_KEYS})
@@ -407,6 +423,22 @@ def write_run_dir(resolved) -> str:
     distinguishable from a genuine conflict. Both documents are serialized
     BEFORE anything touches disk — a NaN in an open dict can never leave a
     half-written run dir behind.
+
+    Parameters
+    ----------
+    resolved : ResolvedPipeline
+        The resolved pipeline to persist.
+
+    Returns
+    -------
+    str
+        The run directory that was created (``resolved.run_dir``).
+
+    Raises
+    ------
+    ValueError
+        If ``resolved.run_dir`` already exists and is non-empty, or if
+        either document is not canonically serializable.
     """
     run_dir = resolved.run_dir
     new_hash = pipeline_hash(resolved)
