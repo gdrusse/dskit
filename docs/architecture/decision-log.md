@@ -6585,9 +6585,12 @@ verbatim as the plan's authoritative list).** No agent may infer these.
    untouched test.
 5. First replay horizon policy: h1-only/non-overlapping as the memo
    recommends, or mixed confirmed caps; precise exit/expiry and overlap
-   semantics.
+   semantics. Owner ruled mixed caps (2026-09-10); overlap/expiry
+   mechanics are proposed in ADR-0119 (not accepted).
 6. Fill model: order type, decision/fill bar, latency, partial fills,
    rejections, spread/slippage, halts, forced exits, and mark source.
+   Owner ruled next-bar-open, config-driven (2026-09-10); the fill-policy
+   bundle is proposed in ADR-0119 (not accepted).
 7. Performance-monitor minimum counts, windows, thresholds, and when a
    warning becomes a hold. Hard-stop invariant categories are already
    locked.
@@ -6955,3 +6958,740 @@ placeholder anchor dates and deterministic flow-to-flow ordering.
 
 **Consequences.** Acceptance would authorize the mechanism-only TDD pass,
 not a policy. A production process remains settlement-driven; a replay can
+## ADR-0118 — The versioned event/metric contract: a catalogue, an adapter seam, and safe aggregates (Gate 6 / ADR-0114 Phase 6)
+
+**Status:** accepted (2026-09-10; owner accepted after five sequential
+independent skeptic rounds closed clean — round 1 found a real Major
+[money-safety unenforced on `EventAdapter.event()`], round 3 found a real
+Critical [`drawdown` wrongly excluded from `MONEY_FIELDS`], both fixed;
+rounds 4 and 5 were two consecutive independent clean passes, 0
+Critical/Major/Minor on round 5). Extends ADR-0114's "Phase 6 — shared event
+and metric contract" section; it does not modify, reinterpret, or reopen
+ADR-0113, ADR-0114, ADR-0115 or ADR-0116. **Additive only:** every existing
+caller of `metrics.py`, `monitors.py` and `vocab.py` keeps its exact current
+behaviour, with the one deliberate correction named under "Behaviour change"
+below. Nothing here is read, planned, or executed against real market data.
+
+**Base.** Written on the Gate 1/2 lane
+(`claude/phase1-recovery-seven-gates-ao4zdj`), which is where ADR-0113 through
+ADR-0116 live; `main` still tops out at ADR-0112. This entry is appended after
+ADR-0116, the highest existing number.
+
+### Inventory — what already exists (read, not guessed)
+
+Read this session: `dskit/production/README.md`, `CLAUDE.md`, `metrics.py`
+(877 lines), `monitors.py` (4,215 lines), `vocab.py` (663 lines),
+`tests/production/test_purity.py`, `test_monitors.py`,
+`children/intraday_equities/{README,CLAUDE,AGENTS}.md` and
+`intraday_equities/__init__.py`.
+
+- **`metrics.py` already owns:** `Metrics` (declare/record/snapshot/flush),
+  the three handle classes `Counter`/`Gauge`/`Histogram` (`inc`/`set`/
+  `observe`), `Reading` + `readings()`, `series_key`/`series_labels`, the
+  `MetricSink` exporter ABC and `METRIC_SINK_KINDS`, the reserved-value drop
+  rule, `DEFAULT_LABELS_MAX_CARDINALITY`, and the refusal of `Decimal` and
+  non-finite values. It declares **no metric of its own beyond its two
+  self-counters** — every name comes from `vocab.METRIC_LABEL_VALUES`.
+- **`vocab.METRIC_LABEL_VALUES` holds thirteen names:** `ticks_total`,
+  `tick_seconds`, `decisions_total`, `proposals_total`, `submits_total`,
+  `refusals_total`, `alert_sink_failures_total`, `metric_sink_failures_total`,
+  `alerts_suppressed_total`, `monitor_verdicts_total`, `recon_breaks_total`,
+  `ledger_append_seconds`, `metrics_label_cardinality_dropped_total`.
+- **`monitors.py` already owns eighteen registered kinds** in four families:
+  operational (`staleness`, `decision_rate`, `coverage`, `latency`,
+  `refusals`), stream/drift (`page_hinkley`, `tracking_signal`, `ddm`,
+  `adwin`, `psi`, `ks`, `jensen_shannon`, `linf`), outcome (`calibration`,
+  `brier`, `skill`, `prediction_bias`) and parity (`parity`), plus the
+  `Reference`/`Chunker`/`Threshold` strategy registries and the
+  `check_scoring`/`mean_score`/`dm_test`/`expected_calibration_error`
+  reducers. `OperationalMonitor`'s hooks are `_FIELDS`, `_value`, `_reduce`.
+- **There is no event schema anywhere in the package.** `ledger.SCHEMA_VERSION`
+  versions the ledger ENVELOPE (`prev_hash`, `recorded_at_ms`, …), not the
+  BODY a decision records; a search for `event_version`/`EVENT_` over
+  `dskit/production/` returns nothing.
+- **There is no event-field adapter seam.** The plan's phrase "equity
+  event-field adapters" has no generic counterpart to subclass today.
+
+Two facts from the inventory constrain everything below, and are stated
+because they decide what may become a metric at all:
+
+1. **Money can never be a metric.** `metrics._check_value` refuses `Decimal`
+   by design ("a `Decimal` in a counter is money that took a wrong turn"),
+   which is the existing money rule and needed no change. But at the time
+   this ADR was first drafted, `vocab.MONEY_FIELDS` named only `nav` among
+   the catalogue's portfolio/capital amounts, and nothing on the event path
+   called the existing float-refusal rule (`base.reject_money_floats`)
+   against an event body at all — so `EventCatalogue.validate` accepted a
+   plain `float` under `cash`, `starting_cash`, `settled_external_flow`,
+   `buying_power`, `gross_exposure`, `net_exposure`, `realized_pnl`,
+   `unrealized_pnl`, `net_pnl`, `fees` and `peak` with no refusal (a
+   skeptic review, 2026-09-10, proved this by construction). Both gaps are
+   now closed for that list, plus `drawdown` (a second skeptic pass,
+   2026-09-10, found it wrongly excluded — see the second correction
+   below): `MONEY_FIELDS` names every one of those fields, and
+   `EventCatalogue.validate` calls `reject_money_floats` against the body,
+   refusing a `float` under any of them at any depth — the same rule
+   `records.py` and `ledger.py` already enforce on their own payloads,
+   applied here for the first time. With both in place, the catalogue's
+   portfolio/capital amounts are **event/ledger/report fields and never
+   metric series**, enforced rather than merely intended.
+2. **Symbol and lead can never be a metric label.** ADR-0114 Phase 6 and plan
+   §6 both say so, and `_declared_labels` has no rule that enforces it today.
+
+### Gaps this ADR closes
+
+- The versioned event schema itself does not exist (the whole of Phase 6's
+  first sentence).
+- `monitor_verdicts_total`'s `monitor` label declares only **nine** of the
+  eighteen registered monitor kinds, so `ddm`, `adwin`, `jensen_shannon`,
+  `linf`, `calibration`, `brier`, `skill`, `prediction_bias` and `parity`
+  verdicts currently export as the reserved value `other` and silently
+  increment `metrics_label_cardinality_dropped_total`. Pre-existing; found by
+  diffing `MONITOR_KINDS.kinds()` against the table.
+- Catalogue readings named by plan §6 that have no metric name and no
+  reducer: replay-versus-paper divergence by divergence class, retries,
+  dead-man heartbeat age, data stale age, feature completeness, reference
+  completeness, label coverage, fill rate, turnover, holding time,
+  decision-to-submit and decision-to-fill latency, and MIO solve latency.
+- The catalogue's data category has no reducer: `Coverage` measures ABSTAINING
+  LEGS, not input completeness, so "expected/received/missing/late" has no
+  monitor.
+
+### Decision
+
+**A. `dskit/production/vocab.py` (data only — the module holds no code).**
+
+- `EVENT_SCHEMA_VERSION = 1` — the version every emitted event body stamps.
+- `EVENT_CATEGORIES` — the eight of plan §6, in the plan's own order:
+  `("identity", "data", "model", "gates", "mio", "execution", "portfolio",
+  "operations")`.
+- `EVENT_FIELDS` — `{category: (field, …)}`: a snake_case rendering of every
+  field the plan's §6 list names, complete — nothing added, nothing removed,
+  nothing merged — but not verbatim. **Nine items** are renamed onto a
+  domain-neutral or materially shortened token — more than a mechanical
+  snake_case rendering of the same words — not four as an earlier draft of
+  this entry claimed (a skeptic review, 2026-09-10, caught the
+  undercount): `bars` → `inputs` (tier 1 holds no domain word),
+  `cleared-but-unfunded candidates` → `unfunded_candidates`, `per-name
+  concentration` → `concentration`, `dead-man heartbeat` → `heartbeat_age`,
+  `time since last successful refit` → `refit_age` (a descriptive phrase
+  compressed to the same kind of `_age` token as `heartbeat_age`),
+  `weakest required slice` → `weakest_slice` (drops "required"),
+  `performance hold state` → `hold_state` (drops "performance"), `signal
+  decay over realized latency` → `signal_decay` (drops the
+  measurement-basis clause), and `replay-versus-paper divergence by
+  existing divergence class` → `divergences` (drops the comparison and the
+  classifying clause from the field name; the class survives elsewhere, as
+  `divergences_total`'s label dimension, not as part of the field name
+  itself). Every other apparent shortening in the catalogue (`R2OOS` →
+  `r2_oos`, `HFDR usage` → `hfdr_usage`, splitting a plan slash/list
+  phrase into one field per item — e.g. `baseline and model SSE` →
+  `baseline_sse`, `model_sse`; `cash/gross/cardinality/position
+  utilization` → the four `..._utilization` fields) is checked and is
+  ordinary snake_case rendering of the plan's own words, not a rename;
+  field counts per category match the plan exactly (108 fields, 8
+  categories). `symbol` and `lead` are `identity` fields, as the plan puts
+  them.
+- `UNBOUNDED_LABEL_FIELDS = ("symbol", "lead")` — the field names that may
+  never become a closed telemetry label.
+- `EVENT_READINGS` — `{metric name: (category, field, family)}`, the binding
+  from ONE catalogue field to ONE exported series, with the metric family
+  stated rather than inferred from the name. Thirteen entries; every one is
+  dimensionless or a duration, and no money field appears.
+- Thirteen new `METRIC_LABEL_VALUES` entries, every label value set reusing an
+  existing vocabulary: `divergences_total{class: DIVERGENCE_CLASSES}`,
+  `retries_total`, `heartbeat_age_seconds`, `stale_age_seconds`,
+  `feature_completeness_ratio`, `reference_completeness_ratio`,
+  `label_coverage_ratio`, `fill_ratio`, `turnover_ratio`, `holding_seconds`,
+  `decision_to_submit_seconds`, `decision_to_fill_seconds`, `solve_seconds`.
+  Widest new metric: 6 series (`divergences_total`); every other is
+  unlabelled.
+- `monitor_verdicts_total`'s `monitor` values become all nineteen registered
+  kind names. Cardinality 20 × 5 = 100, well under
+  `DEFAULT_LABELS_MAX_CARDINALITY`.
+
+The MIO utilisation ratios (`cash`, `gross`, `cardinality`, `position`) stay
+event and report values and get no metric: the plan names them as four
+separate readings, and folding four catalogue fields into one labelled series
+would be merging items the plan states apart. The catalogue keeps all four.
+
+**A naming rule this needs.** `metrics.py` fixes seconds and bytes as the base
+units, and `tests/production/test_metrics.py` refuses `_percent` and `_pct` as
+scaled restatements. A fraction of one is the third base unit and gets the
+third suffix, `_ratio`; the base-unit test admits it and rejects everything
+else exactly as before. That is why the five ratio readings above are spelled
+`..._ratio` while their catalogue fields keep the plan's own words.
+
+**B. `dskit/production/metrics.py`.**
+
+- `_Metric.record(value, **labels)` — one `@abstractmethod` on the private
+  handle base, implemented by `Counter.record` (delegates to `inc`),
+  `Gauge.record` (to `set`) and `Histogram.record` (to `observe`). It is the
+  polymorphic hook that lets a table-driven reducer write to any family
+  without asking which family it holds. `inc`/`set`/`observe` are untouched.
+- `class EventCatalogue` — the versioned schema as one value object.
+  `EventCatalogue()` (no params). Public surface: `version` (property, int),
+  `categories` (property, tuple), `fields(category)` → tuple,
+  `label_safe(field)` → bool, `validate(body)` → list of problems
+  (default-deny: an unknown category or an unknown field name is a problem, a
+  `float` under any `vocab.MONEY_FIELDS` name is a problem at any depth via
+  `base.reject_money_floats` — the same rule `records.py` and `ledger.py`
+  already enforce — and a missing category or field is not, because no
+  single event carries the whole catalogue), and `stamp(fields)` → the event
+  body with `schema_version` set. It reads `vocab` and declares nothing of
+  its own.
+- `class EventAdapter(ABC)` — the seam plan §5 calls "event-field adapters".
+  `cls(params=None)` with default-deny over `_PARAMS + ("notes",)` through the
+  shared `reject_unknown_params`, exactly as `MetricSink` does. One
+  `@abstractmethod`, `fields(record)` → `{category: {field: value}}`; one
+  concrete method, `event(record)`, which calls `fields`, validates the result
+  through its `EventCatalogue` and returns the stamped body — so replay and
+  paper production emit the SAME body by construction, from one adapter behind
+  two feeds. **No registry is created:** no document key selects an event
+  adapter, and `dskit/production/CLAUDE.md` is explicit that a registry no
+  document selects is a §4.3 family that should not exist.
+- `class EventReadings` — the generic reducer. `EventReadings(metrics,
+  catalogue=None)` declares exactly the `EVENT_READINGS` metrics on the given
+  `Metrics` registry at construction; `record(event)` walks the bindings and,
+  for each catalogue field the event carries, calls `handle.record`. A metric
+  with a declared label reads its field as `{label value: number}`; one
+  without reads a bare number. It records and nothing else: no threshold, no
+  verdict, no alert.
+- `__all__` gains `EventAdapter`, `EventCatalogue`, `EventReadings`.
+- `_declared_labels` gains one refusal: a label name in
+  `vocab.UNBOUNDED_LABEL_FIELDS` refuses at declaration.
+
+**C. `dskit/production/monitors.py`.**
+
+- `class Completeness(OperationalMonitor)`, registered as `"completeness"` —
+  `_FIELDS = ("expected_inputs", "received_inputs")`, `_value` the received
+  fraction (`None` when either is null or `expected_inputs` is zero, so a
+  quiet tick is skipped rather than scored 0/0), `_reduce` the window's
+  minimum — the safety question, the same shape `Staleness` uses with `max`.
+  It carries no new knob: the window, threshold, response and `min_n` are the
+  document's, exactly as for every other monitor. **This ADR sets no
+  threshold**; a threshold is a document value and §11 item 7 governs the
+  performance-monitor ones.
+- `__all__` gains `Completeness`; `MONITOR_KINDS` goes from eighteen kinds to
+  nineteen.
+
+**D. `children/intraday_equities/intraday_equities/metrics.py` (new, tier 3).**
+
+- `class EquityEventAdapter(EventAdapter)` — the child's only mapping from its
+  own record fields to catalogue fields, written down once as the class
+  attribute `FIELD_MAP` (`{this project's field: (category, catalogue
+  field)}`). It supplies `symbol` and `lead` into the `identity` category
+  (where full per-name detail belongs), maps the child's bar counts onto the
+  generic `expected_inputs`/`received_inputs`/`missing_inputs`/`late_inputs`
+  data fields, and carries the domain digests. It owns no schema, no
+  validation and no hashing — `EventAdapter.event` does all three. A record
+  key the table does not map is not a reading and never reaches the body.
+- `class SignalDecay` plus `BASELINE_LEAD` — the domain metric plan §6 names
+  by example, "signal decay over realized latency" / "signal decay by lead".
+  `profile(scores)` returns `{lead: retained fraction of the baseline lead's
+  score}` over exactly the leads given, refusing an undeclared lead, a
+  non-finite score, and an absent or zero baseline (a profile without its
+  baseline is a row of `1.0`s, which reads as "no decay" — the one answer a
+  missing measurement must never give). Per-lead detail is returned as DATA
+  for the ledger/report artifacts; it is never handed to a metric label.
+- Registered in `intraday_equities/__init__.py` per the import-is-registration
+  rule; child README/CLAUDE/AGENTS trees updated.
+
+**E. Tests (new files named here per plan §10's requirement).**
+
+`tests/production/test_metrics.py` and `tests/production/test_monitors.py`
+extended in place; `children/intraday_equities/tests/test_metrics.py` is
+**new**.
+
+### Implemented now versus explicitly deferred
+
+**Implemented now — the value is recorded:** the whole §6 catalogue as
+`EVENT_FIELDS`, stamped and validated on every emitted body by
+`EventAdapter.event`, at full per-symbol/per-lead fidelity, destined for
+ledger and report artifacts. Plus the safe aggregates above as exportable
+metric series, and one new completeness reducer.
+
+**Explicitly deferred — named, not built:**
+
+- **§11 item 7 (WARN/HOLD thresholds, minimum counts, windows, the
+  warn-versus-hold boundary).** Nothing here compares a recorded value to a
+  bound. `Completeness` inherits the document-supplied threshold every monitor
+  has; this ADR proposes no numeric value for one anywhere.
+- **§11 item 10 (reporting/alerting beyond the catalogue).** No alert rule, no
+  report section, no `alerts.py` or `report.py` change.
+- **Emission wiring.** `loop.py`, `leg.py`, `executor.py`, `ledger.py` and
+  `report.py` are the modules that would CALL `EventAdapter.event` and
+  `EventReadings.record` on a real tick. They are outside Gate 6's file
+  ownership (ADR-0114 assigns disjoint files per gate) and outside this
+  session's scope; the seam is built and tested here, the call sites land with
+  Phase 5's replay work. This ADR claims a contract, not an end-to-end run.
+- **Money as telemetry.** Never, per the existing `Decimal` rule; the
+  portfolio/capital amounts live in the event body and the report.
+- **MIO solver internals** beyond `solve_seconds`: `dskit.production` owns no
+  solver, and `EquityKellyMIO`'s own evidence is already ADR-0111's. The
+  utilisation ratios, the solver status, the objective and the binding
+  constraints are catalogue fields and report values.
+
+### Behaviour change (the one, stated plainly)
+
+Widening `monitor_verdicts_total`'s `monitor` label from nine names to every
+registered kind means the drift/outcome/parity monitors' verdicts stop landing
+on the reserved value `other` and stop incrementing
+`metrics_label_cardinality_dropped_total`. That is a correction of a
+mis-declared table, and it is the only observable difference to an existing
+caller. Adding `Completeness` moves `MONITOR_KINDS.kinds()` from eighteen
+members to nineteen, which the existing pinning test in
+`tests/production/test_monitors.py` asserts by count; that test is updated to
+nineteen. `test_metrics.py`'s base-unit assertion admits `_ratio` beside
+`_seconds` and `_bytes`. No existing monitor, metric, handle or sink changes
+shape, and no shipped metric name, label name or label value is removed or
+renamed.
+
+**Correction (2026-09-10, post skeptic review).** This ADR originally
+asserted the money-safety claim in the inventory above as already true; a
+skeptic review proved it false — `MONEY_FIELDS` named only `nav` among the
+portfolio/capital fields, and nothing on the event path ever called the
+existing float-refusal rule against an event body. The fix, landed in this
+same change: `MONEY_FIELDS` gained `cash`, `starting_cash`,
+`settled_external_flow`, `buying_power`, `gross_exposure`, `net_exposure`,
+`realized_pnl`, `unrealized_pnl`, `net_pnl`, `fees` and `peak`, and
+`EventCatalogue.validate` now calls `base.reject_money_floats` against every
+event body. This is a SECOND behaviour change beyond the one above: because
+`MONEY_FIELDS` is read wherever `reject_money_floats` already runs
+(`records.py`, `ledger.py`), a `float` under any of those eleven names now
+refuses in a record or ledger body too, wherever it previously did not —
+the correct outcome, since every one of them is a currency amount, but a
+real widening of what those two already-shipped refusals catch.
+
+**Second correction (2026-09-10, second skeptic review).** The first
+correction still left `drawdown` excluded, with a comment misclassifying
+it as a dimensionless ratio like `twr`/`mwr`/`concentration`/
+`risk_cap_utilization`. It is not: `records.ValuePoint.drawdown` is typed
+`Decimal` (cumulative minus the running peak — "never positive"), and
+`Accounting.drawdown()` returns a `Fraction` that `PaperAccounting._drawdown`
+wraps in `decimal_of(...)`, the same currency treatment as `peak`, its
+computed pair. Fixed: `MONEY_FIELDS` now also names `drawdown`. This
+narrows, but does not remove, the honest caveat here — the money-safety
+gap is closed for `MONEY_FIELDS`'s current membership and this same
+pattern happening again to `twr`/`mwr`/`concentration`/
+`risk_cap_utilization` was checked and rejected (each has no Decimal-typed
+precedent), not proven structurally impossible for a future field. A
+pinning test against `records.py`'s own Decimal-typed field names was
+considered and not added: those names (`realised`, `unrealised`,
+`cumulative`, `external`, …) are deliberately renamed at the event/vocab
+boundary (`realized_pnl`, `unrealized_pnl`, `net_pnl`,
+`settled_external_flow`, …), so a name-for-name pin would either misfire
+on every renamed field or require a mapping table — a redesign, not a
+small addition.
+
+### Scope
+
+Files: `docs/architecture/decision-log.md`,
+`dskit/production/{vocab.py,metrics.py,monitors.py,README.md,CLAUDE.md,AGENTS.md}`,
+`tests/production/{test_metrics.py,test_monitors.py}`,
+`children/intraday_equities/intraday_equities/{metrics.py,__init__.py}`,
+`children/intraday_equities/tests/test_metrics.py`, and the child's
+`README.md`/`CLAUDE.md`/`AGENTS.md` trees. No config document is added or
+modified. No market-data read, HPO, refit, replay execution, threshold, alert
+rule or real-money configuration is authorised. `docs/decisioning/path.csv` is
+not touched.
+
+### Consequences
+
+Replay and paper production have one versioned body to emit and one adapter
+seam to emit it through, so "the same versioned event bodies into the same
+ledger contract" (plan §3) becomes checkable rather than aspirational. Every
+catalogue value is recorded from the moment an adapter exists, with no
+threshold anywhere, so §11 item 7 can be ruled later without re-opening this
+contract. `EVENT_SCHEMA_VERSION` is the handle a future field addition turns:
+a field added to `EVENT_FIELDS` is a schema change and must move the version.
+
+---
+
+## ADR-0119 — Generic run attestation and content-derived multi-manifest identity (extends ADR-0116)
+
+**Status:** accepted (2026-09-10; owner accepted after three sequential
+independent skeptic rounds — round 1 found a real Major [node records
+weren't tied to the run's bound document identity, letting a forged
+directory pass three individually-correct checks ANDed together], fixed by
+`node_output_for_document`; rounds 2 and 3 were two consecutive independent
+clean passes, 0 Critical/Major on both, round 3's one trivial documentation
+note folded in above).
+
+**Context.** ADR-0116 left `final_model.FinalRefit` fail-closed because "the
+current driver owns neither immutable completed-run provenance nor
+content-derived identities for materialized refit rows." This entry builds
+those two missing generic, domain-blind driver capabilities so a future,
+separately authorized `FinalRefit` implementation can eventually verify real
+evidence instead of trusting a path. It does not wire `FinalRefit` to
+anything and does not lift ADR-0116's refusal.
+
+### Inventory — what already exists (read, not guessed)
+
+Read this session: `dskit/pipeline/driver.py` (2,930 lines) in full,
+`dskit/pipeline/node.py`'s `JsonArtifact`, `dskit/pipeline/document.py`'s
+`PipelineDocument.hash`/`to_obj`/`from_obj`, `dskit/pipeline/base.py`'s
+`config_hash`/`_strip_notes`/`_strip_non_identity`, and
+`tests/pipeline/test_driver.py`.
+
+- **`JsonArtifact` (`node.py`) / `resolve_json_artifact` (`driver.py`)**:
+  a node opts one output into durable storage; `_persist_json_artifacts`
+  writes it as canonical, content-addressed bytes at
+  `artifacts/json/<sha256>.json` and replaces the output with a
+  `{path, sha256, bytes, media_type}` manifest. `resolve_json_artifact`
+  independently re-verifies the manifest's shape, its path against the
+  digest it claims, the file's byte count, and the file's digest, before
+  decoding — a single manifest's own internal binding is already checked.
+  There is no existing function that combines MULTIPLE manifests into one
+  identity; each is verified alone.
+- **`_write_node_records`**: one JSON record per node at
+  `nodes/<NN>-<key>.json`, carrying `node`, `uses`, `role`, `status`
+  (`"ok"`/`"halted"`/`"error"`/`"not_run"`), `seconds`, and `outputs`
+  (`_summarize`d, except a `JsonArtifact` manifest, which is recognized by
+  `_is_json_artifact_manifest` and passed through in full). This is where
+  "did this node complete" already lives, read as plain JSON off disk by
+  filename — nothing hashes or chains these records to one another or to
+  `resolved.json`, so a record file swapped for a different node's record
+  (or edited in place) is not detected by anything today. Building that
+  chain is NOT this ADR's job (see Non-goals); this ADR only reads the
+  field honestly and fails closed on anything that does not parse or does
+  not match the node key asked for.
+- **`result.json`**: written unconditionally by `_record_run`, which
+  every `run_document` call reaches once a run dir exists (`_execute_plan`
+  catches every per-node exception into a recorded `"error"` state rather
+  than propagating) — so a run that crashed mid-execution still leaves a
+  `result.json` naming `state`. It carries `name`, `asof`, `document_hash`,
+  `run_hash`, `state` (`"ran"`/`"halted"`/`"error"`), `exit_code`,
+  `halted_at`, `node_states`, `prev_run`.
+- **`resolved.json`**: written by `_resolve_run` BEFORE any node executes,
+  carrying `document_hash` (`document.hash`, computed once at RESOLVE) and
+  `run_hash` (`document_hash` plus the sources' data fingerprints); later
+  amended in place by `_record_run` with `prev_bindings`. Nothing today
+  re-derives `document_hash` from `config.json`'s own bytes to check that
+  the two agree — a caller can only read the stored field and trust it.
+- **`config.json`**: `document.to_obj()`, written once at RESOLVE.
+  `PipelineDocument.from_obj(obj)` (`document.py`) rebuilds a document from
+  exactly this shape, and `.hash` (`config_hash(self,
+  exclude=DOC_NON_IDENTITY_SECTIONS)`, `base.py`) recomputes the identity
+  hash from a document's own `to_obj()` — both pre-existing and reused
+  here unchanged, never reimplemented.
+- **`carry.json`**: run-over-run state a next run binds against via
+  `$prev`; a manifest survives inside it as an ordinary JSON-legal dict
+  (`_carryable` neither special-cases nor rejects the shape), so it names
+  what a run carried forward but binds no identity of its own beyond what
+  the manifest itself already carries.
+
+### The gap, precisely
+
+Nothing today lets a caller holding a run directory and a claimed document
+identity hash (1) attest the run completed end to end without re-deriving
+that from `result.json`'s raw shape by hand, (2) attest one named node
+completed without locating and parsing its record file by hand, (3) confirm
+`resolved.json`'s claimed `document_hash` is not merely a stored field but
+one `config.json`'s own bytes actually reproduce under the pinned hash
+recipe, or (4) compute one identity over a NAMED SET of JSON-artifact row
+manifests that changes when the underlying row CONTENT changes, not only
+when a manifest's path string does (path and content already move together
+under `resolve_json_artifact`'s own checks, but nothing combines several
+verified contents into one combined identity at all).
+
+### Decision
+
+Add to `dskit/pipeline/driver.py` — extending the existing module, which
+already owns `resolve_json_artifact`, `_canonical_hash`, and the RECORD-phase
+writers this reads back; a sibling module would duplicate the hash recipe and
+run-dir layout knowledge that already lives here privately (per root
+CLAUDE.md's "a tier-2 pack never restates tier-1 truth", the tier-1
+mirror of that rule: within one tier, don't restate a private recipe
+either):
+
+```python
+class RunAttestation:
+    """Read-only, fail-closed evidence reader over one run directory."""
+
+    def __init__(self, run_dir):
+        ...
+
+    def completed(self) -> bool:
+        """Whether the run reached RECORD with state == "ran"."""
+
+    def node_completed(self, node_key) -> bool:
+        """Whether ``node_key``'s own record shows status == "ok"."""
+
+    def binds_document_identity(self, document_hash) -> bool:
+        """Whether resolved.json AND config.json both independently
+        reproduce ``document_hash`` under the pinned identity recipe."""
+
+
+def content_identity(run_dir, manifests) -> str:
+    """sha256 over the VERIFIED, DECODED content of named JSON artifacts."""
+```
+
+Exact semantics:
+
+- **`RunAttestation(run_dir)`** — a plain constructor, no params tuple (it
+  reads a run directory, it does not accept knobs a document could set —
+  default-deny params apply to `Node` subclasses, not a read-only evidence
+  reader with a fixed contract). Every method below is FAIL-CLOSED: a
+  missing file, a file that is not valid JSON, or JSON of the wrong shape
+  returns `False` — it never raises, because a caller checking evidence
+  before trusting a run must not have "run I cannot read" look different
+  from "run that did not happen" only by exception type.
+- **`completed()`** — `True` iff `result.json` exists, parses to a JSON
+  object, and its `state` field equals exactly `"ran"`. `"halted"`,
+  `"error"`, a missing file, or a malformed one are all `False`.
+- **`node_completed(node_key)`** — locates `nodes/<NN>-<node_key>.json` by
+  suffix match (the ordinal prefix is plan-order, not known to a caller
+  outside the run), and returns `True` iff exactly one such file exists,
+  parses to a JSON object, its own `"node"` field equals `node_key` (a
+  swapped or misnamed file refuses rather than being read as if it were
+  the one asked for), and its `"status"` field equals exactly `"ok"`.
+  Zero or more-than-one matching file, a parse failure, a node-field
+  mismatch, or any other status all return `False`.
+- **`binds_document_identity(document_hash)`** — `True` iff ALL of: (1)
+  `resolved.json` exists, parses, and its `document_hash` field equals the
+  argument exactly; (2) `config.json` exists and parses to a JSON object;
+  (3) `PipelineDocument.from_obj` rebuilds a document from that object
+  without raising, and that document's own `.hash` property — recomputed
+  independently, never read off any stored field — ALSO equals the
+  argument. Both checks must hold: a `resolved.json` hand-edited to claim a
+  hash its own `config.json` does not actually produce is refused, and a
+  `config.json` substituted for a different document is refused even when
+  `resolved.json`'s stored claim was left untouched. Any parse, shape, or
+  reconstruction failure returns `False`.
+- **`content_identity(run_dir, manifests)`** — a module-level function, not
+  a method, because it is a pure rule with one owner and no state of its
+  own (root CLAUDE.md: "a module-level function is for a pure rule with ONE
+  owner that several classes import"), parallel to `resolve_json_artifact`
+  beside it. `manifests` is a `{name: manifest}` mapping; every manifest is
+  resolved (verified AND decoded) through the existing
+  `resolve_json_artifact` — never trusted by its own claimed `sha256` or
+  `path` alone — and the function returns `_canonical_hash({name: content,
+  ...})` over the DECODED CONTENT, keyed by name and sorted (the existing
+  canonical-JSON sha256 recipe this module already owns). Because the hash
+  is over verified content and not over the manifests' own path or digest
+  strings, two manifests naming byte-identical content under different
+  names produce different identities (the name is part of what was
+  materialized), and a manifest whose recorded digest does not match its
+  on-disk bytes cannot silently pass through into the combined identity —
+  `resolve_json_artifact` raises first. Raises `ValueError` (propagated,
+  never swallowed) for any manifest that fails verification: an identity
+  computed over content nobody could verify is not evidence, so this
+  function fails LOUD rather than closed, matching
+  `resolve_json_artifact`'s own contract exactly.
+
+Both `RunAttestation` and `content_identity` join `driver.__all__`.
+
+**Additive only.** No existing caller of `driver.py` changes behavior:
+`RunAttestation` and `content_identity` only READ state the current
+`run_document`/`_record_run`/`_persist_json_artifacts` pipeline already
+writes, unmodified. No document grammar, node lifecycle, hash recipe, or
+run-dir layout changes.
+
+**Non-goals (explicitly out of scope for this entry).** Node-record
+tamper-evidence beyond today's per-file JSON shape (e.g., hash-chaining
+`nodes/*.json` to `resolved.json` so a record cannot be silently
+regenerated after the run completed) is a real gap the inventory surfaced
+but the kickoff's own Scope section does not name it as one of the four
+capabilities to build, so it is not built here — a future ADR may propose
+it. Reconstructing the pinned 24-candidate inventory from ledger evidence
+is `kinds_search.py`'s existing job, reused, not rebuilt. Wiring
+`FinalRefit` to any of this, the ten labelled input wires, and the
+refit-identity's own source/cache/window-derived hash are ADR-0116's
+named future work and stay unauthorized here.
+
+### Scope
+
+Files: `docs/architecture/decision-log.md` (this entry),
+`dskit/pipeline/driver.py` (`RunAttestation`, `content_identity`, two new
+`__all__` entries), `dskit/pipeline/{README.md,CLAUDE.md}` (directory tree
+and API notes), `tests/pipeline/test_driver.py` (new tests). No config
+document is added or modified. No market data, HPO, or refit execution.
+`final_model.py` and everything under `children/` are untouched.
+`docs/decisioning/path.csv` is not touched.
+
+### Consequences
+
+A future, separately authorized `FinalRefit` implementation gains two of
+the primitives ADR-0116's conditional path names — real run/node
+completion attestation and a content-derived identity over a named set of
+materialized row artifacts — while ADR-0116's fail-closed refusal is
+untouched and this entry authorizes no change to it. The remaining pieces
+that same conditional path names (the ten labelled wires, the
+source/cache/window-derived refit identity, and wiring `FinalRefit` itself)
+remain explicitly unbuilt and unauthorized, for a later deliverable.
+
+### Follow-up (2026-09-10): closing the composed-guarantee gap an independent skeptic found
+
+**Finding.** An independent skeptic review of the entry above proved a real
+Major defect: `binds_document_identity` and `node_completed` are each
+individually correct, but ADR-0116's own stated need is their COMPOSITION
+— "the manifest is genuinely the output of a node that completed... AND
+that run's result metadata binds the pinned document identity" — and that
+composition was forgeable. Proof: run document B for real (`run_dir_b`)
+and document A for real (`run_dir_a`); hand-edit `run_dir_b/resolved.json`'s
+`document_hash` to A's hash and copy A's genuine `config.json` over B's.
+The result: `completed()` → `True` (real), `node_completed('events')` →
+`True` (real, from B's execution), `binds_document_identity(A.hash)` →
+`True` (both file-level checks the original method makes now agree) — but
+every node record in that directory is entirely B's evidence, not A's. The
+"Non-goals" section above already disclosed the underlying mechanism gap
+("nothing hashes or chains these records to one another or to
+`resolved.json`"), but disclosure alone does not stop a caller from
+composing the three public methods naively and getting a false positive —
+exactly ADR-0116's named failure mode.
+
+**Decision.** Add `RunAttestation.node_output_for_document(node_key,
+document_hash)`, the atomic composed check ADR-0116 actually needs:
+`completed()` AND `binds_document_identity(document_hash)` AND `node_key`'s
+own record shows `status == "ok"` AND that SAME record carries
+`document_hash` itself. That last clause needs one small write-path
+change — the only write-path change in this follow-up: `_write_node_records`
+(`driver.py`) now stamps `"document_hash": document_hash` onto every node
+record, sourced from the exact same value (`resolved.payload
+["document_hash"]`, itself `document.hash`) that `resolved.json` already
+carries, at the moment the node actually ran — never re-derived from
+`resolved.json` or `config.json` on a later read, which is exactly what the
+skeptic's forgery substitutes. `node_completed` was refactored to share a
+new private `_node_record` lookup with the new method (one owner for the
+suffix-match + shape + node-field check, per root CLAUDE.md's duplication
+rule); its own observable behavior is unchanged and its existing tests
+pass unmodified.
+
+**What this closes.** Reproducing the skeptic's exact proof against the
+new method: `node_output_for_document('events', A.hash)` on the forged
+`run_dir_b` now correctly returns `False`, because `events`'s record
+carries B's own `document_hash` (stamped when B ran), not A's. This holds
+for ANY variant of the same attack shape — substituting `config.json` and/or
+hand-editing `resolved.json` for a directory whose node records were
+produced by a different document's real execution — because the record's
+`document_hash` was written honestly at execution time and is read back
+unmodified, never re-derived from the files the forgery edits.
+
+**What this does NOT close (honest residual gap, unchanged from the
+original Non-goals).** Nothing hash-chains `nodes/*.json` records to one
+another or to `resolved.json`. An attacker with write access to a run
+directory who edits a node record's `document_hash` field DIRECTLY
+(rather than substituting `config.json`/`resolved.json` around an
+untouched, genuine record) is undetectable by `node_output_for_document`
+or by any method in this class — a hand-edited `document_hash` reads
+exactly like a genuine one. Closing that fully needs a write-time
+hash-chain or signature binding every node record to `resolved.json` (and
+to its neighbors, so one record cannot be regenerated alone after the
+run), which touches the RECORD-phase write path more deeply than this
+narrow, single-field fix and is deliberately left for a future ADR should
+a consumer's threat model require defending against direct record
+tampering rather than directory-level substitution. `RunAttestation`'s own
+docstring now carries this same warning against naive composition of its
+three original methods, in the class and method docstrings, so a future
+reader of the code — not only of this log — sees it.
+
+`node_output_for_document` also makes no claim whatsoever about a node
+record's `outputs` field — it attests that the named node completed for
+the claimed document, nothing about the content of what it produced. A
+caller who separately trusts `content_identity` over that node's
+`JsonArtifact` outputs is verifying a DIFFERENT thing (that a given
+manifest's bytes are unmodified and content-addressed correctly), and
+composing the two does not itself attest that the specific manifest being
+hashed is the one the attested node actually emitted — the same
+write-access threat model above applies to `outputs` exactly as it does to
+`document_hash`. A future consumer needing that combined guarantee needs
+the same write-time chaining named above, not a read-side composition of
+today's two independent checks.
+
+**Scope of this follow-up.** Files: `docs/architecture/decision-log.md`
+(this entry), `dskit/pipeline/driver.py` (`_write_node_records` gains a
+`document_hash` parameter and field; `RunAttestation` gains `_node_record`
+and `node_output_for_document`; `node_completed` refactored onto the
+shared helper with unchanged behavior), `dskit/pipeline/{README.md,
+CLAUDE.md}` (updated API notes and the composition warning),
+`tests/pipeline/test_driver.py` (the regression test reproducing the
+skeptic's exact attack, plus direct tests of the new method),
+`tests/pipeline/test_kinds_search.py` (one pinning test's expected node-
+record key set widened to include `document_hash`, per root CLAUDE.md's
+"a pinning test that omits a knob is worse than none"). `FinalRefit` and
+everything under `children/` are untouched, same as the parent entry.
+## ADR-0120 — Phase 5 replay policies: mixed-horizon overlap and a config-driven next-bar-open fill (Gate 5)
+
+**Status:** accepted (2026-09-11; owner authorized merge after cycle-7 method and architecture reviews reported 0 Critical and 0 Major). Extends ADR-0114 Phase 5. This accepts the reviewed development replay contract, not deployment.
+
+**Context.** Gate 5a (`cursor/gate5a-replay-conformance-1656`, A18857)
+proved by test that existing `ServeLoop` + `ReplayFeed` + `ReplayClock` +
+`PaperExecutor` + the ledger already drive deterministic historical ticks.
+No generic production hook is missing; children must not subclass
+`ServeLoop`. ADR-0114 still blocked `replay.py`'s equity policies on §11
+items 5 and 6. The owner ruled those items on 2026-09-10 (kickoff
+`docs/plans/2026-09-10-gate5-replay-kickoff.md`): mixed confirmed caps
+across all horizons, not h1-only; next-bar-open market fill as a
+config-driven policy, nothing hardcoded. Precise overlap semantics were
+explicitly not decided. Real deployment-eligible caps do not exist yet
+(§11 item 4 / Gate 4).
+
+**Decision (owner-ruled shape, 2026-09-10).**
+
+1. Replay handles overlapping multi-horizon decisions generically.
+   Exercise only against development-only/synthetic caps with
+   `deployment_eligible=false`. Never claim a real mixed-cap result
+   (plan §8).
+2. Fill model: decide at bar close `t` on data known by `t`; fill at bar
+   `t+1`'s open. Reuse `nodes_capital.SchwabCostModel` for spread/fees.
+   No partial fills or rejections (full simulated fill). A halted symbol
+   is skipped, not queued. Forced exit at horizon expiry using that
+   bar's open. Every fill-model value is a named field of
+   `configs/fill-policy.json` (sibling of Gate 3's `capital-policy.json`,
+   which this phase does not own), pinned by digest, never a Python
+   literal.
+
+**Decision (proposed overlap/expiry rule — needs owner acceptance).**
+Grounded in plan §3's one decision graph and one account:
+
+- Lot identity is `(symbol, lead)`. Different leads on the same name MAY
+  be open concurrently (the mixed-cap ladder). A new decision for an
+  already-open `(symbol, lead)` is refused; it does not override.
+- Same-tick order: forced exits whose expiry bar is this fill bar, then
+  new entries. An h1 expiry and an h10 hold never compete; an h1
+  re-entry on the same tick sees a vacant lot after the exit.
+- Expiry bar = fill bar + lead (hold `lead` bars after the next-bar-open
+  entry; exit at that bar's open). Literal `t+h` from the decision bar
+  would make h=1 fill and exit on the same open; this proposal rejects
+  that reading. Config field `forced_exit_horizon_basis` pins `"fill"`.
+- Halt: skip every action for that symbol on that tick (entries and
+  forced exits); do not queue. A due lot (`expiry_index <= index`)
+  that was halt-skipped fires on the next non-halt bar at that bar's
+  open. Still proposed.
+
+Closed vocabularies the config must spell (code refuses any other
+member; the shipped `fill-policy.json` carries the ruled/proposed
+values): `order_type=market`, `partial_fills=false`, `rejections=none`,
+`halt_handling=skip|queue`, `forced_exit_at=horizon_expiry`,
+`forced_exit_horizon_basis=fill`, `same_lead_overlap=refuse|override`,
+`different_lead_overlap=concurrent`, `same_tick_order=exits_then_entries`,
+`mark_source=fill_bar_open`, `paper_fill_rule=touch`, `paper_fees=none`.
+`fill_suffix_bars` and `fill_suffix_weekdays` size the developmental
+fill-only trailing window (session bars and UTC weekdays after
+`evidence_end`; weekend prints refuse). Changing either moves fill-policy
+identity.
+
+**Files.** `intraday_equities/replay.py` (new, tier 3) calls
+`compose.bundles_for(..., tape=BarTape)` then overlays tape cadence
+(`Cadence` subclass; `CADENCE_KINDS` has no tape-times member and Gate 5a
+forbids adding one), the equity decider, `ReleaseIdSource` (this is not
+a recorded series; `BarTape.id_allocations` is empty), and a
+`PaperVenue` around a `PaperExecutor` on compose's clock. The document
+stays `rung=shadow` because `fsync: none` is shadow-only; compose's
+`ShadowExecutor` is not the fill venue. Fills go through `LegPipeline`.
+It does not subclass `ServeLoop` and adds no `dskit.production` hook
+(Gate 5a). `HorizonBook` is the equity `(symbol, lead)` identity overlay
+production positions do not key. `configs/fill-policy.json` (new).
+`configs/run-development-replay.json` (new) — P16 evidence ending
+2025-10-16, `deployment_eligible=false`, fill-policy digest pin. No
+`dskit.production` hook. `path.csv` untouched.
+
+**Consequences.** Owner-ruled 2026-09-10 shape: synthetic tests of the
+fill/overlap book may run against development-only caps with
+`deployment_eligible=false` under this accepted development-only contract. That is
+not deployment authorization. Changing a
+fill-model value is a config edit (identity moves). A different overlap
+ruling changes `_VOCAB` and the book, not a silent code default. Phase 5
+items 3–5 (crash/restart ledger identity, post-fill solvency, observable
+unfunded candidates on a live graph) remain unbuilt.

@@ -1,0 +1,17 @@
+{
+  "name": "intraday-equities-development-replay",
+  "notes": "Developmental replay of already-spent P16 evidence ending 2025-10-16. Forced deployment_eligible=false: this document exists to find code and accounting defects, not to estimate returns (plan §6 Phase 7 item 5, §8). Caps are development-only/synthetic; real confirmed caps do not exist yet. Fill-model knobs live in fill-policy.json (digest pinned below) so a policy change is a config edit. No market-data read is authorized merely because this file exists — tests drive the mechanism with synthetic bars.",
+  "pipeline": {
+    "replay": {
+      "uses": "intraday_equities.replay:DevelopmentReplay",
+      "params": {
+        "deployment_eligible": false,
+        "evidence_end": "2025-10-16",
+        "fill_policy": "configs/fill-policy.json",
+        "fill_policy_sha256": "696b1bcff532e0daeb3396c574021f87fc6cd6cda070827fc016231ffddc6b46",
+        "caps": "development-only"
+      },
+      "notes": "ServeLoop + ReplayFeed + shared ReplayClock + JsonlLedger. Equity policy (next-bar-open, (symbol, lead) lots, Schwab costs) is injected; LegPipeline submits. Trailing fill-only bars are sized by fill-policy fill_suffix_bars / fill_suffix_weekdays (session bars and weekdays after evidence_end, weekends refuse). New decisions at or after evidence_end refuse. Overlap/expiry remains ADR-0120 accepted. Not deployment evidence."
+    }
+  }
+}

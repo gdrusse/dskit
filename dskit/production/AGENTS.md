@@ -36,7 +36,16 @@ points one way; the pipeline receives a `ReleaseReader` through
 - **`__all__` plus the `_` prefix is the API contract.** No underscore name is
   exported and no module reaches another module's private name.
 - **Closed sets live only in `vocab.py`.** Nothing anywhere else defines one.
-  A test enumerates them.
+  A test enumerates them. `EVENT_FIELDS` is one of them: the event catalogue
+  is DATA, and adding a field to it is a schema change that moves
+  `EVENT_SCHEMA_VERSION`.
+- **Two things can never become telemetry** (ADR-0118). Money: every
+  `MONEY_FIELDS` name is a `Decimal` and `metrics._check_value` refuses one,
+  so cash, NAV, PnL and fees are event, ledger and report values only.
+  `symbol` and `lead`: their value sets are as wide as the document, so
+  `_declared_labels` refuses either as a label NAME. Both belong in the
+  event body at full fidelity; an exporter gets the bounded aggregates of
+  `vocab.EVENT_READINGS`.
 - **No `if kind ==` / `if mode ==` / `if rung ==` chains.** A registry entry, a
   strategy object or a table keyed by the declared value. `compose.py` is the
   ONLY module that may read a rung, and an AST test enforces it.
@@ -128,6 +137,12 @@ two and no document ever selects a report format, so a registry would add a
 §4.3 family nothing selects. `report.DIVERGENCE_FIELDS` is a third TABLE, keyed
 on the §6 body FIELD name, with `nondeterminism` as the deliberate default —
 an unclassifiable difference must never be absorbed into a named class.
+`metrics.EventAdapter` is a fourth seam with NO registry (ADR-0118): no
+document key selects an event adapter, so a registry would add a §4.3
+family nothing selects. A layer subclasses it, supplies `fields(record)`,
+and gets `EventCatalogue`'s stamping and default-deny validation; the same
+class behind a replay feed and a paper feed is what makes the two bodies
+identical by construction rather than by review.
 `bundles.ReplayTape` is the seam a replay hands the composition root: DATA
 (instants, feed results, id allocations) and never an object, so which objects
 a replay runs stays `compose.py`'s decision.
@@ -161,6 +176,7 @@ dskit/production/
 ├── policy.py control.py resilience.py  the matrices; the inbox; retry/limits/Signer
 ├── ledger.py state.py reconcile.py     the chain; the sole fold; the venue truth
 ├── monitors.py metrics.py alerts.py health.py   what watches, counts, pages, probes
+│                                    (metrics.py also holds the event contract)
 ├── ids.py bundles.py compose.py leg.py loop.py  ids; the bundles; the root; steps; ticks
 ├── readiness.py outcomes.py report.py  GO/NO-GO; outcomes; value and TWR/MWR
 ├── libs/ (parquet.py sqlite.py         tier-2 packs: RunReference; SqliteLedger;

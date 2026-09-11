@@ -23,10 +23,22 @@ those counts, and three rules keep it from becoming a hazard of its own:
   ``accounting.py`` never read a metric.
 
 Naming is Prometheus-shaped: ``snake_case``, ``_total`` on counters and
-only on counters, seconds and bytes as the base units. ``flush(at_ms,
-tick_id)`` appends one JSON object per tick to ``<log_dir>/metrics.jsonl``
-and is told the instant by the loop — nothing here reads a clock; a flush
-that cannot write is counted in ``flush_failures`` and swallowed.
+only on counters, seconds, bytes and ``_ratio`` as the base units (a
+fraction of one is the dimensionless base; ``_percent`` is a scaled
+restatement of it and is refused). ``flush(at_ms, tick_id)`` appends one
+JSON object per tick to ``<log_dir>/metrics.jsonl`` and is told the instant
+by the loop — nothing here reads a clock; a flush that cannot write is
+counted in ``flush_failures`` and swallowed.
+
+Phase 6 adds the EVENT contract on top of the registry (ADR-0118).
+:class:`EventCatalogue` is the versioned schema a replay and a paper run
+both record into; :class:`EventAdapter` is the one seam a layer subclasses
+to map its own records onto it; :class:`EventReadings` reduces one event
+into the bounded series an exporter may carry. Two limits are structural,
+not stylistic: money never becomes a series (a ``Decimal`` refuses, and
+every ``MONEY_FIELDS`` name is one), and ``symbol``/``lead`` never become a
+label (``vocab.UNBOUNDED_LABEL_FIELDS`` refuses them at declaration). Full
+per-name detail belongs in the event body and the artifacts built from it.
 """
 
 import copy
@@ -39,7 +51,7 @@ from pathlib import Path
 
 from dskit.pipeline.node import check_int_param, class_ref, reject_unknown_params
 from dskit.production import vocab
-from dskit.production.base import ProductionError, Registry, pin_members
+from dskit.production.base import ProductionError, Registry, pin_members, reject_money_floats
 from dskit.production.redact import get_logger
 
 __all__ = [
@@ -47,6 +59,9 @@ __all__ = [
     "Counter",
     "DEFAULT_BUCKETS",
     "DEFAULT_LABELS_MAX_CARDINALITY",
+    "EventAdapter",
+    "EventCatalogue",
+    "EventReadings",
     "Gauge",
     "Histogram",
     "INF_BUCKET",
@@ -101,6 +116,9 @@ _DROPPED = "metrics_label_cardinality_dropped_total"
 _SINK_FAILURES = "metric_sink_failures_total"
 #: The one params key every seam site may carry beside its knobs.
 _NOTES = ("notes",)
+#: The key an event body stamps its schema version under — the one name in
+#: a body that is not a category (ADR-0118).
+_SCHEMA_VERSION = "schema_version"
 #: The bound the registry's OWN two counters are declared under. They come
 #: from the closed table, so their cardinality is fixed by that table and
 #: cannot grow; an operator's ``labels_max_cardinality`` is about the
@@ -260,6 +278,11 @@ def _declared_labels(problems, handle_cls, name, labels, max_cardinality):
         return ()
     for label in sorted(set(wanted) - set(declared)):
         problems.append(f"{name}: label {label!r} is not declared for this metric")
+    for label in sorted(set(wanted) & set(vocab.UNBOUNDED_LABEL_FIELDS)):
+        problems.append(
+            f"{name}: {label!r} names an unbounded field and may never be a metric "
+            "label — its full detail belongs in the ledger and report artifacts"
+        )
     if len(set(wanted)) != len(wanted):
         problems.append(f"{name}: duplicate label names in {wanted!r}")
     if set(wanted) != set(declared):
@@ -336,6 +359,29 @@ class _Metric(ABC):
     def _zero(self):
         """Return a fresh series value."""
 
+    @abstractmethod
+    def record(self, value, **labels):
+        """Take one reading, however this family takes one.
+
+        The three families record differently — a counter adds, a gauge
+        replaces, a histogram bins — so a caller that already knows which
+        it holds says ``inc``, ``set`` or ``observe``. A caller driven by
+        a TABLE (``vocab.EVENT_READINGS``) does not, and this is the verb
+        it says instead of asking.
+
+        Parameters
+        ----------
+        value : int or float
+            The reading, in the metric's base unit.
+        **labels
+            One value per declared label name.
+
+        Returns
+        -------
+        None
+            The reading was taken by this family's own rule.
+        """
+
     def _shape(self):
         """Return what a redeclaration must match exactly."""
         return (type(self), self._labels, self._buckets)
@@ -406,6 +452,23 @@ class Counter(_Metric):
             raise ProductionError([f"{self._name}: a counter never decreases, got {n!r}"])
         self._series[self._series_for(labels)] += n
 
+    def record(self, value, **labels):
+        """Add ``value`` — a counter takes a reading by incrementing.
+
+        Parameters
+        ----------
+        value : int or float
+            The increment, ``>= 0``.
+        **labels
+            One value per declared label name.
+
+        Returns
+        -------
+        None
+            As for :meth:`inc`, which this is.
+        """
+        self.inc(value, **labels)
+
 
 class Gauge(_Metric):
     """A gauge: ``set(value, **labels)`` holds the last value it was given.
@@ -443,6 +506,23 @@ class Gauge(_Metric):
         """
         _check_value(value)
         self._series[self._series_for(labels)] = value
+
+    def record(self, value, **labels):
+        """Set the series to ``value`` — a gauge takes a reading by replacing.
+
+        Parameters
+        ----------
+        value : int or float
+            The reading.
+        **labels
+            One value per declared label name.
+
+        Returns
+        -------
+        None
+            As for :meth:`set`, which this is.
+        """
+        self.set(value, **labels)
 
 
 class Histogram(_Metric):
@@ -496,6 +576,356 @@ class Histogram(_Metric):
             if value <= bound:
                 counts[str(bound)] += 1
         counts[INF_BUCKET] += 1
+
+    def record(self, value, **labels):
+        """Observe ``value`` — a histogram takes a reading by binning it.
+
+        Parameters
+        ----------
+        value : int or float
+            The observation, in the metric's base unit.
+        **labels
+            One value per declared label name.
+
+        Returns
+        -------
+        None
+            As for :meth:`observe`, which this is.
+        """
+        self.observe(value, **labels)
+
+
+class EventCatalogue:
+    """The versioned event schema: which categories, which fields, what is safe.
+
+    Replay and paper production differ in feed, clock, executor and
+    account source and in nothing else, so the body they record has to be
+    ONE shape or a divergence between them is unfalsifiable. This is that
+    shape, read from :data:`~dskit.production.vocab.EVENT_FIELDS` and
+    stamped with :data:`~dskit.production.vocab.EVENT_SCHEMA_VERSION`.
+
+    Validation is default-deny on NAMES and permissive on ABSENCE: an
+    unknown category or field is a problem, because it is a value nobody
+    can read back, while a missing one is not, because no single event
+    reaches every phase — a tick that never got to a solver has no ``mio``
+    reading, and demanding one would make the schema lie. It is also
+    default-deny on MONEY: a ``float`` under any
+    :data:`~dskit.production.vocab.MONEY_FIELDS` name is a problem at any
+    depth of the body, via the same
+    :func:`~dskit.production.base.reject_money_floats` rule ``records.py``
+    and ``ledger.py`` already enforce — an adapter that hands a money field
+    a float is caught here, not waved through as an event value nobody
+    checked.
+
+    Parameters
+    ----------
+    None
+        The catalogue is the vocabulary's; there is nothing to configure.
+
+    Examples
+    --------
+    ::
+
+        catalogue = EventCatalogue()
+        catalogue.validate({"data": {"stale_age": 4.0}})   # []
+        catalogue.label_safe("symbol")   # False
+    """
+
+    def __init__(self):
+        self._fields = {
+            category: frozenset(fields) for category, fields in vocab.EVENT_FIELDS.items()
+        }
+
+    @property
+    def version(self):
+        """Return the schema version a stamped body carries."""
+        return vocab.EVENT_SCHEMA_VERSION
+
+    @property
+    def categories(self):
+        """Return the catalogue's categories, in catalogue order."""
+        return vocab.EVENT_CATEGORIES
+
+    def fields(self, category):
+        """Return the field names one category declares.
+
+        Parameters
+        ----------
+        category : str
+            A :data:`~dskit.production.vocab.EVENT_CATEGORIES` member.
+
+        Returns
+        -------
+        tuple of str
+            The declared fields, in catalogue order.
+
+        Raises
+        ------
+        ProductionError
+            If ``category`` is not a declared category.
+        """
+        if category not in self._fields:
+            raise ProductionError(
+                [f"{category!r} is not an event category — {list(self.categories)}"]
+            )
+        return vocab.EVENT_FIELDS[category]
+
+    def label_safe(self, field):
+        """Return whether a catalogue field may become a telemetry label.
+
+        Parameters
+        ----------
+        field : str
+            A catalogue field name.
+
+        Returns
+        -------
+        bool
+            ``False`` for a
+            :data:`~dskit.production.vocab.UNBOUNDED_LABEL_FIELDS` member,
+            whose value set no vocabulary bounds; ``True`` otherwise.
+        """
+        return field not in vocab.UNBOUNDED_LABEL_FIELDS
+
+    def validate(self, body):
+        """Return every problem with a candidate body; empty when it fits.
+
+        Parameters
+        ----------
+        body : dict
+            ``{category: {field: value}}``; ``schema_version`` is allowed
+            beside the categories so a stamped body validates unchanged.
+
+        Returns
+        -------
+        list of str
+            One problem per unknown category, non-mapping category, unknown
+            field, and float under a :data:`~dskit.production.vocab.MONEY_FIELDS`
+            name — the same money rule ``records.py`` and ``ledger.py``
+            enforce on every other payload, applied here so an event body
+            cannot smuggle money past the catalogue as a float.
+        """
+        problems = []
+        if not isinstance(body, dict):
+            return [f"an event body is a mapping, got {type(body).__name__}"]
+        for category, fields in body.items():
+            if category == _SCHEMA_VERSION:
+                continue
+            if category not in self._fields:
+                problems.append(f"{category!r} is not an event category")
+                continue
+            if not isinstance(fields, dict):
+                problems.append(f"{category}: a category holds a mapping of fields")
+                continue
+            for field in sorted(set(fields) - self._fields[category]):
+                problems.append(f"{category}.{field} is not a catalogue field")
+        reject_money_floats(problems, body, "event")
+        return problems
+
+    def stamp(self, fields):
+        """Return the event body ``fields`` becomes once it names its version.
+
+        Parameters
+        ----------
+        fields : dict
+            ``{category: {field: value}}``.
+
+        Returns
+        -------
+        dict
+            A new mapping carrying ``schema_version`` beside the
+            categories; the caller's mapping is not modified.
+        """
+        return {_SCHEMA_VERSION: self.version, **fields}
+
+
+class EventAdapter(ABC):
+    """The seam that turns one layer's own records into a catalogue event.
+
+    A domain knows what a bar, a lead and a cap are; the catalogue knows
+    what an event is. This is where the two meet, and it is deliberately
+    the ONLY place: a subclass supplies :meth:`fields` and gets stamping
+    and validation for free, so an adapter cannot invent a field, skip the
+    version, or emit a body a reader has no schema for.
+
+    Replay and paper production share one adapter instance or two of the
+    same class; either way the body is identical by construction rather
+    than by review, which is what makes a replay-versus-paper divergence a
+    real finding.
+
+    ``cls(params)`` construction, default-deny over the subclass's
+    ``_PARAMS`` plus ``notes``.
+
+    Parameters
+    ----------
+    params : dict, optional
+        The adapter's own knobs; ``None`` means ``{}``.
+
+    Examples
+    --------
+    An adapter over a record that already speaks the catalogue's names::
+
+        class PassThrough(EventAdapter):
+            def fields(self, record):
+                return {"data": {"stale_age": record["age_s"]}}
+
+        adapter = PassThrough({})
+        adapter.event({"age_s": 4.0})
+        # -> {'schema_version': 1, 'data': {'stale_age': 4.0}}
+    """
+
+    _PARAMS = ()
+
+    def __init__(self, params=None):
+        params = dict(params or {})
+        problems = self.validate_params(params)
+        if problems:
+            raise ProductionError(problems)
+        self._catalogue = EventCatalogue()
+        self._configure(params)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Return every problem with ``params``; empty when it is acceptable.
+
+        Parameters
+        ----------
+        params : dict
+            The params block as written by the caller.
+
+        Returns
+        -------
+        list of str
+            One problem per unknown key; subclasses extend the list.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + _NOTES)
+        return problems
+
+    def _configure(self, params):
+        """Read validated params; the base has none to read."""
+
+    @property
+    def catalogue(self):
+        """Return the catalogue this adapter validates and stamps against."""
+        return self._catalogue
+
+    @abstractmethod
+    def fields(self, record):
+        """Return the catalogue fields one of this layer's records carries.
+
+        Parameters
+        ----------
+        record : object
+            Whatever the layer records — a §6 body, a solver result, a
+            fill. The subclass knows; the catalogue does not.
+
+        Returns
+        -------
+        dict
+            ``{category: {field: value}}``, using catalogue names only.
+            A category the record says nothing about is left out.
+        """
+
+    def event(self, record):
+        """Return the stamped, validated event body for one record.
+
+        Parameters
+        ----------
+        record : object
+            As :meth:`fields` takes it.
+
+        Returns
+        -------
+        dict
+            The body, carrying ``schema_version`` and the categories the
+            adapter supplied.
+
+        Raises
+        ------
+        ProductionError
+            If :meth:`fields` returned a category or a field the catalogue
+            does not declare — a value nobody could read back — or a
+            ``float`` under a :data:`~dskit.production.vocab.MONEY_FIELDS`
+            name — money that took a wrong turn on its way into the event.
+        """
+        fields = self.fields(record)
+        problems = self._catalogue.validate(fields)
+        if problems:
+            raise ProductionError(problems)
+        return self._catalogue.stamp(fields)
+
+
+class EventReadings:
+    """The generic reducer: a catalogue event in, the safe aggregates out.
+
+    :data:`~dskit.production.vocab.EVENT_READINGS` binds each exported
+    series to exactly ONE catalogue field, so a reading has a single owner
+    on both sides and this class holds no rule of its own — it declares
+    what the table says and records what the event carries. The full
+    per-symbol, per-lead detail stays in the event body and in the ledger
+    and report artifacts built from it; an exporter sees only what the
+    table bounds.
+
+    It records and stops there. No threshold is compared, no verdict is
+    reached and no alert is raised: those wait on a ruling this class must
+    not pre-empt.
+
+    Parameters
+    ----------
+    metrics : Metrics
+        The registry to declare on; every binding is declared at
+        construction, so a name the table carries and no event ever fills
+        is visibly zero rather than absent.
+    catalogue : EventCatalogue or None, optional
+        The schema to read fields through; ``None`` builds one.
+
+    Examples
+    --------
+    ::
+
+        registry = Metrics()
+        readings = EventReadings(registry)
+        readings.record({"schema_version": 1, "data": {"stale_age": 12.0}})
+        registry.snapshot()["stale_age_seconds"]   # {'': 12.0}
+    """
+
+    def __init__(self, metrics, catalogue=None):
+        self._catalogue = catalogue if catalogue is not None else EventCatalogue()
+        self._bound = {}
+        for name, (category, field, family) in vocab.EVENT_READINGS.items():
+            declare = _DECLARE[family]
+            labels = tuple(vocab.METRIC_LABEL_VALUES[name])
+            self._bound[name] = (category, field, declare(metrics, name, labels))
+
+    def record(self, event):
+        """Record every bound field the event carries; ignore what it omits.
+
+        Parameters
+        ----------
+        event : dict
+            A body as :meth:`EventAdapter.event` builds one.
+
+        Returns
+        -------
+        None
+            Each present field was recorded through its metric's own
+            family verb; an absent one contributes nothing, because a
+            phase that did not happen is not a reading of zero.
+        """
+        for category, field, handle in self._bound.values():
+            fields = event.get(category)
+            if isinstance(fields, dict) and field in fields:
+                self._apply(handle, fields[field])
+
+    def _apply(self, handle, value):
+        """Record one field: a mapping per label value, or a bare number."""
+        if not handle.labels:
+            handle.record(value)
+            return
+        label = handle.labels[0]
+        for label_value, number in value.items():
+            handle.record(number, **{label: label_value})
 
 
 class MetricSink(ABC):
@@ -863,6 +1293,16 @@ class Metrics:
             return False
         return True
 
+
+#: Which :class:`Metrics` verb declares which family — a table keyed by the
+#: declared family, so :class:`EventReadings` walks
+#: :data:`~dskit.production.vocab.EVENT_READINGS` without ever asking what
+#: it is holding. Defined here because it names ``Metrics`` itself.
+_DECLARE = {
+    _COUNTER: Metrics.counter,
+    _GAUGE: Metrics.gauge,
+    _HISTOGRAM: Metrics.histogram,
+}
 
 #: The metric-exporter family's open doorway (§4.3, §5.11.3): a registered
 #: name or a ``pkg.module:Class`` reference, both subclasses of

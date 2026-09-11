@@ -48,7 +48,7 @@ machine with neither installed.
 from __future__ import annotations
 
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
-from dskit.pipeline.node import check_int_param, register_node_kind
+from dskit.pipeline.node import ConfigError, check_int_param, register_node_kind, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
 __all__ = [
@@ -56,6 +56,7 @@ __all__ = [
     "DEFAULT_LOT_SIZE",
     "EquityKellyMIO",
     "NODE_KINDS",
+    "SchwabCostModel",
 ]
 
 #: What every surviving bundle row must carry — Path A18256's fail-closed
@@ -99,6 +100,76 @@ _WEALTH_ENVELOPE_FLOOR_FRAC = 0.05
 def _ceil_div(numerator, denominator):
     """Give ``ceil(numerator / denominator)`` for non-negative floats, as an int."""
     return int(-(-numerator // denominator))
+
+
+class SchwabCostModel:
+    """Per-share Schwab half-spread, TAF, and Section-31 costs.
+
+    The one owner of the formula ``EquityKellyMIO`` already uses: buy
+    pays half-spread; sell pays half-spread plus uncapped TAF plus
+    Section 31. ``min_price`` is the routing floor, not a fee input.
+
+    Parameters
+    ----------
+    params : dict
+        ``spread_bps`` (finite >= 0), ``taf_per_share`` (finite >= 0),
+        ``sec31_bps`` (finite >= 0), ``min_price`` (finite > 0). All
+        required; ``notes`` is allowed.
+
+    Examples
+    --------
+    Per-share buy and sell costs at $11::
+
+        costs = SchwabCostModel({
+            "spread_bps": 2.2, "taf_per_share": 0.000195,
+            "sec31_bps": 0.0206, "min_price": 5.0,
+        })
+        costs.buy_per_share(11.0)  # 0.00242
+        costs.sell_per_share(11.0)  # 0.00242 + 0.000195 + 0.0002266
+    """
+
+    _PARAMS = ("spread_bps", "taf_per_share", "sec31_bps", "min_price")
+
+    def __init__(self, params):
+        problems = self.validate_params(params)
+        if problems:
+            raise ConfigError(problems)
+        self._knobs = {name: float(params[name]) for name in self._PARAMS}
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        for name in ("spread_bps", "taf_per_share", "sec31_bps"):
+            if name not in params:
+                problems.append(f"{name} is required")
+            elif not number_ok(params[name]) or params[name] < 0.0:
+                problems.append(f"{name} must be a finite number >= 0, got {params[name]!r}")
+        if "min_price" not in params:
+            problems.append("min_price is required")
+        elif not number_ok(params["min_price"]) or params["min_price"] <= 0.0:
+            problems.append(
+                f"min_price must be a finite number > 0, got {params['min_price']!r}"
+            )
+        return problems
+
+    def buy_per_share(self, price):
+        """Half-spread in quote currency per share at ``price``."""
+        return self._knobs["spread_bps"] * 1e-4 * float(price)
+
+    def sell_per_share(self, price):
+        """Half-spread plus uncapped TAF plus Section 31, per share."""
+        price = float(price)
+        return (
+            self.buy_per_share(price)
+            + self._knobs["taf_per_share"]
+            + self._knobs["sec31_bps"] * 1e-4 * price
+        )
+
+    def below_floor(self, price):
+        """Return whether ``price`` is under the routing floor."""
+        return float(price) < self._knobs["min_price"]
 
 
 def _bundle_problems(bundle):
@@ -467,21 +538,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 pi_upper_i = float(row["pi_upper"])
                 x_max = max_notional
                 scenarios = [float(v) for v in row["scenarios"]]
-            spread = float(self.params["spread_bps"]) * 1e-4 * price
-            # taf_per_share UNCAPPED, deliberately: the cap applies per
-            # ORDER, and this coefficient prices a per-SHARE rate the base
-            # applies to whatever quantity the solver picks — sizing the
-            # rate against current holdings (a "cap / held" trick) was
-            # tried and rejected here because it undercharges any sell
-            # smaller than the full held size (e.g. trimming 5 shares off
-            # a 1,000-share position priced the fee as if 1,000 shares
-            # were selling). Charging the uncapped rate is conservative —
-            # it can only OVERSTATE the true fee on a single large sell
-            # that would hit the per-order cap, never understate it, so it
-            # never overstates achievable edge.
-            taf_rate = float(self.params["taf_per_share"])
-            sec31 = float(self.params["sec31_bps"]) * 1e-4 * price
-            sell_cost = spread + taf_rate + sec31
+            # Uncapped TAF lives in SchwabCostModel (see that class and the
+            # module docstring) — never a size-referenced rate.
+            costs = SchwabCostModel({name: self.params[name] for name in SchwabCostModel._PARAMS})
+            spread = costs.buy_per_share(price)
+            sell_cost = costs.sell_per_share(price)
             rows[name] = {
                 "price": price,
                 "held": h,

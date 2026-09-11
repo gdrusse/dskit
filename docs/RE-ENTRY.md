@@ -1,5 +1,12 @@
 # Re-entry
 
+## Current wrap: reviewed Gates 6, 2, and 5 closed to main (2026-09-11)
+
+Owner-approved integration closes Gate 6 as ADR-0118, Gate 2 deliverable 5 as ADR-0119, and the Gate 5 development replay contract as ADR-0120. Retained final skeptic reviews are 0 Critical and 0 Major for every lane; Gate 5 acceptance does not authorize deployment.
+
+Focused integration verification: 1,381 root tests passed; 147 child tests passed with the same five documented configuration-policy baseline failures; Ruff and diff checks are clean. Action A18885 records the acceptance and collision-safe journal renumbering. The four contained remote branches are purged after the main push; Gate 4 remains outstanding.
+
+
 ## Current wrap: Gate 3 cash-flow mechanism merged and remote cleanup complete (2026-09-11)
 
 Branch: `main` at `85ab628`. Gate 3 adds the tier-2 recurring

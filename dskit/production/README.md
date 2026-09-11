@@ -224,8 +224,8 @@ torn-tail recovery, or the same chain in one `sqlite` file; `SeriesState`, the
 sole fold; checkpoints; the durable control inbox; reconciliation and
 authenticated adoption.
 
-**Observation** — eighteen monitors: operational (`staleness`,
-`decision_rate`, `coverage`, `latency`, `refusals`), stream
+**Observation** — nineteen monitors: operational (`staleness`,
+`decision_rate`, `coverage`, `completeness`, `latency`, `refusals`), stream
 (`page_hinkley`, `tracking_signal`, `ddm`, `adwin`), distribution (`psi`,
 `ks`, `jensen_shannon`, `linf`), outcome (`calibration`, `brier`, `skill`,
 `prediction_bias`) and `parity`, over reference populations `leading` /
@@ -233,6 +233,24 @@ authenticated adoption.
 silences, acks and an escalation ladder; a health state machine with probes
 and an external dead-man heartbeat (file, url or systemd); a metrics registry
 with closed label sets.
+
+**The event contract** — one versioned body, so a replay and a paper run
+record the same thing or the difference is a real finding. `EventCatalogue`
+is the schema: eight categories (identity, data, model, gates, mio,
+execution, portfolio, operations), the fields each declares, and the
+version a body stamps. `EventAdapter` is the seam your layer subclasses —
+supply `fields(record)` and stamping, validation and the refusal of a field
+the catalogue never declared come with it. `EventReadings` reduces one
+event into the low-cardinality series an exporter may carry, bound one
+metric to one catalogue field by `vocab.EVENT_READINGS`.
+
+Two limits are structural rather than stylistic. **Money is never a
+series**: every `MONEY_FIELDS` name is a `Decimal` at the ledger boundary
+and the registry refuses a `Decimal`, so cash, NAV, PnL and fees live in
+the event body and the report. **`symbol` and `lead` are never a label**:
+their value sets are as wide as the document, so the registry refuses
+either as a label NAME and full per-name detail stays in the ledger and
+report artifacts.
 
 **Packs** (`libs/`, each naming its library only inside a method, so a
 document that declares none pays for none) — `exchange` materialises a
@@ -303,7 +321,8 @@ dskit/production/
 │                      StateView; PositionBook; Recovery
 ├── reconcile.py       Reconciler; breaks; adoption; LedgerHistory
 ├── monitors.py        Monitor ABC; reference/chunker/threshold strategies; families
-├── metrics.py         counter/gauge/histogram registry; closed labels; JSONL flush
+├── metrics.py         counter/gauge/histogram registry; closed labels; JSONL flush;
+│                      EventCatalogue/EventAdapter/EventReadings — the event contract
 ├── alerts.py          AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter; InhibitRule
 │                      (silences and acks are read from the fold, never a second store)
 ├── health.py          health state machine; probes; heartbeat (file/url/systemd, plus the

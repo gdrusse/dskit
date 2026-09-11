@@ -149,6 +149,7 @@ from dskit.production.monitors import (
     Brier,
     Calibration,
     Chunker,
+    Completeness,
     Constant,
     Count,
     Coverage,
@@ -199,6 +200,11 @@ KINDS = (
     "tracking_signal",
 )
 
+#: ADR-0118's addition to the operational family: the catalogue's data
+#: category (expected/received/missing/late) had no reducer, because
+#: `coverage` measures ABSTAINING LEGS and not input completeness.
+EVENT_CONTRACT_KINDS = ("completeness",)
+
 #: §5.10.1's four additions to the two phase-1 families — two change
 #: detectors on the stream family, two distances on the distribution one.
 PHASE_TWO_KINDS = (
@@ -224,7 +230,12 @@ PARITY_KINDS = ("parity",)
 #: parametrised over ALL of them: a phase-2 member that broke `min_n`, the
 #: partial-chunk rule or the state round-trip would be a monitor the loop
 #: cannot trust, exactly like a phase-1 one.
-ALL_KINDS = tuple(sorted(KINDS + PHASE_TWO_KINDS + OUTCOME_FAMILY_KINDS + PARITY_KINDS))
+ALL_KINDS = tuple(
+    sorted(
+        KINDS + PHASE_TWO_KINDS + OUTCOME_FAMILY_KINDS + PARITY_KINDS
+        + EVENT_CONTRACT_KINDS
+    )
+)
 
 #: §6's `monitor` record body. `monitor` is the owner's name for the
 #: instance; every other field comes off the `Verdict`.
@@ -265,6 +276,14 @@ def tick_record(
         "latency_ms": latency,
         "refusal_reason": refusal_reason,
     }
+
+
+def completeness_record(expected=10, received=10, tick_id="t-1"):
+    """A tick body carrying the catalogue's generic input counts."""
+    body = tick_record(tick_id=tick_id)
+    body["expected_inputs"] = expected
+    body["received_inputs"] = received
+    return body
 
 
 def leg(final="buy", **fields):
@@ -445,6 +464,8 @@ def kind_record(kind, i):
         return decision_record([leg(final="none")], tick_id="t-%d" % i)
     if kind == "latency":
         return tick_record(tick_id="t-%d" % i, latency_ms=10 + i)
+    if kind == "completeness":
+        return completeness_record(expected=10, received=10 - (i % 3))
     if kind == "refusals":
         return tick_record(tick_id="t-%d" % i, status="refused", refusal_reason="stale")
     return tick_record(
@@ -556,7 +577,7 @@ def test_the_registry_lists_exactly_the_eighteen_kinds_of_the_four_families():
     the two families phase 1 declared and could not: the registry is EXACTLY
     the nine plus the four plus the five, and nothing else."""
     assert MONITOR_KINDS.kinds() == ALL_KINDS
-    assert len(ALL_KINDS) == 18
+    assert len(ALL_KINDS) == 19
     for name, cls in (
         ("ddm", DDM),
         ("adwin", ADWIN),
@@ -624,7 +645,9 @@ def test_the_strategy_registries_refuse_an_unregistered_name():
 def test_the_families_are_is_a_hierarchies_under_monitor():
     for family in (OperationalMonitor, StreamMonitor, DistributionMonitor, OutcomeMonitor):
         assert issubclass(family, Monitor)
-    for cls in (Staleness, DecisionRate, Coverage, LatencyPercentiles, RefusalCount):
+    for cls in (
+        Staleness, DecisionRate, Coverage, Completeness, LatencyPercentiles, RefusalCount
+    ):
         assert issubclass(cls, OperationalMonitor)
     for cls in (PageHinkley, TrackingSignal, DDM, ADWIN):
         assert issubclass(cls, StreamMonitor)
@@ -3061,3 +3084,58 @@ def test_a_profile_refuses_an_unknown_key_on_the_way_back_in():
     obj["surprise"] = 1
     with pytest.raises(ProductionError):
         Profile.from_obj(obj)
+
+
+# ---------------------------------------------------------------------------
+# ADR-0118 — `completeness`, the data category's reducer
+# ---------------------------------------------------------------------------
+
+
+def test_completeness_is_the_received_fraction_and_takes_the_windows_worst():
+    """The catalogue's data category asks how much of what was expected
+    arrived; the SAFETY question over a window is the worst answer in it,
+    the same shape `staleness` takes with `max`."""
+    monitor = build("completeness", window=count(3), threshold=at_least(0.9), min_n=1)
+    feed(
+        monitor,
+        [
+            completeness_record(expected=10, received=10),
+            completeness_record(expected=10, received=8),
+            completeness_record(expected=4, received=4),
+        ],
+    )
+    assert monitor.verdict().statistic == pytest.approx(0.8)
+
+
+def test_completeness_measures_inputs_not_the_abstaining_legs_coverage_measures():
+    """`coverage` reads a leg's `final` side; this reads a tick's input
+    counts. A record carrying one is not an observation of the other."""
+    counts = completeness_record(expected=2, received=1)
+    assert not build("coverage", min_n=1).observe(counts)
+    assert build("completeness", min_n=1).observe(counts) is None
+    legs = decision_record([leg(final="none")])
+    assert feed(build("completeness", min_n=1), [legs]).verdict().status == "insufficient"
+
+
+def test_a_tick_expecting_nothing_is_skipped_rather_than_scored_zero_over_zero():
+    monitor = feed(
+        build("completeness", window=count(2), min_n=1),
+        [completeness_record(expected=0, received=0), completeness_record(10, 5)],
+    )
+    assert monitor.verdict().statistic == pytest.approx(0.5)
+    assert monitor.verdict().n_cur == 1
+
+
+def test_a_tick_missing_either_count_is_not_an_observation():
+    monitor = build("completeness", min_n=1)
+    monitor.observe(tick_record())
+    partial = tick_record()
+    partial["expected_inputs"] = 10
+    monitor.observe(partial)
+    assert monitor.verdict().status == "insufficient"
+
+
+def test_completeness_declares_no_knob_of_its_own():
+    """The window, the threshold, the response and `min_n` are the
+    document's; §11 item 7 rules the numbers, not this class."""
+    assert Completeness._PARAMS == OperationalMonitor._PARAMS
