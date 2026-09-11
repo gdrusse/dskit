@@ -150,13 +150,28 @@ register_transform_kind("regroup", _regroup_validator, _apply_regroup)
 
 
 def apply_stream_steps(records, features):
-    """Thread the record stream through every STREAM step of ``features``
-    in declared order. A class-reference step (``pkg.module:Attr``) is
-    imported and called with the stream-transform contract
-    ``target(records, params) -> iterable of records``; backend-owned
-    registered kinds (no ``apply``) are passed over — the backend
-    interprets those inside its own stages. ``features`` may be ``None``
-    (raw stream)."""
+    """Thread the record stream through every STREAM step of ``features``, in declared order.
+
+    A class-reference step (``pkg.module:Attr``) is imported and called
+    with the stream-transform contract ``target(records, params) ->
+    iterable of records``; backend-owned registered kinds (no ``apply``)
+    are passed over — the backend interprets those inside its own
+    stages. ``features`` may be ``None`` (raw stream).
+
+    Parameters
+    ----------
+    records : iterable
+        The record stream — :class:`~dskit.pipeline.records.MarketRecord`
+        (or dict) rows, in ascending ``asof_ms`` order.
+    features : FeatureConfig or None
+        The declared feature config whose STREAM steps to apply, in
+        order. ``None`` means the raw stream, unchanged.
+
+    Returns
+    -------
+    iterable
+        The transformed record stream, in the same record shape.
+    """
     if features is None:
         return records
     for step in features.steps:

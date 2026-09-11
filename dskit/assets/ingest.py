@@ -60,8 +60,7 @@ def _file_digest(path) -> str:
 
 
 def _is_artifact_path(value) -> bool:
-    """Node output ports holding paths INTO an artifacts dir are backed by
-    files the artifacts/ scan already registers — not outputs."""
+    """Node output ports holding paths INTO an artifacts dir are backed by files the artifacts/ scan already registers — not outputs."""
     return isinstance(value, str) and "artifacts" in value.split(os.sep)
 
 

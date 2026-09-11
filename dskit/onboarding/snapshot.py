@@ -116,10 +116,20 @@ def build_manifest(payload_dir, *, source, mode, acquired_at,
 
 
 def snapshot_hash(manifest) -> str:
-    """The snapshot's identity: canonical hash of its manifest.
+    """Return the snapshot's identity: canonical hash of its manifest.
 
     Because every payload file's sha256 is IN the manifest, this one
     digest covers every byte of the snapshot — Merkle-style.
+
+    Parameters
+    ----------
+    manifest : dict
+        The snapshot manifest, as built by :func:`build_manifest`.
+
+    Returns
+    -------
+    str
+        The manifest's canonical digest.
     """
     errors = []
     _check_dict(errors, "manifest", manifest)

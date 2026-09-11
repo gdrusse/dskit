@@ -168,8 +168,7 @@ class Lineage:
         return self._closure(version_id, upstream=False)
 
     def _closure(self, version_id, upstream) -> list:
-        """BFS over the edge list, rebuilt per call — an O(edges) scan,
-        priced for the tier-1 store's declared ~10^4 scale."""
+        """BFS over the edge list, rebuilt per call — an O(edges) scan, priced for the tier-1 store's declared ~10^4 scale."""
         self.registry.get(version_id)
         step = {}
         for e in self.edges():

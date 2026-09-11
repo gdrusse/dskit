@@ -85,12 +85,30 @@ _PENDING_STAMP = "pending"
 
 
 def find_active_source(registry, name) -> str:
-    """The version_id of the single ACTIVE ``source_config`` named ``name``.
+    """Return the version_id of the single ACTIVE ``source_config`` named ``name``.
 
     Aliases may have many versions (ADR-0009); the lifecycle
     disambiguates: exactly one must be ``active``. Zero means nothing to
     pull with; two or more means the operator has an unresolved config
     conflict — both are errors, never guesses.
+
+    Parameters
+    ----------
+    registry : Registry
+        The registry to search for ``source_config`` versions.
+    name : str
+        The ``source_config`` alias to resolve.
+
+    Returns
+    -------
+    str
+        The version_id of the single ACTIVE version.
+
+    Raises
+    ------
+    AssetError
+        If no ``source_config`` named ``name`` is ACTIVE, or if more than
+        one is.
     """
     errors = []
     _check_str(errors, "name", name)
