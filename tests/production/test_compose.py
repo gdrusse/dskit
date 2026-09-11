@@ -69,7 +69,11 @@ from dskit.production.compose import (
     outcome_join,
 )
 from dskit.production.control import CommandProcessor, ControlInbox
-from dskit.production.cashflows import DueCashFlow, RecurringCashFlowSchedule
+from dskit.production.cashflows import (
+    DueCashFlow,
+    RecurringCashFlowSchedule,
+    WithdrawalCashFlow,
+)
 from dskit.production.coordination import Lease, LeasePermit, ProcessLease
 from dskit.production.decider import Decider, IntentRows
 from dskit.production.document import ServeDocument
@@ -2204,6 +2208,42 @@ def test_a_bound_composer_authorizes_only_its_exact_derived_record(
         bundles[5].ledger.append(forged)
 
     assert bundles[5].state.snapshot().balances == {}
+
+
+def test_a_stateful_override_tuple_cannot_mint_replay_cash(
+    shadow_document, composer
+):
+    """Schedule construction seals overrides before replay authorizes them."""
+    timezone = ZoneInfo("UTC")
+    anchor = datetime(2031, 4, 9, 13, 17, tzinfo=timezone)
+
+    class StatefulOverrides(tuple):
+        def __new__(cls):
+            value = super().__new__(cls, ())
+            value.armed = False
+            return value
+
+        def __iter__(self):
+            if self.armed:
+                return iter((
+                    WithdrawalCashFlow("forged", anchor, Decimal("9999999")),
+                ))
+            return super().__iter__()
+
+    overrides = StatefulOverrides()
+    schedule = RecurringCashFlowSchedule(
+        "test-schedule", anchor, 13, "XYZ", Decimal("37"), timezone, overrides,
+    )
+    cash_flows = ReplayCashFlowComposer(schedule)
+    overrides.armed = True
+    bundles = composer.build(
+        shadow_document, tape=EmptyReplayTape(), cash_flow_composer=cash_flows
+    )
+
+    for record in cash_flows.due(anchor, anchor + timedelta(seconds=1)):
+        bundles[5].ledger.append(record)
+
+    assert bundles[5].state.snapshot().balances == {"XYZ": Decimal("37")}
 
 
 def test_a_schedule_subclass_cannot_mint_replay_cash():

@@ -428,7 +428,10 @@ class RecurringCashFlowSchedule:
             raise ValueError("interval_days must be a positive int")
         _identity(self.currency, "currency")
         _amount(self.amount, "amount", positive=True)
-        if not isinstance(self.overrides, tuple) or not all(
+        if not isinstance(self.overrides, tuple):
+            raise ValueError("overrides must be a tuple of approved concrete CashFlowOverride values")
+        object.__setattr__(self, "overrides", tuple(self.overrides))
+        if not all(
             type(override) in _APPROVED_OVERRIDE_TYPES
             for override in self.overrides
         ):
@@ -449,9 +452,8 @@ class RecurringCashFlowSchedule:
             target = override._target()
             if target is not None and not self._is_occurrence(target):
                 raise ValueError(f"override {override.override_id!r} targets no occurrence")
-            for flow in override._standalone(self.schedule_id, self.currency):
-                self._check_emitted(flow)
             override._validate(self)
+        self._standalone_flows()
 
     def materialize(self, start, end_exclusive):
         """Return declarations in the normalized half-open instant window."""
@@ -460,8 +462,7 @@ class RecurringCashFlowSchedule:
         if start_utc >= end_utc:
             raise ValueError("start must precede end_exclusive")
         flows = list(self._recurrences(end_utc))
-        for override in self.overrides:
-            flows.extend(override._standalone(self.schedule_id, self.currency))
+        flows.extend(self._standalone_flows())
         selected = [flow for flow in flows
                     if start_utc <= _utc(flow.effective_at, "effective_at") < end_utc]
         selected.sort(key=lambda flow: (_utc(flow.effective_at, "effective_at"), flow.flow_id))
@@ -491,9 +492,18 @@ class RecurringCashFlowSchedule:
                     break
                 due = override.apply(due)
             if due is not None:
-                self._check_emitted(due)
-                flows.append(due)
+                flows.append(self._check_emitted(due))
             index += 1
+        return tuple(flows)
+
+    def _standalone_flows(self):
+        """Return freshly validated, concrete standalone declarations."""
+        flows = []
+        for override in self.overrides:
+            flows.extend(
+                self._check_emitted(flow)
+                for flow in override._standalone(self.schedule_id, self.currency)
+            )
         return tuple(flows)
 
     def _occurrence(self, index):
@@ -518,8 +528,7 @@ class RecurringCashFlowSchedule:
         """Return ids this schedule can emit strictly before ``instant``."""
         end_utc = _utc(instant, "correction effective_at")
         flows = list(self._recurrences(end_utc))
-        for override in self.overrides:
-            flows.extend(override._standalone(self.schedule_id, self.currency))
+        flows.extend(self._standalone_flows())
         return frozenset(
             flow.flow_id
             for flow in flows
@@ -527,7 +536,17 @@ class RecurringCashFlowSchedule:
         )
 
     def _check_emitted(self, flow):
+        """Validate and seal one declaration emitted by an override."""
         if type(flow) is not DueCashFlow:
             raise ValueError(f"override emitted {flow!r}, not a concrete DueCashFlow")
+        flow = DueCashFlow(
+            flow.flow_id,
+            flow.effective_at,
+            flow.currency,
+            flow.amount,
+            flow.flow_kind,
+            flow.supersedes,
+        )
         if isinstance(flow.effective_at.tzinfo, ZoneInfo):
             _valid_local(flow.effective_at, flow.effective_at.tzinfo, "effective_at")
+        return flow
