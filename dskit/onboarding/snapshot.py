@@ -81,6 +81,11 @@ def build_manifest(payload_dir, *, source, mode, acquired_at,
     -------
     dict
         The manifest object; hash it with :func:`snapshot_hash`.
+
+    Raises
+    ------
+    AssetError
+        If any argument is malformed, or ``payload_dir`` does not exist.
     """
     errors = []
     _check_str(errors, "payload_dir", payload_dir)
@@ -200,7 +205,24 @@ def write_snapshot(root, staged_dir, manifest) -> tuple:
 
 
 def read_manifest(snapshot_dir) -> dict:
-    """Load and shape-check one snapshot's manifest.json."""
+    """Load and shape-check one snapshot's manifest.json.
+
+    Parameters
+    ----------
+    snapshot_dir : str
+        The snapshot directory holding ``manifest.json``.
+
+    Returns
+    -------
+    dict
+        The parsed manifest.
+
+    Raises
+    ------
+    AssetError
+        If ``snapshot_dir`` is malformed, the file is unreadable or not
+        valid JSON, or the manifest is not shape-valid.
+    """
     errors = []
     _check_str(errors, "snapshot_dir", snapshot_dir)
     _raise_if(errors)
@@ -227,10 +249,23 @@ def find_snapshot_dir(root, manifest_hash):
     re-hashing, which doubles as an integrity check. O(snapshots), priced
     for the tier-1 scale.
 
+    Parameters
+    ----------
+    root : OnboardingRoot
+        The onboarding root.
+    manifest_hash : str
+        The digest to search for, as :func:`snapshot_hash` would compute.
+
     Returns
     -------
     str or None
         The snapshot directory, or None if no manifest matches.
+
+    Raises
+    ------
+    AssetError
+        If ``root`` is not an OnboardingRoot, or ``manifest_hash`` is
+        not a non-empty string.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
@@ -261,6 +296,11 @@ def verify_snapshot(snapshot_dir) -> list:
     any open, because reading a FIFO would hang the trust gate), and
     content whose digest or size drifted — DVC-style tamper evidence for
     WORM storage.
+
+    Parameters
+    ----------
+    snapshot_dir : str
+        The snapshot directory to verify.
 
     Returns
     -------

@@ -149,6 +149,12 @@ class Connector(abc.ABC):
     ``spec`` is import-cheap; ``check`` may touch the network but moves
     no data; ``discover`` is cheap; heavy imports live INSIDE ``read``
     (the tier-2 rule, same as pipeline nodes).
+
+    Examples
+    --------
+    Abstract — subclass and implement the four verbs; see
+    :class:`~dskit.onboarding.libs.localfiles.LocalFilesConnector` for a
+    complete, minimal implementation.
     """
 
     @abc.abstractmethod
@@ -166,11 +172,25 @@ class Connector(abc.ABC):
 
     @abc.abstractmethod
     def check(self, config) -> None:
-        """Fail fast: can we connect with this config? Raise :class:`~dskit.assets.base.AssetError` on failure; move no data."""
+        """Fail fast on a config this connector cannot use.
+
+        Raise :class:`~dskit.assets.base.AssetError` on failure; move no
+        data.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`check_config`.
+        """
 
     @abc.abstractmethod
     def discover(self, config) -> list:
         """Return the streams this source offers.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`check_config`.
 
         Returns
         -------
