@@ -267,14 +267,36 @@ REMAINING, in the plan's risk order:
       as-is and are not.
       **27 of the original 57 drained; 30 remain**, each with 8+ D-rule
       findings and generally more classes needing full conversion — left
-      for a future pass. Note also: several drained files (`metrics.py`
-      is the clearest case) satisfy ruff's automated `D` check without
-      every public function gaining a full `Parameters`/`Returns` — this
-      matches the file's own pre-existing one-liner convention (and
-      precedent elsewhere in the repo, e.g. `driver.py`), but means
-      removing a file's ignore-list entry certifies ruff-compliance, not
-      necessarily the complete CLAUDE.md standard, for every function in
-      that file.
+      for a future pass.
+
+      **Correction (2026-09-11, third skeptic round):** the note above
+      about `metrics.py`-style files being ruff-clean without full
+      `Parameters`/`Returns` was found MAJOR, not acceptable — this
+      repo's own `pyproject.toml` PRE-STANDARD MODULES comment says
+      "clearing a large module... means converting the whole file," and
+      14 of the 27 drained files were only ruff-flagged-spot fixes,
+      missing 47 of 94 public functions' full sections and 14 private
+      helpers below the one-line floor. All of it is now actually done:
+      every one of the 27 files' public functions carries
+      `Parameters`/`Returns`/`Raises`(/`Yields`) where its signature and
+      body call for one, and every private helper has at least its
+      one-line floor — verified by an AST script over every touched
+      file, not by spot-checking (it parses each function, flags a
+      public one with args but no `Parameters`, or a return/yield value
+      with no `Returns`/`Yields`, or a private one with no docstring at
+      all; it now reports zero findings). Also fixed in the same round:
+      `Connector` (an ABC) gained an `Examples` note pointing to
+      `LocalFilesConnector` since it cannot be instantiated itself;
+      `ResolvedPipeline`'s `Examples` block was rewritten to actually
+      construct a `ResolvedPipeline` (it previously called the
+      module-level `resolve()` function against an undefined variable,
+      violating "an Examples block that INSTANTIATES the class"); nine
+      docstrings that satisfied D205 by becoming one 150-258 char
+      physical line were reflowed into a short summary + blank line +
+      wrapped body instead; and `dskit/pipeline/features.py`'s
+      `apply_stream_steps` Parameters section no longer claims plain
+      dict rows work as input (they crash — proven by running the
+      built-in `filter`/`regroup` steps against one).
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,
