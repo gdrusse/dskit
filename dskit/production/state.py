@@ -171,6 +171,14 @@ _PLAN_KEYS = ("plan_id", "decision_plan_digest", "result", "client_ref")
 #: which is why the currency is kept beside the amount.
 _CASH_FLOW_KEYS = ("currency", "amount", "effective_at_ms", "superseded_by")
 
+#: Snapshot payloads written before R15 kept no effective instant beside a
+#: booked cash flow.  Envelope schema_version did not change for that
+#: addition, so restore recognizes only this exact old form and upcasts it
+#: in memory.  Zero is the earliest valid effective instant, preserving the
+#: correction ordering check without inventing a later time.
+_LEGACY_CASH_FLOW_KEYS = ("currency", "amount", "superseded_by")
+_LEGACY_CASH_FLOW_EFFECTIVE_AT_MS = 0
+
 #: What the fold keeps of the latest ``trip`` (see ``SeriesState.last_trip``):
 #: the envelope's identity and instant — a reset acknowledges the id and
 #: cooling-off is measured from ``recorded_at_ms`` — plus the body fields
@@ -1840,13 +1848,26 @@ class SeriesState:
                 _exact(problems, f"snapshot.state.tick_plans.{tick_id}[{position}]", entry, _PLAN_KEYS)
         for ref, entry in state["working"].items():
             _exact(problems, f"snapshot.state.working.{ref}", entry, ("order", "filled_notional"))
+        cash_flow_entries = {}
         for record_id, entry in state["cash_flows"].items():
-            _exact(problems, f"snapshot.state.cash_flows.{record_id}", entry, _CASH_FLOW_KEYS)
+            where = f"snapshot.state.cash_flows.{record_id}"
+            _check_dict(problems, where, entry)
+            if not isinstance(entry, dict):
+                continue
+            if set(entry) == set(_LEGACY_CASH_FLOW_KEYS):
+                # Do not alter a ledger-owned snapshot payload while restoring it.
+                cash_flow_entries[record_id] = {
+                    **entry,
+                    "effective_at_ms": _LEGACY_CASH_FLOW_EFFECTIVE_AT_MS,
+                }
+            else:
+                _exact(problems, where, entry, _CASH_FLOW_KEYS)
+                cash_flow_entries[record_id] = entry
         if problems:
             raise ProductionError(problems)
         cash_flows = {
             record_id: self._booked_flow(problems, record_id, entry)
-            for record_id, entry in state["cash_flows"].items()
+            for record_id, entry in cash_flow_entries.items()
         }
         if problems:
             raise ProductionError(problems)

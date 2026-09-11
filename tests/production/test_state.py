@@ -2033,7 +2033,31 @@ def test_the_snapshot_carries_the_cash_flow_map_a_later_correction_nets_against(
     }
 
 
-def test_restore_refuses_a_cash_flow_entry_that_is_not_the_four_key_form():
+def test_restore_upcasts_the_exact_legacy_cash_flow_snapshot_shape():
+    """Snapshots from before R15 lack only ``effective_at_ms`` (schema stays 1)."""
+    st, chain = new_state()
+    fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
+    legacy = copy.deepcopy(snapshot_env(st, chain))
+    legacy_entry = legacy["body"]["state"]["cash_flows"]["cf-1"]
+    legacy_entry.pop("effective_at_ms")
+
+    restored = SeriesState(SERIES_ID)
+    restored.restore(legacy)
+
+    # Restore normalizes its fold, not the ledger-owned payload it was given.
+    assert "effective_at_ms" not in legacy_entry
+    assert restored.to_snapshot_obj()["cash_flows"] == {
+        "cf-1": {"currency": "USD", "amount": "250",
+                 "effective_at_ms": 0, "superseded_by": None},
+    }
+
+    restored.apply(legacy)
+    fold(restored, chain, "cash_flow",
+         cash_flow_body(amount="100", supersedes="cf-1"), rid="cf-2")
+    assert restored.snapshot().balances["USD"] == Decimal("100")
+
+
+def test_restore_refuses_a_cash_flow_entry_that_is_neither_current_nor_legacy():
     st, chain = new_state()
     fold(st, chain, "cash_flow", cash_flow_body(amount="250"), rid="cf-1")
     broken = copy.deepcopy(snapshot_env(st, chain))
