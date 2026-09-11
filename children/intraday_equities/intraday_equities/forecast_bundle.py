@@ -6,12 +6,13 @@ The P16 label ``y(t, h) = [r_i(t, t+h) - beta_i,t * r_SPY(t, t+h)] /
 fractional returns. The owner's §11 item 3 ruling (2026-09-10, carried in
 ``docs/plans/2026-09-10-gate4-forecast-bundle-kickoff.md`` and ADR-0121)
 fixes the inverse: assume a **zero-drift market reference**,
-``E[r_SPY(t, t+h)] ~= 0`` over the model's short forecast horizons, so the
-point-in-time gross-return forecast is ``yhat * sigma_i,t * sqrt(h)`` using
-the SAME causal ``sigma_i,t`` the label used at training/prediction time —
-read from the model bundle's manifest / the same feature pipeline, never
-recomputed with different parameters. No SPY-forecast model is authorized
-by that ruling, and none exists here.
+``E[r_SPY(t, t+h)] ~= 0`` over the model's short forecast horizons. The
+label uses log returns, so ``yhat * sigma_i,t * sqrt(h)`` first recovers a
+log return and ``expm1`` converts it to the capital boundary's simple
+fractional-return unit. The SAME causal ``sigma_i,t`` the label used at
+training/prediction time is read from the model bundle's manifest / the
+same feature pipeline, never recomputed with different parameters. No
+SPY-forecast model is authorized by that ruling, and none exists here.
 
 This module owns the child-specific half only: the unit conversion, the
 fail-closed assembly/validation of the ADR-0088/MIO bundle, and the pinned
@@ -28,9 +29,12 @@ slice (``configs/run-mean-confirmation.json`` stays unreadable per plan
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 
 from dskit.pipeline.records import number_ok
+from dskit.pipeline.stages import is_sha256hex
 
 from .final_gates import DEVELOPMENT_EVIDENCE_SCOPE
 from .final_model import HEADS
@@ -38,6 +42,7 @@ from .nodes import (
     DEFAULT_BETA_WINDOW_MINUTES,
     DEFAULT_VOL_FLOOR,
     DEFAULT_VOL_WINDOW_MINUTES,
+    LABEL_RETURN_BASIS,
 )
 
 __all__ = [
@@ -76,6 +81,7 @@ BUNDLE_UNIT = "gross_fractional_return"
 LABEL_CONTRACT_FIELDS = (
     "label_scale",
     "label_residual",
+    "return_basis",
     "vol_window_minutes",
     "beta_window_minutes",
     "vol_floor",
@@ -91,6 +97,7 @@ KNOWN_AT_FIELDS = (
     "reference",
     "price",
     "yhat",
+    "pi_hat",
     "pi_upper",
     "scenarios",
 )
@@ -107,6 +114,7 @@ _INPUT_FIELDS = frozenset(
         "yhat",
         "sigma_t",
         "beta_t",
+        "pi_hat",
         "pi_upper",
         "weights",
         "scenarios",
@@ -132,7 +140,8 @@ def default_label_contract():
     -------
     dict
         ``label_scale`` ``"vol"``, ``label_residual`` ``"SPY"``,
-        ``vol_window_minutes`` 390, ``beta_window_minutes`` 3900,
+        ``return_basis`` ``"log"``, ``vol_window_minutes`` 390,
+        ``beta_window_minutes`` 3900,
         ``vol_floor`` 1e-8.
 
     Examples
@@ -146,6 +155,7 @@ def default_label_contract():
     return {
         "label_scale": "vol",
         "label_residual": DEFAULT_REFERENCE,
+        "return_basis": LABEL_RETURN_BASIS,
         "vol_window_minutes": DEFAULT_VOL_WINDOW_MINUTES,
         "beta_window_minutes": DEFAULT_BETA_WINDOW_MINUTES,
         "vol_floor": DEFAULT_VOL_FLOOR,
@@ -153,12 +163,14 @@ def default_label_contract():
 
 
 def gross_return(yhat, sigma, lead):
-    """Convert one label-unit prediction to a gross fractional return — the §11 item 3 ruled inverse.
+    """Convert one label-unit log prediction to a simple fractional return.
 
-    ``gross_return_i(t, h) = yhat_i(t, h) * sigma_i, t * sqrt(h)`` under the
+    The ruled inverse first recovers the log return
+    ``z = yhat_i(t, h) * sigma_i,t * sqrt(h)`` under the
     zero-drift market reference ``E[r_SPY(t, t+h)] ~= 0``: the beta-hedge
     term's expectation vanishes, and the SAME causal ``sigma_i, t`` the
-    label divided by multiplies straight back.
+    label divided by multiplies straight back. Because ``_LeadLabel`` used
+    ``log(P1/P0)``, the capital-facing simple return is ``expm1(z)``.
 
     Parameters
     ----------
@@ -173,8 +185,7 @@ def gross_return(yhat, sigma, lead):
     Returns
     -------
     float
-        ``yhat * sigma * sqrt(lead)`` — a gross fractional return over the
-        lead.
+        ``expm1(yhat * sigma * sqrt(lead))`` — a simple fractional return.
 
     Raises
     ------
@@ -187,7 +198,7 @@ def gross_return(yhat, sigma, lead):
     One ruled conversion::
 
         gross_return(1.5, 0.0008, 4)
-        # -> 0.0024
+        # -> approximately 0.00240288
     """
     if not number_ok(yhat):
         raise ValueError(f"gross_return: yhat must be a finite number, got {yhat!r}")
@@ -197,7 +208,14 @@ def gross_return(yhat, sigma, lead):
         )
     if isinstance(lead, bool) or not isinstance(lead, int) or lead < 1:
         raise ValueError(f"gross_return: lead must be an int >= 1, got {lead!r}")
-    return float(yhat) * float(sigma) * math.sqrt(lead)
+    log_return = float(yhat) * float(sigma) * math.sqrt(lead)
+    try:
+        simple_return = math.expm1(log_return)
+    except OverflowError as exc:
+        raise ValueError("gross_return: recovered log return is too large") from exc
+    if not math.isfinite(simple_return):
+        raise ValueError("gross_return: recovered simple return must be finite")
+    return simple_return
 
 
 def _row_problems(index, row, label_contract):
@@ -221,9 +239,9 @@ def _row_problems(index, row, label_contract):
     if not isinstance(entity, str) or not entity:
         problems.append(f"{where}: entity must be a non-empty string, got {entity!r}")
     decision_ts = row["decision_ts"]
-    if not number_ok(decision_ts):
+    if isinstance(decision_ts, bool) or not isinstance(decision_ts, int) or decision_ts < 0:
         problems.append(
-            f"{where} ({entity!r}): decision_ts must be a finite number (epoch ms)"
+            f"{where} ({entity!r}): decision_ts must be an integer epoch ms >= 0"
         )
     lead = row["lead"]
     if isinstance(lead, bool) or not isinstance(lead, int) or not 1 <= lead <= len(HEADS):
@@ -251,9 +269,20 @@ def _row_problems(index, row, label_contract):
         problems.append(
             f"{where} ({entity!r}): beta_t must be a finite number"
         )
-    if not number_ok(row["pi_upper"]) or not 0.0 <= row["pi_upper"] <= 1.0:
+    pi_hat = row["pi_hat"]
+    pi_upper = row["pi_upper"]
+    if not number_ok(pi_hat) or not 0.0 <= pi_hat <= 1.0:
+        problems.append(
+            f"{where} ({entity!r}): pi_hat must be a finite number in [0, 1]"
+        )
+    if not number_ok(pi_upper) or not 0.0 <= pi_upper <= 1.0:
         problems.append(
             f"{where} ({entity!r}): pi_upper must be a finite number in [0, 1]"
+        )
+    elif number_ok(pi_hat) and pi_hat > pi_upper:
+        problems.append(
+            f"{where} ({entity!r}): pi_hat {pi_hat!r} must not exceed the "
+            f"conservative pi_upper {pi_upper!r}"
         )
     if row["label"] != label_contract:
         problems.append(
@@ -308,10 +337,10 @@ def _row_problems(index, row, label_contract):
             )
         if number_ok(decision_ts):
             for key, stamp in sorted(known_at.items()):
-                if not number_ok(stamp) or stamp < 0:
+                if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0:
                     problems.append(
                         f"{where} ({entity!r}): known_at[{key!r}] must be a "
-                        f"finite epoch-ms number, got {stamp!r}"
+                        f"integer epoch-ms value >= 0, got {stamp!r}"
                     )
                 elif stamp > decision_ts:
                     problems.append(
@@ -327,8 +356,12 @@ class ForecastBundle:
 
     Validates caller-supplied point-in-time rows, applies the §11 item 3
     ruled inverse (:func:`gross_return`) to the mean prediction and to each
-    ``prediction + scenario residual`` payoff, and emits gross-unit rows in
-    exactly the shape
+    ``prediction + scenario residual`` payoff. ``mu_gross`` is the plug-in
+    mean ``expm1(E[log return])`` with no Jensen correction. After nonlinear
+    conversion, the finite scenario set is shifted to weighted mean
+    ``(1 - pi_hat) * mu_gross``; that explicit false-signal haircut target
+    deliberately overrides the raw finite-scenario Jensen mean. Emits
+    gross-unit rows in exactly the shape
     :class:`~intraday_equities.nodes_capital.EquityKellyMIO` consumes.
     Fail-closed: every problem is named, and any one of them refuses the
     whole tick.
@@ -344,13 +377,15 @@ class ForecastBundle:
         ``decision_ts`` (epoch ms), ``lead`` (int 1..10, shared),
         ``price`` (> 0), ``yhat`` (label units), ``sigma_t`` (the SAME
         causal trailing residual std the label used — above the pinned
-        contract's ``vol_floor``), ``beta_t`` (finite), ``pi_upper``
-        (in [0, 1]), ``weights`` (non-empty, finite >= 0, summing to 1,
+        contract's ``vol_floor``), ``beta_t`` (finite), ``pi_hat``
+        (point false-signal prevalence in [0, 1]), ``pi_upper``
+        (conservative prevalence bound in [pi_hat, 1]), ``weights`` (non-empty, finite >= 0, summing to 1,
         shared), ``scenarios`` (label-unit residuals, one per weight),
         ``label`` (the contract that produced ``sigma_t`` — must equal the
         pinned contract), and ``known_at`` (a map keyed EXACTLY by
-        ``('sigma', 'beta', 'reference', 'price', 'yhat', 'pi_upper',
-        'scenarios')``, every stamp at or before ``decision_ts``).
+        ``('sigma', 'beta', 'reference', 'price', 'yhat', 'pi_hat',
+        'pi_upper', 'scenarios')``, every stamp at or before
+        ``decision_ts``). All time values are integer epoch milliseconds.
         An empty list is the empty gate and assembles to an empty bundle.
     label_contract : dict, optional
         The pinned label contract ``sigma_t`` was computed under (default
@@ -372,16 +407,17 @@ class ForecastBundle:
             {
                 "entity": "AAPL", "decision_ts": 1_700_000_000_000, "lead": 3,
                 "price": 190.0, "yhat": 0.5, "sigma_t": 0.0012, "beta_t": 1.1,
-                "pi_upper": 0.2, "weights": [0.5, 0.5],
+                "pi_hat": 0.1, "pi_upper": 0.2, "weights": [0.5, 0.5],
                 "scenarios": [-0.4, 0.9],
                 "label": default_label_contract(),
                 "known_at": {"sigma": 1_699_999_939_000, "beta": 1_699_999_939_000,
                               "reference": 1_699_999_939_000, "price": 1_699_999_939_000,
-                              "yhat": 1_699_999_939_000, "pi_upper": 1_699_999_500_000,
+                              "yhat": 1_699_999_939_000, "pi_hat": 1_699_999_500_000,
+                              "pi_upper": 1_699_999_500_000,
                               "scenarios": 1_699_999_939_000},
             },
         ])
-        bundle.rows[0]["mu_gross"] == 0.5 * 0.0012 * 3 ** 0.5
+        bundle.rows[0]["mu_gross"] == math.expm1(0.5 * 0.0012 * 3 ** 0.5)
         # -> True
     """
 
@@ -446,6 +482,7 @@ class ForecastBundle:
         """Convert one validated input row into its gross-unit output row."""
         sigma = float(row["sigma_t"])
         lead = row["lead"]
+        mu_gross = gross_return(row["yhat"], sigma, lead)
         return {
             "entity": row["entity"],
             "decision_ts": row["decision_ts"],
@@ -453,16 +490,36 @@ class ForecastBundle:
             "model_release_id": self.release_id,
             "unit": BUNDLE_UNIT,
             "price": float(row["price"]),
+            "pi_hat": float(row["pi_hat"]),
             "pi_upper": float(row["pi_upper"]),
             "weights": list(row["weights"]),
-            "scenarios": [
-                gross_return(row["yhat"] + residual, sigma, lead)
-                for residual in row["scenarios"]
-            ],
-            "mu_gross": gross_return(row["yhat"], sigma, lead),
+            "scenarios": self._recentered_scenarios(row, mu_gross),
+            "mu_gross": mu_gross,
             "reference_policy": self.reference_policy,
             "known_at": dict(row["known_at"]),
         }
+
+    @staticmethod
+    def _recentered_scenarios(row, mu_gross):
+        """Convert log residual draws, then pin their weighted simple-return mean."""
+        sigma = float(row["sigma_t"])
+        lead = row["lead"]
+        converted = [
+            gross_return(row["yhat"] + residual, sigma, lead)
+            for residual in row["scenarios"]
+        ]
+        observed_mean = sum(
+            float(weight) * value
+            for weight, value in zip(row["weights"], converted)
+        )
+        target_mean = (1.0 - float(row["pi_hat"])) * mu_gross
+        recentered = [value - observed_mean + target_mean for value in converted]
+        if any(value <= -1.0 or not math.isfinite(value) for value in recentered):
+            raise ValueError(
+                "ForecastBundle: recentered simple-return scenarios must be "
+                "finite and greater than -1"
+            )
+        return recentered
 
 
 _CAP_SCHEMA_FIELDS = frozenset(
@@ -473,33 +530,40 @@ _CAP_SCHEMA_FIELDS = frozenset(
         "evidence_scope",
         "evidence_end_ms",
         "generated_ms",
+        "producer",
+        "evidence",
         "caps",
     )
 )
 
 #: The one schema version a confirmed-cap artifact may declare.
-_CAP_SCHEMA_VERSION = 1
+_CAP_SCHEMA_VERSION = 2
 
 
 class ConfirmedCaps:
-    """The pinned, deployable ``(symbol, lead)`` confirmation-cap artifact.
+    """A hash-addressable ``(symbol, lead)`` confirmation-cap artifact.
 
-    Phase 4's cap contract (ADR-0121): confirmation caps are pinned,
-    deployable, contiguous from h1, and from evidence not used to choose
-    the P16 mask. Development caps always refuse deployment. No real
-    artifact exists yet — the March-May confirmation evidence (§11 item 4)
-    is unreadable — so this class only VALIDATES a caller-supplied
-    artifact; it never produces or calibrates one.
+    Phase 4's structural cap contract (ADR-0121): confirmation caps are
+    contiguous from h1, bind a producer and evidence digest, and come from
+    evidence not used to choose the P16 mask. This value class validates
+    structure and computes the canonical digest; the capital node compares
+    that digest and the producer/evidence identities with trusted config
+    pins and enforces development versus deployment mode. No trusted real
+    producer exists yet, so deployment mode fails closed regardless of an
+    artifact's self-declared eligibility.
 
     Parameters
     ----------
     artifact : dict
-        Exactly: ``schema_version`` (1), ``model_release_id`` (non-empty
-        str), ``deployment_eligible`` (must be ``True``),         ``evidence_scope``
+        Exactly: ``schema_version`` (2), ``model_release_id`` (non-empty
+        str), ``deployment_eligible`` (JSON boolean), ``evidence_scope``
         (non-empty str, NOT this child's P16 development scope),
         ``evidence_end_ms`` (epoch ms, strictly before ``generated_ms`` —
         every confirming outcome realized before the artifact was pinned),
-        ``generated_ms`` (epoch ms), and ``caps`` — a list of unique
+        ``generated_ms`` (integer epoch ms), ``producer`` (exactly a
+        lowercase document SHA-256, node, and ``output="cap"``),
+        ``evidence`` (exactly a lowercase SHA-256 plus scope/end bindings
+        equal to the top-level declarations), and ``caps`` — a list of unique
         ``{"symbol": str, "capped_horizon": int}`` rows, ``capped_horizon``
         in 0..10. The integer IS the contiguous-from-h1 encoding: a cap of
         N confirms leads h1..hN; 0 confirms nothing (the capital node
@@ -512,14 +576,18 @@ class ConfirmedCaps:
 
     Examples
     --------
-    Validate one deployable cap artifact::
+    Validate one structurally sound nonproduction cap artifact::
 
         caps = ConfirmedCaps({
-            "schema_version": 1, "model_release_id": "rel-abc",
-            "deployment_eligible": True,
-            "evidence_scope": "mean_confirmation_2026_03_05",
+            "schema_version": 2, "model_release_id": "rel-abc",
+            "deployment_eligible": False,
+            "evidence_scope": "synthetic_demo",
             "evidence_end_ms": 1_699_990_000_000,
             "generated_ms": 1_699_999_000_000,
+            "producer": {"document_sha256": "a" * 64,
+                         "node": "source", "output": "cap"},
+            "evidence": {"sha256": "b" * 64, "scope": "synthetic_demo",
+                         "end_ms": 1_699_990_000_000},
             "caps": [{"symbol": "AAPL", "capped_horizon": 4}],
         })
         caps.allows("AAPL", 4)
@@ -537,9 +605,26 @@ class ConfirmedCaps:
         self.evidence_scope = artifact["evidence_scope"]
         self.evidence_end_ms = artifact["evidence_end_ms"]
         self.generated_ms = artifact["generated_ms"]
+        self.producer = dict(artifact["producer"])
+        self.evidence = dict(artifact["evidence"])
         self.caps = {
             row["symbol"]: row["capped_horizon"] for row in artifact["caps"]
         }
+
+    @classmethod
+    def digest(cls, artifact):
+        """Return the canonical SHA-256 a trusted config must pin."""
+        try:
+            raw = json.dumps(
+                artifact,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        except (TypeError, ValueError, UnicodeEncodeError) as exc:
+            raise ValueError("cap artifact is not canonical JSON") from exc
+        return hashlib.sha256(raw).hexdigest()
 
     @classmethod
     def problems(cls, artifact):
@@ -580,10 +665,9 @@ class ConfirmedCaps:
             problems.append(
                 f"cap.model_release_id must be a non-empty string, got {release!r}"
             )
-        if artifact["deployment_eligible"] is not True:
+        if not isinstance(artifact["deployment_eligible"], bool):
             problems.append(
-                "cap.deployment_eligible must be true — development caps "
-                "always refuse deployment (plan §6 Phase 4 item 4)"
+                "cap.deployment_eligible must be a JSON boolean"
             )
         scope = artifact["evidence_scope"]
         if not isinstance(scope, str) or not scope:
@@ -599,9 +683,9 @@ class ConfirmedCaps:
         evidence_end = artifact["evidence_end_ms"]
         generated = artifact["generated_ms"]
         for name, value in (("evidence_end_ms", evidence_end), ("generated_ms", generated)):
-            if not number_ok(value) or value < 0:
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 problems.append(
-                    f"cap.{name} must be a finite epoch-ms number >= 0, got "
+                    f"cap.{name} must be an integer epoch-ms value >= 0, got "
                     f"{value!r}"
                 )
         if (
@@ -614,6 +698,32 @@ class ConfirmedCaps:
                 f"before cap.generated_ms ({generated!r}) — every "
                 "confirming outcome realizes before the artifact is pinned"
             )
+        producer = artifact["producer"]
+        producer_fields = {"document_sha256", "node", "output"}
+        if not isinstance(producer, dict) or set(producer) != producer_fields:
+            problems.append(
+                f"cap.producer must carry exactly {sorted(producer_fields)!r}"
+            )
+        else:
+            if not is_sha256hex(producer["document_sha256"]):
+                problems.append("cap.producer.document_sha256 must be lowercase SHA-256")
+            if not isinstance(producer["node"], str) or not producer["node"]:
+                problems.append("cap.producer.node must be a non-empty string")
+            if producer["output"] != "cap":
+                problems.append("cap.producer.output must be 'cap'")
+        evidence = artifact["evidence"]
+        evidence_fields = {"sha256", "scope", "end_ms"}
+        if not isinstance(evidence, dict) or set(evidence) != evidence_fields:
+            problems.append(
+                f"cap.evidence must carry exactly {sorted(evidence_fields)!r}"
+            )
+        else:
+            if not is_sha256hex(evidence["sha256"]):
+                problems.append("cap.evidence.sha256 must be lowercase SHA-256")
+            if evidence["scope"] != scope:
+                problems.append("cap.evidence.scope must equal cap.evidence_scope")
+            if evidence["end_ms"] != evidence_end:
+                problems.append("cap.evidence.end_ms must equal cap.evidence_end_ms")
         caps = artifact["caps"]
         if not isinstance(caps, (list, tuple)) or not caps:
             problems.append(

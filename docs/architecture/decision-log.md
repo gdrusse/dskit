@@ -7696,7 +7696,7 @@ ruling changes `_VOCAB` and the book, not a silent code default. Phase 5
 items 3–5 (crash/restart ledger identity, post-fill solvency, observable
 unfunded candidates on a live graph) remain unbuilt.
 
-+## ADR-0121 — Gate 4: real forecast bundle and confirmed caps over the ruled §11 item 3 zero-drift inverse (ADR-0114 Phase 4)
+## ADR-0121 — Gate 4: real forecast bundle and confirmed caps over the ruled §11 item 3 zero-drift inverse (ADR-0114 Phase 4)
 
 **Status:** accepted (2026-09-11; the user explicitly approved this Gate 4 ADR and design).
 
@@ -7708,10 +7708,13 @@ per `intraday_equities/nodes.py`'s `_LeadLabel` (causal trailing
 `beta`/`sigma`, `beta_window` 3900 min, `vol_window` 390 min, `vol_floor`
 1e-8). `r_SPY(t,t+h)` is unknown at decision time `t`, so the owner rules a
 **zero-drift market reference** — `E[r_SPY(t,t+h)] ~= 0` over the model's
-short forecast horizons — making the point-in-time gross-return forecast:
+short forecast horizons. The label's `r` values are log returns, so the
+inverse first recovers a log return and then converts it to the capital
+boundary's simple fractional-return unit:
 
 ```
-gross_return_i(t,h) = yhat_i(t,h) * sigma_i,t * sqrt(h)
+log_return_i(t,h) = yhat_i(t,h) * sigma_i,t * sqrt(h)
+gross_return_i(t,h) = exp(log_return_i(t,h)) - 1
 ```
 
 using the SAME causal `sigma_i,t` the label used at training/prediction
@@ -7729,7 +7732,7 @@ conversion from label units to gross fractional returns plus
 assembly/validation of the ADR-0088/MIO bundle, and the capital node
 requiring the pinned confirmed `(symbol, lead)` cap. Phase 4's remaining
 unruled half — the March-May confirmation EVIDENCE that would produce a
-real deployable cap artifact, `pi_upper`, `U_mu`, and joint `U_r`
+real deployable cap artifact, `pi_hat`, `pi_upper`, `U_mu`, and joint `U_r`
 calibration — stays blocked (§11 item 4): this gate builds the CONTRACTS
 (cap artifact validation, bundle assembly, unit conversion) and their
 synthetic tests only, never calibration and never a real cap.
@@ -7740,22 +7743,28 @@ synthetic tests only, never calibration and never a real cap.
   tier 3; no node kinds — plain, directly-callable value classes, the
   `final_model.py` precedent):
   - `gross_return(yhat, sigma, lead)` — the ruled inverse as one
-    module-level pure function (one owner; the mean converts directly and
-    each payoff converts `yhat + scenario residual`, so the optimizer does
-    not discard the forecast mean). Refuses non-finite inputs,
+    module-level pure function: recover the log return, then use `expm1`
+    to emit a simple fractional return. The point estimate deliberately
+    uses the plug-in mean `expm1(E[log return])`; it does not apply a
+    Jensen correction. Each payoff converts `yhat + scenario residual`
+    through the same nonlinear map, then the finite weighted scenario set
+    is shifted to mean `(1 - pi_hat) * mu_gross`. That explicit false-signal
+    haircut target overrides the raw finite-scenario Jensen mean. Refuses non-finite inputs,
     `sigma <= 0`, and a non-integer/`< 1` lead.
   - `ForecastBundle(release_id, rows, label_contract=None)` — the
     fail-closed bundle assembler. A supplied `label_contract` must equal
     the pinned training default exactly; callers cannot redefine release
     semantics. Each input row carries
     `entity`, `decision_ts`, `lead`, `price`, `yhat`, `sigma_t`, `beta_t`,
-    `pi_upper`, `weights`, `scenarios` (label-unit residuals), `label`
+    `pi_hat`, `pi_upper`, `weights`, `scenarios` (label-unit residuals), `label`
     (the contract that produced `sigma_t`), and `known_at` — a
     default-deny map keyed EXACTLY by the closed point-in-time vocabulary
-    `{sigma, beta, reference, price, yhat, pi_upper, scenarios}`, every
+    `{sigma, beta, reference, price, yhat, pi_hat, pi_upper, scenarios}`, every
     value at or before `decision_ts`. An unknown `known_at` key — e.g. an
     `outcome` — refuses: future knowledge has no path into this bundle
-    under the zero-drift ruling. `sigma_t` must exceed the pinned
+    under the zero-drift ruling. `pi_hat` is the point-in-time false-signal
+    prevalence used for recentering; `pi_upper` is its distinct conservative
+    bound, and `0 <= pi_hat <= pi_upper <= 1`. `sigma_t` must exceed the pinned
     contract's `vol_floor` (the label's own refusal bound). Every row's
     `label` must equal the pinned contract exactly — sigma may never be
     recomputed with different parameters. All rows must share one
@@ -7768,36 +7777,45 @@ synthetic tests only, never calibration and never a real cap.
     `EquityKellyMIO` bundle shape (BUNDLE_FIELDS below) plus `mu_gross`,
     `reference_policy`, and the `known_at` audit trail.
   - `ConfirmedCaps(artifact)` + `ConfirmedCaps.problems(artifact)` — the
-    pinned confirmed-cap artifact validator: `schema_version` 1;
-    non-empty `model_release_id`; `deployment_eligible` must be true
-    (development caps always refuse deployment); `evidence_scope` must
+    confirmed-cap structure validator: `schema_version` 2;
+    non-empty `model_release_id`; JSON-boolean `deployment_eligible`;
+    `evidence_scope` must
     not be the P16 development scope (`final_gates.py`'s own scope
     constant, exported for this pin — caps must come from evidence not
     used to choose the P16 mask); `evidence_end_ms < generated_ms` (every
     confirming outcome realized before the artifact was pinned);
-    `caps` a list of unique `{symbol, capped_horizon}` rows with
+    hash-addressed `producer = {document_sha256, node, output: "cap"}` and
+    `evidence = {sha256, scope, end_ms}` bindings whose scope/cut equal the
+    top-level declarations; `caps` a list of unique `{symbol, capped_horizon}` rows with
     `capped_horizon` an integer 0..10 — the contiguous-from-h1 encoding
     (cap N confirms h1..hN; 0 confirms nothing and the capital node
     routes that symbol's rows out). Answers `capped_horizon(symbol)` and
-    `allows(symbol, lead)`.
+    `allows(symbol, lead)`. Decision, known-at, and cap times are integer
+    epoch milliseconds; fractional values refuse rather than being truncated.
   - Constants: `ZERO_DRIFT` (`"zero-drift"`, the ruled reference policy,
     the only one), `BUNDLE_UNIT` (`"gross_fractional_return"`),
     `DEFAULT_REFERENCE` (`"SPY"`).
 - `children/intraday_equities/intraday_equities/nodes_capital.py`
   (modify, tier 3): `BUNDLE_FIELDS` gains `lead`, `model_release_id`, and
   `unit` — the fuller reader ADR-0114's Phase 4 anticipated (additive).
-  `_bundle_problems` requires a valid shared `lead` (integer 1..10, the
+  `_bundle_problems` requires one shared integer epoch-ms `decision_ts`, a
+  valid shared `lead` (integer 1..10, the
   ten-head vocabulary imported from `final_model.HEADS`), a shared
   non-empty `model_release_id`, and `unit == "gross_fractional_return"`
   — a vol-scaled SPY-residual prediction is never accepted as a gross
   return (plan §6 Phase 4 item 1). New required param
   `cap_max_staleness_ms` (int >= 0, no default — same shape as
-  `bundle_max_staleness_ms`). New REQUIRED input `cap`, validated
+  `bundle_max_staleness_ms`). Config also pins the canonical cap artifact
+  SHA-256, producer document SHA-256/node, evidence SHA-256, and an explicit
+  `deployment_mode` boolean. New REQUIRED input `cap`, validated
   through `ConfirmedCaps.problems` (imported — the validator has one
   owner). Hard refusals in `validate_inputs`: missing `cap` input,
-  malformed cap, development (ineligible) cap, stale or future-dated cap
+  malformed or pin-mismatched cap, stale or future-dated cap
   against `portfolio.asof_ms`, and a cap whose `model_release_id`
-  differs from the bundle's shared release (wrong model release). Row
+  differs from the bundle's shared release (wrong model release).
+  Development mode accepts only an explicitly ineligible synthetic cap;
+  deployment mode accepts none until a trusted real confirmation-cap
+  producer exists, so self-attestation cannot authorize capital. Row
   routing-out in `instruments()` (reasons recorded in `evidence`, the
   `stat_test` precedent): no cap entry for the symbol (absent), a zero
   `capped_horizon`, and a lead above the confirmed cap. The required
@@ -7815,10 +7833,11 @@ synthetic tests only, never calibration and never a real cap.
 - `children/intraday_equities/intraday_equities/testing.py` (modify):
   `SyntheticMioSource` emits a `cap` output (a synthetic, clearly-marked
   demo cap matching its synthetic bundle's release) and its bundle rows
-  gain `lead`, `model_release_id`, `unit` — the demo's
+  gain `lead`, `model_release_id`, `unit`, and `pi_hat` — the demo's
   fabricate-everything design, never real evidence.
-- `configs/run-mio-demo.json` (modify): wire `"cap": "$source.cap"` and
-  declare `cap_max_staleness_ms`; its identity hash changes (a new
+- `configs/run-mio-demo.json` (modify): wire `"cap": "$source.cap"`,
+  declare `cap_max_staleness_ms`, set `deployment_mode=false`, and pin the
+  deterministic synthetic cap artifact/producer/evidence hashes; its identity hash changes (new
   graded param on the capital node) — inherent to the contract change;
   the demo has no pinned run history to orphan. `run-mean-confirmation.json`
   is NOT created or touched.
@@ -7840,11 +7859,12 @@ SPY-forecast model is built or proposed. This entry resolves no other
 §11 item and does not modify ADR-0088/0108/0111/0113/0114/0115/0116 —
 it extends ADR-0114's Phase 4 under its item 3 ruling.
 
-**Consequences.** Once accepted, `EquityKellyMIO` cannot size any name
-without a deployable, fresh, release-matching confirmed cap — fail-closed
-by construction until the owner's March-May confirmation phase later
-produces a real cap artifact. The demo document keeps running only
-because its synthetic source fabricates one, clearly marked as demo
-data. Bundle rows in label units (or without `unit`) refuse at the
-capital node; the assembler is the only sanctioned producer of
-gross-unit rows.
+**Consequences.** `EquityKellyMIO` cannot size any name without a fresh,
+release-matching cap whose full canonical artifact digest and producer/evidence
+bindings match trusted config pins. Deployment mode fails closed
+unconditionally until the owner's March-May confirmation phase supplies a
+trusted real producer; a cap's own eligibility flag is not authority. The demo
+runs only in explicit development mode with a deterministic, pinned,
+`deployment_eligible=false` synthetic cap. Bundle rows in label units (or
+without `unit`) refuse at the capital node; the assembler is the only
+sanctioned producer of gross-unit rows.

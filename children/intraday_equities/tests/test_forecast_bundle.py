@@ -30,12 +30,15 @@ from intraday_equities.nodes import (
     DEFAULT_VOL_FLOOR,
     DEFAULT_VOL_WINDOW_MINUTES,
     LABEL_PARAMS,
+    LABEL_RETURN_BASIS,
 )
 
 ASOF_MS = 1_700_000_000_000
 RELEASE = "release-sha256-0f" * 4  # any non-empty release identity
 WEIGHTS = [0.5, 0.25, 0.25]
 SCENARIOS = [-0.4, 0.0, 0.9]
+PRODUCER_DOCUMENT_SHA256 = "a" * 64
+EVIDENCE_SHA256 = "b" * 64
 
 
 def _input_row(entity, **overrides):
@@ -48,6 +51,7 @@ def _input_row(entity, **overrides):
         "yhat": 0.5,
         "sigma_t": 0.0012,
         "beta_t": 1.1,
+        "pi_hat": 0.10,
         "pi_upper": 0.20,
         "weights": list(WEIGHTS),
         "scenarios": list(SCENARIOS),
@@ -58,6 +62,7 @@ def _input_row(entity, **overrides):
             "reference": ASOF_MS - 61_000,
             "price": ASOF_MS - 61_000,
             "yhat": ASOF_MS - 61_000,
+            "pi_hat": ASOF_MS - 500_000,
             "pi_upper": ASOF_MS - 500_000,
             "scenarios": ASOF_MS - 61_000,
         },
@@ -75,14 +80,18 @@ def _bundle(rows=None):
 
 
 class TestGrossReturn:
-    """The §11 item 3 ruled inverse: ``yhat * sigma_t * sqrt(lead)``."""
+    """The ruled log-return inverse converted to a simple gross return."""
 
     def test_the_ruled_formula_is_exact(self):
-        # yhat=1.5, sigma=0.0008, lead=4 bars -> 1.5 * 0.0008 * sqrt(4)
-        assert gross_return(1.5, 0.0008, 4) == pytest.approx(0.0024)
+        expected = math.expm1(1.5 * 0.0008 * math.sqrt(4))
+        assert gross_return(1.5, 0.0008, 4) == pytest.approx(expected)
+
+    def test_a_non_small_log_return_is_not_mislabeled_as_a_simple_return(self):
+        assert gross_return(1.0, 0.5, 1) == pytest.approx(math.expm1(0.5))
+        assert gross_return(1.0, 0.5, 1) != pytest.approx(0.5)
 
     def test_lead_one_uses_the_sigma_unchanged(self):
-        assert gross_return(-2.0, 0.001, 1) == pytest.approx(-0.002)
+        assert gross_return(-2.0, 0.001, 1) == pytest.approx(math.expm1(-0.002))
 
     def test_a_non_finite_yhat_is_refused(self):
         with pytest.raises(ValueError, match="yhat"):
@@ -120,8 +129,10 @@ class TestGrossReturn:
         # The label divided by sigma*sqrt(h); the inverse multiplies back,
         # so a round trip over one row returns the residual return itself.
         yhat, sigma, lead = 0.7, 0.0013, 9
-        residual = yhat * sigma * math.sqrt(lead)
-        assert gross_return(yhat, sigma, lead) == pytest.approx(residual)
+        residual_log_return = yhat * sigma * math.sqrt(lead)
+        assert gross_return(yhat, sigma, lead) == pytest.approx(
+            math.expm1(residual_log_return)
+        )
 
 
 class TestDefaultLabelContract:
@@ -138,7 +149,8 @@ class TestDefaultLabelContract:
     def test_every_contract_field_is_a_real_label_knob(self):
         # A pinning test: the contract vocabulary cannot drift from the
         # label's own declared knob list (CLAUDE.md: pin the agreement).
-        assert set(LABEL_CONTRACT_FIELDS) <= set(LABEL_PARAMS)
+        assert set(LABEL_CONTRACT_FIELDS) - {"return_basis"} <= set(LABEL_PARAMS)
+        assert default_label_contract()["return_basis"] == LABEL_RETURN_BASIS
         assert set(default_label_contract()) == set(LABEL_CONTRACT_FIELDS)
 
 
@@ -154,12 +166,19 @@ class TestForecastBundleAssembly:
         for out in bundle.rows:
             assert out["mu_gross"] == pytest.approx(gross_return(0.5, 0.0012, 3))
 
-    def test_every_scenario_is_the_forecast_mean_plus_a_converted_residual(self):
+    def test_scenario_mean_is_recentered_to_the_false_signal_haircut(self):
         bundle = _bundle()
         for out in bundle.rows:
-            assert out["scenarios"] == pytest.approx(
-                [gross_return(0.5 + v, 0.0012, 3) for v in SCENARIOS]
+            weighted_mean = sum(
+                weight * value
+                for weight, value in zip(out["weights"], out["scenarios"])
             )
+            assert weighted_mean == pytest.approx((1.0 - 0.10) * out["mu_gross"])
+
+    def test_pi_hat_and_pi_upper_remain_distinct_outputs(self):
+        out = _bundle().rows[0]
+        assert out["pi_hat"] == 0.10
+        assert out["pi_upper"] == 0.20
 
     def test_output_rows_carry_the_shared_tick_identity(self):
         bundle = _bundle()
@@ -223,7 +242,7 @@ class TestPointInTimeAvailability:
 
     @pytest.mark.parametrize(
         "key",
-        ["sigma", "beta", "reference", "price", "yhat", "pi_upper", "scenarios"],
+        ["sigma", "beta", "reference", "price", "yhat", "pi_hat", "pi_upper", "scenarios"],
     )
     def test_a_dependency_known_after_the_decision_refuses(self, key):
         bad_known = dict(_input_row("AAPL")["known_at"], **{key: ASOF_MS + 1})
@@ -233,7 +252,7 @@ class TestPointInTimeAvailability:
 
     @pytest.mark.parametrize(
         "key",
-        ["sigma", "beta", "reference", "price", "yhat", "pi_upper", "scenarios"],
+        ["sigma", "beta", "reference", "price", "yhat", "pi_hat", "pi_upper", "scenarios"],
     )
     def test_a_missing_availability_stamp_refuses(self, key):
         bad_known = {
@@ -365,6 +384,14 @@ class TestOneJointScenarioSetPerTick:
         with pytest.raises(ValueError, match="pi_upper"):
             _bundle([_input_row("AAPL", pi_upper=1.5)])
 
+    def test_pi_hat_above_pi_upper_refuses(self):
+        with pytest.raises(ValueError, match="pi_hat"):
+            _bundle([_input_row("AAPL", pi_hat=0.3, pi_upper=0.2)])
+
+    def test_fractional_decision_epoch_refuses(self):
+        with pytest.raises(ValueError, match="decision_ts"):
+            _bundle([_input_row("AAPL", decision_ts=ASOF_MS + 0.5)])
+
 
 class TestTheCapitalNodeContractIsPinned:
     """The produced rows must satisfy the consumer's own bundle validator."""
@@ -378,12 +405,22 @@ class TestTheCapitalNodeContractIsPinned:
 def _cap_artifact(**overrides):
     """One hand-built, deployable confirmed-cap artifact."""
     artifact = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model_release_id": RELEASE,
         "deployment_eligible": True,
         "evidence_scope": "mean_confirmation_2026_03_05",
         "evidence_end_ms": ASOF_MS - 10_000_000,
         "generated_ms": ASOF_MS - 1_000_000,
+        "producer": {
+            "document_sha256": PRODUCER_DOCUMENT_SHA256,
+            "node": "confirm",
+            "output": "cap",
+        },
+        "evidence": {
+            "sha256": EVIDENCE_SHA256,
+            "scope": "mean_confirmation_2026_03_05",
+            "end_ms": ASOF_MS - 10_000_000,
+        },
         "caps": [
             {"symbol": "AAPL", "capped_horizon": 4},
             {"symbol": "MSFT", "capped_horizon": 2},
@@ -395,7 +432,7 @@ def _cap_artifact(**overrides):
 
 
 class TestConfirmedCaps:
-    """The pinned, deployable (symbol, lead) cap artifact contract."""
+    """The hash-addressable (symbol, lead) cap artifact structure."""
 
     def test_the_reference_artifact_validates(self):
         from intraday_equities.forecast_bundle import ConfirmedCaps
@@ -427,12 +464,11 @@ class TestConfirmedCaps:
         assert caps.capped_horizon("NOPE") is None
         assert not caps.allows("NOPE", 1)
 
-    def test_a_development_cap_always_refuses_deployment(self):
+    def test_a_development_cap_is_structurally_valid_but_not_deployable(self):
         from intraday_equities.forecast_bundle import ConfirmedCaps
 
-        bad = _cap_artifact(deployment_eligible=False)
-        with pytest.raises(ValueError, match="deployment_eligible"):
-            ConfirmedCaps(bad)
+        caps = ConfirmedCaps(_cap_artifact(deployment_eligible=False))
+        assert caps.deployment_eligible is False
 
     def test_a_cap_from_the_p16_development_evidence_scope_refuses(self):
         # Confirmation caps must come from evidence NOT used to choose the
@@ -454,11 +490,30 @@ class TestConfirmedCaps:
         with pytest.raises(ValueError, match="evidence_end_ms"):
             ConfirmedCaps(bad)
 
+    def test_evidence_binding_must_match_the_top_level_scope_and_cut(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        bad = _cap_artifact(
+            evidence={
+                "sha256": EVIDENCE_SHA256,
+                "scope": "different_scope",
+                "end_ms": ASOF_MS - 10_000_000,
+            }
+        )
+        with pytest.raises(ValueError, match="evidence.*scope"):
+            ConfirmedCaps(bad)
+
+    def test_fractional_cap_epoch_refuses_instead_of_being_truncated(self):
+        from intraday_equities.forecast_bundle import ConfirmedCaps
+
+        with pytest.raises(ValueError, match="generated_ms"):
+            ConfirmedCaps(_cap_artifact(generated_ms=ASOF_MS - 0.5))
+
     def test_a_wrong_schema_version_refuses(self):
         from intraday_equities.forecast_bundle import ConfirmedCaps
 
         with pytest.raises(ValueError, match="schema_version"):
-            ConfirmedCaps(_cap_artifact(schema_version=2))
+            ConfirmedCaps(_cap_artifact(schema_version=3))
 
     def test_an_empty_release_identity_refuses(self):
         from intraday_equities.forecast_bundle import ConfirmedCaps
@@ -503,5 +558,5 @@ class TestConfirmedCaps:
     def test_problems_accumulates_without_raising(self):
         from intraday_equities.forecast_bundle import ConfirmedCaps
 
-        problems = ConfirmedCaps.problems(_cap_artifact(deployment_eligible=False))
+        problems = ConfirmedCaps.problems(_cap_artifact(deployment_eligible="yes"))
         assert any("deployment_eligible" in p for p in problems)

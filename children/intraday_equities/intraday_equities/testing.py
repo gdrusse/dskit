@@ -299,7 +299,9 @@ class SyntheticMioSource(Node):
     this one node for a real source" pattern
     ``examples/pipeline/pyomo-solve.json`` documents for the toolkit's
     own ``PyomoSolve`` example. NOT real market data; every number here
-    is illustrative and reproducible, never fetched.
+    is illustrative and reproducible, never fetched. Its cap is explicitly
+    ``deployment_eligible=false`` and is usable only with the demo's
+    ``deployment_mode=false`` plus exact artifact/producer/evidence pins.
 
     Parameters
     ----------
@@ -328,9 +330,12 @@ class SyntheticMioSource(Node):
     _PRICES = {"AAPL": 190.0, "MSFT": 410.0, "XOM": 110.0}
     _MU = {"AAPL": 0.006, "MSFT": 0.004, "XOM": 0.002}
     _SIGMA = {"AAPL": 0.012, "MSFT": 0.010, "XOM": 0.008}
+    _PI_HAT = {"AAPL": 0.08, "MSFT": 0.12, "XOM": 0.18}
     _PI_UPPER = {"AAPL": 0.15, "MSFT": 0.20, "XOM": 0.25}
     _RELEASE_ID = "synthetic-mio-demo-release"
     _LEAD = 3
+    _CAP_PRODUCER_DOCUMENT_SHA256 = "c" * 64
+    _CAP_EVIDENCE_SHA256 = "d" * 64
     #: A fixed epoch — the decision tick is a reproducible instant, not
     #: wall-clock "now"; EquityKellyMIO reads freshness off portfolio vs.
     #: bundle timestamps alone, never off ctx.asof.
@@ -366,7 +371,8 @@ class SyntheticMioSource(Node):
         -------
         dict
             ``scores`` (the stat_test's food), plus ``bundle``,
-            ``portfolio``, and ``cap`` (EquityKellyMIO's inputs).
+            ``portfolio``, and a deterministic nonproduction ``cap``
+            (EquityKellyMIO's inputs).
         """
         import numpy as np
 
@@ -379,7 +385,11 @@ class SyntheticMioSource(Node):
             scores[name] = {
                 f"c{c}": 0.02 + 0.001 * ((seed + i + c) % 5) for c in range(self._N_CLUSTERS)
             }
-            draws = rng.normal(self._MU[name], self._SIGMA[name], self._N_SCENARIOS)
+            draws = rng.normal(
+                (1.0 - self._PI_HAT[name]) * self._MU[name],
+                self._SIGMA[name],
+                self._N_SCENARIOS,
+            )
             bundle.append(
                 {
                     "entity": name,
@@ -388,6 +398,7 @@ class SyntheticMioSource(Node):
                     "model_release_id": self._RELEASE_ID,
                     "unit": BUNDLE_UNIT,
                     "price": self._PRICES[name],
+                    "pi_hat": self._PI_HAT[name],
                     "pi_upper": self._PI_UPPER[name],
                     "weights": weights,
                     "scenarios": [float(v) for v in draws],
@@ -404,12 +415,22 @@ class SyntheticMioSource(Node):
             "sale_credit": 1.0,
         }
         cap = {
-            "schema_version": 1,
+            "schema_version": 2,
             "model_release_id": self._RELEASE_ID,
-            "deployment_eligible": True,
+            "deployment_eligible": False,
             "evidence_scope": "synthetic_mio_demo",
             "evidence_end_ms": self._ASOF_MS - 2000,
             "generated_ms": self._ASOF_MS - 1000,
+            "producer": {
+                "document_sha256": self._CAP_PRODUCER_DOCUMENT_SHA256,
+                "node": "source",
+                "output": "cap",
+            },
+            "evidence": {
+                "sha256": self._CAP_EVIDENCE_SHA256,
+                "scope": "synthetic_mio_demo",
+                "end_ms": self._ASOF_MS - 2000,
+            },
             "caps": [
                 {"symbol": name, "capped_horizon": len(HEADS)}
                 for name in self._NAMES

@@ -90,12 +90,24 @@ def test_mio_demo_wires_the_synthetic_confirmed_cap():
     assert source["uses"] == "intraday_equities.testing:SyntheticMioSource"
     assert size["inputs"]["cap"] == "$source.cap"
     assert size["params"]["cap_max_staleness_ms"] == 5000
+    assert size["params"]["deployment_mode"] is False
+    assert len(size["params"]["cap_artifact_sha256"]) == 64
+    assert len(size["params"]["cap_producer_document_sha256"]) == 64
+    assert size["params"]["cap_producer_node"] == "source"
+    assert len(size["params"]["cap_evidence_sha256"]) == 64
 
 
-def test_mio_demo_source_emits_a_release_matched_deployable_cap():
+def test_mio_demo_source_emits_a_release_matched_nonproduction_cap():
+    raw = _raw("run-mio-demo.json")
+    pins = raw["pipeline"]["size"]["params"]
     out = SyntheticMioSource("source", {"seed": 0}).run(None, {})
     assert _bundle_problems(out["bundle"]) == []
     caps = ConfirmedCaps(out["cap"])
+    assert pins["cap_artifact_sha256"] == ConfirmedCaps.digest(out["cap"])
+    assert pins["cap_producer_document_sha256"] == caps.producer["document_sha256"]
+    assert pins["cap_producer_node"] == caps.producer["node"]
+    assert pins["cap_evidence_sha256"] == caps.evidence["sha256"]
+    assert caps.deployment_eligible is False
     assert caps.model_release_id == out["bundle"][0]["model_release_id"]
     assert all(caps.allows(row["entity"], row["lead"]) for row in out["bundle"])
 

@@ -3,15 +3,20 @@
 ## Current wrap: Gate 4 forecast bundle + confirmed-cap contracts (2026-09-11)
 
 Branch `sol/gate4-closeout` integrates `origin/main` at `5b60f97` and records
-the owner-approved design as ADR-0121. Gate 4 now converts the pinned P16 label
-contract into gross-unit scenario rows, requires fresh release-matched confirmed
-caps before capital sizing, and keeps the synthetic MIO demo wired end to end.
+the owner-approved design as ADR-0121. Gate 4 now converts the pinned P16 log
+label through `expm1`, keeps point `pi_hat` distinct from conservative
+`pi_upper`, and recenters scenarios to the false-signal-haircut mean. Capital
+requires one integer decision tick plus fresh, release-matched caps whose full
+artifact and producer/evidence identities match config pins. Deployment remains
+fail-closed until a trusted real cap producer exists; the demo is explicitly
+nonproduction.
 
-Focused verification: 157 Gate 4 tests passed; demo validate/plan hash
-`49ac368b…`; Ruff and `git diff --check` clean. The broader config suite retains
-five unrelated final-HPO/P16 expectation failures. No market data, HPO, refit,
-replay, full suite, or `path.csv` operation ran. Final review is delegated to the
-parent task; do not merge or push this branch before that review closes.
+Focused verification: 175 Gate 4 tests passed; demo validate/plan hash
+`b1727913b33fda2dcefb801a409ac0102f975cc919442ff86ff53c9a6edef025`;
+Ruff and `git diff --check` clean. The broader config suite was not rerun. No
+market data, HPO, refit, replay, full suite, or `path.csv` operation ran. Final
+independent rereview is delegated to the parent task; do not merge or push this
+branch before that review closes.
 
 ## Current wrap: reviewed Gates 6, 2, and 5 closed to main (2026-09-11)
 

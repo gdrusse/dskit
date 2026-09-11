@@ -50,6 +50,7 @@ from __future__ import annotations
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 from dskit.pipeline.node import ConfigError, check_int_param, register_node_kind, reject_unknown_params
 from dskit.pipeline.records import number_ok
+from dskit.pipeline.stages import is_sha256hex
 
 from .final_model import HEADS
 from .forecast_bundle import BUNDLE_UNIT, ConfirmedCaps
@@ -77,6 +78,7 @@ BUNDLE_FIELDS = (
     "model_release_id",
     "unit",
     "price",
+    "pi_hat",
     "pi_upper",
     "weights",
     "scenarios",
@@ -192,6 +194,7 @@ def _bundle_problems(bundle):
         ]
     problems = []
     weights_ref = None
+    decision_ts_ref = None
     lead_ref = None
     release_ref = None
     seen = set()
@@ -214,8 +217,22 @@ def _bundle_problems(bundle):
             problems.append(f"bundle[{i}]: duplicate entity {entity!r} in one bundle")
         else:
             seen.add(entity)
-        if not number_ok(row.get("decision_ts")):
-            problems.append(f"bundle[{i}] ({entity!r}).decision_ts must be a finite number (epoch ms)")
+        decision_ts = row["decision_ts"]
+        if (
+            isinstance(decision_ts, bool)
+            or not isinstance(decision_ts, int)
+            or decision_ts < 0
+        ):
+            problems.append(
+                f"bundle[{i}] ({entity!r}).decision_ts must be an integer epoch ms >= 0"
+            )
+        elif decision_ts_ref is None:
+            decision_ts_ref = decision_ts
+        elif decision_ts != decision_ts_ref:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).decision_ts must equal the batch's "
+                f"shared decision_ts {decision_ts_ref!r}, got {decision_ts!r}"
+            )
         lead = row["lead"]
         if isinstance(lead, bool) or not isinstance(lead, int) or not 1 <= lead <= len(HEADS):
             problems.append(
@@ -283,8 +300,16 @@ def _bundle_problems(bundle):
                 )
         if not number_ok(row.get("price")) or row["price"] <= 0.0:
             problems.append(f"bundle[{i}] ({entity!r}).price must be a finite number > 0")
-        if not number_ok(row.get("pi_upper")) or not 0.0 <= row["pi_upper"] <= 1.0:
+        pi_hat = row["pi_hat"]
+        pi_upper = row["pi_upper"]
+        if not number_ok(pi_hat) or not 0.0 <= pi_hat <= 1.0:
+            problems.append(f"bundle[{i}] ({entity!r}).pi_hat must be a finite number in [0, 1]")
+        if not number_ok(pi_upper) or not 0.0 <= pi_upper <= 1.0:
             problems.append(f"bundle[{i}] ({entity!r}).pi_upper must be a finite number in [0, 1]")
+        elif number_ok(pi_hat) and pi_hat > pi_upper:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).pi_hat must not exceed pi_upper"
+            )
     return problems
 
 
@@ -299,7 +324,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     ``cash_reserve``/``gross_limit``/``sale_credit``), ``survivors``
     (the ``stat_test`` gate REQUIRED by the planner's capital rule — only
     bundle rows whose ``entity`` is a survivor enter the program), and
-    ``cap`` (the required, fresh, release-matched confirmed-cap artifact).
+    ``cap`` (the required, fresh, release-matched confirmed-cap artifact;
+    its digest and producer/evidence identities must match config pins).
 
     Parameters
     ----------
@@ -318,7 +344,13 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         ``min_ticket``), ``max_position_notional`` (required, > 0 — a
         UNIFORM per-name dollar ceiling; a bundle-declared per-name cap is a
         follow-up, not built here), ``bundle_max_staleness_ms`` and
-        ``cap_max_staleness_ms`` (required ints >= 0), ``lot_size`` (int >=
+        ``cap_max_staleness_ms`` (required ints >= 0),
+        ``cap_artifact_sha256`` (canonical artifact digest),
+        ``cap_producer_document_sha256``/``cap_producer_node`` (producer
+        identity), ``cap_evidence_sha256`` (evidence identity), and
+        ``deployment_mode`` (required bool). Development mode accepts only
+        an explicitly non-deployable cap; deployment mode fails closed until
+        a trusted real cap producer exists. ``lot_size`` (int >=
         1, default :data:`DEFAULT_LOT_SIZE` — scales
         the no-trade band's ``band_shares_i`` floor to a round number of
         lots; shares bought or sold are NOT themselves constrained to
@@ -339,6 +371,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             "hfdr_q": 0.10, "band_bps": 10.0, "max_position_notional": 5000.0,
             "bundle_max_staleness_ms": 5000,
             "cap_max_staleness_ms": 5000,
+            "cap_artifact_sha256": "a" * 64,
+            "cap_producer_document_sha256": "b" * 64,
+            "cap_producer_node": "source",
+            "cap_evidence_sha256": "c" * 64,
+            "deployment_mode": False,
         })
     """
 
@@ -355,6 +392,11 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         "max_position_notional",
         "bundle_max_staleness_ms",
         "cap_max_staleness_ms",
+        "cap_artifact_sha256",
+        "cap_producer_document_sha256",
+        "cap_producer_node",
+        "cap_evidence_sha256",
+        "deployment_mode",
         "lot_size",
     )
 
@@ -427,6 +469,23 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 params["cap_max_staleness_ms"],
                 ge=0,
             )
+        for name in (
+            "cap_artifact_sha256",
+            "cap_producer_document_sha256",
+            "cap_evidence_sha256",
+        ):
+            if name not in params:
+                problems.append(f"{name} is required — trusted cap provenance has no default")
+            elif not is_sha256hex(params[name]):
+                problems.append(f"{name} must be a lowercase SHA-256 digest")
+        if "cap_producer_node" not in params:
+            problems.append("cap_producer_node is required — trusted cap provenance has no default")
+        elif not isinstance(params["cap_producer_node"], str) or not params["cap_producer_node"]:
+            problems.append("cap_producer_node must be a non-empty string")
+        if "deployment_mode" not in params:
+            problems.append("deployment_mode is required — development versus deployment must be explicit")
+        elif not isinstance(params["deployment_mode"], bool):
+            problems.append("deployment_mode must be a JSON boolean")
         check_int_param(problems, "lot_size", params.get("lot_size", DEFAULT_LOT_SIZE), ge=1)
         return problems
 
@@ -440,8 +499,9 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 f"portfolio must be a mapping of account state, got {type(portfolio).__name__}"
             )
         else:
-            if not number_ok(portfolio.get("asof_ms")):
-                problems.append("portfolio.asof_ms must be a finite number (epoch ms)")
+            asof_ms = portfolio.get("asof_ms")
+            if isinstance(asof_ms, bool) or not isinstance(asof_ms, int) or asof_ms < 0:
+                problems.append("portfolio.asof_ms must be an integer epoch ms >= 0")
             if not number_ok(portfolio.get("cash")):
                 problems.append("portfolio.cash must be a finite number")
             if not number_ok(portfolio.get("buying_power")):
@@ -512,8 +572,42 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         problems.extend(cap_problems)
         if not cap_problems:
             confirmed = ConfirmedCaps(cap)
-            if isinstance(portfolio, dict) and number_ok(portfolio.get("asof_ms")):
-                age_ms = int(portfolio["asof_ms"]) - int(confirmed.generated_ms)
+            digest = ConfirmedCaps.digest(cap)
+            if digest != self.params["cap_artifact_sha256"]:
+                problems.append(
+                    "cap artifact does not match cap_artifact_sha256: "
+                    f"expected {self.params['cap_artifact_sha256']!r}, got {digest!r}"
+                )
+            if confirmed.producer["document_sha256"] != self.params[
+                "cap_producer_document_sha256"
+            ]:
+                problems.append(
+                    "cap producer document does not match "
+                    "cap_producer_document_sha256"
+                )
+            if confirmed.producer["node"] != self.params["cap_producer_node"]:
+                problems.append("cap producer node does not match cap_producer_node")
+            if confirmed.evidence["sha256"] != self.params["cap_evidence_sha256"]:
+                problems.append("cap evidence does not match cap_evidence_sha256")
+            if self.params["deployment_mode"]:
+                if not confirmed.deployment_eligible:
+                    problems.append(
+                        "cap.deployment_eligible must be true in deployment mode"
+                    )
+                problems.append(
+                    "deployment mode refuses: no trusted real confirmation-cap "
+                    "producer exists yet"
+                )
+            elif confirmed.deployment_eligible:
+                problems.append(
+                    "cap.deployment_eligible must be false in development mode"
+                )
+            if (
+                isinstance(portfolio, dict)
+                and isinstance(portfolio.get("asof_ms"), int)
+                and not isinstance(portfolio.get("asof_ms"), bool)
+            ):
+                age_ms = portfolio["asof_ms"] - confirmed.generated_ms
                 max_stale = int(self.params["cap_max_staleness_ms"])
                 if age_ms < 0:
                     problems.append(
@@ -554,7 +648,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         portfolio = inputs["portfolio"]
         survivors = set(inputs["survivors"])
         confirmed = ConfirmedCaps(inputs["cap"])
-        asof_ms = int(portfolio["asof_ms"])
+        asof_ms = portfolio["asof_ms"]
         max_stale = int(self.params["bundle_max_staleness_ms"])
         min_price = float(self.params["min_price"])
         max_notional = float(self.params["max_position_notional"])
@@ -581,7 +675,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                     f"lead {row['lead']} is above confirmed cap {capped_horizon}"
                 )
                 continue
-            age_ms = asof_ms - int(row["decision_ts"])
+            age_ms = asof_ms - row["decision_ts"]
             if age_ms < 0 or age_ms > max_stale:
                 routed_out[entity] = f"bundle stale or from the future: age_ms={age_ms}"
                 continue

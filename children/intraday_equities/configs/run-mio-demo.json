@@ -41,6 +41,11 @@
         "max_position_notional": 5000.0,
         "bundle_max_staleness_ms": 5000,
         "cap_max_staleness_ms": 5000,
+        "cap_artifact_sha256": "9ae17a39173a48c5df43134dd0eb20711dbe10f144caf87bc109102117ca41ff",
+        "cap_producer_document_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "cap_producer_node": "source",
+        "cap_evidence_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "deployment_mode": false,
         "solver": "appsi_highs",
         "solver_options": {}
       },

@@ -18,7 +18,7 @@ import pytest
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext, node_class_errors
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 
-from intraday_equities.forecast_bundle import BUNDLE_UNIT
+from intraday_equities.forecast_bundle import BUNDLE_UNIT, ConfirmedCaps
 from intraday_equities.nodes_capital import (
     BUNDLE_FIELDS,
     NODE_KINDS,
@@ -29,6 +29,8 @@ from intraday_equities.nodes_capital import (
 KIND = "intraday_equities-kelly-mio"
 
 RELEASE = "release-sha256-0f" * 4
+CAP_PRODUCER_DOCUMENT_SHA256 = "a" * 64
+CAP_EVIDENCE_SHA256 = "b" * 64
 
 PARAMS = {
     "risk_aversion_gamma": 2.0,
@@ -64,6 +66,7 @@ def _row(entity, price, pi_upper, scenarios, decision_ts=ASOF_MS - 1000, weights
         "model_release_id": RELEASE,
         "unit": BUNDLE_UNIT,
         "price": price,
+        "pi_hat": min(pi_upper, 0.10),
         "pi_upper": pi_upper,
         "weights": weights or _weights(len(scenarios)),
         "scenarios": list(scenarios),
@@ -71,14 +74,24 @@ def _row(entity, price, pi_upper, scenarios, decision_ts=ASOF_MS - 1000, weights
 
 
 def _cap(**overrides):
-    """One deployable confirmed-cap artifact covering the demo names."""
+    """One hash-pinnable synthetic cap artifact covering the demo names."""
     cap = {
-        "schema_version": 1,
+        "schema_version": 2,
         "model_release_id": RELEASE,
-        "deployment_eligible": True,
-        "evidence_scope": "mean_confirmation_2026_03_05",
+        "deployment_eligible": False,
+        "evidence_scope": "synthetic_mio_demo",
         "evidence_end_ms": ASOF_MS - 10_000_000,
         "generated_ms": ASOF_MS - 1000,
+        "producer": {
+            "document_sha256": CAP_PRODUCER_DOCUMENT_SHA256,
+            "node": "confirm",
+            "output": "cap",
+        },
+        "evidence": {
+            "sha256": CAP_EVIDENCE_SHA256,
+            "scope": "synthetic_mio_demo",
+            "end_ms": ASOF_MS - 10_000_000,
+        },
         "caps": [
             {"symbol": "AAPL", "capped_horizon": 10},
             {"symbol": "MSFT", "capped_horizon": 10},
@@ -87,6 +100,17 @@ def _cap(**overrides):
     }
     cap.update(overrides)
     return cap
+
+
+PARAMS.update(
+    {
+        "cap_artifact_sha256": ConfirmedCaps.digest(_cap()),
+        "cap_producer_document_sha256": CAP_PRODUCER_DOCUMENT_SHA256,
+        "cap_producer_node": "confirm",
+        "cap_evidence_sha256": CAP_EVIDENCE_SHA256,
+        "deployment_mode": False,
+    }
+)
 
 
 def _bundle():
@@ -116,8 +140,19 @@ def _ctx(tmp_path):
     return NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path / "run"))
 
 
-def _node(**params):
-    return EquityKellyMIO("size", {**PARAMS, **params})
+def _node(cap=None, **params):
+    cap = _cap() if cap is None else cap
+    pins = {
+        "cap_artifact_sha256": ConfirmedCaps.digest(cap),
+        "cap_producer_document_sha256": cap.get("producer", {}).get(
+            "document_sha256", CAP_PRODUCER_DOCUMENT_SHA256
+        ),
+        "cap_producer_node": cap.get("producer", {}).get("node", "confirm"),
+        "cap_evidence_sha256": cap.get("evidence", {}).get(
+            "sha256", CAP_EVIDENCE_SHA256
+        ),
+    }
+    return EquityKellyMIO("size", {**PARAMS, **pins, **params})
 
 
 class TestRegistration:
@@ -147,7 +182,9 @@ class TestParams:
         [
             "spread_bps", "taf_per_share", "sec31_bps", "min_price",
             "hfdr_q", "band_bps", "max_position_notional", "bundle_max_staleness_ms",
-            "cap_max_staleness_ms",
+            "cap_max_staleness_ms", "cap_artifact_sha256",
+            "cap_producer_document_sha256", "cap_producer_node",
+            "cap_evidence_sha256", "deployment_mode",
         ],
     )
     def test_the_cost_and_risk_knobs_have_no_default(self, name):
@@ -243,16 +280,15 @@ class TestRealSolve:
         assert "XOM" not in out["target"]
         assert out["evidence"]["routed_out"]["XOM"] == "not a stat_test survivor"
 
-    def test_a_stale_bundle_row_is_routed_out(self, tmp_path):
+    def test_a_stale_bundle_row_cannot_create_a_mixed_decision_batch(self, tmp_path):
         bundle = _bundle()
         bundle[0] = dict(bundle[0], decision_ts=ASOF_MS - 999999)
         node = _node()
-        out = node.run(
-            _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
-        )
-        assert "AAPL" not in out["target"]
-        assert "stale" in out["evidence"]["routed_out"]["AAPL"]
+        with pytest.raises(ValueError, match="shared decision_ts"):
+            node.run(
+                _ctx(tmp_path),
+                {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+            )
 
     def test_a_price_below_min_price_is_routed_out(self, tmp_path):
         bundle = _bundle()
@@ -703,14 +739,14 @@ class TestSmallPositiveNetWorthSolvesInsteadOfRefusing:
     relative to net worth itself, never an absolute dollar figure."""
 
     def test_a_near_zero_account_can_still_exit_its_one_residual_position(self, tmp_path):
-        node = EquityKellyMIO("size", {
-            "risk_aversion_gamma": 2.0, "n_tangents": 16, "n_scenarios_max": 128,
-            "cardinality": 3, "min_ticket": 0.1, "spread_bps": 2.2, "taf_per_share": 0.000195,
-            "sec31_bps": 0.0206, "min_price": 0.01, "hfdr_q": 0.90,
-            "bundle_max_staleness_ms": 5000, "cap_max_staleness_ms": 5000,
-            "cvar_alpha": 0.9, "cvar_limit": None,
-            "band_bps": 10.0, "max_position_notional": 999999.0,
-        })
+        node = _node(
+            n_tangents=16,
+            n_scenarios_max=128,
+            min_ticket=0.1,
+            min_price=0.01,
+            hfdr_q=0.90,
+            max_position_notional=999999.0,
+        )
         portfolio = {
             "asof_ms": ASOF_MS, "cash": 0.0, "buying_power": 0.0, "positions": {"AAPL": 1},
             "mark_prices": {"AAPL": 0.50}, "cash_reserve": 0.0, "gross_limit": None,
@@ -774,12 +810,25 @@ class TestExtendedBundleContract:
         problems = _bundle_problems(bad)
         assert any("model_release_id" in p and "shared" in p for p in problems), problems
 
+    def test_mixed_decision_timestamps_in_one_bundle_refuse(self):
+        bad = _bundle()
+        bad[1] = dict(bad[1], decision_ts=ASOF_MS - 2000)
+        problems = _bundle_problems(bad)
+        assert any("decision_ts" in p and "shared" in p for p in problems), problems
+
+    def test_fractional_future_decision_timestamp_refuses_before_truncation(self):
+        bad = _bundle()
+        bad[0] = dict(bad[0], decision_ts=ASOF_MS + 0.5)
+        problems = _bundle_problems(bad)
+        assert any("decision_ts" in p and "integer" in p for p in problems), problems
+
 
 class TestConfirmedCapEnforcement:
     """Gate 4 (ADR-0121): the pinned confirmed (symbol, lead) cap is a
     required input and is enforced before optimization — absent, zero and
-    over-cap rows route out; stale, ineligible and wrong-release caps
-    refuse outright. The stat_test survivor wire is unchanged."""
+    over-cap rows route out; stale, provenance-mismatched, mode-ineligible,
+    and wrong-release caps refuse outright. The stat_test survivor wire is
+    unchanged."""
 
     def test_the_reference_cap_input_validates_clean(self):
         node = _node()
@@ -802,49 +851,84 @@ class TestConfirmedCapEnforcement:
         )
         assert any("cap" in p for p in problems), problems
 
-    def test_a_development_cap_refuses_deployment(self):
-        node = _node()
+    def test_a_deployable_cap_refuses_in_explicit_development_mode(self):
+        cap = _cap(deployment_eligible=True)
+        node = _node(cap=cap)
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
-                "cap": _cap(deployment_eligible=False),
+                "cap": cap,
             }
         )
         assert any("deployment_eligible" in p for p in problems), problems
 
+    def test_deployment_mode_fails_closed_without_a_trusted_real_producer(self):
+        cap = _cap(deployment_eligible=True)
+        node = _node(cap=cap, deployment_mode=True)
+        problems = node.validate_inputs(
+            {
+                "bundle": _bundle(), "portfolio": _portfolio(),
+                "survivors": {"AAPL"}, "cap": cap,
+            }
+        )
+        assert any("trusted real" in p for p in problems), problems
+
+    def test_a_cap_that_differs_from_the_config_digest_pin_refuses(self):
+        cap = _cap(caps=[{"symbol": "AAPL", "capped_horizon": 2}])
+        problems = _node().validate_inputs(
+            {
+                "bundle": _bundle(), "portfolio": _portfolio(),
+                "survivors": {"AAPL"}, "cap": cap,
+            }
+        )
+        assert any("cap_artifact_sha256" in p for p in problems), problems
+
+    def test_fractional_future_cap_timestamp_refuses_before_truncation(self):
+        cap = _cap(generated_ms=ASOF_MS + 0.5)
+        problems = _node(cap=cap).validate_inputs(
+            {
+                "bundle": _bundle(), "portfolio": _portfolio(),
+                "survivors": {"AAPL"}, "cap": cap,
+            }
+        )
+        assert any("generated_ms" in p and "integer" in p for p in problems), problems
+
     def test_a_stale_cap_is_refused(self):
-        node = _node()
+        cap = _cap(generated_ms=ASOF_MS - 999_999)
+        node = _node(cap=cap)
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
-                "cap": _cap(generated_ms=ASOF_MS - 999_999),
+                "cap": cap,
             }
         )
         assert any("stale" in p for p in problems), problems
 
     def test_a_future_dated_cap_is_refused(self):
-        node = _node()
+        cap = _cap(generated_ms=ASOF_MS + 10_000)
+        node = _node(cap=cap)
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
-                "cap": _cap(generated_ms=ASOF_MS + 10_000),
+                "cap": cap,
             }
         )
         assert any("cap" in p and ("future" in p or "stale" in p) for p in problems), problems
 
     def test_a_cap_for_the_wrong_model_release_is_refused(self):
-        node = _node()
+        cap = _cap(model_release_id="a-different-release")
+        node = _node(cap=cap)
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
-                "cap": _cap(model_release_id="a-different-release"),
+                "cap": cap,
             }
         )
         assert any("model_release_id" in p for p in problems), problems
 
     def test_a_symbol_absent_from_the_cap_is_routed_out(self, tmp_path):
         cap = _cap(caps=[{"symbol": "AAPL", "capped_horizon": 10}])
-        out = _node().run(
+        out = _node(cap=cap).run(
             _ctx(tmp_path),
             {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
         )
@@ -858,7 +942,7 @@ class TestConfirmedCapEnforcement:
             {"symbol": "MSFT", "capped_horizon": 10},
             {"symbol": "XOM", "capped_horizon": 0},
         ])
-        out = _node().run(
+        out = _node(cap=cap).run(
             _ctx(tmp_path),
             {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
         )
@@ -871,7 +955,7 @@ class TestConfirmedCapEnforcement:
             {"symbol": "MSFT", "capped_horizon": 10},
             {"symbol": "XOM", "capped_horizon": 10},
         ])
-        out = _node().run(
+        out = _node(cap=cap).run(
             _ctx(tmp_path),
             {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
         )
@@ -886,7 +970,7 @@ class TestConfirmedCapEnforcement:
             {"symbol": "MSFT", "capped_horizon": 10},
             {"symbol": "XOM", "capped_horizon": 10},
         ])
-        out = _node().run(
+        out = _node(cap=cap).run(
             _ctx(tmp_path),
             {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
         )
@@ -894,15 +978,16 @@ class TestConfirmedCapEnforcement:
 
     def test_a_bad_cap_refuses_at_run_time_too_not_just_validation(self, tmp_path):
         # run() is callable directly (the tests above do); a development
-        # cap must fail closed there as well, never silently size.
-        node = _node()
+        # node must reject a deployment-marked cap, never silently size.
+        cap = _cap(deployment_eligible=True)
+        node = _node(cap=cap)
         with pytest.raises(ValueError, match="deployment_eligible"):
             node.run(
                 _ctx(tmp_path),
                 {
                     "bundle": _bundle(), "portfolio": _portfolio(),
                     "survivors": {"AAPL", "MSFT", "XOM"},
-                    "cap": _cap(deployment_eligible=False),
+                    "cap": cap,
                 },
             )
 

@@ -60,6 +60,12 @@ __all__ = [
     "DEFAULT_MAX_GAP_MINUTES",
     "DEFAULT_PRICE_FIELD",
     "DEFAULT_QUOTE_FIELDS",
+    "DEFAULT_BETA_WINDOW_MINUTES",
+    "DEFAULT_VOL_FLOOR",
+    "DEFAULT_VOL_WINDOW_MINUTES",
+    "LABEL_PARAMS",
+    "LABEL_RETURN_BASIS",
+    "LABEL_SCALES",
     "BarsFromStore",
     "FeedParity",
     "FoldFeatureStats",
@@ -115,6 +121,8 @@ DEFAULT_BETA_WINDOW_MINUTES = 3900
 #: A per-bar sd at or below this is a stale tape, not a quiet market;
 #: dividing by it would manufacture an enormous label.
 DEFAULT_VOL_FLOOR = 1e-8
+#: ``_LeadLabel`` computes ``log(px1 / px0)`` before residualization.
+LABEL_RETURN_BASIS = "log"
 #: What ``label_scale`` may say.
 LABEL_SCALES = ("raw", "vol")
 #: The label knobs, named ONCE (ADR-0059): :class:`NoInformationScan`
