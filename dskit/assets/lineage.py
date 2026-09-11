@@ -136,6 +136,12 @@ class Lineage:
     def edges(self, version_id=None) -> list:
         """Every edge, or every edge touching ``version_id``, in assert order.
 
+        Parameters
+        ----------
+        version_id : str, optional
+            Restrict to edges where this is the ``src`` or ``dst``;
+            ``None`` returns every edge in the graph.
+
         Returns
         -------
         list of dict
@@ -150,25 +156,93 @@ class Lineage:
         return out
 
     def parents(self, version_id) -> list:
-        """Direct upstream version_ids (what this derives from), sorted."""
+        """Direct upstream version_ids (what this derives from), sorted.
+
+        Parameters
+        ----------
+        version_id : str
+            A version_id present in the store.
+
+        Returns
+        -------
+        list of str
+            Sorted, direct upstream version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent or its kind is undeclared.
+        """
         self.registry.get(version_id)
         return sorted({e["src"] for e in self.edges(version_id) if e["dst"] == version_id})
 
     def children(self, version_id) -> list:
-        """Direct downstream version_ids (what derives from this), sorted."""
+        """Direct downstream version_ids (what derives from this), sorted.
+
+        Parameters
+        ----------
+        version_id : str
+            A version_id present in the store.
+
+        Returns
+        -------
+        list of str
+            Sorted, direct downstream version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent or its kind is undeclared.
+        """
         self.registry.get(version_id)
         return sorted({e["dst"] for e in self.edges(version_id) if e["src"] == version_id})
 
     def ancestors(self, version_id) -> list:
-        """Every upstream version_id, transitively, sorted."""
+        """Every upstream version_id, transitively, sorted.
+
+        Parameters
+        ----------
+        version_id : str
+            A version_id present in the store.
+
+        Returns
+        -------
+        list of str
+            Sorted, transitive upstream version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent or its kind is undeclared.
+        """
         return self._closure(version_id, upstream=True)
 
     def descendants(self, version_id) -> list:
-        """Every downstream version_id, transitively, sorted."""
+        """Every downstream version_id, transitively, sorted.
+
+        Parameters
+        ----------
+        version_id : str
+            A version_id present in the store.
+
+        Returns
+        -------
+        list of str
+            Sorted, transitive downstream version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent or its kind is undeclared.
+        """
         return self._closure(version_id, upstream=False)
 
     def _closure(self, version_id, upstream) -> list:
-        """BFS over the edge list, rebuilt per call — an O(edges) scan, priced for the tier-1 store's declared ~10^4 scale."""
+        """BFS over the edge list, rebuilt per call.
+
+        An O(edges) scan, priced for the tier-1 store's declared ~10^4
+        scale.
+        """
         self.registry.get(version_id)
         step = {}
         for e in self.edges():

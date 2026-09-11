@@ -196,6 +196,12 @@ class AssetRecord:
 
         The emitted ``version_id`` makes files self-describing and
         tamper-evident — :meth:`from_obj` recomputes it and refuses drift.
+
+        Returns
+        -------
+        dict
+            ``{"kind", "payload", "refs", "version_id"}`` plus
+            ``registered_at``/``origin``/``notes`` when non-empty.
         """
         out = {
             "kind": self.kind,
@@ -214,6 +220,17 @@ class AssetRecord:
     @classmethod
     def from_obj(cls, obj) -> "AssetRecord":
         """Rebuild a record from its file form; refuse tampered content.
+
+        Parameters
+        ----------
+        obj : dict
+            A record as :meth:`to_obj` emits it (or read back from a
+            store file).
+
+        Returns
+        -------
+        AssetRecord
+            The rebuilt record.
 
         Raises
         ------
