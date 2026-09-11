@@ -226,6 +226,20 @@ REMAINING, in the plan's risk order:
 - [ ] **Drain the pre-standard ignore list.** 73 modules sit in
       `pyproject.toml` under `per-file-ignores`; delete a module's entry when
       you convert it. That list IS the remaining work, in config form.
+      **In progress (2026-09-11):** 15 entries drained — 6 needed real
+      docstring fixes (`dskit/__init__.py`,
+      `children/intraday_poc/intraday_poc/__init__.py`,
+      `dskit/onboarding/__init__.py`, `dskit/pipeline/io.py`,
+      `dskit/onboarding/state.py`, `dskit/onboarding/certify.py` [already
+      compliant]) and 9 more were already fully compliant and needed only
+      the ignore-list entry removed (`dskit/assets/sync.py`,
+      `dskit/onboarding/publish.py`, `dskit/assets/default_model.py`,
+      `dskit/onboarding/default_model.py`, `dskit/onboarding/acquire.py`,
+      `dskit/onboarding/snapshot.py`, `dskit/assets/ingest.py`,
+      `dskit/assets/lineage.py`, `dskit/pipeline/features.py`). 42 modules
+      remain, each with more D-rule findings (3+) and generally classes
+      needing NumPy-section + Examples conversion, not just function-level
+      fixes — left for a future pass rather than rushed.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,
