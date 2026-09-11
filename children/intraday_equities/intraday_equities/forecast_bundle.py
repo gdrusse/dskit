@@ -50,6 +50,7 @@ __all__ = [
     "DEFAULT_REFERENCE",
     "ForecastBundle",
     "ConfirmedCaps",
+    "KNOWN_AT_FIELDS",
     "LABEL_CONTRACT_FIELDS",
     "ZERO_DRIFT",
     "default_label_contract",
@@ -387,6 +388,12 @@ class ForecastBundle:
         'pi_upper', 'scenarios')``, every stamp at or before
         ``decision_ts``). All time values are integer epoch milliseconds.
         An empty list is the empty gate and assembles to an empty bundle.
+    producer : dict
+        Exact producer identity: lowercase ``document_sha256``, non-empty
+        ``node``, and ``output="bundle"``.
+    model_manifest_sha256 : str
+        Lowercase SHA-256 of the release manifest that binds label/model
+        semantics.
     label_contract : dict, optional
         The pinned label contract ``sigma_t`` was computed under (default
         :func:`default_label_contract` — the training label's own knobs,
@@ -416,12 +423,22 @@ class ForecastBundle:
                               "pi_upper": 1_699_999_500_000,
                               "scenarios": 1_699_999_939_000},
             },
-        ])
+        ], producer={"document_sha256": "a" * 64,
+                     "node": "forecast", "output": "bundle"},
+           model_manifest_sha256="b" * 64)
         bundle.rows[0]["mu_gross"] == math.expm1(0.5 * 0.0012 * 3 ** 0.5)
         # -> True
     """
 
-    def __init__(self, release_id, rows, label_contract=None):
+    def __init__(
+        self,
+        release_id,
+        rows,
+        *,
+        producer=None,
+        model_manifest_sha256=None,
+        label_contract=None,
+    ):
         self.release_id = release_id
         self.label_contract = default_label_contract()
         self.reference_policy = ZERO_DRIFT
@@ -436,6 +453,20 @@ class ForecastBundle:
             problems.append(
                 f"release_id must be a non-empty string, got {release_id!r}"
             )
+        producer_fields = {"document_sha256", "node", "output"}
+        if not isinstance(producer, dict) or set(producer) != producer_fields:
+            problems.append(
+                f"producer must carry exactly {sorted(producer_fields)!r}"
+            )
+        else:
+            if not is_sha256hex(producer["document_sha256"]):
+                problems.append("producer.document_sha256 must be lowercase SHA-256")
+            if not isinstance(producer["node"], str) or not producer["node"]:
+                problems.append("producer.node must be a non-empty string")
+            if producer["output"] != "bundle":
+                problems.append("producer.output must be 'bundle'")
+        if not is_sha256hex(model_manifest_sha256):
+            problems.append("model_manifest_sha256 must be a lowercase SHA-256")
         if not isinstance(rows, (list, tuple)):
             problems.append(
                 f"rows must be a materialized list of candidate rows, got "
@@ -476,7 +507,24 @@ class ForecastBundle:
         self.decision_ts = shared.get("decision_ts")
         self.lead = shared.get("lead")
         self.weights = list(shared["weights"]) if "weights" in shared else None
+        self.producer = dict(producer)
+        self.model_manifest_sha256 = model_manifest_sha256
         self.rows = [self._assemble(row) for row in rows]
+
+    @classmethod
+    def digest(cls, rows):
+        """Return the canonical SHA-256 of an assembled row list."""
+        try:
+            raw = json.dumps(
+                rows,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        except (TypeError, ValueError, UnicodeEncodeError) as exc:
+            raise ValueError("bundle rows are not canonical JSON") from exc
+        return hashlib.sha256(raw).hexdigest()
 
     def _assemble(self, row):
         """Convert one validated input row into its gross-unit output row."""
@@ -496,6 +544,9 @@ class ForecastBundle:
             "scenarios": self._recentered_scenarios(row, mu_gross),
             "mu_gross": mu_gross,
             "reference_policy": self.reference_policy,
+            "label": dict(self.label_contract),
+            "model_manifest_sha256": self.model_manifest_sha256,
+            "producer": dict(self.producer),
             "known_at": dict(row["known_at"]),
         }
 

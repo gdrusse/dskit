@@ -6,13 +6,15 @@ Branch `sol/gate4-closeout` integrates `origin/main` at `5b60f97` and records
 the owner-approved design as ADR-0121. Gate 4 now converts the pinned P16 log
 label through `expm1`, keeps point `pi_hat` distinct from conservative
 `pi_upper`, and recenters scenarios to the false-signal-haircut mean. Capital
-requires one integer decision tick plus fresh, release-matched caps whose full
-artifact and producer/evidence identities match config pins. Deployment remains
-fail-closed until a trusted real cap producer exists; the demo is explicitly
-nonproduction.
+requires one integer decision tick plus hash-pinned bundle producer/manifest
+provenance and fresh, release-matched caps whose full artifact and
+producer/evidence identities match config pins. Caps generated after the
+forecast decision refuse. Deployment remains fail-closed until a trusted real
+cap producer exists; the demo is explicitly nonproduction and its realized
+finite scenario grids are exactly centered.
 
-Focused verification: 175 Gate 4 tests passed; demo validate/plan hash
-`b1727913b33fda2dcefb801a409ac0102f975cc919442ff86ff53c9a6edef025`;
+Focused verification: 183 Gate 4 tests passed; demo validate/plan hash
+`1124198a8853fbe17b89222c6f7c6bdec1f9f1b4f9f04bb26018c1a4106c691f`;
 Ruff and `git diff --check` clean. The broader config suite was not rerun. No
 market data, HPO, refit, replay, full suite, or `path.csv` operation ran. Final
 independent rereview is delegated to the parent task; do not merge or push this

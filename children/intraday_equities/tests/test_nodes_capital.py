@@ -18,7 +18,13 @@ import pytest
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext, node_class_errors
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 
-from intraday_equities.forecast_bundle import BUNDLE_UNIT, ConfirmedCaps
+from intraday_equities.forecast_bundle import (
+    BUNDLE_UNIT,
+    ZERO_DRIFT,
+    ConfirmedCaps,
+    ForecastBundle,
+    default_label_contract,
+)
 from intraday_equities.nodes_capital import (
     BUNDLE_FIELDS,
     NODE_KINDS,
@@ -31,6 +37,13 @@ KIND = "intraday_equities-kelly-mio"
 RELEASE = "release-sha256-0f" * 4
 CAP_PRODUCER_DOCUMENT_SHA256 = "a" * 64
 CAP_EVIDENCE_SHA256 = "b" * 64
+BUNDLE_PRODUCER_DOCUMENT_SHA256 = "c" * 64
+MODEL_MANIFEST_SHA256 = "d" * 64
+BUNDLE_PRODUCER = {
+    "document_sha256": BUNDLE_PRODUCER_DOCUMENT_SHA256,
+    "node": "forecast",
+    "output": "bundle",
+}
 
 PARAMS = {
     "risk_aversion_gamma": 2.0,
@@ -70,6 +83,20 @@ def _row(entity, price, pi_upper, scenarios, decision_ts=ASOF_MS - 1000, weights
         "pi_upper": pi_upper,
         "weights": weights or _weights(len(scenarios)),
         "scenarios": list(scenarios),
+        "reference_policy": ZERO_DRIFT,
+        "label": default_label_contract(),
+        "model_manifest_sha256": MODEL_MANIFEST_SHA256,
+        "producer": dict(BUNDLE_PRODUCER),
+        "known_at": {
+            "sigma": decision_ts - 1,
+            "beta": decision_ts - 1,
+            "reference": decision_ts - 1,
+            "price": decision_ts - 1,
+            "yhat": decision_ts - 1,
+            "pi_hat": decision_ts - 1,
+            "pi_upper": decision_ts - 1,
+            "scenarios": decision_ts - 1,
+        },
     }
 
 
@@ -122,6 +149,19 @@ def _bundle():
     ]
 
 
+def _bundle_pins(bundle=None):
+    bundle = _bundle() if bundle is None else bundle
+    return {
+        "bundle_artifact_sha256": ForecastBundle.digest(bundle),
+        "bundle_producer_document_sha256": BUNDLE_PRODUCER_DOCUMENT_SHA256,
+        "bundle_producer_node": "forecast",
+        "bundle_model_manifest_sha256": MODEL_MANIFEST_SHA256,
+    }
+
+
+PARAMS.update(_bundle_pins())
+
+
 def _portfolio(**overrides):
     base = {
         "asof_ms": ASOF_MS,
@@ -140,7 +180,7 @@ def _ctx(tmp_path):
     return NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path / "run"))
 
 
-def _node(cap=None, **params):
+def _node(cap=None, bundle=None, **params):
     cap = _cap() if cap is None else cap
     pins = {
         "cap_artifact_sha256": ConfirmedCaps.digest(cap),
@@ -152,7 +192,9 @@ def _node(cap=None, **params):
             "sha256", CAP_EVIDENCE_SHA256
         ),
     }
-    return EquityKellyMIO("size", {**PARAMS, **pins, **params})
+    return EquityKellyMIO(
+        "size", {**PARAMS, **_bundle_pins(bundle), **pins, **params}
+    )
 
 
 class TestRegistration:
@@ -185,6 +227,8 @@ class TestParams:
             "cap_max_staleness_ms", "cap_artifact_sha256",
             "cap_producer_document_sha256", "cap_producer_node",
             "cap_evidence_sha256", "deployment_mode",
+            "bundle_artifact_sha256", "bundle_producer_document_sha256",
+            "bundle_producer_node", "bundle_model_manifest_sha256",
         ],
     )
     def test_the_cost_and_risk_knobs_have_no_default(self, name):
@@ -293,7 +337,7 @@ class TestRealSolve:
     def test_a_price_below_min_price_is_routed_out(self, tmp_path):
         bundle = _bundle()
         bundle[2] = dict(bundle[2], price=1.0)  # below min_price=5.0
-        node = _node()
+        node = _node(bundle=bundle)
         out = node.run(
             _ctx(tmp_path),
             {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
@@ -304,7 +348,7 @@ class TestRealSolve:
     def test_a_dropped_held_name_is_a_mandatory_full_exit(self, tmp_path):
         bundle = [row for row in _bundle() if row["entity"] != "XOM"]
         portfolio = _portfolio(positions={"XOM": 20}, mark_prices={"XOM": 108.0})
-        node = _node()
+        node = _node(bundle=bundle)
         out = node.run(
             _ctx(tmp_path), {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
         )
@@ -317,7 +361,7 @@ class TestRealSolve:
         # scenarios look attractive.
         bundle = _bundle()
         bundle[2] = dict(bundle[2], pi_upper=0.95)
-        node = _node(hfdr_q=0.10)
+        node = _node(bundle=bundle, hfdr_q=0.10)
         out = node.run(
             _ctx(tmp_path),
             {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
@@ -413,7 +457,7 @@ class TestPositionBookkeeping:
     def test_a_zero_share_position_entry_is_not_treated_as_held(self, tmp_path):
         bundle = [row for row in _bundle() if row["entity"] != "XOM"]
         portfolio = _portfolio(positions={"XOM": 0})  # no mark_prices supplied on purpose
-        node = _node()
+        node = _node(bundle=bundle)
         out = node.run(
             _ctx(tmp_path),
             {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
@@ -513,7 +557,7 @@ class TestNoTradeBandNeverStrandsAPosition:
         portfolio = _portfolio(positions={"AAPL": 1})  # $190 notional, one lonely share
         # band_bps=10000 (100%) on a ticket floored at min_ticket=$200
         # gives band_shares=2 > held=1 — the exact "roach motel" shape.
-        node = _node(band_bps=10000.0)
+        node = _node(bundle=bundle, band_bps=10000.0)
         out = node.run(
             _ctx(tmp_path),
             {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
@@ -553,7 +597,7 @@ class TestNoTradeBandFloorsAreLoadBearing:
         # transient bookkeeping in a finally (a round-10 skeptic-review fix).
         _names, _rows, _account = node.instruments(inputs)
         assert node._band_shares["AAPL"] == 10
-        out = _node(band_bps=band_bps, cardinality=1, max_position_notional=999999.0).run(
+        out = _node(bundle=[row], band_bps=band_bps, cardinality=1, max_position_notional=999999.0).run(
             _ctx(tmp_path), inputs
         )
         assert out["trades"] == {}  # blocked: only 5 shares of room, floor needs 10
@@ -580,7 +624,7 @@ class TestNoTradeBandFloorsAreLoadBearing:
         node = _node(**node_params)
         node.instruments(inputs)
         assert node._band_shares["XOM"] == 100
-        out = _node(**node_params).run(_ctx(tmp_path), inputs)
+        out = _node(bundle=[row], **node_params).run(_ctx(tmp_path), inputs)
         sold = out["trades"].get("XOM", {"sell": 0})["sell"]
         assert sold == 0 or sold >= 100
         assert sold != 4  # pin the exact "would-be dust trim" this fixture proves the floor blocks
@@ -822,6 +866,14 @@ class TestExtendedBundleContract:
         problems = _bundle_problems(bad)
         assert any("decision_ts" in p and "integer" in p for p in problems), problems
 
+    def test_missing_label_and_point_in_time_audit_refuse(self):
+        bad = _bundle()
+        del bad[0]["label"]
+        del bad[0]["known_at"]
+        problems = _bundle_problems(bad)
+        assert any("label" in p for p in problems), problems
+        assert any("known_at" in p for p in problems), problems
+
 
 class TestConfirmedCapEnforcement:
     """Gate 4 (ADR-0121): the pinned confirmed (symbol, lead) cap is a
@@ -882,6 +934,36 @@ class TestConfirmedCapEnforcement:
             }
         )
         assert any("cap_artifact_sha256" in p for p in problems), problems
+
+    def test_a_bundle_that_differs_from_the_config_digest_pin_refuses(self):
+        bundle = _bundle()
+        bundle[0] = dict(bundle[0], scenarios=[99.0] * 8)
+        problems = _node().validate_inputs(
+            {
+                "bundle": bundle, "portfolio": _portfolio(),
+                "survivors": {"AAPL"}, "cap": _cap(),
+            }
+        )
+        assert any("bundle_artifact_sha256" in p for p in problems), problems
+
+    def test_a_cap_generated_after_the_bundle_decision_refuses(self):
+        decision_ts = _bundle()[0]["decision_ts"]
+        cap = _cap(
+            evidence_end_ms=decision_ts,
+            generated_ms=decision_ts + 1,
+            evidence={
+                "sha256": CAP_EVIDENCE_SHA256,
+                "scope": "synthetic_mio_demo",
+                "end_ms": decision_ts,
+            },
+        )
+        problems = _node(cap=cap).validate_inputs(
+            {
+                "bundle": _bundle(), "portfolio": _portfolio(),
+                "survivors": {"AAPL"}, "cap": cap,
+            }
+        )
+        assert any("after bundle decision_ts" in p for p in problems), problems
 
     def test_fractional_future_cap_timestamp_refuses_before_truncation(self):
         cap = _cap(generated_ms=ASOF_MS + 0.5)

@@ -14,7 +14,7 @@ from dskit.pipeline.node import Node
 
 from .connectors import AlpacaBars, SchwabBars
 from .final_model import HEADS
-from .forecast_bundle import BUNDLE_UNIT
+from .forecast_bundle import ForecastBundle, default_label_contract
 
 __all__ = [
     "DEFAULT_BARS_PER_SYMBOL",
@@ -336,6 +336,8 @@ class SyntheticMioSource(Node):
     _LEAD = 3
     _CAP_PRODUCER_DOCUMENT_SHA256 = "c" * 64
     _CAP_EVIDENCE_SHA256 = "d" * 64
+    _BUNDLE_PRODUCER_DOCUMENT_SHA256 = "e" * 64
+    _MODEL_MANIFEST_SHA256 = "f" * 64
     #: A fixed epoch — the decision tick is a reproducible instant, not
     #: wall-clock "now"; EquityKellyMIO reads freshness off portfolio vs.
     #: bundle timestamps alone, never off ctx.asof.
@@ -380,30 +382,58 @@ class SyntheticMioSource(Node):
         rng = np.random.default_rng(seed)
         weights = [1.0 / self._N_SCENARIOS] * self._N_SCENARIOS
 
-        scores, bundle = {}, []
+        scores, bundle_inputs = {}, []
         for i, name in enumerate(self._NAMES):
             scores[name] = {
                 f"c{c}": 0.02 + 0.001 * ((seed + i + c) % 5) for c in range(self._N_CLUSTERS)
             }
-            draws = rng.normal(
+            simple_draws = rng.normal(
                 (1.0 - self._PI_HAT[name]) * self._MU[name],
                 self._SIGMA[name],
                 self._N_SCENARIOS,
             )
-            bundle.append(
+            target_mean = (1.0 - self._PI_HAT[name]) * self._MU[name]
+            observed_mean = float(sum(weights[j] * simple_draws[j] for j in range(self._N_SCENARIOS)))
+            simple_draws = simple_draws - observed_mean + target_mean
+            label_sigma = self._SIGMA[name]
+            scale = label_sigma * math.sqrt(self._LEAD)
+            yhat = math.log1p(self._MU[name]) / scale
+            residuals = [math.log1p(float(value)) / scale - yhat for value in simple_draws]
+            known_at = self._ASOF_MS - 2000
+            bundle_inputs.append(
                 {
                     "entity": name,
                     "decision_ts": self._ASOF_MS - 1000,
                     "lead": self._LEAD,
-                    "model_release_id": self._RELEASE_ID,
-                    "unit": BUNDLE_UNIT,
                     "price": self._PRICES[name],
+                    "yhat": yhat,
+                    "sigma_t": label_sigma,
+                    "beta_t": 1.0,
                     "pi_hat": self._PI_HAT[name],
                     "pi_upper": self._PI_UPPER[name],
                     "weights": weights,
-                    "scenarios": [float(v) for v in draws],
+                    "scenarios": residuals,
+                    "label": default_label_contract(),
+                    "known_at": {
+                        field: known_at
+                        for field in (
+                            "sigma", "beta", "reference", "price", "yhat",
+                            "pi_hat", "pi_upper", "scenarios",
+                        )
+                    },
                 }
             )
+
+        bundle = ForecastBundle(
+            self._RELEASE_ID,
+            bundle_inputs,
+            producer={
+                "document_sha256": self._BUNDLE_PRODUCER_DOCUMENT_SHA256,
+                "node": "source",
+                "output": "bundle",
+            },
+            model_manifest_sha256=self._MODEL_MANIFEST_SHA256,
+        ).rows
 
         portfolio = {
             "asof_ms": self._ASOF_MS,

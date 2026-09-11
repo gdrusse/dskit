@@ -12,7 +12,7 @@ from dskit.onboarding import check_config, load_suite
 from dskit.pipeline.document import load_document
 
 from intraday_equities.connectors import AlpacaBars, SchwabBars
-from intraday_equities.forecast_bundle import ConfirmedCaps
+from intraday_equities.forecast_bundle import ConfirmedCaps, ForecastBundle
 from intraday_equities.nodes import _emit_feature_names, session_feature_names
 from intraday_equities.nodes_capital import _bundle_problems
 from intraday_equities.testing import SyntheticMioSource
@@ -95,6 +95,10 @@ def test_mio_demo_wires_the_synthetic_confirmed_cap():
     assert len(size["params"]["cap_producer_document_sha256"]) == 64
     assert size["params"]["cap_producer_node"] == "source"
     assert len(size["params"]["cap_evidence_sha256"]) == 64
+    assert len(size["params"]["bundle_artifact_sha256"]) == 64
+    assert len(size["params"]["bundle_producer_document_sha256"]) == 64
+    assert size["params"]["bundle_producer_node"] == "source"
+    assert len(size["params"]["bundle_model_manifest_sha256"]) == 64
 
 
 def test_mio_demo_source_emits_a_release_matched_nonproduction_cap():
@@ -107,6 +111,13 @@ def test_mio_demo_source_emits_a_release_matched_nonproduction_cap():
     assert pins["cap_producer_document_sha256"] == caps.producer["document_sha256"]
     assert pins["cap_producer_node"] == caps.producer["node"]
     assert pins["cap_evidence_sha256"] == caps.evidence["sha256"]
+    assert pins["bundle_artifact_sha256"] == ForecastBundle.digest(out["bundle"])
+    assert pins["bundle_producer_document_sha256"] == out["bundle"][0]["producer"]["document_sha256"]
+    assert pins["bundle_producer_node"] == out["bundle"][0]["producer"]["node"]
+    assert pins["bundle_model_manifest_sha256"] == out["bundle"][0]["model_manifest_sha256"]
+    for row in out["bundle"]:
+        weighted_mean = sum(w * value for w, value in zip(row["weights"], row["scenarios"]))
+        assert weighted_mean == pytest.approx((1.0 - row["pi_hat"]) * row["mu_gross"])
     assert caps.deployment_eligible is False
     assert caps.model_release_id == out["bundle"][0]["model_release_id"]
     assert all(caps.allows(row["entity"], row["lead"]) for row in out["bundle"])

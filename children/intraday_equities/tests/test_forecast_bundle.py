@@ -39,6 +39,13 @@ WEIGHTS = [0.5, 0.25, 0.25]
 SCENARIOS = [-0.4, 0.0, 0.9]
 PRODUCER_DOCUMENT_SHA256 = "a" * 64
 EVIDENCE_SHA256 = "b" * 64
+BUNDLE_PRODUCER_DOCUMENT_SHA256 = "c" * 64
+MODEL_MANIFEST_SHA256 = "d" * 64
+BUNDLE_PRODUCER = {
+    "document_sha256": BUNDLE_PRODUCER_DOCUMENT_SHA256,
+    "node": "forecast",
+    "output": "bundle",
+}
 
 
 def _input_row(entity, **overrides):
@@ -75,7 +82,10 @@ def _bundle(rows=None):
     from intraday_equities.forecast_bundle import ForecastBundle
 
     return ForecastBundle(
-        RELEASE, [_input_row("AAPL"), _input_row("MSFT")] if rows is None else rows
+        RELEASE,
+        [_input_row("AAPL"), _input_row("MSFT")] if rows is None else rows,
+        producer=BUNDLE_PRODUCER,
+        model_manifest_sha256=MODEL_MANIFEST_SHA256,
     )
 
 
@@ -195,6 +205,12 @@ class TestForecastBundleAssembly:
     def test_the_point_in_time_audit_trail_is_carried(self):
         bundle = _bundle()
         assert bundle.rows[0]["known_at"]["pi_upper"] == ASOF_MS - 500_000
+
+    def test_output_rows_bind_label_manifest_and_producer_provenance(self):
+        out = _bundle().rows[0]
+        assert out["label"] == default_label_contract()
+        assert out["model_manifest_sha256"] == MODEL_MANIFEST_SHA256
+        assert out["producer"] == BUNDLE_PRODUCER
 
     def test_price_pi_upper_and_entity_pass_through(self):
         out = _bundle().rows[0]

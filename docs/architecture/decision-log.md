@@ -7751,7 +7751,8 @@ synthetic tests only, never calibration and never a real cap.
     is shifted to mean `(1 - pi_hat) * mu_gross`. That explicit false-signal
     haircut target overrides the raw finite-scenario Jensen mean. Refuses non-finite inputs,
     `sigma <= 0`, and a non-integer/`< 1` lead.
-  - `ForecastBundle(release_id, rows, label_contract=None)` — the
+  - `ForecastBundle(release_id, rows, *, producer,
+    model_manifest_sha256, label_contract=None)` — the
     fail-closed bundle assembler. A supplied `label_contract` must equal
     the pinned training default exactly; callers cannot redefine release
     semantics. Each input row carries
@@ -7773,9 +7774,11 @@ synthetic tests only, never calibration and never a real cap.
     Phase 4 item 3). The default pinned contract is the training label's
     own knobs, READ from `nodes.py`'s `DEFAULT_VOL_WINDOW_MINUTES` /
     `DEFAULT_BETA_WINDOW_MINUTES` / `DEFAULT_VOL_FLOOR` (never restated),
-    with reference `SPY` and scale `vol`. Output rows are the
-    `EquityKellyMIO` bundle shape (BUNDLE_FIELDS below) plus `mu_gross`,
-    `reference_policy`, and the `known_at` audit trail.
+    with reference `SPY`, scale `vol`, and return basis `log`. The assembler
+    requires a hash-addressed producer identity and release-manifest hash.
+    Output rows carry those bindings, the exact label contract,
+    `mu_gross`, `reference_policy`, and the `known_at` audit trail;
+    `ForecastBundle.digest(rows)` gives their canonical artifact hash.
   - `ConfirmedCaps(artifact)` + `ConfirmedCaps.problems(artifact)` — the
     confirmed-cap structure validator: `schema_version` 2;
     non-empty `model_release_id`; JSON-boolean `deployment_eligible`;
@@ -7805,12 +7808,17 @@ synthetic tests only, never calibration and never a real cap.
   — a vol-scaled SPY-residual prediction is never accepted as a gross
   return (plan §6 Phase 4 item 1). New required param
   `cap_max_staleness_ms` (int >= 0, no default — same shape as
-  `bundle_max_staleness_ms`). Config also pins the canonical cap artifact
-  SHA-256, producer document SHA-256/node, evidence SHA-256, and an explicit
-  `deployment_mode` boolean. New REQUIRED input `cap`, validated
+  `bundle_max_staleness_ms`). Config pins the canonical bundle artifact
+  SHA-256, bundle producer document SHA-256/node, and model-manifest SHA-256;
+  it also pins the canonical cap artifact SHA-256, producer document
+  SHA-256/node, evidence SHA-256, and an explicit `deployment_mode` boolean.
+  The capital boundary verifies every bundle row's pinned label/reference
+  contract and complete integer point-in-time audit trail before comparing
+  the full artifact digest. New REQUIRED input `cap`, validated
   through `ConfirmedCaps.problems` (imported — the validator has one
   owner). Hard refusals in `validate_inputs`: missing `cap` input,
-  malformed or pin-mismatched cap, stale or future-dated cap
+  malformed or pin-mismatched cap, stale or future-dated cap, a cap generated
+  after the bundle's shared decision timestamp,
   against `portfolio.asof_ms`, and a cap whose `model_release_id`
   differs from the bundle's shared release (wrong model release).
   Development mode accepts only an explicitly ineligible synthetic cap;
@@ -7832,12 +7840,13 @@ synthetic tests only, never calibration and never a real cap.
   behavior change.
 - `children/intraday_equities/intraday_equities/testing.py` (modify):
   `SyntheticMioSource` emits a `cap` output (a synthetic, clearly-marked
-  demo cap matching its synthetic bundle's release) and its bundle rows
-  gain `lead`, `model_release_id`, `unit`, and `pi_hat` — the demo's
+  demo cap matching its synthetic bundle's release) and uses
+  `ForecastBundle` to assemble its bundle. Its realized finite scenario
+  sets are exactly recentered to `(1-pi_hat)*mu_gross` — the demo's
   fabricate-everything design, never real evidence.
 - `configs/run-mio-demo.json` (modify): wire `"cap": "$source.cap"`,
   declare `cap_max_staleness_ms`, set `deployment_mode=false`, and pin the
-  deterministic synthetic cap artifact/producer/evidence hashes; its identity hash changes (new
+  deterministic synthetic bundle/cap artifact and provenance hashes; its identity hash changes (new
   graded param on the capital node) — inherent to the contract change;
   the demo has no pinned run history to orphan. `run-mean-confirmation.json`
   is NOT created or touched.
@@ -7859,9 +7868,12 @@ SPY-forecast model is built or proposed. This entry resolves no other
 §11 item and does not modify ADR-0088/0108/0111/0113/0114/0115/0116 —
 it extends ADR-0114's Phase 4 under its item 3 ruling.
 
-**Consequences.** `EquityKellyMIO` cannot size any name without a fresh,
-release-matching cap whose full canonical artifact digest and producer/evidence
-bindings match trusted config pins. Deployment mode fails closed
+**Consequences.** `EquityKellyMIO` cannot size any name unless the bundle's
+full canonical artifact digest, producer, release manifest, pinned label
+contract, and point-in-time audit match the trusted config and the cap is
+already available at that decision. The fresh, release-matching cap's full
+canonical artifact digest and producer/evidence bindings must likewise match.
+Deployment mode fails closed
 unconditionally until the owner's March-May confirmation phase supplies a
 trusted real producer; a cap's own eligibility flag is not authority. The demo
 runs only in explicit development mode with a deterministic, pinned,

@@ -53,7 +53,14 @@ from dskit.pipeline.records import number_ok
 from dskit.pipeline.stages import is_sha256hex
 
 from .final_model import HEADS
-from .forecast_bundle import BUNDLE_UNIT, ConfirmedCaps
+from .forecast_bundle import (
+    BUNDLE_UNIT,
+    KNOWN_AT_FIELDS,
+    ZERO_DRIFT,
+    ConfirmedCaps,
+    ForecastBundle,
+    default_label_contract,
+)
 
 __all__ = [
     "BUNDLE_FIELDS",
@@ -65,12 +72,10 @@ __all__ = [
 
 #: What every surviving bundle row must carry — Path A18256's fail-closed
 #: contract (docs/plans/2026-09-intraday-equities-mio.md §7), narrowed to
-#: the fields this scoped build actually READS: this pass sizes off the
-#: scenario-return rows directly and does not re-derive them from
-#: ``mu_gross``/``mu_net``/``cost_reference``/model-hash provenance, so
-#: those stay out of this tuple rather than being required-but-unread.
-#: ADR-0121 adds the horizon, release identity, and gross-return unit the
-#: capital boundary must verify before sizing.
+#: the fields this scoped build actually READS or verifies. Besides payoff
+#: inputs, ADR-0121 requires the label/reference contract, point-in-time
+#: audit trail, model-manifest identity, and producer identity at the capital
+#: boundary; the full canonical row list is checked against its config pin.
 BUNDLE_FIELDS = (
     "entity",
     "decision_ts",
@@ -82,6 +87,11 @@ BUNDLE_FIELDS = (
     "pi_upper",
     "weights",
     "scenarios",
+    "reference_policy",
+    "label",
+    "model_manifest_sha256",
+    "producer",
+    "known_at",
 )
 
 #: The no-trade band's rounding granularity, absent a declared
@@ -264,6 +274,55 @@ def _bundle_problems(bundle):
                 f"bundle[{i}] ({entity!r}).unit must be {BUNDLE_UNIT!r}, got "
                 f"{row['unit']!r} — label-unit predictions are never gross returns"
             )
+        if row["reference_policy"] != ZERO_DRIFT:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).reference_policy must be {ZERO_DRIFT!r}"
+            )
+        if row["label"] != default_label_contract():
+            problems.append(
+                f"bundle[{i}] ({entity!r}).label must equal the pinned label contract"
+            )
+        if not is_sha256hex(row["model_manifest_sha256"]):
+            problems.append(
+                f"bundle[{i}] ({entity!r}).model_manifest_sha256 must be lowercase SHA-256"
+            )
+        producer = row["producer"]
+        producer_fields = {"document_sha256", "node", "output"}
+        if not isinstance(producer, dict) or set(producer) != producer_fields:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).producer must carry exactly "
+                f"{sorted(producer_fields)!r}"
+            )
+        else:
+            if not is_sha256hex(producer["document_sha256"]):
+                problems.append(
+                    f"bundle[{i}] ({entity!r}).producer.document_sha256 must be lowercase SHA-256"
+                )
+            if not isinstance(producer["node"], str) or not producer["node"]:
+                problems.append(
+                    f"bundle[{i}] ({entity!r}).producer.node must be non-empty"
+                )
+            if producer["output"] != "bundle":
+                problems.append(
+                    f"bundle[{i}] ({entity!r}).producer.output must be 'bundle'"
+                )
+        known_at = row["known_at"]
+        if not isinstance(known_at, dict) or set(known_at) != set(KNOWN_AT_FIELDS):
+            problems.append(
+                f"bundle[{i}] ({entity!r}).known_at must carry exactly "
+                f"{list(KNOWN_AT_FIELDS)!r}"
+            )
+        elif isinstance(decision_ts, int) and not isinstance(decision_ts, bool):
+            for field, stamp in sorted(known_at.items()):
+                if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0:
+                    problems.append(
+                        f"bundle[{i}] ({entity!r}).known_at[{field!r}] must be "
+                        "an integer epoch ms >= 0"
+                    )
+                elif stamp > decision_ts:
+                    problems.append(
+                        f"bundle[{i}] ({entity!r}).known_at[{field!r}] is after decision_ts"
+                    )
         weights = row["weights"]
         scenarios = row["scenarios"]
         if not isinstance(weights, (list, tuple)) or not weights:
@@ -345,6 +404,9 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         UNIFORM per-name dollar ceiling; a bundle-declared per-name cap is a
         follow-up, not built here), ``bundle_max_staleness_ms`` and
         ``cap_max_staleness_ms`` (required ints >= 0),
+        ``bundle_artifact_sha256`` (canonical assembled-row-list digest),
+        ``bundle_producer_document_sha256``/``bundle_producer_node`` and
+        ``bundle_model_manifest_sha256`` (trusted bundle provenance),
         ``cap_artifact_sha256`` (canonical artifact digest),
         ``cap_producer_document_sha256``/``cap_producer_node`` (producer
         identity), ``cap_evidence_sha256`` (evidence identity), and
@@ -370,6 +432,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             "sec31_bps": 0.0206, "min_price": 5.0,
             "hfdr_q": 0.10, "band_bps": 10.0, "max_position_notional": 5000.0,
             "bundle_max_staleness_ms": 5000,
+            "bundle_artifact_sha256": "d" * 64,
+            "bundle_producer_document_sha256": "e" * 64,
+            "bundle_producer_node": "forecast",
+            "bundle_model_manifest_sha256": "f" * 64,
             "cap_max_staleness_ms": 5000,
             "cap_artifact_sha256": "a" * 64,
             "cap_producer_document_sha256": "b" * 64,
@@ -391,6 +457,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         "band_bps",
         "max_position_notional",
         "bundle_max_staleness_ms",
+        "bundle_artifact_sha256",
+        "bundle_producer_document_sha256",
+        "bundle_producer_node",
+        "bundle_model_manifest_sha256",
         "cap_max_staleness_ms",
         "cap_artifact_sha256",
         "cap_producer_document_sha256",
@@ -470,14 +540,25 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 ge=0,
             )
         for name in (
+            "bundle_artifact_sha256",
+            "bundle_producer_document_sha256",
+            "bundle_model_manifest_sha256",
             "cap_artifact_sha256",
             "cap_producer_document_sha256",
             "cap_evidence_sha256",
         ):
             if name not in params:
-                problems.append(f"{name} is required — trusted cap provenance has no default")
+                problems.append(f"{name} is required — trusted provenance has no default")
             elif not is_sha256hex(params[name]):
                 problems.append(f"{name} must be a lowercase SHA-256 digest")
+        if "bundle_producer_node" not in params:
+            problems.append(
+                "bundle_producer_node is required — trusted bundle provenance has no default"
+            )
+        elif not isinstance(params["bundle_producer_node"], str) or not params[
+            "bundle_producer_node"
+        ]:
+            problems.append("bundle_producer_node must be a non-empty string")
         if "cap_producer_node" not in params:
             problems.append("cap_producer_node is required — trusted cap provenance has no default")
         elif not isinstance(params["cap_producer_node"], str) or not params["cap_producer_node"]:
@@ -492,7 +573,35 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     def validate_inputs(self, inputs):
         """Problems with the materialized ``inputs``, empty when none."""
         bundle = inputs.get("bundle")
-        problems = list(_bundle_problems(bundle))
+        bundle_problems = _bundle_problems(bundle)
+        problems = list(bundle_problems)
+        if not bundle_problems and bundle:
+            digest = ForecastBundle.digest(bundle)
+            if digest != self.params["bundle_artifact_sha256"]:
+                problems.append(
+                    "bundle artifact does not match bundle_artifact_sha256: "
+                    f"expected {self.params['bundle_artifact_sha256']!r}, got {digest!r}"
+                )
+            for index, row in enumerate(bundle):
+                producer = row["producer"]
+                if producer["document_sha256"] != self.params[
+                    "bundle_producer_document_sha256"
+                ]:
+                    problems.append(
+                        f"bundle[{index}] producer document does not match "
+                        "bundle_producer_document_sha256"
+                    )
+                if producer["node"] != self.params["bundle_producer_node"]:
+                    problems.append(
+                        f"bundle[{index}] producer node does not match bundle_producer_node"
+                    )
+                if row["model_manifest_sha256"] != self.params[
+                    "bundle_model_manifest_sha256"
+                ]:
+                    problems.append(
+                        f"bundle[{index}] model manifest does not match "
+                        "bundle_model_manifest_sha256"
+                    )
         portfolio = inputs.get("portfolio")
         if not isinstance(portfolio, dict):
             problems.append(
@@ -628,6 +737,19 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                     "cap.model_release_id must equal the bundle's shared "
                     f"model_release_id {bundle[0]['model_release_id']!r}, got "
                     f"{confirmed.model_release_id!r}"
+                )
+            if (
+                isinstance(bundle, (list, tuple))
+                and bundle
+                and isinstance(bundle[0], dict)
+                and isinstance(bundle[0].get("decision_ts"), int)
+                and not isinstance(bundle[0].get("decision_ts"), bool)
+                and confirmed.generated_ms > bundle[0]["decision_ts"]
+            ):
+                problems.append(
+                    f"cap.generated_ms {confirmed.generated_ms!r} is after bundle "
+                    f"decision_ts {bundle[0]['decision_ts']!r} — the cap must exist "
+                    "before it can authorize that forecast decision"
                 )
         return problems
 
