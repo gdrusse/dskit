@@ -1,5 +1,4 @@
-"""The observations READ seam — deduplicated snapshots of what acquire
-wrote (ADR-0037).
+"""The observations READ seam — deduplicated snapshots of what acquire wrote (ADR-0037).
 
 Acquire appends envelope rows under
 ``<root>/observations/<source>/<acq_id>/<stream>.jsonl[.gz]``; this
@@ -84,10 +83,7 @@ def _epoch_ms(dt) -> int:
 
 
 def _key_part(value):
-    """A key-field value under CANONICAL identity — never coercing
-    Python ``==``, where ``1 == 1.0 == True`` would let one dict slot
-    silently merge three canonically distinct keys (and the same
-    coercion would let sort comparisons equate distinct records).
+    """Canonicalize a key-field value's identity — never coercing Python's ``==``, where ``1 == 1.0 == True`` would let one dict slot silently merge three canonically distinct keys (and the same coercion would let sort comparisons equate distinct records).
 
     Strings — the overwhelmingly common key type — pass through
     untouched (zero allocation, so the memory contract is unchanged).
@@ -111,7 +107,7 @@ def _key_part(value):
 
 
 def _key_display(key) -> list:
-    """The raw values behind a key's tagged parts, for messages."""
+    """Return the raw values behind a key's tagged parts, for messages."""
     return [part[1] if isinstance(part, tuple) and len(part) in (2, 3)
             and part[0] in ("b", "f", "i") else part
             for part in key]
@@ -561,7 +557,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
 
 
 def stream_digest(records) -> str:
-    """The snapshot's content fingerprint, hashed record by record.
+    """Return the snapshot's content fingerprint, hashed record by record.
 
     Byte-identical to ``sha256(json.dumps(records, sort_keys=True))`` —
     the FROZEN recipe (plain dump: default separators, ASCII) — without

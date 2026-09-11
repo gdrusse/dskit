@@ -46,6 +46,16 @@ class AssetError(ValueError):
     errors : list of str
         The individual problems. The message joins them one per line so a
         multi-field failure names every field, not just the first.
+
+    Examples
+    --------
+    Build and read the joined message::
+
+        err = AssetError(["kind must be a non-empty string", "unknown key(s) ['x']"])
+        str(err)
+        # -> invalid asset operation (2 problems):
+        # ->   kind must be a non-empty string
+        # ->   unknown key(s) ['x']
     """
 
     def __init__(self, errors):
@@ -65,11 +75,13 @@ class AssetError(ValueError):
 
 
 def check_str(errors, name, value, *, non_empty=True):
+    """Append an error unless value is a non-empty string (or any string, if not required)."""
     if not isinstance(value, str) or (non_empty and not value):
         errors.append(f"{name} must be a non-empty string, got {value!r}")
 
 
 def check_dict(errors, name, value):
+    """Append an error unless value is a dict with string-only keys."""
     if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
         errors.append(f"{name} must be a dict with string keys, got {value!r}")
 
@@ -83,6 +95,7 @@ def check_unknown(errors, obj, allowed, where=""):
 
 
 def raise_if(errors):
+    """Raise :class:`AssetError` with every accumulated problem, if any."""
     if errors:
         raise AssetError(errors)
 
@@ -192,7 +205,7 @@ def atomic_write_json(path, obj) -> None:
 
 
 def utc_now() -> str:
-    """Current UTC time as an ISO-8601 string, second precision.
+    """Return the current UTC time as an ISO-8601 string, second precision.
 
     Provenance timestamps (``registered_at``) all come from here so every
     record in a store sorts and diffs the same way. Provenance sits

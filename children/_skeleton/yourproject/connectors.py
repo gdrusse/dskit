@@ -43,9 +43,32 @@ _DEFAULT_START = "2026-01-01"
 
 
 class SampleConnector(Connector):
-    """A deterministic in-code source, one stream. See module docs."""
+    """A deterministic in-code source, one stream — no filesystem, no network.
+
+    See the module docstring for the full contract: cursor semantics,
+    config knobs, and what a real connector replaces here.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; every setting comes from config.
+
+    Examples
+    --------
+    Discover the one stream this source offers::
+
+        connector = SampleConnector()
+        streams = connector.discover({"rows": 5, "start_date": "2026-01-01"})
+    """
 
     def spec(self) -> dict:
+        """Declare the default-deny sample-source configuration catalogue.
+
+        Returns
+        -------
+        dict
+            Connector knob declarations.
+        """
         return {
             "params": {
                 "rows": {
@@ -71,9 +94,7 @@ class SampleConnector(Connector):
         return rows
 
     def _rows(self, config):
-        """Yield ``(effective_date, data)`` in date order — a real child
-        replaces this with the vendor fetch, keeping the emission sorted
-        so the cursor ("everything before this is durable") stays honest."""
+        """Yield ``(effective_date, data)`` in date order — a real child replaces this with the vendor fetch, keeping the emission sorted so the cursor ("everything before this is durable") stays honest."""
         rows = self._budget(config)
         start = parse_utc(config.get("start_date", _DEFAULT_START))
         for i in range(rows):
@@ -87,13 +108,12 @@ class SampleConnector(Connector):
     # -- the four verbs ----------------------------------------------------
 
     def check(self, config) -> None:
-        """Fail fast on knobs a pull would choke on; move no data. A real
-        connector authenticates and pings the vendor here."""
+        """Fail fast on knobs a pull would choke on; move no data. A real connector authenticates and pings the vendor here."""
         self._budget(config)
         parse_utc(config.get("start_date", _DEFAULT_START))
 
     def discover(self, config) -> list:
-        """The streams on offer — a real connector asks the vendor."""
+        """Return the streams on offer — a real connector asks the vendor."""
         return [{
             "stream": _STREAM,
             "schema": {"fields": list(_FIELDS)},

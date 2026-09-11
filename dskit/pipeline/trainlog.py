@@ -59,7 +59,7 @@ DEFAULT_MAX_LINES = 20
 
 
 def is_binary(labels) -> bool:
-    """True when every label is exactly 0.0 or 1.0 (and there is one).
+    """Say whether every label is exactly 0.0 or 1.0 (and there is one).
 
     The gate on the probability metrics: ``logloss``/``brier``/``ece`` are
     meaningful for a settled binary outcome and meaningless for a
@@ -142,7 +142,7 @@ def probability_metrics(preds, labels) -> dict:
 
 
 def _fmt(value) -> str:
-    """A metric for the stream: 4 dp, or ``—`` when it is absent/unusable."""
+    """Format a metric for the stream: 4 dp, or ``—`` when it is absent/unusable."""
     if value is None or not isinstance(value, (int, float)):
         return "—"
     if isinstance(value, bool) or not math.isfinite(value):
@@ -178,6 +178,16 @@ class TrainingCurve:
         Ceiling on streamed lines for the whole fit
         (:data:`DEFAULT_MAX_LINES`). 0 disables the stream entirely — the
         rows are still recorded and still land in the artifact.
+
+    Examples
+    --------
+    Record one epoch and inspect the returned row::
+
+        import logging
+        curve = TrainingCurve("head", logging.getLogger(__name__), total_epochs=10)
+        row = curve.record(1, 0.693, val_loss=0.701)
+        row
+        # -> {'epoch': 1, 'train_loss': 0.693, 'val_loss': 0.701, 'best': True}
     """
 
     def __init__(
@@ -285,7 +295,7 @@ class TrainingCurve:
     # -- output ------------------------------------------------------------
 
     def summary(self) -> dict:
-        """The compact reduction for a node's ``metrics`` output."""
+        """Return the compact reduction for a node's ``metrics`` output."""
         out = {
             "epochs_run": len(self.rows),
             "best_epoch": self.best_epoch if self.best_epoch is not None else -1,
@@ -302,7 +312,7 @@ class TrainingCurve:
         return {k: v for k, v in out.items() if v is not None}
 
     def payload(self) -> dict:
-        """The durable artifact body — every epoch, streamed or not."""
+        """Return the durable artifact body — every epoch, streamed or not."""
         return {
             "node": self.key,
             "objective": self.objective,
@@ -340,7 +350,7 @@ class TrainingCurve:
 
 
 def _num(value):
-    """A JSON-safe float — NaN/inf become None (write_artifact refuses NaN)."""
+    """Coerce to a JSON-safe float — NaN/inf become None (write_artifact refuses NaN)."""
     if value is None or isinstance(value, bool):
         return None
     if not isinstance(value, (int, float)):
