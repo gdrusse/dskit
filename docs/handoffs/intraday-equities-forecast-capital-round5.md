@@ -1,8 +1,9 @@
 # Intraday equities forecast/capital infrastructure — round-5 handoff
 
-Status: stopped at the five-round skeptic-review cutoff. This branch is an unmerged
-design handoff based on `origin/main` at `4876ace`; it contains no implementation
-and authorizes no calibration, paper-capital, or production execution.
+Status: extended by owner instruction and passed Terra skeptic review in round 6
+with no Critical or Major findings. This branch is an unmerged design handoff based
+on `origin/main` at `4876ace`; it contains no implementation and authorizes no
+calibration, paper-capital, or production execution.
 
 ## Goal and ownership boundary
 
@@ -143,14 +144,22 @@ test suite.
   and the precise paper-only boundary.
 - FinalRefit and its release attestation remain separate upstream hard gates.
 
+## Extended-review result
+
+Round 6 resolved all three Majors with time-bounded exact capture attestations, an
+enforced producer/seal/capture/consumer multi-run lifecycle, and signed measured
+runtime/image/module/dependency identity with strict privilege separation.
+
+Final verdict: **PASS, conditionally implementation-ready.**
+
 ## Prompt for the next agent
 
-Implement this lane from branch
+Implement the accepted design from branch
 `handoff/forecast-capital-round5-20260911` in a new isolated worktree, using
 Grok 4.6 with strict TDD and one Terra skeptic reviewer at a time. Treat
-`origin/main` as correct. First close the three Remaining round-4 findings:
-time-bounded exact capture allowlists, enforced multi-run sign/publish/capture
-lifecycle, and signed trusted-runtime/code identity. Then implement the generic
+`origin/main` as correct. Implement time-bounded exact capture allowlists, the
+enforced multi-run sign/publish/capture lifecycle, and signed trusted-runtime/code
+identity first. Then implement the generic
 DSKit trust and causal-calibration APIs before adding thin intraday-equities
 publishers, V3 caps, PIT bundle, and MIO adapters. Preserve all owner/ADR gates,
 paper-only refusal, causal evidence identities, and pre-branch provenance checks.
