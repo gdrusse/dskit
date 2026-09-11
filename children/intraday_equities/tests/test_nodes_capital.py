@@ -290,7 +290,7 @@ class TestBundleValidation:
 
 class TestEmptyGate:
     def test_empty_bundle_and_no_position_deploys_zero_without_solving(self, tmp_path):
-        node = _node()
+        node = _node(bundle=[])
         out = node.run(
             _ctx(tmp_path),
             {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set(), "cap": _cap()},
@@ -299,6 +299,25 @@ class TestEmptyGate:
         assert out["metrics"]["objective"] == 0.0
         assert out["cash_after"] == 500.0
         assert out["evidence"]["n_bundle_rows"] == 0
+
+    def test_an_unpinned_empty_bundle_refuses(self):
+        problems = _node().validate_inputs(
+            {"bundle": [], "portfolio": _portfolio(), "survivors": set(), "cap": _cap()}
+        )
+        assert any("bundle_artifact_sha256" in p for p in problems), problems
+
+    def test_an_empty_bundle_cannot_authorize_liquidation(self):
+        problems = _node(bundle=[]).validate_inputs(
+            {
+                "bundle": [],
+                "portfolio": _portfolio(
+                    positions={"AAPL": 1}, mark_prices={"AAPL": 190.0}
+                ),
+                "survivors": set(),
+                "cap": _cap(),
+            }
+        )
+        assert any("cannot authorize liquidation" in p for p in problems), problems
 
 
 class TestRealSolve:
@@ -738,7 +757,7 @@ class TestTransientStateIsClearedAfterRun:
         assert node._evidence is None
 
     def test_state_is_none_after_the_empty_gate_short_circuit(self, tmp_path):
-        node = _node()
+        node = _node(bundle=[])
         node.run(
             _ctx(tmp_path),
             {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set(), "cap": _cap()},
@@ -783,7 +802,11 @@ class TestSmallPositiveNetWorthSolvesInsteadOfRefusing:
     relative to net worth itself, never an absolute dollar figure."""
 
     def test_a_near_zero_account_can_still_exit_its_one_residual_position(self, tmp_path):
+        # The authenticated bundle carries AAPL but routes it below the
+        # declared price floor, so liquidation authority remains explicit.
+        bundle = [_row("AAPL", 0.005, 0.10, [-0.30] * 8)]
         node = _node(
+            bundle=bundle,
             n_tangents=16,
             n_scenarios_max=128,
             min_ticket=0.1,
@@ -796,7 +819,10 @@ class TestSmallPositiveNetWorthSolvesInsteadOfRefusing:
             "mark_prices": {"AAPL": 0.50}, "cash_reserve": 0.0, "gross_limit": None,
             "sale_credit": 1.0,
         }
-        out = node.run(_ctx(tmp_path), {"bundle": [], "portfolio": portfolio, "survivors": set(), "cap": _cap()})
+        out = node.run(
+            _ctx(tmp_path),
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL"}, "cap": _cap()},
+        )
         assert "AAPL" not in out["target"]
         assert out["trades"]["AAPL"] == {"buy": 0, "sell": 1}
 

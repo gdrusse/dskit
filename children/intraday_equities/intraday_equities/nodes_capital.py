@@ -377,7 +377,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
 
     The ``intraday_equities-kelly-mio`` kind. Inputs: ``bundle`` (a
     materialized list of per-candidate forecast rows, see
-    :data:`BUNDLE_FIELDS`), ``portfolio`` (account state — ``asof_ms``,
+    :data:`BUNDLE_FIELDS`; even an empty list must match its artifact pin,
+    and it is legal only with no held positions), ``portfolio`` (account state — ``asof_ms``,
     ``cash``, ``buying_power``, ``positions`` (``symbol -> held shares``),
     optional ``mark_prices`` for a held name the bundle dropped, optional
     ``cash_reserve``/``gross_limit``/``sale_credit``), ``survivors``
@@ -575,7 +576,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         bundle = inputs.get("bundle")
         bundle_problems = _bundle_problems(bundle)
         problems = list(bundle_problems)
-        if not bundle_problems and bundle:
+        if not bundle_problems and isinstance(bundle, (list, tuple)):
             digest = ForecastBundle.digest(bundle)
             if digest != self.params["bundle_artifact_sha256"]:
                 problems.append(
@@ -631,6 +632,14 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                             "refused by name rather than silently truncated or solved into an "
                             "opaque infeasibility"
                         )
+                if bundle == [] and any(
+                    number_ok(shares) and shares != 0
+                    for shares in positions.values()
+                ):
+                    problems.append(
+                        "an empty bundle cannot authorize liquidation of a non-empty "
+                        "portfolio — require an authenticated bundle carrying the held names"
+                    )
             mark_prices = portfolio.get("mark_prices", {})
             if not isinstance(mark_prices, dict):
                 problems.append("portfolio.mark_prices must be a mapping of symbol -> price when given")

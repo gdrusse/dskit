@@ -11,9 +11,10 @@ provenance and fresh, release-matched caps whose full artifact and
 producer/evidence identities match config pins. Caps generated after the
 forecast decision refuse. Deployment remains fail-closed until a trusted real
 cap producer exists; the demo is explicitly nonproduction and its realized
-finite scenario grids are exactly centered.
+finite scenario grids are exactly centered. Empty bundles are digest-pinned
+and cannot authorize liquidation of held positions.
 
-Focused verification: 183 Gate 4 tests passed; demo validate/plan hash
+Focused verification: 185 Gate 4 tests passed; demo validate/plan hash
 `1124198a8853fbe17b89222c6f7c6bdec1f9f1b4f9f04bb26018c1a4106c691f`;
 Ruff and `git diff --check` clean. The broader config suite was not rerun. No
 market data, HPO, refit, replay, full suite, or `path.csv` operation ran. Final

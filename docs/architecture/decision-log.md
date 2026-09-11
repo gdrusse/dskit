@@ -7814,7 +7814,9 @@ synthetic tests only, never calibration and never a real cap.
   SHA-256/node, evidence SHA-256, and an explicit `deployment_mode` boolean.
   The capital boundary verifies every bundle row's pinned label/reference
   contract and complete integer point-in-time audit trail before comparing
-  the full artifact digest. New REQUIRED input `cap`, validated
+  the full artifact digest. Empty bundles are also digest-pinned and are
+  legal only with no held positions; liquidation requires an authenticated
+  bundle carrying the held names. New REQUIRED input `cap`, validated
   through `ConfirmedCaps.problems` (imported — the validator has one
   owner). Hard refusals in `validate_inputs`: missing `cap` input,
   malformed or pin-mismatched cap, stale or future-dated cap, a cap generated
