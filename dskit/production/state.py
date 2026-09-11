@@ -173,11 +173,10 @@ _CASH_FLOW_KEYS = ("currency", "amount", "effective_at_ms", "superseded_by")
 
 #: Snapshot payloads written before R15 kept no effective instant beside a
 #: booked cash flow.  Envelope schema_version did not change for that
-#: addition, so restore recognizes only this exact old form and upcasts it
-#: in memory.  Zero is the earliest valid effective instant, preserving the
-#: correction ordering check without inventing a later time.
+#: addition, so restore recognizes only this exact old form.  Its timing is
+#: unknowable: it stays serialised as legacy and cannot be superseded, because
+#: an adjustment could not prove it follows the original flow.
 _LEGACY_CASH_FLOW_KEYS = ("currency", "amount", "superseded_by")
-_LEGACY_CASH_FLOW_EFFECTIVE_AT_MS = 0
 
 #: What the fold keeps of the latest ``trip`` (see ``SeriesState.last_trip``):
 #: the envelope's identity and instant — a reset acknowledges the id and
@@ -1367,6 +1366,11 @@ class SeriesState:
             problems.append(
                 f"cash_flow {superseded!r} was already superseded by {booked[3]!r}"
             )
+        elif booked[2] is None:
+            problems.append(
+                f"cash_flow {superseded!r} has an unknown effective instant; "
+                "a correction cannot prove it follows the original flow"
+            )
         elif (
             isinstance(effective_at_ms, int) and not isinstance(effective_at_ms, bool)
             and effective_at_ms <= booked[2]
@@ -1746,10 +1750,17 @@ class SeriesState:
             "silences": [silence.to_obj() for silence in self._silences.values()],
             "alert_acks": [ack.to_obj() for ack in self._alert_acks.values()],
             "cash_flows": {
-                record_id: dict(zip(_CASH_FLOW_KEYS, _jsonable(booked)))
+                record_id: self._cash_flow_snapshot_entry(booked)
                 for record_id, booked in self._cash_flows.items()
             },
         }
+
+    @staticmethod
+    def _cash_flow_snapshot_entry(booked):
+        """Render current flows fully and retain an old flow's unknown time."""
+        if booked[2] is None:
+            return dict(zip(_LEGACY_CASH_FLOW_KEYS, _jsonable((booked[0], booked[1], booked[3]))))
+        return dict(zip(_CASH_FLOW_KEYS, _jsonable(booked)))
 
     def restore(self, snapshot_env):
         """Rebuild a fresh fold from a ``snapshot`` envelope.
@@ -1855,19 +1866,15 @@ class SeriesState:
             if not isinstance(entry, dict):
                 continue
             if set(entry) == set(_LEGACY_CASH_FLOW_KEYS):
-                # Do not alter a ledger-owned snapshot payload while restoring it.
-                cash_flow_entries[record_id] = {
-                    **entry,
-                    "effective_at_ms": _LEGACY_CASH_FLOW_EFFECTIVE_AT_MS,
-                }
+                cash_flow_entries[record_id] = (entry, True)
             else:
                 _exact(problems, where, entry, _CASH_FLOW_KEYS)
-                cash_flow_entries[record_id] = entry
+                cash_flow_entries[record_id] = (entry, False)
         if problems:
             raise ProductionError(problems)
         cash_flows = {
-            record_id: self._booked_flow(problems, record_id, entry)
-            for record_id, entry in cash_flow_entries.items()
+            record_id: self._booked_flow(problems, record_id, entry, legacy=legacy)
+            for record_id, (entry, legacy) in cash_flow_entries.items()
         }
         if problems:
             raise ProductionError(problems)
@@ -1926,13 +1933,14 @@ class SeriesState:
             "_cash_flows": cash_flows,
         }
 
-    def _booked_flow(self, problems, record_id, entry):
+    def _booked_flow(self, problems, record_id, entry, *, legacy=False):
         """One restored ``_cash_flows`` value from its payload entry."""
         where = f"snapshot.state.cash_flows.{record_id}"
         _check_str(problems, f"{where}.currency", entry["currency"])
         amount = _money(problems, f"{where}.amount", entry["amount"])
-        effective_at_ms = entry["effective_at_ms"]
-        check_int_param(problems, f"{where}.effective_at_ms", effective_at_ms, ge=0)
+        effective_at_ms = None if legacy else entry["effective_at_ms"]
+        if not legacy:
+            check_int_param(problems, f"{where}.effective_at_ms", effective_at_ms, ge=0)
         superseded_by = entry["superseded_by"]
         if superseded_by is not None:
             _check_str(problems, f"{where}.superseded_by", superseded_by)
