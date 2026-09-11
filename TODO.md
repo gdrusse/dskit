@@ -231,12 +231,16 @@ REMAINING, in the plan's risk order:
       `children/intraday_poc/intraday_poc/__init__.py`,
       `dskit/onboarding/__init__.py`, `dskit/pipeline/io.py`,
       `dskit/onboarding/state.py`, `dskit/onboarding/certify.py` [already
-      compliant]) and 9 more were already fully compliant and needed only
+      compliant]); 4 more were already fully compliant and needed only
       the ignore-list entry removed (`dskit/assets/sync.py`,
       `dskit/onboarding/publish.py`, `dskit/assets/default_model.py`,
-      `dskit/onboarding/default_model.py`, `dskit/onboarding/acquire.py`,
-      `dskit/onboarding/snapshot.py`, `dskit/assets/ingest.py`,
-      `dskit/assets/lineage.py`, `dskit/pipeline/features.py`).
+      `dskit/onboarding/default_model.py`); and 5 more needed real fixes
+      too — `dskit/onboarding/acquire.py` and `dskit/onboarding/snapshot.py`
+      each gained new `Parameters`/`Returns` (`acquire.py` also `Raises`),
+      `dskit/pipeline/features.py` gained new `Parameters`/`Returns` on its
+      public `apply_stream_steps`, and `dskit/assets/ingest.py` /
+      `dskit/assets/lineage.py` each got a one-line-docstring reflow
+      (mechanical, no new sections needed).
       **Continued (2026-09-11, same session):** 12 more modules drained —
       the next tier up (3-6 D-rule findings each), several needing a new
       class `Examples` block, each execution-verified against the real

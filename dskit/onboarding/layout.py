@@ -172,7 +172,7 @@ class OnboardingRoot:
         return os.path.join(self.root, "raw", source, acq_id)
 
     def records_dir(self, source, acq_id, *, forecasts=False) -> str:
-        """Return normalized rows for one acquisition — observations by default, the segregated forecast root when ``forecasts`` (ADR-0014/OQ-6)."""
+        """Return the path to normalized rows for one acquisition — observations by default, the segregated forecast root when ``forecasts`` (ADR-0014/OQ-6)."""
         errors = []
         _check_segment(errors, "source", source)
         _check_str(errors, "acq_id", acq_id)

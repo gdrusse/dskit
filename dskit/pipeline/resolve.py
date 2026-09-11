@@ -104,12 +104,13 @@ class ResolvedPipeline:
     --------
     :func:`resolve` is the normal way to obtain one, from a config and an
     ``asof`` date; it returns the resolved pipeline paired with the
-    backend that produced it. Once resolved, ``to_dict()`` gives the JSON
-    body written to ``resolved.json``::
+    backend that produced it. Once resolved, ``to_dict()`` gives most of
+    the JSON body :func:`write_run_dir` writes to ``resolved.json``
+    (which additionally stamps ``pipeline_hash`` before writing)::
 
         resolved, backend = resolve(config, asof="2026-01-31")
         resolved.to_dict()["instruments"]
-        # -> ["AAPL", "MSFT"]
+        # -> ['AAPL', 'MSFT']
     """
 
     config: PipelineConfig
@@ -150,12 +151,13 @@ class ResolvedPipeline:
             )
 
     def to_dict(self) -> dict:
-        """Build the JSON-ready form — the hash input (minus exclusions) and the resolved.json body.
+        """Build the JSON-ready form — the hash input (minus exclusions) and most of the resolved.json body.
 
         Returns
         -------
         dict
-            The resolved.json body.
+            Most of the resolved.json body — :func:`write_run_dir`
+            additionally stamps ``pipeline_hash`` onto this before writing.
         """
         return {
             "asof": self.asof,
