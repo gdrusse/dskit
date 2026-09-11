@@ -114,6 +114,9 @@ __all__ = [
     "JsonReport",
     "MarkdownReport",
     "ParityDiff",
+    "PerformanceCalculator",
+    "PerformanceObservation",
+    "PerformanceReturns",
     "Replay",
     "Report",
     "ReportEmitter",
@@ -310,6 +313,217 @@ def _decimal_of(value, where):
         except ArithmeticError as exc:
             raise ProductionError([f"{where}: {value!r} is not a decimal"]) from exc
     raise ProductionError([f"{where}: {value!r} is not a decimal"])
+
+
+# ---------------------------------------------------------------------------
+# External-flow-neutral performance
+# ---------------------------------------------------------------------------
+
+
+_PERFORMANCE_YEAR_MS = Decimal(365 * 24 * 60 * 60 * 1000)
+_MWR_FLOOR = Decimal("-0.999999999999")
+_MWR_TOLERANCE = Decimal("1e-24")
+_MWR_MAX_RATE = Decimal("1000000")
+_MWR_MAX_STEPS = 256
+
+
+@dataclass(frozen=True)
+class PerformanceObservation:
+    """One exact NAV and cumulative-external observation.
+
+    Parameters
+    ----------
+    at_ms : int
+        Non-negative epoch milliseconds.
+    nav : Decimal
+        Account value recorded at that instant.
+    external : Decimal
+        Cumulative net external cash recorded by that instant.
+
+    Examples
+    --------
+    ::
+
+        observation = PerformanceObservation(0, Decimal("100"), Decimal("100"))
+        observation.nav
+        # -> Decimal('100')
+    """
+
+    at_ms: int
+    nav: Decimal
+    external: Decimal
+
+    def __post_init__(self):
+        """Validate one exact dated observation."""
+        problems = []
+        _check_cut(self.at_ms, "PerformanceObservation.at_ms")
+        for name in ("nav", "external"):
+            value = getattr(self, name)
+            if not isinstance(value, Decimal) or not value.is_finite():
+                problems.append(f"PerformanceObservation.{name} must be a finite Decimal")
+        if isinstance(self.nav, Decimal) and self.nav < 0:
+            problems.append("PerformanceObservation.nav must not be negative")
+        if problems:
+            raise ProductionError(problems)
+
+
+@dataclass(frozen=True)
+class PerformanceReturns:
+    """The two external-flow-aware returns over one observation path.
+
+    Parameters
+    ----------
+    time_weighted, money_weighted : Decimal or None
+        ``None`` when fewer than two usable NAV observations exist.
+
+    Examples
+    --------
+    ::
+
+        PerformanceReturns(Decimal("0.1"), Decimal("0.1")).time_weighted
+        # -> Decimal('0.1')
+    """
+
+    time_weighted: Decimal | None
+    money_weighted: Decimal | None
+
+    def __post_init__(self):
+        """Refuse non-exact return values."""
+        problems = []
+        for name in ("time_weighted", "money_weighted"):
+            value = getattr(self, name)
+            if value is not None and (
+                not isinstance(value, Decimal) or not value.is_finite()
+            ):
+                problems.append(f"PerformanceReturns.{name} must be a finite Decimal or None")
+        if problems:
+            raise ProductionError(problems)
+
+
+@dataclass(frozen=True)
+class PerformanceCalculator:
+    """Compute TWR and dated MWR from exact account observations.
+
+    Parameters
+    ----------
+    observations : tuple of PerformanceObservation
+        Strictly increasing observations.  The first NAV establishes the
+        invested base; later changes in ``external`` are period cash flows.
+
+    Examples
+    --------
+    ::
+
+        calculator = PerformanceCalculator((start, finish))
+        calculator.time_weighted_return()
+        # -> Decimal('0.1')
+    """
+
+    observations: tuple
+
+    def __post_init__(self):
+        """Validate an immutable, strictly ordered observation path."""
+        if not isinstance(self.observations, tuple):
+            raise ProductionError(["observations must be a tuple"])
+        problems = []
+        previous = None
+        for position, observation in enumerate(self.observations):
+            if not isinstance(observation, PerformanceObservation):
+                problems.append(
+                    f"observations[{position}] is not a PerformanceObservation"
+                )
+                continue
+            if previous is not None and observation.at_ms <= previous:
+                problems.append("performance observation instants must strictly increase")
+            previous = observation.at_ms
+        if self.observations and self.observations[0].nav <= 0:
+            problems.append("the first performance NAV must be positive")
+        if problems:
+            raise ProductionError(problems)
+
+    def time_weighted_return(self):
+        """Chain subperiod returns after removing each external-flow delta.
+
+        Returns
+        -------
+        Decimal or None
+            The linked return, or ``None`` below two observations.
+        """
+        if len(self.observations) < 2:
+            return None
+        linked = Decimal(1)
+        for previous, current in zip(self.observations, self.observations[1:]):
+            if previous.nav == 0:
+                raise ProductionError(
+                    ["time-weighted return is undefined after a zero NAV"]
+                )
+            flow = current.external - previous.external
+            linked *= (current.nav - flow) / previous.nav
+        return linked - Decimal(1)
+
+    def money_weighted_return(self):
+        """Solve the annualized dated external-flow equation by bisection.
+
+        Returns
+        -------
+        Decimal or None
+            The supported root, or ``None`` below two observations or when
+            the dated equation has no bracketed root.
+        """
+        return self._money_weighted_return(self._observation_cash_flows())
+
+    def _money_weighted_return(self, external_flows):
+        """Solve MWR with ``(effective_at_ms, amount)`` external flows."""
+        if len(self.observations) < 2:
+            return None
+        first, last = self.observations[0], self.observations[-1]
+        cash_flows = [(first.at_ms, -first.nav)]
+        cash_flows.extend((instant, -amount) for instant, amount in external_flows)
+        cash_flows.append((last.at_ms, last.nav))
+        cash_flows = tuple(cash_flows)
+        lower, upper = _MWR_FLOOR, Decimal(1)
+        low_value = self._present_value(cash_flows, lower)
+        high_value = self._present_value(cash_flows, upper)
+        while low_value * high_value > 0 and upper < _MWR_MAX_RATE:
+            upper = upper * 2 + 1
+            high_value = self._present_value(cash_flows, upper)
+        if low_value == 0:
+            return lower
+        if high_value == 0:
+            return upper
+        if low_value * high_value > 0:
+            return None
+        for _step in range(_MWR_MAX_STEPS):
+            middle = (lower + upper) / 2
+            value = self._present_value(cash_flows, middle)
+            if value == 0 or upper - lower <= _MWR_TOLERANCE:
+                return middle
+            if low_value * value < 0:
+                upper, high_value = middle, value
+            else:
+                lower, low_value = middle, value
+        return (lower + upper) / 2
+
+    def _observation_cash_flows(self):
+        """Return external-flow deltas dated at their observation instants."""
+        flows = []
+        for previous, current in zip(self.observations, self.observations[1:]):
+            delta = current.external - previous.external
+            if delta:
+                flows.append((current.at_ms, delta))
+        return tuple(flows)
+
+    def _present_value(self, cash_flows, rate):
+        """Return the dated equation value at one annualized rate."""
+        start = self.observations[0].at_ms
+        base = Decimal(1) + rate
+        return sum(
+            (
+                amount / (base ** (Decimal(at_ms - start) / _PERFORMANCE_YEAR_MS))
+                for at_ms, amount in cash_flows
+            ),
+            Decimal(0),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +833,39 @@ class Report:
             )
         return tuple(points)
 
+    def performance(self, at_ms):
+        """Return exact time- and money-weighted performance at one cut.
+
+        Parameters
+        ----------
+        at_ms : int
+            The explicit report cut, epoch milliseconds.
+
+        Returns
+        -------
+        PerformanceReturns
+            Both returns over value points whose recorded NAV is present.
+        """
+        flows = self._history.cash_flows(0)
+        observations = tuple(
+            PerformanceObservation(point.at_ms, point.nav, point.external)
+            for point in self.value_curve(at_ms)
+            if point.nav is not None
+        )
+        calculator = PerformanceCalculator(observations)
+        dated_flows = ()
+        if len(observations) >= 2:
+            first, last = observations[0].at_ms, observations[-1].at_ms
+            dated_flows = tuple(
+                (instant, amount)
+                for instant, amount in _external_cash_flow_events(flows, at_ms)
+                if first < instant <= last
+            )
+        return PerformanceReturns(
+            calculator.time_weighted_return(),
+            calculator._money_weighted_return(dated_flows),
+        )
+
     def _ticks(self, at_ms):
         """Return every terminal ``tick`` body observed at or before the cut, in order."""
         return [body for body in self._history.ticks(0) if body["observed_at_ms"] <= at_ms]
@@ -757,6 +1004,20 @@ def _external_total(flows, at_ms):
             if body.get("external")
         ),
         _ZERO,
+    )
+
+
+def _external_cash_flow_events(flows, at_ms):
+    """Return final effective external flows at their own instants.
+
+    A correction replaces, rather than incrementally adjusts, its superseded
+    flow. A valid later correction therefore carries its whole final amount at
+    the correction instant and leaves no residual at the original instant.
+    """
+    return tuple(
+        (body["effective_at_ms"], _decimal_of(body["amount"], "cash_flow.amount"))
+        for body in effective_bodies(tuple(flows), at_ms, "cash_flows")
+        if body.get("external")
     )
 
 

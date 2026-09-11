@@ -1,5 +1,38 @@
 # Re-entry
 
+## Current wrap: reviewed Gates 6, 2, and 5 closed to main (2026-09-11)
+
+Owner-approved integration closes Gate 6 as ADR-0118, Gate 2 deliverable 5 as ADR-0119, and the Gate 5 development replay contract as ADR-0120. Retained final skeptic reviews are 0 Critical and 0 Major for every lane; Gate 5 acceptance does not authorize deployment.
+
+Focused integration verification: 1,381 root tests passed; 147 child tests passed with the same five documented configuration-policy baseline failures; Ruff and diff checks are clean. Action A18885 records the acceptance and collision-safe journal renumbering. The four contained remote branches are purged after the main push; Gate 4 remains outstanding.
+
+
+## Current wrap: Gate 3 cash-flow mechanism merged and remote cleanup complete (2026-09-11)
+
+Branch: `main` at `85ab628`. Gate 3 adds the tier-2 recurring
+cash-flow schedule and dated overrides, replay-only declaration composition,
+settlement-driven production folds, and generic TWR/MWR. No real capital-policy
+config or §11.2 same-instant decision-ordering claim was made.
+
+Two final fresh Terra capital/accounting reviews passed with no Critical or
+Major findings. Focused verification: 381 tests + 329 gate tests, Ruff and
+`git diff --check` clean. Latest fix: `b33f350` preserves unknown legacy cash
+timing rather than inventing it. The merge was pushed to `origin/main`; the four
+remote branches already merged to main were deleted and verified absent. **Next:**
+await the remaining owner §11 rulings before Gate 4+ policy work.
+
+## Prior wrap: Gate 5a replay conformance closed on main (2026-09-10)
+
+Branch `cursor/gate5a-replay-conformance-1656` merged to `main` as `19d7c2c`.
+Tests only: existing `ServeLoop` + `ReplayFeed`/`ReplayClock` +
+`PaperExecutor` + ledger drive deterministic synthetic ticks. No production
+hook. Both Sonnet 5 skeptics PASS (0 Critical, 0 Major, 1 Nit each).
+`path.csv` untouched; `replay.py` not written. Remote feature branch already
+deleted.
+
+**Next:** remaining Gate 5 policy (`replay.py`) and Gates 4/6/7 wait on owner
+§11 rulings.
+
 ## Current wrap: Gate 2 deliverable 4 review-closed, fail-closed (2026-09-10)
 
 Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (not pushed by this wrap;

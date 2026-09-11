@@ -224,8 +224,8 @@ torn-tail recovery, or the same chain in one `sqlite` file; `SeriesState`, the
 sole fold; checkpoints; the durable control inbox; reconciliation and
 authenticated adoption.
 
-**Observation** — eighteen monitors: operational (`staleness`,
-`decision_rate`, `coverage`, `latency`, `refusals`), stream
+**Observation** — nineteen monitors: operational (`staleness`,
+`decision_rate`, `coverage`, `completeness`, `latency`, `refusals`), stream
 (`page_hinkley`, `tracking_signal`, `ddm`, `adwin`), distribution (`psi`,
 `ks`, `jensen_shannon`, `linf`), outcome (`calibration`, `brier`, `skill`,
 `prediction_bias`) and `parity`, over reference populations `leading` /
@@ -233,6 +233,24 @@ authenticated adoption.
 silences, acks and an escalation ladder; a health state machine with probes
 and an external dead-man heartbeat (file, url or systemd); a metrics registry
 with closed label sets.
+
+**The event contract** — one versioned body, so a replay and a paper run
+record the same thing or the difference is a real finding. `EventCatalogue`
+is the schema: eight categories (identity, data, model, gates, mio,
+execution, portfolio, operations), the fields each declares, and the
+version a body stamps. `EventAdapter` is the seam your layer subclasses —
+supply `fields(record)` and stamping, validation and the refusal of a field
+the catalogue never declared come with it. `EventReadings` reduces one
+event into the low-cardinality series an exporter may carry, bound one
+metric to one catalogue field by `vocab.EVENT_READINGS`.
+
+Two limits are structural rather than stylistic. **Money is never a
+series**: every `MONEY_FIELDS` name is a `Decimal` at the ledger boundary
+and the registry refuses a `Decimal`, so cash, NAV, PnL and fees live in
+the event body and the report. **`symbol` and `lead` are never a label**:
+their value sets are as wide as the document, so the registry refuses
+either as a label NAME and full per-name detail stays in the ledger and
+report artifacts.
 
 **Packs** (`libs/`, each naming its library only inside a method, so a
 document that declares none pays for none) — `exchange` materialises a
@@ -252,6 +270,11 @@ trained from. Its reconnect policy is the `resilience` `Retry`, and the link
 FLOORS the freshness ladder — recovering is at best `stale`, an exhausted
 reconnect budget is `dead`, and a link that dropped and came back this tick is
 `degraded`.
+
+**Cash flows and returns** — `RecurringCashFlowSchedule` materializes
+immutable, idempotent declarations for replay only; production still books
+cash through reconciled settlement. `Report.performance()` computes generic
+TWR/MWR from recorded NAV and the value curve's separate external-flow column.
 
 **Scoring itself** — `outcomes` joins what happened onto each leg through the
 declared sources and appends it as a supersede chain; `report` prints
@@ -276,6 +299,7 @@ dskit/production/
 ├── clock.py           Clock ABC; WallClock, TestClock, ReplayClock
 ├── sessions.py        Calendar ABC; AlwaysOpen, WeeklySessions, EventWindow, Composite
 ├── cadence.py         Cadence ABC; FixedInterval, AlignedBar, AtTimes, OnData; Overrun
+├── cashflows.py       replay-only recurring declarations; dated overrides; stable IDs
 ├── control.py         ControlInbox; CommandProcessor
 ├── feed.py            Feed ABC; ServingContract + FeedSpec; EntrySourceFeed; ReplayFeed;
 │                      StreamTransport ABC + StreamFeed (`websocket`), the push source whose
@@ -297,7 +321,8 @@ dskit/production/
 │                      StateView; PositionBook; Recovery
 ├── reconcile.py       Reconciler; breaks; adoption; LedgerHistory
 ├── monitors.py        Monitor ABC; reference/chunker/threshold strategies; families
-├── metrics.py         counter/gauge/histogram registry; closed labels; JSONL flush
+├── metrics.py         counter/gauge/histogram registry; closed labels; JSONL flush;
+│                      EventCatalogue/EventAdapter/EventReadings — the event contract
 ├── alerts.py          AlertSink ABC; Log/Memory/Email/Webhook; AlertRouter; InhibitRule
 │                      (silences and acks are read from the fold, never a second store)
 ├── health.py          health state machine; probes; heartbeat (file/url/systemd, plus the
@@ -312,7 +337,7 @@ dskit/production/
 │                      the names the series proves for itself (coverage, freshness,
 │                      calibration)
 ├── outcomes.py        forward_asof; OutcomeSource + registry; OutcomeJoin (D21)
-├── report.py          Report (attribution / calibration / value, each at an explicit
+├── report.py          Report (attribution / calibration / value / TWR / MWR, each at an explicit
 │                      cut); ReportView + ReportEmitter ABC + Markdown/Json; Tape +
 │                      Replay + ParityDiff — D20's parity, run against a scratch root
 ├── libs/              tier-2 packs — a library behind a seam this package owns

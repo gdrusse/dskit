@@ -28,7 +28,9 @@ import hashlib
 import json
 import pathlib
 import uuid
+from datetime import datetime, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -51,6 +53,7 @@ from dskit.production.bundles import (
     Invocation,
     Observability,
     Recording,
+    ReplayTape,
     Safety,
     Schedule,
 )
@@ -60,11 +63,17 @@ from dskit.production.clock import TestClock
 from dskit.production.compose import (
     AuthorityTable,
     RUNG_TABLE,
+    ReplayCashFlowComposer,
     bundles_for,
     handlers_for,
     outcome_join,
 )
 from dskit.production.control import CommandProcessor, ControlInbox
+from dskit.production.cashflows import (
+    DueCashFlow,
+    RecurringCashFlowSchedule,
+    WithdrawalCashFlow,
+)
 from dskit.production.coordination import Lease, LeasePermit, ProcessLease
 from dskit.production.decider import Decider, IntentRows
 from dskit.production.document import ServeDocument
@@ -2079,3 +2088,204 @@ class TestTheCalendarsDataIsReEarned:
         # new refusal.
         assert CALENDAR_CLASS_KEY not in composer.release.classes
         assert composer.build(shadow_document)[0].calendar.data_fingerprint() is None
+
+
+class EmptyReplayTape(ReplayTape):
+    """The replay data needed to prove cash-flow composition is replay-only."""
+
+    def start_ms(self):
+        return NOW_MS
+
+    def feed_results(self):
+        return ()
+
+    def id_allocations(self):
+        return ()
+
+
+def replay_cash_flow_composer():
+    """One arbitrary placeholder schedule; no production policy is implied."""
+    timezone = ZoneInfo("UTC")
+    anchor = datetime(2031, 4, 9, 13, 17, tzinfo=timezone)
+    schedule = RecurringCashFlowSchedule(
+        "test-schedule", anchor, 13, "XYZ", Decimal("37"), timezone
+    )
+    return ReplayCashFlowComposer(schedule), anchor
+
+
+def test_replay_cash_flow_composer_emits_existing_cash_flow_records():
+    """Replay declarations use the ledger schema and deterministic record ids."""
+    cash_flows, anchor = replay_cash_flow_composer()
+
+    first = cash_flows.due(anchor, anchor + timedelta(seconds=1))
+    restarted = cash_flows.due(anchor, anchor + timedelta(seconds=1))
+
+    assert restarted == first
+    assert len(first) == 1
+    assert first[0]["kind"] == "cash_flow"
+    assert first[0]["id"] == f"cash_flow:{first[0]['body']['evidence']['flow_id']}"
+    assert first[0]["body"] == {
+        "effective_at_ms": int(anchor.timestamp() * 1000),
+        "known_at_ms": int(anchor.timestamp() * 1000),
+        "supersedes": None,
+        "currency": "XYZ",
+        "amount": "37",
+        "flow_kind": "deposit",
+        "external": True,
+        "source": "replay",
+        "evidence": {"flow_id": first[0]["body"]["evidence"]["flow_id"]},
+    }
+
+
+def test_ordinary_composition_refuses_a_scheduled_cash_flow_composer(
+    shadow_document, composer
+):
+    """A production-shaped process can spend only reconciled settled cash."""
+    cash_flows, _anchor = replay_cash_flow_composer()
+
+    with pytest.raises(ProductionError, match="replay"):
+        composer.build(shadow_document, cash_flow_composer=cash_flows)
+
+
+def test_ordinary_fold_refuses_a_directly_appended_replay_declaration(
+    shadow_document, composer
+):
+    """The replay-only boundary survives bypassing the composer argument guard."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(shadow_document)
+    record = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
+
+    with pytest.raises(ProductionError, match="composer"):
+        bundles[5].ledger.append(record)
+
+    assert bundles[5].state.snapshot().balances == {}
+
+
+def test_replay_composition_accepts_declared_cash_flow_records(
+    shadow_document, composer
+):
+    """Only a tape composition may append declarations to its scratch fold."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(
+        shadow_document, tape=EmptyReplayTape(), cash_flow_composer=cash_flows
+    )
+
+    for record in cash_flows.due(anchor, anchor + timedelta(seconds=1)):
+        bundles[5].ledger.append(record)
+
+    assert bundles[5].state.snapshot().balances == {"XYZ": Decimal("37")}
+
+
+def test_a_tape_without_a_bound_composer_cannot_authorize_replay_cash(
+    shadow_document, composer
+):
+    """Tape shape alone grants no authority to mint a replay deposit."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(shadow_document, tape=EmptyReplayTape())
+    forged = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
+
+    with pytest.raises(ProductionError, match="composer|authorize"):
+        bundles[5].ledger.append(forged)
+
+    assert bundles[5].state.snapshot().balances == {}
+
+
+def test_a_bound_composer_authorizes_only_its_exact_derived_record(
+    shadow_document, composer
+):
+    """Changing a composer-derived amount invalidates its record identity."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(
+        shadow_document, tape=EmptyReplayTape(), cash_flow_composer=cash_flows
+    )
+    emitted = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
+    forged = {
+        **emitted,
+        "body": {**emitted["body"], "amount": "9999999"},
+    }
+
+    with pytest.raises(ProductionError, match="composer|authorize"):
+        bundles[5].ledger.append(forged)
+
+    assert bundles[5].state.snapshot().balances == {}
+
+
+def test_a_replay_state_refuses_a_forged_venue_cash_flow(
+    shadow_document, composer
+):
+    """The replay boundary authorizes declarations, not their source label."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(
+        shadow_document, tape=EmptyReplayTape(), cash_flow_composer=cash_flows
+    )
+    emitted = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
+    forged = {
+        **emitted,
+        "body": {**emitted["body"], "amount": "9999999", "source": "venue"},
+    }
+
+    with pytest.raises(ProductionError, match="composer|authorize"):
+        bundles[5].ledger.append(forged)
+
+    assert bundles[5].state.snapshot().balances == {}
+
+
+def test_a_stateful_override_tuple_cannot_mint_replay_cash(
+    shadow_document, composer
+):
+    """Schedule construction seals overrides before replay authorizes them."""
+    timezone = ZoneInfo("UTC")
+    anchor = datetime(2031, 4, 9, 13, 17, tzinfo=timezone)
+
+    class StatefulOverrides(tuple):
+        def __new__(cls):
+            value = super().__new__(cls, ())
+            value.armed = False
+            return value
+
+        def __iter__(self):
+            if self.armed:
+                return iter((
+                    WithdrawalCashFlow("forged", anchor, Decimal("9999999")),
+                ))
+            return super().__iter__()
+
+    overrides = StatefulOverrides()
+    schedule = RecurringCashFlowSchedule(
+        "test-schedule", anchor, 13, "XYZ", Decimal("37"), timezone, overrides,
+    )
+    cash_flows = ReplayCashFlowComposer(schedule)
+    overrides.armed = True
+    bundles = composer.build(
+        shadow_document, tape=EmptyReplayTape(), cash_flow_composer=cash_flows
+    )
+
+    for record in cash_flows.due(anchor, anchor + timedelta(seconds=1)):
+        bundles[5].ledger.append(record)
+
+    assert bundles[5].state.snapshot().balances == {"XYZ": Decimal("37")}
+
+
+def test_a_schedule_subclass_cannot_mint_replay_cash():
+    """Only the sealed schedule implementation may derive declarations."""
+    timezone = ZoneInfo("UTC")
+    anchor = datetime(2031, 4, 9, 13, 17, tzinfo=timezone)
+
+    class ForgedSchedule(RecurringCashFlowSchedule):
+        def materialize(self, start, end_exclusive):
+            return (
+                DueCashFlow(
+                    "forged",
+                    anchor,
+                    "XYZ",
+                    Decimal("9999999"),
+                    "deposit",
+                ),
+            )
+
+    forged = ForgedSchedule(
+        "test-schedule", anchor, 13, "XYZ", Decimal("37"), timezone
+    )
+
+    with pytest.raises(ProductionError, match="RecurringCashFlowSchedule"):
+        ReplayCashFlowComposer(forged)

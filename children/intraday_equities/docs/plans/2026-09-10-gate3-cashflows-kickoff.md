@@ -5,11 +5,14 @@ writes the first TDD pass (used once); Terra reviewers/rewriters run every
 skeptic round and every follow-up fix after that, one fresh agent at a time,
 never in parallel.
 **Suggested branch:** `codex/gate3-cashflows-<id>`, branched from
-`origin/claude/phase1-recovery-seven-gates-ao4zdj` — **not** `main`. ADR-0114
-and the completed Gate 1/Gate 2 work this plan builds on live only on that
-branch; `main`'s decision-log tops out at the unrelated ADR-0112. Verify
-ADR-0114 is actually present in `docs/architecture/decision-log.md` after
-checkout before doing anything else.
+`origin/claude/final-model-replay-gate-kickoffs` — **not** `main` and
+**not** `claude/phase1-recovery-seven-gates-ao4zdj` directly. That branch is
+`phase1-recovery-seven-gates-ao4zdj`'s tip (has ADR-0114 and the completed
+Gate 1/Gate 2 work) with all four Gate 3-6 kickoff docs already applied on
+top, so you don't need to hunt for this file on a branch that doesn't carry
+it. `main`'s decision-log tops out at the unrelated ADR-0112 — do not use
+it. Verify ADR-0114 is actually present in `docs/architecture/decision-log.md`
+after checkout before doing anything else.
 
 Full scope: `docs/plans/2026-09-08-final-model-replay-and-monitoring.md` §6
 Phase 3 and §9 (reviewer lens 5, "Capital/accounting skeptic"); file

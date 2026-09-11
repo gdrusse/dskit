@@ -49,6 +49,7 @@ import inspect
 import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone as utc_timezone
 from types import MappingProxyType
 
 from dskit.onboarding import OnboardingRoot
@@ -88,6 +89,7 @@ from dskit.production.bundles import (
     Schedule,
 )
 from dskit.production.cadence import CADENCE_KINDS, Overrun
+from dskit.production.cashflows import DueCashFlow, RecurringCashFlowSchedule
 from dskit.production.clock import CLOCK_KINDS, ManualTime, ReplayClock
 from dskit.production.control import ControlInbox
 from dskit.production.coordination import LEASE_KINDS
@@ -133,6 +135,7 @@ __all__ = [
     "AuthorityTable",
     "DEFAULT_JITTER_SEED",
     "RUNG_TABLE",
+    "ReplayCashFlowComposer",
     "bundles_for",
     "clock_for",
     "handlers_for",
@@ -142,6 +145,114 @@ __all__ = [
 ]
 
 _LOG = get_logger("compose")
+
+class ReplayCashFlowComposer:
+    """Turn one declared schedule into existing replay ledger records.
+
+    This object only materializes declarations. It has no settlement flag,
+    does not append, and ordinary composition refuses it; the replay owner
+    chooses a half-open window and writes the returned records to its scratch
+    ledger. Instances are immutable so a bound authorization cannot change
+    schedules.
+
+    Parameters
+    ----------
+    schedule : RecurringCashFlowSchedule
+        The immutable replay declaration mechanism.
+
+    Examples
+    --------
+    ::
+
+        composer = ReplayCashFlowComposer(schedule)
+        composer.due(schedule.anchor, schedule.anchor + timedelta(days=1))[0]["kind"]
+        # -> 'cash_flow'
+    """
+
+    __slots__ = ("_schedule",)
+
+    def __init__(self, schedule):
+        if type(schedule) is not RecurringCashFlowSchedule:
+            raise ProductionError(
+                [f"schedule must be a RecurringCashFlowSchedule, got {schedule!r}"]
+            )
+        object.__setattr__(self, "_schedule", schedule)
+
+    def __setattr__(self, name, value):
+        """Refuse mutation after the schedule has been bound."""
+        raise AttributeError("ReplayCashFlowComposer is immutable")
+
+    def due(self, start, end_exclusive):
+        """Return deterministic cash-flow records in the requested window."""
+        return tuple(
+            self._record(flow)
+            for flow in self._schedule.materialize(start, end_exclusive)
+        )
+
+    @classmethod
+    def _record(cls, flow):
+        """Convert one due declaration to the existing cash-flow body."""
+        if not isinstance(flow, DueCashFlow):
+            raise ProductionError([f"schedule emitted {flow!r}, not a DueCashFlow"])
+        at_ms = cls._epoch_ms(flow.effective_at)
+        return {
+            "kind": "cash_flow",
+            "id": cls._record_id(flow.flow_id),
+            "body": {
+                "effective_at_ms": at_ms,
+                "known_at_ms": at_ms,
+                "supersedes": (
+                    None if flow.supersedes is None else cls._record_id(flow.supersedes)
+                ),
+                "currency": flow.currency,
+                "amount": str(flow.amount),
+                "flow_kind": flow.flow_kind,
+                "external": True,
+                "source": "replay",
+                "evidence": {"flow_id": flow.flow_id},
+            },
+        }
+
+    def _authorizes(self, record):
+        """Return whether this exact record derives from the bound schedule."""
+        try:
+            if not isinstance(record, dict) or set(record) != {"kind", "id", "body"}:
+                return False
+            body = record.get("body")
+            if not isinstance(body, dict):
+                return False
+            at_ms = body.get("effective_at_ms")
+            if isinstance(at_ms, bool) or not isinstance(at_ms, int) or at_ms < 0:
+                return False
+            epoch = datetime(1970, 1, 1, tzinfo=utc_timezone.utc)
+            start = epoch + timedelta(milliseconds=at_ms)
+            expected = self.due(start, start + timedelta(milliseconds=1))
+        except (OverflowError, ProductionError, TypeError, ValueError):
+            return False
+        return any(
+            candidate["id"] == record["id"]
+            and canonical_hash(candidate) == canonical_hash(record)
+            for candidate in expected
+        )
+
+    @staticmethod
+    def _record_id(flow_id):
+        """Return the existing envelope identity for one schedule flow id."""
+        return f"cash_flow:{flow_id}"
+
+    @staticmethod
+    def _epoch_ms(value):
+        """Convert one aware datetime to exact epoch milliseconds."""
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise ProductionError([f"cash-flow instant must be aware, got {value!r}"])
+        instant = value.astimezone(utc_timezone.utc)
+        if instant.microsecond % 1000:
+            raise ProductionError(
+                [f"cash-flow instant {value!r} is finer than the ledger's epoch-ms contract"]
+            )
+        delta = instant - datetime(1970, 1, 1, tzinfo=utc_timezone.utc)
+        return delta.days * 86_400_000 + delta.seconds * 1000 + delta.microseconds // 1000
+
 
 #: The seed the resilience jitter draws from. Jitter spreads retries; it
 #: never reaches a decision, so a fixed seed costs nothing and buys a
@@ -951,6 +1062,7 @@ def bundles_for(
     lock=None,
     journal_hook=None,
     tape=None,
+    cash_flow_composer=None,
 ):
     """Build the seven collaborator bundles this document and release select.
 
@@ -984,6 +1096,9 @@ def bundles_for(
     journal_hook : callable, optional
         D22's injected seam; defaults to ``dskit.journal.hooks.record_production``,
         imported at function depth so the package stays importable without it.
+    cash_flow_composer : ReplayCashFlowComposer, optional
+        A declaration source accepted only beside a replay tape. Ordinary
+        production remains settlement-driven and refuses it.
     tape : bundles.ReplayTape, optional
         D20's replay. Given one, the clock, the feed and the id source are
         the RECORDING's — selected together, so the rungs still differ only
@@ -1009,6 +1124,17 @@ def bundles_for(
     row = RUNG_TABLE[document.rung]
     problems = []
     resolved = _resolved_families(problems, document, row)
+    if cash_flow_composer is not None:
+        if type(cash_flow_composer) is not ReplayCashFlowComposer:
+            problems.append(
+                "cash_flow_composer must be a ReplayCashFlowComposer or None, "
+                f"got {cash_flow_composer!r}"
+            )
+        elif tape is None:
+            problems.append(
+                "cash_flow_composer is replay-only; production books only reconciled "
+                "settled cash"
+            )
     if tape is not None:
         if not isinstance(tape, ReplayTape):
             problems.append(f"tape must be a bundles.ReplayTape, got {tape!r}")
@@ -1031,7 +1157,10 @@ def bundles_for(
         rng=random.Random(DEFAULT_JITTER_SEED),
     )
 
-    state = SeriesState(document.series_id)
+    state = (
+        SeriesState(document.series_id) if tape is None
+        else SeriesState._for_replay(document.series_id, tape, cash_flow_composer)
+    )
     ledger = ledger_class(document)(
         serve_root,
         process_id,

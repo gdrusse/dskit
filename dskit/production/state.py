@@ -101,6 +101,7 @@ from dskit.production.vocab import (
     AUTHORITY_EVENTS,
     AUTHORITY_ROLES,
     BREAKER_STATES,
+    CASH_FLOW_KINDS,
     FILL_STATUSES,
     GUARD_STATE_KINDS,
     ORDER_EVENTS,
@@ -168,7 +169,14 @@ _PLAN_KEYS = ("plan_id", "decision_plan_digest", "result", "client_ref")
 #: correction can net the amount it replaces back out (see
 #: ``SeriesState._fold_cash_flow``). Booked in the record's OWN currency,
 #: which is why the currency is kept beside the amount.
-_CASH_FLOW_KEYS = ("currency", "amount", "superseded_by")
+_CASH_FLOW_KEYS = ("currency", "amount", "effective_at_ms", "superseded_by")
+
+#: Snapshot payloads written before R15 kept no effective instant beside a
+#: booked cash flow.  Envelope schema_version did not change for that
+#: addition, so restore recognizes only this exact old form.  Its timing is
+#: unknowable: it stays serialised as legacy and cannot be superseded, because
+#: an adjustment could not prove it follows the original flow.
+_LEGACY_CASH_FLOW_KEYS = ("currency", "amount", "superseded_by")
 
 #: What the fold keeps of the latest ``trip`` (see ``SeriesState.last_trip``):
 #: the envelope's identity and instant — a reset acknowledges the id and
@@ -987,12 +995,16 @@ class SeriesState:
 
     def __init__(self, series_id, max_history=DEFAULT_MAX_HISTORY):
         problems = []
+        if type(self) is not SeriesState:
+            problems.append("SeriesState is sealed; replay capability comes from composition")
         _check_str(problems, "series_id", series_id)
         check_int_param(problems, "max_history", max_history, ge=1)
         if problems:
             raise ProductionError(problems)
         self._series_id = series_id
         self._max_history = max_history
+        self._is_replay = False
+        self._replay_authorizer = None
         self._head_seq, self._head_hash = 0, GENESIS_HASH
         self._economic_seq = 0
         self._book = PositionBook()
@@ -1030,6 +1042,32 @@ class SeriesState:
     def series_id(self):
         """The series this fold belongs to."""
         return self._series_id
+
+    @classmethod
+    def _for_replay(
+        cls, series_id, tape, cash_flow_composer, max_history=DEFAULT_MAX_HISTORY
+    ):
+        """Construct a tape-and-composer-bound scratch fold."""
+        from dskit.production.bundles import ReplayTape
+        from dskit.production.compose import ReplayCashFlowComposer
+
+        problems = []
+        if cls is not SeriesState:
+            problems.append("only SeriesState may bind replay capability")
+        if not isinstance(tape, ReplayTape):
+            problems.append("replay capability requires a ReplayTape")
+        if (
+            cash_flow_composer is not None
+            and type(cash_flow_composer) is not ReplayCashFlowComposer
+        ):
+            problems.append("replay cash authorization requires an exact composer")
+        if problems:
+            raise ProductionError(problems)
+        state = cls(series_id, max_history)
+        state._is_replay = True
+        if cash_flow_composer is not None:
+            state._replay_authorizer = cash_flow_composer._authorizes
+        return state
 
     # -- the fold -----------------------------------------------------------
 
@@ -1255,18 +1293,64 @@ class SeriesState:
         amount = _money(problems, "cash_flow.amount", body.get("amount"))
         record_id = envelope.get("id")
         _check_str(problems, "cash_flow.id", record_id)
+        check_int_param(
+            problems, "cash_flow.effective_at_ms", body.get("effective_at_ms"), ge=0
+        )
+        check_int_param(problems, "cash_flow.known_at_ms", body.get("known_at_ms"), ge=0)
+        _check_str(problems, "cash_flow.source", body.get("source"))
+        _check_dict(problems, "cash_flow.evidence", body.get("evidence"))
+        if body.get("flow_kind") not in CASH_FLOW_KINDS:
+            problems.append(
+                f"cash_flow.flow_kind must be one of {list(CASH_FLOW_KINDS)}, "
+                f"got {body.get('flow_kind')!r}"
+            )
+        if not isinstance(body.get("external"), bool):
+            problems.append(
+                f"cash_flow.external must be a bool, got {body.get('external')!r}"
+            )
+        if self._is_replay or body.get("source") == "replay":
+            self._check_replay_cash_flow(problems, body, record_id)
         superseded = body.get("supersedes")
         if superseded is not None:
-            self._check_supersedable(problems, superseded)
+            self._check_supersedable(problems, superseded, body.get("effective_at_ms"))
         if problems:
             raise ProductionError(problems)
         if superseded is not None:
             self._unbook(superseded, record_id)
         currency = body["currency"]
         self._balances[currency] = self._balances.get(currency, _ZERO) + amount
-        self._cash_flows[record_id] = (currency, amount, None)
+        self._cash_flows[record_id] = (
+            currency, amount, body["effective_at_ms"], None
+        )
 
-    def _check_supersedable(self, problems, superseded):
+    def _check_replay_cash_flow(self, problems, body, record_id):
+        """Validate the auditable shape a replay composer alone emits."""
+        record = {"kind": "cash_flow", "id": record_id, "body": body}
+        if (
+            self._replay_authorizer is None
+            or not self._replay_authorizer(record)
+        ):
+            problems.append(
+                "replay cash requires an exact declaration from the bound composer"
+            )
+        if body.get("known_at_ms") != body.get("effective_at_ms"):
+            problems.append(
+                "a replay cash flow must be known at its declared effective instant"
+            )
+        if body.get("external") is not True:
+            problems.append("a replay cash flow must be external")
+        evidence = body.get("evidence")
+        if not isinstance(evidence, dict) or set(evidence) != {"flow_id"}:
+            problems.append("a replay cash flow evidence must contain exactly flow_id")
+            return
+        flow_id = evidence["flow_id"]
+        _check_str(problems, "cash_flow.evidence.flow_id", flow_id)
+        if isinstance(flow_id, str) and record_id != f"cash_flow:{flow_id}":
+            problems.append(
+                f"replay cash_flow.id {record_id!r} disagrees with flow_id {flow_id!r}"
+            )
+
+    def _check_supersedable(self, problems, superseded, effective_at_ms):
         """Why ``supersedes`` cannot be netted out, if it cannot."""
         if not isinstance(superseded, str):
             problems.append(
@@ -1278,16 +1362,26 @@ class SeriesState:
             problems.append(
                 f"cash_flow.supersedes names {superseded!r}, which this fold never booked"
             )
-        elif booked[2] is not None:
+        elif booked[3] is not None:
             problems.append(
-                f"cash_flow {superseded!r} was already superseded by {booked[2]!r}"
+                f"cash_flow {superseded!r} was already superseded by {booked[3]!r}"
             )
+        elif booked[2] is None:
+            problems.append(
+                f"cash_flow {superseded!r} has an unknown effective instant; "
+                "a correction cannot prove it follows the original flow"
+            )
+        elif (
+            isinstance(effective_at_ms, int) and not isinstance(effective_at_ms, bool)
+            and effective_at_ms <= booked[2]
+        ):
+            problems.append("a correction must be effective after the flow it supersedes")
 
     def _unbook(self, superseded, record_id):
         """Reverse a booked cash flow in its own currency and mark who replaced it."""
-        currency, amount, _ = self._cash_flows[superseded]
+        currency, amount, effective_at_ms, _ = self._cash_flows[superseded]
         self._balances[currency] = self._balances.get(currency, _ZERO) - amount
-        self._cash_flows[superseded] = (currency, amount, record_id)
+        self._cash_flows[superseded] = (currency, amount, effective_at_ms, record_id)
 
     def _fold_authority(self, body, envelope):
         """Dispatch an authority event by role and event."""
@@ -1656,10 +1750,17 @@ class SeriesState:
             "silences": [silence.to_obj() for silence in self._silences.values()],
             "alert_acks": [ack.to_obj() for ack in self._alert_acks.values()],
             "cash_flows": {
-                record_id: dict(zip(_CASH_FLOW_KEYS, _jsonable(booked)))
+                record_id: self._cash_flow_snapshot_entry(booked)
                 for record_id, booked in self._cash_flows.items()
             },
         }
+
+    @staticmethod
+    def _cash_flow_snapshot_entry(booked):
+        """Render current flows fully and retain an old flow's unknown time."""
+        if booked[2] is None:
+            return dict(zip(_LEGACY_CASH_FLOW_KEYS, _jsonable((booked[0], booked[1], booked[3]))))
+        return dict(zip(_CASH_FLOW_KEYS, _jsonable(booked)))
 
     def restore(self, snapshot_env):
         """Rebuild a fresh fold from a ``snapshot`` envelope.
@@ -1758,13 +1859,22 @@ class SeriesState:
                 _exact(problems, f"snapshot.state.tick_plans.{tick_id}[{position}]", entry, _PLAN_KEYS)
         for ref, entry in state["working"].items():
             _exact(problems, f"snapshot.state.working.{ref}", entry, ("order", "filled_notional"))
+        cash_flow_entries = {}
         for record_id, entry in state["cash_flows"].items():
-            _exact(problems, f"snapshot.state.cash_flows.{record_id}", entry, _CASH_FLOW_KEYS)
+            where = f"snapshot.state.cash_flows.{record_id}"
+            _check_dict(problems, where, entry)
+            if not isinstance(entry, dict):
+                continue
+            if set(entry) == set(_LEGACY_CASH_FLOW_KEYS):
+                cash_flow_entries[record_id] = (entry, True)
+            else:
+                _exact(problems, where, entry, _CASH_FLOW_KEYS)
+                cash_flow_entries[record_id] = (entry, False)
         if problems:
             raise ProductionError(problems)
         cash_flows = {
-            record_id: self._booked_flow(problems, record_id, entry)
-            for record_id, entry in state["cash_flows"].items()
+            record_id: self._booked_flow(problems, record_id, entry, legacy=legacy)
+            for record_id, (entry, legacy) in cash_flow_entries.items()
         }
         if problems:
             raise ProductionError(problems)
@@ -1823,15 +1933,18 @@ class SeriesState:
             "_cash_flows": cash_flows,
         }
 
-    def _booked_flow(self, problems, record_id, entry):
+    def _booked_flow(self, problems, record_id, entry, *, legacy=False):
         """One restored ``_cash_flows`` value from its payload entry."""
         where = f"snapshot.state.cash_flows.{record_id}"
         _check_str(problems, f"{where}.currency", entry["currency"])
         amount = _money(problems, f"{where}.amount", entry["amount"])
+        effective_at_ms = None if legacy else entry["effective_at_ms"]
+        if not legacy:
+            check_int_param(problems, f"{where}.effective_at_ms", effective_at_ms, ge=0)
         superseded_by = entry["superseded_by"]
         if superseded_by is not None:
             _check_str(problems, f"{where}.superseded_by", superseded_by)
-        return (entry["currency"], amount, superseded_by)
+        return (entry["currency"], amount, effective_at_ms, superseded_by)
 
 
 # ---------------------------------------------------------------------------

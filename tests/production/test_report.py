@@ -67,6 +67,9 @@ from dskit.production.report import (
     JsonReport,
     MarkdownReport,
     ParityDiff,
+    PerformanceCalculator,
+    PerformanceObservation,
+    PerformanceReturns,
     Replay,
     Report,
     ReportEmitter,
@@ -285,7 +288,9 @@ def record_outcome(
     return identifier
 
 
-def record_cash_flow(ledger, flow_id, *, amount, external, at_ms=BASE_MS):
+def record_cash_flow(
+    ledger, flow_id, *, amount, external, at_ms=BASE_MS, supersedes=None
+):
     """Append one §6 `cash_flow`."""
     ledger.append(
         {
@@ -294,10 +299,10 @@ def record_cash_flow(ledger, flow_id, *, amount, external, at_ms=BASE_MS):
             "body": {
                 "effective_at_ms": at_ms,
                 "known_at_ms": at_ms,
-                "supersedes": None,
+                "supersedes": supersedes,
                 "currency": "USD",
                 "amount": amount,
-                "flow_kind": "deposit" if external else "fee",
+                "flow_kind": "adjustment" if supersedes else ("deposit" if external else "fee"),
                 "external": external,
                 "source": "venue",
                 "evidence": {},
@@ -786,6 +791,102 @@ class TestValueCurve:
         """A tick after the cut had not happened yet."""
         curve = a_report(self.a_traded_series()).value_curve(BASE_MS)
         assert [point.at_ms for point in curve] == [BASE_MS]
+
+
+# ---------------------------------------------------------------------------
+# Performance — external-flow-neutral TWR and dated MWR
+# ---------------------------------------------------------------------------
+
+
+YEAR_MS = 365 * 24 * 60 * 60 * 1000
+
+
+def loss_with_midyear_deposit():
+    """A hand-calculated two-period path losing ten percent in each period."""
+    return (
+        PerformanceObservation(BASE_MS, Decimal("1000"), Decimal("1000")),
+        PerformanceObservation(
+            BASE_MS + YEAR_MS // 2, Decimal("1400"), Decimal("1500")
+        ),
+        PerformanceObservation(BASE_MS + YEAR_MS, Decimal("1260"), Decimal("1500")),
+    )
+
+
+def test_time_weighted_return_chains_around_external_flow_deltas():
+    """A deposit cannot turn two ten-percent trading losses into a gain."""
+    found = PerformanceCalculator(loss_with_midyear_deposit()).time_weighted_return()
+
+    assert found == Decimal("-0.19")
+
+
+def test_money_weighted_return_solves_the_dated_external_flow_equation():
+    """The half-year deposit and terminal NAV have the hand-calculated IRR."""
+    found = PerformanceCalculator(loss_with_midyear_deposit()).money_weighted_return()
+
+    assert found.quantize(Decimal("0.000000001")) == Decimal("-0.190000000")
+
+
+def test_report_performance_uses_the_value_curves_separated_external_column():
+    """Report exposes both returns without changing its existing PnL attribution."""
+    ledger = a_ledger()
+    record_cash_flow(ledger, "cash_flow:initial", amount="1000", external=True, at_ms=BASE_MS)
+    record_tick(ledger, "tick-1", BASE_MS, [], nav="1000")
+    halfway = BASE_MS + YEAR_MS // 2
+    record_cash_flow(ledger, "cash_flow:deposit", amount="500", external=True, at_ms=halfway)
+    record_tick(ledger, "tick-2", halfway, [], nav="1400")
+    record_tick(ledger, "tick-3", BASE_MS + YEAR_MS, [], nav="1260")
+
+    found = a_report(ledger).performance(BASE_MS + YEAR_MS)
+
+    assert isinstance(found, PerformanceReturns)
+    assert found.time_weighted == Decimal("-0.19")
+    assert found.money_weighted.quantize(Decimal("0.000000001")) == Decimal("-0.190000000")
+    assert a_report(ledger).value_curve(BASE_MS + YEAR_MS)[-1].cumulative == Decimal("0")
+
+
+def test_report_money_weighted_return_uses_the_cash_flows_effective_instant():
+    """A between-tick deposit is dated when effective, not at the next NAV tick."""
+    ledger = a_ledger()
+    record_cash_flow(
+        ledger, "cash_flow:initial", amount="1000", external=True, at_ms=BASE_MS
+    )
+    record_tick(ledger, "tick-1", BASE_MS, [], nav="1000")
+    record_cash_flow(
+        ledger, "cash_flow:deposit", amount="500", external=True,
+        at_ms=BASE_MS + YEAR_MS // 4,
+    )
+    record_tick(ledger, "tick-2", BASE_MS + YEAR_MS // 2, [], nav="600")
+    record_tick(ledger, "tick-3", BASE_MS + YEAR_MS, [], nav="125")
+
+    found = a_report(ledger).performance(BASE_MS + YEAR_MS)
+
+    assert found.money_weighted.quantize(Decimal("0.000000001")) == Decimal("-0.937500000")
+
+
+def test_valid_correction_replaces_the_original_mwr_flow_and_date():
+    """A later correction's final amount wholly replaces the earlier flow."""
+    ledger = a_ledger()
+    record_cash_flow(
+        ledger, "cash_flow:initial", amount="1000", external=True, at_ms=BASE_MS
+    )
+    record_tick(ledger, "tick-1", BASE_MS, [], nav="1000")
+    original_at = BASE_MS + YEAR_MS // 4
+    record_cash_flow(
+        ledger, "cash_flow:original", amount="100", external=True, at_ms=original_at
+    )
+    record_cash_flow(
+        ledger,
+        "cash_flow:correction",
+        amount="200",
+        external=True,
+        at_ms=BASE_MS + YEAR_MS // 2,
+        supersedes="cash_flow:original",
+    )
+    record_tick(ledger, "tick-2", BASE_MS + YEAR_MS, [], nav="112.5")
+
+    found = a_report(ledger).performance(BASE_MS + YEAR_MS)
+
+    assert found.money_weighted.quantize(Decimal("0.000000001")) == Decimal("-0.937500000")
 
 
 # ---------------------------------------------------------------------------
