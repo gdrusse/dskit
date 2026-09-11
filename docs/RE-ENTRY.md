@@ -14,6 +14,18 @@ timing rather than inventing it. The merge was pushed to `origin/main`; the four
 remote branches already merged to main were deleted and verified absent. **Next:**
 await the remaining owner §11 rulings before Gate 4+ policy work.
 
+## Prior wrap: Gate 5a replay conformance closed on main (2026-09-10)
+
+Branch `cursor/gate5a-replay-conformance-1656` merged to `main` as `19d7c2c`.
+Tests only: existing `ServeLoop` + `ReplayFeed`/`ReplayClock` +
+`PaperExecutor` + ledger drive deterministic synthetic ticks. No production
+hook. Both Sonnet 5 skeptics PASS (0 Critical, 0 Major, 1 Nit each).
+`path.csv` untouched; `replay.py` not written. Remote feature branch already
+deleted.
+
+**Next:** remaining Gate 5 policy (`replay.py`) and Gates 4/6/7 wait on owner
+§11 rulings.
+
 ## Current wrap: Gate 2 deliverable 4 review-closed, fail-closed (2026-09-10)
 
 Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (not pushed by this wrap;
