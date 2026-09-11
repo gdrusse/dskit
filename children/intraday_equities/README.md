@@ -171,6 +171,7 @@ intraday_equities/
 │   ├── nodes.py         # bars, universe, features, H/L + no-info scan, portfolio
 │   ├── feature_cache.py # verified read-only feature-array cache
 │   ├── final_model.py   # final-HPO selection and fail-closed refit contract
+│   ├── forecast_bundle.py # ruled label inverse + confirmed-cap contract
 │   ├── replay.py        # next-bar-open fill + multi-horizon overlap book
 │   ├── nodes_capital.py # Schwab cost model + MIO/capital policy nodes
 │   ├── modelability.py  # staged P10 gate orchestration

@@ -51,6 +51,9 @@ from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 from dskit.pipeline.node import ConfigError, check_int_param, register_node_kind, reject_unknown_params
 from dskit.pipeline.records import number_ok
 
+from .final_model import HEADS
+from .forecast_bundle import BUNDLE_UNIT, ConfirmedCaps
+
 __all__ = [
     "BUNDLE_FIELDS",
     "DEFAULT_LOT_SIZE",
@@ -64,12 +67,15 @@ __all__ = [
 #: the fields this scoped build actually READS: this pass sizes off the
 #: scenario-return rows directly and does not re-derive them from
 #: ``mu_gross``/``mu_net``/``cost_reference``/model-hash provenance, so
-#: those stay out of this tuple rather than being required-but-unread. A
-#: later, fuller bundle reader that DOES consume them extends this tuple;
-#: it is additive, not a breaking change.
+#: those stay out of this tuple rather than being required-but-unread.
+#: ADR-0121 adds the horizon, release identity, and gross-return unit the
+#: capital boundary must verify before sizing.
 BUNDLE_FIELDS = (
     "entity",
     "decision_ts",
+    "lead",
+    "model_release_id",
+    "unit",
     "price",
     "pi_upper",
     "weights",
@@ -186,6 +192,8 @@ def _bundle_problems(bundle):
         ]
     problems = []
     weights_ref = None
+    lead_ref = None
+    release_ref = None
     seen = set()
     for i, row in enumerate(bundle):
         if not isinstance(row, dict):
@@ -208,6 +216,37 @@ def _bundle_problems(bundle):
             seen.add(entity)
         if not number_ok(row.get("decision_ts")):
             problems.append(f"bundle[{i}] ({entity!r}).decision_ts must be a finite number (epoch ms)")
+        lead = row["lead"]
+        if isinstance(lead, bool) or not isinstance(lead, int) or not 1 <= lead <= len(HEADS):
+            problems.append(
+                f"bundle[{i}] ({entity!r}).lead must be an integer 1..{len(HEADS)}, "
+                f"got {lead!r}"
+            )
+        elif lead_ref is None:
+            lead_ref = lead
+        elif lead != lead_ref:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).lead must equal the batch's shared lead "
+                f"{lead_ref!r}, got {lead!r}"
+            )
+        release = row["model_release_id"]
+        if not isinstance(release, str) or not release:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).model_release_id must be a non-empty string, "
+                f"got {release!r}"
+            )
+        elif release_ref is None:
+            release_ref = release
+        elif release != release_ref:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).model_release_id must equal the batch's "
+                f"shared model_release_id {release_ref!r}, got {release!r}"
+            )
+        if row["unit"] != BUNDLE_UNIT:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).unit must be {BUNDLE_UNIT!r}, got "
+                f"{row['unit']!r} — label-unit predictions are never gross returns"
+            )
         weights = row["weights"]
         scenarios = row["scenarios"]
         if not isinstance(weights, (list, tuple)) or not weights:
@@ -257,9 +296,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     :data:`BUNDLE_FIELDS`), ``portfolio`` (account state — ``asof_ms``,
     ``cash``, ``buying_power``, ``positions`` (``symbol -> held shares``),
     optional ``mark_prices`` for a held name the bundle dropped, optional
-    ``cash_reserve``/``gross_limit``/``sale_credit``), and ``survivors``
+    ``cash_reserve``/``gross_limit``/``sale_credit``), ``survivors``
     (the ``stat_test`` gate REQUIRED by the planner's capital rule — only
-    bundle rows whose ``entity`` is a survivor enter the program).
+    bundle rows whose ``entity`` is a survivor enter the program), and
+    ``cap`` (the required, fresh, release-matched confirmed-cap artifact).
 
     Parameters
     ----------
@@ -277,8 +317,9 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         band as basis points of the larger of current ticket or
         ``min_ticket``), ``max_position_notional`` (required, > 0 — a
         UNIFORM per-name dollar ceiling; a bundle-declared per-name cap is a
-        follow-up, not built here), ``bundle_max_staleness_ms`` (required,
-        >= 0), ``lot_size`` (int >= 1, default :data:`DEFAULT_LOT_SIZE` — scales
+        follow-up, not built here), ``bundle_max_staleness_ms`` and
+        ``cap_max_staleness_ms`` (required ints >= 0), ``lot_size`` (int >=
+        1, default :data:`DEFAULT_LOT_SIZE` — scales
         the no-trade band's ``band_shares_i`` floor to a round number of
         lots; shares bought or sold are NOT themselves constrained to
         multiples of ``lot_size`` — ``model.b``/``model.s`` stay plain
@@ -297,6 +338,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             "sec31_bps": 0.0206, "min_price": 5.0,
             "hfdr_q": 0.10, "band_bps": 10.0, "max_position_notional": 5000.0,
             "bundle_max_staleness_ms": 5000,
+            "cap_max_staleness_ms": 5000,
         })
     """
 
@@ -312,6 +354,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         "band_bps",
         "max_position_notional",
         "bundle_max_staleness_ms",
+        "cap_max_staleness_ms",
         "lot_size",
     )
 
@@ -372,12 +415,25 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             )
         else:
             check_int_param(problems, "bundle_max_staleness_ms", params["bundle_max_staleness_ms"], ge=0)
+        if "cap_max_staleness_ms" not in params:
+            problems.append(
+                "cap_max_staleness_ms is required — how stale a confirmed-cap "
+                "artifact may be before this refuses, by name"
+            )
+        else:
+            check_int_param(
+                problems,
+                "cap_max_staleness_ms",
+                params["cap_max_staleness_ms"],
+                ge=0,
+            )
         check_int_param(problems, "lot_size", params.get("lot_size", DEFAULT_LOT_SIZE), ge=1)
         return problems
 
     def validate_inputs(self, inputs):
         """Problems with the materialized ``inputs``, empty when none."""
-        problems = list(_bundle_problems(inputs.get("bundle")))
+        bundle = inputs.get("bundle")
+        problems = list(_bundle_problems(bundle))
         portfolio = inputs.get("portfolio")
         if not isinstance(portfolio, dict):
             problems.append(
@@ -448,6 +504,37 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             for name in survivors:
                 if not isinstance(name, str):
                     problems.append(f"survivors entries must be strings, got {name!r}")
+        cap = inputs.get("cap")
+        if "cap" not in inputs:
+            problems.append("cap is required — the pinned confirmed-cap artifact has no default")
+            return problems
+        cap_problems = ConfirmedCaps.problems(cap)
+        problems.extend(cap_problems)
+        if not cap_problems:
+            confirmed = ConfirmedCaps(cap)
+            if isinstance(portfolio, dict) and number_ok(portfolio.get("asof_ms")):
+                age_ms = int(portfolio["asof_ms"]) - int(confirmed.generated_ms)
+                max_stale = int(self.params["cap_max_staleness_ms"])
+                if age_ms < 0:
+                    problems.append(
+                        f"cap is from the future: age_ms={age_ms} against portfolio.asof_ms"
+                    )
+                elif age_ms > max_stale:
+                    problems.append(
+                        f"cap is stale: age_ms={age_ms} exceeds cap_max_staleness_ms={max_stale}"
+                    )
+            if (
+                isinstance(bundle, (list, tuple))
+                and bundle
+                and isinstance(bundle[0], dict)
+                and isinstance(bundle[0].get("model_release_id"), str)
+                and bundle[0]["model_release_id"] != confirmed.model_release_id
+            ):
+                problems.append(
+                    "cap.model_release_id must equal the bundle's shared "
+                    f"model_release_id {bundle[0]['model_release_id']!r}, got "
+                    f"{confirmed.model_release_id!r}"
+                )
         return problems
 
     # -- the three doorway hooks --------------------------------------------
@@ -456,8 +543,9 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         """Fail-closed bundle read + Schwab cost pricing -> ``(names, rows, account)``.
 
         A bundle row is routed out (never entering the program) for a
-        stat_test-gate miss, staleness past ``bundle_max_staleness_ms``, or a
-        price below ``min_price`` — each reason recorded in
+        stat_test-gate miss, missing/zero/over-horizon confirmed cap,
+        staleness past ``bundle_max_staleness_ms``, or a price below
+        ``min_price`` — each reason recorded in
         ``self._evidence`` for :meth:`run`'s ``evidence`` output. A currently
         held name absent from the surviving bundle rows enters as a
         MANDATORY EXIT (``x_max = 0``): it may only be sold, never bought.
@@ -465,6 +553,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         bundle = inputs["bundle"]
         portfolio = inputs["portfolio"]
         survivors = set(inputs["survivors"])
+        confirmed = ConfirmedCaps(inputs["cap"])
         asof_ms = int(portfolio["asof_ms"])
         max_stale = int(self.params["bundle_max_staleness_ms"])
         min_price = float(self.params["min_price"])
@@ -479,6 +568,18 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             entity = row["entity"]
             if entity not in survivors:
                 routed_out[entity] = "not a stat_test survivor"
+                continue
+            capped_horizon = confirmed.capped_horizon(entity)
+            if capped_horizon is None:
+                routed_out[entity] = "no confirmed cap for symbol"
+                continue
+            if capped_horizon == 0:
+                routed_out[entity] = "zero confirmed cap"
+                continue
+            if row["lead"] > capped_horizon:
+                routed_out[entity] = (
+                    f"lead {row['lead']} is above confirmed cap {capped_horizon}"
+                )
                 continue
             age_ms = asof_ms - int(row["decision_ts"])
             if age_ms < 0 or age_ms > max_stale:
@@ -686,6 +787,9 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     def run(self, ctx, inputs):
         """Solve, then attach the routing/gating evidence to the reported outputs."""
         try:
+            problems = self.validate_inputs(inputs)
+            if problems:
+                raise ValueError(f"{self.key}: " + "; ".join(problems))
             out = super().run(ctx, inputs)
             out["evidence"] = self._evidence or {
                 "n_bundle_rows": 0, "n_gated": 0, "n_held": 0, "routed_out": {},

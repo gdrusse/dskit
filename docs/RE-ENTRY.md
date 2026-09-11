@@ -1,5 +1,18 @@
 # Re-entry
 
+## Current wrap: Gate 4 forecast bundle + confirmed-cap contracts (2026-09-11)
+
+Branch `sol/gate4-closeout` integrates `origin/main` at `5b60f97` and records
+the owner-approved design as ADR-0121. Gate 4 now converts the pinned P16 label
+contract into gross-unit scenario rows, requires fresh release-matched confirmed
+caps before capital sizing, and keeps the synthetic MIO demo wired end to end.
+
+Focused verification: 157 Gate 4 tests passed; demo validate/plan hash
+`49ac368b…`; Ruff and `git diff --check` clean. The broader config suite retains
+five unrelated final-HPO/P16 expectation failures. No market data, HPO, refit,
+replay, full suite, or `path.csv` operation ran. Final review is delegated to the
+parent task; do not merge or push this branch before that review closes.
+
 ## Current wrap: reviewed Gates 6, 2, and 5 closed to main (2026-09-11)
 
 Owner-approved integration closes Gate 6 as ADR-0118, Gate 2 deliverable 5 as ADR-0119, and the Gate 5 development replay contract as ADR-0120. Retained final skeptic reviews are 0 Critical and 0 Major for every lane; Gate 5 acceptance does not authorize deployment.

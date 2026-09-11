@@ -7740,11 +7740,14 @@ synthetic tests only, never calibration and never a real cap.
   tier 3; no node kinds — plain, directly-callable value classes, the
   `final_model.py` precedent):
   - `gross_return(yhat, sigma, lead)` — the ruled inverse as one
-    module-level pure function (one owner; both the mean and every
-    scenario residual convert through it). Refuses non-finite inputs,
+    module-level pure function (one owner; the mean converts directly and
+    each payoff converts `yhat + scenario residual`, so the optimizer does
+    not discard the forecast mean). Refuses non-finite inputs,
     `sigma <= 0`, and a non-integer/`< 1` lead.
   - `ForecastBundle(release_id, rows, label_contract=None)` — the
-    fail-closed bundle assembler. Each input row carries
+    fail-closed bundle assembler. A supplied `label_contract` must equal
+    the pinned training default exactly; callers cannot redefine release
+    semantics. Each input row carries
     `entity`, `decision_ts`, `lead`, `price`, `yhat`, `sigma_t`, `beta_t`,
     `pi_upper`, `weights`, `scenarios` (label-unit residuals), `label`
     (the contract that produced `sigma_t`), and `known_at` — a

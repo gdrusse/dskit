@@ -24,7 +24,7 @@ _GATE_PARAMS = (
 )
 _SCOPE = "developmental_post_selection"
 #: The public name for the P16 development evidence scope — what this
-#: module stamps on every winner/cap it emits. Exported (ADR-0117) so the
+#: module stamps on every winner/cap it emits. Exported (ADR-0121) so the
 #: confirmed-cap validator can refuse any cap artifact claiming this same
 #: scope: confirmation caps must come from evidence NOT used to choose the
 #: P16 mask (plan §6 Phase 4 item 4).

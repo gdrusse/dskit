@@ -13,6 +13,8 @@ from dskit.onboarding import parse_utc
 from dskit.pipeline.node import Node
 
 from .connectors import AlpacaBars, SchwabBars
+from .final_model import HEADS
+from .forecast_bundle import BUNDLE_UNIT
 
 __all__ = [
     "DEFAULT_BARS_PER_SYMBOL",
@@ -290,7 +292,8 @@ class SyntheticMioSource(Node):
     Role ``data``. Emits per-instrument cluster evidence for the owned
     ``stat_test`` gate (three names, each with a clear positive edge in
     every cluster, so all three survive) plus a synthetic forecast
-    ``bundle`` and ``portfolio`` state shaped for
+    ``bundle``, ``portfolio`` state, and a release-matched synthetic
+    confirmed ``cap`` shaped for
     :class:`~intraday_equities.nodes_capital.EquityKellyMIO`. Referenced
     by import path from ``configs/run-mio-demo.json`` — the same "swap
     this one node for a real source" pattern
@@ -314,7 +317,7 @@ class SyntheticMioSource(Node):
     """
 
     role = "data"
-    outputs = ("scores", "bundle", "portfolio")
+    outputs = ("scores", "bundle", "portfolio", "cap")
 
     #: Three names with a clear, deterministic positive edge — enough to
     #: prove the whole gate-then-size loop end to end without needing real
@@ -326,6 +329,8 @@ class SyntheticMioSource(Node):
     _MU = {"AAPL": 0.006, "MSFT": 0.004, "XOM": 0.002}
     _SIGMA = {"AAPL": 0.012, "MSFT": 0.010, "XOM": 0.008}
     _PI_UPPER = {"AAPL": 0.15, "MSFT": 0.20, "XOM": 0.25}
+    _RELEASE_ID = "synthetic-mio-demo-release"
+    _LEAD = 3
     #: A fixed epoch — the decision tick is a reproducible instant, not
     #: wall-clock "now"; EquityKellyMIO reads freshness off portfolio vs.
     #: bundle timestamps alone, never off ctx.asof.
@@ -360,8 +365,8 @@ class SyntheticMioSource(Node):
         Returns
         -------
         dict
-            ``scores`` (the stat_test's food), ``bundle`` and
-            ``portfolio`` (EquityKellyMIO's inputs).
+            ``scores`` (the stat_test's food), plus ``bundle``,
+            ``portfolio``, and ``cap`` (EquityKellyMIO's inputs).
         """
         import numpy as np
 
@@ -379,6 +384,9 @@ class SyntheticMioSource(Node):
                 {
                     "entity": name,
                     "decision_ts": self._ASOF_MS - 1000,
+                    "lead": self._LEAD,
+                    "model_release_id": self._RELEASE_ID,
+                    "unit": BUNDLE_UNIT,
                     "price": self._PRICES[name],
                     "pi_upper": self._PI_UPPER[name],
                     "weights": weights,
@@ -395,4 +403,21 @@ class SyntheticMioSource(Node):
             "gross_limit": 12000.0,
             "sale_credit": 1.0,
         }
-        return {"scores": scores, "bundle": bundle, "portfolio": portfolio}
+        cap = {
+            "schema_version": 1,
+            "model_release_id": self._RELEASE_ID,
+            "deployment_eligible": True,
+            "evidence_scope": "synthetic_mio_demo",
+            "evidence_end_ms": self._ASOF_MS - 2000,
+            "generated_ms": self._ASOF_MS - 1000,
+            "caps": [
+                {"symbol": name, "capped_horizon": len(HEADS)}
+                for name in self._NAMES
+            ],
+        }
+        return {
+            "scores": scores,
+            "bundle": bundle,
+            "portfolio": portfolio,
+            "cap": cap,
+        }

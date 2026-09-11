@@ -18,6 +18,7 @@ import pytest
 from dskit.pipeline.node import DEFAULT_NODE_KINDS, NodeContext, node_class_errors
 from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 
+from intraday_equities.forecast_bundle import BUNDLE_UNIT
 from intraday_equities.nodes_capital import (
     BUNDLE_FIELDS,
     NODE_KINDS,
@@ -26,6 +27,8 @@ from intraday_equities.nodes_capital import (
 )
 
 KIND = "intraday_equities-kelly-mio"
+
+RELEASE = "release-sha256-0f" * 4
 
 PARAMS = {
     "risk_aversion_gamma": 2.0,
@@ -43,6 +46,7 @@ PARAMS = {
     "band_bps": 10.0,
     "max_position_notional": 4000.0,
     "bundle_max_staleness_ms": 5000,
+    "cap_max_staleness_ms": 5000,
 }
 
 ASOF_MS = 1_700_000_000_000
@@ -56,11 +60,33 @@ def _row(entity, price, pi_upper, scenarios, decision_ts=ASOF_MS - 1000, weights
     return {
         "entity": entity,
         "decision_ts": decision_ts,
+        "lead": 3,
+        "model_release_id": RELEASE,
+        "unit": BUNDLE_UNIT,
         "price": price,
         "pi_upper": pi_upper,
         "weights": weights or _weights(len(scenarios)),
         "scenarios": list(scenarios),
     }
+
+
+def _cap(**overrides):
+    """One deployable confirmed-cap artifact covering the demo names."""
+    cap = {
+        "schema_version": 1,
+        "model_release_id": RELEASE,
+        "deployment_eligible": True,
+        "evidence_scope": "mean_confirmation_2026_03_05",
+        "evidence_end_ms": ASOF_MS - 10_000_000,
+        "generated_ms": ASOF_MS - 1000,
+        "caps": [
+            {"symbol": "AAPL", "capped_horizon": 10},
+            {"symbol": "MSFT", "capped_horizon": 10},
+            {"symbol": "XOM", "capped_horizon": 10},
+        ],
+    }
+    cap.update(overrides)
+    return cap
 
 
 def _bundle():
@@ -121,6 +147,7 @@ class TestParams:
         [
             "spread_bps", "taf_per_share", "sec31_bps", "min_price",
             "hfdr_q", "band_bps", "max_position_notional", "bundle_max_staleness_ms",
+            "cap_max_staleness_ms",
         ],
     )
     def test_the_cost_and_risk_knobs_have_no_default(self, name):
@@ -185,7 +212,7 @@ class TestEmptyGate:
         node = _node()
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set()},
+            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set(), "cap": _cap()},
         )
         assert out["target"] == {}
         assert out["metrics"]["objective"] == 0.0
@@ -198,7 +225,7 @@ class TestRealSolve:
         node = _node()
         survivors = {"AAPL", "MSFT", "XOM"}
         out = node.run(
-            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors}
+            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap()}
         )
         assert len(out["target"]) <= PARAMS["cardinality"]
         assert out["metrics"]["gross_exposure"] <= 12000.0 + 1e-6
@@ -211,7 +238,7 @@ class TestRealSolve:
         node = _node()
         survivors = {"AAPL", "MSFT"}  # XOM not a survivor
         out = node.run(
-            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors}
+            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap()}
         )
         assert "XOM" not in out["target"]
         assert out["evidence"]["routed_out"]["XOM"] == "not a stat_test survivor"
@@ -222,7 +249,7 @@ class TestRealSolve:
         node = _node()
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}},
+            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
         )
         assert "AAPL" not in out["target"]
         assert "stale" in out["evidence"]["routed_out"]["AAPL"]
@@ -233,7 +260,7 @@ class TestRealSolve:
         node = _node()
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}},
+            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
         )
         assert "XOM" not in out["target"]
         assert "min_price" in out["evidence"]["routed_out"]["XOM"]
@@ -243,7 +270,7 @@ class TestRealSolve:
         portfolio = _portfolio(positions={"XOM": 20}, mark_prices={"XOM": 108.0})
         node = _node()
         out = node.run(
-            _ctx(tmp_path), {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}}
+            _ctx(tmp_path), {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
         )
         assert "XOM" not in out["target"]
         assert out["trades"]["XOM"] == {"buy": 0, "sell": 20}
@@ -257,7 +284,7 @@ class TestRealSolve:
         node = _node(hfdr_q=0.10)
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}},
+            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
         )
         assert "XOM" not in out["target"]
 
@@ -275,7 +302,7 @@ class TestRealSolve:
         node = _node(band_bps=1000.0)  # a deliberately huge band
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
         )
         moved = out["trades"].get("AAPL", {"buy": 0, "sell": 0})
         total = moved["buy"] + moved["sell"]
@@ -285,7 +312,7 @@ class TestRealSolve:
 
     def test_identical_inputs_give_identical_output_twice(self, tmp_path):
         survivors = {"AAPL", "MSFT", "XOM"}
-        inputs = {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors}
+        inputs = {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap()}
         out_a = _node().run(_ctx(tmp_path), inputs)
         out_b = _node().run(_ctx(tmp_path), inputs)
         assert out_a["target"] == out_b["target"]
@@ -301,7 +328,7 @@ class TestExitCostIsPriced:
     def test_exit_cost_per_share_is_populated_and_matches_the_sell_cost(self, tmp_path):
         node = _node()
         names, rows, _account = node.instruments(
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}}
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
         )
         assert names
         for name in names:
@@ -317,7 +344,7 @@ class TestExitCostIsPriced:
         portfolio = _portfolio(positions={"XOM": 20}, mark_prices={"XOM": 108.0})
         node = _node()
         names, rows, _account = node.instruments(
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}}
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
         )
         assert "XOM" in names
         assert rows["XOM"]["exit_cost_per_share"] == pytest.approx(rows["XOM"]["cost_sell"])
@@ -326,7 +353,7 @@ class TestExitCostIsPriced:
     def test_zeroing_exit_cost_understates_the_reported_cvar(self, tmp_path):
         survivors = {"AAPL", "MSFT", "XOM"}
         portfolio = _portfolio(positions={"AAPL": 50}, cash=15000.0, buying_power=15000.0)
-        inputs = {"bundle": _bundle(), "portfolio": portfolio, "survivors": survivors}
+        inputs = {"bundle": _bundle(), "portfolio": portfolio, "survivors": survivors, "cap": _cap()}
 
         real_out = _node(cvar_limit=100000.0).run(_ctx(tmp_path), inputs)
 
@@ -353,7 +380,7 @@ class TestPositionBookkeeping:
         node = _node()
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
         )
         assert "XOM" not in out["target"]
         assert "XOM" not in out["trades"]
@@ -372,7 +399,7 @@ class TestTafNeverUndercharges:
             {
                 "bundle": [],
                 "portfolio": _portfolio(positions={"AAPL": 1000}, mark_prices={"AAPL": 190.0}),
-                "survivors": set(),
+                "survivors": set(), "cap": _cap(),
             }
         )
         assert names == ["AAPL"]
@@ -391,14 +418,14 @@ class TestAdversarialInputsAreRefusedByName:
     def test_a_fractional_position_is_refused_not_silently_truncated(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": 19.9}), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": 19.9}), "survivors": set(), "cap": _cap()}
         )
         assert any("XOM" in p and "integer" in p for p in problems)
 
     def test_a_negative_position_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": -5}), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": -5}), "survivors": set(), "cap": _cap()}
         )
         assert any("XOM" in p for p in problems)
 
@@ -408,7 +435,7 @@ class TestAdversarialInputsAreRefusedByName:
             {
                 "bundle": _bundle(),
                 "portfolio": _portfolio(positions={"XOM": 5}, mark_prices={"XOM": float("nan")}),
-                "survivors": set(),
+                "survivors": set(), "cap": _cap(),
             }
         )
         assert any("mark_prices" in p and "XOM" in p for p in problems)
@@ -453,7 +480,7 @@ class TestNoTradeBandNeverStrandsAPosition:
         node = _node(band_bps=10000.0)
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
         )
         assert "AAPL" not in out["target"]
         assert out["trades"]["AAPL"] == {"buy": 0, "sell": 1}
@@ -485,7 +512,7 @@ class TestNoTradeBandFloorsAreLoadBearing:
             positions={"AAPL": held}, cash=999999.0, buying_power=999999.0, gross_limit=gross_limit
         )
         node = _node(band_bps=band_bps, cardinality=1, max_position_notional=999999.0)
-        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"AAPL"}}
+        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"AAPL"}, "cap": _cap()}
         # instruments() alone, not post-run state — run() clears its
         # transient bookkeeping in a finally (a round-10 skeptic-review fix).
         _names, _rows, _account = node.instruments(inputs)
@@ -511,7 +538,7 @@ class TestNoTradeBandFloorsAreLoadBearing:
         # 100, so the floor (not coincidence) is what forces the jump.
         node_params = dict(band_bps=band_bps, cardinality=1, cvar_alpha=0.9, cvar_limit=3400.0,
                             max_position_notional=999999.0)
-        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"XOM"}}
+        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"XOM"}, "cap": _cap()}
         # instruments() alone, not post-run state — run() clears its
         # transient bookkeeping in a finally (a round-10 skeptic-review fix).
         node = _node(**node_params)
@@ -534,49 +561,49 @@ class TestAccountFieldsAreValidated:
     def test_nan_cash_reserve_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(cash_reserve=float("nan")), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(cash_reserve=float("nan")), "survivors": set(), "cap": _cap()}
         )
         assert any("cash_reserve" in p for p in problems)
 
     def test_nan_gross_limit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=float("nan")), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=float("nan")), "survivors": set(), "cap": _cap()}
         )
         assert any("gross_limit" in p for p in problems)
 
     def test_a_negative_gross_limit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=-50.0), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=-50.0), "survivors": set(), "cap": _cap()}
         )
         assert any("gross_limit" in p for p in problems)
 
     def test_a_non_numeric_gross_limit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit="not-a-number"), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit="not-a-number"), "survivors": set(), "cap": _cap()}
         )
         assert any("gross_limit" in p for p in problems)
 
     def test_an_out_of_range_sale_credit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=1.5), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=1.5), "survivors": set(), "cap": _cap()}
         )
         assert any("sale_credit" in p for p in problems)
 
     def test_a_nan_sale_credit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=float("nan")), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=float("nan")), "survivors": set(), "cap": _cap()}
         )
         assert any("sale_credit" in p for p in problems)
 
     def test_a_non_string_survivor_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {12345}}
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {12345}, "cap": _cap()}
         )
         assert any("survivors entries must be strings" in p for p in problems)
 
@@ -587,7 +614,7 @@ class TestAccountFieldsAreValidated:
         # mixed str/int set.
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(positions={42: 100}), "survivors": set()}
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={42: 100}), "survivors": set(), "cap": _cap()}
         )
         assert any("portfolio.positions keys" in p for p in problems)
 
@@ -597,7 +624,7 @@ class TestAccountFieldsAreValidated:
             {
                 "bundle": _bundle(),
                 "portfolio": _portfolio(mark_prices={42: 100.0}),
-                "survivors": set(),
+                "survivors": set(), "cap": _cap(),
             }
         )
         assert any("portfolio.mark_prices keys" in p for p in problems)
@@ -623,7 +650,7 @@ class TestTransientStateIsClearedAfterRun:
         node = _node()
         node.run(
             _ctx(tmp_path),
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}},
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
         )
         assert node._pi_upper is None
         assert node._band_shares is None
@@ -634,7 +661,7 @@ class TestTransientStateIsClearedAfterRun:
         node = _node()
         node.run(
             _ctx(tmp_path),
-            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set()},
+            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set(), "cap": _cap()},
         )
         assert node._pi_upper is None
         assert node._band_shares is None
@@ -661,7 +688,7 @@ class TestNegativeNetWorthGivesTheClearMessage:
         with pytest.raises(ValueError, match="net worth"):
             node.run(
                 _ctx(tmp_path),
-                {"bundle": _bundle(), "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}},
+                {"bundle": _bundle(), "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
             )
 
 
@@ -680,14 +707,219 @@ class TestSmallPositiveNetWorthSolvesInsteadOfRefusing:
             "risk_aversion_gamma": 2.0, "n_tangents": 16, "n_scenarios_max": 128,
             "cardinality": 3, "min_ticket": 0.1, "spread_bps": 2.2, "taf_per_share": 0.000195,
             "sec31_bps": 0.0206, "min_price": 0.01, "hfdr_q": 0.90,
-            "bundle_max_staleness_ms": 5000, "cvar_alpha": 0.9, "cvar_limit": None,
+            "bundle_max_staleness_ms": 5000, "cap_max_staleness_ms": 5000,
+            "cvar_alpha": 0.9, "cvar_limit": None,
             "band_bps": 10.0, "max_position_notional": 999999.0,
         })
         portfolio = {
-            "asof_ms": 0, "cash": 0.0, "buying_power": 0.0, "positions": {"AAPL": 1},
+            "asof_ms": ASOF_MS, "cash": 0.0, "buying_power": 0.0, "positions": {"AAPL": 1},
             "mark_prices": {"AAPL": 0.50}, "cash_reserve": 0.0, "gross_limit": None,
             "sale_credit": 1.0,
         }
-        out = node.run(_ctx(tmp_path), {"bundle": [], "portfolio": portfolio, "survivors": set()})
+        out = node.run(_ctx(tmp_path), {"bundle": [], "portfolio": portfolio, "survivors": set(), "cap": _cap()})
         assert "AAPL" not in out["target"]
         assert out["trades"]["AAPL"] == {"buy": 0, "sell": 1}
+
+
+class TestExtendedBundleContract:
+    """Gate 4 (ADR-0121): a lead, a release identity, and a gross unit on
+    every bundle row — a vol-scaled SPY-residual prediction is never
+    accepted as a gross return (plan §6 Phase 4 item 1)."""
+
+    def test_a_missing_lead_is_refused_by_name(self):
+        bad = [dict(_bundle()[0])]
+        del bad[0]["lead"]
+        problems = _bundle_problems(bad)
+        assert any("lead" in p for p in problems), problems
+
+    def test_a_missing_model_release_id_is_refused_by_name(self):
+        bad = [dict(_bundle()[0])]
+        del bad[0]["model_release_id"]
+        problems = _bundle_problems(bad)
+        assert any("model_release_id" in p for p in problems), problems
+
+    def test_a_missing_unit_is_refused_by_name(self):
+        bad = [dict(_bundle()[0])]
+        del bad[0]["unit"]
+        problems = _bundle_problems(bad)
+        assert any("unit" in p for p in problems), problems
+
+    def test_a_label_unit_row_is_never_accepted_as_a_gross_return(self):
+        bad = _bundle()
+        bad[0] = dict(bad[0], unit="vol_scaled_residual")
+        problems = _bundle_problems(bad)
+        assert any("gross_fractional_return" in p for p in problems), problems
+
+    def test_a_lead_outside_the_ten_heads_is_refused(self):
+        bad = _bundle()
+        bad[0] = dict(bad[0], lead=11)
+        problems = _bundle_problems(bad)
+        assert any("lead" in p for p in problems), problems
+
+    def test_a_non_integer_lead_is_refused(self):
+        bad = _bundle()
+        bad[0] = dict(bad[0], lead=2.5)
+        problems = _bundle_problems(bad)
+        assert any("lead" in p for p in problems), problems
+
+    def test_mixed_leads_in_one_bundle_refuse(self):
+        bad = _bundle()
+        bad[1] = dict(bad[1], lead=4)
+        problems = _bundle_problems(bad)
+        assert any("lead" in p and "shared" in p for p in problems), problems
+
+    def test_mixed_releases_in_one_bundle_refuse(self):
+        bad = _bundle()
+        bad[1] = dict(bad[1], model_release_id="another-release")
+        problems = _bundle_problems(bad)
+        assert any("model_release_id" in p and "shared" in p for p in problems), problems
+
+
+class TestConfirmedCapEnforcement:
+    """Gate 4 (ADR-0121): the pinned confirmed (symbol, lead) cap is a
+    required input and is enforced before optimization — absent, zero and
+    over-cap rows route out; stale, ineligible and wrong-release caps
+    refuse outright. The stat_test survivor wire is unchanged."""
+
+    def test_the_reference_cap_input_validates_clean(self):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
+        )
+        assert problems == [], problems
+
+    def test_a_missing_cap_input_is_refused(self):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": set()}
+        )
+        assert any("cap is required" in p for p in problems), problems
+
+    def test_a_malformed_cap_artifact_is_refused_by_name(self):
+        node = _node()
+        problems = node.validate_inputs(
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": set(), "cap": {"schema_version": 1}}
+        )
+        assert any("cap" in p for p in problems), problems
+
+    def test_a_development_cap_refuses_deployment(self):
+        node = _node()
+        problems = node.validate_inputs(
+            {
+                "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
+                "cap": _cap(deployment_eligible=False),
+            }
+        )
+        assert any("deployment_eligible" in p for p in problems), problems
+
+    def test_a_stale_cap_is_refused(self):
+        node = _node()
+        problems = node.validate_inputs(
+            {
+                "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
+                "cap": _cap(generated_ms=ASOF_MS - 999_999),
+            }
+        )
+        assert any("stale" in p for p in problems), problems
+
+    def test_a_future_dated_cap_is_refused(self):
+        node = _node()
+        problems = node.validate_inputs(
+            {
+                "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
+                "cap": _cap(generated_ms=ASOF_MS + 10_000),
+            }
+        )
+        assert any("cap" in p and ("future" in p or "stale" in p) for p in problems), problems
+
+    def test_a_cap_for_the_wrong_model_release_is_refused(self):
+        node = _node()
+        problems = node.validate_inputs(
+            {
+                "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
+                "cap": _cap(model_release_id="a-different-release"),
+            }
+        )
+        assert any("model_release_id" in p for p in problems), problems
+
+    def test_a_symbol_absent_from_the_cap_is_routed_out(self, tmp_path):
+        cap = _cap(caps=[{"symbol": "AAPL", "capped_horizon": 10}])
+        out = _node().run(
+            _ctx(tmp_path),
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
+        )
+        assert "MSFT" not in out["target"]
+        assert "XOM" not in out["target"]
+        assert "no confirmed cap" in out["evidence"]["routed_out"]["MSFT"]
+
+    def test_a_zero_cap_routes_the_symbol_out(self, tmp_path):
+        cap = _cap(caps=[
+            {"symbol": "AAPL", "capped_horizon": 10},
+            {"symbol": "MSFT", "capped_horizon": 10},
+            {"symbol": "XOM", "capped_horizon": 0},
+        ])
+        out = _node().run(
+            _ctx(tmp_path),
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
+        )
+        assert "XOM" not in out["target"]
+        assert "zero" in out["evidence"]["routed_out"]["XOM"]
+
+    def test_a_lead_above_the_confirmed_cap_is_routed_out(self, tmp_path):
+        cap = _cap(caps=[
+            {"symbol": "AAPL", "capped_horizon": 2},  # bundle rows sit at lead 3
+            {"symbol": "MSFT", "capped_horizon": 10},
+            {"symbol": "XOM", "capped_horizon": 10},
+        ])
+        out = _node().run(
+            _ctx(tmp_path),
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
+        )
+        assert "AAPL" not in out["target"]
+        assert "above" in out["evidence"]["routed_out"]["AAPL"]
+
+    def test_a_within_cap_lead_still_sizes(self, tmp_path):
+        # lead 3 inside a capped_horizon of 3 is the boundary's inclusive
+        # edge — the row must survive the cap gate and size normally.
+        cap = _cap(caps=[
+            {"symbol": "AAPL", "capped_horizon": 3},
+            {"symbol": "MSFT", "capped_horizon": 10},
+            {"symbol": "XOM", "capped_horizon": 10},
+        ])
+        out = _node().run(
+            _ctx(tmp_path),
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
+        )
+        assert "AAPL" not in out["evidence"]["routed_out"]
+
+    def test_a_bad_cap_refuses_at_run_time_too_not_just_validation(self, tmp_path):
+        # run() is callable directly (the tests above do); a development
+        # cap must fail closed there as well, never silently size.
+        node = _node()
+        with pytest.raises(ValueError, match="deployment_eligible"):
+            node.run(
+                _ctx(tmp_path),
+                {
+                    "bundle": _bundle(), "portfolio": _portfolio(),
+                    "survivors": {"AAPL", "MSFT", "XOM"},
+                    "cap": _cap(deployment_eligible=False),
+                },
+            )
+
+    def test_a_missing_cap_input_refuses_at_run_time_too(self, tmp_path):
+        node = _node()
+        with pytest.raises(ValueError, match="cap"):
+            node.run(
+                _ctx(tmp_path),
+                {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": set()},
+            )
+
+    def test_the_stat_test_wire_still_gates_before_the_cap(self, tmp_path):
+        # A name that is BOTH a non-survivor and cap-covered is routed for
+        # the stat_test reason — the survivor wire keeps its own message.
+        survivors = {"AAPL", "MSFT"}  # XOM covered by cap but not a survivor
+        out = _node().run(
+            _ctx(tmp_path),
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap()},
+        )
+        assert out["evidence"]["routed_out"]["XOM"] == "not a stat_test survivor"

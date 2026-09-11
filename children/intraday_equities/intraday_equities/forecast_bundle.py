@@ -4,7 +4,7 @@ The P16 label ``y(t, h) = [r_i(t, t+h) - beta_i,t * r_SPY(t, t+h)] /
 (sigma_i,t * sqrt(h))`` is a vol-scaled SPY residual (ADR-0059's
 :class:`intraday_equities.nodes._LeadLabel`); the capital step needs gross
 fractional returns. The owner's §11 item 3 ruling (2026-09-10, carried in
-``docs/plans/2026-09-10-gate4-forecast-bundle-kickoff.md`` and ADR-0117)
+``docs/plans/2026-09-10-gate4-forecast-bundle-kickoff.md`` and ADR-0121)
 fixes the inverse: assume a **zero-drift market reference**,
 ``E[r_SPY(t, t+h)] ~= 0`` over the model's short forecast horizons, so the
 point-in-time gross-return forecast is ``yhat * sigma_i,t * sqrt(h)`` using
@@ -326,8 +326,9 @@ class ForecastBundle:
     """One decision tick's assembled, unit-verified MIO forecast bundle.
 
     Validates caller-supplied point-in-time rows, applies the §11 item 3
-    ruled inverse (:func:`gross_return`) to the mean prediction AND every
-    scenario residual, and emits gross-unit rows in exactly the shape
+    ruled inverse (:func:`gross_return`) to the mean prediction and to each
+    ``prediction + scenario residual`` payoff, and emits gross-unit rows in
+    exactly the shape
     :class:`~intraday_equities.nodes_capital.EquityKellyMIO` consumes.
     Fail-closed: every problem is named, and any one of them refuses the
     whole tick.
@@ -386,11 +387,15 @@ class ForecastBundle:
 
     def __init__(self, release_id, rows, label_contract=None):
         self.release_id = release_id
-        self.label_contract = (
-            default_label_contract() if label_contract is None else label_contract
-        )
+        self.label_contract = default_label_contract()
         self.reference_policy = ZERO_DRIFT
         problems = []
+        if label_contract is not None and label_contract != self.label_contract:
+            problems.append(
+                f"label_contract {label_contract!r} differs from the pinned "
+                f"training label contract {self.label_contract!r} — callers "
+                "cannot redefine the release's label semantics"
+            )
         if not isinstance(release_id, str) or not release_id:
             problems.append(
                 f"release_id must be a non-empty string, got {release_id!r}"
@@ -450,7 +455,10 @@ class ForecastBundle:
             "price": float(row["price"]),
             "pi_upper": float(row["pi_upper"]),
             "weights": list(row["weights"]),
-            "scenarios": [gross_return(v, sigma, lead) for v in row["scenarios"]],
+            "scenarios": [
+                gross_return(row["yhat"] + residual, sigma, lead)
+                for residual in row["scenarios"]
+            ],
             "mu_gross": gross_return(row["yhat"], sigma, lead),
             "reference_policy": self.reference_policy,
             "known_at": dict(row["known_at"]),
@@ -476,7 +484,7 @@ _CAP_SCHEMA_VERSION = 1
 class ConfirmedCaps:
     """The pinned, deployable ``(symbol, lead)`` confirmation-cap artifact.
 
-    Phase 4's cap contract (ADR-0117): confirmation caps are pinned,
+    Phase 4's cap contract (ADR-0121): confirmation caps are pinned,
     deployable, contiguous from h1, and from evidence not used to choose
     the P16 mask. Development caps always refuse deployment. No real
     artifact exists yet — the March-May confirmation evidence (§11 item 4)

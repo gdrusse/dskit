@@ -90,7 +90,7 @@ Agent orientation — see README.md for operator commands.
 ## Layout
 
 ```
-intraday_equities/   # auth, connectors, nodes, nodes_capital, metrics, models, live, testing, replay
+intraday_equities/   # auth, connectors, nodes, forecast_bundle, nodes_capital, metrics, models, live, testing, replay
 configs/             # universe + sources, suites/model-zoo, scan/action/HPO/train, fill-policy, development-replay
 journal.json         # dskit.journal marker
 docs/decisioning/    # actions.csv + path.csv; README generated

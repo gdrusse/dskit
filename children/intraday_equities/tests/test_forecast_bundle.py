@@ -1,6 +1,6 @@
-"""``forecast_bundle`` (Gate 4, ADR-0114 Phase 4 / ADR-0117): behaviour.
+"""``forecast_bundle`` (Gate 4, ADR-0114 Phase 4 / ADR-0121): behaviour.
 
-Covers the three contracts ADR-0117 names: the §11 item 3 ruled inverse
+Covers the three contracts ADR-0121 names: the §11 item 3 ruled inverse
 label transformation (a vol-scaled SPY-residual prediction must never be
 accepted as a gross return), the point-in-time bundle assembler
 (:class:`intraday_equities.forecast_bundle.ForecastBundle`), and the
@@ -154,11 +154,11 @@ class TestForecastBundleAssembly:
         for out in bundle.rows:
             assert out["mu_gross"] == pytest.approx(gross_return(0.5, 0.0012, 3))
 
-    def test_every_scenario_residual_converts_with_the_same_factor(self):
+    def test_every_scenario_is_the_forecast_mean_plus_a_converted_residual(self):
         bundle = _bundle()
         for out in bundle.rows:
             assert out["scenarios"] == pytest.approx(
-                [gross_return(v, 0.0012, 3) for v in SCENARIOS]
+                [gross_return(0.5 + v, 0.0012, 3) for v in SCENARIOS]
             )
 
     def test_output_rows_carry_the_shared_tick_identity(self):
@@ -283,6 +283,14 @@ class TestSigmaComesFromTheSamePipeline:
         with pytest.raises(ValueError, match="label"):
             _bundle([bad])
 
+    def test_a_caller_cannot_redefine_the_pinned_training_label_contract(self):
+        from intraday_equities.forecast_bundle import ForecastBundle
+
+        drifted = dict(default_label_contract(), label_residual="QQQ")
+        row = _input_row("AAPL", label=drifted)
+        with pytest.raises(ValueError, match="pinned training label contract"):
+            ForecastBundle(RELEASE, [row], label_contract=drifted)
+
     def test_a_row_with_no_label_contract_refuses(self):
         bad = _input_row("AAPL")
         del bad["label"]
@@ -369,8 +377,6 @@ class TestTheCapitalNodeContractIsPinned:
 
 def _cap_artifact(**overrides):
     """One hand-built, deployable confirmed-cap artifact."""
-    from intraday_equities.forecast_bundle import ConfirmedCaps
-
     artifact = {
         "schema_version": 1,
         "model_release_id": RELEASE,

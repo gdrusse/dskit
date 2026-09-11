@@ -12,7 +12,10 @@ from dskit.onboarding import check_config, load_suite
 from dskit.pipeline.document import load_document
 
 from intraday_equities.connectors import AlpacaBars, SchwabBars
+from intraday_equities.forecast_bundle import ConfirmedCaps
 from intraday_equities.nodes import _emit_feature_names, session_feature_names
+from intraday_equities.nodes_capital import _bundle_problems
+from intraday_equities.testing import SyntheticMioSource
 
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
@@ -78,6 +81,23 @@ def test_every_run_document_loads():
         if name.startswith("run-") and name.endswith(".json"):
             document = load_document(_path(name))
             assert document.hash, name
+
+
+def test_mio_demo_wires_the_synthetic_confirmed_cap():
+    raw = _raw("run-mio-demo.json")
+    source = raw["pipeline"]["source"]
+    size = raw["pipeline"]["size"]
+    assert source["uses"] == "intraday_equities.testing:SyntheticMioSource"
+    assert size["inputs"]["cap"] == "$source.cap"
+    assert size["params"]["cap_max_staleness_ms"] == 5000
+
+
+def test_mio_demo_source_emits_a_release_matched_deployable_cap():
+    out = SyntheticMioSource("source", {"seed": 0}).run(None, {})
+    assert _bundle_problems(out["bundle"]) == []
+    caps = ConfirmedCaps(out["cap"])
+    assert caps.model_release_id == out["bundle"][0]["model_release_id"]
+    assert all(caps.allows(row["entity"], row["lead"]) for row in out["bundle"])
 
 
 def test_action_documents_differ_only_in_cadence():
