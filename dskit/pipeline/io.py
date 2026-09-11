@@ -68,9 +68,22 @@ def load_config(path, adapters=()) -> PipelineConfig:
 
 
 def save_config(config, path) -> None:
-    """Write a config as canonical, human-diffable JSON (sorted keys,
-    2-space indent, NaN refused). Serialized fully before the file opens —
-    a bad value can never leave a half-written document."""
+    """Write a config as canonical, human-diffable JSON.
+
+    Sorted keys, 2-space indent, NaN refused. Serialized fully before
+    the file opens — a bad value can never leave a half-written document.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+        The config to serialize.
+    path : str
+        Path to write the ``.json`` file to.
+
+    Returns
+    -------
+    None
+    """
     text = json.dumps(config.to_obj(), indent=2, sort_keys=True, allow_nan=False)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text + "\n")

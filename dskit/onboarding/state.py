@@ -36,6 +36,7 @@ __all__ = ["load_state", "save_state"]
 
 
 def _require_root(root):
+    """Refuse anything that is not an OnboardingRoot."""
     if not isinstance(root, OnboardingRoot):
         raise AssetError(
             [f"root must be an OnboardingRoot, got {type(root).__name__}"]
@@ -43,7 +44,7 @@ def _require_root(root):
 
 
 def load_state(root, source, stream, mode) -> dict:
-    """The last persisted checkpoint for one (source, stream, mode).
+    """Return the last persisted checkpoint for one (source, stream, mode).
 
     Parameters
     ----------
@@ -100,6 +101,11 @@ def save_state(root, source, stream, mode, state) -> str:
         The checkpoint key.
     state : dict
         The connector's state, exactly as its STATE message carried it.
+
+    Returns
+    -------
+    str
+        The path the checkpoint was written to.
     """
     _require_root(root)
     errors = []

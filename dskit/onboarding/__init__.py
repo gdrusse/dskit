@@ -1,5 +1,4 @@
-"""``dskit.onboarding`` — Acquisition & Onboarding: connectors, snapshots,
-validation, certification, publication.
+"""``dskit.onboarding`` — Acquisition & Onboarding: connectors, snapshots, validation, certification, publication.
 
 Package 2 of the master specs, designed in ADR-0012…0016 and built on
 the assets engine reused as a library (ADR-0013):

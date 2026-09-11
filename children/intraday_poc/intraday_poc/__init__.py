@@ -1,5 +1,4 @@
-"""``intraday_poc`` — a dskit child (ADR-0021): the two-stock intraday
-proof of concept.
+"""``intraday_poc`` — a dskit child (ADR-0021): the two-stock intraday proof of concept.
 
 AAPL and MSFT 1-minute bars (Alpaca), one zoo LSTM per symbol
 (``torch-ts-train`` / ``arch: lstm``), and a pick-exactly-one selector
