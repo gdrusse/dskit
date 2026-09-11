@@ -77,7 +77,7 @@ _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*\Z")
 
 
 def _check_segment(errors, name, value):
-    """Append an error if ``value`` is not a filesystem-safe path segment (lowercase/digits/_/-)."""
+    """Append an error if ``value`` is not filesystem-safe (lowercase/digits/_/-) — it becomes a directory."""
     if not isinstance(value, str) or not _SEGMENT.match(value):
         errors.append(
             f"{name} must be filesystem-safe (lowercase/digits/_/-), got {value!r}"

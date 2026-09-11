@@ -162,7 +162,11 @@ def apply_stream_steps(records, features):
     ----------
     records : iterable
         The record stream — :class:`~dskit.pipeline.records.MarketRecord`
-        (or dict) rows, in ascending ``asof_ms`` order.
+        rows, in ascending ``asof_ms`` order. The built-in steps read
+        ``MarketRecord`` attributes directly, so a plain dict stream
+        only survives when ``features`` is ``None`` or declares no
+        built-in step (a class-reference step may accept whatever its
+        own contract promises).
     features : FeatureConfig or None
         The declared feature config whose STREAM steps to apply, in
         order. ``None`` means the raw stream, unchanged.

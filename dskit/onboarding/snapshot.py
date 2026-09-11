@@ -130,6 +130,11 @@ def snapshot_hash(manifest) -> str:
     -------
     str
         The manifest's canonical digest.
+
+    Raises
+    ------
+    AssetError
+        If ``manifest`` is not a dict.
     """
     errors = []
     _check_dict(errors, "manifest", manifest)

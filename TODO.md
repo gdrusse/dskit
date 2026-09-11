@@ -223,43 +223,53 @@ REMAINING, in the plan's risk order:
       (grep found NO live importer through kinds_flow); kinds_flow fully
       converted, its ignore entry drained; banking behaviour tests stay
       beside the driver integration run by design.
-- [ ] **Drain the pre-standard ignore list.** 73 modules sit in
+- [ ] **Drain the pre-standard ignore list.** 57 modules sit in
       `pyproject.toml` under `per-file-ignores`; delete a module's entry when
       you convert it. That list IS the remaining work, in config form.
-      **In progress (2026-09-11):** 15 entries drained — 6 needed real
+      **In progress (2026-09-11):** 15 entries drained — 5 needed real
       docstring fixes (`dskit/__init__.py`,
       `children/intraday_poc/intraday_poc/__init__.py`,
       `dskit/onboarding/__init__.py`, `dskit/pipeline/io.py`,
-      `dskit/onboarding/state.py`, `dskit/onboarding/certify.py` [already
-      compliant]); 4 more were already fully compliant and needed only
-      the ignore-list entry removed (`dskit/assets/sync.py`,
-      `dskit/onboarding/publish.py`, `dskit/assets/default_model.py`,
-      `dskit/onboarding/default_model.py`); and 5 more needed real fixes
-      too — `dskit/onboarding/acquire.py` and `dskit/onboarding/snapshot.py`
-      each gained new `Parameters`/`Returns` (`acquire.py` also `Raises`),
-      `dskit/pipeline/features.py` gained new `Parameters`/`Returns` on its
-      public `apply_stream_steps`, and `dskit/assets/ingest.py` /
-      `dskit/assets/lineage.py` each got a one-line-docstring reflow
-      (mechanical, no new sections needed).
+      `dskit/onboarding/state.py`); 5 were already fully compliant and
+      needed only the ignore-list entry removed (`dskit/onboarding
+      /certify.py`, `dskit/assets/sync.py`, `dskit/onboarding/publish.py`,
+      `dskit/assets/default_model.py`, `dskit/onboarding/default_model.py`);
+      and 5 more needed real fixes too — `dskit/onboarding/acquire.py` and
+      `dskit/onboarding/snapshot.py` each gained new `Parameters`/`Returns`
+      (`acquire.py` also `Raises`), `dskit/pipeline/features.py` gained new
+      `Parameters`/`Returns` on its public `apply_stream_steps`, and
+      `dskit/assets/ingest.py` / `dskit/assets/lineage.py` each got a
+      one-line-docstring reflow (mechanical, no new sections needed).
       **Continued (2026-09-11, same session):** 12 more modules drained —
       the next tier up (3-6 D-rule findings each), several needing a new
-      class `Examples` block, each execution-verified against the real
-      code before landing: `dskit/assets/record.py`,
+      class `Examples` block: `dskit/assets/record.py`,
       `dskit/assets/registry.py`, `dskit/onboarding/base.py`,
       `dskit/onboarding/connector.py`, `dskit/onboarding/libs/localfiles.py`
       (`LocalFilesConnector` upgraded to a full class docstring),
       `dskit/pipeline/resolve.py` (`ResolvedPipeline` gained an `Examples`
-      block, corrected in review — the first draft called `resolve()`
-      with a wrong signature), `dskit/assets/base.py` (`AssetError` gained
-      an `Examples` block mirroring `JournalError`'s), `dskit/onboarding
-      /observations.py`, `dskit/pipeline/trainlog.py` (`TrainingCurve`
-      gained an `Examples` block), `children/_skeleton/yourproject
-      /connectors.py` (`SampleConnector` upgraded, mirroring
-      `LocalFilesConnector` — the skeleton propagates to every future
-      child), `dskit/onboarding/layout.py`, `dskit/pipeline/metrics.py`.
+      block), `dskit/assets/base.py` (`AssetError` gained an `Examples`
+      block mirroring `JournalError`'s), `dskit/onboarding/observations.py`,
+      `dskit/pipeline/trainlog.py` (`TrainingCurve` gained an `Examples`
+      block), `children/_skeleton/yourproject/connectors.py`
+      (`SampleConnector` upgraded, mirroring `LocalFilesConnector` — the
+      skeleton propagates to every future child), `dskit/onboarding
+      /layout.py`, `dskit/pipeline/metrics.py`. Not every `Examples` block
+      was execution-verified before its first commit — two rounds of
+      independent skeptic review found and fixed a wrong `resolve()` call
+      signature, a wrong list-repr in an expected-output line, and three
+      other factually-inaccurate reworded summaries; every `Examples`
+      block now IS execution-verified, but say so honestly rather than as
+      an original design choice.
       **27 of the original 57 drained; 30 remain**, each with 8+ D-rule
       findings and generally more classes needing full conversion — left
-      for a future pass.
+      for a future pass. Note also: several drained files (`metrics.py`
+      is the clearest case) satisfy ruff's automated `D` check without
+      every public function gaining a full `Parameters`/`Returns` — this
+      matches the file's own pre-existing one-liner convention (and
+      precedent elsewhere in the repo, e.g. `driver.py`), but means
+      removing a file's ignore-list entry certifies ruff-compliance, not
+      necessarily the complete CLAUDE.md standard, for every function in
+      that file.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

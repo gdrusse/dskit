@@ -83,7 +83,12 @@ def _epoch_ms(dt) -> int:
 
 
 def _key_part(value):
-    """Canonicalize a key-field value's identity — never coercing Python's ``==``, where ``1 == 1.0 == True`` would let one dict slot silently merge three canonically distinct keys (and the same coercion would let sort comparisons equate distinct records).
+    """Canonicalize a key-field value's identity.
+
+    Never coercing Python's ``==``, where ``1 == 1.0 == True`` would let
+    one dict slot silently merge three canonically distinct keys (and
+    the same coercion would let sort comparisons equate distinct
+    records).
 
     Strings — the overwhelmingly common key type — pass through
     untouched (zero allocation, so the memory contract is unchanged).

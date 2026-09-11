@@ -94,7 +94,12 @@ class SampleConnector(Connector):
         return rows
 
     def _rows(self, config):
-        """Yield ``(effective_date, data)`` in date order — a real child replaces this with the vendor fetch, keeping the emission sorted so the cursor ("everything before this is durable") stays honest."""
+        """Yield ``(effective_date, data)`` in date order.
+
+        A real child replaces this with the vendor fetch, keeping the
+        emission sorted so the cursor ("everything before this is
+        durable") stays honest.
+        """
         rows = self._budget(config)
         start = parse_utc(config.get("start_date", _DEFAULT_START))
         for i in range(rows):

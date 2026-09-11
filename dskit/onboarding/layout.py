@@ -172,7 +172,11 @@ class OnboardingRoot:
         return os.path.join(self.root, "raw", source, acq_id)
 
     def records_dir(self, source, acq_id, *, forecasts=False) -> str:
-        """Return the path to normalized rows for one acquisition — observations by default, the segregated forecast root when ``forecasts`` (ADR-0014/OQ-6)."""
+        """Return the path to normalized rows for one acquisition.
+
+        Observations by default, the segregated forecast root when
+        ``forecasts`` (ADR-0014/OQ-6).
+        """
         errors = []
         _check_segment(errors, "source", source)
         _check_str(errors, "acq_id", acq_id)
@@ -194,7 +198,10 @@ class OnboardingRoot:
         return os.path.join(self.root, "state", source, f"{stream}-{mode}.json")
 
     def coverage_path(self) -> str:
-        """``state/coverage.sqlite`` — the coverage ledger's one file (ADR-0030). State beside the cursors, never evidence: ``verify`` ignores it."""
+        """``state/coverage.sqlite`` — the coverage ledger's one file (ADR-0030).
+
+        State beside the cursors, never evidence: ``verify`` ignores it.
+        """
         return os.path.join(self.root, "state", "coverage.sqlite")
 
     def published_dir(self, dataset) -> str:

@@ -1,4 +1,7 @@
-"""dskit — a data-science toolkit. Four packages, one doctrine: code is generic, configuration is the interface, and your project is a thin child.
+"""dskit — a data-science toolkit.
+
+Four packages, one doctrine: code is generic, configuration is the
+interface, and your project is a thin child.
 
 Subpackages:
 

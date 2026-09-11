@@ -66,7 +66,12 @@ def brier(q, y) -> float:
 
 
 def _check_regression(metric, q, y):
-    """Both values finite numbers — a regression rule has no [0, 1] frame and no binary payout to police, but a NaN/inf belief or outcome would poison every aggregate exactly like the binary case."""
+    """Refuse a non-finite belief or outcome.
+
+    A regression rule has no [0, 1] frame and no binary payout to
+    police, but a NaN/inf belief or outcome would poison every
+    aggregate exactly like the binary case.
+    """
     for name, v in (("q", q), ("y", y)):
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise ValueError(f"{metric}: {name} must be a number, got {v!r}")
@@ -75,13 +80,22 @@ def _check_regression(metric, q, y):
 
 
 def squared_error(q, y) -> float:
-    """Per-observation squared error over unbounded values — the mark-to-market sibling of :func:`brier` (ADR-0025): ``q`` is the signal's point belief (a return, a price), ``y`` the realized value through the venue's ``Accounting`` seam."""
+    """Per-observation squared error over unbounded values.
+
+    The mark-to-market sibling of :func:`brier` (ADR-0025): ``q`` is the
+    signal's point belief (a return, a price), ``y`` the realized value
+    through the venue's ``Accounting`` seam.
+    """
     _check_regression("squared_error", q, y)
     return (float(q) - float(y)) ** 2
 
 
 def absolute_error(q, y) -> float:
-    """Per-observation absolute error over unbounded values — the robust companion to :func:`squared_error` (median-flavored where that one is mean-flavored)."""
+    """Per-observation absolute error over unbounded values.
+
+    The robust companion to :func:`squared_error` (median-flavored
+    where that one is mean-flavored).
+    """
     _check_regression("absolute_error", q, y)
     return abs(float(q) - float(y))
 

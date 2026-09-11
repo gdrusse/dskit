@@ -165,7 +165,10 @@ class Registry:
         return record
 
     def find(self, kind, name) -> list:
-        """Return version_ids of ``kind`` whose payload ``name`` equals ``name`` — the alias lookup of ADR-0009 (aliases may have many versions)."""
+        """Return version_ids of ``kind`` whose payload ``name`` equals ``name``.
+
+        The alias lookup of ADR-0009 (aliases may have many versions).
+        """
         self._spec(kind)
         errors = []
         _check_str(errors, "name", name)
