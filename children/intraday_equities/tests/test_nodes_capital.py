@@ -306,10 +306,11 @@ class TestEmptyGate:
         )
         assert any("bundle_artifact_sha256" in p for p in problems), problems
 
-    def test_an_empty_bundle_cannot_authorize_liquidation(self):
-        problems = _node(bundle=[]).validate_inputs(
+    @pytest.mark.parametrize("empty_bundle", [[], ()])
+    def test_an_empty_bundle_cannot_authorize_liquidation(self, empty_bundle):
+        problems = _node(bundle=empty_bundle).validate_inputs(
             {
-                "bundle": [],
+                "bundle": empty_bundle,
                 "portfolio": _portfolio(
                     positions={"AAPL": 1}, mark_prices={"AAPL": 190.0}
                 ),

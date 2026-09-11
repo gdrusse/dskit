@@ -632,7 +632,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                             "refused by name rather than silently truncated or solved into an "
                             "opaque infeasibility"
                         )
-                if bundle == [] and any(
+                if isinstance(bundle, (list, tuple)) and not bundle and any(
                     number_ok(shares) and shares != 0
                     for shares in positions.values()
                 ):
