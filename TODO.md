@@ -236,10 +236,26 @@ REMAINING, in the plan's risk order:
       `dskit/onboarding/publish.py`, `dskit/assets/default_model.py`,
       `dskit/onboarding/default_model.py`, `dskit/onboarding/acquire.py`,
       `dskit/onboarding/snapshot.py`, `dskit/assets/ingest.py`,
-      `dskit/assets/lineage.py`, `dskit/pipeline/features.py`). 42 modules
-      remain, each with more D-rule findings (3+) and generally classes
-      needing NumPy-section + Examples conversion, not just function-level
-      fixes — left for a future pass rather than rushed.
+      `dskit/assets/lineage.py`, `dskit/pipeline/features.py`).
+      **Continued (2026-09-11, same session):** 12 more modules drained —
+      the next tier up (3-6 D-rule findings each), several needing a new
+      class `Examples` block, each execution-verified against the real
+      code before landing: `dskit/assets/record.py`,
+      `dskit/assets/registry.py`, `dskit/onboarding/base.py`,
+      `dskit/onboarding/connector.py`, `dskit/onboarding/libs/localfiles.py`
+      (`LocalFilesConnector` upgraded to a full class docstring),
+      `dskit/pipeline/resolve.py` (`ResolvedPipeline` gained an `Examples`
+      block, corrected in review — the first draft called `resolve()`
+      with a wrong signature), `dskit/assets/base.py` (`AssetError` gained
+      an `Examples` block mirroring `JournalError`'s), `dskit/onboarding
+      /observations.py`, `dskit/pipeline/trainlog.py` (`TrainingCurve`
+      gained an `Examples` block), `children/_skeleton/yourproject
+      /connectors.py` (`SampleConnector` upgraded, mirroring
+      `LocalFilesConnector` — the skeleton propagates to every future
+      child), `dskit/onboarding/layout.py`, `dskit/pipeline/metrics.py`.
+      **27 of the original 57 drained; 30 remain**, each with 8+ D-rule
+      findings and generally more classes needing full conversion — left
+      for a future pass.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,
