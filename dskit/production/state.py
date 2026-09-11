@@ -996,6 +996,7 @@ class SeriesState:
             raise ProductionError(problems)
         self._series_id = series_id
         self._max_history = max_history
+        self._is_replay = False
         self._replay_authorizer = None
         self._head_seq, self._head_hash = 0, GENESIS_HASH
         self._economic_seq = 0
@@ -1056,6 +1057,7 @@ class SeriesState:
         if problems:
             raise ProductionError(problems)
         state = cls(series_id, max_history)
+        state._is_replay = True
         if cash_flow_composer is not None:
             state._replay_authorizer = cash_flow_composer._authorizes
         return state
@@ -1299,7 +1301,7 @@ class SeriesState:
             problems.append(
                 f"cash_flow.external must be a bool, got {body.get('external')!r}"
             )
-        if body.get("source") == "replay":
+        if self._is_replay or body.get("source") == "replay":
             self._check_replay_cash_flow(problems, body, record_id)
         superseded = body.get("supersedes")
         if superseded is not None:

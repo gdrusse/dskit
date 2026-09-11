@@ -2210,6 +2210,26 @@ def test_a_bound_composer_authorizes_only_its_exact_derived_record(
     assert bundles[5].state.snapshot().balances == {}
 
 
+def test_a_replay_state_refuses_a_forged_venue_cash_flow(
+    shadow_document, composer
+):
+    """The replay boundary authorizes declarations, not their source label."""
+    cash_flows, anchor = replay_cash_flow_composer()
+    bundles = composer.build(
+        shadow_document, tape=EmptyReplayTape(), cash_flow_composer=cash_flows
+    )
+    emitted = cash_flows.due(anchor, anchor + timedelta(seconds=1))[0]
+    forged = {
+        **emitted,
+        "body": {**emitted["body"], "amount": "9999999", "source": "venue"},
+    }
+
+    with pytest.raises(ProductionError, match="composer|authorize"):
+        bundles[5].ledger.append(forged)
+
+    assert bundles[5].state.snapshot().balances == {}
+
+
 def test_a_stateful_override_tuple_cannot_mint_replay_cash(
     shadow_document, composer
 ):
