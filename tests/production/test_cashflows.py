@@ -8,7 +8,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from dskit.production.cashflows import (
+    CashFlowOverride,
     CorrectCashFlow,
+    DueCashFlow,
     MoveCashFlow,
     RecurringCashFlowSchedule,
     ReplaceCashFlow,
@@ -266,4 +268,38 @@ def test_a_correction_cannot_predate_its_schedule_target():
                     "backdated", anchor - timedelta(days=1), prior.flow_id, Decimal("41")
                 ),
             ),
+        )
+
+
+def test_an_unapproved_override_cannot_mint_standalone_replay_cash():
+    """A user-defined override cannot inject an arbitrary declaration."""
+    timezone = ZoneInfo("UTC")
+    anchor = datetime(2031, 4, 9, 13, 17, tzinfo=timezone)
+
+    class ForgedOverride(CashFlowOverride):
+        override_id = "forged"
+
+        def apply(self, occurrence):
+            return occurrence
+
+        def _standalone(self, schedule_id, currency):
+            return (
+                DueCashFlow(
+                    "forged",
+                    anchor,
+                    "XYZ",
+                    Decimal("9999999"),
+                    "deposit",
+                ),
+            )
+
+    with pytest.raises(ValueError, match="approved concrete CashFlowOverride"):
+        RecurringCashFlowSchedule(
+            "test-schedule",
+            anchor,
+            13,
+            "XYZ",
+            Decimal("37"),
+            timezone,
+            overrides=(ForgedOverride(),),
         )

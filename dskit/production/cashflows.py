@@ -363,6 +363,15 @@ class CorrectCashFlow(CashFlowOverride):
             )
 
 
+_APPROVED_OVERRIDE_TYPES = (
+    SkipCashFlow,
+    MoveCashFlow,
+    ReplaceCashFlow,
+    WithdrawalCashFlow,
+    CorrectCashFlow,
+)
+
+
 @dataclass(frozen=True)
 class RecurringCashFlowSchedule:
     """An anchored local-calendar recurrence for replay declarations.
@@ -420,9 +429,12 @@ class RecurringCashFlowSchedule:
         _identity(self.currency, "currency")
         _amount(self.amount, "amount", positive=True)
         if not isinstance(self.overrides, tuple) or not all(
-            isinstance(override, CashFlowOverride) for override in self.overrides
+            type(override) in _APPROVED_OVERRIDE_TYPES
+            for override in self.overrides
         ):
-            raise ValueError("overrides must be a tuple of CashFlowOverride values")
+            raise ValueError(
+                "overrides must be a tuple of approved concrete CashFlowOverride values"
+            )
         identities = [override.override_id for override in self.overrides]
         if len(identities) != len(set(identities)):
             raise ValueError("override_id values must be unique within a schedule")
@@ -515,7 +527,7 @@ class RecurringCashFlowSchedule:
         )
 
     def _check_emitted(self, flow):
-        if not isinstance(flow, DueCashFlow):
-            raise ValueError(f"override emitted {flow!r}, not a DueCashFlow")
+        if type(flow) is not DueCashFlow:
+            raise ValueError(f"override emitted {flow!r}, not a concrete DueCashFlow")
         if isinstance(flow.effective_at.tzinfo, ZoneInfo):
             _valid_local(flow.effective_at, flow.effective_at.tzinfo, "effective_at")
