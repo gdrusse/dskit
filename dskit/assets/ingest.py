@@ -38,6 +38,7 @@ __all__ = ["ingest_run"]
 
 
 def _read_json(path, what) -> dict:
+    """Load one JSON object at ``path``; raise AssetError naming ``what`` on failure."""
     try:
         with open(path, encoding="utf-8") as fh:
             obj = json.load(fh)
