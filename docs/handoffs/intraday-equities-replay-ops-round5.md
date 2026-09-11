@@ -1,8 +1,9 @@
 # Intraday equities replay/operations infrastructure — round-5 handoff
 
-Status: stopped at the five-round skeptic-review cutoff. This is an unmerged design
-handoff based on `origin/main` at `4876ace`; it contains no implementation and
-authorizes no market-data, replay, paper, or lockbox execution.
+Status: extended by owner instruction and passed Terra skeptic review in round 8
+with no Critical or Major findings. This remains an unmerged design handoff based
+on `origin/main` at `4876ace`; it contains no implementation and authorizes no
+market-data, replay, paper, or lockbox execution.
 
 ## Goal and ownership boundary
 
@@ -150,14 +151,24 @@ test suite.
 - Separately authorize any frozen full-system lockbox run. Paper remains the only
   executable operating rung before that authorization.
 
+## Extended-review result
+
+Rounds 6–8 resolved both Majors with a live-compatible `CheckpointWriter`, an
+atomic transaction-scoped `_LoopBinding`, one authoritative snapshot path,
+`SnapshotIntent.v2` complete timestamp/envelope preimages with pure under-lock
+preview, and `CacheWriteIntent.v2` complete checkpoint bytes with explicit atomic
+cache-ancestry rules.
+
+Final verdict: **PASS, conditionally implementation-ready.**
+
 ## Prompt for the next agent
 
-Implement this lane from branch `handoff/replay-ops-round5-20260911` in a new
+Implement the accepted design from branch `handoff/replay-ops-round5-20260911` in a new
 isolated worktree, using Grok 4.6 with strict TDD and one Terra skeptic reviewer at
-a time. Treat `origin/main` as correct. First close the two Remaining round-4
-findings by adding a real checkpoint-writer dispatch and transaction-scoped
-bundles/handlers/processor binding around the existing ServeLoop path. Then
-implement the already-reviewed replay journal/recovery, compatible cashflow V2,
+a time. Treat `origin/main` as correct. Implement the checkpoint-writer dispatch,
+transaction-scoped bundles/handlers/processor binding, sole snapshot path, frozen
+snapshot preview, and exact checkpoint-cache preimages around the existing
+ServeLoop path. Then implement the reviewed replay journal/recovery and cashflow V2,
 post-commit event outbox, monitor hold mapping, ledger-derived ReplayResult, and
 rolling release calendar, followed by thin intraday-equities adapters/configs.
 Preserve all ADR/owner gates, release identity checks, paper-only refusal, and
