@@ -1,8 +1,8 @@
 # Re-entry
 
-## Current wrap: Gate 3 cash-flow mechanism review-closed (2026-09-11)
+## Current wrap: Gate 3 cash-flow mechanism merged and remote cleanup complete (2026-09-11)
 
-Branch: `codex/gate3-cashflows-f74aff8`. Gate 3 adds the tier-2 recurring
+Branch: `main` at `85ab628`. Gate 3 adds the tier-2 recurring
 cash-flow schedule and dated overrides, replay-only declaration composition,
 settlement-driven production folds, and generic TWR/MWR. No real capital-policy
 config or §11.2 same-instant decision-ordering claim was made.
@@ -10,8 +10,9 @@ config or §11.2 same-instant decision-ordering claim was made.
 Two final fresh Terra capital/accounting reviews passed with no Critical or
 Major findings. Focused verification: 381 tests + 329 gate tests, Ruff and
 `git diff --check` clean. Latest fix: `b33f350` preserves unknown legacy cash
-timing rather than inventing it. **Next:** await the remaining owner §11 rulings
-before Gate 4+ policy work.
+timing rather than inventing it. The merge was pushed to `origin/main`; the four
+remote branches already merged to main were deleted and verified absent. **Next:**
+await the remaining owner §11 rulings before Gate 4+ policy work.
 
 ## Current wrap: Gate 2 deliverable 4 review-closed, fail-closed (2026-09-10)
 
