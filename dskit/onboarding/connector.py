@@ -166,12 +166,11 @@ class Connector(abc.ABC):
 
     @abc.abstractmethod
     def check(self, config) -> None:
-        """Fail fast: can we connect with this config? Raise
-        :class:`~dskit.assets.base.AssetError` on failure; move no data."""
+        """Fail fast: can we connect with this config? Raise :class:`~dskit.assets.base.AssetError` on failure; move no data."""
 
     @abc.abstractmethod
     def discover(self, config) -> list:
-        """The streams this source offers.
+        """Return the streams this source offers.
 
         Returns
         -------

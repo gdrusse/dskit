@@ -49,9 +49,35 @@ _DEFAULT_ENCODING = "utf-8"
 
 
 class LocalFilesConnector(Connector):
-    """Files in a local directory, one stream per file. See module docs."""
+    """Files in a local directory, one stream per file.
+
+    See the module docstring for the full contract: cursor semantics,
+    config knobs, and the CSV/JSONL value-typing caveat.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; every setting comes from config.
+
+    Examples
+    --------
+    Discover the streams under a directory of data files::
+
+        connector = LocalFilesConnector()
+        streams = connector.discover({
+            "path": "/data/my_source",
+            "effective_field": "date",
+        })
+    """
 
     def spec(self) -> dict:
+        """Declare the default-deny local-files configuration catalogue.
+
+        Returns
+        -------
+        dict
+            Connector knob declarations.
+        """
         return {
             "params": {
                 "path": {
@@ -81,7 +107,7 @@ class LocalFilesConnector(Connector):
         return os.path.abspath(os.path.expanduser(path))
 
     def _files(self, config) -> dict:
-        """stream name -> file path, for every recognized data file."""
+        """Stream name -> file path, for every recognized data file."""
         directory = self._dir(config)
         if not os.path.isdir(directory):
             raise AssetError([f"config.path is not a directory: {directory!r}"])
@@ -119,7 +145,7 @@ class LocalFilesConnector(Connector):
     # -- the four verbs ----------------------------------------------------
 
     def check(self, config) -> None:
-        """The directory exists, is readable, and holds at least one file."""
+        """Refuse a config whose directory is missing, unreadable, or empty of recognized files."""
         if not self._files(config):
             raise AssetError(
                 [f"no *.csv / *.jsonl files under {self._dir(config)!r}"]

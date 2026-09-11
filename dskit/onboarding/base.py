@@ -77,7 +77,7 @@ _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*\Z")
 
 
 def _check_segment(errors, name, value):
-    """A path segment: lowercase/digits/_/-, because it becomes a directory."""
+    """Refuse a value that is not a filesystem-safe path segment (lowercase/digits/_/-)."""
     if not isinstance(value, str) or not _SEGMENT.match(value):
         errors.append(
             f"{name} must be filesystem-safe (lowercase/digits/_/-), got {value!r}"
@@ -90,7 +90,7 @@ def _check_mode(errors, mode):
 
 
 def _check_iso(errors, name, value, *, required=True):
-    """An ISO date/datetime string, appended to ``errors`` if malformed."""
+    """Append an error if ``value`` is not a valid ISO date/datetime string."""
     if value == "" and not required:
         return
     if not isinstance(value, str) or not value:
@@ -103,7 +103,7 @@ def _check_iso(errors, name, value, *, required=True):
 
 
 def parse_utc(value):
-    """An ISO date or datetime string as an aware UTC datetime.
+    """Parse an ISO date or datetime string into an aware UTC datetime.
 
     Naive values are treated as UTC — the bitemporal comparison
     ``effective_date <= acquired_at`` (ADR-0014) must never crash on a

@@ -99,6 +99,17 @@ class ResolvedPipeline:
         The backend's per-instrument snapshot identity. HASHED.
     run_dir : str
         Where artifacts land. Excluded from the hash (it embeds hash8).
+
+    Examples
+    --------
+    :func:`resolve` is the normal way to obtain one, from a config and an
+    ``asof`` date; it returns the resolved pipeline paired with the
+    backend that produced it. Once resolved, ``to_dict()`` gives the JSON
+    body written to ``resolved.json``::
+
+        resolved, backend = resolve(config, asof="2026-01-31")
+        resolved.to_dict()["instruments"]
+        # -> ["AAPL", "MSFT"]
     """
 
     config: PipelineConfig
@@ -110,6 +121,7 @@ class ResolvedPipeline:
     run_dir: str = ""
 
     def __post_init__(self):
+        """Refuse a config/asof/path/instruments/fingerprint combination that is malformed."""
         if not isinstance(self.config, PipelineConfig):
             raise ValueError(
                 f"config must be a PipelineConfig, got {type(self.config).__name__}"
@@ -138,8 +150,13 @@ class ResolvedPipeline:
             )
 
     def to_dict(self) -> dict:
-        """JSON-ready form — the hash input (minus exclusions) and the
-        resolved.json body."""
+        """Build the JSON-ready form — the hash input (minus exclusions) and the resolved.json body.
+
+        Returns
+        -------
+        dict
+            The resolved.json body.
+        """
         return {
             "asof": self.asof,
             "resolver_version": RESOLVER_VERSION,

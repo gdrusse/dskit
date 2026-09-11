@@ -168,6 +168,7 @@ class AssetRecord:
     notes: str = ""
 
     def __post_init__(self):
+        """Refuse a record whose kind/payload/refs/provenance fields are malformed."""
         errors = []
         _check_str(errors, "kind", self.kind)
         _check_dict(errors, "payload", self.payload)
@@ -178,7 +179,7 @@ class AssetRecord:
         _raise_if(errors)
 
     def version_id(self) -> str:
-        """The record's identity: canonical hash of ``{kind, payload, refs}``.
+        """Return the record's identity: canonical hash of ``{kind, payload, refs}``.
 
         Returns
         -------
@@ -191,7 +192,7 @@ class AssetRecord:
         )
 
     def to_obj(self) -> dict:
-        """The store file format: identity material + version_id + provenance.
+        """Build the store file format: identity material + version_id + provenance.
 
         The emitted ``version_id`` makes files self-describing and
         tamper-evident — :meth:`from_obj` recomputes it and refuses drift.
