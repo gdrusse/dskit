@@ -1,6 +1,35 @@
 # Re-entry
 
-## Current wrap: Gate 2 deliverable 4 review-closed, fail-closed (2026-09-10)
+## Current wrap: Gate 5 development replay review-closed (2026-09-11)
+
+Branch: `cursor/gate5-replay-3bda` (pushed; PR #10 into
+`claude/phase1-recovery-seven-gates-ao4zdj`). Not merged to `main` — this
+lane never lands there directly. Product `5914052` / journal A18880.
+
+`children/intraday_equities/intraday_equities/replay.py` composes
+`bundles_for(..., tape=BarTape)` then overlays tape cadence, the equity
+decider, `ReleaseIdSource`, and a `PaperVenue` on compose's clock. Fills
+go through `LegPipeline`. Config-driven next-bar-open fill-policy
+(`configs/fill-policy.json`, digest-pinned). Halted bars are not quoted;
+non-finite prices refuse at ingest; ServeLoop tick `failed`/`refused`
+raises. `deployment_eligible=false`. No `dskit/production` hook. Path
+untouched.
+
+Cycle-7 sequential Grok skeptics: method PASS 0C/0M (4 minor),
+architecture PASS 0C/0M (12 nits). Nits/minors not edited. ADR-0117
+stays **proposed**. Identity `5adac27e…`. Focused: 94 passed
+(`test_replay` + `test_nodes_capital`); ruff clean. Five documented
+Gate 2 `test_configs` failures remain.
+
+Memos:
+`children/intraday_equities/docs/memos/2026-09-10-final-model-replay-gate5-skeptic-method-cycle7.md`
+and `-architecture-cycle7.md`.
+
+**Next (owner):** review/merge PR #10; accept or amend ADR-0117; do not
+edit nits (restarts the loop). Gates 3, 4, 6, 7 and Phase 5 items 3–5
+remain.
+
+## Prior wrap: Gate 2 deliverable 4 review-closed, fail-closed (2026-09-10)
 
 Branch: `claude/phase1-recovery-seven-gates-ao4zdj` (not pushed by this wrap;
 never merge or push directly to `main`). Deliverable 4 is review-closed as a
