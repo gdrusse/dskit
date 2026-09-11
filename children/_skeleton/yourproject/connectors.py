@@ -88,6 +88,7 @@ class SampleConnector(Connector):
     # -- internals ---------------------------------------------------------
 
     def _budget(self, config) -> int:
+        """Return ``config.rows`` as a positive int; refuse anything else."""
         rows = config.get("rows")
         if isinstance(rows, bool) or not isinstance(rows, int) or rows < 1:
             raise AssetError([f"config.rows must be an int >= 1, got {rows!r}"])
@@ -113,12 +114,40 @@ class SampleConnector(Connector):
     # -- the four verbs ----------------------------------------------------
 
     def check(self, config) -> None:
-        """Fail fast on knobs a pull would choke on; move no data. A real connector authenticates and pings the vendor here."""
+        """Fail fast on knobs a pull would choke on; move no data.
+
+        A real connector authenticates and pings the vendor here.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by
+            :func:`~dskit.onboarding.connector.check_config`.
+
+        Raises
+        ------
+        AssetError
+            If ``config.rows`` is not an int ``>= 1``, or
+            ``config.start_date`` does not parse as an ISO date.
+        """
         self._budget(config)
         parse_utc(config.get("start_date", _DEFAULT_START))
 
     def discover(self, config) -> list:
-        """Return the streams on offer — a real connector asks the vendor."""
+        """Return the streams on offer — a real connector asks the vendor.
+
+        Parameters
+        ----------
+        config : dict
+            Unused here — the skeleton declares one fixed stream; a real
+            connector would consult the vendor.
+
+        Returns
+        -------
+        list of dict
+            One entry: ``{"stream": "samples", "schema": {"fields":
+            [...]}, "primary_key": ["id"]}``.
+        """
         return [{
             "stream": _STREAM,
             "schema": {"fields": list(_FIELDS)},
@@ -126,7 +155,36 @@ class SampleConnector(Connector):
         }]
 
     def read(self, config, streams, state, mode):
-        """Emit SCHEMA, then cursor-filtered RECORDs, then one STATE."""
+        """Emit SCHEMA, then cursor-filtered RECORDs, then one STATE.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by
+            :func:`~dskit.onboarding.connector.check_config`.
+        streams : list of str
+            Which discovered streams to pull; only ``"samples"`` exists.
+        state : dict
+            The last persisted checkpoint, keyed by stream; ``{}`` on a
+            first pull.
+        mode : str
+            ``"backfill"`` or ``"live"`` — unused here: this connector's
+            cursor logic is identical in both modes (see the module
+            docstring).
+
+        Yields
+        ------
+        dict
+            One SCHEMA message, then cursor-filtered RECORD messages in
+            ascending effective-date order, then one STATE message
+            carrying the updated cursor.
+
+        Raises
+        ------
+        AssetError
+            If ``state`` is not a dict, ``streams`` is empty or not a
+            list, or a requested stream is not ``"samples"``.
+        """
         if not isinstance(state, dict):
             raise AssetError([f"state must be a dict, got {state!r}"])
         if not isinstance(streams, list) or not streams:
