@@ -856,6 +856,41 @@ REMAINING, in the plan's risk order:
       remains open**, though the breadth of what came back clean this
       round (an entire checker family, plus three more functions from a
       fresh angle) continues the narrowing trend since round 13.
+
+      **Eighteenth skeptic round (2026-09-12): a 15th recurrence — 2
+      MAJOR + 1 MINOR, while `parse_utc`, `dir_digest`, `file_digest`,
+      `durable_write_bytes`, `durable_copy_file`, all five of
+      `OnboardingRoot`'s path helpers, `features.py`'s validator
+      halves, and the `__init__.py` re-export question all came back
+      clean.** **MAJOR:** `durable_write_json`
+      (`dskit/onboarding/base.py`) documented its `AssetError` as only
+      "obj is not JSON-serializable," omitting that it also raises
+      `AssetError` when `path` itself is not a non-empty string
+      (propagated from `durable_write_bytes`'s own check) — added.
+      **MAJOR:** `Registry.find`/`list`/`state` (and `transition`,
+      which calls `state` internally) each documented only their own
+      local checks, omitting that all four propagate `AssetError` from
+      a CORRUPTED STORE (a foreign entry under `records/` or a kind
+      directory, or `events.jsonl` replaced with something that is not
+      a regular file) — verified by planting each corruption and
+      triggering the exact propagated message; this is the established
+      "document a propagated exception from a called function"
+      convention this same session's own `durable_write_json`/
+      `durable_copy_file` docstrings already follow, just not yet
+      applied to these four methods — added, each noting the condition
+      is an out-of-band mutation, not a normal-use path. **MINOR:**
+      `fsync_dir` (`dskit/onboarding/base.py`) claimed "a path that
+      cannot be opened is a no-op," but a non-string `directory` (e.g.
+      `None`, an int) raises an uncaught `TypeError` from `os.open`,
+      not caught by the function's `except OSError` — the claim only
+      holds for a well-typed but unusable path; narrowed and a `Raises`
+      section added. **Given a 15th straight round finding real
+      gaps — `Raises` completeness remains open**, though the breadth
+      of clean surface keeps growing (this round's clean list alone
+      covers 10 more functions/questions). Not yet from-scratch traced:
+      `dskit/onboarding/observations.py`'s `stream_dir`/`stream_digest`/
+      `verified_payload_dir` (inspected by reading only this round, not
+      execution-verified) — a 19th round should close that out.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

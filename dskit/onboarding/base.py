@@ -160,13 +160,21 @@ def fsync_dir(directory):
     Parameters
     ----------
     directory : str
-        The directory to fsync; a path that cannot be opened is a no-op.
+        The directory to fsync; a STRING path that cannot be opened
+        (missing, no permission, not a directory) is a no-op.
 
     Returns
     -------
     None
         Returns once the directory entry is durable, where the platform
         supports it.
+
+    Raises
+    ------
+    TypeError
+        If ``directory`` is not a string/bytes/path-like value (e.g.
+        ``None`` or an int) — only an ``OSError`` from a well-typed but
+        unusable path is treated as the documented no-op.
     """
     try:
         fd = os.open(directory, os.O_RDONLY)
@@ -299,7 +307,9 @@ def durable_write_json(path, obj) -> None:
     Raises
     ------
     AssetError
-        If ``obj`` is not JSON-serializable (NaN/Infinity refused).
+        If ``obj`` is not JSON-serializable (NaN/Infinity refused), or
+        ``path`` is not a non-empty string (propagated from
+        :func:`durable_write_bytes`'s own check).
     OSError
         If ``path``'s directory does not exist or is not writable
         (propagated from :func:`durable_write_bytes`).

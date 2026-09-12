@@ -222,8 +222,11 @@ class Registry:
         Raises
         ------
         AssetError
-            If ``kind`` is not declared by the model, or ``name`` is not
-            a non-empty string.
+            If ``kind`` is not declared by the model, ``name`` is not
+            a non-empty string, or the store's ``kind`` directory holds
+            a foreign entry (propagated from
+            :meth:`~dskit.assets.store.Store.list_records` — an
+            out-of-band mutation, not a normal-use condition).
         TypeError
             If ``kind`` is an unhashable type (e.g. a list).
         """
@@ -253,7 +256,11 @@ class Registry:
         Raises
         ------
         AssetError
-            If ``kind`` is given but not declared by the model.
+            If ``kind`` is given but not declared by the model, or the
+            store's ``records/`` (or one ``kind`` directory within it)
+            holds a foreign entry (propagated from
+            :meth:`~dskit.assets.store.Store.list_records` — an
+            out-of-band mutation, not a normal-use condition).
         TypeError
             If ``kind`` is an unhashable type (e.g. a list).
         """
@@ -280,8 +287,13 @@ class Registry:
         ------
         AssetError
             If ``version_id`` is absent, its kind is undeclared, its
-            event log has no register event, or it replays to a state
-            the model does not declare.
+            event log has no register event, it replays to a state
+            the model does not declare, or the store's event log is
+            itself unreadable (propagated from
+            :meth:`~dskit.assets.store.Store.iter_events` — e.g.
+            ``events.jsonl`` replaced with something that is not a
+            regular file; an out-of-band mutation, not a normal-use
+            condition).
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)
@@ -326,8 +338,10 @@ class Registry:
         AssetError
             If ``version_id`` is absent or its kind is undeclared, if
             ``to`` is not a non-empty string, if the kind is
-            record-only (no lifecycle), or if the model's transition map
-            does not allow the current state to move to ``to``.
+            record-only (no lifecycle), if the model's transition map
+            does not allow the current state to move to ``to``, or if
+            the store's event log is itself unreadable (propagated from
+            :meth:`state`, called internally to find the current state).
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)
