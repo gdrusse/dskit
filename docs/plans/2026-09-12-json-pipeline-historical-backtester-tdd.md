@@ -36,10 +36,16 @@ G1--G6. Each is signed, time-bounded, revocation-checked, identity-bound evidenc
 Before any execution PipelineDocument exists, a distinct G1+G2
 `DatasetCaptureAuthorization.v1` may authorize one external data-capture broker read
 of named sources, scope, licenses, schema, and media into a WORM raw-event capture.
-It is security/data policy evidence, not a study or execution permit; synthetic uses
-only a fixed-fixture authority with `deployment_eligible=false`. No implementation
-slice performs a real capture. The later study scopes bind this already captured
-dataset and never imply a pre-authorization historical read.
+That producer may only `PRODUCE -> SEAL -> PUBLISH`: it yields immutable roots and
+publication receipts plus broker-readable metadata, never a CAPTURED receipt or
+worker consumption before a consumer document exists. It is security/data policy
+evidence, not a study or execution permit; synthetic uses only a fixed-fixture
+authority with `deployment_eligible=false`. No implementation slice performs a real
+capture. The later study scopes bind the exact published-to-captured chain and never
+imply a pre-authorization historical read or consumption.
+Port-specific consumer capture/admission occurs only after each relevant consumer
+PipelineDocument hash is frozen; G1/G2 owns raw read/capture/publish, while study
+evidence later binds rather than authorizes that exact chain.
 
 `ReviewEvidenceManifest.v1` is signed append-only evidence for slice/dependency
 identity, Sol RED test+command+observed failure, Sol implementation commit, Sol
@@ -63,9 +69,9 @@ substituted, or unlisted slices refuse.
 
 `HistoricalStudyScopeAuthorization.v1` resolves the release circularity after the
 separate G1/G2 dataset capture: it is a signed pre-refit authorization for one WORM
-`study_id`, the already frozen dataset/tape/capture set, normalized pipeline/
-environment/profile, fixed candidate inventory/selection policy/seeds, and exactly
-A1--A4's permitted actions.
+`study_id`, the already frozen published dataset/tape roots and later exact
+port-bound capture chain, normalized pipeline/environment/profile, fixed candidate
+inventory/selection policy/seeds, and exactly A1--A4's permitted actions.
 It binds G0--G7 scope-evidence digests, signer, key/version, revocation result,
 issuance/validity, and approved identities; G3 is the pre-refit causal-method scope,
 not a nonexistent release. The broker verifies every binding before every captured-
@@ -148,10 +154,12 @@ go through an explicit versioned migration to canonical v1, then revalidate and
 rehash; unknown keys, omitted required members, a changed normalized default, or a
 noncanonical/mismatched digest refuses. The normal PipelineDocument canonical hash
 includes this normalized block and all legal content references. `$node.output` stays
-same-run; `$captured_artifact` is only producer -> seal -> external capture ->
-consumer. Capture stages are derived only from those legal graph ports and their
-completed lifecycle receipts, then compiled by the existing planner into staged runs;
-there is no second stage-language member to drift from the graph.
+same-run; `$captured_artifact` is only producer -> seal -> publish -> later frozen
+consumer document/port -> capture -> later consumer. Pre-document descriptors may
+name only immutable PUBLISHED roots/receipts, never a placeholder or CAPTURED receipt.
+Capture stages are derived only from those legal graph ports and lifecycle receipts,
+then compiled by the existing planner into staged runs; there is no second
+stage-language member to drift from the graph.
 `source_rank_policy_sha256` specifically names the pre-document F3
 SourceRosterCapture policy and must equal the data producer's resolved
 `source_roster` descriptor policy at broker admission; it is never derived from or a
@@ -166,11 +174,13 @@ member is legal on that node. The two raw descriptors are normal normalized
 PipelineDocument canonical JSON/hash/plan material, and their complete canonical
 values are carried unchanged in `PlannedRuntimeContract`; they are not ambient
 configuration, a later path lookup, or a `tape_digest` field in
-`execution_backtest`/EnvironmentIdentity. In the broker route, descriptor parsing
-derives the two ConsumerCapturedPorts and exact authorization entries before ordinary
-planning or ServeRoot/root creation. Only after this admission may the planner
-produce the staged program. The later inner `tape_digest` is transaction identity,
-not a PipelineDocument field.
+`execution_backtest`/EnvironmentIdentity. The frozen descriptors must resolve to
+PUBLISHED outer-manifest/data roots and publication receipts. Only then, in the
+broker route, does descriptor parsing derive the two exact ConsumerCapturedPorts and
+authorization entries, issue their port-bound CAPTURED receipts, and authorize the
+distinct later consumer LaunchSession before ordinary planning or ServeRoot/root
+creation. Only after this admission may the planner produce the staged program. The
+later inner `tape_digest` is transaction identity, not a PipelineDocument field.
 
 **Absence is canonical compatibility, never a null default.** When absent,
 `execution_backtest` is absent from the normalized `PipelineDocument` object,
@@ -383,7 +393,7 @@ pre-document, immutable `SourceRosterCapture.v1`; this is an F3 substep, not a n
 DAG node, so `F3 <- F1,F2,F4` remains acyclic. For an historical purpose the data
 owner signs G2 authorization for it before any data access; synthetic uses the
 equivalent nondeployment authority only. The roster is
-PUBLISHED and CAPTURED before the execution PipelineDocument is frozen and contains
+PUBLISHED (not CAPTURED) before the execution PipelineDocument is frozen and contains
 the complete authorized source universe, scope/time bounds, source-provenance
 identities, policy version, and its `SourceRankPolicy.v1`:
 
@@ -401,11 +411,13 @@ identities, policy version, and its `SourceRankPolicy.v1`:
 omits itself. The scope is a complete provenance-attested source universe for its
 declared availability interval—not merely sources observed in resulting events—so it
 includes authorized zero-event sources. The execution block pins this already-
-captured policy digest, and the tape-data producer node declares and consumes its
-exact top-level `source_roster` `$captured_artifact` descriptor. It is the same
-F5-authorized descriptor/purpose/receipt flow as every capture input. Thus no policy
-is derived from the resulting tape. Missing, late, unknown, duplicate, substituted,
-noncanonical, noncontiguous, or rank-changed roster/policy data refuses.
+published policy digest, and the tape-data producer document freezes an exact
+top-level `source_roster` `$captured_artifact` descriptor pointing at its immutable
+root/publication receipt. Only after that consumer document hash exists may F5 derive
+its ConsumerCapturedPort, issue the CAPTURED receipt, and allow the later consumer
+LaunchSession to CONSUME it. Thus no policy is derived from the resulting tape.
+Missing, late, unknown, duplicate, substituted, noncanonical, noncontiguous, or
+rank-changed roster/policy data refuses.
 
 The separate external data-capture broker next acts only under the exact signed,
 time-bounded, revocation-checked G1+G2 `DatasetCaptureAuthorization.v1`. It may read
@@ -419,21 +431,26 @@ policy digest, and correction/bust metadata. Its inner default-deny manifest is:
  "dataset_capture_authorization_sha256":"<sha256>",
  "scope":{"availability_start_ms":0,"availability_end_ms":0,
           "source_provenance_sha256":"<sha256>"},
+ "source_roster_root_sha256":"<sha256>",
+ "source_roster_publication_receipt_sha256":"<sha256>",
  "source_roster_policy_sha256":"<sha256>","license_digests":["<sha256>"],
  "event_schema":"dskit.raw-event/v1","media_type":"application/x-ndjson",
  "ordered_member_digests":["<sha256>"],
  "correction_bust_metadata_sha256":"<sha256>"}
 ```
 
-F4 supplies the separate PUBLISHED/CAPTURED receipts for that immutable root; they
-are not self-fields. A synthetic fixture authority emits the same canonical manifest
-from fixed fixture bytes with `deployment_eligible=false`. This is the only source
-provider/filesystem/network operation: no execution worker/provider receives it.
-Only after both source roster and raw dataset captures exist may the execution
-PipelineDocument freeze. Its generic `ReplayTapeDataCapture` producer declares
-exactly the two top-level captured node inputs `raw_event_dataset` and `source_roster`
-(no alias/extra/nested captured descriptors); F5 authorization/receipt/member/
-purpose equality and CapturedAuthorizationSet bind both.
+F4 supplies the separate PUBLISHED receipt for that immutable root; CAPTURED is
+deliberately absent until its exact consumer document/port exists. A synthetic
+fixture authority emits the same canonical manifest from fixed fixture bytes with
+`deployment_eligible=false`. This is the only source provider/filesystem/network
+operation: no execution worker/provider receives it. Only after both source roster
+and raw dataset artifacts are PUBLISHED may the execution PipelineDocument freeze.
+Its generic `ReplayTapeDataCapture` producer declares exactly the two top-level
+captured node inputs `raw_event_dataset` and `source_roster` (no alias/extra/nested
+captured descriptors). F5 then derives both exact ports from the frozen document,
+verifies the roots/publication receipts, issues port-bound CAPTURED receipts, and
+only then admits the distinct consumer run; its authorization/receipt/member/purpose
+equality and CapturedAuthorizationSet bind both.
 
 **RED:** F1/F2 migration, DST/timezone/tzdata, source/exchange/receive/availability
 causality, pre-document roster cycle/late-roster, roster descriptor/digest/source
@@ -448,7 +465,10 @@ envelope/order tests use the exact deterministic synthetic fixture and derive th
 rank only from the verified pre-document policy; add focused
 `tests/production/test_bundles.py`, `test_feed.py`, and
 `test_captured_event_dataset.py` coverage for the default-deny codec/one-pass stream.
-Envelopes bind
+Those tests also prove CAPTURED-before-document/hash, placeholder/self hash,
+prefreeze port, publish omission, same run/session, descriptor mutation after freeze,
+and wrong consumer-doc hash refuse while the exact publish->freeze->port->CAPTURED->
+session->CONSUME order succeeds. Envelopes bind
 source/event IDs, source sequence, source, exchange, receive, and derived
 availability instants, timezone/tzdata, provenance, schema/media/payload digest,
 the derived rank plus `source_rank_policy_sha256`, and
@@ -466,11 +486,12 @@ Its restricted `ExecutionNodeContext` exposes only a single-pass `iter_events()`
 stream plus the mediated output writer: it has no path, provider, network, raw
 member, reopen, seek, reset, replay, or ambient source access. The stream emits only
 the canonical captured records and enforces the captured availability bounds and
-correction/bust metadata. It then receives distinct PUBLISHED and CAPTURED receipts
-for that **data** root. Second, a
-distinct later `ReplayTapeManifestProducer` run consumes that parent only through its
-authorized `CapturedLifecyclePort` and verified parent capture. It derives the
-inner canonical `ReplayTapeManifest` (`CapturedReplayTape.v1`) bytes:
+correction/bust metadata. It then receives a PUBLISHED receipt for that **data**
+root. Second, the distinct later `ReplayTapeManifestProducer` consumer document is
+frozen against that published root/receipt; only then does the broker derive its
+exact port, issue its CAPTURED receipt, and start its distinct consumer LaunchSession
+to consume the parent. It derives the inner canonical `ReplayTapeManifest`
+(`CapturedReplayTape.v1`) bytes:
 
 ```json
 {"schema_version":"dskit.captured-replay-tape/v1",
@@ -486,24 +507,28 @@ private verification seam. `ordered_envelope_digests` is the complete F3-sorted
 sequence of canonical envelope-byte digests; `ordered_envelopes_sha256` hashes its
 canonical array and `tape_digest` hashes the inner canonical object with only itself
 omitted. `data_capture_root`/`data_captured_receipt` name the exact parent data root
-and parent CAPTURED receipt whose WORM members contain those bytes and policy. The
-manifest producer then PUBLISHES and CAPTURES those inner manifest bytes in its own,
-separate `ReplayTapeManifestCapture` WORM root and receipt. It never records its
-own root or receipt in the inner manifest: the hierarchy is parent data capture ->
-later manifest capture -> third consumer, never same-root/self-receipt/cycle.
+and the manifest-producer's port-bound parent CAPTURED receipt whose WORM members
+contain those bytes and policy. The manifest producer then PUBLISHES (not CAPTURES)
+those inner manifest bytes in its own, separate `ReplayTapeManifestCapture` WORM
+root/receipt. It never records its own root or receipt in the inner manifest: the
+hierarchy is parent data publish -> later manifest consumer/capture -> manifest
+publish -> third consumer, never same-root/self-receipt/cycle.
 
 Third, `ReplayRun` is a distinct later consumer run. Its broker authorization has
 the exact sorted pair of consumer ports for the outer manifest capture and the
 referenced parent data capture; the replay process receives neither as a reopenable
-handle. The broker verifies the outer manifest `VerifiedCapture`/bytes, matches the
-parent port to the referenced parent data CAPTURED receipt/root/members, verifies the
-derived policy/digest sequence, and only then issues one opaque composed tape
-capability that alone can become the runtime `ReplayTape`. Same run/session
-consumption and raw legacy `ReplayTape` admission refuse. The manifest capture's own
-root/receipt is bound by its consumer port, the new `LaunchSession`, study and plan
-evidence, and existing captured-binding/permit/binding-digest plus R1 frozen
-manifest/input/artifact evidence—not by hashing it into its own bytes and not by
-adding an ADR-0124 key.
+handle. Its replay consumer document/hash must first freeze descriptors resolving to
+the two PUBLISHED roots/receipts. The broker then derives the replay-specific ports,
+issues two replay-specific CAPTURED receipts, and starts a new replay LaunchSession.
+It verifies outer manifest `VerifiedCapture`/bytes; verifies the inner prior
+manifest-producer data receipt against the parent root/members/policy; verifies the
+separate replay-data CAPTURED receipt against the replay data port; and only then
+issues one opaque composed tape capability that alone can become the runtime
+`ReplayTape`. Same run/session consumption and raw legacy `ReplayTape` admission
+refuse. The manifest capture's own root/receipt is bound by its consumer port, new
+LaunchSession, study and plan evidence, and existing captured-binding/permit/binding-
+digest plus R1 frozen manifest/input/artifact evidence—not by hashing it into its own
+bytes and not by adding an ADR-0124 key.
 
 The policy and inner `CapturedReplayTape.v1` digests are captured receipt evidence
 resolved from the exact normal PipelineDocument `tape_manifest`/`tape_data`
@@ -530,7 +555,10 @@ impossible time, or missing provenance rejects.
 **Reuse:** ADR-0122 `PreparedCapture`, `VerifiedCapture`,
 `CapturedMemberHandle`, `CapturedRelease`, and run/snapshot/data-provider seams.
 **RED:** every transition, post-seal mutation, partial/duplicate member, WORM
-capability, recovery, consumer substitution, symlink/hardlink/path leakage tests.
+capability, recovery, consumer substitution, CAPTURED-before-consumer-document/hash,
+placeholder/self hash, prefreeze port, publish omission, descriptor mutation after
+freeze, wrong document hash, same-run/session, and symlink/hardlink/path leakage
+tests.
 **GREEN/test:** focused generic capture tests for the exact WORM CAS chain
 `PRODUCED -> SEALED -> PUBLISHED -> CAPTURED -> CONSUMED`. A broker-owned external
 `LifecycleAuthority` alone writes append-only signed receipts. Each receipt binds
@@ -538,26 +566,31 @@ producer/run/node/output/document identity, predecessor receipt digest, monotoni
 sequence, immutable root/snapshot/member/publication identities, actor measured
 runtime, nonce, trusted instant, signer/key, and the ConsumerCapturedPort when
 applicable. `PUBLISHED` requires the immutable CAS root and a signed publication
-receipt; `CAPTURED` requires that exact receipt plus live port authorization;
-`CONSUMED` is a distinct, later consumer run using the exact port. Handles expose no
-path/reopen/dict/JSON interface. **Exit:** same-run, skipped, reordered, replayed,
-duplicate-nonce, non-WORM, unsealed, uncaptured, unverified, cross-plan, TOCTOU, or
-invalid-path bytes cannot be consumed.
+receipt. A producer may stop there before any consumer document exists. Only a
+frozen consumer document/hash with a complete descriptor for that PUBLISHED root can
+derive a live exact `ConsumerCapturedPort`; only then can the broker issue CAPTURED
+for the exact `{consumer_document_sha256,node,input,purpose}` and authorize a new,
+distinct consumer LaunchSession. `CONSUMED` is that later consumer run using the
+exact port. Handles expose no path/reopen/dict/JSON interface. **Exit:** CAPTURED
+before a consumer document/hash, placeholder/self/frozen-mutation/wrong-doc port,
+same-run, skipped, reordered, replayed, duplicate-nonce, non-WORM, unsealed,
+uncaptured, unverified, cross-plan, TOCTOU, or invalid-path bytes cannot be consumed.
 
 Within that single authority flow, only the trusted driver receives a private
 `PreparedCapture` at PRODUCED/SEALED; that producer `LaunchSession` ends before the
-later consumer run. After PUBLISHED/CAPTURED, the broker issues a **new**, process-
-and run-bound consumer `LaunchSession` only after verifying the linked receipts and
-exact `ConsumerCapturedPort`; same-run or same-session replay refuses. That consumer
-session obtains a `VerifiedCapture`, which yields verified `CapturedMemberHandle`
-values for a native loader such as
+later consumer run. After PUBLISHED and document freeze, the broker verifies the
+linked publication receipt/descriptor, derives the exact ConsumerCapturedPort,
+records CAPTURED, and issues a **new**, process- and run-bound consumer LaunchSession;
+same-run or same-session replay refuses. That consumer session obtains a
+`VerifiedCapture`, which yields verified `CapturedMemberHandle` values for a native loader such as
 `load_text_bundle(VerifiedCapture)`. For a planned consumer port, the driver derives
 one `CapturedLifecyclePort`/`CapturedJsonArtifact` from those verified retained
 bytes, exposes it only through that node's `CapturedBindings`, and records CONSUMED.
 `CapturedRelease` is the opaque post-capture result returned to the driver. These
 are one-way consumption transitions, never a second trust root or reopen mechanism.
 Focused lifecycle tests prove producer-session termination, new consumer-session
-binding, receipt/port linkage, and same-run/session replay refusal.
+binding, exact publish->document/port->capture->consumer order, receipt/port linkage,
+and same-run/session replay refusal.
 
 ## F5 — captured ports, driver, and decider injection
 
@@ -577,7 +610,10 @@ snapshots, producers, members, or receipts, inner digest/policy/count/order, pur
 and authorization-descriptor swaps, and equal ConsumerCapturedPorts with different
 captures—all before planning/root creation. CapturedAuthorizationSet RED covers
 unknown/extra/missing/duplicate/unsorted entry, self-digest, port/descriptor/resolved/
-live-authorization substitution, and restart identity refusal.
+live-authorization substitution, CAPTURED-before-doc/hash, placeholder/self hash,
+prefreeze port, publish omission, descriptor mutation after freeze, wrong doc hash,
+same-run/session, happy exact publish->freeze->port->CAPTURED->session->CONSUME
+order, and restart identity refusal.
 **GREEN/test:** the only legal descriptor is the complete value of a declared node
 input:
 
@@ -622,24 +658,34 @@ The broker resolves each descriptor's `root_ref` + `snapshot_version` + producer
 `document_sha256`/`node`/`output` to those exact immutable values; equal consumer
 ports cannot substitute a different descriptor or capture. Descriptor `purpose`
 must equal `execution_backtest.purpose`, the `LaunchSession`/permit purpose, and the
-study purpose. It refuses the complete equality check before ordinary planning or
-ServeRoot/root creation.
+study purpose. Before ordinary planning it first verifies the descriptor's PUBLISHED
+root/publication receipt and broker-readable metadata; application/node data is not
+opened or consumed. From the frozen consumer document hash it then derives the exact
+ConsumerCapturedPort, records the port-specific CAPTURED receipt, completes the
+authorization set, and issues only the later distinct consumer LaunchSession. It
+refuses this complete equality/admission sequence before planning or ServeRoot/root
+creation.
 
 For `ReplayTapeDataCapture`, exactly named `raw_event_dataset` and `source_roster`
 top-level descriptors are both mandatory and are separate CapturedAuthorizationSet
 entries. The broker verifies the raw-dataset authorization, immutable root, complete
-member sequence, PUBLISHED/CAPTURED receipts, scope/source/license/schema/media and
-availability/provenance identities; it then verifies that its roster-policy digest,
-source universe, purpose, and receipts equal the roster entry and execution block.
-Any missing/extra/swapped descriptor, scope/source/license/schema/receipt/member/
-digest/purpose mismatch, or changed raw data refuses before the stream, planner, or
-root exists.
+member sequence, PUBLISHED receipts, scope/source/license/schema/media and
+availability/provenance identities; from that frozen producer document it then
+derives the two exact ports and records two port-specific CAPTURED receipts. It
+verifies the raw policy/source universe/purpose/publication chain against the roster
+entry and execution block, then admits the later producer session. Any missing/
+extra/swapped descriptor, scope/source/license/schema/receipt/member/digest/purpose
+mismatch, changed raw data, prefreeze port, or CAPTURED-before-document refuses
+before the stream, planner, or root exists.
 
 For ReplayRun's exactly named `tape_manifest`/`tape_data` descriptors, the manifest
-entry's verified inner bytes must equal the data entry's resolved root, CAPTURED
-receipt, ordered members, source-rank policy, envelope count, ordered digest list,
-and recomputed inner `tape_digest`. Only then does F3 issue the composed tape
-capability. Before node/branch construction the broker injects a fresh
+entry's verified inner bytes must equal the data entry's resolved root, PUBLISHED
+members, source-rank policy, envelope count, ordered digest list, and recomputed
+inner `tape_digest`. Its inner `data_captured_receipt` must verify the **prior**
+manifest-producer port for that parent root; the ReplayRun data entry instead has its
+own later replay-specific CAPTURED receipt, derived from the frozen replay document.
+Only then does F3 issue the composed tape capability. Before node/branch construction
+the broker injects a fresh
 non-enumerable `CapturedBindings` for only the current node; `require(input)` cannot
 discover, copy, serialize, reopen, or forward another port. Carry/records retain
 audit only; it is never a prior-run value. Injected decider receives immutable
@@ -922,9 +968,13 @@ subprocess, ambient time/random, and import-escalation denial before I/O/output;
 G1/G2 DatasetCaptureAuthorization and deterministic fixed-fixture raw-event capture
 tests, including raw dataset/roster descriptor, scope/source/license/schema/receipt/
 member/digest/purpose, availability/correction, mutation, reopen/seek/replay/restart,
-and provider/filesystem/network refusal before output; child direct-construction/
-export/registry/CLI refusal; ReplayRun's exact top-level manifest/data descriptor pair
-and complete CapturedAuthorizationSet entry/set-digest equality before planning/root
+and provider/filesystem/network refusal before output; every capture edge's exact
+PUBLISH -> frozen consumer document/hash -> derived port -> CAPTURED -> new session
+-> CONSUME order, including CAPTURED-before-doc/hash, placeholder/self hash,
+prefreeze port, publish omission, same run/session, post-freeze descriptor mutation,
+wrong doc hash, and uninterrupted/restart equality; child direct-construction/export/
+registry/CLI refusal; ReplayRun's exact top-level manifest/data descriptor pair and
+complete CapturedAuthorizationSet entry/set-digest equality before planning/root
 creation (including all capture/receipt/member/policy/count/order/purpose/auth-set
 swaps); port contract; accounting property/metamorphic; PIT/leakage; event/effect/
 outbox/ACK; lifecycle; and crash at every persisted boundary. This layer also runs the
@@ -938,8 +988,9 @@ refit/paper/live work occurs.
 
 ## I2 — exactly one gated historical simulator study
 
-After the separate G1/G2 `DatasetCaptureAuthorization` has created the already
-captured raw dataset, `HistoricalStudyScopeAuthorization` first permits only its
+After the separate G1/G2 `DatasetCaptureAuthorization` has read/captured/published
+the raw dataset and F5 has admitted each frozen consumer document into its exact
+port-bound capture chain, `HistoricalStudyScopeAuthorization` first permits only its
 fixed A1--A4 release creation; then its same-study WORM `HistoricalStudyManifest`
 permits only the named control/crash executions against that captured dataset,
 envelopes/data, actual verified release, EnvironmentIdentity, profile, and simulator
