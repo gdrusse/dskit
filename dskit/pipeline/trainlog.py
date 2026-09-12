@@ -196,6 +196,16 @@ class TrainingCurve:
         (:data:`DEFAULT_MAX_LINES`). 0 disables the stream entirely — the
         rows are still recorded and still land in the artifact.
 
+    Raises
+    ------
+    ValueError
+        If ``total_epochs``, ``log_every``, or ``max_lines`` is a
+        string that does not parse as an integer.
+    TypeError
+        If ``total_epochs``, ``log_every``, or ``max_lines`` is neither
+        a number nor a string (e.g. ``None``) — each goes through a
+        bare ``int()`` conversion, unvalidated.
+
     Examples
     --------
     Record one epoch and inspect the returned row::
@@ -271,7 +281,9 @@ class TrainingCurve:
         TypeError
             If ``epoch`` or ``seconds`` is neither a number nor a
             string (e.g. ``None`` or a list) — both go through a bare
-            ``int()``/``float()`` conversion, unvalidated.
+            ``int()``/``float()`` conversion, unvalidated; or ``metrics``
+            is truthy but has no ``.items()`` (e.g. a list) — it is
+            iterated unguarded once it passes the falsy/``None`` check.
         """
         row = {"epoch": int(epoch), "train_loss": _num(train_loss)}
         if val_loss is not None:

@@ -733,6 +733,56 @@ REMAINING, in the plan's risk order:
       not just the gate.** A 15th round should continue the
       from-scratch trace on a further fresh set, since two rounds
       running it (13, 14) have both found real gaps.
+
+      **Fifteenth skeptic round (2026-09-12): a 12th recurrence — 6
+      findings (2 MAJOR, 4 MINOR) across `connector.py`/`features.py`/
+      `trainlog.py`, while `Lineage` and `load_state` came back
+      completely clean.** All execution-verified. **MAJOR (1):**
+      `TrainingCurve.__init__` (`dskit/pipeline/trainlog.py`) had NO
+      `Raises` section at all, though `total_epochs`/`log_every`/
+      `max_lines` each go through a bare `int()` — the exact pattern
+      round 10 already fixed on this class's `record()`, never applied
+      to `__init__`; added to the class docstring, matching the
+      established dunder-`Raises` convention. **MAJOR (2):**
+      `resolve_connector` (`dskit/onboarding/connector.py`) caught only
+      `except ImportError`, letting any other import-time exception
+      (e.g. a dependency's own `RuntimeError`) escape raw — **this one
+      was a genuine CODE fix, not just documentation**: the sibling
+      `dskit/assets/store.py::_resolve_backend`, explicitly written to
+      copy this exact "connector resolve idiom" (ADR-0013), already
+      widens the catch to `except Exception` with a comment stating why
+      ("a backend module crashing at import ... must not escape the
+      seam raw") — `resolve_connector` never received that fix. Widened
+      to match, verified the wrapped `AssetError` now fires, and the
+      full `tests/onboarding` suite (3124 tests) still passes. Unlike
+      every other fix in this loop, this changes runtime behavior
+      rather than only documenting it — justified because it closes an
+      already-established, ADR-cited idiom this exact function's own
+      docstring claims to implement, verified safe by the full suite,
+      not a new design decision. **MINOR (3):** `retry_after` documented
+      no `Raises` and its own Parameters text overclaimed "a caller
+      never has to guard the shape" — a headers-like object whose
+      `items()` raises, or yields non-pair entries, is not shielded;
+      corrected the claim and added `Raises`. **MINOR (4):**
+      `apply_stream_steps` documented only `ValueError` for a class-ref
+      that fails to import, omitting `TypeError` when the ref imports
+      but resolves to a non-callable — added. **MINOR (5):**
+      `TrainingCurve.record` omitted `AttributeError` from a truthy,
+      non-dict `metrics` argument (`(metrics or {}).items()`) — added.
+      **MINOR (6):** `check_config` omitted `TypeError` propagated from
+      `codec.py`'s `storage_problems` when `config["storage"]` has
+      mixed-type keys — `storage_problems`'s own one-line docstring
+      ("never raises") is itself false, but `codec.py` is outside this
+      item's 24-file scope, so only `check_config`'s docstring was
+      corrected here; `codec.py`'s own false claim is left for a future
+      pass. **Given a 12th straight round — `Raises` completeness
+      remains open**, though this round's own closing note flagged a
+      promising narrower angle: a "fix landed in one sibling, missing
+      in its twin" pattern (exactly what `resolve_connector` turned out
+      to be) — a 16th round should grep for other lone
+      `except ImportError`/single-purpose resolvers across the 24 files
+      and check each against any already-fixed sibling elsewhere in the
+      repo.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

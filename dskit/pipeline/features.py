@@ -190,6 +190,11 @@ def apply_stream_steps(records, features):
     ValueError
         If a class-reference step's ``kind`` does not import (via
         :func:`~dskit.pipeline.base.import_ref`).
+    TypeError
+        If a class-reference step's ``kind`` imports but resolves to
+        something that is not callable — ``import_ref`` only confirms
+        the import succeeds, not that the result honors the
+        stream-transform contract.
     """
     if features is None:
         return records

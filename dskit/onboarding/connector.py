@@ -246,6 +246,12 @@ def check_config(connector, config) -> None:
     ------
     AssetError
         Listing every violation at once.
+    TypeError
+        If ``config["storage"]`` is a dict with mixed-type keys (e.g.
+        both strings and an int) — propagated from
+        :func:`~dskit.onboarding.codec.storage_problems`, whose own
+        ``sorted(storage)`` call is unguarded despite that function's
+        own docstring claiming it never raises.
     """
     errors = []
     if not isinstance(connector, Connector):
@@ -408,7 +414,11 @@ def resolve_connector(ref):
     module_name, attr = ref.split(":", 1)
     try:
         module = importlib.import_module(module_name)
-    except ImportError as exc:
+    # Everything, not just ImportError: a connector module crashing at
+    # import (a bad dependency, a top-level config read) must not
+    # escape the seam raw — the same idiom store.py's _resolve_backend
+    # already applies to this exact resolve-a-reference shape.
+    except Exception as exc:
         raise AssetError([f"cannot import connector {ref!r}: {exc}"]) from exc
     cls = getattr(module, attr, None)
     if cls is None:
@@ -517,9 +527,12 @@ def retry_after(headers, fallback):
     Parameters
     ----------
     headers : mapping or None
-        The response headers. Anything without an ``items()`` — ``None``
-        included — is read as carrying no header, so a caller never has to
-        guard the shape a failed request handed it.
+        The response headers. Anything without a callable ``items()`` —
+        ``None`` included — is read as carrying no header. Something
+        that DOES have an ``items()`` is trusted to behave like a
+        mapping's: it is called and iterated unguarded, so a
+        header-like object whose ``items()`` raises, or yields entries
+        that are not 2-element pairs, is not shielded.
     fallback : float
         Seconds to use when no usable header is present. Callers pass
         :func:`backoff` for the attempt, so an absent, malformed or
@@ -529,6 +542,14 @@ def retry_after(headers, fallback):
     -------
     float
         The capped header value, else ``fallback`` unchanged.
+
+    Raises
+    ------
+    ValueError
+        If ``headers.items()`` yields an entry that is not a
+        2-element pair (e.g. a ``Retry-After`` tuple of length 1 or 3).
+        ``headers.items()`` itself is also called and iterated
+        unguarded, so whatever it raises (if anything) propagates too.
 
     Examples
     --------
