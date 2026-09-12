@@ -7882,3 +7882,38 @@ runs only in explicit development mode with a deterministic, pinned,
 `deployment_eligible=false` synthetic cap. Bundle rows in label units (or
 without `unit`) refuse at the capital node; the assembler is the only
 sanctioned producer of gross-unit rows.
+
+
+---
+
+## ADR-0124 - Proposed transactional replay and operations seams
+
+**Status:** proposed (2026-09-11; owner approval required before code). Extends ADR-0090/0091, ADR-0112, ADR-0114, ADR-0117/0118 and ADR-0120; authorizes no replay, paper/market execution, HPO/refit, lockbox read or full backtest.
+
+**Context.** Round-5 review proved two gaps: `ServeLoop` writes the real checkpoint cache directly, and handlers close over original bundles. Retain the existing loop, ledger/fold, accounting, report, replay clock/feed and released graph; do not create a parallel simulator.
+
+**Decision.** Add internal `CheckpointWriter`. Its default preserves live checkpoint bytes/order exactly. Replay freezes complete `CacheWriteIntent.v2`: target/release/process/tick identity, exact bytes, projected terminal head, and prior bytes-or-absence/digest. It stages only; locked commit requires exact preimage and ancestry. Stale ancestors rebuild; ahead/divergent/mismatched state refuses. Provisional heads never reach the real cache.
+
+Add exception-safe internal `_LoopBinding`: transaction-bound frozen bundles, handlers, command processor, checkpoint writer and observation/control callbacks installed as one scope and restored exactly once after commit/abort. Recorded bodies, monitors, commands and approvals use it. The journal binds handler/processor/bundle/config/runtime digests; changes refuse.
+
+Add public `TickTransactionMode` and `ReplayTransactionalMode`; no mode uses unchanged live `_tick_once`. Recovery offers incomplete transactions to the mode first. `TransactionalLedger` implements the existing ledger contract provisionally and invents no envelope, hash, fold or accounting rule. Unstageable external effects refuse.
+
+`ReplayTransaction.v1` binds replay/release/document/tape/cadence/clock/ID, process/tick/code identities; pre-head/checkpoint; canonical caller records/exact append instants; snapshot/checkpoint intents. Durable order is `BEGIN -> PROVISIONAL -> FROZEN -> PUBLISHING -> RECORDS_BARRIERED -> SNAPSHOTTED -> CHECKPOINTED -> COMMITTED`. `SnapshotIntent.v2` freezes the complete timestamp/envelope preimage, bytes/digest, state payload/digest, pre-head and projected snapshot head. Pure under-lock preview is the sole path.
+
+Before `FROZEN`, recovery restores clock, IDs and collaborators and may evaluate once. At/after it, never evaluate: verify identities/digests/instants and exact ledger prefix; publish only missing suffix; barrier; append previewed snapshot and barrier; write exact checkpoint; drain outbox; run deferred after-tick effects; advance ledger-derived cursors/results; restore bindings. Non-prefixes/substitutions fail closed.
+
+Version `RecurringCashFlowSchedule` and `ReplayCashFlowComposer` additively. V2 binds immutable policy/schedule digests and exactly one initial flow, preserving signed-`Decimal` amount, `flow_kind`, effective/known instants, deterministic ID and `supersedes`. Only the initial flow may be positive/external/unsuperseded. Production stays settlement/adoption driven. NAV/TWR/MWR/returns/results derive only from the ledger's external-flow/PnL partition.
+
+Generic `ReplayRun` composes existing seams. Its decider executes the manifest-pinned graph each tick. Paper/full tapes refuse precomputed decisions, weights, orders, fills or returns; synthetic decisions are development-only. Cursor-derived IDs and frozen outputs make restart exact.
+
+`EventCursor.v1` binds replay/emitter identities, last ACK sequence/hash and last seen ledger head. Order: ledger barrier -> emit stable event ID -> durable ACK -> atomic cursor. ACK-window duplicate delivery may reuse only that ID. Stale ancestors rebuild; skips, ahead/non-ancestor heads and mismatches refuse.
+
+A registered generic `MonitorHoldGuard` normalizes legacy strings/V2 actions. Only authenticated, scoped, TTL-bounded holds enter existing `guard_state`, fold, snapshot, expiry and `approve_hold`; unauthorized holds are record-only. `halt` remains breaker-only.
+
+`ReplayResult.v1` is a ServeRoot cache of terminal identities, ledger head, checkpoint, account, event, metric and report identities derived from the ledger. Stale ancestors rebuild; ahead/non-ancestor/tampered state refuses. Add pure sibling `RollingReleaseRotationCalendar` allowing explicit overlapping trailing training windows without changing ADR-0112: bounded UTC cadence/training/embargo and model/data/cache/policy availability pins; no training, promotion, deployment, I/O or implicit now.
+
+**Placement.** Generic mechanisms stay with existing `dskit.production`/pipeline owners. `children/intraday_equities` holds only thin released-graph, exchange-session, horizon/cost/fill and event adapters plus pinned configuration. It owns no loop, clock, ledger/fold, returns simulator or canonicalization.
+
+**Focused TDD after approval.** First observe focused failures. Inject crashes around every state, append/barrier, snapshot preview/append/barrier, cache write, event emit/ACK/cursor, deferred effect and restore. Require uninterrupted/restarted byte-identical ledger/head, checkpoint, terminal identities, account, events, metrics and report. Pin unchanged live checkpoints, no provisional leakage, all substitution refusals, V1/V2 flow corrections, outbox windows, hold restart/expiry, result tamper/staleness and rolling pins. Run only affected tests and directly affected purity/OOP/producer gates.
+
+**Owner gates.** Implementation stays fail-closed until this ADR is accepted. Execution separately requires ratified capital timing/settlement/corrections; event retention/redaction/sink reliability; hold authority/scope/TTL; cadence, session/training/embargo/availability; released model/calibration/cap/MIO identities and security authorities; and rung gates. No actual replay, paper/market action, lockbox/full backtest, HPO or final refit is authorized.
