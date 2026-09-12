@@ -101,31 +101,58 @@ planner/identity hash, `driver.py:run_document`, staged runner, and registry.
 hash and digest-change, secret literal, normal wire, illegal captured wire/topology,
 unsupported-profile, direct ServeDocument CLI/config/construction/parsing, alternate
 independently hashed document, field/default/captured-binding substitution, and
-live/replay composition-parity tests. **GREEN/test:** add one default-deny versioned
-`execution_backtest` object and focused document/driver/production bridge tests. It
-names only policy/migration/defaults, content-digested refs, fidelity/profile,
-capture stages, and opaque external references. `$node.output` stays same-run;
-`$captured_artifact` is only producer -> seal -> external capture -> consumer,
-compiled by the existing planner into staged runs.
+live/replay composition parity, and pipeline-imports-production refusal tests.
 
-The trusted planner/driver alone derives an internal, non-user-constructible
-`PipelineServeRuntime` view from normalized PipelineDocument plus verified captured
-bindings. Its only identity is a canonical derivative of the PipelineDocument hash,
-normalized plan hash, captured-binding audit digests, release, and EnvironmentIdentity;
-it has no JSON loader, `to_obj`, independent config path, or hash authority. It may
-reuse `production.document.ServeDocument` validators/read views behind an internal
-compatibility projection, but that projection cannot parse, construct, select,
-substitute, or independently identify an operational process.
+The complete default-deny `execution_backtest` v1 grammar is:
+
+```json
+{"execution_backtest":{"schema_version":"dskit.execution-backtest/v1",
+ "purpose":"synthetic|historical-simulator",
+ "event_envelope_schema":"dskit.event-envelope/v2",
+ "source_rank_policy_sha256":"<lowercase-sha256>",
+ "execution_profile_sha256":"<lowercase-sha256>",
+ "environment_identity_sha256":"<lowercase-sha256>"}}
+```
+
+Every shown member is required if the block exists; only standard `notes` is
+optional and excluded from identity. The block itself is optional only for ordinary
+non-production PipelineDocument use and cannot create a serve/replay runtime when
+absent. `purpose` is `synthetic` or `historical-simulator` only; the latter requires
+the verified study phase. All digests are exact lowercase SHA-256 and must match the
+verified captured ports/runtime. There are no implicit v1 defaults. Older shapes must
+go through an explicit versioned migration to canonical v1, then revalidate and
+rehash; unknown keys, omitted required members, a changed normalized default, or a
+noncanonical/mismatched digest refuses. The normal PipelineDocument canonical hash
+includes this normalized block and all legal content references. `$node.output` stays
+same-run; `$captured_artifact` is only producer -> seal -> external capture ->
+consumer. Capture stages are derived only from those legal graph ports and their
+completed lifecycle receipts, then compiled by the existing planner into staged runs;
+there is no second stage-language member to drift from the graph.
+
+Pipeline remains dependency-pure: it emits only generic immutable
+`PlannedRuntimeContract` data containing the normalized PipelineDocument/plan hashes,
+execution policy, declared capture-port identities, and audit digests; it never
+imports, names, constructs, or validates `dskit.production` types. A production-owned
+`PipelineRuntimeBridge` consumes that generic contract plus broker-verified captures
+and derives non-user-constructible `PipelineServeRuntime`/ServeLoop bindings. Its
+identity is a canonical derivative of the contract's PipelineDocument/plan hashes,
+captured-binding audit digests, release, and EnvironmentIdentity; it has no JSON
+loader, `to_obj`, independent config path, or hash authority. The production bridge
+may reuse internal `production.document.ServeDocument` validators/read views only
+behind its exact projection; Pipeline never imports that module and the projection
+cannot parse, construct, select, substitute, or independently identify a process.
 
 Direct `ServeDocument.load`/`from_obj`/constructor use, a ServeDocument positional
 CLI/config, or a caller-supplied serve view refuses for secure, replay, historical,
 and new live operation. Existing standalone live users receive an explicit,
-non-executing migration/compatibility diagnostic: a one-shot converter may read the
-legacy document solely to emit a normalized PipelineDocument or refuse an unmappable
-field; it never starts ServeLoop. Thus legacy use is neither silently reinterpreted
-nor silently broken. **Exit:** malformed/mutable/secret/same-DAG-capture or any
-independently authored/hashed operational document refuses before planning, data,
-adapter load, or lifecycle action.
+non-executing migration/compatibility diagnostic: a production-side one-shot
+converter may read the legacy document solely to emit a normalized PipelineDocument
+or refuse an unmappable field; it never starts ServeLoop. Thus legacy use is neither
+silently reinterpreted nor silently broken. **GREEN/test:** focused pipeline grammar,
+migration/hash/purity tests and production bridge tests. **Exit:** malformed,
+mutable, secret, same-DAG-capture, pipeline-to-production import, or independently
+authored/hashed operational document refuses before planning, data, adapter load, or
+lifecycle action.
 
 ## F2 — external launcher, codecs, EnvironmentIdentity
 
@@ -192,13 +219,19 @@ the derived rank plus `source_rank_policy_sha256`, and
 `corrects_event_id`/chain position/prior digest. Order is availability, derived
 source rank, source sequence, correction position, payload digest, event ID.
 
-The policy schema version and digest are required tape manifest/capture members and
-receipt evidence; are pinned by normalized PipelineDocument/plan and
-EnvironmentIdentity; and are repeated in frozen replay plans/transactions,
-checkpoint/cache intents, ReplayResult, and report identity/provenance. Recovery
-byte-compares those bindings before using a tape or resuming. **Exit:** ambient
-time, rank-policy mismatch, ambiguity, cycles, impossible time, or missing
-provenance rejects.
+The policy schema/version/digest are canonical tape-manifest/capture members and
+receipt evidence, and are pinned by `execution_backtest`, EnvironmentIdentity, and
+the existing `tape_digest`. ADR-0124's named `ReplayTransaction.v1`,
+`FrozenReplayPlan.v1`, `SnapshotIntent.v2`, `CacheWriteIntent.v2`,
+`EventCursorSet.v1`, and `ReplayResult.v1` keep their accepted exact default-deny
+key sets: no source-rank field is casually added. Their existing transaction/frozen
+plan `tape_digest`, replay identity, frozen cache bytes, ledger-head, and report
+provenance transitively bind the policy. Recovery byte-compares those existing
+identities before using a tape or resuming. Any direct schema field requires a
+separately accepted versioned ADR evolution, default-deny migration, and focused
+old/new-schema refusal tests before implementation. **Exit:** ambient time,
+rank-policy mismatch, ambiguity, cycles, impossible time, or missing provenance
+rejects.
 
 ## F4 — immutable capture/WORM lifecycle
 
@@ -421,10 +454,11 @@ snapshot preview/exact cache intents, and `ReplayResult` digest omitting
 
 **Reuse:** `production/loop.py:ServeLoop`, `compose.py:handlers_for`,
 `CommandProcessor`, `Checkpoint`, ReplayClock/Feed, and recovery. ServeLoop,
-`bundles_for`, `handlers_for`, and the command processor accept only the derived
-`PipelineServeRuntime`, never a user-authored `ServeDocument`; its bound pipeline
-document/plan/capture/release/environment identities are carried into live and replay
-binding digests. **RED:** live
+`bundles_for`, `handlers_for`, and the command processor accept only the production
+bridge's derived `PipelineServeRuntime`, never a user-authored `ServeDocument` or
+pipeline-created production type; its bound generic contract, pipeline document/plan,
+capture/release/environment identities are carried into live and replay binding
+digests. **RED:** live
 byte/order equivalence, provisional isolation, handler/processor digest, preview/
 cache, lifecycle crash/restore, direct serve-view/config rejection, runtime field/
 default/capture substitution, live/replay composition parity, and injected crashes
@@ -441,8 +475,8 @@ effects -> result/cursor -> `COMMITTED`. Every append, cache replacement, outbox
 ACK, deferred-effect receipt, result write, and cursor replacement verifies the
 current fence token and frozen preimage; cursor replacement is atomic and the final
 commit is durable only after both result and cursor are valid ledger-derived values.
-`ReplayRun` and live mode compose through the same derived runtime view; only replay
-adds transaction mode. `ReplayRun` drives **three** lifecycle transactions under
+`ReplayRun` and live mode compose through the same production-bridge runtime view;
+only replay adds transaction mode. `ReplayRun` drives **three** lifecycle transactions under
 that same journal, lease, and frozen-plan rule: `startup` for recovery/reconciliation
 mutations, one `tick`
 per F3 tape tick, and `shutdown` for stop/final checkpoint/result/teardown and
@@ -462,11 +496,34 @@ authority/evidence refuses actions, flows, reports, or rotation.
 
 ### R5 — child realism adapters
 
-**Reuse:** child replay only after R1--R4. **RED:** exact fixture/profile/tape order,
-restart identity, and unsupported knob. **GREEN/test:** thin deterministic tape-
-driven latency/slippage/fee/partial-fill/reject/cancel/session/halt/auction/
-corporate-action adapters with focused child tests. **Exit:** ambient market/wall-
-clock access or silent approximation refuses.
+**Bypass inventory and migration:** current
+`children/intraday_equities/intraday_equities/replay.py` imports
+`ServeDocument`/`ServeLoop`; `EquityReplay` calls `ServeDocument.from_obj` and
+constructs `ServeLoop`; `ReplayAdapter` delegates to it; registered
+`DevelopmentReplay` reaches `ReplayAdapter`; and the child package currently exports
+the latter two. All are production-capable direct-construction bypasses and must be
+removed, disabled with a migration refusal, or migrated before any production path.
+No child source may import/construct `ServeDocument`, `ServeLoop`, `ReplayRun`, a
+permit, or a broker authority; `EquityReplay`, `ReplayAdapter`, and the old
+`DevelopmentReplay` entrypoint cease to be package/registry production surfaces.
+
+The replacement is ordinary PipelineDocument plus registered child decider,
+execution-profile, fill-policy, and event-mapping adapters selected by the trusted
+production-side `PipelineRuntimeBridge`; `ReplayRun` is the sole caller of the
+production replay path. Existing development-replay documents and public adapter
+calls receive an explicit non-executing migration diagnostic to the pipeline JSON or
+refuse an unmappable policy. A synthetic fixture helper, if retained, lives only in
+tests, is nonexported/unregistered, uses `SyntheticReplayAuthority` with
+`deployment_eligible=false`, and cannot accept a CLI/config/production permit.
+
+**RED:** child/import-graph/AST tests reject every listed direct import,
+construction, package export, registry entry, CLI route, and legacy call; migration
+diagnostic, production-bridge routing, exact fixture/profile/tape order, restart
+identity, and unsupported-knob tests also fail first. **GREEN/test:** thin
+deterministic tape-driven latency/slippage/fee/partial-fill/reject/cancel/session/
+halt/auction/corporate-action adapters under the bridge with focused child and
+production replay tests. **Exit:** any child bypass, ambient market/wall clock,
+non-synthetic authority, or silent approximation refuses.
 
 ## I1 — layered synthetic normal-pipeline acceptance
 
@@ -477,12 +534,13 @@ rolling retraining/release`.
 
 RED/focused GREEN categories are config-negative/plan hash, direct-ServeDocument
 CLI/config/constructor rejection, PipelineServeRuntime field/default/capture
-substitution, live/replay composition parity, port contract, accounting property/
-metamorphic, PIT/leakage, event/effect/outbox/ACK, lifecycle, and crash at every
-persisted boundary. Synthetic uninterrupted and crash/restart schedules must have
-identical release/artifact identities, ledger head, checkpoint, account state,
-outbox/cursors/events, metrics, and report. Any difference fails; no real tape/HPO/
-refit/paper/live work occurs.
+substitution, pipeline-to-production import-graph refusal, production-bridge
+live/replay composition parity, child direct-construction/export/registry/CLI refusal,
+port contract, accounting property/metamorphic, PIT/leakage, event/effect/outbox/ACK,
+lifecycle, and crash at every persisted boundary. Synthetic uninterrupted and
+crash/restart schedules must have identical release/artifact identities, ledger head,
+checkpoint, account state, outbox/cursors/events, metrics, and report. Any difference
+fails; no real tape/HPO/refit/paper/live work occurs.
 
 ## I2 — exactly one gated historical simulator study
 
@@ -507,6 +565,8 @@ Gate 2 already has child HPO/final-model evidence, fail-closed refit config, and
 `children/intraday_equities/tests/test_final_model.py`; it is A input, not capture
 authority. Gate 4 already has `forecast_bundle.py`, capital nodes, and focused
 forecast-bundle/nodes-capital tests; extend provenance ports, not policy. Gate 5
-already has child synthetic replay tests plus ReplayClock, ReplayFeed, ServeLoop,
-ServeRoot, ChainLedger, cashflow composer, Replay/CLI, recovery, and report seams.
-R1--R5 extend those seams, never a child backtester or second accounting engine.
+already has ReplayClock, ReplayFeed, ServeLoop, ServeRoot, ChainLedger, cashflow
+composer, Replay/CLI, recovery, and report seams. Its child replay helpers are the
+R5 bypass inventory to migrate/remove, not reusable production composition. R1--R5
+extend the generic seams through the production bridge, never a child backtester or
+second accounting engine.
