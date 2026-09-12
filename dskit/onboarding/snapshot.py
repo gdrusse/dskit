@@ -139,7 +139,8 @@ def snapshot_hash(manifest) -> str:
     Raises
     ------
     AssetError
-        If ``manifest`` is not a dict with string-only keys.
+        If ``manifest`` is not a dict with string-only keys, or is not
+        canonically serializable (a non-JSON value, or NaN/Infinity).
     """
     errors = []
     _check_dict(errors, "manifest", manifest)

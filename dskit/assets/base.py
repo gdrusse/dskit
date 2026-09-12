@@ -75,7 +75,7 @@ class AssetError(ValueError):
 
 
 def check_str(errors, name, value, *, non_empty=True):
-    """Append an error unless value is a non-empty string (or any string, when non_empty=False).
+    """Append an error unless ``value`` is a string meeting ``non_empty``.
 
     Parameters
     ----------

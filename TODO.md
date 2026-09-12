@@ -223,9 +223,10 @@ REMAINING, in the plan's risk order:
       (grep found NO live importer through kinds_flow); kinds_flow fully
       converted, its ignore entry drained; banking behaviour tests stay
       beside the driver integration run by design.
-- [ ] **Drain the pre-standard ignore list.** 57 modules sit in
-      `pyproject.toml` under `per-file-ignores`; delete a module's entry when
-      you convert it. That list IS the remaining work, in config form.
+- [ ] **Drain the pre-standard ignore list.** 30 modules sit in
+      `pyproject.toml` under `per-file-ignores` (57 originally; 27 drained
+      so far — see below); delete a module's entry when you convert it.
+      That list IS the remaining work, in config form.
       **In progress (2026-09-11):** 15 entries drained — 5 needed real
       docstring fixes (`dskit/__init__.py`,
       `children/intraday_poc/intraday_poc/__init__.py`,
@@ -329,6 +330,29 @@ REMAINING, in the plan's risk order:
       malformed-JSONL case `_rows` can raise while reading a first
       row). **This item is done for these 27 files** — the remaining
       30 pre-standard modules are unstarted, left for a future pass.
+
+      **Fifth skeptic round (2026-09-12): no blocker or major findings;
+      8 minor/nit fixes.** Verified all 6 round-4 fixes independently
+      (fresh AST audit, fresh executable-diff, re-executed every
+      constructing `Examples` block byte-exact) — 5 held cleanly; the
+      6th (`snapshot_hash`'s `Raises`) was still incomplete, and round
+      4's D205 reflow missed a 6th instance. Fixed: `snapshot_hash`'s
+      `Raises` now also names the canonically-serializable check (a set
+      or NaN/Infinity value raises even with all-string keys — proven);
+      `dskit/pipeline/features.py:158` (`apply_stream_steps`) was the
+      missed 6th joined-line instance, reflowed; three more `Raises`
+      sections tightened to name every condition their body actually
+      raises (`LocalFilesConnector.check`/`.read`'s duplicate-stem and
+      parse/malformed-JSONL cases; the skeleton `SampleConnector.read`'s
+      `_budget`/`parse_utc` cases; `AssetRecord.from_obj`'s non-dict and
+      field-validation cases) — each re-verified by triggering it;
+      three more docstrings that were summary-only long lines
+      (`assets/base.py`'s `check_str`, `pipeline/resolve.py`'s
+      `ResolvedPipeline.__post_init__`, `pipeline/trainlog.py`'s
+      `_num`) shortened or split for consistency; this item's own
+      header still said "57 modules" after the count had moved to 30 —
+      corrected; and a ragged short line left by round 4's reflow of
+      `children/intraday_poc/intraday_poc/__init__.py` was re-wrapped.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

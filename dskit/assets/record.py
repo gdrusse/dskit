@@ -235,8 +235,10 @@ class AssetRecord:
         Raises
         ------
         AssetError
-            On unknown keys, or when a stored ``version_id`` does not
-            match the recomputed hash of the stored content.
+            If ``obj`` is not a dict with string keys, on unknown keys,
+            if a rebuilt field fails :class:`AssetRecord`'s own checks
+            (e.g. an empty ``kind``), or when a stored ``version_id``
+            does not match the recomputed hash of the stored content.
         """
         errors = []
         _check_dict(errors, "record", obj)

@@ -156,8 +156,9 @@ class LocalFilesConnector(Connector):
         Raises
         ------
         AssetError
-            If ``config.path`` does not exist, is not a directory, or
-            holds no ``*.csv``/``*.jsonl`` file.
+            If ``config.path`` does not exist, is not a directory,
+            holds no ``*.csv``/``*.jsonl`` file, or holds both a
+            ``.csv`` and a ``.jsonl`` file for the same stem.
         """
         if not self._files(config):
             raise AssetError(
@@ -232,9 +233,12 @@ class LocalFilesConnector(Connector):
         Raises
         ------
         AssetError
-            If ``state`` is not a dict, ``streams`` is empty or not a
-            list, a requested stream was not discovered, or a row is
-            missing its effective-date field.
+            If ``state`` is not a dict; ``streams`` is empty or not a
+            list; ``config.path`` does not exist, is not a directory,
+            or holds a duplicate csv/jsonl stem; a requested stream was
+            not discovered; a row's effective-date field is missing,
+            empty, or does not parse as an ISO date/datetime; or a
+            JSONL row is malformed JSON or not a JSON object.
         """
         errors = []
         _check_dict(errors, "state", state)

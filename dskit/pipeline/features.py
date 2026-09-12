@@ -155,7 +155,7 @@ register_transform_kind("regroup", _regroup_validator, _apply_regroup)
 
 
 def apply_stream_steps(records, features):
-    """Thread the record stream through every STREAM step of ``features``, in declared order.
+    """Thread the record stream through every STREAM step of ``features``, in order.
 
     A class-reference step (``pkg.module:Attr``) is imported and called
     with the stream-transform contract ``target(records, params) ->

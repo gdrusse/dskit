@@ -408,7 +408,10 @@ class TrainingCurve:
 
 
 def _num(value):
-    """Coerce to a JSON-safe float — NaN/inf become None (write_artifact refuses NaN)."""
+    """Coerce to a JSON-safe float — NaN/inf become None.
+
+    ``write_artifact`` refuses NaN.
+    """
     if value is None or isinstance(value, bool):
         return None
     if not isinstance(value, (int, float)):

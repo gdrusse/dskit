@@ -140,7 +140,11 @@ class ResolvedPipeline:
     run_dir: str = ""
 
     def __post_init__(self):
-        """Refuse a config/asof/path/instruments/fingerprint combination that is malformed."""
+        """Refuse a malformed field combination.
+
+        Checks ``config``, ``asof``, the path fields, ``instruments``,
+        and ``data_fingerprint``.
+        """
         if not isinstance(self.config, PipelineConfig):
             raise ValueError(
                 f"config must be a PipelineConfig, got {type(self.config).__name__}"
