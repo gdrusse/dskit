@@ -40,10 +40,13 @@ GREEN command/result, artifacts, corrections, and reviews. Each signed
 clean conclusion. `ReviewExit.v1` is a verifier result, not prose: it verifies the
 complete dependency binding, exactly one active skeptic history, every Sol RED ->
 Sol commit -> Sol GREEN sequence, every Terra-only correction, and **zero unresolved
-Critical, Major, or Minor** findings. Only one Terra skeptic is active. Terra fixes
-all severities, adds regression evidence, and reviews repeat through a clean exit.
-Two fresh, sequential, independent Terra clean verdicts are mandatory; neither may
-review its own correction. No full suite absent direct integration necessity.
+Critical/Major** findings. Every Minor remains signed in its `ReviewVerdict`, bound
+into the manifest, and visibly records a disposition, owner, and rationale
+(`deferred`, `accepted`, or `corrected`); changing a finding's severity cannot hide
+a Critical/Major. Only one Terra skeptic is active. Any correction, at any severity,
+is Terra-authored with regression evidence. Two fresh, sequential, independent Terra
+reviews are CLEAN only when they each find zero unresolved Critical/Major; neither
+may review its own correction. No full suite absent direct integration necessity.
 
 `SliceDependencyManifest.v1` is signed and binds the slice DAG, prerequisites,
 commits/evidence, gates, environment/policy identities, allowed commands, and
