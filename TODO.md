@@ -891,6 +891,49 @@ REMAINING, in the plan's risk order:
       `dskit/onboarding/observations.py`'s `stream_dir`/`stream_digest`/
       `verified_payload_dir` (inspected by reading only this round, not
       execution-verified) — a 19th round should close that out.
+
+      **Nineteenth skeptic round (2026-09-12): a 16th recurrence — 2
+      MAJOR + 1 MINOR, closing out the `observations.py` carryover
+      (`stream_digest` came back clean; `stream_dir` and
+      `verified_payload_dir` did not) plus a comprehensive final sweep:
+      10 spot-checked exception TYPES across `metrics.py`/`io.py`/
+      `Registry.register`/`load_state`/`check_config`/`publish_version`
+      all matched exactly, all ~15 Examples blocks across the 24 files
+      re-executed byte-exact, and zero `>>>` occurrences remain.**
+      **MAJOR:** `verified_payload_dir`
+      (`dskit/onboarding/observations.py`) documented only 4 causes
+      (root not initialized, hash malformed, no match, verification
+      failure/no files) but omitted 4 more, all verified: `root` not a
+      string at all (a different `AssetError` cause than "not
+      initialized"); `stream` not filesystem-safe (not mentioned at
+      all); a raw `AssetError` propagated from `find_snapshot_dir` when
+      its scan encounters a completely UNRELATED snapshot with a
+      corrupt manifest before reaching the target (verified — a corrupt
+      sibling can mask a legitimate lookup depending on scan order); and
+      a raw `TypeError`/`KeyError` propagated from `verify_snapshot`
+      when the TARGET's own manifest holds a malformed `files` entry
+      (the same shape round 17 already fixed in `verify_snapshot`
+      itself, now also documented on its caller). **MAJOR:**
+      `find_active_source` (`dskit/onboarding/acquire.py`) never
+      type-checks `registry` before calling `registry.find(...)` — a
+      malformed value (e.g. `None`, an int, a string) escapes as a raw
+      `TypeError`/`AttributeError` instead of the documented
+      `AssetError`; documented as the two new entries (kept as a
+      documentation fix, not a code change, since `sync_published`'s
+      `isinstance(registry, Registry)` check is an ordinary defensive
+      pattern here, not an ADR-cited "must mirror" idiom like round 15's
+      `resolve_connector` case). **MINOR:** `stream_dir`
+      (`dskit/onboarding/observations.py`) had no `Raises` section at
+      all, though a non-string `root`/`source` raises a raw `TypeError`
+      from `os.path.join` — unlike every path helper on `OnboardingRoot`,
+      which validates first; added. **Given a 16th straight round
+      finding real gaps — `Raises` completeness remains open** — though
+      this round's own closing note states it found no new gaps
+      anywhere else across the full 24-file surface beyond these three,
+      after the most comprehensive single-round sweep yet run. A 20th
+      round should apply these three fixes (now done) and attempt a
+      confirmation-only pass with no new targets, to test whether the
+      surface has actually reached a fixed point.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

@@ -207,6 +207,14 @@ def stream_dir(root, source) -> str:
     -------
     str
         The directory path; existence is the caller's to check.
+
+    Raises
+    ------
+    TypeError
+        If ``root`` or ``source`` is not a string/bytes/path-like value
+        (e.g. ``None`` or an int) — unlike every path helper on
+        :class:`~dskit.onboarding.layout.OnboardingRoot`, this function
+        does not validate either argument before ``os.path.join``.
     """
     return os.path.join(root, "observations", source)
 
@@ -637,10 +645,21 @@ def verified_payload_dir(root, manifest_hash, stream) -> str:
     Raises
     ------
     AssetError
-        When the root is not initialized, the hash is malformed, no
-        snapshot under the root carries it, the snapshot fails
-        verification (every drift named), or it holds no files for
-        ``stream``.
+        When ``root`` is not a non-empty string or is not an
+        initialized onboarding root; ``stream`` is not filesystem-safe;
+        the hash is malformed; no snapshot under the root carries it;
+        the snapshot fails verification (every drift named); it holds
+        no files for ``stream``; or scanning for the hash
+        (:func:`find_snapshot_dir`) encounters a DIFFERENT, unrelated
+        snapshot whose own manifest is unreadable — such a corrupt
+        sibling can block a legitimate lookup depending on scan order.
+    TypeError
+        If the target snapshot's own manifest holds a ``files`` entry
+        that is not a dict — propagated from :func:`verify_snapshot`'s
+        own unvalidated assumption about entry shape.
+    KeyError
+        If a ``files`` entry is a dict missing ``relpath`` — the same
+        unvalidated assumption, a different malformed shape.
     """
     ob = root if isinstance(root, OnboardingRoot) else OnboardingRoot(root)
     errors = []

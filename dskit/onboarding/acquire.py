@@ -112,6 +112,15 @@ def find_active_source(registry, name) -> str:
         (:meth:`~dskit.assets.registry.Registry.find`); if no
         ``source_config`` named ``name`` is ACTIVE; or if more than one
         is.
+    TypeError
+        If ``registry`` is a string — unlike ``name``, its type is
+        never checked before ``registry.find(...)`` is called, so a
+        malformed value escapes as whatever error that call happens to
+        raise, rather than as ``AssetError``.
+    AttributeError
+        If ``registry`` is any other non-``Registry`` value lacking a
+        ``find`` method (e.g. ``None`` or an int) — the same
+        unvalidated-type gap as above, a different resulting error.
     """
     errors = []
     _check_str(errors, "name", name)
