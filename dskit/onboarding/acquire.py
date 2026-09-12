@@ -154,6 +154,20 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         ``{"job", "snapshot", "acq_id", "records", "forecasts", "files",
         "skipped", "logs", "state_saved"}`` — ``job``/``snapshot``/
         ``acq_id`` are None on an empty pull.
+
+    Raises
+    ------
+    AssetError
+        If any argument is malformed; ``source`` has no single ACTIVE
+        ``source_config`` (:func:`find_active_source`); the resolved
+        connector's config fails ``spec()``/reserved-storage validation
+        (:func:`~dskit.onboarding.connector.check_config`,
+        :func:`~dskit.onboarding.codec.check_storage`) or its own
+        ``check()``; the connector emits a malformed envelope message
+        (:func:`~dskit.onboarding.connector.check_message`) or raises
+        while reading; or building/writing the snapshot manifest fails
+        (:func:`~dskit.onboarding.snapshot.build_manifest`,
+        :func:`~dskit.onboarding.snapshot.write_snapshot`).
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

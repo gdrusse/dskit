@@ -265,8 +265,9 @@ def find_snapshot_dir(root, manifest_hash):
     Raises
     ------
     AssetError
-        If ``root`` is not an OnboardingRoot, or ``manifest_hash`` is
-        not a non-empty string.
+        If ``root`` is not an OnboardingRoot, ``manifest_hash`` is not
+        a non-empty string, or a manifest found along the way is
+        unreadable or shape-invalid (via :func:`read_manifest`).
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

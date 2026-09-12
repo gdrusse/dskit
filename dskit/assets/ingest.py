@@ -97,6 +97,15 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
     existing run directory under ``pipeline_runs/``::
 
         summary = ingest_run(reg, "pipeline_runs/my-run-2026-01-01-5ce0d310")
+
+    Raises
+    ------
+    AssetError
+        If ``registry``/``run_dir``/``origin`` are malformed;
+        ``run_dir`` does not exist; ``result.json`` (or any node
+        record under ``nodes/``) is unreadable, not valid JSON, or not
+        a JSON object; ``result.json`` is missing a required field; or
+        a node record lacks a valid ``node``/``outputs`` shape.
     """
     errors = []
     if not isinstance(registry, Registry):

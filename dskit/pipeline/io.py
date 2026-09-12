@@ -83,6 +83,13 @@ def save_config(config, path) -> None:
     Returns
     -------
     None
+
+    Raises
+    ------
+    ValueError
+        If ``config.to_obj()`` is not JSON-serializable (NaN/Infinity).
+    OSError
+        If ``path``'s directory does not exist or is not writable.
     """
     text = json.dumps(config.to_obj(), indent=2, sort_keys=True, allow_nan=False)
     with open(path, "w", encoding="utf-8") as fh:

@@ -107,6 +107,11 @@ def probability_metrics(preds, labels) -> dict:
         ``{"logloss": .., "brier": .., "ece": .., "n": ..}``, or ``{}``
         when the labels are not binary or there are no rows.
 
+    Raises
+    ------
+    ValueError
+        If ``preds`` and ``labels`` are not the same length.
+
     Notes
     -----
     ``ece`` is the n-weighted mean over decile buckets of

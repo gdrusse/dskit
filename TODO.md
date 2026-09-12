@@ -277,15 +277,18 @@ REMAINING, in the plan's risk order:
       "clearing a large module... means converting the whole file," and
       14 of the 27 drained files were only ruff-flagged-spot fixes,
       missing 47 of 94 public functions' full sections and 14 private
-      helpers below the one-line floor. All of it is now actually done:
-      every one of the 27 files' public functions carries
-      `Parameters`/`Returns`/`Raises`(/`Yields`) where its signature and
-      body call for one, and every private helper has at least its
-      one-line floor — verified by an AST script over every touched
-      file, not by spot-checking (it parses each function, flags a
-      public one with args but no `Parameters`, or a return/yield value
-      with no `Returns`/`Yields`, or a private one with no docstring at
-      all; it now reports zero findings). Also fixed in the same round:
+      helpers below the one-line floor. `Parameters`/`Returns`/`Yields`
+      completeness is genuinely closed — an AST script (parses each
+      function, flags a public one with args but no `Parameters`, or a
+      return/yield value with no `Returns`/`Yields`, or a private one
+      with no docstring at all) reports zero findings, independently
+      reproduced by three later skeptic rounds. **`Raises` completeness
+      is NOT mechanically checkable the same way** (an AST script
+      cannot see which exceptions a call chain can raise without
+      interprocedural analysis) and rounds 5 and 6 both found real
+      `Raises` gaps by tracing call chains by hand/execution — this
+      class of defect is addressed incrementally as skeptics find it,
+      not closed by a script. Also fixed in the same round:
       `Connector` (an ABC) gained an `Examples` note pointing to
       `LocalFilesConnector` since it cannot be instantiated itself;
       `ResolvedPipeline`'s `Examples` block was rewritten to actually
@@ -335,12 +338,14 @@ REMAINING, in the plan's risk order:
       8 minor/nit fixes.** Verified all 6 round-4 fixes independently
       (fresh AST audit, fresh executable-diff, re-executed every
       constructing `Examples` block byte-exact) — 5 held cleanly; the
-      6th (`snapshot_hash`'s `Raises`) was still incomplete, and round
-      4's D205 reflow missed a 6th instance. Fixed: `snapshot_hash`'s
-      `Raises` now also names the canonically-serializable check (a set
-      or NaN/Infinity value raises even with all-string keys — proven);
-      `dskit/pipeline/features.py:158` (`apply_stream_steps`) was the
-      missed 6th joined-line instance, reflowed; three more `Raises`
+      6th (`snapshot_hash`'s `Raises`) was still incomplete, and one
+      summary line round 4 missed (`apply_stream_steps`, already a
+      proper summary+blank+body split, just with a 93-char summary
+      line) needed shortening too. Fixed: `snapshot_hash`'s `Raises`
+      now also names the canonically-serializable check (a set or
+      NaN/Infinity value raises even with all-string keys — proven);
+      `dskit/pipeline/features.py:158`'s (`apply_stream_steps`) summary
+      line shortened; three more `Raises`
       sections tightened to name every condition their body actually
       raises (`LocalFilesConnector.check`/`.read`'s duplicate-stem and
       parse/malformed-JSONL cases; the skeleton `SampleConnector.read`'s
@@ -353,6 +358,42 @@ REMAINING, in the plan's risk order:
       header still said "57 modules" after the count had moved to 30 —
       corrected; and a ragged short line left by round 4's reflow of
       `children/intraday_poc/intraday_poc/__init__.py` was re-wrapped.
+
+      **Sixth skeptic round (2026-09-12): no blocker or major findings;
+      9 minor/nit fixes — the same "incomplete `Raises`" pattern
+      recurring for a third straight round.** Verified all 8 round-5
+      fixes independently — all held. Found: `save_state`,
+      `save_config`, and `OnboardingRoot.registry` had gained
+      `Parameters`/`Returns` in earlier rounds but never a `Raises`
+      section despite raising (3 fixed); `Lineage.add`,
+      `find_snapshot_dir` had `Raises` sections naming only SOME of
+      their conditions (2 fixed, each re-verified by triggering the
+      missing condition); `LocalFilesConnector.read` and the skeleton's
+      `SampleConnector.read` both still omitted a malformed-cursor case
+      in `state` (2 fixed); and this item's own round-5 note
+      mischaracterized one of its fixes and overstated that an AST
+      script closes `Raises` completeness the way it closes
+      `Parameters`/`Returns` — it does not, and cannot: no purely
+      syntactic check sees which exceptions a call chain can raise
+      (corrected). **Given this pattern survived three straight
+      rounds, a proactive heuristic script was then written and run
+      before the next round** (flags any public function calling
+      `_raise_if`/`_check_*`/other known-raising helpers, or containing
+      a bare `raise`, with no `Raises` section at all — not full
+      completeness, but catches the "missing entirely" half of the
+      pattern) over all 27 files: it found 6 more genuine gaps
+      (`ingest_run`, `AssetRecord.version_id`, `sync_published`,
+      `run_acquisition`, `publish_version`, `probability_metrics` — the
+      last three in files this session had marked "already compliant,
+      zero changes needed," which was true for ruff but not for
+      `Raises`), each fixed and re-verified by triggering it. Left
+      deliberately unfixed: five dunder `__init__`/`__post_init__`
+      methods whose only raise is a constructor type-check already
+      implied by the class docstring's `Parameters` types — no
+      already-compliant class in this repo documents that as a
+      separate `Raises`, and no skeptic round (six, by this point) has
+      flagged it, so adding one now would invent a convention rather
+      than follow one.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

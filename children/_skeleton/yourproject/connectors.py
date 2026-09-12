@@ -182,7 +182,8 @@ class SampleConnector(Connector):
         Raises
         ------
         AssetError
-            If ``state`` is not a dict, ``streams`` is empty or not a
+            If ``state`` is not a dict, a stream's ``state`` cursor does
+            not parse as an ISO date, ``streams`` is empty or not a
             list, a requested stream is not ``"samples"``,
             ``config.rows`` is not an int ``>= 1``, or
             ``config.start_date`` does not parse as an ISO date.

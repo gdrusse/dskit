@@ -121,6 +121,15 @@ def sync_published(registry, published_root, origin="sync-published") -> dict:
         "failed": [{"file", "error"}]}`` — ``registered`` lists NEW
         versions only; a rescan of a synced root registers nothing,
         fails nothing, and is free.
+
+    Raises
+    ------
+    AssetError
+        If ``registry``/``published_root``/``origin`` are malformed, or
+        ``published_root`` does not exist. A malformed MANIFEST FILE
+        does not raise — it is collected into the returned ``failed``
+        list and the scan continues (anti-entropy: repair what is
+        repairable, report the rest).
     """
     errors = []
     if not isinstance(registry, Registry):

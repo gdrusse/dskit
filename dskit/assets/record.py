@@ -186,6 +186,13 @@ class AssetRecord:
         str
             Hex sha256. Same content, same id — however and whenever
             registered (ADR-0009).
+
+        Raises
+        ------
+        AssetError
+            If ``payload``/``refs`` hold a value that is not
+            canonically serializable (a non-JSON type, or NaN/Infinity)
+            — ``__post_init__`` checks their shape, not their values.
         """
         return canonical_hash(
             {"kind": self.kind, "payload": self.payload, "refs": self.refs}

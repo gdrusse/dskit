@@ -162,6 +162,11 @@ class OnboardingRoot:
         -------
         Registry
             A registry over this root's store.
+
+        Raises
+        ------
+        AssetError
+            If ``model`` does not hash to the store's pin.
         """
         model = onboarding_model() if model is None else model
         return Registry(open_store(os.path.join(self.root, "store")), model)

@@ -97,8 +97,10 @@ class Lineage:
         Raises
         ------
         AssetError
-            If an endpoint does not resolve, ``src == dst``, or the edge
-            would create a cycle — the graph stays a DAG.
+            If ``relation``/``phase`` are not non-empty strings or
+            ``origin`` is not a string; an endpoint does not resolve;
+            ``src == dst``; or the edge would create a cycle — the
+            graph stays a DAG.
         """
         errors = []
         _check_str(errors, "relation", relation)

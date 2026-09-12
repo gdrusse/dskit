@@ -364,6 +364,11 @@ def file_digest(path) -> str:
     str
         Hex sha256. Re-hash and compare to detect tampering (the
         ``verify`` command's whole job).
+
+    Raises
+    ------
+    AssetError
+        When ``path`` is not a string, or the file cannot be read.
     """
     errors = []
     _check_str(errors, "path", path)

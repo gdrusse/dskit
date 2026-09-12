@@ -74,6 +74,16 @@ def publish_version(root, registry, dataset, certification_vid,
         ``{"published_version": vid, "manifest_path": path,
         "version_manifest_hash": hash, "reused": bool}`` — ``reused``
         is True when identical content was already in the outbox.
+
+    Raises
+    ------
+    AssetError
+        If any argument is malformed; ``root`` is not an
+        OnboardingRoot; ``certification_vid`` does not resolve, is not
+        a ``certification``, or records a decision other than
+        ``"certified"``; or an existing outbox file for this dataset
+        is unreadable (``published/`` is WORM — investigate rather
+        than overwrite).
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

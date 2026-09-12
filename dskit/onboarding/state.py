@@ -106,6 +106,15 @@ def save_state(root, source, stream, mode, state) -> str:
     -------
     str
         The path the checkpoint was written to.
+
+    Raises
+    ------
+    AssetError
+        If ``root`` is not an OnboardingRoot; ``state`` is not a dict
+        with string keys; ``source``/``stream`` are not filesystem-safe
+        or ``mode`` is not a declared mode (via
+        :meth:`~dskit.onboarding.layout.OnboardingRoot.state_path`); or
+        ``state`` is not JSON-serializable.
     """
     _require_root(root)
     errors = []

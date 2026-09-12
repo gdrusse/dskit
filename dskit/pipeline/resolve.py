@@ -263,10 +263,10 @@ def resolve(config, asof=None, backend=None, registry=DEFAULT_REGISTRY):
         If ``data.data_dir`` does not exist here (the environment check
         deferred out of ``__post_init__`` by design rule 1).
     ValueError
-        Unknown venue, unknown ``validation.metric`` or
-        ``stat_test.correction``, a split/optimizer kind the backend does
-        not support, an optimizer kind nobody registered, or an empty
-        discovered universe.
+        ``asof`` is not a ``YYYY-MM-DD`` date; unknown venue, unknown
+        ``validation.metric`` or ``stat_test.correction``, a
+        split/optimizer kind the backend does not support, an optimizer
+        kind nobody registered, or an empty discovered universe.
     """
     if asof is None:
         asof_s = datetime.now(timezone.utc).date().isoformat()
