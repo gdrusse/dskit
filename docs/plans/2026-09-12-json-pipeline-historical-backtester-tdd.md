@@ -82,12 +82,12 @@ nodes must have a verified `ReviewExit.v1`):
 ```json
 {"F1":[],"F2":["F1"],"F3":["F1","F2"],"F4":["F2","F3"],
  "F5":["F1","F2","F4"],"A1":["F1","F2","F4","F5"],
- "A2":["A1"],"A3":["A2","F2","F4"],"A4":["A3"],
+ "A2":["A1"],"A3":["A2","F2","F4","F5"],"A4":["A3"],
  "B0":["F1","F2","F4","F5"],"B1":["B0"],"B2":["B1"],
  "B3":["B2"],"E1":["F1","F2","F3","F4"],"C0":["F1","F2","F4"],
  "C1":["B3","E1","C0"],"R1":["F2","F3","F4","F5","C0"],
  "R2":["R1","C0"],"R3":["R2"],"R4":["R3","C0"],
- "R5":["R4","E1","C1"],"I1":["A4","C1","R5"],"I2":["I1"]}
+ "R5":["R4","E1","C1"],"I1":["F1","F2","F5","A4","C1","R5"],"I2":["I1"]}
 ```
 
 Every slice below lists reuse, RED, minimal GREEN/focused test category, and
@@ -170,14 +170,51 @@ consumer port. Focused tests instrument provider/filesystem opens and assert zer
 opens for every rejected `$prev` variant.
 
 Execution mode also rejects every explicit or default-resolved
-`NodeSpec.mode:"load"`, `artifact` pin, raw artifact/read/path field, and
-model-path-shaped value before node construction. The only model load is private
-production-bridge `CapturedModelLoad`: it is derived from
-the current node's `CapturedBindings` and a `VerifiedCapture`, never JSON/NodeSpec,
-and invokes the native codec (for example `load_text_bundle(VerifiedCapture)`) behind
-the `TrainableNode` load template. A path or artifact never reaches a node constructor
-or load method. Focused pre-construction and poison-path tests prove refusal without
+`NodeSpec.mode:"load"`, `artifact` pin, and every declared raw artifact/read/path
+field before node construction. It does **not** try to recognize path-shaped strings:
+execution nodes/adapters instead have manifest-approved signed/digested registrations
+and closed, versioned per-node parameter schemas. A parameter not in that exact
+schema—including a renamed path, artifact, URI, reader, or loader knob—refuses before
+construction. The only model load is private production-bridge `CapturedModelLoad`:
+it is derived from the current node's `CapturedBindings` and a `VerifiedCapture`,
+never JSON/NodeSpec, and invokes the native codec (for example
+`load_text_bundle(VerifiedCapture)`) behind the `TrainableNode` load template. A raw
+path, artifact, or reader never reaches a node constructor or load method. Focused
+pre-construction and renamed-poison-parameter tests prove refusal without
 file/provider access or model import.
+
+**Public execution-entry denial.** `dskit.pipeline.driver.run_document` is a public
+ordinary-pipeline entry only. It accepts an in-memory `PipelineDocument` and its
+first operation is the in-memory `execution_backtest`-presence guard: any present
+block raises before `plan_document`, environment/getenv loading, provider or
+filesystem access, registry/adaptor import, node construction, or run-directory
+work. Its legacy string/path overload is retired with an explicit migration
+diagnostic before opening that path; ordinary callers first use the normal document
+loader and then the same public guard, so ordinary documents with an absent block
+continue unchanged. Public stage runners, walk-forward helpers, CLI `run`, and every
+other driver API perform the same in-memory guard; an execution document supplied to
+any public API is never a compatibility fallback. A user-facing CLI may parse a
+user-supplied ordinary config into memory solely to issue that diagnostic, but has no
+execution route and never starts planning or opens any provider/run/output path.
+
+The external broker is the sole execution route. From a broker-owned immutable
+document/capture store it verifies the permit and constructs a private,
+non-exported verified-driver invocation through the production-owned
+`PipelineRuntimeBridge`; that entry accepts the bridge's nonconstructible runtime
+and the opaque, broker-issued process/run/purpose-bound `LaunchSession` only. It has
+no public import, CLI, path, overload, keyword, claim/dict, duck-type, or optional
+session argument. The bridge validates the exact document/plan/release/capture/
+environment bindings before it invokes the private entry. **RED:** invoke every
+public driver/stage/walk-forward/CLI surface with an execution document plus absent,
+forged, replayed, expired, wrong-process/run/purpose, dict, and duck-typed sessions;
+poison/mocking assertions prove zero planning, getenv/env load, provider/filesystem
+open, registry/import, node construction, or output in
+`tests/pipeline/test_driver.py`, `test_stages.py`, `test_walkforward.py`, and
+`test_main.py`; ordinary no-block document tests remain byte-identical. The private
+entry is production-owned and may call an internal generic execution kernel only
+through the bridge; `dskit.pipeline` does not import or name production types.
+**Exit:** a public API, supplied path, optional kwarg, or non-opaque session cannot
+reach execution.
 
 Pipeline remains dependency-pure: it emits only generic immutable
 `PlannedRuntimeContract` data containing the normalized PipelineDocument/plan hashes,
@@ -214,10 +251,12 @@ pipeline trust capability is ADR-0123's opaque `LaunchSession`. ADR-0122's
 `LaunchContext` is its source-document label for the same broker-issued external
 launch capability, not a second DSKit API, constructor, verifier, or trust root.
 **RED:** forged/expired/revoked/replayed/wrong process-purpose-release-profile
-permit and poisoned import/runtime/environment tests. **GREEN/test:** focused
-secure-launch/driver tests for canonical signed release/runtime/permit/broker/hold/
-review/dependency/study codecs. The external launcher owns image bytes, keys,
-trusted clock, revocation, and isolated import view; DSKit has no fallback verifier.
+permit and poisoned import/runtime/environment tests, including public-driver/session
+forgery and a malicious signed-test component attempting all ambient capabilities.
+**GREEN/test:** focused secure-launch/driver tests for canonical signed release/
+runtime/permit/broker/hold/review/dependency/study codecs. The external launcher
+owns image bytes, keys, trusted clock, revocation, and isolated import view; DSKit
+has no fallback verifier.
 The sole public **authority** API names are `ImmutableSnapshotProvider.describe`/
 `open_member`, `ReleaseKeyring.verify`, `TrustedClock.now_ms`,
 `TrustedRuntimeVerifier`, and opaque `LaunchSession`; all authority instances come
@@ -237,6 +276,31 @@ mint, copy, pickle/JSON, path, provider, credential, signing, or reopen API.
 Application data cannot construct a provider, keyring, clock, verifier, lifecycle
 authority, session, capture, receipt, resolver, or any such value. The single broker
 issues every value through the verified LaunchSession and lifecycle receipts.
+
+**Execution capability boundary.** The broker admits only an execution-safe,
+signed-and-digested release manifest's registered node/adapter identities, exact code
+and import-view digests, and closed versioned parameter schemas. The private verified
+driver constructs only its restricted registry and gives such a component an
+`ExecutionNodeContext`, never `NodeContext`: it exposes no `run_dir`, path, provider,
+secrets/env, previous-run carry, tracker, release reader, ambient clock, or ambient
+RNG. Its only data/capabilities are declared same-run inputs, its own mediated
+`CapturedBindings`, injected logical-clock and opaque deterministic-RNG capabilities,
+and a mediated metric/output/capture writer. Training and release output require
+captured inputs and `PreparedCapture`/the writer; neither grants a raw output path.
+Direct `NodeContext`, arbitrary/custom node class, ordinary registry, or arbitrary
+adapter is refused before construction.
+
+The external OS sandbox binds that measured release: it denies ambient filesystem,
+network, process/subprocess, environment, wall-clock, random source, and import
+escalation; the measured import view contains only approved modules and all other
+imports refuse. **RED:** a malicious registered test component attempts `ctx.run_dir`,
+`os`/`open`/`pathlib`, environment lookup, network, subprocess, ambient time/random,
+and an unapproved import, plus renamed path-like parameter names. Mocks prove denial
+before external I/O and before any output/capture receipt in focused
+`tests/production/test_verifier.py`, `test_sessions.py`, and a new
+`test_execution_sandbox.py`. **Exit:** an unmeasured component, nonclosed schema,
+ordinary context/registry, ambient capability, or raw input/output path refuses
+before node construction.
 `EnvironmentIdentity.v1` binds image/interpreter/stdlib/DSKit/dependency/native
 digests, OS/kernel/architecture, locale, timezone plus tzdata digest/version,
 canonicalization and logical-clock/RNG algorithm/version, and execution profile.
@@ -343,14 +407,17 @@ binding, receipt/port linkage, and same-run/session replay refusal.
 
 ## F5 — captured ports, driver, and decider injection
 
-**Reuse:** existing planner/driver/NodeContext/staged runner and the forecast
-handoff's opaque `CapturedArtifactPort`. **RED:** legal grammar/nesting/stage
-boundary, descriptor forgery, sorted authorization comparison, broker/receipt before
-construction, runtime/consumer/release substitution, restricted-worker, and restart
-binding tests, plus execution-mode `stages`, every `$prev`/carry spelling, and
-artifact/read/path/model-load poison rejection before planner staging, provider/
-filesystem open, broker construction, or node import. **GREEN/test:** the only legal
-descriptor is the complete value of a declared node input:
+**Reuse:** existing planner/driver/staged-runner data contracts and the forecast
+handoff's opaque `CapturedArtifactPort`; ordinary `NodeContext` remains only an
+ordinary-pipeline contract, while execution uses F2's `ExecutionNodeContext`.
+**RED:** legal grammar/nesting/stage boundary, descriptor forgery, sorted
+authorization comparison, broker/receipt before construction, runtime/consumer/
+release substitution, restricted-worker, closed per-node schema/manifest identity,
+direct ordinary context/registry/custom-node use, and restart binding tests, plus
+execution-mode `stages`, every `$prev`/carry spelling, and artifact/read/path/model-
+load or renamed-param poison rejection before planner staging, provider/filesystem
+open, broker construction, node import, or output writer creation. **GREEN/test:**
+the only legal descriptor is the complete value of a declared node input:
 
 ```json
 {"$captured_artifact":{"root_ref":"release://forecast/v42","snapshot_version":"42","document_sha256":"<sha256>","node":"pit_bundle","output":"bundle","purpose":"paper"}}
@@ -367,10 +434,14 @@ matching `PUBLISHED` then `CAPTURED` receipt for every port. It injects a fresh
 non-enumerable `CapturedBindings` for only the current node; `require(input)` cannot
 discover, copy, serialize, reopen, or forward another port. Carry/records retain
 audit only; it is never a prior-run value. Injected decider receives immutable
-captured ports, EnvironmentIdentity, logical clock, RNG, and F3 contract.
-**Exit:** untrusted workers cannot access paths, roots/keys/clock/storage/
-credentials; an execution document with user stages, a `$prev`/carry variant,
-ambient, nested, ordinary, raw-artifact, or noncaptured decision input refuses.
+captured ports, EnvironmentIdentity, and only F2's logical/opaque capabilities.
+The bridge resolves every node/adapter only from the signed release manifest and
+passes its exact closed schema's normalized values; it neither passes NodeSpec
+params wholesale nor searches their strings for paths. **Exit:** untrusted workers
+cannot access paths, roots/keys/clock/storage/credentials; an execution document
+with user stages, a `$prev`/carry variant, unapproved component/schema, ordinary
+context/registry, ambient, nested, raw-artifact, or noncaptured decision input
+refuses.
 
 ## A1--A4 — model release
 
@@ -378,9 +449,13 @@ ambient, nested, ordinary, raw-artifact, or noncaptured decision input refuses.
 
 **Reuse:** `node.py:TrainableNode`, fitted-node conformance, and existing split/row
 seams. **RED:** chronological split, row/source/cache/window/schema/order identity,
-embargo/purge, immutable manifest, and leakage tests. **GREEN/test:** smallest
+embargo/purge, immutable manifest, leakage, and execution-safe registered-template/
+closed-param-schema/ExecutionNodeContext refusal tests. **GREEN/test:** smallest
 generic split evidence/contract with focused pipeline node/split and final-model
-tests. **Exit:** no training absent verified causal rows/split.
+tests; the verified execution template receives causal rows only through captured
+bindings and emits evidence/model members only through the mediated capture writer.
+**Exit:** no training absent verified causal rows/split, or through an ordinary
+context, arbitrary node, or raw input/output path.
 
 ### A2 — ten-head HPO/refit and exact 1-SE
 
@@ -396,14 +471,15 @@ approximate threshold, or nonreconstructable winner/rows refuses.
 **Reuse:** ADR-0122 generic tier-2 `pipeline.libs.lightgbm` seam. **RED:**
 canonical `dskit.lightgbm-text-bundle/v1`, ordered text members, feature/category/
 runtime identities, fixture prediction, pickle/joblib refusal, and execution-mode
-JSON `mode:load`/artifact/read/path poison before a node constructor, codec import,
-or provider/filesystem open. **GREEN/test:** verified synthetic-fixture writer/
-loader accepts only the bridge-injected opaque `CapturedModelLoad`/`VerifiedCapture`
-from current `CapturedBindings`, then calls the native codec behind `TrainableNode`;
+JSON `mode:load`/artifact/read/path or renamed-parameter poison before a node
+constructor, codec import, or provider/filesystem open. **GREEN/test:** verified
+synthetic-fixture writer/loader accepts only the bridge-injected opaque
+`CapturedModelLoad`/`VerifiedCapture` from current `CapturedBindings`, then calls
+the native codec behind the manifest-approved `TrainableNode` execution template;
 `tests/pipeline_libs/test_lightgbm_release.py`. No `NodeSpec`, artifact pin, raw
-member/path, or model value reaches a constructor or loader. **Exit:** paths, object
-deserializers, missing/extra/reordered/tampered members, or any config-origin model
-load refuses.
+member/path, model value, ordinary context, or unapproved constructor reaches a
+loader. **Exit:** paths, object deserializers, missing/extra/reordered/tampered
+members, ordinary node/context, or any config-origin model load refuses.
 
 ### A4 — FinalRefit captured release
 
@@ -418,10 +494,12 @@ refuse until G3/G7 exactly as authorized.
 
 ### B0 — equity labels/PIT
 
-**Reuse:** generic NodeContext/ports and thin child label-state adapter. **RED:**
-observation/label availability, delayed labels, sessions, capture barriers, leakage.
-**GREEN/test:** generic temporal contract plus child adapter; focused PIT/label tests.
-**Exit:** unavailable/future/cross-stage label or feature refuses.
+**Reuse:** generic port contracts and thin child label-state adapter; ordinary
+pipelines may use `NodeContext`, while execution uses only F2's restricted context.
+**RED:** observation/label availability, delayed labels, sessions, capture barriers,
+leakage, and ordinary-context/path/provider refusal. **GREEN/test:** generic temporal
+contract plus child adapter; focused PIT/label tests. **Exit:** unavailable/future/
+cross-stage label or feature, or an ambient execution capability, refuses.
 
 ### B1 — causal calibration/confirmation
 
@@ -617,13 +695,18 @@ rolling retraining/release`.
 RED/focused GREEN categories are config-negative/plan hash; execution-block
 user-stage rejection at parser/planner/CLI/secure launcher (including auto-stage,
 with an instrumented assertion that `plan_stages` was never called); every `$prev`/
-carry spelling and mode/load/artifact/read/path poison rejection before provider/
-filesystem open/import/construction; direct-ServeDocument CLI/config/constructor
-rejection; PipelineServeRuntime field/default/capture substitution; pipeline-to-
-production import-graph refusal; production-bridge live/replay composition parity;
-child direct-construction/export/registry/CLI refusal; port contract; accounting
-property/metamorphic; PIT/leakage; event/effect/outbox/ACK; lifecycle; and crash at
-every persisted boundary. This layer also runs the committed pre-execution
+carry spelling and mode/load/artifact/read/path or renamed-parameter poison rejection
+before provider/filesystem open/import/construction; every public driver/stage/
+walk-forward/CLI API's missing/forged/replayed/duck-typed session denial with mocked
+zero plan/getenv/env/provider/fs/registry/import/construction/output; direct-
+ServeDocument CLI/config/constructor rejection; PipelineServeRuntime field/default/
+capture substitution; pipeline-to-production import-graph refusal; production-bridge
+live/replay composition parity; closed execution component-schema/manifest and
+restricted-context tests; malicious-node `run_dir`, filesystem, environment,
+network, subprocess, ambient time/random, and import-escalation denial before I/O/
+output; child direct-construction/export/registry/CLI refusal; port contract;
+accounting property/metamorphic; PIT/leakage; event/effect/outbox/ACK; lifecycle;
+and crash at every persisted boundary. This layer also runs the committed pre-execution
 PipelineDocument golden: no block must retain exact legacy canonical bytes/hash/run
 identity after parse and round-trip, while a present block must change identity and
 be fully hash material. Synthetic uninterrupted and crash/restart schedules must
@@ -648,8 +731,9 @@ no historical execution is run by this implementation slice.
 ## Existing reuse inventory — do not rebuild Gate 2/4/5
 
 Pipeline already provides `PipelineDocument` (`document.py:1760`), `TrainableNode`
-(`node.py:912`), `run_document` (`driver.py:2315`), staged runner, and split/fitted
-conformance. ADR-0122 fixes the approved launcher/capture/native-LightGBM placement.
+(`node.py:912`), public ordinary-only `run_document` (`driver.py:2315`), staged
+runner, and split/fitted conformance. ADR-0122 fixes the approved launcher/capture/
+native-LightGBM placement.
 Gate 2 already has child HPO/final-model evidence, fail-closed refit config, and
 `children/intraday_equities/tests/test_final_model.py`; it is A input, not capture
 authority. Gate 4 already has `forecast_bundle.py`, capital nodes, and focused
