@@ -485,6 +485,40 @@ REMAINING, in the plan's risk order:
       and that sibling functions sharing a helper share its `Raises`
       clauses — would close this class of defect faster than further
       manual rounds; none has been built yet.
+
+      **Ninth skeptic round (2026-09-12): a 6th straight recurrence, via
+      a distinct lens (caller-names-callee and shared-helper wording
+      consistency, rather than local per-function completeness).** One
+      MAJOR: `run_acquisition`'s (`dskit/onboarding/acquire.py`) `Raises`
+      named every sub-call that can raise `AssetError` EXCEPT its own
+      `load_state`/`save_state` calls — verified by corrupting a
+      checkpoint file and triggering the exact `AssetError` `run_acquisition`
+      propagates unlisted; fixed by naming both, matching this file's own
+      existing convention of citing propagation sources. One MINOR:
+      `LocalFilesConnector.read()`'s (`dskit/onboarding/libs/localfiles.py`)
+      `Raises` said `state` "is not a dict," silently dropping the "with
+      string keys" qualifier its own `_check_dict` call — and every other
+      caller of that shared helper — actually documents; fixed and
+      verified by triggering `AssetError: state must be a dict with
+      string keys`. One MINOR/nit: the same class's `Examples` block used
+      a non-existent literal path (`/data/my_source`) with no "not
+      runnable as-is" disclaimer, unlike every other filesystem-touching
+      Examples block in the 27 files (which all build a real
+      `tempfile.mkdtemp()` directory); rewritten to build and read a real
+      CSV file, execution-verified byte-exact. Round 9 also closed two
+      things fully: every one of the 27 files' `Examples` blocks was
+      extracted and EXECUTED (not just read) with all `# ->` markers
+      confirmed byte-exact, and zero `>>>` occurrences confirmed by grep
+      — both CLOSED. It also flagged, without treating as a defect, that
+      3 of the "27" files (`dskit/assets/default_model.py`,
+      `dskit/onboarding/default_model.py`, `dskit/onboarding/certify.py`)
+      have zero diff from the merge-base — their ignore entries were
+      dropped because they already met the standard, not because they
+      were edited; the actual edited-file count is 24, not 27. **Given a
+      6th straight round finding a live `Raises` gap — smaller in scope
+      each time, but still real — this class of defect remains open;**
+      round 9's own recommendation, matching round 8's, is to build the
+      mechanical gate rather than run a 10th manual pass.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

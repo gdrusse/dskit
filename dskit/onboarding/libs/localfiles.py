@@ -61,13 +61,18 @@ class LocalFilesConnector(Connector):
 
     Examples
     --------
-    Discover the streams under a directory of data files::
+    Discover the one stream a directory of data files holds::
 
+        import os
+        import tempfile
+        path = tempfile.mkdtemp()
+        with open(os.path.join(path, "prices.csv"), "w") as fh:
+            fh.write("date,close" + os.linesep)
+            fh.write("2024-01-01,100" + os.linesep)
         connector = LocalFilesConnector()
-        streams = connector.discover({
-            "path": "/data/my_source",
-            "effective_field": "date",
-        })
+        connector.discover({"path": path, "effective_field": "date"})
+        # -> [{'stream': 'prices', 'schema': {'fields': ['close', 'date']},
+        #      'primary_key': []}]
     """
 
     def spec(self) -> dict:
@@ -233,14 +238,14 @@ class LocalFilesConnector(Connector):
         Raises
         ------
         AssetError
-            If ``state`` is not a dict; a stream's ``state`` cursor
-            does not parse as an ISO date/datetime; ``streams`` is
-            empty or not a list; ``config.path`` does not exist, is not
-            a directory, or holds a duplicate csv/jsonl stem; a
-            requested stream was not discovered; a row's effective-date
-            field is missing, empty, or does not parse as an ISO
-            date/datetime; or a JSONL row is malformed JSON or not a
-            JSON object.
+            If ``state`` is not a dict with string keys; a stream's
+            ``state`` cursor does not parse as an ISO date/datetime;
+            ``streams`` is empty or not a list; ``config.path`` does
+            not exist, is not a directory, or holds a duplicate
+            csv/jsonl stem; a requested stream was not discovered; a
+            row's effective-date field is missing, empty, or does not
+            parse as an ISO date/datetime; or a JSONL row is malformed
+            JSON or not a JSON object.
         TypeError
             If a per-stream value in ``state`` is not itself a dict and
             is not a string (only the outer ``state`` shape is checked).

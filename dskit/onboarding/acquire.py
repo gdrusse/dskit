@@ -163,11 +163,15 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         connector's config fails ``spec()``/reserved-storage validation
         (:func:`~dskit.onboarding.connector.check_config`,
         :func:`~dskit.onboarding.codec.check_storage`) or its own
-        ``check()``; the connector emits a malformed envelope message
+        ``check()``; an existing checkpoint is unreadable or malformed
+        (:func:`~dskit.onboarding.state.load_state`); the connector
+        emits a malformed envelope message
         (:func:`~dskit.onboarding.connector.check_message`) or raises
-        while reading; or building/writing the snapshot manifest fails
+        while reading; building/writing the snapshot manifest fails
         (:func:`~dskit.onboarding.snapshot.build_manifest`,
-        :func:`~dskit.onboarding.snapshot.write_snapshot`).
+        :func:`~dskit.onboarding.snapshot.write_snapshot`); or the new
+        checkpoint cannot be saved
+        (:func:`~dskit.onboarding.state.save_state`).
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
