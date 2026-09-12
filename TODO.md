@@ -934,6 +934,35 @@ REMAINING, in the plan's risk order:
       round should apply these three fixes (now done) and attempt a
       confirmation-only pass with no new targets, to test whether the
       surface has actually reached a fixed point.
+
+      **Twentieth skeptic round (2026-09-12): a confirmation-only pass
+      (re-verify round 19's fixes + 5 random spot-checks, no new-target
+      hunting) — a 17th recurrence, one MAJOR, everything else clean.**
+      All 3 round-19 fixes re-verified accurate and complete by
+      execution. 4 of 5 random picks (`metrics.py::pinball`,
+      `record.py::check_payload`, `connector.py::check_message`,
+      `layout.py::OnboardingRoot.snapshot_dir`) came back clean. The
+      5th, `resolve()` itself (`dskit/pipeline/resolve.py`) — the
+      top-level orchestrator whose OWN sprawling branch tree had never
+      had the full from-scratch treatment even though its callees
+      (`pipeline_hash`, `write_run_dir`, `ResolvedPipeline`) all had —
+      had a MAJOR gap: its `ValueError` entry named only ~9 of the
+      branches it actually raises, missing 6 distinct causes, each
+      verified live: an unimportable `pkg.module:Attr` reference
+      anywhere (`optimization.kind`, a features step, a tracking sink,
+      or a custom stage); a class-reference `optimization.kind`,
+      features-step `kind`, or custom stage that imports but is not
+      callable; a features step `kind` neither registered nor claimed
+      by the backend; a class-reference `model.name` missing a required
+      `train`/`load` method; and a class-reference tracking sink
+      missing a Tracker seam method. All 6 added (same `ValueError`
+      type as already documented — a missing CAUSE list, not a wrong
+      type). **Given a 17th straight round finding a real gap — even a
+      pure confirmation pass — `Raises` completeness remains open, but
+      the finding rate keeps falling** (4 of 5 random picks clean, only
+      one true orchestrator function still uncovered). A 21st round
+      should retry the confirmation-only pass now that `resolve()` is
+      fixed.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

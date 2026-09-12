@@ -307,8 +307,18 @@ def resolve(config, asof=None, backend=None, registry=DEFAULT_REGISTRY):
         ``validation.metric`` or ``stat_test.correction``; a weighted
         correction declared (the stage-list grammar cannot wire the
         weights it needs); a split/optimizer kind the backend does not
-        support, an optimizer kind nobody registered; or an empty
-        discovered universe.
+        support, an optimizer kind nobody registered; an empty
+        discovered universe; any ``pkg.module:Attr`` reference in
+        ``optimization.kind``, a features step's ``kind``, a tracking
+        sink's ``kind``, or a custom stage that does not import
+        (propagated from :func:`~dskit.pipeline.base.import_ref`); a
+        class-reference ``optimization.kind``, features-step ``kind``,
+        or custom stage that imports but is not callable; a features
+        step ``kind`` that is neither a registered transform nor
+        claimed by the backend; a class-reference ``model.name`` whose
+        target lacks the required ``train``/``load`` method(s); or a
+        class-reference tracking sink missing a Tracker seam method
+        (``log_params``/``log_metrics``/``close``).
     TypeError
         If ``backend.fingerprint()`` returns a value that is not JSON-
         serializable at all (e.g. a ``set``) — propagated from
