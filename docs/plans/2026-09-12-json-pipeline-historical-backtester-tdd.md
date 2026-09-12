@@ -4,6 +4,13 @@
 is the single orchestration contract. It authorizes no data/market/lockbox read,
 HPO, refit, replay, paper/live order, release use, or full backtest.
 
+**Accepted-source pins:** this plan interprets ADR-0122 from
+`fe59c8442aefed2c2b372ebe50b2279878d97422` (secure final-model release),
+ADR-0123 from `4f2bfdbe66fbb2037d032a9c434864ae775d668a` (external forecast
+trust boundary), and ADR-0124 from `77697edf823810e0832f02f73511638b681a9834`
+(fenced transactional replay lifecycle). A plan/release/study identity includes
+these three commit identities; a substituted ADR text or commit refuses.
+
 ## P0 — gates, fidelity, and immutable review workflow
 
 DSKit remains generic; `children/intraday_equities` contains only label, cap, MIO,
@@ -43,15 +50,26 @@ commits/evidence, gates, environment/policy identities, allowed commands, and
 capture outputs. Scheduler and launcher enforce it: omitted, reordered,
 substituted, or unlisted slices refuse.
 
-`HistoricalStudyManifest.v1` is signed only after G1--G7. It binds one frozen
-dataset/tape/capture set, one normalized pipeline/release/environment/profile, and
-exactly named control plus crash/restart executions. It also lists, for **each**
-G1--G7, its evidence digest, signer, key/version, revocation result, issuance and
-validity instants, approved identity, and this exact study identity. The broker
-verifies every field before it opens data, constructs a node, or creates a root.
-G7 may authorize A1--A4 historical training/HPO/selection/refit on that one frozen
-dataset only through a simulator broker. It never authorizes paper/live or a
-second study.
+`HistoricalStudyScopeAuthorization.v1` resolves the release circularity before any
+historical read: it is a signed pre-refit authorization for one WORM `study_id`, one
+frozen dataset/tape/capture set, normalized pipeline/environment/profile, fixed
+candidate inventory/selection policy/seeds, and exactly A1--A4's permitted actions.
+It binds G0--G7 scope-evidence digests, signer, key/version, revocation result,
+issuance/validity, and approved identities; G3 is the pre-refit causal-method scope,
+not a nonexistent release. The broker verifies every binding before every data open,
+node construction, root creation, or A1--A4 action. It permits one captured release
+creation only, no retune, no additional candidates/seeds, no control/crash run, and
+no paper/live action.
+
+After that capture, `HistoricalStudyManifest.v1` finalizes the same WORM `study_id`.
+It binds the scope-authorization digest, actual release/capture identity, one frozen
+dataset/tape/capture set, exact normalized pipeline/environment/profile, and exactly
+named control plus crash/restart executions. It repeats, for **each** G0--G7, the
+evidence digest, signer, key/version, revocation result, issuance/validity, and
+approved identity, including the post-refit G3 outcome evidence. The broker verifies
+it before every control/crash data, node, root, or simulator action. Thus the actual
+release is bound after creation without authorizing retuning, another release, extra
+executions, paper/live, or a second study.
 
 ## Dependency DAG and universal slice form
 
@@ -88,8 +106,11 @@ refuse before planning, data access, adapter load, or lifecycle action.
 
 ## F2 — external launcher, codecs, EnvironmentIdentity
 
-**Reuse:** ADR-0122 external OS-admin launcher, opaque `LaunchContext`, generic
-capture driver seam, secure CLI refusal, and `node.py:TrainableNode` placement.
+**Reuse:** ADR-0122 external OS-admin launcher and secure CLI refusal, ADR-0123's
+generic capture driver seam, and `node.py:TrainableNode` placement. The authoritative
+pipeline trust capability is ADR-0123's opaque `LaunchSession`. ADR-0122's
+`LaunchContext` is its source-document label for the same broker-issued external
+launch capability, not a second DSKit API, constructor, verifier, or trust root.
 **RED:** forged/expired/revoked/replayed/wrong process-purpose-release-profile
 permit and poisoned import/runtime/environment tests. **GREEN/test:** focused
 secure-launch/driver tests for canonical signed release/runtime/permit/broker/hold/
@@ -98,9 +119,11 @@ trusted clock, revocation, and isolated import view; DSKit has no fallback verif
 The sole generic trust API names are `ImmutableSnapshotProvider.describe`/
 `open_member`, `ReleaseKeyring.verify`, `TrustedClock.now_ms`,
 `TrustedRuntimeVerifier`, opaque `LaunchSession`, `CapturedJsonArtifact.value`/
-`audit`, `CapturedLifecyclePort`, and per-node `CapturedBindings`. Application
-data cannot construct a provider, keyring, clock, verifier, lifecycle authority,
-session, capture, receipt, or resolver.
+`audit`, `CapturedLifecyclePort`, and per-node `CapturedBindings`. Application data
+cannot construct a provider, keyring, clock, verifier, lifecycle authority, session,
+capture, receipt, or resolver. `LaunchContext` is never another public API name in
+implementation, configuration, or code; the external broker alone maps the accepted
+ADR-0122 launch contract into the authoritative ADR-0123 `LaunchSession`.
 `EnvironmentIdentity.v1` binds image/interpreter/stdlib/DSKit/dependency/native
 digests, OS/kernel/architecture, locale, timezone plus tzdata digest/version,
 canonicalization and logical-clock/RNG algorithm/version, and execution profile.
@@ -251,17 +274,17 @@ implemented realism. **Exit:** no order, valuation, or simulated fill without it
 
 ### C0 — ChainLedger and AccountState
 
-**Reuse:** extend existing `production/records.py`,
-`production/accounting.py:AccountState`, `production/ledger.py:ChainLedger`/
-`ServeRoot`, cashflow schedule/composer, and report performance; no second
-ledger/returns simulator. **RED:** balance properties, genesis/lineage, V1/V2
-flows/timing/supersession, correction/bust, stale price/FX, split/dividend,
-NAV/TWR/MWR/restart. **GREEN/test:** genesis, external-flow evidence, canonical
-valuation, and double-entry `AccountState` extensions in those owned records/
-accounting seams, plus focused ledger/cashflow/report tests. Initial positivity is
-only `initial_flow`; V1, scheduled deposits/withdrawals/corrections remain
-compatible. **Exit:** unbalanced, stale/missing/incompatible/nonancestor evidence
-stops accounting.
+**Reuse:** extend existing `production/records.py:AccountState`,
+`production/accounting.py` (which folds, validates, and consumes that record type),
+`production/ledger.py:ChainLedger`/`ServeRoot`, cashflow schedule/composer, and
+report performance; no second ledger/returns simulator. **RED:** balance properties,
+genesis/lineage, V1/V2 flows/timing/supersession, correction/bust, stale price/FX,
+split/dividend, NAV/TWR/MWR/restart. **GREEN/test:** genesis, external-flow evidence,
+canonical valuation, and double-entry `AccountState` extensions in the owning
+records seam with corresponding accounting-fold behavior, plus focused ledger/
+cashflow/report tests. Initial positivity is only `initial_flow`; V1, scheduled
+deposits/withdrawals/corrections remain compatible. **Exit:** unbalanced,
+stale/missing/incompatible/nonancestor evidence stops accounting.
 
 ### C1 — MIO consumes B3 + E1 + C0
 
@@ -322,18 +345,26 @@ snapshot preview/exact cache intents, and `ReplayResult` digest omitting
 **Reuse:** `production/loop.py:ServeLoop`, `compose.py:handlers_for`,
 `CommandProcessor`, `Checkpoint`, ReplayClock/Feed, and recovery. **RED:** live
 byte/order equivalence, provisional isolation, handler/processor digest, preview/
-cache, lifecycle crash/restore. **GREEN/test:** extract `_tick_once`; live delegates
-unchanged, replay selects transaction mode; focused loop tests add mode checkpoint
-writer and exception-safe transaction-scoped recording/bundles/handlers/processor/
-schedule/release/ports/clock. Post-FROZEN recovery publishes exact suffix then
-atomically commits ledger/snapshot/checkpoint/cache/result/cursor before deferred
-effects. `ReplayRun` drives **three** lifecycle transactions under that same journal,
-lease, and frozen-plan rule: `startup` for recovery/reconciliation mutations, one
-`tick` per F3 tape tick, and `shutdown` for stop/final checkpoint/result/teardown
-and deferred effects. Every startup/tick/shutdown mutation or effect must be
-planable, idempotent, frozen, and lease-held; one that cannot be staged refuses
-before it runs. **Exit:** no provisional leak or replay mutation outside a verified
-lifecycle transaction.
+cache, lifecycle crash/restore, and injected crashes after outbox drain, every
+deferred effect receipt, result write, cursor replacement, and pre/post COMMITTED.
+Each crash schedule asserts the ADR-0124 order and either resumes the exact frozen
+suffix or refuses; it never derives a result/cursor before effects. **GREEN/test:**
+extract `_tick_once`; live delegates unchanged, replay selects transaction mode;
+focused loop tests add mode checkpoint writer and exception-safe transaction-scoped
+recording/bundles/handlers/processor/schedule/release/ports/clock. Post-FROZEN
+recovery publishes the exact suffix under the current fence, then follows the exact
+durable order: record barrier -> snapshot barrier -> checkpoint/cache -> outbox ->
+effects -> result/cursor -> `COMMITTED`. Every append, cache replacement, outbox/
+ACK, deferred-effect receipt, result write, and cursor replacement verifies the
+current fence token and frozen preimage; cursor replacement is atomic and the final
+commit is durable only after both result and cursor are valid ledger-derived values.
+`ReplayRun` drives **three** lifecycle transactions under that same journal, lease,
+and frozen-plan rule: `startup` for recovery/reconciliation mutations, one `tick`
+per F3 tape tick, and `shutdown` for stop/final checkpoint/result/teardown and
+deferred effects. Every startup/tick/shutdown mutation or effect must be planable,
+idempotent, frozen, and lease-held; one that cannot be staged refuses before it
+runs. **Exit:** no provisional leak, reordered result/cursor, or replay mutation
+outside a verified lifecycle transaction.
 
 ### R4 — holds/cashflow V2/returns/monitoring/rotation
 
@@ -368,11 +399,17 @@ real tape/HPO/refit/paper/live work occurs.
 
 ## I2 — exactly one gated historical simulator study
 
-Only an exact G1--G7 `HistoricalStudyManifest` can run the normal pipeline against
-captured envelopes/data, verified release, EnvironmentIdentity, profile, and
-simulator broker for its named control/crash executions. Preserve I1 identity
-equality. It authorizes neither paper/live, another dataset/execution, another real
-release, nor a full/lockbox backtest.
+`HistoricalStudyScopeAuthorization` first permits only its fixed A1--A4 release
+creation; then its same-study WORM `HistoricalStudyManifest` permits only the named
+control/crash executions against captured envelopes/data, that actual verified
+release, EnvironmentIdentity, profile, and simulator broker. The broker checks the
+appropriate phase before every data/node/root/action. Preserve I1 identity equality.
+Neither phase authorizes paper/live, another dataset/execution, retuning, another
+release, or a full/lockbox backtest. **RED/test:** focused manifest/broker tests
+prove G0--G7 signer/key/revocation/time and source-commit substitution, pre-refit
+release circularity, post-refit release substitution, retune/extra-execution, and
+pre-data/node/root/action refusal. **GREEN:** only the two-phase WORM verifier;
+no historical execution is run by this implementation slice.
 
 ## Existing reuse inventory — do not rebuild Gate 2/4/5
 
