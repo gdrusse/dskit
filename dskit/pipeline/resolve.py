@@ -332,6 +332,12 @@ def resolve(config, asof=None, backend=None, registry=DEFAULT_REGISTRY):
         serializable at all (e.g. a ``set``) — propagated from
         :func:`pipeline_hash`, which this function calls to embed the
         run directory's hash.
+    Exception
+        Whatever ``backend``'s own hooks raise, if anything — a custom
+        or test-injected ``backend`` (a caller-suppliable value, per the
+        ``backend`` parameter above) is never validated, and its
+        ``discover_instruments``/``fingerprint``/``supported_*`` calls
+        are all unguarded.
     """
     if asof is None:
         asof_s = datetime.now(timezone.utc).date().isoformat()

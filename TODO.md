@@ -1040,6 +1040,42 @@ REMAINING, in the plan's risk order:
       method, an injected callback, an import loop) across the 24
       files, per this round's own recommendation, rather than another
       full sweep.
+
+      **Twenty-third skeptic round (2026-09-12): the targeted grep for
+      "unguarded call into caller/implementer-owned code" — a 20th
+      recurrence, 3 MAJOR, surfacing at the three main caller-extensible
+      seams in this diff (`Connector`, `Store`, `Backend`).**
+      `run_acquisition` (`dskit/onboarding/acquire.py`) calls the
+      resolved connector's `check()`/`read()` unguarded — a `Connector`
+      subclass raising `RuntimeError` from `check()`, or
+      `ConnectionResetError` from `read()`, propagates raw (both
+      verified live); the ABC documents the contract but never enforces
+      it. `Registry.register`/`transition`
+      (`dskit/assets/registry.py`) call `self.store.put_record`/
+      `append_event` unguarded on a caller-supplied
+      :class:`~dskit.assets.store.Store` implementation — a custom
+      `Store` raising `MemoryError` propagates raw (verified live);
+      `transition` inherits the same gap via its own `append_event`
+      call. `resolve()` (`dskit/pipeline/resolve.py`) — its THIRD
+      finding in 3 rounds, but the first on this axis rather than
+      `ValueError`-completeness — calls the caller-injectable `backend`
+      parameter's `discover_instruments`/`fingerprint`/`supported_*`
+      unguarded; a backend raising `PermissionError` from
+      `discover_instruments` propagates raw (verified live). All three
+      fixed with a generic `Exception` entry, matching the
+      already-established treatment for this exact shape
+      (`scan_stream`/`load_config`/`check_config`). **Given a 20th
+      straight round finding real gaps, though every one of them was an
+      instance of an already-catalogued shape (none new) — `Raises`
+      completeness remains open.** A 24th round should re-check whether
+      any OTHER `Registry`/`Lineage` method beyond `register`/
+      `transition` calls `store.*` unguarded in a way not already
+      covered by the FileStore-corruption documentation added in round
+      18 (`find`/`list`/`state` document specific KNOWN corruption
+      modes of the built-in store, not an arbitrary custom `Store`'s
+      arbitrary behavior) — the same distinction that made this round's
+      `register`/`transition` finding a genuine gap despite those
+      methods looking superficially covered.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

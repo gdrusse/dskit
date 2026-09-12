@@ -142,6 +142,11 @@ class Registry:
             method calls :meth:`AssetRecord.version_id`.
         TypeError
             If ``kind`` is an unhashable type (e.g. a list).
+        Exception
+            Whatever ``self.store``'s own ``put_record``/``append_event``
+            raises, if anything — this registry's store is a caller-
+            supplied :class:`~dskit.assets.store.Store` implementation,
+            called unguarded once every prior check has passed.
         """
         spec = self._spec(kind)
         refs = {} if refs is None else refs
@@ -343,6 +348,10 @@ class Registry:
             does not allow the current state to move to ``to``, or if
             the store's event log is itself unreadable (propagated from
             :meth:`state`, called internally to find the current state).
+        Exception
+            Whatever ``self.store.append_event`` itself raises, if
+            anything — same caller-supplied-``Store`` gap as
+            :meth:`register`.
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)

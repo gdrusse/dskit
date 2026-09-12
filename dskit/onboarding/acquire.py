@@ -202,6 +202,11 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         call created is removed by something else between its
         existence check and the cleanup ``shutil.rmtree`` in the
         ``finally`` block.
+    Exception
+        Whatever the resolved connector's own ``check()`` or ``read()``
+        raises, if anything — both are called unguarded, on an
+        implementer-supplied :class:`~dskit.onboarding.connector.Connector`
+        subclass whose contract the ABC documents but does not enforce.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
