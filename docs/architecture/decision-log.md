@@ -8154,3 +8154,1129 @@ capital timing/settlement/corrections, cadence/session/training/embargo/
 availability, released model/calibration/cap/MIO identities and rung gates.
 No market replay, paper/market action, lockbox/full backtest, HPO or final
 refit is authorized.
+
+
+---
+
+## ADR-0126 -- Deferred terminal projection for fenced replay
+
+**Status:** proposed -- **PENDING OWNER APPROVAL**. Corrects ADR-0124 at
+77697edf823810e0832f02f73511638b681a9834 but does not amend the model plan
+at 40ab10fa7428e5eab14cff2f082c781cf962b860. Its current V1 requirement
+therefore remains conflicting and fail-closed. This proposal authorizes no
+implementation, synthetic execution, market replay, paper/live action, HPO,
+refit, lockbox read or backtest.
+
+**Problem.** ADR-0124 freezes final ReplayResult.v1 bytes before effects, but
+that result binds event_cursor_sha256. Signed ACK/cursor evidence exists only
+after outbox emission and effect completion. A pre-effect final result is
+unknowable or silently omits/substitutes the evidence it claims to bind.
+
+**Decision, if accepted.** Add FrozenReplayPlan.v2. It freezes every
+pre-effect invariant and the complete ordered language of allowed post-effect
+receipts, then derives one terminal cursor/result projection from verified
+evidence. Canonical JSON/UTF-8 bytes, lowercase SHA-256, exact-key default
+denial and self-digest omission retain ADR-0124 meaning.
+
+**Frozen V2 schema.** FrozenReplayPlan.v2 has exactly schema_version, study_id,
+replay_id, transaction_id, series_id, genesis_sha256, release_hash,
+document_hash, tape_digest, cadence_digest, clock_digest, id_source_digest,
+code_digest, permit_digest, binding_digest, pre_head, records, snapshot, cache,
+control_inbox, outbox, deferred_effects, transaction_header_sha256,
+effect_slot_set, effect_broker_policy, emitter_verifier_map, result_intent,
+result_projection, phase_order and plan_sha256; plan_sha256 omits itself. It has
+no result member.
+pre_head is canonical JSON with exactly ledger_seq (a non-negative integer) and
+ledger_hash (a lowercase SHA-256 string), with no null or omitted member. Its
+canonical UTF-8 bytes are byte-identical in the plan and header and are bound by
+both plan_sha256 and header_sha256. A V1 result, omitted/unknown member or
+non-V2 nested schema refuses.
+
+ReplayResultIntent.v2 has exactly schema_version, study_id, replay_id,
+transaction_id, series_id, genesis_sha256, release_hash, document_hash, tape_digest,
+cadence_digest, clock_digest, id_source_digest, code_digest, permit_digest,
+binding_digest, ledger_head, checkpoint_sha256, account_sha256, metrics_sha256,
+report_sha256, cursor_transition, result_schema_version and intent_sha256;
+intent_sha256 omits itself. It is built before projection from static fields and
+the pre-effect frozen cursor transition; the later plan must byte-verify those
+fields. Effect-derived and projection-derived data refuses.
+
+ResultProjectionSpec.v2 has exactly schema_version, study_id, replay_id,
+transaction_id, intent_sha256, projection_algorithm, projection_version,
+canonicalization_version, projection_code_digest, environment_identity_sha256,
+result_schema_version, effect_slot_set_sha256, cursor_transition_sha256 and
+projection_sha256; projection_sha256 omits itself. cursor_transition_sha256 must
+equal the self digest of the exact ReplayResultIntent.v2.cursor_transition bytes.
+Algorithm/version/canonicalizer/code/environment are identity: another runtime,
+serializer or environment refuses.
+
+
+FrozenEmitterVerifierMap.v2 is canonical, externally authorized pre-plan bytes
+with exactly schema_version, study_id, replay_id, series_id, genesis_sha256,
+transaction_id, transaction_key, pre_head, entries,
+authority_envelope_bytes_b64, authority_envelope_sha256 and verifier_map_sha256;
+verifier_map_sha256 omits authority-envelope fields and itself. entries are
+strictly sorted by emitter_digest without duplicates. Each entry has exactly
+emitter_digest, emitter_keyring_id, emitter_keyring_version,
+emitter_keyring_as_of_ms, revocation_source_id, revocation_version,
+revocation_as_of_ms, verifier_key_id, verifier_key_sha256 and
+signature_algorithm. The only permitted signature algorithms are the closed,
+registered emitter-verifier algorithm set. Its emitter_verifier_map authority
+envelope uses BOOTSTRAP_PREPLAN_V2 and exact BootstrapScope.v2 bindings, has no
+plan_sha256, and may sign only this immutable map. FrozenReplayPlan.v2 embeds
+the exact map bytes/digest; the map is thereby plan-bound without a plan-to-map
+cycle. Any map/keyring/revocation snapshot or authority substitution refuses.
+Study identity is a nonempty canonical identifier equal byte-for-byte to the
+trusted authority scope. Every identity-bearing V2 document below carries
+study_id: plan, header intent/header, result/projection/result witness, journal
+snapshot, series head, lease lineage/elevation, event/commit, effect/receipt,
+broker policy/verifier-map/authorization, terminal pair/bundle/manifest and commit/reader authority. No
+path, series, replay or transaction may imply it; any mismatch or reuse across
+studies refuses, and transaction/terminal identities are distinct across studies.
+
+study_path_key is lowercase hexadecimal SHA-256 of the canonical UTF-8 raw
+study_id; series_path_key is lowercase hexadecimal SHA-256 of the canonical
+UTF-8 raw series_id. Every rooted key below uses only these fixed 64-hex
+segments, never raw study_id or series_id; every schema still stores and
+byte-compares raw canonical identities plus its derived path key. transaction_key,
+payload_sha256, manifest_sha256, head_sha256, snapshot_sha256 and all other
+digest path components are likewise exactly lowercase 64-hex; generations and
+fences are canonical non-negative decimal integers. Any raw segment, '.', '..',
+separator, percent/Unicode alias, noncanonical integer or nonmatching digest
+refuses. No identity-derived path has an unstated encoding.
+
+Topological construction is mandatory: derive BootstrapIdentity.v2, immutable
+header intent, replay/transaction identities and static result inputs first;
+the external authority next signs InitialReservationAuthority.v2 and
+InitialLeaseAcquisition.v2 from BootstrapIdentity.v2 and only the exact selected
+committed predecessor (or canonical genesis sentinel), never a reservation or
+series-state digest; only then acquire the bootstrap reservation and read its
+selected committed series head and prior cursor bytes or genesis sentinel; build each EffectIntent.v2,
+QueryRequest.v2 and EffectSlotSet.v2; construct the pre-plan broker policy and
+frozen emitter verifier map under bootstrap scope; construct cursor_transition;
+build ReplayResultIntent.v2, then
+ResultProjectionSpec.v2; then canonicalize, hash and embed exact intent,
+projection, slot set, policy and verifier map
+in FrozenReplayPlan.v2. Under only the bootstrap lease, atomically persist those
+exact plan bytes in the FROZEN journal snapshot. Only after that durable snapshot
+may the external authority create and atomically select a plan-bound lease
+elevation; only then may it sign broker transaction authorization or advance any
+outbox, effect, consumer or execution phase. Neither elevation nor authorization
+is a plan member or may alter frozen bytes. Tests construct only in this order
+and prove every forward/cyclic reference, mutable policy, scope-phase violation
+and fallback authorization refuses.
+
+ReplayTransactionHeaderIntent.v2 is canonical pre-plan header identity with
+exactly schema_version, study_id, replay_id, transaction_id, series_id,
+genesis_sha256, release_hash, document_hash, tape_digest, cadence_digest,
+clock_digest, id_source_digest, code_digest, permit_digest, binding_digest,
+pre_head_bytes_b64, pre_head_sha256 and header_intent_sha256; its self digest
+omits itself. The later immutable header must byte-match this intent in every
+shared field.
+
+BootstrapIdentity.v2 has exactly schema_version, study_id, replay_id, series_id,
+genesis_sha256, transaction_id, transaction_key, header_intent_sha256,
+pre_head_bytes_b64, pre_head_sha256, permit_digest,
+environment_identity_sha256 and bootstrap_identity_sha256; its self digest omits
+itself. It is immutable, distinct per study and transaction, and has no plan
+member or plan-derived digest.
+
+ExternalAuthorityEnvelope.v2 is the sole signing transport for bootstrap_lease,
+initial_reservation, initial_lease_acquisition, lease_handoff, pre_effect_abort,
+plan_lease, broker_policy, emitter_verifier_map, broker_transaction, commit and
+reader capabilities.
+It has exactly schema_version, authority_kind, scope_variant, domain_separator,
+algorithm_id, canonicalization_version, payload_preimage_sha256, issuer_key_id,
+verifier_keyring_id, verifier_keyring_version, trusted_clock_id, valid_from_ms,
+expires_at_ms, revocation_source_id, revocation_version, revocation_as_of_ms,
+scope, audience, signature and envelope_sha256; envelope_sha256 omits signature
+and itself. scope_variant is closed to INITIAL_RESERVATION_V2,
+BOOTSTRAP_PREPLAN_V2 or PLAN_BOUND_V2.
+BootstrapScope.v2 has exactly schema_version, bootstrap_identity_sha256,
+study_id, replay_id, series_id, genesis_sha256, transaction_id, transaction_key,
+header_intent_sha256, pre_head_sha256, permit_digest,
+environment_identity_sha256 and plan_sha256; it requires exact BootstrapIdentity
+equality and plan_sha256 exactly NOT_APPLICABLE_V2. It cannot name, infer or
+later mutate a plan. PlanBoundScope.v2 has exactly schema_version,
+bootstrap_identity_sha256, study_id, replay_id, series_id, genesis_sha256,
+transaction_id, transaction_key, plan_sha256, pre_head_sha256, permit_digest and
+environment_identity_sha256; all fields must byte-equal the persisted frozen
+plan/header/permit/environment bindings.
+
+Only initial_reservation and initial_lease_acquisition use
+INITIAL_RESERVATION_V2; their scopes are defined below and default-deny every
+plan, reservation and series-state member. Only bootstrap_lease, broker_policy
+and emitter_verifier_map use BOOTSTRAP_PREPLAN_V2. A
+bootstrap_lease authorizes only header creation, first journal snapshot,
+read-only planning inputs and BEGIN/PROVISIONAL/FROZEN events; it cannot publish
+outbox, dispatch/query effects, invoke consumers or create plan-bound authority.
+broker_policy and emitter_verifier_map may sign only their pure pre-plan bytes. plan_lease,
+broker_transaction, commit and reader require PLAN_BOUND_V2. signature verifies
+the domain-separated canonical preimage under issuer_key_id looked up only in
+the named/versioned keyring; trusted-clock validity and named revocation
+source/version/as-of must verify. Unknown kind, scope variant, field, algorithm,
+key, audience, clock or revocation state refuses. Each externally-authorized payload below
+carries authority_envelope_bytes_b64 and authority_envelope_sha256; its self
+digest omits those fields and the envelope binds that self digest. DSKit holds no
+private authority key and supplies no fallback verifier.
+ReplayResultIntent.v2.cursor_transition has exactly
+prior_committed_transaction_key, prior_terminal_manifest_key,
+prior_terminal_manifest_sha256, prior_terminal_generation,
+prior_projection_pair_sha256, prior_cursor_set_bytes_b64,
+prior_cursor_set_sha256, pre_transaction_ledger_head, terminal_generation,
+target_ledger_head, updates and transition_sha256; transition_sha256 omits
+itself. It freezes the exact immediate committed predecessor and cursor bytes.
+For genesis, the five prior-transaction/manifest/pair fields and prior cursor
+bytes/digest are their named canonical GENESIS_*_V2 sentinels and
+prior_terminal_generation is zero; otherwise all are byte-equal to the current
+ReplaySeriesCommittedHead.v2. terminal_generation is exactly
+prior_terminal_generation plus one. The prior cursor terminal_ledger_head equals
+pre_transaction_ledger_head, which equals FrozenPlan.v2 pre_head. target_ledger_head
+and ordered event_ack updates then follow. Each update
+has exactly position, emitter_digest, event_id, ledger_seq, ledger_hash,
+event_digest and receipt_slot_id. The first ordered frozen record predecessor
+equals pre_head; each later record predecessor equals its prior frozen record.
+The ordered frozen record-chain terminal equals cursor_transition.target_ledger_head
+and ReplayResultIntent.v2.ledger_head. Frozen snapshot/cache preimages and the
+starting AccountState ledger_head bind pre_head by exact canonical bytes. The
+expected cursor transition is frozen, while its signed evidence digest is post-effect.
+
+EventAckEvidence.v2 is canonical signed, default-deny evidence with exactly
+schema_version, study_id, replay_id, series_id, genesis_sha256, transaction_id,
+transaction_key, frozen_plan_sha256, pre_head, terminal_ledger_head,
+result_intent_sha256, effect_slot_set_sha256, slot_position, ack_position,
+effect_intent_sha256, effect_resolution_sha256, effect_receipt_sha256,
+emitter_digest, event_id, ledger_seq, ledger_hash, event_digest, ack_id,
+acknowledged_at_ms, emitter_receipt, emitter_verifier_map_sha256,
+emitter_keyring_id, emitter_keyring_version, emitter_keyring_as_of_ms,
+revocation_source_id, revocation_version, revocation_as_of_ms, key_id,
+verifier_key_sha256, signature_algorithm, ack_signature_preimage_sha256,
+signature and ack_evidence_sha256; ack_evidence_sha256 omits itself. slot_position
+and ack_position equal the one frozen event_ack slot and cursor_transition update;
+all study/replay/series/transaction/plan/pre_head/result-intent/terminal-head
+identities byte-match the plan, header, transition and terminal resolution. Every
+map/keyring/version/as-of/revocation/key/algorithm field equals the one frozen
+FrozenEmitterVerifierMap.v2 entry for emitter_digest.
+
+ack_signature_preimage_sha256 is SHA-256 of canonical UTF-8 JSON with exactly
+the keys domain, canonicalization_version and payload under the stated canonicalizer;
+domain is the literal dskit.replay.event_ack.v2.signature,
+canonicalization_version is the literal CANONICAL_JSON_UTF8_V2, and payload P is
+the exact EventAckEvidence.v2 field projection containing every field above except
+ack_signature_preimage_sha256, signature and ack_evidence_sha256. signature
+verifies only that digest under verifier_key_sha256 from the immutable named
+keyring snapshot at emitter_keyring_version/emitter_keyring_as_of_ms after the
+named revocation source/version/as-of check. Unknown field, map, keyring version,
+as-of, revocation snapshot, key, algorithm, domain or signature refuses. The ACK
+follows exactly its terminal EffectResolutionEvidence.v2 and binds that
+resolution and receipt, so one slot has one signed ACK; repeat is idempotent only
+for byte-identical evidence.
+
+EventCursorSet.v2 is canonical, default-deny bytes with exactly schema_version,
+study_id, replay_id, series_id, genesis_sha256, transaction_id, transaction_key,
+frozen_plan_sha256, pre_head, prior_committed_transaction_key,
+prior_terminal_manifest_key, prior_terminal_manifest_sha256,
+prior_terminal_generation, prior_projection_pair_sha256,
+prior_cursor_set_bytes_b64, prior_cursor_set_sha256, terminal_generation,
+terminal_ledger_head, result_intent_sha256, effect_slot_set_sha256,
+post_effect_receipts_sha256, acknowledgements, cursors and
+cursor_set_sha256; cursor_set_sha256 omits itself. cursors is strictly sorted by
+emitter_digest with no duplicate; each EventCursor.v2 has exactly emitter_digest,
+event_id, ledger_seq, ledger_hash, event_digest, slot_position, ack_position,
+ack_evidence_sha256, effect_receipt_sha256 and last_seen_ledger_head. Each
+EventAckReference.v2 has exactly ack_position, slot_position, emitter_digest,
+event_id, ledger_seq, ledger_hash, event_digest, ack_evidence_sha256 and
+effect_receipt_sha256. acknowledgements are contiguous by ack_position and give
+one entry for every frozen event_ack update; cursors retain only each emitter
+terminal entry. Every cursor last_seen_ledger_head equals terminal_ledger_head.
+The set validates every acknowledgement against EventAckEvidence.v2 and the
+exact terminal resolution/receipt in PostEffectReceiptSet.v2; missing, extra,
+reordered or substituted entry/evidence refuses. Its predecessor fields and
+terminal_generation must byte-equal ReplayResultIntent.v2.cursor_transition and
+the selected immediate ReplaySeriesCommittedHead.v2 predecessor. result_intent_sha256 is the frozen final
+result identity. result_sha256 intentionally cannot occur here because the
+result later binds cursor_set_sha256; ReplayResult.v2, projection, pair,
+manifest and COMMITTED bind both without a cycle. The terminal manifest binds
+the resulting result_sha256 and terminal_ledger_head only after projection.
+An absent prior cursor is the one canonical pre-plan EventCursorSet.v2 sentinel
+for the current header identities, with frozen_plan_sha256 equal to
+NO_FROZEN_PLAN_V2, terminal_ledger_head equal to pre_head,
+post_effect_receipts_sha256 equal to NO_POST_EFFECT_RECEIPTS_V2, and empty
+acknowledgements/cursors; this pre-plan sentinel prevents a plan-to-prior-cursor
+cycle. null, a V1 set or any other empty encoding refuses.
+
+**Effects and terminal order.** Records, snapshot and checkpoint/cache publish
+from frozen bytes, then outbox, then effects/query receipts/signed ACKs, then
+derive+validate cursor/result projection, then durable projected result/cursor
+storage, then durable ReplayTerminalBundle.v2 write and full byte verification,
+then TERMINAL_BUNDLE_DURABLE event, then COMMITTED. All run under the current
+fence. Append-only, exact-key/default-deny
+EffectResolutionEvidence.v2 binds slot, intent, idempotency key, dispatch/query
+request+response bytes, verifier result, receipt bytes/digest and resolution
+path. The receipt must match the declared slot schema, identity and verifier.
+
+After a durable dispatch without receipt, recovery queries the registered
+broker/emitter using the frozen query before resend. Verified known uses that
+receipt; verified not-seen permits only the identical idempotent resend;
+unknown/unavailable/contradictory/unverifiable query state refuses. An
+undispatched intent emits once. No fresh effect/event/idempotency key,
+unrecorded query, timeout or blind resend is allowed. EventAckEvidence.v2 still
+needs its registered signature verifier and exact slot match; only
+byte-identical repeat evidence is idempotent. Missing, extra, reordered,
+substituted, conflicting or signature-invalid receipt/ACK evidence refuses.
+
+The pinned projection reads exactly persisted verified slots in position order,
+validates prior cursor bytes and the complete transition, constructs sorted
+EventCursorSet.v2 at the frozen head, then constructs ReplayResult.v2 with
+exactly schema_version, study_id, replay_id, ledger_head, checkpoint_sha256,
+account_sha256, event_cursor_sha256, metrics_sha256, report_sha256,
+result_intent_sha256, result_projection_sha256, post_effect_receipts_sha256 and
+result_sha256; result_sha256 omits itself. Static fields equal the intent and
+its ledger_head equals the frozen record-chain terminal and cursor target. The
+projected terminal AccountState has that same ledger_head; account_sha256,
+result_sha256 and terminal identity bind it with cursor/receipt evidence.
+
+ReplayTerminalProjection.v2 has exactly schema_version, study_id, transaction_id,
+plan_sha256, ledger_head, result_sha256, event_cursor_sha256,
+post_effect_receipts_sha256 and terminal_identity_sha256; its self digest omits
+itself. Its ledger_head exactly equals the terminal record/cursor/result head.
+It is the durable commit witness. The projection-pair payload accepts only
+projected canonical bytes; an existing different payload refuses. Readers expose
+neither result nor cursor as terminal until
+COMMITTED binds this witness. Uninterrupted and recovered completion must have
+byte-identical result, cursor, receipt sequence and terminal identity; a
+different signed receipt refuses.
+
+**Recovery/versioning.** Before FROZEN, V2 may restore pre-head and evaluate
+once. At/after FROZEN it never evaluates the graph or derives plan content. It
+cannot interpret or recover a journal until its externally authorized handoff
+successor is durable. For takeover, the external authority (not the recovering
+worker) validates the current series state under series_state/lock, signs the
+handoff request, atomically advances only the operational reservation to its
+higher fence/owner, durably writes matching handoff evidence, then permits the
+bounded journal CAS that publishes its operational successor. The worker may
+read that exact predecessor only inside this CAS; it must publish the successor
+before any generic recovery read or suffix decision. A state showing the new
+reservation without matching evidence/successor, or evidence without matching
+state, is handoff-pending and denies all worker reads/writes except the external
+authority's idempotent repair. Old journal bytes remain readable only as
+historical evidence after lineage validation; they grant no current writer
+authority. The successor snapshot is the only plan source: recovery decodes its complete
+frozen_plan_bytes_b64, canonicalizes it, recomputes frozen_plan_bytes_sha256 and
+plan_sha256, and byte-compares its study_id and every plan/header/BootstrapIdentity
+binding before any recovery decision. An event or other payload cannot substitute
+for plan bytes. A FROZEN bootstrap-scope snapshot permits only a verified
+plan-lease elevation; every later suffix requires the selected PLAN_BOUND_V2
+lease and same active Reservation.v2. Before any suffix publication it verifies the selected
+ReplaySeriesState.v2 committed-head chain to genesis and requires the frozen
+cursor-transition immediate predecessor to byte-match it.
+It byte-compares plan/header pre_head with the real ledger prefix ending at its
+exact ledger_seq and ledger_hash. It verifies root/genesis, study, permit,
+binding, environment, lineage/fence, frozen bytes, frozen verifier-map bytes and
+persisted idempotency/effect evidence; canonicalizes and verifies every
+EventAckEvidence.v2, PostEffectReceiptSet.v2 and EventCursorSet.v2 identity,
+ordering, receipt/ACK and self-digest binding; queries before resend; publishes
+only missing frozen bytes; and projects identically. Missing, substituted, ahead,
+stale or nonancestor pre_head/real-prefix, cache preimage mismatch, cursor
+mismatch, receipt substitution, changed runtime or terminal-identity mismatch refuses.
+
+ReplayTransaction.v2 names only FrozenReplayPlan.v2 and includes plan/projection
+schema versions in replay/transaction identity. A V1 journal at every phase is
+inspect-only: it cannot become, continue as or share transaction, series or root
+identity with V2. A V2 run requires a distinct study, replay, series, genesis and
+transaction identity, with no V1 journal, cursor, ledger, cache, account or other
+state carry. There is no V1 abandonment, migration, replacement or handoff path.
+Absent, unknown, unsupported or mixed versions default-deny.
+
+**Durable transaction root.** No ServeRoot object uses a bare digest alias.
+Its exact fully rooted keys are immutable header
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/header.json; immutable lease
+lineage studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/lineage/
+<fence_token>-<lineage_sha256>.json; the sole authoritative journal snapshot
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/journal/current.json; its
+non-authoritative journal next sibling
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/journal/current.json.next-<snapshot_sha256>;
+exclusive lock studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/journal/lock;
+plan-lease elevation studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/
+elevations/<fence_token>-<elevation_sha256>.json;
+post-plan broker authorization
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/broker/authorization.json;
+the transaction-local terminal-manifest candidate
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/terminal/manifest.json; its
+non-authoritative manifest next sibling
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/terminal/manifest.json.next-<manifest_sha256>;
+non-authoritative content-addressed payload blobs
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/payloads/<payload_sha256>.json;
+and their non-authoritative next siblings
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/payloads/<payload_sha256>.json.next.
+The sole authoritative per-series state is
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/current.json;
+its exclusive lock is
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/lock;
+its non-authoritative next sibling is
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/current.json.next-<series_state_sha256>;
+and immutable committed-head lineage candidates are
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/heads/<generation>-<head_sha256>.json.
+No transaction manifest is globally terminal unless this one series-state file
+atomically selects its head and clears its active reservation.
+
+There are no separate index, event, attempt, resolution, result, cursor,
+projection or bundle keys. transaction_key is SHA-256 of canonical JSON
+containing schema_version, study_id, transaction_id, replay_id, series_id and genesis_sha256.
+Header creation is put-if-absent: an existing header is accepted only when
+canonical bytes match exactly.
+
+ReplayTransaction.v2 header has exactly schema_version, study_id, transaction_id,
+replay_id, series_id, genesis_sha256, release_hash, document_hash, tape_digest,
+cadence_digest, clock_digest, id_source_digest, code_digest, permit_digest,
+binding_digest, pre_head, header_intent_sha256, frozen_plan_schema_version,
+projection_schema_version, transaction_key and header_sha256; header_sha256 omits itself. It is immutable;
+state is never overwritten into the header.
+
+ReplaySeriesCommittedHead.v2 is immutable lineage only, never a mutable pointer.
+It exists only at its derived heads/<generation>-<head_sha256>.json path and has
+exactly schema_version, study_id, study_path_key, series_id, series_path_key,
+genesis_sha256, committed_generation, transaction_key, terminal_manifest_key,
+terminal_manifest_sha256, projection_pair_sha256, cursor_set_bytes_b64,
+cursor_set_sha256, terminal_ledger_head, prior_committed_transaction_key,
+prior_terminal_manifest_key, prior_terminal_manifest_sha256,
+prior_terminal_generation, prior_projection_pair_sha256,
+prior_cursor_set_bytes_b64, prior_cursor_set_sha256, prior_head_sha256 and
+head_sha256; head_sha256 omits itself. For its first non-genesis record,
+prior_head_sha256 and every prior transaction/manifest/pair/cursor value are
+the named GENESIS_*_V2 sentinels and prior_terminal_generation is zero. They are
+exactly GENESIS_COMMITTED_TRANSACTION_V2, GENESIS_TERMINAL_MANIFEST_KEY_V2,
+GENESIS_TERMINAL_MANIFEST_SHA256_V2, GENESIS_PROJECTION_PAIR_SHA256_V2 and
+SERIES_HEAD_GENESIS_V2, each SHA-256 of its domain-separated canonical UTF-8
+token; GENESIS_CURSOR_SET_BYTES_V2 is base64 of canonical UTF-8 token
+dskit.replay.v2.genesis.cursor-set and GENESIS_CURSOR_SET_SHA256_V2 is SHA-256
+of its decoded bytes. No null, empty string or alternate genesis encoding is
+accepted. Otherwise the preceding immutable lineage record is generation minus
+one and byte-matches every prior field. committed_generation is positive and
+equals TerminalManifest.v2.terminal_generation.
+
+ReplaySeriesState.v2 at series_state/current.json is the one authoritative
+per-series state. It has exactly schema_version, study_id, study_path_key,
+series_id, series_path_key, genesis_sha256, series_state_generation, committed_head_sha256,
+committed_generation, committed_transaction_key, committed_terminal_manifest_key,
+committed_terminal_manifest_sha256, committed_projection_pair_sha256,
+committed_cursor_set_bytes_b64, committed_cursor_set_sha256,
+committed_terminal_ledger_head, active_reservation,
+active_reservation_authority_envelope_sha256 and series_state_sha256;
+series_state_sha256 omits itself. Before the first terminal it carries the exact
+genesis sentinels and committed_generation zero; series_state_generation is one
+on first creation and increments by one at every StateReplace. Otherwise every committed field must
+byte-match the selected immutable ReplaySeriesCommittedHead.v2. active_reservation
+is either canonical NO_ACTIVE_RESERVATION_V2 or Reservation.v2, never null; its
+authority-envelope digest must equal active_reservation_authority_envelope_sha256.
+With no active reservation that state field is the exact
+NO_ACTIVE_RESERVATION_AUTHORITY_V2 sentinel.
+
+Reservation.v2 has exactly schema_version, bootstrap_identity_sha256,
+transaction_key, transaction_id, prior_reservation_sha256,
+prior_series_state_sha256, reservation_fence, owner_id, owner_lease_token,
+owner_lease_lineage_key, owner_lease_lineage_sha256, lease_scope_phase,
+reservation_phase, authority_kind, authority_envelope_bytes_b64,
+authority_envelope_sha256 and reservation_sha256; reservation_sha256 omits
+authority-envelope fields and itself. reservation_phase is closed to BOOTSTRAP,
+PLANNING, FROZEN, PLAN_ELEVATED, EXECUTING or TERMINAL. For initial
+acquisition, both prior fields are named canonical INITIAL_RESERVATION_*_GENESIS_V2
+sentinels and authority_kind is initial_reservation; for handoff they name the
+exact prior reservation/state and authority_kind is lease_handoff; for a
+plan elevation they likewise name the exact prior reservation/state and
+authority_kind is plan_lease. Every
+reservation field is operational state, not immutable transaction semantics, and
+must byte-compare to the active state, journal snapshot and external authority
+scope at that instant.
+
+AtomicSeriesStateReplace.v2 has exactly expected_series_state_sha256,
+expected_reservation_fence, expected_committed_generation,
+expected_series_state_generation,
+new_series_state_bytes_b64 and new_series_state_sha256. It is an actual
+single-file filesystem procedure, never a multi-key CAS or blind os.replace:
+ServeRoot first lstat-checks every root/series directory, lock, current file and
+candidate sibling, rejects symlink, non-directory root/series, non-regular current/lock, owner/group/mode
+mismatch, link count other than one or a path not owned by its configured
+ServeRoot uid/gid, and uses only same-directory paths. On genesis only the
+InitialReservationAuthority may provision lock with O_CREAT|O_EXCL|O_NOFOLLOW,
+mode 0600, fsync its file and parent; thereafter a writer opens that verified
+lock O_NOFOLLOW and holds flock(LOCK_EX) for the whole procedure. Under the held
+lock it reads and hashes current.json, verifies its exact expected SHA,
+series-state generation, committed predecessor, active reservation/fence and authority; a
+replacement also must preserve the committed fields unless it is the terminal
+publication defined below, and its series_state_generation must equal the
+expected_series_state_generation plus one.
+
+It then creates the deterministic same-directory sibling
+current.json.next-<new_series_state_sha256> with O_WRONLY|O_CREAT|O_EXCL|
+O_NOFOLLOW and mode 0600, writes exactly the decoded canonical new bytes,
+fsyncs and rehashes it. A surviving sibling is reusable only after the same
+lstat/owner/type and full-byte validation; otherwise it is ignored and refuses
+the operation. Still holding the lock, it re-reads and rehashes current.json and
+requires the expected SHA/series-state-generation/reservation fence unchanged before renameat
+atomically replaces it, then fsyncs the parent directory. Genesis instead uses
+renameat2(RENAME_NOREPLACE) from the fsynced sibling and requires absence of
+current.json; a filesystem without this no-replace primitive refuses V2.
+Temporary siblings are never authoritative and may be unlinked only under the
+same lock after reference scans prove they are not current. Any failed lstat,
+lock, authority/fence, expected-byte, fsync, rename or directory-fsync step
+refuses; crash before rename leaves only ignored staging bytes, while crash after
+rename is validated by the new exact current SHA. No actor may bypass this lock.
+
+InitialReservationAuthority.v2 has exactly schema_version,
+bootstrap_identity_sha256, study_id, replay_id, series_id, transaction_id,
+transaction_key, genesis_sha256, expected_committed_head_sha256,
+expected_committed_generation, expected_genesis_sha256, requested_owner_id,
+requested_lease_token, requested_reservation_fence, request_nonce,
+requested_lease_scope_phase, permit_digest, environment_identity_sha256,
+authority_envelope_bytes_b64, authority_envelope_sha256 and
+initial_reservation_authority_sha256; its self digest omits authority-envelope
+fields and itself. Its ExternalAuthorityEnvelope.v2 is signed before any
+series-state exists, uses INITIAL_RESERVATION_V2, binds the exact
+BootstrapIdentity and expected predecessor or genesis sentinel, and MUST NOT
+contain reservation_sha256, series_state_sha256 or any inferred equivalent.
+InitialLeaseAcquisition.v2 has exactly schema_version, study_id, transaction_key,
+transaction_id, bootstrap_identity_sha256, header_intent_sha256,
+initial_reservation_authority_sha256, expected_committed_head_sha256,
+expected_committed_generation, expected_genesis_sha256, requested_owner_id,
+requested_lease_token, requested_reservation_fence, request_nonce,
+requested_lease_scope_phase, authority_envelope_bytes_b64,
+authority_envelope_sha256 and acquisition_sha256; its self digest omits authority
+envelope fields and itself, carries the matching independently signed
+initial_lease_acquisition envelope, and also MUST NOT contain a reservation or
+series-state digest.
+
+Before any planning read, header creation, FROZEN transition, outbox or effect,
+the external authority obtains those two envelopes, verifies the selected
+predecessor under series_state/lock, and AtomicSeriesStateReplace.v2 creates the
+generation-zero state or replaces only an exact idle state with a BOOTSTRAP
+Reservation.v2. The new state and reservation both bind the same independent
+initial authority-envelope digest. Only then may it create the header and the
+immutable InitialLeaseAcquisition evidence; only then may it create the first
+journal snapshot. This DAG is InitialAuthority/Acquisition -> Reservation+State
+-> Header/Acquisition evidence -> Journal, never the reverse. Any active other
+transaction, predecessor mismatch, wrong nonce/owner/fence, changed authority or
+failed no-replace refuses. All planning, journal mutation, elevation, outbox,
+effect/query and terminal operations verify the same active transaction,
+bootstrap identity, reservation fence and current owner lease lineage; no effect
+may occur before this reservation or after it is lost.
+
+Only recovery/takeover of this exact active bootstrap_identity_sha256 and
+transaction_key may change owner, owner lease lineage or strictly increase
+reservation_fence; it uses the same atomic replacement and a valid handoff
+authority. No competing transaction may acquire, plan, freeze or effect this
+series. Immutable transaction semantics are FrozenReplayPlan.v2 bytes/digests,
+header/pre_head, result intent/projection, effect slots and their declarative
+EffectIntent.v2 bytes, all record/event/attempt/resolution payload bytes and
+positions, and every terminal payload; a takeover must byte-preserve them.
+Operational bindings are prior_snapshot_sha256, snapshot_sha256, state_generation,
+current owner/token, fence, lease lineage, series_state_sha256,
+series_state_generation, reservation fence and reservation SHA. A handoff successor changes exactly those operational
+bindings to its exact post-takeover values; it must never require a byte-identical
+reservation, owner or fence.
+
+Effect progress is independent of journal phase and is derived from persisted
+evidence, never inferred from FROZEN or PLAN_ELEVATED. A FrozenReplayPlan.v2
+EffectIntent.v2 is declarative only; it is not a durable effect intent. The first
+durable effect intent is an EffectIntentActivation.v2 carried as the exact payload
+of one EFFECTS_RESOLVING ReplayTransactionEvent.v2. It has exactly schema_version,
+study_id, transaction_key, transaction_id, slot_position, effect_intent_sha256,
+logical_effect_at_ms, activation_position, fence_token, lease_lineage_sha256 and
+activation_sha256; its self digest omits itself. Activation positions are unique,
+contiguous from zero and canonical slot order. A broker/emitter call, query,
+outbox release or dispatch attempt is forbidden until its matching activation is
+durable. EffectProgress.v2 is the closed derived classification NO_EFFECT,
+INTENT_DURABLE, ATTEMPT_DURABLE, RECEIPT_DURABLE or EXTERNAL_EMISSION, calculated
+from activations, attempts, resolutions and queried broker evidence in that
+order. It cannot regress and phase alone never changes it.
+
+PreEffectAbortAuthority.v2 has exactly schema_version, study_id,
+bootstrap_identity_sha256, transaction_key, transaction_id, snapshot_sha256,
+series_state_sha256, series_state_generation, reservation_sha256, reservation_fence,
+lease_lineage_sha256, effect_progress, permit_digest,
+authority_envelope_bytes_b64, authority_envelope_sha256 and abort_authority_sha256;
+its self digest omits authority-envelope fields and itself. Its external envelope
+matches the current bootstrap or plan-bound scope and is valid only when the
+exact derived effect_progress is NO_EFFECT: no EffectIntentActivation.v2,
+EffectDispatchAttempt.v2, terminal EffectResolutionEvidence.v2, receipt or
+queried external emission exists. Thus a pre-effect abort remains possible in
+FROZEN or PLAN_ELEVATED; FROZEN does not imply an effect is durable. On the first
+durable activation, or any attempt, receipt or external emission, abort is
+forbidden and recovery must continue this exact transaction until committed or
+fail-closed.
+
+The abort sequence is exact. Under series_state/lock then journal/lock, the
+current owner verifies PreEffectAbortAuthority.v2 and appends ABORTING, then
+ABORTED, each with the unchanged active reservation/fence/lineage and an
+AtomicJournalReplace.v2. The durable ABORTED snapshot comes before any state
+clear. Only then AtomicSeriesStateReplace.v2 replaces that same active
+reservation and authority-envelope digest with their NO_ACTIVE_* sentinels.
+Crash before ABORTING leaves an active transaction; between ABORTING and ABORTED
+the same owner/recovery must revalidate NO_EFFECT and finish ABORTED or refuse;
+after ABORTED but before clear, recovery performs only the idempotent exact
+clear. No new transaction may acquire the series until that clear is durable.
+
+At terminal, the active owner writes the immutable head candidate, obtains the
+external commit signature, and while holding series_state/lock then journal/lock
+publishes COMMITTED. AtomicSeriesStateReplace.v2 then atomically advances every
+committed head/generation field to that candidate and replaces the matching
+active reservation and its authority-envelope digest with their NO_ACTIVE_*_V2
+sentinels. This single rename is terminal
+visibility. A crash before it leaves the exact reservation active and no terminal
+visible; recovery verifies the candidate and same reservation, then completes
+only that replacement. A crash after it leaves a selected head and no active
+reservation. Orphan head candidates and next files are non-authoritative; no
+multi-key CAS exists.
+
+For an active nonterminal snapshot, its state/reservation generation and digests
+must equal current series state exactly. The only post-publication exceptions are
+an ABORTED snapshot, whose selected state must be its direct one-generation
+NO_ACTIVE_* clear successor with unchanged committed fields, and a COMMITTED
+snapshot, whose selected state must be its direct one-generation terminal
+successor with the exact committed head/generation/cursor/result fields bound by
+that commit. Any other state/journal mismatch, including a stale reader or a
+handoff-pending state, refuses.
+
+Readers/recovery follow committed_head_sha256 through immutable lineage paths to
+the genesis sentinel, verify every generation and cross-check each prior
+manifest, projection pair and cursor bytes/digests; gap, fork, rollback, stale
+predecessor, conflicting active reservation, handoff-pending operational binding
+or non-genesis root refuses.
+
+ReplayTransactionJournalSnapshot.v2 is the sole authoritative record, index and
+frozen-plan state at journal/current.json. It has exactly schema_version,
+study_id, transaction_key, transaction_id, state_generation,
+prior_snapshot_sha256, frozen_plan_state, frozen_plan_bytes_b64,
+frozen_plan_sha256, frozen_plan_bytes_sha256, bootstrap_identity_sha256,
+lease_scope_phase, plan_lease_elevation_sha256, phase, current_owner_id,
+current_lease_token, fence_token, lease_lineage_key, lease_lineage_sha256,
+series_state_sha256, series_state_generation, reservation_fence, reservation_sha256, journal_head_event_sha256, events, attempts, resolutions,
+terminal_manifest_sha256, series_head_sha256, series_head_generation and
+snapshot_sha256; snapshot_sha256 omits itself.
+Before FROZEN, frozen_plan_state is NOT_FROZEN_V2, frozen_plan_bytes_b64 is the
+canonical empty byte string, frozen_plan_sha256 is NO_FROZEN_PLAN_V2 and
+frozen_plan_bytes_sha256 is SHA-256 of those empty bytes. The atomic FROZEN
+snapshot instead embeds the complete canonical FrozenReplayPlan.v2 bytes/base64,
+requires frozen_plan_sha256 equal to its plan_sha256 and
+frozen_plan_bytes_sha256 equal to SHA-256 of the full decoded bytes. Readers and
+recovery decode, UTF-8/canonicalize, recompute both digests, byte-compare every
+plan/header/bootstrap-study field and reject any event payload as a plan
+substitute. events/attempts/resolutions contain complete canonical bytes/base64,
+digest, position, fence and lineage, rather than object keys; every list is
+unique, contiguous from zero and self-verifies its predecessor chain. Thus a
+record, index and plan authority are one canonical file, never separate objects.
+
+AtomicJournalReplace.v2 is the only journal mutation. It has exactly
+expected_snapshot_sha256, expected_fence_token, expected_lease_lineage_sha256,
+new_snapshot_bytes_b64 and new_snapshot_sha256. Under the exclusive journal/lock
+all writers read and byte-verify current.json against the expected snapshot and
+active lease, write a sibling current.json.next-<new_snapshot_sha256>, fsync it,
+atomically rename it over current.json, then fsync the parent directory. Initial
+creation uses the same fsynced sibling and atomic no-replace rename from the
+canonical absence sentinel. The next file is non-authoritative and is ignored
+and garbage-collected if a crash occurs before rename. There is no multi-key
+filesystem CAS, and no reader treats a payload or next file as state. A
+ServeRoot without exclusive lock, same-directory atomic rename and file-plus-
+directory fsync semantics refuses V2.
+
+Lease bootstrap has canonical immutable sentinels JOURNAL_SNAPSHOT_GENESIS_V2,
+JOURNAL_HEAD_GENESIS_V2, NO_CURRENT_LEASE_V2, NO_FROZEN_PLAN_V2,
+NO_PLAN_LEASE_ELEVATION_V2 and NO_TERMINAL_MANIFEST_V2, each the SHA-256 of its
+named domain-separated canonical UTF-8 token. The first snapshot uses journal
+genesis, current-lease and not-frozen sentinels, exact BootstrapIdentity.v2,
+lease_scope_phase BOOTSTRAP_PREPLAN_V2, plan_lease_elevation_sha256 equal to
+NO_PLAN_LEASE_ELEVATION_V2, empty events/attempts/resolutions and canonical
+terminal_manifest_sha256 equal to NO_TERMINAL_MANIFEST_V2.
+series_head_sha256 is NO_SERIES_HEAD_V2 and series_head_generation is zero until COMMITTED.
+
+InitialLeaseAcquisition.v2, defined above, is immutable at
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/lineage/1-<acquisition_sha256>.json.
+Its authority envelope was signed before state creation and carries no
+reservation/state digest. Its requested_reservation_fence is exactly 1 and its
+requested_lease_scope_phase is BOOTSTRAP_PREPLAN_V2.
+
+The externally authorized first-acquisition protocol alone may create the
+initial series state, header and acquisition lineage. First it performs the
+StateReplace defined above, creating generation-zero committed fields and an
+active BOOTSTRAP reservation, or replacing only an exact generation-zero idle
+state. The state and reservation bind the exact independently signed initial
+authority-envelope digest, not a digest of each other. Second, it put-if-absent
+creates the header matching HeaderIntent.v2. Third, it put-if-absent writes this
+InitialLeaseAcquisition.v2 evidence, whose initial authority and envelope digest
+match the active reservation/state. Fourth, under journal/lock it atomically
+no-replace publishes the first bootstrap snapshot carrying that lineage and the
+exact current state/reservation generation/digests. Only after this publication may a worker
+append BEGIN or conduct a planning read; no record, effect, terminal, payload
+reference or alternate lease may precede it. An initial state without matching
+acquisition/snapshot is initial-pending and grants no worker authority; only the
+external authority may idempotently complete it. Any active other transaction,
+failed no-replace, authority, predecessor, lease or digest mismatch refuses.
+
+ReplayPlanLeaseElevation.v2 is immutable at
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/elevations/
+<fence_token>-<elevation_sha256>.json. It has exactly schema_version, study_id,
+transaction_key, transaction_id, bootstrap_identity_sha256,
+prior_lease_lineage_sha256, prior_snapshot_sha256, frozen_plan_sha256,
+frozen_plan_bytes_sha256, prior_owner_id, prior_lease_token, owner_id,
+lease_token, prior_fence_token, fence_token, prior_series_state_sha256,
+prior_series_state_generation, prior_reservation_sha256, series_state_sha256,
+series_state_generation, reservation_sha256,
+lease_scope_phase, process_id, permit_digest, reason, trusted_issued_at_ms, authority_envelope_bytes_b64,
+authority_envelope_sha256 and elevation_sha256; elevation_sha256 omits authority
+envelope fields and itself. fence_token is strictly greater than prior_fence_token
+and lease_scope_phase is PLAN_BOUND_V2.
+
+Only after a BOOTSTRAP_PREPLAN_V2 snapshot durably reaches FROZEN with complete
+plan bytes may the external plan_lease authority put-if-absent write this
+elevation. Under journal/lock it re-reads that exact FROZEN snapshot, recomputes
+the plan bytes/digests and BootstrapIdentity.v2, verifies the bootstrap lease,
+then under series_state/lock atomically replaces the active reservation with the
+plan_lease reservation matching the exact prior state/reservation and new
+owner/token/fence. It durably writes this elevation evidence binding both prior
+and new operational generation/digests, then under journal/lock AtomicJournalReplace.v2
+publishes the operational successor with those same new owner/token/fence,
+state generation/reservation and elevation lineage bindings. Only that post-elevation
+snapshot authorizes broker transaction authorization, outbox, effects, consumers
+or execution. A crash before the replace leaves an
+unauthoritative elevation candidate; a missing, stale, unsigned, wrong-plan or
+wrong-phase elevation refuses. No bootstrap lease, handoff or authority is a
+fallback for post-plan work.
+
+ReplayLeaseHandoff.v2 is immutable at
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/lineage/
+<fence_token>-<handoff_sha256>.json. It has exactly schema_version,
+study_id, transaction_key, transaction_id, bootstrap_identity_sha256,
+frozen_plan_sha256, lease_scope_phase, prior_lineage_sha256,
+prior_snapshot_sha256, journal_head_event_sha256, prior_owner_id,
+prior_lease_token, owner_id, lease_token, prior_fence_token, fence_token,
+prior_series_state_sha256, prior_series_state_generation, prior_reservation_sha256,
+series_state_sha256, series_state_generation, reservation_sha256, process_id,
+permit_digest, reason, trusted_issued_at_ms,
+authority_envelope_bytes_b64, authority_envelope_sha256 and handoff_sha256;
+handoff_sha256 omits authority_envelope fields and itself. fence_token is
+strictly greater than prior_fence_token, and all prior/new state generations,
+state/reservation digests are required exact canonical values.
+
+For takeover, the external lease authority first acquires series_state/lock and
+reads the exact active state/reservation and its selected predecessor. It signs a
+lease_handoff envelope binding the bootstrap identity, exact prior state/
+reservation/snapshot/lineage values, requested owner/token/fence/scope and
+immutable semantic identities, but not a successor state digest. Under that lock
+AtomicSeriesStateReplace.v2 creates the higher-fence Reservation.v2 for the same
+transaction; the new reservation binds the handoff-envelope bytes/digest and the
+state binds that same digest. The authority next put-if-absent durably writes
+ReplayLeaseHandoff.v2 with those exact prior and resulting state/generation/reservation
+digests. Only then, under journal/lock, does the designated worker make the
+bounded AtomicJournalReplace.v2 CAS from handoff.prior_snapshot_sha256 to its
+successor. It changes prior_snapshot_sha256, snapshot_sha256, state_generation,
+current owner/token/fence, lease lineage, series_state_sha256, series_state_generation,
+reservation_fence and reservation_sha256 to the exact post-takeover values; all immutable semantic
+fields named above, phase, frozen bytes, events, attempts, resolutions and
+terminal payload fields stay byte-identical.
+
+A BOOTSTRAP_PREPLAN_V2 handoff requires BootstrapScope.v2,
+NO_FROZEN_PLAN_V2 and remains limited to planning recovery; a PLAN_BOUND_V2
+handoff requires PlanBoundScope.v2 and full persisted plan bytes/digests. No
+handoff changes scope phase; only ReplayPlanLeaseElevation.v2 may do so. No
+recovery worker may interpret the old snapshot: its sole permitted read is the
+expected-byte check within the stated CAS, and the journal successor must be
+durable before generic recovery starts. After state replacement but before
+handoff evidence, or after evidence but before journal successor, the state is
+handoff-pending: old owners fail the active state/fence check and every worker
+refuses; only the external authority may idempotently complete the exact next
+step. A lineage object not selected by the successor snapshot is an
+unauthoritative candidate and may be garbage-collected only after external
+expiry/revocation evidence.
+
+The first recovery append binds lease_evidence_kind handoff and handoff_sha256;
+all later writes require the new in-snapshot lease. Readers verify every inline
+event, activation, attempt and resolution fence/lineage against the immutable
+acquisition/handoff chain: each historical append is valid when its recorded
+fence was current, and only current writes need the successor fence. Prior-fence
+bytes remain readable; a handoff never re-fences or rewrites them. Missing,
+stale, forked, substituted or lease-mismatched lineage refuses.
+
+An append clones the complete current snapshot, adds exactly one canonical
+event, attempt or resolution and its contiguous list entry, advances the phase
+when applicable, then uses AtomicJournalReplace.v2. The copied snapshot is the
+only authoritative index; partial or orphan record files cannot exist. Recovery
+reads only current.json under lock, validates snapshot self digest, all inline
+bytes/digests, complete contiguous lists and predecessor chains, then ignores
+and eventually garbage-collects every unreferenced payload or next file.
+
+Each non-COMMITTED ReplayTransactionEvent.v2, including ABORTING and ABORTED, has exactly schema_version,
+study_id, transaction_key, transaction_id, event_position, phase, prior_event_position,
+prior_event_sha256, prior_ledger_head, ledger_head, fence_token,
+lease_lineage_sha256, lease_evidence_kind, lease_evidence_sha256,
+payload_bytes_b64, payload_sha256 and event_sha256; event_sha256 omits itself.
+BEGIN uses prior_event_position -1 and header_sha256 as prior_event_sha256.
+BEGIN and FROZEN each require prior_ledger_head exactly equal to pre_head; their
+ledger_head also equals pre_head. Every later event names the immediately
+preceding durable event and ledger head. The sole contiguous transition is BEGIN
+-> PROVISIONAL -> FROZEN -> PUBLISHING -> RECORDS_BARRIERED -> SNAPSHOTTED ->
+CHECKPOINTED -> OUTBOX_PUBLISHED -> EFFECTS_RESOLVING -> EFFECTS_RESOLVED ->
+TERMINAL_PROJECTED -> RESULT_CURSOR_DURABLE -> TERMINAL_BUNDLE_DURABLE ->
+COMMITTED. Independently, from any nonterminal phase for which the exact derived
+EffectProgress.v2 is NO_EFFECT, PreEffectAbortAuthority.v2 alone may take the
+current phase -> ABORTING -> ABORTED; ABORTED has no terminal result, cursor or
+head and admits no normal successor. Both abort events preserve the same active
+reservation/fence/lineage until the post-ABORTED state clear. Any other skip,
+repeat, fork, changed prior digest/head, payload, progress or fence refuses.
+
+COMMITTED is ReplayCommitEvent.v2, never a generic payload. It has exactly
+schema_version, study_id, transaction_key, transaction_id, event_position, phase,
+prior_event_position, prior_event_sha256, prior_ledger_head, ledger_head,
+lease_evidence_kind, lease_evidence_sha256, frozen_plan_sha256,
+plan_lease_elevation_sha256,
+terminal_bundle_key, terminal_bundle_sha256, projection_pair_key,
+projection_pair_sha256, terminal_witness_sha256, result_sha256,
+cursor_set_sha256, post_effect_receipts_sha256, terminal_manifest_sha256,
+series_head_sha256, series_head_generation, fence_token,
+commit_authority_digest, signer_key_id, signer_key_version, signer_key_usage,
+signer_algorithm, commit_signature_domain, commit_canonicalization_version,
+commit_verifier_keyring_id, commit_verifier_keyring_version,
+commit_verifier_keyring_as_of_ms, commit_revocation_source_id,
+commit_revocation_version, commit_revocation_as_of_ms, trusted_issued_at_ms,
+valid_from_ms, valid_until_ms, revocation_evidence_bytes_b64,
+revocation_evidence_sha256, commit_signature_preimage_bytes_b64,
+commit_signature_preimage_sha256, commit_signature and commit_sha256. phase is
+COMMITTED; commit_signature_preimage_sha256 is SHA-256 of decoded canonical preimage bytes,
+and commit_sha256 omits commit_signature and itself.
+The only commit signing protocol is commit_signature_domain literal
+dskit.replay.commit.v2, commit_canonicalization_version literal
+CANONICAL_JSON_UTF8_V2 and the closed signer_algorithm from CommitAuthority.v2.
+commit_signature_preimage_bytes_b64 decodes to canonical UTF-8 JSON with exactly
+domain, canonicalization_version and payload. payload is the exact
+ReplayCommitEvent.v2 field projection containing every listed field except
+commit_signature_preimage_bytes_b64, commit_signature_preimage_sha256,
+commit_signature and commit_sha256. Its decoded bytes hash to the declared
+preimage SHA; commit_signature verifies only that SHA under signer_key_id/version/
+usage from the immutable commit_verifier_keyring_id/version/as_of snapshot after
+the named commit revocation source/version/as-of check. The event, authority,
+verified signer and plan-bound authority envelope must byte-match every domain,
+algorithm, keyring, clock and revocation field. Independent readers rebuild the
+exact bytes/digest, verify the signature and all bindings, and refuse unknown
+field, domain, canonicalizer, algorithm, key, version, clock or revocation state.
+
+Its prior event is TERMINAL_BUNDLE_DURABLE and every digest
+equals the actual canonical manifest/pair/bundle/witness/result/cursor/receipt
+bytes; series_head_sha256/generation equal the exact next immediate-successor
+ReplaySeriesCommittedHead.v2 selected only after this event is durable.
+
+ReplayCommitAuthority.v2 is opaque broker-owned payload with exactly
+schema_version, study_id, authority_id, authority_version, authority_keyring_digest,
+permit_digest, environment_identity_sha256, series_id, transaction_id,
+transaction_key, frozen_plan_sha256, commit_signature_domain,
+commit_canonicalization_version, signer_key_id, signer_key_version, signer_key_usage,
+signer_algorithm, commit_verifier_keyring_id, commit_verifier_keyring_version,
+commit_verifier_keyring_as_of_ms, commit_revocation_source_id,
+commit_revocation_version, commit_revocation_as_of_ms,
+authority_envelope_bytes_b64, authority_envelope_sha256 and commit_authority_digest;
+commit_authority_digest omits authority_envelope fields and itself. Its commit
+ExternalAuthorityEnvelope.v2 binds that digest and exact plan scope; only the
+external authority owns its private signing key.
+
+VerifiedCommitSigner.v2 is the reader payload with exactly schema_version,
+study_id, commit_authority_digest, reader_keyring_digest, permit_digest,
+environment_identity_sha256, series_id, transaction_id, transaction_key,
+frozen_plan_sha256, commit_signature_domain, commit_canonicalization_version,
+signer_key_id, signer_key_version, signer_key_usage, signer_algorithm,
+commit_verifier_keyring_id, commit_verifier_keyring_version,
+commit_verifier_keyring_as_of_ms, commit_revocation_source_id,
+commit_revocation_version, commit_revocation_as_of_ms,
+authority_envelope_bytes_b64, authority_envelope_sha256 and capability_sha256;
+capability_sha256 omits authority_envelope fields and itself. Its reader
+ExternalAuthorityEnvelope.v2 supplies the trusted clock, keyring lookup,
+revocation source/version/as-of, scope, audience and verifier rule.
+
+Before signing, the external authority verifies the current journal snapshot,
+lease/handoff/fence lineage, complete inline event/attempt/resolution chains and
+the terminal manifest plus every referenced payload blob. It signs only the
+canonical CommitEvent preimage above. DSKit and its workers hold no commit
+signing key; readers verify only through VerifiedCommitSigner.v2 and the
+external authority, with no local or fallback verification path.
+
+Header, lease lineage and broker authorization are put-if-absent and accept only
+byte equality. The journal snapshot and terminal manifest are each changed only
+by their one-file fsync-and-rename protocols under journal/lock. Payload blobs
+are never authoritative, even when content-addressed and fsynced. Every read
+validates the snapshot current lease/fence/lineage and inline chains. Readers
+expose nothing terminal unless the selected ReplaySeriesCommittedHead.v2, header,
+current journal snapshot, manifest, referenced payload bytes and externally
+verified COMMITTED event validate, including identical V2 cursor digest in head,
+manifest, pair, result and projection.
+
+Terminal receipt set, projection/witness, result/cursor pair and bundle have
+only fully rooted non-authoritative payload keys
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/payloads/<payload_sha256>.json.
+The sole durable terminal visibility pointer is
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/current.json.
+Payload presence alone is neither discoverability nor terminal visibility.
+
+ReplayProjectionPair.v2 has exactly schema_version, study_id, transaction_key,
+transaction_id, result_bytes_b64, result_sha256, cursor_set_bytes_b64,
+cursor_set_sha256, post_effect_receipt_set_key, post_effect_receipts_sha256,
+terminal_projection_key, terminal_witness_sha256 and pair_sha256; pair_sha256
+omits itself. It is a payload blob; result/cursor canonical bytes occur only
+inside it and are never independently addressable or visible. Its referenced
+payload digests must byte-verify.
+
+ReplayTerminalBundle.v2 is a payload blob, not a terminal pointer. It has
+exactly schema_version, study_id, terminal_key, series_id, genesis_sha256,
+transaction_id, projection_pair_key, projection_pair_sha256,
+terminal_witness_sha256, post_effect_receipts_sha256 and bundle_sha256;
+bundle_sha256 omits itself. terminal_key is SHA-256 of canonical JSON containing
+schema_version, study_id, series_id, genesis_sha256 and transaction_id. The manifest alone makes its exact pair,
+witness and receipt-set references candidate terminal state.
+
+TerminalManifest.v2 is an immutable transaction-local candidate at the rooted
+manifest key, never a globally visible terminal pointer. It has exactly schema_version, study_id, series_id, transaction_key,
+transaction_id, frozen_plan_sha256, plan_lease_elevation_sha256,
+prior_committed_transaction_key, prior_terminal_manifest_key,
+prior_terminal_manifest_sha256, prior_terminal_generation,
+prior_projection_pair_sha256, prior_cursor_set_bytes_b64, prior_cursor_set_sha256,
+terminal_generation, terminal_ledger_head, result_sha256, result_cursor_event_sha256,
+lease_lineage_sha256, fence_token, receipt_set_key, post_effect_receipts_sha256,
+cursor_set_sha256, projection_key, terminal_witness_sha256, projection_pair_key,
+projection_pair_sha256, bundle_key, terminal_bundle_sha256, commit_authority_digest,
+verified_signer_capability_sha256 and manifest_sha256;
+manifest_sha256 omits itself. Its replace preimage is either canonical
+NO_TERMINAL_MANIFEST_V2 or byte-identical prior manifest bytes; any other
+preimage refuses.
+Its predecessor fields and terminal_generation must byte-equal the frozen
+cursor_transition and EventCursorSet.v2, and the selected series-head immediate
+predecessor; any non-genesis predecessor mismatch refuses.
+Every receipt_set_key, projection_key, projection_pair_key and bundle_key must
+be exactly its fully rooted payload key with a filename digest equal to the
+referenced canonical bytes; any other key form refuses.
+
+At RESULT_CURSOR_DURABLE, the worker creates each canonical receipt set,
+projection/witness, pair and bundle only by writing its exact payload next path,
+fsyncing, atomic no-replace renaming to its payload key and fsyncing that parent;
+an existing payload must byte-equal. It then AtomicJournalReplace.v2 publishes
+the RESULT_CURSOR_DURABLE snapshot event binding every payload digest. It
+reopens and byte-verifies those blobs, reads the manifest preimage under
+journal/lock, writes the exact manifest next path, fsyncs, atomically renames it
+to terminal/manifest.json and fsyncs that parent. It next
+AtomicJournalReplace.v2 publishes TERMINAL_BUNDLE_DURABLE with
+terminal_manifest_sha256. This manifest is only a candidate. Under the global
+lock order series_state/lock then journal/lock, the current PLAN_BOUND_V2 owner
+verifies its exact active reservation/fence and the committed fields or canonical
+genesis state. It requires immediate-predecessor equality against the frozen
+transition, cursor set and manifest, then constructs and put-if-absent writes one
+immutable ReplaySeriesCommittedHead.v2 candidate. The external commit authority
+verifies that candidate, active reservation, frozen verifier map, journal/lease
+chains and all terminal bytes, then signs ReplayCommitEvent.v2 binding its head
+sha/generation. Still holding both locks, AtomicJournalReplace.v2 publishes
+COMMITTED with that exact candidate digest/generation. AtomicSeriesStateReplace.v2
+then performs the only terminal visibility mutation: it advances committed fields
+to that candidate and clears that exact active reservation in one CAS/rename. No
+step is a multi-key CAS.
+
+A crash before payload or manifest rename leaves only ignored garbage; after a
+manifest or head-lineage candidate but before COMMITTED it leaves the reservation
+active and no terminal visible; after COMMITTED but before series-state rename,
+recovery verifies the same active reservation/fence, candidate and predecessor,
+then performs only that series-state replacement or refuses. After its rename
+readers may expose the selected terminal. Orphan payload, manifest candidate,
+head candidate and next files are ignored and garbage-collected only after scans
+prove no current journal or selected series state/lineage references them.
+Independent readers require selected series state, head, current COMMITTED
+snapshot, signed CommitEvent and manifest to agree on transaction, predecessor,
+generation, manifest/pair/cursor/result digests; they then verify all payload
+bytes/digests, complete inline receipt enumeration, projection, bundle, fence
+lineage, full head chain and authority capability before exposure.
+
+**Frozen effect protocol.** EffectSlotSet.v2 has exactly schema_version,
+study_id, replay_id, transaction_id, slots and slot_set_sha256; slot_set_sha256
+omits itself. Each slot has exactly slot_id, slot_position, origin_kind,
+origin_position, effect_kind, effect_intent_bytes_b64, effect_intent_sha256,
+query_request_bytes_b64 and query_request_sha256. origin_kind is closed to
+outbox or deferred_effect; effect_kind is closed to event_ack or deferred_effect.
+Slots are contiguous from zero and are the exhaustive one-to-one merge of frozen
+outbox items in canonical plan order, then frozen deferred_effects in canonical
+plan order. No alternate merge, gap, duplicate or unreferenced origin is legal.
+This is the exclusive slot definition.
+
+EffectIntent.v2 canonical bytes have exactly schema_version, replay_id,
+study_id, transaction_key, transaction_id, slot_id, slot_position, origin_kind,
+origin_position, effect_kind, logical_effect_at_ms, idempotency_key,
+effect_request_bytes_b64, effect_request_sha256 and intent_sha256;
+intent_sha256 omits itself. It never references a query, broker policy or authorization.
+QueryRequest.v2 canonical bytes have exactly schema_version, replay_id,
+study_id, transaction_key, transaction_id, slot_id, effect_kind, logical_effect_at_ms,
+idempotency_key, effect_intent_sha256, query_operation and query_request_sha256;
+query_request_sha256 omits itself. It is built only after and binds the intent.
+The slot stores exact canonical base64 bytes and digest of both objects; decode,
+re-canonicalize or digest mismatch refuses.
+
+Before any send, ServeRoot embeds fenced EffectDispatchAttempt.v2 into the next
+atomic ReplayTransactionJournalSnapshot.v2; it has no standalone object key.
+It has exactly schema_version, study_id, transaction_key, transaction_id, slot_id,
+slot_position, global_attempt_position, slot_attempt_position,
+prior_global_attempt_sha256, prior_slot_attempt_sha256,
+prior_transaction_event_sha256, effect_intent_bytes_b64, effect_intent_sha256,
+idempotency_key, query_request_bytes_b64, query_request_sha256,
+logical_effect_at_ms, fence_token, lease_lineage_sha256 and attempt_sha256; attempt_sha256 omits
+itself. Global and per-slot positions are contiguous from zero; both prior
+fields are EFFECT_DISPATCH_GENESIS_V2 at their position zero and otherwise name
+the immediate prior append. A durable AtomicJournalReplace.v2 containing it is
+the only send authority.
+After any attempt, including crash before/after send, recovery queries before resend.
+
+EffectResolutionEvidence.v2 is a fenced inline record in the next atomic
+ReplayTransactionJournalSnapshot.v2
+with exactly schema_version, study_id, transaction_key, transaction_id, slot_id,
+slot_position, global_resolution_position, slot_resolution_position,
+prior_global_resolution_sha256, prior_slot_resolution_sha256,
+dispatch_attempt_sha256, effect_intent_bytes_b64, effect_intent_sha256,
+query_request_bytes_b64, query_request_sha256, query_response_bytes_b64,
+query_response_sha256, query_verifier_sha256, query_verdict,
+receipt_bytes_b64, receipt_sha256, receipt_verifier_sha256, receipt_verdict,
+resolution_path, terminal, fence_token, lease_lineage_sha256 and evidence_sha256; evidence_sha256
+omits itself. Global/per-slot positions are contiguous from zero; both prior
+fields are EFFECT_RESOLUTION_GENESIS_V2 at position zero and otherwise name
+the immediate prior resolution. dispatch_attempt_sha256 must name the exact
+attempt. resolution_path is closed to query_not_seen, initial_send_receipt,
+query_known_receipt or query_not_seen_resend_receipt. query_not_seen has
+terminal false and canonical null receipt fields; the other paths have terminal
+true. Exactly one terminal true resolution exists per slot. Canonical
+query/receipt bytes revalidate before append/projection; gap, fork, duplicate,
+reordered or substituted attempt/query/resolution evidence refuses.
+
+PostEffectReceiptSet.v2 has exactly schema_version, study_id, transaction_key,
+effect_slot_set_sha256, entries and post_effect_receipts_sha256;
+post_effect_receipts_sha256 omits itself. Each entry has exactly slot_position,
+terminal_resolution_bytes_b64, terminal_resolution_sha256, receipt_bytes_b64,
+receipt_sha256, ack_evidence_bytes_b64 and ack_evidence_sha256. Entries occur once in ascending
+slot_position, bind that slot's one terminal resolution and its exact receipt;
+event_ack additionally binds its exact EventAckEvidence.v2 bytes/digest, while
+deferred_effect uses canonical null ACK-evidence fields. No gap, fork, duplicate
+or substitution is legal. ReplayResult.v2, EventCursorSet.v2, terminal
+witness/bundle/manifest and COMMITTED bind this exact post_effect_receipts_sha256,
+never an unstructured receipt collection.
+**Deterministic replay broker.** DeterministicReplayBrokerPolicy.v2 is built
+and externally authorized before the plan. It has exactly schema_version,
+study_id, replay_id, transaction_id, transaction_header_sha256, effect_slot_set_sha256,
+permit_digest, environment_identity_sha256, broker_id, receipt_function,
+receipt_function_version, receipt_key_id, receipt_key_fingerprint_sha256,
+broker_runtime_sha256, authority_envelope_bytes_b64, authority_envelope_sha256
+and policy_sha256; policy_sha256 omits authority_envelope fields and itself. Its
+broker_policy envelope has canonical scope.plan_sha256 NOT_APPLICABLE_V2 and
+binds policy_sha256; neither policy nor its envelope contains or derives a plan.
+FrozenReplayPlan.v2 embeds exact policy bytes/digest, and only that pre-plan
+policy is immutable-plan content.
+
+Only after the complete FrozenReplayPlan.v2 bytes are persisted in the FROZEN
+snapshot and its plan-lease elevation replacement selects PLAN_BOUND_V2 may the
+external broker authority put-if-absent create ReplayBrokerTransactionAuthorization.v2 at
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/broker/authorization.json.
+It has exactly schema_version, study_id, replay_id, transaction_id,
+transaction_header_sha256, plan_sha256, policy_sha256, effect_slot_set_sha256,
+permit_digest, environment_identity_sha256, broker_id,
+authority_envelope_bytes_b64, authority_envelope_sha256 and authorization_sha256;
+authorization_sha256 omits authority_envelope fields and itself. Its
+broker_transaction envelope binds authorization_sha256 and all ten exact scope
+fields, including plan_sha256. This authorization is never a plan member and
+cannot revise the policy, slots, plan or any frozen byte; missing, changed,
+expired, revoked or non-byte-identical policy/authorization refuses.
+
+ReplayRun accepts effects only with both the frozen policy and its exact
+post-plan authorization. For each such policy/authorization, idempotency_key,
+effect_intent_sha256 and logical_effect_at_ms, this broker durably put-if-absent
+creates one canonical receipt forever. It additionally requires the current
+snapshot to carry the exact plan-lease elevation and PLAN_BOUND_V2. acknowledged_at_ms equals
+logical_effect_at_ms; ack_id and emitter_receipt are deterministic functions of
+frozen inputs. Query returns byte-identical receipt; a not-seen resend produces
+the same bytes. Random IDs, later timestamps, changed keys/functions or
+environment drift refuse. A nondeterministic, paper or live emitter cannot
+satisfy this protocol and ReplayRun refuses it.
+
+**V1 denial.** Every V1 journal, at every phase, is inspect-only. It cannot
+be abandoned, migrated, replaced, handed off, continued as V2 or share V2
+transaction, series or ServeRoot identity. A fresh V2 requires distinct study,
+replay, series, genesis and transaction identities with no carried V1 state.
+No V1 permit, evidence, journal mutation or execution authority exists.
+
+**Skeptic closure.** The construction DAG is acyclic: policy and its envelope
+and verifier map are pre-plan and forbid plan_sha256; the plan freezes both;
+authorization is post-plan and is not a plan member. Bootstrap publishes
+the reservation, then header/acquisition and one first journal snapshot. Every record/index cutpoint
+is one locked fsync and atomic rename of current.json; transaction manifests are
+candidates and terminal visibility is one series-state replacement that selects
+the signed immediate-successor head and clears its reservation; next files and
+payload blobs are non-authoritative and safely ignored until referenced.
+Immutable lineage, full rooted keys and envelope scope/key/
+clock/revocation checks prevent fence, key and capability substitution. This
+self-review preserves ADR-0124 fences, identity and ordering guarantees.
+
+**Additional focused failures.** Prove header/lineage/snapshot key or digest
+substitution, phase skip/fork, missing/stale/forked lease handoff, wrong
+owner/token/fence and recovery-before-handoff refusal; lock contention, expected
+snapshot mismatch, interrupted next-file write/rename/directory-fsync, inline
+position/digest/predecessor gap/fork and ignored-orphan blob refusal; manifest
+preimage conflict, manifest-before-COMMITTED and result/cursor invisibility;
+crash before/after each attempt/send and query-before-resend; resolution/receipt
+substitution; pre-plan policy plan binding, post-plan authorization absence or
+substitution, later timestamp/random-ID and broker key/function/environment/
+permit/plan/slot substitution; external signature/keyring/clock/revocation
+failure; and every V1 execution, migration, replacement, handoff or identity
+sharing refusal.
+
+**Tests after approval.** First fail every V2 exact-key/version/default-deny
+and plan-intent-spec equality boundary; pre-plan policy scope.plan_sha256,
+post-plan authorization scope/digest and all cyclic/mutable/fallback variants;
+missing, substituted, ahead, stale or nonancestor pre_head across plan/header/
+real-ledger prefix; first frozen-record predecessor, record-chain terminal/
+ReplayResultIntent ledger_head and cursor target; initial acquisition and handoff
+lineage/authority/lock/one-file snapshot replacement; initial authority/acquisition
+envelopes with no reservation/state digest, exact predecessor/genesis/nonce and
+bootstrap DAG-cycle refusal; lstat/type/owner/link/mode failure, O_EXCL staging,
+expected-state-generation conflict, fsync/rename/directory-fsync crash and
+ignored temp handling; first recovery handoff binding, state-replace -> evidence
+-> journal-successor ordering, stale/forked fence rejection, prior/new
+series-state generation/digest substitution and no old-owner write; inline
+snapshot positions, bytes, digests, chains and no record/index orphan; next-file
+crash before/after fsync/rename/directory-fsync and safe payload garbage
+collection; series-head genesis, immediate-successor CAS, monotonic generation,
+duplicate same-prehead selection, head/manifest/pair/cursor predecessor
+substitution, full chain-to-genesis, bootstrap reservation before planning,
+active-reservation conflict, only-same-transaction takeover/fence increase,
+FROZEN/PLAN_ELEVATED pre-effect abort, activation/attempt/receipt/emission
+non-abandonability, ABORTING/ABORTED pre/post-clear crashes and new-transaction
+race refusal, and pre/post-series-state-replacement crash recovery; lock
+order/fence and no result/cursor visibility before selected-head publication;
+external commit authority, signer key/version/usage/algorithm, exact commit
+domain/canonical preimage/digest, frozen verifier keyring/version/as-of, trusted
+clock, validity and revocation rejection; raw/aliased study or series path,
+digest-segment and key substitution refusal; all missing/extra/reordered/substituted/invalid receipts
+and EventAckEvidence.v2 values; V2 ACK map/keyring version/as-of/revocation
+snapshot/key/algorithm/domain/preimage/signature substitution, slot/update/
+receipt/result-intent/terminal-head substitution, duplicate-emitter cursor,
+noncontiguous acknowledgement, empty-cursor sentinel and manifest/pair/result/
+projection cursor-digest mismatch; query-known, query-not-seen/resend and ambiguous/unavailable query
+refusal; result/cursor preimage, self-digest and witness tamper; and every V1
+execute/migrate/replace/handoff or identity-sharing refusal. Inject crashes
+after records, snapshot, cache, outbox, dispatch, query, receipt, ACK,
+projection, payload fsync, snapshot rename, manifest rename and pre/post-
+COMMITTED. Assert terminal identity equality and no out-of-order visibility.
+Run only focused replay/ledger/loop and directly affected purity/OOP/producer
+gates.
+
+**Authority and scope.** dskit.production.replay owns V2 validation/recovery;
+ServeRoot owns fenced durability/terminal visibility; ChainLedger remains sole
+frozen record/snapshot authority; registered emitters/effect brokers own query,
+signature verification and idempotency evidence; the external permit broker is
+sole execution authority. Children, CLI documents and fixtures cannot mint a
+permit, declare a projection algorithm or broaden a receipt slot. Synthetic
+authority remains test-only.
+
+If the owner accepts this ADR, it supersedes only ADR-0124 clauses requiring
+final ReplayResult/cursor bytes before effects or prohibiting this V2 terminal
+derivation. Every other ADR-0124 fence, immutable-plan, identity, outbox and
+owner gate remains unchanged. This proposal does not amend the master plan at
+40ab10fa7428e5eab14cff2f082c781cf962b860: its V1 requirement conflicts and
+remains fail-closed. Owner acceptance only permits a subsequent Terra-authored
+plan correction to replace R1--R3/I with V2; implementation remains forbidden
+until that corrected plan receives its required clean reviews. Until then, no
+real replay, paper/live action or other execution may use this proposal.
