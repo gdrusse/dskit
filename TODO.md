@@ -830,6 +830,32 @@ REMAINING, in the plan's risk order:
       `verify_snapshot` in `snapshot.py`, and the `assets/base.py`
       checker family (`_check_str`/`_check_dict`/`_check_unknown`/
       `_raise_if`/`_strip_notes`/`canonical_hash`/`atomic_write_json`).
+
+      **Seventeenth skeptic round (2026-09-12): a 14th recurrence — 2
+      MAJOR, both in `snapshot.py`, both execution-verified; the
+      `base.py` checker family, `read_manifest`, and a fresh sweep of
+      the shortest/simplest-looking functions in the diff
+      (`metrics.py`'s functions, `Lineage`'s graph reads,
+      `Registry.get`) all came back genuinely clean.** `find_snapshot_dir`
+      raises a raw, undocumented `FileNotFoundError` when `root`'s
+      `raw/` directory is absent (always present on a root
+      `OnboardingRoot.create` built, so only reachable if something
+      removed it afterward) — added. `verify_snapshot` had two distinct
+      gaps: **(1)** a `manifest.files` entry that isn't a dict, or is a
+      dict missing `relpath`, crashes with a raw `TypeError`/`KeyError`
+      — `read_manifest` checks only that `files` is a LIST, never each
+      entry's shape; **(2)** a payload file present during the initial
+      `os.walk` scan but removed by something else before the later
+      `lstat`/size/digest check on it raises a raw `FileNotFoundError`
+      — this directly **contradicts** the docstring's own explicit
+      claim, "a MISSING or DRIFTED payload file is a returned problem,
+      never a raise" (that claim is true only for a file already absent
+      from the walk, not this TOCTOU case); both added, the existing
+      claim narrowed to be accurate. **Given a 14th straight round
+      finding real, execution-verified gaps — `Raises` completeness
+      remains open**, though the breadth of what came back clean this
+      round (an entire checker family, plus three more functions from a
+      fresh angle) continues the narrowing trend since round 13.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

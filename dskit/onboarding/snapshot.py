@@ -290,6 +290,10 @@ def find_snapshot_dir(root, manifest_hash):
         If ``root`` is not an OnboardingRoot, ``manifest_hash`` is not
         a non-empty string, or a manifest found along the way is
         unreadable or shape-invalid (via :func:`read_manifest`).
+    FileNotFoundError
+        If ``root``'s ``raw/`` directory does not exist — always
+        present on a root ``OnboardingRoot.create`` built, so only
+        reachable if something removed it afterward.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
@@ -336,7 +340,18 @@ def verify_snapshot(snapshot_dir) -> list:
     AssetError
         If ``snapshot_dir`` is malformed, or its manifest is unreadable
         or shape-invalid (via :func:`read_manifest`) — a MISSING or
-        DRIFTED payload file is a returned problem, never a raise.
+        DRIFTED payload file (present on disk throughout the check) is
+        a returned problem, never a raise.
+    TypeError
+        If a ``manifest.files`` entry is not a dict — ``read_manifest``
+        checks only that ``files`` is a list, not each entry's shape.
+    KeyError
+        If a ``manifest.files`` entry is a dict missing ``relpath``.
+    FileNotFoundError
+        If a payload file present during the initial directory walk is
+        removed by something else before the later ``lstat``/size/
+        digest check on it runs — unlike a file already absent from
+        the walk (a returned problem above), this TOCTOU gap raises.
     """
     manifest = read_manifest(snapshot_dir)
     payload_dir = os.path.join(snapshot_dir, "payload")
