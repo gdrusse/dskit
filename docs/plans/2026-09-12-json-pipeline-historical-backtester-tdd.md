@@ -95,13 +95,16 @@ fail-closed exit and inherits the P0 Sol-first/Terra lifecycle.
 
 ## F1 — ordinary PipelineDocument JSON
 
-**Reuse:** `dskit/pipeline/document.py:PipelineDocument`, existing `RunConfig`,
-planner/identity hash, `driver.py:run_document`, staged runner, and registry.
+**Reuse:** `dskit/pipeline/document.py:PipelineDocument`, `NodeSpec`, and
+`StageSpec`; the node-map document/driver is current, while `stages.py:plan_stages`
+is the predecessor stage-list seam. There is no `RunConfig` in this grammar.
+Reuse the current planner/identity hash, `driver.py:run_document`, and registry.
 **RED:** parser unknown-key/version/migration/default normalization, canonical plan
 hash and digest-change, secret literal, normal wire, illegal captured wire/topology,
 unsupported-profile, direct ServeDocument CLI/config/construction/parsing, alternate
 independently hashed document, field/default/captured-binding substitution, and
-live/replay composition parity, and pipeline-imports-production refusal tests.
+live/replay composition parity, pipeline-imports-production refusal, user-authored
+`stages`, `$prev`/carry, and raw model-load/artifact-path refusal tests.
 
 The complete default-deny `execution_backtest` v1 grammar is:
 
@@ -128,6 +131,35 @@ same-run; `$captured_artifact` is only producer -> seal -> external capture ->
 consumer. Capture stages are derived only from those legal graph ports and their
 completed lifecycle receipts, then compiled by the existing planner into staged runs;
 there is no second stage-language member to drift from the graph.
+
+If `execution_backtest` exists, user-authored `PipelineDocument.stages` is forbidden:
+`PipelineDocument.from_obj`, the ordinary planner, every CLI entry point (including
+the auto-stage `run_staged` route), and the secure launcher reject it before any
+provider/filesystem open, node/adapter import, object construction, or
+`plan_stages` call. Trusted producer -> seal -> capture -> consumer barriers are
+derived solely from legal captured ports and verified lifecycle receipts. A document
+without `execution_backtest` may retain legacy `stages`, but is ordinary non-runtime
+pipeline work and cannot produce a serve/replay view; its explicit migration must
+remove stages and emit the v1 execution block before bridge admission.
+
+Execution mode recursively rejects every semantic prior-run/carry reference at
+parse, plan, CLI, and launcher preflight: `$prev` strings/objects and all grammar-
+defined variants in node inputs, sources, params, outputs, artifacts, defaults,
+stages, or reference expressions. It opens no parent run, carry, provider, or path.
+The only cross-run value is a later-distinct `$captured_artifact` whose completed
+PRODUCED -> SEALED -> PUBLISHED -> CAPTURED -> CONSUMED receipts authorize its exact
+consumer port. Focused tests instrument provider/filesystem opens and assert zero
+opens for every rejected `$prev` variant.
+
+Execution mode also rejects every explicit or default-resolved
+`NodeSpec.mode:"load"`, `artifact` pin, raw artifact/read/path field, and
+model-path-shaped value before node construction. The only model load is private
+production-bridge `CapturedModelLoad`: it is derived from
+the current node's `CapturedBindings` and a `VerifiedCapture`, never JSON/NodeSpec,
+and invokes the native codec (for example `load_text_bundle(VerifiedCapture)`) behind
+the `TrainableNode` load template. A path or artifact never reaches a node constructor
+or load method. Focused pre-construction and poison-path tests prove refusal without
+file/provider access or model import.
 
 Pipeline remains dependency-pure: it emits only generic immutable
 `PlannedRuntimeContract` data containing the normalized PipelineDocument/plan hashes,
@@ -219,19 +251,41 @@ the derived rank plus `source_rank_policy_sha256`, and
 `corrects_event_id`/chain position/prior digest. Order is availability, derived
 source rank, source sequence, correction position, payload digest, event ID.
 
-The policy schema/version/digest are canonical tape-manifest/capture members and
-receipt evidence, and are pinned by `execution_backtest`, EnvironmentIdentity, and
-the existing `tape_digest`. ADR-0124's named `ReplayTransaction.v1`,
-`FrozenReplayPlan.v1`, `SnapshotIntent.v2`, `CacheWriteIntent.v2`,
-`EventCursorSet.v1`, and `ReplayResult.v1` keep their accepted exact default-deny
-key sets: no source-rank field is casually added. Their existing transaction/frozen
-plan `tape_digest`, replay identity, frozen cache bytes, ledger-head, and report
-provenance transitively bind the policy. Recovery byte-compares those existing
-identities before using a tape or resuming. Any direct schema field requires a
-separately accepted versioned ADR evolution, default-deny migration, and focused
-old/new-schema refusal tests before implementation. **Exit:** ambient time,
-rank-policy mismatch, ambiguity, cycles, impossible time, or missing provenance
-rejects.
+`ReplayTape` currently has no digest or verified-capture identity. F3 therefore
+adds one generic production-owned capture manifest, not a parallel tape engine:
+
+```json
+{"schema_version":"dskit.captured-replay-tape/v1",
+ "event_envelope_schema":"dskit.event-envelope/v2",
+ "capture_root_sha256":"<sha256>","captured_receipt_sha256":"<sha256>",
+ "source_rank_policy_sha256":"<sha256>","envelope_count":0,
+ "ordered_envelope_digests":["<sha256>"],
+ "ordered_envelopes_sha256":"<sha256>","tape_digest":"<sha256>"}
+```
+
+`production/bundles.py` owns the default-deny v1 parser/canonical bytes and the
+private verification seam. `ordered_envelope_digests` is the complete F3-sorted
+sequence of canonical envelope-byte digests; `ordered_envelopes_sha256` hashes its
+canonical array and `tape_digest` hashes the canonical object with only itself
+omitted. The root/receipt must be the exact F4 CAPTURED WORM members containing
+those bytes, and the policy digest must be the derived F3 policy for that same
+roster. The trusted production bridge verifies this manifest through
+`VerifiedCapture` and alone turns it into a runtime `ReplayTape`; a raw legacy
+`ReplayTape` has no admission to secure, replay, historical, or new-live runtime.
+
+The policy and `CapturedReplayTape.v1` digests are receipt evidence and are pinned
+by `execution_backtest`/EnvironmentIdentity. Its verified `tape_digest` fills the
+already accepted `tape_digest` keys of ADR-0124's `ReplayTransaction.v1` and
+`FrozenReplayPlan.v1`; those identities in turn bind replay ID, frozen cache bytes,
+checkpoint, ledger head, `ReplayResult`, and report provenance without changing
+their exact default-deny schemas. **RED:** raw-tape admission, unknown/extra/missing
+manifest member, canonical-byte/digest, policy/root/receipt substitution, reordered
+digest list, and restart-identity tests fail first. Recovery byte-compares the
+existing ADR identities before using a tape or resuming. Any direct transaction,
+result, cache, or checkpoint field addition requires a separately accepted
+versioned ADR evolution, default-deny migration, and focused old/new-schema refusal
+tests. **Exit:** ambient time, unverified/raw tape, rank-policy/capture mismatch,
+ambiguity, cycles, impossible time, or missing provenance rejects.
 
 ## F4 — immutable capture/WORM lifecycle
 
@@ -273,8 +327,10 @@ binding, receipt/port linkage, and same-run/session replay refusal.
 handoff's opaque `CapturedArtifactPort`. **RED:** legal grammar/nesting/stage
 boundary, descriptor forgery, sorted authorization comparison, broker/receipt before
 construction, runtime/consumer/release substitution, restricted-worker, and restart
-binding tests. **GREEN/test:** the only legal descriptor is the complete value of a
-declared node input:
+binding tests, plus execution-mode `stages`, every `$prev`/carry spelling, and
+artifact/read/path/model-load poison rejection before planner staging, provider/
+filesystem open, broker construction, or node import. **GREEN/test:** the only legal
+descriptor is the complete value of a declared node input:
 
 ```json
 {"$captured_artifact":{"root_ref":"release://forecast/v42","snapshot_version":"42","document_sha256":"<sha256>","node":"pit_bundle","output":"bundle","purpose":"paper"}}
@@ -290,10 +346,11 @@ Before node/branch construction the broker verifies one live authorization and o
 matching `PUBLISHED` then `CAPTURED` receipt for every port. It injects a fresh
 non-enumerable `CapturedBindings` for only the current node; `require(input)` cannot
 discover, copy, serialize, reopen, or forward another port. Carry/records retain
-audit only. Injected decider receives immutable captured ports, EnvironmentIdentity,
-logical clock, RNG, and F3 contract. **Exit:** untrusted workers cannot access paths,
-roots/keys/clock/storage/credentials; ambient, nested, ordinary, or noncaptured
-decision input refuses.
+audit only; it is never a prior-run value. Injected decider receives immutable
+captured ports, EnvironmentIdentity, logical clock, RNG, and F3 contract.
+**Exit:** untrusted workers cannot access paths, roots/keys/clock/storage/
+credentials; an execution document with user stages, a `$prev`/carry variant,
+ambient, nested, ordinary, raw-artifact, or noncaptured decision input refuses.
 
 ## A1--A4 — model release
 
@@ -318,10 +375,15 @@ approximate threshold, or nonreconstructable winner/rows refuses.
 
 **Reuse:** ADR-0122 generic tier-2 `pipeline.libs.lightgbm` seam. **RED:**
 canonical `dskit.lightgbm-text-bundle/v1`, ordered text members, feature/category/
-runtime identities, fixture prediction, and pickle/joblib refusal. **GREEN/test:**
-verified synthetic-fixture writer/loader using `VerifiedCapture` handles only;
-`tests/pipeline_libs/test_lightgbm_release.py`. **Exit:** paths, object
-deserializers, missing/extra/reordered/tampered members refuse.
+runtime identities, fixture prediction, pickle/joblib refusal, and execution-mode
+JSON `mode:load`/artifact/read/path poison before a node constructor, codec import,
+or provider/filesystem open. **GREEN/test:** verified synthetic-fixture writer/
+loader accepts only the bridge-injected opaque `CapturedModelLoad`/`VerifiedCapture`
+from current `CapturedBindings`, then calls the native codec behind `TrainableNode`;
+`tests/pipeline_libs/test_lightgbm_release.py`. No `NodeSpec`, artifact pin, raw
+member/path, or model value reaches a constructor or loader. **Exit:** paths, object
+deserializers, missing/extra/reordered/tampered members, or any config-origin model
+load refuses.
 
 ### A4 — FinalRefit captured release
 
@@ -532,15 +594,19 @@ Use one normal pipeline JSON/staged capture path:
 -> orders/fills -> ChainLedger/AccountState -> NAV/TWR/MWR -> monitoring/holds ->
 rolling retraining/release`.
 
-RED/focused GREEN categories are config-negative/plan hash, direct-ServeDocument
-CLI/config/constructor rejection, PipelineServeRuntime field/default/capture
-substitution, pipeline-to-production import-graph refusal, production-bridge
-live/replay composition parity, child direct-construction/export/registry/CLI refusal,
-port contract, accounting property/metamorphic, PIT/leakage, event/effect/outbox/ACK,
-lifecycle, and crash at every persisted boundary. Synthetic uninterrupted and
-crash/restart schedules must have identical release/artifact identities, ledger head,
-checkpoint, account state, outbox/cursors/events, metrics, and report. Any difference
-fails; no real tape/HPO/refit/paper/live work occurs.
+RED/focused GREEN categories are config-negative/plan hash; execution-block
+user-stage rejection at parser/planner/CLI/secure launcher (including auto-stage,
+with an instrumented assertion that `plan_stages` was never called); every `$prev`/
+carry spelling and mode/load/artifact/read/path poison rejection before provider/
+filesystem open/import/construction; direct-ServeDocument CLI/config/constructor
+rejection; PipelineServeRuntime field/default/capture substitution; pipeline-to-
+production import-graph refusal; production-bridge live/replay composition parity;
+child direct-construction/export/registry/CLI refusal; port contract; accounting
+property/metamorphic; PIT/leakage; event/effect/outbox/ACK; lifecycle; and crash at
+every persisted boundary. Synthetic uninterrupted and crash/restart schedules must
+have identical release/artifact identities, ledger head, checkpoint, account state,
+outbox/cursors/events, metrics, and report. Any difference fails; no real tape/HPO/
+refit/paper/live work occurs.
 
 ## I2 — exactly one gated historical simulator study
 
