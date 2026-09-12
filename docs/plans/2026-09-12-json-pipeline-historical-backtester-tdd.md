@@ -132,15 +132,39 @@ canonicalization and logical-clock/RNG algorithm/version, and execution profile.
 ## F3 — EventEnvelope F1/F2 causal total order
 
 **Reuse:** `production/feed.py:ReplayFeed`, `clock.py:ReplayClock`, and canonical
-ledger records. **RED:** F1/F2 migration, DST/timezone/tzdata, source/exchange/
-receive/availability causality, tie/sequence, duplicate ID, correction/bust chain,
-canonical bytes/digest, shuffle, and restart tests. **GREEN/test:** focused envelope
-codec/order tests. Envelopes bind source/event IDs, source sequence, source,
-exchange, receive, and derived availability instants, timezone/tzdata, provenance,
-schema/media/payload digest, and `corrects_event_id`/chain position/prior digest.
-Order is availability, source rank, source sequence, correction position, payload
-digest, event ID. **Exit:** ambient time, ambiguity, cycles, impossible time, or
-missing provenance rejects; no alternate tape engine.
+ledger records; extend their event-order contract, not a parallel tape engine.
+`SourceRankPolicy.v1` is a default-deny captured canonical object:
+
+```json
+{"schema_version":"dskit.source-rank-policy/v1","sources":[
+  {"source_id":"<canonical-id>","rank":0}],"policy_sha256":"<sha256>"}
+```
+
+The trusted capture authority derives `sources` from the captured tape's complete
+normalized source-identifier roster: entries are sorted by `source_id`, ranks are
+the contiguous `0..n-1` entry positions, and `policy_sha256` omits itself. Thus the
+mapping is unique and total for that tape; callers never supply a rank. Empty,
+unknown, duplicate, missing, noncanonical, noncontiguous, or swapped source/rank
+mappings refuse.
+
+**RED:** F1/F2 migration, DST/timezone/tzdata, source/exchange/receive/availability
+causality, rank-policy substitution, unknown/duplicate/missing/swapped mappings,
+same-availability tie ordering, duplicate ID, correction/bust chain, canonical
+bytes/digest, shuffle, and restart-terminal-identity tests. **GREEN/test:** focused
+envelope/order tests derive the rank from the verified policy. Envelopes bind
+source/event IDs, source sequence, source, exchange, receive, and derived
+availability instants, timezone/tzdata, provenance, schema/media/payload digest,
+the derived rank plus `source_rank_policy_sha256`, and
+`corrects_event_id`/chain position/prior digest. Order is availability, derived
+source rank, source sequence, correction position, payload digest, event ID.
+
+The policy schema version and digest are required tape manifest/capture members and
+receipt evidence; are pinned by normalized PipelineDocument/plan and
+EnvironmentIdentity; and are repeated in frozen replay plans/transactions,
+checkpoint/cache intents, ReplayResult, and report identity/provenance. Recovery
+byte-compares those bindings before using a tape or resuming. **Exit:** ambient
+time, rank-policy mismatch, ambiguity, cycles, impossible time, or missing
+provenance rejects.
 
 ## F4 — immutable capture/WORM lifecycle
 
