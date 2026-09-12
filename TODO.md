@@ -619,6 +619,39 @@ REMAINING, in the plan's risk order:
       round 10's gate widened to `os.rename`/`os.replace`/`shutil.*`
       (its own stated blind spot) before `Raises` completeness is
       declared closed.
+
+      **Twelfth skeptic round (2026-09-12): a 9th recurrence, both
+      instances the same already-known pattern-1 shape at two sites
+      rounds 10-11 hadn't swept — no new bug class.** Widening the
+      gate to `shutil.*`/`os.replace` (round 11's own recommendation)
+      plus a fresh `os.makedirs`/`os.rename` sweep of all 24 files
+      found: `run_acquisition`'s (`dskit/onboarding/acquire.py`)
+      `finally`-block cleanup checks `os.path.isdir` before each
+      `shutil.rmtree`, but an external actor (a stale-tmp reaper,
+      manual cleanup) deleting the directory in between raises a raw,
+      undocumented `FileNotFoundError` — verified by simulating exactly
+      that TOCTOU gap; and `write_run_dir`
+      (`dskit/pipeline/resolve.py`) has the identical unguarded
+      `os.makedirs(run_dir, exist_ok=True)` shape round 10 already
+      fixed at 4 other sites, in a file neither round 10 nor round 11
+      swept — its existing generic `OSError` clause is technically a
+      superset but omitted the named type and the race wording every
+      sibling site now carries verbatim, verified by triggering a real
+      `FileExistsError` via the same TOCTOU technique. Both fixed. Both
+      findings need external interference to reach (neither is
+      triggerable through the function's own retry/at-least-once
+      semantics alone) — consistent with round 11's finding, not a
+      regression in severity. Round 12 explicitly deferred its most
+      expensive planned check (an independent from-scratch exception
+      trace, built without looking at the current docstring first) per
+      its own stated precondition, since the mechanical sweep did not
+      come back clean. **Given a 9th straight round, but narrowing to
+      recurrences of one already-catalogued shape at previously-unswept
+      sites (no new class since round 10) — a 13th round should run
+      that deferred from-scratch trace on 3-4 multiply-touched
+      functions (`run_acquisition`, `write_snapshot`,
+      `Registry.register`, `pipeline_hash`) before `Raises`
+      completeness is declared closed.**
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

@@ -483,6 +483,11 @@ def write_run_dir(resolved) -> str:
     OSError
         If ``resolved.run_dir`` cannot be created, or its parent is not
         writable.
+    FileExistsError
+        If a stray file or directory already occupies ``resolved.run_dir``
+        between the non-empty check above and the commit — the unguarded
+        ``os.makedirs(..., exist_ok=True)`` this function makes does not
+        distinguish that from a race.
     """
     run_dir = resolved.run_dir
     new_hash = pipeline_hash(resolved)

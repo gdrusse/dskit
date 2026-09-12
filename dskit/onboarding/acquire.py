@@ -186,7 +186,10 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         ``observations/``/``forecasts/`` destination — unlike
         ``raw/`` (guarded by :func:`~dskit.onboarding.snapshot.write_snapshot`'s
         WORM check), nothing here confirms that destination is free
-        before the commit ``os.rename``.
+        before the commit ``os.rename``; or a staging directory this
+        call created is removed by something else between its
+        existence check and the cleanup ``shutil.rmtree`` in the
+        ``finally`` block.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
