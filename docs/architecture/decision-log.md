@@ -7887,14 +7887,111 @@ sanctioned producer of gross-unit rows.
 
 **Status:** proposed; owner approval is required before tests, code, config enablement, or execution. This extends ADR-0113/0115/0116/0119 and reconciles their delivered seams rather than replacing them.
 
-**Decision proposed.** Extend dskit.pipeline.driver with a generic signed, immutable RunOutputAttestation (dskit.run-output-attestation/v1) and verifier. It binds issuer/key ID and version, signer usage, purpose, consumer allowlist, algorithm, issued/not-before/expires epoch-ms, document/run identities, terminal state, and a complete ordered output-member list. Each member binds node, output, canonical relative artifact path, media type, bytes, SHA-256, and decoded-content identity. It also binds the signed exact runtime image, or the signed module/class/dependency identities when no image is used; the verifier checks the configured expected identities before any trusted code loads. Verification uses an injected trusted clock/keyring; rejects unknown, revoked, wrong-usage, wrong-purpose, unauthorized-consumer, out-of-window keys, runtime-identity mismatch, noncanonical/duplicate paths, missing/extra members, and signature/byte/digest mismatch; and composes existing RunAttestation.node_output_for_document with resolve_json_artifact, never trusting mutable sidecars alone. Add generic immutable MaterializedRowsEvidence binding row-artifact digest, source/cache identities, feature/category schema, ordered row-identity digest, count, event-time bounds, training start/exclusive end, and excluded half-open embargoes. Verification recomputes these from captured immutable bytes and refuses duplicates, unordered rows, cut/embargo violations, or identity substitution.
+**Decision proposed.** Add two generic, driver-owned trust boundaries. First,
+before plan resolves any document-selected uses reference, a sealed
+PreImportResolver reads the candidate module's distribution metadata and
+installed source-file bytes without importing that candidate module, its class,
+or its dependencies. It compares canonical, exact identities for the runtime
+image (or runtime), distribution, module files, named class, and transitive
+declared dependency files against an immutable, externally supplied expected
+identity document; it also verifies that document's signature, purpose,
+consumer allowlist, validity window, and exact consumer-document identity.
+Only after every comparison succeeds may it import the already-resolved module
+and let the ordinary planner validate the resulting Node subclass. The
+expected identity document cannot nominate a bootstrap, resolver, provider,
+keyring, clock, or verifier: those are a separately pinned, minimal trusted
+bootstrap selected by the executable distribution, with their own signed
+identity and fixed key authority. Registered toolkit kinds remain selected
+only by that trusted bootstrap; an untrusted pipeline document never selects
+code that establishes its own trust boundary. Missing metadata, editable or
+ambiguous distributions, namespace/file ambiguity, a module/class/dependency
+swap, an identity-document substitution, or any import before verification
+refuses plan/load fail-closed.
+
+Second, extend dskit.pipeline.driver with a generic signed immutable
+RunOutputAttestation (dskit.run-output-attestation/v1) and capture/publish
+protocol. A producer writes the completed bundle and manifest into a private
+staging directory, freezes their exact bytes, and asks an external signing
+authority to sign one complete ordered member list. That attestation binds
+schema/version, issuer/key/version/usage/algorithm, purpose, consumer
+allowlist, issued/not-before/expires epoch-ms, producer document/run/code and
+runtime identities, terminal state, immutable snapshot identity, and both
+bundle and manifest members' canonical relative paths, media types, byte
+counts, SHA-256 values, and decoded-content identities. Only after the
+external signature verifies does the driver atomically publish the immutable
+snapshot/output attestation; no mutable output path, sidecar, self-signed
+manifest, or producer-controlled replacement is a release. The verifier,
+using injected trusted clock/keyring, verifies the authorized consumer,
+external signer, time/key status, producer/run/code/runtime identities,
+complete exact member set, captured immutable bytes, paths, byte counts,
+digests, and signature before any joblib deserialization. run_load
+and every bundle consumer accept only verified captured member handles, never
+a caller path plus mutable JSON sidecar. It composes
+RunAttestation.node_output_for_document and resolve_json_artifact for
+producer evidence, but neither is an authorization substitute for the signed
+immutable snapshot.
+
+Add generic immutable MaterializedRowsEvidence binding captured row-artifact
+digest, source/cache identities, feature/category schema, ordered row-identity
+digest, count, event-time bounds, training start/exclusive end, and excluded
+half-open embargoes. Verification recomputes these from captured immutable
+bytes and refuses duplicates, unordered rows, cut/embargo violations, or
+identity substitution.
 
 In children/intraday_equities.final_model, require one immutable, completed, attested HPO run/snapshot/document whose complete ordered members contain all ten scan_h01..scan_h10 outputs; combining heads from different runs, snapshots, or documents is rejected. Require ten separately attested labelled-row members. Per head, FinalRefit reconstructs CandidateInventory and TrialLedger from that one pinned HPO document, requires canonical completeness and one shared inventory digest, recomputes every score and SE from canonical per-day contributions using the pinned bootstrap algorithm, version, code digest, seed, and complete configuration, verifies every stored score/SE/bootstrap result exactly, then reruns OneStandardErrorSelector with the existing ruled simplicity_key. Stored selection must exactly match; no winner field or approximate threshold is trusted. Every trial binds candidate, causal per-day score contributions, bootstrap settings/algorithm/version/code digest/seed/config/result and SE, fit seed, cuts, and row counts; prediction/outcome availability precedes the evidence cutoff. Refit rows share the pinned source/cache/window/embargo and feature/category contracts, remain lockbox-disjoint, and match their head label.
 
-FinalRefit becomes a conforming TrainableNode: base run and input-validation templates remain final; run_train performs exactly one fit per verified winner and one generic write_bundle call; run_load restores only through load_bundle and never fits. Neither path searches. Existing generic write_bundle/load_bundle/EstimatorBundle remain the sole persistence boundary and must change under focused TDD because their current bundle semantics do not make library/runtime version fields digest material or enforce an expected-version policy at load. The new manifest binds exactly ten ordered heads, per-head constructor params, full and surviving feature order, categorical encoding, immutable HPO/refit identities and cuts, runtime/library versions as digest material, prediction fixture/checksum, model bytes, and manifest digest. Load recomputes digest/checksum, verifies class and exact membership/order and configured expected runtime/library versions before loading, and refuses swaps, omissions, additions, corruption, version drift, or silent refit.
+FinalRefit becomes a conforming TrainableNode: base run and
+input-validation templates remain final; run_train performs exactly one fit
+per verified winner, calls the generic staged bundle writer once, then may
+return only its externally signed, atomically published capture; run_load
+obtains that capture through the verifier and only then calls load_bundle.
+Neither path searches. write_bundle/load_bundle/EstimatorBundle remain
+the sole generic persistence boundary, but load_bundle changes its input
+from a path to verified immutable bundle/manifest member handles plus their
+attestation context; it must not open or deserialize arbitrary caller-selected
+bytes. The manifest binds exactly ten ordered heads, per-head constructor
+params, full and surviving feature order, categorical encoding, immutable
+HPO/refit identities and cuts, runtime/library versions as digest material,
+prediction fixture/checksum, model bytes, and manifest digest. After the
+capture boundary has verified the bytes, load recomputes digest/checksum,
+verifies class and exact membership/order and configured expected
+runtime/library versions, and refuses swaps, omissions, additions, corruption,
+version drift, or silent refit.
 
-**Placement/API.** Generic attestation parsing, verification, row evidence, and canonical identity stay in existing dskit/pipeline/driver.py (or another existing generic module only after owner approval); sklearn persistence stays in dskit/pipeline/libs/sklearn.py; TrainableNode stays in node.py. Equity head vocabulary, score/simplicity, calendar/label rules, and orchestration stay in children/intraday_equities/intraday_equities/final_model.py; only children/intraday_equities/configs/run-final-refit.json supplies final pins and output path. No duplicate hash, selector, estimator, serializer, or row builder. Public names join owning __all__; schemas are default-deny canonical JSON and every digest domain binds schema version and purpose.
+**Placement/API.** The sealed bootstrap and PreImportResolver, including the
+pre-import distribution/file inspection seam, live with driver planning in
+dskit/pipeline/driver.py and planner.py (or another existing generic module
+only after owner approval); generic attestation parsing, capture, atomic
+publication, verification, row evidence, and canonical identity stay in
+dskit/pipeline/driver.py; sklearn persistence stays in
+dskit/pipeline/libs/sklearn.py; TrainableNode stays in node.py. Equity
+head vocabulary, score/simplicity, calendar/label rules, and orchestration
+stay in children/intraday_equities/intraday_equities/final_model.py; only
+children/intraday_equities/configs/run-final-refit.json supplies final pins
+and output path. No duplicate hash, selector, estimator, serializer, row
+builder, trust bootstrap, or import resolver. Public names join owning
+__all__; schemas are default-deny canonical JSON and every digest domain
+binds schema version and purpose.
 
-**Strict TDD after approval.** RED then focused GREEN: signature/key/version/revocation/time and exact membership substitutions; row-content/cut/embargo/order/causality identities; exact 1-SE reconstruction and ten-head completeness; TrainableNode conformance plus train/load no-search/no-silent-refit; bundle atomicity, round-trip and tamper/swap; then config validate/plan and synthetic ten-head orchestration. Run only owning files plus directly implicated purity, OOP, and conformance gates, Ruff on touched Python, and git diff --check.
+**Strict TDD after approval.** RED then focused GREEN: malicious candidate
+module import side effects prove no candidate code executes before pre-import
+identity verification; module, class-file, distribution, dependency, expected
+consumer-document, and bootstrap/keyring-provider swaps refuse; signature/key/
+version/revocation/time and exact membership substitutions; row-content/cut/
+embargo/order/causality identities; exact 1-SE reconstruction and ten-head
+completeness; TrainableNode conformance plus train/load no-search/no-silent-
+refit; staged-write interruption and atomic-publish tests; paired
+bundle/manifest substitution, re-signed self-manifest, mutable-sidecar, and
+hostile pickle/RCE fixtures prove refusal occurs before joblib.load; then
+config validate/plan and synthetic ten-head orchestration. Run only owning
+files plus directly implicated purity, OOP, and conformance gates, Ruff on
+touched Python, and git diff --check.
 
-**Fail-closed gates/non-goals.** Until the owner accepts this ADR, freezes its schema/key authority/trusted clock/runtime identity, approves exact HPO/refit artifact identities and final-refit config, and separately authorizes execution, FinalRefit and its config retain unconditional refusal. Approval authorizes synthetic tests and implementation, not real HPO, refit, market-data/lockbox reads, replay, paper trading, full backtesting, or a real bundle release.
+**Fail-closed gates/non-goals.** Until the owner accepts this ADR, freezes the
+schemas, external signing/key authority, trusted clock, bootstrap identities,
+runtime/module/class/dependency expected identities, consumer documents, exact
+HPO/refit artifact identities, and final-refit config, and separately
+authorizes execution, FinalRefit, its config, run_load, and every bundle
+consumer retain unconditional refusal. Approval authorizes synthetic tests
+and implementation, not real HPO, refit, market-data/lockbox reads, replay,
+paper trading, full backtesting, or a real bundle release.
