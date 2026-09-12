@@ -193,9 +193,14 @@ diagnostic before opening that path; ordinary callers first use the normal docum
 loader and then the same public guard, so ordinary documents with an absent block
 continue unchanged. Public stage runners, walk-forward helpers, CLI `run`, and every
 other driver API perform the same in-memory guard; an execution document supplied to
-any public API is never a compatibility fallback. A user-facing CLI may parse a
-user-supplied ordinary config into memory solely to issue that diagnostic, but has no
-execution route and never starts planning or opens any provider/run/output path.
+any public API is never a compatibility fallback. All public CLI `plan`, `run`,
+`staged`, walk-forward, and node-map `validate` routes are reordered through one
+side-effect-free `load_and_preflight_public_document`: it may perform the one
+explicit user-config read needed to parse/normalize a PipelineDocument, then checks
+`execution_backtest` **before** `_import_adapters`, registry access, planning,
+node/output construction, env/getenv, or provider/run/output filesystem work. A
+present block emits only the public refusal; it has no compatibility execution route.
+An absent ordinary document may then import its adapters and retain current behavior.
 
 The external broker is the sole execution route. From a broker-owned immutable
 document/capture store it verifies the permit and constructs a private,
@@ -210,9 +215,12 @@ forged, replayed, expired, wrong-process/run/purpose, dict, and duck-typed sessi
 poison/mocking assertions prove zero planning, getenv/env load, provider/filesystem
 open, registry/import, node construction, or output in
 `tests/pipeline/test_driver.py`, `test_stages.py`, `test_walkforward.py`, and
-`test_main.py`; ordinary no-block document tests remain byte-identical. The private
-entry is production-owned and may call an internal generic execution kernel only
-through the bridge; `dskit.pipeline` does not import or name production types.
+`test_main.py`. The CLI poison-adapter test permits exactly the explicit config read
+to parse/normalize and proves zero adapter import, provider/run/output filesystem
+open, planning, node construction, and output; ordinary no-block document tests
+remain byte-identical. The private entry is production-owned and may call an internal
+generic execution kernel only through the bridge; `dskit.pipeline` does not import or
+name production types.
 **Exit:** a public API, supplied path, optional kwarg, or non-opaque session cannot
 reach execution.
 
@@ -317,12 +325,12 @@ ledger records; extend their event-order contract, not a parallel tape engine.
   {"source_id":"<canonical-id>","rank":0}],"policy_sha256":"<sha256>"}
 ```
 
-The trusted capture authority derives `sources` from the captured tape's complete
-normalized source-identifier roster: entries are sorted by `source_id`, ranks are
-the contiguous `0..n-1` entry positions, and `policy_sha256` omits itself. Thus the
-mapping is unique and total for that tape; callers never supply a rank. Empty,
-unknown, duplicate, missing, noncanonical, noncontiguous, or swapped source/rank
-mappings refuse.
+The trusted capture authority derives `sources` from the parent tape-data capture's
+complete normalized source-identifier roster: entries are sorted by `source_id`,
+ranks are the contiguous `0..n-1` entry positions, and `policy_sha256` omits itself.
+Thus the mapping is unique and total for that data capture; callers never supply a
+rank. Empty, unknown, duplicate, missing, noncanonical, noncontiguous, or swapped
+source/rank mappings refuse.
 
 **RED:** F1/F2 migration, DST/timezone/tzdata, source/exchange/receive/availability
 causality, rank-policy substitution, unknown/duplicate/missing/swapped mappings,
@@ -336,40 +344,63 @@ the derived rank plus `source_rank_policy_sha256`, and
 source rank, source sequence, correction position, payload digest, event ID.
 
 `ReplayTape` currently has no digest or verified-capture identity. F3 therefore
-adds one generic production-owned capture manifest, not a parallel tape engine:
+adds an acyclic generic capture hierarchy, not a parallel tape engine. First,
+`ReplayTapeDataCapture` is a parent F4 WORM capture: one data-producer run writes
+the canonical F3-ordered envelope bytes and its derived `SourceRankPolicy.v1`, then
+receives distinct PUBLISHED and CAPTURED receipts for that **data** root. Second, a
+distinct later `ReplayTapeManifestProducer` run consumes that parent only through its
+authorized `CapturedLifecyclePort` and verified parent capture. It derives the
+inner canonical `ReplayTapeManifest` (`CapturedReplayTape.v1`) bytes:
 
 ```json
 {"schema_version":"dskit.captured-replay-tape/v1",
  "event_envelope_schema":"dskit.event-envelope/v2",
- "capture_root_sha256":"<sha256>","captured_receipt_sha256":"<sha256>",
+ "data_capture_root":"<sha256>","data_captured_receipt":"<sha256>",
  "source_rank_policy_sha256":"<sha256>","envelope_count":0,
  "ordered_envelope_digests":["<sha256>"],
  "ordered_envelopes_sha256":"<sha256>","tape_digest":"<sha256>"}
 ```
 
-`production/bundles.py` owns the default-deny v1 parser/canonical bytes and the
+`production/bundles.py` owns the default-deny v1 parser/canonical bytes and its
 private verification seam. `ordered_envelope_digests` is the complete F3-sorted
 sequence of canonical envelope-byte digests; `ordered_envelopes_sha256` hashes its
-canonical array and `tape_digest` hashes the canonical object with only itself
-omitted. The root/receipt must be the exact F4 CAPTURED WORM members containing
-those bytes, and the policy digest must be the derived F3 policy for that same
-roster. The trusted production bridge verifies this manifest through
-`VerifiedCapture` and alone turns it into a runtime `ReplayTape`; a raw legacy
-`ReplayTape` has no admission to secure, replay, historical, or new-live runtime.
+canonical array and `tape_digest` hashes the inner canonical object with only itself
+omitted. `data_capture_root`/`data_captured_receipt` name the exact parent data root
+and parent CAPTURED receipt whose WORM members contain those bytes and policy. The
+manifest producer then PUBLISHES and CAPTURES those inner manifest bytes in its own,
+separate `ReplayTapeManifestCapture` WORM root and receipt. It never records its
+own root or receipt in the inner manifest: the hierarchy is parent data capture ->
+later manifest capture -> third consumer, never same-root/self-receipt/cycle.
 
-The policy and `CapturedReplayTape.v1` digests are receipt evidence and are pinned
-by `execution_backtest`/EnvironmentIdentity. Its verified `tape_digest` fills the
-already accepted `tape_digest` keys of ADR-0124's `ReplayTransaction.v1` and
-`FrozenReplayPlan.v1`; those identities in turn bind replay ID, frozen cache bytes,
-checkpoint, ledger head, `ReplayResult`, and report provenance without changing
-their exact default-deny schemas. **RED:** raw-tape admission, unknown/extra/missing
-manifest member, canonical-byte/digest, policy/root/receipt substitution, reordered
-digest list, and restart-identity tests fail first. Recovery byte-compares the
-existing ADR identities before using a tape or resuming. Any direct transaction,
-result, cache, or checkpoint field addition requires a separately accepted
-versioned ADR evolution, default-deny migration, and focused old/new-schema refusal
-tests. **Exit:** ambient time, unverified/raw tape, rank-policy/capture mismatch,
-ambiguity, cycles, impossible time, or missing provenance rejects.
+Third, `ReplayRun` is a distinct later consumer run. Its broker authorization has
+the exact sorted pair of consumer ports for the outer manifest capture and the
+referenced parent data capture; the replay process receives neither as a reopenable
+handle. The broker verifies the outer manifest `VerifiedCapture`/bytes, matches the
+parent port to the referenced parent data CAPTURED receipt/root/members, verifies the
+derived policy/digest sequence, and only then issues one opaque composed tape
+capability that alone can become the runtime `ReplayTape`. Same run/session
+consumption and raw legacy `ReplayTape` admission refuse. The manifest capture's own
+root/receipt is bound by its consumer port, the new `LaunchSession`, study and plan
+evidence, and existing captured-binding/permit/binding-digest plus R1 frozen
+manifest/input/artifact evidence—not by hashing it into its own bytes and not by
+adding an ADR-0124 key.
+
+The policy and inner `CapturedReplayTape.v1` digests are receipt evidence and are
+pinned by `execution_backtest`/EnvironmentIdentity. Its verified inner
+`tape_digest` fills the already accepted `tape_digest` keys of ADR-0124's
+`ReplayTransaction.v1` and `FrozenReplayPlan.v1`; the outer capture identity remains
+admission/frozen evidence, so replay ID, frozen cache bytes, checkpoint, ledger
+head, `ReplayResult`, and report provenance are bound without changing their exact
+default-deny schemas. **RED:** raw-tape admission, unknown/extra/missing inner member,
+canonical-byte/digest, same-root/self-receipt, swapped parent/manifest receipts,
+missing hierarchy, same-run/session, outer-capture substitution, parent mutation/
+reorder, policy/root/receipt substitution, reordered digest list, and restart-
+identity tests fail first. Recovery byte-compares the existing ADR identities before
+using a tape or resuming. Any direct transaction, result, cache, or checkpoint field
+addition requires a separately accepted versioned ADR evolution, default-deny
+migration, and focused old/new-schema refusal tests. **Exit:** ambient time,
+unverified/raw tape, rank-policy/capture mismatch, self-reference/cycle, ambiguity,
+impossible time, or missing provenance rejects.
 
 ## F4 — immutable capture/WORM lifecycle
 
@@ -698,15 +729,18 @@ with an instrumented assertion that `plan_stages` was never called); every `$pre
 carry spelling and mode/load/artifact/read/path or renamed-parameter poison rejection
 before provider/filesystem open/import/construction; every public driver/stage/
 walk-forward/CLI API's missing/forged/replayed/duck-typed session denial with mocked
-zero plan/getenv/env/provider/fs/registry/import/construction/output; direct-
-ServeDocument CLI/config/constructor rejection; PipelineServeRuntime field/default/
-capture substitution; pipeline-to-production import-graph refusal; production-bridge
-live/replay composition parity; closed execution component-schema/manifest and
-restricted-context tests; malicious-node `run_dir`, filesystem, environment,
-network, subprocess, ambient time/random, and import-escalation denial before I/O/
-output; child direct-construction/export/registry/CLI refusal; port contract;
-accounting property/metamorphic; PIT/leakage; event/effect/outbox/ACK; lifecycle;
-and crash at every persisted boundary. This layer also runs the committed pre-execution
+zero plan/getenv/env/provider/fs/registry/import/construction/output; CLI plan/run
+poison-adapter tests permit only the explicit config read needed to parse/normalize,
+then assert zero adapter import, provider/run/output filesystem open, planning, node
+construction, and output; direct-ServeDocument CLI/config/constructor rejection;
+PipelineServeRuntime field/default/capture substitution; pipeline-to-production
+import-graph refusal; production-bridge live/replay composition parity; closed
+execution component-schema/manifest and restricted-context tests; malicious-node
+`run_dir`, filesystem, environment, network, subprocess, ambient time/random, and
+import-escalation denial before I/O/output; child direct-construction/export/registry/
+CLI refusal; port contract; accounting property/metamorphic; PIT/leakage; event/
+effect/outbox/ACK; lifecycle; and crash at every persisted boundary. This layer also
+runs the committed pre-execution
 PipelineDocument golden: no block must retain exact legacy canonical bytes/hash/run
 identity after parse and round-trip, while a present block must change identity and
 be fully hash material. Synthetic uninterrupted and crash/restart schedules must
