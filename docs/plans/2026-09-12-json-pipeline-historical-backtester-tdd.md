@@ -99,13 +99,33 @@ fail-closed exit and inherits the P0 Sol-first/Terra lifecycle.
 planner/identity hash, `driver.py:run_document`, staged runner, and registry.
 **RED:** parser unknown-key/version/migration/default normalization, canonical plan
 hash and digest-change, secret literal, normal wire, illegal captured wire/topology,
-and unsupported-profile tests. **GREEN/test:** add one default-deny versioned
-`execution_backtest` object and focused document/driver tests. It names only
-policy/migration/defaults, content-digested refs, fidelity/profile, capture stages,
-and opaque external references. `$node.output` stays same-run; `$captured_artifact`
-is only producer -> seal -> external capture -> consumer, compiled by the existing
-planner into staged runs. **Exit:** malformed/mutable/secret/same-DAG-capture plans
-refuse before planning, data access, adapter load, or lifecycle action.
+unsupported-profile, direct ServeDocument CLI/config/construction/parsing, alternate
+independently hashed document, field/default/captured-binding substitution, and
+live/replay composition-parity tests. **GREEN/test:** add one default-deny versioned
+`execution_backtest` object and focused document/driver/production bridge tests. It
+names only policy/migration/defaults, content-digested refs, fidelity/profile,
+capture stages, and opaque external references. `$node.output` stays same-run;
+`$captured_artifact` is only producer -> seal -> external capture -> consumer,
+compiled by the existing planner into staged runs.
+
+The trusted planner/driver alone derives an internal, non-user-constructible
+`PipelineServeRuntime` view from normalized PipelineDocument plus verified captured
+bindings. Its only identity is a canonical derivative of the PipelineDocument hash,
+normalized plan hash, captured-binding audit digests, release, and EnvironmentIdentity;
+it has no JSON loader, `to_obj`, independent config path, or hash authority. It may
+reuse `production.document.ServeDocument` validators/read views behind an internal
+compatibility projection, but that projection cannot parse, construct, select,
+substitute, or independently identify an operational process.
+
+Direct `ServeDocument.load`/`from_obj`/constructor use, a ServeDocument positional
+CLI/config, or a caller-supplied serve view refuses for secure, replay, historical,
+and new live operation. Existing standalone live users receive an explicit,
+non-executing migration/compatibility diagnostic: a one-shot converter may read the
+legacy document solely to emit a normalized PipelineDocument or refuse an unmappable
+field; it never starts ServeLoop. Thus legacy use is neither silently reinterpreted
+nor silently broken. **Exit:** malformed/mutable/secret/same-DAG-capture or any
+independently authored/hashed operational document refuses before planning, data,
+adapter load, or lifecycle action.
 
 ## F2 — external launcher, codecs, EnvironmentIdentity
 
@@ -200,14 +220,19 @@ duplicate-nonce, non-WORM, unsealed, uncaptured, unverified, cross-plan, TOCTOU,
 invalid-path bytes cannot be consumed.
 
 Within that single authority flow, only the trusted driver receives a private
-`PreparedCapture` at PRODUCED/SEALED. After PUBLISHED/CAPTURED, the broker admits the
-same `LaunchSession` to obtain a `VerifiedCapture`; it yields verified
-`CapturedMemberHandle` values for a native loader such as
+`PreparedCapture` at PRODUCED/SEALED; that producer `LaunchSession` ends before the
+later consumer run. After PUBLISHED/CAPTURED, the broker issues a **new**, process-
+and run-bound consumer `LaunchSession` only after verifying the linked receipts and
+exact `ConsumerCapturedPort`; same-run or same-session replay refuses. That consumer
+session obtains a `VerifiedCapture`, which yields verified `CapturedMemberHandle`
+values for a native loader such as
 `load_text_bundle(VerifiedCapture)`. For a planned consumer port, the driver derives
 one `CapturedLifecyclePort`/`CapturedJsonArtifact` from those verified retained
 bytes, exposes it only through that node's `CapturedBindings`, and records CONSUMED.
 `CapturedRelease` is the opaque post-capture result returned to the driver. These
 are one-way consumption transitions, never a second trust root or reopen mechanism.
+Focused lifecycle tests prove producer-session termination, new consumer-session
+binding, receipt/port linkage, and same-run/session replay refusal.
 
 ## F5 — captured ports, driver, and decider injection
 
@@ -395,9 +420,15 @@ snapshot preview/exact cache intents, and `ReplayResult` digest omitting
 ### R3 — loop dispatch/binding/checkpoint/recovery after R1/R2
 
 **Reuse:** `production/loop.py:ServeLoop`, `compose.py:handlers_for`,
-`CommandProcessor`, `Checkpoint`, ReplayClock/Feed, and recovery. **RED:** live
+`CommandProcessor`, `Checkpoint`, ReplayClock/Feed, and recovery. ServeLoop,
+`bundles_for`, `handlers_for`, and the command processor accept only the derived
+`PipelineServeRuntime`, never a user-authored `ServeDocument`; its bound pipeline
+document/plan/capture/release/environment identities are carried into live and replay
+binding digests. **RED:** live
 byte/order equivalence, provisional isolation, handler/processor digest, preview/
-cache, lifecycle crash/restore, and injected crashes after outbox drain, every
+cache, lifecycle crash/restore, direct serve-view/config rejection, runtime field/
+default/capture substitution, live/replay composition parity, and injected crashes
+after outbox drain, every
 deferred effect receipt, result write, cursor replacement, and pre/post COMMITTED.
 Each crash schedule asserts the ADR-0124 order and either resumes the exact frozen
 suffix or refuses; it never derives a result/cursor before effects. **GREEN/test:**
@@ -410,8 +441,10 @@ effects -> result/cursor -> `COMMITTED`. Every append, cache replacement, outbox
 ACK, deferred-effect receipt, result write, and cursor replacement verifies the
 current fence token and frozen preimage; cursor replacement is atomic and the final
 commit is durable only after both result and cursor are valid ledger-derived values.
-`ReplayRun` drives **three** lifecycle transactions under that same journal, lease,
-and frozen-plan rule: `startup` for recovery/reconciliation mutations, one `tick`
+`ReplayRun` and live mode compose through the same derived runtime view; only replay
+adds transaction mode. `ReplayRun` drives **three** lifecycle transactions under
+that same journal, lease, and frozen-plan rule: `startup` for recovery/reconciliation
+mutations, one `tick`
 per F3 tape tick, and `shutdown` for stop/final checkpoint/result/teardown and
 deferred effects. Every startup/tick/shutdown mutation or effect must be planable,
 idempotent, frozen, and lease-held; one that cannot be staged refuses before it
@@ -442,12 +475,14 @@ Use one normal pipeline JSON/staged capture path:
 -> orders/fills -> ChainLedger/AccountState -> NAV/TWR/MWR -> monitoring/holds ->
 rolling retraining/release`.
 
-RED/focused GREEN categories are config-negative/plan hash, port contract,
-accounting property/metamorphic, PIT/leakage, event/effect/outbox/ACK, lifecycle,
-and crash at every persisted boundary. Synthetic uninterrupted and crash/restart
-schedules must have identical release/artifact identities, ledger head, checkpoint,
-account state, outbox/cursors/events, metrics, and report. Any difference fails; no
-real tape/HPO/refit/paper/live work occurs.
+RED/focused GREEN categories are config-negative/plan hash, direct-ServeDocument
+CLI/config/constructor rejection, PipelineServeRuntime field/default/capture
+substitution, live/replay composition parity, port contract, accounting property/
+metamorphic, PIT/leakage, event/effect/outbox/ACK, lifecycle, and crash at every
+persisted boundary. Synthetic uninterrupted and crash/restart schedules must have
+identical release/artifact identities, ledger head, checkpoint, account state,
+outbox/cursors/events, metrics, and report. Any difference fails; no real tape/HPO/
+refit/paper/live work occurs.
 
 ## I2 — exactly one gated historical simulator study
 
