@@ -140,6 +140,10 @@ same-run; `$captured_artifact` is only producer -> seal -> external capture ->
 consumer. Capture stages are derived only from those legal graph ports and their
 completed lifecycle receipts, then compiled by the existing planner into staged runs;
 there is no second stage-language member to drift from the graph.
+`source_rank_policy_sha256` specifically names the pre-document F3
+SourceRosterCapture policy and must equal the data producer's resolved
+`source_roster` descriptor policy at broker admission; it is never derived from or a
+digest of a resulting tape.
 
 **Replay tape inputs are ordinary document identity.** Every node resolved as the
 generic `ReplayRun` consumer in an execution PipelineDocument declares exactly two
@@ -218,6 +222,30 @@ explicit user-config read needed to parse/normalize a PipelineDocument, then che
 node/output construction, env/getenv, or provider/run/output filesystem work. A
 present block emits only the public refusal; it has no compatibility execution route.
 An absent ordinary document may then import its adapters and retain current behavior.
+
+**Public planning-entry denial.** Inventory and gate every public planning surface:
+`dskit.pipeline.planner.plan`, exported `dskit.pipeline.plan`,
+`dskit.pipeline.driver.plan_document`, stage planning, and exported
+`dskit.pipeline.resolve_uses`. For an in-memory PipelineDocument each document-
+accepting facade's literal first operation is the same execution-block guard; a
+present block refuses before `resolve_uses`, registry lookup, `uses`/adapter/class
+import, planner work, filesystem/provider/environment use, node construction, or
+output. The current bare `resolve_uses(uses, registry)` cannot see a document, so it
+is retired from the public execution-capable API: ordinary implementation uses the
+private `_resolve_uses_ordinary` only after its facade's absent-block guard, while the
+public replacement accepts an in-memory PipelineDocument first and performs that
+guard before resolving. Old bare callers receive an explicit ordinary-compatibility
+migration diagnostic, never execution behavior. **RED:** poison `uses`/adapter tests
+in `tests/pipeline/test_planner.py`, `test_node.py`, `test_driver.py`, `test_stages.py`,
+and `test_main.py` exercise every export with an execution document and assert zero
+resolution/import/filesystem/environment/node/output activity.
+
+The broker route alone calls a private, non-exported generic planning kernel, only
+after the production bridge has verified the opaque LaunchSession/permit, canonical
+document, captures/authorization set, release, and EnvironmentIdentity. That kernel
+is not a public alias, import, CLI, kwargs/dict/claim/duck-type extension, and it
+does not relax any ordinary public facade. **Exit:** no public plan/resolve surface
+can resolve a `uses` value or produce a plan for an execution document.
 
 The external broker is the sole execution route. From a broker-owned immutable
 document/capture store it verifies the permit and constructs a private,
@@ -335,25 +363,41 @@ canonicalization and logical-clock/RNG algorithm/version, and execution profile.
 
 **Reuse:** `production/feed.py:ReplayFeed`, `clock.py:ReplayClock`, and canonical
 ledger records; extend their event-order contract, not a parallel tape engine.
-`SourceRankPolicy.v1` is a default-deny captured canonical object:
+F3 first creates a pre-document, immutable `SourceRosterCapture.v1`; this is an F3
+prerequisite under F2, not a new DAG node, so `F3 <- F1,F2` remains acyclic. For an
+historical purpose the data owner signs G2 authorization for it before any data
+access; synthetic uses the equivalent nondeployment authority only. The roster is
+PUBLISHED and CAPTURED before the execution PipelineDocument is frozen and contains
+the complete authorized source universe, scope/time bounds, source-provenance
+identities, policy version, and its `SourceRankPolicy.v1`:
 
 ```json
-{"schema_version":"dskit.source-rank-policy/v1","sources":[
-  {"source_id":"<canonical-id>","rank":0}],"policy_sha256":"<sha256>"}
+{"schema_version":"dskit.source-roster-capture/v1",
+ "scope":{"availability_start_ms":0,"availability_end_ms":0,
+          "source_provenance_sha256":"<sha256>"},
+ "source_ids":["<canonical-id>"],
+ "policy":{"schema_version":"dskit.source-rank-policy/v1","sources":[
+   {"source_id":"<canonical-id>","rank":0}],"policy_sha256":"<sha256>"}}
 ```
 
-The trusted capture authority derives `sources` from the parent tape-data capture's
-complete normalized source-identifier roster: entries are sorted by `source_id`,
-ranks are the contiguous `0..n-1` entry positions, and `policy_sha256` omits itself.
-Thus the mapping is unique and total for that data capture; callers never supply a
-rank. Empty, unknown, duplicate, missing, noncanonical, noncontiguous, or swapped
-source/rank mappings refuse.
+`source_ids` is canonical sorted/unique; the trusted roster authority derives
+`policy.sources` in that order with contiguous ranks `0..n-1`, and `policy_sha256`
+omits itself. The scope is a complete provenance-attested source universe for its
+declared availability interval—not merely sources observed in resulting events—so it
+includes authorized zero-event sources. The execution block pins this already-
+captured policy digest, and the tape-data producer node declares and consumes its
+exact top-level `source_roster` `$captured_artifact` descriptor. It is the same
+F5-authorized descriptor/purpose/receipt flow as every capture input. Thus no policy
+is derived from the resulting tape. Missing, late, unknown, duplicate, substituted,
+noncanonical, noncontiguous, or rank-changed roster/policy data refuses.
 
 **RED:** F1/F2 migration, DST/timezone/tzdata, source/exchange/receive/availability
-causality, rank-policy substitution, unknown/duplicate/missing/swapped mappings,
-same-availability tie ordering, duplicate ID, correction/bust chain, canonical
-bytes/digest, shuffle, and restart-terminal-identity tests. **GREEN/test:** focused
-envelope/order tests derive the rank from the verified policy. Envelopes bind
+causality, pre-document roster cycle/late-roster, roster descriptor/digest/source
+swap, rank-policy substitution, unknown/duplicate/missing/swapped mappings, unknown
+event source, rank change, zero-event source, same-availability tie ordering,
+duplicate ID, correction/bust chain, canonical bytes/digest, shuffle, and restart-
+terminal-identity tests. **GREEN/test:** focused roster/envelope/order tests derive
+the rank only from the verified pre-document policy. Envelopes bind
 source/event IDs, source sequence, source, exchange, receive, and derived
 availability instants, timezone/tzdata, provenance, schema/media/payload digest,
 the derived rank plus `source_rank_policy_sha256`, and
@@ -363,8 +407,10 @@ source rank, source sequence, correction position, payload digest, event ID.
 `ReplayTape` currently has no digest or verified-capture identity. F3 therefore
 adds an acyclic generic capture hierarchy, not a parallel tape engine. First,
 `ReplayTapeDataCapture` is a parent F4 WORM capture: one data-producer run writes
-the canonical F3-ordered envelope bytes and its derived `SourceRankPolicy.v1`, then
-receives distinct PUBLISHED and CAPTURED receipts for that **data** root. Second, a
+the canonical F3-ordered envelope bytes while verifying every event source belongs
+to its consumed pre-document roster and binds that exact policy digest; it does not
+derive a new policy. It then receives distinct PUBLISHED and CAPTURED receipts for
+that **data** root. Second, a
 distinct later `ReplayTapeManifestProducer` run consumes that parent only through its
 authorized `CapturedLifecyclePort` and verified parent capture. It derives the
 inner canonical `ReplayTapeManifest` (`CapturedReplayTape.v1`) bytes:
@@ -472,7 +518,9 @@ RED additionally covers `tape_manifest`-only, `tape_data`-only, missing outer or
 parent, extra/duplicate/aliased/nested descriptors, swapped outer/parent roots,
 snapshots, producers, members, or receipts, inner digest/policy/count/order, purpose
 and authorization-descriptor swaps, and equal ConsumerCapturedPorts with different
-captures—all before planning/root creation.
+captures—all before planning/root creation. CapturedAuthorizationSet RED covers
+unknown/extra/missing/duplicate/unsorted entry, self-digest, port/descriptor/resolved/
+live-authorization substitution, and restart identity refusal.
 **GREEN/test:** the only legal descriptor is the complete value of a declared node
 input:
 
@@ -484,11 +532,35 @@ The parser derives, not accepts, the exact
 `ConsumerCapturedPort={consumer_document_sha256,consumer_node,consumer_input,purpose}`.
 It rejects the descriptor in params, outputs, defaults, lists, maps, carry,
 artifacts, or any nested/non-input location. The planner creates non-JSON
-`CapturedArtifactPort` values. It compares the complete sorted planned set to the
-complete sorted broker **authorization-entry** set, never only ConsumerCapturedPorts.
-An entry binds (1) that derived, unchanged ADR-0123 ConsumerCapturedPort, (2) the
-complete normalized descriptor, and (3) the descriptor's resolved immutable root,
-ordered member digests, PUBLISHED receipt, CAPTURED receipt, and live authorization.
+`CapturedArtifactPort` values. F5 defines the canonical default-deny
+`CapturedAuthorizationSet.v1`:
+
+```json
+{"schema_version":"dskit.captured-authorization-set/v1","entries":[
+ {"consumer_port":{"consumer_document_sha256":"<sha256>","consumer_node":"n",
+   "consumer_input":"i","purpose":"synthetic"},
+  "descriptor":{"$captured_artifact":{"root_ref":"release://x","snapshot_version":"1",
+   "document_sha256":"<sha256>","node":"n","output":"o","purpose":"synthetic"}},
+  "resolved":{"immutable_root_sha256":"<sha256>","ordered_member_digests":["<sha256>"],
+   "published_receipt_sha256":"<sha256>","captured_receipt_sha256":"<sha256>",
+   "live_authorization_evidence_sha256":"<sha256>"}}],
+ "authorization_set_sha256":"<sha256>"}
+```
+
+Entries sort by their complete canonical `(consumer_port, descriptor, resolved)`
+bytes; duplicate or unsorted entries refuse, and `authorization_set_sha256` hashes
+the object with only itself omitted. An entry binds (1) that derived, unchanged
+ADR-0123 ConsumerCapturedPort, (2) the complete normalized descriptor, and (3) the
+descriptor's resolved immutable root, ordered member digests, PUBLISHED receipt,
+CAPTURED receipt, and live-authorization evidence. The planner and broker compare
+the complete sorted set and self-omitting digest exactly, never only
+ConsumerCapturedPorts. That digest is carried in PlannedRuntimeContract, bound by
+the broker permit/opaque LaunchSession, included in PipelineServeRuntime's
+`binding_digest`, and retained through R1 frozen input/artifact evidence, recovery,
+result, report, and study evidence using their existing identity/evidence slots—no
+ADR-0124 exact key is added. Substitution, ordering, and restart identity tests are
+focused F5/I1 RED cases.
+
 The broker resolves each descriptor's `root_ref` + `snapshot_version` + producer
 `document_sha256`/`node`/`output` to those exact immutable values; equal consumer
 ports cannot substitute a different descriptor or capture. Descriptor `purpose`
@@ -771,17 +843,21 @@ walk-forward/CLI API's missing/forged/replayed/duck-typed session denial with mo
 zero plan/getenv/env/provider/fs/registry/import/construction/output; CLI plan/run
 poison-adapter tests permit only the explicit config read needed to parse/normalize,
 then assert zero adapter import, provider/run/output filesystem open, planning, node
-construction, and output; direct-ServeDocument CLI/config/constructor rejection;
-PipelineServeRuntime field/default/capture substitution; pipeline-to-production
-import-graph refusal; production-bridge live/replay composition parity; closed
-execution component-schema/manifest and restricted-context tests; malicious-node
-`run_dir`, filesystem, environment, network, subprocess, ambient time/random, and
-import-escalation denial before I/O/output; child direct-construction/export/registry/
-CLI refusal; ReplayRun's exact top-level manifest/data descriptor pair and complete
-authorization-entry equality before planning/root creation (including all capture/
-receipt/member/policy/count/order/purpose swaps); port contract; accounting property/
-metamorphic; PIT/leakage; event/effect/outbox/ACK; lifecycle; and crash at every
-persisted boundary. This layer also runs the committed pre-execution
+construction, and output; public `planner.plan`, exported `pipeline.plan`,
+`plan_document`, stage-plan, and `resolve_uses` poison-uses/adapter tests with zero
+resolution/import/fs/env/node/output; direct-ServeDocument CLI/config/constructor
+rejection; PipelineServeRuntime field/default/capture substitution; pipeline-to-
+production import-graph refusal; production-bridge live/replay composition parity;
+pre-document SourceRosterCapture cycle/late/descriptor/digest/source/rank/unknown-
+source/zero-event/restart refusal; closed execution component-schema/manifest and
+restricted-context tests; malicious-node `run_dir`, filesystem, environment, network,
+subprocess, ambient time/random, and import-escalation denial before I/O/output;
+child direct-construction/export/registry/CLI refusal; ReplayRun's exact top-level
+manifest/data descriptor pair and complete CapturedAuthorizationSet entry/set-digest
+equality before planning/root creation (including all capture/receipt/member/policy/
+count/order/purpose/auth-set swaps); port contract; accounting property/metamorphic;
+PIT/leakage; event/effect/outbox/ACK; lifecycle; and crash at every persisted
+boundary. This layer also runs the committed pre-execution
 PipelineDocument golden: no block must retain exact legacy canonical bytes/hash/run
 identity after parse and round-trip, while a present block must change identity and
 be fully hash material. Synthetic uninterrupted and crash/restart schedules must
