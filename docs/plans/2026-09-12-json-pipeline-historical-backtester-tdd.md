@@ -99,12 +99,19 @@ fail-closed exit and inherits the P0 Sol-first/Terra lifecycle.
 `StageSpec`; the node-map document/driver is current, while `stages.py:plan_stages`
 is the predecessor stage-list seam. There is no `RunConfig` in this grammar.
 Reuse the current planner/identity hash, `driver.py:run_document`, and registry.
+`PipelineDocument.to_obj` already omits later-added `walkforward` and `foreach`
+sections when absent; the execution block follows that omission precedent rather
+than the older always-emitted nullable sections.
 **RED:** parser unknown-key/version/migration/default normalization, canonical plan
 hash and digest-change, secret literal, normal wire, illegal captured wire/topology,
 unsupported-profile, direct ServeDocument CLI/config/construction/parsing, alternate
 independently hashed document, field/default/captured-binding substitution, and
 live/replay composition parity, pipeline-imports-production refusal, user-authored
-`stages`, `$prev`/carry, and raw model-load/artifact-path refusal tests.
+`stages`, `$prev`/carry, and raw model-load/artifact-path refusal tests. Add the
+pre-change representative `PipelineDocument` canonical-JSON-byte/hash golden to
+`tests/pipeline/test_document.py`, then prove absent-block parse/round-trip/to_obj
+preserves those bytes, hash, and `run_document` identity exactly; prove null/empty
+is refused, absent differs from present, and an explicit migration changes identity.
 
 The complete default-deny `execution_backtest` v1 grammar is:
 
@@ -131,6 +138,17 @@ same-run; `$captured_artifact` is only producer -> seal -> external capture ->
 consumer. Capture stages are derived only from those legal graph ports and their
 completed lifecycle receipts, then compiled by the existing planner into staged runs;
 there is no second stage-language member to drift from the graph.
+
+**Absence is canonical compatibility, never a null default.** When absent,
+`execution_backtest` is absent from the normalized `PipelineDocument` object,
+`to_obj` output, canonical JSON bytes, config hash, plan hash, and run identity—not
+present as `null`, `{}`, an inferred version, or another default. `from_obj` must
+therefore preserve every pre-existing representative legacy document's serialized
+bytes and hash byte-for-byte; the focused golden regression freezes both before the
+field is introduced. A present, fully normalized v1 block is emitted and wholly hash
+material. Moving a legacy document into execution mode is an explicit new document/
+migration that adds the block and intentionally has a new canonical and run identity;
+no parser, planner, CLI, or launcher default may silently perform that migration.
 
 If `execution_backtest` exists, user-authored `PipelineDocument.stages` is forbidden:
 `PipelineDocument.from_obj`, the ordinary planner, every CLI entry point (including
@@ -181,10 +199,12 @@ non-executing migration/compatibility diagnostic: a production-side one-shot
 converter may read the legacy document solely to emit a normalized PipelineDocument
 or refuse an unmappable field; it never starts ServeLoop. Thus legacy use is neither
 silently reinterpreted nor silently broken. **GREEN/test:** focused pipeline grammar,
-migration/hash/purity tests and production bridge tests. **Exit:** malformed,
-mutable, secret, same-DAG-capture, pipeline-to-production import, or independently
-authored/hashed operational document refuses before planning, data, adapter load, or
-lifecycle action.
+migration/hash/purity tests and production bridge tests, including the committed
+legacy canonical-byte/hash/run-identity golden, absent/present/round-trip matrix,
+and explicit-migration identity change. **Exit:** malformed, mutable, secret,
+same-DAG-capture, nullable/defaulted execution block, changed legacy canonical bytes/
+hash/run identity, pipeline-to-production import, or independently authored/hashed
+operational document refuses before planning, data, adapter load, or lifecycle action.
 
 ## F2 — external launcher, codecs, EnvironmentIdentity
 
@@ -603,7 +623,10 @@ rejection; PipelineServeRuntime field/default/capture substitution; pipeline-to-
 production import-graph refusal; production-bridge live/replay composition parity;
 child direct-construction/export/registry/CLI refusal; port contract; accounting
 property/metamorphic; PIT/leakage; event/effect/outbox/ACK; lifecycle; and crash at
-every persisted boundary. Synthetic uninterrupted and crash/restart schedules must
+every persisted boundary. This layer also runs the committed pre-execution
+PipelineDocument golden: no block must retain exact legacy canonical bytes/hash/run
+identity after parse and round-trip, while a present block must change identity and
+be fully hash material. Synthetic uninterrupted and crash/restart schedules must
 have identical release/artifact identities, ledger head, checkpoint, account state,
 outbox/cursors/events, metrics, and report. Any difference fails; no real tape/HPO/
 refit/paper/live work occurs.
