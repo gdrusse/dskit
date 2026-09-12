@@ -138,6 +138,8 @@ class Registry:
             strings, or ``payload``/``refs`` hold a value that is not
             canonically serializable (propagated from constructing the
             :class:`AssetRecord`).
+        TypeError
+            If ``kind`` is an unhashable type (e.g. a list).
         """
         spec = self._spec(kind)
         refs = {} if refs is None else refs
@@ -220,6 +222,8 @@ class Registry:
         AssetError
             If ``kind`` is not declared by the model, or ``name`` is not
             a non-empty string.
+        TypeError
+            If ``kind`` is an unhashable type (e.g. a list).
         """
         self._spec(kind)
         errors = []
@@ -248,6 +252,8 @@ class Registry:
         ------
         AssetError
             If ``kind`` is given but not declared by the model.
+        TypeError
+            If ``kind`` is an unhashable type (e.g. a list).
         """
         if kind is not None:
             self._spec(kind)

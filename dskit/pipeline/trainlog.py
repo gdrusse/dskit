@@ -105,7 +105,8 @@ def probability_metrics(preds, labels) -> dict:
     -------
     dict
         ``{"logloss": .., "brier": .., "ece": .., "n": ..}``, or ``{}``
-        when the labels are not binary or there are no rows.
+        when the labels are not binary, there are no rows, or any
+        prediction is not a finite number.
 
     Raises
     ------

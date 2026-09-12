@@ -250,6 +250,8 @@ def durable_copy_file(src, dst) -> None:
     AssetError
         When ``src`` is missing, unreadable or not a regular file, or
         when ``dst`` cannot be written (a directory squatting the path).
+    OSError
+        If ``dst``'s directory does not exist.
     """
     errors = []
     _check_str(errors, "src", src)

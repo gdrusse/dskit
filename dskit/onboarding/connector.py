@@ -456,12 +456,14 @@ def backoff(attempt, base_s=DEFAULT_BACKOFF_S):
     base_s : float, optional
         The first wait, in seconds, ``>= 0``; defaults to
         :data:`DEFAULT_BACKOFF_S`. A pack that starts wider, or reads its
-        base from config, passes its own.
+        base from config, passes its own. NOT independently validated —
+        a caller-supplied negative or non-finite value is not refused
+        and produces a result outside the stated range below.
 
     Returns
     -------
     float
-        Seconds in ``[0, MAX_BACKOFF_S]``.
+        Seconds in ``[0, MAX_BACKOFF_S]``, given a well-formed ``base_s``.
 
     Raises
     ------
@@ -470,6 +472,10 @@ def backoff(attempt, base_s=DEFAULT_BACKOFF_S):
         the point of the check: the doubling would HALVE the first wait
         rather than fail, which is exactly the silent drift one owner
         exists to prevent.
+    TypeError
+        If ``base_s`` is ``None`` or another type ``float()`` refuses.
+    ValueError
+        If ``base_s`` is a string ``float()`` cannot parse.
 
     Examples
     --------

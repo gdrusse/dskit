@@ -64,8 +64,11 @@ def load_state(root, source, stream, mode) -> dict:
     Raises
     ------
     AssetError
-        If an existing checkpoint file is unreadable or malformed —
-        a corrupt cursor must halt the pull, not silently restart it
+        If ``root`` is not an OnboardingRoot; ``source``/``stream`` are
+        not filesystem-safe or ``mode`` is not a declared mode (via
+        :meth:`~dskit.onboarding.layout.OnboardingRoot.state_path`); or
+        an existing checkpoint file is unreadable or malformed — a
+        corrupt cursor must halt the pull, not silently restart it
         from zero (which would re-acquire everything).
     """
     _require_root(root)

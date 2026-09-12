@@ -439,6 +439,52 @@ REMAINING, in the plan's risk order:
       eighth round is required before treating `Raises` completeness
       as settled, unlike `Parameters`/`Returns`/`Yields` (AST-provable,
       closed since round 4).
+
+      **Eighth skeptic round (2026-09-12): still MAJOR — a 5th
+      straight recurrence, this time including two of round 7's OWN
+      fixes.** The two connector `read()` methods' round-7
+      `ValueError` note for a bad per-stream `state` value was itself
+      wrong for most inputs: only a `str` value raises `ValueError`
+      (via `dict(v)`); an `int`/`list`/`None`/`float` raises
+      `TypeError` instead — split into separately-scoped `TypeError`/
+      `ValueError` entries in both `dskit/onboarding/libs/localfiles.py`
+      and `children/_skeleton/yourproject/connectors.py`, each verified
+      by executing both branches. `durable_copy_file` was the one
+      sibling round 7's `OSError` sweep missed — added, verified via a
+      copy into a nonexistent directory. Four more gaps, all fixed and
+      verified by triggering the condition: `load_state`
+      (`dskit/onboarding/state.py`) had no `Raises` at all despite
+      raising the same root/segment/mode errors its sibling
+      `save_state` documents 40 lines below; `OnboardingRoot.registry`
+      (`dskit/onboarding/layout.py`) omitted the "`model` given but not
+      an `AssetModel`" case its own callee (`Registry.__init__`) raises;
+      `backoff` (`dskit/onboarding/connector.py`) left `base_s`
+      completely unvalidated/undocumented — added `TypeError`/
+      `ValueError` entries and softened the `Returns` range claim,
+      which a negative or NaN `base_s` violates; and an unhashable
+      `kind` (e.g. a list) escapes `Registry.register`/`find`/`list`
+      (`dskit/assets/registry.py`) as a raw, undocumented `TypeError`
+      — added to all three. Also fixed a `Returns` gap:
+      `probability_metrics` (`dskit/pipeline/trainlog.py`) documented
+      only two of its three early-return-to-`{}` paths, omitting the
+      case where a prediction is not a finite number. **Correction to
+      round 7's framing above:** "32 counter-examples… so the 'no
+      convention exists' reasoning was wrong" overstated what the scan
+      showed — of the ~132 already-compliant classes in the repo whose
+      `__init__`/`__post_init__` raises, only ~36 (~27%) document a
+      class-level `Raises`. That is precedent enough to justify adding
+      one (round 7's actual decision), not a majority or "confirmed"
+      convention; no future round should cite it as settled practice.
+      **Given a 5th straight MAJOR recurrence, `Raises` completeness is
+      still not trusted closed** — the pattern each round finds is
+      narrower (round 8's own gaps were mostly in files/methods
+      previous rounds had already touched, including two of round 7's
+      own fixes), which suggests convergence, but a 9th round is
+      required rather than declaring victory. A mechanical gate — a
+      test asserting every documented exception type actually fires,
+      and that sibling functions sharing a helper share its `Raises`
+      clauses — would close this class of defect faster than further
+      manual rounds; none has been built yet.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,
