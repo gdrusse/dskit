@@ -119,14 +119,25 @@ permit and poisoned import/runtime/environment tests. **GREEN/test:** focused
 secure-launch/driver tests for canonical signed release/runtime/permit/broker/hold/
 review/dependency/study codecs. The external launcher owns image bytes, keys,
 trusted clock, revocation, and isolated import view; DSKit has no fallback verifier.
-The sole generic trust API names are `ImmutableSnapshotProvider.describe`/
+The sole public **authority** API names are `ImmutableSnapshotProvider.describe`/
 `open_member`, `ReleaseKeyring.verify`, `TrustedClock.now_ms`,
-`TrustedRuntimeVerifier`, opaque `LaunchSession`, `CapturedJsonArtifact.value`/
-`audit`, `CapturedLifecyclePort`, and per-node `CapturedBindings`. Application data
-cannot construct a provider, keyring, clock, verifier, lifecycle authority, session,
-capture, receipt, or resolver. `LaunchContext` is never another public API name in
-implementation, configuration, or code; the external broker alone maps the accepted
-ADR-0122 launch contract into the authoritative ADR-0123 `LaunchSession`.
+`TrustedRuntimeVerifier`, and opaque `LaunchSession`; all authority instances come
+from one external broker/trust root. `LaunchContext` is never another public API
+name in implementation, configuration, or code; the broker alone maps ADR-0122's
+launch contract into ADR-0123's authoritative `LaunchSession`.
+
+ADR-0122's driver-owned `PreparedCapture`, `VerifiedCapture`,
+`CapturedMemberHandle`, and `CapturedRelease` are not another authority API.
+`PreparedCapture` is trusted-driver internal and is not exported. `VerifiedCapture`,
+`CapturedMemberHandle`, `CapturedRelease`, `CapturedJsonArtifact.value`/`audit`,
+`CapturedLifecyclePort`, and per-node `CapturedBindings` are exported only as opaque
+nonconstructible **consumption values** for typed method signatures: a library may
+consume `load_text_bundle(VerifiedCapture)` and a node may use only its own
+`CapturedBindings.require(input)`. They have no public constructor, `from_obj`,
+mint, copy, pickle/JSON, path, provider, credential, signing, or reopen API.
+Application data cannot construct a provider, keyring, clock, verifier, lifecycle
+authority, session, capture, receipt, resolver, or any such value. The single broker
+issues every value through the verified LaunchSession and lifecycle receipts.
 `EnvironmentIdentity.v1` binds image/interpreter/stdlib/DSKit/dependency/native
 digests, OS/kernel/architecture, locale, timezone plus tzdata digest/version,
 canonicalization and logical-clock/RNG algorithm/version, and execution profile.
@@ -187,6 +198,16 @@ receipt; `CAPTURED` requires that exact receipt plus live port authorization;
 path/reopen/dict/JSON interface. **Exit:** same-run, skipped, reordered, replayed,
 duplicate-nonce, non-WORM, unsealed, uncaptured, unverified, cross-plan, TOCTOU, or
 invalid-path bytes cannot be consumed.
+
+Within that single authority flow, only the trusted driver receives a private
+`PreparedCapture` at PRODUCED/SEALED. After PUBLISHED/CAPTURED, the broker admits the
+same `LaunchSession` to obtain a `VerifiedCapture`; it yields verified
+`CapturedMemberHandle` values for a native loader such as
+`load_text_bundle(VerifiedCapture)`. For a planned consumer port, the driver derives
+one `CapturedLifecyclePort`/`CapturedJsonArtifact` from those verified retained
+bytes, exposes it only through that node's `CapturedBindings`, and records CONSUMED.
+`CapturedRelease` is the opaque post-capture result returned to the driver. These
+are one-way consumption transitions, never a second trust root or reopen mechanism.
 
 ## F5 — captured ports, driver, and decider injection
 
@@ -301,17 +322,21 @@ implemented realism. **Exit:** no order, valuation, or simulated fill without it
 
 ### C0 — ChainLedger and AccountState
 
-**Reuse:** extend existing `production/records.py:AccountState`,
-`production/accounting.py` (which folds, validates, and consumes that record type),
+**Reuse:** extend `production/records.py:AccountState`,
+`production/state.py:SeriesState` as the sole ordered persistent ledger fold,
 `production/ledger.py:ChainLedger`/`ServeRoot`, cashflow schedule/composer, and
-report performance; no second ledger/returns simulator. **RED:** balance properties,
+report consumers; no second ledger/returns simulator. `production/accounting.py`
+remains snapshot/validation/derived-accounting utility: it consumes snapshots but
+does not own a persistent fold. **RED:** `tests/production/test_state.py` proves
+that only `SeriesState.apply` folds ledger records into AccountState plus the
+ledger-derived NAV/TWR/MWR state required for its snapshot; it also covers balance,
 genesis/lineage, V1/V2 flows/timing/supersession, correction/bust, stale price/FX,
-split/dividend, NAV/TWR/MWR/restart. **GREEN/test:** genesis, external-flow evidence,
-canonical valuation, and double-entry `AccountState` extensions in the owning
-records seam with corresponding accounting-fold behavior, plus focused ledger/
-cashflow/report tests. Initial positivity is only `initial_flow`; V1, scheduled
-deposits/withdrawals/corrections remain compatible. **Exit:** unbalanced,
-stale/missing/incompatible/nonancestor evidence stops accounting.
+split/dividend, return identities, and restart. **GREEN/test:** make the smallest
+SeriesState/records extensions and snapshot/report consumer updates, then run focused
+`test_state.py` with directly affected ledger/cashflow/report tests. Initial
+positivity is only `initial_flow`; V1, scheduled deposits/withdrawals/corrections
+remain compatible. **Exit:** a second fold, an accounting.py persistent mutation,
+or unbalanced/stale/missing/incompatible/nonancestor evidence refuses.
 
 ### C1 — MIO consumes B3 + E1 + C0
 
