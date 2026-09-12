@@ -139,7 +139,7 @@ def snapshot_hash(manifest) -> str:
     Raises
     ------
     AssetError
-        If ``manifest`` is not a dict.
+        If ``manifest`` is not a dict with string-only keys.
     """
     errors = []
     _check_dict(errors, "manifest", manifest)

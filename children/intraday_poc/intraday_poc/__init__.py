@@ -1,6 +1,7 @@
-"""``intraday_poc`` — a dskit child (ADR-0021): the two-stock intraday proof of concept.
+"""``intraday_poc`` — a dskit child (ADR-0021).
 
-AAPL and MSFT 1-minute bars (Alpaca), one zoo LSTM per symbol
+The two-stock intraday proof of concept: AAPL and MSFT 1-minute bars
+(Alpaca), one zoo LSTM per symbol
 (``torch-ts-train`` / ``arch: lstm``), and a pick-exactly-one selector
 on the PyomoSolve doorway — dskit stays generic, THIS package holds the
 tier-3 code, and ``configs/`` holds the domain as JSON. Import =

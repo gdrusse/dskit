@@ -1,6 +1,6 @@
-"""The observations READ seam — deduplicated snapshots of what acquire wrote (ADR-0037).
+"""The observations READ seam (ADR-0037).
 
-Acquire appends envelope rows under
+Deduplicated snapshots of what acquire wrote. Acquire appends envelope rows under
 ``<root>/observations/<source>/<acq_id>/<stream>.jsonl[.gz]``; this
 module is the one generic way to read them BACK: :func:`scan_stream`
 returns the bitemporally deduplicated snapshot (for one declared key,

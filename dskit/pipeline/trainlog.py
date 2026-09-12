@@ -340,8 +340,11 @@ class TrainingCurve:
         -------
         dict
             ``epochs_run``, ``best_epoch``, ``objective``, and — when
-            present — ``best_<objective>`` plus each recorded
-            ``final_<name>`` from the last epoch.
+            present — ``best_<objective>`` plus ``final_train_loss``
+            and any of ``final_val_loss``/``final_logloss``/
+            ``final_brier``/``final_ece`` the last epoch recorded (this
+            fixed set only — an extra ``metrics`` key passed to
+            :meth:`record` gets no ``final_`` counterpart here).
         """
         out = {
             "epochs_run": len(self.rows),

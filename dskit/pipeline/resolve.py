@@ -109,6 +109,9 @@ class ResolvedPipeline:
     :func:`write_run_dir` writes to ``resolved.json`` (which additionally
     stamps ``pipeline_hash`` before writing)::
 
+        from dskit.pipeline.base import (
+            DataConfig, ModelConfig, PipelineConfig, TimeSplitConfig,
+        )
         resolved = ResolvedPipeline(
             config=PipelineConfig(
                 name="syn",

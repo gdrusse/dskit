@@ -182,8 +182,9 @@ class LocalFilesConnector(Connector):
         Raises
         ------
         AssetError
-            If ``config.path`` does not exist, is not a directory, or a
-            stem exists as both a ``.csv`` and a ``.jsonl`` file.
+            If ``config.path`` does not exist, is not a directory, a
+            stem exists as both a ``.csv`` and a ``.jsonl`` file, or a
+            file's first row is malformed JSON / not a JSON object.
         """
         encoding = config.get("encoding", _DEFAULT_ENCODING)
         out = []
@@ -223,9 +224,10 @@ class LocalFilesConnector(Connector):
         Yields
         ------
         dict
-            One SCHEMA message per stream, then cursor-filtered RECORD
-            messages in ascending effective-date order, then one STATE
-            message carrying every stream's updated cursor.
+            For each stream in turn: one SCHEMA message, then its
+            cursor-filtered RECORD messages in ascending effective-date
+            order; finally, after every stream, one STATE message
+            carrying every stream's updated cursor.
 
         Raises
         ------

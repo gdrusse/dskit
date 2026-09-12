@@ -297,6 +297,38 @@ REMAINING, in the plan's risk order:
       `apply_stream_steps` Parameters section no longer claims plain
       dict rows work as input (they crash — proven by running the
       built-in `filter`/`regroup` steps against one).
+
+      **Fourth skeptic round (2026-09-12): clean pass — no blocker or
+      major findings.** Re-derived all seven checks from scratch
+      (independent AST completeness audit, independent NumPy
+      section-formatting audit, byte-exact re-execution of every
+      constructing `Examples` block including `ResolvedPipeline`'s) and
+      confirmed the round-3 fixes hold. Found and fixed 6 minor/nit
+      accuracy issues: 5 docstrings (`assets/ingest.py`,
+      `onboarding/__init__.py`, `onboarding/base.py`,
+      `onboarding/observations.py`,
+      `children/intraday_poc/intraday_poc/__init__.py`) had been
+      D205-fixed by joining onto one 90-138 char physical line instead
+      of the summary+blank+body split used elsewhere in the same diff
+      — reflowed for consistency; `dskit/__init__.py` said "Four
+      packages" and omitted `dskit.production` from the list, in a file
+      this diff itself declares converted — corrected to five;
+      `TrainingCurve.summary()`'s `Returns` overstated that every
+      recorded metric gets a `final_<name>` (only a fixed whitelist
+      does — proven by recording an extra metric and checking it's
+      absent from the summary); `LocalFilesConnector.read()`'s `Yields`
+      described all-SCHEMAs-then-all-RECORDs instead of the real
+      per-stream interleaving; `ResolvedPipeline`'s `Examples` block
+      was missing the `from dskit.pipeline.base import ...` line its
+      own constructor call needs (added and re-verified it runs);
+      three `Raises`/summary sections understated what they actually
+      check (`metrics.py`'s `_check_binary`/`_check_regression` omitted
+      the type/finiteness checks that run before the range checks
+      named; `snapshot_hash`'s `Raises` omitted the non-string-keys
+      case; `LocalFilesConnector.discover`'s `Raises` omitted the
+      malformed-JSONL case `_rows` can raise while reading a first
+      row). **This item is done for these 27 files** — the remaining
+      30 pre-standard modules are unstarted, left for a future pass.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

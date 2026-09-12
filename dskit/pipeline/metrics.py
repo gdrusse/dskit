@@ -39,7 +39,11 @@ CLIP = 1e-6
 
 
 def _check_binary(metric, q, y):
-    """Refuse a ``q`` outside ``[0, 1]`` or a ``y`` that is not exactly 0.0 or 1.0."""
+    """Refuse a non-finite/non-number ``q``/``y``.
+
+    Also refuses a ``q`` outside ``[0, 1]`` or a ``y`` that is not
+    exactly 0.0 or 1.0.
+    """
     for name, v in (("q", q), ("y", y)):
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise ValueError(f"{metric}: {name} must be a number, got {v!r}")
@@ -105,7 +109,7 @@ def brier(q, y) -> float:
 
 
 def _check_regression(metric, q, y):
-    """Refuse a non-finite belief or outcome.
+    """Refuse a non-number or non-finite belief or outcome.
 
     A regression rule has no [0, 1] frame and no binary payout to
     police, but a NaN/inf belief or outcome would poison every
