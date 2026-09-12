@@ -52,11 +52,17 @@ def load_config(path, adapters=()) -> PipelineConfig:
     OSError
         If the file cannot be read.
     ModuleNotFoundError
-        If a named adapter module is not importable here.
+        If a named adapter module itself does not exist.
     TypeError
         If the file's top-level JSON value parses but is not an object
         (e.g. ``null``, a number, or a bool) — ``PipelineConfig.from_obj``
         calls ``set(obj)`` unguarded on it before any schema check runs.
+    Exception
+        Whatever else importing a named adapter module raises — the
+        import loop is unguarded beyond Python's own import machinery,
+        so a bad nested import inside the adapter surfaces as a plain
+        ``ImportError`` (not ``ModuleNotFoundError``), and any other
+        top-level failure in the adapter propagates as-is.
     """
     for module in adapters:
         importlib.import_module(module)

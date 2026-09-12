@@ -252,6 +252,10 @@ def check_config(connector, config) -> None:
         :func:`~dskit.onboarding.codec.storage_problems`, whose own
         ``sorted(storage)`` call is unguarded despite that function's
         own docstring claiming it never raises.
+    Exception
+        Whatever ``connector.spec()`` itself raises, if anything — it
+        is called unguarded before any shape checking of its return
+        value runs.
     """
     errors = []
     if not isinstance(connector, Connector):

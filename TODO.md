@@ -1000,6 +1000,46 @@ REMAINING, in the plan's risk order:
       `verify_snapshot`/its callers). A 22nd round's random picks should
       keep favoring multi-branch functions and widely-called helpers
       over simple leaf functions, per this round's own recommendation.
+
+      **Twenty-second skeptic round (2026-09-12): targeted the two
+      highest-risk shapes directly (orchestrators, shared helpers) — a
+      19th recurrence, 1 MAJOR + 1 MINOR + 1 NIT, and both `resolve()`
+      and `run_acquisition` (the two orchestrators re-traced a SECOND
+      time) came back genuinely clean, confirming those two fixed
+      points hold.** **MAJOR:** `load_config`
+      (`dskit/pipeline/io.py`) — the adapter-import loop
+      (`importlib.import_module(module)`) is unguarded beyond Python's
+      own import machinery; the docstring named only
+      `ModuleNotFoundError`, but a bad nested import inside an adapter
+      surfaces as a plain `ImportError` (verified live), and any other
+      top-level failure in the adapter (a crashing `raise RuntimeError`
+      at module scope, verified live) propagates untouched — the same
+      "caller-controlled/plugin code raises whatever it raises, only
+      the narrowest case documented" shape round 16 already fixed once
+      in `scan_stream`'s `admit` callback; added the same generic
+      `Exception` entry. **MINOR:** `check_config`
+      (`dskit/onboarding/connector.py`) calls `connector.spec()`
+      unguarded before any shape checking of the return value — a
+      connector whose `spec()` implementation raises propagates that
+      exception raw (verified live); added, same shape/treatment.
+      **NIT:** `write_run_dir`'s (`dskit/pipeline/resolve.py`)
+      `FileExistsError` entry framed the cause as strictly a TIMING
+      RACE ("between the check above and the commit"), but a plain
+      pre-existing FILE (not directory) at `run_dir` hits the identical
+      error deterministically on the very first call, no race required
+      — the non-empty check tests `os.path.isdir` first, which is
+      structurally blind to a non-directory occupant; narrowed to
+      describe both the simpler case and the race. **Given a 19th
+      straight round finding real gaps — `Raises` completeness remains
+      open** — though two multiply-re-traced orchestrators (`resolve()`,
+      `run_acquisition`) are now confirmed stable across repeated
+      independent passes, and this round's own findings were both
+      instances of an already-catalogued shape rather than a new one.
+      A 23rd round should grep specifically for other unguarded
+      first-calls into caller/implementer-owned code (an abstract
+      method, an injected callback, an import loop) across the 24
+      files, per this round's own recommendation, rather than another
+      full sweep.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,
