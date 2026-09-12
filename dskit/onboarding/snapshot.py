@@ -183,6 +183,11 @@ def write_snapshot(root, staged_dir, manifest) -> tuple:
         If a stray file already occupies where ``raw/<source>/``
         belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
         this function makes does not distinguish that from a race.
+    OSError
+        If a concurrent writer lands the same ``acq_id`` between this
+        call's existence check and its ``os.rename`` — the check is
+        not atomic with the rename, so a same-second at-least-once
+        retry can lose the race and raise "Directory not empty."
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

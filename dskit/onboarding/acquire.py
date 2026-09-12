@@ -181,6 +181,12 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         ``raw/``, ``observations/``, or ``forecasts/`` belongs — the
         unguarded ``os.makedirs(..., exist_ok=True)`` calls this
         function makes do not distinguish that from a race.
+    OSError
+        If a non-empty directory already occupies this pull's
+        ``observations/``/``forecasts/`` destination — unlike
+        ``raw/`` (guarded by :func:`~dskit.onboarding.snapshot.write_snapshot`'s
+        WORM check), nothing here confirms that destination is free
+        before the commit ``os.rename``.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

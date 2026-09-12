@@ -573,6 +573,52 @@ REMAINING, in the plan's risk order:
       tuning before its output was trustworthy, and still carries known
       blind spots — an 11th round should run the now-hardened gate again
       before this is declared closed.
+
+      **Eleventh skeptic round (2026-09-12): an 8th recurrence, but
+      narrowing — two MINOR instances of round 10's own pattern-1
+      family (a different unguarded stdlib call, not a new shape) plus
+      one docstring-accuracy nit.** Generalizing round 10's
+      "unguarded destructive filesystem call" pattern from
+      `os.makedirs` to `os.rename` found: `write_snapshot`
+      (`dskit/onboarding/snapshot.py`) checks `os.path.exists(final_dir)`
+      before its commit `os.rename`, but the check is not atomic with
+      the rename — a genuine same-second concurrent duplicate pull can
+      pass the check on both sides, and the loser's rename raises a raw
+      `OSError` ("Directory not empty") instead of the documented
+      `AssetError`; verified by triggering the exact TOCTOU gap
+      (monkeypatching the check to miss a real concurrent winner).
+      `run_acquisition`'s later `os.rename` of the normalized-rows
+      staging dir into `observations/`/`forecasts/` has no pre-check at
+      all; verified by execution that an already-occupied destination
+      raises the same raw `OSError` (reachability note: unlike
+      `write_snapshot`'s race, a plain identical retry cannot reach this
+      path — `write_snapshot`'s own WORM check on `raw/` fires first and
+      blocks it — so this needs an already-occupied
+      `observations/`/`forecasts/` destination from outside this
+      function's own retry logic, e.g. a leftover from an unrelated
+      write). Both fixed with an `OSError` `Raises` entry, matching round
+      10's `FileExistsError` phrasing convention. Also fixed:
+      `apply_stream_steps` (`dskit/pipeline/features.py`) described its
+      silent-skip surface too narrowly — "backend-owned registered
+      kinds (no `apply`) are passed over" implies only recognized
+      backend kinds are skipped, but the code passes over **any**
+      `kind` that is neither a class-reference nor a registered kind
+      with an `apply` hook, so a misspelled `kind` is silently a no-op
+      too (verified: `FeatureStepConfig(kind="totally_bogus_kind",
+      params={})` constructs cleanly and `apply_stream_steps` returns
+      its input unchanged) — corrected to say so explicitly. Round 11
+      also did a fresh full read of the 5 least-touched files
+      (`observations.py`, `sync.py`, `metrics.py`, `features.py`,
+      the skeleton's `connectors.py`) and found nothing else — every
+      documented `Raises`/`Returns` re-verified byte-exact by execution.
+      **Given an 8th straight round, but the finding narrowing to two
+      instances of an already-known pattern shape plus one wording nit
+      (no new shape, no BLOCKER/MAJOR) — this is the first round since
+      the pattern started recurring that did not surface a genuinely
+      new defect class.** A 12th round should specifically re-run
+      round 10's gate widened to `os.rename`/`os.replace`/`shutil.*`
+      (its own stated blind spot) before `Raises` completeness is
+      declared closed.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

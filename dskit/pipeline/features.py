@@ -159,9 +159,13 @@ def apply_stream_steps(records, features):
 
     A class-reference step (``pkg.module:Attr``) is imported and called
     with the stream-transform contract ``target(records, params) ->
-    iterable of records``; backend-owned registered kinds (no ``apply``)
-    are passed over — the backend interprets those inside its own
-    stages. ``features`` may be ``None`` (raw stream).
+    iterable of records``. A ``kind`` that is neither a class-reference
+    nor a registered kind with an ``apply`` hook is passed over
+    unchanged and silently — this covers a genuinely backend-owned kind
+    (the backend interprets those inside its own stages) but is not
+    otherwise validated here, so an unregistered or misspelled ``kind``
+    is indistinguishable from one. ``features`` may be ``None`` (raw
+    stream).
 
     Parameters
     ----------
