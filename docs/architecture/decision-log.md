@@ -7893,17 +7893,23 @@ sanctioned producer of gross-unit rows.
 
 ### Immutable capture API and schemas
 
-dskit.pipeline.trust exports ImmutableSnapshotProvider.describe(root_ref, snapshot_version)/open_member(snapshot, member_name), ReleaseKeyring.verify(key_id, key_version, issued_at_ms, message, signature), TrustedClock.now_ms(), TrustedRuntimeVerifier.verify(identity, planned_classes), ArtifactTrustRoot(provider, keyring, clock, runtime) with capture(snapshot, document_sha256, node_key, output_name, purpose, release_attestation), and opaque CapturedJsonArtifact.value/.audit.
+dskit.pipeline.trust exports ImmutableSnapshotProvider.describe(root_ref, snapshot_version)/open_member(snapshot, relative_path), ReleaseKeyring.verify(key_id, key_version, issued_at_ms, message, signature), TrustedClock.now_ms(), TrustedRuntimeVerifier.verify(identity, planned_classes), ArtifactTrustRoot(provider, keyring, clock, runtime), opaque CapturedJsonArtifact.value/.audit, and CapturedBindingResolver.
+
+CapturedBindingResolver.resolve(planned_port, *, release_attestation, runtime_identity) verifies the exact root, manifest, release, time, purpose, and runtime binding, then returns the sole nonforgeable CapturedJsonArtifact for that port. The generic driver resolves every declared captured port before constructing any node or evaluating any node branch, and injects an opaque read-only CapturedBindings resolver as the final `NodeContext` field. In particular, the current `dskit/production/decider.py` construction `NodeContext(name=served.name, asof=asof, run_dir=base_run_dir)` becomes a trusted-driver construction with those already-resolved bindings; paper/production MIO obtains only `ctx.captured.resolve(port)`, never a caller-supplied value.
 
 The captured value is final, immutable, constructible only by the trust root, and refuses copy/pickle/JSON reconstruction. It retains single-read verified bytes and exposes no path, reopen, provider, credential, or signing API.
 
 Canonical JSON is UTF-8, sorted-key, compact, ASCII and finite-number-only; digests are lowercase SHA-256; instants are integer epoch-ms; schemas are default-deny. Ed25519 signs canonical envelopes with signature omitted.
 
-dskit.trust-root/v1 is exactly {schema,root_ref,root_id,snapshot_version,document_sha256,run_identity,members,key,issued_at_ms,signature}. members is the complete sorted {name,sha256,bytes} list for config, resolved state, result, optional carry, producer node record, and requested JSON artifact; key={key_id,key_version}.
+dskit.trust-root/v1 is exactly {schema,root_ref,root_id,snapshot_version,document_sha256,run_identity,members,key,issued_at_ms,signature}. Each member uses `relative_path`, a normalized POSIX relative path, never an ambiguous name. The complete sorted manifest maps required `config.json`, `resolved.json`, and `result.json`; optional `carry.json`; the producer record `nodes/<ordinal>-<node>.json`; and requested artifact `artifacts/<node>/<artifact-relative-path>` to `{relative_path,sha256,bytes}`. `key={key_id,key_version}`.
+
+The exact root/member identity binds the producer node/output and artifact bytes; an artifact cannot be substituted for a same-named file elsewhere in the run layout.
 
 Refuse absolute/empty/dot/traversal/backslash/NUL names, duplicate normalized POSIX names, symlink, hard link, non-regular member, mixed version, missing/extra required member, invalid/revoked/out-of-validity key, short read, byte/digest mismatch, or mutation. Verify retained bytes and decode those same bytes: no check/reopen TOCTOU.
 
 Staging is trusted-driver work, never a node: write a new version, fsync every member and directory, close staging, obtain an external signature over the complete manifest, then atomically publish the immutable version. Unsigned local providers are development-only and refuse paper/production.
+
+No untrusted node, worker, or writable run directory can create a capture, binding, resolver, receipt, snapshot, or authority-bearing manifest; they receive neither provider/key/runtime/lifecycle credentials nor a writable authority store.
 
 dskit.decision-release-attestation/v1 is exactly {schema,consumer_document_sha256,purpose,policy_sha256,captures,runtime_identity,issued_at_ms,not_before_ms,expires_at_ms,key,signature}. Each sorted capture binds {port,root_ref,root_id,snapshot_version,run_identity,producer_document_sha256,producer_node,producer_output,artifact_manifest_sha256}.
 
@@ -7917,15 +7923,21 @@ Snapshot, release, confirmation, and runtime keys have separate usages; the exte
 
 The only document spelling, valid only at an input port, is {$captured_artifact:{root_ref:"release://forecast/v42",snapshot_version:"42",document_sha256:"<sha256>",node:"pit_bundle",output:"bundle",purpose:"paper"}}.
 
-The planner compiles this exact object to non-JSON CapturedArtifactPort. Nodes cannot declare, emit, serialize, forge, or put it in params. After release/runtime verification, the driver injects it only through NodeContext.captured(port). Ordinary dollar-reference wires cannot carry it.
+The planner compiles this exact object to non-JSON CapturedArtifactPort. Nodes cannot declare, emit, serialize, forge, or put it in params. After all release/runtime checks, the generic driver uses CapturedBindingResolver before any node construction or branch selection and injects only the corresponding opaque binding through `NodeContext.captured.resolve(port)`. Ordinary dollar-reference wires cannot carry it.
+
+`CapturedBindings` accepts only planner-issued port identities, is not constructible from JSON, and never returns a path, bytes, provider, credential, signing API, or descriptor-shaped substitute. A node can receive an already-verified `CapturedJsonArtifact` only by resolving its own declared port.
 
 Records, carry, checkpoints, and reports persist only immutable audit; a descriptor-shaped dict is never authority. Paper/production consumers declare trusted ports and reject ordinary JSON before every normal, empty, mandatory-exit, held-position, or solver path.
 
-SealedRunLifecycle adds append-only compare-and-set receipts for PRODUCED -> SEALED -> PUBLISHED -> CAPTURED -> CONSUMED.
 
-Each receipt binds document, run, node/output, predecessor digest, snapshot version, actor/runtime identity, and instant. Produce requires a completed run; seal requires closed bytes; publish requires the externally signed root; capture requires the published version plus a live attestation; consume requires a later distinct run.
+SealedRunLifecycle uses a dedicated external LifecycleAuthority and an externally protected append-only/WORM receipt store for compare-and-set receipts: PRODUCED -> SEALED -> PUBLISHED -> CAPTURED -> CONSUMED. The store accepts writes only from that authority, never from nodes, workers, or the run directory.
 
-Same-run, skipped, reordered, replayed, cross-version, and expired transitions refuse. Repeat the whole sequence independently for confirmation evidence -> signed proof, calibration publisher -> signed snapshot, cap publisher -> signed snapshot, PIT publisher -> signed snapshot, and captured-port MIO. These are never same-DAG capability wires.
+Before every CAS transition, LifecycleAuthority verifies the prior receipt and proposed receipt signature and lifecycle-key usage, key ID/version/validity/revocation, trusted time and issuance age, strictly next sequence, exact predecessor digest, run/node/output/document identity, snapshot/root/member identity, actor/runtime identity, and transition-specific nonce/receipt identity against the WORM anti-replay index.
+
+Each signed receipt binds document, run, node/output, predecessor digest, sequence, snapshot/root/member identities, actor/runtime identity, transition nonce, and instant. Produce requires a completed run; seal requires closed bytes; publish requires the externally signed root; capture requires the published version plus a live attestation; consume requires a later distinct run.
+
+Same-run, skipped, reordered, replayed, duplicate-nonce, cross-version, predecessor-mismatched, expired, unsigned, wrong-key-usage, or non-WORM transitions refuse. Repeat the whole sequence independently for confirmation evidence -> signed proof, calibration publisher -> signed snapshot, cap publisher -> signed snapshot, PIT publisher -> signed snapshot, and captured-port MIO. These are never same-DAG capability wires.
+
 
 ### Causal calibration, confirmation, FDR, and scenarios
 
@@ -7939,9 +7951,12 @@ Local-FDR apply emits only pi_hat and conservative pi_upper with exact fit/decis
 
 Shared scenarios emit one ordered scenario-by-entity matrix over common causal instants, normalized weights, entity order, instant IDs, unit, missingness mask/digest, fit/policy identities, and availability. Ragged/per-entity sets, reorder, unhashed imputation, non-finite values, nonpositive weights, or dimension mismatch refuse. Method, dependence unit, uncertainty construction, evidence minima, and bounds have no defaults.
 
-External ConfirmationAuthority.issue(evidence, policy, clock) recomputes the verdict and signs exact dskit.confirmation-proof/v1 fields: {schema,producer_document_sha256,producer_node,producer_output,model_manifest_sha256,statistical_policy_sha256,fit_identity,fit_pair_sha256,test_identity,test_pair_sha256,verdict,fit_outcomes_available_ms,state_published_ms,test_decisions_start_ms,test_outcomes_available_ms,cap_policy_sha256,issued_at_ms,key,signature}.
+External ConfirmationAuthority.issue(evidence, policy, clock) accepts only verified `CapturedJsonArtifact` evidence rooted in the exact required `root_ref`, `root_id`, `snapshot_version`, and complete member manifest/version. It independently decodes the retained verified bytes, reconstructs CausalPairs and recomputes every pair identity, availability/cut rule, statistical input, and verdict from those bytes; raw caller-provided `CausalPairs`, verdicts, pair hashes, or JSON cannot authorize.
 
-Only exact policy-qualified GO can feed a deployable cap; self-signed/fake GO, revoked key, or substitution refuses.
+It signs exact dskit.confirmation-proof/v1 fields: {schema,producer_document_sha256,producer_node,producer_output,model_manifest_sha256,statistical_policy_sha256,fit_identity,fit_pair_sha256,test_identity,test_pair_sha256,verdict,fit_outcomes_available_ms,state_published_ms,test_decisions_start_ms,test_outcomes_available_ms,cap_policy_sha256,capture_root_ref,capture_root_id,capture_snapshot_version,capture_member_manifest_sha256,capture_member_identities,issued_at_ms,key,signature}. `capture_member_identities` binds the config/resolved/result/producer-record/artifact member digests and normalized relative paths used for recomputation.
+
+Only exact policy-qualified GO can feed a deployable cap; self-signed/fake GO, revoked key, unverified capture, wrong root/member/version, raw CausalPairs, or substitution refuses.
+
 
 ### Thin intraday-equities adapters
 
@@ -7955,7 +7970,9 @@ Existing EquityKellyMIO accepts only captured bundle/cap ports in paper/producti
 
 ### Focused TDD and gates
 
-After approval, strict red-green order is: (1) schemas, signatures, key/time/runtime swaps; (2) member/path/link/TOCTOU/mutation attacks; (3) capability forgery, worker isolation, and port injection; (4) lifecycle-transition and same-run refusals; (5) causal identity and fit/apply/confirmation substitutions; (6) local-FDR limits and shared matrix/missingness; (7) child label/V3/PIT adapters; (8) every MIO branch.
+After approval, strict red-green order is: (1) schemas, signatures, key/time/runtime swaps; (2) member/path/link/TOCTOU/mutation attacks; (3) capability forgery, worker isolation, resolver injection before construction/branches, and port injection; (4) externally-authorized WORM lifecycle signature/key/time/sequence/predecessor/anti-replay and same-run refusals; (5) captured-byte-only causal identity and confirmation substitutions; (6) local-FDR limits and shared matrix/missingness; (7) child label/V3/PIT adapters; (8) every MIO branch.
+
+Owner approval is required for focused ownership paths: new `tests/pipeline/test_trust.py` (capture, resolver, lifecycle/WORM and confirmation authority), new `tests/pipeline/test_calibration.py` (causal/calibration/FDR/scenarios), existing `tests/pipeline/test_document.py`, `tests/pipeline/test_planner.py`, `tests/pipeline/test_node.py`, and `tests/pipeline/test_driver.py` (captured-port grammar and trusted injection), existing `tests/production/test_decider.py` (the Decider NodeContext seam), and existing child `children/intraday_equities/tests/test_forecast_bundle.py` and `children/intraday_equities/tests/test_nodes_capital.py` (adapter/MIO gates).
 
 Each focused test first fails for the intended missing behavior, then minimal code passes it. Run only affected tests, purity, touched-path Ruff, and git diff --check. One Terra skeptic is active at a time; every correction and subsequent review uses Terra until zero Critical/Major findings.
 
