@@ -7886,34 +7886,196 @@ sanctioned producer of gross-unit rows.
 
 ---
 
-## ADR-0124 - Proposed transactional replay and operations seams
+## ADR-0124 — Proposed transactional replay and operations seams
 
 **Status:** proposed (2026-09-11; owner approval required before code). Extends ADR-0090/0091, ADR-0112, ADR-0114, ADR-0117/0118 and ADR-0120; authorizes no replay, paper/market execution, HPO/refit, lockbox read or full backtest.
 
-**Context.** Round-5 review proved two gaps: `ServeLoop` writes the real checkpoint cache directly, and handlers close over original bundles. Retain the existing loop, ledger/fold, accounting, report, replay clock/feed and released graph; do not create a parallel simulator.
+**Context.** Round-5 review proved two gaps: `ServeLoop` writes the real checkpoint cache directly, and handlers close over original bundles. The existing `report.Replay` and CLI also compose a runnable replay without a typed execution authority. Retain the existing loop, ledger/fold, accounting, report, replay clock/feed and released graph; do not create a parallel simulator.
 
-**Decision.** Add internal `CheckpointWriter`. Its default preserves live checkpoint bytes/order exactly. Replay freezes complete `CacheWriteIntent.v2`: target/release/process/tick identity, exact bytes, projected terminal head, and prior bytes-or-absence/digest. It stages only; locked commit requires exact preimage and ancestry. Stale ancestors rebuild; ahead/divergent/mismatched state refuses. Provisional heads never reach the real cache.
+**Live dispatch and transaction binding.** Extract the current body of
+`ServeLoop._tick` verbatim into `_tick_once`. `ServeLoop._tick` becomes the
+small dispatcher: its default internal live mode delegates to `_tick_once`,
+with the current call order, checkpoint bytes and observable behavior
+unchanged; only `ReplayRun` may inject `ReplayTransactionalMode`. A serve
+document, rung, child adapter, or CLI flag cannot select transaction mode.
+`TickTransactionMode` has exactly `run(loop, tick_at_ms, absorbed,
+reduction_cycle)` and `recover(loop)` hooks. Recovery offers an incomplete
+transaction to that mode before ordinary recovery; live mode has no
+transaction journal and retains ordinary recovery unchanged.
 
-Add exception-safe internal `_LoopBinding`: transaction-bound frozen bundles, handlers, command processor, checkpoint writer and observation/control callbacks installed as one scope and restored exactly once after commit/abort. Recorded bodies, monitors, commands and approvals use it. The journal binds handler/processor/bundle/config/runtime digests; changes refuse.
+Add internal `CheckpointWriter`. The live writer contains the exact current
+`Checkpoint(...).write(serve_root.checkpoint_cache)` construction; the replay
+writer can only freeze a `CacheWriteIntent.v2`, never write the live cache.
+That intent has the exact keys `schema_version`, `target`, `release_hash`,
+`process_id`, `tick_id`, `pre_head`, `projected_head`, `prior`, `bytes_b64`
+and `sha256`; `prior` is either `{present: false}` or
+`{present: true, bytes_b64, sha256}`. Commit independently verifies the
+prior bytes/absence, projected-head ancestry and new bytes before one durable
+replace. A provisional head therefore cannot reach the real cache; stale
+caches rebuild, while ahead, divergent, substituted or mismatched caches
+refuse.
 
-Add public `TickTransactionMode` and `ReplayTransactionalMode`; no mode uses unchanged live `_tick_once`. Recovery offers incomplete transactions to the mode first. `TransactionalLedger` implements the existing ledger contract provisionally and invents no envelope, hash, fold or accounting rule. Unstageable external effects refuse.
+`_LoopBinding` is an exception-safe, single-use scope. It constructs and
+installs one transaction-bound `Recording`, bundles, handler map from
+`handlers_for`, command processor, checkpoint writer and
+observation/control callbacks, then restores the exact originals once after
+commit or abort. `_recorded_bodies`, monitors, commands, approvals and every
+control handler must use the bound set. Its canonical `binding_digest` binds
+the handler classes, processor class, bundle/config/runtime digests and
+callback identities; any recovery substitution refuses. A collaborator with
+an external effect that cannot stage and replay its exact effect refuses
+before `BEGIN`.
 
-`ReplayTransaction.v1` binds replay/release/document/tape/cadence/clock/ID, process/tick/code identities; pre-head/checkpoint; canonical caller records/exact append instants; snapshot/checkpoint intents. Durable order is `BEGIN -> PROVISIONAL -> FROZEN -> PUBLISHING -> RECORDS_BARRIERED -> SNAPSHOTTED -> CHECKPOINTED -> COMMITTED`. `SnapshotIntent.v2` freezes the complete timestamp/envelope preimage, bytes/digest, state payload/digest, pre-head and projected snapshot head. Pure under-lock preview is the sole path.
+**Durable transaction and frozen publication.** `ServeRoot` owns the
+discoverable layout, creates it with the series root, and is the only path
+builder:
 
-Before `FROZEN`, recovery restores clock, IDs and collaborators and may evaluate once. At/after it, never evaluate: verify identities/digests/instants and exact ledger prefix; publish only missing suffix; barrier; append previewed snapshot and barrier; write exact checkpoint; drain outbox; run deferred after-tick effects; advance ledger-derived cursors/results; restore bindings. Non-prefixes/substitutions fail closed.
+```
+<series>/replay/transactions/<transaction_id>.json
+<series>/replay/outbox/<replay_id>/<emitter_digest>.json
+<series>/replay/outbox/<replay_id>/<emitter_digest>/acks/<event_id>.json
+<series>/replay/results/<replay_id>.json
+```
 
-Version `RecurringCashFlowSchedule` and `ReplayCashFlowComposer` additively. V2 binds immutable policy/schedule digests and exactly one initial flow, preserving signed-`Decimal` amount, `flow_kind`, effective/known instants, deterministic ID and `supersedes`. Only the initial flow may be positive/external/unsuperseded. Production stays settlement/adoption driven. NAV/TWR/MWR/returns/results derive only from the ledger's external-flow/PnL partition.
+Every path segment is a validated lowercase SHA-256 identity:
+`replay_id` hashes schema version plus release, document, tape, cadence,
+clock, recorded-ID and code digests; `transaction_id` hashes `replay_id`,
+the deterministic replay process id and tape-derived tick id; `emitter_digest`
+hashes the emitter identity/configuration. No replay process id is a random
+UUID.
 
-Generic `ReplayRun` composes existing seams. Its decider executes the manifest-pinned graph each tick. Paper/full tapes refuse precomputed decisions, weights, orders, fills or returns; synthetic decisions are development-only. Cursor-derived IDs and frozen outputs make restart exact.
+`ReplayTransaction.v1` is one canonical, default-deny JSON object with exact
+keys `schema_version`, `transaction_id`, `replay_id`, `release_hash`,
+`document_hash`, `tape_digest`, `cadence_digest`, `clock_digest`,
+`id_source_digest`, `code_digest`, `permit_digest`, `process_id`, `tick_id`,
+`binding_digest`, `state`, `pre_head`, `pre_checkpoint`, `frozen` and
+`transitions`. `pre_head` is `{seq, hash}`; `pre_checkpoint` is the exact
+prior cache bytes-or-absence; `frozen` is null before `FROZEN` and otherwise
+the complete immutable publication plan. `transitions` is the append-only
+ordered tuple of state names. Creation is idempotent only when the complete
+canonical `BEGIN` object matches; a same-path conflict refuses. Every
+transition is `durable_write_json`/file fsync/rename/directory fsync, may
+advance only once, and preserves every prior transition.
 
-`EventCursor.v1` binds replay/emitter identities, last ACK sequence/hash and last seen ledger head. Order: ledger barrier -> emit stable event ID -> durable ACK -> atomic cursor. ACK-window duplicate delivery may reuse only that ID. Stale ancestors rebuild; skips, ahead/non-ancestor heads and mismatches refuse.
+The sole order is `BEGIN -> PROVISIONAL -> FROZEN -> PUBLISHING ->
+RECORDS_BARRIERED -> SNAPSHOTTED -> CHECKPOINTED -> OUTBOX_DRAINED ->
+EFFECTS_DONE -> COMMITTED`. A `TransactionalLedger` implements the existing
+ledger contract against provisional state only; it invents no envelope, hash,
+fold or accounting rule. Before `FROZEN`, recovery requires the real ledger
+to equal `pre_head`, restores replay clock/IDs/bindings and may evaluate once.
+At or after `FROZEN`, recovery never evaluates the graph: it verifies every
+identity, frozen instant and exact real-ledger prefix, publishes only the
+missing frozen suffix, and otherwise refuses.
 
-A registered generic `MonitorHoldGuard` normalizes legacy strings/V2 actions. Only authenticated, scoped, TTL-bounded holds enter existing `guard_state`, fold, snapshot, expiry and `approve_hold`; unauthorized holds are record-only. `halt` remains breaker-only.
+`ChainLedger` owns a verified frozen append seam shared by JSONL and SQLite:
+`freeze_appends(records, recorded_at_ms)` constructs full canonical envelopes
+from an explicit head and explicit append instants, and
+`append_frozen(envelopes)` independently reconstructs and byte-compares every
+envelope before writing it. It never reads ambient time. `SnapshotIntent.v2`
+has exact keys `schema_version`, `pre_head`, `at_seq`, `recorded_at_ms`,
+`state`, `state_digest`, `envelope`, `bytes_b64` and `sha256`; only the
+under-lock `freeze_snapshot` path may construct it, and transactional replay
+may publish it only with `append_frozen`. Its state is the provisional fold
+after the frozen caller-record suffix. `CacheWriteIntent.v2` is likewise
+frozen before publication. This makes provisional and real publication use
+the same independently verified append-time/envelope bytes, regardless of
+restart timing or ambient clock.
 
-`ReplayResult.v1` is a ServeRoot cache of terminal identities, ledger head, checkpoint, account, event, metric and report identities derived from the ledger. Stale ancestors rebuild; ahead/non-ancestor/tampered state refuses. Add pure sibling `RollingReleaseRotationCalendar` allowing explicit overlapping trailing training windows without changing ADR-0112: bounded UTC cadence/training/embargo and model/data/cache/policy availability pins; no training, promotion, deployment, I/O or implicit now.
+After the frozen record barrier, recovery publishes the frozen snapshot and
+barriers, writes the exact checkpoint intent, drains the outbox, runs deferred
+after-tick effects, records result/cursor projections, then restores bindings.
+At every step a non-prefix, substituted envelope, changed append instant,
+changed preimage or off-chain cache refuses.
 
-**Placement.** Generic mechanisms stay with existing `dskit.production`/pipeline owners. `children/intraday_equities` holds only thin released-graph, exchange-session, horizon/cost/fill and event adapters plus pinned configuration. It owns no loop, clock, ledger/fold, returns simulator or canonicalization.
+**Authorized replay entry point.** Add generic `dskit.production.replay.ReplayRun`;
+remove `report.Replay` as a runnable public API and route
+`production.__main__.ReplayVerb` through `ReplayRun`. `ReplayRun` accepts
+only a `VerifiedReplayExecutionPermit`, not a mapping or path. Its private
+construction follows verification by a release-pinned authority over the
+exact `purpose`, release/document/tape/replay identities, target series,
+permitted paper rung, validity interval, issuer/key identity and signature.
+The CLI requires `--permit` and refuses before creating a scratch root when
+verification fails or no permit is supplied. Its decider executes the
+manifest-pinned graph each tick; paper/full tapes refuse precomputed
+decisions, weights, orders, fills or returns.
 
-**Focused TDD after approval.** First observe focused failures. Inject crashes around every state, append/barrier, snapshot preview/append/barrier, cache write, event emit/ACK/cursor, deferred effect and restore. Require uninterrupted/restarted byte-identical ledger/head, checkpoint, terminal identities, account, events, metrics and report. Pin unchanged live checkpoints, no provisional leakage, all substitution refusals, V1/V2 flow corrections, outbox windows, hold restart/expiry, result tamper/staleness and rolling pins. Run only affected tests and directly affected purity/OOP/producer gates.
+Tests may inject a separate `SyntheticReplayAuthority`, defined only in
+`tests/production/test_replay.py`, which can mint a typed permit only for an
+explicit synthetic tape and `deployment_eligible=false`. It is not exported,
+registered, accepted by the CLI, or usable for paper/live input. Thus a test
+fixture cannot become an execution bypass.
+
+**Post-commit events and result.** `EventOutboxItem.v1` has exact keys
+`schema_version`, `replay_id`, `emitter_digest`, `ledger_seq`, `ledger_hash`,
+`event_id`, `event`, and `event_digest`; it is generated only from committed
+ledger envelopes through the ADR-0118 event adapter. `event_id` hashes the
+replay/emitter identities and the envelope `(seq, hash)`. The durable outbox
+contains the ordered pending items; no caller supplies event bodies.
+`EventCursor.v1` has exact keys `schema_version`, `replay_id`,
+`emitter_digest`, `last_ack_seq`, `last_ack_hash`, `last_seen_head_seq` and
+`last_seen_head_hash`. For each item: persist pending item, emit its stable
+id, verify and durably persist the matching ACK evidence, then atomically
+advance the cursor. A crash after emission may redeliver only the same id.
+Emitter recovery starts from durable pending/ACK evidence in sequence order;
+skips, changed items, ahead/non-ancestor heads and identity mismatches refuse,
+while a stale ancestor rebuilds from the ledger.
+
+`ReplayResult.v1` is the ServeRoot cache with exact keys `schema_version`,
+`replay_id`, `ledger_head`, `checkpoint_sha256`, `account_sha256`,
+`event_cursor_sha256`, `metrics_sha256`, `report_sha256` and `result_sha256`.
+Every value is derived at the stated ledger head; stale ancestors rebuild and
+ahead, non-ancestor or tampered values refuse.
+
+**Cash flows and holds.** Version `RecurringCashFlowSchedule` serialization
+and `ReplayCashFlowComposer` additively. V1 parses and emits every existing
+scheduled deposit, withdrawal, adjustment and correction unchanged. V2 adds
+immutable `policy_digest`, `schedule_digest` and one `initial_flow`, while
+preserving signed-`Decimal` amount, `flow_kind`, effective/known instants,
+deterministic ID and `supersedes`. The positivity/external/unsuperseded rule
+applies only to `initial_flow`; it must be one positive external deposit with
+no supersession. It does not reinterpret, reject or constrain scheduled V1/V2
+deposits, withdrawals, adjustments or corrections. Production remains
+settlement/adoption driven; NAV/TWR/MWR/returns/results derive only from the
+ledger external-flow/PnL partition.
+
+`MonitorHoldGuard` accepts legacy monitor responses only as record-only.
+A V2 hold may enter the existing `guard_state`, fold, snapshot, expiry and
+`approve_hold` path only when a signed, immutable release-pinned
+`HoldActionPolicy.v1` and a verified `HoldActionCapability.v1` agree on
+purpose, release/document/policy digests, monitor and target scope, issuer,
+issued-at, expiry and bounded TTL. Invalid, absent, expired or out-of-scope
+authority records the response/rejection without a hold; a malformed claimed
+capability refuses the action. `halt` remains breaker-only. This adds no
+threshold, warn/hold boundary, authority, scope or TTL policy and preserves
+ADR-0114 §11 item 7 as open.
+
+Add pure sibling `RollingReleaseRotationCalendar` without changing
+ADR-0112: explicit bounded UTC cadence/training/embargo and
+model/data/cache/policy availability pins; no training, promotion,
+deployment, I/O, implicit now or exchange-session policy.
+
+**Placement.** `dskit.production.loop` owns the live-preserving dispatch,
+writer and binding; `ledger` owns ServeRoot paths and frozen envelopes;
+new generic `production.replay` owns transactions, permits, outbox, cursor
+and result; `cashflows`, `compose`, `guards`, `report` and `__main__` receive
+only their stated seam changes. Update `dskit.production` README/AGENTS
+inventories. `children/intraday_equities` supplies only thin released-graph,
+exchange-session, horizon/cost/fill and event adapters plus pinned
+configuration; it owns no loop, clock, ledger/fold, permit authority, returns
+simulator or canonicalization.
+
+**Focused TDD after approval.** First add focused failures in
+`tests/production/test_loop.py`, `test_ledger.py`, new `test_replay.py`,
+`test_report.py`, `test_cashflows.py`, `test_compose.py`, `test_guards.py`,
+`test_control.py`, and `children/intraday_equities/tests/test_replay.py`.
+Inject crashes around every journal state, frozen append/barrier, snapshot
+preview/append/barrier, checkpoint write, event pending/emit/ACK/cursor,
+deferred effect and restore. Require uninterrupted/restarted byte-identical
+ledger/head, checkpoint, terminal identities, account, events, metrics and
+report. Pin unchanged live `_tick_once` checkpoint bytes/order, no provisional
+leakage, permit refusal, synthetic-authority isolation, all substitutions,
+V1/V2 cashflow compatibility, outbox ACK windows, hold restart/expiry,
+result tamper/staleness and rolling pins. Run only those files and directly
+affected purity/OOP/producer gates.
 
 **Owner gates.** Implementation stays fail-closed until this ADR is accepted. Execution separately requires ratified capital timing/settlement/corrections; event retention/redaction/sink reliability; hold authority/scope/TTL; cadence, session/training/embargo/availability; released model/calibration/cap/MIO identities and security authorities; and rung gates. No actual replay, paper/market action, lockbox/full backtest, HPO or final refit is authorized.
