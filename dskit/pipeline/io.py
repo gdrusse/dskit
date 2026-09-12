@@ -53,6 +53,10 @@ def load_config(path, adapters=()) -> PipelineConfig:
         If the file cannot be read.
     ModuleNotFoundError
         If a named adapter module is not importable here.
+    TypeError
+        If the file's top-level JSON value parses but is not an object
+        (e.g. ``null``, a number, or a bool) — ``PipelineConfig.from_obj``
+        calls ``set(obj)`` unguarded on it before any schema check runs.
     """
     for module in adapters:
         importlib.import_module(module)

@@ -307,6 +307,11 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     AssetError
         Accumulating parameter problems; naming the path (and line) for
         store-side refusals.
+    Exception
+        Whatever a caller-supplied ``admit`` callback itself raises —
+        it is called unguarded once a record clears the two intake
+        bounds, so a callback that is not actually pure/exception-free
+        is not shielded.
     """
     _raise_if(_scan_problems(root, source, stream, key_fields, ts_field,
                              ts_out, shared_fields, since_ms, keep_values,

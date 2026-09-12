@@ -130,6 +130,12 @@ def sync_published(registry, published_root, origin="sync-published") -> dict:
         does not raise — it is collected into the returned ``failed``
         list and the scan continues (anti-entropy: repair what is
         repairable, report the rest).
+    KeyError
+        If ``registry``'s model declares a ``dataset`` kind with no
+        required ``source`` ref — the per-file catch above only
+        shields ``AssetError``, so this escapes and aborts the WHOLE
+        scan rather than failing one file. Never reachable against the
+        default model, which requires it.
     """
     errors = []
     if not isinstance(registry, Registry):

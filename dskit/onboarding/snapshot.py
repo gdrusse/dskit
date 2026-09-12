@@ -86,6 +86,11 @@ def build_manifest(payload_dir, *, source, mode, acquired_at,
     ------
     AssetError
         If any argument is malformed, or ``payload_dir`` does not exist.
+    FileNotFoundError
+        If a walked file is removed by something else between its
+        digest (:func:`~dskit.onboarding.base.file_digest`) and the
+        unguarded ``os.path.getsize`` call right after — this function
+        does not re-check the file still exists.
     """
     errors = []
     _check_str(errors, "payload_dir", payload_dir)

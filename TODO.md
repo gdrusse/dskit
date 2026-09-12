@@ -783,6 +783,53 @@ REMAINING, in the plan's risk order:
       `except ImportError`/single-purpose resolvers across the 24 files
       and check each against any already-fixed sibling elsewhere in the
       repo.
+
+      **Sixteenth skeptic round (2026-09-12): a 13th recurrence — 1
+      MAJOR + 5 MINOR, no BLOCKER, the sibling-divergence hunt came back
+      clean (round 15's `resolve_connector` fix holds, verified against
+      `store.py::_resolve_backend` and the full test suite; no other
+      pair in the repo shares an ADR-cited "must mirror" contract).**
+      All fixes below are documentation-only and execution-verified.
+      **MAJOR:** `load_config` (`dskit/pipeline/io.py`) — the pipeline's
+      primary config-loading entry point — lets a syntactically-valid
+      JSON file whose top-level value is `null`, a number, or a bool
+      reach `PipelineConfig.from_obj`'s unguarded `set(obj)` call,
+      raising a raw `TypeError` instead of the documented
+      `ValueError`/`OSError`/`ModuleNotFoundError`; added. **MINOR (5):**
+      `build_manifest` (`dskit/onboarding/snapshot.py`) — the
+      established "unguarded stdlib call after a check" shape recurs
+      again: `os.path.getsize` runs unguarded right after
+      `file_digest` succeeds, so a file removed in between raises a raw
+      `FileNotFoundError`; added. `sync_published`
+      (`dskit/assets/sync.py`) accepts any registry whose model
+      "declares `dataset`/`dataset_version`," but when that model omits
+      the `dataset` kind's `source` ref, `registry.get(...).refs["source"]`
+      raises a raw `KeyError` that escapes the per-file `except
+      AssetError` catch and aborts the WHOLE scan rather than failing
+      one file (defeating the documented anti-entropy design) — added,
+      noting it is unreachable against the shipped default model.
+      `find_active_source` (`dskit/onboarding/acquire.py`) omitted the
+      `AssetError` `registry.find()` raises when the model does not
+      declare a `source_config` kind at all (same type as already
+      documented, a missing CAUSE) — added. `scan_stream`
+      (`dskit/onboarding/observations.py`) documented only `AssetError`
+      though its caller-supplied `admit` callback is invoked unguarded
+      and its own exception propagates whatever type it raises — added
+      as a generic `Exception` entry (deliberately not folded under
+      `AssetError`, since the type is genuinely caller-controlled).
+      `AssetError` the class itself (`dskit/assets/base.py`) had NO
+      `Raises` section despite `AssetError(42)` raising an undocumented
+      `TypeError` from its own bare `list(errors)` — added, matching
+      the round 7 dunder-`Raises` precedent. **Given a 13th straight
+      round finding real gaps — `Raises` completeness remains open.**
+      All 7 Examples blocks spot-checked this round (touched or
+      adjacent to rounds 10-15's edits) executed byte-exact; that axis
+      stays closed. A 17th round should continue the from-scratch trace
+      on the remaining not-yet-covered surface this round flagged but
+      did not reach: `read_manifest`/`find_snapshot_dir`/
+      `verify_snapshot` in `snapshot.py`, and the `assets/base.py`
+      checker family (`_check_str`/`_check_dict`/`_check_unknown`/
+      `_raise_if`/`_strip_notes`/`canonical_hash`/`atomic_write_json`).
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

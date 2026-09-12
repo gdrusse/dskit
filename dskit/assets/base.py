@@ -47,6 +47,12 @@ class AssetError(ValueError):
         The individual problems. The message joins them one per line so a
         multi-field failure names every field, not just the first.
 
+    Raises
+    ------
+    TypeError
+        If ``errors`` is not iterable (e.g. an int) — ``list(errors)``
+        is called unguarded and unvalidated.
+
     Examples
     --------
     Build and read the joined message::

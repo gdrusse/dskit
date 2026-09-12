@@ -107,8 +107,11 @@ def find_active_source(registry, name) -> str:
     Raises
     ------
     AssetError
-        If ``name`` is not a non-empty string, if no ``source_config``
-        named ``name`` is ACTIVE, or if more than one is.
+        If ``name`` is not a non-empty string; if ``registry``'s model
+        does not declare a ``source_config`` kind at all
+        (:meth:`~dskit.assets.registry.Registry.find`); if no
+        ``source_config`` named ``name`` is ACTIVE; or if more than one
+        is.
     """
     errors = []
     _check_str(errors, "name", name)
