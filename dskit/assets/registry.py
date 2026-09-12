@@ -195,8 +195,9 @@ class Registry:
         Raises
         ------
         AssetError
-            If ``version_id`` is absent from the store, or its kind is
-            not declared by this registry's model (an out-of-band write).
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent from the store, or its kind is not
+            declared by this registry's model (an out-of-band write).
         """
         record = self.store.get_record(version_id)
         self._spec(record.kind)  # a foreign kind means an out-of-band write

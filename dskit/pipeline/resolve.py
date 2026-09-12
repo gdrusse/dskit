@@ -309,16 +309,24 @@ def resolve(config, asof=None, backend=None, registry=DEFAULT_REGISTRY):
         weights it needs); a split/optimizer kind the backend does not
         support, an optimizer kind nobody registered; an empty
         discovered universe; any ``pkg.module:Attr`` reference in
-        ``optimization.kind``, a features step's ``kind``, a tracking
-        sink's ``kind``, or a custom stage that does not import
-        (propagated from :func:`~dskit.pipeline.base.import_ref`); a
-        class-reference ``optimization.kind``, features-step ``kind``,
-        or custom stage that imports but is not callable; a features
-        step ``kind`` that is neither a registered transform nor
-        claimed by the backend; a class-reference ``model.name`` whose
-        target lacks the required ``train``/``load`` method(s); or a
-        class-reference tracking sink missing a Tracker seam method
-        (``log_params``/``log_metrics``/``close``).
+        ``model.name``, ``optimization.kind``, a features step's
+        ``kind``, a tracking sink's ``kind``, or a custom stage that
+        does not import (propagated from
+        :func:`~dskit.pipeline.base.import_ref`); a class-reference
+        ``optimization.kind``, features-step ``kind``, or custom stage
+        that imports but is not callable; a features step ``kind`` that
+        is neither a registered transform nor claimed by the backend; a
+        class-reference ``model.name`` whose target lacks the required
+        ``train``/``load`` method(s); a class-reference tracking sink
+        missing a Tracker seam method
+        (``log_params``/``log_metrics``/``close``); a non-class-reference
+        tracking sink ``kind`` not (or no longer) in ``SINK_KINDS``; a
+        required environment variable named in ``config.env.require``
+        that is absent (propagated from
+        :func:`~dskit.pipeline.env.load_env`); or ``backend.fingerprint()``
+        returning a value with a NaN/Infinity float — propagated from
+        :func:`pipeline_hash`, the sibling case to the ``TypeError``
+        below.
     TypeError
         If ``backend.fingerprint()`` returns a value that is not JSON-
         serializable at all (e.g. a ``set``) — propagated from

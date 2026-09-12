@@ -195,6 +195,10 @@ class LocalFilesConnector(Connector):
             If a recognized filename is a symlink whose target does
             not exist — listing the directory does not confirm a file
             actually opens.
+        OSError
+            If a recognized filename is a symlink LOOP (too many levels
+            of symbolic links) — the same unconfirmed-open gap as
+            above, a different OS-level failure.
         """
         encoding = config.get("encoding", _DEFAULT_ENCODING)
         out = []
@@ -260,6 +264,10 @@ class LocalFilesConnector(Connector):
             If a recognized filename is a symlink whose target does
             not exist — listing the directory does not confirm a file
             actually opens.
+        OSError
+            If a recognized filename is a symlink LOOP (too many levels
+            of symbolic links) — the same unconfirmed-open gap as
+            above, a different OS-level failure.
         """
         errors = []
         _check_dict(errors, "state", state)

@@ -178,7 +178,8 @@ class Lineage:
         Raises
         ------
         AssetError
-            If ``version_id`` is absent or its kind is undeclared.
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent, or its kind is undeclared.
         """
         self.registry.get(version_id)
         return sorted({e["src"] for e in self.edges(version_id) if e["dst"] == version_id})
@@ -199,7 +200,8 @@ class Lineage:
         Raises
         ------
         AssetError
-            If ``version_id`` is absent or its kind is undeclared.
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent, or its kind is undeclared.
         """
         self.registry.get(version_id)
         return sorted({e["dst"] for e in self.edges(version_id) if e["src"] == version_id})
@@ -220,7 +222,8 @@ class Lineage:
         Raises
         ------
         AssetError
-            If ``version_id`` is absent or its kind is undeclared.
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent, or its kind is undeclared.
         """
         return self._closure(version_id, upstream=True)
 
@@ -240,7 +243,8 @@ class Lineage:
         Raises
         ------
         AssetError
-            If ``version_id`` is absent or its kind is undeclared.
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent, or its kind is undeclared.
         """
         return self._closure(version_id, upstream=False)
 

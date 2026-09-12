@@ -963,6 +963,43 @@ REMAINING, in the plan's risk order:
       one true orchestrator function still uncovered). A 21st round
       should retry the confirmation-only pass now that `resolve()` is
       fixed.
+
+      **Twenty-first skeptic round (2026-09-12): another confirmation
+      pass — an 18th recurrence, 5 MAJOR + 1 MINOR.** A second
+      independent from-scratch trace of `resolve()`'s full body (the
+      exact function round 20 just rewrote) found **4 more real gaps in
+      the same `ValueError` enumeration**: a class-reference
+      `model.name` that fails to import (the "does not import" list
+      named every OTHER class-ref site but omitted this one);
+      `backend.fingerprint()` returning a NaN/Infinity value, which
+      propagates `pipeline_hash`'s `ValueError` (only the sibling
+      `TypeError`-for-a-`set` case was documented); a non-class-reference
+      tracking sink `kind` no longer in `SINK_KINDS` (reachable via
+      registry drift between construction and resolve); and a required
+      environment variable named in `config.env.require` that is absent
+      (`EnvConfig`'s OWN docstring already says this happens "at resolve
+      time," yet `resolve()`'s `Raises` never mentioned it). All 4
+      added. Separately, `Registry.get()` and all four `Lineage` read
+      methods (`parents`/`children`/`ancestors`/`descendants`, which all
+      call `get()` internally) documented "absent or kind undeclared" as
+      the only causes, omitting that a MALFORMED (non-64-hex)
+      `version_id` raises the same `AssetError` type for a third, no
+      less real cause — fixed in all five docstrings from one shared
+      phrase. **MINOR:** `LocalFilesConnector.discover()`/`.read()`
+      (`dskit/onboarding/libs/localfiles.py`) documented a dangling
+      symlink's `FileNotFoundError` but not a symlink LOOP's `OSError`
+      — the exact pattern round 14 already fixed once in `ingest_run`,
+      never propagated to this sibling (which is, notably, the ORIGINAL
+      site round 10 first found the dangling-symlink half of this same
+      pattern in) — added to both methods. **Given an 18th straight
+      round finding real gaps, even under a confirmation-only mandate —
+      `Raises` completeness remains open.** The recurring shape is now
+      explicit: gaps cluster in (a) long-branch-tree orchestrators
+      (`resolve()`, twice now) and (b) shared helpers whose callers
+      inherit an incomplete enumeration (`Registry.get`/`Lineage`,
+      `verify_snapshot`/its callers). A 22nd round's random picks should
+      keep favoring multi-branch functions and widely-called helpers
+      over simple leaf functions, per this round's own recommendation.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,
