@@ -7885,17 +7885,92 @@ sanctioned producer of gross-unit rows.
 
 ## ADR-0123 — Signed immutable captures and causal forecast/capital evidence
 
-**Status:** proposed (2026-09-11; owner approval required before code, config, protected-data read, or execution). Extends ADR-0088/0111/0114/0118/0119/0121 without reopening them; baseline is main cfd2893.
+**Status:** accepted (2026-09-12; owner approved the external launcher/broker architecture and synthetic TDD implementation only). Extends ADR-0088/0111/0114/0118/0119/0121 without reopening them; baseline is main cfd2893. Real calibration, HPO, refit, replay, paper/market execution, protected-data reads, lockbox work, and full backtests remain prohibited.
 
 **Problem.** Local RunAttestation/content hashes do not defend a writable run directory. Existing bundle, cap, and MIO pins cannot make self-authored files release authority. Generic causal calibration, local-FDR, shared scenarios, immutable capture, and trusted runtime identity do not ship. Paper/production therefore remain closed.
 
-**Placement.** Add generic stdlib contracts in new dskit/pipeline/trust.py and calibration.py; extend existing document.py, planner.py, node.py, driver.py, and stages.py only at owned seams. Crypto implementations, if needed, are lazy tier-2 packs. The child adds only thin adapters in existing forecast_bundle.py/nodes_capital.py, registration, docs, and tests. No child signature, hash, lifecycle, calibration, FDR, or scenario mechanism. These exact new files require owner approval before creation.
+**Placement.** Add generic stdlib contracts in new dskit/pipeline/trust.py and calibration.py; extend existing document.py, planner.py, node.py, driver.py, and stages.py only at owned seams. Crypto implementations, if needed, are lazy tier-2 packs. The child adds only thin adapters in existing forecast_bundle.py/nodes_capital.py, registration, docs, and tests. No child signature, hash, lifecycle, calibration, FDR, or scenario mechanism. These exact new files are approved for synthetic TDD only.
+
+**External launch root.** Deployment authority begins outside Python and outside
+the writable workspace. `dskit-launch/v1` is an owner-provisioned,
+OS/orchestrator-owned launcher and broker, not a dskit module, package, script,
+or configuration-selected implementation. Before it executes an interpreter it
+independently verifies its immutable host/VM/OCI image admission measurement,
+the exact interpreter and read-only runtime image, and a protected,
+externally-signed `LaunchAuthorization`. The authorization binds the exact
+canonical consumer-document bytes/digest, purpose, policy digest, named
+entrypoint, validity interval, consumer allowlist, immutable image/runtime and
+dependency digests, and a complete static import closure: every module,
+distribution, extension, parent package, class and dependency file that the
+entrypoint may import, each with its canonical identity.
+
+The launcher imports no Python or dskit code while making those checks. It
+rejects an editable/ambiguous/namespace/zip module, unlisted extension or
+parent package, altered import hook, extra `sys.path` entry, user site,
+`PYTHONPATH`, inherited preload, or a closure/image/document/purpose mismatch.
+Only then does it start the pinned interpreter in isolated mode and hand its
+measured process identity to the OS-owned broker. The fixed bootstrap first
+claims an opaque, process-bound `LaunchSession` from that broker and performs
+no document, planner, driver, node, decider, adapter, or candidate-module
+import beforehand. The bootstrap may import the already authorized
+`dskit.production.decider`, `dskit.pipeline.driver`, `planner`, and `node`
+only after the broker confirms the session's image measurement and exact
+authorization. Thus the present module-level decider imports cannot execute
+before the trust decision.
+
+The broker, not an environment variable or Python-held secret, owns provider,
+keyring, trusted-clock, runtime-measurement, lifecycle, and capture
+credentials. It admits only the measured launched process and grants
+single-purpose, nonserializable handles; a copied descriptor, inherited
+environment, local Python invocation, or a process from another image cannot
+claim one. Python rechecks the static closure against that session before
+ordinary `resolve_uses`, but this is defense in depth, never its bootstrap
+authority. A development launcher may issue deterministic
+`deployment_eligible=false` sessions for focused tests only; without this
+external launcher and its protected policy store, all capture, lifecycle,
+calibration publication, and paper/production paths refuse.
 
 ### Immutable capture API and schemas
 
-dskit.pipeline.trust exports ImmutableSnapshotProvider.describe(root_ref, snapshot_version)/open_member(snapshot, relative_path), ReleaseKeyring.verify(key_id, key_version, issued_at_ms, message, signature), TrustedClock.now_ms(), TrustedRuntimeVerifier.verify(identity, planned_classes), ArtifactTrustRoot(provider, keyring, clock, runtime), opaque CapturedJsonArtifact.value/.audit, and CapturedBindingResolver.
+dskit.pipeline.trust exports only generic parsers and opaque handles:
+ImmutableSnapshotProvider.describe(root_ref, snapshot_version)/open_member(snapshot,
+relative_path), ReleaseKeyring.verify(key_id, key_version, issued_at_ms,
+message, signature), TrustedClock.now_ms(), TrustedRuntimeVerifier, opaque
+LaunchSession, CapturedJsonArtifact.value/.audit, CapturedLifecyclePort, and
+per-node CapturedBindings. Application code cannot construct an
+ArtifactTrustRoot, provider, keyring, clock, runtime verifier, lifecycle
+authority, launch session, capture, receipt, or binding resolver from data;
+the trusted bootstrap obtains the private authority bundle only through the
+broker's verified LaunchSession.
 
-CapturedBindingResolver.resolve(planned_port, *, release_attestation, runtime_identity) verifies the exact root, manifest, release, time, purpose, and runtime binding, then returns the sole nonforgeable CapturedJsonArtifact for that port. The generic driver resolves every declared captured port before constructing any node or evaluating any node branch, and injects an opaque read-only CapturedBindings resolver as the final `NodeContext` field. In particular, the current `dskit/production/decider.py` construction `NodeContext(name=served.name, asof=asof, run_dir=base_run_dir)` becomes a trusted-driver construction with those already-resolved bindings; paper/production MIO obtains only `ctx.captured.resolve(port)`, never a caller-supplied value.
+Every authorization names one canonical
+`ConsumerCapturedPort = {consumer_document_sha256, consumer_node,
+consumer_input, purpose}`. The external broker signs a
+`CapturedPortAuthorization` for exactly one such port and exactly one
+root/snapshot/member/producer/policy/runtime/time binding. A bare port name,
+producer descriptor, mutable path, or authorization for another document,
+node, or input is not authority.
+
+After the authorized bootstrap has parsed and planned the exact document, the
+generic driver compares the complete sorted ConsumerCapturedPort set to the
+launch authorization, opens every authorized immutable member through the
+broker, and verifies it before constructing any node or selecting any branch.
+For each node invocation it derives a fresh NodeContext whose `captured` field
+is a non-enumerable CapturedBindings view containing only that node's declared
+authorized input names. `ctx.captured.require(input_name)` returns only that
+input's opaque CapturedLifecyclePort/CapturedJsonArtifact; it cannot name,
+discover, reopen, copy, serialize, or resolve another node's port. The normal
+materialized input for that declared port is the same opaque handle. Outputs,
+params, ordinary dollar wires, carry, checkpoints, records, reports, and JSON
+artifact persistence reject captured handles and descriptor-shaped substitutes.
+
+In particular, `dskit/production/decider.py` must no longer create
+`NodeContext(name=served.name, asof=asof, run_dir=base_run_dir)` directly.
+Its prepare path is entered only through the claimed LaunchSession; it plans
+against the launcher-approved closure, asks the generic driver to resolve all
+captured ports before base-pass construction, and receives only per-node
+contexts. Paper/production MIO therefore obtains a handle only at its own
+declared input, never from a caller, global resolver, or another node.
 
 The captured value is final, immutable, constructible only by the trust root, and refuses copy/pickle/JSON reconstruction. It retains single-read verified bytes and exposes no path, reopen, provider, credential, or signing API.
 
@@ -7915,43 +7990,113 @@ dskit.decision-release-attestation/v1 is exactly {schema,consumer_document_sha25
 
 Trusted time requires not_before_ms <= now_ms < expires_at_ms, issued_at_ms <= now_ms, and a configured maximum issuance age; purpose and actual consumer document match. A circular document self-pin is not authority.
 
-Runtime identity is either {kind:"image",image_sha256,runtime_sha256,dependencies_sha256} or {kind:"modules",runtime_sha256,dependencies_sha256,modules:[{module,class,code_sha256}]}. Measure the image/interpreter, dependency lock, and every trusted class before loading one; missing/extra/swapped identities refuse.
+Runtime identity is launcher-measured evidence, either
+{kind:"image",image_sha256,runtime_sha256,dependencies_sha256} or the complete
+authorized static module closure
+{kind:"modules",runtime_sha256,dependencies_sha256,modules:[{module,class,code_sha256}]}.
+The OS-owned launcher verifies that closure before interpreter execution;
+Python never imports a candidate, parent package, adapter, driver, planner,
+node, or decider in order to measure or authorize it. Missing, extra, swapped,
+late-loaded, or dynamically discovered identities refuse.
 
 Snapshot, release, confirmation, and runtime keys have separate usages; the external keyring checks ID/version, validity, rotation, and revocation. Untrusted JSON-RPC workers receive no provider/key/runtime credential, signing authority, or writable run root.
 
 ### Captured ports and enforced multi-run stages
 
-The only document spelling, valid only at an input port, is {$captured_artifact:{root_ref:"release://forecast/v42",snapshot_version:"42",document_sha256:"<sha256>",node:"pit_bundle",output:"bundle",purpose:"paper"}}.
+The only document spelling, valid only as the complete value of one declared
+node input, is
+{$captured_artifact:{root_ref:"release://forecast/v42",snapshot_version:"42",
+document_sha256:"<sha256>",node:"pit_bundle",output:"bundle",purpose:"paper"}}.
+The parser computes the ConsumerCapturedPort from the containing document
+digest, node key, and input name; these are not optional fields and may not be
+spelled inside the descriptor.
 
-The planner compiles this exact object to non-JSON CapturedArtifactPort. Nodes cannot declare, emit, serialize, forge, or put it in params. After all release/runtime checks, the generic driver uses CapturedBindingResolver before any node construction or branch selection and injects only the corresponding opaque binding through `NodeContext.captured.resolve(port)`. Ordinary dollar-reference wires cannot carry it.
+The planner compiles this exact object to a non-JSON CapturedArtifactPort and
+records its canonical ConsumerCapturedPort. It rejects the spelling in params,
+outputs, defaults, lists, maps, carry references, artifacts, or any nested
+location other than the one input value. Nodes cannot declare, emit, serialize,
+forge, or forward a captured handle. Before construction the driver requires
+one matching live broker authorization and one matching signed lifecycle
+capture for every planned captured port; an unused authorization, missing
+planned port, duplicate port, wrong consumer input, or authorization for an
+ordinary wire refuses.
 
-`CapturedBindings` accepts only planner-issued port identities, is not constructible from JSON, and never returns a path, bytes, provider, credential, signing API, or descriptor-shaped substitute. A node can receive an already-verified `CapturedJsonArtifact` only by resolving its own declared port.
+`CapturedBindings` accepts only the driver's private, planner-issued identity
+for its current node, is not constructible from JSON, and never returns a
+path, raw provider, credential, signing API, descriptor-shaped substitute, or
+another node's handle. A node can receive an already verified captured value
+only through its own exact declared input.
 
 Records, carry, checkpoints, and reports persist only immutable audit; a descriptor-shaped dict is never authority. Paper/production consumers declare trusted ports and reject ordinary JSON before every normal, empty, mandatory-exit, held-position, or solver path.
 
 
-SealedRunLifecycle uses a dedicated external LifecycleAuthority and an externally protected append-only/WORM receipt store for compare-and-set receipts: PRODUCED -> SEALED -> PUBLISHED -> CAPTURED -> CONSUMED. The store accepts writes only from that authority, never from nodes, workers, or the run directory.
+SealedRunLifecycle is served by the same OS-owned broker's dedicated external
+LifecycleAuthority and protected append-only/WORM receipt store. Its
+compare-and-set receipts are PRODUCED -> SEALED -> PUBLISHED -> CAPTURED ->
+CONSUMED; the store accepts writes only from that authority, never from nodes,
+workers, Python process state, or the run directory. A
+`dskit.lifecycle-receipt/v1` binds schema, stream identity, exact
+producer/run/node/output/document identities, previous receipt digest,
+strictly increasing sequence, event, immutable root/snapshot/member and
+publication-attestation identities, consumer captured-port identity when
+applicable, actor launch measurement, transition nonce, trusted issuance
+instant, key identity, and signature.
 
 Before every CAS transition, LifecycleAuthority verifies the prior receipt and proposed receipt signature and lifecycle-key usage, key ID/version/validity/revocation, trusted time and issuance age, strictly next sequence, exact predecessor digest, run/node/output/document identity, snapshot/root/member identity, actor/runtime identity, and transition-specific nonce/receipt identity against the WORM anti-replay index.
 
-Each signed receipt binds document, run, node/output, predecessor digest, sequence, snapshot/root/member identities, actor/runtime identity, transition nonce, and instant. Produce requires a completed run; seal requires closed bytes; publish requires the externally signed root; capture requires the published version plus a live attestation; consume requires a later distinct run.
+Produce requires a completed planned run; seal requires the same closed verified
+bytes; publish requires the externally signed immutable root; capture requires
+that exact publication receipt plus a live matching CapturedPortAuthorization;
+and consume requires a later distinct run and the exact consumer document/node/
+input identity. The broker returns a `CapturedLifecyclePort` only after the
+CAPTURED receipt verifies, and records CONSUMED after the authorized input is
+used. No caller-supplied time, local status flag, path, signature, or receipt
+dict can stand in for a publication or capture receipt.
 
 Same-run, skipped, reordered, replayed, duplicate-nonce, cross-version, predecessor-mismatched, expired, unsigned, wrong-key-usage, or non-WORM transitions refuse. Repeat the whole sequence independently for confirmation evidence -> signed proof, calibration publisher -> signed snapshot, cap publisher -> signed snapshot, PIT publisher -> signed snapshot, and captured-port MIO. These are never same-DAG capability wires.
 
 
 ### Causal calibration, confirmation, FDR, and scenarios
 
-dskit.pipeline.calibration exports immutable generic CausalPairs(rows, *, decision_cut_ms, outcome_cut_ms), CalibrationFit.fit(pairs, policy), CalibrationState.apply(decisions, *, known_at_ms), ConfirmationTest.confirm(state, test_pairs, policy), LocalFdrEstimator.fit/apply, and SharedResidualScenarios.fit.
+dskit.pipeline.calibration exports generic causal codecs plus
+`CalibrationFit.fit(captured_pairs, policy_handle)`,
+`CalibrationState.apply(captured_decisions, policy_handle)`,
+`ConfirmationTest.confirm(captured_state, captured_test_pairs, policy_handle)`,
+LocalFdrEstimator.fit/apply, and SharedResidualScenarios.fit. In deployment,
+each `captured_*` argument is a verified CapturedLifecyclePort from the exact
+authorized input; each policy handle comes from the LaunchSession. Raw
+CausalPairs are useful only for development computation and can never produce
+an authority-bearing state, cap, confirmation, or MIO input. No fit, apply, or
+confirmation API accepts caller `known_at_ms`, publication time, capture time,
+receipt, or lifecycle timestamp.
 
 CausalPairs hashes sorted unique {decision_id,outcome_id,entity,decision_ms,outcome_available_ms,prediction,outcome} rows. Fit/test decision and outcome IDs are mutually disjoint; fit outcomes precede fit, state publication precedes apply/test decisions, and test outcomes precede confirmation. Overlap, substitution, lateness, reversed cuts, and outcome access during apply refuse.
 
-CalibrationState binds schema/method/policy digest, fit/pair identity, availability, parameters, producer/runtime identity, and state digest.
+For deployment, the authority derives fit availability, state publication,
+decision availability, and test availability exclusively from the verified
+captured bytes and their signed PRODUCED/SEALED/PUBLISHED/CAPTURED receipts.
+It verifies the causal cuts against the policy handle and receipt sequence;
+caller timestamps cannot advance a state, make an outcome known, or satisfy a
+confirmation boundary. A completed fit/apply/scenario/FDR result is only a
+draft until the driver stages it and LifecycleAuthority publishes, captures,
+and authorizes it for its next consumer.
+
+CalibrationState binds schema/method/policy digest, fit/pair identity,
+publication/capture receipt digests, availability derived from those receipts,
+parameters, producer/runtime identity, and state digest.
 
 Local-FDR apply emits only pi_hat and conservative pi_upper with exact fit/decision/time bindings; HFDR selection remains solely in EquityKellyMIO.
 
 Shared scenarios emit one ordered scenario-by-entity matrix over common causal instants, normalized weights, entity order, instant IDs, unit, missingness mask/digest, fit/policy identities, and availability. Ragged/per-entity sets, reorder, unhashed imputation, non-finite values, nonpositive weights, or dimension mismatch refuse. Method, dependence unit, uncertainty construction, evidence minima, and bounds have no defaults.
 
-External ConfirmationAuthority.issue(evidence, policy, clock) accepts only verified `CapturedJsonArtifact` evidence rooted in the exact required `root_ref`, `root_id`, `snapshot_version`, and complete member manifest/version. It independently decodes the retained verified bytes, reconstructs CausalPairs and recomputes every pair identity, availability/cut rule, statistical input, and verdict from those bytes; raw caller-provided `CausalPairs`, verdicts, pair hashes, or JSON cannot authorize.
+External ConfirmationAuthority.issue(evidence_port, policy_handle) accepts only
+a verified CapturedLifecyclePort rooted in the exact required
+root_ref/root_id/snapshot_version/member manifest and carrying a valid signed
+PUBLISHED then CAPTURED receipt for its exact consumer port. It independently
+decodes the retained verified bytes and receipts, reconstructs CausalPairs, and
+recomputes every pair identity, availability/cut rule, statistical input, and
+verdict from those bytes; raw caller-provided CausalPairs, timestamps,
+verdicts, pair hashes, JSON, receipt dicts, or policy cannot authorize.
 
 It signs exact dskit.confirmation-proof/v1 fields: {schema,producer_document_sha256,producer_node,producer_output,model_manifest_sha256,statistical_policy_sha256,fit_identity,fit_pair_sha256,test_identity,test_pair_sha256,verdict,fit_outcomes_available_ms,state_published_ms,test_decisions_start_ms,test_outcomes_available_ms,cap_policy_sha256,capture_root_ref,capture_root_id,capture_snapshot_version,capture_member_manifest_sha256,capture_member_identities,issued_at_ms,key,signature}. `capture_member_identities` binds the config/resolved/result/producer-record/artifact member digests and normalized relative paths used for recomputation.
 
@@ -7970,18 +8115,37 @@ Existing EquityKellyMIO accepts only captured bundle/cap ports in paper/producti
 
 ### Focused TDD and gates
 
-After approval, strict red-green order is: (1) schemas, signatures, key/time/runtime swaps; (2) member/path/link/TOCTOU/mutation attacks; (3) capability forgery, worker isolation, resolver injection before construction/branches, and port injection; (4) externally-authorized WORM lifecycle signature/key/time/sequence/predecessor/anti-replay and same-run refusals; (5) captured-byte-only causal identity and confirmation substitutions; (6) local-FDR limits and shared matrix/missingness; (7) child label/V3/PIT adapters; (8) every MIO branch.
+After approval, strict red-green order is: (1) external-launcher refusal
+before any decider/planner/driver/node/candidate import, including image,
+closure, parent-package, import-hook, site-path, document, purpose, and broker
+process-identity swaps; (2) schemas, signatures, key/time/runtime swaps;
+(3) member/path/link/TOCTOU/mutation attacks; (4) per-consumer
+document/node/input authorization, node-context isolation, capability forgery,
+worker isolation, and resolution before construction/branches; (5)
+externally-authorized WORM lifecycle publication/capture signature/key/sequence/
+predecessor/anti-replay and same-run refusals; (6) captured-byte-and-receipt-only
+causal identity, caller-time refusal, and confirmation substitutions; (7)
+local-FDR limits and shared matrix/missingness; (8) child label/V3/PIT adapters;
+(9) every MIO branch.
 
-Owner approval is required for focused ownership paths: new `tests/pipeline/test_trust.py` (capture, resolver, lifecycle/WORM and confirmation authority), new `tests/pipeline/test_calibration.py` (causal/calibration/FDR/scenarios), existing `tests/pipeline/test_document.py`, `tests/pipeline/test_planner.py`, `tests/pipeline/test_node.py`, and `tests/pipeline/test_driver.py` (captured-port grammar and trusted injection), existing `tests/production/test_decider.py` (the Decider NodeContext seam), and existing child `children/intraday_equities/tests/test_forecast_bundle.py` and `children/intraday_equities/tests/test_nodes_capital.py` (adapter/MIO gates).
+Focused synthetic TDD ownership paths are: new `tests/pipeline/test_trust.py` (capture, resolver, lifecycle/WORM and confirmation authority), new `tests/pipeline/test_calibration.py` (causal/calibration/FDR/scenarios), existing `tests/pipeline/test_document.py`, `tests/pipeline/test_planner.py`, `tests/pipeline/test_node.py`, and `tests/pipeline/test_driver.py` (captured-port grammar and trusted injection), existing `tests/production/test_decider.py` (the Decider NodeContext seam), and existing child `children/intraday_equities/tests/test_forecast_bundle.py` and `children/intraday_equities/tests/test_nodes_capital.py` (adapter/MIO gates).
 
 Each focused test first fails for the intended missing behavior, then minimal code passes it. Run only affected tests, purity, touched-path Ruff, and git diff --check. One Terra skeptic is active at a time; every correction and subsequent review uses Terra until zero Critical/Major findings.
 
-**Fail-closed gates.** This ADR authorizes no implementation. Owner must approve it, exact new files, key owners/storage/rotation/revocation, runtime measurement, and worker sandbox.
+**Fail-closed gates.** Owner approval authorizes synthetic TDD implementation
+only. Owner must still freeze the exact new files, external OS-owned
+launcher/broker and its host/image admission root, protected policy and WORM
+stores, key owners/storage/rotation/revocation, static import-closure format,
+runtime measurement, and worker sandbox. dskit code must not supply a fallback,
+self-hosted, or configuration-selected launcher.
 
 Before real calibration, owner/statistics must ratify ADR-0114 §11.4 fit/test partitions, dependence, evidence minima, calibration/FDR/scenario methods, uncertainty, GO, and reuse.
 
 Before capital, owner/risk must ratify semantic availability, cap economics, and every §11.8 MIO/account policy; security must approve providers, signers, and execution authorities.
 
-Affected paths stay closed until signed artifacts and exact policies are frozen. No real calibration, HPO, final refit, market replay, paper trading, lockbox read, or full backtest is authorized.
+Affected paths stay closed until signed artifacts, lifecycle publication/capture
+receipts, exact policies, and the shared model-release launcher contract are
+frozen. No real calibration, HPO, final refit, market replay, paper trading,
+lockbox read, or full backtest is authorized.
 
 **Consequences.** Local runs and V2 caps remain development evidence, never paper/production authority. Authority is the exact time-bounded conjunction of immutable bytes, producer/run/consumer/policy identity, measured trusted code, causal evidence, staged publication, and least-privilege captured delivery.
