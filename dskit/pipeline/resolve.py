@@ -235,13 +235,20 @@ def pipeline_hash(resolved) -> str:
     ------
     ValueError
         If the stripped content is not canonically serializable
-        (NaN/Infinity in an open dict or fingerprint).
+        (NaN/Infinity in an open dict or fingerprint); or ``resolved``
+        has no ``to_dict`` and is a non-mapping iterable of items that
+        are not themselves 2-element pairs (e.g. a list of strings or a
+        plain string) — raised by the ``dict(resolved)`` fallback
+        conversion, unrelated to the NaN/Infinity case above and not
+        wrapped with the same message.
     TypeError
         If the stripped content holds a value ``json.dumps`` cannot
         serialize at all (not caught and wrapped like the NaN/Infinity
         case above — this pre-existing ``except ValueError`` does not
         catch it); also propagated from ``resolved.to_dict()`` when
-        ``resolved`` is a :class:`ResolvedPipeline`.
+        ``resolved`` is a :class:`ResolvedPipeline`; or ``resolved`` has
+        no ``to_dict`` and is not iterable at all (e.g. an int) —
+        raised by the same ``dict(resolved)`` fallback.
     """
     d = resolved.to_dict() if hasattr(resolved, "to_dict") else dict(resolved)
     d = _strip_notes({k: v for k, v in d.items() if k not in _PROVENANCE_KEYS})

@@ -179,6 +179,11 @@ def write_snapshot(root, staged_dir, manifest) -> tuple:
     AssetError
         If the destination already exists — WORM means a snapshot is
         written exactly once, never overwritten.
+    KeyError
+        If ``manifest`` holds only declared keys (per the check above)
+        but omits a required one — ``manifest["acquired_at"]`` and
+        ``manifest["source"]`` are read directly, unchecked for
+        presence.
     FileExistsError
         If a stray file already occupies where ``raw/<source>/``
         belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
@@ -187,7 +192,10 @@ def write_snapshot(root, staged_dir, manifest) -> tuple:
         If a concurrent writer lands the same ``acq_id`` between this
         call's existence check and its ``os.rename`` — the check is
         not atomic with the rename, so a same-second at-least-once
-        retry can lose the race and raise "Directory not empty."
+        retry can lose the race and raise "Directory not empty"; or
+        ``staged_dir`` is removed by something else between the
+        ``payload/`` check above and the manifest write
+        (:func:`~dskit.onboarding.base.durable_write_json`).
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

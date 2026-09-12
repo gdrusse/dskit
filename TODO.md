@@ -652,6 +652,50 @@ REMAINING, in the plan's risk order:
       functions (`run_acquisition`, `write_snapshot`,
       `Registry.register`, `pipeline_hash`) before `Raises`
       completeness is declared closed.**
+
+      **Thirteenth skeptic round (2026-09-12): ran the deferred
+      from-scratch trace — a 10th recurrence, and it surfaced a
+      genuinely NEW bug shape on its first try, confirming round 12's
+      concern that the gate-based method alone would not be enough.**
+      Method: derive each function's exception surface independently
+      from its code, before ever reading its current docstring, then
+      diff. `run_acquisition` came back a clean match (nothing to fix —
+      the first function in 10 rounds to survive a full independent
+      trace with zero gap). Three genuine defects elsewhere, all
+      execution-verified: **(1)** `write_snapshot`
+      (`dskit/onboarding/snapshot.py`) reads `manifest["acquired_at"]`
+      and `manifest["source"]` unchecked for presence — a manifest that
+      passes the declared-keys check but omits a required one raises an
+      undocumented `KeyError`; added. **(2)** the same function has a
+      THIRD, previously uncatalogued TOCTOU beyond its two documented
+      races: `staged_dir` deleted externally between the `payload/`
+      check and the manifest write raises a raw `FileNotFoundError`
+      from `durable_write_json`, not covered by either existing
+      `AssetError`/`OSError` entry; added. **(3)** `Registry.register`
+      (`dskit/assets/registry.py`) attributed its canonical-
+      serializability `AssetError` to "constructing the `AssetRecord`,"
+      but the traceback shows the true raise site is one line later, in
+      this method's own call to `record.version_id()` — `AssetRecord`'s
+      shape check never looks inside a free-form `"object"` field, so
+      construction succeeds and only hashing fails; corrected. **(4)
+      MAJOR, a new bug class:** `pipeline_hash`
+      (`dskit/pipeline/resolve.py`) falls back to `dict(resolved)` when
+      `resolved` has no `to_dict`, and that conversion can itself raise
+      — `pipeline_hash(42)` raises `TypeError: 'int' object is not
+      iterable`, and `pipeline_hash(['a','b','c'])` /
+      `pipeline_hash('hello')` raise `ValueError: dictionary update
+      sequence element #0 has length 1; 2 is required` — neither
+      documented, and the `ValueError` case is actively misleading: it
+      collides with the ALREADY-documented `ValueError` (stated cause:
+      "NaN/Infinity in an open dict or fingerprint"), for a completely
+      unrelated failure that never reaches the NaN/Infinity code path
+      at all; corrected with its own clause. **Given a 10th straight
+      round, and a genuinely new bug shape found on the very first
+      application of the most rigorous method tried — `Raises`
+      completeness remains open.** A 14th round should re-apply the
+      same from-scratch method to a fresh set of functions (this round
+      only covered 4), since it is now the one method in 13 rounds that
+      has found a brand-new defect class rather than a recurrence.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

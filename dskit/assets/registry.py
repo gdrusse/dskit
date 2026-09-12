@@ -136,8 +136,10 @@ class Registry:
             model's field checks, a ref does not resolve to a present
             record of the declared kind, ``origin``/``notes`` are not
             strings, or ``payload``/``refs`` hold a value that is not
-            canonically serializable (propagated from constructing the
-            :class:`AssetRecord`).
+            canonically serializable — a free-form ``"object"`` field
+            can construct an :class:`AssetRecord` cleanly (its shape
+            check does not look inside) and only fail later, when this
+            method calls :meth:`AssetRecord.version_id`.
         TypeError
             If ``kind`` is an unhashable type (e.g. a list).
         """
