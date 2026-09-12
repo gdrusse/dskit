@@ -7882,3 +7882,89 @@ runs only in explicit development mode with a deterministic, pinned,
 `deployment_eligible=false` synthetic cap. Bundle rows in label units (or
 without `unit`) refuse at the capital node; the assembler is the only
 sanctioned producer of gross-unit rows.
+
+## ADR-0123 — Signed immutable captures and causal forecast/capital evidence
+
+**Status:** proposed (2026-09-11; owner approval required before code, config, protected-data read, or execution). Extends ADR-0088/0111/0114/0118/0119/0121 without reopening them; baseline is main cfd2893.
+
+**Problem.** Local RunAttestation/content hashes do not defend a writable run directory. Existing bundle, cap, and MIO pins cannot make self-authored files release authority. Generic causal calibration, local-FDR, shared scenarios, immutable capture, and trusted runtime identity do not ship. Paper/production therefore remain closed.
+
+**Placement.** Add generic stdlib contracts in new dskit/pipeline/trust.py and calibration.py; extend existing document.py, planner.py, node.py, driver.py, and stages.py only at owned seams. Crypto implementations, if needed, are lazy tier-2 packs. The child adds only thin adapters in existing forecast_bundle.py/nodes_capital.py, registration, docs, and tests. No child signature, hash, lifecycle, calibration, FDR, or scenario mechanism. These exact new files require owner approval before creation.
+
+### Immutable capture API and schemas
+
+dskit.pipeline.trust exports ImmutableSnapshotProvider.describe(root_ref, snapshot_version)/open_member(snapshot, member_name), ReleaseKeyring.verify(key_id, key_version, issued_at_ms, message, signature), TrustedClock.now_ms(), TrustedRuntimeVerifier.verify(identity, planned_classes), ArtifactTrustRoot(provider, keyring, clock, runtime) with capture(snapshot, document_sha256, node_key, output_name, purpose, release_attestation), and opaque CapturedJsonArtifact.value/.audit.
+
+The captured value is final, immutable, constructible only by the trust root, and refuses copy/pickle/JSON reconstruction. It retains single-read verified bytes and exposes no path, reopen, provider, credential, or signing API.
+
+Canonical JSON is UTF-8, sorted-key, compact, ASCII and finite-number-only; digests are lowercase SHA-256; instants are integer epoch-ms; schemas are default-deny. Ed25519 signs canonical envelopes with signature omitted.
+
+dskit.trust-root/v1 is exactly {schema,root_ref,root_id,snapshot_version,document_sha256,run_identity,members,key,issued_at_ms,signature}. members is the complete sorted {name,sha256,bytes} list for config, resolved state, result, optional carry, producer node record, and requested JSON artifact; key={key_id,key_version}.
+
+Refuse absolute/empty/dot/traversal/backslash/NUL names, duplicate normalized POSIX names, symlink, hard link, non-regular member, mixed version, missing/extra required member, invalid/revoked/out-of-validity key, short read, byte/digest mismatch, or mutation. Verify retained bytes and decode those same bytes: no check/reopen TOCTOU.
+
+Staging is trusted-driver work, never a node: write a new version, fsync every member and directory, close staging, obtain an external signature over the complete manifest, then atomically publish the immutable version. Unsigned local providers are development-only and refuse paper/production.
+
+dskit.decision-release-attestation/v1 is exactly {schema,consumer_document_sha256,purpose,policy_sha256,captures,runtime_identity,issued_at_ms,not_before_ms,expires_at_ms,key,signature}. Each sorted capture binds {port,root_ref,root_id,snapshot_version,run_identity,producer_document_sha256,producer_node,producer_output,artifact_manifest_sha256}.
+
+Trusted time requires not_before_ms <= now_ms < expires_at_ms, issued_at_ms <= now_ms, and a configured maximum issuance age; purpose and actual consumer document match. A circular document self-pin is not authority.
+
+Runtime identity is either {kind:"image",image_sha256,runtime_sha256,dependencies_sha256} or {kind:"modules",runtime_sha256,dependencies_sha256,modules:[{module,class,code_sha256}]}. Measure the image/interpreter, dependency lock, and every trusted class before loading one; missing/extra/swapped identities refuse.
+
+Snapshot, release, confirmation, and runtime keys have separate usages; the external keyring checks ID/version, validity, rotation, and revocation. Untrusted JSON-RPC workers receive no provider/key/runtime credential, signing authority, or writable run root.
+
+### Captured ports and enforced multi-run stages
+
+The only document spelling, valid only at an input port, is {$captured_artifact:{root_ref:"release://forecast/v42",snapshot_version:"42",document_sha256:"<sha256>",node:"pit_bundle",output:"bundle",purpose:"paper"}}.
+
+The planner compiles this exact object to non-JSON CapturedArtifactPort. Nodes cannot declare, emit, serialize, forge, or put it in params. After release/runtime verification, the driver injects it only through NodeContext.captured(port). Ordinary dollar-reference wires cannot carry it.
+
+Records, carry, checkpoints, and reports persist only immutable audit; a descriptor-shaped dict is never authority. Paper/production consumers declare trusted ports and reject ordinary JSON before every normal, empty, mandatory-exit, held-position, or solver path.
+
+SealedRunLifecycle adds append-only compare-and-set receipts for PRODUCED -> SEALED -> PUBLISHED -> CAPTURED -> CONSUMED.
+
+Each receipt binds document, run, node/output, predecessor digest, snapshot version, actor/runtime identity, and instant. Produce requires a completed run; seal requires closed bytes; publish requires the externally signed root; capture requires the published version plus a live attestation; consume requires a later distinct run.
+
+Same-run, skipped, reordered, replayed, cross-version, and expired transitions refuse. Repeat the whole sequence independently for confirmation evidence -> signed proof, calibration publisher -> signed snapshot, cap publisher -> signed snapshot, PIT publisher -> signed snapshot, and captured-port MIO. These are never same-DAG capability wires.
+
+### Causal calibration, confirmation, FDR, and scenarios
+
+dskit.pipeline.calibration exports immutable generic CausalPairs(rows, *, decision_cut_ms, outcome_cut_ms), CalibrationFit.fit(pairs, policy), CalibrationState.apply(decisions, *, known_at_ms), ConfirmationTest.confirm(state, test_pairs, policy), LocalFdrEstimator.fit/apply, and SharedResidualScenarios.fit.
+
+CausalPairs hashes sorted unique {decision_id,outcome_id,entity,decision_ms,outcome_available_ms,prediction,outcome} rows. Fit/test decision and outcome IDs are mutually disjoint; fit outcomes precede fit, state publication precedes apply/test decisions, and test outcomes precede confirmation. Overlap, substitution, lateness, reversed cuts, and outcome access during apply refuse.
+
+CalibrationState binds schema/method/policy digest, fit/pair identity, availability, parameters, producer/runtime identity, and state digest.
+
+Local-FDR apply emits only pi_hat and conservative pi_upper with exact fit/decision/time bindings; HFDR selection remains solely in EquityKellyMIO.
+
+Shared scenarios emit one ordered scenario-by-entity matrix over common causal instants, normalized weights, entity order, instant IDs, unit, missingness mask/digest, fit/policy identities, and availability. Ragged/per-entity sets, reorder, unhashed imputation, non-finite values, nonpositive weights, or dimension mismatch refuse. Method, dependence unit, uncertainty construction, evidence minima, and bounds have no defaults.
+
+External ConfirmationAuthority.issue(evidence, policy, clock) recomputes the verdict and signs exact dskit.confirmation-proof/v1 fields: {schema,producer_document_sha256,producer_node,producer_output,model_manifest_sha256,statistical_policy_sha256,fit_identity,fit_pair_sha256,test_identity,test_pair_sha256,verdict,fit_outcomes_available_ms,state_published_ms,test_decisions_start_ms,test_outcomes_available_ms,cap_policy_sha256,issued_at_ms,key,signature}.
+
+Only exact policy-qualified GO can feed a deployable cap; self-signed/fake GO, revoked key, or substitution refuses.
+
+### Thin intraday-equities adapters
+
+EquityLabelState maps ADR-0121 causal sigma/beta/reference state to generic decisions.
+
+EquityConfirmedCapsV3 maps a captured verified proof to contiguous h01..h10 {symbol,capped_horizon} caps and adds proof/policy, release/runtime, availability, and expiry identities; V2 stays development-only.
+
+EquityPitBundle maps captured model/calibration/FDR/scenario/price inputs to ADR-0121 gross-return rows and emits one canonical envelope with structured producer/model/calibration/scenario/label/unit/availability provenance.
+
+Existing EquityKellyMIO accepts only captured bundle/cap ports in paper/production and verifies every identity before every branch.
+
+### Focused TDD and gates
+
+After approval, strict red-green order is: (1) schemas, signatures, key/time/runtime swaps; (2) member/path/link/TOCTOU/mutation attacks; (3) capability forgery, worker isolation, and port injection; (4) lifecycle-transition and same-run refusals; (5) causal identity and fit/apply/confirmation substitutions; (6) local-FDR limits and shared matrix/missingness; (7) child label/V3/PIT adapters; (8) every MIO branch.
+
+Each focused test first fails for the intended missing behavior, then minimal code passes it. Run only affected tests, purity, touched-path Ruff, and git diff --check. One Terra skeptic is active at a time; every correction and subsequent review uses Terra until zero Critical/Major findings.
+
+**Fail-closed gates.** This ADR authorizes no implementation. Owner must approve it, exact new files, key owners/storage/rotation/revocation, runtime measurement, and worker sandbox.
+
+Before real calibration, owner/statistics must ratify ADR-0114 §11.4 fit/test partitions, dependence, evidence minima, calibration/FDR/scenario methods, uncertainty, GO, and reuse.
+
+Before capital, owner/risk must ratify semantic availability, cap economics, and every §11.8 MIO/account policy; security must approve providers, signers, and execution authorities.
+
+Affected paths stay closed until signed artifacts and exact policies are frozen. No real calibration, HPO, final refit, market replay, paper trading, lockbox read, or full backtest is authorized.
+
+**Consequences.** Local runs and V2 caps remain development evidence, never paper/production authority. Authority is the exact time-bounded conjunction of immutable bytes, producer/run/consumer/policy identity, measured trusted code, causal evidence, staged publication, and least-privilege captured delivery.
