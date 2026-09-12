@@ -103,6 +103,10 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
         If a file under ``artifacts/`` is a symlink whose target does
         not exist — walking the directory does not confirm each entry
         actually opens for digesting.
+    OSError
+        If a file under ``artifacts/`` is a symlink loop (too many
+        levels of symbolic links) — the same unconfirmed-open gap as
+        above, a different OS-level failure.
 
     Examples
     --------

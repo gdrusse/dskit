@@ -109,6 +109,12 @@ class ResolvedPipeline:
         a ``YYYY-MM-DD`` date; ``data_root``/``model_root``/``run_dir``
         are not non-empty strings; ``instruments`` is not a non-empty,
         already-sorted tuple; or ``data_fingerprint`` is not a dict.
+    TypeError
+        If ``instruments`` holds elements that are not mutually
+        comparable (e.g. a mix of ``str`` and ``int``) — the sortedness
+        check calls ``sorted()`` unguarded, and a ``<`` failure between
+        its elements escapes raw rather than becoming the ``ValueError``
+        above.
 
     Examples
     --------
@@ -200,6 +206,10 @@ class ResolvedPipeline:
             If ``data_fingerprint`` holds a value ``json.dumps`` cannot
             serialize — ``__post_init__`` only checks it is a dict, not
             that its values are JSON-safe.
+        ValueError
+            If ``data_fingerprint`` holds a circular reference — the
+            same unchecked-values gap as above, a different failure
+            from the same ``json.dumps`` call.
         """
         return {
             "asof": self.asof,

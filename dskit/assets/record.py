@@ -258,8 +258,11 @@ class AssetRecord:
         AssetError
             If ``obj`` is not a dict with string keys, on unknown keys,
             if a rebuilt field fails :class:`AssetRecord`'s own checks
-            (e.g. an empty ``kind``), or when a stored ``version_id``
-            does not match the recomputed hash of the stored content.
+            (e.g. an empty ``kind``), if ``payload``/``refs`` hold a
+            value that is not canonically serializable (raised while
+            computing the hash to compare a stored ``version_id``
+            against), or when a stored ``version_id`` does not match
+            the recomputed hash of the stored content.
         """
         errors = []
         _check_dict(errors, "record", obj)

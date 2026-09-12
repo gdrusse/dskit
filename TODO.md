@@ -696,6 +696,43 @@ REMAINING, in the plan's risk order:
       same from-scratch method to a fresh set of functions (this round
       only covered 4), since it is now the one method in 13 rounds that
       has found a brand-new defect class rather than a recurrence.
+
+      **Fourteenth skeptic round (2026-09-12): the from-scratch method
+      applied to 5 fresh functions/classes — an 11th recurrence, all 5
+      instances of already-known shapes (partial-type or
+      partial-cause documentation), no new class this time, and one
+      target (`OnboardingRoot.create`) came back completely clean.**
+      All execution-verified: **(1)** `publish_version`
+      (`dskit/onboarding/publish.py`) documented only `FileExistsError`
+      for its unguarded `os.makedirs`, omitting the generic `OSError`
+      an unwritable outbox directory raises from that same call and
+      from the manifest's `durable_write_bytes` — added, matching the
+      sibling-documented convention that helper already carries. **(2)**
+      `ingest_run` (`dskit/assets/ingest.py`) documented a dangling
+      symlink's `FileNotFoundError` under `artifacts/` but not a
+      symlink LOOP's `OSError` (errno 40, "too many levels of symbolic
+      links") from the identical `open()` call — added. **(3)**
+      `ResolvedPipeline`'s class-level `Raises`
+      (`dskit/pipeline/resolve.py`) documented the sortedness check on
+      `instruments` as always producing `ValueError`, but
+      `list(self.instruments) != sorted(self.instruments)` calls
+      `sorted()` unguarded — a tuple of mutually-incomparable elements
+      (e.g. mixed `str`/`int`) raises a raw `TypeError` instead — added.
+      **(4)** `to_dict`'s `Raises` documented only `TypeError` from a
+      non-serializable `data_fingerprint` value, but the same
+      `json.dumps` call raises `ValueError` instead for a circular
+      reference — added. **(5)** `AssetRecord.from_obj`'s `Raises`
+      enumerated three `AssetError` causes but missed a fourth: the
+      stored-`version_id` comparison itself calls `rec.version_id()`,
+      which raises `AssetError` when `payload`/`refs` hold a
+      non-canonically-serializable value (the same failure mode round
+      13 found misattributed in `Registry.register`) — added. **Given
+      an 11th straight round, though this one found only known-shape
+      recurrences and one clean function — `Raises` completeness
+      remains open but is narrowing under the from-scratch method too,
+      not just the gate.** A 15th round should continue the
+      from-scratch trace on a further fresh set, since two rounds
+      running it (13, 14) have both found real gaps.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

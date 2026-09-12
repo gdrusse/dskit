@@ -88,6 +88,11 @@ def publish_version(root, registry, dataset, certification_vid,
         If a stray file already occupies where ``published/<dataset>/``
         belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
         this function makes does not distinguish that from a race.
+    OSError
+        If ``published/<dataset>/`` cannot be created, or the new
+        manifest cannot be written, because the outbox directory is
+        not writable (propagated from ``os.makedirs`` and
+        :func:`~dskit.onboarding.base.durable_write_bytes`).
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
