@@ -112,6 +112,8 @@ pre-change representative `PipelineDocument` canonical-JSON-byte/hash golden to
 `tests/pipeline/test_document.py`, then prove absent-block parse/round-trip/to_obj
 preserves those bytes, hash, and `run_document` identity exactly; prove null/empty
 is refused, absent differs from present, and an explicit migration changes identity.
+Add ReplayRun two-capture descriptor grammar/identity tests for missing/extra/
+duplicate/aliased/nested descriptors and preplanning broker-admission refusal.
 
 The complete default-deny `execution_backtest` v1 grammar is:
 
@@ -138,6 +140,21 @@ same-run; `$captured_artifact` is only producer -> seal -> external capture ->
 consumer. Capture stages are derived only from those legal graph ports and their
 completed lifecycle receipts, then compiled by the existing planner into staged runs;
 there is no second stage-language member to drift from the graph.
+
+**Replay tape inputs are ordinary document identity.** Every node resolved as the
+generic `ReplayRun` consumer in an execution PipelineDocument declares exactly two
+canonical top-level `NodeSpec.inputs` values: `tape_manifest` and `tape_data`. Each
+value is the complete legal `$captured_artifact` descriptor; no third captured
+descriptor, alias key, duplicate descriptor, nested/list/map descriptor, or missing
+member is legal on that node. The two raw descriptors are normal normalized
+PipelineDocument canonical JSON/hash/plan material, and their complete canonical
+values are carried unchanged in `PlannedRuntimeContract`; they are not ambient
+configuration, a later path lookup, or a `tape_digest` field in
+`execution_backtest`/EnvironmentIdentity. In the broker route, descriptor parsing
+derives the two ConsumerCapturedPorts and exact authorization entries before ordinary
+planning or ServeRoot/root creation. Only after this admission may the planner
+produce the staged program. The later inner `tape_digest` is transaction identity,
+not a PipelineDocument field.
 
 **Absence is canonical compatibility, never a null default.** When absent,
 `execution_backtest` is absent from the normalized `PipelineDocument` object,
@@ -385,13 +402,16 @@ evidence, and existing captured-binding/permit/binding-digest plus R1 frozen
 manifest/input/artifact evidence—not by hashing it into its own bytes and not by
 adding an ADR-0124 key.
 
-The policy and inner `CapturedReplayTape.v1` digests are receipt evidence and are
-pinned by `execution_backtest`/EnvironmentIdentity. Its verified inner
-`tape_digest` fills the already accepted `tape_digest` keys of ADR-0124's
-`ReplayTransaction.v1` and `FrozenReplayPlan.v1`; the outer capture identity remains
-admission/frozen evidence, so replay ID, frozen cache bytes, checkpoint, ledger
-head, `ReplayResult`, and report provenance are bound without changing their exact
-default-deny schemas. **RED:** raw-tape admission, unknown/extra/missing inner member,
+The policy and inner `CapturedReplayTape.v1` digests are captured receipt evidence
+resolved from the exact normal PipelineDocument `tape_manifest`/`tape_data`
+descriptors and their broker authorization entries; neither `execution_backtest` nor
+EnvironmentIdentity claims to pin a `tape_digest`. Its verified inner `tape_digest`
+fills the already accepted **post-admission** `tape_digest` keys of ADR-0124's
+`ReplayTransaction.v1` and `FrozenReplayPlan.v1`; the two descriptors and outer
+capture identity remain ordinary document-plan/admission/frozen evidence, so replay
+ID, frozen cache bytes, checkpoint, ledger head, `ReplayResult`, and report
+provenance are bound without changing their exact default-deny schemas. **RED:**
+raw-tape admission, unknown/extra/missing inner member,
 canonical-byte/digest, same-root/self-receipt, swapped parent/manifest receipts,
 missing hierarchy, same-run/session, outer-capture substitution, parent mutation/
 reorder, policy/root/receipt substitution, reordered digest list, and restart-
@@ -447,21 +467,40 @@ release substitution, restricted-worker, closed per-node schema/manifest identit
 direct ordinary context/registry/custom-node use, and restart binding tests, plus
 execution-mode `stages`, every `$prev`/carry spelling, and artifact/read/path/model-
 load or renamed-param poison rejection before planner staging, provider/filesystem
-open, broker construction, node import, or output writer creation. **GREEN/test:**
-the only legal descriptor is the complete value of a declared node input:
+open, broker construction, node import, or output writer creation. For ReplayRun,
+RED additionally covers `tape_manifest`-only, `tape_data`-only, missing outer or
+parent, extra/duplicate/aliased/nested descriptors, swapped outer/parent roots,
+snapshots, producers, members, or receipts, inner digest/policy/count/order, purpose
+and authorization-descriptor swaps, and equal ConsumerCapturedPorts with different
+captures—all before planning/root creation.
+**GREEN/test:** the only legal descriptor is the complete value of a declared node
+input:
 
 ```json
-{"$captured_artifact":{"root_ref":"release://forecast/v42","snapshot_version":"42","document_sha256":"<sha256>","node":"pit_bundle","output":"bundle","purpose":"paper"}}
+{"$captured_artifact":{"root_ref":"release://forecast/v42","snapshot_version":"42","document_sha256":"<sha256>","node":"pit_bundle","output":"bundle","purpose":"synthetic"}}
 ```
 
 The parser derives, not accepts, the exact
 `ConsumerCapturedPort={consumer_document_sha256,consumer_node,consumer_input,purpose}`.
 It rejects the descriptor in params, outputs, defaults, lists, maps, carry,
 artifacts, or any nested/non-input location. The planner creates non-JSON
-`CapturedArtifactPort` values and compares the complete sorted planned
-ConsumerCapturedPort set exactly to the complete sorted broker authorization set.
-Before node/branch construction the broker verifies one live authorization and one
-matching `PUBLISHED` then `CAPTURED` receipt for every port. It injects a fresh
+`CapturedArtifactPort` values. It compares the complete sorted planned set to the
+complete sorted broker **authorization-entry** set, never only ConsumerCapturedPorts.
+An entry binds (1) that derived, unchanged ADR-0123 ConsumerCapturedPort, (2) the
+complete normalized descriptor, and (3) the descriptor's resolved immutable root,
+ordered member digests, PUBLISHED receipt, CAPTURED receipt, and live authorization.
+The broker resolves each descriptor's `root_ref` + `snapshot_version` + producer
+`document_sha256`/`node`/`output` to those exact immutable values; equal consumer
+ports cannot substitute a different descriptor or capture. Descriptor `purpose`
+must equal `execution_backtest.purpose`, the `LaunchSession`/permit purpose, and the
+study purpose. It refuses the complete equality check before ordinary planning or
+ServeRoot/root creation.
+
+For ReplayRun's exactly named `tape_manifest`/`tape_data` descriptors, the manifest
+entry's verified inner bytes must equal the data entry's resolved root, CAPTURED
+receipt, ordered members, source-rank policy, envelope count, ordered digest list,
+and recomputed inner `tape_digest`. Only then does F3 issue the composed tape
+capability. Before node/branch construction the broker injects a fresh
 non-enumerable `CapturedBindings` for only the current node; `require(input)` cannot
 discover, copy, serialize, reopen, or forward another port. Carry/records retain
 audit only; it is never a prior-run value. Injected decider receives immutable
@@ -470,9 +509,9 @@ The bridge resolves every node/adapter only from the signed release manifest and
 passes its exact closed schema's normalized values; it neither passes NodeSpec
 params wholesale nor searches their strings for paths. **Exit:** untrusted workers
 cannot access paths, roots/keys/clock/storage/credentials; an execution document
-with user stages, a `$prev`/carry variant, unapproved component/schema, ordinary
-context/registry, ambient, nested, raw-artifact, or noncaptured decision input
-refuses.
+with user stages, a `$prev`/carry variant, unapproved component/schema, purpose/
+authorization/descriptor mismatch, ordinary context/registry, ambient, nested,
+raw-artifact, or noncaptured decision input refuses.
 
 ## A1--A4 — model release
 
@@ -738,9 +777,11 @@ import-graph refusal; production-bridge live/replay composition parity; closed
 execution component-schema/manifest and restricted-context tests; malicious-node
 `run_dir`, filesystem, environment, network, subprocess, ambient time/random, and
 import-escalation denial before I/O/output; child direct-construction/export/registry/
-CLI refusal; port contract; accounting property/metamorphic; PIT/leakage; event/
-effect/outbox/ACK; lifecycle; and crash at every persisted boundary. This layer also
-runs the committed pre-execution
+CLI refusal; ReplayRun's exact top-level manifest/data descriptor pair and complete
+authorization-entry equality before planning/root creation (including all capture/
+receipt/member/policy/count/order/purpose swaps); port contract; accounting property/
+metamorphic; PIT/leakage; event/effect/outbox/ACK; lifecycle; and crash at every
+persisted boundary. This layer also runs the committed pre-execution
 PipelineDocument golden: no block must retain exact legacy canonical bytes/hash/run
 identity after parse and round-trip, while a present block must change identity and
 be fully hash material. Synthetic uninterrupted and crash/restart schedules must
