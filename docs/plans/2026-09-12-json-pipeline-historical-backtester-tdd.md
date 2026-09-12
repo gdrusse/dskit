@@ -33,6 +33,14 @@ accepts profile/simulator broker. G6: operations owner accepts journal/recovery/
 outbox/holds/rotation. G7: research owner accepts one historical study only after
 G1--G6. Each is signed, time-bounded, revocation-checked, identity-bound evidence.
 
+Before any execution PipelineDocument exists, a distinct G1+G2
+`DatasetCaptureAuthorization.v1` may authorize one external data-capture broker read
+of named sources, scope, licenses, schema, and media into a WORM raw-event capture.
+It is security/data policy evidence, not a study or execution permit; synthetic uses
+only a fixed-fixture authority with `deployment_eligible=false`. No implementation
+slice performs a real capture. The later study scopes bind this already captured
+dataset and never imply a pre-authorization historical read.
+
 `ReviewEvidenceManifest.v1` is signed append-only evidence for slice/dependency
 identity, Sol RED test+command+observed failure, Sol implementation commit, Sol
 GREEN command/result, artifacts, corrections, and reviews. Each signed
@@ -53,14 +61,16 @@ commits/evidence, gates, environment/policy identities, allowed commands, and
 capture outputs. Scheduler and launcher enforce it: omitted, reordered,
 substituted, or unlisted slices refuse.
 
-`HistoricalStudyScopeAuthorization.v1` resolves the release circularity before any
-historical read: it is a signed pre-refit authorization for one WORM `study_id`, one
-frozen dataset/tape/capture set, normalized pipeline/environment/profile, fixed
-candidate inventory/selection policy/seeds, and exactly A1--A4's permitted actions.
+`HistoricalStudyScopeAuthorization.v1` resolves the release circularity after the
+separate G1/G2 dataset capture: it is a signed pre-refit authorization for one WORM
+`study_id`, the already frozen dataset/tape/capture set, normalized pipeline/
+environment/profile, fixed candidate inventory/selection policy/seeds, and exactly
+A1--A4's permitted actions.
 It binds G0--G7 scope-evidence digests, signer, key/version, revocation result,
 issuance/validity, and approved identities; G3 is the pre-refit causal-method scope,
-not a nonexistent release. The broker verifies every binding before every data open,
-node construction, root creation, or A1--A4 action. It permits one captured release
+not a nonexistent release. The broker verifies every binding before every captured-
+member open, node construction, root creation, or A1--A4 action. It permits one
+captured release
 creation only, no retune, no additional candidates/seeds, no control/crash run, and
 no paper/live action.
 
@@ -80,7 +90,7 @@ executions, paper/live, or a second study.
 nodes must have a verified `ReviewExit.v1`):
 
 ```json
-{"F1":[],"F2":["F1"],"F3":["F1","F2"],"F4":["F2","F3"],
+{"F1":[],"F2":["F1"],"F4":["F2"],"F3":["F1","F2","F4"],
  "F5":["F1","F2","F4"],"A1":["F1","F2","F4","F5"],
  "A2":["A1"],"A3":["A2","F2","F4","F5"],"A4":["A3"],
  "B0":["F1","F2","F4","F5"],"B1":["B0"],"B2":["B1"],
@@ -92,6 +102,8 @@ nodes must have a verified `ReviewExit.v1`):
 
 Every slice below lists reuse, RED, minimal GREEN/focused test category, and
 fail-closed exit and inherits the P0 Sol-first/Terra lifecycle.
+The prose introduces F3's causal contract before F4's lifecycle section, but the
+signed DAG is authoritative: scheduler/launcher execute F4 before F3.
 
 ## F1 — ordinary PipelineDocument JSON
 
@@ -340,6 +352,8 @@ RNG. Its only data/capabilities are declared same-run inputs, its own mediated
 `CapturedBindings`, injected logical-clock and opaque deterministic-RNG capabilities,
 and a mediated metric/output/capture writer. Training and release output require
 captured inputs and `PreparedCapture`/the writer; neither grants a raw output path.
+F3's `CapturedEventDataset` is likewise a broker-derived opaque captured input with
+only its single-pass stream capability, never a provider/path/network handle.
 Direct `NodeContext`, arbitrary/custom node class, ordinary registry, or arbitrary
 adapter is refused before construction.
 
@@ -363,10 +377,12 @@ canonicalization and logical-clock/RNG algorithm/version, and execution profile.
 
 **Reuse:** `production/feed.py:ReplayFeed`, `clock.py:ReplayClock`, and canonical
 ledger records; extend their event-order contract, not a parallel tape engine.
-F3 first creates a pre-document, immutable `SourceRosterCapture.v1`; this is an F3
-prerequisite under F2, not a new DAG node, so `F3 <- F1,F2` remains acyclic. For an
-historical purpose the data owner signs G2 authorization for it before any data
-access; synthetic uses the equivalent nondeployment authority only. The roster is
+F4's generic WORM lifecycle is intentionally a prerequisite of F3: raw source and
+roster captures need it, while F4 itself has no F3 dependency. F3 first creates a
+pre-document, immutable `SourceRosterCapture.v1`; this is an F3 substep, not a new
+DAG node, so `F3 <- F1,F2,F4` remains acyclic. For an historical purpose the data
+owner signs G2 authorization for it before any data access; synthetic uses the
+equivalent nondeployment authority only. The roster is
 PUBLISHED and CAPTURED before the execution PipelineDocument is frozen and contains
 the complete authorized source universe, scope/time bounds, source-provenance
 identities, policy version, and its `SourceRankPolicy.v1`:
@@ -391,13 +407,48 @@ F5-authorized descriptor/purpose/receipt flow as every capture input. Thus no po
 is derived from the resulting tape. Missing, late, unknown, duplicate, substituted,
 noncanonical, noncontiguous, or rank-changed roster/policy data refuses.
 
+The separate external data-capture broker next acts only under the exact signed,
+time-bounded, revocation-checked G1+G2 `DatasetCaptureAuthorization.v1`. It may read
+the authorization's named sources exactly once, only within the named scope/license/
+schema/media policy, and writes a WORM `RawEventDatasetCapture.v1` with canonical
+provenance, availability bounds, media and ordered-member digests, source-roster/
+policy digest, and correction/bust metadata. Its inner default-deny manifest is:
+
+```json
+{"schema_version":"dskit.raw-event-dataset-capture/v1",
+ "dataset_capture_authorization_sha256":"<sha256>",
+ "scope":{"availability_start_ms":0,"availability_end_ms":0,
+          "source_provenance_sha256":"<sha256>"},
+ "source_roster_policy_sha256":"<sha256>","license_digests":["<sha256>"],
+ "event_schema":"dskit.raw-event/v1","media_type":"application/x-ndjson",
+ "ordered_member_digests":["<sha256>"],
+ "correction_bust_metadata_sha256":"<sha256>"}
+```
+
+F4 supplies the separate PUBLISHED/CAPTURED receipts for that immutable root; they
+are not self-fields. A synthetic fixture authority emits the same canonical manifest
+from fixed fixture bytes with `deployment_eligible=false`. This is the only source
+provider/filesystem/network operation: no execution worker/provider receives it.
+Only after both source roster and raw dataset captures exist may the execution
+PipelineDocument freeze. Its generic `ReplayTapeDataCapture` producer declares
+exactly the two top-level captured node inputs `raw_event_dataset` and `source_roster`
+(no alias/extra/nested captured descriptors); F5 authorization/receipt/member/
+purpose equality and CapturedAuthorizationSet bind both.
+
 **RED:** F1/F2 migration, DST/timezone/tzdata, source/exchange/receive/availability
 causality, pre-document roster cycle/late-roster, roster descriptor/digest/source
 swap, rank-policy substitution, unknown/duplicate/missing/swapped mappings, unknown
 event source, rank change, zero-event source, same-availability tie ordering,
 duplicate ID, correction/bust chain, canonical bytes/digest, shuffle, and restart-
-terminal-identity tests. **GREEN/test:** focused roster/envelope/order tests derive
-the rank only from the verified pre-document policy. Envelopes bind
+terminal-identity tests. Raw-dataset RED covers missing/extra/swapped dataset or
+roster, wrong scope/source/license/schema/receipt/member/digest/purpose, mutation,
+early/late availability, raw provider/filesystem/network attempt, replay/reopen/seek,
+and restart refusal before output. **GREEN/test:** focused roster/raw-dataset/
+envelope/order tests use the exact deterministic synthetic fixture and derive the
+rank only from the verified pre-document policy; add focused
+`tests/production/test_bundles.py`, `test_feed.py`, and
+`test_captured_event_dataset.py` coverage for the default-deny codec/one-pass stream.
+Envelopes bind
 source/event IDs, source sequence, source, exchange, receive, and derived
 availability instants, timezone/tzdata, provenance, schema/media/payload digest,
 the derived rank plus `source_rank_policy_sha256`, and
@@ -409,8 +460,14 @@ adds an acyclic generic capture hierarchy, not a parallel tape engine. First,
 `ReplayTapeDataCapture` is a parent F4 WORM capture: one data-producer run writes
 the canonical F3-ordered envelope bytes while verifying every event source belongs
 to its consumed pre-document roster and binds that exact policy digest; it does not
-derive a new policy. It then receives distinct PUBLISHED and CAPTURED receipts for
-that **data** root. Second, a
+derive a new policy. The broker alone derives from the verified raw-dataset capture
+an opaque `CapturedEventDataset` through a default-deny `RawEventDatasetCodec.v1`.
+Its restricted `ExecutionNodeContext` exposes only a single-pass `iter_events()`
+stream plus the mediated output writer: it has no path, provider, network, raw
+member, reopen, seek, reset, replay, or ambient source access. The stream emits only
+the canonical captured records and enforces the captured availability bounds and
+correction/bust metadata. It then receives distinct PUBLISHED and CAPTURED receipts
+for that **data** root. Second, a
 distinct later `ReplayTapeManifestProducer` run consumes that parent only through its
 authorized `CapturedLifecyclePort` and verified parent capture. It derives the
 inner canonical `ReplayTapeManifest` (`CapturedReplayTape.v1`) bytes:
@@ -567,6 +624,16 @@ ports cannot substitute a different descriptor or capture. Descriptor `purpose`
 must equal `execution_backtest.purpose`, the `LaunchSession`/permit purpose, and the
 study purpose. It refuses the complete equality check before ordinary planning or
 ServeRoot/root creation.
+
+For `ReplayTapeDataCapture`, exactly named `raw_event_dataset` and `source_roster`
+top-level descriptors are both mandatory and are separate CapturedAuthorizationSet
+entries. The broker verifies the raw-dataset authorization, immutable root, complete
+member sequence, PUBLISHED/CAPTURED receipts, scope/source/license/schema/media and
+availability/provenance identities; it then verifies that its roster-policy digest,
+source universe, purpose, and receipts equal the roster entry and execution block.
+Any missing/extra/swapped descriptor, scope/source/license/schema/receipt/member/
+digest/purpose mismatch, or changed raw data refuses before the stream, planner, or
+root exists.
 
 For ReplayRun's exactly named `tape_manifest`/`tape_data` descriptors, the manifest
 entry's verified inner bytes must equal the data entry's resolved root, CAPTURED
@@ -852,12 +919,16 @@ pre-document SourceRosterCapture cycle/late/descriptor/digest/source/rank/unknow
 source/zero-event/restart refusal; closed execution component-schema/manifest and
 restricted-context tests; malicious-node `run_dir`, filesystem, environment, network,
 subprocess, ambient time/random, and import-escalation denial before I/O/output;
-child direct-construction/export/registry/CLI refusal; ReplayRun's exact top-level
-manifest/data descriptor pair and complete CapturedAuthorizationSet entry/set-digest
-equality before planning/root creation (including all capture/receipt/member/policy/
-count/order/purpose/auth-set swaps); port contract; accounting property/metamorphic;
-PIT/leakage; event/effect/outbox/ACK; lifecycle; and crash at every persisted
-boundary. This layer also runs the committed pre-execution
+G1/G2 DatasetCaptureAuthorization and deterministic fixed-fixture raw-event capture
+tests, including raw dataset/roster descriptor, scope/source/license/schema/receipt/
+member/digest/purpose, availability/correction, mutation, reopen/seek/replay/restart,
+and provider/filesystem/network refusal before output; child direct-construction/
+export/registry/CLI refusal; ReplayRun's exact top-level manifest/data descriptor pair
+and complete CapturedAuthorizationSet entry/set-digest equality before planning/root
+creation (including all capture/receipt/member/policy/count/order/purpose/auth-set
+swaps); port contract; accounting property/metamorphic; PIT/leakage; event/effect/
+outbox/ACK; lifecycle; and crash at every persisted boundary. This layer also runs the
+committed pre-execution
 PipelineDocument golden: no block must retain exact legacy canonical bytes/hash/run
 identity after parse and round-trip, while a present block must change identity and
 be fully hash material. Synthetic uninterrupted and crash/restart schedules must
@@ -867,17 +938,20 @@ refit/paper/live work occurs.
 
 ## I2 — exactly one gated historical simulator study
 
-`HistoricalStudyScopeAuthorization` first permits only its fixed A1--A4 release
-creation; then its same-study WORM `HistoricalStudyManifest` permits only the named
-control/crash executions against captured envelopes/data, that actual verified
-release, EnvironmentIdentity, profile, and simulator broker. The broker checks the
-appropriate phase before every data/node/root/action. Preserve I1 identity equality.
+After the separate G1/G2 `DatasetCaptureAuthorization` has created the already
+captured raw dataset, `HistoricalStudyScopeAuthorization` first permits only its
+fixed A1--A4 release creation; then its same-study WORM `HistoricalStudyManifest`
+permits only the named control/crash executions against that captured dataset,
+envelopes/data, actual verified release, EnvironmentIdentity, profile, and simulator
+broker. The broker checks the appropriate phase before every node/root/action; the
+study scope has no raw-provider/capture permission. Preserve I1 identity equality.
 Neither phase authorizes paper/live, another dataset/execution, retuning, another
 release, or a full/lockbox backtest. **RED/test:** focused manifest/broker tests
 prove G0--G7 signer/key/revocation/time and source-commit substitution, pre-refit
-release circularity, post-refit release substitution, retune/extra-execution, and
-pre-data/node/root/action refusal. **GREEN:** only the two-phase WORM verifier;
-no historical execution is run by this implementation slice.
+release circularity, post-refit release substitution, retune/extra-execution, raw-
+capture-before-authorization, and pre-data/node/root/action refusal. **GREEN:** only
+the two-phase WORM verifier; no historical capture or execution is run by this
+implementation slice.
 
 ## Existing reuse inventory — do not rebuild Gate 2/4/5
 
