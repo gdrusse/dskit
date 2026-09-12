@@ -84,6 +84,10 @@ def publish_version(root, registry, dataset, certification_vid,
         ``"certified"``; or an existing outbox file for this dataset
         is unreadable (``published/`` is WORM — investigate rather
         than overwrite).
+    FileExistsError
+        If a stray file already occupies where ``published/<dataset>/``
+        belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
+        this function makes does not distinguish that from a race.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

@@ -172,6 +172,15 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         :func:`~dskit.onboarding.snapshot.write_snapshot`); or the new
         checkpoint cannot be saved
         (:func:`~dskit.onboarding.state.save_state`).
+    TypeError
+        If a ``RECORD`` message's ``data`` holds a value that is not
+        JSON-serializable — ``check_message`` only confirms ``data`` is
+        a dict, not that every value can be written.
+    FileExistsError
+        If a stray file already occupies where a subdirectory under
+        ``raw/``, ``observations/``, or ``forecasts/`` belongs — the
+        unguarded ``os.makedirs(..., exist_ok=True)`` calls this
+        function makes do not distinguish that from a race.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

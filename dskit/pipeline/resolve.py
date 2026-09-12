@@ -292,6 +292,11 @@ def resolve(config, asof=None, backend=None, registry=DEFAULT_REGISTRY):
         weights it needs); a split/optimizer kind the backend does not
         support, an optimizer kind nobody registered; or an empty
         discovered universe.
+    TypeError
+        If ``backend.fingerprint()`` returns a value that is not JSON-
+        serializable at all (e.g. a ``set``) — propagated from
+        :func:`pipeline_hash`, which this function calls to embed the
+        run directory's hash.
     """
     if asof is None:
         asof_s = datetime.now(timezone.utc).date().isoformat()

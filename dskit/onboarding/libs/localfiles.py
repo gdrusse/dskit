@@ -191,6 +191,10 @@ class LocalFilesConnector(Connector):
             If ``config.path`` does not exist, is not a directory, a
             stem exists as both a ``.csv`` and a ``.jsonl`` file, or a
             file's first row is malformed JSON / not a JSON object.
+        FileNotFoundError
+            If a recognized filename is a symlink whose target does
+            not exist — listing the directory does not confirm a file
+            actually opens.
         """
         encoding = config.get("encoding", _DEFAULT_ENCODING)
         out = []
@@ -252,6 +256,10 @@ class LocalFilesConnector(Connector):
         ValueError
             If a per-stream value in ``state`` is a string (not itself
             a dict).
+        FileNotFoundError
+            If a recognized filename is a symlink whose target does
+            not exist — listing the directory does not confirm a file
+            actually opens.
         """
         errors = []
         _check_dict(errors, "state", state)

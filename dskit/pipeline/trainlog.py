@@ -266,7 +266,12 @@ class TrainingCurve:
         ValueError
             If :attr:`objective` is absent from the row this call would
             record — a typo'd monitor or an adapter that emits no
-            beliefs, never silently selected around.
+            beliefs, never silently selected around; or ``epoch`` or
+            ``seconds`` is a string that does not parse as a number.
+        TypeError
+            If ``epoch`` or ``seconds`` is neither a number nor a
+            string (e.g. ``None`` or a list) — both go through a bare
+            ``int()``/``float()`` conversion, unvalidated.
         """
         row = {"epoch": int(epoch), "train_loss": _num(train_loss)}
         if val_loss is not None:

@@ -519,6 +519,60 @@ REMAINING, in the plan's risk order:
       each time, but still real — this class of defect remains open;**
       round 9's own recommendation, matching round 8's, is to build the
       mechanical gate rather than run a 10th manual pass.
+
+      **Tenth skeptic round (2026-09-12): built the recommended
+      mechanical gate — a 7th straight recurrence, this time
+      one systemic pattern found at 4 sites plus a second at 2, both
+      new bug shapes.** The gate computed, per function with a `Raises`
+      section, the interprocedural closure of exception types reachable
+      through this package's own helpers (`_raise_if`, `_check_*`,
+      `durable_write_*`, `check_payload`, `check_config`,
+      `check_message`, and the stdlib calls each function makes
+      directly), and diffed it against the documented types; every
+      candidate was then verified by executing the real code (the gate
+      has both false positives — an argument already narrowed by an
+      earlier `isinstance` check — and false negatives — a
+      `self.attr.method()` chain two hops deep — so it is a lead
+      generator, not a verdict). Found and fixed, all execution-verified:
+      **pattern 1**, an unguarded `os.makedirs(..., exist_ok=True)` racing
+      a stray file left at the target path raises a raw `FileExistsError`
+      undocumented in `save_state` (`dskit/onboarding/state.py`),
+      `write_snapshot` (`dskit/onboarding/snapshot.py`),
+      `run_acquisition` (`dskit/onboarding/acquire.py`, two call sites),
+      and `publish_version` (`dskit/onboarding/publish.py`); **pattern
+      2**, a "shape-only" upstream check does not imply
+      JSON-serializability downstream — `run_acquisition` also lets a
+      `RECORD.data` value `check_message` only confirms is a dict (not
+      that its VALUES serialize) reach a raw, undocumented `TypeError`
+      from `json.dumps`; the same shape recurs once each in
+      `save_config` (`dskit/pipeline/io.py`, a `model.params` value) and
+      `resolve` (`dskit/pipeline/resolve.py`, propagated uncaught from
+      `pipeline_hash` when `backend.fingerprint()` returns a
+      non-serializable value — the exact defect round 7 already fixed
+      once in `pipeline_hash`/`write_run_dir` themselves, never
+      propagated to their own caller). Two more, unrelated: both
+      `LocalFilesConnector.discover`/`.read`
+      (`dskit/onboarding/libs/localfiles.py`) and `ingest_run`
+      (`dskit/assets/ingest.py`) list a directory and then open every
+      entry without handling a broken symlink, raising a raw
+      `FileNotFoundError`; and `TrainingCurve.record`
+      (`dskit/pipeline/trainlog.py`) passes `epoch`/`seconds` through a
+      bare `int()`/`float()` with no validation, raising undocumented
+      `TypeError`/`ValueError` for a non-numeric value. All 9 fixed by
+      adding the accurate `Raises` entry (no runtime behavior changed —
+      documenting reality stays in scope for a docstring-conversion
+      item; whether these should also be WRAPPED into `AssetError` for
+      consistency with sibling code, e.g. `OnboardingRoot.create`'s own
+      `makedirs` already does, is a separate, larger decision this item
+      does not make). **Given a 7th straight round finding genuine,
+      previously-undetected gaps — now via a mechanical gate rather than
+      manual reading — `Raises` completeness remains open.** The gate
+      itself is real progress (it surfaces a class of defect no manual
+      round had found: unguarded stdlib calls inside otherwise
+      AssetError-only functions) but needed several rounds of its own
+      tuning before its output was trustworthy, and still carries known
+      blind spots — an 11th round should run the now-hardened gate again
+      before this is declared closed.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

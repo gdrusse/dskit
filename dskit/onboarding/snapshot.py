@@ -179,6 +179,10 @@ def write_snapshot(root, staged_dir, manifest) -> tuple:
     AssetError
         If the destination already exists — WORM means a snapshot is
         written exactly once, never overwritten.
+    FileExistsError
+        If a stray file already occupies where ``raw/<source>/``
+        belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
+        this function makes does not distinguish that from a race.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

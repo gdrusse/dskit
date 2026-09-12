@@ -87,7 +87,11 @@ def save_config(config, path) -> None:
     Raises
     ------
     ValueError
-        If ``config.to_obj()`` is not JSON-serializable (NaN/Infinity).
+        If ``config.to_obj()`` holds a NaN/Infinity float.
+    TypeError
+        If ``config.to_obj()`` holds a value ``json.dumps`` cannot
+        serialize at all (e.g. a ``set`` inside a free-form field such
+        as ``model.params``).
     OSError
         If ``path``'s directory does not exist or is not writable.
     """

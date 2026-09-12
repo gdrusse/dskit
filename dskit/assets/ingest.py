@@ -99,6 +99,10 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
         record under ``nodes/``) is unreadable, not valid JSON, or not
         a JSON object; ``result.json`` is missing a required field; or
         a node record lacks a valid ``node``/``outputs`` shape.
+    FileNotFoundError
+        If a file under ``artifacts/`` is a symlink whose target does
+        not exist — walking the directory does not confirm each entry
+        actually opens for digesting.
 
     Examples
     --------

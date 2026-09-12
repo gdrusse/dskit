@@ -118,6 +118,10 @@ def save_state(root, source, stream, mode, state) -> str:
         or ``mode`` is not a declared mode (via
         :meth:`~dskit.onboarding.layout.OnboardingRoot.state_path`); or
         ``state`` is not JSON-serializable.
+    FileExistsError
+        If a stray file already occupies where ``state/<source>/``
+        belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
+        this function makes does not distinguish that from a race.
     """
     _require_root(root)
     errors = []
