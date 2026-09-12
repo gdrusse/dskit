@@ -7888,9 +7888,9 @@ sanctioned producer of gross-unit rows.
 
 ## ADR-0124 — Proposed transactional replay and operations seams
 
-**Status:** proposed (2026-09-11; owner approval required before code). Extends ADR-0090/0091, ADR-0112, ADR-0114, ADR-0117/0118 and ADR-0120; authorizes no replay, paper/market execution, HPO/refit, lockbox read or full backtest.
+**Status:** accepted (2026-09-12; owner approved the external launcher/broker architecture and synthetic TDD implementation only). Extends ADR-0090/0091, ADR-0112, ADR-0114, ADR-0117/0118 and ADR-0120. It authorizes no market tape, paper/live action, HPO/refit, lockbox read or full backtest.
 
-**Context.** Round-5 review proved two gaps: `ServeLoop` writes the real checkpoint cache directly, and handlers close over original bundles. The existing `report.Replay` and CLI also compose a runnable replay without a typed execution authority. Retain the existing loop, ledger/fold, accounting, report, replay clock/feed and released graph; do not create a parallel simulator.
+**Context.** Round-5 review proved two gaps: `ServeLoop` writes the real checkpoint cache directly, and handlers close over original bundles. The existing `report.Replay` and CLI also compose a runnable replay without a typed execution authority. A replay transaction must additionally fence every series mutation, bind one immutable series genesis, freeze the whole lifecycle plan before publish, and use the same external launcher/broker trust boundary approved for model release. Retain the existing loop, ledger/fold, accounting, report, replay clock/feed and released graph; do not create a parallel simulator.
 
 **Live dispatch and transaction binding.** Extract the current body of
 `ServeLoop._tick` verbatim into `_tick_once`. `ServeLoop._tick` becomes the
@@ -7914,6 +7914,20 @@ prior bytes/absence, projected-head ancestry and new bytes before one durable
 replace. A provisional head therefore cannot reach the real cache; stale
 caches rebuild, while ahead, divergent, substituted or mismatched caches
 refuse.
+
+`ReplayTransactionalMode` acquires a `FencedSeriesWriterLease` before
+`BEGIN`, holds it through cache, outbox, result and `COMMITTED`, and releases
+it only after commit or abort. The lease is rooted at the one `ServeRoot`
+series and contains the immutable `(series_id, genesis_sha256, transaction_id)`
+identity plus a monotonically increasing fencing token. Every real-ledger
+append, checkpoint/cache replacement, command-inbox move, outbox/ACK write,
+result write and deferred-effect receipt requires the currently held token.
+Recovery first reacquires the same series with a strictly higher token and
+records a durable lease handoff before reading or mutating the transaction;
+an old or parallel holder is fenced out. `series_id` and the canonical digest
+of `series.json` are bound into the replay identity, permit, transaction,
+frozen plan, cache intents, outbox evidence and result; any root/genesis
+substitution refuses.
 
 `_LoopBinding` is an exception-safe, single-use scope. It constructs and
 installs one transaction-bound `Recording`, bundles, handler map from
@@ -7948,14 +7962,32 @@ UUID.
 keys `schema_version`, `transaction_id`, `replay_id`, `release_hash`,
 `document_hash`, `tape_digest`, `cadence_digest`, `clock_digest`,
 `id_source_digest`, `code_digest`, `permit_digest`, `process_id`, `tick_id`,
-`binding_digest`, `state`, `pre_head`, `pre_checkpoint`, `frozen` and
-`transitions`. `pre_head` is `{seq, hash}`; `pre_checkpoint` is the exact
-prior cache bytes-or-absence; `frozen` is null before `FROZEN` and otherwise
-the complete immutable publication plan. `transitions` is the append-only
-ordered tuple of state names. Creation is idempotent only when the complete
-canonical `BEGIN` object matches; a same-path conflict refuses. Every
-transition is `durable_write_json`/file fsync/rename/directory fsync, may
-advance only once, and preserves every prior transition.
+`series_id`, `genesis_sha256`, `binding_digest`, `state`, `pre_head`,
+`pre_checkpoint`, `lease`, `frozen` and `transitions`. `pre_head` is
+`{seq, hash}`; `pre_checkpoint` is the exact cache bytes-or-absence; `lease`
+is the current fenced-token evidence; `frozen` is null before `FROZEN` and
+otherwise a `FrozenReplayPlan.v1`; `transitions` is the append-only ordered
+tuple of state names and lease handoffs. Creation is idempotent only when the
+complete canonical `BEGIN` object, series identity and first lease evidence
+match; a same-path conflict refuses. Every transition is
+`durable_write_json`/file fsync/rename/directory fsync, may advance only
+once, and preserves every prior transition.
+
+`FrozenReplayPlan.v1` is immutable and default-deny. Its exact keys are
+`schema_version`, `replay_id`, `transaction_id`, `series_id`,
+`genesis_sha256`, `release_hash`, `document_hash`, `tape_digest`,
+`cadence_digest`, `clock_digest`, `id_source_digest`, `code_digest`,
+`permit_digest`, `binding_digest`, `records`, `snapshot`, `cache`,
+`control_inbox`, `outbox`, `result`, `deferred_effects`, `phase_order` and
+`plan_sha256`. `plan_sha256` is SHA-256 of its canonical object with that
+field omitted. Every member is mandatory. `records` is the ordered tuple of
+full frozen envelope canonical bytes and digests; `snapshot` and `cache` are
+the complete canonical bytes/digests of their intents; `control_inbox` names
+the exact pending/applied/rejected bytes, digests and move order; `outbox`
+names the ordered event-item bytes/digests; `result` names the canonical
+result bytes/digest; and `deferred_effects` is the ordered tuple of canonical
+effect-intent bytes/digests and idempotency keys. No post-`FROZEN` code may
+derive, add, replace, reorder or serialize any of these values anew.
 
 The sole order is `BEGIN -> PROVISIONAL -> FROZEN -> PUBLISHING ->
 RECORDS_BARRIERED -> SNAPSHOTTED -> CHECKPOINTED -> OUTBOX_DRAINED ->
@@ -7986,18 +8018,33 @@ barriers, writes the exact checkpoint intent, drains the outbox, runs deferred
 after-tick effects, records result/cursor projections, then restores bindings.
 At every step a non-prefix, substituted envelope, changed append instant,
 changed preimage or off-chain cache refuses.
+`ReplayRun` does not call raw `ServeLoop.run`. It drives three lifecycle
+transactions using the same journal, fence and `FrozenReplayPlan`: `startup`
+for process/recovery/reconciliation mutations, one `tick` transaction per
+tape-derived tick, and `shutdown` for process-stop, final checkpoint/result,
+observability teardown and all deferred effects. Every lifecycle mutation or
+effect must be present in its frozen plan and execute under the transaction
+lease; an existing startup/tick/shutdown callback that cannot be made
+planable and idempotent refuses replay before it runs. This is a replay-only
+lifecycle; the ordinary live lifecycle remains the exact `_tick_once` path.
+
 
 **Authorized replay entry point.** Add generic `dskit.production.replay.ReplayRun`;
 remove `report.Replay` as a runnable public API and route
 `production.__main__.ReplayVerb` through `ReplayRun`. `ReplayRun` accepts
-only a `VerifiedReplayExecutionPermit`, not a mapping or path. Its private
-construction follows verification by a release-pinned authority over the
-exact `purpose`, release/document/tape/replay identities, target series,
-permitted paper rung, validity interval, issuer/key identity and signature.
-The CLI requires `--permit` and refuses before creating a scratch root when
-verification fails or no permit is supplied. Its decider executes the
-manifest-pinned graph each tick; paper/full tapes refuse precomputed
-decisions, weights, orders, fills or returns.
+only an opaque, process-bound `VerifiedReplayExecutionPermit`, never a claims
+mapping, signature, key, local file path or constructible public value. The
+independent launcher validates the immutable runtime/image and series/genesis
+binding before Python starts; its external permit broker alone reads the
+protected keyring, trusted clock and revocation state, validates the opaque
+capability's purpose, release/document/tape/replay/series/genesis/process
+bindings and expiry, and returns the typed permit plus non-secret digest.
+DSKit has no signing key, trusted wall clock, revocation reader or permit
+minting/serialization path. The CLI passes an opaque `--permit-handle` to the
+broker and refuses before creating a root if the broker does not return the
+typed permit. Its decider executes the manifest-pinned graph each tick;
+paper/full tapes refuse precomputed decisions, weights, orders, fills or
+returns.
 
 Tests may inject a separate `SyntheticReplayAuthority`, defined only in
 `tests/production/test_replay.py`, which can mint a typed permit only for an
@@ -8011,20 +8058,35 @@ fixture cannot become an execution bypass.
 ledger envelopes through the ADR-0118 event adapter. `event_id` hashes the
 replay/emitter identities and the envelope `(seq, hash)`. The durable outbox
 contains the ordered pending items; no caller supplies event bodies.
-`EventCursor.v1` has exact keys `schema_version`, `replay_id`,
-`emitter_digest`, `last_ack_seq`, `last_ack_hash`, `last_seen_head_seq` and
-`last_seen_head_hash`. For each item: persist pending item, emit its stable
-id, verify and durably persist the matching ACK evidence, then atomically
-advance the cursor. A crash after emission may redeliver only the same id.
-Emitter recovery starts from durable pending/ACK evidence in sequence order;
+`EventAckEvidence.v1` is signed and default-deny with exact keys
+`schema_version`, `replay_id`, `series_id`, `genesis_sha256`,
+`emitter_digest`, `event_id`, `ledger_seq`, `ledger_hash`, `event_digest`,
+`ack_id`, `acknowledged_at_ms`, `emitter_receipt`, `key_id`, `signature` and
+`evidence_sha256`; `evidence_sha256` omits itself. `ack_id` is deterministic
+over the item and receipt, so only byte-identical repeat evidence is
+idempotent and a competing ACK refuses. The registered emitter receipt
+verifier checks its signature before the evidence is durably stored.
+
+`EventCursorSet.v1`, rather than an unbound singleton cursor, has exact keys
+`schema_version`, `replay_id`, `series_id`, `genesis_sha256`, `ledger_head`,
+`cursors` and `cursor_set_sha256`; its digest omits itself. `cursors` is a
+strictly sorted tuple by `emitter_digest`, with no duplicate, and each
+default-deny `EventCursor.v1` binds that emitter's last ACK evidence digest,
+last ACK `(seq, hash)` and last seen ledger head. For each item: persist the
+frozen pending bytes under the transaction fence, emit its stable id, verify
+and durably persist matching signed ACK evidence, then atomically replace the
+sorted cursor set. A crash after emission may redeliver only the same id.
+Emitter recovery starts from frozen pending/ACK evidence in sequence order;
 skips, changed items, ahead/non-ancestor heads and identity mismatches refuse,
 while a stale ancestor rebuilds from the ledger.
 
 `ReplayResult.v1` is the ServeRoot cache with exact keys `schema_version`,
 `replay_id`, `ledger_head`, `checkpoint_sha256`, `account_sha256`,
 `event_cursor_sha256`, `metrics_sha256`, `report_sha256` and `result_sha256`.
-Every value is derived at the stated ledger head; stale ancestors rebuild and
-ahead, non-ancestor or tampered values refuse.
+`result_sha256` is SHA-256 of the canonical result object with
+`result_sha256` omitted; readers recompute that same omission before trusting
+it. Every remaining value is derived at the stated ledger head; stale
+ancestors rebuild and ahead, non-ancestor or tampered values refuse.
 
 **Cash flows and holds.** Version `RecurringCashFlowSchedule` serialization
 and `ReplayCashFlowComposer` additively. V1 parses and emits every existing
@@ -8068,14 +8130,27 @@ simulator or canonicalization.
 `tests/production/test_loop.py`, `test_ledger.py`, new `test_replay.py`,
 `test_report.py`, `test_cashflows.py`, `test_compose.py`, `test_guards.py`,
 `test_control.py`, and `children/intraday_equities/tests/test_replay.py`.
+They first prove failures for a second writer/recovery fence, changed
+series/genesis, every missing/extra/reordered `FrozenReplayPlan` member, and
+every startup/tick/shutdown mutation or effect outside a lifecycle plan.
 Inject crashes around every journal state, frozen append/barrier, snapshot
-preview/append/barrier, checkpoint write, event pending/emit/ACK/cursor,
-deferred effect and restore. Require uninterrupted/restarted byte-identical
-ledger/head, checkpoint, terminal identities, account, events, metrics and
-report. Pin unchanged live `_tick_once` checkpoint bytes/order, no provisional
-leakage, permit refusal, synthetic-authority isolation, all substitutions,
-V1/V2 cashflow compatibility, outbox ACK windows, hold restart/expiry,
-result tamper/staleness and rolling pins. Run only those files and directly
-affected purity/OOP/producer gates.
+preview/append/barrier, checkpoint write, command move, event
+pending/emit/signed-ACK/cursor-set replacement, deferred effect and restore.
+Require uninterrupted/restarted byte-identical ledger/head, checkpoint,
+terminal identities, account, events, metrics and report. Pin unchanged live
+`_tick_once` checkpoint bytes/order, opaque broker-only permit refusal,
+synthetic-authority isolation, all substitutions, V1/V2 cashflow
+compatibility, ACK idempotency/signature failure/cursor sorting, hold
+restart/expiry, result self-digest omission, result tamper/staleness and
+rolling pins. Run only those files and directly affected purity/OOP/producer
+gates.
 
-**Owner gates.** Implementation stays fail-closed until this ADR is accepted. Execution separately requires ratified capital timing/settlement/corrections; event retention/redaction/sink reliability; hold authority/scope/TTL; cadence, session/training/embargo/availability; released model/calibration/cap/MIO identities and security authorities; and rung gates. No actual replay, paper/market action, lockbox/full backtest, HPO or final refit is authorized.
+**Owner gates.** This acceptance permits only deterministic synthetic TDD
+through the test-only authority and a temporary test ServeRoot. The production
+entry point remains fail-closed. Actual replay separately requires owner
+activation of the external launcher/broker, protected keyring/clock/revocation
+operations, event retention/redaction/sink reliability, hold authority/scope/TTL,
+capital timing/settlement/corrections, cadence/session/training/embargo/
+availability, released model/calibration/cap/MIO identities and rung gates.
+No market replay, paper/market action, lockbox/full backtest, HPO or final
+refit is authorized.
