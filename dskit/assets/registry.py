@@ -50,6 +50,10 @@ class Registry:
     AssetError
         If ``store``/``model`` are not the right types, or ``model``
         does not hash to ``store``'s pin.
+    Exception
+        Whatever ``store.model_pin()`` itself raises, if anything — a
+        caller-supplied :class:`~dskit.assets.store.Store`
+        implementation, called unguarded once the type checks pass.
 
     Examples
     --------
@@ -203,6 +207,11 @@ class Registry:
             If ``version_id`` is not a well-formed 64-char sha256 hex
             digest, is absent from the store, or its kind is not
             declared by this registry's model (an out-of-band write).
+        Exception
+            Whatever ``self.store.get_record`` itself raises, if
+            anything — a caller-supplied
+            :class:`~dskit.assets.store.Store` implementation, called
+            unguarded.
         """
         record = self.store.get_record(version_id)
         self._spec(record.kind)  # a foreign kind means an out-of-band write
@@ -235,6 +244,12 @@ class Registry:
             out-of-band mutation, not a normal-use condition).
         TypeError
             If ``kind`` is an unhashable type (e.g. a list).
+        Exception
+            Whatever ``self.store``'s own ``list_records``/
+            ``get_record`` raises beyond the specific corruption shapes
+            above — a caller-supplied
+            :class:`~dskit.assets.store.Store` implementation, called
+            unguarded.
         """
         self._spec(kind)
         errors = []
@@ -269,6 +284,11 @@ class Registry:
             out-of-band mutation, not a normal-use condition).
         TypeError
             If ``kind`` is an unhashable type (e.g. a list).
+        Exception
+            Whatever ``self.store.list_records`` raises beyond the
+            specific corruption shape above — a caller-supplied
+            :class:`~dskit.assets.store.Store` implementation, called
+            unguarded.
         """
         if kind is not None:
             self._spec(kind)
@@ -300,6 +320,12 @@ class Registry:
             ``events.jsonl`` replaced with something that is not a
             regular file; an out-of-band mutation, not a normal-use
             condition).
+        Exception
+            Whatever ``self.get`` (its own ``store.get_record`` call)
+            or ``self.store.iter_events`` raises beyond the specific
+            corruption shape above — a caller-supplied
+            :class:`~dskit.assets.store.Store` implementation, called
+            unguarded.
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)

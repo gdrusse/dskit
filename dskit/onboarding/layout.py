@@ -172,8 +172,15 @@ class OnboardingRoot:
         Raises
         ------
         AssetError
-            If ``model`` is given but is not an AssetModel, or does not
-            hash to the store's pin.
+            If ``model`` is given but is not an AssetModel, does not
+            hash to the store's pin, or the store's own ``store.json``
+            is unreadable/malformed (propagated from
+            :func:`~dskit.assets.store.open_store`).
+        Exception
+            Whatever the store's declared backend itself raises while
+            opening — an unrecognized or misbehaving
+            ``pkg.module:Class`` backend reference, called unguarded
+            by :func:`~dskit.assets.store.open_store`.
         """
         model = onboarding_model() if model is None else model
         return Registry(open_store(os.path.join(self.root, "store")), model)

@@ -1076,6 +1076,41 @@ REMAINING, in the plan's risk order:
       arbitrary behavior) — the same distinction that made this round's
       `register`/`transition` finding a genuine gap despite those
       methods looking superficially covered.
+
+      **Twenty-fourth skeptic round (2026-09-12): resolved round 23's
+      own follow-up and found it was a genuine, wider gap than
+      expected — a 21st recurrence, 7 MAJOR, all the same
+      caller-owned-`Store`/backend propagation shape at every remaining
+      site.** Confirmed the specific-corruption wording in `find`/
+      `list`/`state` does NOT generalize: a custom `Store` raising a
+      generic `MemoryError`/`ConnectionError` propagates through all of
+      `Registry.get` (which had NO store-propagation entry at all, not
+      even narrow wording), `find` (two undocumented paths — both
+      `list_records` AND `get_record`), `list`, and `state` — all four
+      gained a generic `Exception` entry alongside their existing
+      specific-corruption `AssetError` wording. `Registry.__init__`
+      itself calls `store.model_pin()` unguarded (verified: a raw
+      `ConnectionError` propagates) — added to the class docstring.
+      `Lineage.add`/`parents`/`children`/`ancestors`/`descendants` all
+      inherit the identical gap via their internal
+      `Registry.get`/`store.append_event` calls (verified live on all
+      five) — added to each. Separately, `OnboardingRoot.registry()`
+      calls `open_store(...)` unguarded — verified two ways: a
+      `store/store.json` that exists (passing `__init__`'s presence-
+      only check) but is corrupted raises `AssetError` undocumented,
+      and a `pkg.module:Class` backend reference whose own `__init__`
+      raises propagates raw — the identical "unguarded call into
+      caller/implementer-owned code" shape round 23 fixed at
+      `Connector`/`Store`/`Backend`, now also fixed here. **Given a
+      21st straight round, and every finding again an instance of an
+      already-catalogued shape — `Raises` completeness remains open,
+      but this shape (caller-extensible seam propagation) now appears
+      close to exhaustively covered**: `Connector`, `Store` (via
+      `Registry`/`Lineage`), `Backend`, and store-backend-by-reference
+      have all been checked. A 25th round should do a final broad
+      confirmation sweep across fresh, unrelated functions rather than
+      continuing to mine this one shape, to test whether a genuinely
+      different defect class remains.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

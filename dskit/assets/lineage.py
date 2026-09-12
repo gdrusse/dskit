@@ -106,6 +106,13 @@ class Lineage:
             ``origin`` is not a string; an endpoint does not resolve;
             ``src == dst``; or the edge would create a cycle — the
             graph stays a DAG.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``src``/``dst`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) or appending
+            the edge event — a caller-supplied store, called
+            unguarded.
         """
         errors = []
         _check_str(errors, "relation", relation)
@@ -180,6 +187,12 @@ class Lineage:
         AssetError
             If ``version_id`` is not a well-formed 64-char sha256 hex
             digest, is absent, or its kind is undeclared.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``version_id`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) — a
+            caller-supplied store, called unguarded.
         """
         self.registry.get(version_id)
         return sorted({e["src"] for e in self.edges(version_id) if e["dst"] == version_id})
@@ -202,6 +215,12 @@ class Lineage:
         AssetError
             If ``version_id`` is not a well-formed 64-char sha256 hex
             digest, is absent, or its kind is undeclared.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``version_id`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) — a
+            caller-supplied store, called unguarded.
         """
         self.registry.get(version_id)
         return sorted({e["dst"] for e in self.edges(version_id) if e["src"] == version_id})
@@ -224,6 +243,12 @@ class Lineage:
         AssetError
             If ``version_id`` is not a well-formed 64-char sha256 hex
             digest, is absent, or its kind is undeclared.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``version_id`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) — a
+            caller-supplied store, called unguarded.
         """
         return self._closure(version_id, upstream=True)
 
@@ -245,6 +270,12 @@ class Lineage:
         AssetError
             If ``version_id`` is not a well-formed 64-char sha256 hex
             digest, is absent, or its kind is undeclared.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``version_id`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) — a
+            caller-supplied store, called unguarded.
         """
         return self._closure(version_id, upstream=False)
 
