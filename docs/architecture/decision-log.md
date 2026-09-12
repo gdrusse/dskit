@@ -7885,113 +7885,164 @@ sanctioned producer of gross-unit rows.
 
 ## ADR-0122 — Proposed attested ten-head final-model release
 
-**Status:** proposed; owner approval is required before tests, code, config enablement, or execution. This extends ADR-0113/0115/0116/0119 and reconciles their delivered seams rather than replacing them.
+**Status:** accepted (2026-09-12; owner approved the external-launcher and
+native-LightGBM architecture). This authorizes synthetic TDD implementation
+only; real HPO/refit, market/lockbox reads, replay, paper trading, full
+backtesting, and real release construction or consumption remain prohibited.
+It extends ADR-0113/0115/0116/0119 and reconciles their delivered seams rather
+than replacing them.
 
-**Decision proposed.** Add two generic, driver-owned trust boundaries. First,
-before plan resolves any document-selected uses reference, a sealed
-PreImportResolver reads the candidate module's distribution metadata and
-installed source-file bytes without importing that candidate module, its class,
-or its dependencies. It compares canonical, exact identities for the runtime
-image (or runtime), distribution, module files, named class, and transitive
-declared dependency files against an immutable, externally supplied expected
-identity document; it also verifies that document's signature, purpose,
-consumer allowlist, validity window, and exact consumer-document identity.
-Only after every comparison succeeds may it import the already-resolved module
-and let the ordinary planner validate the resulting Node subclass. The
-expected identity document cannot nominate a bootstrap, resolver, provider,
-keyring, clock, or verifier: those are a separately pinned, minimal trusted
-bootstrap selected by the executable distribution, with their own signed
-identity and fixed key authority. Registered toolkit kinds remain selected
-only by that trusted bootstrap; an untrusted pipeline document never selects
-code that establishes its own trust boundary. Missing metadata, editable or
-ambiguous distributions, namespace/file ambiguity, a module/class/dependency
-swap, an identity-document substitution, or any import before verification
-refuses plan/load fail-closed.
+**Correction.** A Python `PreImportResolver` cannot be a root of trust: Python
+has already selected and started its interpreter, import machinery, bootstrap
+modules, and possible import hooks before that resolver can run. Nor does an
+external signature make `joblib` safe: pickle is executable code, so a signed
+hostile bundle is still an RCE. Release trust must therefore begin outside
+Python, and release model members must be non-pickle data.
 
-Second, extend dskit.pipeline.driver with a generic signed immutable
-RunOutputAttestation (dskit.run-output-attestation/v1) and capture/publish
-protocol. A producer writes the completed bundle and manifest into a private
-staging directory, freezes their exact bytes, and asks an external signing
-authority to sign one complete ordered member list. That attestation binds
-schema/version, issuer/key/version/usage/algorithm, purpose, consumer
-allowlist, issued/not-before/expires epoch-ms, producer document/run/code and
-runtime identities, terminal state, immutable snapshot identity, and both
-bundle and manifest members' canonical relative paths, media types, byte
-counts, SHA-256 values, and decoded-content identities. Only after the
-external signature verifies does the driver atomically publish the immutable
-snapshot/output attestation; no mutable output path, sidecar, self-signed
-manifest, or producer-controlled replacement is a release. The verifier,
-using injected trusted clock/keyring, verifies the authorized consumer,
-external signer, time/key status, producer/run/code/runtime identities,
-complete exact member set, captured immutable bytes, paths, byte counts,
-digests, and signature before any joblib deserialization. run_load
-and every bundle consumer accept only verified captured member handles, never
-a caller path plus mutable JSON sidecar. It composes
-RunAttestation.node_output_for_document and resolve_json_artifact for
-producer evidence, but neither is an authorization substitute for the signed
-immutable snapshot.
+**Decision.**
 
-Add generic immutable MaterializedRowsEvidence binding captured row-artifact
-digest, source/cache identities, feature/category schema, ordered row-identity
-digest, count, event-time bounds, training start/exclusive end, and excluded
-half-open embargoes. Verification recomputes these from captured immutable
-bytes and refuses duplicates, unordered rows, cut/embargo violations, or
-identity substitution.
+1. **External launch root.** Every secure operation — release construction,
+   final-refit load, and release consumption in paper/live modes — starts only
+   through an OS-administrator-owned, non-Python launcher. It verifies the
+   signed immutable runtime-image digest, launch-profile signature, purpose,
+   consumer document identity, validity window, and key status before starting
+   an interpreter. A user-owned wrapper, repository file, environment variable,
+   signed JSON document, or Python module is never a substitute for this root.
 
-In children/intraday_equities.final_model, require one immutable, completed, attested HPO run/snapshot/document whose complete ordered members contain all ten scan_h01..scan_h10 outputs; combining heads from different runs, snapshots, or documents is rejected. Require ten separately attested labelled-row members. Per head, FinalRefit reconstructs CandidateInventory and TrialLedger from that one pinned HPO document, requires canonical completeness and one shared inventory digest, recomputes every score and SE from canonical per-day contributions using the pinned bootstrap algorithm, version, code digest, seed, and complete configuration, verifies every stored score/SE/bootstrap result exactly, then reruns OneStandardErrorSelector with the existing ruled simplicity_key. Stored selection must exactly match; no winner field or approximate threshold is trusted. Every trial binds candidate, causal per-day score contributions, bootstrap settings/algorithm/version/code digest/seed/config/result and SE, fit seed, cuts, and row counts; prediction/outcome availability precedes the evidence cutoff. Refit rows share the pinned source/cache/window/embargo and feature/category contracts, remain lockbox-disjoint, and match their head label.
+   The launcher creates an immutable execution view before any Python import:
+   the verified interpreter, standard library, DSKit, declared adapters, native
+   libraries, and all declared dependency bytes come only from the verified
+   image; writable overlays, current-directory imports, user/site paths,
+   `.pth`, `sitecustomize`, `usercustomize`, `PYTHONPATH`, startup files,
+   namespace ambiguity, and externally supplied import hooks are unavailable.
+   It starts only a profile-approved entry point in isolated mode. The image
+   view, not a later hash comparison of a pathname, closes verify-to-import
+   TOCTOU; mounts/handles holding verified bytes cannot be replaced after
+   verification.
 
-FinalRefit becomes a conforming TrainableNode: base run and
-input-validation templates remain final; run_train performs exactly one fit
-per verified winner, calls the generic staged bundle writer once, then may
-return only its externally signed, atomically published capture; run_load
-obtains that capture through the verifier and only then calls load_bundle.
-Neither path searches. write_bundle/load_bundle/EstimatorBundle remain
-the sole generic persistence boundary, but load_bundle changes its input
-from a path to verified immutable bundle/manifest member handles plus their
-attestation context; it must not open or deserialize arbitrary caller-selected
-bytes. The manifest binds exactly ten ordered heads, per-head constructor
-params, full and surviving feature order, categorical encoding, immutable
-HPO/refit identities and cuts, runtime/library versions as digest material,
-prediction fixture/checksum, model bytes, and manifest digest. After the
-capture boundary has verified the bytes, load recomputes digest/checksum,
-verifies class and exact membership/order and configured expected
-runtime/library versions, and refuses swaps, omissions, additions, corruption,
-version drift, or silent refit.
+   A profile names exact permitted `uses` references and adapters. In secure
+   mode, DSKit asks the launch profile to authorize a reference before normal
+   resolution, but that is defence in depth only: its code is already inside
+   the verified image. Direct `python -m dskit.pipeline` operation, a direct
+   CLI `run`/`staged`/`walkforward` invocation, and every `--adapter` flag
+   refuse in secure mode. Development mode retains current unrestricted
+   behavior and cannot construct, load, or consume a release.
 
-**Placement/API.** The sealed bootstrap and PreImportResolver, including the
-pre-import distribution/file inspection seam, live with driver planning in
-dskit/pipeline/driver.py and planner.py (or another existing generic module
-only after owner approval); generic attestation parsing, capture, atomic
-publication, verification, row evidence, and canonical identity stay in
-dskit/pipeline/driver.py; sklearn persistence stays in
-dskit/pipeline/libs/sklearn.py; TrainableNode stays in node.py. Equity
-head vocabulary, score/simplicity, calendar/label rules, and orchestration
-stay in children/intraday_equities/intraday_equities/final_model.py; only
-children/intraday_equities/configs/run-final-refit.json supplies final pins
-and output path. No duplicate hash, selector, estimator, serializer, row
-builder, trust bootstrap, or import resolver. Public names join owning
-__all__; schemas are default-deny canonical JSON and every digest domain
-binds schema version and purpose.
+2. **Opaque launch capability.** The launcher supplies `LaunchContext` as an
+   opaque, kernel/launcher-bound capability, not a constructor, JSON object,
+   environment variable, path, or user-signable token. It has no public
+   serialization or `from_obj` API. DSKit validates its operation, image and
+   profile identities, consumer authorization, and capture-authority binding
+   through the privileged launcher endpoint; it owns no bootstrap key or
+   fallback verifier. Missing, replayed, wrong-operation, or unverified context
+   refuses before document planning, adapter loading, bundle loading, or
+   `FinalRefit` construction.
 
-**Strict TDD after approval.** RED then focused GREEN: malicious candidate
-module import side effects prove no candidate code executes before pre-import
-identity verification; module, class-file, distribution, dependency, expected
-consumer-document, and bootstrap/keyring-provider swaps refuse; signature/key/
-version/revocation/time and exact membership substitutions; row-content/cut/
-embargo/order/causality identities; exact 1-SE reconstruction and ten-head
-completeness; TrainableNode conformance plus train/load no-search/no-silent-
-refit; staged-write interruption and atomic-publish tests; paired
-bundle/manifest substitution, re-signed self-manifest, mutable-sidecar, and
-hostile pickle/RCE fixtures prove refusal occurs before joblib.load; then
-config validate/plan and synthetic ten-head orchestration. Run only owning
-files plus directly implicated purity, OOP, and conformance gates, Ruff on
-touched Python, and git diff --check.
+3. **Generic sealed capture lifecycle.** Add generic driver-owned
+   `PreparedCapture`, `VerifiedCapture`, `CapturedMemberHandle`, and
+   `CapturedRelease` values. A producer may write declared members only to
+   private staging. `seal()` freezes one ordered member declaration; the
+   external capture authority copies those exact bytes into protected immutable
+   storage, verifies their hashes/counts/media types and producer binding, then
+   records a signed, append-only/WORM attestation. Only `open_capture()` on the
+   authorized `LaunchContext` produces a `VerifiedCapture`; it supplies typed
+   member handles whose only content operation is verified byte/text access.
+   Handles expose no filesystem path, staging path, manifest path, `__fspath__`,
+   or JSON/dict serialization.
 
-**Fail-closed gates/non-goals.** Until the owner accepts this ADR, freezes the
-schemas, external signing/key authority, trusted clock, bootstrap identities,
-runtime/module/class/dependency expected identities, consumer documents, exact
-HPO/refit artifact identities, and final-refit config, and separately
-authorizes execution, FinalRefit, its config, run_load, and every bundle
-consumer retain unconditional refusal. Approval authorizes synthetic tests
-and implementation, not real HPO, refit, market-data/lockbox reads, replay,
-paper trading, full backtesting, or a real bundle release.
+   The attestation binds schema/purpose, issuer/key/algorithm/usage, issue and
+   validity instants, producer document/run/code/runtime identities, terminal
+   state, immutable capture identity, authorized consumers, and the complete
+   ordered member list of relative path, media type, byte count, and SHA-256.
+   Consumer verification checks all of those facts and reads the immutable
+   captured bytes, never a producer path or a mutable sidecar. The enforced
+   lifecycle is producer → seal → external capture/signature → authorized
+   consumer; neither `RunAttestation` nor `resolve_json_artifact` is an
+   authorization substitute. They may contribute evidence only before sealing.
+
+4. **Native LightGBM release format.** Add a generic tier-2
+   `LightGBMTextBundle` writer/loader in `dskit.pipeline.libs.lightgbm`.
+   Its release representation is canonical JSON
+   `dskit.lightgbm-text-bundle/v1` plus exactly the declared ordered native
+   LightGBM text-model members. The manifest records each ordinal, name,
+   canonical relative path, byte count, SHA-256, constructor/prediction
+   contract, feature and categorical contracts, training identities, fixture
+   checksum, and runtime/library identities. It refuses an omission, addition,
+   duplicate, reordered member, noncanonical manifest, version drift, or
+   prediction-fixture mismatch.
+
+   `load_text_bundle(VerifiedCapture)` accepts only verified captured member
+   handles and constructs native `lightgbm.Booster` values from strict UTF-8
+   model text. It never accepts a path. Release code must not import or invoke
+   `joblib`, `pickle`, `cloudpickle`, `dill`, or any general object
+   deserializer. Existing sklearn joblib persistence remains development-only
+   and refuses a release purpose. The ten-head rule is child policy; the generic
+   bundle supports any caller-declared ordered head list.
+
+5. **Typed upstream evidence and final refit.** The generic capture boundary
+   provides exact-member specifications and typed `CapturedMemberHandle` sets.
+   The child forms `HpoEvidenceCapture` and `MaterializedRowsEvidence` only from
+   those verified handles; neither accepts a run directory, manifest, carry
+   entry, or path. One HPO capture must bind one completed producer
+   document/run/snapshot and exactly all ten child-declared `scan_h01` through
+   `scan_h10` evidence members. Ten independently captured labelled-row
+   evidence members bind their matching heads. Mixing captures, producer runs,
+   snapshots, documents, member layouts, or labels refuses.
+
+   Per head, `FinalRefit` reconstructs `CandidateInventory` and `TrialLedger`
+   from that exact HPO capture, requires one shared inventory digest, recomputes
+   every score and SE from the pinned causal per-day contributions, bootstrap
+   algorithm/version/code digest/seed/configuration, and reruns the ruled
+   `OneStandardErrorSelector` with `simplicity_key`. Stored winner fields and
+   approximate thresholds are not trusted. Refit rows recompute their captured
+   source/cache/window/schema/order/cut/embargo identities, remain
+   lockbox-disjoint, and prove prediction/outcome availability before cutoff.
+
+   `FinalRefit` remains a conforming `TrainableNode`; base templates remain
+   final. `run_train` fits exactly once per verified winner, writes one prepared
+   native-text bundle, and returns only the resulting opaque
+   `CapturedRelease` after external capture succeeds. `run_load` obtains that
+   capture only through `LaunchContext` and then calls `load_text_bundle`.
+   Neither path searches, refits during load, accepts `artifact`, returns a
+   path/manifest/dict, enters `carry.json`, or emits a `JsonArtifact`.
+   The final-refit config may name only an expected capture identity/purpose
+   resolved by `LaunchContext`; output paths, manifests, and adapter selection
+   are prohibited.
+
+**Placement/API.** `LaunchContext`, capture contracts, verification, and
+canonical identity live in the generic pipeline driver seam; CLI secure-mode
+refusals live in `dskit.pipeline.__main__`; native LightGBM text persistence
+lives in the LightGBM tier-2 pack; `TrainableNode` remains in `node.py`.
+The external launcher is deployment-owned infrastructure, outside DSKit and
+outside the release image. Equity head vocabulary, label semantics, 1-SE
+policy, calendar rules, and the thin evidence adapter remain solely in
+`children/intraday_equities`. Public schemas are default-deny and every digest
+domain binds schema version and purpose.
+
+**Strict TDD.** RED then focused GREEN in `tests/pipeline/test_secure_launch.py`,
+`tests/pipeline/test_driver.py`, `tests/pipeline_libs/test_lightgbm_release.py`,
+`children/intraday_equities/tests/test_final_model.py`, and its config tests:
+
+- a poisoned current directory, `.pth`, `sitecustomize`, user path, environment,
+  import hook, module swap, and post-verification mutation cannot execute before
+  the approved entry point; direct CLI and `--adapter` refuse secure mode;
+- forged/replayed launch capabilities; wrong profile/image/consumer/purpose/time
+  and unapproved `uses` references refuse;
+- producer-to-seal, seal-to-capture, and capture-to-consumer substitutions,
+  reordering, added members, mutable paths, stale signatures, and TOCTOU refuse;
+- pickle/joblib fixtures prove release loading never deserializes object code;
+  native text members load only through verified handles and reproduce fixtures;
+- mixed HPO captures, missing/extra heads, altered row evidence, causal/cut/
+  embargo failures, and winner/SE reconstruction disagreements refuse;
+- synthetic ten-head train/load conformance proves one fit per winner, opaque
+  release output, no load-time search/refit, and no config output path.
+
+Run only those owners plus directly implicated purity/OOP/conformance tests,
+Ruff on touched Python, and `git diff --check`; no full suite.
+
+**Fail-closed gates/non-goals.** The exact external launcher/profile authority,
+immutable runtime-image mechanism, capture/signing/key authority, trusted clock,
+consumer documents, exact HPO/refit capture identities, and final-refit
+configuration remain frozen requirements. This acceptance permits synthetic
+tests and implementation only — never real HPO/refit, market/lockbox reads,
+replay, paper trading, full backtesting, or a real release.
