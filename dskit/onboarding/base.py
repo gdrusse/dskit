@@ -204,6 +204,8 @@ def durable_write_bytes(path, data) -> None:
     ------
     AssetError
         If ``path`` is not a non-empty string, or ``data`` is not bytes.
+    OSError
+        If ``path``'s directory does not exist or is not writable.
     """
     errors = []
     _check_str(errors, "path", path)
@@ -296,6 +298,9 @@ def durable_write_json(path, obj) -> None:
     ------
     AssetError
         If ``obj`` is not JSON-serializable (NaN/Infinity refused).
+    OSError
+        If ``path``'s directory does not exist or is not writable
+        (propagated from :func:`durable_write_bytes`).
     """
     try:
         text = json.dumps(obj, indent=2, sort_keys=True, allow_nan=False)

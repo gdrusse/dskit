@@ -241,6 +241,9 @@ class LocalFilesConnector(Connector):
             field is missing, empty, or does not parse as an ISO
             date/datetime; or a JSONL row is malformed JSON or not a
             JSON object.
+        ValueError
+            If a per-stream value in ``state`` is not itself a dict
+            (only the outer ``state`` shape is checked).
         """
         errors = []
         _check_dict(errors, "state", state)

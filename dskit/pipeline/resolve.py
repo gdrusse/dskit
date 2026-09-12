@@ -93,12 +93,22 @@ class ResolvedPipeline:
         Absolute paths. ``data_root`` must exist at resolve time;
         ``model_root`` is an OUTPUT root the runner creates.
     instruments : tuple of str
-        The concrete, sorted universe (explicit instruments canonicalized
-        by sorting — a universe is a set; or the backend's auto-discovery).
+        The concrete, sorted universe (:func:`resolve` sorts explicit
+        instruments before constructing — a universe is a set — or
+        uses the backend's auto-discovery, already sorted; direct
+        construction REFUSES an unsorted tuple rather than sorting it).
     data_fingerprint : dict
         The backend's per-instrument snapshot identity. HASHED.
     run_dir : str
         Where artifacts land. Excluded from the hash (it embeds hash8).
+
+    Raises
+    ------
+    ValueError
+        If ``config`` is not a :class:`PipelineConfig`; ``asof`` is not
+        a ``YYYY-MM-DD`` date; ``data_root``/``model_root``/``run_dir``
+        are not non-empty strings; ``instruments`` is not a non-empty,
+        already-sorted tuple; or ``data_fingerprint`` is not a dict.
 
     Examples
     --------
@@ -183,6 +193,13 @@ class ResolvedPipeline:
         dict
             Most of the resolved.json body — :func:`write_run_dir`
             additionally stamps ``pipeline_hash`` onto this before writing.
+
+        Raises
+        ------
+        TypeError
+            If ``data_fingerprint`` holds a value ``json.dumps`` cannot
+            serialize — ``__post_init__`` only checks it is a dict, not
+            that its values are JSON-safe.
         """
         return {
             "asof": self.asof,
@@ -219,6 +236,12 @@ def pipeline_hash(resolved) -> str:
     ValueError
         If the stripped content is not canonically serializable
         (NaN/Infinity in an open dict or fingerprint).
+    TypeError
+        If the stripped content holds a value ``json.dumps`` cannot
+        serialize at all (not caught and wrapped like the NaN/Infinity
+        case above — this pre-existing ``except ValueError`` does not
+        catch it); also propagated from ``resolved.to_dict()`` when
+        ``resolved`` is a :class:`ResolvedPipeline`.
     """
     d = resolved.to_dict() if hasattr(resolved, "to_dict") else dict(resolved)
     d = _strip_notes({k: v for k, v in d.items() if k not in _PROVENANCE_KEYS})
@@ -264,9 +287,11 @@ def resolve(config, asof=None, backend=None, registry=DEFAULT_REGISTRY):
         deferred out of ``__post_init__`` by design rule 1).
     ValueError
         ``asof`` is not a ``YYYY-MM-DD`` date; unknown venue, unknown
-        ``validation.metric`` or ``stat_test.correction``, a
-        split/optimizer kind the backend does not support, an optimizer
-        kind nobody registered, or an empty discovered universe.
+        ``validation.metric`` or ``stat_test.correction``; a weighted
+        correction declared (the stage-list grammar cannot wire the
+        weights it needs); a split/optimizer kind the backend does not
+        support, an optimizer kind nobody registered; or an empty
+        discovered universe.
     """
     if asof is None:
         asof_s = datetime.now(timezone.utc).date().isoformat()
@@ -445,7 +470,14 @@ def write_run_dir(resolved) -> str:
     ------
     ValueError
         If ``resolved.run_dir`` already exists and is non-empty, or if
-        either document is not canonically serializable.
+        either document is not canonically serializable (NaN/Infinity).
+    TypeError
+        If ``resolved.data_fingerprint`` (or ``resolved.config``) holds
+        a value ``json.dumps`` cannot serialize at all — see
+        :meth:`ResolvedPipeline.to_dict` and :func:`pipeline_hash`.
+    OSError
+        If ``resolved.run_dir`` cannot be created, or its parent is not
+        writable.
     """
     run_dir = resolved.run_dir
     new_hash = pipeline_hash(resolved)

@@ -39,6 +39,11 @@ class Lineage:
         The registry whose store holds the graph; endpoint resolution
         and kind checks ride on it.
 
+    Raises
+    ------
+    AssetError
+        If ``registry`` is not a :class:`~dskit.assets.registry.Registry`.
+
     Examples
     --------
     Add a lineage edge, add it again idempotently, and reject a cycle::

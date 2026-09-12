@@ -233,6 +233,8 @@ def atomic_write_json(path, obj) -> None:
     ------
     AssetError
         If ``obj`` is not JSON-serializable.
+    OSError
+        If ``path``'s directory does not exist or is not writable.
     """
     try:
         text = json.dumps(obj, indent=2, sort_keys=True, allow_nan=False)

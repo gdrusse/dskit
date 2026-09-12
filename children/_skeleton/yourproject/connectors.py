@@ -187,6 +187,9 @@ class SampleConnector(Connector):
             list, a requested stream is not ``"samples"``,
             ``config.rows`` is not an int ``>= 1``, or
             ``config.start_date`` does not parse as an ISO date.
+        ValueError
+            If a per-stream value in ``state`` is not itself a dict
+            (only the outer ``state`` shape is checked).
         """
         if not isinstance(state, dict):
             raise AssetError([f"state must be a dict, got {state!r}"])

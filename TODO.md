@@ -383,17 +383,62 @@ REMAINING, in the plan's risk order:
       completeness, but catches the "missing entirely" half of the
       pattern) over all 27 files: it found 6 more genuine gaps
       (`ingest_run`, `AssetRecord.version_id`, `sync_published`,
-      `run_acquisition`, `publish_version`, `probability_metrics` — the
-      last three in files this session had marked "already compliant,
-      zero changes needed," which was true for ruff but not for
-      `Raises`), each fixed and re-verified by triggering it. Left
-      deliberately unfixed: five dunder `__init__`/`__post_init__`
-      methods whose only raise is a constructor type-check already
-      implied by the class docstring's `Parameters` types — no
-      already-compliant class in this repo documents that as a
-      separate `Raises`, and no skeptic round (six, by this point) has
-      flagged it, so adding one now would invent a convention rather
-      than follow one.
+      `run_acquisition`, `publish_version`, `probability_metrics`), each
+      fixed and re-verified by triggering it. **Correction (round 7):**
+      this ledger's first cut of that sentence miscounted — only
+      `sync_published` (`dskit/assets/sync.py`) and `publish_version`
+      (`dskit/onboarding/publish.py`) were genuinely 0-change files;
+      `run_acquisition` (`dskit/onboarding/acquire.py`) and
+      `probability_metrics` (`dskit/pipeline/trainlog.py`, not
+      `metrics.py`) both live in files this session HAD already edited
+      earlier (for `find_active_source` and for imperative-mood/
+      `Examples` fixes respectively) — the point stands (ruff-clean is
+      not `Raises`-complete) but the file list was wrong. Left
+      deliberately unfixed at the time: five dunder
+      `__init__`/`__post_init__` methods whose only raise is a
+      constructor type-check already implied by the class docstring's
+      `Parameters` types — no already-compliant class in this repo
+      documents that as a separate `Raises`, and no skeptic round (six,
+      by this point) has flagged it, so adding one now would invent a
+      convention rather than follow one.
+
+      **Seventh skeptic round (2026-09-12): escalated to MAJOR — the
+      "left deliberately unfixed" dunder claim above was FALSE.** An
+      independent scan of every already-compliant (non-ignored) class
+      in the whole repo whose `__init__`/`__post_init__` raises found
+      **32 counter-examples that DO document it** (e.g.
+      `dskit/pipeline/records.py`'s `MarketRecord`,
+      `dskit/pipeline/release_rotation.py`'s `HalfOpenInterval`,
+      `dskit/production/ledger.py`'s `ServeRoot`), so the "no
+      convention exists" reasoning was wrong — all five dunders
+      (`Lineage`, `Registry`, `OnboardingRoot`, `AssetRecord`,
+      `ResolvedPipeline`) now carry a class-level `Raises`. The same
+      round also found the `Raises`-completeness gap had recurred a
+      **4th** straight time, escalated to MAJOR this time: 6 more
+      functions with `Raises` entirely missing or incomplete
+      (`verify_snapshot`, `apply_stream_steps`, `AssetRecord.to_obj`,
+      `Registry.register`, `ResolvedPipeline.to_dict`, `pipeline_hash`
+      + `write_run_dir` — the last two documented only `ValueError`
+      when a `set` value actually escapes as an undocumented
+      `TypeError`, since the `except ValueError` never catches it) —
+      all fixed and re-verified by triggering each condition. Also
+      fixed: `ingest_run`'s `Raises` was placed after `Examples`
+      (numpydoc order is Parameters → Returns → Raises → … →
+      Examples) — the only out-of-order section among the 27 files;
+      `ResolvedPipeline`'s own `instruments` doc claimed direct
+      construction "canonicalizes by sorting" when it actually REFUSES
+      unsorted input (only `resolve()` sorts before constructing) —
+      corrected; three `durable_write_*`/`atomic_write_json` siblings
+      gained the `OSError` note `save_config` already had, for
+      consistency; the two connector `read()` methods gained a
+      `ValueError` note for a per-stream `state` value that isn't a
+      dict (an internal message leaks through, undocumented); and
+      `resolve()`'s `ValueError` list gained the weighted-correction
+      case. **Given a MAJOR-severity recurrence of the exact same
+      pattern for a 4th time, this is not yet trusted closed** — an
+      eighth round is required before treating `Raises` completeness
+      as settled, unlike `Parameters`/`Returns`/`Yields` (AST-provable,
+      closed since round 4).
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

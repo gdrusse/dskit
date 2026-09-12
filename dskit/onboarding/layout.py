@@ -57,6 +57,12 @@ class OnboardingRoot:
         A directory previously initialized by :meth:`create` (it must
         hold an assets store under ``store/``).
 
+    Raises
+    ------
+    AssetError
+        If ``root`` is not a non-empty string, or is not an
+        initialized onboarding root (no ``store/store.json``).
+
     Examples
     --------
     Create a root and check its layout::

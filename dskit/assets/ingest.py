@@ -91,13 +91,6 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
         "edges_added": n}`` — re-ingesting yields the same vids with
         ``edges_added == 0``.
 
-    Examples
-    --------
-    A sketch, not runnable as-is — it needs a live ``Registry`` and an
-    existing run directory under ``pipeline_runs/``::
-
-        summary = ingest_run(reg, "pipeline_runs/my-run-2026-01-01-5ce0d310")
-
     Raises
     ------
     AssetError
@@ -106,6 +99,13 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
         record under ``nodes/``) is unreadable, not valid JSON, or not
         a JSON object; ``result.json`` is missing a required field; or
         a node record lacks a valid ``node``/``outputs`` shape.
+
+    Examples
+    --------
+    A sketch, not runnable as-is — it needs a live ``Registry`` and an
+    existing run directory under ``pipeline_runs/``::
+
+        summary = ingest_run(reg, "pipeline_runs/my-run-2026-01-01-5ce0d310")
     """
     errors = []
     if not isinstance(registry, Registry):

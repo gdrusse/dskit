@@ -45,6 +45,12 @@ class Registry:
         The governing model; hashed and compared against the pin, so a
         store can never be driven by a model it was not created with.
 
+    Raises
+    ------
+    AssetError
+        If ``store``/``model`` are not the right types, or ``model``
+        does not hash to ``store``'s pin.
+
     Examples
     --------
     Register an entity and a feature, transition state, and look it up::
@@ -127,8 +133,11 @@ class Registry:
         ------
         AssetError
             If ``kind`` is undeclared, ``payload``/``refs`` fail the
-            model's field checks, or a ref does not resolve to a
-            present record of the declared kind.
+            model's field checks, a ref does not resolve to a present
+            record of the declared kind, ``origin``/``notes`` are not
+            strings, or ``payload``/``refs`` hold a value that is not
+            canonically serializable (propagated from constructing the
+            :class:`AssetRecord`).
         """
         spec = self._spec(kind)
         refs = {} if refs is None else refs

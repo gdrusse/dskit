@@ -147,6 +147,13 @@ class AssetRecord:
     notes : str
         Documentation; outside the hash.
 
+    Raises
+    ------
+    AssetError
+        If ``kind`` is not a non-empty string; ``payload``/``refs`` are
+        not dicts with string keys; or ``registered_at``/``origin``/
+        ``notes`` are not strings.
+
     Examples
     --------
     Construct a record and check that provenance never changes identity::
@@ -209,6 +216,13 @@ class AssetRecord:
         dict
             ``{"kind", "payload", "refs", "version_id"}`` plus
             ``registered_at``/``origin``/``notes`` when non-empty.
+
+        Raises
+        ------
+        AssetError
+            If ``payload``/``refs`` hold a value that is not
+            canonically serializable (propagated from
+            :meth:`version_id`).
         """
         out = {
             "kind": self.kind,

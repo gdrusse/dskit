@@ -180,6 +180,12 @@ def apply_stream_steps(records, features):
     -------
     iterable
         The transformed record stream, in the same record shape.
+
+    Raises
+    ------
+    ValueError
+        If a class-reference step's ``kind`` does not import (via
+        :func:`~dskit.pipeline.base.import_ref`).
     """
     if features is None:
         return records

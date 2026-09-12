@@ -308,6 +308,13 @@ def verify_snapshot(snapshot_dir) -> list:
     -------
     list of str
         Problems found; empty means the snapshot is intact.
+
+    Raises
+    ------
+    AssetError
+        If ``snapshot_dir`` is malformed, or its manifest is unreadable
+        or shape-invalid (via :func:`read_manifest`) — a MISSING or
+        DRIFTED payload file is a returned problem, never a raise.
     """
     manifest = read_manifest(snapshot_dir)
     payload_dir = os.path.join(snapshot_dir, "payload")
