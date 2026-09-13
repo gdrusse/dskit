@@ -173,6 +173,20 @@ def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
     assert "external broker" in str(exc_info.value)
     assert not marker.exists(), "planner imported execution uses"
 
+    from dskit.pipeline.driver import run_walk_forward
+    from dskit.pipeline.stages import plan_stages, run_staged
+
+    for action in (
+        lambda: plan_stages(document),
+        lambda: run_staged(str(document_path)),
+        lambda: run_walk_forward(document, asof=ASOF),
+    ):
+        sys.modules.pop("execution_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        with pytest.raises(ConfigError, match="external broker"):
+            action()
+        assert not marker.exists(), "execution route imported its adapter"
+
 
 class TestCleanRun:
     def test_end_to_end_banking_run(self, tmp_path, registry):

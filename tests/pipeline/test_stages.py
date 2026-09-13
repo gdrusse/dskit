@@ -90,6 +90,14 @@ def test_staged_run_resumes_without_reexecuting(tmp_path, monkeypatch):
     assert second.outputs == first.outputs
     assert CountingStage.calls == 1
 
+def test_cli_staged_keeps_the_original_path(tmp_path, monkeypatch):
+    child, path = _write_child(tmp_path)
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child)
+    from dskit.pipeline.__main__ import main
+
+    assert main(["staged", str(path), "--asof", "2026-01-02"]) == 0
+
 
 def test_orphaned_stage_artifact_is_refused(tmp_path, monkeypatch):
     child, path = _write_child(tmp_path)
