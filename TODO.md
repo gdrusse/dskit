@@ -1262,6 +1262,36 @@ REMAINING, in the plan's risk order:
       further, and if that holds, move to unrelated functions per
       round 27's original step-3 fallback (the 3 longest/most-complex
       not-yet-individually-named functions).
+
+      **Twenty-ninth skeptic round (2026-09-13): CLEAN — the loop's
+      stopping condition is met.** Re-ran round 28's exact
+      `Registry`/`Lineage` call-site inventory as a pure confirmation
+      (reading each CURRENT docstring, not trusting the prior round's
+      summary): every site holds. Full-effort from-scratch traces of
+      the 3 longest not-yet-individually-named functions in the 24
+      files (`_place_file` in `acquire.py`, `OnboardingRoot.records_dir`
+      and `.state_path` in `layout.py`, with `features.py`'s
+      `_filter_validator` spot-checked as a tied-length fourth) all
+      matched their docstrings exactly across every axis
+      (Parameters/Returns/Raises/Examples) — zero discrepancies. One
+      NIT found and fixed: a single line in `run_acquisition`'s round-27
+      cross-reference (100 chars, the only line over 99 in the whole
+      diff) was reflowed. **Zero MAJOR, zero MINOR — the stopping
+      condition the user set is met.** 25 straight rounds (4-28) of
+      genuine, execution-verified `Raises`/`Returns`/`Examples` defects
+      converged, over the last 9 rounds (21-28), onto one narrowing
+      family — "a caller of an already-fixed wrapper method
+      (`Registry`/`Lineage`, `Connector`, `Store`, `Backend`) not
+      cross-citing that method's own documented propagation" — and
+      round 29's exhaustive re-confirmation of that exact family, plus
+      fresh unrelated surface, both came back clean on the first pass.
+      This is treated as a genuine fixed point for the 24 files this
+      effort actually touched, not merely a quiet round: **the skeptic-
+      review sub-effort on the CONVERTED 24 files is now closed.** This
+      top-level item stays open only because 30 of the original 57
+      pre-standard modules remain unconverted (untouched by this whole
+      effort) — draining those is separate, un-started work, not part
+      of what the 29 rounds here reviewed.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

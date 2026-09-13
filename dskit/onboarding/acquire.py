@@ -218,8 +218,9 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         :class:`~dskit.assets.store.Store` raises, if anything, from
         the ``registry.get(config_vid)`` lookup or the evidence-writing
         ``registry.register`` calls — already documented on
-        :meth:`~dskit.assets.registry.Registry.get`/:meth:`~dskit.assets.registry.Registry.register`
-        themselves, but not previously cited here.
+        :meth:`~dskit.assets.registry.Registry.get` and
+        :meth:`~dskit.assets.registry.Registry.register` themselves,
+        but not previously cited here.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
