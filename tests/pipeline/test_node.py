@@ -414,3 +414,34 @@ def test_check_int_param_accepts_integral_floats():
     check_int_param(problems, "lead", 470.5, ge=1)
     check_int_param(problems, "lead", True, ge=1)
     assert len(problems) == 2
+def test_public_resolver_requires_an_ordinary_document_before_import(tmp_path, monkeypatch):
+    from dskit.pipeline.document import PipelineDocument
+
+    marker = tmp_path / "imported"
+    adapter = tmp_path / "resolver_poison.py"
+    adapter.write_text(
+        "from pathlib import Path" + chr(10)
+        + f"Path({str(marker)!r}).write_text('imported')" + chr(10)
+        + "class Poison:" + chr(10)
+        + "    pass" + chr(10)
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    document = PipelineDocument.from_obj({
+        "name": "execution-resolver",
+        "pipeline": {"node": {"uses": "resolver_poison:Poison"}},
+        "execution_backtest": {
+            "schema_version": "dskit.execution-backtest/v1",
+            "purpose": "synthetic",
+            "event_envelope_schema": "dskit.event-envelope/v2",
+            "source_rank_policy_sha256": "1" * 64,
+            "execution_profile_sha256": "2" * 64,
+            "environment_identity_sha256": "3" * 64,
+        },
+    })
+    with pytest.raises(ConfigError, match="external broker"):
+        resolve_uses(document, "resolver_poison:Poison")
+    assert not marker.exists()
+    reg = NodeKindRegistry()
+    reg.register("minimal", MinimalNode)
+    with pytest.raises(ValueError, match="PipelineDocument first"):
+        resolve_uses("minimal", reg)
