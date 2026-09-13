@@ -3168,8 +3168,8 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     """
     if not isinstance(document, PipelineDocument):
         document = load_document(document)
-    _walkforward_refusals(document)
     refuse_execution_backtest(document)
+    _walkforward_refusals(document)
     asof = _validated_asof(asof)
     spec = document.walkforward
     summary_dir = _walkforward_summary_dir(document, asof)

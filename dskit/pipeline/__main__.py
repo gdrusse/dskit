@@ -434,7 +434,7 @@ def cmd_staged(path, asof, adapters=()) -> int:
     try:
         document = _load_ordinary_document(path)
         _import_adapters(adapters)
-        result = run_staged(document if document is not None else path, asof=asof)
+        result = run_staged(path, asof=asof)
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1

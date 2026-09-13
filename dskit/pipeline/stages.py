@@ -238,9 +238,11 @@ def _toposort(keys, dependencies):
 
 def plan_stages(document, registry=DEFAULT_STAGE_KINDS):
     """Import, validate, and deterministically order a document's stages."""
+    from dskit.pipeline.planner import plan, refuse_execution_backtest
+
+    refuse_execution_backtest(document)
     if document.stages is None:
         raise ValueError("document has no stages section")
-    from dskit.pipeline.planner import plan
 
     # Stages orchestrate the declared node map; they never exempt it from
     # the ordinary import, parameter, role, and DAG checks.

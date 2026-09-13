@@ -94,6 +94,10 @@ def test_cli_staged_keeps_the_original_path(tmp_path, monkeypatch):
     child, path = _write_child(tmp_path)
     monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
     monkeypatch.chdir(child)
+    payload = _document(child / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path.write_text(json.dumps(payload))
     from dskit.pipeline.__main__ import main
 
     assert main(["staged", str(path), "--asof", "2026-01-02"]) == 0
