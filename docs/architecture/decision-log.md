@@ -8160,10 +8160,11 @@ refit is authorized.
 
 ## ADR-0126 -- Deferred terminal projection for fenced replay
 
-**Status:** proposed -- **PENDING OWNER APPROVAL**. Corrects ADR-0124 at
+**Status:** accepted (2026-09-12; explicitly owner-approved in the active
+thread). Corrects ADR-0124 at
 77697edf823810e0832f02f73511638b681a9834 but does not amend the model plan
 at 40ab10fa7428e5eab14cff2f082c781cf962b860. Its current V1 requirement
-therefore remains conflicting and fail-closed. This proposal authorizes no
+therefore remains conflicting and fail-closed. This ADR authorizes no
 implementation, synthetic execution, market replay, paper/live action, HPO,
 refit, lockbox read or backtest.
 
@@ -8172,7 +8173,7 @@ that result binds event_cursor_sha256. Signed ACK/cursor evidence exists only
 after outbox emission and effect completion. A pre-effect final result is
 unknowable or silently omits/substitutes the evidence it claims to bind.
 
-**Decision, if accepted.** Add FrozenReplayPlan.v2. It freezes every
+**Decision.** Add FrozenReplayPlan.v2. It freezes every
 pre-effect invariant and the complete ordered language of allowed post-effect
 receipts, then derives one terminal cursor/result projection from verified
 evidence. Canonical JSON/UTF-8 bytes, lowercase SHA-256, exact-key default
@@ -9223,7 +9224,7 @@ permit/plan/slot substitution; external signature/keyring/clock/revocation
 failure; and every V1 execution, migration, replacement, handoff or identity
 sharing refusal.
 
-**Tests after approval.** First fail every V2 exact-key/version/default-deny
+**Tests following acceptance.** First fail every V2 exact-key/version/default-deny
 and plan-intent-spec equality boundary; pre-plan policy scope.plan_sha256,
 post-plan authorization scope/digest and all cyclic/mutable/fallback variants;
 missing, substituted, ahead, stale or nonancestor pre_head across plan/header/
@@ -9271,12 +9272,12 @@ sole execution authority. Children, CLI documents and fixtures cannot mint a
 permit, declare a projection algorithm or broaden a receipt slot. Synthetic
 authority remains test-only.
 
-If the owner accepts this ADR, it supersedes only ADR-0124 clauses requiring
+This accepted ADR supersedes only ADR-0124 clauses requiring
 final ReplayResult/cursor bytes before effects or prohibiting this V2 terminal
 derivation. Every other ADR-0124 fence, immutable-plan, identity, outbox and
-owner gate remains unchanged. This proposal does not amend the master plan at
+owner gate remains unchanged. This ADR does not amend the master plan at
 40ab10fa7428e5eab14cff2f082c781cf962b860: its V1 requirement conflicts and
-remains fail-closed. Owner acceptance only permits a subsequent Terra-authored
+remains fail-closed. This acceptance permits only a subsequent Terra-authored
 plan correction to replace R1--R3/I with V2; implementation remains forbidden
-until that corrected plan receives its required clean reviews. Until then, no
-real replay, paper/live action or other execution may use this proposal.
+until that corrected plan receives its required clean reviews. Before that, no
+real replay, paper/live action or other execution may use this ADR.
