@@ -942,7 +942,11 @@ def test_identical_development_clock_keyring_and_inputs_make_identical_receipts(
 
 def test_post_seal_path_and_type_mutation_refuses_publication():
     trust = _trust()
-    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    storage = {}
+    broker = trust._development_broker(
+        snapshot_storage=storage,
+        start_ms=1_700_000_000_000,
+    )
     producer_session, prepared, members = _produce(broker)
     sealed = broker.seal(
         producer_session,
@@ -951,13 +955,16 @@ def test_post_seal_path_and_type_mutation_refuses_publication():
     )
     members[1]["relative_path"] = "../escape.json"
     members[1]["file_type"] = "symlink"
+    published = broker.publish(
+        producer_session,
+        sealed,
+        transition_nonce="nonce-published",
+    )
+    paths = {key[2] for key in storage}
 
-    with pytest.raises(ValueError, match="mutation|path|regular|symlink"):
-        broker.publish(
-            producer_session,
-            sealed,
-            transition_nonce="nonce-published",
-        )
+    assert "../escape.json" not in paths
+    assert paths == {"config.json", "artifacts/bundle.json"}
+    assert broker.descriptor(published, purpose="synthetic")["root_ref"] == _ROOT["root_ref"]
 
 
 def test_failed_publish_does_not_poison_worm_storage_or_block_retry():
@@ -1017,8 +1024,6 @@ def test_consumer_port_is_rederived_and_freeze_token_mutation_refuses():
     broker.end_session(producer_session)
     _document, frozen = _freeze(broker, published)
     frozen.port["consumer_input"] = "substituted"
-    frozen.consumer_input = "substituted"
-
     port = broker.derive_consumer_port(frozen)
     assert port["consumer_input"] == "bundle"
     with pytest.raises((TypeError, ValueError, AttributeError)):

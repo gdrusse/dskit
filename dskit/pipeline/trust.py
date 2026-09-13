@@ -326,15 +326,17 @@ class VerifiedCapture(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_members", "_published", "_port", "_frozen")
+    __slots__ = ("_members", "_published", "_port", "_frozen", "_session", "_retained")
 
-    def __init__(self, token, members, published, port, frozen):
+    def __init__(self, token, members, published, port, frozen, session, retained):
         if token is not _MAKE:
             raise TypeError("VerifiedCapture is opaque")
         self._members = members
         self._published = published
         self._port = port
         self._frozen = frozen
+        self._session = session
+        self._retained = retained
 
     def member(self, relative_path):
         """Return the one-shot handle for a retained member."""
@@ -556,15 +558,33 @@ class _AcceptRuntime(TrustedRuntimeVerifier):
 class _Prepared:
     """Driver-internal PRODUCED token. Not exported."""
 
-    __slots__ = ("stream_id", "members", "output_member", "purpose", "root", "producer")
+    __slots__ = (
+        "stream_id",
+        "members",
+        "output_member",
+        "purpose",
+        "root",
+        "producer",
+        "session_run_identity",
+    )
 
-    def __init__(self, stream_id, members, output_member, purpose, root, producer):
+    def __init__(
+        self,
+        stream_id,
+        members,
+        output_member,
+        purpose,
+        root,
+        producer,
+        session_run_identity,
+    ):
         self.stream_id = stream_id
         self.members = members
         self.output_member = output_member
         self.purpose = purpose
         self.root = root
         self.producer = producer
+        self.session_run_identity = session_run_identity
 
 
 class _Sealed:
@@ -600,11 +620,19 @@ class _Frozen:
         "purpose",
         "document_sha256",
         "port",
+        "_locked",
     )
 
     def __init__(self, **kwargs):
+        object.__setattr__(self, "_locked", False)
         for key, value in kwargs.items():
-            setattr(self, key, value)
+            object.__setattr__(self, key, value)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise TypeError("frozen consumer document is immutable")
+        object.__setattr__(self, name, value)
 
 
 class _Captured:
@@ -646,6 +674,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._used_inputs = {}
         self._released = set()
         self._captured_streams = {}
+        self._session_streams = {}
 
     def start_producer_session(
         self,
@@ -717,7 +746,15 @@ class _DevelopmentBroker(LifecycleAuthority):
             payload = member.get("bytes")
             if not isinstance(payload, (bytes, bytearray)):
                 raise ValueError("member bytes are required")
-            checked.append(member)
+            checked.append(
+                {
+                    "relative_path": path,
+                    "media_type": member.get("media_type"),
+                    "bytes": payload,
+                    "file_type": "regular",
+                    "link_count": 1,
+                }
+            )
         if output_member not in seen:
             raise ValueError("complete expected members are required")
         stream_id = _digest(
@@ -729,6 +766,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                 }
             )
         )
+        self._reload_stream(stream_id)
         prepared = _Prepared(
             stream_id,
             checked,
@@ -736,6 +774,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             purpose,
             dict(root),
             dict(producer),
+            session._run_identity,
         )
         self._append_receipt(
             prepared,
@@ -750,6 +789,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._require_session(session, kind="producer", allow_open=True)
         if not isinstance(prepared, _Prepared):
             raise ValueError("SEALED requires a PRODUCED token")
+        self._reload_stream(prepared.stream_id)
         self._require_head(prepared.stream_id, "PRODUCED")
         digests = []
         parsed = {}
@@ -787,17 +827,21 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not isinstance(sealed, _Sealed):
             raise ValueError("PUBLISHED requires a SEALED token")
         prepared = sealed.prepared
+        self._reload_stream(prepared.stream_id)
         self._require_head(prepared.stream_id, "SEALED")
         if not self._worm:
             raise ValueError("WORM immutable snapshot is required")
+        staged = []
         for member, declared in zip(prepared.members, sealed.digests):
             current = bytes(member["bytes"])
             if _digest(current) != declared["sha256"]:
                 raise ValueError("member digest mutation after seal")
+            staged.append((declared["relative_path"], current, declared))
+        for path, current, _declared in staged:
             self._provider.write_member(
                 prepared.root["root_ref"],
                 prepared.root["snapshot_version"],
-                member["relative_path"],
+                path,
                 current,
             )
         descriptor = {
@@ -878,7 +922,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             consumer_input=consumer_input,
             purpose=purpose,
             document_sha256=source_sha256,
-            port=port,
+            port=dict(port),
         )
 
     def derive_consumer_port(self, frozen):
@@ -886,7 +930,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         current = _digest(_canonical_bytes(frozen.source))
         if current != frozen.source_sha256:
             raise ValueError("consumer document changed after freeze")
-        return dict(frozen.port)
+        return {
+            "consumer_document_sha256": current,
+            "consumer_node": frozen.consumer_node,
+            "consumer_input": frozen.consumer_input,
+            "purpose": frozen.purpose,
+        }
 
     def capture(
         self,
@@ -907,12 +956,14 @@ class _DevelopmentBroker(LifecycleAuthority):
         if port != expected:
             raise ValueError("document port mismatch")
         producer_run = published.sealed.prepared.producer["run_identity"]
-        if consumer_run_identity == producer_run:
-            raise ValueError("consumer run must be distinct from producer run")
+        session_run = published.sealed.prepared.session_run_identity
+        if consumer_run_identity in {producer_run, session_run}:
+            raise ValueError("consumer run must be distinct from producer session")
         for session in self._sessions.values():
             if session._kind == "producer" and not session._ended:
                 raise ValueError("producer session must end before capture")
         stream_id = published.sealed.prepared.stream_id
+        self._reload_stream(stream_id)
         self._require_head(stream_id, "PUBLISHED")
         session = LaunchSession(
             _MAKE,
@@ -936,6 +987,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             extra={"consumer_captured_port": dict(expected)},
         )
         self._captured_streams[id(captured)] = stream_id
+        self._session_streams[id(session)] = stream_id
         return captured, session
 
     def open_capture(self, session, captured):
@@ -964,6 +1016,8 @@ class _DevelopmentBroker(LifecycleAuthority):
             published,
             dict(captured.port),
             captured.frozen,
+            session,
+            retained,
         )
 
     def captured_bindings(
@@ -977,6 +1031,8 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._require_session(session, kind="consumer", allow_open=True)
         if not isinstance(verified, VerifiedCapture):
             raise ValueError("verified capture is required")
+        if verified._session is not session:
+            raise ValueError("consumer session mismatch")
         frozen = self._require_frozen(frozen)
         if verified._frozen is not frozen:
             raise ValueError("plan document does not match captured freeze")
@@ -984,10 +1040,11 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("consumer node mismatch")
         published = verified._published
         output_path = published.sealed.prepared.output_member
-        parsed = published.sealed.parsed[output_path]
+        parsed, _canonical = _load_canonical_json(verified._retained[output_path])
         declared = {
             item["relative_path"]: item for item in published.sealed.digests
         }[output_path]
+        expected_port = dict(verified._port)
         artifact = CapturedJsonArtifact(
             _MAKE,
             _freeze_json(parsed),
@@ -1003,18 +1060,20 @@ class _DevelopmentBroker(LifecycleAuthority):
         port = CapturedLifecyclePort(
             _MAKE,
             artifact,
-            MappingProxyType({"consumer_port": dict(frozen.port)}),
+            MappingProxyType({"consumer_port": expected_port}),
         )
         stream_id = published.sealed.prepared.stream_id
+        self._reload_stream(stream_id)
 
         def _on_require(input_name):
+            self._reload_stream(stream_id)
             self._require_head(stream_id, "CAPTURED")
             self._append_receipt(
                 published.sealed.prepared,
                 "CONSUMED",
                 session,
                 transition_nonce,
-                extra={"consumer_captured_port": dict(frozen.port)},
+                extra={"consumer_captured_port": expected_port},
             )
             self._used_inputs.setdefault(id(session), set()).add(input_name)
 
@@ -1031,12 +1090,10 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("CONSUMED input is required before release")
         if id(session) in self._released:
             raise ValueError("release already replayed")
-        self._released.add(id(session))
-        stream_id = None
-        for token, value in self._captured_streams.items():
-            stream_id = value
+        stream_id = self._session_streams.get(id(session))
         if stream_id is None:
             raise ValueError("CONSUMED input is required before release")
+        self._released.add(id(session))
         return CapturedRelease(_MAKE, stream_id)
 
     def _receipt_audit(self, published):
@@ -1045,6 +1102,21 @@ class _DevelopmentBroker(LifecycleAuthority):
 
     def _receipt_digests(self, published):
         return [_digest(_canonical_bytes(row)) for row in self._receipt_audit(published)]
+
+    def _hmac_payload(self, receipt):
+        skip = {"signature"}
+        if receipt.get("event") == "PUBLISHED":
+            skip.add("publication_receipt_sha256")
+        return {key: value for key, value in receipt.items() if key not in skip}
+
+    def _reload_stream(self, stream_id):
+        if stream_id not in self._receipt_store:
+            return
+        self._recover(stream_id)
+        rows = [
+            json.loads(raw.decode("ascii")) for raw in self._receipt_store[stream_id]
+        ]
+        self._streams[stream_id] = rows
 
     def _recover(self, stream_id):
         records = list(self._receipt_store.get(stream_id, ()))
@@ -1055,10 +1127,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                 raise ValueError("receipt sequence mismatch")
             if receipt.get("previous_receipt_sha256") != previous:
                 raise ValueError("receipt predecessor mismatch")
-            if index > 1 and records[index - 2] and index >= 2:
-                pass
-            body = {key: value for key, value in receipt.items() if key != "signature"}
-            message = _canonical_bytes(body)
+            message = _canonical_bytes(self._hmac_payload(receipt))
             if not self._keyring.verify(
                 receipt["key"]["key_id"],
                 receipt["key"]["key_version"],
@@ -1180,12 +1249,21 @@ class _DevelopmentBroker(LifecycleAuthority):
                 "key_version": 1,
             },
         }
-        if "publication_receipt_sha256" in extra:
-            body["publication_receipt_sha256"] = extra["publication_receipt_sha256"]
         if "consumer_captured_port" in extra:
             body["consumer_captured_port"] = extra["consumer_captured_port"]
-        signature = _sign(body)
+        if event in {"CAPTURED", "CONSUMED"}:
+            for row in rows:
+                if row.get("event") == "PUBLISHED" and row.get("publication_receipt_sha256"):
+                    body["publication_receipt_sha256"] = row["publication_receipt_sha256"]
+                    break
+        signature = hmac.new(
+            _DEV_KEY,
+            _canonical_bytes(self._hmac_payload(body)),
+            hashlib.sha256,
+        ).hexdigest()
         body["signature"] = signature
+        if event == "PUBLISHED":
+            body["publication_receipt_sha256"] = _digest(_canonical_bytes(body))
         rows.append(body)
         encoded = tuple(self._receipt_store.get(stream_id, ())) + (_canonical_bytes(body),)
         self._receipt_store[stream_id] = encoded
