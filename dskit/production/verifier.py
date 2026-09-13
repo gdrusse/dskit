@@ -44,6 +44,7 @@ the ``SubmittingExecutor`` contract (§5.7).
 """
 
 import dataclasses
+from threading import Lock
 from types import MappingProxyType
 
 from dskit.pipeline.trust import LifecycleAuthority
@@ -667,6 +668,7 @@ class HistoricalStudyVerifier:
         self._authority = authority
         self._bound = {}
         self._admission_spent = False
+        self._capture_lock = Lock()
         self.deployment_eligible = False
 
     def bind(self, **artifacts):
@@ -721,20 +723,20 @@ class HistoricalStudyVerifier:
             When ScopeIntent, CES, PEA, BVP, CAS, or consumed admission
             is not bound, or when that admission is already spent.
         """
-        if self._admission_spent:
-            raise ValueError(
-                "CAPTURED refuses after consumed admission is spent"
-            )
-        missing = [
-            name
-            for name in _REQUIRED_PLAN
-            if not _plan_artifact_bound(self._bound.get(name), name)
-        ]
-        if missing:
-            raise ValueError(
-                "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, CAS, "
-                "and consumed admission are bound"
-            )
-        captured = self._authority.capture(published, frozen, port, **kwargs)
-        self._admission_spent = True
-        return captured
+        with self._capture_lock:
+            if self._admission_spent:
+                raise ValueError(
+                    "CAPTURED refuses after consumed admission is spent"
+                )
+            missing = [
+                name
+                for name in _REQUIRED_PLAN
+                if not _plan_artifact_bound(self._bound.get(name), name)
+            ]
+            if missing:
+                raise ValueError(
+                    "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, CAS, "
+                    "and consumed admission are bound"
+                )
+            self._admission_spent = True
+        return self._authority.capture(published, frozen, port, **kwargs)

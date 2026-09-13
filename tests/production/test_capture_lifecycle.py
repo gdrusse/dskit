@@ -331,7 +331,7 @@ def test_capture_write_then_raise_still_spends_admission():
     inner = broker.capture
 
     def write_then_raise(*args, **kwargs):
-        result = inner(*args, **kwargs)
+        inner(*args, **kwargs)
         raise ValueError("capture wrote then failed")
 
     broker.capture = write_then_raise
