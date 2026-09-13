@@ -193,6 +193,12 @@ class SampleConnector(Connector):
         ValueError
             If a per-stream value in ``state`` is a string (not itself
             a dict).
+        AttributeError
+            If a per-stream value in ``state`` is empty but not itself
+            a dict (e.g. ``""`` or ``[]``) — ``dict(v)`` accepts an
+            empty iterable silently, so the eager per-stream conversion
+            above does not catch it, and the cursor is then read off
+            the ORIGINAL (unconverted) value a few lines later.
         """
         if not isinstance(state, dict):
             raise AssetError([f"state must be a dict, got {state!r}"])

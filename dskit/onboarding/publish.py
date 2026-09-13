@@ -84,6 +84,13 @@ def publish_version(root, registry, dataset, certification_vid,
         ``"certified"``; or an existing outbox file for this dataset
         is unreadable (``published/`` is WORM — investigate rather
         than overwrite).
+    KeyError
+        If ``registry``'s model declares a ``certification`` kind
+        without a required ``decision`` field or ``snapshot`` ref, or a
+        ``snapshot`` kind without a required ``mode``/``acquired_at``/
+        ``manifest_hash`` field — this function reads all of them by
+        bracket access, unguarded. Never reachable against the default
+        model, which requires them all.
     FileExistsError
         If a stray file already occupies where ``published/<dataset>/``
         belongs — the unguarded ``os.makedirs(..., exist_ok=True)``

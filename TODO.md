@@ -1111,6 +1111,47 @@ REMAINING, in the plan's risk order:
       confirmation sweep across fresh, unrelated functions rather than
       continuing to mine this one shape, to test whether a genuinely
       different defect class remains.
+
+      **Twenty-fifth skeptic round (2026-09-13): a deliberately broad
+      sweep avoiding the now-exhausted "caller-owned code" shape — a
+      22nd recurrence, 2 MAJOR, both genuinely NEW shapes (not
+      propagation).** `metrics.py`'s `pinball`, `trainlog.py`'s
+      `TrainingCurve.summary`/`.payload`, `record.py`'s `check_payload`/
+      `AssetRecord.to_obj`/`.version_id`, and `connector.py`'s
+      `check_message` all came back clean under fresh traces checking
+      Parameters/Returns accuracy and Raises-type correctness (not just
+      completeness). **MAJOR:** `LocalFilesConnector.read()`
+      (`dskit/onboarding/libs/localfiles.py`) and its sibling
+      `SampleConnector.read()`
+      (`children/_skeleton/yourproject/connectors.py`) both build
+      `new_state = {k: dict(v) for k, v in state.items()}` to validate
+      each per-stream cursor value — but an EMPTY per-stream value
+      (``""`` or ``[]``) makes `dict(v)` succeed silently (`dict("") ==
+      {}`), slipping past that eager check; a few lines later, the
+      cursor is read off the ORIGINAL, unconverted value via
+      `state.get(stream, {}).get("cursor", "")`, which crashes with an
+      undocumented `AttributeError` — verified live on both files with
+      `state={"samples": ""}` and `state={"samples": []}`. Added an
+      `AttributeError` entry to both, matching each other's existing
+      `TypeError`/`ValueError` phrasing. **MAJOR:** `publish_version`
+      (`dskit/onboarding/publish.py`) reads `cert.payload["decision"]`,
+      `cert.refs["snapshot"]`, and `snap.payload["mode"/"acquired_at"/
+      "manifest_hash"]` by unguarded bracket access — the exact
+      "accepts any registry whose model declares X, crashes on a
+      non-default model that omits a field" shape round 16 already
+      fixed once in `sync_published`/`find_active_source`, never
+      checked against this sibling until now; verified live with a
+      custom `AssetModel` whose `certification` kind omits `decision`,
+      raising a raw `KeyError`; added, matching round 16's phrasing
+      ("never reachable against the default model"). All 15 Examples
+      blocks across the 24 files re-executed byte-exact, zero `>>>`
+      remain, and a full top-to-bottom read of this TODO item's own
+      24-round history found no internal contradiction or dropped
+      follow-up. **Given a 22nd straight round finding real gaps — even
+      in a search that deliberately avoided the most productive known
+      shape — `Raises` completeness remains open.** A 26th round should
+      re-run this same deliberately-broad, shape-agnostic method on a
+      fresh set of functions.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

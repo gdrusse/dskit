@@ -260,6 +260,12 @@ class LocalFilesConnector(Connector):
         ValueError
             If a per-stream value in ``state`` is a string (not itself
             a dict).
+        AttributeError
+            If a per-stream value in ``state`` is empty but not itself
+            a dict (e.g. ``""`` or ``[]``) — ``dict(v)`` accepts an
+            empty iterable silently, so the eager per-stream conversion
+            above does not catch it, and the cursor is then read off
+            the ORIGINAL (unconverted) value a few lines later.
         FileNotFoundError
             If a recognized filename is a symlink whose target does
             not exist — listing the directory does not confirm a file
