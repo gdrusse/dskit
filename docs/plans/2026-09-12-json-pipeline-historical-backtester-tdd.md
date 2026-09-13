@@ -85,12 +85,16 @@ bootstrap tuple and non-roots await declared PUBLISHED predecessors. Each action
 requires one StageAdmission and one consumed ActionExecutionAdmission binding that
 tuple, one logical execution/run, recovery journal/fence, and one capture/session.
 
-After stages publish, pre-final replay PIS/CES/PEA/BVP/CAS chains complete.
+After required stage outputs publish, each pre-final replay chain is replay
+PIS -> CES -> PEA -> private BVP/PCE -> equality -> CAS -> FinalReplayEntry ->
+Final Manifest -> FinalReplayAdmission. Replay PIS never depends on the Final
+Manifest.
 `HistoricalStudyManifest.v2` is the WORM singleton that binds the unique scope
 authorization/intent, G0--G7 set, exhaustive sorted StageAdmissions and outputs
 (including A4 release), and exactly the two pre-capture FinalReplayEntry.v1 tuples.
 It contains no actual capture/receipt/set/session/post-final field. One post-final
-FinalReplayAdmission per named replay consumes its sole run/session. No phase permits
+FinalReplayAdmission per named replay is consumed by its first replay port
+authorization before its sole replay session. No phase permits
 retuning, another release/dataset/execution, paper/live, or a second study.
 
 ## Dependency DAG and universal slice form
@@ -633,7 +637,28 @@ signature. Its entries are exactly the planned-entry, port-authorization, and
 lifecycle-receipt digests sorted by planned entry; no V1/alternate resolved projection
 exists.
 
-The only accepted chronology is PUBLISHED input -> phase-correct PIS -> ScopeIntent -> sorted G0--G7 gates -> CES -> PEA -> private BVP/PlannedCaptureSet (PCE) -> byte equality P(CES)==P(BVP) -> CAS -> ScopeAuthorization consuming those exact prior objects -> StageAdmission (or FinalReplayAdmission) -> consumed ActionExecutionAdmission -> per-PCE CapturedPortAuthorization and LifecycleCapturedReceipt -> signed CapturedAuthorizationSet.v2 -> distinct LaunchSession -> CONSUME. PEA, CES, BVP, PCE, and CAS are planning/admission evidence only: no member open, import, node construction, session, run, or CAPTURED receipt occurs before private planning and consumed one-use authority; CAS is never mutable scope or execution authority.
+The only accepted chronology has three separate phases. **Root scope construction:**
+root publications -> root PIS -> ScopeIntent (whose basis names only root PIS) ->
+complete sorted G0--G7 gates -> root CES -> root PEA binding root PIS, CES,
+ScopeIntent, and gates -> private root BVP/PCE -> P(CES)==P(BVP) -> root CAS ->
+ScopeAuthorization consuming the exact ScopeIntent, gate set, and root tuples.
+**Per-stage capture under ScopeAuthorization:** a root StageAdmission reuses its
+bootstrap tuple; a nonroot first has its declared predecessors PUBLISHED, then its
+stage PIS -> CES -> scope-action PEA -> private BVP/PCE -> equality -> CAS ->
+StageAdmission -> ActionExecutionAdmission. The first per-PCE port authorization
+consumes that ActionExecutionAdmission before port authorization, lifecycle captured
+receipt, signed CapturedAuthorizationSet.v2, distinct LaunchSession, run, and stage
+publication. **Final replay after required stage publications:** replay PIS (never
+depending on Final Manifest) -> replay CES -> replay PEA -> private BVP/PCE ->
+equality -> replay CAS -> FinalReplayEntry -> Final Manifest ->
+FinalReplayAdmission. Its first replay port authorization consumes
+FinalReplayAdmission itself, then port authorization -> lifecycle captured receipt ->
+CapturedAuthorizationSet.v2 -> ReplayCaptureAdmissionEvidence -> distinct replay
+LaunchSession. FinalReplayAdmission never routes through ActionExecutionAdmission.
+PEA, CES, BVP, PCE, and CAS are planning/admission evidence only: no member open,
+import, node construction, session, run, or CAPTURED receipt occurs before private
+planning and consumed one-use authority; CAS is never mutable scope or execution
+authority.
 
 The broker resolves the frozen normal consumer document's complete descriptor to the
 already PUBLISHED immutable root and flat PIS projection, privately plans the exact
@@ -988,10 +1013,19 @@ refit/paper/live work occurs.
 
 ## I2 — exactly one gated historical simulator study
 
-I2 verifies only this order: dual G1+G2 authority -> PUBLISHED public metadata ->
-PUBLISHED inputs -> PIS -> ScopeIntent -> sorted G0--G7 gates -> CES -> PEA -> private BVP/PCE -> byte equality -> CAS -> ScopeAuthorization consuming the exact ScopeIntent, gates, CES, PEA, BVP/PCE, and CAS -> StageAdmission -> consumed ActionExecutionAdmission -> per-port authorization/capture -> CapturedAuthorizationSet -> distinct session/consumer.
-No capture precedes ScopeAuthorization, StageAdmission, consumed ActionExecutionAdmission, per-port authorization, and seal/capture. Published stage outputs then form the
-pre-final replay chain, Manifest, FinalReplayAdmission, replay capture, and session.
+I2 verifies only the three ADR-0125 phases above: root publications -> root PIS ->
+ScopeIntent (root-PIS-only basis) -> complete G0--G7 gates -> root CES -> root PEA
+-> private root BVP/PCE -> equality -> root CAS -> ScopeAuthorization; under that
+ScopeAuthorization, StageAdmission -> consumed ActionExecutionAdmission -> port
+authorization -> lifecycle receipt -> CapturedAuthorizationSet -> distinct session;
+and, after required stage publications, replay PIS -> replay CES -> PEA -> private
+BVP/PCE -> equality -> CAS -> FinalReplayEntry -> Final Manifest -> FinalReplayAdmission ->
+consumed FinalReplayAdmission -> replay port/receipt/set/evidence -> replay session.
+Root StageAdmission reuses its bootstrap tuple, nonroots require their declared
+PUBLISHED predecessors, replay PIS never depends on Final Manifest, and
+FinalReplayAdmission never routes through ActionExecutionAdmission. No capture
+precedes ScopeAuthorization, StageAdmission, consumed admission, per-port
+authorization, and seal/capture.
 RED proves G2-only, pre-private-plan, pre-admission, and every reordered chain
 refuse. No phase authorizes paper/live, another dataset/execution, retuning, release,
 or full/lockbox backtest; this slice executes only focused verifier tests.
