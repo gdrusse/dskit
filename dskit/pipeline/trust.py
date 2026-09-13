@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 from abc import ABC, abstractmethod
 from types import MappingProxyType
 
@@ -785,6 +786,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._verified_intern = {}
         self._capture_bind_intern = {}
         self._publish_sealed_intern = {}
+        self._map_key = os.urandom(32)
 
     def start_producer_session(
         self,
@@ -1187,14 +1189,14 @@ class _DevelopmentBroker(LifecycleAuthority):
             session,
             retained,
         )
-        pin = {
-            "published": published,
-            "frozen": frozen,
-            "session": session,
-            "stream_id": stream_id,
-            "retained": {path: bytes(data) for path, data in retained.items()},
-            "port": dict(self.derive_consumer_port(frozen)),
-        }
+        pin = (
+            published,
+            frozen,
+            session,
+            str(stream_id),
+            MappingProxyType({path: bytes(data) for path, data in retained.items()}),
+            tuple(sorted(dict(self.derive_consumer_port(frozen)).items())),
+        )
         self._store_interned(
             self._verified_pin,
             self._verified_intern,
@@ -1220,14 +1222,14 @@ class _DevelopmentBroker(LifecycleAuthority):
             id(verified),
             "verified capture is required",
         )
-        if pin["session"] is not session:
+        published, frozen_pin, bound_session, stream_id, retained, port_items = pin
+        if bound_session is not session:
             raise ValueError("consumer session mismatch")
         frozen = self._require_frozen(frozen)
-        if pin["frozen"] is not frozen:
+        if frozen_pin is not frozen:
             raise ValueError("plan document does not match captured freeze")
         if consumer_node != frozen.consumer_node:
             raise ValueError("consumer node mismatch")
-        published = pin["published"]
         if (
             self._load_interned(
                 self._freeze_published,
@@ -1239,14 +1241,13 @@ class _DevelopmentBroker(LifecycleAuthority):
         ):
             raise ValueError("plan document does not match captured freeze")
         sealed = self._sealed_for(published)
-        stream_id = pin["stream_id"]
         subject = self._stream_pin[stream_id]
         output_path = subject.output_member
-        parsed, _canonical = _load_canonical_json(pin["retained"][output_path])
+        parsed, _canonical = _load_canonical_json(retained[output_path])
         declared = {
             item["relative_path"]: item for item in sealed._digests
         }[output_path]
-        expected_port = dict(pin["port"])
+        expected_port = dict(port_items)
         artifact = CapturedJsonArtifact(
             _MAKE,
             _freeze_json(parsed),
@@ -1266,18 +1267,18 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         ports = {frozen.consumer_input: port}
         bindings = CapturedBindings(_MAKE, ports, self)
-        self._store_interned(
+        self._mac_put(
             self._bindings_pin,
-            self._bindings_intern,
             id(bindings),
-            (
+            [
                 id(bindings),
                 str(stream_id),
                 str(transition_nonce),
-                tuple(sorted(dict(expected_port).items())),
+                list(sorted(dict(expected_port).items())),
                 id(session),
-            ),
+            ],
         )
+        self._bindings_intern[id(bindings)] = self._bindings_pin[id(bindings)]
         self._store_interned(
             self._bindings_ports,
             self._ports_intern,
@@ -1290,15 +1291,18 @@ class _DevelopmentBroker(LifecycleAuthority):
         return bindings
 
     def _consume_binding(self, bindings, input_name):
-        rec = self._load_interned(
+        rec = self._mac_get(
             self._bindings_pin,
-            self._bindings_intern,
             id(bindings),
             "captured bindings are required",
         )
+        interned = self._bindings_intern.get(id(bindings))
+        if interned is not self._bindings_pin.get(id(bindings)):
+            raise ValueError("captured bindings are required")
         if rec[0] != id(bindings):
             raise ValueError("captured bindings are required")
         _bindings_id, stream_id, nonce, port_items, session_id = rec
+        port_items = tuple(tuple(item) for item in port_items)
         ports_rec = self._load_interned(
             self._bindings_ports,
             self._ports_intern,
@@ -1389,6 +1393,8 @@ class _DevelopmentBroker(LifecycleAuthority):
             receipt = json.loads(raw.decode("ascii"))
             if receipt.get("sequence") != index:
                 raise ValueError("receipt sequence mismatch")
+            if receipt.get("stream_id") != stream_id:
+                raise ValueError("receipt stream mismatch")
             if receipt.get("previous_receipt_sha256") != previous:
                 raise ValueError("receipt predecessor mismatch")
             message = _canonical_bytes(self._hmac_payload(receipt))
@@ -1442,6 +1448,26 @@ class _DevelopmentBroker(LifecycleAuthority):
         table[key] = value
         intern[key] = value
         return value
+
+    def _mac_put(self, table, key, payload):
+        body = {"_k": key, "v": payload}
+        mac = hmac.new(self._map_key, _canonical_bytes(body), hashlib.sha256).hexdigest()
+        table[key] = (body, mac)
+        return table[key]
+
+    def _mac_get(self, table, key, message):
+        rec = table.get(key)
+        if rec is None or not isinstance(rec, tuple) or len(rec) != 2:
+            raise ValueError(message)
+        body, mac = rec
+        expected = hmac.new(
+            self._map_key,
+            _canonical_bytes(body),
+            hashlib.sha256,
+        ).hexdigest()
+        if mac != expected or body.get("_k") != key:
+            raise ValueError(message)
+        return body["v"]
 
     def _load_interned(self, table, intern, key, message):
         value = table.get(key)

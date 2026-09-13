@@ -2099,13 +2099,20 @@ def test_bindings_pin_tuple_replace_cannot_forge_consumed_identity():
     ) = _two_captured_consumers(broker)
     rec_a = broker._bindings_pin[id(bindings_a)]
     rec_b = broker._bindings_pin[id(bindings_b)]
-    broker._bindings_pin[id(bindings_a)] = (
-        rec_a[0],
-        rec_a[1],
-        rec_b[2],
-        rec_b[3],
-        rec_b[4],
-    )
+    if (
+        isinstance(rec_a, tuple)
+        and len(rec_a) == 2
+        and isinstance(rec_a[0], dict)
+    ):
+        broker._bindings_pin[id(bindings_a)] = rec_b
+    else:
+        broker._bindings_pin[id(bindings_a)] = (
+            rec_a[0],
+            rec_a[1],
+            rec_b[2],
+            rec_b[3],
+            rec_b[4],
+        )
     broker._session_runtime[id(session_a)] = (
         id(session_a),
         broker._session_runtime[id(session_b)][1],
