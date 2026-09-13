@@ -326,17 +326,25 @@ class VerifiedCapture(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_members", "_published", "_port", "_frozen", "_session", "_retained")
+    __slots__ = ("_members", "_published", "_port", "_frozen", "_session", "_retained", "_locked")
 
     def __init__(self, token, members, published, port, frozen, session, retained):
         if token is not _MAKE:
             raise TypeError("VerifiedCapture is opaque")
-        self._members = members
-        self._published = published
-        self._port = port
-        self._frozen = frozen
-        self._session = session
-        self._retained = retained
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "_members", members)
+        object.__setattr__(self, "_published", published)
+        object.__setattr__(self, "_port", port)
+        object.__setattr__(self, "_frozen", frozen)
+        object.__setattr__(self, "_session", session)
+        object.__setattr__(self, "_retained", retained)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        """Refuse attribute writes after construction."""
+        if getattr(self, "_locked", False):
+            raise AttributeError("verified capture is frozen")
+        object.__setattr__(self, name, value)
 
     def member(self, relative_path):
         """Return the one-shot handle for a retained member."""
@@ -555,6 +563,35 @@ class _AcceptRuntime(TrustedRuntimeVerifier):
         return isinstance(measurement, dict)
 
 
+class _ReceiptSubject:
+    """Immutable stream identity for receipt append. Not exported."""
+
+    __slots__ = (
+        "stream_id",
+        "producer",
+        "root",
+        "session_run_identity",
+        "output_member",
+        "purpose",
+    )
+
+    def __init__(
+        self,
+        stream_id,
+        producer,
+        root,
+        session_run_identity,
+        output_member,
+        purpose,
+    ):
+        self.stream_id = stream_id
+        self.producer = dict(producer)
+        self.root = dict(root)
+        self.session_run_identity = session_run_identity
+        self.output_member = output_member
+        self.purpose = purpose
+
+
 class _Prepared:
     """Driver-internal PRODUCED token. Not exported."""
 
@@ -718,6 +755,9 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._publish_sealed = {}
         self._freeze_published = {}
         self._capture_bind = {}
+        self._stream_pin = {}
+        self._publish_stream = {}
+        self._verified_pin = {}
 
     def start_producer_session(
         self,
@@ -819,6 +859,14 @@ class _DevelopmentBroker(LifecycleAuthority):
             dict(producer),
             session._run_identity,
         )
+        self._stream_pin[stream_id] = _ReceiptSubject(
+            stream_id,
+            producer,
+            root,
+            session._run_identity,
+            output_member,
+            purpose,
+        )
         self._append_receipt(
             prepared,
             "PRODUCED",
@@ -903,6 +951,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         published = _Published(sealed, descriptor)
         self._remember_published(published)
         self._publish_sealed[id(published)] = sealed
+        self._publish_stream[id(published)] = prepared.stream_id
         self._append_receipt(
             prepared,
             "PUBLISHED",
@@ -1004,22 +1053,22 @@ class _DevelopmentBroker(LifecycleAuthority):
         expected = self.derive_consumer_port(frozen)
         if port != expected:
             raise ValueError("document port mismatch")
-        sealed = self._sealed_for(published)
-        producer_run = sealed.prepared.producer["run_identity"]
-        session_run = sealed.prepared.session_run_identity
+        stream_id = self._publish_stream[id(published)]
+        pin = self._stream_pin[stream_id]
+        producer_run = pin.producer["run_identity"]
+        session_run = pin.session_run_identity
         if consumer_run_identity in {producer_run, session_run}:
             raise ValueError("consumer run must be distinct from producer session")
         for session in self._sessions.values():
             if session._kind == "producer" and not session._ended:
                 raise ValueError("producer session must end before capture")
-        stream_id = sealed.prepared.stream_id
         self._reload_stream(stream_id)
         self._require_head(stream_id, "PUBLISHED")
         session = LaunchSession(
             _MAKE,
             "consumer",
             consumer_run_identity,
-            sealed.prepared.producer.get("document_sha256"),
+            pin.producer.get("document_sha256"),
             {
                 "process_measurement_sha256": process_measurement_sha256,
                 "runtime_sha256": runtime_sha256,
@@ -1030,7 +1079,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._session_events.append(("start", consumer_run_identity, id(session)))
         captured = _Captured(published, frozen, dict(expected), session)
         self._append_receipt(
-            sealed.prepared,
+            pin,
             "CAPTURED",
             session,
             transition_nonce,
@@ -1052,9 +1101,10 @@ class _DevelopmentBroker(LifecycleAuthority):
         if bound_session is not session:
             raise ValueError("capture is bound to a different consumer session")
         sealed = self._sealed_for(published)
+        pin = self._stream_pin[stream_id]
         snapshot = self._provider.describe(
-            sealed.prepared.root["root_ref"],
-            sealed.prepared.root["snapshot_version"],
+            pin.root["root_ref"],
+            pin.root["snapshot_version"],
         )
         handles = {}
         retained = {}
@@ -1070,7 +1120,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                 raise ValueError("snapshot member digest mutation")
             retained[path] = bytes(raw)
             handles[path] = CapturedMemberHandle(_MAKE, retained[path])
-        return VerifiedCapture(
+        verified = VerifiedCapture(
             _MAKE,
             handles,
             published,
@@ -1079,6 +1129,14 @@ class _DevelopmentBroker(LifecycleAuthority):
             session,
             retained,
         )
+        self._verified_pin[id(verified)] = {
+            "published": published,
+            "frozen": frozen,
+            "session": session,
+            "stream_id": stream_id,
+            "retained": {path: bytes(data) for path, data in retained.items()},
+        }
+        return verified
 
     def captured_bindings(
         self,
@@ -1091,19 +1149,24 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._require_session(session, kind="consumer", allow_open=True)
         if not isinstance(verified, VerifiedCapture):
             raise ValueError("verified capture is required")
-        if verified._session is not session:
+        pin = self._verified_pin.get(id(verified))
+        if pin is None:
+            raise ValueError("verified capture is required")
+        if pin["session"] is not session:
             raise ValueError("consumer session mismatch")
         frozen = self._require_frozen(frozen)
-        if verified._frozen is not frozen:
+        if pin["frozen"] is not frozen:
             raise ValueError("plan document does not match captured freeze")
         if consumer_node != frozen.consumer_node:
             raise ValueError("consumer node mismatch")
-        published = verified._published
+        published = pin["published"]
         if self._freeze_published.get(id(frozen)) is not published:
             raise ValueError("plan document does not match captured freeze")
         sealed = self._sealed_for(published)
-        output_path = sealed.prepared.output_member
-        parsed, _canonical = _load_canonical_json(verified._retained[output_path])
+        stream_id = pin["stream_id"]
+        subject = self._stream_pin[stream_id]
+        output_path = subject.output_member
+        parsed, _canonical = _load_canonical_json(pin["retained"][output_path])
         declared = {
             item["relative_path"]: item for item in sealed._digests
         }[output_path]
@@ -1116,7 +1179,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                     "media_type": declared["media_type"],
                     "sha256": declared["sha256"],
                     "bytes": declared["bytes"],
-                    "purpose": sealed.prepared.purpose,
+                    "purpose": subject.purpose,
                 }
             ),
         )
@@ -1125,14 +1188,13 @@ class _DevelopmentBroker(LifecycleAuthority):
             artifact,
             MappingProxyType({"consumer_port": expected_port}),
         )
-        stream_id = sealed.prepared.stream_id
         self._reload_stream(stream_id)
 
         def _on_require(input_name):
             self._reload_stream(stream_id)
             self._require_head(stream_id, "CAPTURED")
             self._append_receipt(
-                sealed.prepared,
+                subject,
                 "CONSUMED",
                 session,
                 transition_nonce,
@@ -1160,7 +1222,9 @@ class _DevelopmentBroker(LifecycleAuthority):
         return CapturedRelease(_MAKE, stream_id)
 
     def _receipt_audit(self, published):
-        stream_id = self._sealed_for(published).prepared.stream_id
+        stream_id = self._publish_stream.get(id(published))
+        if stream_id is None:
+            raise ValueError("PUBLISHED token is required")
         return [dict(row) for row in self._streams[stream_id]]
 
     def _receipt_digests(self, published):
