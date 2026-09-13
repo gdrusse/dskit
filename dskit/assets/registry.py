@@ -377,7 +377,12 @@ class Registry:
         Exception
             Whatever ``self.store.append_event`` itself raises, if
             anything — same caller-supplied-``Store`` gap as
-            :meth:`register`.
+            :meth:`register`; or whatever ``self.get``/``self.state``
+            (called internally, at the start of this method and to
+            find the current state) themselves raise beyond the
+            specific corruption shapes those methods already document
+            — the same store-propagation gap, from a different call
+            site.
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)

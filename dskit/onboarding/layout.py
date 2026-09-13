@@ -180,7 +180,12 @@ class OnboardingRoot:
             Whatever the store's declared backend itself raises while
             opening — an unrecognized or misbehaving
             ``pkg.module:Class`` backend reference, called unguarded
-            by :func:`~dskit.assets.store.open_store`.
+            by :func:`~dskit.assets.store.open_store`; or whatever the
+            opened store's own ``model_pin()`` raises, if anything —
+            already documented on
+            :meth:`~dskit.assets.registry.Registry.__init__` itself
+            (called here to construct the returned ``Registry``), but
+            not previously cited here.
         """
         model = onboarding_model() if model is None else model
         return Registry(open_store(os.path.join(self.root, "store")), model)

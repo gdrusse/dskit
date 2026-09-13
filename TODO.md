@@ -1225,6 +1225,43 @@ REMAINING, in the plan's risk order:
       gap, not a new code-behavior discovery. A 28th round should check
       whether any OTHER caller of `Registry.register`/`.get`/`Lineage.add`
       in the 24 files has the same missing cross-reference.
+
+      **Twenty-eighth skeptic round (2026-09-13): the exhaustive
+      call-site inventory — a 25th straight round, 4 MAJOR, all the
+      same cross-reference-gap shape, at sites round 27 hadn't
+      reached.** Built a full table of every `Registry`/`Lineage`
+      call site across the 24 files; 4 of ~8 distinct callers were
+      missing or incomplete. **`find_active_source`**
+      (`dskit/onboarding/acquire.py`) had no `Exception` entry at all
+      for its `registry.find`/`registry.state` calls — verified live
+      with a `Store.list_records` raising `MemoryError`. **`run_acquisition`**'s
+      existing `Exception` entry (added round 27) named only the
+      evidence-writing `registry.register` calls, omitting its own
+      earlier `registry.get(config_vid)` lookup — verified live.
+      **`OnboardingRoot.registry()`**'s existing entry (added round
+      24) covered only the backend-opening step via `open_store`, not
+      the separate `store.model_pin()` call `Registry.__init__` makes
+      when constructing the returned `Registry` — verified live with a
+      backend whose `__init__` succeeds but `model_pin()` raises.
+      **`Registry.transition`**'s existing entry (added round 23) named
+      only its own `append_event` call, omitting its own internal
+      `self.get()`/`self.state()` calls — notably, `state()`'s own
+      docstring already correctly cites its internal `get()` call,
+      making `transition()` inconsistent with its own sibling's
+      pattern; verified live. All four fixed with the same
+      cross-referencing phrasing established in round 27. A private-
+      helper sweep (`_spec`, `_closure`, `_sync_one`, others) found no
+      further gap — both `Registry`/`Lineage`-touching private helpers
+      are already fully covered by their public callers. **Given a
+      25th straight round — `Raises` completeness remains open** — but
+      the call-site table this round built is now believed exhaustive:
+      every `Registry`/`Lineage` method call across the 24 files has
+      been individually checked and either already cited correctly or
+      just fixed. A 29th round should re-run this exact grep as a pure
+      confirmation (expecting zero results) rather than searching
+      further, and if that holds, move to unrelated functions per
+      round 27's original step-3 fallback (the 3 longest/most-complex
+      not-yet-individually-named functions).
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

@@ -121,6 +121,13 @@ def find_active_source(registry, name) -> str:
         If ``registry`` is any other non-``Registry`` value lacking a
         ``find`` method (e.g. ``None`` or an int) — the same
         unvalidated-type gap as above, a different resulting error.
+    Exception
+        Whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything — this
+        function's ``registry.find``/``registry.state`` calls are each
+        already documented to propagate it, but a caller reading only
+        this docstring would not know that without following those
+        cross-references.
     """
     errors = []
     _check_str(errors, "name", name)
@@ -209,9 +216,10 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         subclass whose contract the ABC documents but does not enforce;
         or whatever ``registry``'s underlying
         :class:`~dskit.assets.store.Store` raises, if anything, from
-        the evidence-writing ``registry.register`` calls — already
-        documented on :meth:`~dskit.assets.registry.Registry.register`
-        itself, but not previously cited here.
+        the ``registry.get(config_vid)`` lookup or the evidence-writing
+        ``registry.register`` calls — already documented on
+        :meth:`~dskit.assets.registry.Registry.get`/:meth:`~dskit.assets.registry.Registry.register`
+        themselves, but not previously cited here.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
