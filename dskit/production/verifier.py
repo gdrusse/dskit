@@ -681,15 +681,18 @@ class HistoricalStudyVerifier:
         Raises
         ------
         ValueError
-            On an unknown name or an unbound artifact.
+            On an unknown name or an unbound artifact. A refused call
+            stores none of that call's names.
         """
         unknown = tuple(name for name in artifacts if name not in _REQUIRED_PLAN)
         if unknown:
             raise ValueError("unknown plan artifact")
+        pending = {}
         for name, value in artifacts.items():
             if not _plan_artifact_bound(value, name):
                 raise ValueError("plan artifact is required")
-            self._bound[name] = value
+            pending[name] = value
+        self._bound.update(pending)
 
     def capture(self, published, frozen, port, **kwargs):
         """Refuse CAPTURED when any required plan artifact is unbound.
