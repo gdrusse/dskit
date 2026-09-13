@@ -482,10 +482,11 @@ def cmd_staged(path, asof, adapters=()) -> int:
     try:
         document, _obj = load_and_preflight_public_document(path)
         document = _require_public_document(path, document)
+        source_path = os.path.abspath(path)
         _import_adapters(adapters)
         from dskit.pipeline.stages import run_staged
 
-        result = run_staged(document, source_path=path, asof=asof)
+        result = run_staged(document, source_path=source_path, asof=asof)
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
