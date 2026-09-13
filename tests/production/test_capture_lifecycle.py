@@ -21,6 +21,19 @@ _PLACEHOLDERS = {
 }
 
 
+class _TruthyEmpty(dict):
+    def __bool__(self):
+        return True
+
+
+class _GetConsumed(dict):
+    def get(self, key, default=None):
+        if key == "consumed":
+            return True
+        return super().get(key, default)
+
+
+
 def _study_capture_setup():
     trust = f4._trust()
     broker = trust._development_broker(start_ms=1_700_000_000_000)
@@ -182,3 +195,49 @@ def test_bytes_blank_plan_artifact_cannot_bind_capture():
                     transition_nonce="nonce-captured",
                 )
             assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
+
+
+def test_dict_subclass_plan_artifact_cannot_bind_capture():
+    broker, published, frozen, port, verifier = _study_capture_setup()
+    payload = dict(_PLACEHOLDERS)
+    empty = _TruthyEmpty()
+    for name in ("scope_intent", "ces", "pea", "bvp", "cas"):
+        payload[name] = empty
+    with pytest.raises(ValueError, match="plan artifact is required"):
+        verifier.bind(**payload)
+    with pytest.raises(
+        ValueError,
+        match="ScopeIntent|CES|PEA|BVP|CAS|admission",
+    ):
+        verifier.capture(
+            published,
+            frozen,
+            port,
+            consumer_run_identity="consumer-run",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured",
+        )
+    assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
+
+
+def test_admission_get_spoof_cannot_bind_capture():
+    broker, published, frozen, port, verifier = _study_capture_setup()
+    payload = dict(_PLACEHOLDERS)
+    payload["admission"] = _GetConsumed()
+    with pytest.raises(ValueError, match="plan artifact is required"):
+        verifier.bind(**payload)
+    with pytest.raises(
+        ValueError,
+        match="ScopeIntent|CES|PEA|BVP|CAS|admission",
+    ):
+        verifier.capture(
+            published,
+            frozen,
+            port,
+            consumer_run_identity="consumer-run",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured",
+        )
+    assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
