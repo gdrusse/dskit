@@ -45,6 +45,7 @@ Import cost: stdlib only.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
 
@@ -601,8 +602,17 @@ class NodeSpec:
 
 _EXECUTION_BACKTEST_SCHEMA = "dskit.execution-backtest/v1"
 _EXECUTION_BACKTEST_PURPOSES = ("synthetic", "historical-simulator")
+_EXECUTION_BACKTEST_FORBIDDEN_SECTIONS = ("stages", "foreach", "walkforward")
 _EVENT_ENVELOPE_SCHEMA = "dskit.event-envelope/v2"
 _SHA256_OK = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _execution_backtest_section_errors(sections):
+    return [
+        f"execution_backtest documents forbid user-authored {section}; "
+        "capture barriers are derived from verified captured ports"
+        for section in sections
+    ]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1975,10 +1985,13 @@ class PipelineDocument:
                             f"stages: keys must match {_NODE_KEY_OK}, got {key!r}"
                         )
                     _check_child(errors, f"stages.{key}", spec, StageSpec)
-        if self.execution_backtest is not None and self.stages is not None:
-            errors.append(
-                "execution_backtest documents forbid user-authored stages; "
-                "capture barriers are derived from verified captured ports"
+        if self.execution_backtest is not None:
+            errors.extend(
+                _execution_backtest_section_errors(
+                    section
+                    for section in _EXECUTION_BACKTEST_FORBIDDEN_SECTIONS
+                    if getattr(self, section) is not None
+                )
             )
         _check_str(errors, "notes", self.notes, non_empty=False)
         # The derived pair defaults to the declared map — with no foreach
@@ -2204,10 +2217,13 @@ class PipelineDocument:
             ),
             "document",
         )
-        if "execution_backtest" in obj and "stages" in obj:
-            raise ConfigError(
-                ["execution_backtest documents forbid user-authored stages; "
-                 "capture barriers are derived from verified captured ports"]
+        if "execution_backtest" in obj:
+            _raise_if(
+                _execution_backtest_section_errors(
+                    section
+                    for section in _EXECUTION_BACKTEST_FORBIDDEN_SECTIONS
+                    if section in obj
+                )
             )
         errors = []
         nodes = {}
@@ -2304,9 +2320,32 @@ def _load_strict_json(path):
             f"{path}: non-finite JSON constant {constant} is not valid JSON"
         )
 
+    def _refuse_nonfinite_json_float(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise ValueError(
+                f"{path}: non-finite JSON number {text} is not valid JSON"
+            )
+        return value
+
+    def _refuse_duplicate_json_key(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError(
+                    f"{path}: duplicate JSON object key {key!r} is not valid JSON"
+                )
+            obj[key] = value
+        return obj
+
     with open(path, encoding="utf-8") as fh:
         try:
-            return json.load(fh, parse_constant=_refuse_nonfinite_json_constant)
+            return json.load(
+                fh,
+                parse_constant=_refuse_nonfinite_json_constant,
+                parse_float=_refuse_nonfinite_json_float,
+                object_pairs_hook=_refuse_duplicate_json_key,
+            )
         except json.JSONDecodeError as exc:
             raise ValueError(f"{path} is not valid JSON: {exc}") from exc
 

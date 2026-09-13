@@ -419,7 +419,7 @@ def run_staged(document, source_path=None, asof=None, registry=DEFAULT_STAGE_KIN
         raise ValueError("run_staged source_path must be a text string or path-like text label") from exc
     if isinstance(source_path, bytes):
         raise ValueError("run_staged source_path must be a text string or path-like text label")
-    source_path = os.path.abspath(source_path)
+    source_path = os.path.realpath(os.path.abspath(source_path))
     plan = plan_stages(document, registry=registry)
     asof = _validated_asof(asof)
     declared_root = document.outputs.run_root if document.outputs else ""
