@@ -101,14 +101,14 @@ retuning, another release/dataset/execution, paper/live, or a second study.
 nodes must have a verified `ReviewExit.v1`):
 
 ```json
-{"F1":[],"F2":["F1"],"F4":["F2"],"F3":["F1","F2","F4"],
- "F5":["F1","F2","F4"],"A1":["F1","F2","F4","F5"],
- "A2":["A1"],"A3":["A2","F2","F4","F5"],"A4":["A3"],
- "B0":["F1","F2","F4","F5"],"B1":["B0"],"B2":["B1"],
+{"F1":[],"F2":["F1"],"F4":["F2"],"F5a":["F1","F2","F4"],
+ "F3":["F1","F2","F4","F5a"],"F5b":["F3","F5a"],"A1":["F1","F2","F4","F5b"],
+ "A2":["A1"],"A3":["A2","F2","F4","F5b"],"A4":["A3"],
+ "B0":["F1","F2","F4","F5b"],"B1":["B0"],"B2":["B1"],
  "B3":["B2"],"E1":["F1","F2","F3","F4"],"C0":["F1","F2","F4"],
- "C1":["B3","E1","C0"],"R1":["F2","F3","F4","F5","C0"],
+ "C1":["B3","E1","C0"],"R1":["F2","F3","F4","F5a","C0"],
  "R2":["R1","C0"],"R3":["R2"],"R4":["R3","C0"],
- "R5":["R4","E1","C1"],"I1":["F1","F2","F5","A4","C1","R5"],"I2":["I1"]}
+ "R5":["R4","E1","C1"],"I1":["F1","F2","F5a","F5b","A4","C1","R5"],"I2":["I1"]}
 ```
 
 Every slice below lists reuse, RED, minimal GREEN/focused test category, and
@@ -392,12 +392,12 @@ canonicalization and logical-clock/RNG algorithm/version, and execution profile.
 
 **Reuse:** `production/feed.py:ReplayFeed`, `clock.py:ReplayClock`, and canonical
 ledger records; extend their event-order contract, not a parallel tape engine.
-F4's generic WORM lifecycle is intentionally a prerequisite of F3: raw source and
-roster captures need it, while F4 itself has no F3 dependency. F3 first creates a
-pre-document, immutable `SourceRosterCapture.v1`; this is an F3 substep, not a new
-DAG node, so `F3 <- F1,F2,F4` remains acyclic. For an historical purpose the data
-owner signs G2 authorization for it before any data access; synthetic uses the
-equivalent nondeployment authority only. The roster is
+F4's WORM lifecycle and F5a's private-plan/admission primitives are prerequisites
+of F3. Historical roster/dataset-root capture requires the exact valid, bound,
+one-use G1 security-owner **and** G2 data-owner `DatasetCaptureAuthorization.v1`;
+G2 alone refuses before data access. F3 creates pre-document immutable
+`SourceRosterCapture.v1`, so `F3 <- F1,F2,F4,F5a` remains acyclic. Synthetic uses
+the equivalent nondeployment dual authority only. The roster is
 PUBLISHED (not CAPTURED) before the execution PipelineDocument is frozen and contains
 the complete authorized source universe, scope/time bounds, source-provenance
 identities, policy version, and its `SourceRankPolicy.v1`:
@@ -987,21 +987,15 @@ refit/paper/live work occurs.
 
 ## I2 — exactly one gated historical simulator study
 
-After the separate G1/G2 `DatasetCaptureAuthorization` has read/captured/published
-the raw dataset and F5 has admitted each frozen consumer document into its exact
-port-bound capture chain, `HistoricalStudyScopeAuthorization` first permits only its
-fixed A1--A4 release creation; then its same-study WORM `HistoricalStudyManifest`
-permits only the named control/crash executions against that captured dataset,
-envelopes/data, actual verified release, EnvironmentIdentity, profile, and simulator
-broker. The broker checks the appropriate phase before every node/root/action; the
-study scope has no raw-provider/capture permission. Preserve I1 identity equality.
-Neither phase authorizes paper/live, another dataset/execution, retuning, another
-release, or a full/lockbox backtest. **RED/test:** focused manifest/broker tests
-prove G0--G7 signer/key/revocation/time and source-commit substitution, pre-refit
-release circularity, post-refit release substitution, retune/extra-execution, raw-
-capture-before-authorization, and pre-data/node/root/action refusal. **GREEN:** only
-the two-phase WORM verifier; no historical capture or execution is run by this
-implementation slice.
+I2 verifies only this order: dual G1+G2 authority -> PUBLISHED public metadata ->
+PIS/PEA -> private BVP/PCE equality -> ScopeIntent -> ScopeAuthorization/CAS ->
+StageAdmission plus consumed ActionExecutionAdmission -> per-port authorization ->
+seal/capture -> CapturedAuthorizationSet -> distinct session/consumer. No F5a
+capture precedes scope/stage/action admission. Published stage outputs then form the
+pre-final replay chain, Manifest, FinalReplayAdmission, replay capture, and session.
+RED proves G2-only, pre-private-plan, pre-admission, and every reordered chain
+refuse. No phase authorizes paper/live, another dataset/execution, retuning, release,
+or full/lockbox backtest; this slice executes only focused verifier tests.
 
 ## Existing reuse inventory — do not rebuild Gate 2/4/5
 
