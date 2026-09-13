@@ -1025,126 +1025,80 @@ R5 bypass inventory to migrate/remove, not reusable production composition. R1--
 extend the generic seams through the production bridge, never a child backtester or
 second accounting engine.
 
-## M2--M4 execution ownership and evidence manifest
+## Controlling executable TDD manifest
 
-Three isolated lane worktrees are mandatory: model-release owns F1/F2/A1--A4/E1;
-forecast-capital owns F3/F4/F5a/F5b/B0--B3/C1; replay-ops owns C0/R1--R5; only a
-fresh integration worktree owns I1/I2. Cross-lane inputs are signed artifact/commit
-pins, never live shared edits. Merge F5a before F3/F5b and all DAG pins before I1;
-Sol GREEN then one Terra skeptic follows each merge, with Terra corrections/later
-reviews and two sequential clean Terra reviews before integration.
+This replaces every earlier ownership, test-node, and command summary in this plan. It is the sole normative slice manifest. Exactly three lanes exist: **model-release** owns F1, F2, A1--A4, E1, I1, I2; **forecast-capital** owns F3, F4, F5a, F5b, B0--B3, C1; **replay-ops** owns C0, R1--R5. Cross-lane input is a signed pin, never a shared edit. I1/I2 are model-release integration after that checkout merges the exact pinned forecast-capital and replay-ops commits; they use only integration tests.
 
-R1--R3 own only generic `dskit/production/replay.py`, `serve_root.py`, `loop.py` and
-`tests/production/test_replay_state_v2.py`, `test_loop.py`, and route tests; equity supplies
-thin registered adapters only. ServeRoot validates rooted digest keys, lstat type/
-owner/mode/link count, O_NOFOLLOW locks and O_EXCL same-directory siblings; under
-lock it checks expected bytes/hash/generation, write+file-fsyncs, re-reads, atomically
-renames (no-replace genesis), and directory-fsyncs. Crash RED nodes cover every
-pre/post lock/lstat/write/fsync/reread/rename/dir-fsync/FROZEN/elevation/activation/
-attempt/send/query/receipt/ACK/projection/payload/manifest/COMMITTED/state-replace
-cutpoint; recovery completes exact lineage or refuses.
+`Existing` was validated by `git ls-files` at accepted HEAD `782535101bb9113b45642f2c0f8e72aaf0c2fac3`; `NEW` explicitly authorizes that path. For every slice Sol first records the named RED, makes only its GREEN edits, and saves the literal command's passing output. Each Evidence item requires that RED, Sol commit, and GREEN output in `ReviewEvidenceManifest.v1`, then Terra signed review/correction evidence and a clean `ReviewExit.v1`; no full suite or real execution is authorized.
 
-Normative TDD command: `wsl.exe -e bash -lc 'cd <lane> && pytest -q <nodeid>'`; Sol
-first creates the row's named failing assertion, then minimal implementation, GREEN
-node output, and ReviewEvidenceManifest. Complete nodes: F1 document::execution-block;
-F2 driver::execution-before-import; F3 captured-event-dataset::dual-authority;
-F4/F5a capture-lifecycle::published-root/private-plan; F5b forecast-bundle::bound-port;
-A1--A4 final-model::release-identity; B0--B3 forecast-bundle::provenance; E1 feed::tie-swap;
-C0/C1 state::nonancestor; R1 replay::bootstrap-reservation; R2 replay::projection-receipts;
-R3 replay::atomic-journal-cutpoints; R4 loop::hold-authority; R5 child-replay::direct-refusal;
-I1/I2 replay::synthetic-json-e2e. These are exact focused pytest node-id suffixes in
-the lane test paths named above; no full suite or real execution is authorized.
+### F1 — model-release
+Test: Existing `tests/pipeline/test_document.py::test_execution_block_rejects_user_stages`. RED: An execution-backtest document with user-authored stages refuses during parse before planning. GREEN: Existing `dskit/pipeline/document.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q tests/pipeline/test_document.py::test_execution_block_rejects_user_stages'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
 
-## Round-2 controlling corrections
+### F2 — model-release
+Test: Existing `tests/pipeline/test_driver.py::test_execution_refuses_before_adapter_import`. RED: A public execution-document driver call refuses before adapter import or planning side effects. GREEN: Existing `dskit/pipeline/driver.py`, `dskit/pipeline/planner.py`, `dskit/pipeline/stages.py`, `dskit/pipeline/__main__.py`, `dskit/pipeline/__init__.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q tests/pipeline/test_driver.py::test_execution_refuses_before_adapter_import'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
 
-This section replaces contradictory earlier F5/I2/manifest wording. ADR-0125 order
-is strictly: G1+G2 roots PUBLISH -> root PIS -> WORM ScopeIntent -> complete G0--G7
-gate set -> CES -> PEA (which binds CES) -> private BVP/PlannedCaptureSet (which
-binds PEA) -> byte equality P(CES)==P(BVP) -> CAS -> ScopeAuthorization consuming
-the exact ScopeIntent, gate set, and root bootstrap CES/PEA/BVP/CAS tuples ->
-StageAdmission -> consumed ActionExecutionAdmission -> per-PCE port authorization ->
-LifecycleCapturedReceipt -> CapturedAuthorizationSet.v2 -> distinct LaunchSession.
-Every cited digest therefore exists earlier. ScopeIntent precedes gates/PEA; CES
-precedes PEA; BVP follows PEA; capture never precedes Stage/Action admission. The
-construction is acyclic because ScopeIntent contains no gate, CES, PEA, capture, or
-future output.
+### F3 — forecast-capital
+Test: NEW `tests/production/test_captured_event_dataset.py::test_roster_rejects_g2_without_g1`. RED: A G2-only source roster refuses before event-envelope, tape-member, or capture access. GREEN: NEW `dskit/production/captured_event_dataset.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q tests/production/test_captured_event_dataset.py::test_roster_rejects_g2_without_g1'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
 
-F5a and F5b replace the old generic F5 body. F5a depends F1/F2/F4 and owns new
-`dskit/production/capture.py`, `trust.py`, and `tests/production/test_capture_lifecycle.py`:
-RED `test_private_plan_precedes_capture` asserts no capture/member open/session before
-ScopeIntent/PEA/BVP/CES/CAS/consumed admission; GREEN emits verified V2 captured set.
-Run `wsl.exe -e bash -lc 'cd forecast-capital && pytest -q tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture'`.
-F5b depends F3/F5a and owns new `dskit/production/captured_bindings.py` plus
-`children/intraday_equities/tests/test_forecast_bundle.py`: RED
-`test_forecast_consumer_requires_v2_captured_set`; GREEN injects only the bound port.
-Run `wsl.exe -e bash -lc 'cd forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set'`.
+### F4 — forecast-capital
+Test: NEW `tests/production/test_capture_lifecycle.py::test_publish_required_before_capture`. RED: A consumer capture without immutable PUBLISHED root and receipt refuses before member access or session creation. GREEN: NEW `dskit/production/capture.py`, NEW `dskit/production/trust.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q tests/production/test_capture_lifecycle.py::test_publish_required_before_capture'`. Evidence: focused node passes plus required evidence; F4 precedes F5a on both shared files.
 
-Route ownership is replay-ops: `dskit/production/replay.py`, `serve_root.py`,
-`loop.py`, `report.py`, `dskit/production/report.py`, and
-`dskit/production/__main__.py`, with new `tests/production/test_replay_state_v2.py`
-and `test_replay_routes_v2.py`. C0 alone owns existing `tests/production/test_state.py`;
-replay owns only those new V2 modules. I1/I2 own new
-`tests/integration/test_historical_json_e2e.py`, never replay-lane tests, and may
-consolidate only pinned artifacts after lane merges.
+### F5a — forecast-capital
+Test: NEW `tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture`. RED: Capture refuses before ScopeIntent, CES, PEA, BVP, CAS, and consumed admission are bound. GREEN: NEW `dskit/production/capture.py`, NEW `dskit/production/trust.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture'`. Evidence: focused node passes plus required evidence; serially follows F4.
 
-The exhaustive TDD manifest has unique assertion/node/path per slice (each command is
-`wsl.exe -e bash -lc 'cd <listed lane> && pytest -q <listed node>'`, with its literal
-lane/node below): F1 model-release `tests/pipeline/test_document.py::test_execution_block_rejects_user_stages`;
-F2 model-release `tests/pipeline/test_driver.py::test_execution_refuses_before_adapter_import`;
-F3 forecast-capital `tests/production/test_captured_event_dataset.py::test_roster_rejects_g2_without_g1`;
-F4 replay-ops `tests/production/test_capture_lifecycle.py::test_publish_required_before_capture`;
-F5a forecast-capital `tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture`;
-F5b forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set`;
-A1 model-release `children/intraday_equities/tests/test_final_model.py::test_a1_split_requires_causal_identity`;
-A2 model-release `children/intraday_equities/tests/test_final_model.py::test_a2_search_rejects_seed_substitution`;
-A3 model-release `children/intraday_equities/tests/test_final_model.py::test_a3_refit_rejects_release_substitution`;
-A4 model-release `children/intraday_equities/tests/test_final_model.py::test_a4_release_requires_signed_manifest`;
-B0 forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_b0_calibration_requires_fit_identity`;
-B1 forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_b1_confirmation_requires_causal_pairs`;
-B2 forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_b2_scenarios_reject_missingness_swap`;
-B3 forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_b3_cap_requires_confirmation`;
-E1 model-release `tests/production/test_feed.py::test_e1_tie_swap_refuses`;
-C0 forecast-capital `tests/production/test_state.py::test_c0_nonancestor_account_refuses`;
-C1 forecast-capital `tests/production/test_capital.py::test_c1_mio_requires_verified_inputs`;
-R1 replay-ops `tests/production/test_replay_v2.py::test_r1_bootstrap_reservation_precedes_frozen_plan`;
-R2 replay-ops `tests/production/test_replay_v2.py::test_r2_receipts_precede_projection`;
-R3 replay-ops `tests/production/test_replay_storage_v2.py::test_r3_all_fsync_rename_cutpoints`;
-R4 replay-ops `tests/production/test_loop.py::test_r4_hold_requires_registered_authority`;
-R5 replay-ops `children/intraday_equities/tests/test_replay.py::test_r5_direct_replay_route_refuses`;
-I1 integration `tests/production/test_replay_v2.py::test_i1_deterministic_json_e2e`;
-I2 integration `tests/production/test_replay_v2.py::test_i2_verifier_rejects_reordered_adr0125_chain`.
-For every row Sol first makes exactly that named assertion RED in its listed minimal
-path, implements only its lane-owned path, records the literal focused command/output
-as GREEN, then Terra solely reviews/corrects. No full suite or real execution follows.
+### F5b — forecast-capital
+Test: Existing `children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set`. RED: A forecast consumer refuses a descriptor, port, or receipt outside the verified F5a V2 captured set. GREEN: NEW `dskit/production/captured_bindings.py`, Existing `children/intraday_equities/intraday_equities/forecast_bundle.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
 
-## Final lane and manifest correction
+### A1 — model-release
+Test: Existing `children/intraday_equities/tests/test_final_model.py::test_a1_split_requires_causal_identity`. RED: Training refuses without exact causal row, source, schema, window, and embargo split identity. GREEN: Existing `dskit/pipeline/node.py`, `dskit/pipeline/split_policy.py`, `children/intraday_equities/intraday_equities/final_model.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q children/intraday_equities/tests/test_final_model.py::test_a1_split_requires_causal_identity'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
 
-There are exactly three worktrees: model-release, forecast-capital, and replay-ops.
-Forecast-capital owns F3/F4/F5a/F5b/B0--B3/C1, including new
-`dskit/production/capture.py`, `trust.py`, `captured_bindings.py`, and
-`tests/production/test_capture_lifecycle.py`; replay-ops owns C0/R1--R5, including
-existing `dskit/production/replay.py`, `serve_root.py`, `loop.py`, `report.py`,
-`__main__.py`, `tests/production/test_state.py` (C0 only), and new
-`tests/production/test_replay_state_v2.py`, `test_replay_routes_v2.py` (R only).
-Model-release owns F1/F2/A1--A4/E1 and I1/I2. I1/I2 run after model-release merges
-the pinned forecast-capital/replay-ops commits into its named
-`model-release-integration` checkout under the model-release lane, not a fourth lane;
-they own only new `tests/integration/test_historical_json_e2e.py` and new
-`children/intraday_equities/configs/historical_json_e2e.json`.
+### A2 — model-release
+Test: Existing `children/intraday_equities/tests/test_final_model.py::test_a2_search_rejects_seed_substitution`. RED: HPO refuses a substituted bootstrap seed or nonreconstructable ten-head evidence. GREEN: Existing `dskit/pipeline/libs/optuna.py`, `children/intraday_equities/intraday_equities/final_model.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q children/intraday_equities/tests/test_final_model.py::test_a2_search_rejects_seed_substitution'`. Evidence: focused node passes plus required evidence; serially follows A1 on final-model evidence.
 
-Literal focused commands use `/mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/<lane>`: F1
-`.../model-release && pytest -q tests/pipeline/test_document.py::test_execution_block_rejects_user_stages`; F2
-`.../model-release && pytest -q tests/pipeline/test_driver.py::test_execution_refuses_before_adapter_import`; F3
-`.../forecast-capital && pytest -q tests/production/test_captured_event_dataset.py::test_roster_rejects_g2_without_g1`; F4
-`.../forecast-capital && pytest -q tests/production/test_capture_lifecycle.py::test_publish_required_before_capture`; F5a
-`.../forecast-capital && pytest -q tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture`; F5b
-`.../forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set`; A1--A4
-`.../model-release && pytest -q children/intraday_equities/tests/test_final_model.py`; B0--B3/C1
-`.../forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py`; E1
-`.../model-release && pytest -q tests/production/test_feed.py::test_e1_tie_swap_refuses`; C0
-`.../replay-ops && pytest -q tests/production/test_state.py::test_c0_nonancestor_account_refuses`; R1--R3
-`.../replay-ops && pytest -q tests/production/test_replay_state_v2.py`; R4/R5
-`.../replay-ops && pytest -q tests/production/test_replay_routes_v2.py`; I1/I2
-`.../model-release-integration && pytest -q tests/integration/test_historical_json_e2e.py`.
-Each row's listed implementation path is its minimal GREEN edit boundary; shared
-forecast capture file is serial F4 then F5a, while replay state is C0 before R1.
+### A3 — model-release
+Test: NEW `tests/pipeline_libs/test_lightgbm_release.py::test_a3_refit_rejects_release_substitution`. RED: Native LightGBM loading refuses a substituted release member before codec import, construction, or provider/file access. GREEN: NEW `dskit/pipeline/libs/lightgbm.py`, Existing `dskit/pipeline/node.py`, `children/intraday_equities/intraday_equities/final_model.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q tests/pipeline_libs/test_lightgbm_release.py::test_a3_refit_rejects_release_substitution'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
+
+### A4 — model-release
+Test: Existing `children/intraday_equities/tests/test_final_model.py::test_a4_release_requires_signed_manifest`. RED: Final refit refuses publication without exact signed winner and captured-release manifest. GREEN: Existing `dskit/pipeline/node.py`, `dskit/production/release.py`, `children/intraday_equities/intraday_equities/final_model.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q children/intraday_equities/tests/test_final_model.py::test_a4_release_requires_signed_manifest'`. Evidence: focused node passes plus required evidence; serially follows A3 on final-model release construction.
+
+### B0 — forecast-capital
+Test: Existing `children/intraday_equities/tests/test_forecast_bundle.py::test_b0_calibration_requires_fit_identity`. RED: PIT labels refuse when fit identity is unavailable at the observation instant. GREEN: Existing `children/intraday_equities/intraday_equities/forecast_bundle.py`, `children/intraday_equities/intraday_equities/nodes.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_b0_calibration_requires_fit_identity'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
+
+### B1 — forecast-capital
+Test: Existing `children/intraday_equities/tests/test_forecast_bundle.py::test_b1_confirmation_requires_causal_pairs`. RED: Calibration confirmation refuses when fit/test pairs are not disjoint, ordered, and signed. GREEN: Existing `children/intraday_equities/intraday_equities/forecast_bundle.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_b1_confirmation_requires_causal_pairs'`. Evidence: focused node passes plus required evidence; serially follows B0 on forecast bundle.
+
+### B2 — forecast-capital
+Test: Existing `children/intraday_equities/tests/test_forecast_bundle.py::test_b2_scenarios_reject_missingness_swap`. RED: The scenario/FDR port refuses a missingness, seed, order, or provenance substitution. GREEN: Existing `children/intraday_equities/intraday_equities/forecast_bundle.py`, `children/intraday_equities/intraday_equities/nodes_capital.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_b2_scenarios_reject_missingness_swap'`. Evidence: focused node passes plus required evidence; serially follows B1 on forecast bundle.
+
+### B3 — forecast-capital
+Test: Existing `children/intraday_equities/tests/test_forecast_bundle.py::test_b3_cap_requires_confirmation`. RED: Capital caps refuse without current signed confirmation and matching bundle identity. GREEN: Existing `children/intraday_equities/intraday_equities/forecast_bundle.py`, `children/intraday_equities/intraday_equities/nodes_capital.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_b3_cap_requires_confirmation'`. Evidence: focused node passes plus required evidence; serially follows B2 on forecast bundle.
+
+### E1 — model-release
+Test: Existing `tests/production/test_feed.py::test_e1_tie_swap_refuses`. RED: An execution profile refuses when a tie/order swap changes its profile or release identity. GREEN: Existing `dskit/production/feed.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q tests/production/test_feed.py::test_e1_tie_swap_refuses'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
+
+### C0 — replay-ops
+Test: Existing `tests/production/test_state.py::test_c0_nonancestor_account_refuses`. RED: Account-state folding refuses a nonancestor ledger head instead of mutating a second persistent fold. GREEN: Existing `dskit/production/records.py`, `dskit/production/state.py`, `dskit/production/ledger.py`, `dskit/production/accounting.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/replay-ops && pytest -q tests/production/test_state.py::test_c0_nonancestor_account_refuses'`. Evidence: focused node passes plus required evidence; C0 precedes R1 on ledger/state seams.
+
+### C1 — forecast-capital
+Test: NEW `tests/production/test_capital.py::test_c1_mio_requires_verified_inputs`. RED: MIO refuses order intent unless B3, E1, and C0 identities are verified and fresh. GREEN: Existing `dskit/pipeline/libs/pyomo.py`, `children/intraday_equities/intraday_equities/nodes_capital.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/forecast-capital && pytest -q tests/production/test_capital.py::test_c1_mio_requires_verified_inputs'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
+
+### R1 — replay-ops
+Test: NEW `tests/production/test_replay_state_v2.py::test_r1_bootstrap_reservation_precedes_frozen_plan`. RED: Replay refuses frozen-plan construction before exact V2 bootstrap reservation and initial lease. GREEN: Existing `dskit/production/replay.py`, `dskit/production/serve_root.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/replay-ops && pytest -q tests/production/test_replay_state_v2.py::test_r1_bootstrap_reservation_precedes_frozen_plan'`. Evidence: focused node passes plus required evidence; new replay V2 test, serially after C0.
+
+### R2 — replay-ops
+Test: NEW `tests/production/test_replay_state_v2.py::test_r2_receipts_precede_projection`. RED: Replay refuses a projection/result before verified effect receipts, ACKs, cursor, and committed-head lineage. GREEN: Existing `dskit/production/replay.py`, `dskit/production/serve_root.py`, `dskit/production/report.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/replay-ops && pytest -q tests/production/test_replay_state_v2.py::test_r2_receipts_precede_projection'`. Evidence: focused node passes plus required evidence; new replay V2 test, serially after R1.
+
+### R3 — replay-ops
+Test: NEW `tests/production/test_replay_routes_v2.py::test_r3_all_fsync_rename_cutpoints`. RED: Every replay crash cutpoint resumes the exact frozen suffix or refuses before result/cursor derivation. GREEN: Existing `dskit/production/replay.py`, `dskit/production/serve_root.py`, `dskit/production/loop.py`, `dskit/production/report.py`, `dskit/production/__main__.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/replay-ops && pytest -q tests/production/test_replay_routes_v2.py::test_r3_all_fsync_rename_cutpoints'`. Evidence: focused node passes plus required evidence; new replay V2 route test, serially after R2.
+
+### R4 — replay-ops
+Test: Existing `tests/production/test_loop.py::test_r4_hold_requires_registered_authority`. RED: A hold, cashflow, return, monitor, or rotation transition refuses without current signed release-pinned authority. GREEN: Existing `dskit/production/loop.py`, `dskit/production/control.py`, `dskit/production/cashflows.py`, `dskit/production/report.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/replay-ops && pytest -q tests/production/test_loop.py::test_r4_hold_requires_registered_authority'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
+
+### R5 — replay-ops
+Test: Existing `children/intraday_equities/tests/test_replay.py::test_r5_direct_replay_route_refuses`. RED: Every child direct replay/serve import, construction, export, registry entry, and legacy call refuses with a migration diagnostic. GREEN: Existing `children/intraday_equities/intraday_equities/replay.py`, `children/intraday_equities/intraday_equities/__init__.py`, `dskit/production/replay.py`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/replay-ops && pytest -q children/intraday_equities/tests/test_replay.py::test_r5_direct_replay_route_refuses'`. Evidence: focused node passes plus the required manifest and Terra clean exit.
+
+### I1 — model-release integration owner
+Test: NEW `tests/integration/test_historical_json_e2e.py::test_i1_deterministic_json_e2e`. RED: Synthetic normal-pipeline uninterrupted and crash/restart runs refuse if any identity, ledger head, state, outbox, cursor, metric, or report differs. GREEN: NEW `children/intraday_equities/configs/historical_json_e2e.json`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q tests/integration/test_historical_json_e2e.py::test_i1_deterministic_json_e2e'`. Evidence: after exact lane pins merge, focused node passes plus the required manifest and Terra clean exit.
+
+### I2 — model-release integration owner
+Test: NEW `tests/integration/test_historical_json_e2e.py::test_i2_verifier_rejects_reordered_adr0125_chain`. RED: The historical-study verifier refuses every reordered ADR-0125 admission/capture chain before session or consumer creation. GREEN: NEW `dskit/production/historical_study.py`, NEW `children/intraday_equities/configs/historical_json_e2e.json`. Command: `wsl.exe -e bash -lc 'cd /mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/model-release && pytest -q tests/integration/test_historical_json_e2e.py::test_i2_verifier_rejects_reordered_adr0125_chain'`. Evidence: after exact lane pins merge, focused node passes plus required evidence; I2 follows I1 on the integration config.
