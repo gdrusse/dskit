@@ -7882,3 +7882,948 @@ runs only in explicit development mode with a deterministic, pinned,
 `deployment_eligible=false` synthetic cap. Bundle rows in label units (or
 without `unit`) refuse at the capital node; the assembler is the only
 sanctioned producer of gross-unit rows.
+
+## ADR-0123 — Signed immutable captures and causal forecast/capital evidence
+
+**Status:** accepted (2026-09-12; owner approved the external launcher/broker architecture and synthetic TDD implementation only). Extends ADR-0088/0111/0114/0118/0119/0121 without reopening them; baseline is main cfd2893. Real calibration, HPO, refit, replay, paper/market execution, protected-data reads, lockbox work, and full backtests remain prohibited.
+
+**Problem.** Local RunAttestation/content hashes do not defend a writable run directory. Existing bundle, cap, and MIO pins cannot make self-authored files release authority. Generic causal calibration, local-FDR, shared scenarios, immutable capture, and trusted runtime identity do not ship. Paper/production therefore remain closed.
+
+**Placement.** Add generic stdlib contracts in new dskit/pipeline/trust.py and calibration.py; extend existing document.py, planner.py, node.py, driver.py, and stages.py only at owned seams. Crypto implementations, if needed, are lazy tier-2 packs. The child adds only thin adapters in existing forecast_bundle.py/nodes_capital.py, registration, docs, and tests. No child signature, hash, lifecycle, calibration, FDR, or scenario mechanism. These exact new files are approved for synthetic TDD only.
+
+**External launch root.** Deployment authority begins outside Python and outside
+the writable workspace. `dskit-launch/v1` is an owner-provisioned,
+OS/orchestrator-owned launcher and broker, not a dskit module, package, script,
+or configuration-selected implementation. Before it executes an interpreter it
+independently verifies its immutable host/VM/OCI image admission measurement,
+the exact interpreter and read-only runtime image, and a protected,
+externally-signed `LaunchAuthorization`. The authorization binds the exact
+canonical consumer-document bytes/digest, purpose, policy digest, named
+entrypoint, validity interval, consumer allowlist, immutable image/runtime and
+dependency digests, and a complete static import closure: every module,
+distribution, extension, parent package, class and dependency file that the
+entrypoint may import, each with its canonical identity.
+
+The launcher imports no Python or dskit code while making those checks. It
+rejects an editable/ambiguous/namespace/zip module, unlisted extension or
+parent package, altered import hook, extra `sys.path` entry, user site,
+`PYTHONPATH`, inherited preload, or a closure/image/document/purpose mismatch.
+Only then does it start the pinned interpreter in isolated mode and hand its
+measured process identity to the OS-owned broker. The fixed bootstrap first
+claims an opaque, process-bound `LaunchSession` from that broker and performs
+no document, planner, driver, node, decider, adapter, or candidate-module
+import beforehand. The bootstrap may import the already authorized
+`dskit.production.decider`, `dskit.pipeline.driver`, `planner`, and `node`
+only after the broker confirms the session's image measurement and exact
+authorization. Thus the present module-level decider imports cannot execute
+before the trust decision.
+
+The broker, not an environment variable or Python-held secret, owns provider,
+keyring, trusted-clock, runtime-measurement, lifecycle, and capture
+credentials. It admits only the measured launched process and grants
+single-purpose, nonserializable handles; a copied descriptor, inherited
+environment, local Python invocation, or a process from another image cannot
+claim one. Python rechecks the static closure against that session before
+ordinary `resolve_uses`, but this is defense in depth, never its bootstrap
+authority. A development launcher may issue deterministic
+`deployment_eligible=false` sessions for focused tests only; without this
+external launcher and its protected policy store, all capture, lifecycle,
+calibration publication, and paper/production paths refuse.
+
+### Immutable capture API and schemas
+
+dskit.pipeline.trust exports only generic parsers and opaque handles:
+ImmutableSnapshotProvider.describe(root_ref, snapshot_version)/open_member(snapshot,
+relative_path), ReleaseKeyring.verify(key_id, key_version, issued_at_ms,
+message, signature), TrustedClock.now_ms(), TrustedRuntimeVerifier, opaque
+LaunchSession, CapturedJsonArtifact.value/.audit, CapturedLifecyclePort, and
+per-node CapturedBindings. Application code cannot construct an
+ArtifactTrustRoot, provider, keyring, clock, runtime verifier, lifecycle
+authority, launch session, capture, receipt, or binding resolver from data;
+the trusted bootstrap obtains the private authority bundle only through the
+broker's verified LaunchSession.
+
+Every authorization names one canonical
+`ConsumerCapturedPort = {consumer_document_sha256, consumer_node,
+consumer_input, purpose}`. The external broker signs a
+`CapturedPortAuthorization` for exactly one such port and exactly one
+root/snapshot/member/producer/policy/runtime/time binding. A bare port name,
+producer descriptor, mutable path, or authorization for another document,
+node, or input is not authority.
+
+After the authorized bootstrap has parsed and planned the exact document, the
+generic driver compares the complete sorted ConsumerCapturedPort set to the
+launch authorization, opens every authorized immutable member through the
+broker, and verifies it before constructing any node or selecting any branch.
+For each node invocation it derives a fresh NodeContext whose `captured` field
+is a non-enumerable CapturedBindings view containing only that node's declared
+authorized input names. `ctx.captured.require(input_name)` returns only that
+input's opaque CapturedLifecyclePort/CapturedJsonArtifact; it cannot name,
+discover, reopen, copy, serialize, or resolve another node's port. The normal
+materialized input for that declared port is the same opaque handle. Outputs,
+params, ordinary dollar wires, carry, checkpoints, records, reports, and JSON
+artifact persistence reject captured handles and descriptor-shaped substitutes.
+
+In particular, `dskit/production/decider.py` must no longer create
+`NodeContext(name=served.name, asof=asof, run_dir=base_run_dir)` directly.
+Its prepare path is entered only through the claimed LaunchSession; it plans
+against the launcher-approved closure, asks the generic driver to resolve all
+captured ports before base-pass construction, and receives only per-node
+contexts. Paper/production MIO therefore obtains a handle only at its own
+declared input, never from a caller, global resolver, or another node.
+
+The captured value is final, immutable, constructible only by the trust root, and refuses copy/pickle/JSON reconstruction. It retains single-read verified bytes and exposes no path, reopen, provider, credential, or signing API.
+
+Canonical JSON is UTF-8, sorted-key, compact, ASCII and finite-number-only; digests are lowercase SHA-256; instants are integer epoch-ms; schemas are default-deny. Ed25519 signs canonical envelopes with signature omitted.
+
+dskit.trust-root/v1 is exactly {schema,root_ref,root_id,snapshot_version,document_sha256,run_identity,members,key,issued_at_ms,signature}. Each member uses `relative_path`, a normalized POSIX relative path, never an ambiguous name. The complete sorted manifest maps required `config.json`, `resolved.json`, and `result.json`; optional `carry.json`; the producer record `nodes/<ordinal>-<node>.json`; and requested artifact `artifacts/<node>/<artifact-relative-path>` to `{relative_path,sha256,bytes}`. `key={key_id,key_version}`.
+
+The exact root/member identity binds the producer node/output and artifact bytes; an artifact cannot be substituted for a same-named file elsewhere in the run layout.
+
+Refuse absolute/empty/dot/traversal/backslash/NUL names, duplicate normalized POSIX names, symlink, hard link, non-regular member, mixed version, missing/extra required member, invalid/revoked/out-of-validity key, short read, byte/digest mismatch, or mutation. Verify retained bytes and decode those same bytes: no check/reopen TOCTOU.
+
+Staging is trusted-driver work, never a node: write a new version, fsync every member and directory, close staging, obtain an external signature over the complete manifest, then atomically publish the immutable version. Unsigned local providers are development-only and refuse paper/production.
+
+No untrusted node, worker, or writable run directory can create a capture, binding, resolver, receipt, snapshot, or authority-bearing manifest; they receive neither provider/key/runtime/lifecycle credentials nor a writable authority store.
+
+dskit.decision-release-attestation/v1 is exactly {schema,consumer_document_sha256,purpose,policy_sha256,captures,runtime_identity,issued_at_ms,not_before_ms,expires_at_ms,key,signature}. Each sorted capture binds {port,root_ref,root_id,snapshot_version,run_identity,producer_document_sha256,producer_node,producer_output,artifact_manifest_sha256}.
+
+Trusted time requires not_before_ms <= now_ms < expires_at_ms, issued_at_ms <= now_ms, and a configured maximum issuance age; purpose and actual consumer document match. A circular document self-pin is not authority.
+
+Runtime identity is launcher-measured evidence, either
+{kind:"image",image_sha256,runtime_sha256,dependencies_sha256} or the complete
+authorized static module closure
+{kind:"modules",runtime_sha256,dependencies_sha256,modules:[{module,class,code_sha256}]}.
+The OS-owned launcher verifies that closure before interpreter execution;
+Python never imports a candidate, parent package, adapter, driver, planner,
+node, or decider in order to measure or authorize it. Missing, extra, swapped,
+late-loaded, or dynamically discovered identities refuse.
+
+Snapshot, release, confirmation, and runtime keys have separate usages; the external keyring checks ID/version, validity, rotation, and revocation. Untrusted JSON-RPC workers receive no provider/key/runtime credential, signing authority, or writable run root.
+
+### Captured ports and enforced multi-run stages
+
+The only document spelling, valid only as the complete value of one declared
+node input, is
+{$captured_artifact:{root_ref:"release://forecast/v42",snapshot_version:"42",
+document_sha256:"<sha256>",node:"pit_bundle",output:"bundle",purpose:"paper"}}.
+The parser computes the ConsumerCapturedPort from the containing document
+digest, node key, and input name; these are not optional fields and may not be
+spelled inside the descriptor.
+
+The planner compiles this exact object to a non-JSON CapturedArtifactPort and
+records its canonical ConsumerCapturedPort. It rejects the spelling in params,
+outputs, defaults, lists, maps, carry references, artifacts, or any nested
+location other than the one input value. Nodes cannot declare, emit, serialize,
+forge, or forward a captured handle. Before construction the driver requires
+one matching live broker authorization and one matching signed lifecycle
+capture for every planned captured port; an unused authorization, missing
+planned port, duplicate port, wrong consumer input, or authorization for an
+ordinary wire refuses.
+
+`CapturedBindings` accepts only the driver's private, planner-issued identity
+for its current node, is not constructible from JSON, and never returns a
+path, raw provider, credential, signing API, descriptor-shaped substitute, or
+another node's handle. A node can receive an already verified captured value
+only through its own exact declared input.
+
+Records, carry, checkpoints, and reports persist only immutable audit; a descriptor-shaped dict is never authority. Paper/production consumers declare trusted ports and reject ordinary JSON before every normal, empty, mandatory-exit, held-position, or solver path.
+
+
+SealedRunLifecycle is served by the same OS-owned broker's dedicated external
+LifecycleAuthority and protected append-only/WORM receipt store. Its
+compare-and-set receipts are PRODUCED -> SEALED -> PUBLISHED -> CAPTURED ->
+CONSUMED; the store accepts writes only from that authority, never from nodes,
+workers, Python process state, or the run directory. A
+`dskit.lifecycle-receipt/v1` binds schema, stream identity, exact
+producer/run/node/output/document identities, previous receipt digest,
+strictly increasing sequence, event, immutable root/snapshot/member and
+publication-attestation identities, consumer captured-port identity when
+applicable, actor launch measurement, transition nonce, trusted issuance
+instant, key identity, and signature.
+
+Before every CAS transition, LifecycleAuthority verifies the prior receipt and proposed receipt signature and lifecycle-key usage, key ID/version/validity/revocation, trusted time and issuance age, strictly next sequence, exact predecessor digest, run/node/output/document identity, snapshot/root/member identity, actor/runtime identity, and transition-specific nonce/receipt identity against the WORM anti-replay index.
+
+Produce requires a completed planned run; seal requires the same closed verified
+bytes; publish requires the externally signed immutable root; capture requires
+that exact publication receipt plus a live matching CapturedPortAuthorization;
+and consume requires a later distinct run and the exact consumer document/node/
+input identity. The broker returns a `CapturedLifecyclePort` only after the
+CAPTURED receipt verifies, and records CONSUMED after the authorized input is
+used. No caller-supplied time, local status flag, path, signature, or receipt
+dict can stand in for a publication or capture receipt.
+
+Same-run, skipped, reordered, replayed, duplicate-nonce, cross-version, predecessor-mismatched, expired, unsigned, wrong-key-usage, or non-WORM transitions refuse. Repeat the whole sequence independently for confirmation evidence -> signed proof, calibration publisher -> signed snapshot, cap publisher -> signed snapshot, PIT publisher -> signed snapshot, and captured-port MIO. These are never same-DAG capability wires.
+
+
+### Causal calibration, confirmation, FDR, and scenarios
+
+dskit.pipeline.calibration exports generic causal codecs plus
+`CalibrationFit.fit(captured_pairs, policy_handle)`,
+`CalibrationState.apply(captured_decisions, policy_handle)`,
+`ConfirmationTest.confirm(captured_state, captured_test_pairs, policy_handle)`,
+LocalFdrEstimator.fit/apply, and SharedResidualScenarios.fit. In deployment,
+each `captured_*` argument is a verified CapturedLifecyclePort from the exact
+authorized input; each policy handle comes from the LaunchSession. Raw
+CausalPairs are useful only for development computation and can never produce
+an authority-bearing state, cap, confirmation, or MIO input. No fit, apply, or
+confirmation API accepts caller `known_at_ms`, publication time, capture time,
+receipt, or lifecycle timestamp.
+
+CausalPairs hashes sorted unique {decision_id,outcome_id,entity,decision_ms,outcome_available_ms,prediction,outcome} rows. Fit/test decision and outcome IDs are mutually disjoint; fit outcomes precede fit, state publication precedes apply/test decisions, and test outcomes precede confirmation. Overlap, substitution, lateness, reversed cuts, and outcome access during apply refuse.
+
+For deployment, the authority derives fit availability, state publication,
+decision availability, and test availability exclusively from the verified
+captured bytes and their signed PRODUCED/SEALED/PUBLISHED/CAPTURED receipts.
+It verifies the causal cuts against the policy handle and receipt sequence;
+caller timestamps cannot advance a state, make an outcome known, or satisfy a
+confirmation boundary. A completed fit/apply/scenario/FDR result is only a
+draft until the driver stages it and LifecycleAuthority publishes, captures,
+and authorizes it for its next consumer.
+
+CalibrationState binds schema/method/policy digest, fit/pair identity,
+publication/capture receipt digests, availability derived from those receipts,
+parameters, producer/runtime identity, and state digest.
+
+Local-FDR apply emits only pi_hat and conservative pi_upper with exact fit/decision/time bindings; HFDR selection remains solely in EquityKellyMIO.
+
+Shared scenarios emit one ordered scenario-by-entity matrix over common causal instants, normalized weights, entity order, instant IDs, unit, missingness mask/digest, fit/policy identities, and availability. Ragged/per-entity sets, reorder, unhashed imputation, non-finite values, nonpositive weights, or dimension mismatch refuse. Method, dependence unit, uncertainty construction, evidence minima, and bounds have no defaults.
+
+External ConfirmationAuthority.issue(evidence_port, policy_handle) accepts only
+a verified CapturedLifecyclePort rooted in the exact required
+root_ref/root_id/snapshot_version/member manifest and carrying a valid signed
+PUBLISHED then CAPTURED receipt for its exact consumer port. It independently
+decodes the retained verified bytes and receipts, reconstructs CausalPairs, and
+recomputes every pair identity, availability/cut rule, statistical input, and
+verdict from those bytes; raw caller-provided CausalPairs, timestamps,
+verdicts, pair hashes, JSON, receipt dicts, or policy cannot authorize.
+
+It signs exact dskit.confirmation-proof/v1 fields: {schema,producer_document_sha256,producer_node,producer_output,model_manifest_sha256,statistical_policy_sha256,fit_identity,fit_pair_sha256,test_identity,test_pair_sha256,verdict,fit_outcomes_available_ms,state_published_ms,test_decisions_start_ms,test_outcomes_available_ms,cap_policy_sha256,capture_root_ref,capture_root_id,capture_snapshot_version,capture_member_manifest_sha256,capture_member_identities,issued_at_ms,key,signature}. `capture_member_identities` binds the config/resolved/result/producer-record/artifact member digests and normalized relative paths used for recomputation.
+
+Only exact policy-qualified GO can feed a deployable cap; self-signed/fake GO, revoked key, unverified capture, wrong root/member/version, raw CausalPairs, or substitution refuses.
+
+
+### Thin intraday-equities adapters
+
+EquityLabelState maps ADR-0121 causal sigma/beta/reference state to generic decisions.
+
+EquityConfirmedCapsV3 maps a captured verified proof to contiguous h01..h10 {symbol,capped_horizon} caps and adds proof/policy, release/runtime, availability, and expiry identities; V2 stays development-only.
+
+EquityPitBundle maps captured model/calibration/FDR/scenario/price inputs to ADR-0121 gross-return rows and emits one canonical envelope with structured producer/model/calibration/scenario/label/unit/availability provenance.
+
+Existing EquityKellyMIO accepts only captured bundle/cap ports in paper/production and verifies every identity before every branch.
+
+### Focused TDD and gates
+
+After approval, strict red-green order is: (1) external-launcher refusal
+before any decider/planner/driver/node/candidate import, including image,
+closure, parent-package, import-hook, site-path, document, purpose, and broker
+process-identity swaps; (2) schemas, signatures, key/time/runtime swaps;
+(3) member/path/link/TOCTOU/mutation attacks; (4) per-consumer
+document/node/input authorization, node-context isolation, capability forgery,
+worker isolation, and resolution before construction/branches; (5)
+externally-authorized WORM lifecycle publication/capture signature/key/sequence/
+predecessor/anti-replay and same-run refusals; (6) captured-byte-and-receipt-only
+causal identity, caller-time refusal, and confirmation substitutions; (7)
+local-FDR limits and shared matrix/missingness; (8) child label/V3/PIT adapters;
+(9) every MIO branch.
+
+Focused synthetic TDD ownership paths are: new `tests/pipeline/test_trust.py` (capture, resolver, lifecycle/WORM and confirmation authority), new `tests/pipeline/test_calibration.py` (causal/calibration/FDR/scenarios), existing `tests/pipeline/test_document.py`, `tests/pipeline/test_planner.py`, `tests/pipeline/test_node.py`, and `tests/pipeline/test_driver.py` (captured-port grammar and trusted injection), existing `tests/production/test_decider.py` (the Decider NodeContext seam), and existing child `children/intraday_equities/tests/test_forecast_bundle.py` and `children/intraday_equities/tests/test_nodes_capital.py` (adapter/MIO gates).
+
+Each focused test first fails for the intended missing behavior, then minimal code passes it. Run only affected tests, purity, touched-path Ruff, and git diff --check. One Terra skeptic is active at a time; every correction and subsequent review uses Terra until zero Critical/Major findings.
+
+**Fail-closed gates.** Owner approval authorizes synthetic TDD implementation
+only. Owner must still freeze the exact new files, external OS-owned
+launcher/broker and its host/image admission root, protected policy and WORM
+stores, key owners/storage/rotation/revocation, static import-closure format,
+runtime measurement, and worker sandbox. dskit code must not supply a fallback,
+self-hosted, or configuration-selected launcher.
+
+Before real calibration, owner/statistics must ratify ADR-0114 §11.4 fit/test partitions, dependence, evidence minima, calibration/FDR/scenario methods, uncertainty, GO, and reuse.
+
+Before capital, owner/risk must ratify semantic availability, cap economics, and every §11.8 MIO/account policy; security must approve providers, signers, and execution authorities.
+
+Affected paths stay closed until signed artifacts, lifecycle publication/capture
+receipts, exact policies, and the shared model-release launcher contract are
+frozen. No real calibration, HPO, final refit, market replay, paper trading,
+lockbox read, or full backtest is authorized.
+
+**Consequences.** Local runs and V2 caps remain development evidence, never paper/production authority. Authority is the exact time-bounded conjunction of immutable bytes, producer/run/consumer/policy identity, measured trusted code, causal evidence, staged publication, and least-privilege captured delivery.
+
+## ADR-0125 -- Capture planning and historical-study chronology
+
+**Status:** accepted (2026-09-12; approved by the owner in the active
+orchestration thread). This docs-only ADR
+authorizes no implementation, protected-data read, tape construction, HPO,
+refit, release construction, replay, paper/live operation, or full backtest.
+
+**Single controlling text.** This is the complete ADR-0125 and replaces every
+earlier ADR-0125 draft, variant, correction, and interpretation. It supersedes
+conflicting capture-planning and historical-study chronology in ADR-0123 and the model plan at
+`40ab10fa7428e5eab14cff2f082c781cf962b860`; all other accepted decisions
+remain unchanged. F1/F3/F4/F5/I2 continue to refuse, and no real
+data/tape/HPO/refit/replay is authorized absent their separate stated gates.
+
+### Decision and canonical rules
+
+A secure execution document is parsed and privately planned before CAPTURED
+authorization, receipt, member open, import, construction, session, or run.
+G1/G2 raw capture may publish roster/dataset inputs but cannot authorize a study
+action. One normal canonical `PipelineDocument` JSON remains the only
+orchestration; no second DSL exists. A closed one-use action DAG consumes only
+already PUBLISHED inputs. The Final Manifest is strictly pre-capture for exactly
+two replays.
+
+```text
+G1/G2 publish -> PIS -> CES -> PEA -> private BVP/PCE -> CES=PCE -> CAS
+-> Scope/StageAdmission -> CAPTURED -> CapturedAuthorizationSet -> session
+-> run -> stage publish -> ... -> replay PIS/CES/PEA/BVP/CAS pre-final
+-> Final Manifest -> FinalReplayAdmission -> replay capture evidence -> session
+```
+
+All schemas below are closed default-deny canonical UTF-8 sorted-key JSON. SHA-256
+values are lower-case hex; every array uses the stated sort and refuses duplicate
+keys or complete canonical items. A signed envelope is exactly its stated
+application fields plus this exact envelope:
+
+```text
+{issuance_basis_sha256,issuer_role,key_usage,signature_alg:"Ed25519",
+ issued_at_ms,not_before_ms,expires_at_ms,revocation_snapshot_sha256,
+ key:{key_id,key_version},<named_self_digest>,signature}
+```
+
+Its digest and Ed25519 preimage are its full canonical object with only its
+named self-digest and `signature` omitted. A verifier requires canonical bytes,
+field closure, basis, issuer role, exclusive key use, key ID/version, algorithm,
+trusted time, revocation snapshot, signature, and every linked digest. Unknown,
+missing, null/default, unordered, substituted, expired, revoked, or incorrectly
+signed values refuse.
+
+`IssuanceBasis.v1` is exactly
+`{schema:"dskit.issuance-basis/v1",kind,study_id,refs,issuer_role,key_usage,
+signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,issuance_basis_sha256,signature}`. `refs` is a
+sorted unique array of only `IssuanceBasisRef.v1`, whose one exact key shape is
+`{kind,role,schema,sha256}`. The closed basis kinds are
+`root-publication|stage-publication|root-pis|stage-pis|replay-pis|scope-intent|
+gate-evidence|ces|pea|bvp|cas|scope-authorization|stage-admission|
+action-execution-admission|captured-port|captured-receipt|captured-set|
+final-manifest|final-replay-admission|replay-capture-evidence`. Each artifact
+below carries exactly one verified basis whose kind and refs are stated in its
+validator; its preimage follows the common rule. A basis cannot refer to itself
+or a future output, and a ref with a different/extra/missing key refuses.
+
+`IssuanceBasisRef.v1` is exactly `{kind,role,schema,sha256}`, sorted by
+`{kind,role,schema,sha256}`. From PEA onward its closed mapping is: a
+`pea` basis names PIS, CES, matching intent, and bootstrap gate set or
+scope-action/replay ScopeAuthorization; a `bvp` basis names PEA/CES/PIS/intent;
+a `cas` basis names PEA/CES/BVP/intent; a `stage-admission` basis names
+Scope/ActionIntent/PEA/CES/BVP/CAS/predecessor publications; an
+`action-execution-admission` basis names StageAdmission and that exact tuple;
+captured-port/receipt/set bases name their exact admission, PEA/CES/BVP/CAS/PCE;
+and final-replay-admission/replay-capture-evidence bases name final, replay
+intent/entry, tuple, and captured set as applicable. The required signers/key
+uses are respectively security-broker `plan-evaluation|plan-verifier|
+captured-port-authorization|lifecycle-capture|captured-authorization|
+replay-capture-admission` and study-lifecycle `capture-admission|
+stage-admission|action-execution-admission|final-replay-admission`. A wrong
+kind/ref/phase/issuer/key-use mapping refuses.
+`scope-authorization` basis uses only
+`study-lifecycle/historical-study-scope` and refs exactly the unique ScopeIntent,
+the complete sorted G0--G7 GateEvidenceRef set and gate-set digest, and every
+root bootstrap ActionIntent/PEA/CES/BVP/CAS tuple--no more or fewer. `final-manifest`
+basis uses only `study-lifecycle/historical-study-manifest` and refs exactly
+the unique ScopeAuthorization/ScopeIntent, complete gate set, all StageAdmissions,
+all corresponding published stage-output identities including release, and both
+replay pre-capture PEA/CES/BVP/CAS/FinalReplayEntry tuples--no more or fewer.
+Normatively, PEA/BVP/CAS use only their matching bootstrap, scope-action, or
+replay-pre-final phase and the issuer/key-use pairs security-broker/
+plan-evaluation, security-broker/plan-verifier, and study-lifecycle/
+capture-admission. StageAdmission uses only bootstrap or scope-action with
+study-lifecycle/stage-admission; ActionExecutionAdmission uses only action with
+study-lifecycle/action-execution-admission; captured port/receipt/set use only a
+consumed action or replay admission with their stated security-broker key uses.
+FinalReplayAdmission uses only post-final replay/study-lifecycle/
+final-replay-admission, and replay evidence only post-capture/security-broker/
+replay-capture-admission. Every ref is the same four-key shape; any other map refuses.
+
+### Published inputs and publication receipts
+
+`PublishedInputEntry.v2` is the one flat publication representation:
+
+```text
+{input_id,kind,root_ref,root_id,snapshot_version,member_manifest_sha256,
+ producer_run_identity,producer_document_sha256,producer_node,producer_output,
+ publication_receipt_schema,publication_receipt_sha256,contract_sha256}
+```
+
+It is the only published projection. PIS `entries` is an array of this exact
+object sorted by `input_id`; CES/PCE carry it only as
+`published_input:PublishedInputEntry.v2`. No `published`, nested receipt,
+alternate projection, or `published_receipt_sha256` field exists. Every PIS,
+CES, and PCE projection must be byte-identical to the named PIS entry.
+
+`PublishedInputSet.v2` is exactly
+`{schema:"dskit.published-input-set/v2",study_id,phase,purpose,entries,
+issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+published_input_set_sha256,signature}`. `phase` is exactly
+`root-g1-g2|stage-consumer|replay-consumer` and has the only PEA map
+`root-g1-g2 -> bootstrap`, `stage-consumer -> scope-action`, and
+`replay-consumer -> replay-pre-final`:
+
+- Root PIS uses a `root-pis` basis naming exact G1/G2
+  DatasetCaptureAuthorizations and root receipts, and only
+  `data-publisher/published-input-set-g1-g2` signs it.
+- Stage PIS uses a `stage-pis` basis naming Scope, predecessor StageAdmissions,
+  and their stage publication receipts; only
+  `study-lifecycle/published-input-set-study` signs it.
+- Replay PIS uses a `replay-pis` basis naming Scope and only already PUBLISHED
+  tape-data, tape-manifest, release, profile, and other declared stage outputs
+  with stage publication receipts. It never names or depends on Final Manifest;
+  only `study-lifecycle/published-input-set-study` signs it.
+
+The receipt union is exactly:
+
+```text
+RootPublicationReceipt.v1 =
+{schema:"dskit.root-publication-receipt/v1",kind:"dataset-capture",
+ capture_kind:"source-roster|raw-event-dataset",
+ publication_authorization_ref,root_ref,root_id,snapshot_version,
+ member_manifest_sha256,producer_run_identity,producer_document_sha256,
+ producer_node,producer_output,issuance_basis_sha256,issuer_role,key_usage,
+ signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+ revocation_snapshot_sha256,key,root_publication_receipt_sha256,signature}
+
+LifecyclePublicationReceipt.v2 =
+{schema:"dskit.lifecycle-publication-receipt/v2",kind:"study-stage",study_id,
+ action_id,execution_authority_ref,logical_execution_id,run_id,publication_authorization_ref,root_ref,root_id,
+ snapshot_version,member_manifest_sha256,
+ producer_run_identity,producer_document_sha256,producer_node,producer_output,
+ issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+ not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+ lifecycle_publication_receipt_sha256,signature}
+```
+
+`publication_authorization_ref` is exactly one tagged object:
+`{kind:"dataset-capture",dataset_capture_authorization_sha256}` for a root, or
+`{kind:"study-stage",historical_study_stage_admission_sha256}` for a stage.
+Root validation requires the dataset-capture tag and exact G1/G2 authorization,
+and only `data-publisher/root-publication-g1-g2` signs it; it has no
+study/scope/stage/PEA/CES/BVP/CAS/input-capture/session field. Stage validation
+requires the study-stage tag, exact one-use StageAdmission, and matching action
+execution authority ref/logical execution ID/run ID/output contract; only
+`study-lifecycle/study-stage-publication` signs it and it has no
+CAPTURED/consumer/session/future-output field. A wrong tag, tag field, or
+extra/missing field refuses. Receipt schema/kind selects the validator; no
+legacy receipt fallback exists.
+
+Receipts are WORM `put-if-absent` with key
+`{receipt_schema,canonical_publication_authorization_ref_bytes,
+producer_run_identity,producer_document_sha256,producer_node,producer_output,
+root_ref,root_id,snapshot_version}`. The canonical ref bytes are the complete
+tagged `publication_authorization_ref`; a byte-identical repeat returns the
+original receipt and a different fact or byte sequence for that key refuses.
+Each receipt has its named outer self-digest, omitted from its own signing
+preimage. That digest is never embedded in publication facts/projections or
+referenced by itself; only later PIS/CES/PCE/admission/final values reference
+the completed outer receipt digest.
+
+### Scope intent, gates, and closed intent DAG
+
+Before any gate evidence, the signed policy-only
+`HistoricalStudyScopeIntent.v1` is exactly
+`{schema:"dskit.historical-study-scope-intent/v1",study_id,purpose,
+published_input_set_sha256,action_intents,action_intent_set_sha256,
+action_dag_sha256,edge_set_sha256,replay_intents,replay_intent_set_sha256,
+environment_identity_sha256,execution_profile_sha256,component_manifest_sha256,
+candidate_inventory_sha256,policy_set_sha256,issuance_basis_sha256,issuer_role,
+key_usage,signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,historical_study_scope_intent_sha256,signature}`.
+It is signed only by `study-lifecycle/historical-study-scope-intent`; its basis
+names the root PIS and fixed owner policy. It binds PIS/published inputs, the
+closed action DAG, exactly two replay slots, and environment/profile/component/
+candidate/policy identity, but no gate reference, PEA, CES, BVP, CAS, document
+execution authority, or future output. It is policy intent, not orchestration or
+authority.
+ScopeIntent is a WORM put-if-absent singleton keyed only by `study_id`; its
+deterministic SHA-256 digest/signing preimage is canonical bytes with only its
+named digest and signature omitted. A byte-identical canonical reissue is
+idempotent; different content, digest, or signing identity for the same study
+refuses.
+
+`ExecutionDocumentContract.v1` is the exact canonical evidence projection of a
+normal consumer document:
+`{schema:"dskit.execution-document-contract/v1",role:"action|replay",
+planner_version,allowed_node_dag_sha256,component_manifest_sha256,
+component_roles,closed_parameters_sha256,policy_sha256,input_slot_contracts,
+output_contracts,branch_rules,later_publication_slots,
+consumer_document_contract_sha256}`. Its self-digest preimage omits only
+`consumer_document_contract_sha256`. Execution mode forbids dynamic `stages`,
+`foreach`, `walkforward`, and every other unplanned graph expansion.
+`allowed_node_dag_sha256` hashes the normalized flat PipelineDocument node DAG;
+roles, input/output contracts, and slots sort by ID, and branch rules by rule ID.
+An input slot is exactly `{slot_id,kind,required_contract_sha256}`; it is the
+only value that may replace a later captured instance descriptor and cannot name
+a root, member, receipt, run, or output. The planner derives this projection from
+the normalized flat document, component manifest, closed parameters, roles, slot
+contracts, output contracts, branches, and planner version. At execution it
+replaces only typed captured instance descriptors with their predeclared slot IDs
+and requires byte-for-byte equality to the contract; graph, branch, parameter,
+use, component, policy, input, or output changes refuse. It is evidence, not a second DSL; ActionIntent and ReplayIntent reuse it.
+
+`ActionIntent.v1` is exactly
+`{schema:"dskit.action-intent/v1",study_id,action_id,consumer_document_contract_sha256,kind,
+topological_position,predecessor_action_ids,predecessor_output_refs,
+root_published_input_ids,required_input_contracts,output_contract,
+closed_parameters_sha256,component_manifest_sha256,candidate_selection_sha256,
+policy_sha256,action_intent_sha256}`. Its self-digest preimage omits only
+`action_intent_sha256`; no signature is nested. The action set sorts by
+topological position then action ID and contains exactly one owner-declared ID
+each for `tape-data-materialization`, `tape-manifest-materialization`, A1, A2,
+A3, and A4.
+
+A predecessor-output ref is exactly
+`{predecessor_action_id,output_name,output_schema,output_version,purpose}`,
+sorted by that tuple. An input contract is exactly
+`{binding_id,consumer_node,consumer_input,
+source_kind:"published-input|predecessor-output",source_ref,output_schema,
+output_version,purpose}`, sorted by `binding_id`. An output contract is exactly
+`{output_name,output_schema,output_version,purpose,producer_node,
+producer_output,media_type}`. A root has empty predecessor refs and only sorted
+root PIS input IDs; a nonroot has no root IDs. `EdgeSetEntry.v1` is exactly
+`{consumer_action_id,binding_id,predecessor_action_id,output_name,
+output_schema,output_version,purpose}`, sorted by that full tuple;
+`edge_set_sha256` hashes its canonical array. `action_dag_sha256` hashes the
+sorted ActionIntent array plus its action-intent-set and edge-set digests. No
+graph, edge, port, parameter, candidate, or contract is inferred.
+
+`ActionIntentSet.v1` is exactly
+`{schema:"dskit.action-intent-set/v1",entries,action_intent_set_sha256}`; entries
+are the complete ActionIntent.v1 array sorted by topological position/action ID.
+Its digest preimage omits only `action_intent_set_sha256`. The ScopeIntent and
+ScopeAuthorization action arrays and set digest must be byte-identical to this
+set. `ReplayIntentSet.v1` is exactly
+`{schema:"dskit.replay-intent-set/v1",entries,replay_intent_set_sha256}`; entries
+are the complete ReplayIntent.v1 array sorted by replay ID, exactly control and
+crash-restart, and its digest preimage omits only `replay_intent_set_sha256`.
+ScopeIntent and ScopeAuthorization replay arrays/digest must equal it exactly.
+
+`ReplayIntent.v1` is exactly
+`{schema:"dskit.replay-intent/v1",study_id,replay_id,
+consumer_document_contract_sha256,required_input_contracts,
+environment_identity_sha256,execution_profile_sha256,
+component_manifest_sha256,crash_schedule_sha256,recovery_policy_sha256,
+policy_sha256,replay_intent_sha256}`. Its digest preimage omits only
+`replay_intent_sha256`; slots sort by `replay_id` and are exactly `control` and
+`crash-restart`. It binds a later replay document's contract, not future
+published values or a final replay document hash. Later replay PEA/CES/BVP/CAS
+and FinalReplayEntry bind the same replay-intent digest and must match its typed
+slot, component, policy, input-contract, profile, schedule, and recovery
+projection.
+
+`GateEvidenceRef.v1` is exactly
+`{schema:"dskit.gate-evidence-ref/v1",gate,owner_role,key_purpose,
+scope_intent_sha256,evidence_sha256,approved_identity_sha256,
+issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+gate_evidence_ref_sha256,signature}`. Its set is exactly G0--G7 sorted by gate;
+`gate_set_sha256` hashes that canonical array. Required owner-role/key-purpose
+pairs are G0 `architecture-owner/architecture-gate`, G1
+`security-owner/security-gate`, G2 `data-owner/data-gate`, G3
+`model-owner/model-gate`, G4 `risk-owner/risk-gate`, G5
+`execution-owner/execution-gate`, G6 `operations-owner/operations-gate`, and G7
+`research-owner/research-gate`. Every gate basis names the same verified scope
+intent. Wrong/unknown gate, role, use, intent, evidence, identity, time,
+revocation, or signature refuses.
+
+### CES, PEA, BVP, CAS, Scope, and stages
+
+`CaptureExpectationSet.v1` is exactly
+`{schema:"dskit.capture-expectation-set/v1",study_id,phase,subject_ref,consumer_document_contract_sha256,consumer_document_sha256,purpose,component_manifest_sha256,
+published_input_set_sha256,entries,issuance_basis_sha256,issuer_role,key_usage,
+signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,capture_expectation_set_sha256,signature}`.
+`subject_ref` is exactly one closed object: action
+`{kind:"action",action_id,action_intent_sha256}` or replay
+`{kind:"replay",replay_id,replay_intent_sha256}`. CES is signed only by
+`study-lifecycle/capture-expectation`; its basis names PIS, frozen normal
+document descriptors, and the matching subject. An entry
+is exactly `{binding_id,consumer_document_sha256,consumer_node,consumer_input,
+purpose,descriptor_root_ref,descriptor_snapshot_version,
+descriptor_document_sha256,descriptor_node,descriptor_output,
+descriptor_purpose,published_input}`, sorted by complete canonical bytes.
+CES is expectation only and cannot open/import/construct/select/capture/session/
+execute.
+CES, PEA, BVP, CAS, and StageAdmission each carry the same
+`consumer_document_contract_sha256` and reject unless the actual normal
+PipelineDocument's canonical ExecutionDocumentContract projection equals the
+matching ActionIntent or ReplayIntent contract byte-for-byte.
+
+`PlanEvaluationAuthorization.v1` is exactly
+`{schema:"dskit.plan-evaluation-authorization/v1",study_id,phase,subject_ref,consumer_document_contract_sha256,consumer_document_sha256,purpose,component_manifest_sha256,
+published_input_set_sha256,capture_expectation_set_sha256,authority_ref,
+issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+plan_evaluation_authorization_sha256,signature}`.
+`authority_ref` is exactly one closed tagged object: bootstrap
+`{kind:"scope-intent-gate-set",scope_intent_sha256,gate_set_sha256}`;
+scope-action `{kind:"scope-authorization-action",scope_authorization_sha256,
+action_intent_sha256}`; or replay-pre-final
+`{kind:"scope-authorization-replay",scope_authorization_sha256,
+replay_intent_sha256}`. Bootstrap additionally requires its action `subject_ref`,
+root PIS, and CES; every tag must equal that phase's PIS/subject/Scope facts.
+No tag has nullable/optional fields, and a wrong phase/tag or extra/missing
+field refuses. The signed PEA preimage includes the complete `authority_ref`;
+PEA equality compares it byte-for-byte. Only `security-broker/plan-evaluation`
+signs PEA. It never binds CAS or authorizes lifecycle/execution.
+
+The private broker verifies canonical document, PEA, CES, PIS, measured runtime,
+permit, and component-manifest planning metadata. It can parse normal
+PipelineDocument and derive its graph/ports but cannot import unmeasured code,
+resolve an ordinary registry, open a member/provider, construct a node, read
+application data, or branch select. Public plan/CLI/driver routes refuse
+execution documents before all those effects.
+
+`BrokerVerifiedPlan.v1` is exactly
+`{schema:"dskit.broker-verified-plan/v1",plan_evaluation_authorization_sha256,
+capture_expectation_set_sha256,subject_ref,study_id,
+consumer_document_contract_sha256,consumer_document_sha256,purpose,component_manifest_sha256,
+planning_rules_sha256,plan_sha256,planned_capture_set_sha256,
+issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+broker_verified_plan_sha256,signature}`. It is signed only by
+`security-broker/plan-verifier`; its exact PlannedCaptureSet contains PCEs. A
+PCE is exactly
+`{schema:"dskit.planned-capture-entry/v1",subject_ref,binding_id,
+consumer_document_sha256,consumer_node,consumer_input,purpose,
+descriptor_root_ref,descriptor_snapshot_version,descriptor_document_sha256,
+descriptor_node,descriptor_output,descriptor_purpose,published_input,
+planned_entry_sha256}`. Its self-digest omits only `planned_entry_sha256`.
+`PlannedCaptureSet.v1` is exactly
+`{schema:"dskit.planned-capture-set/v1",study_id,subject_ref,entries,
+planned_capture_set_sha256}`. Its entries are complete PCE objects sorted by
+`planned_entry_sha256`, unique by complete canonical bytes, and its self-digest
+preimage omits only `planned_capture_set_sha256`. `plan_sha256` hashes the
+canonical BVP plan payload containing every listed BVP planning field, including
+the exact PlannedCaptureSet, and omits only `plan_sha256` and `signature`;
+different set, order, field, or signature preimage refuses.
+CES/PEA/BVP/PCE/CAS subject refs are byte-identical: bootstrap and scope-action
+permit only the action tag with the same action ID/intent, while replay-pre-final
+permits only the replay tag with the same replay ID/intent; wrong phase or tag refuses.
+`P(CES)` is CES entries converted to exact PCEs and `P(BVP)` is the exact
+PlannedCaptureSet entries.
+Planning passes only on byte-for-byte `P(CES)==P(BVP)`, including cardinality,
+order, port, descriptor, and flat PIS projection.
+
+Only after that equality, `CaptureAdmissionSet.v1` is exactly
+`{schema:"dskit.capture-admission-set/v1",study_id,subject_ref,
+consumer_document_contract_sha256,consumer_document_sha256,purpose,plan_evaluation_authorization_sha256,
+capture_expectation_set_sha256,broker_verified_plan_sha256,
+planned_capture_set_sha256,entries,issuance_basis_sha256,issuer_role,key_usage,
+signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,capture_admission_set_sha256,signature}`.
+It is signed only by `study-lifecycle/capture-admission`; its PCE entries require
+`P(CES)==P(BVP)==P(CAS)`. CAS cannot exist during PEA/BVP construction and is
+not execution authority.
+
+`HistoricalStudyScopeAuthorization.v2` is exactly
+`{schema:"dskit.historical-study-scope-authorization/v2",study_id,purpose,
+scope_intent_sha256,published_input_set_sha256,action_intents,
+action_intent_set_sha256,action_dag_sha256,edge_set_sha256,replay_intents,
+replay_intent_set_sha256,environment_identity_sha256,execution_profile_sha256,
+component_manifest_sha256,candidate_inventory_sha256,policy_set_sha256,
+bootstrap_artifacts,gates,gate_set_sha256,issuance_basis_sha256,issuer_role,
+key_usage,signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,historical_study_scope_authorization_sha256,
+signature}`. It is signed only by `study-lifecycle/historical-study-scope`.
+ScopeAuthorization is the WORM put-if-absent singleton keyed only by `study_id`.
+Its deterministic canonical digest/signing preimage omits only its named digest
+and signature. Its atomic issuance binds and consumes the exact unique ScopeIntent,
+complete G0--G7 gate set, and complete bootstrap tuple. A byte-identical
+canonical reissue is idempotent; any different content, digest, or signing identity
+for that study refuses.
+All intent-covered fields are byte-for-byte equal to the ScopeIntent projection,
+and the intent digest is identical. `bootstrap_artifacts` sorts by action ID and
+each is exactly `{action_id,action_intent_sha256,consumer_document_contract_sha256,
+authority_ref,plan_evaluation_authorization_sha256,capture_expectation_set_sha256,
+broker_verified_plan_sha256,plan_sha256,planned_capture_set_sha256,
+capture_admission_set_sha256}`. Its action-ID projection is an exhaustive
+bijection with all-and-only ActionIntents having empty predecessor refs; a
+nonroot or missing/extra/duplicate root artifact refuses. Every tuple equals
+the root ActionIntent, bootstrap PEA authority ref, CES/BVP/CAS, and document
+contract byte-for-byte. A root StageAdmission must reuse this exact bootstrap
+tuple and bootstrap PEA; it cannot obtain a new scope-action PEA. A nonroot
+may be planned/admitted only after its declared predecessors publish. Thus Scope
+does not create a PEA/gate cycle.
+
+Every action including a root needs exactly one WORM
+`HistoricalStudyStageAdmission.v1` before capture/session:
+`{schema:"dskit.historical-study-stage-admission/v1",study_id,
+scope_authorization_sha256,scope_intent_sha256,action_intent_sha256,action_id,
+topological_position,predecessor_publications,required_inputs,
+consumer_document_contract_sha256,consumer_document_sha256,closed_parameters_sha256,component_manifest_sha256,
+candidate_selection_sha256,output_contract,plan_evaluation_authorization_sha256,
+capture_expectation_set_sha256,broker_verified_plan_sha256,plan_sha256,
+planned_capture_set_sha256,capture_admission_set_sha256,issuance_basis_sha256,
+issuer_role,key_usage,signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,historical_study_stage_admission_sha256,
+signature}`. It is signed only by `study-lifecycle/stage-admission`.
+
+`PredecessorPublication.v1` is exactly
+`{predecessor_action_id,output_name,output_schema,output_version,purpose,
+published_input}`, sorted by the predecessor-output tuple; `published_input` is
+the exact flat PIS projection and must resolve to the named stage receipt.
+`required_inputs` is the exact PCE array. Stage admission validates document
+contract, closed parameters, component/candidate/policy identity, predecessor
+publications, input/output contracts, and `P(CES)==P(BVP)==P(CAS)==P(Stage)`
+against the same ActionIntent. Its WORM ledger atomically consumes one unused
+action ID at its declared topological position/edge set. Repeat, skip, reorder,
+branch graft, cross-output, wrong document/parameter/component/candidate/input/
+output contract, or missing/extra PCE refuses.
+
+`ActionExecutionAdmission.v1` is exactly
+`{schema:"dskit.action-execution-admission/v1",study_id,
+scope_authorization_sha256,action_id,action_intent_sha256,
+historical_study_stage_admission_sha256,plan_evaluation_authorization_sha256,
+capture_expectation_set_sha256,broker_verified_plan_sha256,plan_sha256,
+planned_capture_set_sha256,capture_admission_set_sha256,logical_execution_id,
+run_id,recovery_journal_sha256,recovery_fence_sha256,recovery_attempt_rules_sha256,
+issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+action_execution_admission_sha256,signature}`. It is signed only by
+`study-lifecycle/action-execution-admission` and WORM `put-if-absent` keyed by
+`{study_id,scope_authorization_sha256,action_id,
+historical_study_stage_admission_sha256}`. It binds the exact StageAdmission
+tuple/CAS and one logical execution ID/run ID. A byte-identical repeat returns
+it; conflict refuses. The first captured-port authorization or LaunchSession
+atomically consumes it; capture before consumption refuses. No second logical
+run/session exists. Crash recovery attaches only to its same admission, execution,
+journal, fence, and session nonce and cannot mint a new run/session.
+`execution_authority_ref` is exactly one closed tagged object:
+`{kind:"action",action_execution_admission_sha256}` or
+`{kind:"replay",final_replay_admission_sha256}`. It is always accompanied by
+the identical `logical_execution_id` and `run_id`; no StageAdmission or Final
+Manifest is an execution authority.
+
+### Capture, sessions, stage publication
+
+Only a consumed ActionExecutionAdmission or FinalReplayAdmission is execution
+authority. The broker issues
+per PCE `CapturedPortAuthorization.v2` exactly
+`{schema:"dskit.captured-port-authorization/v2",study_id,
+execution_authority_ref,logical_execution_id,run_id,subject_ref,plan_evaluation_authorization_sha256,
+capture_expectation_set_sha256,broker_verified_plan_sha256,
+capture_admission_set_sha256,planned_entry_sha256,issuance_basis_sha256,
+issuer_role,key_usage,signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,captured_port_authorization_sha256,signature}`. It is
+signed only by `security-broker/captured-port-authorization`. Issuing the first
+port authorization atomically consumes the referenced WORM admission before
+minting it; an unconsumed, mismatched, or other-run admission refuses.
+
+`LifecycleCapturedReceipt.v2` is exactly
+`{schema:"dskit.lifecycle-captured-receipt/v2",stream_id,sequence,
+previous_lifecycle_captured_receipt_sha256,study_id,consumer_kind,consumer_id,
+execution_authority_ref,logical_execution_id,run_id,subject_ref,predecessor_publication_receipt_schema,
+predecessor_publication_receipt_sha256,plan_evaluation_authorization_sha256,
+capture_expectation_set_sha256,broker_verified_plan_sha256,
+planned_capture_set_sha256,capture_admission_set_sha256,planned_entry_sha256,
+captured_port_authorization_sha256,actor_runtime_sha256,transition_nonce,
+issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+lifecycle_captured_receipt_sha256,signature}`. It is signed only by
+`security-broker/lifecycle-capture`, chains by strictly increasing stream
+sequence, and has a WORM-unique nonce. Its execution authority ref, logical
+execution ID, run ID, and subject are byte-identical to the port authorization.
+It must resolve to the PCE publication receipt, BVP, CAS, consumed admission,
+and its matching logical execution; a StageAdmission or Final Manifest alone
+never resolves.
+
+`CapturedAuthorizationEntry.v2` is exactly
+`{execution_authority_ref,logical_execution_id,run_id,planned_entry_sha256,
+captured_port_authorization_sha256,lifecycle_captured_receipt_sha256}`, sorted by `planned_entry_sha256`.
+`CapturedAuthorizationSet.v2` is exactly
+`{schema:"dskit.captured-authorization-set/v2",study_id,
+execution_authority_ref,logical_execution_id,run_id,subject_ref,plan_evaluation_authorization_sha256,
+capture_expectation_set_sha256,broker_verified_plan_sha256,
+planned_capture_set_sha256,capture_admission_set_sha256,entries,
+issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+captured_authorization_set_sha256,signature}`. It is signed only by
+`security-broker/captured-authorization`. Every entry, port, receipt, set,
+LaunchSession, and runtime binding carries the same execution authority ref,
+logical execution ID, and run ID; for an action, the stage publication carries
+that tuple too. A changed tag, digest, run, or logical execution refuses.
+Resolved entries form `P(CES)==P(BVP)==P(CAS)==P(Stage)==P(Captured)` for an action or the equivalent
+four pre-capture replay legs. Only this verified set can bind a broker-signed,
+nonserializable `LaunchSession`
+`{study_id,execution_authority_ref,logical_execution_id,run_id,consumer_document_sha256,
+broker_verified_plan_sha256,captured_authorization_set_sha256,
+process_measurement_sha256,purpose,issued_at_ms,expires_at_ms,
+session_nonce}`. Then and only then may measured code import, construct, open
+authorized members, run, and publish a Stage receipt.
+
+### Pre-final replay, final manifest, and one-use replay admission
+
+After required tape, release, profile, and other stage outputs publish, each
+replay PIS/CES/PEA/BVP/CAS is computed before Final Manifest from only those
+receipts, Scope, and its ReplayIntent. Neither plan nor CAS captures or runs.
+
+`FinalReplayEntry.v1` is exactly
+`{replay_id,replay_intent_sha256,consumer_document_sha256,
+plan_evaluation_authorization_sha256,capture_expectation_set_sha256,
+broker_verified_plan_sha256,plan_sha256,planned_capture_set_sha256,
+capture_admission_set_sha256,required_inputs,environment_identity_sha256,
+execution_profile_sha256,component_manifest_sha256,crash_schedule_sha256,
+final_replay_entry_sha256}`. `required_inputs` is the complete unique PCE array
+sorted by `planned_entry_sha256` then full PCE canonical bytes. Its digest preimage omits only `final_replay_entry_sha256` and it passes
+only when `P(CES)==P(BVP)==P(CAS)==required_inputs`, including all PIS/PCE
+projections, digests, order, and cardinality. It has no capture/set/receipt/
+session/post-final field.
+
+`HistoricalStudyManifest.v2` is exactly
+`{schema:"dskit.historical-study-manifest/v2",study_id,
+scope_authorization_sha256,scope_intent_sha256,published_input_set_sha256,
+gate_set_sha256,gates,stage_admissions,stage_outputs,release_output,
+replay_entries,environment_identity_sha256,execution_profile_sha256,
+component_manifest_sha256,issuance_basis_sha256,issuer_role,key_usage,
+signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,historical_study_manifest_sha256,signature}`.
+It is signed only by `study-lifecycle/historical-study-manifest`.
+Its SHA-256 digest and Ed25519 signing preimage are deterministic canonical bytes
+with only `historical_study_manifest_sha256` and `signature` omitted. It is a
+WORM singleton put-if-absent before any replay admission, keyed only by
+`study_id`, and validates that study's unique ScopeAuthorization and ScopeIntent.
+A byte-identical canonical reissue returns it; different content, digest, or
+signing identity for that study refuses. One singleton admits its exactly two
+replay entries only once.
+`stage_admissions` sorts by topological position/action ID and is an exhaustive
+bijection with every Scope action exactly once; every admission's
+`scope_authorization_sha256` equals the study's unique ScopeAuthorization.
+`stage_outputs` is exactly `{producer_action_id,producer_output_id,output_schema,
+publication_identity_sha256,historical_study_stage_admission_sha256,published_input}`,
+sorted by producer action ID, producer output ID, output schema, publication
+identity, then complete canonical bytes. The validator resolves each output and
+its ActionExecutionAdmission to the same unique ScopeAuthorization. `release_output`
+is exactly A4's item. `replay_entries` sorts by ID and is exactly control/crash-restart.
+The manifest is pre-capture: no actual
+CAPTURED receipt/authorization/set/session or consumer-capture link appears in
+its signed bytes.
+
+Post-final and pre-capture, `FinalReplayAdmission.v1` is exactly
+`{schema:"dskit.final-replay-admission/v1",study_id,final_manifest_sha256,
+final_replay_entry_sha256,replay_id,replay_intent_sha256,
+plan_evaluation_authorization_sha256,capture_expectation_set_sha256,
+broker_verified_plan_sha256,plan_sha256,planned_capture_set_sha256,
+capture_admission_set_sha256,logical_execution_id,run_id,
+recovery_journal_sha256,recovery_fence_sha256,recovery_attempt_rules_sha256,
+issuance_basis_sha256,issuer_role,key_usage,signature_alg,issued_at_ms,
+not_before_ms,expires_at_ms,revocation_snapshot_sha256,key,
+final_replay_admission_sha256,signature}`. It is signed only by
+`study-lifecycle/final-replay-admission`; its WORM `put-if-absent` key is
+`{study_id,final_manifest_sha256,replay_id}` and replay ID is exactly control or
+crash-restart. Byte-identical repeat returns it; conflict refuses. It binds the
+exact final entry, ReplayIntent, PEA/CES/BVP/CAS, one logical execution ID/run
+ID, and fixed recovery rules. It is the only post-final replay execution
+admission.
+
+The broker may capture only that admission's PCEs, then signs
+`ReplayCaptureAdmissionEvidence.v1` exactly
+`{schema:"dskit.replay-capture-admission-evidence/v1",study_id,
+final_manifest_sha256,final_replay_admission_sha256,final_replay_entry_sha256,
+replay_id,replay_intent_sha256,plan_evaluation_authorization_sha256,
+capture_expectation_set_sha256,broker_verified_plan_sha256,
+planned_capture_set_sha256,capture_admission_set_sha256,issued_ports,
+captured_authorization_set_sha256,issuance_basis_sha256,issuer_role,key_usage,
+signature_alg,issued_at_ms,not_before_ms,expires_at_ms,
+revocation_snapshot_sha256,key,replay_capture_admission_evidence_sha256,
+signature}`. It is signed only by `security-broker/replay-capture-admission`.
+`issued_ports` is the complete sorted array, in PCE planned-entry order, of
+exact `{planned_entry_sha256,captured_port_authorization_sha256,
+lifecycle_captured_receipt_sha256}` entries. It is a one-to-one PCE bijection:
+no uniform or top-level receipt exists, and its entries equal the v2 captured-set
+entries exactly.
+
+The first replay port authorization or LaunchSession atomically consumes
+FinalReplayAdmission and binds its logical execution ID/run ID, recovery journal,
+and fence; capture before consumption refuses. No second logical run/session can
+be minted. A crash recovery attaches only to that same admission, logical
+execution, journal, fence, and session nonce; it cannot mint a replay, run ID,
+or session. Replay session requires exact final manifest, FinalReplayAdmission,
+replay capture evidence, and v2 captured set.
+
+### Tests, migration, and consequences
+
+Focused RED tests prove public plan denial before import/open/construct/run;
+scope intent gate/PEA/Scope cycle attempts; changed intent projections; all
+G0--G7 owner/use/intent substitutions; action/replay intent digest, contract,
+edge, predecessor publication, candidate, parameter, and output changes; root
+admission omission/repeat; DAG skip/reorder/branch/output graft; PIS-to-PEA
+phase/authority-ref tag/key/equality and issuer/basis mismatch; CES after planning; PCE/CES/CAS/Stage/Captured
+missing, extra, duplicate, reordered, or substituted entries; receipt
+self-reference/publication-authorization tag-or-field/kind/WORM conflict; capture/session before
+admission; replay PIS depending on final; final captured link; FinalReplayAdmission
+key/idempotency/final-entry/intent chain mismatch; repeated session/logical run;
+and crash recovery that changes journal/fence/nonce or mints a new run/session.
+Additional RED tests reject dynamic stages/foreach/walkforward expansion, changed
+normalized document projection or slot substitution, subject tag/ID/phase swaps,
+and PlannedCaptureSet ordering/digest or BVP plan-preimage substitutions. They
+also reject an execution-authority ref/logical execution/run mismatch across port,
+receipt, set, session, runtime, or publication; capture before admission
+consumption; a second run; and a manifest singleton reissue with changed bytes,
+digest, signer, scope, or replay cardinality.
+They also reject a second ScopeIntent/ScopeAuthorization/final-manifest/replay
+chain for a study, intent/gate/bootstrap substitution at scope issuance, a
+StageAdmission/action/output/AEA with another scope, non-exhaustive or reordered
+stage-admission/output arrays, and FinalReplayEntry required-input reorder/duplicate.
+Only the stated GREEN chronology passes.
+
+Existing ordinary PipelineDocument bytes/hashes and non-historical behavior remain
+unchanged. No v1 receipt, capture set, scope, final manifest, legacy publication
+form, alternate published projection, or PEA-to-CAS shape gains this meaning.
+Migration is a newly signed root/stage publication, PIS/intent/gate/CES/PEA/BVP/
+CAS/admission/capture/final/replay-admission chain; never an in-place rewrite or
+fallback. Every failure leaves no usable handle, member, capture, node, session,
+execution root, or real-data authorization.
+
+## ADR-0126 -- F4 development-broker Major threat model is single-surface
+
+**Status:** accepted (2026-09-13; owner reply "shrink" in the F4
+orchestration thread). Docs-only. Authorizes no new implementation, no
+`calibration.py`, no paper/production, and no F5a. Does not reset
+Correction13 GREEN `e4c3a2a859250f771f6164c5ca0d3d5ee2a0d60b`.
+
+**Context.** F4 synthetic TDD of `_DevelopmentBroker` closed single-surface
+CAS moves and signed-identity forgeries (R29–R41). Review13 proved combined
+intern HMAC mint plus handle setattr / broker-private map rewrites (R42–R46).
+A holder of the development broker can always rewrite every private field;
+another intern/HMAC/watermark layer does not change that. ADR-0123 still
+requires a real LifecycleAuthority to write only an OS-owned WORM store.
+`_DevelopmentBroker` remains `deployment_eligible=false`. This ADR does not
+shrink the OS-owned broker.
+
+**Decision.** F4 Major against `_DevelopmentBroker` is a **single surface**
+that moves CAS or forges signed CONSUMED/CAPTURED identity:
+
+- public API / opaque-handle contract
+- one intern map write (unsigned dual-intern, tuple replace, or HMAC mint of
+  that map **alone**)
+- one handle poke (`object.__setattr__` or in-place dict) **without** also
+  minting intern
+- the receipt-store object the broker exposes
+  (`broker._receipt_store.__setitem__` truncation or graft)
+- signed-receipt recover checks (sequence, predecessor, signature,
+  `stream_id` mismatch)
+
+Out of scope for Major (deferred, not a CAS defect under this ADR): combining
+intern HMAC mint with a second poke so intern and handle agree; clearing or
+replacing `_consumed_streams` / `_receipt_high` / `_receipt_len` together with
+backing `_data` truncation; rewriting in-memory `_streams` plus intern mint;
+forging receipts with development `_DEV_KEY`; any N-internal combination a
+development-broker holder can always perform.
+
+R29–R41 stay closed. R42–R46 are deferred under this model.
+
+**Consequences.** F4 reviews hunt in-scope single-surface Majors. Re-proven
+R42–R46 are deferred citing this ADR, not Major. F4 may ReviewExit at
+`deployment_eligible: false`. F5a does not start until that exit exists.
