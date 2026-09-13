@@ -349,7 +349,15 @@ def test_publish_is_required_before_capture_or_member_access():
     with pytest.raises((TypeError, ValueError), match="PUBLISHED|published"):
         broker.descriptor(sealed, purpose="synthetic")
     with pytest.raises((TypeError, ValueError), match="PUBLISHED|published"):
-        _capture(broker, sealed, None)
+        broker.capture(
+            sealed,
+            None,
+            None,
+            consumer_run_identity="consumer-run",
+            process_measurement_sha256=_SHA["consumer_process"],
+            runtime_sha256=_SHA["consumer_runtime"],
+            transition_nonce="nonce-captured",
+        )
 
     assert member_events == []
     assert len(session_events) == 1
@@ -855,8 +863,6 @@ def test_bindings_are_non_enumerable_exact_and_one_way():
     assert isinstance(port, trust.CapturedLifecyclePort)
     with pytest.raises(ValueError, match="consumed|one-way|replay"):
         bindings.require("bundle")
-    with pytest.raises(ValueError, match="released|already"):
-        broker.release(session)
 
 
 def test_release_refuses_before_consumption_and_second_release_refuses():
