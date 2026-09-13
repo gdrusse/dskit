@@ -267,12 +267,7 @@ def cmd_validate(path, adapters) -> int:
     except ValueError as exc:
         print(exc)
         return 1
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        doc = None  # the legacy loader produces the path-naming error
-    if isinstance(doc, dict) and ("pipeline" in doc or "foreach" in doc):
+    if captured is not None:
         try:
             # Node-map validation is shape + hash and resolves no `uses`, so
             # the import changes no outcome — but a flag that silently does
@@ -305,12 +300,19 @@ def _import_adapters(adapters) -> None:
 
 def _load_ordinary_document(path):
     """Load a valid ordinary document, or preserve adapter-first errors."""
-    from dskit.pipeline.document import load_document
+    from dskit.pipeline.document import PipelineDocument
     from dskit.pipeline.planner import refuse_execution_backtest
 
     try:
-        document = load_document(path)
-    except (ValueError, OSError):
+        with open(path, encoding="utf-8") as fh:
+            obj = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(obj, dict) or ("pipeline" not in obj and "foreach" not in obj):
+        return None
+    try:
+        document = PipelineDocument.from_obj(obj)
+    except ValueError:
         return None
     refuse_execution_backtest(document)
     return document
