@@ -188,6 +188,18 @@ def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
         assert not marker.exists(), "execution route imported its adapter"
 
 
+    malformed_path = tmp_path / "malformed-execution.json"
+    malformed_path.write_text(json.dumps({"name": "bad", "pipeline": {"source": {"uses": "execution_poison_adapter:PoisonNode"}}, "execution_backtest": {}}))
+    for command in ("plan", "run", "validate", "walkforward", "staged"):
+        sys.modules.pop("execution_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        argv = [command, str(malformed_path), "--adapter", "execution_poison_adapter"]
+        if command in ("run", "walkforward", "staged"):
+            argv[2:2] = ["--asof", ASOF]
+        assert main(argv) == 1
+        assert not marker.exists()
+
+
 class TestCleanRun:
     def test_end_to_end_banking_run(self, tmp_path, registry):
         result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
@@ -1634,3 +1646,4 @@ class TestContentIdentity:
             content_identity(
                 result.run_dir, {"a": manifest, "b": result.outputs["src"]["b"]}
             )
+
