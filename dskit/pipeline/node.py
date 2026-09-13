@@ -45,7 +45,7 @@ from dskit.pipeline.base import (
     import_ref,
     is_class_ref,
 )
-from dskit.pipeline.document import MODES, ROLES, PipelineDocument
+from dskit.pipeline.document import MODES, ROLES
 
 __all__ = [
     "DEFAULT_NODE_KINDS",
@@ -1257,16 +1257,10 @@ def _resolve_uses_ordinary(uses, registry=None) -> ResolvedUse:
 
 def resolve_uses(document=None, uses=None, registry=None) -> ResolvedUse:
     """Resolve a use only after the caller supplies an ordinary document."""
-    if not isinstance(document, PipelineDocument):
-        raise ValueError(
-            "resolve_uses now requires a PipelineDocument first; use an "
-            "ordinary-document facade instead of the retired bare resolver"
-        )
-    if document.execution_backtest is not None:
-        raise ConfigError(
-            [
-                "execution_backtest documents require the external broker; "
-                "public ordinary-pipeline entry points refuse them"
-            ]
-        )
+    from dskit.pipeline.planner import _capture_plain_json, require_in_memory_document
+
+    require_in_memory_document(document, "resolve_uses")
+    uses = _capture_plain_json(uses, "resolve_uses")
+    if type(uses) is not str:
+        raise ValueError("resolve_uses requires a plain text uses value")
     return _resolve_uses_ordinary(uses, registry)

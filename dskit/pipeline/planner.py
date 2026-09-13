@@ -45,6 +45,7 @@ Import cost: stdlib only.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 
@@ -71,16 +72,38 @@ __all__ = [
     "unsearchable_space_why",
 ]
 
-def require_in_memory_document(document, entry_point):
-    """Require an ordinary in-memory document at a public entry point."""
-    if not isinstance(document, PipelineDocument):
+def _capture_plain_json(value, entry_point):
+    """Detach one public value through strict JSON before ordinary planning."""
+    try:
+        return json.loads(
+            json.dumps(
+                value,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError(
-            f"{entry_point} requires an in-memory PipelineDocument; string and "
+            f"{entry_point} requires a JSON-serializable plain value"
+        ) from exc
+
+
+def require_in_memory_document(document, entry_point):
+    """Capture an exact plain ordinary document at a public entry point."""
+    if type(document) is not PipelineDocument:
+        raise ValueError(
+            f"{entry_point} requires a PipelineDocument first: an exact plain "
+            "PipelineDocument snapshot; "
+            "only an in-memory PipelineDocument is accepted. String and "
             "path overloads are retired. Load the document in the caller or use "
             "python -m dskit.pipeline."
         )
-    refuse_execution_backtest(document)
-    return document
+    captured = PipelineDocument.from_obj(
+        _capture_plain_json(document.to_obj(), entry_point)
+    )
+    refuse_execution_backtest(captured)
+    return captured
 
 
 def refuse_execution_backtest(document):
