@@ -46,6 +46,7 @@ the ``SubmittingExecutor`` contract (§5.7).
 import dataclasses
 from threading import Lock
 from types import MappingProxyType
+from weakref import WeakKeyDictionary
 
 from dskit.pipeline.trust import LifecycleAuthority
 from dskit.production.base import ProductionError, canonical_hash, pin_members
@@ -632,13 +633,18 @@ class SubmissionVerifier:
 
 
 _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
+_SPENT = WeakKeyDictionary()
+_SPEND_LOCK = Lock()
 
 
 class _SpendCell:
-    """Uncopyable one-use admission flag shared by cloned doorways."""
+    """Registered one-use admission flag; extra mints are already spent."""
 
-    def __init__(self):
-        self.spent = False
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls, *args, **kwargs):
+        """Refuse construction except through the private mint."""
+        raise TypeError("opaque capture handle")
 
     def __copy__(self):
         """Refuse a shallow copy of the spend cell."""
@@ -659,6 +665,12 @@ class _SpendCell:
     def __reduce_ex__(self, protocol):
         """Refuse pickle protocol reduction of the spend cell."""
         raise TypeError("opaque capture handle")
+
+
+def _mint_spend_cell():
+    cell = object.__new__(_SpendCell)
+    _SPENT[cell] = False
+    return cell
 
 
 def _plan_artifact_bound(value, name=None):
@@ -694,7 +706,7 @@ class HistoricalStudyVerifier:
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound = {}
-        self._admission_spent = _SpendCell()
+        self._admission_spent = _mint_spend_cell()
         self._capture_lock = Lock()
         self.deployment_eligible = False
 
@@ -771,19 +783,20 @@ class HistoricalStudyVerifier:
             is not bound, or when that admission is already spent.
         """
         with self._capture_lock:
-            if self._admission_spent.spent:
-                raise ValueError(
-                    "CAPTURED refuses after consumed admission is spent"
-                )
-            missing = [
-                name
-                for name in _REQUIRED_PLAN
-                if not _plan_artifact_bound(self._bound.get(name), name)
-            ]
-            if missing:
-                raise ValueError(
-                    "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, CAS, "
-                    "and consumed admission are bound"
-                )
-            self._admission_spent.spent = True
+            with _SPEND_LOCK:
+                if _SPENT.get(self._admission_spent, True):
+                    raise ValueError(
+                        "CAPTURED refuses after consumed admission is spent"
+                    )
+                missing = [
+                    name
+                    for name in _REQUIRED_PLAN
+                    if not _plan_artifact_bound(self._bound.get(name), name)
+                ]
+                if missing:
+                    raise ValueError(
+                        "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
+                        "CAS, and consumed admission are bound"
+                    )
+                _SPENT[self._admission_spent] = True
         return self._authority.capture(published, frozen, port, **kwargs)
