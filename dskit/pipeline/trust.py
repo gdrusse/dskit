@@ -979,8 +979,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         }
         published = _Published(sealed, descriptor)
         self._remember_published(published)
-        self._publish_sealed[id(published)] = sealed
-        self._publish_sealed_intern[id(published)] = sealed
+        self._store_interned(
+            self._publish_sealed,
+            self._publish_sealed_intern,
+            id(published),
+            sealed,
+        )
         self._store_interned(
             self._publish_stream,
             self._publish_stream_intern,
@@ -1145,18 +1149,24 @@ class _DevelopmentBroker(LifecycleAuthority):
             id(session),
             (id(session), str(stream_id)),
         )
-        bind = (published, frozen, session, stream_id)
-        self._capture_bind[id(captured)] = bind
-        self._capture_bind_intern[id(captured)] = bind
+        self._store_interned(
+            self._capture_bind,
+            self._capture_bind_intern,
+            id(captured),
+            (published, frozen, session, stream_id),
+        )
         return captured, session
 
     def open_capture(self, session, captured):
         if not isinstance(captured, _Captured):
             raise ValueError("CAPTURED token is required")
         self._require_session(session, kind="consumer", allow_open=True)
-        bind = self._capture_bind.get(id(captured))
-        if bind is None or bind is not self._capture_bind_intern.get(id(captured)):
-            raise ValueError("CAPTURED token is required")
+        bind = self._load_interned(
+            self._capture_bind,
+            self._capture_bind_intern,
+            id(captured),
+            "CAPTURED token is required",
+        )
         published, frozen, bound_session, stream_id = bind
         if bound_session is not session:
             raise ValueError("capture is bound to a different consumer session")
@@ -1267,8 +1277,9 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         ports = {frozen.consumer_input: port}
         bindings = CapturedBindings(_MAKE, ports, self)
-        self._mac_put(
+        self._store_interned(
             self._bindings_pin,
+            self._bindings_intern,
             id(bindings),
             [
                 id(bindings),
@@ -1278,7 +1289,6 @@ class _DevelopmentBroker(LifecycleAuthority):
                 id(session),
             ],
         )
-        self._bindings_intern[id(bindings)] = self._bindings_pin[id(bindings)]
         self._store_interned(
             self._bindings_ports,
             self._ports_intern,
@@ -1291,14 +1301,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         return bindings
 
     def _consume_binding(self, bindings, input_name):
-        rec = self._mac_get(
+        rec = self._load_interned(
             self._bindings_pin,
+            self._bindings_intern,
             id(bindings),
             "captured bindings are required",
         )
-        interned = self._bindings_intern.get(id(bindings))
-        if interned is not self._bindings_pin.get(id(bindings)):
-            raise ValueError("captured bindings are required")
         if rec[0] != id(bindings):
             raise ValueError("captured bindings are required")
         _bindings_id, stream_id, nonce, port_items, session_id = rec
@@ -1445,21 +1453,38 @@ class _DevelopmentBroker(LifecycleAuthority):
         return dict(rec[1])
 
     def _store_interned(self, table, intern, key, value):
-        table[key] = value
-        intern[key] = value
-        return value
+        try:
+            _canonical_bytes(value)
+            rec = self._mac_pack(key, value, ())
+        except (TypeError, ValueError):
+            objs = value if isinstance(value, tuple) else (value,)
+            rec = self._mac_pack(key, None, objs)
+        table[key] = rec
+        intern[key] = rec
+        return rec
 
-    def _mac_put(self, table, key, payload):
-        body = {"_k": key, "v": payload}
-        mac = hmac.new(self._map_key, _canonical_bytes(body), hashlib.sha256).hexdigest()
-        table[key] = (body, mac)
-        return table[key]
-
-    def _mac_get(self, table, key, message):
+    def _load_interned(self, table, intern, key, message):
         rec = table.get(key)
-        if rec is None or not isinstance(rec, tuple) or len(rec) != 2:
+        if rec is None or rec is not intern.get(key):
             raise ValueError(message)
-        body, mac = rec
+        payload, objs = self._mac_unpack(rec, key, message)
+        if payload is not None:
+            return payload
+        if len(objs) == 1:
+            return objs[0]
+        return objs
+
+    def _mac_pack(self, key, payload, objs):
+        objs = tuple(objs)
+        body = {"_k": key, "v": payload, "oids": [id(item) for item in objs]}
+        mac = hmac.new(self._map_key, _canonical_bytes(body), hashlib.sha256).hexdigest()
+        return (body, mac, objs)
+
+    def _mac_unpack(self, rec, key, message):
+        try:
+            body, mac, objs = rec
+        except (TypeError, ValueError):
+            raise ValueError(message)
         expected = hmac.new(
             self._map_key,
             _canonical_bytes(body),
@@ -1467,13 +1492,25 @@ class _DevelopmentBroker(LifecycleAuthority):
         ).hexdigest()
         if mac != expected or body.get("_k") != key:
             raise ValueError(message)
-        return body["v"]
-
-    def _load_interned(self, table, intern, key, message):
-        value = table.get(key)
-        if value is None or value is not intern.get(key):
+        oids = body.get("oids") or []
+        if len(objs) != len(oids):
             raise ValueError(message)
-        return value
+        for obj, oid in zip(objs, oids, strict=True):
+            if id(obj) != oid:
+                raise ValueError(message)
+        return body.get("v"), objs
+
+    def _mac_put(self, table, key, payload):
+        rec = self._mac_pack(key, payload, ())
+        table[key] = rec
+        return rec
+
+    def _mac_get(self, table, key, message):
+        rec = table.get(key)
+        if rec is None:
+            raise ValueError(message)
+        payload, _objs = self._mac_unpack(rec, key, message)
+        return payload
 
     def _require_session(self, session, kind=None, allow_open=False):
         if not isinstance(session, LaunchSession) or id(session) not in self._sessions:
