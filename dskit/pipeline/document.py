@@ -77,6 +77,7 @@ __all__ = [
     "DOC_SPLIT_KINDS",
     "EACH_TOKEN",
     "FOREACH_SEP",
+    "ExecutionBacktestSpec",
     "ForeachSpec",
     "MODES",
     "NodeSpec",
@@ -589,6 +590,109 @@ class NodeSpec:
             mode=obj.get("mode", None),
             artifact=obj.get("artifact", ""),
             role=obj.get("role", None),
+            notes=obj.get("notes", ""),
+        )
+
+
+_EXECUTION_BACKTEST_SCHEMA = "dskit.execution-backtest/v1"
+_EXECUTION_BACKTEST_PURPOSES = ("synthetic", "historical-simulator")
+_EVENT_ENVELOPE_SCHEMA = "dskit.event-envelope/v2"
+_SHA256_OK = re.compile(r"^[0-9a-f]{64}$")
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionBacktestSpec:
+    """Closed, versioned identity for an execution-pipeline document."""
+
+    schema_version: str
+    purpose: str
+    event_envelope_schema: str
+    source_rank_policy_sha256: str
+    execution_profile_sha256: str
+    environment_identity_sha256: str
+    notes: str = ""
+
+    def __post_init__(self):
+        """Validate every required v1 member without supplying defaults."""
+        errors = []
+        _check_str(errors, "execution_backtest.schema_version", self.schema_version)
+        if (
+            isinstance(self.schema_version, str)
+            and self.schema_version
+            and self.schema_version != _EXECUTION_BACKTEST_SCHEMA
+        ):
+            errors.append(
+                "execution_backtest.schema_version must be "
+                f"{_EXECUTION_BACKTEST_SCHEMA!r}, got {self.schema_version!r}"
+            )
+        if self.purpose not in _EXECUTION_BACKTEST_PURPOSES:
+            errors.append(
+                "execution_backtest.purpose must be one of "
+                f"{list(_EXECUTION_BACKTEST_PURPOSES)}, got {self.purpose!r}"
+            )
+        _check_str(
+            errors,
+            "execution_backtest.event_envelope_schema",
+            self.event_envelope_schema,
+        )
+        if (
+            isinstance(self.event_envelope_schema, str)
+            and self.event_envelope_schema
+            and self.event_envelope_schema != _EVENT_ENVELOPE_SCHEMA
+        ):
+            errors.append(
+                "execution_backtest.event_envelope_schema must be "
+                f"{_EVENT_ENVELOPE_SCHEMA!r}, got {self.event_envelope_schema!r}"
+            )
+        for name in (
+            "source_rank_policy_sha256",
+            "execution_profile_sha256",
+            "environment_identity_sha256",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not _SHA256_OK.fullmatch(value):
+                errors.append(
+                    f"execution_backtest.{name} must be an exact lowercase "
+                    f"SHA-256 digest, got {value!r}"
+                )
+        _check_str(errors, "execution_backtest.notes", self.notes, non_empty=False)
+        _raise_if(errors)
+
+    def to_obj(self):
+        """Return all identity members plus standard hash-excluded notes."""
+        return _dataclass_to_obj(self)
+
+    @classmethod
+    def from_obj(cls, obj):
+        """Parse the exact v1 shape; no semantic member has a default."""
+        if not isinstance(obj, dict):
+            raise ConfigError(
+                [f"execution_backtest must be an object, got {obj!r}"]
+            )
+        required = (
+            "schema_version",
+            "purpose",
+            "event_envelope_schema",
+            "source_rank_policy_sha256",
+            "execution_profile_sha256",
+            "environment_identity_sha256",
+        )
+        allowed = (*required, "notes")
+        errors = []
+        unknown = sorted(set(obj) - set(allowed))
+        if unknown:
+            errors.append(
+                "execution_backtest: unknown key(s) "
+                f"{unknown} — allowed: {sorted(allowed)}"
+            )
+        missing = sorted(set(required) - set(obj))
+        if missing:
+            errors.append(
+                "execution_backtest: missing required key(s) " f"{missing}"
+            )
+        _raise_if(errors)
+        return cls(
+            **{name: obj[name] for name in required},
             notes=obj.get("notes", ""),
         )
 
@@ -1796,6 +1900,7 @@ class PipelineDocument:
     walkforward: object = None
     foreach: object = None
     stages: object = None
+    execution_backtest: object = None
     #: DERIVED, never declared and never emitted: the node map that
     #: actually runs, and ``template key -> instance keys``. ``init=False``
     #: so no caller can inject one, ``compare=False`` because they are a
@@ -1849,6 +1954,12 @@ class PipelineDocument:
         _check_child(errors, "tracking", self.tracking, TrackingConfig)
         _check_child(errors, "walkforward", self.walkforward, WalkForwardSpec)
         _check_child(errors, "foreach", self.foreach, ForeachSpec)
+        _check_child(
+            errors,
+            "execution_backtest",
+            self.execution_backtest,
+            ExecutionBacktestSpec,
+        )
         if self.stages is not None:
             if not isinstance(self.stages, dict) or not self.stages:
                 errors.append("stages must be a non-empty map when declared")
@@ -1859,6 +1970,11 @@ class PipelineDocument:
                             f"stages: keys must match {_NODE_KEY_OK}, got {key!r}"
                         )
                     _check_child(errors, f"stages.{key}", spec, StageSpec)
+        if self.execution_backtest is not None and self.stages is not None:
+            errors.append(
+                "execution_backtest documents forbid user-authored stages; "
+                "capture barriers are derived from verified captured ports"
+            )
         _check_str(errors, "notes", self.notes, non_empty=False)
         # The derived pair defaults to the declared map — with no foreach
         # that IS the answer, and the expansion overwrites it otherwise.
@@ -2036,6 +2152,8 @@ class PipelineDocument:
             obj["foreach"] = self.foreach.to_obj()
         if self.stages is not None:
             obj["stages"] = {key: spec.to_obj() for key, spec in self.stages.items()}
+        if self.execution_backtest is not None:
+            obj["execution_backtest"] = self.execution_backtest.to_obj()
         obj["notes"] = self.notes
         return obj
 
@@ -2077,9 +2195,15 @@ class PipelineDocument:
                 "foreach",
                 "notes",
                 "stages",
+                "execution_backtest",
             ),
             "document",
         )
+        if "execution_backtest" in obj and "stages" in obj:
+            raise ConfigError(
+                ["execution_backtest documents forbid user-authored stages; "
+                 "capture barriers are derived from verified captured ports"]
+            )
         errors = []
         nodes = {}
         raw_pipeline = obj.get("pipeline", {})
@@ -2115,6 +2239,15 @@ class PipelineDocument:
         tracking = _section("tracking", TrackingConfig.from_obj)
         walkforward = _section("walkforward", WalkForwardSpec.from_obj)
         foreach = _section("foreach", ForeachSpec.from_obj)
+        execution_backtest = None
+        if "execution_backtest" in obj:
+            raw_execution_backtest = obj["execution_backtest"]
+            try:
+                execution_backtest = ExecutionBacktestSpec.from_obj(
+                    raw_execution_backtest
+                )
+            except ConfigError as exc:
+                errors.extend(exc.errors)
         stages = None
         raw_stages = obj.get("stages")
         if raw_stages is not None:
@@ -2146,6 +2279,7 @@ class PipelineDocument:
             walkforward=walkforward,
             foreach=foreach,
             stages=stages,
+            execution_backtest=execution_backtest,
         )
 
 
