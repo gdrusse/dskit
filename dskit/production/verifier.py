@@ -633,8 +633,10 @@ class SubmissionVerifier:
 _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 
 
-def _plan_artifact_bound(value):
+def _plan_artifact_bound(value, name=None):
     """Return whether ``value`` is a bound plan artifact."""
+    if name == "admission":
+        return isinstance(value, dict) and value.get("consumed") is True
     return bool(value)
 
 
@@ -671,18 +673,19 @@ class HistoricalStudyVerifier:
         ----------
         artifacts : dict
             Any subset of ``scope_intent``, ``ces``, ``pea``, ``bvp``,
-            ``cas``, ``admission``. Values must not be ``None``.
+            ``cas``, ``admission``. Values must be truthy; ``admission``
+            must be a mapping whose ``consumed`` member is ``True``.
 
         Raises
         ------
         ValueError
-            On an unknown name or a ``None`` value.
+            On an unknown name or an unbound artifact.
         """
         unknown = tuple(name for name in artifacts if name not in _REQUIRED_PLAN)
         if unknown:
             raise ValueError("unknown plan artifact")
         for name, value in artifacts.items():
-            if not _plan_artifact_bound(value):
+            if not _plan_artifact_bound(value, name):
                 raise ValueError("plan artifact is required")
             self._bound[name] = value
 
@@ -715,7 +718,7 @@ class HistoricalStudyVerifier:
         missing = [
             name
             for name in _REQUIRED_PLAN
-            if not _plan_artifact_bound(self._bound.get(name))
+            if not _plan_artifact_bound(self._bound.get(name), name)
         ]
         if missing:
             raise ValueError(
