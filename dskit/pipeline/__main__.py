@@ -433,12 +433,15 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
 
 def cmd_staged(path, asof, adapters=()) -> int:
     """Execute or resume a document's journal-backed study stages."""
-    from dskit.pipeline.stages import _run_staged_document
+    from dskit.pipeline.stages import _run_staged_document, run_staged
 
     try:
         document = _load_ordinary_document(path)
         _import_adapters(adapters)
-        result = _run_staged_document(document, path, asof=asof)
+        result = (
+            run_staged(path, asof=asof) if document is None
+            else _run_staged_document(document, path, asof=asof)
+        )
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
