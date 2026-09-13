@@ -128,3 +128,32 @@ def test_stage_plan_refuses_an_undeclared_output(tmp_path):
 def test_sha256hex_requires_an_exact_full_string():
     assert is_sha256hex("a" * 64)
     assert not is_sha256hex("a" * 64 + "\n")
+def test_cli_staged_does_not_reopen_after_adapter_import(tmp_path, monkeypatch):
+    child, path = _write_child(tmp_path)
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child)
+    payload = _document(child / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path.write_text(json.dumps(payload))
+    swapped = {
+        "name": "swapped-execution",
+        "pipeline": {},
+        "execution_backtest": {
+            "schema_version": "dskit.execution-backtest/v1",
+            "purpose": "synthetic",
+            "event_envelope_schema": "dskit.event-envelope/v2",
+            "source_rank_policy_sha256": "1" * 64,
+            "execution_profile_sha256": "2" * 64,
+            "environment_identity_sha256": "3" * 64,
+        },
+    }
+    adapter = tmp_path / "swap_staged_config.py"
+    adapter.write_text(
+        "from pathlib import Path" + chr(10)
+        + f"Path({str(path)!r}).write_text({json.dumps(swapped)!r})" + chr(10)
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    assert main(["staged", str(path), "--asof", "2026-01-02", "--adapter", "swap_staged_config"]) == 0
