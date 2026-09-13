@@ -634,7 +634,7 @@ _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 
 
 def _plan_artifact_bound(value):
-    """True when ``value`` is a real bound artifact, not a missing/falsy stand-in."""
+    """Return whether ``value`` is a bound plan artifact."""
     return bool(value)
 
 
