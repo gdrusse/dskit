@@ -241,3 +241,25 @@ def test_admission_get_spoof_cannot_bind_capture():
             transition_nonce="nonce-captured",
         )
     assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
+
+
+def test_refused_bind_does_not_store_partial_artifacts():
+    broker, published, frozen, port, verifier = _study_capture_setup()
+    five = {name: _PLACEHOLDERS[name] for name in _PLACEHOLDERS if name != "admission"}
+    verifier.bind(**five)
+    with pytest.raises(ValueError, match="plan artifact is required"):
+        verifier.bind(admission=_PLACEHOLDERS["admission"], cas={})
+    with pytest.raises(
+        ValueError,
+        match="ScopeIntent|CES|PEA|BVP|CAS|admission",
+    ):
+        verifier.capture(
+            published,
+            frozen,
+            port,
+            consumer_run_identity="consumer-run",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured",
+        )
+    assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
