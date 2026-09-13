@@ -2225,6 +2225,9 @@ class PipelineDocument:
             raw = obj.get(name)
             if raw is None:
                 return None
+            if not isinstance(raw, dict):
+                errors.append(f"{name}: must be an object, got {raw!r}")
+                return None
             try:
                 return builder(raw)
             except ConfigError as exc:
