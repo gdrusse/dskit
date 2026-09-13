@@ -300,16 +300,24 @@ class LaunchSession(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_kind", "_run_identity", "_ended", "_plan_sha256", "_runtime")
+    __slots__ = ("_kind", "_run_identity", "_ended", "_plan_sha256", "_runtime", "_locked")
 
     def __init__(self, token, kind, run_identity, plan_sha256, runtime):
         if token is not _MAKE:
             raise TypeError("LaunchSession is opaque")
-        self._kind = kind
-        self._run_identity = run_identity
-        self._ended = False
-        self._plan_sha256 = plan_sha256
-        self._runtime = dict(runtime)
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "_kind", kind)
+        object.__setattr__(self, "_run_identity", run_identity)
+        object.__setattr__(self, "_ended", False)
+        object.__setattr__(self, "_plan_sha256", plan_sha256)
+        object.__setattr__(self, "_runtime", MappingProxyType(dict(runtime)))
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        """Refuse attribute writes after construction."""
+        if getattr(self, "_locked", False):
+            raise AttributeError("launch session is frozen")
+        object.__setattr__(self, name, value)
 
 
 class VerifiedCapture(_Opaque):
@@ -599,35 +607,6 @@ class _ReceiptSubject:
         self.purpose = purpose
 
 
-class _BindingsPin:
-    """Frozen consume identity for one CapturedBindings handle."""
-
-    __slots__ = (
-        "stream_id",
-        "session",
-        "port",
-        "nonce",
-        "bindings_id",
-        "ports",
-        "_locked",
-    )
-
-    def __init__(self, stream_id, session, port, nonce, bindings_id, ports):
-        object.__setattr__(self, "_locked", False)
-        object.__setattr__(self, "stream_id", str(stream_id))
-        object.__setattr__(self, "session", session)
-        object.__setattr__(self, "port", MappingProxyType(dict(port)))
-        object.__setattr__(self, "nonce", str(nonce))
-        object.__setattr__(self, "bindings_id", bindings_id)
-        object.__setattr__(self, "ports", MappingProxyType(dict(ports)))
-        object.__setattr__(self, "_locked", True)
-
-    def __setattr__(self, name, value):
-        if getattr(self, "_locked", False):
-            raise AttributeError("bindings pin is frozen")
-        object.__setattr__(self, name, value)
-
-
 class _Prepared:
     """Driver-internal PRODUCED token. Not exported."""
 
@@ -795,6 +774,8 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._publish_stream = {}
         self._verified_pin = {}
         self._bindings_pin = {}
+        self._bindings_ports = {}
+        self._session_runtime = {}
 
     def start_producer_session(
         self,
@@ -814,13 +795,13 @@ class _DevelopmentBroker(LifecycleAuthority):
                 "run_identity": run_identity,
             },
         )
-        self._sessions[id(session)] = session
+        self._remember_session(session)
         self._session_events.append(("start", run_identity, id(session)))
         return session
 
     def end_session(self, session):
         self._require_session(session)
-        session._ended = True
+        object.__setattr__(session, "_ended", True)
 
     def produce(
         self,
@@ -1112,7 +1093,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                 "run_identity": consumer_run_identity,
             },
         )
-        self._sessions[id(session)] = session
+        self._remember_session(session)
         self._session_events.append(("start", consumer_run_identity, id(session)))
         captured = _Captured(published, frozen, dict(expected), session)
         self._append_receipt(
@@ -1123,7 +1104,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             extra={"consumer_captured_port": dict(expected)},
         )
         self._captured_streams[id(captured)] = stream_id
-        self._session_streams[id(session)] = stream_id
+        self._session_streams[id(session)] = (id(session), str(stream_id))
         self._capture_bind[id(captured)] = (published, frozen, session, stream_id)
         return captured, session
 
@@ -1228,23 +1209,33 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         ports = {frozen.consumer_input: port}
         bindings = CapturedBindings(_MAKE, ports, self)
-        self._bindings_pin[id(bindings)] = _BindingsPin(
-            stream_id,
-            session,
-            expected_port,
-            transition_nonce,
+        self._bindings_pin[id(bindings)] = (
             id(bindings),
-            ports,
+            str(stream_id),
+            str(transition_nonce),
+            tuple(sorted(dict(expected_port).items())),
+            id(session),
+        )
+        self._bindings_ports[id(bindings)] = (
+            id(bindings),
+            MappingProxyType(dict(ports)),
         )
         return bindings
 
     def _consume_binding(self, bindings, input_name):
-        pin = self._bindings_pin.get(id(bindings))
-        if pin is None or pin.bindings_id != id(bindings):
+        rec = self._bindings_pin.get(id(bindings))
+        if rec is None or rec[0] != id(bindings):
             raise ValueError("captured bindings are required")
-        if input_name not in pin.ports:
+        _bindings_id, stream_id, nonce, port_items, session_id = rec
+        ports_rec = self._bindings_ports.get(id(bindings))
+        if ports_rec is None or ports_rec[0] != id(bindings):
+            raise ValueError("captured bindings are required")
+        ports = ports_rec[1]
+        if input_name not in ports:
             raise ValueError("missing captured input")
-        stream_id = pin.stream_id
+        session = self._sessions.get(session_id)
+        if session is None or id(session) != session_id:
+            raise ValueError("captured bindings are required")
         subject = self._stream_pin.get(stream_id)
         if subject is None:
             raise ValueError("captured bindings are required")
@@ -1260,22 +1251,25 @@ class _DevelopmentBroker(LifecycleAuthority):
                 subject.purpose,
             ),
             "CONSUMED",
-            pin.session,
-            pin.nonce,
-            extra={"consumer_captured_port": dict(pin.port)},
+            session,
+            nonce,
+            extra={"consumer_captured_port": dict(port_items)},
         )
-        self._used_inputs.setdefault(id(pin.session), set()).add(input_name)
-        return pin.ports[input_name]
+        self._used_inputs.setdefault(session_id, set()).add(input_name)
+        return ports[input_name]
 
     def release(self, session):
         self._require_session(session, kind="consumer", allow_open=True)
-        used = self._used_inputs.get(id(session), set())
-        if not used:
-            raise ValueError("CONSUMED input is required before release")
         if id(session) in self._released:
             raise ValueError("release already replayed")
-        stream_id = self._session_streams.get(id(session))
-        if stream_id is None:
+        bound = self._session_streams.get(id(session))
+        if bound is None or bound[0] != id(session):
+            raise ValueError("CONSUMED input is required before release")
+        stream_id = bound[1]
+        self._reload_stream(stream_id)
+        self._require_head(stream_id, "CONSUMED")
+        used = self._used_inputs.get(id(session), set())
+        if not used:
             raise ValueError("CONSUMED input is required before release")
         self._released.add(id(session))
         return CapturedRelease(_MAKE, stream_id)
@@ -1335,6 +1329,19 @@ class _DevelopmentBroker(LifecycleAuthority):
                 if field != _digest(_canonical_bytes(unsigned)):
                     raise ValueError("publication receipt identity mismatch")
             previous = _digest(_canonical_bytes(receipt))
+
+    def _remember_session(self, session):
+        self._sessions[id(session)] = session
+        self._session_runtime[id(session)] = (
+            id(session),
+            tuple(sorted(dict(session._runtime).items())),
+        )
+
+    def _actor_runtime(self, session):
+        rec = self._session_runtime.get(id(session))
+        if rec is None or rec[0] != id(session):
+            raise ValueError("launch session is required")
+        return dict(rec[1])
 
     def _require_session(self, session, kind=None, allow_open=False):
         if not isinstance(session, LaunchSession) or id(session) not in self._sessions:
@@ -1449,7 +1456,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             "root_id": prepared.root["root_id"],
             "snapshot_version": prepared.root["snapshot_version"],
             "member_manifest_sha256": member_manifest,
-            "actor_runtime": dict(session._runtime),
+            "actor_runtime": self._actor_runtime(session),
             "transition_nonce": transition_nonce,
             "issued_at_ms": self._clock.now_ms(),
             "deployment_eligible": False,
