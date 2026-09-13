@@ -204,14 +204,18 @@ def _legacy_validate(path, adapters) -> int:
     return 0
 
 
-def _doc_validate(path) -> int:
+def _doc_validate(path, document=None) -> int:
     from dskit.pipeline.document import load_document
+    from dskit.pipeline.planner import refuse_execution_backtest
 
-    try:
-        doc = load_document(path)
-    except (ValueError, OSError) as exc:
-        print(exc)
-        return 1
+    if document is None:
+        try:
+            document = load_document(path)
+        except (ValueError, OSError) as exc:
+            print(exc)
+            return 1
+    refuse_execution_backtest(document)
+    doc = document
     sections = [
         s
         for s in (
@@ -259,7 +263,7 @@ def cmd_validate(path, adapters) -> int:
         0 valid, 1 refused (the reason is printed).
     """
     try:
-        _load_ordinary_document(path)
+        captured = _load_ordinary_document(path)
     except ValueError as exc:
         print(exc)
         return 1
@@ -280,7 +284,7 @@ def cmd_validate(path, adapters) -> int:
         except (ImportError, ValueError, OSError) as exc:
             print(exc)
             return 1
-        return _doc_validate(path)
+        return _doc_validate(path, document=captured)
     return _legacy_validate(path, adapters)
 
 
