@@ -8,6 +8,7 @@ from dskit.pipeline.base import ConfigError, TimeSplitConfig
 from dskit.pipeline.document import (
     MODES,
     ClockConfig,
+    ExecutionBacktestSpec,
     NodeSpec,
     PipelineDocument,
     RandomSplitSpec,
@@ -536,6 +537,104 @@ def test_execution_block_rejects_user_stages():
                 "stages": {"capture": {"uses": "capture"}},
             }
         )
+
+
+def _execution_backtest():
+    return {
+        "schema_version": "dskit.execution-backtest/v1",
+        "purpose": "synthetic",
+        "event_envelope_schema": "dskit.event-envelope/v2",
+        "source_rank_policy_sha256": "1" * 64,
+        "execution_profile_sha256": "2" * 64,
+        "environment_identity_sha256": "3" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("node", "semantic"),
+    (
+        (
+            {
+                "uses": "synthetic-frame",
+                "params": {
+                    "nested": [{"$prev": "source.output", "default": "first"}]
+                },
+            },
+            r"\$prev",
+        ),
+        (
+            {
+                "uses": "synthetic-frame",
+                "mode": "load",
+                "artifact": "runs/source/model.json",
+            },
+            "mode",
+        ),
+        (
+            {
+                "uses": "synthetic-frame",
+                "mode": "load",
+                "artifact": "runs/source/model.json",
+            },
+            "artifact",
+        ),
+    ),
+)
+def test_execution_block_rejects_forbidden_node_semantics_from_obj(node, semantic):
+    with pytest.raises(ConfigError, match=semantic):
+        PipelineDocument.from_obj(
+            {
+                "name": "execution-node-refusal",
+                "pipeline": {"source": node},
+                "execution_backtest": _execution_backtest(),
+            }
+        )
+
+
+@pytest.mark.parametrize("semantic", (r"\$prev", "mode", "artifact"))
+def test_execution_block_rejects_forbidden_node_semantics_directly(semantic):
+    if semantic == r"\$prev":
+        node = NodeSpec(
+            uses="synthetic-frame",
+            params={"nested": [{"$prev": "source.output", "default": "first"}]},
+        )
+    else:
+        node = NodeSpec(
+            uses="synthetic-frame",
+            mode="load",
+            artifact="runs/source/model.json",
+        )
+
+    with pytest.raises(ConfigError, match=semantic):
+        PipelineDocument(
+            name="execution-node-refusal",
+            pipeline={"source": node},
+            execution_backtest=ExecutionBacktestSpec.from_obj(_execution_backtest()),
+        )
+
+
+@pytest.mark.parametrize(
+    "node",
+    (
+        {
+            "uses": "synthetic-frame",
+            "params": {"nested": [{"$prev": "source.output", "default": "first"}]},
+        },
+        {
+            "uses": "synthetic-frame",
+            "mode": "load",
+            "artifact": "runs/source/model.json",
+        },
+    ),
+)
+def test_ordinary_document_allows_execution_only_node_semantics(node):
+    document = PipelineDocument.from_obj(
+        {"name": "ordinary-node-semantics", "pipeline": {"source": node}}
+    )
+    spec = document.pipeline["source"]
+    assert spec.params == node.get("params", {})
+    assert spec.mode == node.get("mode")
+    assert spec.artifact == node.get("artifact", "")
 
 
 class TestDocumentHash:
