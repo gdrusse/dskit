@@ -467,14 +467,22 @@ class CapturedBindings(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_ports", "_used", "_on_require")
+    __slots__ = ("_ports", "_used", "_broker", "_locked")
 
-    def __init__(self, token, ports, on_require):
+    def __init__(self, token, ports, broker):
         if token is not _MAKE:
             raise TypeError("CapturedBindings is opaque")
-        self._ports = ports
-        self._used = set()
-        self._on_require = on_require
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "_ports", MappingProxyType(dict(ports)))
+        object.__setattr__(self, "_used", set())
+        object.__setattr__(self, "_broker", broker)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        """Refuse attribute writes after construction."""
+        if getattr(self, "_locked", False):
+            raise AttributeError("captured bindings are frozen")
+        object.__setattr__(self, name, value)
 
     def require(self, input_name):
         """Return the exact declared input once, then refuse replay."""
@@ -483,8 +491,7 @@ class CapturedBindings(_Opaque):
         if input_name in self._used:
             raise ValueError("captured input already consumed")
         self._used.add(input_name)
-        self._on_require(input_name)
-        return self._ports[input_name]
+        return self._broker._consume_binding(self, input_name)
 
 
 class CapturedRelease(_Opaque):
@@ -590,6 +597,35 @@ class _ReceiptSubject:
         self.session_run_identity = session_run_identity
         self.output_member = output_member
         self.purpose = purpose
+
+
+class _BindingsPin:
+    """Frozen consume identity for one CapturedBindings handle."""
+
+    __slots__ = (
+        "stream_id",
+        "session",
+        "port",
+        "nonce",
+        "bindings_id",
+        "ports",
+        "_locked",
+    )
+
+    def __init__(self, stream_id, session, port, nonce, bindings_id, ports):
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "stream_id", str(stream_id))
+        object.__setattr__(self, "session", session)
+        object.__setattr__(self, "port", MappingProxyType(dict(port)))
+        object.__setattr__(self, "nonce", str(nonce))
+        object.__setattr__(self, "bindings_id", bindings_id)
+        object.__setattr__(self, "ports", MappingProxyType(dict(ports)))
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise AttributeError("bindings pin is frozen")
+        object.__setattr__(self, name, value)
 
 
 class _Prepared:
@@ -758,6 +794,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._stream_pin = {}
         self._publish_stream = {}
         self._verified_pin = {}
+        self._bindings_pin = {}
 
     def start_producer_session(
         self,
@@ -1189,25 +1226,46 @@ class _DevelopmentBroker(LifecycleAuthority):
             artifact,
             MappingProxyType({"consumer_port": expected_port}),
         )
-        consumed_stream_id = stream_id
-
-        def _on_require(input_name, stream_id=consumed_stream_id):
-            self._reload_stream(stream_id)
-            self._require_head(stream_id, "CAPTURED")
-            self._append_receipt(
-                self._stream_pin[stream_id],
-                "CONSUMED",
-                session,
-                transition_nonce,
-                extra={"consumer_captured_port": dict(expected_port)},
-            )
-            self._used_inputs.setdefault(id(session), set()).add(input_name)
-
-        return CapturedBindings(
-            _MAKE,
-            {frozen.consumer_input: port},
-            _on_require,
+        ports = {frozen.consumer_input: port}
+        bindings = CapturedBindings(_MAKE, ports, self)
+        self._bindings_pin[id(bindings)] = _BindingsPin(
+            stream_id,
+            session,
+            expected_port,
+            transition_nonce,
+            id(bindings),
+            ports,
         )
+        return bindings
+
+    def _consume_binding(self, bindings, input_name):
+        pin = self._bindings_pin.get(id(bindings))
+        if pin is None or pin.bindings_id != id(bindings):
+            raise ValueError("captured bindings are required")
+        if input_name not in pin.ports:
+            raise ValueError("missing captured input")
+        stream_id = pin.stream_id
+        subject = self._stream_pin.get(stream_id)
+        if subject is None:
+            raise ValueError("captured bindings are required")
+        self._reload_stream(stream_id)
+        self._require_head(stream_id, "CAPTURED")
+        self._append_receipt(
+            _ReceiptSubject(
+                stream_id,
+                subject.producer,
+                subject.root,
+                subject.session_run_identity,
+                subject.output_member,
+                subject.purpose,
+            ),
+            "CONSUMED",
+            pin.session,
+            pin.nonce,
+            extra={"consumer_captured_port": dict(pin.port)},
+        )
+        self._used_inputs.setdefault(id(pin.session), set()).add(input_name)
+        return pin.ports[input_name]
 
     def release(self, session):
         self._require_session(session, kind="consumer", allow_open=True)

@@ -1771,8 +1771,8 @@ def test_require_closure_subject_cannot_move_consumed_cas():
         consumer_node="consume",
         transition_nonce="nonce-consumed",
     )
-    on_require = bindings._on_require
-    if on_require.__closure__:
+    on_require = getattr(bindings, "_on_require", None)
+    if on_require is not None and on_require.__closure__:
         for cell, name in zip(on_require.__closure__, on_require.__code__.co_freevars):
             if name == "subject":
                 cell.cell_contents = sealed_b.prepared
