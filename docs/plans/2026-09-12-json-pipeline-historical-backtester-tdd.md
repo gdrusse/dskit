@@ -418,7 +418,7 @@ declared availability interval—not merely sources observed in resulting events
 includes authorized zero-event sources. The execution block pins this already-
 published policy digest, and the tape-data producer document freezes an exact
 top-level `source_roster` `$captured_artifact` descriptor pointing at its immutable
-root/publication receipt. Only after that consumer document hash exists may F5 derive
+root/publication receipt. Only after that consumer document hash exists may F5a derive
 its ConsumerCapturedPort, issue the CAPTURED receipt, and allow the later consumer
 LaunchSession to CONSUME it. Thus no policy is derived from the resulting tape.
 Missing, late, unknown, duplicate, substituted, noncanonical, noncontiguous, or
@@ -452,7 +452,7 @@ operation: no execution worker/provider receives it. Only after both source rost
 and raw dataset artifacts are PUBLISHED may the execution PipelineDocument freeze.
 Its generic `ReplayTapeDataCapture` producer declares exactly the two top-level
 captured node inputs `raw_event_dataset` and `source_roster` (no alias/extra/nested
-captured descriptors). F5 then derives both exact ports from the frozen document,
+captured descriptors). F5a then derives both exact ports from the frozen document,
 verifies the roots/publication receipts, issues port-bound CAPTURED receipts, and
 only then admits the distinct consumer run; its authorization/receipt/member/purpose
 equality and CapturedAuthorizationSet bind both.
@@ -597,7 +597,7 @@ Focused lifecycle tests prove producer-session termination, new consumer-session
 binding, exact publish->document/port->capture->consumer order, receipt/port linkage,
 and same-run/session replay refusal.
 
-## F5 — captured ports, driver, and decider injection
+## F5a — capture/admission primitives
 
 **Reuse:** existing planner/driver/staged-runner data contracts and the forecast
 handoff's opaque `CapturedArtifactPort`; ordinary `NodeContext` remains only an
@@ -652,7 +652,7 @@ already PUBLISHED immutable root and flat PIS projection, privately plans the ex
 typed capture set, and rejects a substituted, extra, missing, unordered, or unequal
 PCE at every equality boundary. Only the complete V2 captured set binds the
 nonserializable LaunchSession and runtime binding; its digest enters V2 header/frozen
-plan, recovery, terminal projection/result, report, and study evidence. Focused F5/I1
+plan, recovery, terminal projection/result, report, and study evidence. Focused F5a/I1
 RED tests cover plan-before-capture, authority/run/session linkage, equality sets,
 publication/descriptor/receipt substitution, and restart identity.
 
@@ -689,6 +689,18 @@ authorization/descriptor mismatch, ordinary context/registry, ambient, nested,
 raw-artifact, or noncaptured decision input refuses.
 
 ## A1--A4 — model release
+
+## F5b — forecast/calibration/capital consumers
+
+**Dependencies:** F3 and F5a only. **Scope/owned paths:** new generic
+`dskit/production/captured_bindings.py:CapturedBindings.require`, plus thin
+`children/intraday_equities/intraday_equities/forecast_bundle.py` adapters and
+`children/intraday_equities/tests/test_forecast_bundle.py` only. **RED:**
+`test_forecast_consumer_requires_v2_captured_set` refuses a descriptor, port, or
+receipt that is not the F5a V2 set. **GREEN:** one nonserializable binding is injected
+only into its declared consumer input; run `wsl.exe -e bash -lc 'cd forecast-capital &&
+pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set'`.
+Terra records the sole skeptic review after Sol GREEN.
 
 ### A1 — generic TrainableNode/splits
 
@@ -1016,14 +1028,14 @@ second accounting engine.
 ## M2--M4 execution ownership and evidence manifest
 
 Three isolated lane worktrees are mandatory: model-release owns F1/F2/A1--A4/E1;
-forecast-capital owns F3/F5a/F5b/B0--B3/C0--C1; replay-ops owns F4/R1--R5; only a
+forecast-capital owns F3/F4/F5a/F5b/B0--B3/C1; replay-ops owns C0/R1--R5; only a
 fresh integration worktree owns I1/I2. Cross-lane inputs are signed artifact/commit
 pins, never live shared edits. Merge F5a before F3/F5b and all DAG pins before I1;
 Sol GREEN then one Terra skeptic follows each merge, with Terra corrections/later
 reviews and two sequential clean Terra reviews before integration.
 
 R1--R3 own only generic `dskit/production/replay.py`, `serve_root.py`, `loop.py` and
-`tests/production/test_replay.py`, `test_loop.py`, `test_state.py`; equity supplies
+`tests/production/test_replay_state_v2.py`, `test_loop.py`, and route tests; equity supplies
 thin registered adapters only. ServeRoot validates rooted digest keys, lstat type/
 owner/mode/link count, O_NOFOLLOW locks and O_EXCL same-directory siblings; under
 lock it checks expected bytes/hash/generation, write+file-fsyncs, re-reads, atomically
@@ -1069,10 +1081,11 @@ Run `wsl.exe -e bash -lc 'cd forecast-capital && pytest -q children/intraday_equ
 
 Route ownership is replay-ops: `dskit/production/replay.py`, `serve_root.py`,
 `loop.py`, `report.py`, `dskit/production/report.py`, and
-`dskit/production/__main__.py`, with new `tests/production/test_replay_v2.py` and
-`test_replay_storage_v2.py`. C0 alone owns `tests/production/test_state.py`; replay
-uses `test_replay_storage_v2.py`, eliminating concurrent ownership. I1/I2 may only
-consolidate already-pinned tests after lane merges.
+`dskit/production/__main__.py`, with new `tests/production/test_replay_state_v2.py`
+and `test_replay_routes_v2.py`. C0 alone owns existing `tests/production/test_state.py`;
+replay owns only those new V2 modules. I1/I2 own new
+`tests/integration/test_historical_json_e2e.py`, never replay-lane tests, and may
+consolidate only pinned artifacts after lane merges.
 
 The exhaustive TDD manifest has unique assertion/node/path per slice (each command is
 `wsl.exe -e bash -lc 'cd <listed lane> && pytest -q <listed node>'`, with its literal
