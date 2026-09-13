@@ -99,6 +99,7 @@ def require_in_memory_document(document, entry_point):
             "path overloads are retired. Load the document in the caller or use "
             "python -m dskit.pipeline."
         )
+    refuse_execution_backtest(document)
     captured = PipelineDocument.from_obj(
         _capture_plain_json(document.to_obj(), entry_point)
     )

@@ -289,6 +289,17 @@ def _contains_refs(obj) -> bool:
     return False
 
 
+def _contains_prev_ref(obj):
+    """Whether a ``$prev`` carry hides anywhere in ``obj``."""
+    if is_prev_ref(obj):
+        return True
+    if isinstance(obj, dict):
+        return any(_contains_prev_ref(value) for value in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_contains_prev_ref(value) for value in obj)
+    return False
+
+
 def parse_prev_ref(value):
     """Split ``{"$prev": "node.output", "default": X}`` into
     ``(node, path_tuple, default)``. Raises :class:`ConfigError` unless
@@ -613,6 +624,34 @@ def _execution_backtest_section_errors(sections):
         "capture barriers are derived from verified captured ports"
         for section in sections
     ]
+
+
+def _execution_backtest_node_errors(node_maps):
+    """Return forbidden ordinary-pipeline semantics in execution node maps."""
+    errors = []
+    for where, specs in node_maps:
+        if not isinstance(specs, dict):
+            continue
+        for key, spec in specs.items():
+            if not isinstance(spec, NodeSpec):
+                continue
+            node_where = f"{where}.{key}"
+            if _contains_prev_ref(spec.inputs) or _contains_prev_ref(spec.params):
+                errors.append(
+                    f"{node_where}: execution_backtest documents forbid $prev "
+                    "carries"
+                )
+            if spec.mode == "load":
+                errors.append(
+                    f"{node_where}: execution_backtest documents forbid "
+                    "mode 'load'"
+                )
+            if spec.artifact:
+                errors.append(
+                    f"{node_where}: execution_backtest documents forbid "
+                    "artifact pins"
+                )
+    return errors
 
 
 @dataclass(frozen=True, slots=True)
@@ -1993,6 +2032,10 @@ class PipelineDocument:
                     if getattr(self, section) is not None
                 )
             )
+            node_maps = [("pipeline", self.pipeline)]
+            if isinstance(self.foreach, ForeachSpec):
+                node_maps.append(("foreach.pipeline", self.foreach.pipeline))
+            errors.extend(_execution_backtest_node_errors(node_maps))
         _check_str(errors, "notes", self.notes, non_empty=False)
         # The derived pair defaults to the declared map — with no foreach
         # that IS the answer, and the expansion overwrites it otherwise.
