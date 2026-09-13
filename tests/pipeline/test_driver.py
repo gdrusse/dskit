@@ -9,6 +9,7 @@ import re
 import pytest
 import dskit.pipeline.node as node_module
 
+from dskit.pipeline import plan as public_plan
 from dskit.pipeline.base import (
     SINK_KINDS,
     ConfigError,
@@ -20,6 +21,7 @@ from dskit.pipeline.base import (
 )
 from dskit.pipeline.document import (
     ClockConfig,
+    ExecutionBacktestSpec,
     NodeSpec,
     PipelineDocument,
     TrailingSplitSpec,
@@ -38,8 +40,11 @@ from dskit.pipeline.driver import (
     content_identity,
     resolve_json_artifact,
     run_document,
+    run_walk_forward,
 )
-from dskit.pipeline.node import Node, NodeKindRegistry
+from dskit.pipeline.node import Node, NodeKindRegistry, resolve_uses
+from dskit.pipeline.planner import plan
+from dskit.pipeline.stages import plan_stages, run_staged
 from dskit.pipeline.testing import MemoryTracker
 from tests.pipeline.dochelpers import banking_document, banking_pipeline, make_registry
 
@@ -86,6 +91,90 @@ def registry():
 def bdoc(tmp_path, **overrides):
     overrides.setdefault("outputs", OutputsConfig(run_root=str(tmp_path)))
     return banking_document(**overrides)
+
+
+_EXECUTION_BACKTEST = {
+    "schema_version": "dskit.execution-backtest/v1",
+    "purpose": "synthetic",
+    "event_envelope_schema": "dskit.event-envelope/v2",
+    "source_rank_policy_sha256": "1" * 64,
+    "execution_profile_sha256": "2" * 64,
+    "environment_identity_sha256": "3" * 64,
+}
+
+
+class _ExecutionHidingDocument(PipelineDocument):
+    def __getattribute__(self, name):
+        if name == "execution_backtest":
+            return None
+        return super().__getattribute__(name)
+
+
+class _ExecutionMutatingUses(str):
+    def __new__(cls, value, document):
+        instance = super().__new__(cls, value)
+        instance.document = document
+        return instance
+
+    def __hash__(self):
+        object.__setattr__(
+            self.document,
+            "execution_backtest",
+            ExecutionBacktestSpec.from_obj(_EXECUTION_BACKTEST),
+        )
+        return super().__hash__()
+
+
+def _hidden_execution_document():
+    return _ExecutionHidingDocument(
+        name="hidden-execution",
+        pipeline={"source": NodeSpec(uses="filter")},
+        clock=ClockConfig(increment="day"),
+        execution_backtest=ExecutionBacktestSpec.from_obj(_EXECUTION_BACKTEST),
+    )
+
+
+def _mutation_document():
+    document = PipelineDocument(
+        name="mutation-ordinary",
+        pipeline={"source": NodeSpec(uses="filter")},
+        clock=ClockConfig(increment="day"),
+    )
+    document.pipeline["source"] = NodeSpec(
+        uses=_ExecutionMutatingUses("filter", document)
+    )
+    return document
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        public_plan,
+        plan,
+        lambda document: resolve_uses(document, "filter"),
+        lambda document: run_document(document, asof=ASOF),
+        lambda document: run_walk_forward(document, asof=ASOF),
+        plan_stages,
+        lambda document: run_staged(document, source_path="captured.json", asof=ASOF),
+    ),
+)
+def test_public_facades_refuse_a_hostile_pipeline_document_subclass(entry):
+    with pytest.raises(ValueError, match="exact plain PipelineDocument"):
+        entry(_hidden_execution_document())
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        public_plan,
+        plan,
+        lambda document: resolve_uses(document, document.pipeline["source"].uses),
+    ),
+)
+def test_public_resolution_uses_a_detached_plain_document_snapshot(entry):
+    document = _mutation_document()
+    entry(document)
+    assert document.execution_backtest is None
 
 
 def read_json(run_dir, name):
