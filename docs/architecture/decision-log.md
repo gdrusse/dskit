@@ -8152,17 +8152,17 @@ lockbox read, or full backtest is authorized.
 
 ## ADR-0125 -- Capture planning and historical-study chronology
 
-**Status:** proposed (2026-09-12; pending OWNER approval). This docs-only ADR
+**Status:** accepted (2026-09-12; approved by the owner in the active
+orchestration thread). This docs-only ADR
 authorizes no implementation, protected-data read, tape construction, HPO,
 refit, release construction, replay, paper/live operation, or full backtest.
 
 **Single controlling text.** This is the complete ADR-0125 and replaces every
-earlier ADR-0125 draft, variant, correction, and interpretation. Only if OWNER
-accepts it does it supersede conflicting capture-planning and historical-study
-chronology in ADR-0123 and the model plan at
+earlier ADR-0125 draft, variant, correction, and interpretation. It supersedes
+conflicting capture-planning and historical-study chronology in ADR-0123 and the model plan at
 `40ab10fa7428e5eab14cff2f082c781cf962b860`; all other accepted decisions
-remain unchanged. Until then F1/F3/F4/F5/I2 refuse and no real
-data/tape/HPO/refit/replay is authorized.
+remain unchanged. F1/F3/F4/F5/I2 continue to refuse, and no real
+data/tape/HPO/refit/replay is authorized absent their separate stated gates.
 
 ### Decision and canonical rules
 
