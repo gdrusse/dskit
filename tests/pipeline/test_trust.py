@@ -1924,3 +1924,107 @@ def test_require_session_freevar_cannot_forge_consumed_actor():
     with pytest.raises(ValueError, match="CONSUMED|required"):
         broker.release(session_b)
 
+
+def _poke_attr(target, name, value):
+    try:
+        object.__setattr__(target, "_locked", False)
+    except (TypeError, AttributeError):
+        pass
+    try:
+        object.__setattr__(target, name, value)
+        return True
+    except (TypeError, AttributeError):
+        return False
+
+
+def test_bindings_pin_stream_id_cannot_move_consumed_cas():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    pin = broker._bindings_pin.get(id(bindings_a))
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    if pin is not None and not isinstance(pin, tuple):
+        _poke_attr(pin, "stream_id", sid_b)
+    artifact = bindings_a.require("bundle").artifact
+    release_a = broker.release(session_a)
+
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    assert release_a._stream_id == broker._receipt_audit(published_a)[0]["stream_id"]
+    with pytest.raises(ValueError, match="CONSUMED|required"):
+        broker.release(session_b)
+
+
+def test_bindings_pin_and_runtime_cannot_forge_consumed_identity():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        frozen_a,
+        frozen_b,
+        session_a,
+        session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    pin = broker._bindings_pin.get(id(bindings_a))
+    foreign_port = dict(broker.derive_consumer_port(frozen_b))
+    if pin is not None and not isinstance(pin, tuple):
+        _poke_attr(pin, "port", foreign_port)
+        _poke_attr(pin, "session", session_b)
+        _poke_attr(pin, "nonce", "nonce-hostile")
+    try:
+        session_a._runtime["run_identity"] = "consumer-b"
+    except (TypeError, AttributeError):
+        object.__setattr__(session_a, "_runtime", {"run_identity": "consumer-b"})
+    artifact = bindings_a.require("bundle").artifact
+    consumed = broker._receipt_audit(published_a)[-1]
+    release_a = broker.release(session_a)
+
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert consumed["event"] == "CONSUMED"
+    assert consumed["consumer_captured_port"]["consumer_document_sha256"] == frozen_a.source_sha256
+    assert consumed["actor_runtime"]["run_identity"] == "consumer-a"
+    assert consumed["transition_nonce"] == "nonce-consumed-a"
+    assert release_a._stream_id == broker._receipt_audit(published_a)[0]["stream_id"]
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    with pytest.raises(ValueError, match="CONSUMED|required"):
+        broker.release(session_b)
+
+
+def test_release_requires_this_session_stream_consumed():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    broker._used_inputs[id(session_a)] = {"bundle"}
+    with pytest.raises(ValueError, match="CONSUMED|required"):
+        broker.release(session_a)
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    del broker._used_inputs[id(session_a)]
+    bindings_a.require("bundle")
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    broker._session_streams[id(session_a)] = sid_b
+    with pytest.raises(ValueError, match="CONSUMED|required"):
+        broker.release(session_a)
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+
