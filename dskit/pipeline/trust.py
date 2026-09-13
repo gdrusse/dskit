@@ -590,12 +590,29 @@ class _Prepared:
 class _Sealed:
     """Driver-internal SEALED token. Not exported."""
 
-    __slots__ = ("prepared", "digests", "parsed")
+    __slots__ = (
+        "prepared",
+        "digests",
+        "parsed",
+        "_digests",
+        "_member_manifest_sha256",
+        "_locked",
+    )
 
-    def __init__(self, prepared, digests, parsed):
-        self.prepared = prepared
-        self.digests = digests
-        self.parsed = parsed
+    def __init__(self, prepared, digests, parsed, member_manifest_sha256):
+        frozen = tuple(MappingProxyType(dict(item)) for item in digests)
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "prepared", prepared)
+        object.__setattr__(self, "digests", frozen)
+        object.__setattr__(self, "parsed", parsed)
+        object.__setattr__(self, "_digests", frozen)
+        object.__setattr__(self, "_member_manifest_sha256", member_manifest_sha256)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise AttributeError("SEALED token is frozen")
+        object.__setattr__(self, name, value)
 
 
 class _Published:
@@ -810,13 +827,14 @@ class _DevelopmentBroker(LifecycleAuthority):
                     "bytes": len(digest_source),
                 }
             )
-        sealed = _Sealed(prepared, digests, parsed)
+        member_manifest_sha256 = self._manifest_digest(digests)
+        sealed = _Sealed(prepared, digests, parsed, member_manifest_sha256)
         self._append_receipt(
             prepared,
             "SEALED",
             session,
             transition_nonce,
-            extra={"member_manifest_sha256": self._manifest_digest(digests)},
+            extra={"member_manifest_sha256": member_manifest_sha256},
         )
         return sealed
 
@@ -831,19 +849,19 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._require_head(prepared.stream_id, "SEALED")
         if not self._worm:
             raise ValueError("WORM immutable snapshot is required")
+        expected_manifest = self._sealed_member_manifest(prepared.stream_id)
+        if sealed._member_manifest_sha256 != expected_manifest:
+            raise ValueError("member digest mutation after seal")
+        if self._manifest_digest(sealed._digests) != expected_manifest:
+            raise ValueError("member digest mutation after seal")
         staged = []
-        for member, declared in zip(prepared.members, sealed.digests):
+        for member, declared in zip(prepared.members, sealed._digests):
             current = bytes(member["bytes"])
-            if _digest(current) != declared["sha256"]:
+            if _path_error(declared["relative_path"]) is not None:
+                raise ValueError("path")
+            if _digest(current) != declared["sha256"] or len(current) != declared["bytes"]:
                 raise ValueError("member digest mutation after seal")
-            staged.append((declared["relative_path"], current, declared))
-        for path, current, _declared in staged:
-            self._provider.write_member(
-                prepared.root["root_ref"],
-                prepared.root["snapshot_version"],
-                path,
-                current,
-            )
+            staged.append((declared["relative_path"], current))
         descriptor = {
             "root_ref": prepared.root["root_ref"],
             "snapshot_version": prepared.root["snapshot_version"],
@@ -854,22 +872,20 @@ class _DevelopmentBroker(LifecycleAuthority):
         }
         published = _Published(sealed, descriptor)
         self._remember_published(published)
-        publication_id = _digest(
-            _canonical_bytes(
-                {
-                    "stream_id": prepared.stream_id,
-                    "event": "PUBLISHED",
-                    "root_id": prepared.root["root_id"],
-                }
-            )
-        )
         self._append_receipt(
             prepared,
             "PUBLISHED",
             session,
             transition_nonce,
-            extra={"publication_receipt_sha256": publication_id},
+            extra={},
         )
+        for path, current in staged:
+            self._provider.write_member(
+                prepared.root["root_ref"],
+                prepared.root["snapshot_version"],
+                path,
+                current,
+            )
         return published
 
     def descriptor(self, published, purpose):
@@ -1003,7 +1019,14 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         handles = {}
         retained = {}
-        for declared in published.sealed.digests:
+        expected_manifest = self._sealed_member_manifest(
+            published.sealed.prepared.stream_id
+        )
+        if published.sealed._member_manifest_sha256 != expected_manifest:
+            raise ValueError("member digest mutation after seal")
+        if self._manifest_digest(published.sealed._digests) != expected_manifest:
+            raise ValueError("member digest mutation after seal")
+        for declared in published.sealed._digests:
             path = declared["relative_path"]
             raw = self._provider.open_member(snapshot, path)
             if _digest(raw) != declared["sha256"] or len(raw) != declared["bytes"]:
@@ -1042,7 +1065,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         output_path = published.sealed.prepared.output_member
         parsed, _canonical = _load_canonical_json(verified._retained[output_path])
         declared = {
-            item["relative_path"]: item for item in published.sealed.digests
+            item["relative_path"]: item for item in published.sealed._digests
         }[output_path]
         expected_port = dict(verified._port)
         artifact = CapturedJsonArtifact(
@@ -1104,13 +1127,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         return [_digest(_canonical_bytes(row)) for row in self._receipt_audit(published)]
 
     def _hmac_payload(self, receipt):
-        skip = {"signature"}
-        if receipt.get("event") == "PUBLISHED":
-            skip.add("publication_receipt_sha256")
-        return {key: value for key, value in receipt.items() if key not in skip}
+        return {key: value for key, value in receipt.items() if key != "signature"}
 
     def _reload_stream(self, stream_id):
         if stream_id not in self._receipt_store:
+            if stream_id in self._streams:
+                raise ValueError("PUBLISHED store predecessor sequence missing")
             return
         self._recover(stream_id)
         rows = [
@@ -1138,6 +1160,17 @@ class _DevelopmentBroker(LifecycleAuthority):
                 raise ValueError("receipt signature mismatch")
             if receipt["event"] != _EVENTS[index - 1]:
                 raise ValueError("receipt event order mismatch")
+            if receipt["event"] == "PUBLISHED":
+                field = receipt.get("publication_receipt_sha256")
+                if not field:
+                    raise ValueError("publication receipt identity is required")
+                unsigned = {
+                    key: value
+                    for key, value in receipt.items()
+                    if key not in {"signature", "publication_receipt_sha256"}
+                }
+                if field != _digest(_canonical_bytes(unsigned)):
+                    raise ValueError("publication receipt identity mismatch")
             previous = _digest(_canonical_bytes(receipt))
 
     def _require_session(self, session, kind=None, allow_open=False):
@@ -1160,7 +1193,13 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("replay of %s is refused" % event)
 
     def _manifest_digest(self, digests):
-        return _digest(_canonical_bytes(digests))
+        return _digest(_canonical_bytes([dict(item) for item in digests]))
+
+    def _sealed_member_manifest(self, stream_id):
+        for row in self._streams.get(stream_id) or ():
+            if row["event"] == "SEALED":
+                return row["member_manifest_sha256"]
+        raise ValueError("member digest mutation after seal")
 
     def _descriptor_from(self, source, consumer_node, consumer_input):
         try:
@@ -1251,19 +1290,24 @@ class _DevelopmentBroker(LifecycleAuthority):
         }
         if "consumer_captured_port" in extra:
             body["consumer_captured_port"] = extra["consumer_captured_port"]
-        if event in {"CAPTURED", "CONSUMED"}:
+        if event == "PUBLISHED":
+            body["publication_receipt_sha256"] = _digest(_canonical_bytes(body))
+        elif event in {"CAPTURED", "CONSUMED"}:
             for row in rows:
-                if row.get("event") == "PUBLISHED" and row.get("publication_receipt_sha256"):
-                    body["publication_receipt_sha256"] = row["publication_receipt_sha256"]
+                if row.get("event") == "PUBLISHED":
+                    field = row.get("publication_receipt_sha256")
+                    if not field:
+                        raise ValueError("publication receipt identity is required")
+                    body["publication_receipt_sha256"] = field
                     break
+            else:
+                raise ValueError("publication receipt identity is required")
         signature = hmac.new(
             _DEV_KEY,
             _canonical_bytes(self._hmac_payload(body)),
             hashlib.sha256,
         ).hexdigest()
         body["signature"] = signature
-        if event == "PUBLISHED":
-            body["publication_receipt_sha256"] = _digest(_canonical_bytes(body))
         rows.append(body)
         encoded = tuple(self._receipt_store.get(stream_id, ())) + (_canonical_bytes(body),)
         self._receipt_store[stream_id] = encoded
