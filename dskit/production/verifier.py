@@ -667,7 +667,7 @@ class HistoricalStudyVerifier:
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound = {}
-        self._admission_spent = False
+        self._admission_spent = [False]
         self._capture_lock = Lock()
         self.deployment_eligible = False
 
@@ -677,6 +677,18 @@ class HistoricalStudyVerifier:
 
     def __deepcopy__(self, memo):
         """Refuse a deep copy of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def __getstate__(self):
+        """Refuse pickle state of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce__(self):
+        """Refuse pickle reduction of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce_ex__(self, protocol):
+        """Refuse pickle protocol reduction of the one-use doorway."""
         raise TypeError("opaque capture handle")
 
     def bind(self, **artifacts):
@@ -732,7 +744,7 @@ class HistoricalStudyVerifier:
             is not bound, or when that admission is already spent.
         """
         with self._capture_lock:
-            if self._admission_spent:
+            if self._admission_spent[0]:
                 raise ValueError(
                     "CAPTURED refuses after consumed admission is spent"
                 )
@@ -746,5 +758,5 @@ class HistoricalStudyVerifier:
                     "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, CAS, "
                     "and consumed admission are bound"
                 )
-            self._admission_spent = True
+            self._admission_spent[0] = True
         return self._authority.capture(published, frozen, port, **kwargs)
