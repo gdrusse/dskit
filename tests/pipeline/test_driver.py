@@ -150,6 +150,29 @@ def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
     assert exit_code == 1
     assert not marker.exists(), "execution CLI imported its adapter"
 
+    import sys
+
+    def assert_no_import(action):
+        sys.modules.pop("execution_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        assert action() == 1
+        assert not marker.exists(), "execution route imported its adapter"
+
+    for command in ("plan", "validate", "walkforward", "staged"):
+        argv = [command, str(document_path), "--adapter", "execution_poison_adapter"]
+        if command == "walkforward":
+            argv[2:2] = ["--asof", ASOF]
+        assert_no_import(lambda argv=argv: main(argv))
+
+    from dskit.pipeline.planner import plan
+
+    sys.modules.pop("execution_poison_adapter", None)
+    marker.unlink(missing_ok=True)
+    with pytest.raises(ConfigError) as exc_info:
+        plan(document)
+    assert "external broker" in str(exc_info.value)
+    assert not marker.exists(), "planner imported execution uses"
+
 
 class TestCleanRun:
     def test_end_to_end_banking_run(self, tmp_path, registry):
