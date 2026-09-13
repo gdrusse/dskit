@@ -121,6 +121,33 @@ def sync_published(registry, published_root, origin="sync-published") -> dict:
         "failed": [{"file", "error"}]}`` — ``registered`` lists NEW
         versions only; a rescan of a synced root registers nothing,
         fails nothing, and is free.
+
+    Raises
+    ------
+    AssetError
+        If ``registry``/``published_root``/``origin`` are malformed, or
+        ``published_root`` does not exist. A malformed MANIFEST FILE
+        does not raise — it is collected into the returned ``failed``
+        list and the scan continues (anti-entropy: repair what is
+        repairable, report the rest).
+    KeyError
+        If ``registry``'s model declares a ``dataset`` kind with no
+        required ``source`` ref — the per-file catch above only
+        shields ``AssetError``, so this escapes and aborts the WHOLE
+        scan rather than failing one file. Never reachable against the
+        default model, which requires it.
+    Exception
+        Whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything, from
+        ``has_record`` (called directly per file, bypassing
+        :class:`~dskit.assets.registry.Registry`'s own wrapper), or
+        from ``registry.find``/``registry.get``/``registry.register``/
+        ``Lineage.add`` (each already documented, on those methods
+        themselves, to propagate the store's own exceptions) — every
+        one of these escapes the per-file ``except AssetError`` catch
+        and aborts the WHOLE scan, the same consequence as the
+        ``KeyError`` case above, from several different caller-owned
+        seams.
     """
     errors = []
     if not isinstance(registry, Registry):

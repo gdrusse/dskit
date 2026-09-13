@@ -74,6 +74,39 @@ def publish_version(root, registry, dataset, certification_vid,
         ``{"published_version": vid, "manifest_path": path,
         "version_manifest_hash": hash, "reused": bool}`` — ``reused``
         is True when identical content was already in the outbox.
+
+    Raises
+    ------
+    AssetError
+        If any argument is malformed; ``root`` is not an
+        OnboardingRoot; ``certification_vid`` does not resolve, is not
+        a ``certification``, or records a decision other than
+        ``"certified"``; or an existing outbox file for this dataset
+        is unreadable (``published/`` is WORM — investigate rather
+        than overwrite).
+    KeyError
+        If ``registry``'s model declares a ``certification`` kind
+        without a required ``decision`` field or ``snapshot`` ref, or a
+        ``snapshot`` kind without a required ``mode``/``acquired_at``/
+        ``manifest_hash`` field — this function reads all of them by
+        bracket access, unguarded. Never reachable against the default
+        model, which requires them all.
+    FileExistsError
+        If a stray file already occupies where ``published/<dataset>/``
+        belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
+        this function makes does not distinguish that from a race.
+    OSError
+        If ``published/<dataset>/`` cannot be created, or the new
+        manifest cannot be written, because the outbox directory is
+        not writable (propagated from ``os.makedirs`` and
+        :func:`~dskit.onboarding.base.durable_write_bytes`).
+    Exception
+        Whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything — this
+        function's ``registry.get``/``registry.register`` calls are
+        each already documented to propagate it, but a caller reading
+        only this docstring would not know that without following
+        those cross-references.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

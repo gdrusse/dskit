@@ -38,6 +38,7 @@ __all__ = ["ingest_run"]
 
 
 def _read_json(path, what) -> dict:
+    """Load one JSON object at ``path``; raise AssetError naming ``what`` on failure."""
     try:
         with open(path, encoding="utf-8") as fh:
             obj = json.load(fh)
@@ -60,8 +61,11 @@ def _file_digest(path) -> str:
 
 
 def _is_artifact_path(value) -> bool:
-    """Node output ports holding paths INTO an artifacts dir are backed by
-    files the artifacts/ scan already registers — not outputs."""
+    """Say whether ``value`` is a node output port pointing INTO an artifacts dir.
+
+    Such paths are backed by files the artifacts/ scan already
+    registers — not outputs.
+    """
     return isinstance(value, str) and "artifacts" in value.split(os.sep)
 
 
@@ -86,6 +90,30 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
         ``{"run": vid, "artifacts": [vids], "outputs": [vids],
         "edges_added": n}`` — re-ingesting yields the same vids with
         ``edges_added == 0``.
+
+    Raises
+    ------
+    AssetError
+        If ``registry``/``run_dir``/``origin`` are malformed;
+        ``run_dir`` does not exist; ``result.json`` (or any node
+        record under ``nodes/``) is unreadable, not valid JSON, or not
+        a JSON object; ``result.json`` is missing a required field; or
+        a node record lacks a valid ``node``/``outputs`` shape.
+    FileNotFoundError
+        If a file under ``artifacts/`` is a symlink whose target does
+        not exist — walking the directory does not confirm each entry
+        actually opens for digesting.
+    OSError
+        If a file under ``artifacts/`` is a symlink loop (too many
+        levels of symbolic links) — the same unconfirmed-open gap as
+        above, a different OS-level failure.
+    Exception
+        Whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything — this
+        function's ``registry.register``/``Lineage.add`` calls are
+        each already documented to propagate it, but a caller reading
+        only this docstring would not know that without following
+        those cross-references.
 
     Examples
     --------

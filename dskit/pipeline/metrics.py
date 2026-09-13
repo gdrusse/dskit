@@ -39,6 +39,11 @@ CLIP = 1e-6
 
 
 def _check_binary(metric, q, y):
+    """Refuse a non-finite/non-number ``q``/``y``.
+
+    Also refuses a ``q`` outside ``[0, 1]`` or a ``y`` that is not
+    exactly 0.0 or 1.0.
+    """
     for name, v in (("q", q), ("y", y)):
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise ValueError(f"{metric}: {name} must be a number, got {v!r}")
@@ -53,22 +58,63 @@ def _check_binary(metric, q, y):
 
 
 def logloss(q, y) -> float:
-    """Per-observation negative log-likelihood, beliefs clipped at ``CLIP``."""
+    """Per-observation negative log-likelihood, beliefs clipped at ``CLIP``.
+
+    Parameters
+    ----------
+    q : float
+        The signal's belief, in ``[0, 1]``.
+    y : float
+        The realized payout per unit — exactly 0.0 or 1.0.
+
+    Returns
+    -------
+    float
+        The per-observation loss; lower is better.
+
+    Raises
+    ------
+    ValueError
+        If ``q``/``y`` are not finite numbers, ``q`` is outside
+        ``[0, 1]``, or ``y`` is not exactly 0.0 or 1.0.
+    """
     _check_binary("logloss", q, y)
     qc = min(max(float(q), CLIP), 1.0 - CLIP)
     return -math.log(qc if y == 1.0 else 1.0 - qc)
 
 
 def brier(q, y) -> float:
-    """Per-observation squared error ``(q - y)**2``."""
+    """Per-observation squared error ``(q - y)**2``.
+
+    Parameters
+    ----------
+    q : float
+        The signal's belief, in ``[0, 1]``.
+    y : float
+        The realized payout per unit — exactly 0.0 or 1.0.
+
+    Returns
+    -------
+    float
+        The per-observation loss; lower is better.
+
+    Raises
+    ------
+    ValueError
+        If ``q``/``y`` are not finite numbers, ``q`` is outside
+        ``[0, 1]``, or ``y`` is not exactly 0.0 or 1.0.
+    """
     _check_binary("brier", q, y)
     return (float(q) - float(y)) ** 2
 
 
 def _check_regression(metric, q, y):
-    """Both values finite numbers — a regression rule has no [0, 1] frame
-    and no binary payout to police, but a NaN/inf belief or outcome would
-    poison every aggregate exactly like the binary case."""
+    """Refuse a non-number or non-finite belief or outcome.
+
+    A regression rule has no [0, 1] frame and no binary payout to
+    police, but a NaN/inf belief or outcome would poison every
+    aggregate exactly like the binary case.
+    """
     for name, v in (("q", q), ("y", y)):
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise ValueError(f"{metric}: {name} must be a number, got {v!r}")
@@ -77,18 +123,52 @@ def _check_regression(metric, q, y):
 
 
 def squared_error(q, y) -> float:
-    """Per-observation squared error over unbounded values — the
-    mark-to-market sibling of :func:`brier` (ADR-0025): ``q`` is the
+    """Per-observation squared error over unbounded values.
+
+    The mark-to-market sibling of :func:`brier` (ADR-0025): ``q`` is the
     signal's point belief (a return, a price), ``y`` the realized value
-    through the venue's ``Accounting`` seam."""
+    through the venue's ``Accounting`` seam.
+
+    Parameters
+    ----------
+    q, y : float
+        Point belief and realized value.
+
+    Returns
+    -------
+    float
+        The per-observation loss; lower is better.
+
+    Raises
+    ------
+    ValueError
+        If ``q``/``y`` are not finite numbers.
+    """
     _check_regression("squared_error", q, y)
     return (float(q) - float(y)) ** 2
 
 
 def absolute_error(q, y) -> float:
-    """Per-observation absolute error over unbounded values — the robust
-    companion to :func:`squared_error` (median-flavored where that one is
-    mean-flavored)."""
+    """Per-observation absolute error over unbounded values.
+
+    The robust companion to :func:`squared_error` (median-flavored
+    where that one is mean-flavored).
+
+    Parameters
+    ----------
+    q, y : float
+        Point belief and realized value.
+
+    Returns
+    -------
+    float
+        The per-observation loss; lower is better.
+
+    Raises
+    ------
+    ValueError
+        If ``q``/``y`` are not finite numbers.
+    """
     _check_regression("absolute_error", q, y)
     return abs(float(q) - float(y))
 
@@ -107,6 +187,17 @@ def pinball(q, y, tau=DEFAULT_PINBALL_TAU) -> float:
         Point belief and realized value.
     tau : float
         Quantile in ``(0, 1)``. Default :data:`DEFAULT_PINBALL_TAU`.
+
+    Returns
+    -------
+    float
+        The per-observation loss; lower is better.
+
+    Raises
+    ------
+    ValueError
+        If ``q``/``y`` are not finite numbers, or ``tau`` is outside
+        ``(0, 1)``.
     """
     _check_regression("pinball", q, y)
     if (
@@ -131,7 +222,22 @@ METRICS = {
 
 
 def register_metric(name, fn) -> None:
-    """Add a venue/experiment-specific scoring rule. Duplicates raise."""
+    """Add a venue/experiment-specific scoring rule. Duplicates raise.
+
+    Parameters
+    ----------
+    name : str
+        The metric's registered name, as ``ValidationConfig.metric``
+        would reference it.
+    fn : callable
+        ``fn(q, y) -> float`` — lower is better.
+
+    Raises
+    ------
+    ValueError
+        If ``name`` is not a non-empty string, ``fn`` is not callable,
+        or ``name`` is already registered.
+    """
     if not isinstance(name, str) or not name:
         raise ValueError(f"metric name must be a non-empty string, got {name!r}")
     if not callable(fn):

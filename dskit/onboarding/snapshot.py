@@ -81,6 +81,16 @@ def build_manifest(payload_dir, *, source, mode, acquired_at,
     -------
     dict
         The manifest object; hash it with :func:`snapshot_hash`.
+
+    Raises
+    ------
+    AssetError
+        If any argument is malformed, or ``payload_dir`` does not exist.
+    FileNotFoundError
+        If a walked file is removed by something else between its
+        digest (:func:`~dskit.onboarding.base.file_digest`) and the
+        unguarded ``os.path.getsize`` call right after — this function
+        does not re-check the file still exists.
     """
     errors = []
     _check_str(errors, "payload_dir", payload_dir)
@@ -116,10 +126,26 @@ def build_manifest(payload_dir, *, source, mode, acquired_at,
 
 
 def snapshot_hash(manifest) -> str:
-    """The snapshot's identity: canonical hash of its manifest.
+    """Return the snapshot's identity: canonical hash of its manifest.
 
     Because every payload file's sha256 is IN the manifest, this one
     digest covers every byte of the snapshot — Merkle-style.
+
+    Parameters
+    ----------
+    manifest : dict
+        The snapshot manifest, as built by :func:`build_manifest`.
+
+    Returns
+    -------
+    str
+        The manifest's canonical digest.
+
+    Raises
+    ------
+    AssetError
+        If ``manifest`` is not a dict with string-only keys, or is not
+        canonically serializable (a non-JSON value, or NaN/Infinity).
     """
     errors = []
     _check_dict(errors, "manifest", manifest)
@@ -158,6 +184,23 @@ def write_snapshot(root, staged_dir, manifest) -> tuple:
     AssetError
         If the destination already exists — WORM means a snapshot is
         written exactly once, never overwritten.
+    KeyError
+        If ``manifest`` holds only declared keys (per the check above)
+        but omits a required one — ``manifest["acquired_at"]`` and
+        ``manifest["source"]`` are read directly, unchecked for
+        presence.
+    FileExistsError
+        If a stray file already occupies where ``raw/<source>/``
+        belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
+        this function makes does not distinguish that from a race.
+    OSError
+        If a concurrent writer lands the same ``acq_id`` between this
+        call's existence check and its ``os.rename`` — the check is
+        not atomic with the rename, so a same-second at-least-once
+        retry can lose the race and raise "Directory not empty"; or
+        ``staged_dir`` is removed by something else between the
+        ``payload/`` check above and the manifest write
+        (:func:`~dskit.onboarding.base.durable_write_json`).
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
@@ -185,7 +228,24 @@ def write_snapshot(root, staged_dir, manifest) -> tuple:
 
 
 def read_manifest(snapshot_dir) -> dict:
-    """Load and shape-check one snapshot's manifest.json."""
+    """Load and shape-check one snapshot's manifest.json.
+
+    Parameters
+    ----------
+    snapshot_dir : str
+        The snapshot directory holding ``manifest.json``.
+
+    Returns
+    -------
+    dict
+        The parsed manifest.
+
+    Raises
+    ------
+    AssetError
+        If ``snapshot_dir`` is malformed, the file is unreadable or not
+        valid JSON, or the manifest is not shape-valid.
+    """
     errors = []
     _check_str(errors, "snapshot_dir", snapshot_dir)
     _raise_if(errors)
@@ -212,10 +272,28 @@ def find_snapshot_dir(root, manifest_hash):
     re-hashing, which doubles as an integrity check. O(snapshots), priced
     for the tier-1 scale.
 
+    Parameters
+    ----------
+    root : OnboardingRoot
+        The onboarding root.
+    manifest_hash : str
+        The digest to search for, as :func:`snapshot_hash` would compute.
+
     Returns
     -------
     str or None
         The snapshot directory, or None if no manifest matches.
+
+    Raises
+    ------
+    AssetError
+        If ``root`` is not an OnboardingRoot, ``manifest_hash`` is not
+        a non-empty string, or a manifest found along the way is
+        unreadable or shape-invalid (via :func:`read_manifest`).
+    FileNotFoundError
+        If ``root``'s ``raw/`` directory does not exist — always
+        present on a root ``OnboardingRoot.create`` built, so only
+        reachable if something removed it afterward.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])
@@ -247,10 +325,33 @@ def verify_snapshot(snapshot_dir) -> list:
     content whose digest or size drifted — DVC-style tamper evidence for
     WORM storage.
 
+    Parameters
+    ----------
+    snapshot_dir : str
+        The snapshot directory to verify.
+
     Returns
     -------
     list of str
         Problems found; empty means the snapshot is intact.
+
+    Raises
+    ------
+    AssetError
+        If ``snapshot_dir`` is malformed, or its manifest is unreadable
+        or shape-invalid (via :func:`read_manifest`) — a MISSING or
+        DRIFTED payload file (present on disk throughout the check) is
+        a returned problem, never a raise.
+    TypeError
+        If a ``manifest.files`` entry is not a dict — ``read_manifest``
+        checks only that ``files`` is a list, not each entry's shape.
+    KeyError
+        If a ``manifest.files`` entry is a dict missing ``relpath``.
+    FileNotFoundError
+        If a payload file present during the initial directory walk is
+        removed by something else before the later ``lstat``/size/
+        digest check on it runs — unlike a file already absent from
+        the walk (a returned problem above), this TOCTOU gap raises.
     """
     manifest = read_manifest(snapshot_dir)
     payload_dir = os.path.join(snapshot_dir, "payload")

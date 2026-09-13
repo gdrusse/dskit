@@ -147,6 +147,13 @@ class AssetRecord:
     notes : str
         Documentation; outside the hash.
 
+    Raises
+    ------
+    AssetError
+        If ``kind`` is not a non-empty string; ``payload``/``refs`` are
+        not dicts with string keys; or ``registered_at``/``origin``/
+        ``notes`` are not strings.
+
     Examples
     --------
     Construct a record and check that provenance never changes identity::
@@ -168,6 +175,7 @@ class AssetRecord:
     notes: str = ""
 
     def __post_init__(self):
+        """Refuse a record whose kind/payload/refs/provenance fields are malformed."""
         errors = []
         _check_str(errors, "kind", self.kind)
         _check_dict(errors, "payload", self.payload)
@@ -178,23 +186,43 @@ class AssetRecord:
         _raise_if(errors)
 
     def version_id(self) -> str:
-        """The record's identity: canonical hash of ``{kind, payload, refs}``.
+        """Return the record's identity: canonical hash of ``{kind, payload, refs}``.
 
         Returns
         -------
         str
             Hex sha256. Same content, same id — however and whenever
             registered (ADR-0009).
+
+        Raises
+        ------
+        AssetError
+            If ``payload``/``refs`` hold a value that is not
+            canonically serializable (a non-JSON type, or NaN/Infinity)
+            — ``__post_init__`` checks their shape, not their values.
         """
         return canonical_hash(
             {"kind": self.kind, "payload": self.payload, "refs": self.refs}
         )
 
     def to_obj(self) -> dict:
-        """The store file format: identity material + version_id + provenance.
+        """Build the store file format: identity material + version_id + provenance.
 
         The emitted ``version_id`` makes files self-describing and
         tamper-evident — :meth:`from_obj` recomputes it and refuses drift.
+
+        Returns
+        -------
+        dict
+            ``{"kind", "payload", "refs", "version_id"}`` plus
+            ``registered_at``/``origin``/``notes`` when non-empty.
+
+        Raises
+        ------
+        AssetError
+            If ``payload``/``refs`` hold a value that is not
+            canonically serializable (propagated from
+            :meth:`version_id`).
         """
         out = {
             "kind": self.kind,
@@ -214,11 +242,27 @@ class AssetRecord:
     def from_obj(cls, obj) -> "AssetRecord":
         """Rebuild a record from its file form; refuse tampered content.
 
+        Parameters
+        ----------
+        obj : dict
+            A record as :meth:`to_obj` emits it (or read back from a
+            store file).
+
+        Returns
+        -------
+        AssetRecord
+            The rebuilt record.
+
         Raises
         ------
         AssetError
-            On unknown keys, or when a stored ``version_id`` does not
-            match the recomputed hash of the stored content.
+            If ``obj`` is not a dict with string keys, on unknown keys,
+            if a rebuilt field fails :class:`AssetRecord`'s own checks
+            (e.g. an empty ``kind``), if ``payload``/``refs`` hold a
+            value that is not canonically serializable (raised while
+            computing the hash to compare a stored ``version_id``
+            against), or when a stored ``version_id`` does not match
+            the recomputed hash of the stored content.
         """
         errors = []
         _check_dict(errors, "record", obj)

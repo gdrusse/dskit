@@ -72,6 +72,7 @@ _OPS = {
 
 
 def _filter_validator(params):
+    """Return every problem with a ``filter`` step's declared params."""
     errors = []
     unknown = sorted(set(params) - {"require_usable", "where"})
     if unknown:
@@ -103,6 +104,7 @@ def _filter_validator(params):
 
 
 def _clause_holds(record, clause) -> bool:
+    """Say whether ``record`` satisfies one ``{field, op, value}`` clause."""
     value = getattr(record, clause["field"])
     if value is None:
         # a missing quote/lead satisfies nothing except an explicit null test
@@ -116,6 +118,7 @@ def _clause_holds(record, clause) -> bool:
 
 
 def _apply_filter(records, params):
+    """Yield only records passing ``require_usable`` and every ``where`` clause."""
     require_usable = params.get("require_usable", True)
     where = params.get("where", [])
     for rec in records:
@@ -126,6 +129,7 @@ def _apply_filter(records, params):
 
 
 def _regroup_validator(params):
+    """Return every problem with a ``regroup`` step's declared params."""
     errors = []
     unknown = sorted(set(params) - {"by"})
     if unknown:
@@ -139,6 +143,7 @@ def _regroup_validator(params):
 
 
 def _apply_regroup(records, params):
+    """Yield every record with ``group`` reassigned to its instrument or contract."""
     by = params["by"]
     for rec in records:
         target = rec.instrument if by == "instrument" else rec.contract
@@ -150,13 +155,47 @@ register_transform_kind("regroup", _regroup_validator, _apply_regroup)
 
 
 def apply_stream_steps(records, features):
-    """Thread the record stream through every STREAM step of ``features``
-    in declared order. A class-reference step (``pkg.module:Attr``) is
-    imported and called with the stream-transform contract
-    ``target(records, params) -> iterable of records``; backend-owned
-    registered kinds (no ``apply``) are passed over — the backend
-    interprets those inside its own stages. ``features`` may be ``None``
-    (raw stream)."""
+    """Thread the record stream through every STREAM step of ``features``, in order.
+
+    A class-reference step (``pkg.module:Attr``) is imported and called
+    with the stream-transform contract ``target(records, params) ->
+    iterable of records``. A ``kind`` that is neither a class-reference
+    nor a registered kind with an ``apply`` hook is passed over
+    unchanged and silently — this covers a genuinely backend-owned kind
+    (the backend interprets those inside its own stages) but is not
+    otherwise validated here, so an unregistered or misspelled ``kind``
+    is indistinguishable from one. ``features`` may be ``None`` (raw
+    stream).
+
+    Parameters
+    ----------
+    records : iterable
+        The record stream — :class:`~dskit.pipeline.records.MarketRecord`
+        rows, in ascending ``asof_ms`` order. The built-in steps read
+        ``MarketRecord`` attributes directly, so a plain dict stream
+        only survives when ``features`` is ``None`` or declares no
+        built-in step (a class-reference step may accept whatever its
+        own contract promises).
+    features : FeatureConfig or None
+        The declared feature config whose STREAM steps to apply, in
+        order. ``None`` means the raw stream, unchanged.
+
+    Returns
+    -------
+    iterable
+        The transformed record stream, in the same record shape.
+
+    Raises
+    ------
+    ValueError
+        If a class-reference step's ``kind`` does not import (via
+        :func:`~dskit.pipeline.base.import_ref`).
+    TypeError
+        If a class-reference step's ``kind`` imports but resolves to
+        something that is not callable — ``import_ref`` only confirms
+        the import succeeds, not that the result honors the
+        stream-transform contract.
+    """
     if features is None:
         return records
     for step in features.steps:

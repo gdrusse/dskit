@@ -59,13 +59,24 @@ DEFAULT_MAX_LINES = 20
 
 
 def is_binary(labels) -> bool:
-    """True when every label is exactly 0.0 or 1.0 (and there is one).
+    """Say whether every label is exactly 0.0 or 1.0 (and there is one).
 
     The gate on the probability metrics: ``logloss``/``brier``/``ece`` are
     meaningful for a settled binary outcome and meaningless for a
     continuous target, and the toolkit's own metric functions REFUSE a
     non-binary ``y`` by name. Checking first is what lets one trainer
     serve both without either lying or crashing.
+
+    Parameters
+    ----------
+    labels : iterable of float
+        Realized outcomes to check.
+
+    Returns
+    -------
+    bool
+        ``True`` iff every label is exactly 0.0 or 1.0 and at least one
+        label was seen.
     """
     seen = False
     for y in labels:
@@ -94,7 +105,13 @@ def probability_metrics(preds, labels) -> dict:
     -------
     dict
         ``{"logloss": .., "brier": .., "ece": .., "n": ..}``, or ``{}``
-        when the labels are not binary or there are no rows.
+        when the labels are not binary, there are no rows, or any
+        prediction is not a finite number.
+
+    Raises
+    ------
+    ValueError
+        If ``preds`` and ``labels`` are not the same length.
 
     Notes
     -----
@@ -142,7 +159,7 @@ def probability_metrics(preds, labels) -> dict:
 
 
 def _fmt(value) -> str:
-    """A metric for the stream: 4 dp, or ``—`` when it is absent/unusable."""
+    """Format a metric for the stream: 4 dp, or ``—`` when it is absent/unusable."""
     if value is None or not isinstance(value, (int, float)):
         return "—"
     if isinstance(value, bool) or not math.isfinite(value):
@@ -178,6 +195,26 @@ class TrainingCurve:
         Ceiling on streamed lines for the whole fit
         (:data:`DEFAULT_MAX_LINES`). 0 disables the stream entirely — the
         rows are still recorded and still land in the artifact.
+
+    Raises
+    ------
+    ValueError
+        If ``total_epochs``, ``log_every``, or ``max_lines`` is a
+        string that does not parse as an integer.
+    TypeError
+        If ``total_epochs``, ``log_every``, or ``max_lines`` is neither
+        a number nor a string (e.g. ``None``) — each goes through a
+        bare ``int()`` conversion, unvalidated.
+
+    Examples
+    --------
+    Record one epoch and inspect the returned row::
+
+        import logging
+        curve = TrainingCurve("head", logging.getLogger(__name__), total_epochs=10)
+        row = curve.record(1, 0.693, val_loss=0.701)
+        row
+        # -> {'epoch': 1, 'train_loss': 0.693, 'val_loss': 0.701, 'best': True}
     """
 
     def __init__(
@@ -214,6 +251,41 @@ class TrainingCurve:
 
         Returns the row, so a caller can early-stop on it without
         recomputing anything.
+
+        Parameters
+        ----------
+        epoch : int
+            The epoch number just completed.
+        train_loss : float
+            The epoch's training loss.
+        val_loss : float, optional
+            The epoch's validation loss, when computed.
+        metrics : dict, optional
+            Extra named values to record alongside the losses (e.g.
+            ``logloss``/``brier``/``ece``).
+        seconds : float, optional
+            Wall-clock time the epoch took.
+
+        Returns
+        -------
+        dict
+            The recorded row, including the computed ``"best"`` flag.
+
+        Raises
+        ------
+        ValueError
+            If :attr:`objective` is absent from the row this call would
+            record — a typo'd monitor or an adapter that emits no
+            beliefs, never silently selected around; or ``epoch`` or
+            ``seconds`` is a string that does not parse as a number.
+        TypeError
+            If ``epoch`` or ``seconds`` is neither a number nor a
+            string (e.g. ``None`` or a list) — both go through a bare
+            ``int()``/``float()`` conversion, unvalidated.
+        AttributeError
+            If ``metrics`` is truthy but has no ``.items()`` (e.g. a
+            list) — it is iterated unguarded once it passes the
+            falsy/``None`` check.
         """
         row = {"epoch": int(epoch), "train_loss": _num(train_loss)}
         if val_loss is not None:
@@ -251,6 +323,7 @@ class TrainingCurve:
         return row
 
     def _should_stream(self, row, improved) -> bool:
+        """Say whether this epoch's row earns a streamed log line."""
         if not self._max_lines:
             return False
         if row["epoch"] in (1, self.total_epochs):
@@ -260,6 +333,7 @@ class TrainingCurve:
         return row["epoch"] % self._log_every == 0
 
     def _stream(self, row, improved) -> None:
+        """Log one formatted line for ``row`` and count it as streamed."""
         parts = [f"train {_fmt(row.get('train_loss'))}"]
         if "val_loss" in row:
             parts.append(f"val {_fmt(row['val_loss'])}")
@@ -285,7 +359,18 @@ class TrainingCurve:
     # -- output ------------------------------------------------------------
 
     def summary(self) -> dict:
-        """The compact reduction for a node's ``metrics`` output."""
+        """Return the compact reduction for a node's ``metrics`` output.
+
+        Returns
+        -------
+        dict
+            ``epochs_run``, ``best_epoch``, ``objective``, and — when
+            present — ``best_<objective>`` plus ``final_train_loss``
+            and any of ``final_val_loss``/``final_logloss``/
+            ``final_brier``/``final_ece`` the last epoch recorded (this
+            fixed set only — an extra ``metrics`` key passed to
+            :meth:`record` gets no ``final_`` counterpart here).
+        """
         out = {
             "epochs_run": len(self.rows),
             "best_epoch": self.best_epoch if self.best_epoch is not None else -1,
@@ -302,7 +387,15 @@ class TrainingCurve:
         return {k: v for k, v in out.items() if v is not None}
 
     def payload(self) -> dict:
-        """The durable artifact body — every epoch, streamed or not."""
+        """Return the durable artifact body — every epoch, streamed or not.
+
+        Returns
+        -------
+        dict
+            ``node``, ``objective``, ``total_epochs``, ``epochs_run``,
+            ``best_epoch``, ``streamed_lines``, a fixed ``note``, and
+            ``epochs`` — every recorded row.
+        """
         return {
             "node": self.key,
             "objective": self.objective,
@@ -340,7 +433,10 @@ class TrainingCurve:
 
 
 def _num(value):
-    """A JSON-safe float — NaN/inf become None (write_artifact refuses NaN)."""
+    """Coerce to a JSON-safe float — NaN/inf become None.
+
+    ``write_artifact`` refuses NaN.
+    """
     if value is None or isinstance(value, bool):
         return None
     if not isinstance(value, (int, float)):

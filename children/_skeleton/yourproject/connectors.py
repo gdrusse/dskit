@@ -43,9 +43,32 @@ _DEFAULT_START = "2026-01-01"
 
 
 class SampleConnector(Connector):
-    """A deterministic in-code source, one stream. See module docs."""
+    """A deterministic in-code source, one stream — no filesystem, no network.
+
+    See the module docstring for the full contract: cursor semantics,
+    config knobs, and what a real connector replaces here.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; every setting comes from config.
+
+    Examples
+    --------
+    Discover the one stream this source offers::
+
+        connector = SampleConnector()
+        streams = connector.discover({"rows": 5, "start_date": "2026-01-01"})
+    """
 
     def spec(self) -> dict:
+        """Declare the default-deny sample-source configuration catalogue.
+
+        Returns
+        -------
+        dict
+            Connector knob declarations.
+        """
         return {
             "params": {
                 "rows": {
@@ -65,15 +88,19 @@ class SampleConnector(Connector):
     # -- internals ---------------------------------------------------------
 
     def _budget(self, config) -> int:
+        """Return ``config.rows`` as a positive int; refuse anything else."""
         rows = config.get("rows")
         if isinstance(rows, bool) or not isinstance(rows, int) or rows < 1:
             raise AssetError([f"config.rows must be an int >= 1, got {rows!r}"])
         return rows
 
     def _rows(self, config):
-        """Yield ``(effective_date, data)`` in date order — a real child
-        replaces this with the vendor fetch, keeping the emission sorted
-        so the cursor ("everything before this is durable") stays honest."""
+        """Yield ``(effective_date, data)`` in date order.
+
+        A real child replaces this with the vendor fetch, keeping the
+        emission sorted so the cursor ("everything before this is
+        durable") stays honest.
+        """
         rows = self._budget(config)
         start = parse_utc(config.get("start_date", _DEFAULT_START))
         for i in range(rows):
@@ -87,13 +114,40 @@ class SampleConnector(Connector):
     # -- the four verbs ----------------------------------------------------
 
     def check(self, config) -> None:
-        """Fail fast on knobs a pull would choke on; move no data. A real
-        connector authenticates and pings the vendor here."""
+        """Fail fast on knobs a pull would choke on; move no data.
+
+        A real connector authenticates and pings the vendor here.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by
+            :func:`~dskit.onboarding.connector.check_config`.
+
+        Raises
+        ------
+        AssetError
+            If ``config.rows`` is not an int ``>= 1``, or
+            ``config.start_date`` does not parse as an ISO date.
+        """
         self._budget(config)
         parse_utc(config.get("start_date", _DEFAULT_START))
 
     def discover(self, config) -> list:
-        """The streams on offer — a real connector asks the vendor."""
+        """Return the streams on offer — a real connector asks the vendor.
+
+        Parameters
+        ----------
+        config : dict
+            Unused here — the skeleton declares one fixed stream; a real
+            connector would consult the vendor.
+
+        Returns
+        -------
+        list of dict
+            One entry: ``{"stream": "samples", "schema": {"fields":
+            [...]}, "primary_key": ["id"]}``.
+        """
         return [{
             "stream": _STREAM,
             "schema": {"fields": list(_FIELDS)},
@@ -101,7 +155,51 @@ class SampleConnector(Connector):
         }]
 
     def read(self, config, streams, state, mode):
-        """Emit SCHEMA, then cursor-filtered RECORDs, then one STATE."""
+        """Emit SCHEMA, then cursor-filtered RECORDs, then one STATE.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by
+            :func:`~dskit.onboarding.connector.check_config`.
+        streams : list of str
+            Which discovered streams to pull; only ``"samples"`` exists.
+        state : dict
+            The last persisted checkpoint, keyed by stream; ``{}`` on a
+            first pull.
+        mode : str
+            ``"backfill"`` or ``"live"`` — unused here: this connector's
+            cursor logic is identical in both modes (see the module
+            docstring).
+
+        Yields
+        ------
+        dict
+            One SCHEMA message, then cursor-filtered RECORD messages in
+            ascending effective-date order, then one STATE message
+            carrying the updated cursor.
+
+        Raises
+        ------
+        AssetError
+            If ``state`` is not a dict, a stream's ``state`` cursor does
+            not parse as an ISO date, ``streams`` is empty or not a
+            list, a requested stream is not ``"samples"``,
+            ``config.rows`` is not an int ``>= 1``, or
+            ``config.start_date`` does not parse as an ISO date.
+        TypeError
+            If a per-stream value in ``state`` is not itself a dict and
+            is not a string (only the outer ``state`` shape is checked).
+        ValueError
+            If a per-stream value in ``state`` is a string (not itself
+            a dict).
+        AttributeError
+            If a per-stream value in ``state`` is empty but not itself
+            a dict (e.g. ``""`` or ``[]``) — ``dict(v)`` accepts an
+            empty iterable silently, so the eager per-stream conversion
+            above does not catch it, and the cursor is then read off
+            the ORIGINAL (unconverted) value a few lines later.
+        """
         if not isinstance(state, dict):
             raise AssetError([f"state must be a dict, got {state!r}"])
         if not isinstance(streams, list) or not streams:

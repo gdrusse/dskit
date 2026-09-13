@@ -57,6 +57,12 @@ class OnboardingRoot:
         A directory previously initialized by :meth:`create` (it must
         hold an assets store under ``store/``).
 
+    Raises
+    ------
+    AssetError
+        If ``root`` is not a non-empty string, or is not an
+        initialized onboarding root (no ``store/store.json``).
+
     Examples
     --------
     Create a root and check its layout::
@@ -105,6 +111,13 @@ class OnboardingRoot:
         -------
         OnboardingRoot
             The opened root.
+
+        Raises
+        ------
+        AssetError
+            If ``root``/``model`` are malformed, an obstruction sits
+            where a subdirectory belongs, the store is already
+            initialized, or a directory cannot be created.
         """
         errors = []
         _check_str(errors, "root", root)
@@ -142,7 +155,7 @@ class OnboardingRoot:
         return cls(root)
 
     def registry(self, model=None) -> Registry:
-        """A registry over this root's store.
+        """Return a registry over this root's store.
 
         Parameters
         ----------
@@ -150,6 +163,29 @@ class OnboardingRoot:
             Must hash to the store's pin; defaults to the built-in
             onboarding model. A root created with a custom model must be
             opened with that same model — the pin enforces it.
+
+        Returns
+        -------
+        Registry
+            A registry over this root's store.
+
+        Raises
+        ------
+        AssetError
+            If ``model`` is given but is not an AssetModel, does not
+            hash to the store's pin, or the store's own ``store.json``
+            is unreadable/malformed (propagated from
+            :func:`~dskit.assets.store.open_store`).
+        Exception
+            Whatever the store's declared backend itself raises while
+            opening — an unrecognized or misbehaving
+            ``pkg.module:Class`` backend reference, called unguarded
+            by :func:`~dskit.assets.store.open_store`; or whatever the
+            opened store's own ``model_pin()`` raises, if anything —
+            already documented on
+            :meth:`~dskit.assets.registry.Registry.__init__` itself
+            (called here to construct the returned ``Registry``), but
+            not previously cited here.
         """
         model = onboarding_model() if model is None else model
         return Registry(open_store(os.path.join(self.root, "store")), model)
@@ -157,14 +193,49 @@ class OnboardingRoot:
     # -- path helpers: every path in the estate comes from here ------------
 
     def raw_dir(self, source) -> str:
-        """``raw/<source>/`` — where this source's snapshots live."""
+        """``raw/<source>/`` — where this source's snapshots live.
+
+        Parameters
+        ----------
+        source : str
+            A filesystem-safe source name.
+
+        Returns
+        -------
+        str
+            The directory path.
+
+        Raises
+        ------
+        AssetError
+            If ``source`` is not filesystem-safe.
+        """
         errors = []
         _check_segment(errors, "source", source)
         _raise_if(errors)
         return os.path.join(self.root, "raw", source)
 
     def snapshot_dir(self, source, acq_id) -> str:
-        """``raw/<source>/<acq_id>/`` — one WORM snapshot."""
+        """``raw/<source>/<acq_id>/`` — one WORM snapshot.
+
+        Parameters
+        ----------
+        source : str
+            A filesystem-safe source name.
+        acq_id : str
+            The acquisition id.
+
+        Returns
+        -------
+        str
+            The directory path.
+
+        Raises
+        ------
+        AssetError
+            If ``source`` is not filesystem-safe, or ``acq_id`` is not
+            a non-empty string.
+        """
         errors = []
         _check_segment(errors, "source", source)
         _check_str(errors, "acq_id", acq_id)
@@ -172,8 +243,32 @@ class OnboardingRoot:
         return os.path.join(self.root, "raw", source, acq_id)
 
     def records_dir(self, source, acq_id, *, forecasts=False) -> str:
-        """Normalized rows for one acquisition — observations by default,
-        the segregated forecast root when ``forecasts`` (ADR-0014/OQ-6)."""
+        """Return the path to normalized rows for one acquisition.
+
+        Observations by default, the segregated forecast root when
+        ``forecasts`` (ADR-0014/OQ-6).
+
+        Parameters
+        ----------
+        source : str
+            A filesystem-safe source name.
+        acq_id : str
+            The acquisition id.
+        forecasts : bool, optional
+            When ``True``, the segregated forecast root instead of
+            observations.
+
+        Returns
+        -------
+        str
+            The directory path.
+
+        Raises
+        ------
+        AssetError
+            If ``source`` is not filesystem-safe, or ``acq_id`` is not
+            a non-empty string.
+        """
         errors = []
         _check_segment(errors, "source", source)
         _check_str(errors, "acq_id", acq_id)
@@ -186,6 +281,24 @@ class OnboardingRoot:
 
         Keyed per (source, stream, MODE): the backfill cursor and the
         live cursor can never interfere (ADR-0014).
+
+        Parameters
+        ----------
+        source, stream : str
+            Filesystem-safe names.
+        mode : str
+            ``"backfill"`` or ``"live"``.
+
+        Returns
+        -------
+        str
+            The checkpoint file path.
+
+        Raises
+        ------
+        AssetError
+            If ``source``/``stream`` are not filesystem-safe, or
+            ``mode`` is not a declared mode.
         """
         errors = []
         _check_segment(errors, "source", source)
@@ -195,13 +308,35 @@ class OnboardingRoot:
         return os.path.join(self.root, "state", source, f"{stream}-{mode}.json")
 
     def coverage_path(self) -> str:
-        """``state/coverage.sqlite`` — the coverage ledger's one file
-        (ADR-0030). State beside the cursors, never evidence: ``verify``
-        ignores it."""
+        """Return the coverage ledger's one file, ``state/coverage.sqlite`` (ADR-0030).
+
+        State beside the cursors, never evidence: ``verify`` ignores it.
+
+        Returns
+        -------
+        str
+            The ledger file path.
+        """
         return os.path.join(self.root, "state", "coverage.sqlite")
 
     def published_dir(self, dataset) -> str:
-        """``published/<dataset>/`` — the outbox P1 scans (ADR-0012)."""
+        """``published/<dataset>/`` — the outbox P1 scans (ADR-0012).
+
+        Parameters
+        ----------
+        dataset : str
+            A filesystem-safe dataset alias.
+
+        Returns
+        -------
+        str
+            The directory path.
+
+        Raises
+        ------
+        AssetError
+            If ``dataset`` is not filesystem-safe.
+        """
         errors = []
         _check_segment(errors, "dataset", dataset)
         _raise_if(errors)

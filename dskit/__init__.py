@@ -1,5 +1,7 @@
-"""dskit — a data-science toolkit. Four packages, one doctrine: code is
-generic, configuration is the interface, and your project is a thin child.
+"""dskit — a data-science toolkit.
+
+Five packages, one doctrine: code is generic, configuration is the
+interface, and your project is a thin child.
 
 Subpackages:
 
@@ -12,6 +14,10 @@ Subpackages:
 * :mod:`dskit.onboarding` — acquisition & onboarding: connectors pull
   into WORM snapshots, declarative suites validate, certification and
   publication hand evidence to the assets catalog.
+* :mod:`dskit.production` — the production layer: serve an immutable
+  release forward on a cadence, guard every proposal, make moving
+  money an explicit authenticated act, and record the whole decision
+  stream in a hash-chained append-only ledger.
 * :mod:`dskit.journal` — the child action ledger (ADR-0056): every
   acquire / research / execute / production row, CSV store, generated
   markdown, owner path-to-production.

@@ -1,7 +1,6 @@
-"""The observations READ seam — deduplicated snapshots of what acquire
-wrote (ADR-0037).
+"""The observations READ seam (ADR-0037).
 
-Acquire appends envelope rows under
+Deduplicated snapshots of what acquire wrote. Acquire appends envelope rows under
 ``<root>/observations/<source>/<acq_id>/<stream>.jsonl[.gz]``; this
 module is the one generic way to read them BACK: :func:`scan_stream`
 returns the bitemporally deduplicated snapshot (for one declared key,
@@ -84,10 +83,12 @@ def _epoch_ms(dt) -> int:
 
 
 def _key_part(value):
-    """A key-field value under CANONICAL identity — never coercing
-    Python ``==``, where ``1 == 1.0 == True`` would let one dict slot
-    silently merge three canonically distinct keys (and the same
-    coercion would let sort comparisons equate distinct records).
+    """Canonicalize a key-field value's identity.
+
+    Never coercing Python's ``==``, where ``1 == 1.0 == True`` would let
+    one dict slot silently merge three canonically distinct keys (and
+    the same coercion would let sort comparisons equate distinct
+    records).
 
     Strings — the overwhelmingly common key type — pass through
     untouched (zero allocation, so the memory contract is unchanged).
@@ -111,7 +112,7 @@ def _key_part(value):
 
 
 def _key_display(key) -> list:
-    """The raw values behind a key's tagged parts, for messages."""
+    """Return the raw values behind a key's tagged parts, for messages."""
     return [part[1] if isinstance(part, tuple) and len(part) in (2, 3)
             and part[0] in ("b", "f", "i") else part
             for part in key]
@@ -206,6 +207,14 @@ def stream_dir(root, source) -> str:
     -------
     str
         The directory path; existence is the caller's to check.
+
+    Raises
+    ------
+    TypeError
+        If ``root`` or ``source`` is not a string/bytes/path-like value
+        (e.g. ``None`` or an int) — unlike every path helper on
+        :class:`~dskit.onboarding.layout.OnboardingRoot`, this function
+        does not validate either argument before ``os.path.join``.
     """
     return os.path.join(root, "observations", source)
 
@@ -306,6 +315,11 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     AssetError
         Accumulating parameter problems; naming the path (and line) for
         store-side refusals.
+    Exception
+        Whatever a caller-supplied ``admit`` callback itself raises —
+        it is called unguarded once a record clears the two intake
+        bounds, so a callback that is not actually pure/exception-free
+        is not shielded.
     """
     _raise_if(_scan_problems(root, source, stream, key_fields, ts_field,
                              ts_out, shared_fields, since_ms, keep_values,
@@ -561,7 +575,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
 
 
 def stream_digest(records) -> str:
-    """The snapshot's content fingerprint, hashed record by record.
+    """Return the snapshot's content fingerprint, hashed record by record.
 
     Byte-identical to ``sha256(json.dumps(records, sort_keys=True))`` —
     the FROZEN recipe (plain dump: default separators, ASCII) — without
@@ -631,10 +645,21 @@ def verified_payload_dir(root, manifest_hash, stream) -> str:
     Raises
     ------
     AssetError
-        When the root is not initialized, the hash is malformed, no
-        snapshot under the root carries it, the snapshot fails
-        verification (every drift named), or it holds no files for
-        ``stream``.
+        When ``root`` is not a non-empty string or is not an
+        initialized onboarding root; ``stream`` is not filesystem-safe;
+        the hash is malformed; no snapshot under the root carries it;
+        the snapshot fails verification (every drift named); it holds
+        no files for ``stream``; or scanning for the hash
+        (:func:`find_snapshot_dir`) encounters a DIFFERENT, unrelated
+        snapshot whose own manifest is unreadable — such a corrupt
+        sibling can block a legitimate lookup depending on scan order.
+    TypeError
+        If the target snapshot's own manifest holds a ``files`` entry
+        that is not a dict — propagated from :func:`verify_snapshot`'s
+        own unvalidated assumption about entry shape.
+    KeyError
+        If a ``files`` entry is a dict missing ``relpath`` — the same
+        unvalidated assumption, a different malformed shape.
     """
     ob = root if isinstance(root, OnboardingRoot) else OnboardingRoot(root)
     errors = []

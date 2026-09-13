@@ -93,12 +93,58 @@ class ResolvedPipeline:
         Absolute paths. ``data_root`` must exist at resolve time;
         ``model_root`` is an OUTPUT root the runner creates.
     instruments : tuple of str
-        The concrete, sorted universe (explicit instruments canonicalized
-        by sorting — a universe is a set; or the backend's auto-discovery).
+        The concrete, sorted universe (:func:`resolve` sorts explicit
+        instruments before constructing — a universe is a set — or
+        uses the backend's auto-discovery, already sorted; direct
+        construction REFUSES an unsorted tuple rather than sorting it).
     data_fingerprint : dict
         The backend's per-instrument snapshot identity. HASHED.
     run_dir : str
         Where artifacts land. Excluded from the hash (it embeds hash8).
+
+    Raises
+    ------
+    ValueError
+        If ``config`` is not a :class:`PipelineConfig`; ``asof`` is not
+        a ``YYYY-MM-DD`` date; ``data_root``/``model_root``/``run_dir``
+        are not non-empty strings; ``instruments`` is not a non-empty,
+        already-sorted tuple; or ``data_fingerprint`` is not a dict.
+    TypeError
+        If ``instruments`` holds elements that are not mutually
+        comparable (e.g. a mix of ``str`` and ``int``) — the sortedness
+        check calls ``sorted()`` unguarded, and a ``<`` failure between
+        its elements escapes raw rather than becoming the ``ValueError``
+        above.
+
+    Examples
+    --------
+    :func:`resolve` is the normal way to obtain one, from a config and an
+    ``asof`` date; it returns the resolved pipeline paired with the
+    backend that produced it. Constructed directly here to show the
+    shape; once resolved, ``to_dict()`` gives most of the JSON body
+    :func:`write_run_dir` writes to ``resolved.json`` (which additionally
+    stamps ``pipeline_hash`` before writing)::
+
+        from dskit.pipeline.base import (
+            DataConfig, ModelConfig, PipelineConfig, TimeSplitConfig,
+        )
+        resolved = ResolvedPipeline(
+            config=PipelineConfig(
+                name="syn",
+                data=DataConfig(venue="synthetic", data_dir="/data",
+                                 instruments=("AAPL", "MSFT")),
+                splits=TimeSplitConfig(train_end_ms=1, val_end_ms=2,
+                                        test_end_ms=3),
+                model=ModelConfig(name="true-q", model_dir="/data/models"),
+            ),
+            asof="2026-01-31",
+            data_root="/data",
+            model_root="/data/models",
+            instruments=("AAPL", "MSFT"),
+            run_dir="/data/pipeline_runs/syn-2026-01-31-abcd1234",
+        )
+        resolved.to_dict()["instruments"]
+        # -> ['AAPL', 'MSFT']
     """
 
     config: PipelineConfig
@@ -110,6 +156,11 @@ class ResolvedPipeline:
     run_dir: str = ""
 
     def __post_init__(self):
+        """Refuse a malformed field combination.
+
+        Checks ``config``, ``asof``, the path fields, ``instruments``,
+        and ``data_fingerprint``.
+        """
         if not isinstance(self.config, PipelineConfig):
             raise ValueError(
                 f"config must be a PipelineConfig, got {type(self.config).__name__}"
@@ -138,8 +189,28 @@ class ResolvedPipeline:
             )
 
     def to_dict(self) -> dict:
-        """JSON-ready form — the hash input (minus exclusions) and the
-        resolved.json body."""
+        """Build the JSON-ready form.
+
+        The hash input (minus exclusions) and most of the resolved.json
+        body.
+
+        Returns
+        -------
+        dict
+            Most of the resolved.json body — :func:`write_run_dir`
+            additionally stamps ``pipeline_hash`` onto this before writing.
+
+        Raises
+        ------
+        TypeError
+            If ``data_fingerprint`` holds a value ``json.dumps`` cannot
+            serialize — ``__post_init__`` only checks it is a dict, not
+            that its values are JSON-safe.
+        ValueError
+            If ``data_fingerprint`` holds a circular reference — the
+            same unchecked-values gap as above, a different failure
+            from the same ``json.dumps`` call.
+        """
         return {
             "asof": self.asof,
             "resolver_version": RESOLVER_VERSION,
@@ -159,6 +230,35 @@ def pipeline_hash(resolved) -> str:
     re-read resolved.json can be re-hashed byte-for-byte). Strips the
     provenance keys, ``run_dir``, and every ``notes`` key at every level
     (rule 4 — documentation never changes identity).
+
+    Parameters
+    ----------
+    resolved : ResolvedPipeline or dict
+        The resolved pipeline, or its ``to_dict()``/``resolved.json`` form.
+
+    Returns
+    -------
+    str
+        Hex sha256 of the canonical, identity-stripped JSON.
+
+    Raises
+    ------
+    ValueError
+        If the stripped content is not canonically serializable
+        (NaN/Infinity in an open dict or fingerprint); or ``resolved``
+        has no ``to_dict`` and is a non-mapping iterable of items that
+        are not themselves 2-element pairs (e.g. a list of strings or a
+        plain string) — raised by the ``dict(resolved)`` fallback
+        conversion, unrelated to the NaN/Infinity case above and not
+        wrapped with the same message.
+    TypeError
+        If the stripped content holds a value ``json.dumps`` cannot
+        serialize at all (not caught and wrapped like the NaN/Infinity
+        case above — this pre-existing ``except ValueError`` does not
+        catch it); also propagated from ``resolved.to_dict()`` when
+        ``resolved`` is a :class:`ResolvedPipeline`; or ``resolved`` has
+        no ``to_dict`` and is not iterable at all (e.g. an int) —
+        raised by the same ``dict(resolved)`` fallback.
     """
     d = resolved.to_dict() if hasattr(resolved, "to_dict") else dict(resolved)
     d = _strip_notes({k: v for k, v in d.items() if k not in _PROVENANCE_KEYS})
@@ -203,10 +303,41 @@ def resolve(config, asof=None, backend=None, registry=DEFAULT_REGISTRY):
         If ``data.data_dir`` does not exist here (the environment check
         deferred out of ``__post_init__`` by design rule 1).
     ValueError
-        Unknown venue, unknown ``validation.metric`` or
-        ``stat_test.correction``, a split/optimizer kind the backend does
-        not support, an optimizer kind nobody registered, or an empty
-        discovered universe.
+        ``asof`` is not a ``YYYY-MM-DD`` date; unknown venue, unknown
+        ``validation.metric`` or ``stat_test.correction``; a weighted
+        correction declared (the stage-list grammar cannot wire the
+        weights it needs); a split/optimizer kind the backend does not
+        support, an optimizer kind nobody registered; an empty
+        discovered universe; any ``pkg.module:Attr`` reference in
+        ``model.name``, ``optimization.kind``, a features step's
+        ``kind``, a tracking sink's ``kind``, or a custom stage that
+        does not import (propagated from
+        :func:`~dskit.pipeline.base.import_ref`); a class-reference
+        ``optimization.kind``, features-step ``kind``, or custom stage
+        that imports but is not callable; a features step ``kind`` that
+        is neither a registered transform nor claimed by the backend; a
+        class-reference ``model.name`` whose target lacks the required
+        ``train``/``load`` method(s); a class-reference tracking sink
+        missing a Tracker seam method
+        (``log_params``/``log_metrics``/``close``); a non-class-reference
+        tracking sink ``kind`` not (or no longer) in ``SINK_KINDS``; a
+        required environment variable named in ``config.env.require``
+        that is absent (propagated from
+        :func:`~dskit.pipeline.env.load_env`); or ``backend.fingerprint()``
+        returning a value with a NaN/Infinity float — propagated from
+        :func:`pipeline_hash`, the sibling case to the ``TypeError``
+        below.
+    TypeError
+        If ``backend.fingerprint()`` returns a value that is not JSON-
+        serializable at all (e.g. a ``set``) — propagated from
+        :func:`pipeline_hash`, which this function calls to embed the
+        run directory's hash.
+    Exception
+        Whatever ``backend``'s own hooks raise, if anything — a custom
+        or test-injected ``backend`` (a caller-suppliable value, per the
+        ``backend`` parameter above) is never validated, and its
+        ``discover_instruments``/``fingerprint``/``supported_*`` calls
+        are all unguarded.
     """
     if asof is None:
         asof_s = datetime.now(timezone.utc).date().isoformat()
@@ -370,6 +501,37 @@ def write_run_dir(resolved) -> str:
     distinguishable from a genuine conflict. Both documents are serialized
     BEFORE anything touches disk — a NaN in an open dict can never leave a
     half-written run dir behind.
+
+    Parameters
+    ----------
+    resolved : ResolvedPipeline
+        The resolved pipeline to persist.
+
+    Returns
+    -------
+    str
+        The run directory that was created (``resolved.run_dir``).
+
+    Raises
+    ------
+    ValueError
+        If ``resolved.run_dir`` already exists and is non-empty, or if
+        either document is not canonically serializable (NaN/Infinity).
+    TypeError
+        If ``resolved.data_fingerprint`` (or ``resolved.config``) holds
+        a value ``json.dumps`` cannot serialize at all — see
+        :meth:`ResolvedPipeline.to_dict` and :func:`pipeline_hash`.
+    OSError
+        If ``resolved.run_dir`` cannot be created, or its parent is not
+        writable.
+    FileExistsError
+        If a non-directory file already occupies ``resolved.run_dir`` —
+        the non-empty check above tests ``os.path.isdir`` first, so a
+        plain file there is not "non-empty" by that test and reaches
+        the unguarded ``os.makedirs(..., exist_ok=True)`` unchanged;
+        the same call also cannot distinguish a genuine race (a stray
+        directory appearing between the check and the commit) from
+        this simpler case.
     """
     run_dir = resolved.run_dir
     new_hash = pipeline_hash(resolved)

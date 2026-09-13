@@ -1,6 +1,33 @@
 # Re-entry
 
-## Current wrap: Gate 4 forecast bundle + confirmed-cap contracts (2026-09-11)
+## Current wrap: docstring conversion + 29-round skeptic loop closed (2026-09-13)
+
+Branch `claude/todo-simple-items-us9czs`. Converted 24 files (27 originally
+claimed; round 9 found 3 already compliant) off ruff's pre-standard
+docstring-ignore list to the CLAUDE.md standard (module prose; class
+NumPy sections + an instantiating `Examples` block; function
+Parameters/Returns/Raises with types in text). Then ran a 29-round
+sequential Skeptic Review Loop per owner instruction (one independent
+agent at a time, never parallel), fixing every genuine, execution-
+verified defect each round found — 25 straight rounds (4-28) turned up
+real gaps, converging over the last 9 onto one shape ("a caller of an
+already-fixed wrapper method — `Registry`/`Lineage`, `Connector`,
+`Store`, `Backend` — not cross-citing that method's own documented
+propagation"). Round 29 re-confirmed that shape exhaustively closed and
+traced 3 more unrelated functions clean; zero MAJOR/MINOR, one cosmetic
+NIT (fixed). TODO.md's own item carries the full 29-round narrative.
+
+**Verification:** `tests/onboarding tests/assets tests/pipeline` — 3124
+passed, 37 skipped, 1 deselected (`test_an_unlistable_nodes_dir_is_named_not_fatal`,
+a known root-uid environmental failure, confirmed identical on the
+merge-base); ruff clean; long-line sweep clean; identity-hash invariant
+holds over every example/child pipeline config.
+
+**Next:** merge to `main` and delete the remote branch (this wrap).
+30 of the original 57 pre-standard modules remain undrained — separate,
+un-started work, not part of what this branch touched.
+
+## Prior wrap: Gate 4 forecast bundle + confirmed-cap contracts (2026-09-11)
 
 Branch `sol/gate4-closeout` integrates `origin/main` at `5b60f97` and records
 the owner-approved design as ADR-0121. Gate 4 now converts the pinned P16 log

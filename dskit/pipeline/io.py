@@ -52,7 +52,17 @@ def load_config(path, adapters=()) -> PipelineConfig:
     OSError
         If the file cannot be read.
     ModuleNotFoundError
-        If a named adapter module is not importable here.
+        If a named adapter module itself does not exist.
+    TypeError
+        If the file's top-level JSON value parses but is not an object
+        (e.g. ``null``, a number, or a bool) — ``PipelineConfig.from_obj``
+        calls ``set(obj)`` unguarded on it before any schema check runs.
+    Exception
+        Whatever else importing a named adapter module raises — the
+        import loop is unguarded beyond Python's own import machinery,
+        so a bad nested import inside the adapter surfaces as a plain
+        ``ImportError`` (not ``ModuleNotFoundError``), and any other
+        top-level failure in the adapter propagates as-is.
     """
     for module in adapters:
         importlib.import_module(module)
@@ -68,9 +78,33 @@ def load_config(path, adapters=()) -> PipelineConfig:
 
 
 def save_config(config, path) -> None:
-    """Write a config as canonical, human-diffable JSON (sorted keys,
-    2-space indent, NaN refused). Serialized fully before the file opens —
-    a bad value can never leave a half-written document."""
+    """Write a config as canonical, human-diffable JSON.
+
+    Sorted keys, 2-space indent, NaN refused. Serialized fully before
+    the file opens — a bad value can never leave a half-written document.
+
+    Parameters
+    ----------
+    config : PipelineConfig
+        The config to serialize.
+    path : str
+        Path to write the ``.json`` file to.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If ``config.to_obj()`` holds a NaN/Infinity float.
+    TypeError
+        If ``config.to_obj()`` holds a value ``json.dumps`` cannot
+        serialize at all (e.g. a ``set`` inside a free-form field such
+        as ``model.params``).
+    OSError
+        If ``path``'s directory does not exist or is not writable.
+    """
     text = json.dumps(config.to_obj(), indent=2, sort_keys=True, allow_nan=False)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text + "\n")

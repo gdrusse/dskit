@@ -39,6 +39,11 @@ class Lineage:
         The registry whose store holds the graph; endpoint resolution
         and kind checks ride on it.
 
+    Raises
+    ------
+    AssetError
+        If ``registry`` is not a :class:`~dskit.assets.registry.Registry`.
+
     Examples
     --------
     Add a lineage edge, add it again idempotently, and reject a cycle::
@@ -97,8 +102,17 @@ class Lineage:
         Raises
         ------
         AssetError
-            If an endpoint does not resolve, ``src == dst``, or the edge
-            would create a cycle — the graph stays a DAG.
+            If ``relation``/``phase`` are not non-empty strings or
+            ``origin`` is not a string; an endpoint does not resolve;
+            ``src == dst``; or the edge would create a cycle — the
+            graph stays a DAG.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``src``/``dst`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) or appending
+            the edge event — a caller-supplied store, called
+            unguarded.
         """
         errors = []
         _check_str(errors, "relation", relation)
@@ -136,10 +150,27 @@ class Lineage:
     def edges(self, version_id=None) -> list:
         """Every edge, or every edge touching ``version_id``, in assert order.
 
+        Parameters
+        ----------
+        version_id : str, optional
+            Restrict to edges where this is the ``src`` or ``dst``;
+            ``None`` returns every edge in the graph.
+
         Returns
         -------
         list of dict
             ``{"src", "dst", "relation", "phase", "origin", "at"}`` each.
+
+        Raises
+        ------
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises from
+            ``iter_events``, if anything — a caller-supplied store,
+            called unguarded; this is the shared engine underneath
+            :meth:`add`/:meth:`parents`/:meth:`children`/
+            :meth:`ancestors`/:meth:`descendants`, all of which inherit
+            the same gap by calling this method.
         """
         out = []
         for event in self.registry.store.iter_events():
@@ -150,26 +181,125 @@ class Lineage:
         return out
 
     def parents(self, version_id) -> list:
-        """Direct upstream version_ids (what this derives from), sorted."""
+        """Direct upstream version_ids (what this derives from), sorted.
+
+        Parameters
+        ----------
+        version_id : str
+            A version_id present in the store.
+
+        Returns
+        -------
+        list of str
+            Sorted, direct upstream version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent, or its kind is undeclared.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``version_id`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) or reading
+            the edge log (via :meth:`edges`) — a caller-supplied
+            store, called unguarded.
+        """
         self.registry.get(version_id)
         return sorted({e["src"] for e in self.edges(version_id) if e["dst"] == version_id})
 
     def children(self, version_id) -> list:
-        """Direct downstream version_ids (what derives from this), sorted."""
+        """Direct downstream version_ids (what derives from this), sorted.
+
+        Parameters
+        ----------
+        version_id : str
+            A version_id present in the store.
+
+        Returns
+        -------
+        list of str
+            Sorted, direct downstream version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent, or its kind is undeclared.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``version_id`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) or reading
+            the edge log (via :meth:`edges`) — a caller-supplied
+            store, called unguarded.
+        """
         self.registry.get(version_id)
         return sorted({e["dst"] for e in self.edges(version_id) if e["src"] == version_id})
 
     def ancestors(self, version_id) -> list:
-        """Every upstream version_id, transitively, sorted."""
+        """Every upstream version_id, transitively, sorted.
+
+        Parameters
+        ----------
+        version_id : str
+            A version_id present in the store.
+
+        Returns
+        -------
+        list of str
+            Sorted, transitive upstream version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent, or its kind is undeclared.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``version_id`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) or reading
+            the edge log (via :meth:`edges`) — a caller-supplied
+            store, called unguarded.
+        """
         return self._closure(version_id, upstream=True)
 
     def descendants(self, version_id) -> list:
-        """Every downstream version_id, transitively, sorted."""
+        """Every downstream version_id, transitively, sorted.
+
+        Parameters
+        ----------
+        version_id : str
+            A version_id present in the store.
+
+        Returns
+        -------
+        list of str
+            Sorted, transitive downstream version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent, or its kind is undeclared.
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises, if anything,
+            while resolving ``version_id`` (via
+            :meth:`~dskit.assets.registry.Registry.get`) or reading
+            the edge log (via :meth:`edges`) — a caller-supplied
+            store, called unguarded.
+        """
         return self._closure(version_id, upstream=False)
 
     def _closure(self, version_id, upstream) -> list:
-        """BFS over the edge list, rebuilt per call — an O(edges) scan,
-        priced for the tier-1 store's declared ~10^4 scale."""
+        """BFS over the edge list, rebuilt per call.
+
+        An O(edges) scan, priced for the tier-1 store's declared ~10^4
+        scale.
+        """
         self.registry.get(version_id)
         step = {}
         for e in self.edges():

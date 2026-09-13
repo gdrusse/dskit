@@ -149,6 +149,12 @@ class Connector(abc.ABC):
     ``spec`` is import-cheap; ``check`` may touch the network but moves
     no data; ``discover`` is cheap; heavy imports live INSIDE ``read``
     (the tier-2 rule, same as pipeline nodes).
+
+    Examples
+    --------
+    Abstract — subclass and implement the four verbs; see
+    :class:`~dskit.onboarding.libs.localfiles.LocalFilesConnector` for a
+    complete, minimal implementation.
     """
 
     @abc.abstractmethod
@@ -166,12 +172,25 @@ class Connector(abc.ABC):
 
     @abc.abstractmethod
     def check(self, config) -> None:
-        """Fail fast: can we connect with this config? Raise
-        :class:`~dskit.assets.base.AssetError` on failure; move no data."""
+        """Fail fast on a config this connector cannot use.
+
+        Raise :class:`~dskit.assets.base.AssetError` on failure; move no
+        data.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`check_config`.
+        """
 
     @abc.abstractmethod
     def discover(self, config) -> list:
-        """The streams this source offers.
+        """Return the streams this source offers.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`check_config`.
 
         Returns
         -------
@@ -227,6 +246,16 @@ def check_config(connector, config) -> None:
     ------
     AssetError
         Listing every violation at once.
+    TypeError
+        If ``config["storage"]`` is a dict with mixed-type keys (e.g.
+        both strings and an int) — propagated from
+        :func:`~dskit.onboarding.codec.storage_problems`, whose own
+        ``sorted(storage)`` call is unguarded despite that function's
+        own docstring claiming it never raises.
+    Exception
+        Whatever ``connector.spec()`` itself raises, if anything — it
+        is called unguarded before any shape checking of its return
+        value runs.
     """
     errors = []
     if not isinstance(connector, Connector):
@@ -389,7 +418,11 @@ def resolve_connector(ref):
     module_name, attr = ref.split(":", 1)
     try:
         module = importlib.import_module(module_name)
-    except ImportError as exc:
+    # Everything, not just ImportError: a connector module crashing at
+    # import (a bad dependency, a top-level config read) must not
+    # escape the seam raw — the same idiom store.py's _resolve_backend
+    # already applies to this exact resolve-a-reference shape.
+    except Exception as exc:
         raise AssetError([f"cannot import connector {ref!r}: {exc}"]) from exc
     cls = getattr(module, attr, None)
     if cls is None:
@@ -437,12 +470,14 @@ def backoff(attempt, base_s=DEFAULT_BACKOFF_S):
     base_s : float, optional
         The first wait, in seconds, ``>= 0``; defaults to
         :data:`DEFAULT_BACKOFF_S`. A pack that starts wider, or reads its
-        base from config, passes its own.
+        base from config, passes its own. NOT independently validated —
+        a caller-supplied negative or non-finite value is not refused
+        and produces a result outside the stated range below.
 
     Returns
     -------
     float
-        Seconds in ``[0, MAX_BACKOFF_S]``.
+        Seconds in ``[0, MAX_BACKOFF_S]``, given a well-formed ``base_s``.
 
     Raises
     ------
@@ -451,6 +486,10 @@ def backoff(attempt, base_s=DEFAULT_BACKOFF_S):
         the point of the check: the doubling would HALVE the first wait
         rather than fail, which is exactly the silent drift one owner
         exists to prevent.
+    TypeError
+        If ``base_s`` is ``None`` or another type ``float()`` refuses.
+    ValueError
+        If ``base_s`` is a string ``float()`` cannot parse.
 
     Examples
     --------
@@ -492,9 +531,12 @@ def retry_after(headers, fallback):
     Parameters
     ----------
     headers : mapping or None
-        The response headers. Anything without an ``items()`` — ``None``
-        included — is read as carrying no header, so a caller never has to
-        guard the shape a failed request handed it.
+        The response headers. Anything without a callable ``items()`` —
+        ``None`` included — is read as carrying no header. Something
+        that DOES have an ``items()`` is trusted to behave like a
+        mapping's: it is called and iterated unguarded, so a
+        header-like object whose ``items()`` raises, or yields entries
+        that are not 2-element pairs, is not shielded.
     fallback : float
         Seconds to use when no usable header is present. Callers pass
         :func:`backoff` for the attempt, so an absent, malformed or
@@ -504,6 +546,14 @@ def retry_after(headers, fallback):
     -------
     float
         The capped header value, else ``fallback`` unchanged.
+
+    Raises
+    ------
+    ValueError
+        If ``headers.items()`` yields an entry that is not a
+        2-element pair (e.g. a ``Retry-After`` tuple of length 1 or 3).
+        ``headers.items()`` itself is also called and iterated
+        unguarded, so whatever it raises (if anything) propagates too.
 
     Examples
     --------

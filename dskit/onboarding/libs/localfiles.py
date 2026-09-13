@@ -49,9 +49,40 @@ _DEFAULT_ENCODING = "utf-8"
 
 
 class LocalFilesConnector(Connector):
-    """Files in a local directory, one stream per file. See module docs."""
+    """Files in a local directory, one stream per file.
+
+    See the module docstring for the full contract: cursor semantics,
+    config knobs, and the CSV/JSONL value-typing caveat.
+
+    Parameters
+    ----------
+    None
+        The connector is stateless; every setting comes from config.
+
+    Examples
+    --------
+    Discover the one stream a directory of data files holds::
+
+        import os
+        import tempfile
+        path = tempfile.mkdtemp()
+        with open(os.path.join(path, "prices.csv"), "w") as fh:
+            fh.write("date,close" + os.linesep)
+            fh.write("2024-01-01,100" + os.linesep)
+        connector = LocalFilesConnector()
+        connector.discover({"path": path, "effective_field": "date"})
+        # -> [{'stream': 'prices', 'schema': {'fields': ['close', 'date']},
+        #      'primary_key': []}]
+    """
 
     def spec(self) -> dict:
+        """Declare the default-deny local-files configuration catalogue.
+
+        Returns
+        -------
+        dict
+            Connector knob declarations.
+        """
         return {
             "params": {
                 "path": {
@@ -75,13 +106,14 @@ class LocalFilesConnector(Connector):
     # -- internals ---------------------------------------------------------
 
     def _dir(self, config) -> str:
+        """Return ``config.path`` as an absolute, expanded directory path."""
         path = config.get("path")
         if not isinstance(path, str) or not path:
             raise AssetError([f"config.path must be a non-empty string, got {path!r}"])
         return os.path.abspath(os.path.expanduser(path))
 
     def _files(self, config) -> dict:
-        """stream name -> file path, for every recognized data file."""
+        """Stream name -> file path, for every recognized data file."""
         directory = self._dir(config)
         if not os.path.isdir(directory):
             raise AssetError([f"config.path is not a directory: {directory!r}"])
@@ -119,14 +151,55 @@ class LocalFilesConnector(Connector):
     # -- the four verbs ----------------------------------------------------
 
     def check(self, config) -> None:
-        """The directory exists, is readable, and holds at least one file."""
+        """Refuse a config whose directory is missing or empty of recognized files.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`~dskit.onboarding.connector.check_config`.
+
+        Raises
+        ------
+        AssetError
+            If ``config.path`` does not exist, is not a directory,
+            holds no ``*.csv``/``*.jsonl`` file, or holds both a
+            ``.csv`` and a ``.jsonl`` file for the same stem.
+        """
         if not self._files(config):
             raise AssetError(
                 [f"no *.csv / *.jsonl files under {self._dir(config)!r}"]
             )
 
     def discover(self, config) -> list:
-        """One stream per file; schema = the first row's keys."""
+        """One stream per file; schema = the first row's keys.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`~dskit.onboarding.connector.check_config`.
+
+        Returns
+        -------
+        list of dict
+            ``{"stream": str, "schema": {"fields": list of str},
+            "primary_key": []}`` per file — this connector declares no
+            primary key.
+
+        Raises
+        ------
+        AssetError
+            If ``config.path`` does not exist, is not a directory, a
+            stem exists as both a ``.csv`` and a ``.jsonl`` file, or a
+            file's first row is malformed JSON / not a JSON object.
+        FileNotFoundError
+            If a recognized filename is a symlink whose target does
+            not exist — listing the directory does not confirm a file
+            actually opens.
+        OSError
+            If a recognized filename is a symlink LOOP (too many levels
+            of symbolic links) — the same unconfirmed-open gap as
+            above, a different OS-level failure.
+        """
         encoding = config.get("encoding", _DEFAULT_ENCODING)
         out = []
         for stream, path in sorted(self._files(config).items()):
@@ -147,6 +220,60 @@ class LocalFilesConnector(Connector):
         Rows are sorted by effective date before emission so the cursor
         ("everything before this is durable") is honest — an unsorted
         source must not checkpoint past unemitted rows.
+
+        Parameters
+        ----------
+        config : dict
+            Knobs already validated by :func:`~dskit.onboarding.connector.check_config`.
+        streams : list of str
+            Which discovered streams to pull.
+        state : dict
+            The last persisted checkpoint, keyed by stream; ``{}`` on a
+            first pull.
+        mode : str
+            ``"backfill"`` or ``"live"`` — unused here: this connector's
+            cursor logic is identical in both modes (see the module
+            docstring).
+
+        Yields
+        ------
+        dict
+            For each stream in turn: one SCHEMA message, then its
+            cursor-filtered RECORD messages in ascending effective-date
+            order; finally, after every stream, one STATE message
+            carrying every stream's updated cursor.
+
+        Raises
+        ------
+        AssetError
+            If ``state`` is not a dict with string keys; a stream's
+            ``state`` cursor does not parse as an ISO date/datetime;
+            ``streams`` is empty or not a list; ``config.path`` does
+            not exist, is not a directory, or holds a duplicate
+            csv/jsonl stem; a requested stream was not discovered; a
+            row's effective-date field is missing, empty, or does not
+            parse as an ISO date/datetime; or a JSONL row is malformed
+            JSON or not a JSON object.
+        TypeError
+            If a per-stream value in ``state`` is not itself a dict and
+            is not a string (only the outer ``state`` shape is checked).
+        ValueError
+            If a per-stream value in ``state`` is a string (not itself
+            a dict).
+        AttributeError
+            If a per-stream value in ``state`` is empty but not itself
+            a dict (e.g. ``""`` or ``[]``) — ``dict(v)`` accepts an
+            empty iterable silently, so the eager per-stream conversion
+            above does not catch it, and the cursor is then read off
+            the ORIGINAL (unconverted) value a few lines later.
+        FileNotFoundError
+            If a recognized filename is a symlink whose target does
+            not exist — listing the directory does not confirm a file
+            actually opens.
+        OSError
+            If a recognized filename is a symlink LOOP (too many levels
+            of symbolic links) — the same unconfirmed-open gap as
+            above, a different OS-level failure.
         """
         errors = []
         _check_dict(errors, "state", state)

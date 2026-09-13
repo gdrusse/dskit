@@ -85,12 +85,49 @@ _PENDING_STAMP = "pending"
 
 
 def find_active_source(registry, name) -> str:
-    """The version_id of the single ACTIVE ``source_config`` named ``name``.
+    """Return the version_id of the single ACTIVE ``source_config`` named ``name``.
 
     Aliases may have many versions (ADR-0009); the lifecycle
     disambiguates: exactly one must be ``active``. Zero means nothing to
     pull with; two or more means the operator has an unresolved config
     conflict — both are errors, never guesses.
+
+    Parameters
+    ----------
+    registry : Registry
+        The registry to search for ``source_config`` versions.
+    name : str
+        The ``source_config`` alias to resolve.
+
+    Returns
+    -------
+    str
+        The version_id of the single ACTIVE version.
+
+    Raises
+    ------
+    AssetError
+        If ``name`` is not a non-empty string; if ``registry``'s model
+        does not declare a ``source_config`` kind at all
+        (:meth:`~dskit.assets.registry.Registry.find`); if no
+        ``source_config`` named ``name`` is ACTIVE; or if more than one
+        is.
+    TypeError
+        If ``registry`` is a string — unlike ``name``, its type is
+        never checked before ``registry.find(...)`` is called, so a
+        malformed value escapes as whatever error that call happens to
+        raise, rather than as ``AssetError``.
+    AttributeError
+        If ``registry`` is any other non-``Registry`` value lacking a
+        ``find`` method (e.g. ``None`` or an int) — the same
+        unvalidated-type gap as above, a different resulting error.
+    Exception
+        Whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything — this
+        function's ``registry.find``/``registry.state`` calls are each
+        already documented to propagate it, but a caller reading only
+        this docstring would not know that without following those
+        cross-references.
     """
     errors = []
     _check_str(errors, "name", name)
@@ -136,6 +173,54 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         ``{"job", "snapshot", "acq_id", "records", "forecasts", "files",
         "skipped", "logs", "state_saved"}`` — ``job``/``snapshot``/
         ``acq_id`` are None on an empty pull.
+
+    Raises
+    ------
+    AssetError
+        If any argument is malformed; ``source`` has no single ACTIVE
+        ``source_config`` (:func:`find_active_source`); the resolved
+        connector's config fails ``spec()``/reserved-storage validation
+        (:func:`~dskit.onboarding.connector.check_config`,
+        :func:`~dskit.onboarding.codec.check_storage`) or its own
+        ``check()``; an existing checkpoint is unreadable or malformed
+        (:func:`~dskit.onboarding.state.load_state`); the connector
+        emits a malformed envelope message
+        (:func:`~dskit.onboarding.connector.check_message`) or raises
+        while reading; building/writing the snapshot manifest fails
+        (:func:`~dskit.onboarding.snapshot.build_manifest`,
+        :func:`~dskit.onboarding.snapshot.write_snapshot`); or the new
+        checkpoint cannot be saved
+        (:func:`~dskit.onboarding.state.save_state`).
+    TypeError
+        If a ``RECORD`` message's ``data`` holds a value that is not
+        JSON-serializable — ``check_message`` only confirms ``data`` is
+        a dict, not that every value can be written.
+    FileExistsError
+        If a stray file already occupies where a subdirectory under
+        ``raw/``, ``observations/``, or ``forecasts/`` belongs — the
+        unguarded ``os.makedirs(..., exist_ok=True)`` calls this
+        function makes do not distinguish that from a race.
+    OSError
+        If a non-empty directory already occupies this pull's
+        ``observations/``/``forecasts/`` destination — unlike
+        ``raw/`` (guarded by :func:`~dskit.onboarding.snapshot.write_snapshot`'s
+        WORM check), nothing here confirms that destination is free
+        before the commit ``os.rename``; or a staging directory this
+        call created is removed by something else between its
+        existence check and the cleanup ``shutil.rmtree`` in the
+        ``finally`` block.
+    Exception
+        Whatever the resolved connector's own ``check()`` or ``read()``
+        raises, if anything — both are called unguarded, on an
+        implementer-supplied :class:`~dskit.onboarding.connector.Connector`
+        subclass whose contract the ABC documents but does not enforce;
+        or whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything, from
+        the ``registry.get(config_vid)`` lookup or the evidence-writing
+        ``registry.register`` calls — already documented on
+        :meth:`~dskit.assets.registry.Registry.get` and
+        :meth:`~dskit.assets.registry.Registry.register` themselves,
+        but not previously cited here.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

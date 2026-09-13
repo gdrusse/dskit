@@ -45,6 +45,16 @@ class Registry:
         The governing model; hashed and compared against the pin, so a
         store can never be driven by a model it was not created with.
 
+    Raises
+    ------
+    AssetError
+        If ``store``/``model`` are not the right types, or ``model``
+        does not hash to ``store``'s pin.
+    Exception
+        Whatever ``store.model_pin()`` itself raises, if anything — a
+        caller-supplied :class:`~dskit.assets.store.Store`
+        implementation, called unguarded once the type checks pass.
+
     Examples
     --------
     Register an entity and a feature, transition state, and look it up::
@@ -89,6 +99,7 @@ class Registry:
     # -- internal ----------------------------------------------------------
 
     def _spec(self, kind):
+        """Return ``kind``'s declared spec; refuse a kind the model never declared."""
         spec = self.model.kinds.get(kind)
         if spec is None:
             raise AssetError(
@@ -121,6 +132,25 @@ class Registry:
         str
             The version_id. Identical content returns the existing id
             with no new event — registration is idempotent.
+
+        Raises
+        ------
+        AssetError
+            If ``kind`` is undeclared, ``payload``/``refs`` fail the
+            model's field checks, a ref does not resolve to a present
+            record of the declared kind, ``origin``/``notes`` are not
+            strings, or ``payload``/``refs`` hold a value that is not
+            canonically serializable — a free-form ``"object"`` field
+            can construct an :class:`AssetRecord` cleanly (its shape
+            check does not look inside) and only fail later, when this
+            method calls :meth:`AssetRecord.version_id`.
+        TypeError
+            If ``kind`` is an unhashable type (e.g. a list).
+        Exception
+            Whatever ``self.store``'s own ``put_record``/``append_event``
+            raises, if anything — this registry's store is a caller-
+            supplied :class:`~dskit.assets.store.Store` implementation,
+            called unguarded once every prior check has passed.
         """
         spec = self._spec(kind)
         refs = {} if refs is None else refs
@@ -159,14 +189,68 @@ class Registry:
     # -- reads -------------------------------------------------------------
 
     def get(self, version_id) -> AssetRecord:
-        """Load one record; refuse records of kinds the model never declared."""
+        """Load one record; refuse records of kinds the model never declared.
+
+        Parameters
+        ----------
+        version_id : str
+            The record's identity hash.
+
+        Returns
+        -------
+        AssetRecord
+            The stored record.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is not a well-formed 64-char sha256 hex
+            digest, is absent from the store, or its kind is not
+            declared by this registry's model (an out-of-band write).
+        Exception
+            Whatever ``self.store.get_record`` itself raises, if
+            anything — a caller-supplied
+            :class:`~dskit.assets.store.Store` implementation, called
+            unguarded.
+        """
         record = self.store.get_record(version_id)
         self._spec(record.kind)  # a foreign kind means an out-of-band write
         return record
 
     def find(self, kind, name) -> list:
-        """version_ids of ``kind`` whose payload ``name`` equals ``name`` —
-        the alias lookup of ADR-0009 (aliases may have many versions)."""
+        """Return version_ids of ``kind`` whose payload ``name`` equals ``name``.
+
+        The alias lookup of ADR-0009 (aliases may have many versions).
+
+        Parameters
+        ----------
+        kind : str
+            A kind declared by the governing model.
+        name : str
+            The payload ``name`` to match.
+
+        Returns
+        -------
+        list of str
+            Matching version_ids; empty when none match.
+
+        Raises
+        ------
+        AssetError
+            If ``kind`` is not declared by the model, ``name`` is not
+            a non-empty string, or the store's ``kind`` directory holds
+            a foreign entry (propagated from
+            :meth:`~dskit.assets.store.Store.list_records` — an
+            out-of-band mutation, not a normal-use condition).
+        TypeError
+            If ``kind`` is an unhashable type (e.g. a list).
+        Exception
+            Whatever ``self.store``'s own ``list_records``/
+            ``get_record`` raises beyond the specific corruption shapes
+            above — a caller-supplied
+            :class:`~dskit.assets.store.Store` implementation, called
+            unguarded.
+        """
         self._spec(kind)
         errors = []
         _check_str(errors, "name", name)
@@ -178,7 +262,34 @@ class Registry:
         ]
 
     def list(self, kind=None) -> list:
-        """Sorted version_ids, for one declared kind or the whole store."""
+        """Sorted version_ids, for one declared kind or the whole store.
+
+        Parameters
+        ----------
+        kind : str, optional
+            Restrict to one declared kind; ``None`` lists the whole store.
+
+        Returns
+        -------
+        list of str
+            Sorted version_ids.
+
+        Raises
+        ------
+        AssetError
+            If ``kind`` is given but not declared by the model, or the
+            store's ``records/`` (or one ``kind`` directory within it)
+            holds a foreign entry (propagated from
+            :meth:`~dskit.assets.store.Store.list_records` — an
+            out-of-band mutation, not a normal-use condition).
+        TypeError
+            If ``kind`` is an unhashable type (e.g. a list).
+        Exception
+            Whatever ``self.store.list_records`` raises beyond the
+            specific corruption shape above — a caller-supplied
+            :class:`~dskit.assets.store.Store` implementation, called
+            unguarded.
+        """
         if kind is not None:
             self._spec(kind)
         return self.store.list_records(kind)
@@ -186,12 +297,35 @@ class Registry:
     # -- lifecycle ---------------------------------------------------------
 
     def state(self, version_id):
-        """The current lifecycle state, derived by replaying the event log.
+        """Return the current lifecycle state, derived by replaying the event log.
+
+        Parameters
+        ----------
+        version_id : str
+            The record's identity hash.
 
         Returns
         -------
         str or None
             The state, or None for a record-only kind (no lifecycle).
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent, its kind is undeclared, its
+            event log has no register event, it replays to a state
+            the model does not declare, or the store's event log is
+            itself unreadable (propagated from
+            :meth:`~dskit.assets.store.Store.iter_events` — e.g.
+            ``events.jsonl`` replaced with something that is not a
+            regular file; an out-of-band mutation, not a normal-use
+            condition).
+        Exception
+            Whatever ``self.get`` (its own ``store.get_record`` call)
+            or ``self.store.iter_events`` raises beyond the specific
+            corruption shape above — a caller-supplied
+            :class:`~dskit.assets.store.Store` implementation, called
+            unguarded.
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)
@@ -221,6 +355,34 @@ class Registry:
         The move must be listed in the model's transition map for the
         asset's CURRENT state; everything else is refused. The move is an
         appended event — history is immutable, records never change.
+
+        Parameters
+        ----------
+        version_id : str
+            The record's identity hash.
+        to : str
+            The target state.
+        origin : str, optional
+            Provenance: who requested the move.
+
+        Raises
+        ------
+        AssetError
+            If ``version_id`` is absent or its kind is undeclared, if
+            ``to`` is not a non-empty string, if the kind is
+            record-only (no lifecycle), if the model's transition map
+            does not allow the current state to move to ``to``, or if
+            the store's event log is itself unreadable (propagated from
+            :meth:`state`, called internally to find the current state).
+        Exception
+            Whatever ``self.store.append_event`` itself raises, if
+            anything — same caller-supplied-``Store`` gap as
+            :meth:`register`; or whatever ``self.get``/``self.state``
+            (called internally, at the start of this method and to
+            find the current state) themselves raise beyond the
+            specific corruption shapes those methods already document
+            — the same store-propagation gap, from a different call
+            site.
         """
         record = self.get(version_id)
         spec = self._spec(record.kind)

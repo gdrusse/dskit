@@ -77,7 +77,10 @@ _SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*\Z")
 
 
 def _check_segment(errors, name, value):
-    """A path segment: lowercase/digits/_/-, because it becomes a directory."""
+    """Append an error if ``value`` is not filesystem-safe.
+
+    Lowercase/digits/_/- only — it becomes a directory.
+    """
     if not isinstance(value, str) or not _SEGMENT.match(value):
         errors.append(
             f"{name} must be filesystem-safe (lowercase/digits/_/-), got {value!r}"
@@ -85,12 +88,13 @@ def _check_segment(errors, name, value):
 
 
 def _check_mode(errors, mode):
+    """Append an error unless ``mode`` is one of :data:`MODES`."""
     if mode not in MODES:
         errors.append(f"mode must be one of {list(MODES)}, got {mode!r}")
 
 
 def _check_iso(errors, name, value, *, required=True):
-    """An ISO date/datetime string, appended to ``errors`` if malformed."""
+    """Append an error if ``value`` is not a valid ISO date/datetime string."""
     if value == "" and not required:
         return
     if not isinstance(value, str) or not value:
@@ -103,7 +107,7 @@ def _check_iso(errors, name, value, *, required=True):
 
 
 def parse_utc(value):
-    """An ISO date or datetime string as an aware UTC datetime.
+    """Parse an ISO date or datetime string into an aware UTC datetime.
 
     Naive values are treated as UTC — the bitemporal comparison
     ``effective_date <= acquired_at`` (ADR-0014) must never crash on a
@@ -156,13 +160,21 @@ def fsync_dir(directory):
     Parameters
     ----------
     directory : str
-        The directory to fsync; a path that cannot be opened is a no-op.
+        The directory to fsync; a STRING path that cannot be opened
+        (missing, no permission, not a directory) is a no-op.
 
     Returns
     -------
     None
         Returns once the directory entry is durable, where the platform
         supports it.
+
+    Raises
+    ------
+    TypeError
+        If ``directory`` is not a string/bytes/path-like value (e.g.
+        ``None`` or an int) — only an ``OSError`` from a well-typed but
+        unusable path is treated as the documented no-op.
     """
     try:
         fd = os.open(directory, os.O_RDONLY)
@@ -195,6 +207,13 @@ def durable_write_bytes(path, data) -> None:
         Destination; its directory must exist.
     data : bytes
         The exact bytes to persist.
+
+    Raises
+    ------
+    AssetError
+        If ``path`` is not a non-empty string, or ``data`` is not bytes.
+    OSError
+        If ``path``'s directory does not exist or is not writable.
     """
     errors = []
     _check_str(errors, "path", path)
@@ -239,6 +258,8 @@ def durable_copy_file(src, dst) -> None:
     AssetError
         When ``src`` is missing, unreadable or not a regular file, or
         when ``dst`` cannot be written (a directory squatting the path).
+    OSError
+        If ``dst``'s directory does not exist.
     """
     errors = []
     _check_str(errors, "src", src)
@@ -276,10 +297,22 @@ def durable_write_json(path, obj) -> None:
     indented with sorted keys — outbox manifests and checkpoints are
     meant to be human-diffable, like store records.
 
+    Parameters
+    ----------
+    path : str
+        Destination; its directory must exist.
+    obj : object
+        A JSON-serializable value.
+
     Raises
     ------
     AssetError
-        If ``obj`` is not JSON-serializable (NaN/Infinity refused).
+        If ``obj`` is not JSON-serializable (NaN/Infinity refused), or
+        ``path`` is not a non-empty string (propagated from
+        :func:`durable_write_bytes`'s own check).
+    OSError
+        If ``path``'s directory does not exist or is not writable
+        (propagated from :func:`durable_write_bytes`).
     """
     try:
         text = json.dumps(obj, indent=2, sort_keys=True, allow_nan=False)
@@ -348,6 +381,11 @@ def file_digest(path) -> str:
     str
         Hex sha256. Re-hash and compare to detect tampering (the
         ``verify`` command's whole job).
+
+    Raises
+    ------
+    AssetError
+        When ``path`` is not a string, or the file cannot be read.
     """
     errors = []
     _check_str(errors, "path", path)

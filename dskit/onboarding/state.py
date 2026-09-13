@@ -36,6 +36,7 @@ __all__ = ["load_state", "save_state"]
 
 
 def _require_root(root):
+    """Refuse anything that is not an OnboardingRoot."""
     if not isinstance(root, OnboardingRoot):
         raise AssetError(
             [f"root must be an OnboardingRoot, got {type(root).__name__}"]
@@ -43,7 +44,7 @@ def _require_root(root):
 
 
 def load_state(root, source, stream, mode) -> dict:
-    """The last persisted checkpoint for one (source, stream, mode).
+    """Return the last persisted checkpoint for one (source, stream, mode).
 
     Parameters
     ----------
@@ -63,8 +64,11 @@ def load_state(root, source, stream, mode) -> dict:
     Raises
     ------
     AssetError
-        If an existing checkpoint file is unreadable or malformed —
-        a corrupt cursor must halt the pull, not silently restart it
+        If ``root`` is not an OnboardingRoot; ``source``/``stream`` are
+        not filesystem-safe or ``mode`` is not a declared mode (via
+        :meth:`~dskit.onboarding.layout.OnboardingRoot.state_path`); or
+        an existing checkpoint file is unreadable or malformed — a
+        corrupt cursor must halt the pull, not silently restart it
         from zero (which would re-acquire everything).
     """
     _require_root(root)
@@ -100,6 +104,24 @@ def save_state(root, source, stream, mode, state) -> str:
         The checkpoint key.
     state : dict
         The connector's state, exactly as its STATE message carried it.
+
+    Returns
+    -------
+    str
+        The path the checkpoint was written to.
+
+    Raises
+    ------
+    AssetError
+        If ``root`` is not an OnboardingRoot; ``state`` is not a dict
+        with string keys; ``source``/``stream`` are not filesystem-safe
+        or ``mode`` is not a declared mode (via
+        :meth:`~dskit.onboarding.layout.OnboardingRoot.state_path`); or
+        ``state`` is not JSON-serializable.
+    FileExistsError
+        If a stray file already occupies where ``state/<source>/``
+        belongs — the unguarded ``os.makedirs(..., exist_ok=True)``
+        this function makes does not distinguish that from a race.
     """
     _require_root(root)
     errors = []
