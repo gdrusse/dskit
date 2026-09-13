@@ -344,11 +344,26 @@ def cmd_run(path, asof, adapters=()) -> int:
         The run's exit code — 0 ran, 3 halted at a NO-GO gate (a halt is
         a result), 1 error or a pre-flight refusal.
     """
+    from dskit.pipeline.document import load_document
     from dskit.pipeline.driver import run_document
 
     try:
+        document = load_document(path)
+    except (ValueError, OSError):
+        # Preserve the established adapter-before-document error order when
+        # the preflight cannot establish that this is an execution document.
+        document = None
+    else:
+        if document.execution_backtest is not None:
+            try:
+                run_document(document, asof=asof)
+            except (ImportError, ValueError, OSError) as exc:
+                print(exc)
+                return 1
+
+    try:
         _import_adapters(adapters)
-        result = run_document(path, asof=asof)
+        result = run_document(document if document is not None else path, asof=asof)
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
