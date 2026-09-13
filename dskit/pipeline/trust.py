@@ -301,7 +301,15 @@ class LaunchSession(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_kind", "_run_identity", "_ended", "_plan_sha256", "_runtime", "_locked")
+    __slots__ = (
+        "_kind",
+        "_run_identity",
+        "_ended",
+        "_plan_sha256",
+        "_runtime",
+        "_stream_id",
+        "_locked",
+    )
 
     def __init__(self, token, kind, run_identity, plan_sha256, runtime):
         if token is not _MAKE:
@@ -312,6 +320,7 @@ class LaunchSession(_Opaque):
         object.__setattr__(self, "_ended", False)
         object.__setattr__(self, "_plan_sha256", plan_sha256)
         object.__setattr__(self, "_runtime", MappingProxyType(dict(runtime)))
+        object.__setattr__(self, "_stream_id", None)
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name, value):
@@ -476,15 +485,17 @@ class CapturedBindings(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_ports", "_used", "_broker", "_locked")
+    __slots__ = ("_ports", "_used", "_broker", "_session", "_stream_id", "_locked")
 
-    def __init__(self, token, ports, broker):
+    def __init__(self, token, ports, broker, session, stream_id):
         if token is not _MAKE:
             raise TypeError("CapturedBindings is opaque")
         object.__setattr__(self, "_locked", False)
         object.__setattr__(self, "_ports", MappingProxyType(dict(ports)))
         object.__setattr__(self, "_used", set())
         object.__setattr__(self, "_broker", broker)
+        object.__setattr__(self, "_session", session)
+        object.__setattr__(self, "_stream_id", str(stream_id))
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name, value):
@@ -589,6 +600,7 @@ class _ReceiptSubject:
         "session_run_identity",
         "output_member",
         "purpose",
+        "_locked",
     )
 
     def __init__(
@@ -600,12 +612,48 @@ class _ReceiptSubject:
         output_member,
         purpose,
     ):
-        self.stream_id = stream_id
-        self.producer = dict(producer)
-        self.root = dict(root)
-        self.session_run_identity = session_run_identity
-        self.output_member = output_member
-        self.purpose = purpose
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "stream_id", stream_id)
+        object.__setattr__(self, "producer", MappingProxyType(dict(producer)))
+        object.__setattr__(self, "root", MappingProxyType(dict(root)))
+        object.__setattr__(self, "session_run_identity", session_run_identity)
+        object.__setattr__(self, "output_member", output_member)
+        object.__setattr__(self, "purpose", purpose)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise AttributeError("receipt subject is frozen")
+        object.__setattr__(self, name, value)
+
+
+class _WormReceiptStore:
+    """Append-only view of a receipt log; truncation is refused."""
+
+    def __init__(self, data):
+        self._data = data
+
+    def __setitem__(self, key, value):
+        new = tuple(value)
+        old = self._data.get(key)
+        if old is not None and len(new) < len(tuple(old)):
+            raise ValueError("WORM receipt store is append-only")
+        self._data[key] = new
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def items(self):
+        return self._data.items()
+
+    def __iter__(self):
+        return iter(self._data)
 
 
 class _Prepared:
@@ -753,7 +801,15 @@ class _DevelopmentBroker(LifecycleAuthority):
         provider_worm,
     ):
         self._storage = snapshot_storage
-        self._receipt_store = receipt_store
+        backing = {} if receipt_store is None else receipt_store
+        self._receipt_store = (
+            backing
+            if isinstance(backing, _WormReceiptStore)
+            else _WormReceiptStore(backing)
+        )
+        self._receipt_len = {
+            key: len(tuple(value)) for key, value in self._receipt_store.items()
+        }
         self._session_events = session_events
         self._member_events = member_events
         self._worm = provider_worm
@@ -1092,32 +1148,38 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not isinstance(published, _Published):
             raise ValueError("PUBLISHED capture is required")
         frozen = self._require_frozen(frozen)
+        intern_pub = self._load_interned(
+            self._freeze_published,
+            self._freeze_intern,
+            id(frozen),
+            "document port does not match published root",
+        )
+        if intern_pub is not published:
+            raise ValueError("document port does not match published root")
+        source_desc = self._descriptor_from(
+            frozen.source,
+            frozen.consumer_node,
+            frozen.consumer_input,
+        )
         if (
-            self._load_interned(
-                self._freeze_published,
-                self._freeze_intern,
-                id(frozen),
-                "document port does not match published root",
-            )
-            is not published
+            source_desc.get("root_ref") != published.descriptor.get("root_ref")
+            or source_desc.get("snapshot_version")
+            != published.descriptor.get("snapshot_version")
+            or source_desc.get("document_sha256")
+            != published.descriptor.get("document_sha256")
         ):
             raise ValueError("document port does not match published root")
         expected = self.derive_consumer_port(frozen)
         if port != expected:
             raise ValueError("document port mismatch")
-        stream_id = self._load_interned(
-            self._publish_stream,
-            self._publish_stream_intern,
-            id(published),
-            "PUBLISHED capture is required",
-        )
+        stream_id = self._stream_for_published(published, "PUBLISHED capture is required")
         pin = self._stream_pin[stream_id]
         producer_run = pin.producer["run_identity"]
         session_run = pin.session_run_identity
         if consumer_run_identity in {producer_run, session_run}:
             raise ValueError("consumer run must be distinct from producer session")
-        for session in self._sessions.values():
-            if session._kind == "producer" and not session._ended:
+        for existing in self._sessions.values():
+            if existing._kind == "producer" and not existing._ended:
                 raise ValueError("producer session must end before capture")
         self._reload_stream(stream_id)
         self._require_head(stream_id, "PUBLISHED")
@@ -1132,6 +1194,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                 "run_identity": consumer_run_identity,
             },
         )
+        object.__setattr__(session, "_stream_id", str(stream_id))
         self._remember_session(session)
         self._session_events.append(("start", consumer_run_identity, id(session)))
         captured = _Captured(published, frozen, dict(expected), session)
@@ -1170,6 +1233,10 @@ class _DevelopmentBroker(LifecycleAuthority):
         published, frozen, bound_session, stream_id = bind
         if bound_session is not session:
             raise ValueError("capture is bound to a different consumer session")
+        handle_sid = session._stream_id
+        if handle_sid is None or str(stream_id) != str(handle_sid):
+            raise ValueError("CAPTURED token is required")
+        stream_id = str(handle_sid)
         sealed = self._sealed_for(published)
         pin = self._stream_pin[stream_id]
         snapshot = self._provider.describe(
@@ -1240,15 +1307,17 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("plan document does not match captured freeze")
         if consumer_node != frozen.consumer_node:
             raise ValueError("consumer node mismatch")
-        if (
-            self._load_interned(
-                self._freeze_published,
-                self._freeze_intern,
-                id(frozen),
-                "plan document does not match captured freeze",
-            )
-            is not published
-        ):
+        handle_sid = session._stream_id
+        if handle_sid is None or str(stream_id) != str(handle_sid):
+            raise ValueError("verified capture is required")
+        stream_id = str(handle_sid)
+        intern_pub = self._load_interned(
+            self._freeze_published,
+            self._freeze_intern,
+            id(frozen),
+            "plan document does not match captured freeze",
+        )
+        if intern_pub is not published:
             raise ValueError("plan document does not match captured freeze")
         sealed = self._sealed_for(published)
         subject = self._stream_pin[stream_id]
@@ -1276,7 +1345,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             MappingProxyType({"consumer_port": expected_port}),
         )
         ports = {frozen.consumer_input: port}
-        bindings = CapturedBindings(_MAKE, ports, self)
+        bindings = CapturedBindings(_MAKE, ports, self, session, stream_id)
         self._store_interned(
             self._bindings_pin,
             self._bindings_intern,
@@ -1309,7 +1378,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         if rec[0] != id(bindings):
             raise ValueError("captured bindings are required")
-        _bindings_id, stream_id, nonce, port_items, session_id = rec
+        _bindings_id, intern_sid, nonce, port_items, session_id = rec
+        session = bindings._session
+        handle_sid = str(bindings._stream_id)
+        if str(intern_sid) != handle_sid or session_id != id(session):
+            raise ValueError("captured bindings are required")
+        stream_id = handle_sid
         port_items = tuple(tuple(item) for item in port_items)
         ports_rec = self._load_interned(
             self._bindings_ports,
@@ -1322,23 +1396,15 @@ class _DevelopmentBroker(LifecycleAuthority):
         ports = ports_rec[1]
         if input_name not in ports:
             raise ValueError("missing captured input")
-        session = self._sessions.get(session_id)
-        if session is None or id(session) != session_id:
-            raise ValueError("captured bindings are required")
-        subject = self._stream_pin.get(stream_id)
-        if subject is None:
+        if session is None or id(session) != session_id or self._sessions.get(session_id) is not session:
             raise ValueError("captured bindings are required")
         self._reload_stream(stream_id)
         self._require_head(stream_id, "CAPTURED")
+        subject = self._publication_subject(stream_id)
+        if subject is None:
+            raise ValueError("captured bindings are required")
         self._append_receipt(
-            _ReceiptSubject(
-                stream_id,
-                subject.producer,
-                subject.root,
-                subject.session_run_identity,
-                subject.output_member,
-                subject.purpose,
-            ),
+            subject,
             "CONSUMED",
             session,
             nonce,
@@ -1359,7 +1425,10 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         if bound[0] != id(session):
             raise ValueError("CONSUMED input is required before release")
-        stream_id = bound[1]
+        handle_sid = session._stream_id
+        if handle_sid is None or str(bound[1]) != str(handle_sid):
+            raise ValueError("CONSUMED input is required before release")
+        stream_id = str(handle_sid)
         self._reload_stream(stream_id)
         self._require_head(stream_id, "CONSUMED")
         used = self._used_inputs.get(id(session), set())
@@ -1369,11 +1438,10 @@ class _DevelopmentBroker(LifecycleAuthority):
         return CapturedRelease(_MAKE, stream_id)
 
     def _receipt_audit(self, published):
-        stream_id = self._load_interned(
-            self._publish_stream,
-            self._publish_stream_intern,
-            id(published),
+        stream_id = self._stream_for_published(
+            published,
             "PUBLISHED token is required",
+            require_intern_match=False,
         )
         return [dict(row) for row in self._streams[stream_id]]
 
@@ -1384,6 +1452,9 @@ class _DevelopmentBroker(LifecycleAuthority):
         return {key: value for key, value in receipt.items() if key != "signature"}
 
     def _reload_stream(self, stream_id):
+        stored = tuple(self._receipt_store.get(stream_id, ()))
+        if len(stored) < self._receipt_len.get(stream_id, 0):
+            raise ValueError("WORM receipt store is append-only")
         if stream_id not in self._receipt_store:
             if stream_id in self._streams:
                 raise ValueError("PUBLISHED store predecessor sequence missing")
@@ -1393,6 +1464,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             json.loads(raw.decode("ascii")) for raw in self._receipt_store[stream_id]
         ]
         self._streams[stream_id] = rows
+        self._receipt_len[stream_id] = max(self._receipt_len.get(stream_id, 0), len(rows))
 
     def _recover(self, stream_id):
         records = list(self._receipt_store.get(stream_id, ()))
@@ -1542,6 +1614,69 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not rows or rows[-1]["event"] != event:
             raise ValueError("replay of %s is refused" % event)
 
+    def _publication_subject(self, stream_id):
+        pin = self._stream_pin.get(stream_id)
+        if pin is None:
+            return None
+        published = None
+        for row in self._streams.get(stream_id) or ():
+            if row.get("event") == "PUBLISHED":
+                published = row
+                break
+        if published is None:
+            return None
+        return _ReceiptSubject(
+            stream_id,
+            {
+                "document_sha256": published["producer_document_sha256"],
+                "run_identity": published["producer_run_identity"],
+                "node": published["producer_node"],
+                "output": published["producer_output"],
+            },
+            {
+                "root_ref": published["root_ref"],
+                "root_id": published["root_id"],
+                "snapshot_version": published["snapshot_version"],
+            },
+            pin.session_run_identity,
+            pin.output_member,
+            pin.purpose,
+        )
+
+    def _captured_actor_runtime(self, rows):
+        for row in rows:
+            if row.get("event") == "CAPTURED":
+                return dict(row["actor_runtime"])
+        raise ValueError("CAPTURED actor runtime is required")
+
+    def _stream_for_published(self, published, message, require_intern_match=True):
+        intern_sid = self._load_interned(
+            self._publish_stream,
+            self._publish_stream_intern,
+            id(published),
+            message,
+        )
+        descriptor = published.descriptor
+        found = None
+        for stream_id, rows in self._streams.items():
+            for row in rows:
+                if row.get("event") != "PUBLISHED":
+                    continue
+                if (
+                    row["root_ref"] == descriptor.get("root_ref")
+                    and row["snapshot_version"] == descriptor.get("snapshot_version")
+                    and row["producer_document_sha256"]
+                    == descriptor.get("document_sha256")
+                ):
+                    if found is not None and found != stream_id:
+                        raise ValueError(message)
+                    found = stream_id
+        if found is None:
+            raise ValueError(message)
+        if str(intern_sid) != str(found) and require_intern_match:
+            raise ValueError(message)
+        return found
+
     def _manifest_digest(self, digests):
         return _digest(_canonical_bytes([dict(item) for item in digests]))
 
@@ -1628,7 +1763,11 @@ class _DevelopmentBroker(LifecycleAuthority):
             "root_id": prepared.root["root_id"],
             "snapshot_version": prepared.root["snapshot_version"],
             "member_manifest_sha256": member_manifest,
-            "actor_runtime": self._actor_runtime(session),
+            "actor_runtime": (
+                self._captured_actor_runtime(rows)
+                if event == "CONSUMED"
+                else self._actor_runtime(session)
+            ),
             "transition_nonce": transition_nonce,
             "issued_at_ms": self._clock.now_ms(),
             "deployment_eligible": False,
@@ -1661,6 +1800,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         rows.append(body)
         encoded = tuple(self._receipt_store.get(stream_id, ())) + (_canonical_bytes(body),)
         self._receipt_store[stream_id] = encoded
+        self._receipt_len[stream_id] = len(encoded)
         return body
 
 def _development_broker(
