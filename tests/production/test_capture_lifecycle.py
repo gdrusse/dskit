@@ -111,3 +111,26 @@ def test_unconsumed_admission_cannot_bind_capture():
             transition_nonce="nonce-captured",
         )
     assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
+
+
+def test_whitespace_plan_artifact_cannot_bind_capture():
+    for name in ("scope_intent", "ces", "pea", "bvp", "cas"):
+        broker, published, frozen, port, verifier = _study_capture_setup()
+        payload = dict(_PLACEHOLDERS)
+        payload[name] = " "
+        with pytest.raises(ValueError, match="plan artifact is required"):
+            verifier.bind(**payload)
+        with pytest.raises(
+            ValueError,
+            match="ScopeIntent|CES|PEA|BVP|CAS|admission",
+        ):
+            verifier.capture(
+                published,
+                frozen,
+                port,
+                consumer_run_identity="consumer-run",
+                process_measurement_sha256=f4._SHA["consumer_process"],
+                runtime_sha256=f4._SHA["consumer_runtime"],
+                transition_nonce="nonce-captured",
+            )
+        assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
