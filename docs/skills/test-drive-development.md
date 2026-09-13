@@ -29,6 +29,18 @@ Thinking "skip TDD just this once"? Stop. That's rationalization.
 NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
 ```
 
+## Before RED — High-Risk Convergence Gate
+
+If the change crosses a trust/security boundary, changes identity or persistent
+state, spans multiple public entry points or lifecycle stages, or can cause an
+irreversible external effect, first run Phase 0 of
+[`skeptic-review`](skeptic-review.md).
+
+Do not discover the contract one failing review at a time. Freeze the contract and
+reviewer-challenged attack matrix first; then turn one matrix row at a time into a
+focused RED test. If two consecutive correction cycles still reveal fresh
+correctness defects, stop TDD patching and return to the convergence gate.
+
 Write code before the test? Delete it. Start over.
 
 **No exceptions:**

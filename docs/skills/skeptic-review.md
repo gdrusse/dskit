@@ -18,6 +18,42 @@ NO DEPLOYABLE CODE IS "DONE" UNTIL AN INDEPENDENT SKEPTIC PASS FINDS ZERO REAL D
 
 Applies to every commit / merge / deploy of production-bound code — new modules, bug fixes, refactors, and analysis / report / plot scripts whose output drives a decision.
 
+## Phase 0 — Convergence Before Code
+
+Run this gate before RED when a change crosses a trust/security boundary, changes
+identity or persistent state, coordinates multiple public entry points or lifecycle
+stages, or can cause an irreversible external effect. Ordinary local changes may go
+straight to TDD.
+
+1. **Inventory first.** Map existing seams and prove the capability is missing or
+   insufficient. Do not design around a partial search.
+2. **Freeze the contract.** State actors, authority, trusted and untrusted inputs,
+   identities, state transitions, allowed outputs, forbidden side effects,
+   compatibility promises, and explicit non-goals.
+3. **Build the attack matrix.** For every invariant, record the failure/attack
+   class, every public entry point, expected result, forbidden side effect, and the
+   focused test or other evidence that will prove it.
+4. **Use an independent design skeptic.** Give it the contract and inventory, not a
+   proposed implementation. It must try to falsify boundaries, add missing attack
+   classes, and identify coupled responsibilities.
+5. **Resolve design findings first.** Start implementation only after the matrix is
+   frozen and the design skeptic reports zero unresolved blocker/major/correctness
+   findings. Material architecture or authority decisions require their normal
+   owner/ADR approval.
+
+The author may draft the matrix, but may not be its only adversary. The matrix is a
+review boundary, not a prediction that later reviewers are forbidden to exceed.
+Newly discovered attack classes are added to it permanently.
+
+Minimum attack classes, when applicable:
+
+- malformed, aliased, duplicated, nested, subclassed, and mutation-during-read input;
+- authorization order, expiry/revocation, confused-deputy, and authority substitution;
+- identity/hash/default/path substitution and canonicalization;
+- partial failure, retry, crash/restart, replay, and concurrent state transition;
+- pre-validation import/open/write/network effects and TOCTOU;
+- every public facade, adapter, CLI, direct constructor, and compatibility route.
+
 ## When to Use
 
 - Before committing, merging, or deploying any code meant to run for real.
@@ -30,15 +66,20 @@ Applies to every commit / merge / deploy of production-bound code — new module
 
 ```dot
 digraph skeptic_loop {
+    matrix   [label="Contract + threat matrix frozen\ndesign skeptic clean", shape=box];
     written  [label="Deployable code written or changed", shape=box];
     dispatch [label="Dispatch >=2 INDEPENDENT skeptics\n(fresh context, adversarial, distinct lenses)", shape=box];
     found    [label="Any real (blocker/major/correctness)\ndefect found?", shape=diamond];
     fix      [label="Fix it (+ regression test if code)", shape=box];
+    reset    [label="2 failed correction cycles?\nSTOP + architecture reset", shape=diamond];
     done     [label="Clean pass -> safe to commit/deploy", shape=doublecircle];
 
+    matrix -> written;
     written -> dispatch;
     dispatch -> found;
-    found -> fix [label="yes"];
+    found -> reset [label="yes"];
+    reset -> fix [label="no"];
+    reset -> matrix [label="yes"];
     fix -> dispatch [label="re-review (fresh skeptics)"];
     found -> done [label="no"];
 }
@@ -51,8 +92,24 @@ digraph skeptic_loop {
 3. **Adversarial, and the skeptic assigns severity.** Prompt each skeptic to FIND a defect and PROVE it (run code, worked examples) — never prompt for approval ("confirm this looks fine") and never scope them away from the riskiest path. Whether a finding is a blocker/major/correctness issue or a nit is the *skeptic's* call, not the author's.
 4. **Every fix re-runs the loop.** A found bug RAISES the prior that another exists, and a "one-line fix" is a top source of new bugs. After ANY change, re-dispatch fresh skeptics.
 5. **Stop only on a clean independent pass** — a fresh round with zero blocker/major/correctness findings. Not on a self re-read, not on a fixed round count, not when you "feel done." Nits may be noted and deferred without restarting; but if you change code to address one, that edit is new code and re-enters the loop (Rule 4). *Any* correctness finding restarts the loop — regardless of who would prefer to call it minor.
-6. **Fix, don't argue.** Address a real finding (with a regression test where it's code), then re-review. You may NOT unilaterally dismiss a finding as invalid to escape both fixing and re-reviewing — a disputed finding goes to a fresh skeptic to adjudicate, not to the author's veto. Concrete escalation trigger: if two consecutive rounds each surface a fresh correctness bug, stop grinding and escalate (redesign, or human review) rather than either loop indefinitely or stop on a marginal pass.
-7. **The trace is the skeptics' own output.** Keep the reviewers' returned verdicts/findings themselves (their transcripts, IDs, or verbatim reports) plus how each finding was resolved — never an author-written summary that merely *asserts* a skeptic said PASS. A self-authored trace proves nothing; the artifact must be independently produced. A loop you cannot show in the skeptics' own words is a loop you did not run.
+6. **Complete the round; batch the findings.** A skeptic does not stop at the first
+   defect. It continues until its assigned lens and the frozen attack matrix are
+   exhausted, then returns all proven findings together. Early return is allowed
+   only when continuing would be unsafe or genuinely blocked. A round that reports
+   one bug without auditing equivalent entry points and attack classes is incomplete.
+7. **Fix, don't argue.** Address a real finding (with a regression test where it's code), then re-review. You may NOT unilaterally dismiss a finding as invalid to escape both fixing and re-reviewing — a disputed finding goes to a fresh skeptic to adjudicate, not to the author's veto.
+8. **Two failed correction cycles force an architecture reset.** A failed
+   correction cycle is `review finds correctness defect -> correction -> fresh
+   review finds another correctness defect`. After two consecutive failed cycles,
+   do not make a third patch. Preserve the evidence, declare non-convergence, and
+   return to Phase 0. Identify the shared design failure, shrink or repartition the
+   boundary, replace the contract/threat matrix, obtain any required approval, then
+   restart implementation and the clean-review count. Time pressure cannot waive
+   this circuit breaker.
+9. **Keep a round ledger.** Record the immutable reviewed commit, matrix revision,
+   reviewer and lens, exact tests/evidence, every finding and disposition, correction
+   commit, and result. This makes repeated defect classes and non-convergence visible.
+10. **The trace is the skeptics' own output.** Keep the reviewers' returned verdicts/findings themselves (their transcripts, IDs, or verbatim reports) plus how each finding was resolved — never an author-written summary that merely *asserts* a skeptic said PASS. A self-authored trace proves nothing; the artifact must be independently produced. A loop you cannot show in the skeptics' own words is a loop you did not run.
 
 ## Rationalizations — all mean STOP and run the loop
 
@@ -74,6 +131,9 @@ digraph skeptic_loop {
 - Reviewing your own code instead of dispatching a skeptic
 - One review round, then ship
 - Applying a fix and NOT re-reviewing
+- Starting high-risk implementation without a frozen contract/threat matrix
+- Returning after the first finding instead of completing the review boundary
+- Beginning a third consecutive patch cycle instead of resetting the architecture
 - Stopping because "only nits remain" without a fresh pass confirming zero correctness findings
 - Relabeling a correctness finding as a "nit" to avoid another round
 - Dispatching skeptics with an approval-seeking prompt, or scoped away from the risky path

@@ -1,6 +1,6 @@
 ---
 name: skeptic-review
-description: Use when code that will be deployed, committed, merged, or run in production has been written or changed and is about to be called done, fixed, ready, or safe to ship — including right after applying a fix mid-review, and especially when tests already pass, coverage is green, it's "just a one-line fix," it's "just plumbing," or the user said "ship it."
+description: Use before high-risk implementation to freeze and adversarially challenge its contract/threat matrix, and whenever production-bound code is about to be called done, fixed, ready, committed, merged, deployed, or safe to ship.
 disable-model-invocation: true
 ---
 
