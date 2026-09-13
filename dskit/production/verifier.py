@@ -634,6 +634,33 @@ class SubmissionVerifier:
 _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 
 
+class _SpendCell:
+    """Uncopyable one-use admission flag shared by cloned doorways."""
+
+    def __init__(self):
+        self.spent = False
+
+    def __copy__(self):
+        """Refuse a shallow copy of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __deepcopy__(self, memo):
+        """Refuse a deep copy of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __getstate__(self):
+        """Refuse pickle state of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce__(self):
+        """Refuse pickle reduction of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce_ex__(self, protocol):
+        """Refuse pickle protocol reduction of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+
 def _plan_artifact_bound(value, name=None):
     """Return whether ``value`` is a bound plan artifact."""
     if type(value) is not dict:
@@ -667,7 +694,7 @@ class HistoricalStudyVerifier:
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound = {}
-        self._admission_spent = [False]
+        self._admission_spent = _SpendCell()
         self._capture_lock = Lock()
         self.deployment_eligible = False
 
@@ -744,7 +771,7 @@ class HistoricalStudyVerifier:
             is not bound, or when that admission is already spent.
         """
         with self._capture_lock:
-            if self._admission_spent[0]:
+            if self._admission_spent.spent:
                 raise ValueError(
                     "CAPTURED refuses after consumed admission is spent"
                 )
@@ -758,5 +785,5 @@ class HistoricalStudyVerifier:
                     "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, CAS, "
                     "and consumed admission are bound"
                 )
-            self._admission_spent[0] = True
+            self._admission_spent.spent = True
         return self._authority.capture(published, frozen, port, **kwargs)
