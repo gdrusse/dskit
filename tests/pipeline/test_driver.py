@@ -126,6 +126,30 @@ def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
     assert not marker.exists(), "execution document imported its adapter"
     assert "external broker" in str(exc_info.value)
 
+    document_path = tmp_path / "execution-document.json"
+    save_document(document, document_path)
+    with pytest.raises(ConfigError) as exc_info:
+        run_document(str(document_path), asof=ASOF)
+
+    assert not marker.exists(), "execution document path imported its adapter"
+    assert "external broker" in str(exc_info.value)
+
+    from dskit.pipeline.__main__ import main
+
+    exit_code = main(
+        [
+            "run",
+            str(document_path),
+            "--asof",
+            ASOF,
+            "--adapter",
+            "execution_poison_adapter",
+        ]
+    )
+
+    assert exit_code == 1
+    assert not marker.exists(), "execution CLI imported its adapter"
+
 
 class TestCleanRun:
     def test_end_to_end_banking_run(self, tmp_path, registry):
