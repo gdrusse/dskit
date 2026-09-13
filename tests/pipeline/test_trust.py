@@ -2473,3 +2473,359 @@ def test_dual_intern_capture_bind_cannot_consume_another_stream():
     assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
     assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
 
+
+def _hmac_mint(broker, table, intern, key, value):
+    broker._store_interned(table, intern, key, value)
+
+
+def _json_payload(broker, table, key):
+    payload, _objs = broker._mac_unpack(table[key], key, "hmac mint")
+    return payload
+
+
+def test_hmac_mint_bindings_pin_cannot_move_consumed_cas():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        _session_a,
+        _session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    payload = list(_json_payload(broker, broker._bindings_pin, id(bindings_a)))
+    payload[1] = sid_b
+    _hmac_mint(
+        broker,
+        broker._bindings_pin,
+        broker._bindings_intern,
+        id(bindings_a),
+        payload,
+    )
+    artifact = _consume_or_refuse(bindings_a)
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
+
+
+def test_hmac_mint_session_streams_cannot_release_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        _session_b,
+        _bindings_a,
+        bindings_b,
+    ) = _two_captured_consumers(broker)
+    bindings_b.require("bundle")
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    broker._used_inputs[id(session_a)] = {"bundle"}
+    _hmac_mint(
+        broker,
+        broker._session_streams,
+        broker._session_stream_intern,
+        id(session_a),
+        [id(session_a), sid_b],
+    )
+    with pytest.raises(ValueError, match="CONSUMED|required"):
+        broker.release(session_a)
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CONSUMED"
+
+
+def test_hmac_mint_publish_stream_cannot_capture_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    _hmac_mint(
+        broker,
+        broker._publish_stream,
+        broker._publish_stream_intern,
+        id(published_a),
+        sid_b,
+    )
+    with pytest.raises(
+        ValueError,
+        match="document|published|root|port|stream|mismatch|capture|required",
+    ):
+        _capture(
+            broker,
+            published_a,
+            frozen_a,
+            run_identity="consumer-a",
+            nonce="nonce-captured-a",
+        )
+    assert broker._receipt_audit(published_a)[-1]["event"] == "PUBLISHED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_hmac_mint_freeze_published_cannot_capture_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _hmac_mint(
+        broker,
+        broker._freeze_published,
+        broker._freeze_intern,
+        id(frozen_a),
+        published_b,
+    )
+    with pytest.raises(
+        ValueError,
+        match="document|published|root|port|freeze|mismatch|capture|required",
+    ):
+        _capture(
+            broker,
+            published_b,
+            frozen_a,
+            run_identity="consumer-cross",
+            nonce="nonce-captured-cross",
+        )
+    assert broker._receipt_audit(published_a)[-1]["event"] == "PUBLISHED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_hmac_mint_capture_bind_cannot_open_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _document_b, frozen_b = _freeze(
+        broker,
+        published_b,
+        document=_consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    captured_a, session_a = _capture(
+        broker,
+        published_a,
+        frozen_a,
+        run_identity="consumer-a",
+        nonce="nonce-captured-a",
+    )
+    captured_b, session_b = _capture(
+        broker,
+        published_b,
+        frozen_b,
+        run_identity="consumer-b",
+        nonce="nonce-captured-b",
+    )
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    _hmac_mint(
+        broker,
+        broker._capture_bind,
+        broker._capture_bind_intern,
+        id(captured_a),
+        (published_b, frozen_b, session_a, sid_b),
+    )
+    with pytest.raises(ValueError, match="capture|session|token|required|bind|published|frozen"):
+        broker.open_capture(session_a, captured_a)
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+
+
+def test_hmac_mint_verified_pin_cannot_move_consumed_cas():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _document_b, frozen_b = _freeze(
+        broker,
+        published_b,
+        document=_consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    captured_a, session_a = _capture(
+        broker,
+        published_a,
+        frozen_a,
+        run_identity="consumer-a",
+        nonce="nonce-captured-a",
+    )
+    captured_b, session_b = _capture(
+        broker,
+        published_b,
+        frozen_b,
+        run_identity="consumer-b",
+        nonce="nonce-captured-b",
+    )
+    verified_a = broker.open_capture(session_a, captured_a)
+    broker.open_capture(session_b, captured_b)
+    pin_a = broker._load_interned(
+        broker._verified_pin,
+        broker._verified_intern,
+        id(verified_a),
+        "verified capture is required",
+    )
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    published, frozen_pin, bound_session, _sid_a, retained, port_items = pin_a
+    _hmac_mint(
+        broker,
+        broker._verified_pin,
+        broker._verified_intern,
+        id(verified_a),
+        (published, frozen_pin, bound_session, sid_b, retained, port_items),
+    )
+    bindings = broker.captured_bindings(
+        session_a,
+        frozen_a,
+        verified_a,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed-a",
+    )
+    artifact = _consume_or_refuse(bindings)
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
+
+
+def test_hmac_mint_session_runtime_cannot_forge_consumed_actor():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    items_b = tuple(sorted(dict(session_b._runtime).items()))
+    _hmac_mint(
+        broker,
+        broker._session_runtime,
+        broker._session_runtime_intern,
+        id(session_a),
+        [id(session_a), list(items_b)],
+    )
+    artifact = _consume_or_refuse(bindings_a)
+    consumed = broker._receipt_audit(published_a)[-1]
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert consumed["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert consumed["event"] == "CONSUMED"
+    assert consumed["actor_runtime"]["run_identity"] == "consumer-a"
+
+
+def test_stream_pin_producer_root_inplace_cannot_forge_consumed_publication():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        _session_a,
+        _session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    sid_a = broker._receipt_audit(published_a)[0]["stream_id"]
+    published_identity_a = broker._receipt_audit(published_a)[2]["publication_receipt_sha256"]
+    producer_a = broker._receipt_audit(published_a)[0]["producer_run_identity"]
+    root_a = broker._receipt_audit(published_a)[0]["root_ref"]
+    pin = broker._stream_pin[sid_a]
+    try:
+        pin.producer["run_identity"] = "producer-b"
+        pin.root["root_ref"] = "capture://synthetic/root-b"
+    except (TypeError, AttributeError, KeyError):
+        pass
+    artifact = _consume_or_refuse(bindings_a)
+    consumed = broker._receipt_audit(published_a)[-1]
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert consumed["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert consumed["event"] == "CONSUMED"
+    assert consumed["producer_run_identity"] == producer_a
+    assert consumed["root_ref"] == root_a
+    assert consumed["publication_receipt_sha256"] == published_identity_a
+
+
+def test_receipt_store_truncation_cannot_rewind_consumed():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        _session_a,
+        _session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    artifact = bindings_a.require("bundle").artifact
+    first = broker._receipt_audit(published_a)[-1]
+    assert first["event"] == "CONSUMED"
+    signature = first["signature"]
+    issued_at = first["issued_at_ms"]
+    sid_a = first["stream_id"]
+    original = tuple(broker._receipt_store[sid_a])
+    truncated = original[:-1]
+    try:
+        broker._receipt_store[sid_a] = truncated
+        truncated_applied = True
+    except (TypeError, ValueError, AttributeError):
+        truncated_applied = False
+    if truncated_applied:
+        broker._nonces.discard("nonce-consumed-a")
+        bindings_a._used.clear()
+        broker._used_inputs.pop(id(_session_a), None)
+        _consume_or_refuse(bindings_a)
+    stored = tuple(broker._receipt_store[sid_a])
+    assert stored == original
+    replayed = broker._receipt_audit(published_a)[-1]
+    assert replayed["event"] == "CONSUMED"
+    assert replayed["signature"] == signature
+    assert replayed["issued_at_ms"] == issued_at
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    assert len(stored) == len(original)
+
