@@ -1012,3 +1012,33 @@ composer, Replay/CLI, recovery, and report seams. Its child replay helpers are t
 R5 bypass inventory to migrate/remove, not reusable production composition. R1--R5
 extend the generic seams through the production bridge, never a child backtester or
 second accounting engine.
+
+## M2--M4 execution ownership and evidence manifest
+
+Three isolated lane worktrees are mandatory: model-release owns F1/F2/A1--A4/E1;
+forecast-capital owns F3/F5a/F5b/B0--B3/C0--C1; replay-ops owns F4/R1--R5; only a
+fresh integration worktree owns I1/I2. Cross-lane inputs are signed artifact/commit
+pins, never live shared edits. Merge F5a before F3/F5b and all DAG pins before I1;
+Sol GREEN then one Terra skeptic follows each merge, with Terra corrections/later
+reviews and two sequential clean Terra reviews before integration.
+
+R1--R3 own only generic `dskit/production/replay.py`, `serve_root.py`, `loop.py` and
+`tests/production/test_replay.py`, `test_loop.py`, `test_state.py`; equity supplies
+thin registered adapters only. ServeRoot validates rooted digest keys, lstat type/
+owner/mode/link count, O_NOFOLLOW locks and O_EXCL same-directory siblings; under
+lock it checks expected bytes/hash/generation, write+file-fsyncs, re-reads, atomically
+renames (no-replace genesis), and directory-fsyncs. Crash RED nodes cover every
+pre/post lock/lstat/write/fsync/reread/rename/dir-fsync/FROZEN/elevation/activation/
+attempt/send/query/receipt/ACK/projection/payload/manifest/COMMITTED/state-replace
+cutpoint; recovery completes exact lineage or refuses.
+
+Normative TDD command: `wsl.exe -e bash -lc 'cd <lane> && pytest -q <nodeid>'`; Sol
+first creates the row's named failing assertion, then minimal implementation, GREEN
+node output, and ReviewEvidenceManifest. Complete nodes: F1 document::execution-block;
+F2 driver::execution-before-import; F3 captured-event-dataset::dual-authority;
+F4/F5a capture-lifecycle::published-root/private-plan; F5b forecast-bundle::bound-port;
+A1--A4 final-model::release-identity; B0--B3 forecast-bundle::provenance; E1 feed::tie-swap;
+C0/C1 state::nonancestor; R1 replay::bootstrap-reservation; R2 replay::projection-receipts;
+R3 replay::atomic-journal-cutpoints; R4 loop::hold-authority; R5 child-replay::direct-refusal;
+I1/I2 replay::synthetic-json-e2e. These are exact focused pytest node-id suffixes in
+the lane test paths named above; no full suite or real execution is authorized.
