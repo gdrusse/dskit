@@ -469,6 +469,30 @@ class TestPipelineDocument:
         assert PipelineDocument.from_obj(d.to_obj()).hash == d.hash
 
 
+def test_execution_block_rejects_user_stages():
+    execution_backtest = {
+        "schema_version": "dskit.execution-backtest/v1",
+        "purpose": "synthetic",
+        "event_envelope_schema": "dskit.event-envelope/v2",
+        "source_rank_policy_sha256": "1" * 64,
+        "execution_profile_sha256": "2" * 64,
+        "environment_identity_sha256": "3" * 64,
+    }
+
+    with pytest.raises(
+        ConfigError,
+        match=r"execution_backtest.*user-authored.*stages",
+    ):
+        PipelineDocument.from_obj(
+            {
+                "name": "execution-stage-refusal",
+                "pipeline": {"source": {"uses": "synthetic-frame"}},
+                "execution_backtest": execution_backtest,
+                "stages": {"capture": {"uses": "capture"}},
+            }
+        )
+
+
 class TestDocumentHash:
     def test_env_outputs_schedule_and_notes_never_move_the_hash(self):
         from dskit.pipeline.base import EnvConfig, OutputsConfig
