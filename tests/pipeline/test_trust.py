@@ -2028,3 +2028,142 @@ def test_release_requires_this_session_stream_consumed():
         broker.release(session_a)
     assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
 
+
+def _consume_or_refuse(bindings):
+    try:
+        return bindings.require("bundle").artifact
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def test_release_identity_tuple_cannot_return_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        _session_b,
+        _bindings_a,
+        bindings_b,
+    ) = _two_captured_consumers(broker)
+    bindings_b.require("bundle")
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    broker._used_inputs[id(session_a)] = {"bundle"}
+    broker._session_streams[id(session_a)] = (id(session_a), sid_b)
+    with pytest.raises(ValueError, match="CONSUMED|required"):
+        broker.release(session_a)
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CONSUMED"
+
+
+def test_bindings_pin_tuple_replace_cannot_move_consumed_cas():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        _session_a,
+        _session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    rec = broker._bindings_pin[id(bindings_a)]
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    broker._bindings_pin[id(bindings_a)] = (rec[0], sid_b) + tuple(rec[2:])
+    artifact = _consume_or_refuse(bindings_a)
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
+
+
+def test_bindings_pin_tuple_replace_cannot_forge_consumed_identity():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        frozen_a,
+        _frozen_b,
+        session_a,
+        session_b,
+        bindings_a,
+        bindings_b,
+    ) = _two_captured_consumers(broker)
+    rec_a = broker._bindings_pin[id(bindings_a)]
+    rec_b = broker._bindings_pin[id(bindings_b)]
+    broker._bindings_pin[id(bindings_a)] = (
+        rec_a[0],
+        rec_a[1],
+        rec_b[2],
+        rec_b[3],
+        rec_b[4],
+    )
+    broker._session_runtime[id(session_a)] = (
+        id(session_a),
+        broker._session_runtime[id(session_b)][1],
+    )
+    artifact = _consume_or_refuse(bindings_a)
+    consumed = broker._receipt_audit(published_a)[-1]
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert consumed["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert consumed["event"] == "CONSUMED"
+    assert consumed["consumer_captured_port"]["consumer_document_sha256"] == frozen_a.source_sha256
+    assert consumed["actor_runtime"]["run_identity"] == "consumer-a"
+    assert consumed["transition_nonce"] == "nonce-consumed-a"
+
+
+def test_freeze_and_publish_stream_maps_cannot_capture_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _document_b, frozen_b = _freeze(
+        broker,
+        published_b,
+        document=_consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    original_freeze = broker._freeze_published[id(frozen_a)]
+    broker._freeze_published[id(frozen_a)] = published_b
+    with pytest.raises(ValueError, match="document|published|root|port|freeze|mismatch"):
+        _capture(
+            broker,
+            published_b,
+            frozen_a,
+            run_identity="consumer-cross",
+            nonce="nonce-captured-cross",
+        )
+    assert broker._receipt_audit(published_a)[-1]["event"] == "PUBLISHED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+    broker._freeze_published[id(frozen_a)] = original_freeze
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    broker._publish_stream[id(published_a)] = sid_b
+    with pytest.raises(ValueError, match="document|published|root|port|stream|mismatch"):
+        _capture(
+            broker,
+            published_a,
+            frozen_a,
+            run_identity="consumer-a",
+            nonce="nonce-captured-a",
+        )
+    assert broker._receipt_audit(published_a)[-1]["event"] == "PUBLISHED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
