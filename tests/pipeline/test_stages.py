@@ -191,3 +191,20 @@ def test_cli_staged_missing_path_returns_one(tmp_path, capsys):
     missing = tmp_path / "missing.json"
     assert main(["staged", str(missing), "--asof", "2026-01-02"]) == 1
     assert str(missing) in capsys.readouterr().out
+
+def test_cli_validate_reads_a_node_map_once(tmp_path, monkeypatch):
+    child, path = _write_child(tmp_path)
+    monkeypatch.chdir(child)
+    import builtins
+    import dskit.pipeline.__main__ as pipeline_main
+
+    reads = []
+    original_open = builtins.open
+    def counted_open(name, *args, **kwargs):
+        if str(name) == str(path):
+            reads.append(name)
+        return original_open(name, *args, **kwargs)
+    monkeypatch.setattr("builtins.open", counted_open)
+
+    assert pipeline_main.main(["validate", str(path)]) == 0
+    assert len(reads) == 1
