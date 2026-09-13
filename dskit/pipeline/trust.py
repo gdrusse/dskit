@@ -334,7 +334,7 @@ class VerifiedCapture(_Opaque):
         object.__setattr__(self, "_locked", False)
         object.__setattr__(self, "_members", members)
         object.__setattr__(self, "_published", published)
-        object.__setattr__(self, "_port", port)
+        object.__setattr__(self, "_port", MappingProxyType(dict(port)))
         object.__setattr__(self, "_frozen", frozen)
         object.__setattr__(self, "_session", session)
         object.__setattr__(self, "_retained", retained)
@@ -1135,6 +1135,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             "session": session,
             "stream_id": stream_id,
             "retained": {path: bytes(data) for path, data in retained.items()},
+            "port": dict(self.derive_consumer_port(frozen)),
         }
         return verified
 
@@ -1170,7 +1171,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         declared = {
             item["relative_path"]: item for item in sealed._digests
         }[output_path]
-        expected_port = dict(verified._port)
+        expected_port = dict(pin["port"])
         artifact = CapturedJsonArtifact(
             _MAKE,
             _freeze_json(parsed),
@@ -1188,17 +1189,17 @@ class _DevelopmentBroker(LifecycleAuthority):
             artifact,
             MappingProxyType({"consumer_port": expected_port}),
         )
-        self._reload_stream(stream_id)
+        consumed_stream_id = stream_id
 
-        def _on_require(input_name):
+        def _on_require(input_name, stream_id=consumed_stream_id):
             self._reload_stream(stream_id)
             self._require_head(stream_id, "CAPTURED")
             self._append_receipt(
-                subject,
+                self._stream_pin[stream_id],
                 "CONSUMED",
                 session,
                 transition_nonce,
-                extra={"consumer_captured_port": expected_port},
+                extra={"consumer_captured_port": dict(expected_port)},
             )
             self._used_inputs.setdefault(id(session), set()).add(input_name)
 
