@@ -1,6 +1,20 @@
 # Re-entry
 
-## Current wrap: Gate 4 forecast bundle + confirmed-cap contracts (2026-09-11)
+## Current wrap: F4 WORM capture lifecycle closed (2026-09-13)
+
+Branch `cursor/r5-f4-capture-lifecycle-0f39`. F4 ReviewExit
+`docs/review-evidence/F4/0031-review-exit.v1.json` at `26f17bf`. ADR-0126
+shrinks `_DevelopmentBroker` Major to a single surface. Review14
+`bc-18489157` and Review15 `bc-65ca1b4b` are 0C/0M. GREEN `e4c3a2a`.
+`deployment_eligible: false`. F2 pinned by blob, not merged. No
+`calibration.py`.
+
+**Verification:** 121 focused trust+purity passed; Ruff on those paths
+clean. No paper/live, HPO, refit, replay, or `path.csv` edit.
+
+**Next:** DAG F5a (private plan before capture). Synthetic TDD only.
+
+## Prior wrap: Gate 4 forecast bundle + confirmed-cap contracts (2026-09-11)
 
 Branch `sol/gate4-closeout` integrates `origin/main` at `5b60f97` and records
 the owner-approved design as ADR-0121. Gate 4 now converts the pinned P16 log
