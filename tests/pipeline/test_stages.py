@@ -83,8 +83,9 @@ def test_staged_run_resumes_without_reexecuting(tmp_path, monkeypatch):
     monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
     monkeypatch.chdir(child)
     CountingStage.calls = 0
-    first = run_staged(str(path), asof="2026-01-02", registry=_registry())
-    second = run_staged(str(path), asof="2026-01-02", registry=_registry())
+    document = PipelineDocument.from_obj(_document(child / "runs"))
+    first = run_staged(document, str(path), asof="2026-01-02", registry=_registry())
+    second = run_staged(document, str(path), asof="2026-01-02", registry=_registry())
     assert first.state == second.state == "ran"
     assert first.outputs["second"]["result"] == 2
     assert second.outputs == first.outputs
@@ -113,7 +114,7 @@ def test_orphaned_stage_artifact_is_refused(tmp_path, monkeypatch):
     stage_dir.mkdir(parents=True)
     (stage_dir / "first.json").write_text("{}\n")
     with pytest.raises(ValueError, match="without a matching successful journal"):
-        run_staged(str(path), asof="2026-01-02", registry=_registry())
+        run_staged(document, str(path), asof="2026-01-02", registry=_registry())
 
 
 def test_stage_plan_refuses_an_undeclared_output(tmp_path):
@@ -122,7 +123,7 @@ def test_stage_plan_refuses_an_undeclared_output(tmp_path):
     path = tmp_path / "run.json"
     path.write_text(json.dumps(obj))
     with pytest.raises(ValueError, match="undeclared output"):
-        run_staged(str(path), asof="2026-01-02", registry=_registry())
+        run_staged(PipelineDocument.from_obj(obj), str(path), asof="2026-01-02", registry=_registry())
 
 
 def test_sha256hex_requires_an_exact_full_string():

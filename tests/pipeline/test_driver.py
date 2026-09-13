@@ -23,6 +23,7 @@ from dskit.pipeline.document import (
     NodeSpec,
     PipelineDocument,
     TrailingSplitSpec,
+    load_document,
     save_document,
 )
 from dskit.pipeline.driver import (
@@ -128,11 +129,11 @@ def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
 
     document_path = tmp_path / "execution-document.json"
     save_document(document, document_path)
-    with pytest.raises(ConfigError) as exc_info:
+    with pytest.raises(ValueError) as exc_info:
         run_document(str(document_path), asof=ASOF)
 
     assert not marker.exists(), "execution document path imported its adapter"
-    assert "external broker" in str(exc_info.value)
+    assert "in-memory PipelineDocument" in str(exc_info.value)
 
     from dskit.pipeline.__main__ import main
 
@@ -178,7 +179,7 @@ def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
 
     for action in (
         lambda: plan_stages(document),
-        lambda: run_staged(str(document_path)),
+        lambda: run_staged(document, source_path=str(document_path)),
         lambda: run_walk_forward(document, asof=ASOF),
     ):
         sys.modules.pop("execution_poison_adapter", None)
@@ -325,7 +326,7 @@ class TestCleanRun:
     def test_document_loads_from_a_path(self, tmp_path, registry):
         doc_path = tmp_path / "doc.json"
         save_document(bdoc(tmp_path / "runs"), doc_path)
-        result = run_document(str(doc_path), asof=ASOF, registry=registry)
+        result = run_document(load_document(doc_path), asof=ASOF, registry=registry)
         assert result.state == "ran"
 
 

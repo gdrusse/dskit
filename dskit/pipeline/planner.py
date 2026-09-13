@@ -66,7 +66,21 @@ from dskit.pipeline.stats import CORRECTIONS
 
 _MAX_JSON_INT = 10**4096 - 1
 
-__all__ = ["Plan", "plan", "refuse_execution_backtest", "unsearchable_space_why"]
+__all__ = [
+    "Plan", "plan", "refuse_execution_backtest", "require_in_memory_document",
+    "unsearchable_space_why",
+]
+
+def require_in_memory_document(document, entry_point):
+    """Require an ordinary in-memory document at a public entry point."""
+    if not isinstance(document, PipelineDocument):
+        raise ValueError(
+            f"{entry_point} requires an in-memory PipelineDocument; string and "
+            "path overloads are retired. Load the document in the caller or use "
+            "python -m dskit.pipeline."
+        )
+    refuse_execution_backtest(document)
+    return document
 
 
 def refuse_execution_backtest(document):
@@ -475,7 +489,7 @@ def plan(document, registry=None) -> Plan:
         Listing every import failure, role violation, wire-contract
         break, cycle, and plan-checkable param problem at once.
     """
-    refuse_execution_backtest(document)
+    document = require_in_memory_document(document, "plan")
     errors = []
     warnings = []
     # What RUNS, not what was written: with no `foreach` section this IS

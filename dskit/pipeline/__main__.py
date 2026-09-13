@@ -59,6 +59,7 @@ import os
 import tempfile
 
 from dskit.pipeline.base import (
+    ConfigError,
     DataConfig,
     ModelConfig,
     OptimizationConfig,
@@ -175,14 +176,70 @@ def cmd_synthetic() -> int:
     return 0
 
 
-def _legacy_validate(path, adapters) -> int:
-    from dskit.pipeline.io import load_config
+def _path_prefixed_config_error(path, error):
+    """Return a config error whose every problem names the captured path."""
+    return ConfigError([f"{path}: {problem}" for problem in error.errors])
+
+
+def _raw_node_map_problems(obj):
+    """Return raw node-map shape problems before any adapter can import."""
+    pipeline = obj.get("pipeline")
+    if pipeline is None:
+        return []
+    if not isinstance(pipeline, dict):
+        return ["pipeline must be an object"]
+    problems = []
+    for key, spec in pipeline.items():
+        if not isinstance(spec, dict):
+            problems.append(f"pipeline.{key}: node must be an object")
+        elif "params" in spec and not isinstance(spec["params"], dict):
+            problems.append(f"pipeline.{key}: params must be an object")
+    return problems
+
+
+def load_and_preflight_public_document(path):
+    """Read once, classify, and preflight one public pipeline config."""
+    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.planner import refuse_execution_backtest
+
+    with open(path, encoding="utf-8") as fh:
+        try:
+            obj = json.load(fh)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise ConfigError([f"{path}: a config must be a JSON object, got {obj!r}"])
+    if not any(key in obj for key in ("pipeline", "foreach", "execution_backtest")):
+        return None, obj
+    problems = _raw_node_map_problems(obj)
+    if problems:
+        raise ConfigError([f"{path}: {problem}" for problem in problems])
+    try:
+        document = PipelineDocument.from_obj(obj)
+    except ConfigError as exc:
+        raise _path_prefixed_config_error(path, exc) from exc
+    refuse_execution_backtest(document)
+    return document, None
+
+
+def _require_public_document(path, document):
+    """Refuse a captured legacy config at a node-map-only route."""
+    if document is None:
+        raise ConfigError(
+            [f"{path}: this command requires a node-map PipelineDocument with a pipeline or foreach section"]
+        )
+    return document
+
+
+def _legacy_validate(path, obj, adapters) -> int:
+    """Validate captured stage-list JSON after adapter registration."""
 
     try:
-        # ImportError included so an unimportable --adapter reads the same
-        # on every command: printed, exit 1. It used to escape as a
-        # traceback here while run/plan handled it.
-        cfg = load_config(path, adapters=tuple(adapters))
+        _import_adapters(adapters)
+        cfg = PipelineConfig.from_obj(obj)
+    except ConfigError as exc:
+        print(_path_prefixed_config_error(path, exc))
+        return 1
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
@@ -204,17 +261,8 @@ def _legacy_validate(path, adapters) -> int:
     return 0
 
 
-def _doc_validate(path, document=None) -> int:
-    from dskit.pipeline.document import load_document
-    from dskit.pipeline.planner import refuse_execution_backtest
-
-    if document is None:
-        try:
-            document = load_document(path)
-        except (ValueError, OSError) as exc:
-            print(exc)
-            return 1
-    refuse_execution_backtest(document)
+def _doc_validate(path, document) -> int:
+    """Print the shape and identity of one captured node-map document."""
     doc = document
     sections = [
         s
@@ -263,24 +311,14 @@ def cmd_validate(path, adapters) -> int:
         0 valid, 1 refused (the reason is printed).
     """
     try:
-        captured = _load_ordinary_document(path)
-    except ValueError as exc:
+        document, obj = load_and_preflight_public_document(path)
+        if document is None:
+            return _legacy_validate(path, obj, adapters)
+        _import_adapters(adapters)
+        return _doc_validate(path, document)
+    except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
-    if captured is not None:
-        try:
-            # Node-map validation is shape + hash and resolves no `uses`, so
-            # the import changes no outcome — but a flag that silently does
-            # nothing on the grammar it was widened for is a trap. Import it,
-            # and report it failing the same way the other commands do —
-            # including an adapter that raises at import (a duplicate kind
-            # registration raises ValueError, not ImportError).
-            _import_adapters(adapters)
-        except (ImportError, ValueError, OSError) as exc:
-            print(exc)
-            return 1
-        return _doc_validate(path, document=captured)
-    return _legacy_validate(path, adapters)
 
 
 def _import_adapters(adapters) -> None:
@@ -335,15 +373,13 @@ def cmd_plan(path, adapters=()) -> int:
     int
         0 planned, 1 refused (the reason is printed).
     """
-    from dskit.pipeline.document import load_document
-    from dskit.pipeline.planner import plan
-    from dskit.pipeline.stages import plan_stages
-
     try:
-        document = _load_ordinary_document(path)
+        document, _obj = load_and_preflight_public_document(path)
+        document = _require_public_document(path, document)
         _import_adapters(adapters)
-        if document is None:
-            document = load_document(path)
+        from dskit.pipeline.planner import plan
+        from dskit.pipeline.stages import plan_stages
+
         resolved = (
             plan_stages(document) if document.stages is not None else plan(document)
         )
@@ -372,17 +408,13 @@ def cmd_run(path, asof, adapters=()) -> int:
         The run's exit code — 0 ran, 3 halted at a NO-GO gate (a halt is
         a result), 1 error or a pre-flight refusal.
     """
-    from dskit.pipeline.driver import run_document
-
     try:
-        document = _load_ordinary_document(path)
-    except (ValueError, OSError) as exc:
-        print(exc)
-        return 1
-
-    try:
+        document, _obj = load_and_preflight_public_document(path)
+        document = _require_public_document(path, document)
         _import_adapters(adapters)
-        result = run_document(document if document is not None else path, asof=asof)
+        from dskit.pipeline.driver import run_document
+
+        result = run_document(document, asof=asof)
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
@@ -411,12 +443,13 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
         0 every fold ran, 3 a fold halted, 1 a fold errored or the
         section was refused pre-flight.
     """
-    from dskit.pipeline.driver import run_walk_forward
-
     try:
-        document = _load_ordinary_document(path)
+        document, _obj = load_and_preflight_public_document(path)
+        document = _require_public_document(path, document)
         _import_adapters(adapters)
-        result = run_walk_forward(document if document is not None else path, asof=asof)
+        from dskit.pipeline.driver import run_walk_forward
+
+        result = run_walk_forward(document, asof=asof)
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
@@ -428,15 +461,13 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
 
 def cmd_staged(path, asof, adapters=()) -> int:
     """Execute or resume a document's journal-backed study stages."""
-    from dskit.pipeline.stages import _run_staged_document, run_staged
-
     try:
-        document = _load_ordinary_document(path)
+        document, _obj = load_and_preflight_public_document(path)
+        document = _require_public_document(path, document)
         _import_adapters(adapters)
-        result = (
-            run_staged(path, asof=asof) if document is None
-            else _run_staged_document(document, path, asof=asof)
-        )
+        from dskit.pipeline.stages import run_staged
+
+        result = run_staged(document, source_path=path, asof=asof)
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1

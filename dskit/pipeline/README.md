@@ -8,6 +8,11 @@ hashable document; same hash = same experiment. A run leaves `config.json`,
 per-node records under `nodes/`, and a verdict-first `report.md` in one run
 directory (`{name}-{asof}-{hash8}`; an occupied directory refuses).
 
+The CLI performs the one JSON read. Public Python execution functions accept
+only an in-memory `PipelineDocument`; pass the captured document to
+`run_document`, `run_walk_forward`, or `run_staged` (with the CLI path only as
+the staged journal label).
+
 Nodes may wrap JSON evidence in `JsonArtifact`. The driver atomically stores
 its canonical bytes under `artifacts/json/<sha256>.json`; the output, node
 record, and carry retain only the path/digest/size/media-type manifest.

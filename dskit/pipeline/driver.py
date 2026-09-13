@@ -94,14 +94,13 @@ from dskit.pipeline.document import (
     flatten_param_paths,
     is_node_ref,
     is_prev_ref,
-    load_document,
     parse_node_ref,
     parse_prev_ref,
 )
 from dskit.pipeline.env import load_env
 from dskit.pipeline.node import JsonArtifact, Node, NodeContext, atomic_write
 from dskit.pipeline.planner import unsearchable_space_why
-from dskit.pipeline.planner import plan as plan_document, refuse_execution_backtest
+from dskit.pipeline.planner import plan as plan_document, require_in_memory_document
 from dskit.pipeline.runs import _escape_pipe
 
 __all__ = [
@@ -2323,8 +2322,8 @@ def run_document(
 
     Parameters
     ----------
-    document : PipelineDocument or str
-        The document, or a path to its JSON file (LOAD).
+    document : PipelineDocument
+        Caller-captured ordinary document. Path overloads are retired.
     asof : str, optional
         ``YYYY-MM-DD``. Defaults to today (UTC) — pass it explicitly
         anywhere determinism matters.
@@ -2356,10 +2355,7 @@ def run_document(
         failures are recorded in the run dir instead of raised.
         A journal refusal after RECORD also raises (the run dir exists).
     """
-    source = document if isinstance(document, str) else ""
-    if not isinstance(document, PipelineDocument):
-        document = load_document(document)
-    refuse_execution_backtest(document)
+    document = require_in_memory_document(document, "run_document")
     the_plan = plan_document(document, registry)
     if document.clock is not None:
         raise ConfigError(
@@ -2404,7 +2400,7 @@ def run_document(
         if journal:
             _journal_execute(
                 document.name,
-                source or document.name,
+                document.name,
                 result.run_dir,
                 f"state={result.state} hash={result.run_hash[:8]} asof={asof}",
             )
@@ -3148,8 +3144,8 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
 
     Parameters
     ----------
-    document : PipelineDocument or str
-        The document, or a path to its JSON file.
+    document : PipelineDocument
+        Caller-captured ordinary document. Path overloads are retired.
     asof : str, optional
         ``YYYY-MM-DD``; today (UTC) by default.
     registry : NodeKindRegistry, optional
@@ -3166,9 +3162,7 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
         No walkforward section, a clock, a declared cal band, a bad
         ``asof``, or an occupied summary dir — all before any fold runs.
     """
-    if not isinstance(document, PipelineDocument):
-        document = load_document(document)
-    refuse_execution_backtest(document)
+    document = require_in_memory_document(document, "run_walk_forward")
     _walkforward_refusals(document)
     asof = _validated_asof(asof)
     spec = document.walkforward
