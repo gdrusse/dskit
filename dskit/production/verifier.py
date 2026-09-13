@@ -46,6 +46,7 @@ the ``SubmittingExecutor`` contract (§5.7).
 import dataclasses
 from types import MappingProxyType
 
+from dskit.pipeline.trust import LifecycleAuthority
 from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
@@ -63,7 +64,7 @@ from dskit.production.vocab import (
     VERDICT_ORDER,
 )
 
-__all__ = ["VERIFY_REASONS", "SubmissionVerifier"]
+__all__ = ["VERIFY_REASONS", "HistoricalStudyVerifier", "SubmissionVerifier"]
 
 _LOG = get_logger("verifier")
 
@@ -627,3 +628,89 @@ class SubmissionVerifier:
         decision = self._policy.permits(request)
         if not decision.allowed:
             raise _Refused(decision.reason)
+
+
+_REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
+
+
+class HistoricalStudyVerifier:
+    """Refuse CAPTURED until ADR-0125 private plan and admission are bound.
+
+    Parameters
+    ----------
+    authority : LifecycleAuthority
+        The F4 WORM writer. Direct construction without one is refused.
+
+    Examples
+    --------
+    Construction without a lifecycle authority is refused::
+
+        try:
+            HistoricalStudyVerifier()
+        except TypeError:
+            refused = True
+        refused  # True
+    """
+
+    def __init__(self, authority):
+        if not isinstance(authority, LifecycleAuthority):
+            raise TypeError("lifecycle authority is required")
+        self._authority = authority
+        self._bound = {}
+        self.deployment_eligible = False
+
+    def bind(self, **artifacts):
+        """Bind named ADR-0125 plan artifacts. Unknown names refuse.
+
+        Parameters
+        ----------
+        artifacts : dict
+            Any subset of ``scope_intent``, ``ces``, ``pea``, ``bvp``,
+            ``cas``, ``admission``. Values must not be ``None``.
+
+        Raises
+        ------
+        ValueError
+            On an unknown name or a ``None`` value.
+        """
+        unknown = tuple(name for name in artifacts if name not in _REQUIRED_PLAN)
+        if unknown:
+            raise ValueError("unknown plan artifact")
+        for name, value in artifacts.items():
+            if value is None:
+                raise ValueError("plan artifact is required")
+            self._bound[name] = value
+
+    def capture(self, published, frozen, port, **kwargs):
+        """Refuse CAPTURED when any required plan artifact is unbound.
+
+        Parameters
+        ----------
+        published : object
+            A PUBLISHED handle from ``authority``.
+        frozen : object
+            The frozen consumer document.
+        port : mapping
+            The derived consumer captured port.
+        kwargs : dict
+            Forwarded to ``authority.capture`` only after every required
+            plan artifact is bound.
+
+        Returns
+        -------
+        tuple
+            The ``authority.capture`` result.
+
+        Raises
+        ------
+        ValueError
+            When ScopeIntent, CES, PEA, BVP, CAS, or consumed admission
+            is not bound.
+        """
+        missing = [name for name in _REQUIRED_PLAN if name not in self._bound]
+        if missing:
+            raise ValueError(
+                "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, CAS, "
+                "and consumed admission are bound"
+            )
+        return self._authority.capture(published, frozen, port, **kwargs)
