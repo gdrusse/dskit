@@ -635,10 +635,10 @@ _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 
 def _plan_artifact_bound(value, name=None):
     """Return whether ``value`` is a bound plan artifact."""
+    if not isinstance(value, dict):
+        return False
     if name == "admission":
-        return isinstance(value, dict) and value.get("consumed") is True
-    if isinstance(value, str):
-        return bool(value.strip())
+        return value.get("consumed") is True
     return bool(value)
 
 
@@ -675,9 +675,8 @@ class HistoricalStudyVerifier:
         ----------
         artifacts : dict
             Any subset of ``scope_intent``, ``ces``, ``pea``, ``bvp``,
-            ``cas``, ``admission``. Values must be truthy after stripping
-            strings; ``admission`` must be a mapping whose ``consumed``
-            member is ``True``.
+            ``cas``, ``admission``. Each value must be a mapping;
+            ``admission`` must have ``consumed`` equal to ``True``.
 
         Raises
         ------
