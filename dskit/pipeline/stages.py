@@ -406,10 +406,18 @@ def _record(source_path, key, token, state, artifact, digest, reason=""):
     )
 
 
-def run_staged(path, asof=None, registry=DEFAULT_STAGE_KINDS):
+def _run_staged_document(document, source_path, asof=None, registry=DEFAULT_STAGE_KINDS):
+    """Run a captured document while preserving its original path label."""
+    from dskit.pipeline.planner import refuse_execution_backtest
+
+    refuse_execution_backtest(document)
+    return run_staged(source_path, asof=asof, registry=registry, _document=document)
+
+
+def run_staged(path, asof=None, registry=DEFAULT_STAGE_KINDS, _document=None):
     """Run or resume every stage, trusting only journal-plus-digest evidence."""
     source_path = os.path.abspath(path)
-    document = load_document(source_path)
+    document = _document if _document is not None else load_document(source_path)
     plan = plan_stages(document, registry=registry)
     asof = _validated_asof(asof)
     declared_root = document.outputs.run_root if document.outputs else ""
