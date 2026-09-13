@@ -83,6 +83,10 @@ kinds resolve. Two more verbs — `demo`
   only via `register()`/`--adapter`. `plan` → `Plan` (`order`, `edges`,
   `role_of`, `ancestors`, `descendants`) and the role rules: `planner.py`.
 - **RESOLVE → RECORD** — `run_document` → `DocumentRunResult`
+  Public resolution is `resolve_uses(document, uses, registry=None)`: it
+  requires a real ordinary `PipelineDocument` and refuses execution documents
+  before import. The retired bare `resolve_uses(uses, registry)` raises a
+  migration diagnostic; planner internals alone use the private resolver.
   (`driver.py`; `exit_code` derives from `state`); trailing cuts materialize
   in `_materialize_splits` off `Node.data_edge`, event policies bind in
   `_bind_event_bounds` (both `driver.py`) over `merge_event_bounds`
