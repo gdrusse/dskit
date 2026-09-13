@@ -671,6 +671,14 @@ class HistoricalStudyVerifier:
         self._capture_lock = Lock()
         self.deployment_eligible = False
 
+    def __copy__(self):
+        """Refuse a shallow copy of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def __deepcopy__(self, memo):
+        """Refuse a deep copy of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
     def bind(self, **artifacts):
         """Bind named ADR-0125 plan artifacts. Unknown names refuse.
 
