@@ -140,7 +140,9 @@ class TestAdapterKindsBecomeReachable:
 
 
 class TestImportOrderAndRepetition:
-    @pytest.mark.parametrize("command", ["plan", "run", "staged", "walkforward", "validate"])
+    @pytest.mark.parametrize(
+        "command", ["plan", "run", "staged", "walkforward", "validate"]
+    )
     @pytest.mark.parametrize("document_error", ["missing", "malformed"])
     def test_document_capture_and_preflight_beat_adapter_import(
         self, tmp_path, command, document_error, capsys
@@ -171,7 +173,6 @@ class TestImportOrderAndRepetition:
         assert main(["plan", NODEMAP, "--adapter", ADAPTER, "--adapter", MISSING]) == 1
         assert f"No module named '{MISSING}'" in capsys.readouterr().out
 
-
     def test_staged_refuses_a_bytes_path_before_config_io_or_adapter_import(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -181,8 +182,7 @@ class TestImportOrderAndRepetition:
 
         marker = tmp_path / "adapter-imported"
         (tmp_path / "poison_adapter.py").write_text(
-            "from pathlib import Path\n"
-            f"Path({str(marker)!r}).write_text('imported')\n",
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n",
             encoding="utf-8",
         )
         monkeypatch.syspath_prepend(str(tmp_path))
@@ -266,6 +266,24 @@ class TestHelp:
         assert "--adapter MODULE" in out
         assert (
             "adapter module(s) to import after document preflight (import = registration), "
-            "e.g. yourproject — a child package, never a dskit subpackage"
-            in out
+            "e.g. yourproject — a child package, never a dskit subpackage" in out
         )
+
+    def test_overflow_json_number_refuses_before_adapter_import(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        path = tmp_path / "overflow.json"
+        path.write_text(
+            '{"name":"overflow","pipeline":{"source":{"uses":"synthetic-frame",'
+            '"params":{"value":1e9999}}}}',
+            encoding="utf-8",
+        )
+        marker = tmp_path / "adapter-imported"
+        (tmp_path / "poison_adapter.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        assert main(["plan", str(path), "--adapter", "poison_adapter"]) == 1
+        assert not marker.exists()
+        assert "non-finite JSON number 1e9999" in capsys.readouterr().out

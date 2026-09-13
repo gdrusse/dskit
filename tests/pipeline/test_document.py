@@ -36,7 +36,16 @@ def doc(**overrides):
 
 @pytest.mark.parametrize(
     "section",
-    ("splits", "clock", "schedule", "env", "outputs", "tracking", "walkforward", "foreach"),
+    (
+        "splits",
+        "clock",
+        "schedule",
+        "env",
+        "outputs",
+        "tracking",
+        "walkforward",
+        "foreach",
+    ),
 )
 def test_optional_object_sections_refuse_lists_as_config_errors(section):
     """Optional document sections fail closed before their builders run."""
@@ -56,7 +65,10 @@ def test_optional_object_sections_refuse_lists_as_config_errors(section):
 def test_document_parser_refuses_non_mapping_nested_specs(location, field, bad):
     """Nested node/stage mappings must reach their ConfigError validators."""
     spec = {"uses": "synthetic-frame", field: bad}
-    obj = {"name": "bad-nested-mapping", "pipeline": {"source": {"uses": "synthetic-frame"}}}
+    obj = {
+        "name": "bad-nested-mapping",
+        "pipeline": {"source": {"uses": "synthetic-frame"}},
+    }
     if location == "pipeline":
         obj["pipeline"] = {"source": spec}
     elif location == "foreach.pipeline":
@@ -590,14 +602,90 @@ class TestDocumentIO:
             load_document(path)
 
     @pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
-    def test_nonfinite_json_constants_refuse_before_a_document_is_returned(self, tmp_path, constant):
+    def test_nonfinite_json_constants_refuse_before_a_document_is_returned(
+        self, tmp_path, constant
+    ):
         path = tmp_path / "nonfinite.json"
         path.write_text(
             '{"name":"nonfinite","pipeline":{"source":{"uses":"synthetic-frame",'
-            '"params":{"value":' + constant + '}}}}',
+            '"params":{"value":' + constant + "}}}}",
             encoding="utf-8",
         )
         with pytest.raises(
             ValueError, match=rf"nonfinite.json: non-finite JSON constant {constant}"
         ):
             load_document(path)
+
+
+@pytest.mark.parametrize(
+    ("section", "value"),
+    (
+        (
+            "foreach",
+            {
+                "keys": ["one"],
+                "pipeline": {"template": {"uses": "synthetic-frame"}},
+            },
+        ),
+        (
+            "walkforward",
+            {
+                "objective": "$source.output",
+                "val_days": 1,
+                "folds": ["2026-01-01"],
+            },
+        ),
+    ),
+)
+def test_execution_block_rejects_foreach_and_walkforward(section, value):
+    execution_backtest = {
+        "schema_version": "dskit.execution-backtest/v1",
+        "purpose": "synthetic",
+        "event_envelope_schema": "dskit.event-envelope/v2",
+        "source_rank_policy_sha256": "1" * 64,
+        "execution_profile_sha256": "2" * 64,
+        "environment_identity_sha256": "3" * 64,
+    }
+    with pytest.raises(ConfigError, match=rf"execution_backtest.*{section}"):
+        PipelineDocument.from_obj(
+            {
+                "name": "execution-section-refusal",
+                "pipeline": {"source": {"uses": "synthetic-frame"}},
+                "execution_backtest": execution_backtest,
+                section: value,
+            }
+        )
+
+
+def test_overflow_json_number_is_refused_before_document_return(tmp_path):
+    path = tmp_path / "overflow.json"
+    path.write_text(
+        '{"name":"overflow","pipeline":{"source":{"uses":"synthetic-frame",'
+        '"params":{"value":1e9999}}}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError, match=r"overflow.json: non-finite JSON number 1e9999"
+    ):
+        load_document(path)
+
+
+@pytest.mark.parametrize(
+    ("payload", "key"),
+    (
+        ('{"name":"first","name":"second","pipeline":{}}', "name"),
+        (
+            '{"name":"nested","pipeline":{"source":'
+            '{"uses":"synthetic-frame","params":{"x":1,"x":2}}}}',
+            "x",
+        ),
+    ),
+)
+def test_duplicate_json_object_keys_refuse_at_any_depth(tmp_path, payload, key):
+    path = tmp_path / "duplicate.json"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(
+        ValueError,
+        match=rf"duplicate.json: duplicate JSON object key {key!r}",
+    ):
+        load_document(path)
