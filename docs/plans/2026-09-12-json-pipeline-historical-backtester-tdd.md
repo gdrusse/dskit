@@ -52,25 +52,57 @@ Port-specific consumer capture/admission occurs only after each relevant consume
 PipelineDocument hash is frozen; G1/G2 owns raw read/capture/publish, while study
 evidence later binds rather than authorizes that exact chain.
 
-`ReviewEvidenceManifest.v1` is signed append-only evidence for slice/dependency
-identity, Sol RED test+command+observed failure, Sol implementation commit, Sol
-GREEN command/result, artifacts, corrections, and reviews. Each signed
-`ReviewVerdict.v1` binds reviewer, commit/range, scope, severity findings, and
-clean conclusion. `ReviewExit.v1` is a verifier result, not prose: it verifies the
-complete dependency binding, exactly one active skeptic history, every Sol RED ->
-Sol commit -> Sol GREEN sequence, every Terra-only correction, and **zero unresolved
-Critical/Major** findings. Every Minor remains signed in its `ReviewVerdict`, bound
-into the manifest, and visibly records a disposition, owner, and rationale
-(`deferred`, `accepted`, or `corrected`); changing a finding's severity cannot hide
-a Critical/Major. Only one Terra skeptic is active. Any correction, at any severity,
-is Terra-authored with regression evidence. Two fresh, sequential, independent Terra
-reviews are CLEAN only when they each find zero unresolved Critical/Major; neither
-may review its own correction. No full suite absent direct integration necessity.
+Repository development-review evidence is canonical, content-addressed JSON under
+`docs/review-evidence/<slice_id>/`, never runtime evidence. Files are UTF-8 without
+BOM, LF-terminated, lexicographically key-sorted JSON with separators `,` and `:`;
+their SHA-256 is over those exact bytes. They are append-only successors: a new file
+never edits a predecessor and carries its predecessor's canonical-byte SHA-256 in
+`previous_evidence_sha256` (`null` only for the first file). Git blob and commit
+ancestry plus that explicit chain establish integrity/immutability; there is no
+review-evidence signer, key, or runtime authority. A Codex/orchestrator reviewer is
+recorded only as provenance.
 
-`SliceDependencyManifest.v1` is signed and binds the slice DAG, prerequisites,
-commits/evidence, gates, environment/policy identities, allowed commands, and
-capture outputs. Scheduler and launcher enforce it: omitted, reordered,
-substituted, or unlisted slices refuse.
+`ReviewEvidenceManifest.v1` has exactly: `schema_version`, `slice_id`,
+`dependency_identity` (`dag_id`, `required_slice_ids`, `dependency_manifest_ref`),
+`plan_identity` (`path`, `source_commit`, `git_blob`), `base_commit`,
+`red` (`test_introduced_commit`, `command_correction_commit`, `test_commit`,
+`interpreter` (`path`, `version`, `prefix`, `pytest_version`), `command`,
+`exit_code`, `normalized_output_sha256`, `normalized_output_summary`), `green`
+(`commit`, `command`, `exit_code`, `normalized_output_sha256`,
+`normalized_output_summary`), `artifacts` (each `kind`, `path`, `sha256`,
+`summary`), `review_verdict_refs` (each `path`, `canonical_byte_sha256`, `git_blob`,
+`finding_counts`, `dispositions`), `previous_evidence_sha256`, and
+`deployment_eligible` (always `false`). `ReviewVerdict.v1` has exactly: `schema_version`, `slice_id`, `reviewed_base_commit`,
+`reviewed_head_commit`, `scope`, `reviewer_provenance` (`provider`, `model`,
+`agent_task`), `findings` (each `id`, `severity`, `summary`, `disposition`,
+`rationale`, `correction_ref`), `conclusion`, `previous_evidence_sha256`, and
+`deployment_eligible` (always `false`). A verdict reference gives its path,
+canonical-byte SHA-256, Git blob, and finding/disposition summary.
+
+`ReviewExit.v1` is materialized only after all required reviews. It has exactly:
+`schema_version`, `slice_id`, `review_evidence_refs`, `verified_chain`,
+`verified_commits`, `verified_commands`, `required_review_count`,
+`observed_review_count`, `clean_review_count`, `skeptic_count`,
+`unresolved_finding_counts` (`critical`, `major`, `minor`),
+`previous_evidence_sha256`, and `deployment_eligible` (always `false`). It verifies
+the successor chain, slice dependencies, RED/implementation/GREEN commits and
+commands, reviewer/count requirements, Terra-only corrections, and **zero unresolved
+Critical/Major** findings. It is a development-process verifier result, not prose,
+and never enters a runtime `PipelineDocument`, release/study identity, or G0--G7
+signature set; it cannot substitute for those signed, owner-gated authorities.
+
+Only one Terra skeptic is active. Any correction, at any severity, is Terra-authored
+with regression evidence. Two fresh, sequential, independent Terra reviews are CLEAN
+only when they each find zero unresolved Critical/Major; neither may review its own
+correction. Every Minor stays visible with a disposition and rationale
+(`deferred`, `accepted`, or `corrected`). No full suite absent direct integration
+necessity.
+
+`SliceDependencyManifest.v1` is development-review content-addressed JSON and binds
+the slice DAG, prerequisites, commits/evidence, allowed commands, and applicable
+environment/policy identities. Repository review verifies it; omitted, reordered,
+substituted, or unlisted slices have no verified `ReviewExit.v1`. It grants neither
+runtime authority nor capture output authority.
 
 ADR-0125 controls study chronology. Before gates, the signed
 `HistoricalStudyScopeIntent.v1` WORM singleton keyed by `study_id` binds only the
@@ -99,8 +131,8 @@ retuning, another release/dataset/execution, paper/live, or a second study.
 
 ## Dependency DAG and universal slice form
 
-`SliceDependencyManifest.v1.requires` is the machine-checkable DAG (all listed
-nodes must have a verified `ReviewExit.v1`):
+`SliceDependencyManifest.v1.requires` is the machine-checkable development-review
+DAG (all listed nodes must have a verified `ReviewExit.v1`):
 
 ```json
 {"F1":[],"F2":["F1"],"F4":["F2"],"F5a":["F1","F2","F4"],
@@ -116,7 +148,8 @@ nodes must have a verified `ReviewExit.v1`):
 Every slice below lists reuse, RED, minimal GREEN/focused test category, and
 fail-closed exit and inherits the P0 Sol-first/Terra lifecycle.
 The prose introduces F3's causal contract before F4's lifecycle section, but the
-signed DAG is authoritative: scheduler/launcher execute F4 before F3.
+development-review DAG is authoritative for review order: F4 precedes F3. Runtime
+scheduler/launcher authority remains exclusively the separately signed G0--G7 path.
 
 ## F1 — ordinary PipelineDocument JSON
 
