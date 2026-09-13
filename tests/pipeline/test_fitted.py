@@ -37,7 +37,7 @@ from dskit.pipeline.fitted import (
     Standardize,
     _assigns_by_cluster,
 )
-from dskit.pipeline.node import NodeContext, resolve_uses
+from dskit.pipeline.node import NodeContext, _resolve_uses_ordinary as resolve_uses
 from dskit.pipeline.planner import plan
 from dskit.pipeline.records import MarketRecord
 

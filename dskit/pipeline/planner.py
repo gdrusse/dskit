@@ -61,7 +61,7 @@ from dskit.pipeline.document import (
     parse_prev_ref,
 )
 from dskit.pipeline.fitted import FittedTransform
-from dskit.pipeline.node import resolve_uses
+from dskit.pipeline.node import _resolve_uses_ordinary
 from dskit.pipeline.stats import CORRECTIONS
 
 _MAX_JSON_INT = 10**4096 - 1
@@ -487,7 +487,7 @@ def plan(document, registry=None) -> Plan:
     resolved = {}
     for key, spec in specs.items():
         try:
-            resolved[key] = resolve_uses(spec.uses, registry)
+            resolved[key] = _resolve_uses_ordinary(spec.uses, registry)
         except ValueError as exc:
             errors.append(f"pipeline.{key}: {exc}")
             continue

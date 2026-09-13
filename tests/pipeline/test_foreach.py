@@ -40,7 +40,7 @@ from dskit.pipeline.document import (
 )
 from dskit.pipeline.driver import run_document
 from dskit.pipeline.io import load_config
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, resolve_uses
+from dskit.pipeline.node import DEFAULT_NODE_KINDS, _resolve_uses_ordinary as resolve_uses
 from dskit.pipeline.planner import plan
 
 ASOF = "2026-01-01"

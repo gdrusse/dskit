@@ -45,7 +45,7 @@ from dskit.pipeline.base import (
     import_ref,
     is_class_ref,
 )
-from dskit.pipeline.document import MODES, ROLES
+from dskit.pipeline.document import MODES, ROLES, PipelineDocument
 
 __all__ = [
     "DEFAULT_NODE_KINDS",
@@ -1236,7 +1236,7 @@ def register_node_kind(name, cls, *, owned=False) -> None:
     DEFAULT_NODE_KINDS.register(name, cls, owned=owned)
 
 
-def resolve_uses(uses, registry=None) -> ResolvedUse:
+def _resolve_uses_ordinary(uses, registry=None) -> ResolvedUse:
     """Turn one ``uses`` reference into a Node subclass (IMPORT, §9 step 2).
 
     A registered kind name is looked up in ``registry`` (default
@@ -1254,3 +1254,19 @@ def resolve_uses(uses, registry=None) -> ResolvedUse:
         return ResolvedUse(cls=cls, owned=False, ref=uses)
     cls, owned = registry.get(uses)
     return ResolvedUse(cls=cls, owned=owned, ref=uses)
+
+def resolve_uses(document, uses=None, registry=None) -> ResolvedUse:
+    """Resolve a use only after the caller supplies an ordinary document."""
+    if not isinstance(document, PipelineDocument):
+        raise ValueError(
+            "resolve_uses now requires a PipelineDocument first; use an "
+            "ordinary-document facade instead of the retired bare resolver"
+        )
+    if document.execution_backtest is not None:
+        raise ConfigError(
+            [
+                "execution_backtest documents require the external broker; "
+                "public ordinary-pipeline entry points refuse them"
+            ]
+        )
+    return _resolve_uses_ordinary(uses, registry)

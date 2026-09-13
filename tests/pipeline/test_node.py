@@ -11,7 +11,8 @@ from dskit.pipeline.node import (
     TrainableNode,
     check_int_param,
     node_class_errors,
-    resolve_uses,
+    _resolve_uses_ordinary as resolve_uses,
+    resolve_uses as public_resolve_uses,
 )
 
 
@@ -439,9 +440,9 @@ def test_public_resolver_requires_an_ordinary_document_before_import(tmp_path, m
         },
     })
     with pytest.raises(ConfigError, match="external broker"):
-        resolve_uses(document, "resolver_poison:Poison")
+        public_resolve_uses(document, "resolver_poison:Poison")
     assert not marker.exists()
     reg = NodeKindRegistry()
     reg.register("minimal", MinimalNode)
     with pytest.raises(ValueError, match="PipelineDocument first"):
-        resolve_uses("minimal", reg)
+        public_resolve_uses("minimal", reg)

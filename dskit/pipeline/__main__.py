@@ -34,7 +34,7 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   so a fanned-out document counts its instances.
 
 ``--adapter MODULE`` (repeatable) applies to all three: it imports the
-named module BEFORE the document is read, which is how a document that
+named module after an ordinary document is captured, which is how a document that
 names registered adapter kinds (``<venue>-kelly-mio``) resolves them.
 Documents referencing components by class path
 (``yourproject.nodes:KellyMIOSize`` — a CHILD package, ADR-0032) import
