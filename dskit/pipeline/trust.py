@@ -671,13 +671,20 @@ class _Frozen:
 class _Captured:
     """CAPTURED token bound to one consumer run. Not exported."""
 
-    __slots__ = ("published", "frozen", "port", "session")
+    __slots__ = ("published", "frozen", "port", "session", "_locked")
 
     def __init__(self, published, frozen, port, session):
-        self.published = published
-        self.frozen = frozen
-        self.port = port
-        self.session = session
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "published", published)
+        object.__setattr__(self, "frozen", frozen)
+        object.__setattr__(self, "port", dict(port))
+        object.__setattr__(self, "session", session)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise AttributeError("CAPTURED token is frozen")
+        object.__setattr__(self, name, value)
 
 
 class _DevelopmentBroker(LifecycleAuthority):
@@ -708,6 +715,9 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._released = set()
         self._captured_streams = {}
         self._session_streams = {}
+        self._publish_sealed = {}
+        self._freeze_published = {}
+        self._capture_bind = {}
 
     def start_producer_session(
         self,
@@ -892,6 +902,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         }
         published = _Published(sealed, descriptor)
         self._remember_published(published)
+        self._publish_sealed[id(published)] = sealed
         self._append_receipt(
             prepared,
             "PUBLISHED",
@@ -950,7 +961,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             "consumer_input": consumer_input,
             "purpose": purpose,
         }
-        return _Frozen(
+        frozen = _Frozen(
             source=source,
             source_sha256=source_sha256,
             published=published,
@@ -960,6 +971,8 @@ class _DevelopmentBroker(LifecycleAuthority):
             document_sha256=source_sha256,
             port=dict(port),
         )
+        self._freeze_published[id(frozen)] = published
+        return frozen
 
     def derive_consumer_port(self, frozen):
         frozen = self._require_frozen(frozen)
@@ -986,26 +999,27 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not isinstance(published, _Published):
             raise ValueError("PUBLISHED capture is required")
         frozen = self._require_frozen(frozen)
-        if frozen.published is not published:
+        if self._freeze_published.get(id(frozen)) is not published:
             raise ValueError("document port does not match published root")
         expected = self.derive_consumer_port(frozen)
         if port != expected:
             raise ValueError("document port mismatch")
-        producer_run = published._sealed.prepared.producer["run_identity"]
-        session_run = published._sealed.prepared.session_run_identity
+        sealed = self._sealed_for(published)
+        producer_run = sealed.prepared.producer["run_identity"]
+        session_run = sealed.prepared.session_run_identity
         if consumer_run_identity in {producer_run, session_run}:
             raise ValueError("consumer run must be distinct from producer session")
         for session in self._sessions.values():
             if session._kind == "producer" and not session._ended:
                 raise ValueError("producer session must end before capture")
-        stream_id = published._sealed.prepared.stream_id
+        stream_id = sealed.prepared.stream_id
         self._reload_stream(stream_id)
         self._require_head(stream_id, "PUBLISHED")
         session = LaunchSession(
             _MAKE,
             "consumer",
             consumer_run_identity,
-            published._sealed.prepared.producer.get("document_sha256"),
+            sealed.prepared.producer.get("document_sha256"),
             {
                 "process_measurement_sha256": process_measurement_sha256,
                 "runtime_sha256": runtime_sha256,
@@ -1016,7 +1030,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._session_events.append(("start", consumer_run_identity, id(session)))
         captured = _Captured(published, frozen, dict(expected), session)
         self._append_receipt(
-            published._sealed.prepared,
+            sealed.prepared,
             "CAPTURED",
             session,
             transition_nonce,
@@ -1024,29 +1038,32 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         self._captured_streams[id(captured)] = stream_id
         self._session_streams[id(session)] = stream_id
+        self._capture_bind[id(captured)] = (published, frozen, session, stream_id)
         return captured, session
 
     def open_capture(self, session, captured):
         if not isinstance(captured, _Captured):
             raise ValueError("CAPTURED token is required")
         self._require_session(session, kind="consumer", allow_open=True)
-        if captured.session is not session:
+        bind = self._capture_bind.get(id(captured))
+        if bind is None:
+            raise ValueError("CAPTURED token is required")
+        published, frozen, bound_session, stream_id = bind
+        if bound_session is not session:
             raise ValueError("capture is bound to a different consumer session")
-        published = captured.published
+        sealed = self._sealed_for(published)
         snapshot = self._provider.describe(
-            published._sealed.prepared.root["root_ref"],
-            published._sealed.prepared.root["snapshot_version"],
+            sealed.prepared.root["root_ref"],
+            sealed.prepared.root["snapshot_version"],
         )
         handles = {}
         retained = {}
-        expected_manifest = self._sealed_member_manifest(
-            published._sealed.prepared.stream_id
-        )
-        if published._sealed._member_manifest_sha256 != expected_manifest:
+        expected_manifest = self._sealed_member_manifest(stream_id)
+        if sealed._member_manifest_sha256 != expected_manifest:
             raise ValueError("member digest mutation after seal")
-        if self._manifest_digest(published._sealed._digests) != expected_manifest:
+        if self._manifest_digest(sealed._digests) != expected_manifest:
             raise ValueError("member digest mutation after seal")
-        for declared in published._sealed._digests:
+        for declared in sealed._digests:
             path = declared["relative_path"]
             raw = self._provider.open_member(snapshot, path)
             if _digest(raw) != declared["sha256"] or len(raw) != declared["bytes"]:
@@ -1058,7 +1075,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             handles,
             published,
             dict(captured.port),
-            captured.frozen,
+            frozen,
             session,
             retained,
         )
@@ -1082,10 +1099,13 @@ class _DevelopmentBroker(LifecycleAuthority):
         if consumer_node != frozen.consumer_node:
             raise ValueError("consumer node mismatch")
         published = verified._published
-        output_path = published._sealed.prepared.output_member
+        if self._freeze_published.get(id(frozen)) is not published:
+            raise ValueError("plan document does not match captured freeze")
+        sealed = self._sealed_for(published)
+        output_path = sealed.prepared.output_member
         parsed, _canonical = _load_canonical_json(verified._retained[output_path])
         declared = {
-            item["relative_path"]: item for item in published._sealed._digests
+            item["relative_path"]: item for item in sealed._digests
         }[output_path]
         expected_port = dict(verified._port)
         artifact = CapturedJsonArtifact(
@@ -1096,7 +1116,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                     "media_type": declared["media_type"],
                     "sha256": declared["sha256"],
                     "bytes": declared["bytes"],
-                    "purpose": published._sealed.prepared.purpose,
+                    "purpose": sealed.prepared.purpose,
                 }
             ),
         )
@@ -1105,14 +1125,14 @@ class _DevelopmentBroker(LifecycleAuthority):
             artifact,
             MappingProxyType({"consumer_port": expected_port}),
         )
-        stream_id = published._sealed.prepared.stream_id
+        stream_id = sealed.prepared.stream_id
         self._reload_stream(stream_id)
 
         def _on_require(input_name):
             self._reload_stream(stream_id)
             self._require_head(stream_id, "CAPTURED")
             self._append_receipt(
-                published._sealed.prepared,
+                sealed.prepared,
                 "CONSUMED",
                 session,
                 transition_nonce,
@@ -1140,7 +1160,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         return CapturedRelease(_MAKE, stream_id)
 
     def _receipt_audit(self, published):
-        stream_id = published._sealed.prepared.stream_id
+        stream_id = self._sealed_for(published).prepared.stream_id
         return [dict(row) for row in self._streams[stream_id]]
 
     def _receipt_digests(self, published):
@@ -1206,6 +1226,14 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not isinstance(frozen, _Frozen):
             raise ValueError("frozen consumer document is required")
         return frozen
+
+    def _sealed_for(self, published):
+        if not isinstance(published, _Published):
+            raise ValueError("PUBLISHED token is required")
+        sealed = self._publish_sealed.get(id(published))
+        if sealed is None:
+            raise ValueError("PUBLISHED token is required")
+        return sealed
 
     def _require_head(self, stream_id, event):
         rows = self._streams.get(stream_id) or []
