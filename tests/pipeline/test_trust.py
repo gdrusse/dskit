@@ -1044,10 +1044,10 @@ def test_publication_receipt_digest_binds_later_receipts():
     bindings.require("bundle")
     receipts = broker._receipt_audit(published)
     field = receipts[2]["publication_receipt_sha256"]
-    core = {
+    unsigned = {
         key: value
         for key, value in receipts[2].items()
-        if key != "publication_receipt_sha256"
+        if key not in {"signature", "publication_receipt_sha256"}
     }
     weak = hashlib.sha256(
         _json_bytes(
@@ -1058,10 +1058,16 @@ def test_publication_receipt_digest_binds_later_receipts():
             }
         )
     ).hexdigest()
+    signed = {
+        key: value
+        for key, value in receipts[2].items()
+        if key != "signature"
+    }
 
     assert field
     assert field != weak
-    assert field == hashlib.sha256(_json_bytes(core)).hexdigest()
+    assert "publication_receipt_sha256" in signed
+    assert field == hashlib.sha256(_json_bytes(unsigned)).hexdigest()
     assert receipts[3]["publication_receipt_sha256"] == field
     assert receipts[4]["publication_receipt_sha256"] == field
 
@@ -1222,4 +1228,155 @@ def test_bindings_and_release_are_bound_to_the_capture_session():
     assert release_a._stream_id == stream_a
     assert release_b._stream_id == stream_b
     assert stream_a != stream_b
+
+
+def test_sealed_digest_oracle_mutation_cannot_publish_hostile_members():
+    trust = _trust()
+    storage = {}
+    broker = trust._development_broker(
+        snapshot_storage=storage,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, prepared, members = _produce(broker)
+    sealed = broker.seal(
+        producer_session,
+        prepared,
+        transition_nonce="nonce-sealed",
+    )
+    original_bundle = bytes(members[1]["bytes"])
+    hostile = _json_bytes({"rows": [{"id": "PWNED"}]})
+    mutated = False
+    try:
+        sealed.digests[1]["relative_path"] = "../escape.json"
+        sealed.digests[1]["sha256"] = hashlib.sha256(hostile).hexdigest()
+        sealed.digests[1]["bytes"] = len(hostile)
+        mutated = True
+    except (TypeError, ValueError, AttributeError):
+        pass
+    members[1]["bytes"][:] = hostile
+    if mutated:
+        with pytest.raises((TypeError, ValueError, AttributeError)):
+            broker.publish(
+                producer_session,
+                sealed,
+                transition_nonce="nonce-published",
+            )
+        assert "../escape.json" not in {key[2] for key in storage}
+    members[1]["bytes"][:] = original_bundle
+    published = broker.publish(
+        producer_session,
+        sealed,
+        transition_nonce="nonce-published",
+    )
+    paths = {key[2] for key in storage}
+
+    assert "../escape.json" not in paths
+    assert paths == {"config.json", "artifacts/bundle.json"}
+    assert broker.descriptor(published, purpose="synthetic")["root_ref"] == _ROOT["root_ref"]
+
+
+def test_duplicate_publish_nonce_does_not_write_members_or_block_retry():
+    trust = _trust()
+    storage = {}
+    broker = trust._development_broker(
+        snapshot_storage=storage,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, prepared, _values = _produce(broker)
+    sealed = broker.seal(
+        producer_session,
+        prepared,
+        transition_nonce="nonce-sealed",
+    )
+
+    with pytest.raises(ValueError, match="nonce"):
+        broker.publish(
+            producer_session,
+            sealed,
+            transition_nonce="nonce-sealed",
+        )
+    assert storage == {}
+    published = broker.publish(
+        producer_session,
+        sealed,
+        transition_nonce="nonce-published",
+    )
+    paths = {key[2] for key in storage}
+
+    assert paths == {"config.json", "artifacts/bundle.json"}
+    assert broker.descriptor(published, purpose="synthetic")["root_ref"] == _ROOT["root_ref"]
+
+
+def test_publication_receipt_identity_is_hmac_bound_and_required_on_recover():
+    trust = _trust()
+    receipt_store = {}
+    broker = trust._development_broker(
+        receipt_store=receipt_store,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    _document, frozen = _freeze(broker, published)
+    stream_id = broker._receipt_audit(published)[0]["stream_id"]
+    original = tuple(receipt_store[stream_id])
+    published_receipt = json.loads(original[2].decode("ascii"))
+    field = published_receipt["publication_receipt_sha256"]
+    unsigned = {
+        key: value
+        for key, value in published_receipt.items()
+        if key not in {"signature", "publication_receipt_sha256"}
+    }
+    signed = {
+        key: value
+        for key, value in published_receipt.items()
+        if key != "signature"
+    }
+
+    stripped = dict(published_receipt)
+    del stripped["publication_receipt_sha256"]
+    receipt_store[stream_id] = original[:2] + (_json_bytes(stripped),) + original[3:]
+    with pytest.raises(ValueError, match="publication|identity|signature|store"):
+        _capture(broker, published, frozen)
+
+    tampered = dict(published_receipt)
+    tampered["publication_receipt_sha256"] = "0" * 64
+    receipt_store[stream_id] = original[:2] + (_json_bytes(tampered),) + original[3:]
+    with pytest.raises(ValueError, match="publication|identity|signature|store"):
+        _capture(broker, published, frozen)
+
+    receipt_store[stream_id] = original
+    captured, session = _capture(broker, published, frozen)
+    verified = broker.open_capture(session, captured)
+    bindings = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    bindings.require("bundle")
+    receipts = broker._receipt_audit(published)
+
+    assert "publication_receipt_sha256" in signed
+    assert field == hashlib.sha256(_json_bytes(unsigned)).hexdigest()
+    assert receipts[3]["publication_receipt_sha256"] == field
+    assert receipts[4]["publication_receipt_sha256"] == field
+    assert receipts[3]["previous_receipt_sha256"] == hashlib.sha256(original[2]).hexdigest()
+
+
+def test_deleted_receipt_store_key_refuses_capture_of_in_memory_published():
+    trust = _trust()
+    receipt_store = {}
+    broker = trust._development_broker(
+        receipt_store=receipt_store,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    _document, frozen = _freeze(broker, published)
+    stream_id = broker._receipt_audit(published)[0]["stream_id"]
+    del receipt_store[stream_id]
+
+    with pytest.raises(ValueError, match="PUBLISHED|store|predecessor|sequence"):
+        _capture(broker, published, frozen)
 
