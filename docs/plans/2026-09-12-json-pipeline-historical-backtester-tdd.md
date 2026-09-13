@@ -1116,3 +1116,35 @@ I2 integration `tests/production/test_replay_v2.py::test_i2_verifier_rejects_reo
 For every row Sol first makes exactly that named assertion RED in its listed minimal
 path, implements only its lane-owned path, records the literal focused command/output
 as GREEN, then Terra solely reviews/corrects. No full suite or real execution follows.
+
+## Final lane and manifest correction
+
+There are exactly three worktrees: model-release, forecast-capital, and replay-ops.
+Forecast-capital owns F3/F4/F5a/F5b/B0--B3/C1, including new
+`dskit/production/capture.py`, `trust.py`, `captured_bindings.py`, and
+`tests/production/test_capture_lifecycle.py`; replay-ops owns C0/R1--R5, including
+existing `dskit/production/replay.py`, `serve_root.py`, `loop.py`, `report.py`,
+`__main__.py`, `tests/production/test_state.py` (C0 only), and new
+`tests/production/test_replay_state_v2.py`, `test_replay_routes_v2.py` (R only).
+Model-release owns F1/F2/A1--A4/E1 and I1/I2. I1/I2 run after model-release merges
+the pinned forecast-capital/replay-ops commits into its named
+`model-release-integration` checkout under the model-release lane, not a fourth lane;
+they own only new `tests/integration/test_historical_json_e2e.py` and new
+`children/intraday_equities/configs/historical_json_e2e.json`.
+
+Literal focused commands use `/mnt/c/Users/russe/.codex/visualizations/2026/09/11/01a092b4-cc7b-7083-9bfa-8353bcba056e/dskit-round5-worktrees/<lane>`: F1
+`.../model-release && pytest -q tests/pipeline/test_document.py::test_execution_block_rejects_user_stages`; F2
+`.../model-release && pytest -q tests/pipeline/test_driver.py::test_execution_refuses_before_adapter_import`; F3
+`.../forecast-capital && pytest -q tests/production/test_captured_event_dataset.py::test_roster_rejects_g2_without_g1`; F4
+`.../forecast-capital && pytest -q tests/production/test_capture_lifecycle.py::test_publish_required_before_capture`; F5a
+`.../forecast-capital && pytest -q tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture`; F5b
+`.../forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set`; A1--A4
+`.../model-release && pytest -q children/intraday_equities/tests/test_final_model.py`; B0--B3/C1
+`.../forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py`; E1
+`.../model-release && pytest -q tests/production/test_feed.py::test_e1_tie_swap_refuses`; C0
+`.../replay-ops && pytest -q tests/production/test_state.py::test_c0_nonancestor_account_refuses`; R1--R3
+`.../replay-ops && pytest -q tests/production/test_replay_state_v2.py`; R4/R5
+`.../replay-ops && pytest -q tests/production/test_replay_routes_v2.py`; I1/I2
+`.../model-release-integration && pytest -q tests/integration/test_historical_json_e2e.py`.
+Each row's listed implementation path is its minimal GREEN edit boundary; shared
+forecast capture file is serial F4 then F5a, while replay state is C0 before R1.
