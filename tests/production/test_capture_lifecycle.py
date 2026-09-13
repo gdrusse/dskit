@@ -307,3 +307,54 @@ def test_consumed_admission_cannot_capture_a_second_stream():
             transition_nonce="nonce-captured-b",
         )
     assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_capture_write_then_raise_still_spends_admission():
+    trust = f4._trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_a, published_a, _values = f4._publish(broker)
+    broker.end_session(producer_a)
+    published_b, _sealed_b = f4._foreign_publish(broker)
+    _document_a, frozen_a = f4._freeze(broker, published_a)
+    _document_b, frozen_b = f4._freeze(
+        broker,
+        published_b,
+        document=f4._consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    port_a = broker.derive_consumer_port(frozen_a)
+    port_b = broker.derive_consumer_port(frozen_b)
+    verifier = verifier_module.HistoricalStudyVerifier(broker)
+    verifier.bind(**_PLACEHOLDERS)
+    inner = broker.capture
+
+    def write_then_raise(*args, **kwargs):
+        result = inner(*args, **kwargs)
+        raise ValueError("capture wrote then failed")
+
+    broker.capture = write_then_raise
+    with pytest.raises(ValueError, match="capture wrote then failed"):
+        verifier.capture(
+            published_a,
+            frozen_a,
+            port_a,
+            consumer_run_identity="consumer-a",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured-a",
+        )
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    broker.capture = inner
+    with pytest.raises(ValueError, match="consumed admission"):
+        verifier.capture(
+            published_b,
+            frozen_b,
+            port_b,
+            consumer_run_identity="consumer-b",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured-b",
+        )
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
