@@ -2356,6 +2356,16 @@ def run_document(
         failures are recorded in the run dir instead of raised.
         A journal refusal after RECORD also raises (the run dir exists).
     """
+    if (
+        isinstance(document, PipelineDocument)
+        and document.execution_backtest is not None
+    ):
+        raise ConfigError(
+            [
+                "execution_backtest documents require the external broker; "
+                "public run_document is ordinary-pipeline only"
+            ]
+        )
     source = document if isinstance(document, str) else ""
     if not isinstance(document, PipelineDocument):
         document = load_document(document)
