@@ -32,7 +32,7 @@ import sys
 
 import pytest
 
-from dskit.pipeline.__main__ import main
+from dskit.pipeline.__main__ import cmd_staged, main
 
 ASOF = "2026-01-01"
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -170,6 +170,33 @@ class TestImportOrderAndRepetition:
         # attempted, or the repetition is decorative.
         assert main(["plan", NODEMAP, "--adapter", ADAPTER, "--adapter", MISSING]) == 1
         assert f"No module named '{MISSING}'" in capsys.readouterr().out
+
+
+    def test_staged_refuses_a_bytes_path_before_config_io_or_adapter_import(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        class BytesPath:
+            def __fspath__(self):
+                return b"poison-config.json"
+
+        marker = tmp_path / "adapter-imported"
+        (tmp_path / "poison_adapter.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('imported')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        opened = []
+
+        def refuse_config_open(*args, **kwargs):
+            opened.append(args)
+            raise AssertionError("bytes path reached config I/O")
+
+        monkeypatch.setattr("builtins.open", refuse_config_open)
+        assert cmd_staged(BytesPath(), ASOF, adapters=("poison_adapter",)) == 1
+        assert opened == []
+        assert not marker.exists()
+        assert "text path" in capsys.readouterr().out
 
 
 class TestBadAdapterModule:

@@ -50,6 +50,23 @@ def test_optional_object_sections_refuse_lists_as_config_errors(section):
         )
 
 
+@pytest.mark.parametrize("field", ("inputs", "params"))
+@pytest.mark.parametrize("bad", (7, [], [("port", "$source.value")]))
+@pytest.mark.parametrize("location", ("pipeline", "foreach.pipeline", "stages"))
+def test_document_parser_refuses_non_mapping_nested_specs(location, field, bad):
+    """Nested node/stage mappings must reach their ConfigError validators."""
+    spec = {"uses": "synthetic-frame", field: bad}
+    obj = {"name": "bad-nested-mapping", "pipeline": {"source": {"uses": "synthetic-frame"}}}
+    if location == "pipeline":
+        obj["pipeline"] = {"source": spec}
+    elif location == "foreach.pipeline":
+        obj["foreach"] = {"keys": ["one"], "pipeline": {"template": spec}}
+    else:
+        obj["stages"] = {"first": spec}
+    with pytest.raises(ConfigError):
+        PipelineDocument.from_obj(obj)
+
+
 # ---------------------------------------------------------------------------
 # Reference grammar
 # ---------------------------------------------------------------------------
@@ -570,4 +587,17 @@ class TestDocumentIO:
             load_document(path)
         path.write_text('{"name": "x", "pipeline": {"a": {"uses": ""}}}')
         with pytest.raises(ConfigError, match="broken.json.*pipeline.a"):
+            load_document(path)
+
+    @pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
+    def test_nonfinite_json_constants_refuse_before_a_document_is_returned(self, tmp_path, constant):
+        path = tmp_path / "nonfinite.json"
+        path.write_text(
+            '{"name":"nonfinite","pipeline":{"source":{"uses":"synthetic-frame",'
+            '"params":{"value":' + constant + '}}}}',
+            encoding="utf-8",
+        )
+        with pytest.raises(
+            ValueError, match=rf"nonfinite.json: non-finite JSON constant {constant}"
+        ):
             load_document(path)
