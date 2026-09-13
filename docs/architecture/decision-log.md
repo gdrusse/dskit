@@ -8785,3 +8785,45 @@ Migration is a newly signed root/stage publication, PIS/intent/gate/CES/PEA/BVP/
 CAS/admission/capture/final/replay-admission chain; never an in-place rewrite or
 fallback. Every failure leaves no usable handle, member, capture, node, session,
 execution root, or real-data authorization.
+
+## ADR-0126 -- F4 development-broker Major threat model is single-surface
+
+**Status:** accepted (2026-09-13; owner reply "shrink" in the F4
+orchestration thread). Docs-only. Authorizes no new implementation, no
+`calibration.py`, no paper/production, and no F5a. Does not reset
+Correction13 GREEN `e4c3a2a859250f771f6164c5ca0d3d5ee2a0d60b`.
+
+**Context.** F4 synthetic TDD of `_DevelopmentBroker` closed single-surface
+CAS moves and signed-identity forgeries (R29–R41). Review13 proved combined
+intern HMAC mint plus handle setattr / broker-private map rewrites (R42–R46).
+A holder of the development broker can always rewrite every private field;
+another intern/HMAC/watermark layer does not change that. ADR-0123 still
+requires a real LifecycleAuthority to write only an OS-owned WORM store.
+`_DevelopmentBroker` remains `deployment_eligible=false`. This ADR does not
+shrink the OS-owned broker.
+
+**Decision.** F4 Major against `_DevelopmentBroker` is a **single surface**
+that moves CAS or forges signed CONSUMED/CAPTURED identity:
+
+- public API / opaque-handle contract
+- one intern map write (unsigned dual-intern, tuple replace, or HMAC mint of
+  that map **alone**)
+- one handle poke (`object.__setattr__` or in-place dict) **without** also
+  minting intern
+- the receipt-store object the broker exposes
+  (`broker._receipt_store.__setitem__` truncation or graft)
+- signed-receipt recover checks (sequence, predecessor, signature,
+  `stream_id` mismatch)
+
+Out of scope for Major (deferred, not a CAS defect under this ADR): combining
+intern HMAC mint with a second poke so intern and handle agree; clearing or
+replacing `_consumed_streams` / `_receipt_high` / `_receipt_len` together with
+backing `_data` truncation; rewriting in-memory `_streams` plus intern mint;
+forging receipts with development `_DEV_KEY`; any N-internal combination a
+development-broker holder can always perform.
+
+R29–R41 stay closed. R42–R46 are deferred under this model.
+
+**Consequences.** F4 reviews hunt in-scope single-surface Majors. Re-proven
+R42–R46 are deferred citing this ADR, not Major. F4 may ReviewExit at
+`deployment_eligible: false`. F5a does not start until that exit exists.
