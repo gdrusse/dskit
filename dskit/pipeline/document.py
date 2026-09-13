@@ -170,6 +170,11 @@ _KIND_OK = r"^[a-z][a-z0-9_-]*$"
 _NAME_OK = r"^[a-z0-9][a-z0-9._-]*$"
 _SEGMENT_OK = r"^[A-Za-z_][A-Za-z0-9_]*$"
 
+def _copy_mapping_or_raw(value):
+    """Copy a JSON object, leaving invalid shapes for validation."""
+    return dict(value) if isinstance(value, dict) else value
+
+
 PREV_KEY = "$prev"
 
 #: The ``foreach`` fan-out token (ADR-0039 rule 3). A template ``params``
@@ -584,8 +589,8 @@ class NodeSpec:
         )
         return cls(
             uses=obj.get("uses", ""),
-            inputs=dict(obj.get("inputs", {})),
-            params=dict(obj.get("params", {})),
+            inputs=_copy_mapping_or_raw(obj.get("inputs", {})),
+            params=_copy_mapping_or_raw(obj.get("params", {})),
             every=obj.get("every", "once"),
             mode=obj.get("mode", None),
             artifact=obj.get("artifact", ""),
@@ -770,8 +775,8 @@ class StageSpec:
         _reject_unknown(obj, ("uses", "inputs", "params", "notes"), "stage")
         return cls(
             uses=obj.get("uses", ""),
-            inputs=dict(obj.get("inputs", {})),
-            params=dict(obj.get("params", {})),
+            inputs=_copy_mapping_or_raw(obj.get("inputs", {})),
+            params=_copy_mapping_or_raw(obj.get("params", {})),
             notes=obj.get("notes", ""),
         )
 
@@ -2291,6 +2296,21 @@ class PipelineDocument:
 # ---------------------------------------------------------------------------
 
 
+def _load_strict_json(path):
+    """Read JSON once, refusing non-finite constants with its path."""
+
+    def _refuse_nonfinite_json_constant(constant):
+        raise ValueError(
+            f"{path}: non-finite JSON constant {constant} is not valid JSON"
+        )
+
+    with open(path, encoding="utf-8") as fh:
+        try:
+            return json.load(fh, parse_constant=_refuse_nonfinite_json_constant)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+
+
 def load_document(path) -> PipelineDocument:
     """Read and validate one node-map document (LOAD, spec §9 step 1).
 
@@ -2302,11 +2322,7 @@ def load_document(path) -> PipelineDocument:
     OSError
         If the file cannot be read.
     """
-    with open(path, encoding="utf-8") as fh:
-        try:
-            doc = json.load(fh)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+    doc = _load_strict_json(path)
     if not isinstance(doc, dict):
         raise ConfigError([f"{path}: a document must be a JSON object, got {doc!r}"])
     try:

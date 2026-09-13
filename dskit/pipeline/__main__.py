@@ -217,17 +217,10 @@ def _raw_node_map_problems(obj):
 
 def load_and_preflight_public_document(path):
     """Read once, classify, and preflight one public pipeline config."""
-    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.document import PipelineDocument, _load_strict_json
     from dskit.pipeline.planner import refuse_execution_backtest
 
-    def refuse_nonfinite_json_constant(constant):
-        raise ValueError(f"{path}: non-finite JSON constant {constant} is not valid JSON")
-
-    with open(path, encoding="utf-8") as fh:
-        try:
-            obj = json.load(fh, parse_constant=refuse_nonfinite_json_constant)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+    obj = _load_strict_json(path)
     if not isinstance(obj, dict):
         raise ConfigError([f"{path}: a config must be a JSON object, got {obj!r}"])
     if not any(key in obj for key in ("pipeline", "foreach", "execution_backtest")):
@@ -483,7 +476,17 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
 def cmd_staged(path, asof, adapters=()) -> int:
     """Execute or resume a document's journal-backed study stages."""
     try:
-        source_path = os.path.realpath(os.path.abspath(os.fspath(path)))
+        try:
+            source = os.fspath(path)
+        except TypeError as exc:
+            raise ValueError(
+                f"staged config path must be a text path, got {path!r}"
+            ) from exc
+        if not isinstance(source, str):
+            raise ValueError(
+                f"staged config path must be a text path, got {source!r}"
+            )
+        source_path = os.path.realpath(os.path.abspath(source))
         document, _obj = load_and_preflight_public_document(source_path)
         document = _require_public_document(path, document)
         _import_adapters(adapters)
