@@ -633,6 +633,11 @@ class SubmissionVerifier:
 _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 
 
+def _plan_artifact_bound(value):
+    """True when ``value`` is a real bound artifact, not a missing/falsy stand-in."""
+    return bool(value)
+
+
 class HistoricalStudyVerifier:
     """Refuse CAPTURED until ADR-0125 private plan and admission are bound.
 
@@ -677,7 +682,7 @@ class HistoricalStudyVerifier:
         if unknown:
             raise ValueError("unknown plan artifact")
         for name, value in artifacts.items():
-            if value is None:
+            if not _plan_artifact_bound(value):
                 raise ValueError("plan artifact is required")
             self._bound[name] = value
 
@@ -707,7 +712,11 @@ class HistoricalStudyVerifier:
             When ScopeIntent, CES, PEA, BVP, CAS, or consumed admission
             is not bound.
         """
-        missing = [name for name in _REQUIRED_PLAN if name not in self._bound]
+        missing = [
+            name
+            for name in _REQUIRED_PLAN
+            if not _plan_artifact_bound(self._bound.get(name))
+        ]
         if missing:
             raise ValueError(
                 "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, CAS, "
