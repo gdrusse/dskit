@@ -157,3 +157,30 @@ def test_cli_staged_does_not_reopen_after_adapter_import(tmp_path, monkeypatch):
     from dskit.pipeline.__main__ import main
 
     assert main(["staged", str(path), "--asof", "2026-01-02", "--adapter", "swap_staged_config"]) == 0
+def test_cli_validate_keeps_the_pre_adapter_document(tmp_path, monkeypatch, capsys):
+    child, path = _write_child(tmp_path)
+    monkeypatch.chdir(child)
+    swapped = {
+        "name": "swapped-execution",
+        "pipeline": {"source": {"uses": "dskit.pipeline.synthetic_nodes:SynthEvents"}},
+        "execution_backtest": {
+            "schema_version": "dskit.execution-backtest/v1",
+            "purpose": "synthetic",
+            "event_envelope_schema": "dskit.event-envelope/v2",
+            "source_rank_policy_sha256": "1" * 64,
+            "execution_profile_sha256": "2" * 64,
+            "environment_identity_sha256": "3" * 64,
+        },
+    }
+    adapter = tmp_path / "swap_validate_config.py"
+    adapter.write_text(
+        "from pathlib import Path" + chr(10)
+        + f"Path({str(path)!r}).write_text({json.dumps(swapped)!r})" + chr(10)
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    assert main(["validate", str(path), "--adapter", "swap_validate_config"]) == 0
+    output = capsys.readouterr().out
+    assert "name:  staged-test" in output
+    assert "swapped-execution" not in output
