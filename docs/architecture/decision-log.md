@@ -7882,3 +7882,65 @@ runs only in explicit development mode with a deterministic, pinned,
 `deployment_eligible=false` synthetic cap. Bundle rows in label units (or
 without `unit`) refuse at the capital node; the assembler is the only
 sanctioned producer of gross-unit rows.
+## ADR-0122 — Proposed segmentation and auditable SB3 episode evaluation
+
+**Status:** proposed 2026-09-13; owner approval is required before the first
+failing implementation test.
+
+**Context.** `FittedTransform` already owns train-split selection, all-row
+application, JSON sidecar/load compatibility, and row-independence screening.
+The sklearn pack has supervised fit/predict/select; the SB3 pack already has
+Gymnasium `Env` subclass checking, declared environment construction,
+zip-plus-hashed-sidecar save/load, policy restore, evaluation, and close
+discipline. The previous proposal attempted to add binary fitted state, sealed
+data, artifact envelopes, source authority, a Gym contract registry, publication
+protocol, and parallel `sb3-*-v2` lifecycles. Repeated security reviews showed
+that this trusted-local protocol was expanding instead of reusing accepted seams.
+
+**Decision.** The mandatory architecture-reset checkpoint discards those proposed
+elements. No `ArtifactEnvelope`, `BinaryFittedTransform`, `SealedDataset`,
+`seal-dataset`, Gym source registry, publication protocol, or replacement SB3
+train/policy lifecycle will be implemented. Existing formats and legacy kinds
+remain unchanged.
+
+Add only two generic, tier-2 extensions described exactly in
+`docs/plans/2026-09-clustering-rl-framework.md`:
+
+1. `SklearnSegment(FittedTransform)` in the existing sklearn pack, registered
+   as `sklearn-segment`. It fits one of `KMeans`, `MiniBatchKMeans`, or `Birch`
+   only on inherited `fit_split: "train"`, persists extracted JSON-safe centers
+   and labels through the existing fitted sidecar, assigns every row by a
+   deterministic nearest-center rule, and emits `segment` plus a canonical-state
+   `segment_model_id`. Its `row_problems` is the sole per-row admission owner:
+   mapping shape, finite declared feature values, and absence of those two
+   reserved output keys. Both the direct fitted doorway and a carried
+   `ApplyTransform` second stream invoke that rule before execution. It never
+   persists a native clustering model.
+   A default-compatible `FittedTransform.sidecar_problems` hook makes load-mode
+   segment state train-only without changing other fitted subclasses.
+
+2. `Sb3EvalEpisodes(_Sb3Base)` in the existing SB3 pack, registered as
+   `sb3-eval-episodes`. It reuses the legacy sidecar/load/environment services,
+   makes no artifact-format change, and adds bounded manual Gymnasium episode
+   loops whose ordered evidence is the existing `JsonArtifact` persistence
+   seam, with defined flat numeric aggregates. Existing
+   `sb3-train`, `sb3-policy`, and `sb3-eval` remain behaviorally unchanged.
+
+Add the bounded optional extra `rl = ["gymnasium>=1.3,<1.4",
+"stable-baselines3>=2.9,<2.10"]` and include it in `all`. Dependencies remain
+lazy imports.
+
+**Consequences.** General mechanism remains in `dskit/pipeline/libs`; the
+accepted `FittedTransform` lifecycle remains tier 1. A child owns environment,
+reward, transition, orders/fills, segment meaning, and economic realism in a
+future child ADR; JSON configuration does not certify those semantics. Artifacts
+and packages are trusted-local WSL2 inputs; existing hashes detect corruption or
+drift but do not authenticate a publisher or make pickle safe. No production
+authority is added.
+
+No dependency installation, test execution, clustering study, SB3 training,
+HPO, final refit, market replay, backtest, paper trade, or lockbox use is
+authorized until owner gates in the plan are approved. Implementation is an
+owner-selected exact GLM/DeepSeek RED→minimal-GREEN pass, followed by sequential
+fresh Terra skeptic lenses; each correction restarts both and final acceptance
+requires zero Critical/Major/correctness findings.
