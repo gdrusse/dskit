@@ -220,9 +220,12 @@ def load_and_preflight_public_document(path):
     from dskit.pipeline.document import PipelineDocument
     from dskit.pipeline.planner import refuse_execution_backtest
 
+    def refuse_nonfinite_json_constant(constant):
+        raise ValueError(f"{path}: non-finite JSON constant {constant} is not valid JSON")
+
     with open(path, encoding="utf-8") as fh:
         try:
-            obj = json.load(fh)
+            obj = json.load(fh, parse_constant=refuse_nonfinite_json_constant)
         except json.JSONDecodeError as exc:
             raise ValueError(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(obj, dict):
