@@ -776,6 +776,15 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._bindings_pin = {}
         self._bindings_ports = {}
         self._session_runtime = {}
+        self._bindings_intern = {}
+        self._ports_intern = {}
+        self._session_stream_intern = {}
+        self._session_runtime_intern = {}
+        self._freeze_intern = {}
+        self._publish_stream_intern = {}
+        self._verified_intern = {}
+        self._capture_bind_intern = {}
+        self._publish_sealed_intern = {}
 
     def start_producer_session(
         self,
@@ -969,7 +978,13 @@ class _DevelopmentBroker(LifecycleAuthority):
         published = _Published(sealed, descriptor)
         self._remember_published(published)
         self._publish_sealed[id(published)] = sealed
-        self._publish_stream[id(published)] = prepared.stream_id
+        self._publish_sealed_intern[id(published)] = sealed
+        self._store_interned(
+            self._publish_stream,
+            self._publish_stream_intern,
+            id(published),
+            prepared.stream_id,
+        )
         self._append_receipt(
             prepared,
             "PUBLISHED",
@@ -1038,7 +1053,12 @@ class _DevelopmentBroker(LifecycleAuthority):
             document_sha256=source_sha256,
             port=dict(port),
         )
-        self._freeze_published[id(frozen)] = published
+        self._store_interned(
+            self._freeze_published,
+            self._freeze_intern,
+            id(frozen),
+            published,
+        )
         return frozen
 
     def derive_consumer_port(self, frozen):
@@ -1066,12 +1086,25 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not isinstance(published, _Published):
             raise ValueError("PUBLISHED capture is required")
         frozen = self._require_frozen(frozen)
-        if self._freeze_published.get(id(frozen)) is not published:
+        if (
+            self._load_interned(
+                self._freeze_published,
+                self._freeze_intern,
+                id(frozen),
+                "document port does not match published root",
+            )
+            is not published
+        ):
             raise ValueError("document port does not match published root")
         expected = self.derive_consumer_port(frozen)
         if port != expected:
             raise ValueError("document port mismatch")
-        stream_id = self._publish_stream[id(published)]
+        stream_id = self._load_interned(
+            self._publish_stream,
+            self._publish_stream_intern,
+            id(published),
+            "PUBLISHED capture is required",
+        )
         pin = self._stream_pin[stream_id]
         producer_run = pin.producer["run_identity"]
         session_run = pin.session_run_identity
@@ -1104,8 +1137,15 @@ class _DevelopmentBroker(LifecycleAuthority):
             extra={"consumer_captured_port": dict(expected)},
         )
         self._captured_streams[id(captured)] = stream_id
-        self._session_streams[id(session)] = (id(session), str(stream_id))
-        self._capture_bind[id(captured)] = (published, frozen, session, stream_id)
+        self._store_interned(
+            self._session_streams,
+            self._session_stream_intern,
+            id(session),
+            (id(session), str(stream_id)),
+        )
+        bind = (published, frozen, session, stream_id)
+        self._capture_bind[id(captured)] = bind
+        self._capture_bind_intern[id(captured)] = bind
         return captured, session
 
     def open_capture(self, session, captured):
@@ -1113,7 +1153,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("CAPTURED token is required")
         self._require_session(session, kind="consumer", allow_open=True)
         bind = self._capture_bind.get(id(captured))
-        if bind is None:
+        if bind is None or bind is not self._capture_bind_intern.get(id(captured)):
             raise ValueError("CAPTURED token is required")
         published, frozen, bound_session, stream_id = bind
         if bound_session is not session:
@@ -1147,7 +1187,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             session,
             retained,
         )
-        self._verified_pin[id(verified)] = {
+        pin = {
             "published": published,
             "frozen": frozen,
             "session": session,
@@ -1155,6 +1195,12 @@ class _DevelopmentBroker(LifecycleAuthority):
             "retained": {path: bytes(data) for path, data in retained.items()},
             "port": dict(self.derive_consumer_port(frozen)),
         }
+        self._store_interned(
+            self._verified_pin,
+            self._verified_intern,
+            id(verified),
+            pin,
+        )
         return verified
 
     def captured_bindings(
@@ -1168,9 +1214,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._require_session(session, kind="consumer", allow_open=True)
         if not isinstance(verified, VerifiedCapture):
             raise ValueError("verified capture is required")
-        pin = self._verified_pin.get(id(verified))
-        if pin is None:
-            raise ValueError("verified capture is required")
+        pin = self._load_interned(
+            self._verified_pin,
+            self._verified_intern,
+            id(verified),
+            "verified capture is required",
+        )
         if pin["session"] is not session:
             raise ValueError("consumer session mismatch")
         frozen = self._require_frozen(frozen)
@@ -1179,7 +1228,15 @@ class _DevelopmentBroker(LifecycleAuthority):
         if consumer_node != frozen.consumer_node:
             raise ValueError("consumer node mismatch")
         published = pin["published"]
-        if self._freeze_published.get(id(frozen)) is not published:
+        if (
+            self._load_interned(
+                self._freeze_published,
+                self._freeze_intern,
+                id(frozen),
+                "plan document does not match captured freeze",
+            )
+            is not published
+        ):
             raise ValueError("plan document does not match captured freeze")
         sealed = self._sealed_for(published)
         stream_id = pin["stream_id"]
@@ -1209,26 +1266,46 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         ports = {frozen.consumer_input: port}
         bindings = CapturedBindings(_MAKE, ports, self)
-        self._bindings_pin[id(bindings)] = (
+        self._store_interned(
+            self._bindings_pin,
+            self._bindings_intern,
             id(bindings),
-            str(stream_id),
-            str(transition_nonce),
-            tuple(sorted(dict(expected_port).items())),
-            id(session),
+            (
+                id(bindings),
+                str(stream_id),
+                str(transition_nonce),
+                tuple(sorted(dict(expected_port).items())),
+                id(session),
+            ),
         )
-        self._bindings_ports[id(bindings)] = (
+        self._store_interned(
+            self._bindings_ports,
+            self._ports_intern,
             id(bindings),
-            MappingProxyType(dict(ports)),
+            (
+                id(bindings),
+                MappingProxyType(dict(ports)),
+            ),
         )
         return bindings
 
     def _consume_binding(self, bindings, input_name):
-        rec = self._bindings_pin.get(id(bindings))
-        if rec is None or rec[0] != id(bindings):
+        rec = self._load_interned(
+            self._bindings_pin,
+            self._bindings_intern,
+            id(bindings),
+            "captured bindings are required",
+        )
+        if rec[0] != id(bindings):
             raise ValueError("captured bindings are required")
         _bindings_id, stream_id, nonce, port_items, session_id = rec
-        ports_rec = self._bindings_ports.get(id(bindings))
-        if ports_rec is None or ports_rec[0] != id(bindings):
+        ports_rec = self._load_interned(
+            self._bindings_ports,
+            self._ports_intern,
+            id(bindings),
+            "captured bindings are required",
+        )
+        if ports_rec[0] != id(bindings):
             raise ValueError("captured bindings are required")
         ports = ports_rec[1]
         if input_name not in ports:
@@ -1262,8 +1339,13 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._require_session(session, kind="consumer", allow_open=True)
         if id(session) in self._released:
             raise ValueError("release already replayed")
-        bound = self._session_streams.get(id(session))
-        if bound is None or bound[0] != id(session):
+        bound = self._load_interned(
+            self._session_streams,
+            self._session_stream_intern,
+            id(session),
+            "CONSUMED input is required before release",
+        )
+        if bound[0] != id(session):
             raise ValueError("CONSUMED input is required before release")
         stream_id = bound[1]
         self._reload_stream(stream_id)
@@ -1275,9 +1357,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         return CapturedRelease(_MAKE, stream_id)
 
     def _receipt_audit(self, published):
-        stream_id = self._publish_stream.get(id(published))
-        if stream_id is None:
-            raise ValueError("PUBLISHED token is required")
+        stream_id = self._load_interned(
+            self._publish_stream,
+            self._publish_stream_intern,
+            id(published),
+            "PUBLISHED token is required",
+        )
         return [dict(row) for row in self._streams[stream_id]]
 
     def _receipt_digests(self, published):
@@ -1332,16 +1417,37 @@ class _DevelopmentBroker(LifecycleAuthority):
 
     def _remember_session(self, session):
         self._sessions[id(session)] = session
-        self._session_runtime[id(session)] = (
+        self._store_interned(
+            self._session_runtime,
+            self._session_runtime_intern,
             id(session),
-            tuple(sorted(dict(session._runtime).items())),
+            (
+                id(session),
+                tuple(sorted(dict(session._runtime).items())),
+            ),
         )
 
     def _actor_runtime(self, session):
-        rec = self._session_runtime.get(id(session))
-        if rec is None or rec[0] != id(session):
+        rec = self._load_interned(
+            self._session_runtime,
+            self._session_runtime_intern,
+            id(session),
+            "launch session is required",
+        )
+        if rec[0] != id(session):
             raise ValueError("launch session is required")
         return dict(rec[1])
+
+    def _store_interned(self, table, intern, key, value):
+        table[key] = value
+        intern[key] = value
+        return value
+
+    def _load_interned(self, table, intern, key, message):
+        value = table.get(key)
+        if value is None or value is not intern.get(key):
+            raise ValueError(message)
+        return value
 
     def _require_session(self, session, kind=None, allow_open=False):
         if not isinstance(session, LaunchSession) or id(session) not in self._sessions:
@@ -1360,9 +1466,12 @@ class _DevelopmentBroker(LifecycleAuthority):
     def _sealed_for(self, published):
         if not isinstance(published, _Published):
             raise ValueError("PUBLISHED token is required")
-        sealed = self._publish_sealed.get(id(published))
-        if sealed is None:
-            raise ValueError("PUBLISHED token is required")
+        sealed = self._load_interned(
+            self._publish_sealed,
+            self._publish_sealed_intern,
+            id(published),
+            "PUBLISHED token is required",
+        )
         return sealed
 
     def _require_head(self, stream_id, event):

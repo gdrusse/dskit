@@ -2155,8 +2155,9 @@ def test_freeze_and_publish_stream_maps_cannot_capture_another_stream():
     assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
     broker._freeze_published[id(frozen_a)] = original_freeze
     sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    original_stream = broker._publish_stream_intern[id(published_a)]
     broker._publish_stream[id(published_a)] = sid_b
-    with pytest.raises(ValueError, match="document|published|root|port|stream|mismatch"):
+    with pytest.raises(ValueError, match="document|published|root|port|stream|mismatch|capture|required"):
         _capture(
             broker,
             published_a,
@@ -2164,6 +2165,7 @@ def test_freeze_and_publish_stream_maps_cannot_capture_another_stream():
             run_identity="consumer-a",
             nonce="nonce-captured-a",
         )
+    broker._publish_stream[id(published_a)] = original_stream
     assert broker._receipt_audit(published_a)[-1]["event"] == "PUBLISHED"
     assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
 
