@@ -1046,14 +1046,16 @@ the lane test paths named above; no full suite or real execution is authorized.
 ## Round-2 controlling corrections
 
 This section replaces contradictory earlier F5/I2/manifest wording. ADR-0125 order
-is strictly: derive and WORM-persist ScopeIntent; produce phase-correct PIS and the
-complete G0--G7 gate set; create bootstrap PEA, privately verify BVP/PCE, create CES
-and CAS with P(CES)==P(BVP)==P(CAS); issue ScopeAuthorization consuming that exact
-ScopeIntent, gates, and bootstrap tuple; issue StageAdmission; consume exactly one
-ActionExecutionAdmission; then per-port authorization, seal/capture, captured set,
-and distinct session. PEA never precedes ScopeIntent; capture never precedes stage/
-action admission. This construction is acyclic because ScopeIntent contains no PEA,
-gates, capture, or future output.
+is strictly: G1+G2 roots PUBLISH -> root PIS -> WORM ScopeIntent -> complete G0--G7
+gate set -> CES -> PEA (which binds CES) -> private BVP/PlannedCaptureSet (which
+binds PEA) -> byte equality P(CES)==P(BVP) -> CAS -> ScopeAuthorization consuming
+the exact ScopeIntent, gate set, and root bootstrap CES/PEA/BVP/CAS tuples ->
+StageAdmission -> consumed ActionExecutionAdmission -> per-PCE port authorization ->
+LifecycleCapturedReceipt -> CapturedAuthorizationSet.v2 -> distinct LaunchSession.
+Every cited digest therefore exists earlier. ScopeIntent precedes gates/PEA; CES
+precedes PEA; BVP follows PEA; capture never precedes Stage/Action admission. The
+construction is acyclic because ScopeIntent contains no gate, CES, PEA, capture, or
+future output.
 
 F5a and F5b replace the old generic F5 body. F5a depends F1/F2/F4 and owns new
 `dskit/production/capture.py`, `trust.py`, and `tests/production/test_capture_lifecycle.py`:
