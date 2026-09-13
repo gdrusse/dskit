@@ -259,6 +259,11 @@ def cmd_validate(path, adapters) -> int:
         0 valid, 1 refused (the reason is printed).
     """
     try:
+        _load_ordinary_document(path)
+    except ValueError as exc:
+        print(exc)
+        return 1
+    try:
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
     except (OSError, json.JSONDecodeError):
@@ -294,6 +299,19 @@ def _import_adapters(adapters) -> None:
         importlib.import_module(module)
 
 
+def _load_ordinary_document(path):
+    """Load a valid ordinary document, or preserve adapter-first errors."""
+    from dskit.pipeline.document import load_document
+    from dskit.pipeline.planner import refuse_execution_backtest
+
+    try:
+        document = load_document(path)
+    except (ValueError, OSError):
+        return None
+    refuse_execution_backtest(document)
+    return document
+
+
 def cmd_plan(path, adapters=()) -> int:
     """Print a document's resolved DAG as JSON; execute nothing.
 
@@ -314,8 +332,10 @@ def cmd_plan(path, adapters=()) -> int:
     from dskit.pipeline.stages import plan_stages
 
     try:
+        document = _load_ordinary_document(path)
         _import_adapters(adapters)
-        document = load_document(path)
+        if document is None:
+            document = load_document(path)
         resolved = (
             plan_stages(document) if document.stages is not None else plan(document)
         )
@@ -395,8 +415,9 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
     from dskit.pipeline.driver import run_walk_forward
 
     try:
+        document = _load_ordinary_document(path)
         _import_adapters(adapters)
-        result = run_walk_forward(path, asof=asof)
+        result = run_walk_forward(document if document is not None else path, asof=asof)
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1
@@ -411,8 +432,9 @@ def cmd_staged(path, asof, adapters=()) -> int:
     from dskit.pipeline.stages import run_staged
 
     try:
+        document = _load_ordinary_document(path)
         _import_adapters(adapters)
-        result = run_staged(path, asof=asof)
+        result = run_staged(document if document is not None else path, asof=asof)
     except (ImportError, ValueError, OSError) as exc:
         print(exc)
         return 1

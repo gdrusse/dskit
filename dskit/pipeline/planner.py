@@ -66,7 +66,18 @@ from dskit.pipeline.stats import CORRECTIONS
 
 _MAX_JSON_INT = 10**4096 - 1
 
-__all__ = ["Plan", "plan", "unsearchable_space_why"]
+__all__ = ["Plan", "plan", "refuse_execution_backtest", "unsearchable_space_why"]
+
+
+def refuse_execution_backtest(document):
+    """Refuse execution documents before resolving ordinary pipeline code."""
+    if document.execution_backtest is not None:
+        raise ConfigError(
+            [
+                "execution_backtest documents require the external broker; "
+                "public ordinary-pipeline entry points refuse them"
+            ]
+        )
 
 #: Roles that may carry ``mode``/``artifact`` (spec §5: trainable). The
 #: grammar's own tuple, imported — a second copy here is how a new
@@ -464,6 +475,7 @@ def plan(document, registry=None) -> Plan:
         Listing every import failure, role violation, wire-contract
         break, cycle, and plan-checkable param problem at once.
     """
+    refuse_execution_backtest(document)
     errors = []
     warnings = []
     # What RUNS, not what was written: with no `foreach` section this IS

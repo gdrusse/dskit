@@ -101,7 +101,7 @@ from dskit.pipeline.document import (
 from dskit.pipeline.env import load_env
 from dskit.pipeline.node import JsonArtifact, Node, NodeContext, atomic_write
 from dskit.pipeline.planner import unsearchable_space_why
-from dskit.pipeline.planner import plan as plan_document
+from dskit.pipeline.planner import plan as plan_document, refuse_execution_backtest
 from dskit.pipeline.runs import _escape_pipe
 
 __all__ = [
@@ -2359,13 +2359,7 @@ def run_document(
     source = document if isinstance(document, str) else ""
     if not isinstance(document, PipelineDocument):
         document = load_document(document)
-    if document.execution_backtest is not None:
-        raise ConfigError(
-            [
-                "execution_backtest documents require the external broker; "
-                "public run_document is ordinary-pipeline only"
-            ]
-        )
+    refuse_execution_backtest(document)
     the_plan = plan_document(document, registry)
     if document.clock is not None:
         raise ConfigError(
@@ -3175,6 +3169,7 @@ def run_walk_forward(document, asof=None, registry=None) -> WalkForwardRunResult
     if not isinstance(document, PipelineDocument):
         document = load_document(document)
     _walkforward_refusals(document)
+    refuse_execution_backtest(document)
     asof = _validated_asof(asof)
     spec = document.walkforward
     summary_dir = _walkforward_summary_dir(document, asof)
