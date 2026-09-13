@@ -638,31 +638,23 @@ signature. Its entries are exactly the planned-entry, port-authorization, and
 lifecycle-receipt digests sorted by planned entry; no V1/alternate resolved projection
 exists.
 
-Entries sort by their complete canonical `(consumer_port, descriptor, resolved)`
-bytes; duplicate or unsorted entries refuse, and `authorization_set_sha256` hashes
-the object with only itself omitted. An entry binds (1) that derived, unchanged
-ADR-0123 ConsumerCapturedPort, (2) the complete normalized descriptor, and (3) the
-descriptor's resolved immutable root, ordered member digests, PUBLISHED receipt,
-CAPTURED receipt, and live-authorization evidence. The planner and broker compare
-the complete sorted set and self-omitting digest exactly, never only
-ConsumerCapturedPorts. That digest is carried in PlannedRuntimeContract, bound by
-the broker permit/opaque LaunchSession, included in PipelineServeRuntime's
-`binding_digest`, and retained through R1 frozen input/artifact evidence, recovery,
-result, report, and study evidence using their existing identity/evidence slots—no
-ADR-0124 exact key is added. Substitution, ordering, and restart identity tests are
-focused F5/I1 RED cases.
+The only accepted chronology is PUBLISHED input -> phase-correct PIS -> PEA ->
+private BVP/PlannedCaptureSet (PCE) -> byte equality P(CES)==P(BVP) -> CAS ->
+Scope/StageAdmission (or FinalReplayAdmission) -> consumed execution admission ->
+per-PCE CapturedPortAuthorization and LifecycleCapturedReceipt -> signed
+CapturedAuthorizationSet.v2 -> distinct LaunchSession -> CONSUME. PEA, CES, BVP,
+PCE, and CAS are planning/admission evidence only: no member open, import, node
+construction, session, run, or CAPTURED receipt occurs before private planning and
+the consumed one-use authority. CAS is never a mutable scope or execution authority.
 
-The broker resolves each descriptor's `root_ref` + `snapshot_version` + producer
-`document_sha256`/`node`/`output` to those exact immutable values; equal consumer
-ports cannot substitute a different descriptor or capture. Descriptor `purpose`
-must equal `execution_backtest.purpose`, the `LaunchSession`/permit purpose, and the
-study purpose. Before ordinary planning it first verifies the descriptor's PUBLISHED
-root/publication receipt and broker-readable metadata; application/node data is not
-opened or consumed. From the frozen consumer document hash it then derives the exact
-ConsumerCapturedPort, records the port-specific CAPTURED receipt, completes the
-authorization set, and issues only the later distinct consumer LaunchSession. It
-refuses this complete equality/admission sequence before planning or ServeRoot/root
-creation.
+The broker resolves the frozen normal consumer document's complete descriptor to the
+already PUBLISHED immutable root and flat PIS projection, privately plans the exact
+typed capture set, and rejects a substituted, extra, missing, unordered, or unequal
+PCE at every equality boundary. Only the complete V2 captured set binds the
+nonserializable LaunchSession and runtime binding; its digest enters V2 header/frozen
+plan, recovery, terminal projection/result, report, and study evidence. Focused F5/I1
+RED tests cover plan-before-capture, authority/run/session linkage, equality sets,
+publication/descriptor/receipt substitution, and restart identity.
 
 For `ReplayTapeDataCapture`, exactly named `raw_event_dataset` and `source_roster`
 top-level descriptors are both mandatory and are separate CapturedAuthorizationSet
