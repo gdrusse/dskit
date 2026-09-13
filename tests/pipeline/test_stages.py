@@ -104,6 +104,44 @@ def test_cli_staged_keeps_the_original_path(tmp_path, monkeypatch):
     assert main(["staged", str(path), "--asof", "2026-01-02"]) == 0
 
 
+def test_cli_staged_captures_relative_source_before_adapter_changes_cwd(
+    tmp_path, monkeypatch
+):
+    child_a, path = _write_child(tmp_path)
+    child_b = tmp_path / "child-b"
+    (child_b / "configs").mkdir(parents=True)
+    (child_b / "pyproject.toml").write_text("[project]\nname='test-b'\n")
+    init_journal(str(child_b))
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child_a)
+    payload = _document(child_a / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path.write_text(json.dumps(payload))
+    adapter = tmp_path / "move_staged_cwd.py"
+    adapter.write_text("import os\nos.chdir(" + repr(str(child_b)) + ")\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.journal import load_root
+    from dskit.journal.store import read_actions
+    from dskit.pipeline.__main__ import main
+
+    assert main(
+        [
+            "staged",
+            "configs/run.json",
+            "--asof",
+            "2026-01-02",
+            "--adapter",
+            "move_staged_cwd",
+        ]
+    ) == 0
+    assert [row.inputs for row in read_actions(load_root(str(child_a)))] == [
+        str(path),
+        str(path),
+    ]
+    assert read_actions(load_root(str(child_b))) == []
+
+
 def test_orphaned_stage_artifact_is_refused(tmp_path, monkeypatch):
     child, path = _write_child(tmp_path)
     monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
