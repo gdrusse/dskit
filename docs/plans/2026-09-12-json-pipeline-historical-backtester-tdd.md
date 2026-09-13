@@ -1042,3 +1042,62 @@ C0/C1 state::nonancestor; R1 replay::bootstrap-reservation; R2 replay::projectio
 R3 replay::atomic-journal-cutpoints; R4 loop::hold-authority; R5 child-replay::direct-refusal;
 I1/I2 replay::synthetic-json-e2e. These are exact focused pytest node-id suffixes in
 the lane test paths named above; no full suite or real execution is authorized.
+
+## Round-2 controlling corrections
+
+This section replaces contradictory earlier F5/I2/manifest wording. ADR-0125 order
+is strictly: derive and WORM-persist ScopeIntent; produce phase-correct PIS and the
+complete G0--G7 gate set; create bootstrap PEA, privately verify BVP/PCE, create CES
+and CAS with P(CES)==P(BVP)==P(CAS); issue ScopeAuthorization consuming that exact
+ScopeIntent, gates, and bootstrap tuple; issue StageAdmission; consume exactly one
+ActionExecutionAdmission; then per-port authorization, seal/capture, captured set,
+and distinct session. PEA never precedes ScopeIntent; capture never precedes stage/
+action admission. This construction is acyclic because ScopeIntent contains no PEA,
+gates, capture, or future output.
+
+F5a and F5b replace the old generic F5 body. F5a depends F1/F2/F4 and owns new
+`dskit/production/capture.py`, `trust.py`, and `tests/production/test_capture_lifecycle.py`:
+RED `test_private_plan_precedes_capture` asserts no capture/member open/session before
+ScopeIntent/PEA/BVP/CES/CAS/consumed admission; GREEN emits verified V2 captured set.
+Run `wsl.exe -e bash -lc 'cd forecast-capital && pytest -q tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture'`.
+F5b depends F3/F5a and owns new `dskit/production/captured_bindings.py` plus
+`children/intraday_equities/tests/test_forecast_bundle.py`: RED
+`test_forecast_consumer_requires_v2_captured_set`; GREEN injects only the bound port.
+Run `wsl.exe -e bash -lc 'cd forecast-capital && pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set'`.
+
+Route ownership is replay-ops: `dskit/production/replay.py`, `serve_root.py`,
+`loop.py`, `report.py`, `dskit/production/report.py`, and
+`dskit/production/__main__.py`, with new `tests/production/test_replay_v2.py` and
+`test_replay_storage_v2.py`. C0 alone owns `tests/production/test_state.py`; replay
+uses `test_replay_storage_v2.py`, eliminating concurrent ownership. I1/I2 may only
+consolidate already-pinned tests after lane merges.
+
+The exhaustive TDD manifest has unique assertion/node/path per slice (each command is
+`wsl.exe -e bash -lc 'cd <listed lane> && pytest -q <listed node>'`, with its literal
+lane/node below): F1 model-release `tests/pipeline/test_document.py::test_execution_block_rejects_user_stages`;
+F2 model-release `tests/pipeline/test_driver.py::test_execution_refuses_before_adapter_import`;
+F3 forecast-capital `tests/production/test_captured_event_dataset.py::test_roster_rejects_g2_without_g1`;
+F4 replay-ops `tests/production/test_capture_lifecycle.py::test_publish_required_before_capture`;
+F5a forecast-capital `tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture`;
+F5b forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set`;
+A1 model-release `children/intraday_equities/tests/test_final_model.py::test_a1_split_requires_causal_identity`;
+A2 model-release `children/intraday_equities/tests/test_final_model.py::test_a2_search_rejects_seed_substitution`;
+A3 model-release `children/intraday_equities/tests/test_final_model.py::test_a3_refit_rejects_release_substitution`;
+A4 model-release `children/intraday_equities/tests/test_final_model.py::test_a4_release_requires_signed_manifest`;
+B0 forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_b0_calibration_requires_fit_identity`;
+B1 forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_b1_confirmation_requires_causal_pairs`;
+B2 forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_b2_scenarios_reject_missingness_swap`;
+B3 forecast-capital `children/intraday_equities/tests/test_forecast_bundle.py::test_b3_cap_requires_confirmation`;
+E1 model-release `tests/production/test_feed.py::test_e1_tie_swap_refuses`;
+C0 forecast-capital `tests/production/test_state.py::test_c0_nonancestor_account_refuses`;
+C1 forecast-capital `tests/production/test_capital.py::test_c1_mio_requires_verified_inputs`;
+R1 replay-ops `tests/production/test_replay_v2.py::test_r1_bootstrap_reservation_precedes_frozen_plan`;
+R2 replay-ops `tests/production/test_replay_v2.py::test_r2_receipts_precede_projection`;
+R3 replay-ops `tests/production/test_replay_storage_v2.py::test_r3_all_fsync_rename_cutpoints`;
+R4 replay-ops `tests/production/test_loop.py::test_r4_hold_requires_registered_authority`;
+R5 replay-ops `children/intraday_equities/tests/test_replay.py::test_r5_direct_replay_route_refuses`;
+I1 integration `tests/production/test_replay_v2.py::test_i1_deterministic_json_e2e`;
+I2 integration `tests/production/test_replay_v2.py::test_i2_verifier_rejects_reordered_adr0125_chain`.
+For every row Sol first makes exactly that named assertion RED in its listed minimal
+path, implements only its lane-owned path, records the literal focused command/output
+as GREEN, then Terra solely reviews/corrects. No full suite or real execution follows.
