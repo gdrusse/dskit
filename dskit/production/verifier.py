@@ -666,6 +666,7 @@ class HistoricalStudyVerifier:
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound = {}
+        self._admission_spent = False
         self.deployment_eligible = False
 
     def bind(self, **artifacts):
@@ -718,8 +719,12 @@ class HistoricalStudyVerifier:
         ------
         ValueError
             When ScopeIntent, CES, PEA, BVP, CAS, or consumed admission
-            is not bound.
+            is not bound, or when that admission is already spent.
         """
+        if self._admission_spent:
+            raise ValueError(
+                "CAPTURED refuses after consumed admission is spent"
+            )
         missing = [
             name
             for name in _REQUIRED_PLAN
@@ -730,4 +735,6 @@ class HistoricalStudyVerifier:
                 "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, CAS, "
                 "and consumed admission are bound"
             )
-        return self._authority.capture(published, frozen, port, **kwargs)
+        captured = self._authority.capture(published, frozen, port, **kwargs)
+        self._admission_spent = True
+        return captured
