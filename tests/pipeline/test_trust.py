@@ -1,0 +1,934 @@
+"""F4 immutable capture and WORM lifecycle contract tests."""
+
+import copy
+import hashlib
+import importlib
+import importlib.util
+import json
+import os
+import pickle
+from types import MappingProxyType
+
+import pytest
+
+
+_SHA = {
+    "producer_document": "1" * 64,
+    "root": "2" * 64,
+    "producer_process": "3" * 64,
+    "producer_runtime": "4" * 64,
+    "producer_plan": "5" * 64,
+    "consumer_process": "6" * 64,
+    "consumer_runtime": "7" * 64,
+}
+_PRODUCER = {
+    "document_sha256": _SHA["producer_document"],
+    "run_identity": "producer-run",
+    "node": "publisher",
+    "output": "bundle",
+}
+_ROOT = {
+    "root_ref": "capture://synthetic/root",
+    "root_id": _SHA["root"],
+    "snapshot_version": "1",
+}
+_PUBLIC_TYPES = {
+    "CapturedBindings",
+    "CapturedJsonArtifact",
+    "CapturedLifecyclePort",
+    "CapturedMemberHandle",
+    "CapturedRelease",
+    "ImmutableSnapshotProvider",
+    "LaunchSession",
+    "LifecycleAuthority",
+    "ReleaseKeyring",
+    "TrustedClock",
+    "TrustedRuntimeVerifier",
+    "VerifiedCapture",
+}
+
+
+def _trust():
+    spec = importlib.util.find_spec("dskit.pipeline.trust")
+    assert spec is not None, "F4 trust module is not implemented"
+    return importlib.import_module("dskit.pipeline.trust")
+
+
+def _json_bytes(value):
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _members(bundle=None):
+    if bundle is None:
+        bundle = {"rows": [{"id": "one", "value": 7}]}
+    return [
+        {
+            "relative_path": "config.json",
+            "media_type": "application/json",
+            "bytes": bytearray(_json_bytes({"name": "producer"})),
+            "file_type": "regular",
+            "link_count": 1,
+        },
+        {
+            "relative_path": "artifacts/bundle.json",
+            "media_type": "application/json",
+            "bytes": bytearray(_json_bytes(bundle)),
+            "file_type": "regular",
+            "link_count": 1,
+        },
+    ]
+
+
+def _producer_session(broker):
+    return broker.start_producer_session(
+        run_identity="producer-run",
+        process_measurement_sha256=_SHA["producer_process"],
+        runtime_sha256=_SHA["producer_runtime"],
+        plan_sha256=_SHA["producer_plan"],
+    )
+
+
+def _produce(broker, *, members=None, expected_members=None, nonce="nonce-produced"):
+    session = _producer_session(broker)
+    values = _members() if members is None else members
+    expected = (
+        ("config.json", "artifacts/bundle.json")
+        if expected_members is None
+        else expected_members
+    )
+    prepared = broker.produce(
+        session,
+        producer=dict(_PRODUCER),
+        root=dict(_ROOT),
+        purpose="synthetic",
+        expected_members=expected,
+        members=values,
+        output_member="artifacts/bundle.json",
+        completed=True,
+        planned=True,
+        transition_nonce=nonce,
+    )
+    return session, prepared, values
+
+
+def _publish(
+    broker,
+    *,
+    members=None,
+    expected_members=None,
+    produced_nonce="nonce-produced",
+    sealed_nonce="nonce-sealed",
+    published_nonce="nonce-published",
+):
+    session, prepared, values = _produce(
+        broker,
+        members=members,
+        expected_members=expected_members,
+        nonce=produced_nonce,
+    )
+    sealed = broker.seal(session, prepared, transition_nonce=sealed_nonce)
+    published = broker.publish(session, sealed, transition_nonce=published_nonce)
+    return session, published, values
+
+
+def _consumer_document(descriptor, *, name="consumer"):
+    return {
+        "name": name,
+        "pipeline": {
+            "consume": {
+                "inputs": {
+                    "bundle": {"$captured_artifact": descriptor},
+                }
+            }
+        },
+    }
+
+
+def _freeze(broker, published, *, document=None):
+    descriptor = broker.descriptor(published, purpose="synthetic")
+    source = _consumer_document(descriptor) if document is None else document
+    return (
+        source,
+        broker.freeze_consumer_document(
+            source,
+            consumer_node="consume",
+            consumer_input="bundle",
+            purpose="synthetic",
+        ),
+    )
+
+
+def _capture(
+    broker,
+    published,
+    frozen,
+    *,
+    port=None,
+    run_identity="consumer-run",
+    nonce="nonce-captured",
+):
+    if port is None:
+        port = broker.derive_consumer_port(frozen)
+    return broker.capture(
+        published,
+        frozen,
+        port,
+        consumer_run_identity=run_identity,
+        process_measurement_sha256=_SHA["consumer_process"],
+        runtime_sha256=_SHA["consumer_runtime"],
+        transition_nonce=nonce,
+    )
+
+
+def _captured_flow(
+    *,
+    snapshot_storage=None,
+    receipt_store=None,
+    session_events=None,
+    member_events=None,
+):
+    trust = _trust()
+    broker = trust._development_broker(
+        snapshot_storage=snapshot_storage,
+        receipt_store=receipt_store,
+        session_events=session_events,
+        member_events=member_events,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    document, frozen = _freeze(broker, published)
+    captured, consumer_session = _capture(broker, published, frozen)
+    verified = broker.open_capture(consumer_session, captured)
+    return broker, published, document, frozen, captured, consumer_session, verified
+
+
+def test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private():
+    trust = _trust()
+
+    assert set(trust.__all__) == _PUBLIC_TYPES
+    assert not hasattr(trust, "PreparedCapture")
+    assert "_development_broker" not in trust.__all__
+    assert trust.ImmutableSnapshotProvider.__abstractmethods__ == {
+        "describe",
+        "open_member",
+    }
+    assert trust.ReleaseKeyring.__abstractmethods__ == {"verify"}
+    assert trust.TrustedClock.__abstractmethods__ == {"now_ms"}
+    assert trust.TrustedRuntimeVerifier.__abstractmethods__ == {"verify"}
+    assert trust.LifecycleAuthority.__abstractmethods__ == {
+        "capture",
+        "open_capture",
+        "produce",
+        "publish",
+        "seal",
+    }
+    for name in _PUBLIC_TYPES:
+        with pytest.raises(TypeError):
+            getattr(trust, name)()
+
+
+def test_exact_worm_chain_binds_receipts_and_uses_a_new_consumer_session():
+    trust = _trust()
+    broker, published, _document, frozen, captured, session, verified = _captured_flow()
+
+    bindings = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    lifecycle_port = bindings.require("bundle")
+    release = broker.release(session)
+    receipts = broker._receipt_audit(published)
+    digests = broker._receipt_digests(published)
+
+    assert isinstance(verified, trust.VerifiedCapture)
+    assert isinstance(lifecycle_port, trust.CapturedLifecyclePort)
+    assert isinstance(lifecycle_port.artifact, trust.CapturedJsonArtifact)
+    assert isinstance(release, trust.CapturedRelease)
+    assert [receipt["event"] for receipt in receipts] == [
+        "PRODUCED",
+        "SEALED",
+        "PUBLISHED",
+        "CAPTURED",
+        "CONSUMED",
+    ]
+    assert [receipt["sequence"] for receipt in receipts] == [1, 2, 3, 4, 5]
+    assert receipts[0]["previous_receipt_sha256"] is None
+    assert [
+        receipt["previous_receipt_sha256"] for receipt in receipts[1:]
+    ] == digests[:-1]
+    assert all(receipt["producer_document_sha256"] == _SHA["producer_document"] for receipt in receipts)
+    assert all(receipt["producer_run_identity"] == "producer-run" for receipt in receipts)
+    assert all(receipt["producer_node"] == "publisher" for receipt in receipts)
+    assert all(receipt["producer_output"] == "bundle" for receipt in receipts)
+    assert all(receipt["root_ref"] == _ROOT["root_ref"] for receipt in receipts)
+    assert all(receipt["root_id"] == _ROOT["root_id"] for receipt in receipts)
+    assert all(receipt["snapshot_version"] == "1" for receipt in receipts)
+    assert all(len(receipt["member_manifest_sha256"]) == 64 for receipt in receipts)
+    assert receipts[2]["publication_receipt_sha256"]
+    assert receipts[3]["consumer_captured_port"] == receipts[4]["consumer_captured_port"]
+    assert receipts[3]["consumer_captured_port"] == lifecycle_port.audit["consumer_port"]
+    assert receipts[0]["actor_runtime"]["run_identity"] == "producer-run"
+    assert receipts[3]["actor_runtime"]["run_identity"] == "consumer-run"
+    assert [receipt["transition_nonce"] for receipt in receipts] == [
+        "nonce-produced",
+        "nonce-sealed",
+        "nonce-published",
+        "nonce-captured",
+        "nonce-consumed",
+    ]
+    assert all(receipt["key"]["usage"] == "lifecycle" for receipt in receipts)
+    assert all(receipt["signature"] for receipt in receipts)
+    assert all(receipt["deployment_eligible"] is False for receipt in receipts)
+    assert len({receipt["issued_at_ms"] for receipt in receipts}) == 5
+    assert captured is not session
+
+
+def test_published_can_stop_before_any_consumer_document_or_capture():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+
+    assert [row["event"] for row in broker._receipt_audit(published)] == [
+        "PRODUCED",
+        "SEALED",
+        "PUBLISHED",
+    ]
+    assert broker.descriptor(published, purpose="synthetic")["root_ref"] == _ROOT["root_ref"]
+
+
+def test_capture_before_frozen_document_refuses_without_member_or_session_effects():
+    trust = _trust()
+    session_events = []
+    member_events = []
+    broker = trust._development_broker(
+        session_events=session_events,
+        member_events=member_events,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    prior_sessions = tuple(session_events)
+
+    with pytest.raises((TypeError, ValueError), match="frozen|document"):
+        broker.derive_consumer_port(None)
+    with pytest.raises((TypeError, ValueError), match="frozen|document"):
+        _capture(broker, published, None, port=None)
+
+    assert tuple(session_events) == prior_sessions
+    assert member_events == []
+    assert [row["event"] for row in broker._receipt_audit(published)] == [
+        "PRODUCED",
+        "SEALED",
+        "PUBLISHED",
+    ]
+
+
+def test_publish_is_required_before_capture_or_member_access():
+    trust = _trust()
+    member_events = []
+    session_events = []
+    broker = trust._development_broker(
+        member_events=member_events,
+        session_events=session_events,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, prepared, _values = _produce(broker)
+    sealed = broker.seal(producer_session, prepared, transition_nonce="nonce-sealed")
+
+    with pytest.raises((TypeError, ValueError), match="PUBLISHED|published"):
+        broker.descriptor(sealed, purpose="synthetic")
+    with pytest.raises((TypeError, ValueError), match="PUBLISHED|published"):
+        _capture(broker, sealed, None)
+
+    assert member_events == []
+    assert len(session_events) == 1
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        ("publish_unsealed", "SEALED|sealed"),
+        ("seal_twice", "replay|SEALED|sealed"),
+        ("publish_twice", "replay|PUBLISHED|published"),
+        ("capture_twice", "replay|CAPTURED|captured"),
+        ("duplicate_nonce", "nonce"),
+    ],
+)
+def test_skipped_reordered_replayed_and_duplicate_nonce_transitions_refuse(
+    operation,
+    message,
+):
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_session, prepared, _values = _produce(broker)
+
+    if operation == "publish_unsealed":
+        action = lambda: broker.publish(
+            producer_session,
+            prepared,
+            transition_nonce="nonce-published",
+        )
+    else:
+        sealed = broker.seal(
+            producer_session,
+            prepared,
+            transition_nonce="nonce-sealed",
+        )
+        if operation == "seal_twice":
+            action = lambda: broker.seal(
+                producer_session,
+                sealed,
+                transition_nonce="another-seal",
+            )
+        else:
+            publish_nonce = (
+                "nonce-sealed" if operation == "duplicate_nonce" else "nonce-published"
+            )
+            published = broker.publish(
+                producer_session,
+                sealed,
+                transition_nonce=publish_nonce,
+            ) if operation != "duplicate_nonce" else None
+            if operation == "duplicate_nonce":
+                action = lambda: broker.publish(
+                    producer_session,
+                    sealed,
+                    transition_nonce=publish_nonce,
+                )
+            elif operation == "publish_twice":
+                action = lambda: broker.publish(
+                    producer_session,
+                    published,
+                    transition_nonce="another-publish",
+                )
+            else:
+                broker.end_session(producer_session)
+                _document, frozen = _freeze(broker, published)
+                port = broker.derive_consumer_port(frozen)
+                _captured, _consumer = _capture(
+                    broker,
+                    published,
+                    frozen,
+                    port=port,
+                )
+                action = lambda: _capture(
+                    broker,
+                    published,
+                    frozen,
+                    port=port,
+                    nonce="another-capture",
+                )
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        action()
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "message"),
+    [
+        (b"bytes.json", "path"),
+        ("", "path"),
+        (".", "path"),
+        ("/absolute.json", "path"),
+        ("../escape.json", "path"),
+        ("a/../escape.json", "path"),
+        ("a/./member.json", "path"),
+        ("a//member.json", "path"),
+        ("a\\member.json", "path"),
+        ("a\x00member.json", "path"),
+    ],
+)
+def test_invalid_member_paths_refuse_before_produced(relative_path, message):
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    members = _members()
+    members[1]["relative_path"] = relative_path
+
+    with pytest.raises(ValueError, match=message):
+        _produce(
+            broker,
+            members=members,
+            expected_members=("config.json", relative_path),
+        )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"file_type": "symlink"}, "regular|symlink"),
+        ({"file_type": "directory"}, "regular|directory"),
+        ({"link_count": 2}, "link|hard"),
+        ({"unexpected": True}, "unknown|keys"),
+    ],
+)
+def test_symlink_hardlink_nonregular_and_unknown_member_fields_refuse(change, message):
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    members = _members()
+    members[1].update(change)
+
+    with pytest.raises(ValueError, match=message):
+        _produce(broker, members=members)
+
+
+def test_partial_duplicate_and_reordered_member_declarations_refuse():
+    trust = _trust()
+
+    partial = trust._development_broker(start_ms=1_700_000_000_000)
+    with pytest.raises(ValueError, match="complete|expected|member"):
+        _produce(partial, members=_members()[:1])
+
+    duplicate_members = _members()
+    duplicate_members[1]["relative_path"] = "config.json"
+    duplicate = trust._development_broker(start_ms=1_700_000_000_000)
+    with pytest.raises(ValueError, match="duplicate"):
+        _produce(
+            duplicate,
+            members=duplicate_members,
+            expected_members=("config.json", "config.json"),
+        )
+
+    reordered = trust._development_broker(start_ms=1_700_000_000_000)
+    with pytest.raises(ValueError, match="order|expected|member"):
+        _produce(
+            reordered,
+            members=list(reversed(_members())),
+            expected_members=("config.json", "artifacts/bundle.json"),
+        )
+
+
+def test_post_seal_source_mutation_refuses_publication():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_session, prepared, members = _produce(broker)
+    sealed = broker.seal(
+        producer_session,
+        prepared,
+        transition_nonce="nonce-sealed",
+    )
+    members[1]["bytes"][:] = _json_bytes({"rows": [{"id": "changed"}]})
+
+    with pytest.raises(ValueError, match="mutation|changed|digest"):
+        broker.publish(
+            producer_session,
+            sealed,
+            transition_nonce="nonce-published",
+        )
+
+
+def test_non_worm_root_and_unsealed_capture_refuse():
+    trust = _trust()
+    broker = trust._development_broker(
+        provider_worm=False,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, prepared, _values = _produce(broker)
+    sealed = broker.seal(
+        producer_session,
+        prepared,
+        transition_nonce="nonce-sealed",
+    )
+
+    with pytest.raises(ValueError, match="WORM|immutable"):
+        broker.publish(
+            producer_session,
+            sealed,
+            transition_nonce="nonce-published",
+        )
+    with pytest.raises((TypeError, ValueError), match="PUBLISHED|published"):
+        broker.descriptor(prepared, purpose="synthetic")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("document_sha256", "self", "document_sha256|SHA-256|placeholder"),
+        ("document_sha256", "0" * 64, "placeholder|document_sha256"),
+        ("document_sha256", "A" * 64, "document_sha256|SHA-256"),
+        ("root_ref", "capture://other/root", "published|root"),
+        ("snapshot_version", "2", "published|snapshot"),
+        ("purpose", "paper", "purpose"),
+        ("unknown", "value", "unknown|descriptor"),
+    ],
+)
+def test_placeholder_self_wrong_root_and_unknown_descriptor_fields_refuse(
+    field,
+    value,
+    message,
+):
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    descriptor = broker.descriptor(published, purpose="synthetic")
+    descriptor[field] = value
+    document = _consumer_document(descriptor)
+
+    with pytest.raises(ValueError, match=message):
+        broker.freeze_consumer_document(
+            document,
+            consumer_node="consume",
+            consumer_input="bundle",
+            purpose="synthetic",
+        )
+
+
+def test_descriptor_mutation_after_freeze_refuses_before_port_derivation():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    document, frozen = _freeze(broker, published)
+    document["pipeline"]["consume"]["inputs"]["bundle"]["$captured_artifact"][
+        "output"
+    ] = "substituted"
+
+    with pytest.raises(ValueError, match="changed after freeze|mutation"):
+        broker.derive_consumer_port(frozen)
+
+
+def test_producer_session_must_end_and_consumer_run_and_session_must_be_distinct():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_session, published, _values = _publish(broker)
+    _document, frozen = _freeze(broker, published)
+
+    with pytest.raises(ValueError, match="producer session|end"):
+        _capture(broker, published, frozen)
+    broker.end_session(producer_session)
+    with pytest.raises(ValueError, match="distinct|same run"):
+        _capture(
+            broker,
+            published,
+            frozen,
+            run_identity="producer-run",
+        )
+
+    captured, consumer_session = _capture(broker, published, frozen)
+    assert consumer_session is not producer_session
+    with pytest.raises(ValueError, match="session|consumer"):
+        broker.open_capture(producer_session, captured)
+
+
+def test_wrong_document_port_cross_plan_and_consumer_substitution_refuse():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    _document, frozen = _freeze(broker, published)
+    _other_document, other_frozen = _freeze(
+        broker,
+        published,
+        document=_consumer_document(
+            broker.descriptor(published, purpose="synthetic"),
+            name="other-consumer",
+        ),
+    )
+    wrong_port = broker.derive_consumer_port(other_frozen)
+
+    with pytest.raises(ValueError, match="document|port"):
+        _capture(broker, published, frozen, port=wrong_port)
+
+    captured, consumer_session = _capture(broker, published, frozen)
+    verified = broker.open_capture(consumer_session, captured)
+    with pytest.raises(ValueError, match="plan|document"):
+        broker.captured_bindings(
+            consumer_session,
+            other_frozen,
+            verified,
+            consumer_node="consume",
+            transition_nonce="nonce-consumed",
+        )
+    with pytest.raises(ValueError, match="node|consumer"):
+        broker.captured_bindings(
+            consumer_session,
+            frozen,
+            verified,
+            consumer_node="substituted",
+            transition_nonce="nonce-consumed",
+        )
+
+
+def test_uncaptured_unverified_and_wrong_input_cannot_be_consumed():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    _document, frozen = _freeze(broker, published)
+
+    with pytest.raises((TypeError, ValueError), match="CAPTURED|captured"):
+        broker.open_capture(producer_session, published)
+
+    captured, consumer_session = _capture(broker, published, frozen)
+    with pytest.raises((TypeError, ValueError), match="verified"):
+        broker.captured_bindings(
+            consumer_session,
+            frozen,
+            captured,
+            consumer_node="consume",
+            transition_nonce="nonce-consumed",
+        )
+
+    verified = broker.open_capture(consumer_session, captured)
+    bindings = broker.captured_bindings(
+        consumer_session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    with pytest.raises((KeyError, ValueError), match="input|missing"):
+        bindings.require("substituted")
+
+
+def test_provider_mutation_before_verification_refuses_without_a_handle():
+    trust = _trust()
+    storage = {}
+    member_events = []
+    broker = trust._development_broker(
+        snapshot_storage=storage,
+        member_events=member_events,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, published, _values = _publish(broker)
+    broker.end_session(producer_session)
+    _document, frozen = _freeze(broker, published)
+    captured, consumer_session = _capture(broker, published, frozen)
+    storage[(_ROOT["root_ref"], "1", "artifacts/bundle.json")] = b'{"changed":true}'
+
+    with pytest.raises(ValueError, match="digest|bytes|mutation"):
+        broker.open_capture(consumer_session, captured)
+
+    assert member_events
+
+
+def test_verified_retained_bytes_are_not_reopened_after_toctou_change():
+    storage = {}
+    member_events = []
+    broker, _published, _document, frozen, _captured, session, verified = (
+        _captured_flow(snapshot_storage=storage, member_events=member_events)
+    )
+    opens_after_verify = tuple(member_events)
+    storage[(_ROOT["root_ref"], "1", "artifacts/bundle.json")] = b'{"changed":true}'
+
+    bindings = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    artifact = bindings.require("bundle").artifact
+
+    assert artifact.value["rows"][0]["id"] == "one"
+    assert tuple(member_events) == opens_after_verify
+
+
+@pytest.mark.parametrize(
+    "bad_bytes",
+    [
+        b'{"rows": NaN}',
+        b'{ "rows":[]}',
+        b'{"rows":[]}\n',
+        b'{"rows":[],"rows":[]}',
+        '{"value":"é"}'.encode(),
+        b"\xff",
+    ],
+)
+def test_noncanonical_nonfinite_or_invalid_json_member_refuses_seal(bad_bytes):
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    members = _members()
+    members[1]["bytes"] = bytearray(bad_bytes)
+    producer_session, prepared, _values = _produce(broker, members=members)
+
+    with pytest.raises(ValueError, match="canonical|JSON|UTF-8|finite|duplicate"):
+        broker.seal(
+            producer_session,
+            prepared,
+            transition_nonce="nonce-sealed",
+        )
+
+
+def test_handles_leak_no_paths_reopen_or_serialization_interface():
+    broker, _published, _document, frozen, _captured, session, verified = (
+        _captured_flow()
+    )
+    member = verified.member("artifacts/bundle.json")
+    bindings = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    port = bindings.require("bundle")
+    artifact = port.artifact
+    release = broker.release(session)
+
+    for handle in (session, verified, member, bindings, port, artifact, release):
+        for name in (
+            "path",
+            "relative_path",
+            "root_ref",
+            "provider",
+            "reopen",
+            "open",
+            "to_obj",
+            "from_obj",
+            "__fspath__",
+            "__dict__",
+        ):
+            assert not hasattr(handle, name), (type(handle).__name__, name)
+        with pytest.raises(TypeError):
+            os.fspath(handle)
+        with pytest.raises((TypeError, ValueError)):
+            json.dumps(handle)
+        with pytest.raises(TypeError):
+            dict(handle)
+        with pytest.raises(TypeError):
+            copy.copy(handle)
+        with pytest.raises(TypeError):
+            copy.deepcopy(handle)
+        with pytest.raises((TypeError, pickle.PicklingError)):
+            pickle.dumps(handle)
+
+
+def test_member_reads_once_and_captured_json_value_and_audit_are_immutable():
+    broker, _published, _document, frozen, _captured, session, verified = (
+        _captured_flow()
+    )
+    handle = verified.member("artifacts/bundle.json")
+    assert json.loads(handle.read_text())["rows"][0]["value"] == 7
+    with pytest.raises(ValueError, match="consumed|read"):
+        handle.read_bytes()
+
+    bindings = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    artifact = bindings.require("bundle").artifact
+    assert {
+        name for name in dir(artifact) if not name.startswith("_")
+    } == {"audit", "value"}
+    assert isinstance(artifact.value, MappingProxyType)
+    assert isinstance(artifact.audit, MappingProxyType)
+    with pytest.raises(TypeError):
+        artifact.value["new"] = "changed"
+    with pytest.raises(TypeError):
+        artifact.value["rows"][0]["id"] = "changed"
+    assert "relative_path" not in artifact.audit
+
+
+def test_bindings_are_non_enumerable_exact_and_one_way():
+    trust = _trust()
+    broker, _published, _document, frozen, _captured, session, verified = (
+        _captured_flow()
+    )
+    bindings = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+
+    assert not hasattr(bindings, "keys")
+    assert not hasattr(bindings, "items")
+    with pytest.raises(TypeError):
+        iter(bindings)
+    port = bindings.require("bundle")
+    assert isinstance(port, trust.CapturedLifecyclePort)
+    with pytest.raises(ValueError, match="consumed|one-way|replay"):
+        bindings.require("bundle")
+    with pytest.raises(ValueError, match="released|already"):
+        broker.release(session)
+
+
+def test_release_refuses_before_consumption_and_second_release_refuses():
+    trust = _trust()
+    broker, _published, _document, frozen, _captured, session, verified = (
+        _captured_flow()
+    )
+    bindings = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    with pytest.raises(ValueError, match="consume|CONSUMED"):
+        broker.release(session)
+    bindings.require("bundle")
+    release = broker.release(session)
+    assert isinstance(release, trust.CapturedRelease)
+    with pytest.raises(ValueError, match="released|replay"):
+        broker.release(session)
+
+
+@pytest.mark.parametrize("attack", ["signature", "reorder"])
+def test_recovery_refuses_tampered_or_reordered_receipts(attack):
+    receipt_store = {}
+    broker, published, _document, frozen, _captured, session, verified = (
+        _captured_flow(receipt_store=receipt_store)
+    )
+    bindings = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    bindings.require("bundle")
+    stream_id = broker._receipt_audit(published)[0]["stream_id"]
+    records = list(receipt_store[stream_id])
+    if attack == "signature":
+        changed = json.loads(records[2])
+        changed["signature"] = "0" * 64
+        records[2] = _json_bytes(changed)
+    else:
+        records[1], records[2] = records[2], records[1]
+    receipt_store[stream_id] = tuple(records)
+
+    with pytest.raises(ValueError, match="signature|sequence|predecessor|order"):
+        broker._recover(stream_id)
+
+
+def test_identical_development_clock_keyring_and_inputs_make_identical_receipts():
+    trust = _trust()
+
+    def run():
+        broker = trust._development_broker(start_ms=1_700_000_000_000)
+        producer_session, published, _values = _publish(broker)
+        broker.end_session(producer_session)
+        _document, frozen = _freeze(broker, published)
+        _captured, session = _capture(broker, published, frozen)
+        verified = broker.open_capture(session, _captured)
+        bindings = broker.captured_bindings(
+            session,
+            frozen,
+            verified,
+            consumer_node="consume",
+            transition_nonce="nonce-consumed",
+        )
+        bindings.require("bundle")
+        canonical_receipts = [
+            _json_bytes(dict(row)) for row in broker._receipt_audit(published)
+        ]
+        return [hashlib.sha256(value).hexdigest() for value in canonical_receipts]
+
+    assert run() == run()
