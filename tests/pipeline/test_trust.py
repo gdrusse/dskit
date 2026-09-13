@@ -1678,3 +1678,96 @@ def test_verified_slots_cannot_consume_another_stream():
     assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
     assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
 
+
+def test_require_closure_subject_cannot_move_consumed_cas():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_a)
+    published_b, sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _document_b, frozen_b = _freeze(
+        broker,
+        published_b,
+        document=_consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    captured, session = _capture(broker, published_a, frozen_a)
+    _captured_b, _session_b = _capture(
+        broker,
+        published_b,
+        frozen_b,
+        run_identity="consumer-b",
+        nonce="nonce-captured-b",
+    )
+    verified = broker.open_capture(session, captured)
+    bindings = broker.captured_bindings(
+        session,
+        frozen_a,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    )
+    on_require = bindings._on_require
+    if on_require.__closure__:
+        for cell, name in zip(on_require.__closure__, on_require.__code__.co_freevars):
+            if name == "subject":
+                cell.cell_contents = sealed_b.prepared
+    artifact = bindings.require("bundle").artifact
+
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+
+
+def test_verified_port_cannot_forge_consumed_document_hash():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _document_b, frozen_b = _freeze(
+        broker,
+        published_b,
+        document=_consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    captured, session = _capture(
+        broker,
+        published_a,
+        frozen_a,
+        run_identity="consumer-a",
+        nonce="nonce-captured-a",
+    )
+    verified = broker.open_capture(session, captured)
+    foreign_port = dict(broker.derive_consumer_port(frozen_b))
+    try:
+        verified._port.clear()
+        verified._port.update(foreign_port)
+    except (TypeError, ValueError, AttributeError):
+        object.__setattr__(verified, "_port", foreign_port)
+    bindings = broker.captured_bindings(
+        session,
+        frozen_a,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed-a",
+    )
+    artifact = bindings.require("bundle").artifact
+    consumed = broker._receipt_audit(published_a)[-1]
+
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert consumed["event"] == "CONSUMED"
+    assert consumed["consumer_captured_port"]["consumer_document_sha256"] == frozen_a.source_sha256
+
