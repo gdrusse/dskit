@@ -200,6 +200,76 @@ def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
         assert not marker.exists()
 
 
+def test_public_execution_path_overloads_refuse_before_open(monkeypatch):
+    """The CLI owns document I/O; public execution APIs never reopen paths."""
+    from dskit.pipeline.driver import run_walk_forward
+    from dskit.pipeline.stages import run_staged
+
+    def unexpected_open(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("public execution API opened a retired path overload")
+
+    monkeypatch.setattr("builtins.open", unexpected_open)
+    for action in (
+        lambda: run_document("retired-document.json", asof=ASOF),
+        lambda: run_walk_forward("retired-document.json", asof=ASOF),
+        lambda: run_staged("retired-document.json", asof=ASOF),
+    ):
+        with pytest.raises(ValueError, match="in-memory PipelineDocument"):
+            action()
+
+
+def test_malformed_node_map_refuses_once_before_any_cli_adapter(tmp_path, monkeypatch):
+    """Malformed node maps never fall through to adapters or a second read."""
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "ordinary_poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "malformed-node-map.json"
+    config.write_text(
+        json.dumps(
+            {
+                "name": "malformed-node-map",
+                "pipeline": {
+                    "source": {
+                        "uses": "ordinary-poison",
+                        "params": [],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    import builtins
+    import sys
+
+    original_open = builtins.open
+    reads = []
+
+    def counted_open(name, *args, **kwargs):
+        if str(name) == str(config):
+            reads.append(name)
+        return original_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counted_open)
+    for command in ("plan", "run", "validate", "walkforward", "staged"):
+        sys.modules.pop("ordinary_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        reads.clear()
+        argv = [command, str(config), "--adapter", "ordinary_poison_adapter"]
+        if command in ("run", "walkforward", "staged"):
+            argv[2:2] = ["--asof", ASOF]
+        assert main(argv) == 1
+        assert reads == [str(config)]
+        assert not marker.exists(), f"{command} imported an adapter before refusal"
+
+
 class TestCleanRun:
     def test_end_to_end_banking_run(self, tmp_path, registry):
         result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
