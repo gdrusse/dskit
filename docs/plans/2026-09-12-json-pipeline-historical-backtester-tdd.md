@@ -9,7 +9,12 @@ HPO, refit, replay, paper/live order, release use, or full backtest.
 ADR-0123 from `4f2bfdbe66fbb2037d032a9c434864ae775d668a` (external forecast
 trust boundary), and ADR-0124 from `77697edf823810e0832f02f73511638b681a9834`
 (fenced transactional replay lifecycle). A plan/release/study identity includes
-these three commit identities; a substituted ADR text or commit refuses.
+ADR-0125 from accepted commit `7a71f3933f6360dd36ddfe6e86d4a9c6a4fcb2a0`
+and ADR-0126 from accepted commit `97900efd66bfed44cc403c567c04c4e383c05c24`.
+The owner explicitly approved both on 2026-09-12; acceptance deltas passed Terra
+with 0 Critical, 0 Major, and 0 Minor findings. These approvals approve neither
+implementation nor any real execution. A plan/release/study identity includes all
+five commit identities; a substituted ADR text or commit refuses.
 
 ## P0 — gates, fidelity, and immutable review workflow
 
@@ -67,28 +72,28 @@ commits/evidence, gates, environment/policy identities, allowed commands, and
 capture outputs. Scheduler and launcher enforce it: omitted, reordered,
 substituted, or unlisted slices refuse.
 
-`HistoricalStudyScopeAuthorization.v1` resolves the release circularity after the
-separate G1/G2 dataset capture: it is a signed pre-refit authorization for one WORM
-`study_id`, the already frozen published dataset/tape roots and later exact
-port-bound capture chain, normalized pipeline/environment/profile, fixed candidate
-inventory/selection policy/seeds, and exactly A1--A4's permitted actions.
-It binds G0--G7 scope-evidence digests, signer, key/version, revocation result,
-issuance/validity, and approved identities; G3 is the pre-refit causal-method scope,
-not a nonexistent release. The broker verifies every binding before every captured-
-member open, node construction, root creation, or A1--A4 action. It permits one
-captured release
-creation only, no retune, no additional candidates/seeds, no control/crash run, and
-no paper/live action.
+ADR-0125 controls study chronology. Before gates, the signed
+`HistoricalStudyScopeIntent.v1` WORM singleton keyed by `study_id` binds only the
+root PublishedInputSet.v2, closed tape-data/tape-manifest/A1--A4 ActionIntent DAG,
+exactly control/crash-restart ReplayIntents, and environment/profile/component/
+candidate/policy identity. It has no gate, PEA/CES/BVP/CAS, capture, authority, or
+future output: policy intent is not execution authority.
 
-After that capture, `HistoricalStudyManifest.v1` finalizes the same WORM `study_id`.
-It binds the scope-authorization digest, actual release/capture identity, one frozen
-dataset/tape/capture set, exact normalized pipeline/environment/profile, and exactly
-named control plus crash/restart executions. It repeats, for **each** G0--G7, the
-evidence digest, signer, key/version, revocation result, issuance/validity, and
-approved identity, including the post-refit G3 outcome evidence. The broker verifies
-it before every control/crash data, node, root, or simulator action. Thus the actual
-release is bound after creation without authorizing retuning, another release, extra
-executions, paper/live, or a second study.
+`HistoricalStudyScopeAuthorization.v2` is the same WORM singleton. It atomically
+consumes exactly that ScopeIntent, sorted G0--G7 evidence, and every root bootstrap
+ActionIntent/PEA/CES/BVP/CAS tuple. It binds the complete one-use DAG, intent/digest
+sets, identities, gates, and bootstrap tuples; root StageAdmission reuses its
+bootstrap tuple and non-roots await declared PUBLISHED predecessors. Each action then
+requires one StageAdmission and one consumed ActionExecutionAdmission binding that
+tuple, one logical execution/run, recovery journal/fence, and one capture/session.
+
+After stages publish, pre-final replay PIS/CES/PEA/BVP/CAS chains complete.
+`HistoricalStudyManifest.v2` is the WORM singleton that binds the unique scope
+authorization/intent, G0--G7 set, exhaustive sorted StageAdmissions and outputs
+(including A4 release), and exactly the two pre-capture FinalReplayEntry.v1 tuples.
+It contains no actual capture/receipt/set/session/post-final field. One post-final
+FinalReplayAdmission per named replay consumes its sole run/session. No phase permits
+retuning, another release/dataset/execution, paper/live, or a second study.
 
 ## Dependency DAG and universal slice form
 
@@ -534,11 +539,11 @@ The policy and inner `CapturedReplayTape.v1` digests are captured receipt eviden
 resolved from the exact normal PipelineDocument `tape_manifest`/`tape_data`
 descriptors and their broker authorization entries; neither `execution_backtest` nor
 EnvironmentIdentity claims to pin a `tape_digest`. Its verified inner `tape_digest`
-fills the already accepted **post-admission** `tape_digest` keys of ADR-0124's
-`ReplayTransaction.v1` and `FrozenReplayPlan.v1`; the two descriptors and outer
-capture identity remain ordinary document-plan/admission/frozen evidence, so replay
-ID, frozen cache bytes, checkpoint, ledger head, `ReplayResult`, and report
-provenance are bound without changing their exact default-deny schemas. **RED:**
+fills ADR-0126's post-admission `tape_digest` fields in the V2 header, intent,
+and frozen plan. The descriptors and outer capture identity remain ordinary
+document-plan/admission/frozen evidence; their exact V2 binding carries through replay
+identity, cache/checkpoint preimages, ledger head, terminal projection, result, and
+report provenance. **RED:**
 raw-tape admission, unknown/extra/missing inner member,
 canonical-byte/digest, same-root/self-receipt, swapped parent/manifest receipts,
 missing hierarchy, same-run/session, outer-capture substitution, parent mutation/
@@ -625,20 +630,13 @@ The parser derives, not accepts, the exact
 `ConsumerCapturedPort={consumer_document_sha256,consumer_node,consumer_input,purpose}`.
 It rejects the descriptor in params, outputs, defaults, lists, maps, carry,
 artifacts, or any nested/non-input location. The planner creates non-JSON
-`CapturedArtifactPort` values. F5 defines the canonical default-deny
-`CapturedAuthorizationSet.v1`:
-
-```json
-{"schema_version":"dskit.captured-authorization-set/v1","entries":[
- {"consumer_port":{"consumer_document_sha256":"<sha256>","consumer_node":"n",
-   "consumer_input":"i","purpose":"synthetic"},
-  "descriptor":{"$captured_artifact":{"root_ref":"release://x","snapshot_version":"1",
-   "document_sha256":"<sha256>","node":"n","output":"o","purpose":"synthetic"}},
-  "resolved":{"immutable_root_sha256":"<sha256>","ordered_member_digests":["<sha256>"],
-   "published_receipt_sha256":"<sha256>","captured_receipt_sha256":"<sha256>",
-   "live_authorization_evidence_sha256":"<sha256>"}}],
- "authorization_set_sha256":"<sha256>"}
-```
+`CapturedArtifactPort` values. ADR-0125 defines the canonical default-deny
+`CapturedAuthorizationSet.v2`: it binds study, consumed action/replay execution
+authority, logical execution/run, subject, PEA/CES/BVP/planned-set/CAS chain, sorted
+one-for-one port-authorizations and lifecycle-captured receipts, issuance basis, and
+signature. Its entries are exactly the planned-entry, port-authorization, and
+lifecycle-receipt digests sorted by planned entry; no V1/alternate resolved projection
+exists.
 
 Entries sort by their complete canonical `(consumer_port, descriptor, resolved)`
 bytes; duplicate or unsorted entries refuse, and `authorization_set_sha256` hashes
@@ -843,27 +841,34 @@ cache-result/recovery. A fenced lease spans BEGIN through cache/result commit an
 recovery; broker query request/response evidence precedes resend. **Exit:** unknown,
 contradictory/unavailable broker state and blind resend refuse effects.
 
-`ReplayTransaction.v1` and its `FrozenReplayPlan.v1` are canonical default-deny
-ServeRoot-owned objects keyed below the series root. The lease binds immutable
-`series_id`, `genesis_sha256`, transaction identity, and a monotonic fencing token;
-each ledger append, cache/checkpoint, inbox move, outbox/ACK, result, and deferred
-effect receipt requires the current token. The frozen plan binds manifest/input/
-artifact identities, pre-head, frozen canonical records and append instants, snapshot
-and cache intent bytes/digests, control move order, outbox items, result, deferred
-effects/idempotency keys, and phase order. It freezes effect intents, not future
-graph decisions: before FROZEN recovery may restore pre-head and evaluate once; at
-or after FROZEN it verifies the exact prefix and publishes only the missing frozen
-suffix. Any changed identity, intent, order, append instant, or preimage refuses.
+ADR-0126 replaces every V1 replay transaction/result/ACK/cursor assumption.
+`ReplayTransaction.v2` names only `FrozenReplayPlan.v2`; V1 journals are
+inspect-only and cannot migrate, abandon, replace, hand off, continue, or share V2
+study/replay/series/genesis/transaction identity or state. A V2 run starts fresh.
+BootstrapIdentity, immutable header intent, identities, static result inputs, and
+the selected committed predecessor/genesis sentinel precede separately signed
+InitialReservationAuthority and InitialLeaseAcquisition. Only their exact bootstrap
+reservation may read the committed head/prior cursor and construct EffectIntent,
+QueryRequest, EffectSlotSet, pre-plan broker policy, verifier map, result intent,
+projection spec, and the embedded canonical frozen plan. It atomically persists full
+plan bytes in the FROZEN journal snapshot; only then can a plan-bound lease elevation
+and broker authorization exist. The plan freezes pre-head, records, snapshot/cache,
+inbox/outbox, effect slots, policy/verifier map, result intent/projection, and phase
+order, never a terminal result. Before FROZEN recovery may restore/evaluate once; at
+or after it validates the committed-head lineage and publishes only frozen suffixes.
 
 ### R2 — postings/outbox/ACK/cursor/result
 
-**Reuse:** ChainLedger, ServeRoot, snapshot/cache/report. **RED:** posting/outbox
-atomicity, ACK signature/duplicate, sorted cursor, emit/restart, correction/bust,
-self-excluding result digest/cache/terminal identity. **GREEN/test:** focused tests
-route result/fill/correction/bust to canonical balanced postings, ledger-derived
-outbox, signed idempotent `EventAckEvidence.v1`, sorted `EventCursorSet.v1`, frozen
-snapshot preview/exact cache intents, and `ReplayResult` digest omitting
-`result_sha256`. **Exit:** ambiguous ACK/cursor/result refuses progression.
+**Reuse:** ChainLedger, ServeRoot, snapshot/cache/report. **RED:** exact V2
+bootstrap reservation/lease elevation, frozen-plan bytes, per-series committed-head
+lineage, ACK keyring/revocation/signature, sorted cursor, effect query-before-resend,
+receipt substitution, projection/result/terminal-manifest, and every fsync/rename
+cutpoint. **GREEN/test:** use frozen `EffectSlotSet.v2`, durable
+EffectIntentActivation/Attempt/Resolution evidence, `EventAckEvidence.v2`,
+`PostEffectReceiptSet.v2`, and `EventCursorSet.v2`; derive `ReplayResult.v2`
+only after verified effects, then write the terminal projection/bundle/manifest and
+external commit signature. **Exit:** no result/cursor is visible before the selected
+signed committed head; ambiguous or nonancestor evidence refuses progression.
 
 ### R3 — loop dispatch/binding/checkpoint/recovery after R1/R2
 
@@ -879,17 +884,19 @@ cache, lifecycle crash/restore, direct serve-view/config rejection, runtime fiel
 default/capture substitution, live/replay composition parity, and injected crashes
 after outbox drain, every
 deferred effect receipt, result write, cursor replacement, and pre/post COMMITTED.
-Each crash schedule asserts the ADR-0124 order and either resumes the exact frozen
-suffix or refuses; it never derives a result/cursor before effects. **GREEN/test:**
+Each crash schedule asserts ADR-0126 V2 ordering and either resumes the exact
+frozen suffix or refuses; it never derives a result/cursor before effects. **GREEN/test:**
 extract `_tick_once`; live delegates unchanged, replay selects transaction mode;
 focused loop tests add mode checkpoint writer and exception-safe transaction-scoped
 recording/bundles/handlers/processor/schedule/release/ports/clock. Post-FROZEN
-recovery publishes the exact suffix under the current fence, then follows the exact
-durable order: record barrier -> snapshot barrier -> checkpoint/cache -> outbox ->
-effects -> result/cursor -> `COMMITTED`. Every append, cache replacement, outbox/
-ACK, deferred-effect receipt, result write, and cursor replacement verifies the
-current fence token and frozen preimage; cursor replacement is atomic and the final
-commit is durable only after both result and cursor are valid ledger-derived values.
+recovery requires a durable externally authorized handoff successor, verifies its
+plan-bound lease and committed-head predecessor, then follows: record barrier ->
+snapshot barrier -> checkpoint/cache -> outbox -> durable activation/attempt ->
+query-before-resend -> receipt/ACK -> cursor/result projection -> payload fsync and
+terminal-manifest rename -> signed committed-head selection and atomic series-state
+replace. A pre-effect abort is possible only with NO_EFFECT; after activation,
+attempt, receipt, or external emission the transaction is non-abandonable and must
+continue or fail closed.
 `ReplayRun` and live mode compose through the same production-bridge runtime view;
 only replay adds transaction mode. `ReplayRun` drives **three** lifecycle transactions under
 that same journal, lease, and frozen-plan rule: `startup` for recovery/reconciliation
