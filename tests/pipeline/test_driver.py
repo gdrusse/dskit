@@ -1717,4 +1717,3 @@ class TestContentIdentity:
             content_identity(
                 result.run_dir, {"a": manifest, "b": result.outputs["src"]["b"]}
             )
-

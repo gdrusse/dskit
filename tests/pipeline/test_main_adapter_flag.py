@@ -1,12 +1,12 @@
-"""``--adapter MODULE`` on ``run`` and ``plan``, not just ``validate``.
+"""``--adapter MODULE`` on every public pipeline route.
 
 Adapters ship components, never CLIs — there is ONE universal command
 line. A document may name its components two ways, and only one of them
 was reachable from that command line before this seam: a class reference
 (``pkg.module:Class``) imports itself when it resolves, but a REGISTERED
 kind name (``synth-source``) exists only after its owning package has been
-imported. ``--adapter`` is that import, and it happens BEFORE the document
-is read.
+imported. ``--adapter`` is that import, after the public document has been
+captured and preflighted.
 
 The properties pinned here:
 
@@ -16,8 +16,8 @@ The properties pinned here:
   suite may already have imported the adapter and the flag would then
   prove nothing;
 * the flag repeats, and EVERY entry is imported;
-* adapters import before the document is read (a bad module beats a
-  missing file to the error message);
+* every route captures and preflights its document before importing
+  adapters (a missing or malformed document beats a bad module);
 * a bad module exits 1 with the ImportError printed — no traceback;
 * ``validate --adapter`` is unchanged.
 
@@ -140,14 +140,26 @@ class TestAdapterKindsBecomeReachable:
 
 
 class TestImportOrderAndRepetition:
-    @pytest.mark.parametrize("command", ["plan", "run"])
-    def test_adapters_import_before_the_document_is_read(self, command, capsys):
-        # Both a bad module AND a missing file: whichever error surfaces
-        # names which step ran first.
-        assert main([command, "no-such-document.json", "--adapter", MISSING]) == 1
+    @pytest.mark.parametrize("command", ["plan", "run", "staged", "walkforward", "validate"])
+    @pytest.mark.parametrize("document_error", ["missing", "malformed"])
+    def test_document_capture_and_preflight_beat_adapter_import(
+        self, tmp_path, command, document_error, capsys
+    ):
+        # A document error and a bad module together prove the public order.
+        path = tmp_path / "malformed.json"
+        if document_error == "missing":
+            path = tmp_path / "no-such-document.json"
+            expected = str(path)
+        else:
+            path.write_text("{", encoding="utf-8")
+            expected = "is not valid JSON"
+        argv = [command, str(path)]
+        if command in {"run", "staged", "walkforward"}:
+            argv += ["--asof", ASOF]
+        assert main([*argv, "--adapter", MISSING]) == 1
         out = capsys.readouterr().out
-        assert f"No module named '{MISSING}'" in out
-        assert "no-such-document.json" not in out
+        assert expected in out
+        assert MISSING not in out
 
     def test_the_flag_repeats(self, capsys):
         assert main(["plan", NODEMAP, "--adapter", ADAPTER, "--adapter", "json"]) == 0
