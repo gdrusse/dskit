@@ -1380,3 +1380,101 @@ def test_deleted_receipt_store_key_refuses_capture_of_in_memory_published():
     with pytest.raises(ValueError, match="PUBLISHED|store|predecessor|sequence"):
         _capture(broker, published, frozen)
 
+
+def test_published_sealed_swap_cannot_consume_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_a, published_a, _values_a = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_a)
+    session_b = broker.start_producer_session(
+        run_identity="producer-b",
+        process_measurement_sha256=_SHA["producer_process"],
+        runtime_sha256=_SHA["producer_runtime"],
+        plan_sha256=_SHA["producer_plan"],
+    )
+    producer_b = dict(_PRODUCER)
+    producer_b["run_identity"] = "producer-b"
+    prepared_b = broker.produce(
+        session_b,
+        producer=producer_b,
+        root={
+            "root_ref": "capture://synthetic/root-b",
+            "root_id": "8" * 64,
+            "snapshot_version": "1",
+        },
+        purpose="synthetic",
+        expected_members=("config.json", "artifacts/bundle.json"),
+        members=_members({"rows": [{"id": "BBB-SUBSTITUTED"}]}),
+        output_member="artifacts/bundle.json",
+        completed=True,
+        planned=True,
+        transition_nonce="nonce-produced-b",
+    )
+    sealed_b = broker.seal(session_b, prepared_b, transition_nonce="nonce-sealed-b")
+    broker.publish(session_b, sealed_b, transition_nonce="nonce-published-b")
+    broker.end_session(session_b)
+    _document, frozen = _freeze(broker, published_a)
+    try:
+        published_a.sealed = sealed_b
+    except (TypeError, ValueError, AttributeError):
+        pass
+    captured, session = _capture(broker, published_a, frozen)
+    verified = broker.open_capture(session, captured)
+    artifact = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    ).require("bundle").artifact
+
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker.descriptor(published_a, purpose="synthetic")["root_ref"] == _ROOT["root_ref"]
+
+
+def test_truncated_sealed_members_cannot_publish_partial_worm_snapshot():
+    trust = _trust()
+    storage = {}
+    broker = trust._development_broker(
+        snapshot_storage=storage,
+        start_ms=1_700_000_000_000,
+    )
+    producer_session, prepared, _values = _produce(broker)
+    sealed = broker.seal(
+        producer_session,
+        prepared,
+        transition_nonce="nonce-sealed",
+    )
+    truncated = False
+    try:
+        sealed.prepared.members.pop()
+        truncated = True
+    except (TypeError, ValueError, AttributeError):
+        try:
+            sealed.prepared.members = list(sealed.prepared.members)[:1]
+            truncated = True
+        except (TypeError, ValueError, AttributeError):
+            pass
+    if truncated:
+        with pytest.raises((TypeError, ValueError, AttributeError)):
+            broker.publish(
+                producer_session,
+                sealed,
+                transition_nonce="nonce-published",
+            )
+        assert {key[2] for key in storage} != {"config.json"}
+        assert storage == {}
+        return
+    published = broker.publish(
+        producer_session,
+        sealed,
+        transition_nonce="nonce-published",
+    )
+    paths = {key[2] for key in storage}
+
+    assert paths == {"config.json", "artifacts/bundle.json"}
+    assert broker.descriptor(published, purpose="synthetic")["root_ref"] == _ROOT["root_ref"]
+
