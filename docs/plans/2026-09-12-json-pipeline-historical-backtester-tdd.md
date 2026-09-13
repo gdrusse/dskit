@@ -464,9 +464,7 @@ roster, wrong scope/source/license/schema/receipt/member/digest/purpose, mutatio
 early/late availability, raw provider/filesystem/network attempt, replay/reopen/seek,
 and restart refusal before output. **GREEN/test:** focused roster/raw-dataset/
 envelope/order tests use the exact deterministic synthetic fixture and derive the
-rank only from the verified pre-document policy; add focused
-`tests/production/test_bundles.py`, `test_feed.py`, and
-`test_captured_event_dataset.py` coverage for the default-deny codec/one-pass stream.
+rank only from the verified pre-document policy; add only NEW tests/production/test_captured_event_dataset.py::test_roster_rejects_g2_without_g1, the F3 manifest-owned focused coverage for the default-deny codec and one-pass stream.
 Those tests also prove CAPTURED-before-document/hash, placeholder/self hash,
 prefreeze port, publish omission, same run/session, descriptor mutation after freeze,
 and wrong consumer-doc hash refuse while the exact publish->freeze->port->CAPTURED->
@@ -688,8 +686,7 @@ raw-artifact, or noncaptured decision input refuses.
 `children/intraday_equities/tests/test_forecast_bundle.py` only. **RED:**
 `test_forecast_consumer_requires_v2_captured_set` refuses a descriptor, port, or
 receipt that is not the F5a V2 set. **GREEN:** one nonserializable binding is injected
-only into its declared consumer input; run `wsl.exe -e bash -lc 'cd forecast-capital &&
-python -m pytest -q children/intraday_equities/tests/test_forecast_bundle.py::test_forecast_consumer_requires_v2_captured_set'`.
+only into its declared consumer input; the controlling manifest supplies its focused command.
 Terra records the sole skeptic review after Sol GREEN.
 
 ### A1 — generic TrainableNode/splits
@@ -993,7 +990,7 @@ refit/paper/live work occurs.
 
 I2 verifies only this order: dual G1+G2 authority -> PUBLISHED public metadata ->
 PUBLISHED inputs -> PIS -> ScopeIntent -> sorted G0--G7 gates -> CES -> PEA -> private BVP/PCE -> byte equality -> CAS -> ScopeAuthorization consuming the exact ScopeIntent, gates, CES, PEA, BVP/PCE, and CAS -> StageAdmission -> consumed ActionExecutionAdmission -> per-port authorization/capture -> CapturedAuthorizationSet -> distinct session/consumer.
-capture precedes scope/stage/action admission. Published stage outputs then form the
+No capture precedes ScopeAuthorization, StageAdmission, consumed ActionExecutionAdmission, per-port authorization, and seal/capture. Published stage outputs then form the
 pre-final replay chain, Manifest, FinalReplayAdmission, replay capture, and session.
 RED proves G2-only, pre-private-plan, pre-admission, and every reordered chain
 refuse. No phase authorizes paper/live, another dataset/execution, retuning, release,
