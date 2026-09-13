@@ -2291,3 +2291,194 @@ def test_dual_intern_bindings_pin_cannot_move_consumed_cas():
     assert artifact.value["rows"][0]["id"] == "AAA"
     assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
 
+
+def _dual_write(table, intern, key, value):
+    table[key] = value
+    if intern is not None:
+        intern[key] = value
+
+
+def test_dual_intern_session_streams_cannot_release_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        _session_b,
+        _bindings_a,
+        bindings_b,
+    ) = _two_captured_consumers(broker)
+    bindings_b.require("bundle")
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    broker._used_inputs[id(session_a)] = {"bundle"}
+    _dual_write(
+        broker._session_streams,
+        getattr(broker, "_session_stream_intern", None),
+        id(session_a),
+        (id(session_a), sid_b),
+    )
+    with pytest.raises(ValueError, match="CONSUMED|required"):
+        broker.release(session_a)
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CONSUMED"
+
+
+def test_dual_intern_runtime_cannot_forge_consumed_actor():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    rec_b = broker._session_runtime[id(session_b)]
+    items_b = rec_b[1] if isinstance(rec_b, tuple) and len(rec_b) > 1 else rec_b
+    _dual_write(
+        broker._session_runtime,
+        getattr(broker, "_session_runtime_intern", None),
+        id(session_a),
+        (id(session_a), items_b),
+    )
+    artifact = _consume_or_refuse(bindings_a)
+    consumed = broker._receipt_audit(published_a)[-1]
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert consumed["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert consumed["event"] == "CONSUMED"
+    assert consumed["actor_runtime"]["run_identity"] == "consumer-a"
+
+
+def test_dual_intern_freeze_and_publish_stream_cannot_capture_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _document_b, _frozen_b = _freeze(
+        broker,
+        published_b,
+        document=_consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    _dual_write(
+        broker._freeze_published,
+        getattr(broker, "_freeze_intern", None),
+        id(frozen_a),
+        published_b,
+    )
+    with pytest.raises(
+        ValueError,
+        match="document|published|root|port|freeze|mismatch|capture|required",
+    ):
+        _capture(
+            broker,
+            published_b,
+            frozen_a,
+            run_identity="consumer-cross",
+            nonce="nonce-captured-cross",
+        )
+    assert broker._receipt_audit(published_a)[-1]["event"] == "PUBLISHED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+    freeze_intern = getattr(broker, "_freeze_intern", None)
+    original_freeze = published_a
+    if freeze_intern is not None:
+        original_freeze = freeze_intern.get(id(frozen_a), published_a)
+        if original_freeze is published_b:
+            original_freeze = published_a
+    _dual_write(
+        broker._freeze_published,
+        freeze_intern,
+        id(frozen_a),
+        original_freeze,
+    )
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    stream_intern = getattr(broker, "_publish_stream_intern", None)
+    original_stream = None if stream_intern is None else stream_intern.get(id(published_a))
+    _dual_write(
+        broker._publish_stream,
+        stream_intern,
+        id(published_a),
+        sid_b,
+    )
+    with pytest.raises(
+        ValueError,
+        match="document|published|root|port|stream|mismatch|capture|required",
+    ):
+        _capture(
+            broker,
+            published_a,
+            frozen_a,
+            run_identity="consumer-a",
+            nonce="nonce-captured-a",
+        )
+    if original_stream is not None:
+        _dual_write(
+            broker._publish_stream,
+            stream_intern,
+            id(published_a),
+            original_stream,
+        )
+    assert broker._receipt_audit(published_a)[-1]["event"] == "PUBLISHED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_dual_intern_capture_bind_cannot_consume_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _document_b, frozen_b = _freeze(
+        broker,
+        published_b,
+        document=_consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    captured_a, session_a = _capture(
+        broker,
+        published_a,
+        frozen_a,
+        run_identity="consumer-a",
+        nonce="nonce-captured-a",
+    )
+    captured_b, _session_b = _capture(
+        broker,
+        published_b,
+        frozen_b,
+        run_identity="consumer-b",
+        nonce="nonce-captured-b",
+    )
+    bind_b = broker._capture_bind[id(captured_b)]
+    _dual_write(
+        broker._capture_bind,
+        getattr(broker, "_capture_bind_intern", None),
+        id(captured_a),
+        bind_b,
+    )
+    with pytest.raises(ValueError, match="capture|session|token|required|bind"):
+        broker.open_capture(session_a, captured_a)
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+
