@@ -1152,6 +1152,40 @@ REMAINING, in the plan's risk order:
       shape — `Raises` completeness remains open.** A 26th round should
       re-run this same deliberately-broad, shape-agnostic method on a
       fresh set of functions.
+
+      **Twenty-sixth skeptic round (2026-09-13): generalized round 25's
+      two shapes (found no new instances of either) and traced 5 fresh
+      functions — a 23rd recurrence, 2 MAJOR, both the "caller-owned
+      Store propagation" shape on functions that had never individually
+      been swept, not a new shape.** `Registry._spec`, `build_manifest`,
+      and `logloss` (a full fresh trace of the whole `metrics.py` file)
+      all came back clean. **MAJOR:** `Lineage.edges()`
+      (`dskit/assets/lineage.py`) — the shared engine underneath
+      `add`/`parents`/`children`/`ancestors`/`descendants`, all five of
+      which got their OWN `Store`-propagation fix in round 24 — had no
+      `Raises` section at all, and calls `self.registry.store.iter_events()`
+      unguarded; verified live with a `Store.iter_events` raising
+      `MemoryError`. Fixed, and the four sibling methods' existing
+      `Exception` entries (which named only the `Registry.get`
+      resolution step) broadened to also cite this method, since
+      `parents`/`children` call it directly and a raising
+      `iter_events` was previously undocumented from THIS path too.
+      **MAJOR:** `sync_published` (`dskit/assets/sync.py`) documented
+      only the narrow `KeyError` case (a model missing a required
+      ref) for "escapes the per-file catch, aborts the whole scan," but
+      `_sync_one` also calls `registry.store.has_record(...)`
+      *directly*, bypassing `Registry`'s own already-fixed wrapper —
+      verified live that a `Store.has_record` raising `MemoryError`
+      propagates the same way. Fixed with a generic `Exception` entry
+      alongside the existing `KeyError` one. **Given a 23rd straight
+      round, and this round's own closing note that the "direct
+      caller-owned-seam bypass" sub-shape (skipping `Registry`'s
+      wrapper entirely, as `_sync_one` does) is narrower than what
+      rounds 23-24 swept and may have more instances — `Raises`
+      completeness remains open.** A 27th round should specifically
+      grep for other direct `registry.store.*`/`connector.*`/
+      `backend.*` calls that bypass an already-fixed wrapper method,
+      rather than another fully generic sweep.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,

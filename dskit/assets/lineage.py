@@ -160,6 +160,17 @@ class Lineage:
         -------
         list of dict
             ``{"src", "dst", "relation", "phase", "origin", "at"}`` each.
+
+        Raises
+        ------
+        Exception
+            Whatever the registry's underlying
+            :class:`~dskit.assets.store.Store` raises from
+            ``iter_events``, if anything — a caller-supplied store,
+            called unguarded; this is the shared engine underneath
+            :meth:`add`/:meth:`parents`/:meth:`children`/
+            :meth:`ancestors`/:meth:`descendants`, all of which inherit
+            the same gap by calling this method.
         """
         out = []
         for event in self.registry.store.iter_events():
@@ -191,8 +202,9 @@ class Lineage:
             Whatever the registry's underlying
             :class:`~dskit.assets.store.Store` raises, if anything,
             while resolving ``version_id`` (via
-            :meth:`~dskit.assets.registry.Registry.get`) — a
-            caller-supplied store, called unguarded.
+            :meth:`~dskit.assets.registry.Registry.get`) or reading
+            the edge log (via :meth:`edges`) — a caller-supplied
+            store, called unguarded.
         """
         self.registry.get(version_id)
         return sorted({e["src"] for e in self.edges(version_id) if e["dst"] == version_id})
@@ -219,8 +231,9 @@ class Lineage:
             Whatever the registry's underlying
             :class:`~dskit.assets.store.Store` raises, if anything,
             while resolving ``version_id`` (via
-            :meth:`~dskit.assets.registry.Registry.get`) — a
-            caller-supplied store, called unguarded.
+            :meth:`~dskit.assets.registry.Registry.get`) or reading
+            the edge log (via :meth:`edges`) — a caller-supplied
+            store, called unguarded.
         """
         self.registry.get(version_id)
         return sorted({e["dst"] for e in self.edges(version_id) if e["src"] == version_id})
@@ -247,8 +260,9 @@ class Lineage:
             Whatever the registry's underlying
             :class:`~dskit.assets.store.Store` raises, if anything,
             while resolving ``version_id`` (via
-            :meth:`~dskit.assets.registry.Registry.get`) — a
-            caller-supplied store, called unguarded.
+            :meth:`~dskit.assets.registry.Registry.get`) or reading
+            the edge log (via :meth:`edges`) — a caller-supplied
+            store, called unguarded.
         """
         return self._closure(version_id, upstream=True)
 
@@ -274,8 +288,9 @@ class Lineage:
             Whatever the registry's underlying
             :class:`~dskit.assets.store.Store` raises, if anything,
             while resolving ``version_id`` (via
-            :meth:`~dskit.assets.registry.Registry.get`) — a
-            caller-supplied store, called unguarded.
+            :meth:`~dskit.assets.registry.Registry.get`) or reading
+            the edge log (via :meth:`edges`) — a caller-supplied
+            store, called unguarded.
         """
         return self._closure(version_id, upstream=False)
 
