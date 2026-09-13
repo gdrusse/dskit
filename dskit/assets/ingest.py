@@ -107,6 +107,13 @@ def ingest_run(registry, run_dir, origin="ingest-run") -> dict:
         If a file under ``artifacts/`` is a symlink loop (too many
         levels of symbolic links) — the same unconfirmed-open gap as
         above, a different OS-level failure.
+    Exception
+        Whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything — this
+        function's ``registry.register``/``Lineage.add`` calls are
+        each already documented to propagate it, but a caller reading
+        only this docstring would not know that without following
+        those cross-references.
 
     Examples
     --------

@@ -139,11 +139,15 @@ def sync_published(registry, published_root, origin="sync-published") -> dict:
     Exception
         Whatever ``registry``'s underlying
         :class:`~dskit.assets.store.Store` raises, if anything, from
-        ``has_record`` (called directly, bypassing
-        :class:`~dskit.assets.registry.Registry`'s own wrapper) — the
-        same "escapes the per-file catch, aborts the whole scan" gap
-        as the ``KeyError`` case above, from a different caller-owned
-        seam.
+        ``has_record`` (called directly per file, bypassing
+        :class:`~dskit.assets.registry.Registry`'s own wrapper), or
+        from ``registry.find``/``registry.get``/``registry.register``/
+        ``Lineage.add`` (each already documented, on those methods
+        themselves, to propagate the store's own exceptions) — every
+        one of these escapes the per-file ``except AssetError`` catch
+        and aborts the WHOLE scan, the same consequence as the
+        ``KeyError`` case above, from several different caller-owned
+        seams.
     """
     errors = []
     if not isinstance(registry, Registry):

@@ -206,7 +206,12 @@ def run_acquisition(root, registry, source, stream, mode, origin="acquire") -> d
         Whatever the resolved connector's own ``check()`` or ``read()``
         raises, if anything — both are called unguarded, on an
         implementer-supplied :class:`~dskit.onboarding.connector.Connector`
-        subclass whose contract the ABC documents but does not enforce.
+        subclass whose contract the ABC documents but does not enforce;
+        or whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything, from
+        the evidence-writing ``registry.register`` calls — already
+        documented on :meth:`~dskit.assets.registry.Registry.register`
+        itself, but not previously cited here.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

@@ -281,9 +281,11 @@ class TrainingCurve:
         TypeError
             If ``epoch`` or ``seconds`` is neither a number nor a
             string (e.g. ``None`` or a list) — both go through a bare
-            ``int()``/``float()`` conversion, unvalidated; or ``metrics``
-            is truthy but has no ``.items()`` (e.g. a list) — it is
-            iterated unguarded once it passes the falsy/``None`` check.
+            ``int()``/``float()`` conversion, unvalidated.
+        AttributeError
+            If ``metrics`` is truthy but has no ``.items()`` (e.g. a
+            list) — it is iterated unguarded once it passes the
+            falsy/``None`` check.
         """
         row = {"epoch": int(epoch), "train_loss": _num(train_loss)}
         if val_loss is not None:

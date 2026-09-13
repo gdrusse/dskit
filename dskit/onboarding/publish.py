@@ -100,6 +100,13 @@ def publish_version(root, registry, dataset, certification_vid,
         manifest cannot be written, because the outbox directory is
         not writable (propagated from ``os.makedirs`` and
         :func:`~dskit.onboarding.base.durable_write_bytes`).
+    Exception
+        Whatever ``registry``'s underlying
+        :class:`~dskit.assets.store.Store` raises, if anything — this
+        function's ``registry.get``/``registry.register`` calls are
+        each already documented to propagate it, but a caller reading
+        only this docstring would not know that without following
+        those cross-references.
     """
     if not isinstance(root, OnboardingRoot):
         raise AssetError([f"root must be an OnboardingRoot, got {type(root).__name__}"])

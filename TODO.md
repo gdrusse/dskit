@@ -1186,6 +1186,45 @@ REMAINING, in the plan's risk order:
       grep for other direct `registry.store.*`/`connector.*`/
       `backend.*` calls that bypass an already-fixed wrapper method,
       rather than another fully generic sweep.
+
+      **Twenty-seventh skeptic round (2026-09-13): the direct-bypass
+      hunt came back clean, but surfaced a related, bigger recurrence
+      instead — a 24th straight round, 4 MAJOR + 1 MINOR.** No new
+      bypass-of-a-wrapper sites exist; every `.store.`/`connector.*`/
+      `backend.*` call in the 24 files already routes through an
+      already-documented wrapper. But three functions that DO call
+      `Registry`'s/`Lineage`'s own already-fixed, properly-wrapped
+      methods (`ingest_run` → `registry.register`/`Lineage.add`;
+      `publish_version` → `registry.get`/`registry.register`;
+      `run_acquisition` → `registry.register`, its evidence-writing
+      step) never cited that those calls can themselves propagate the
+      store's exception — a caller reading only, say, `ingest_run`'s
+      own `Raises` would not learn this without separately opening
+      `Registry.register`'s docstring. Verified live on all three: a
+      `Store.put_record` raising `MemoryError` escapes each,
+      undocumented. Added a cross-referencing `Exception` note to each.
+      Separately, round 26's own `sync_published` fix was found
+      INCOMPLETE: its new `Exception` entry named only the direct
+      `has_record` bypass, but `_sync_one`'s properly-wrapped
+      `registry.find`/`registry.get`/`registry.register`/`Lineage.add`
+      calls escape the identical per-file catch just as unguarded —
+      verified live for all four (`list_records`/`get_record`/
+      `put_record`/`append_event` failures all propagate past the
+      `except AssetError` and abort the whole scan) — broadened to name
+      all of them. **MINOR:** `TrainingCurve.record`
+      (`dskit/pipeline/trainlog.py`) had its own round-19 fix
+      MISFILED: the `metrics`-is-truthy-but-not-a-dict clause was
+      appended under the `TypeError` heading, but the actual exception
+      is `AttributeError` (`'list' object has no attribute 'items'`)
+      — moved to its own, correctly-typed entry. **Given a 24th
+      straight round — `Raises` completeness remains open**, though
+      this round's framing corrects round 26's: the residual gap isn't
+      really "direct bypass of a wrapper" but "a caller of an
+      already-fixed wrapper method not cross-citing that method's own
+      propagation note in its own docstring" — a documentation-linking
+      gap, not a new code-behavior discovery. A 28th round should check
+      whether any OTHER caller of `Registry.register`/`.get`/`Lineage.add`
+      in the 24 files has the same missing cross-reference.
 - [x] **Convert the 81 unexecuted `>>>` lines** across 17 docstrings in
       `assets/`/`onboarding/` to `::` blocks. They read as verified doctests
       and nothing collects them. Biggest: `assets/model.py:64`,
