@@ -92,6 +92,41 @@ def read_json(run_dir, name):
         return json.load(fh)
 
 
+def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "execution_poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "class PoisonNode:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    document = PipelineDocument.from_obj(
+        {
+            "name": "execution-driver-refusal",
+            "pipeline": {
+                "source": {"uses": "execution_poison_adapter:PoisonNode"}
+            },
+            "execution_backtest": {
+                "schema_version": "dskit.execution-backtest/v1",
+                "purpose": "synthetic",
+                "event_envelope_schema": "dskit.event-envelope/v2",
+                "source_rank_policy_sha256": "1" * 64,
+                "execution_profile_sha256": "2" * 64,
+                "environment_identity_sha256": "3" * 64,
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError) as exc_info:
+        run_document(document, asof=ASOF)
+
+    assert not marker.exists(), "execution document imported its adapter"
+    assert "external broker" in str(exc_info.value)
+
+
 class TestCleanRun:
     def test_end_to_end_banking_run(self, tmp_path, registry):
         result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)
