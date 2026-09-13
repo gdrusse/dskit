@@ -480,9 +480,9 @@ def cmd_walkforward(path, asof, adapters=()) -> int:
 def cmd_staged(path, asof, adapters=()) -> int:
     """Execute or resume a document's journal-backed study stages."""
     try:
-        document, _obj = load_and_preflight_public_document(path)
-        document = _require_public_document(path, document)
         source_path = os.path.realpath(os.path.abspath(os.fspath(path)))
+        document, _obj = load_and_preflight_public_document(source_path)
+        document = _require_public_document(path, document)
         _import_adapters(adapters)
         from dskit.pipeline.stages import run_staged
 

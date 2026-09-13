@@ -414,7 +414,7 @@ def run_staged(document, source_path=None, asof=None, registry=DEFAULT_STAGE_KIN
     if source_path is None:
         raise ValueError("run_staged requires source_path as a staged-journal label")
     try:
-        source_path = os.path.realpath(os.path.abspath(os.fspath(source_path)))
+        source_path = os.fspath(source_path)
     except TypeError as exc:
         raise ValueError("run_staged source_path must be a string or path-like label") from exc
     plan = plan_stages(document, registry=registry)
