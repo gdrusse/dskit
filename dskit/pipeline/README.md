@@ -637,6 +637,7 @@ dskit/pipeline/
 │                      run_walk_forward (one derived run per fold + summary);
 │                      RunAttestation + content_identity (ADR-0119)
 ├── stages.py          journal-backed staged DAG execution and resume
+├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        per-(unit,horizon) quality gate: contiguous horizon cap
 │                      over config-declared checks + slice stability (ADR-0107)
