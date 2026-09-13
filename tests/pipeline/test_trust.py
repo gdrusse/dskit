@@ -137,6 +137,37 @@ def _publish(
     return session, published, values
 
 
+def _foreign_publish(broker):
+    session = broker.start_producer_session(
+        run_identity="producer-b",
+        process_measurement_sha256=_SHA["producer_process"],
+        runtime_sha256=_SHA["producer_runtime"],
+        plan_sha256=_SHA["producer_plan"],
+    )
+    producer = dict(_PRODUCER)
+    producer["run_identity"] = "producer-b"
+    prepared = broker.produce(
+        session,
+        producer=producer,
+        root={
+            "root_ref": "capture://synthetic/root-b",
+            "root_id": "8" * 64,
+            "snapshot_version": "1",
+        },
+        purpose="synthetic",
+        expected_members=("config.json", "artifacts/bundle.json"),
+        members=_members({"rows": [{"id": "BBB-SUBSTITUTED"}]}),
+        output_member="artifacts/bundle.json",
+        completed=True,
+        planned=True,
+        transition_nonce="nonce-produced-b",
+    )
+    sealed = broker.seal(session, prepared, transition_nonce="nonce-sealed-b")
+    published = broker.publish(session, sealed, transition_nonce="nonce-published-b")
+    broker.end_session(session)
+    return published, sealed
+
+
 def _consumer_document(descriptor, *, name="consumer"):
     return {
         "name": name,
@@ -1477,4 +1508,84 @@ def test_truncated_sealed_members_cannot_publish_partial_worm_snapshot():
 
     assert paths == {"config.json", "artifacts/bundle.json"}
     assert broker.descriptor(published, purpose="synthetic")["root_ref"] == _ROOT["root_ref"]
+
+
+def test_captured_published_swap_cannot_consume_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document, frozen = _freeze(broker, published_a)
+    captured, session = _capture(broker, published_a, frozen)
+    try:
+        captured.published = published_b
+    except (TypeError, ValueError, AttributeError):
+        object.__setattr__(captured, "published", published_b)
+    verified = broker.open_capture(session, captured)
+    artifact = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    ).require("bundle").artifact
+
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_sealed_slot_setattr_cannot_consume_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_a)
+    _published_b, sealed_b = _foreign_publish(broker)
+    _document, frozen = _freeze(broker, published_a)
+    object.__setattr__(published_a, "_sealed", sealed_b)
+    captured, session = _capture(broker, published_a, frozen)
+    verified = broker.open_capture(session, captured)
+    artifact = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    ).require("bundle").artifact
+
+    assert artifact.value["rows"][0]["id"] == "AAA"
+
+
+def test_frozen_published_setattr_cannot_capture_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document, frozen = _freeze(broker, published_a)
+    object.__setattr__(frozen, "published", published_b)
+
+    with pytest.raises(ValueError, match="published|document|port|root"):
+        _capture(broker, published_b, frozen)
+    captured, session = _capture(broker, published_a, frozen)
+    verified = broker.open_capture(session, captured)
+    artifact = broker.captured_bindings(
+        session,
+        frozen,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed",
+    ).require("bundle").artifact
+
+    assert artifact.value["rows"][0]["id"] == "AAA"
 
