@@ -446,3 +446,11 @@ def test_public_resolver_requires_an_ordinary_document_before_import(tmp_path, m
     reg.register("minimal", MinimalNode)
     with pytest.raises(ValueError, match="PipelineDocument first"):
         public_resolve_uses("minimal", reg)
+
+
+def test_public_resolver_keyword_only_retired_form_names_the_migration():
+    reg = NodeKindRegistry()
+    reg.register("minimal", MinimalNode)
+
+    with pytest.raises(ValueError, match=r"PipelineDocument.*retired"):
+        public_resolve_uses(uses="minimal", registry=reg)
