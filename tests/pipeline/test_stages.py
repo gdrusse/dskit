@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -30,6 +31,18 @@ class DoublerStage(Stage):
     def run(self, ctx, inputs):
         del ctx
         return {"result": 2 * inputs["source"]}
+
+
+class ChangingDirectoryStage(Stage):
+    outputs = ("value",)
+    target = None
+    calls = 0
+
+    def run(self, ctx, inputs):
+        del ctx, inputs
+        type(self).calls += 1
+        os.chdir(type(self).target)
+        return {"value": type(self).calls}
 
 
 def _document(run_root):
@@ -90,6 +103,33 @@ def test_staged_run_resumes_without_reexecuting(tmp_path, monkeypatch):
     assert first.outputs["second"]["result"] == 2
     assert second.outputs == first.outputs
     assert CountingStage.calls == 1
+
+
+def test_direct_staged_run_keeps_a_relative_label_after_a_stage_changes_cwd(
+    tmp_path, monkeypatch
+):
+    child_a, path = _write_child(tmp_path)
+    child_b = tmp_path / "child-b"
+    child_b.mkdir()
+    init_journal(str(child_b))
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child_a)
+    ChangingDirectoryStage.target = str(child_b)
+    ChangingDirectoryStage.calls = 0
+    registry = StageKindRegistry()
+    registry.register("count", ChangingDirectoryStage)
+    registry.register("double", DoublerStage)
+    document = PipelineDocument.from_obj(_document(child_a / "runs"))
+    first = run_staged(document, "configs/run.json", asof="2026-01-02", registry=registry)
+    from dskit.journal import load_root
+    from dskit.journal.store import read_actions
+    assert [row.inputs for row in read_actions(load_root(str(child_a)))] == [str(path), str(path)]
+    assert read_actions(load_root(str(child_b))) == []
+    monkeypatch.chdir(child_a)
+    second = run_staged(document, "configs/run.json", asof="2026-01-02", registry=registry)
+    assert second.outputs == first.outputs
+    assert ChangingDirectoryStage.calls == 1
+
 
 def test_cli_staged_keeps_the_original_path(tmp_path, monkeypatch):
     child, path = _write_child(tmp_path)
