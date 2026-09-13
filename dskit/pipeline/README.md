@@ -48,10 +48,11 @@ python -m dskit.pipeline runs                                     # every run so
 ```
 
 Exit codes: **0** ran · **3** halted at a NO-GO gate (a halt is a result) ·
-**1** error. `--adapter MODULE` (repeatable, also on
-`walkforward`/`plan`/`validate`) imports your package first so its registered
-kinds resolve. Two more verbs — `demo`
-(the default) and `synthetic` — drive the legacy stage-list grammar (below).
+**1** error. `--adapter MODULE` (repeatable, on `run`, `staged`,
+`walkforward`, `plan`, and `validate`) imports your package only after
+document capture and mapping-shape preflight, so its registered kinds resolve
+safely. Two more verbs — `demo` (the default) and `synthetic` — drive the
+legacy stage-list grammar (below).
 
 ## The shape of a run
 

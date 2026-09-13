@@ -238,7 +238,7 @@ class TestHelp:
         out = " ".join(capsys.readouterr().out.split())
         assert "--adapter MODULE" in out
         assert (
-            "adapter module(s) to import first (import = registration), "
+            "adapter module(s) to import after document preflight (import = registration), "
             "e.g. yourproject — a child package, never a dskit subpackage"
             in out
         )

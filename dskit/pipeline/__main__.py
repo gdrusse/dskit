@@ -33,13 +33,13 @@ One command line for every project and venue (docs/24 §9, D-145 ruling
   through to the stage-list validator. Its node count reports what RUNS,
   so a fanned-out document counts its instances.
 
-``--adapter MODULE`` (repeatable) applies to all three: it imports the
-named module after an ordinary document is captured, which is how a document that
-names registered adapter kinds (``<venue>-kelly-mio``) resolves them.
-Documents referencing components by class path
-(``yourproject.nodes:KellyMIOSize`` — a CHILD package, ADR-0032) import
-themselves and need no flag — adapters ship components, never CLIs
-(D-145 ruling 3).
+``--adapter MODULE`` (repeatable) applies to every node-map route — ``run``,
+``staged``, ``walkforward``, ``plan``, and ``validate``. Each captures and
+preflights the document before importing named modules, so registered adapter
+kinds (``<venue>-kelly-mio``) resolve safely. Documents referencing components
+by class path (``yourproject.nodes:KellyMIOSize`` — a CHILD package,
+ADR-0032) import themselves and need no flag — adapters ship components,
+never CLIs (D-145 ruling 3).
 * ``nodemap`` — the full banking document (data → … → stat_test →
   capital → report) against the synthetic Node set, in a temporary
   directory; prints the verdict-first report.
@@ -181,19 +181,37 @@ def _path_prefixed_config_error(path, error):
     return ConfigError([f"{path}: {problem}" for problem in error.errors])
 
 
+def _raw_mapping_field_problems(where, specs, noun):
+    """Return mapping-field shape problems before any adapter can import."""
+    problems = []
+    for key, spec in specs.items():
+        path = f"{where}.{key}"
+        if not isinstance(spec, dict):
+            problems.append(f"{path}: {noun} must be an object")
+            continue
+        for field in ("inputs", "params"):
+            if field in spec and not isinstance(spec[field], dict):
+                problems.append(f"{path}: {field} must be an object")
+    return problems
+
+
 def _raw_node_map_problems(obj):
     """Return raw node-map shape problems before any adapter can import."""
-    pipeline = obj.get("pipeline")
-    if pipeline is None:
-        return []
-    if not isinstance(pipeline, dict):
-        return ["pipeline must be an object"]
     problems = []
-    for key, spec in pipeline.items():
-        if not isinstance(spec, dict):
-            problems.append(f"pipeline.{key}: node must be an object")
-        elif "params" in spec and not isinstance(spec["params"], dict):
-            problems.append(f"pipeline.{key}: params must be an object")
+    pipeline = obj.get("pipeline")
+    if pipeline is not None:
+        if not isinstance(pipeline, dict):
+            problems.append("pipeline must be an object")
+        else:
+            problems.extend(_raw_mapping_field_problems("pipeline", pipeline, "node"))
+    foreach = obj.get("foreach")
+    if isinstance(foreach, dict) and isinstance(foreach.get("pipeline"), dict):
+        problems.extend(
+            _raw_mapping_field_problems("foreach.pipeline", foreach["pipeline"], "node")
+        )
+    stages = obj.get("stages")
+    if isinstance(stages, dict):
+        problems.extend(_raw_mapping_field_problems("stages", stages, "stage"))
     return problems
 
 
@@ -805,7 +823,7 @@ def _add_adapter_flag(parser) -> None:
         action="append",
         default=[],
         metavar="MODULE",
-        help="adapter module(s) to import first (import = registration), "
+        help="adapter module(s) to import after document preflight (import = registration), "
         "e.g. yourproject — a child package, never a dskit subpackage",
     )
 
