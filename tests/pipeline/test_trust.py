@@ -2836,3 +2836,107 @@ def test_receipt_store_truncation_cannot_rewind_consumed():
     assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
     assert len(stored) == len(original)
 
+
+def test_hmac_mint_and_stream_id_setattr_cannot_move_consumed_cas():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        _session_a,
+        _session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    published_identity_a = broker._receipt_audit(published_a)[2]["publication_receipt_sha256"]
+    payload = list(_json_payload(broker, broker._bindings_pin, id(bindings_a)))
+    payload[1] = sid_b
+    _hmac_mint(
+        broker,
+        broker._bindings_pin,
+        broker._bindings_intern,
+        id(bindings_a),
+        payload,
+    )
+    object.__setattr__(bindings_a, "_stream_id", sid_b)
+    artifact = _consume_or_refuse(bindings_a)
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+        return
+    consumed = broker._receipt_audit(published_a)[-1]
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert consumed["event"] == "CONSUMED"
+    assert consumed["publication_receipt_sha256"] == published_identity_a
+
+
+def test_hmac_mint_and_session_stream_setattr_cannot_release_another_stream():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        _session_b,
+        _bindings_a,
+        bindings_b,
+    ) = _two_captured_consumers(broker)
+    bindings_b.require("bundle")
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    broker._used_inputs[id(session_a)] = {"bundle"}
+    _hmac_mint(
+        broker,
+        broker._session_streams,
+        broker._session_stream_intern,
+        id(session_a),
+        [id(session_a), sid_b],
+    )
+    object.__setattr__(session_a, "_stream_id", sid_b)
+    with pytest.raises(ValueError, match="CONSUMED|required"):
+        broker.release(session_a)
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CONSUMED"
+
+
+def test_backing_store_and_watermark_cannot_rewind_consumed():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        session_a,
+        _session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    artifact = bindings_a.require("bundle").artifact
+    first = broker._receipt_audit(published_a)[-1]
+    assert first["event"] == "CONSUMED"
+    signature = first["signature"]
+    issued_at = first["issued_at_ms"]
+    sid_a = first["stream_id"]
+    original = tuple(broker._receipt_store[sid_a])
+    backing = getattr(broker._receipt_store, "_data", None)
+    if backing is None:
+        backing = getattr(broker._receipt_store, "_WormReceiptStore__data", None)
+    if backing is not None:
+        backing[sid_a] = original[:-1]
+    broker._receipt_len[sid_a] = len(original) - 1
+    broker._nonces.discard("nonce-consumed-a")
+    bindings_a._used.clear()
+    broker._used_inputs.pop(id(session_a), None)
+    _consume_or_refuse(bindings_a)
+    replayed = broker._receipt_audit(published_a)[-1]
+    assert replayed["event"] == "CONSUMED"
+    assert replayed["signature"] == signature
+    assert replayed["issued_at_ms"] == issued_at
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+
