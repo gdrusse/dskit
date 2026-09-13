@@ -818,6 +818,8 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._runtime = _AcceptRuntime()
         self._provider = _MemoryProvider(snapshot_storage, member_events, provider_worm)
         self._nonces = set()
+        self._consumed_streams = set()
+        self._receipt_high = {}
         self._sessions = {}
         self._streams = {}
         self._used_inputs = {}
@@ -1380,10 +1382,15 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("captured bindings are required")
         _bindings_id, intern_sid, nonce, port_items, session_id = rec
         session = bindings._session
-        handle_sid = str(bindings._stream_id)
-        if str(intern_sid) != handle_sid or session_id != id(session):
+        if session is None or id(session) != session_id or self._sessions.get(session_id) is not session:
             raise ValueError("captured bindings are required")
-        stream_id = handle_sid
+        found = self._stream_for_run_identity(
+            session._run_identity,
+            "captured bindings are required",
+        )
+        if str(intern_sid) != str(found):
+            raise ValueError("captured bindings are required")
+        stream_id = found
         port_items = tuple(tuple(item) for item in port_items)
         ports_rec = self._load_interned(
             self._bindings_ports,
@@ -1398,6 +1405,8 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("missing captured input")
         if session is None or id(session) != session_id or self._sessions.get(session_id) is not session:
             raise ValueError("captured bindings are required")
+        if stream_id in self._consumed_streams:
+            raise ValueError("replay of CONSUMED is refused")
         self._reload_stream(stream_id)
         self._require_head(stream_id, "CAPTURED")
         subject = self._publication_subject(stream_id)
@@ -1411,6 +1420,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             extra={"consumer_captured_port": dict(port_items)},
         )
         self._used_inputs.setdefault(session_id, set()).add(input_name)
+        self._consumed_streams.add(stream_id)
         return ports[input_name]
 
     def release(self, session):
@@ -1425,10 +1435,13 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         if bound[0] != id(session):
             raise ValueError("CONSUMED input is required before release")
-        handle_sid = session._stream_id
-        if handle_sid is None or str(bound[1]) != str(handle_sid):
+        found = self._stream_for_run_identity(
+            session._run_identity,
+            "CONSUMED input is required before release",
+        )
+        if str(bound[1]) != str(found):
             raise ValueError("CONSUMED input is required before release")
-        stream_id = str(handle_sid)
+        stream_id = found
         self._reload_stream(stream_id)
         self._require_head(stream_id, "CONSUMED")
         used = self._used_inputs.get(id(session), set())
@@ -1453,8 +1466,15 @@ class _DevelopmentBroker(LifecycleAuthority):
 
     def _reload_stream(self, stream_id):
         stored = tuple(self._receipt_store.get(stream_id, ()))
-        if len(stored) < self._receipt_len.get(stream_id, 0):
+        high = max(
+            self._receipt_len.get(stream_id, 0),
+            self._receipt_high.get(stream_id, 0),
+        )
+        if len(stored) < high:
             raise ValueError("WORM receipt store is append-only")
+        if stream_id in self._consumed_streams:
+            if not stored or json.loads(stored[-1].decode("ascii")).get("event") != "CONSUMED":
+                raise ValueError("WORM receipt store is append-only")
         if stream_id not in self._receipt_store:
             if stream_id in self._streams:
                 raise ValueError("PUBLISHED store predecessor sequence missing")
@@ -1464,7 +1484,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             json.loads(raw.decode("ascii")) for raw in self._receipt_store[stream_id]
         ]
         self._streams[stream_id] = rows
-        self._receipt_len[stream_id] = max(self._receipt_len.get(stream_id, 0), len(rows))
+        self._note_len(stream_id, len(rows))
 
     def _recover(self, stream_id):
         records = list(self._receipt_store.get(stream_id, ()))
@@ -1643,6 +1663,28 @@ class _DevelopmentBroker(LifecycleAuthority):
             pin.purpose,
         )
 
+    def _stream_for_run_identity(self, run_identity, message):
+        found = None
+        for stream_id, rows in self._streams.items():
+            for row in rows:
+                if row.get("event") != "CAPTURED":
+                    continue
+                if row.get("actor_runtime", {}).get("run_identity") != run_identity:
+                    continue
+                if found is not None and found != stream_id:
+                    raise ValueError(message)
+                found = stream_id
+        if found is None:
+            raise ValueError(message)
+        return str(found)
+
+    def _note_len(self, stream_id, n):
+        high = self._receipt_high.get(stream_id, 0)
+        if n < high:
+            raise ValueError("WORM receipt store is append-only")
+        self._receipt_high[stream_id] = n
+        self._receipt_len[stream_id] = n
+
     def _captured_actor_runtime(self, rows):
         for row in rows:
             if row.get("event") == "CAPTURED":
@@ -1800,7 +1842,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         rows.append(body)
         encoded = tuple(self._receipt_store.get(stream_id, ())) + (_canonical_bytes(body),)
         self._receipt_store[stream_id] = encoded
-        self._receipt_len[stream_id] = len(encoded)
+        self._note_len(stream_id, len(encoded))
         return body
 
 def _development_broker(
