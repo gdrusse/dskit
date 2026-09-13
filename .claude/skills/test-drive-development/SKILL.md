@@ -1,7 +1,6 @@
 ---
 name: test-drive-development
-description: Use when implementing any feature or bugfix, before writing implementation code
-disable-model-invocation: true
+description: Automatically use when implementing any feature, bugfix, refactor, or behavior change before production code; route high-risk work through skeptic-review Phase 0.
 ---
 
 # Test-Driven Development (TDD)

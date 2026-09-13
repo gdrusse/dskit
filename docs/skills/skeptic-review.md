@@ -71,15 +71,18 @@ digraph skeptic_loop {
     dispatch [label="Dispatch >=2 INDEPENDENT skeptics\n(fresh context, adversarial, distinct lenses)", shape=box];
     found    [label="Any real (blocker/major/correctness)\ndefect found?", shape=diamond];
     fix      [label="Fix it (+ regression test if code)", shape=box];
-    reset    [label="2 failed correction cycles?\nSTOP + architecture reset", shape=diamond];
+    checkpoint [label="3 failed correction cycles?\nSTOP + convergence checkpoint", shape=diamond];
+    systemic [label="Repeated defect class, widening scope,\nor broken boundary?", shape=diamond];
     done     [label="Clean pass -> safe to commit/deploy", shape=doublecircle];
 
     matrix -> written;
     written -> dispatch;
     dispatch -> found;
-    found -> reset [label="yes"];
-    reset -> fix [label="no"];
-    reset -> matrix [label="yes"];
+    found -> checkpoint [label="yes"];
+    checkpoint -> fix [label="no"];
+    checkpoint -> systemic [label="yes"];
+    systemic -> matrix [label="yes: architecture reset"];
+    systemic -> fix [label="no: record + resume"];
     fix -> dispatch [label="re-review (fresh skeptics)"];
     found -> done [label="no"];
 }
@@ -98,14 +101,21 @@ digraph skeptic_loop {
    only when continuing would be unsafe or genuinely blocked. A round that reports
    one bug without auditing equivalent entry points and attack classes is incomplete.
 7. **Fix, don't argue.** Address a real finding (with a regression test where it's code), then re-review. You may NOT unilaterally dismiss a finding as invalid to escape both fixing and re-reviewing — a disputed finding goes to a fresh skeptic to adjudicate, not to the author's veto.
-8. **Two failed correction cycles force an architecture reset.** A failed
-   correction cycle is `review finds correctness defect -> correction -> fresh
-   review finds another correctness defect`. After two consecutive failed cycles,
-   do not make a third patch. Preserve the evidence, declare non-convergence, and
-   return to Phase 0. Identify the shared design failure, shrink or repartition the
-   boundary, replace the contract/threat matrix, obtain any required approval, then
-   restart implementation and the clean-review count. Time pressure cannot waive
-   this circuit breaker.
+8. **Three failed correction cycles force a convergence checkpoint.** One failed
+   cycle is `correction -> fresh review still finds a blocker/major/correctness
+   defect`. After three consecutive failed cycles, do not make a fourth patch until
+   the checkpoint classifies the pattern. Reset the architecture only when defect
+   classes repeat, corrections keep widening the public boundary/scope, or a finding
+   disproves the contract or ownership boundary. Otherwise record why the findings
+   are distinct and localized, then resume corrections. Any of those systemic signs
+   may trigger the checkpoint earlier than cycle three.
+
+   An architecture reset is a pause and design decision, not an automatic rewrite.
+   Preserve code, tests, commits, and evidence; cluster the findings by root cause;
+   revisit ownership, seams, and the threat matrix; then choose the smallest sound
+   outcome: resume a local correction, refactor one seam, repartition the slice, or
+   rewrite only the invalid boundary. Obtain any required approval, then restart the
+   clean-review count. Time pressure cannot waive the checkpoint.
 9. **Keep a round ledger.** Record the immutable reviewed commit, matrix revision,
    reviewer and lens, exact tests/evidence, every finding and disposition, correction
    commit, and result. This makes repeated defect classes and non-convergence visible.
@@ -133,7 +143,8 @@ digraph skeptic_loop {
 - Applying a fix and NOT re-reviewing
 - Starting high-risk implementation without a frozen contract/threat matrix
 - Returning after the first finding instead of completing the review boundary
-- Beginning a third consecutive patch cycle instead of resetting the architecture
+- Beginning a fourth consecutive patch without the convergence checkpoint
+- Treating the checkpoint as either optional or an automatic full rewrite
 - Stopping because "only nits remain" without a fresh pass confirming zero correctness findings
 - Relabeling a correctness finding as a "nit" to avoid another round
 - Dispatching skeptics with an approval-seeking prompt, or scoped away from the risky path

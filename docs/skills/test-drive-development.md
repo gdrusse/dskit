@@ -38,8 +38,10 @@ irreversible external effect, first run Phase 0 of
 
 Do not discover the contract one failing review at a time. Freeze the contract and
 reviewer-challenged attack matrix first; then turn one matrix row at a time into a
-focused RED test. If two consecutive correction cycles still reveal fresh
-correctness defects, stop TDD patching and return to the convergence gate.
+focused RED test. After three consecutive failed correction cycles, stop before a
+fourth patch and run the skeptic skill's convergence checkpoint. Return to Phase 0
+only for repeated defect classes, widening scope, or a disproven contract/boundary;
+otherwise record the localized diagnosis and resume TDD.
 
 Write code before the test? Delete it. Start over.
 

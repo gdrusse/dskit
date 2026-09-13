@@ -142,9 +142,14 @@ file before acting on a matching trigger.
 | Research, investigate, or write to `docs/research/` | `docs/skills/record-research.md` |
 | Refresh a child's skeleton infrastructure | `docs/skills/refresh-child-infra.md` |
 | Bring a child up to the ADR-0056 action journal | `docs/skills/refresh-child-journal.md` |
-| Code about to be shipped/committed/merged | `docs/skills/skeptic-review.md` |
+| High-risk design before code, or code about to be shipped/committed/merged/deployed | `docs/skills/skeptic-review.md` |
 | Implementing any feature or bugfix, before writing code | `docs/skills/test-drive-development.md` |
 | `/wrap`, wrap up, hand off, close the session | `docs/skills/wrap.md` |
+
+TDD and skeptic review are automatic gates, not slash-command-only skills.
+Implementation loads TDD; high-risk TDD invokes skeptic Phase 0; preparing code
+for commit, merge, or deploy invokes skeptic review again. Cursor and Claude use
+their implicit stubs, OpenCode loads `.cursor/skills`, and Codex follows this index.
 
 ## Repository layout
 
