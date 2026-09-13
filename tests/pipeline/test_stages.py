@@ -184,3 +184,10 @@ def test_cli_validate_keeps_the_pre_adapter_document(tmp_path, monkeypatch, caps
     output = capsys.readouterr().out
     assert "name:  staged-test" in output
     assert "swapped-execution" not in output
+
+def test_cli_staged_missing_path_returns_one(tmp_path, capsys):
+    from dskit.pipeline.__main__ import main
+
+    missing = tmp_path / "missing.json"
+    assert main(["staged", str(missing), "--asof", "2026-01-02"]) == 1
+    assert str(missing) in capsys.readouterr().out
