@@ -168,6 +168,40 @@ def test_cli_staged_uses_real_config_target_for_journal_identity(tmp_path, monke
     assert read_actions(load_root(str(child_b))) == []
 
 
+def test_cli_staged_keeps_captured_target_when_alias_retargets(tmp_path, monkeypatch):
+    child_a, path_a = _write_child(tmp_path)
+    child_b, path_b = _write_child(tmp_path / "other")
+    alias = tmp_path / "run.json"
+    alias.symlink_to(path_a)
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    payload = _document(child_a / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path_a.write_text(json.dumps(payload))
+    from dskit.journal import load_root
+    from dskit.journal.store import read_actions
+    from dskit.pipeline import __main__ as pipeline_main
+
+    load_document = pipeline_main.load_and_preflight_public_document
+
+    def load_then_retarget(path):
+        captured = load_document(path)
+        alias.unlink()
+        alias.symlink_to(path_b)
+        return captured
+
+    monkeypatch.setattr(
+        pipeline_main, "load_and_preflight_public_document", load_then_retarget
+    )
+
+    assert pipeline_main.main(["staged", str(alias), "--asof", "2026-01-02"]) == 0
+    assert [row.inputs for row in read_actions(load_root(str(child_a)))] == [
+        str(path_a),
+        str(path_a),
+    ]
+    assert read_actions(load_root(str(child_b))) == []
+
+
 def test_orphaned_stage_artifact_is_refused(tmp_path, monkeypatch):
     child, path = _write_child(tmp_path)
     monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
