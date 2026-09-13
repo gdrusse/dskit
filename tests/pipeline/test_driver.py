@@ -269,6 +269,60 @@ def test_malformed_mapping_fields_refuse_once_before_any_cli_adapter(
         assert f"{where}: {field} must be an object" in capsys.readouterr().out
         assert reads == [str(config)]
         assert not marker.exists(), f"{command} imported an adapter before refusal"
+
+
+def test_malformed_optional_section_refuses_once_before_any_cli_adapter(
+    tmp_path, monkeypatch, capsys
+):
+    """A malformed document section cannot escape into an adapter import."""
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "section_poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "malformed-section.json"
+    config.write_text(
+        json.dumps(
+            {
+                "name": "malformed-section",
+                "pipeline": {"source": {"uses": "ordinary-poison"}},
+                "foreach": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    import builtins
+    import sys
+
+    original_open = builtins.open
+    reads = []
+
+    def counted_open(name, *args, **kwargs):
+        if str(name) == str(config):
+            reads.append(name)
+        return original_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counted_open)
+    for command in ("plan", "run", "validate", "walkforward", "staged"):
+        sys.modules.pop("section_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        reads.clear()
+        argv = [command, str(config), "--adapter", "section_poison_adapter"]
+        if command in ("run", "walkforward", "staged"):
+            argv[2:2] = ["--asof", ASOF]
+        assert main(argv) == 1
+        output = capsys.readouterr().out
+        assert "foreach: must be an object" in output
+        assert "Traceback" not in output
+        assert reads == [str(config)]
+        assert not marker.exists(), f"{command} imported an adapter before refusal"
+
+
 def test_malformed_node_map_refuses_once_before_any_cli_adapter(tmp_path, monkeypatch):
     """Malformed node maps never fall through to adapters or a second read."""
     marker = tmp_path / "adapter-imported"

@@ -34,6 +34,22 @@ def doc(**overrides):
     return PipelineDocument(**base)
 
 
+@pytest.mark.parametrize(
+    "section",
+    ("splits", "clock", "schedule", "env", "outputs", "tracking", "walkforward", "foreach"),
+)
+def test_optional_object_sections_refuse_lists_as_config_errors(section):
+    """Optional document sections fail closed before their builders run."""
+    with pytest.raises(ConfigError):
+        PipelineDocument.from_obj(
+            {
+                "name": "non-object-section",
+                "pipeline": {"source": {"uses": "synthetic-frame"}},
+                section: [],
+            }
+        )
+
+
 # ---------------------------------------------------------------------------
 # Reference grammar
 # ---------------------------------------------------------------------------

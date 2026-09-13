@@ -131,6 +131,21 @@ def test_direct_staged_run_keeps_a_relative_label_after_a_stage_changes_cwd(
     assert ChangingDirectoryStage.calls == 1
 
 
+def test_direct_staged_run_refuses_a_bytes_source_label_before_side_effects(tmp_path):
+    """A journal label is text, so bytes cannot create a staged run first."""
+    document = PipelineDocument.from_obj(_document(tmp_path / "runs"))
+
+    with pytest.raises(ValueError, match="text"):
+        run_staged(
+            document,
+            os.fsencode(str(tmp_path / "configs" / "run.json")),
+            asof="2026-01-02",
+            registry=_registry(),
+        )
+
+    assert not (tmp_path / "runs").exists()
+
+
 def test_cli_staged_keeps_the_original_path(tmp_path, monkeypatch):
     child, path = _write_child(tmp_path)
     monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
