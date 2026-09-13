@@ -2169,3 +2169,118 @@ def test_freeze_and_publish_stream_maps_cannot_capture_another_stream():
     assert broker._receipt_audit(published_a)[-1]["event"] == "PUBLISHED"
     assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
 
+
+def test_receipt_store_graft_cannot_consume_foreign_chain():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        _session_a,
+        _session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    sid_a = broker._receipt_audit(published_a)[0]["stream_id"]
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    published_identity_a = broker._receipt_audit(published_a)[2]["publication_receipt_sha256"]
+    broker._receipt_store[sid_a] = broker._receipt_store[sid_b]
+    artifact = _consume_or_refuse(bindings_a)
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        return
+    consumed = broker._receipt_audit(published_a)[-1]
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert consumed["event"] == "CONSUMED"
+    assert consumed["stream_id"] == sid_a
+    assert consumed["publication_receipt_sha256"] == published_identity_a
+
+
+def test_verified_pin_inplace_cannot_move_consumed_cas():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    session_prod_a, published_a, _values = _publish(
+        broker,
+        members=_members({"rows": [{"id": "AAA"}]}),
+    )
+    broker.end_session(session_prod_a)
+    published_b, _sealed_b = _foreign_publish(broker)
+    _document_a, frozen_a = _freeze(broker, published_a)
+    _document_b, frozen_b = _freeze(
+        broker,
+        published_b,
+        document=_consumer_document(
+            broker.descriptor(published_b, purpose="synthetic"),
+            name="consumer-b-doc",
+        ),
+    )
+    captured, session = _capture(
+        broker,
+        published_a,
+        frozen_a,
+        run_identity="consumer-a",
+        nonce="nonce-captured-a",
+    )
+    _capture(
+        broker,
+        published_b,
+        frozen_b,
+        run_identity="consumer-b",
+        nonce="nonce-captured-b",
+    )
+    verified = broker.open_capture(session, captured)
+    pin = broker._verified_pin[id(verified)]
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    if isinstance(pin, dict):
+        pin["stream_id"] = sid_b
+    bindings = broker.captured_bindings(
+        session,
+        frozen_a,
+        verified,
+        consumer_node="consume",
+        transition_nonce="nonce-consumed-a",
+    )
+    artifact = _consume_or_refuse(bindings)
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
+
+
+def test_dual_intern_bindings_pin_cannot_move_consumed_cas():
+    trust = _trust()
+    broker = trust._development_broker(start_ms=1_700_000_000_000)
+    (
+        published_a,
+        published_b,
+        _frozen_a,
+        _frozen_b,
+        _session_a,
+        _session_b,
+        bindings_a,
+        _bindings_b,
+    ) = _two_captured_consumers(broker)
+    rec = broker._bindings_pin.get(id(bindings_a))
+    sid_b = broker._receipt_audit(published_b)[0]["stream_id"]
+    if rec is not None and not isinstance(rec, dict):
+        hostile = (rec[0], sid_b) + tuple(rec[2:])
+        broker._bindings_pin[id(bindings_a)] = hostile
+        intern = getattr(broker, "_bindings_intern", None)
+        if intern is not None:
+            intern[id(bindings_a)] = hostile
+    else:
+        store = getattr(broker._bindings_pin, "_store", None)
+        if store is not None:
+            store[id(bindings_a)] = (sid_b,)
+    artifact = _consume_or_refuse(bindings_a)
+    assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+    if artifact is None:
+        assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+        return
+    assert artifact.value["rows"][0]["id"] == "AAA"
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CONSUMED"
+
