@@ -1255,7 +1255,7 @@ def _resolve_uses_ordinary(uses, registry=None) -> ResolvedUse:
     cls, owned = registry.get(uses)
     return ResolvedUse(cls=cls, owned=owned, ref=uses)
 
-def resolve_uses(document, uses=None, registry=None) -> ResolvedUse:
+def resolve_uses(document=None, uses=None, registry=None) -> ResolvedUse:
     """Resolve a use only after the caller supplies an ordinary document."""
     if not isinstance(document, PipelineDocument):
         raise ValueError(

@@ -482,7 +482,7 @@ def cmd_staged(path, asof, adapters=()) -> int:
     try:
         document, _obj = load_and_preflight_public_document(path)
         document = _require_public_document(path, document)
-        source_path = os.path.abspath(path)
+        source_path = os.path.realpath(os.path.abspath(os.fspath(path)))
         _import_adapters(adapters)
         from dskit.pipeline.stages import run_staged
 
