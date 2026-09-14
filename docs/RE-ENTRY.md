@@ -1,5 +1,26 @@
 # Re-entry
 
+## Current wrap: Q2 F2 deferred lint nits closed (2026-09-14)
+
+Packet Q2 re-inventoried the F2 deferred lint findings and fixed the two still
+present: D202 (blank line after the `_legacy_validate` docstring, editorial) in
+`dskit/pipeline/__main__.py`, and F401 (unused `PipelineDocument` import) in
+`dskit/pipeline/stages.py`. The F401 removal is proven safe — `PipelineDocument`
+is unreferenced in stages.py, absent from `__all__`, and never imported from
+`dskit.pipeline.stages` repo-wide; `parse_node_ref` remains imported and used.
+Focused Ruff, `py_compile`, and `git diff --check` are clean; no behavior test
+was invented for the lint-only change. Two fresh final lenses (correctness/
+authority, test-quality/integration) report 0 Critical/0 Major/0 Minor/0 Nit on
+candidate `25f3f2c`. Memo:
+`docs/memos/2026-09-14-q2-lint-closeout.md`.
+
+Blocker recorded (owner-approved substitution): the required reviewer model
+gpt-5.6-terra is unavailable (only gpt-5.6-luna in the gpt-5.6 family), so both
+final lenses ran on gpt-5.6-luna (reasoning high).
+
+Next: Packet 2 D0 — replay ADR/plan reconciliation from
+`origin/codex/r5-replay-ops-20260911` @ `97900efd66bfed44cc403c567c04c4e383c05c24`.
+
 ## Current wrap: F5a driver-only facade landed (2026-09-14)
 
 Packet 2 adds `HistoricalStudyVerifier` and the identity-bound
