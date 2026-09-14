@@ -1295,3 +1295,113 @@ def test_saved_cls_reset_cannot_capture_a_second_stream():
             transition_nonce="nonce-captured-b",
         )
     assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def _pair_id_and_cell(src, new_cell):
+    spend = _opaque_copy_value(src)
+    old_id = id(spend)
+    dst = object.__new__(type(src))
+    for key, value in src.__dict__.items():
+        if type(value) is int and value == old_id:
+            dst.__dict__[key] = id(new_cell)
+            continue
+        try:
+            copy.copy(value)
+        except TypeError as exc:
+            if "opaque" in str(exc):
+                dst.__dict__[key] = new_cell
+                continue
+            try:
+                dst.__dict__[key] = type(value)()
+            except TypeError:
+                dst.__dict__[key] = value
+            continue
+        dst.__dict__[key] = copy.copy(value)
+    return dst
+
+
+def test_minted_id_pairing_cannot_capture_a_second_stream():
+    (
+        broker,
+        published_a,
+        frozen_a,
+        port_a,
+        published_b,
+        frozen_b,
+        port_b,
+        verifier,
+    ) = _bound_two_stream_setup()
+    spend = _opaque_copy_value(verifier)
+    twin = _pair_id_and_cell(verifier, object.__new__(type(spend)))
+    captured, session = verifier.capture(
+        published_a,
+        frozen_a,
+        port_a,
+        consumer_run_identity="consumer-a",
+        process_measurement_sha256=f4._SHA["consumer_process"],
+        runtime_sha256=f4._SHA["consumer_runtime"],
+        transition_nonce="nonce-captured-a",
+    )
+    assert captured is not None
+    assert session is not None
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    with pytest.raises(ValueError, match="consumed admission"):
+        twin.capture(
+            published_b,
+            frozen_b,
+            port_b,
+            consumer_run_identity="consumer-b",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured-b",
+        )
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_minted_id_pairing_after_a_cannot_capture_a_second_stream():
+    (
+        broker,
+        published_a,
+        frozen_a,
+        port_a,
+        published_b,
+        frozen_b,
+        port_b,
+        verifier,
+    ) = _bound_two_stream_setup()
+    spend = _opaque_copy_value(verifier)
+    cls = type(spend)
+    captured, session = verifier.capture(
+        published_a,
+        frozen_a,
+        port_a,
+        consumer_run_identity="consumer-a",
+        process_measurement_sha256=f4._SHA["consumer_process"],
+        runtime_sha256=f4._SHA["consumer_runtime"],
+        transition_nonce="nonce-captured-a",
+    )
+    assert captured is not None
+    assert session is not None
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    new_cell = object.__new__(cls)
+    old_id = id(spend)
+    for key, value in list(verifier.__dict__.items()):
+        if type(value) is int and value == old_id:
+            verifier.__dict__[key] = id(new_cell)
+            continue
+        try:
+            copy.copy(value)
+        except TypeError as exc:
+            if "opaque" in str(exc):
+                verifier.__dict__[key] = new_cell
+    with pytest.raises(ValueError, match="consumed admission"):
+        verifier.capture(
+            published_b,
+            frozen_b,
+            port_b,
+            consumer_run_identity="consumer-b",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured-b",
+        )
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
