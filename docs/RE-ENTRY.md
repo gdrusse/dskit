@@ -1,5 +1,25 @@
 # Re-entry
 
+## Current wrap: D0 replay ADR/plan reconciliation landed (2026-09-14)
+
+Packet D0 reconciled the replay design delta. Mapping:
+`docs/memos/2026-09-14-d0-replay-adr-reconciliation.md` (candidate `fbdcfac`).
+The ADR-0126 identity collision is resolved — replay V2 ("Deferred terminal
+projection for fenced replay", source `97900ef`) → **ADR-0127**; the partially
+amended V1 (source ADR-0124) → **ADR-0128**. ADR-0120/0121 already integrated;
+V1 seams + the R5 child bypass are on main; all V2 symbols absent. Phase 0
+skeptic found 3 Major (corrected by a gpt-5.6-luna corrector); both final lenses
+passed 0 Critical/0 Major with one deferred Minor. Evidence:
+`docs/memos/2026-09-14-d0-replay-recon-closeout.md`. Reviewer model
+gpt-5.6-terra unavailable; owner approved gpt-5.6-luna (reasoning high).
+
+Follow-on (not done here): migrate the manifest's `ADR-0126` citations to
+ADR-0127 and reconcile any plan-blob/evidence identity referencing ADR-0126.
+`origin/codex/r5-replay-ops-20260911` is preserved.
+
+Next: R1 (bootstrap and atomic storage) — blocked on F2/F3/F4/F5a/C0 per the
+master DAG; D0 is not R1's ReviewExit and is not permission to run replay.
+
 ## Current wrap: Q2 F2 deferred lint nits closed (2026-09-14)
 
 Packet Q2 re-inventoried the F2 deferred lint findings and fixed the two still
