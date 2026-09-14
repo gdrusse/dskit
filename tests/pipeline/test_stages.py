@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -30,6 +31,18 @@ class DoublerStage(Stage):
     def run(self, ctx, inputs):
         del ctx
         return {"result": 2 * inputs["source"]}
+
+
+class ChangingDirectoryStage(Stage):
+    outputs = ("value",)
+    target = None
+    calls = 0
+
+    def run(self, ctx, inputs):
+        del ctx, inputs
+        type(self).calls += 1
+        os.chdir(type(self).target)
+        return {"value": type(self).calls}
 
 
 def _document(run_root):
@@ -83,12 +96,176 @@ def test_staged_run_resumes_without_reexecuting(tmp_path, monkeypatch):
     monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
     monkeypatch.chdir(child)
     CountingStage.calls = 0
-    first = run_staged(str(path), asof="2026-01-02", registry=_registry())
-    second = run_staged(str(path), asof="2026-01-02", registry=_registry())
+    document = PipelineDocument.from_obj(_document(child / "runs"))
+    first = run_staged(document, str(path), asof="2026-01-02", registry=_registry())
+    second = run_staged(document, str(path), asof="2026-01-02", registry=_registry())
     assert first.state == second.state == "ran"
     assert first.outputs["second"]["result"] == 2
     assert second.outputs == first.outputs
     assert CountingStage.calls == 1
+
+
+def test_direct_staged_run_keeps_a_relative_label_after_a_stage_changes_cwd(
+    tmp_path, monkeypatch
+):
+    child_a, path = _write_child(tmp_path)
+    child_b = tmp_path / "child-b"
+    child_b.mkdir()
+    init_journal(str(child_b))
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child_a)
+    ChangingDirectoryStage.target = str(child_b)
+    ChangingDirectoryStage.calls = 0
+    registry = StageKindRegistry()
+    registry.register("count", ChangingDirectoryStage)
+    registry.register("double", DoublerStage)
+    document = PipelineDocument.from_obj(_document(child_a / "runs"))
+    first = run_staged(
+        document, "configs/run.json", asof="2026-01-02", registry=registry
+    )
+    from dskit.journal import load_root
+    from dskit.journal.store import read_actions
+
+    assert [row.inputs for row in read_actions(load_root(str(child_a)))] == [
+        str(path),
+        str(path),
+    ]
+    assert read_actions(load_root(str(child_b))) == []
+    monkeypatch.chdir(child_a)
+    second = run_staged(
+        document, "configs/run.json", asof="2026-01-02", registry=registry
+    )
+    assert second.outputs == first.outputs
+    assert ChangingDirectoryStage.calls == 1
+
+
+def test_direct_staged_run_refuses_a_bytes_source_label_before_side_effects(tmp_path):
+    """A journal label is text, so bytes cannot create a staged run first."""
+    document = PipelineDocument.from_obj(_document(tmp_path / "runs"))
+
+    with pytest.raises(ValueError, match="text"):
+        run_staged(
+            document,
+            os.fsencode(str(tmp_path / "configs" / "run.json")),
+            asof="2026-01-02",
+            registry=_registry(),
+        )
+
+    assert not (tmp_path / "runs").exists()
+
+
+def test_cli_staged_keeps_the_original_path(tmp_path, monkeypatch):
+    child, path = _write_child(tmp_path)
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child)
+    payload = _document(child / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path.write_text(json.dumps(payload))
+    from dskit.pipeline.__main__ import main
+
+    assert main(["staged", str(path), "--asof", "2026-01-02"]) == 0
+
+
+def test_cli_staged_captures_relative_source_before_adapter_changes_cwd(
+    tmp_path, monkeypatch
+):
+    child_a, path = _write_child(tmp_path)
+    child_b = tmp_path / "child-b"
+    (child_b / "configs").mkdir(parents=True)
+    (child_b / "pyproject.toml").write_text("[project]\nname='test-b'\n")
+    init_journal(str(child_b))
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child_a)
+    payload = _document(child_a / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path.write_text(json.dumps(payload))
+    adapter = tmp_path / "move_staged_cwd.py"
+    adapter.write_text("import os\nos.chdir(" + repr(str(child_b)) + ")\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.journal import load_root
+    from dskit.journal.store import read_actions
+    from dskit.pipeline.__main__ import main
+
+    assert (
+        main(
+            [
+                "staged",
+                "configs/run.json",
+                "--asof",
+                "2026-01-02",
+                "--adapter",
+                "move_staged_cwd",
+            ]
+        )
+        == 0
+    )
+    assert [row.inputs for row in read_actions(load_root(str(child_a)))] == [
+        str(path),
+        str(path),
+    ]
+    assert read_actions(load_root(str(child_b))) == []
+
+
+def test_cli_staged_uses_real_config_target_for_journal_identity(tmp_path, monkeypatch):
+    child_a, path = _write_child(tmp_path)
+    child_b = tmp_path / "child-b"
+    alias_dir = child_b / "configs"
+    alias_dir.mkdir(parents=True)
+    (child_b / "pyproject.toml").write_text("[project]\\nname='test-b'\\n")
+    init_journal(str(child_b))
+    alias = alias_dir / "run.json"
+    alias.symlink_to(path)
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    payload = _document(child_a / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path.write_text(json.dumps(payload))
+    from dskit.journal import load_root
+    from dskit.journal.store import read_actions
+    from dskit.pipeline.__main__ import main
+
+    assert main(["staged", str(alias), "--asof", "2026-01-02"]) == 0
+    assert [row.inputs for row in read_actions(load_root(str(child_a)))] == [
+        str(path),
+        str(path),
+    ]
+    assert read_actions(load_root(str(child_b))) == []
+
+
+def test_cli_staged_keeps_captured_target_when_alias_retargets(tmp_path, monkeypatch):
+    child_a, path_a = _write_child(tmp_path)
+    child_b, path_b = _write_child(tmp_path / "other")
+    alias = tmp_path / "run.json"
+    alias.symlink_to(path_a)
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    payload = _document(child_a / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path_a.write_text(json.dumps(payload))
+    from dskit.journal import load_root
+    from dskit.journal.store import read_actions
+    from dskit.pipeline import __main__ as pipeline_main
+
+    load_document = pipeline_main.load_and_preflight_public_document
+
+    def load_then_retarget(path):
+        captured = load_document(path)
+        alias.unlink()
+        alias.symlink_to(path_b)
+        return captured
+
+    monkeypatch.setattr(
+        pipeline_main, "load_and_preflight_public_document", load_then_retarget
+    )
+
+    assert pipeline_main.main(["staged", str(alias), "--asof", "2026-01-02"]) == 0
+    assert [row.inputs for row in read_actions(load_root(str(child_a)))] == [
+        str(path_a),
+        str(path_a),
+    ]
+    assert read_actions(load_root(str(child_b))) == []
 
 
 def test_orphaned_stage_artifact_is_refused(tmp_path, monkeypatch):
@@ -101,7 +278,7 @@ def test_orphaned_stage_artifact_is_refused(tmp_path, monkeypatch):
     stage_dir.mkdir(parents=True)
     (stage_dir / "first.json").write_text("{}\n")
     with pytest.raises(ValueError, match="without a matching successful journal"):
-        run_staged(str(path), asof="2026-01-02", registry=_registry())
+        run_staged(document, str(path), asof="2026-01-02", registry=_registry())
 
 
 def test_stage_plan_refuses_an_undeclared_output(tmp_path):
@@ -110,9 +287,143 @@ def test_stage_plan_refuses_an_undeclared_output(tmp_path):
     path = tmp_path / "run.json"
     path.write_text(json.dumps(obj))
     with pytest.raises(ValueError, match="undeclared output"):
-        run_staged(str(path), asof="2026-01-02", registry=_registry())
+        run_staged(
+            PipelineDocument.from_obj(obj),
+            str(path),
+            asof="2026-01-02",
+            registry=_registry(),
+        )
 
 
 def test_sha256hex_requires_an_exact_full_string():
     assert is_sha256hex("a" * 64)
     assert not is_sha256hex("a" * 64 + "\n")
+
+
+def test_cli_staged_does_not_reopen_after_adapter_import(tmp_path, monkeypatch):
+    child, path = _write_child(tmp_path)
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child)
+    payload = _document(child / "runs")
+    payload["stages"]["first"]["uses"] = "tests.pipeline.test_stages:CountingStage"
+    payload["stages"]["second"]["uses"] = "tests.pipeline.test_stages:DoublerStage"
+    path.write_text(json.dumps(payload))
+    swapped = {
+        "name": "swapped-execution",
+        "pipeline": {},
+        "execution_backtest": {
+            "schema_version": "dskit.execution-backtest/v1",
+            "purpose": "synthetic",
+            "event_envelope_schema": "dskit.event-envelope/v2",
+            "source_rank_policy_sha256": "1" * 64,
+            "execution_profile_sha256": "2" * 64,
+            "environment_identity_sha256": "3" * 64,
+        },
+    }
+    adapter = tmp_path / "swap_staged_config.py"
+    adapter.write_text(
+        "from pathlib import Path"
+        + chr(10)
+        + f"Path({str(path)!r}).write_text({json.dumps(swapped)!r})"
+        + chr(10)
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    assert (
+        main(
+            [
+                "staged",
+                str(path),
+                "--asof",
+                "2026-01-02",
+                "--adapter",
+                "swap_staged_config",
+            ]
+        )
+        == 0
+    )
+
+
+def test_cli_validate_keeps_the_pre_adapter_document(tmp_path, monkeypatch, capsys):
+    child, path = _write_child(tmp_path)
+    monkeypatch.chdir(child)
+    swapped = {
+        "name": "swapped-execution",
+        "pipeline": {"source": {"uses": "dskit.pipeline.synthetic_nodes:SynthEvents"}},
+        "execution_backtest": {
+            "schema_version": "dskit.execution-backtest/v1",
+            "purpose": "synthetic",
+            "event_envelope_schema": "dskit.event-envelope/v2",
+            "source_rank_policy_sha256": "1" * 64,
+            "execution_profile_sha256": "2" * 64,
+            "environment_identity_sha256": "3" * 64,
+        },
+    }
+    adapter = tmp_path / "swap_validate_config.py"
+    adapter.write_text(
+        "from pathlib import Path"
+        + chr(10)
+        + f"Path({str(path)!r}).write_text({json.dumps(swapped)!r})"
+        + chr(10)
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    assert main(["validate", str(path), "--adapter", "swap_validate_config"]) == 0
+    output = capsys.readouterr().out
+    assert "name:  staged-test" in output
+    assert "swapped-execution" not in output
+
+
+def test_cli_staged_missing_path_returns_one(tmp_path, capsys):
+    from dskit.pipeline.__main__ import main
+
+    missing = tmp_path / "missing.json"
+    assert main(["staged", str(missing), "--asof", "2026-01-02"]) == 1
+    assert str(missing) in capsys.readouterr().out
+
+
+def test_cli_validate_reads_a_node_map_once(tmp_path, monkeypatch):
+    child, path = _write_child(tmp_path)
+    monkeypatch.chdir(child)
+    import builtins
+    import dskit.pipeline.__main__ as pipeline_main
+
+    reads = []
+    original_open = builtins.open
+
+    def counted_open(name, *args, **kwargs):
+        if str(name) == str(path):
+            reads.append(name)
+        return original_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counted_open)
+
+    assert pipeline_main.main(["validate", str(path)]) == 0
+    assert len(reads) == 1
+
+
+def test_direct_staged_run_canonicalizes_a_pathlike_symlink_label(
+    tmp_path, monkeypatch
+):
+    class TextPath:
+        def __init__(self, value):
+            self.value = value
+
+        def __fspath__(self):
+            return str(self.value)
+
+    child, path = _write_child(tmp_path)
+    alias = child / "configs" / "alias.json"
+    alias.symlink_to(path)
+    monkeypatch.setenv("DSKIT_JOURNAL_TESTS", "1")
+    monkeypatch.chdir(child)
+    document = PipelineDocument.from_obj(_document(child / "runs"))
+    run_staged(document, TextPath(alias), asof="2026-01-02", registry=_registry())
+    from dskit.journal import load_root
+    from dskit.journal.store import read_actions
+
+    assert [row.inputs for row in read_actions(load_root(str(child)))] == [
+        str(path.resolve())
+    ] * 2

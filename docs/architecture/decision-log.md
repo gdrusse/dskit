@@ -7883,6 +7883,170 @@ runs only in explicit development mode with a deterministic, pinned,
 without `unit`) refuse at the capital node; the assembler is the only
 sanctioned producer of gross-unit rows.
 
+## ADR-0122 — Proposed attested ten-head final-model release
+
+**Status:** accepted (2026-09-12; owner approved the external-launcher and
+native-LightGBM architecture). This authorizes synthetic TDD implementation
+only; real HPO/refit, market/lockbox reads, replay, paper trading, full
+backtesting, and real release construction or consumption remain prohibited.
+It extends ADR-0113/0115/0116/0119 and reconciles their delivered seams rather
+than replacing them.
+
+**Correction.** A Python `PreImportResolver` cannot be a root of trust: Python
+has already selected and started its interpreter, import machinery, bootstrap
+modules, and possible import hooks before that resolver can run. Nor does an
+external signature make `joblib` safe: pickle is executable code, so a signed
+hostile bundle is still an RCE. Release trust must therefore begin outside
+Python, and release model members must be non-pickle data.
+
+**Decision.**
+
+1. **External launch root.** Every secure operation — release construction,
+   final-refit load, and release consumption in paper/live modes — starts only
+   through an OS-administrator-owned, non-Python launcher. It verifies the
+   signed immutable runtime-image digest, launch-profile signature, purpose,
+   consumer document identity, validity window, and key status before starting
+   an interpreter. A user-owned wrapper, repository file, environment variable,
+   signed JSON document, or Python module is never a substitute for this root.
+
+   The launcher creates an immutable execution view before any Python import:
+   the verified interpreter, standard library, DSKit, declared adapters, native
+   libraries, and all declared dependency bytes come only from the verified
+   image; writable overlays, current-directory imports, user/site paths,
+   `.pth`, `sitecustomize`, `usercustomize`, `PYTHONPATH`, startup files,
+   namespace ambiguity, and externally supplied import hooks are unavailable.
+   It starts only a profile-approved entry point in isolated mode. The image
+   view, not a later hash comparison of a pathname, closes verify-to-import
+   TOCTOU; mounts/handles holding verified bytes cannot be replaced after
+   verification.
+
+   A profile names exact permitted `uses` references and adapters. In secure
+   mode, DSKit asks the launch profile to authorize a reference before normal
+   resolution, but that is defence in depth only: its code is already inside
+   the verified image. Direct `python -m dskit.pipeline` operation, a direct
+   CLI `run`/`staged`/`walkforward` invocation, and every `--adapter` flag
+   refuse in secure mode. Development mode retains current unrestricted
+   behavior and cannot construct, load, or consume a release.
+
+2. **Opaque launch capability.** The launcher supplies `LaunchContext` as an
+   opaque, kernel/launcher-bound capability, not a constructor, JSON object,
+   environment variable, path, or user-signable token. It has no public
+   serialization or `from_obj` API. DSKit validates its operation, image and
+   profile identities, consumer authorization, and capture-authority binding
+   through the privileged launcher endpoint; it owns no bootstrap key or
+   fallback verifier. Missing, replayed, wrong-operation, or unverified context
+   refuses before document planning, adapter loading, bundle loading, or
+   `FinalRefit` construction.
+
+3. **Generic sealed capture lifecycle.** Add generic driver-owned
+   `PreparedCapture`, `VerifiedCapture`, `CapturedMemberHandle`, and
+   `CapturedRelease` values. A producer may write declared members only to
+   private staging. `seal()` freezes one ordered member declaration; the
+   external capture authority copies those exact bytes into protected immutable
+   storage, verifies their hashes/counts/media types and producer binding, then
+   records a signed, append-only/WORM attestation. Only `open_capture()` on the
+   authorized `LaunchContext` produces a `VerifiedCapture`; it supplies typed
+   member handles whose only content operation is verified byte/text access.
+   Handles expose no filesystem path, staging path, manifest path, `__fspath__`,
+   or JSON/dict serialization.
+
+   The attestation binds schema/purpose, issuer/key/algorithm/usage, issue and
+   validity instants, producer document/run/code/runtime identities, terminal
+   state, immutable capture identity, authorized consumers, and the complete
+   ordered member list of relative path, media type, byte count, and SHA-256.
+   Consumer verification checks all of those facts and reads the immutable
+   captured bytes, never a producer path or a mutable sidecar. The enforced
+   lifecycle is producer → seal → external capture/signature → authorized
+   consumer; neither `RunAttestation` nor `resolve_json_artifact` is an
+   authorization substitute. They may contribute evidence only before sealing.
+
+4. **Native LightGBM release format.** Add a generic tier-2
+   `LightGBMTextBundle` writer/loader in `dskit.pipeline.libs.lightgbm`.
+   Its release representation is canonical JSON
+   `dskit.lightgbm-text-bundle/v1` plus exactly the declared ordered native
+   LightGBM text-model members. The manifest records each ordinal, name,
+   canonical relative path, byte count, SHA-256, constructor/prediction
+   contract, feature and categorical contracts, training identities, fixture
+   checksum, and runtime/library identities. It refuses an omission, addition,
+   duplicate, reordered member, noncanonical manifest, version drift, or
+   prediction-fixture mismatch.
+
+   `load_text_bundle(VerifiedCapture)` accepts only verified captured member
+   handles and constructs native `lightgbm.Booster` values from strict UTF-8
+   model text. It never accepts a path. Release code must not import or invoke
+   `joblib`, `pickle`, `cloudpickle`, `dill`, or any general object
+   deserializer. Existing sklearn joblib persistence remains development-only
+   and refuses a release purpose. The ten-head rule is child policy; the generic
+   bundle supports any caller-declared ordered head list.
+
+5. **Typed upstream evidence and final refit.** The generic capture boundary
+   provides exact-member specifications and typed `CapturedMemberHandle` sets.
+   The child forms `HpoEvidenceCapture` and `MaterializedRowsEvidence` only from
+   those verified handles; neither accepts a run directory, manifest, carry
+   entry, or path. One HPO capture must bind one completed producer
+   document/run/snapshot and exactly all ten child-declared `scan_h01` through
+   `scan_h10` evidence members. Ten independently captured labelled-row
+   evidence members bind their matching heads. Mixing captures, producer runs,
+   snapshots, documents, member layouts, or labels refuses.
+
+   Per head, `FinalRefit` reconstructs `CandidateInventory` and `TrialLedger`
+   from that exact HPO capture, requires one shared inventory digest, recomputes
+   every score and SE from the pinned causal per-day contributions, bootstrap
+   algorithm/version/code digest/seed/configuration, and reruns the ruled
+   `OneStandardErrorSelector` with `simplicity_key`. Stored winner fields and
+   approximate thresholds are not trusted. Refit rows recompute their captured
+   source/cache/window/schema/order/cut/embargo identities, remain
+   lockbox-disjoint, and prove prediction/outcome availability before cutoff.
+
+   `FinalRefit` remains a conforming `TrainableNode`; base templates remain
+   final. `run_train` fits exactly once per verified winner, writes one prepared
+   native-text bundle, and returns only the resulting opaque
+   `CapturedRelease` after external capture succeeds. `run_load` obtains that
+   capture only through `LaunchContext` and then calls `load_text_bundle`.
+   Neither path searches, refits during load, accepts `artifact`, returns a
+   path/manifest/dict, enters `carry.json`, or emits a `JsonArtifact`.
+   The final-refit config may name only an expected capture identity/purpose
+   resolved by `LaunchContext`; output paths, manifests, and adapter selection
+   are prohibited.
+
+**Placement/API.** `LaunchContext`, capture contracts, verification, and
+canonical identity live in the generic pipeline driver seam; CLI secure-mode
+refusals live in `dskit.pipeline.__main__`; native LightGBM text persistence
+lives in the LightGBM tier-2 pack; `TrainableNode` remains in `node.py`.
+The external launcher is deployment-owned infrastructure, outside DSKit and
+outside the release image. Equity head vocabulary, label semantics, 1-SE
+policy, calendar rules, and the thin evidence adapter remain solely in
+`children/intraday_equities`. Public schemas are default-deny and every digest
+domain binds schema version and purpose.
+
+**Strict TDD.** RED then focused GREEN in `tests/pipeline/test_secure_launch.py`,
+`tests/pipeline/test_driver.py`, `tests/pipeline_libs/test_lightgbm_release.py`,
+`children/intraday_equities/tests/test_final_model.py`, and its config tests:
+
+- a poisoned current directory, `.pth`, `sitecustomize`, user path, environment,
+  import hook, module swap, and post-verification mutation cannot execute before
+  the approved entry point; direct CLI and `--adapter` refuse secure mode;
+- forged/replayed launch capabilities; wrong profile/image/consumer/purpose/time
+  and unapproved `uses` references refuse;
+- producer-to-seal, seal-to-capture, and capture-to-consumer substitutions,
+  reordering, added members, mutable paths, stale signatures, and TOCTOU refuse;
+- pickle/joblib fixtures prove release loading never deserializes object code;
+  native text members load only through verified handles and reproduce fixtures;
+- mixed HPO captures, missing/extra heads, altered row evidence, causal/cut/
+  embargo failures, and winner/SE reconstruction disagreements refuse;
+- synthetic ten-head train/load conformance proves one fit per winner, opaque
+  release output, no load-time search/refit, and no config output path.
+
+Run only those owners plus directly implicated purity/OOP/conformance tests,
+Ruff on touched Python, and `git diff --check`; no full suite.
+
+**Fail-closed gates/non-goals.** The exact external launcher/profile authority,
+immutable runtime-image mechanism, capture/signing/key authority, trusted clock,
+consumer documents, exact HPO/refit capture identities, and final-refit
+configuration remain frozen requirements. This acceptance permits synthetic
+tests and implementation only — never real HPO/refit, market/lockbox reads,
+replay, paper trading, full backtesting, or a real release.
+
 ## ADR-0123 — Signed immutable captures and causal forecast/capital evidence
 
 **Status:** accepted (2026-09-12; owner approved the external launcher/broker architecture and synthetic TDD implementation only). Extends ADR-0088/0111/0114/0118/0119/0121 without reopening them; baseline is main cfd2893. Real calibration, HPO, refit, replay, paper/market execution, protected-data reads, lockbox work, and full backtests remain prohibited.

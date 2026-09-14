@@ -1,3 +1,9 @@
+> **ARCHIVED — DO NOT EXECUTE.** Superseded by
+> `docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md` at
+> `90b510a2b51e78408c5b4dc55a3ed9fc784e7a68`, with accepted ADR-0125
+> (`7a71f3933f6360dd36ddfe6e86d4a9c6a4fcb2a0`) and ADR-0126
+> (`97900efd66bfed44cc403c567c04c4e383c05c24`) pins. Retained as history only.
+
 # Gate 5 kickoff — stateful replay through the production seams
 
 **Status:** START NOW — §11 items 5 and 6 are ruled (2026-09-10, below).

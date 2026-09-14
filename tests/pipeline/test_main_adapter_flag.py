@@ -1,12 +1,12 @@
-"""``--adapter MODULE`` on ``run`` and ``plan``, not just ``validate``.
+"""``--adapter MODULE`` on every public pipeline route.
 
 Adapters ship components, never CLIs — there is ONE universal command
 line. A document may name its components two ways, and only one of them
 was reachable from that command line before this seam: a class reference
 (``pkg.module:Class``) imports itself when it resolves, but a REGISTERED
 kind name (``synth-source``) exists only after its owning package has been
-imported. ``--adapter`` is that import, and it happens BEFORE the document
-is read.
+imported. ``--adapter`` is that import, after the public document has been
+captured and preflighted.
 
 The properties pinned here:
 
@@ -16,8 +16,8 @@ The properties pinned here:
   suite may already have imported the adapter and the flag would then
   prove nothing;
 * the flag repeats, and EVERY entry is imported;
-* adapters import before the document is read (a bad module beats a
-  missing file to the error message);
+* every route captures and preflights its document before importing
+  adapters (a missing or malformed document beats a bad module);
 * a bad module exits 1 with the ImportError printed — no traceback;
 * ``validate --adapter`` is unchanged.
 
@@ -32,7 +32,7 @@ import sys
 
 import pytest
 
-from dskit.pipeline.__main__ import main
+from dskit.pipeline.__main__ import cmd_staged, main
 
 ASOF = "2026-01-01"
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -140,14 +140,28 @@ class TestAdapterKindsBecomeReachable:
 
 
 class TestImportOrderAndRepetition:
-    @pytest.mark.parametrize("command", ["plan", "run"])
-    def test_adapters_import_before_the_document_is_read(self, command, capsys):
-        # Both a bad module AND a missing file: whichever error surfaces
-        # names which step ran first.
-        assert main([command, "no-such-document.json", "--adapter", MISSING]) == 1
+    @pytest.mark.parametrize(
+        "command", ["plan", "run", "staged", "walkforward", "validate"]
+    )
+    @pytest.mark.parametrize("document_error", ["missing", "malformed"])
+    def test_document_capture_and_preflight_beat_adapter_import(
+        self, tmp_path, command, document_error, capsys
+    ):
+        # A document error and a bad module together prove the public order.
+        path = tmp_path / "malformed.json"
+        if document_error == "missing":
+            path = tmp_path / "no-such-document.json"
+            expected = str(path)
+        else:
+            path.write_text("{", encoding="utf-8")
+            expected = "is not valid JSON"
+        argv = [command, str(path)]
+        if command in {"run", "staged", "walkforward"}:
+            argv += ["--asof", ASOF]
+        assert main([*argv, "--adapter", MISSING]) == 1
         out = capsys.readouterr().out
-        assert f"No module named '{MISSING}'" in out
-        assert "no-such-document.json" not in out
+        assert expected in out
+        assert MISSING not in out
 
     def test_the_flag_repeats(self, capsys):
         assert main(["plan", NODEMAP, "--adapter", ADAPTER, "--adapter", "json"]) == 0
@@ -158,6 +172,31 @@ class TestImportOrderAndRepetition:
         # attempted, or the repetition is decorative.
         assert main(["plan", NODEMAP, "--adapter", ADAPTER, "--adapter", MISSING]) == 1
         assert f"No module named '{MISSING}'" in capsys.readouterr().out
+
+    def test_staged_refuses_a_bytes_path_before_config_io_or_adapter_import(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        class BytesPath:
+            def __fspath__(self):
+                return b"poison-config.json"
+
+        marker = tmp_path / "adapter-imported"
+        (tmp_path / "poison_adapter.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        opened = []
+
+        def refuse_config_open(*args, **kwargs):
+            opened.append(args)
+            raise AssertionError("bytes path reached config I/O")
+
+        monkeypatch.setattr("builtins.open", refuse_config_open)
+        assert cmd_staged(BytesPath(), ASOF, adapters=("poison_adapter",)) == 1
+        assert opened == []
+        assert not marker.exists()
+        assert "text path" in capsys.readouterr().out
 
 
 class TestBadAdapterModule:
@@ -226,7 +265,25 @@ class TestHelp:
         out = " ".join(capsys.readouterr().out.split())
         assert "--adapter MODULE" in out
         assert (
-            "adapter module(s) to import first (import = registration), "
-            "e.g. yourproject — a child package, never a dskit subpackage"
-            in out
+            "adapter module(s) to import after document preflight (import = registration), "
+            "e.g. yourproject — a child package, never a dskit subpackage" in out
         )
+
+    def test_overflow_json_number_refuses_before_adapter_import(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        path = tmp_path / "overflow.json"
+        path.write_text(
+            '{"name":"overflow","pipeline":{"source":{"uses":"synthetic-frame",'
+            '"params":{"value":1e9999}}}}',
+            encoding="utf-8",
+        )
+        marker = tmp_path / "adapter-imported"
+        (tmp_path / "poison_adapter.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n",
+            encoding="utf-8",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        assert main(["plan", str(path), "--adapter", "poison_adapter"]) == 1
+        assert not marker.exists()
+        assert "non-finite JSON number 1e9999" in capsys.readouterr().out

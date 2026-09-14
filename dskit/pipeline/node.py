@@ -1236,7 +1236,7 @@ def register_node_kind(name, cls, *, owned=False) -> None:
     DEFAULT_NODE_KINDS.register(name, cls, owned=owned)
 
 
-def resolve_uses(uses, registry=None) -> ResolvedUse:
+def _resolve_uses_ordinary(uses, registry=None) -> ResolvedUse:
     """Turn one ``uses`` reference into a Node subclass (IMPORT, §9 step 2).
 
     A registered kind name is looked up in ``registry`` (default
@@ -1254,3 +1254,13 @@ def resolve_uses(uses, registry=None) -> ResolvedUse:
         return ResolvedUse(cls=cls, owned=False, ref=uses)
     cls, owned = registry.get(uses)
     return ResolvedUse(cls=cls, owned=owned, ref=uses)
+
+def resolve_uses(document=None, uses=None, registry=None) -> ResolvedUse:
+    """Resolve a use only after the caller supplies an ordinary document."""
+    from dskit.pipeline.planner import _capture_plain_json, require_in_memory_document
+
+    require_in_memory_document(document, "resolve_uses")
+    uses = _capture_plain_json(uses, "resolve_uses")
+    if type(uses) is not str:
+        raise ValueError("resolve_uses requires a plain text uses value")
+    return _resolve_uses_ordinary(uses, registry)

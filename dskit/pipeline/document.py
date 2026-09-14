@@ -45,6 +45,7 @@ Import cost: stdlib only.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
 
@@ -77,6 +78,7 @@ __all__ = [
     "DOC_SPLIT_KINDS",
     "EACH_TOKEN",
     "FOREACH_SEP",
+    "ExecutionBacktestSpec",
     "ForeachSpec",
     "MODES",
     "NodeSpec",
@@ -168,6 +170,11 @@ _NODE_KEY_OK = r"^[a-z_][a-z0-9_]*$"
 _KIND_OK = r"^[a-z][a-z0-9_-]*$"
 _NAME_OK = r"^[a-z0-9][a-z0-9._-]*$"
 _SEGMENT_OK = r"^[A-Za-z_][A-Za-z0-9_]*$"
+
+def _copy_mapping_or_raw(value):
+    """Copy a JSON object, leaving invalid shapes for validation."""
+    return dict(value) if isinstance(value, dict) else value
+
 
 PREV_KEY = "$prev"
 
@@ -279,6 +286,17 @@ def _contains_refs(obj) -> bool:
         return any(_contains_refs(v) for v in obj.values())
     if isinstance(obj, (list, tuple)):
         return any(_contains_refs(v) for v in obj)
+    return False
+
+
+def _contains_prev_ref(obj):
+    """Whether a ``$prev`` carry hides anywhere in ``obj``."""
+    if is_prev_ref(obj):
+        return True
+    if isinstance(obj, dict):
+        return any(_contains_prev_ref(value) for value in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_contains_prev_ref(value) for value in obj)
     return False
 
 
@@ -583,12 +601,152 @@ class NodeSpec:
         )
         return cls(
             uses=obj.get("uses", ""),
-            inputs=dict(obj.get("inputs", {})),
-            params=dict(obj.get("params", {})),
+            inputs=_copy_mapping_or_raw(obj.get("inputs", {})),
+            params=_copy_mapping_or_raw(obj.get("params", {})),
             every=obj.get("every", "once"),
             mode=obj.get("mode", None),
             artifact=obj.get("artifact", ""),
             role=obj.get("role", None),
+            notes=obj.get("notes", ""),
+        )
+
+
+_EXECUTION_BACKTEST_SCHEMA = "dskit.execution-backtest/v1"
+_EXECUTION_BACKTEST_PURPOSES = ("synthetic", "historical-simulator")
+_EXECUTION_BACKTEST_FORBIDDEN_SECTIONS = ("stages", "foreach", "walkforward")
+_EVENT_ENVELOPE_SCHEMA = "dskit.event-envelope/v2"
+_SHA256_OK = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _execution_backtest_section_errors(sections):
+    return [
+        f"execution_backtest documents forbid user-authored {section}; "
+        "capture barriers are derived from verified captured ports"
+        for section in sections
+    ]
+
+
+def _execution_backtest_node_errors(node_maps):
+    """Return forbidden ordinary-pipeline semantics in execution node maps."""
+    errors = []
+    for where, specs in node_maps:
+        if not isinstance(specs, dict):
+            continue
+        for key, spec in specs.items():
+            if not isinstance(spec, NodeSpec):
+                continue
+            node_where = f"{where}.{key}"
+            if _contains_prev_ref(spec.inputs) or _contains_prev_ref(spec.params):
+                errors.append(
+                    f"{node_where}: execution_backtest documents forbid $prev "
+                    "carries"
+                )
+            if spec.mode == "load":
+                errors.append(
+                    f"{node_where}: execution_backtest documents forbid "
+                    "mode 'load'"
+                )
+            if spec.artifact:
+                errors.append(
+                    f"{node_where}: execution_backtest documents forbid "
+                    "artifact pins"
+                )
+    return errors
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionBacktestSpec:
+    """Closed, versioned identity for an execution-pipeline document."""
+
+    schema_version: str
+    purpose: str
+    event_envelope_schema: str
+    source_rank_policy_sha256: str
+    execution_profile_sha256: str
+    environment_identity_sha256: str
+    notes: str = ""
+
+    def __post_init__(self):
+        """Validate every required v1 member without supplying defaults."""
+        errors = []
+        _check_str(errors, "execution_backtest.schema_version", self.schema_version)
+        if (
+            isinstance(self.schema_version, str)
+            and self.schema_version
+            and self.schema_version != _EXECUTION_BACKTEST_SCHEMA
+        ):
+            errors.append(
+                "execution_backtest.schema_version must be "
+                f"{_EXECUTION_BACKTEST_SCHEMA!r}, got {self.schema_version!r}"
+            )
+        if self.purpose not in _EXECUTION_BACKTEST_PURPOSES:
+            errors.append(
+                "execution_backtest.purpose must be one of "
+                f"{list(_EXECUTION_BACKTEST_PURPOSES)}, got {self.purpose!r}"
+            )
+        _check_str(
+            errors,
+            "execution_backtest.event_envelope_schema",
+            self.event_envelope_schema,
+        )
+        if (
+            isinstance(self.event_envelope_schema, str)
+            and self.event_envelope_schema
+            and self.event_envelope_schema != _EVENT_ENVELOPE_SCHEMA
+        ):
+            errors.append(
+                "execution_backtest.event_envelope_schema must be "
+                f"{_EVENT_ENVELOPE_SCHEMA!r}, got {self.event_envelope_schema!r}"
+            )
+        for name in (
+            "source_rank_policy_sha256",
+            "execution_profile_sha256",
+            "environment_identity_sha256",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not _SHA256_OK.fullmatch(value):
+                errors.append(
+                    f"execution_backtest.{name} must be an exact lowercase "
+                    f"SHA-256 digest, got {value!r}"
+                )
+        _check_str(errors, "execution_backtest.notes", self.notes, non_empty=False)
+        _raise_if(errors)
+
+    def to_obj(self):
+        """Return all identity members plus standard hash-excluded notes."""
+        return _dataclass_to_obj(self)
+
+    @classmethod
+    def from_obj(cls, obj):
+        """Parse the exact v1 shape; no semantic member has a default."""
+        if not isinstance(obj, dict):
+            raise ConfigError(
+                [f"execution_backtest must be an object, got {obj!r}"]
+            )
+        required = (
+            "schema_version",
+            "purpose",
+            "event_envelope_schema",
+            "source_rank_policy_sha256",
+            "execution_profile_sha256",
+            "environment_identity_sha256",
+        )
+        allowed = (*required, "notes")
+        errors = []
+        unknown = sorted(set(obj) - set(allowed))
+        if unknown:
+            errors.append(
+                "execution_backtest: unknown key(s) "
+                f"{unknown} — allowed: {sorted(allowed)}"
+            )
+        missing = sorted(set(required) - set(obj))
+        if missing:
+            errors.append(
+                "execution_backtest: missing required key(s) " f"{missing}"
+            )
+        _raise_if(errors)
+        return cls(
+            **{name: obj[name] for name in required},
             notes=obj.get("notes", ""),
         )
 
@@ -666,8 +824,8 @@ class StageSpec:
         _reject_unknown(obj, ("uses", "inputs", "params", "notes"), "stage")
         return cls(
             uses=obj.get("uses", ""),
-            inputs=dict(obj.get("inputs", {})),
-            params=dict(obj.get("params", {})),
+            inputs=_copy_mapping_or_raw(obj.get("inputs", {})),
+            params=_copy_mapping_or_raw(obj.get("params", {})),
             notes=obj.get("notes", ""),
         )
 
@@ -1796,6 +1954,7 @@ class PipelineDocument:
     walkforward: object = None
     foreach: object = None
     stages: object = None
+    execution_backtest: object = None
     #: DERIVED, never declared and never emitted: the node map that
     #: actually runs, and ``template key -> instance keys``. ``init=False``
     #: so no caller can inject one, ``compare=False`` because they are a
@@ -1849,6 +2008,12 @@ class PipelineDocument:
         _check_child(errors, "tracking", self.tracking, TrackingConfig)
         _check_child(errors, "walkforward", self.walkforward, WalkForwardSpec)
         _check_child(errors, "foreach", self.foreach, ForeachSpec)
+        _check_child(
+            errors,
+            "execution_backtest",
+            self.execution_backtest,
+            ExecutionBacktestSpec,
+        )
         if self.stages is not None:
             if not isinstance(self.stages, dict) or not self.stages:
                 errors.append("stages must be a non-empty map when declared")
@@ -1859,6 +2024,18 @@ class PipelineDocument:
                             f"stages: keys must match {_NODE_KEY_OK}, got {key!r}"
                         )
                     _check_child(errors, f"stages.{key}", spec, StageSpec)
+        if self.execution_backtest is not None:
+            errors.extend(
+                _execution_backtest_section_errors(
+                    section
+                    for section in _EXECUTION_BACKTEST_FORBIDDEN_SECTIONS
+                    if getattr(self, section) is not None
+                )
+            )
+            node_maps = [("pipeline", self.pipeline)]
+            if isinstance(self.foreach, ForeachSpec):
+                node_maps.append(("foreach.pipeline", self.foreach.pipeline))
+            errors.extend(_execution_backtest_node_errors(node_maps))
         _check_str(errors, "notes", self.notes, non_empty=False)
         # The derived pair defaults to the declared map — with no foreach
         # that IS the answer, and the expansion overwrites it otherwise.
@@ -2036,6 +2213,8 @@ class PipelineDocument:
             obj["foreach"] = self.foreach.to_obj()
         if self.stages is not None:
             obj["stages"] = {key: spec.to_obj() for key, spec in self.stages.items()}
+        if self.execution_backtest is not None:
+            obj["execution_backtest"] = self.execution_backtest.to_obj()
         obj["notes"] = self.notes
         return obj
 
@@ -2077,9 +2256,18 @@ class PipelineDocument:
                 "foreach",
                 "notes",
                 "stages",
+                "execution_backtest",
             ),
             "document",
         )
+        if "execution_backtest" in obj:
+            _raise_if(
+                _execution_backtest_section_errors(
+                    section
+                    for section in _EXECUTION_BACKTEST_FORBIDDEN_SECTIONS
+                    if section in obj
+                )
+            )
         errors = []
         nodes = {}
         raw_pipeline = obj.get("pipeline", {})
@@ -2101,6 +2289,9 @@ class PipelineDocument:
             raw = obj.get(name)
             if raw is None:
                 return None
+            if not isinstance(raw, dict):
+                errors.append(f"{name}: must be an object, got {raw!r}")
+                return None
             try:
                 return builder(raw)
             except ConfigError as exc:
@@ -2115,6 +2306,15 @@ class PipelineDocument:
         tracking = _section("tracking", TrackingConfig.from_obj)
         walkforward = _section("walkforward", WalkForwardSpec.from_obj)
         foreach = _section("foreach", ForeachSpec.from_obj)
+        execution_backtest = None
+        if "execution_backtest" in obj:
+            raw_execution_backtest = obj["execution_backtest"]
+            try:
+                execution_backtest = ExecutionBacktestSpec.from_obj(
+                    raw_execution_backtest
+                )
+            except ConfigError as exc:
+                errors.extend(exc.errors)
         stages = None
         raw_stages = obj.get("stages")
         if raw_stages is not None:
@@ -2146,12 +2346,51 @@ class PipelineDocument:
             walkforward=walkforward,
             foreach=foreach,
             stages=stages,
+            execution_backtest=execution_backtest,
         )
 
 
 # ---------------------------------------------------------------------------
 # File I/O — the io.py discipline: every parse/shape error names the path
 # ---------------------------------------------------------------------------
+
+
+def _load_strict_json(path):
+    """Read JSON once, refusing non-finite constants with its path."""
+
+    def _refuse_nonfinite_json_constant(constant):
+        raise ValueError(
+            f"{path}: non-finite JSON constant {constant} is not valid JSON"
+        )
+
+    def _refuse_nonfinite_json_float(text):
+        value = float(text)
+        if not math.isfinite(value):
+            raise ValueError(
+                f"{path}: non-finite JSON number {text} is not valid JSON"
+            )
+        return value
+
+    def _refuse_duplicate_json_key(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError(
+                    f"{path}: duplicate JSON object key {key!r} is not valid JSON"
+                )
+            obj[key] = value
+        return obj
+
+    with open(path, encoding="utf-8") as fh:
+        try:
+            return json.load(
+                fh,
+                parse_constant=_refuse_nonfinite_json_constant,
+                parse_float=_refuse_nonfinite_json_float,
+                object_pairs_hook=_refuse_duplicate_json_key,
+            )
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
 
 
 def load_document(path) -> PipelineDocument:
@@ -2165,11 +2404,7 @@ def load_document(path) -> PipelineDocument:
     OSError
         If the file cannot be read.
     """
-    with open(path, encoding="utf-8") as fh:
-        try:
-            doc = json.load(fh)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
+    doc = _load_strict_json(path)
     if not isinstance(doc, dict):
         raise ConfigError([f"{path}: a document must be a JSON object, got {doc!r}"])
     try:

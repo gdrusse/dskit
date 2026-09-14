@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from dskit.pipeline.base import ConfigError, import_ref, is_class_ref
-from dskit.pipeline.document import load_document, parse_node_ref
+from dskit.pipeline.document import PipelineDocument, parse_node_ref
 from dskit.pipeline.runs import resolve_run_root
 
 __all__ = [
@@ -238,9 +238,11 @@ def _toposort(keys, dependencies):
 
 def plan_stages(document, registry=DEFAULT_STAGE_KINDS):
     """Import, validate, and deterministically order a document's stages."""
+    from dskit.pipeline.planner import plan, require_in_memory_document
+
+    document = require_in_memory_document(document, "plan_stages")
     if document.stages is None:
         raise ValueError("document has no stages section")
-    from dskit.pipeline.planner import plan
 
     # Stages orchestrate the declared node map; they never exempt it from
     # the ordinary import, parameter, role, and DAG checks.
@@ -404,10 +406,20 @@ def _record(source_path, key, token, state, artifact, digest, reason=""):
     )
 
 
-def run_staged(path, asof=None, registry=DEFAULT_STAGE_KINDS):
-    """Run or resume every stage, trusting only journal-plus-digest evidence."""
-    source_path = os.path.abspath(path)
-    document = load_document(source_path)
+def run_staged(document, source_path=None, asof=None, registry=DEFAULT_STAGE_KINDS):
+    """Run or resume captured document stages from journal-plus-digest evidence."""
+    from dskit.pipeline.planner import require_in_memory_document
+
+    document = require_in_memory_document(document, "run_staged")
+    if source_path is None:
+        raise ValueError("run_staged requires source_path as a staged-journal label")
+    try:
+        source_path = os.fspath(source_path)
+    except TypeError as exc:
+        raise ValueError("run_staged source_path must be a text string or path-like text label") from exc
+    if isinstance(source_path, bytes):
+        raise ValueError("run_staged source_path must be a text string or path-like text label")
+    source_path = os.path.realpath(os.path.abspath(source_path))
     plan = plan_stages(document, registry=registry)
     asof = _validated_asof(asof)
     declared_root = document.outputs.run_root if document.outputs else ""

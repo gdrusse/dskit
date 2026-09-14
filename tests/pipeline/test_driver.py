@@ -9,6 +9,7 @@ import re
 import pytest
 import dskit.pipeline.node as node_module
 
+from dskit.pipeline import plan as public_plan
 from dskit.pipeline.base import (
     SINK_KINDS,
     ConfigError,
@@ -20,9 +21,12 @@ from dskit.pipeline.base import (
 )
 from dskit.pipeline.document import (
     ClockConfig,
+    ExecutionBacktestSpec,
     NodeSpec,
     PipelineDocument,
+    StageSpec,
     TrailingSplitSpec,
+    load_document,
     save_document,
 )
 from dskit.pipeline.driver import (
@@ -37,8 +41,11 @@ from dskit.pipeline.driver import (
     content_identity,
     resolve_json_artifact,
     run_document,
+    run_walk_forward,
 )
-from dskit.pipeline.node import Node, NodeKindRegistry
+from dskit.pipeline.node import Node, NodeKindRegistry, resolve_uses
+from dskit.pipeline.planner import plan
+from dskit.pipeline.stages import plan_stages, run_staged
 from dskit.pipeline.testing import MemoryTracker
 from tests.pipeline.dochelpers import banking_document, banking_pipeline, make_registry
 
@@ -87,9 +94,558 @@ def bdoc(tmp_path, **overrides):
     return banking_document(**overrides)
 
 
+_EXECUTION_BACKTEST = {
+    "schema_version": "dskit.execution-backtest/v1",
+    "purpose": "synthetic",
+    "event_envelope_schema": "dskit.event-envelope/v2",
+    "source_rank_policy_sha256": "1" * 64,
+    "execution_profile_sha256": "2" * 64,
+    "environment_identity_sha256": "3" * 64,
+}
+
+
+class _ExecutionHidingDocument(PipelineDocument):
+    def __getattribute__(self, name):
+        if name == "execution_backtest":
+            return None
+        return super().__getattribute__(name)
+
+
+class _ExecutionMutatingUses(str):
+    def __new__(cls, value, document):
+        instance = super().__new__(cls, value)
+        instance.document = document
+        return instance
+
+    def __hash__(self):
+        object.__setattr__(
+            self.document,
+            "execution_backtest",
+            ExecutionBacktestSpec.from_obj(_EXECUTION_BACKTEST),
+        )
+        return super().__hash__()
+
+
+class _ExecutionClearingPipeline(dict):
+    def __init__(self, document, values):
+        super().__init__(values)
+        self.document = document
+
+    def items(self):
+        object.__setattr__(self.document, "execution_backtest", None)
+        return super().items()
+
+
+def _hidden_execution_document():
+    return _ExecutionHidingDocument(
+        name="hidden-execution",
+        pipeline={"source": NodeSpec(uses="filter")},
+        clock=ClockConfig(increment="day"),
+        execution_backtest=ExecutionBacktestSpec.from_obj(_EXECUTION_BACKTEST),
+    )
+
+
+def _mutation_document():
+    document = PipelineDocument(
+        name="mutation-ordinary",
+        pipeline={"source": NodeSpec(uses="filter")},
+        clock=ClockConfig(increment="day"),
+    )
+    document.pipeline["source"] = NodeSpec(
+        uses=_ExecutionMutatingUses("filter", document)
+    )
+    return document
+
+
+def _poison_execution_document():
+    document = PipelineDocument(
+        name="poison-execution",
+        pipeline={"source": NodeSpec(uses="poison_mod:Poison")},
+        execution_backtest=ExecutionBacktestSpec.from_obj(_EXECUTION_BACKTEST),
+    )
+    object.__setattr__(document, "stages", {"capture": StageSpec(uses="capture")})
+    object.__setattr__(
+        document,
+        "pipeline",
+        _ExecutionClearingPipeline(document, document.pipeline),
+    )
+    return document
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        public_plan,
+        plan,
+        lambda document: resolve_uses(document, "filter"),
+        lambda document: run_document(document, asof=ASOF),
+        lambda document: run_walk_forward(document, asof=ASOF),
+        plan_stages,
+        lambda document: run_staged(document, source_path="captured.json", asof=ASOF),
+    ),
+)
+def test_public_facades_refuse_a_hostile_pipeline_document_subclass(entry):
+    with pytest.raises(ValueError, match="exact plain PipelineDocument"):
+        entry(_hidden_execution_document())
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        public_plan,
+        plan,
+        lambda document: resolve_uses(document, document.pipeline["source"].uses),
+    ),
+)
+def test_public_resolution_uses_a_detached_plain_document_snapshot(entry):
+    document = _mutation_document()
+    entry(document)
+    assert document.execution_backtest is None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        public_plan,
+        plan,
+        lambda document: resolve_uses(document, "poison_mod:Poison"),
+        lambda document: run_document(document, asof=ASOF),
+        lambda document: run_walk_forward(document, asof=ASOF),
+        plan_stages,
+        lambda document: run_staged(
+            document, source_path="captured.json", asof=ASOF
+        ),
+    ),
+)
+def test_public_facades_refuse_execution_before_mutating_snapshot_import(
+    entry, tmp_path, monkeypatch
+):
+    marker = tmp_path / "poison-imported"
+    module = tmp_path / "poison_mod.py"
+    module.write_text(
+        "from pathlib import Path\n"
+        "from dskit.pipeline.node import Node\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "class Poison(Node):\n"
+        "    role = 'transform'\n"
+        "    def run(self, ctx, inputs):\n"
+        "        return {}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    import sys
+
+    sys.modules.pop("poison_mod", None)
+    try:
+        entry(_poison_execution_document())
+    except ConfigError as exc:
+        message = str(exc)
+    else:
+        message = ""
+    assert not marker.exists(), "execution document imported its poison class"
+    assert "external broker" in message
+
+
 def read_json(run_dir, name):
     with open(os.path.join(run_dir, name), encoding="utf-8") as fh:
         return json.load(fh)
+
+
+def test_execution_refuses_before_adapter_import(tmp_path, monkeypatch):
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "execution_poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n"
+        "class PoisonNode:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    document = PipelineDocument.from_obj(
+        {
+            "name": "execution-driver-refusal",
+            "pipeline": {
+                "source": {"uses": "execution_poison_adapter:PoisonNode"}
+            },
+            "execution_backtest": {
+                "schema_version": "dskit.execution-backtest/v1",
+                "purpose": "synthetic",
+                "event_envelope_schema": "dskit.event-envelope/v2",
+                "source_rank_policy_sha256": "1" * 64,
+                "execution_profile_sha256": "2" * 64,
+                "environment_identity_sha256": "3" * 64,
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError) as exc_info:
+        run_document(document, asof=ASOF)
+
+    assert not marker.exists(), "execution document imported its adapter"
+    assert "external broker" in str(exc_info.value)
+
+    document_path = tmp_path / "execution-document.json"
+    save_document(document, document_path)
+    with pytest.raises(ValueError) as exc_info:
+        run_document(str(document_path), asof=ASOF)
+
+    assert not marker.exists(), "execution document path imported its adapter"
+    assert "in-memory PipelineDocument" in str(exc_info.value)
+
+    from dskit.pipeline.__main__ import main
+
+    exit_code = main(
+        [
+            "run",
+            str(document_path),
+            "--asof",
+            ASOF,
+            "--adapter",
+            "execution_poison_adapter",
+        ]
+    )
+
+    assert exit_code == 1
+    assert not marker.exists(), "execution CLI imported its adapter"
+
+    import sys
+
+    def assert_no_import(action):
+        sys.modules.pop("execution_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        assert action() == 1
+        assert not marker.exists(), "execution route imported its adapter"
+
+    for command in ("plan", "validate", "walkforward", "staged"):
+        argv = [command, str(document_path), "--adapter", "execution_poison_adapter"]
+        if command == "walkforward":
+            argv[2:2] = ["--asof", ASOF]
+        assert_no_import(lambda argv=argv: main(argv))
+
+    from dskit.pipeline.planner import plan
+
+    sys.modules.pop("execution_poison_adapter", None)
+    marker.unlink(missing_ok=True)
+    with pytest.raises(ConfigError) as exc_info:
+        plan(document)
+    assert "external broker" in str(exc_info.value)
+    assert not marker.exists(), "planner imported execution uses"
+
+    from dskit.pipeline.driver import run_walk_forward
+    from dskit.pipeline.stages import plan_stages, run_staged
+
+    for action in (
+        lambda: plan_stages(document),
+        lambda: run_staged(document, source_path=str(document_path)),
+        lambda: run_walk_forward(document, asof=ASOF),
+    ):
+        sys.modules.pop("execution_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        with pytest.raises(ConfigError, match="external broker"):
+            action()
+        assert not marker.exists(), "execution route imported its adapter"
+
+
+    malformed_path = tmp_path / "malformed-execution.json"
+    malformed_path.write_text(json.dumps({"name": "bad", "pipeline": {"source": {"uses": "execution_poison_adapter:PoisonNode"}}, "execution_backtest": {}}))
+    for command in ("plan", "run", "validate", "walkforward", "staged"):
+        sys.modules.pop("execution_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        argv = [command, str(malformed_path), "--adapter", "execution_poison_adapter"]
+        if command in ("run", "walkforward", "staged"):
+            argv[2:2] = ["--asof", ASOF]
+        assert main(argv) == 1
+        assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("node", "semantic"),
+    (
+        (
+            {
+                "uses": "poison_adapter:Poison",
+                "params": {
+                    "nested": [{"$prev": "source.output", "default": "first"}]
+                },
+            },
+            "$prev",
+        ),
+        (
+            {
+                "uses": "poison_adapter:Poison",
+                "mode": "load",
+                "artifact": "runs/source/model.json",
+            },
+            "mode",
+        ),
+        (
+            {
+                "uses": "poison_adapter:Poison",
+                "mode": "load",
+                "artifact": "runs/source/model.json",
+            },
+            "artifact",
+        ),
+    ),
+)
+@pytest.mark.parametrize("command", ("plan", "run", "validate", "walkforward", "staged"))
+def test_execution_forbidden_node_semantics_refuse_before_cli_adapter_import(
+    command, node, semantic, tmp_path, monkeypatch, capsys
+):
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "execution-forbidden-node-semantics.json"
+    config.write_text(
+        json.dumps(
+            {
+                "name": "execution-forbidden-node-semantics",
+                "pipeline": {"source": node},
+                "execution_backtest": _EXECUTION_BACKTEST,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    import sys
+
+    sys.modules.pop("poison_adapter", None)
+    argv = [command, str(config), "--adapter", "poison_adapter"]
+    if command in ("run", "walkforward", "staged"):
+        argv[2:2] = ["--asof", ASOF]
+    from dskit.pipeline.__main__ import main
+
+    assert main(argv) == 1
+    assert not marker.exists(), f"{command} imported its adapter before refusal"
+    assert semantic in capsys.readouterr().out
+
+
+def test_public_execution_path_overloads_refuse_before_open(monkeypatch):
+    """The CLI owns document I/O; public execution APIs never reopen paths."""
+    from dskit.pipeline.driver import run_walk_forward
+    from dskit.pipeline.stages import run_staged
+
+    def unexpected_open(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("public execution API opened a retired path overload")
+
+    monkeypatch.setattr("builtins.open", unexpected_open)
+    for action in (
+        lambda: run_document("retired-document.json", asof=ASOF),
+        lambda: run_walk_forward("retired-document.json", asof=ASOF),
+        lambda: run_staged("retired-document.json", asof=ASOF),
+    ):
+        with pytest.raises(ValueError, match="in-memory PipelineDocument"):
+            action()
+
+
+@pytest.mark.parametrize(
+    ("where", "field", "document"),
+    (
+        ("pipeline.source", "inputs", {"pipeline": {"source": {"uses": "ordinary-poison", "inputs": []}}}),
+        ("foreach.pipeline.source", "inputs", {"pipeline": {}, "foreach": {"keys": ["one"], "pipeline": {"source": {"uses": "ordinary-poison", "inputs": []}}}}),
+        ("foreach.pipeline.source", "params", {"pipeline": {}, "foreach": {"keys": ["one"], "pipeline": {"source": {"uses": "ordinary-poison", "params": []}}}}),
+        ("stages.capture", "inputs", {"pipeline": {"source": {"uses": "ordinary-poison"}}, "stages": {"capture": {"uses": "ordinary-poison", "inputs": []}}}),
+        ("stages.capture", "params", {"pipeline": {"source": {"uses": "ordinary-poison"}}, "stages": {"capture": {"uses": "ordinary-poison", "params": []}}}),
+    ),
+)
+def test_malformed_mapping_fields_refuse_once_before_any_cli_adapter(
+    tmp_path, monkeypatch, capsys, where, field, document
+):
+    """Poison adapters cannot observe malformed mapping-shaped fields."""
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "mapping_poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text(\"imported\", encoding=\"utf-8\")\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "malformed-mapping.json"
+    config.write_text(json.dumps({"name": "malformed-mapping", **document}), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    import builtins
+    import sys
+
+    original_open = builtins.open
+    reads = []
+
+    def counted_open(name, *args, **kwargs):
+        if str(name) == str(config):
+            reads.append(name)
+        return original_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counted_open)
+    for command in ("plan", "run", "validate", "walkforward", "staged"):
+        sys.modules.pop("mapping_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        reads.clear()
+        argv = [command, str(config), "--adapter", "mapping_poison_adapter"]
+        if command in ("run", "walkforward", "staged"):
+            argv[2:2] = ["--asof", ASOF]
+        assert main(argv) == 1
+        assert f"{where}: {field} must be an object" in capsys.readouterr().out
+        assert reads == [str(config)]
+        assert not marker.exists(), f"{command} imported an adapter before refusal"
+
+
+def test_malformed_optional_section_refuses_once_before_any_cli_adapter(
+    tmp_path, monkeypatch, capsys
+):
+    """A malformed document section cannot escape into an adapter import."""
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "section_poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "malformed-section.json"
+    config.write_text(
+        json.dumps(
+            {
+                "name": "malformed-section",
+                "pipeline": {"source": {"uses": "ordinary-poison"}},
+                "foreach": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    import builtins
+    import sys
+
+    original_open = builtins.open
+    reads = []
+
+    def counted_open(name, *args, **kwargs):
+        if str(name) == str(config):
+            reads.append(name)
+        return original_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counted_open)
+    for command in ("plan", "run", "validate", "walkforward", "staged"):
+        sys.modules.pop("section_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        reads.clear()
+        argv = [command, str(config), "--adapter", "section_poison_adapter"]
+        if command in ("run", "walkforward", "staged"):
+            argv[2:2] = ["--asof", ASOF]
+        assert main(argv) == 1
+        output = capsys.readouterr().out
+        assert "foreach: must be an object" in output
+        assert "Traceback" not in output
+        assert reads == [str(config)]
+        assert not marker.exists(), f"{command} imported an adapter before refusal"
+
+
+def test_malformed_node_map_refuses_once_before_any_cli_adapter(tmp_path, monkeypatch):
+    """Malformed node maps never fall through to adapters or a second read."""
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "ordinary_poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "malformed-node-map.json"
+    config.write_text(
+        json.dumps(
+            {
+                "name": "malformed-node-map",
+                "pipeline": {
+                    "source": {
+                        "uses": "ordinary-poison",
+                        "params": [],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    import builtins
+    import sys
+
+    original_open = builtins.open
+    reads = []
+
+    def counted_open(name, *args, **kwargs):
+        if str(name) == str(config):
+            reads.append(name)
+        return original_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counted_open)
+    for command in ("plan", "run", "validate", "walkforward", "staged"):
+        sys.modules.pop("ordinary_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        reads.clear()
+        argv = [command, str(config), "--adapter", "ordinary_poison_adapter"]
+        if command in ("run", "walkforward", "staged"):
+            argv[2:2] = ["--asof", ASOF]
+        assert main(argv) == 1
+        assert reads == [str(config)]
+        assert not marker.exists(), f"{command} imported an adapter before refusal"
+
+
+@pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
+def test_nonfinite_json_constants_refuse_once_before_any_cli_adapter(
+    tmp_path, monkeypatch, capsys, constant
+):
+    """Public config JSON refuses nonfinite constants before adapter import."""
+    marker = tmp_path / "adapter-imported"
+    adapter = tmp_path / "nonfinite_poison_adapter.py"
+    adapter.write_text(
+        "from pathlib import Path\n"
+        + f"Path({str(marker)!r}).write_text('imported', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "nonfinite.json"
+    config.write_text(
+        '{"name":"nonfinite","pipeline":{"source":'
+        '{"uses":"ordinary-poison","params":{"x":'
+        + constant
+        + "}}}}",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    from dskit.pipeline.__main__ import main
+
+    import builtins
+    import sys
+
+    original_open = builtins.open
+    reads = []
+
+    def counted_open(name, *args, **kwargs):
+        if str(name) == str(config):
+            reads.append(name)
+        return original_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", counted_open)
+    for command in ("plan", "run", "validate", "walkforward", "staged"):
+        sys.modules.pop("nonfinite_poison_adapter", None)
+        marker.unlink(missing_ok=True)
+        reads.clear()
+        argv = [command, str(config), "--adapter", "nonfinite_poison_adapter"]
+        if command in ("run", "walkforward", "staged"):
+            argv[2:2] = ["--asof", ASOF]
+        assert main(argv) == 1
+        assert f"{config}: non-finite JSON constant {constant}" in capsys.readouterr().out
+        assert reads == [str(config)]
+        assert not marker.exists(), f"{command} imported an adapter before refusal"
 
 
 class TestCleanRun:
@@ -147,7 +703,7 @@ class TestCleanRun:
     def test_document_loads_from_a_path(self, tmp_path, registry):
         doc_path = tmp_path / "doc.json"
         save_document(bdoc(tmp_path / "runs"), doc_path)
-        result = run_document(str(doc_path), asof=ASOF, registry=registry)
+        result = run_document(load_document(doc_path), asof=ASOF, registry=registry)
         assert result.state == "ran"
 
 

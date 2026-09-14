@@ -29,7 +29,7 @@ from dskit.pipeline.fitted import (
     FeatureSelector,
     FittedTransform,
 )
-from dskit.pipeline.node import NodeContext, TrainableNode, resolve_uses
+from dskit.pipeline.node import NodeContext, TrainableNode, _resolve_uses_ordinary as resolve_uses
 from dskit.pipeline.planner import plan
 
 DAY = 24 * 60 * 60 * 1000

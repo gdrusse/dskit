@@ -8,6 +8,11 @@ hashable document; same hash = same experiment. A run leaves `config.json`,
 per-node records under `nodes/`, and a verdict-first `report.md` in one run
 directory (`{name}-{asof}-{hash8}`; an occupied directory refuses).
 
+The CLI performs the one JSON read. Public Python execution functions accept
+only an in-memory `PipelineDocument`; pass the captured document to
+`run_document`, `run_walk_forward`, or `run_staged` (with the CLI path only as
+the staged journal label).
+
 Nodes may wrap JSON evidence in `JsonArtifact`. The driver atomically stores
 its canonical bytes under `artifacts/json/<sha256>.json`; the output, node
 record, and carry retain only the path/digest/size/media-type manifest.
@@ -43,10 +48,11 @@ python -m dskit.pipeline runs                                     # every run so
 ```
 
 Exit codes: **0** ran · **3** halted at a NO-GO gate (a halt is a result) ·
-**1** error. `--adapter MODULE` (repeatable, also on
-`walkforward`/`plan`/`validate`) imports your package first so its registered
-kinds resolve. Two more verbs — `demo`
-(the default) and `synthetic` — drive the legacy stage-list grammar (below).
+**1** error. `--adapter MODULE` (repeatable, on `run`, `staged`,
+`walkforward`, `plan`, and `validate`) imports your package only after
+document capture and mapping-shape preflight, so its registered kinds resolve
+safely. Two more verbs — `demo` (the default) and `synthetic` — drive the
+legacy stage-list grammar (below).
 
 ## The shape of a run
 
@@ -83,6 +89,10 @@ kinds resolve. Two more verbs — `demo`
   only via `register()`/`--adapter`. `plan` → `Plan` (`order`, `edges`,
   `role_of`, `ancestors`, `descendants`) and the role rules: `planner.py`.
 - **RESOLVE → RECORD** — `run_document` → `DocumentRunResult`
+  Public resolution is `resolve_uses(document, uses, registry=None)`: it
+  requires a real ordinary `PipelineDocument` and refuses execution documents
+  before import. The retired bare `resolve_uses(uses, registry)` raises a
+  migration diagnostic; planner internals alone use the private resolver.
   (`driver.py`; `exit_code` derives from `state`); trailing cuts materialize
   in `_materialize_splits` off `Node.data_edge`, event policies bind in
   `_bind_event_bounds` (both `driver.py`) over `merge_event_bounds`

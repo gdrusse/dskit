@@ -8,6 +8,7 @@ from dskit.pipeline.base import ConfigError, TimeSplitConfig
 from dskit.pipeline.document import (
     MODES,
     ClockConfig,
+    ExecutionBacktestSpec,
     NodeSpec,
     PipelineDocument,
     RandomSplitSpec,
@@ -32,6 +33,51 @@ def doc(**overrides):
     }
     base.update(overrides)
     return PipelineDocument(**base)
+
+
+@pytest.mark.parametrize(
+    "section",
+    (
+        "splits",
+        "clock",
+        "schedule",
+        "env",
+        "outputs",
+        "tracking",
+        "walkforward",
+        "foreach",
+    ),
+)
+def test_optional_object_sections_refuse_lists_as_config_errors(section):
+    """Optional document sections fail closed before their builders run."""
+    with pytest.raises(ConfigError):
+        PipelineDocument.from_obj(
+            {
+                "name": "non-object-section",
+                "pipeline": {"source": {"uses": "synthetic-frame"}},
+                section: [],
+            }
+        )
+
+
+@pytest.mark.parametrize("field", ("inputs", "params"))
+@pytest.mark.parametrize("bad", (7, [], [("port", "$source.value")]))
+@pytest.mark.parametrize("location", ("pipeline", "foreach.pipeline", "stages"))
+def test_document_parser_refuses_non_mapping_nested_specs(location, field, bad):
+    """Nested node/stage mappings must reach their ConfigError validators."""
+    spec = {"uses": "synthetic-frame", field: bad}
+    obj = {
+        "name": "bad-nested-mapping",
+        "pipeline": {"source": {"uses": "synthetic-frame"}},
+    }
+    if location == "pipeline":
+        obj["pipeline"] = {"source": spec}
+    elif location == "foreach.pipeline":
+        obj["foreach"] = {"keys": ["one"], "pipeline": {"template": spec}}
+    else:
+        obj["stages"] = {"first": spec}
+    with pytest.raises(ConfigError):
+        PipelineDocument.from_obj(obj)
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +515,128 @@ class TestPipelineDocument:
         assert PipelineDocument.from_obj(d.to_obj()).hash == d.hash
 
 
+def test_execution_block_rejects_user_stages():
+    execution_backtest = {
+        "schema_version": "dskit.execution-backtest/v1",
+        "purpose": "synthetic",
+        "event_envelope_schema": "dskit.event-envelope/v2",
+        "source_rank_policy_sha256": "1" * 64,
+        "execution_profile_sha256": "2" * 64,
+        "environment_identity_sha256": "3" * 64,
+    }
+
+    with pytest.raises(
+        ConfigError,
+        match=r"execution_backtest.*user-authored.*stages",
+    ):
+        PipelineDocument.from_obj(
+            {
+                "name": "execution-stage-refusal",
+                "pipeline": {"source": {"uses": "synthetic-frame"}},
+                "execution_backtest": execution_backtest,
+                "stages": {"capture": {"uses": "capture"}},
+            }
+        )
+
+
+def _execution_backtest():
+    return {
+        "schema_version": "dskit.execution-backtest/v1",
+        "purpose": "synthetic",
+        "event_envelope_schema": "dskit.event-envelope/v2",
+        "source_rank_policy_sha256": "1" * 64,
+        "execution_profile_sha256": "2" * 64,
+        "environment_identity_sha256": "3" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("node", "semantic"),
+    (
+        (
+            {
+                "uses": "synthetic-frame",
+                "params": {
+                    "nested": [{"$prev": "source.output", "default": "first"}]
+                },
+            },
+            r"\$prev",
+        ),
+        (
+            {
+                "uses": "synthetic-frame",
+                "mode": "load",
+                "artifact": "runs/source/model.json",
+            },
+            "mode",
+        ),
+        (
+            {
+                "uses": "synthetic-frame",
+                "mode": "load",
+                "artifact": "runs/source/model.json",
+            },
+            "artifact",
+        ),
+    ),
+)
+def test_execution_block_rejects_forbidden_node_semantics_from_obj(node, semantic):
+    with pytest.raises(ConfigError, match=semantic):
+        PipelineDocument.from_obj(
+            {
+                "name": "execution-node-refusal",
+                "pipeline": {"source": node},
+                "execution_backtest": _execution_backtest(),
+            }
+        )
+
+
+@pytest.mark.parametrize("semantic", (r"\$prev", "mode", "artifact"))
+def test_execution_block_rejects_forbidden_node_semantics_directly(semantic):
+    if semantic == r"\$prev":
+        node = NodeSpec(
+            uses="synthetic-frame",
+            params={"nested": [{"$prev": "source.output", "default": "first"}]},
+        )
+    else:
+        node = NodeSpec(
+            uses="synthetic-frame",
+            mode="load",
+            artifact="runs/source/model.json",
+        )
+
+    with pytest.raises(ConfigError, match=semantic):
+        PipelineDocument(
+            name="execution-node-refusal",
+            pipeline={"source": node},
+            execution_backtest=ExecutionBacktestSpec.from_obj(_execution_backtest()),
+        )
+
+
+@pytest.mark.parametrize(
+    "node",
+    (
+        {
+            "uses": "synthetic-frame",
+            "params": {"nested": [{"$prev": "source.output", "default": "first"}]},
+        },
+        {
+            "uses": "synthetic-frame",
+            "mode": "load",
+            "artifact": "runs/source/model.json",
+        },
+    ),
+)
+def test_ordinary_document_allows_execution_only_node_semantics(node):
+    document = PipelineDocument.from_obj(
+        {"name": "ordinary-node-semantics", "pipeline": {"source": node}}
+    )
+    spec = document.pipeline["source"]
+    assert spec.params == node.get("params", {})
+    assert spec.mode == node.get("mode")
+    assert spec.artifact == node.get("artifact", "")
+
+
 class TestDocumentHash:
     def test_env_outputs_schedule_and_notes_never_move_the_hash(self):
         from dskit.pipeline.base import EnvConfig, OutputsConfig
@@ -531,3 +699,92 @@ class TestDocumentIO:
         path.write_text('{"name": "x", "pipeline": {"a": {"uses": ""}}}')
         with pytest.raises(ConfigError, match="broken.json.*pipeline.a"):
             load_document(path)
+
+    @pytest.mark.parametrize("constant", ("NaN", "Infinity", "-Infinity"))
+    def test_nonfinite_json_constants_refuse_before_a_document_is_returned(
+        self, tmp_path, constant
+    ):
+        path = tmp_path / "nonfinite.json"
+        path.write_text(
+            '{"name":"nonfinite","pipeline":{"source":{"uses":"synthetic-frame",'
+            '"params":{"value":' + constant + "}}}}",
+            encoding="utf-8",
+        )
+        with pytest.raises(
+            ValueError, match=rf"nonfinite.json: non-finite JSON constant {constant}"
+        ):
+            load_document(path)
+
+
+@pytest.mark.parametrize(
+    ("section", "value"),
+    (
+        (
+            "foreach",
+            {
+                "keys": ["one"],
+                "pipeline": {"template": {"uses": "synthetic-frame"}},
+            },
+        ),
+        (
+            "walkforward",
+            {
+                "objective": "$source.output",
+                "val_days": 1,
+                "folds": ["2026-01-01"],
+            },
+        ),
+    ),
+)
+def test_execution_block_rejects_foreach_and_walkforward(section, value):
+    execution_backtest = {
+        "schema_version": "dskit.execution-backtest/v1",
+        "purpose": "synthetic",
+        "event_envelope_schema": "dskit.event-envelope/v2",
+        "source_rank_policy_sha256": "1" * 64,
+        "execution_profile_sha256": "2" * 64,
+        "environment_identity_sha256": "3" * 64,
+    }
+    with pytest.raises(ConfigError, match=rf"execution_backtest.*{section}"):
+        PipelineDocument.from_obj(
+            {
+                "name": "execution-section-refusal",
+                "pipeline": {"source": {"uses": "synthetic-frame"}},
+                "execution_backtest": execution_backtest,
+                section: value,
+            }
+        )
+
+
+def test_overflow_json_number_is_refused_before_document_return(tmp_path):
+    path = tmp_path / "overflow.json"
+    path.write_text(
+        '{"name":"overflow","pipeline":{"source":{"uses":"synthetic-frame",'
+        '"params":{"value":1e9999}}}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ValueError, match=r"overflow.json: non-finite JSON number 1e9999"
+    ):
+        load_document(path)
+
+
+@pytest.mark.parametrize(
+    ("payload", "key"),
+    (
+        ('{"name":"first","name":"second","pipeline":{}}', "name"),
+        (
+            '{"name":"nested","pipeline":{"source":'
+            '{"uses":"synthetic-frame","params":{"x":1,"x":2}}}}',
+            "x",
+        ),
+    ),
+)
+def test_duplicate_json_object_keys_refuse_at_any_depth(tmp_path, payload, key):
+    path = tmp_path / "duplicate.json"
+    path.write_text(payload, encoding="utf-8")
+    with pytest.raises(
+        ValueError,
+        match=rf"duplicate.json: duplicate JSON object key {key!r}",
+    ):
+        load_document(path)

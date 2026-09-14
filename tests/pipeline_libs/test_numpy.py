@@ -682,13 +682,19 @@ class TestParams:
 
 
 class TestReferencing:
+    @staticmethod
+    def _document():
+        from dskit.pipeline.document import PipelineDocument
+        return PipelineDocument.from_obj({"name": "numpy-references", "pipeline": {"node": {"uses": "dskit.pipeline.libs.numpy:LogMid"}}})
+
     def test_the_bases_are_abstract_and_refused_at_resolve(self):
+        document = self._document()
         for name in ("ArrayMap", "ArrayFeatures"):
             with pytest.raises(ValueError, match="abstract"):
-                resolve_uses(f"dskit.pipeline.libs.numpy:{name}")
+                resolve_uses(document, f"dskit.pipeline.libs.numpy:{name}")
 
     def test_the_reference_subclasses_resolve_by_import_path(self):
-        assert resolve_uses("dskit.pipeline.libs.numpy:LogMid").cls is LogMid
+        assert resolve_uses(self._document(), "dskit.pipeline.libs.numpy:LogMid").cls is LogMid
         assert node_class_errors(TrailingReturns, "here") == []
 
     def test_the_pack_registers_nothing(self):

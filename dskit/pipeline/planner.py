@@ -45,6 +45,7 @@ Import cost: stdlib only.
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 
@@ -61,12 +62,60 @@ from dskit.pipeline.document import (
     parse_prev_ref,
 )
 from dskit.pipeline.fitted import FittedTransform
-from dskit.pipeline.node import resolve_uses
+from dskit.pipeline.node import _resolve_uses_ordinary
 from dskit.pipeline.stats import CORRECTIONS
 
 _MAX_JSON_INT = 10**4096 - 1
 
-__all__ = ["Plan", "plan", "unsearchable_space_why"]
+__all__ = [
+    "Plan", "plan", "refuse_execution_backtest", "require_in_memory_document",
+    "unsearchable_space_why",
+]
+
+def _capture_plain_json(value, entry_point):
+    """Detach one public value through strict JSON before ordinary planning."""
+    try:
+        return json.loads(
+            json.dumps(
+                value,
+                ensure_ascii=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError(
+            f"{entry_point} requires a JSON-serializable plain value"
+        ) from exc
+
+
+def require_in_memory_document(document, entry_point):
+    """Capture an exact plain ordinary document at a public entry point."""
+    if type(document) is not PipelineDocument:
+        raise ValueError(
+            f"{entry_point} requires a PipelineDocument first: an exact plain "
+            "PipelineDocument snapshot; "
+            "only an in-memory PipelineDocument is accepted. String and "
+            "path overloads are retired. Load the document in the caller or use "
+            "python -m dskit.pipeline."
+        )
+    refuse_execution_backtest(document)
+    captured = PipelineDocument.from_obj(
+        _capture_plain_json(document.to_obj(), entry_point)
+    )
+    refuse_execution_backtest(captured)
+    return captured
+
+
+def refuse_execution_backtest(document):
+    """Refuse execution documents before resolving ordinary pipeline code."""
+    if document.execution_backtest is not None:
+        raise ConfigError(
+            [
+                "execution_backtest documents require the external broker; "
+                "public ordinary-pipeline entry points refuse them"
+            ]
+        )
 
 #: Roles that may carry ``mode``/``artifact`` (spec §5: trainable). The
 #: grammar's own tuple, imported — a second copy here is how a new
@@ -464,6 +513,7 @@ def plan(document, registry=None) -> Plan:
         Listing every import failure, role violation, wire-contract
         break, cycle, and plan-checkable param problem at once.
     """
+    document = require_in_memory_document(document, "plan")
     errors = []
     warnings = []
     # What RUNS, not what was written: with no `foreach` section this IS
@@ -475,7 +525,7 @@ def plan(document, registry=None) -> Plan:
     resolved = {}
     for key, spec in specs.items():
         try:
-            resolved[key] = resolve_uses(spec.uses, registry)
+            resolved[key] = _resolve_uses_ordinary(spec.uses, registry)
         except ValueError as exc:
             errors.append(f"pipeline.{key}: {exc}")
             continue
