@@ -67,8 +67,8 @@ No SB3 training is part of this slice.
 Dependency: S4. Use a stub policy and plain environment, not a training run.
 Cover predict tuple unpacking; fresh seed/reset/step validation; termination
 reason precedence and exclusive counts; bounded traces; provenance; JSON safety;
-all eight source-defined atomic artifact failures after sidecar defaults and
-before environment creation; and close-on-every-error behavior.
+all eight source-defined recursive JSON-safety refusal cases on resolved
+(sidecar-defaulted) env_params before environment creation; and close-on-every-error behavior.
 
 Register only when concrete. In that same candidate, update the legacy SB3
 conformance table to explicitly cover its three old kinds and add the separate
