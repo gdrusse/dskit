@@ -1,5 +1,23 @@
 # Re-entry
 
+## Current wrap: F5a driver-only Phase 0 design closed (2026-09-14)
+
+F5a's revised driver-only matrix is
+`docs/review-evidence/F5a/0034-phase0-driver-only.v2.json`; its Phase 0 verdict
+is `docs/review-evidence/F5a/0035-phase0-review-verdict.v1.json`. User-approved
+strict behavior binds the exact constructor verifier, invokes the class method,
+and refuses without a broker fallback. Two sequential final lenses found zero
+Critical/Major; JSON and diff checks passed. This authorizes only Packet 2's
+focused synthetic RED/GREEN work, not a whole-F5a exit or real capture.
+
+F5A-R23-ctor-intern-unspend remains open and continues to block whole F5a and
+F3/F5b. Preserve `origin/cursor/r5-f5a-private-plan-0f39`; do not merge all of
+PR 14, edit frozen F4 `trust.py`, or start dependent work.
+
+Next: replay the minimal approved HistoricalStudyVerifier/facade seam and add
+the matrix's focused RED tests in a new current-main isolated worktree.
+
+
 ## Current wrap: C0 ledger-derived recovery state closed (2026-09-14)
 
 C0 ReviewExit: `docs/review-evidence/C0/0004-review-exit.v1.json`. Candidate
