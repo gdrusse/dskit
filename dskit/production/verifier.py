@@ -709,7 +709,7 @@ class HistoricalStudyVerifier:
         self._authority = authority
         self._bound = {}
         cell = object.__new__(_SpendCell)
-        self._minted_id = id(cell)
+        self._minted = (cell,)
         self._admission_spent = cell
         self._capture_lock = Lock()
         self.deployment_eligible = False
@@ -789,8 +789,11 @@ class HistoricalStudyVerifier:
         with self._capture_lock:
             with _DOOR_LOCK:
                 cell = self._admission_spent
-                if type(cell) is _Spent or id(cell) != getattr(
-                    self, "_minted_id", None
+                minted = getattr(self, "_minted", (None,))
+                if (
+                    type(cell) is _Spent
+                    or type(minted) is not tuple
+                    or cell is not minted[0]
                 ):
                     raise ValueError(
                         "CAPTURED refuses after consumed admission is spent"
