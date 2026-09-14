@@ -708,9 +708,9 @@ class HistoricalStudyVerifier:
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound = {}
-        door = type("_Door", (_SpendCell,), {"__slots__": ()})
-        self._door = (door,)
-        self._admission_spent = object.__new__(door)
+        cell = object.__new__(_SpendCell)
+        self._minted_id = id(cell)
+        self._admission_spent = cell
         self._capture_lock = Lock()
         self.deployment_eligible = False
 
@@ -789,14 +789,8 @@ class HistoricalStudyVerifier:
         with self._capture_lock:
             with _DOOR_LOCK:
                 cell = self._admission_spent
-                box = getattr(self, "_door", (_Spent,))
-                door = box[0] if type(box) is tuple and box else _Spent
-                cls = type(cell)
-                if (
-                    cls is _Spent
-                    or cls is _SpendCell
-                    or cls is not door
-                    or door.__dict__.get("_dead") is _Spent
+                if type(cell) is _Spent or id(cell) != getattr(
+                    self, "_minted_id", None
                 ):
                     raise ValueError(
                         "CAPTURED refuses after consumed admission is spent"
@@ -811,7 +805,5 @@ class HistoricalStudyVerifier:
                         "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
                         "CAS, and consumed admission are bound"
                     )
-                type.__setattr__(door, "_dead", _Spent)
                 object.__setattr__(cell, "__class__", _Spent)
-                self._door = (_Spent,)
         return self._authority.capture(published, frozen, port, **kwargs)
