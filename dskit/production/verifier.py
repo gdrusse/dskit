@@ -632,8 +632,17 @@ class SubmissionVerifier:
 
 
 _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
-_LIVE = set()
-_LIVE_LOCK = Lock()
+_DOOR_LOCK = Lock()
+
+
+class _DoorMeta(type):
+    """Refuse resurrecting a spent per-doorway type."""
+
+    def __setattr__(cls, name, value):
+        """Refuse clearing a spent doorway flag."""
+        if name == "_dead" and cls.__dict__.get("_dead") is True:
+            raise TypeError("opaque capture handle")
+        super().__setattr__(name, value)
 
 
 class _SpendCell:
@@ -703,10 +712,8 @@ class HistoricalStudyVerifier:
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound = {}
-        cell = object.__new__(_SpendCell)
-        with _LIVE_LOCK:
-            _LIVE.add(cell)
-        self._admission_spent = cell
+        door = _DoorMeta("_Door", (_SpendCell,), {"__slots__": (), "_dead": False})
+        self._admission_spent = object.__new__(door)
         self._capture_lock = Lock()
         self.deployment_eligible = False
 
@@ -783,8 +790,9 @@ class HistoricalStudyVerifier:
             is not bound, or when that admission is already spent.
         """
         with self._capture_lock:
-            with _LIVE_LOCK:
-                if self._admission_spent not in _LIVE:
+            with _DOOR_LOCK:
+                cls = type(self._admission_spent)
+                if cls is _SpendCell or cls.__dict__.get("_dead", True) is not False:
                     raise ValueError(
                         "CAPTURED refuses after consumed admission is spent"
                     )
@@ -798,5 +806,5 @@ class HistoricalStudyVerifier:
                         "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
                         "CAS, and consumed admission are bound"
                     )
-                _LIVE.discard(self._admission_spent)
+                cls._dead = True
         return self._authority.capture(published, frozen, port, **kwargs)
