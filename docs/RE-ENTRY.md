@@ -1,5 +1,19 @@
 # Re-entry
 
+## Current wrap: branch and skeptic audit (2026-09-14)
+
+F1/F2 merged to main as `f57b0f0` (PR 12). Final Terra and two sequential
+integration reviews: zero Critical/Major. Five completed remote branches and
+32 contained local branches purged; worktree files and unmerged work preserved.
+Focused tests: 704 passed, 11 skipped, one failure also reproduced on baseline;
+foreach alone 60 passed. Two reviewed lint nits remain. No deployment approval.
+
+Audit and completion plan: [review-progress memo](memos/2026-09-14-review-progress-and-consolidation.md).
+Next: F5a boundary/design checkpoint (PR 14 remains open), replay ADR/plan
+reconciliation; clustering/RL remains separate. Three non-main remote branches
+remain. F5a consume-once has an open Major; its earlier ReviewExits do not close
+the whole branch. No real HPO/refit/replay/backtest is authorized.
+
 ## Current wrap: F4 WORM capture lifecycle merged (2026-09-13)
 
 Branch `cursor/r5-f4-capture-lifecycle-0f39` merged to `main`. F4 ReviewExit
