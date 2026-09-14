@@ -146,3 +146,42 @@ two clean independent lenses, and authorized merge/push/cleanup/wrap.
 The agent has not been started. Instructions guide agents; they are not a
 runtime proof of compliance. Existing sessions/checkouts retain their loaded
 instructions and startup hooks; use a current isolated checkout for the trial.
+
+## Follow-up: remaining feature closeout plans (2026-09-14)
+
+The [nine closeout plans and dependency index](../plans/closeout-2026-09-14/README.md)
+cover all 21 remaining nodes in the 24-node master DAG, the separate clustering/RL
+proposal, quality/legacy histories and other open TODO capabilities/decisions.
+The canonical implementation workflow now routes new work to that index.
+Each packet preserves current source contracts, independent reviews, focused
+proof and conditional merge/main push/verified branch purge/wrap. Partial
+completion does not close its parent feature or discard source-branch remainders.
+No feature implementation, real run or Claude trial was launched in this task.
+
+Base: `3798ffd6b424cbf7561f6596c28641dde8e6b2f9`.
+Both sequential independent lenses reviewed immutable candidate
+`72aa082b325c966a1b1eed1f2b57c6fdd7a88935`: zero Critical/Major, one shared
+Minor and zero Nits. Actual reports are retained in task traces
+/root/closeout_contract_review and /root/integration_validation (closeout lens).
+The second reviewer was reused from an earlier unrelated integration task after
+the agent-thread limit blocked a new thread; it had neither authored nor reviewed
+this planning candidate, and conducted this independent lens afresh.
+
+The sole Minor was the clustering summary's incorrect label for eight recursive
+JSON-safety refusals. Successor `2ae5df8d223aa0a8be62c81c19f0340e7106247f`
+changes only that two-line label in plan 07, from “atomic artifact failures”
+to “recursive JSON-safety refusal cases on resolved (sidecar-defaulted) env_params.”
+The exact `git diff 72aa082 2ae5df8` confirms no other change. The pinned normative
+source, cases, expected behavior, gates, ownership and forbidden effects are
+unchanged. The independent second lens explicitly classified this as editorial
+under skeptic Rule 5; no fresh review cycle is required. This record and RE-ENTRY
+are evidence appends only. No unresolved finding remains in this planning packet.
+
+Local checks: master DAG exact equality (24 nodes); 21 remaining nodes assigned
+once; all 21 manifest RED sentinel names routed; ten documents' relative links
+and finish sections valid; `git diff --check` clean. Candidate changes were
+12 Markdown files; this evidence adds the existing memo. No production, tests,
+configs, path.csv or immutable JSON evidence changed. No full or feature suite
+was run for these documentation directions. Remote/source pins were re-fetched
+and unchanged before the final delivery preparation.
+
