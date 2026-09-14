@@ -96,3 +96,53 @@ Compare `36553ae..ea82c39` for incoming F1/F2 history and `36553ae..c489199` for
 Focused test selection: `tests/pipeline/test_{document,planner,node,driver,stages,main,main_adapter_flag,fitted,foreach,selector}.py` plus `tests/pipeline_libs/test_numpy.py`, invoked in that order with `PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q`. The docstring sample is exactly the commits titled Round 8–29 on `2a06453`; executable AST comparison removes module/class/function docstrings and ignores formatting/comments.
 
 Next work is the F5a boundary decision and replay-plan reconciliation. This memo is the handoff; unfinished branches retain their original evidence and restrictions.
+
+## Follow-up: workflow adopted and routed (2026-09-14)
+
+The owner subsequently requested that agents follow these recommendations
+automatically. The implemented procedure is now
+[implementation-workflow](../skills/implementation-workflow.md), with aligned
+TDD, skeptic review, research-build and wrap procedures. Root AGENTS/CLAUDE,
+eight platform skill stubs, Cursor's always-applied rule and OpenCode's wrap
+entry point route to it. The earlier proposal section above records the audit
+at its original time; these procedures are the adopted follow-up.
+
+Candidate `4ecb2af` passed a correctness/authority lens but failed the routing
+lens with one Major: all three platform startup hooks still pulled into the
+active checkout before instructions could protect isolation. The whole family
+was corrected once to fetch-only. Regression commit `4062753` produced three
+expected failures when upstream advanced a disjoint file in a checkout with
+staged, unstaged, and untracked work. Corrected candidate `9b88f14` produced
+three passes; changed-test Ruff, JSON parsing, diff checks, and paired routing
+checks passed. OpenCode's real Git shell template was exercised, but its
+platform loader/JavaScript runtime was not. No full suite or Claude trial ran.
+
+Six platform stubs pass the available skill validator. The two wrap stubs retain
+an unchanged Claude/Cursor `disable-model-invocation` frontmatter field that the
+Codex-specific validator rejects; canonical wrap routing and the field itself
+were inspected. This is a validator compatibility limitation, not a new failure.
+
+The two final independent lenses were restarted on `9b88f14`, sequentially.
+Correctness/authority reviewer `/root/workflow_final_correctness` returned:
+“PASS — reviewed `9b88f14d47a83577c2d94601b7e407c422fa8efa` against `4b24ee8`.”
+Unresolved counts: “**0 Critical, 0 Major, 0 Minor, 0 Nit**” in assigned scope.
+It checked authority, hook family, isolation, severity, lock/reopening and wrap.
+
+Test-quality/routing reviewer `/root/workflow_final_validation` returned:
+“**Findings: 0 Critical, 0 Major, 0 Minor, 0 Nit.**”
+It reran the hook regressions: “**3 passed in 0.27s**”, and verified routing,
+bounded trial scope, preservation coverage and unchanged candidate.
+Both reviewers excluded actual provider-loader/JavaScript dispatch validation.
+
+First-round reviewer IDs: `/root/workflow_policy_review` (0 Critical/Major)
+and `/root/workflow_routing_review` (0 Critical, 1 Major, not clean).
+The startup pull finding was corrected across the whole family once, then
+both fresh final lenses passed. Actual reports are retained in those task traces.
+
+A [copy-ready Claude trial](../handoffs/2026-09-14-claude-workflow-trial.md)
+targets the outstanding pipeline test-registry order dependency. It requires
+a same-process RED, preserved shipped-kind/adapter coverage, focused verification,
+two clean independent lenses, and authorized merge/push/cleanup/wrap.
+The agent has not been started. Instructions guide agents; they are not a
+runtime proof of compliance. Existing sessions/checkouts retain their loaded
+instructions and startup hooks; use a current isolated checkout for the trial.

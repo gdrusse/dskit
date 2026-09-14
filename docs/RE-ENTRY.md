@@ -1,5 +1,18 @@
 # Re-entry
 
+## Current wrap: adopted implementation workflow (2026-09-14)
+
+Default agent routing uses [implementation-workflow](skills/implementation-workflow.md):
+bounded scope, impact-based severity, two independent lenses, family sweeps,
+third-cycle checkpoint, candidate lock and authorized delivery. Startup hooks
+fetch only; three regressions pass. Final reviews: zero Critical/Major on
+`9b88f14`. [Rollout evidence](memos/2026-09-14-review-progress-and-consolidation.md#follow-up-workflow-adopted-and-routed-2026-09-14).
+
+Next: [Claude trial](handoffs/2026-09-14-claude-workflow-trial.md) fixes the
+outstanding test-registry order dependency. Trial is prepared, not run.
+Use a current isolated checkout; old checkouts retain old startup hooks.
+F5a, replay-plan and clustering/RL restrictions remain unchanged.
+
 ## Current wrap: branch and skeptic audit (2026-09-14)
 
 F1/F2 merged to main as `f57b0f0` (PR 12). Final Terra and two sequential
