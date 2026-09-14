@@ -632,12 +632,14 @@ class SubmissionVerifier:
 
 
 _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
+_LIVE = set()
+_LIVE_LOCK = Lock()
 
 
 class _SpendCell:
-    """One-use admission flag; extra mints and copies stay spent."""
+    """Identity token for one-use admission; extra mints stay spent."""
 
-    __slots__ = ("_bit",)
+    __slots__ = ()
 
     def __new__(cls, *args, **kwargs):
         """Refuse construction except through the doorway mint."""
@@ -702,7 +704,8 @@ class HistoricalStudyVerifier:
         self._authority = authority
         self._bound = {}
         cell = object.__new__(_SpendCell)
-        object.__setattr__(cell, "_bit", False)
+        with _LIVE_LOCK:
+            _LIVE.add(cell)
         self._admission_spent = cell
         self._capture_lock = Lock()
         self.deployment_eligible = False
@@ -780,19 +783,20 @@ class HistoricalStudyVerifier:
             is not bound, or when that admission is already spent.
         """
         with self._capture_lock:
-            if getattr(self._admission_spent, "_bit", True) is not False:
-                raise ValueError(
-                    "CAPTURED refuses after consumed admission is spent"
-                )
-            missing = [
-                name
-                for name in _REQUIRED_PLAN
-                if not _plan_artifact_bound(self._bound.get(name), name)
-            ]
-            if missing:
-                raise ValueError(
-                    "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
-                    "CAS, and consumed admission are bound"
-                )
-            object.__setattr__(self._admission_spent, "_bit", True)
+            with _LIVE_LOCK:
+                if self._admission_spent not in _LIVE:
+                    raise ValueError(
+                        "CAPTURED refuses after consumed admission is spent"
+                    )
+                missing = [
+                    name
+                    for name in _REQUIRED_PLAN
+                    if not _plan_artifact_bound(self._bound.get(name), name)
+                ]
+                if missing:
+                    raise ValueError(
+                        "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
+                        "CAS, and consumed admission are bound"
+                    )
+                _LIVE.discard(self._admission_spent)
         return self._authority.capture(published, frozen, port, **kwargs)
