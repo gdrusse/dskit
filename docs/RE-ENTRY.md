@@ -1,5 +1,17 @@
 # Re-entry
 
+## Current wrap: C0 ledger-derived recovery state closed (2026-09-14)
+
+C0 ReviewExit: `docs/review-evidence/C0/0004-review-exit.v1.json`. Candidate
+`351d879` makes Recovery verify its supplied fold head is a canonical ledger
+ancestor before snapshot, scan or append. Two final lenses: 0 Critical/Major;
+one deferred Minor names direct coverage of same-sequence divergence only.
+Focused state/ledger/cashflow/accounting/report/purity checks: 582 passed; ruff
+and diff checks clean. No real execution, deployment or `path.csv` change.
+
+Next: F5a's still-open consume-once design checkpoint; C0 only unlocks R1 after
+its F5a/F3 dependencies close.
+
 ## Current wrap: remaining feature closeout directions (2026-09-14)
 
 [Closeout plan index](plans/closeout-2026-09-14/README.md): nine workstream plans,
