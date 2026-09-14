@@ -247,7 +247,6 @@ def _require_public_document(path, document):
 
 def _legacy_validate(path, obj, adapters) -> int:
     """Validate captured stage-list JSON after adapter registration."""
-
     try:
         _import_adapters(adapters)
         cfg = PipelineConfig.from_obj(obj)
