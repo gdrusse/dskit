@@ -1,0 +1,17 @@
+---
+description: Apply DSKIT's shared implementation, skeptic review, and closure workflow.
+alwaysApply: true
+---
+
+Read root AGENTS.md (and nearest package instructions). For implementation,
+review, or wrap work, load docs/skills/implementation-workflow.md and follow its
+TDD/review/wrap routing. Read docs/RE-ENTRY.md for current scope and dependencies.
+
+On a resumed branch, fetch and consult current origin/main workflow, skeptic,
+and wrap instructions before continuing. Preserve task-specific approvals,
+contracts, execution restrictions, and unmerged work. Do not treat an earlier
+partial ReviewExit as whole-branch approval.
+
+One bounded result; focused evidence; complete defect-family correction;
+two independent lenses; zero unresolved in-scope Critical/Major for closure;
+record minors, verify the locked candidate, and finish authorized delivery.

@@ -6,4 +6,6 @@ disable-model-invocation: true
 
 # Wrap dskit work
 
+First load `docs/skills/implementation-workflow.md`.
+
 Full procedure: `docs/skills/wrap.md`. Read it before acting — this file only carries the trigger.

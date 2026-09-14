@@ -5,4 +5,6 @@ description: Automatically use before high-risk implementation to freeze and adv
 
 # Skeptic Review Loop
 
+First load `docs/skills/implementation-workflow.md`.
+
 Full procedure: `docs/skills/skeptic-review.md`. Read it before acting — this file only carries the trigger.

@@ -122,6 +122,23 @@ Wrap the *library*, generically — never a project's use of it.
   never fall back to the family name — a commit that says only `Claude` cannot
   be attributed to the session that made it, which is the whole point.
 
+## Automatic implementation and closure
+
+For every implementation, review, or wrap task, read
+`docs/skills/implementation-workflow.md` before acting. It routes TDD,
+skeptic review, convergence checkpoints, and delivery through the canonical
+shared procedures. This is the owner-adopted 2026-09-14 audit workflow:
+zero unresolved in-scope Critical/Major, two independent final lenses,
+recorded minors, family-wide corrections, and a precise candidate lock.
+It supersedes older general process wording, not approved feature contracts,
+dependency/evidence requirements, real-execution gates, or explicit task rulings.
+
+Read `docs/RE-ENTRY.md` for the next bounded slice. On a resumed old branch,
+fetch and read the current `origin/main` workflow/skeptic/wrap files first;
+do not rely solely on stale local prompts. Honor prior authorization to
+commit/merge/push/wrap without asking again. A local checkpoint commit is
+not readiness approval. Keep `AGENTS.md` and `CLAUDE.md` aligned.
+
 ## Skills index
 
 Every skill's full procedure lives in `docs/skills/<name>.md`. Claude Code
@@ -132,6 +149,7 @@ file before acting on a matching trigger.
 
 | Trigger | Canonical doc |
 |---|---|
+| Any implementation, review, or wrap | `docs/skills/implementation-workflow.md` |
 | `/chain`, or a described sequence of agent actions to run one after another | `docs/skills/chain.md` |
 | Implement/build a research finding or plan | `docs/skills/implement-research-build.md` |
 | Explicit request for deep, evidence-backed research | `docs/skills/deep-research.md` |

@@ -5,4 +5,6 @@ description: Automatically use when implementing any feature, bugfix, refactor, 
 
 # Test-Driven Development (TDD)
 
+First load `docs/skills/implementation-workflow.md`.
+
 Full procedure: `docs/skills/test-drive-development.md`. Read it before acting — this file only carries the trigger.
