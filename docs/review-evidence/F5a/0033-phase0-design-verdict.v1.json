@@ -1,0 +1,72 @@
+{
+  "schema_version": "ReviewVerdict.v1",
+  "slice_id": "F5a",
+  "cluster": "driver-only-capture-refuse",
+  "conclusion": "not-clean: three driver-only matrix gaps permit capture through a substituted or rebound exact HistoricalStudyVerifier, or after an unbound-driver refusal",
+  "deployment_eligible": false,
+  "reviewed_base_commit": "c06b0a5bdb358391ff2077e71dddc314ddde496d",
+  "reviewed_source_commit": "c489199",
+  "matrix_path": "c489199:docs/review-evidence/F5a/0032-phase0-driver-only.v1.json",
+  "matrix_sha256": "612c4cc28d7a4dc09066609040769d2e9d6d414eeec164c3475fa79cca07719f",
+  "previous_evidence_sha256": "612c4cc28d7a4dc09066609040769d2e9d6d414eeec164c3475fa79cca07719f",
+  "inherited_open_findings": [
+    {
+      "id": "F5A-R23-ctor-intern-unspend",
+      "disposition": "open-out-of-scope",
+      "consequence": "Still blocks whole F5a and F3/F5b; this packet neither resolves nor relabels it."
+    }
+  ],
+  "findings": [
+    {
+      "id": "F5A-P0-008",
+      "severity": "major",
+      "summary": "The matrix does not require refusal when the held exact HistoricalStudyVerifier is replaced with a different exact HistoricalStudyVerifier.",
+      "reproducer": "Construct with bound verifier A, substitute bound verifier B, then capture; an implementation that checks only type(held) is HistoricalStudyVerifier can capture through B, contrary to the contract's original-instance delegation.",
+      "disposition": "open",
+      "required_correction": "Require original-instance identity preservation/recheck and a B-substitution refusal test."
+    },
+    {
+      "id": "F5A-P0-009",
+      "severity": "major",
+      "summary": "The matrix does not require refusal when an exact HistoricalStudyVerifier instance's capture attribute is rebound to broker.capture.",
+      "reproducer": "Before driver construction, set verifier.capture = broker.capture; self._verifier.capture(...) can write CAPTURED without the HistoricalStudyVerifier bind/spend gates.",
+      "disposition": "open",
+      "required_correction": "Require unbound HistoricalStudyVerifier.capture(held, ...) delegation and a rebinding refusal/no-CAPTURED test."
+    },
+    {
+      "id": "F5A-P0-010",
+      "severity": "major",
+      "summary": "The retry row omits Driver(unbound_hsv).capture and permits an implementation to fall back to the broker after HistoricalStudyVerifier refuses.",
+      "reproducer": "Call the driver with an unbound verifier; a catch-and-fallback to _authority.capture passes the valid-driver and direct-F4-broker cases yet writes CAPTURED after refusal.",
+      "disposition": "open",
+      "required_correction": "Require driver refusal/no-CAPTURED for an unbound HSV, then separately prove direct F4 broker capture remains callable."
+    }
+  ],
+  "reviews": [
+    {
+      "agent_task": "/root/f5a_phase0_skeptic",
+      "lens": "phase0-design",
+      "result": "initial P0-008 dependency concern adjudicated out of scope under the approved bounded-packet plan"
+    },
+    {
+      "agent_task": "/root/f5a_phase0_adjudicator",
+      "lens": "independent-adjudication",
+      "result": "confirmed the missing-HSV observation is an explicitly authorized inherited dependency, not an in-scope Major"
+    },
+    {
+      "agent_task": "/root/f5a_design_authority_final",
+      "lens": "correctness-authority",
+      "result": "pass, 0 Critical/Major"
+    },
+    {
+      "agent_task": "/root/f5a_design_integration_final",
+      "lens": "test-quality-integration",
+      "result": "not clean, 0 Critical and 3 Major"
+    }
+  ],
+  "checks": [
+    "design-only inspection; no production code or tests changed",
+    "source matrix SHA-256 pinned above"
+  ],
+  "next_gate": "Owner-approved revised Phase0 matrix resolving F5A-P0-008 through F5A-P0-010 before RED."
+}
