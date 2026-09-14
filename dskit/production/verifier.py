@@ -790,7 +790,13 @@ class HistoricalStudyVerifier:
             with _DOOR_LOCK:
                 cell = self._admission_spent
                 door = getattr(self, "_door", _Spent)
-                if type(cell) is _Spent or type(cell) is not door:
+                cls = type(cell)
+                if (
+                    cls is _Spent
+                    or cls is _SpendCell
+                    or cls is not door
+                    or cls.__dict__.get("_dead") is _Spent
+                ):
                     raise ValueError(
                         "CAPTURED refuses after consumed admission is spent"
                     )
@@ -804,6 +810,5 @@ class HistoricalStudyVerifier:
                         "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
                         "CAS, and consumed admission are bound"
                     )
-                object.__setattr__(cell, "__class__", _Spent)
-                self._door = _Spent
+                type.__setattr__(cls, "_dead", _Spent)
         return self._authority.capture(published, frozen, port, **kwargs)
