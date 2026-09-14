@@ -1,0 +1,22 @@
+{
+  "schema_version": "ReviewVerdict.v1",
+  "slice_id": "F5a",
+  "cluster": "driver-only-capture-refuse",
+  "conclusion": "clean Phase0 design; Packet 2 RED is authorized, but whole F5a remains open",
+  "deployment_eligible": false,
+  "reviewed_base_commit": "c06b0a5bdb358391ff2077e71dddc314ddde496d",
+  "reviewed_candidate_commit": "cb4bb6093fb30dba356504e710ec17c665993e3e",
+  "matrix_path": "docs/review-evidence/F5a/0034-phase0-driver-only.v2.json",
+  "matrix_sha256": "300be64271d8726ea4459070500c2839bbd17ba51fceab6fc9cfa02ebbf7e700",
+  "previous_evidence_sha256": "300be64271d8726ea4459070500c2839bbd17ba51fceab6fc9cfa02ebbf7e700",
+  "reviews": [
+    {"agent_task": "/root/f5a_v2_authority_review", "lens": "correctness-authority", "result": "pass", "critical": 0, "major": 0, "limits": "Design-only; Packet 2 must prove every matrix row with TDD."},
+    {"agent_task": "/root/f5a_v2_integration_review", "lens": "test-quality-integration", "result": "pass", "critical": 0, "major": 0, "limits": "Design-only; current main lacks HSV and source R23 remains an implementation/merge limitation."}
+  ],
+  "minor_backlog": [],
+  "inherited_open_findings": [
+    {"id": "F5A-R23-ctor-intern-unspend", "disposition": "open-out-of-scope", "consequence": "Blocks whole F5a and F3/F5b; neither the matrix nor this verdict closes, defers, or relabels it."}
+  ],
+  "checks": ["python3 -m json.tool docs/review-evidence/F5a/0034-phase0-driver-only.v2.json", "git diff --check"],
+  "next_gate": "Packet 2: focused RED/GREEN facade implementation and tests for every v2 matrix row; retain source branch and do not merge all of PR 14."
+}
