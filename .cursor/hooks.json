@@ -3,7 +3,7 @@
   "hooks": {
     "sessionStart": [
       {
-        "command": "git pull --ff-only 2>&1 | tail -3",
+        "command": "git fetch --prune origin",
         "timeout": 20
       }
     ],

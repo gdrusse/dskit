@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "git -C \"$CLAUDE_PROJECT_DIR\" pull --ff-only 2>&1 | tail -3"
+            "command": "git -C \"$CLAUDE_PROJECT_DIR\" fetch --prune origin"
           }
         ]
       }

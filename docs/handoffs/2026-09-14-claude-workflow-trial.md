@@ -1,13 +1,18 @@
 # Claude trial: remove the test-registry order dependency
 
-Copy the prompt below into a fresh Claude agent. This is a test of the new
-workflow, not permission to advance the blocked F5a feature branch.
+Start Claude on current origin/main, not inside an old shared checkout.
+For local WSL2 use the prepared /home/russell/wt/claude-workflow-trial-20260914
+worktree; for a cloud agent select gdrusse/dskit at current main. Older checkouts
+retain their old startup hooks until updated; a prompt runs after those hooks.
+Copy the prompt below. This trial does not advance the blocked F5a branch.
 
 ---
 
-Work in WSL2 on gdrusse/dskit. Fetch origin from /home/russell/dskit without
-changing its dirty checkout. Create your own worktree/branch from current
-origin/main. Read the current root CLAUDE.md, nearest applicable instructions,
+Work in WSL2 on gdrusse/dskit. Use the prepared isolated
+/home/russell/wt/claude-workflow-trial-20260914 worktree if present and clean.
+Otherwise fetch and create your own worktree/branch from current origin/main.
+Do not use or change /home/russell/dskit's dirty checkout. Verify your trial
+base is current origin/main before editing. Read the current root CLAUDE.md, nearest applicable instructions,
 docs/RE-ENTRY.md, docs/skills/implementation-workflow.md, and its TDD, skeptic,
 and wrap procedures. Read the audit memo's verification section:
 docs/memos/2026-09-14-review-progress-and-consolidation.md.

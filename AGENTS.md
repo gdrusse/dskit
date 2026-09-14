@@ -87,7 +87,7 @@ Wrap the *library*, generically — never a project's use of it.
 
 ## Session workflow
 
-- **Start:** pull from the remote first (automated by the `SessionStart` hook in
+- **Start:** fetch remote refs first (automated by the `SessionStart` hook in
   `.cursor/hooks.json`).
 - **Isolation:** every session works from its own git worktree — never
   directly on `main` in a shared checkout, and never in a checkout another
@@ -175,7 +175,7 @@ their implicit stubs, OpenCode loads `.cursor/skills`, and Codex follows this in
 dskit/
 ├── AGENTS.md                  # this file — repo-wide standards
 ├── .cursor/
-│   ├── hooks.json          # SessionStart hook: git pull
+│   ├── hooks.json          # SessionStart hook: git fetch
 │   └── skills/                # /chain, /wrap, /record-research, … (stubs; see docs/skills/)
 ├── README.md                  # the three pillars + the child pattern, 60-second paths
 ├── pyproject.toml             # core has ZERO required deps; heavy libs are extras
