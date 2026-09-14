@@ -44,8 +44,10 @@ the ``SubmittingExecutor`` contract (§5.7).
 """
 
 import dataclasses
+from threading import Lock
 from types import MappingProxyType
 
+from dskit.pipeline.trust import LifecycleAuthority
 from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
@@ -63,7 +65,12 @@ from dskit.production.vocab import (
     VERDICT_ORDER,
 )
 
-__all__ = ["VERIFY_REASONS", "SubmissionVerifier"]
+__all__ = [
+    "VERIFY_REASONS",
+    "HistoricalStudyCaptureDriver",
+    "HistoricalStudyVerifier",
+    "SubmissionVerifier",
+]
 
 _LOG = get_logger("verifier")
 
@@ -627,3 +634,232 @@ class SubmissionVerifier:
         decision = self._policy.permits(request)
         if not decision.allowed:
             raise _Refused(decision.reason)
+
+
+_REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
+_DOOR_LOCK = Lock()
+
+
+def _make_spend_pair():
+    """Shared live/spent id sets plus pins; not instance state."""
+    return (set(), set(), {})
+
+
+class _SpendCell:
+    """Identity token for one-use admission; extra mints stay spent."""
+
+    __slots__ = ()
+
+    def __new__(cls, *args, **kwargs):
+        """Refuse construction except through the doorway mint."""
+        raise TypeError("opaque capture handle")
+
+    def __setattr__(self, name, value):
+        """Refuse attribute writes on the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __copy__(self):
+        """Refuse shallow copies of the capture facade."""
+        """Refuse a shallow copy of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __deepcopy__(self, memo):
+        """Refuse deep copies of the capture facade."""
+        """Refuse a deep copy of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __getstate__(self):
+        """Refuse serializing the capture facade."""
+        """Refuse pickle state of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce__(self):
+        """Refuse pickle reduction of the capture facade."""
+        """Refuse pickle reduction of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce_ex__(self, protocol):
+        """Refuse protocol pickle reduction of the facade."""
+        """Refuse pickle protocol reduction of the spend cell."""
+        raise TypeError("opaque capture handle")
+
+
+def _plan_artifact_bound(value, name=None):
+    """Return whether ``value`` is a bound plan artifact."""
+    if type(value) is not dict:
+        return False
+    if name == "admission":
+        return value.get("consumed") is True
+    return bool(value)
+
+
+class HistoricalStudyVerifier:
+    """Refuse CAPTURED until ADR-0125 private plan and admission are bound.
+
+    Parameters
+    ----------
+    authority : LifecycleAuthority
+        The F4 WORM writer. Direct construction without one is refused.
+
+    Examples
+    --------
+    Construction without a lifecycle authority is refused::
+
+        try:
+            HistoricalStudyVerifier()
+        except TypeError:
+            refused = True
+        refused  # True
+    """
+
+    def __init__(self, authority, *, _spend=_make_spend_pair()):
+        if not isinstance(authority, LifecycleAuthority):
+            raise TypeError("lifecycle authority is required")
+        self._authority = authority
+        self._bound = {}
+        live, _spent, pins = _spend
+        cell = object.__new__(_SpendCell)
+        cid = id(cell)
+        live.add(cid)
+        pins[cid] = cell
+        self._admission_spent = cell
+        self._capture_lock = Lock()
+        self.deployment_eligible = False
+
+    def __copy__(self):
+        """Refuse shallow copies of the capture facade."""
+        """Refuse a shallow copy of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def __deepcopy__(self, memo):
+        """Refuse deep copies of the capture facade."""
+        """Refuse a deep copy of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def __getstate__(self):
+        """Refuse serializing the capture facade."""
+        """Refuse pickle state of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce__(self):
+        """Refuse pickle reduction of the capture facade."""
+        """Refuse pickle reduction of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce_ex__(self, protocol):
+        """Refuse protocol pickle reduction of the facade."""
+        """Refuse pickle protocol reduction of the one-use doorway."""
+        raise TypeError("opaque capture handle")
+
+    def bind(self, **artifacts):
+        """Bind named ADR-0125 plan artifacts. Unknown names refuse.
+
+        Parameters
+        ----------
+        artifacts : dict
+            Any subset of ``scope_intent``, ``ces``, ``pea``, ``bvp``,
+            ``cas``, ``admission``. Each value must be a ``dict``;
+            ``admission`` must have ``consumed`` equal to ``True``.
+
+        Raises
+        ------
+        ValueError
+            On an unknown name or an unbound artifact. A refused call
+            stores none of that call's names.
+        """
+        unknown = tuple(name for name in artifacts if name not in _REQUIRED_PLAN)
+        if unknown:
+            raise ValueError("unknown plan artifact")
+        pending = {}
+        for name, value in artifacts.items():
+            if not _plan_artifact_bound(value, name):
+                raise ValueError("plan artifact is required")
+            pending[name] = value
+        self._bound.update(pending)
+
+    def capture(self, published, frozen, port, **kwargs):
+        """Refuse CAPTURED when any required plan artifact is unbound.
+
+        Parameters
+        ----------
+        published : object
+            A PUBLISHED handle from ``authority``.
+        frozen : object
+            The frozen consumer document.
+        port : mapping
+            The derived consumer captured port.
+        kwargs : dict
+            Forwarded to ``authority.capture`` only after every required
+            plan artifact is bound.
+
+        Returns
+        -------
+        tuple
+            The ``authority.capture`` result.
+
+        Raises
+        ------
+        ValueError
+            When ScopeIntent, CES, PEA, BVP, CAS, or consumed admission
+            is not bound, or when that admission is already spent.
+        """
+        live, spent = type(self).__init__.__kwdefaults__["_spend"][:2]
+        with self._capture_lock:
+            with _DOOR_LOCK:
+                cell = getattr(self, "_admission_spent", None)
+                cid = id(cell)
+                if cell is None or cid in spent or cid not in live:
+                    raise ValueError(
+                        "CAPTURED refuses after consumed admission is spent"
+                    )
+                missing = [
+                    name
+                    for name in _REQUIRED_PLAN
+                    if not _plan_artifact_bound(self._bound.get(name), name)
+                ]
+                if missing:
+                    raise ValueError(
+                        "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
+                        "CAS, and consumed admission are bound"
+                    )
+                live.discard(cid)
+                spent.add(cid)
+        return self._authority.capture(published, frozen, port, **kwargs)
+class HistoricalStudyCaptureDriver:
+    """Identity-bound facade for the private historical-study capture doorway."""
+
+    __slots__ = ("_verifier", "_bound_verifier")
+
+    def __init__(self, verifier):
+        if type(verifier) is not HistoricalStudyVerifier:
+            raise TypeError("exact HistoricalStudyVerifier is required")
+        self._verifier = verifier
+        self._bound_verifier = verifier
+
+    def __copy__(self):
+        """Refuse shallow copies of the capture facade."""
+        raise TypeError("opaque capture handle")
+
+    def __deepcopy__(self, memo):
+        """Refuse deep copies of the capture facade."""
+        raise TypeError("opaque capture handle")
+
+    def __getstate__(self):
+        """Refuse serializing the capture facade."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce__(self):
+        """Refuse pickle reduction of the capture facade."""
+        raise TypeError("opaque capture handle")
+
+    def __reduce_ex__(self, protocol):
+        """Refuse protocol pickle reduction of the facade."""
+        raise TypeError("opaque capture handle")
+
+    def capture(self, published, frozen, port, **kwargs):
+        """Delegate only to the constructor-bound verifier's class method."""
+        verifier = getattr(self, "_verifier", None)
+        bound = getattr(self, "_bound_verifier", None)
+        if type(verifier) is not HistoricalStudyVerifier or verifier is not bound:
+            raise ValueError("opaque bound verifier is required")
+        return HistoricalStudyVerifier.capture(verifier, published, frozen, port, **kwargs)
