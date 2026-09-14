@@ -1,5 +1,21 @@
 # Re-entry
 
+## Current wrap: F5a driver-only facade landed (2026-09-14)
+
+Packet 2 adds `HistoricalStudyVerifier` and the identity-bound
+`HistoricalStudyCaptureDriver` in `dskit/production/verifier.py`, with the
+focused lifecycle matrix in `tests/production/test_capture_lifecycle.py`.
+RED recorded the expected missing-class failures; GREEN plus F4 trust coverage
+passed 115 tests, and ruff/diff checks were clean. The final authority
+adjudication and integration lens found zero unresolved Critical/Major.
+
+This is a bounded facade only: F5A-R23-ctor-intern-unspend stays open, whole
+F5a and F3/F5b remain blocked, no real capture is authorized, and the remaining
+`origin/cursor/r5-f5a-private-plan-0f39` source branch must be preserved.
+
+Next: select the next F5a closeout packet (unsigned schemas/signatures) and
+perform its own Phase 0 contract matrix before RED.
+
 ## Current wrap: F5a driver-only Phase 0 design closed (2026-09-14)
 
 F5a's revised driver-only matrix is
