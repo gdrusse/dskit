@@ -1,0 +1,53 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a",
+  "cluster": "driver-only-capture-refuse",
+  "supersedes": "c489199:docs/review-evidence/F5a/0032-phase0-driver-only.v1.json",
+  "previous_evidence_sha256": "612c4cc28d7a4dc09066609040769d2e9d6d414eeec164c3475fa79cca07719f",
+  "approval": {
+    "authority": "user",
+    "date": "2026-09-14",
+    "decision": "Approve strict driver: retain the exact constructor-supplied verifier, invoke HistoricalStudyVerifier.capture as the class method, and refuse without a fallback."
+  },
+  "deployment_eligible": false,
+  "compatibility": [
+    "F4 unit tests may call _DevelopmentBroker.capture and still write CAPTURED.",
+    "F4 GREEN e4c3a2a remains frozen; do not edit or wrap dskit/pipeline/trust.py.",
+    "Pipeline must not import production; deployment eligibility stays false.",
+    "F5A-R23-ctor-intern-unspend remains OPEN and is not relabelled or resolved by this packet."
+  ],
+  "contract": {
+    "actors": ["HistoricalStudyVerifier", "HistoricalStudyCaptureDriver", "LifecycleAuthority/_DevelopmentBroker"],
+    "allowed": "HistoricalStudyCaptureDriver(verifier).capture(...) delegates exclusively through HistoricalStudyVerifier.capture for the exact HistoricalStudyVerifier supplied at construction, after its existing bind gates.",
+    "authority": "HistoricalStudyVerifier.capture is the only production method this facade may invoke that can cause a CAPTURED receipt. _DevelopmentBroker.capture remains callable only by existing F4 unit tests.",
+    "identity": "Construction accepts only type(verifier) is HistoricalStudyVerifier. The driver permanently binds that object identity; replacement by a broker, authority, wrapper, duck, subclass, or a different exact HistoricalStudyVerifier refuses before CAPTURED.",
+    "delegation": "driver.capture invokes HistoricalStudyVerifier.capture(bound_verifier, ...) as the class method, never a rebound instance capture attribute, _authority.capture, broker.capture, or LifecycleAuthority.capture.",
+    "refusal": "If HistoricalStudyVerifier.capture refuses, driver.capture propagates/refuses with no retry, catch-and-fallback, secondary writer, or CAPTURED side effect.",
+    "forbidden": [
+      "Construction or capture with a broker, authority, duck, subclass, wrapper, or alias.",
+      "Retaining a separate LifecycleAuthority, accepting one, subclassing one, or exposing a broker route.",
+      "Placing this facade in pipeline, changing trust.py, adding a CLI/compose/production.__init__ capture route, or monkeypatching a broker."
+    ],
+    "non_goals": [
+      "Do not close F5A-R23-ctor-intern-unspend.",
+      "Do not implement schemas/signatures, CAS v2, parser grammar, equality substitution, restart linkage, replay tape, F3, F5b, paper/live, or HPO.",
+      "Do not merge all of PR 14."
+    ]
+  },
+  "matrix": [
+    {"attack": "broker/none/duck constructor", "entry": "HistoricalStudyCaptureDriver(broker | None | object with broker.capture)", "expect": "refuse at construction; PUBLISHED remains last event", "forbidden": "CAPTURED"},
+    {"attack": "constructor keyword aliases", "entry": "verifier=broker, authority=broker, broker=broker, doorway=broker", "expect": "refuse at construction", "forbidden": "CAPTURED"},
+    {"attack": "subclass or wrapper", "entry": "SkipBindHSV, FakeAuthority, HistoricalStudyCaptureDriver(inner driver)", "expect": "refuse unless direct object is exact HistoricalStudyVerifier", "forbidden": "CAPTURED through a wrapper"},
+    {"attack": "broker held-field replacement", "entry": "replace the bound verifier field with broker after construction", "expect": "refuse before capture", "forbidden": "CAPTURED via driver"},
+    {"attack": "exact-HSV held-field substitution", "entry": "construct with bound verifier A, replace held field with bound exact verifier B", "expect": "refuse because B is not constructor-bound A", "forbidden": "CAPTURED through B"},
+    {"attack": "rebound HSV capture", "entry": "set exact verifier.capture = broker.capture before construction", "expect": "driver invokes HistoricalStudyVerifier.capture(A, ...); normal bind gates apply", "forbidden": "CAPTURED skipping HSV gates"},
+    {"attack": "valid bound HSV", "entry": "HistoricalStudyCaptureDriver(A).capture after A.bind", "expect": "CAPTURED only through HistoricalStudyVerifier.capture(A, ...)", "forbidden": "any direct authority call"},
+    {"attack": "unbound HSV refusal", "entry": "HistoricalStudyCaptureDriver(unbound A).capture", "expect": "refuse and leave PUBLISHED last; no catch-and-fallback", "forbidden": "CAPTURED after HSV refusal"},
+    {"attack": "retry after refusal", "entry": "unbound driver refusal, then direct F4 broker.capture", "expect": "driver contributes no capture; separate F4 test confirms broker remains callable", "forbidden": "driver retry via broker"},
+    {"attack": "direct HSV and F4 broker compatibility", "entry": "HistoricalStudyVerifier.capture; tests/pipeline/test_trust.py broker.capture", "expect": "HSV gates unchanged; direct F4 broker case remains callable", "forbidden": "driver replacing HSV or breaking F4"},
+    {"attack": "copy/pickle facade", "entry": "copy, deepcopy, pickle, object-state clone attempt", "expect": "refuse; no copied facade can capture", "forbidden": "CAPTURED from copied state"},
+    {"attack": "route placement", "entry": "pipeline driver/trust, CLI, compose, production.__init__", "expect": "no new capture route outside verifier.py", "forbidden": "pipeline-to-production import or second writer"}
+  ],
+  "implementation_proof": "Packet 2 must add focused tests for every row, retain the source matrix's F4 compatibility cases, and use TDD. No real capture is authorized.",
+  "next_gate": "Two clean sequential independent Phase0 design lenses on this v2 matrix before RED."
+}
