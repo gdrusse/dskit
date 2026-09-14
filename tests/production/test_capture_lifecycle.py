@@ -1016,3 +1016,116 @@ def test_type_call_sibling_cannot_capture_a_second_stream():
             transition_nonce="nonce-captured-b",
         )
     assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_nonbool_sentinel_cannot_capture_a_second_stream():
+    (
+        broker,
+        published_a,
+        frozen_a,
+        port_a,
+        published_b,
+        frozen_b,
+        port_b,
+        verifier,
+    ) = _bound_two_stream_setup()
+    spend = _opaque_copy_value(verifier)
+    captured, session = verifier.capture(
+        published_a,
+        frozen_a,
+        port_a,
+        consumer_run_identity="consumer-a",
+        process_measurement_sha256=f4._SHA["consumer_process"],
+        runtime_sha256=f4._SHA["consumer_runtime"],
+        transition_nonce="nonce-captured-a",
+    )
+    assert captured is not None
+    assert session is not None
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    cls = type(spend)
+    for name in list(cls.__dict__):
+        if name.startswith("__"):
+            continue
+        try:
+            type.__delattr__(cls, name)
+        except Exception:
+            pass
+        try:
+            type.__setattr__(cls, name, False)
+        except Exception:
+            try:
+                setattr(cls, name, False)
+            except Exception:
+                continue
+    with pytest.raises(ValueError, match="consumed admission"):
+        verifier.capture(
+            published_b,
+            frozen_b,
+            port_b,
+            consumer_run_identity="consumer-b",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured-b",
+        )
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_sibling_type_pairing_cannot_capture_a_second_stream():
+    (
+        broker,
+        published_a,
+        frozen_a,
+        port_a,
+        published_b,
+        frozen_b,
+        port_b,
+        verifier,
+    ) = _bound_two_stream_setup()
+    spend = _opaque_copy_value(verifier)
+    door = type(spend)
+    namespace = {}
+    slots = getattr(door, "__slots__", ())
+    if slots or slots == ():
+        namespace["__slots__"] = slots
+    sibling = type(door)(door.__name__, door.__bases__, namespace)
+    cell = object.__new__(sibling)
+    twin = object.__new__(type(verifier))
+    for key, value in verifier.__dict__.items():
+        if isinstance(value, type):
+            twin.__dict__[key] = sibling
+            continue
+        try:
+            copied = copy.copy(value)
+        except TypeError as exc:
+            if "opaque" in str(exc):
+                twin.__dict__[key] = cell
+            else:
+                try:
+                    twin.__dict__[key] = type(value)()
+                except TypeError:
+                    twin.__dict__[key] = value
+            continue
+        twin.__dict__[key] = copied
+    captured, session = verifier.capture(
+        published_a,
+        frozen_a,
+        port_a,
+        consumer_run_identity="consumer-a",
+        process_measurement_sha256=f4._SHA["consumer_process"],
+        runtime_sha256=f4._SHA["consumer_runtime"],
+        transition_nonce="nonce-captured-a",
+    )
+    assert captured is not None
+    assert session is not None
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    with pytest.raises(ValueError, match="consumed admission"):
+        twin.capture(
+            published_b,
+            frozen_b,
+            port_b,
+            consumer_run_identity="consumer-b",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured-b",
+        )
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
