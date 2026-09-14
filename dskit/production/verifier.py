@@ -635,6 +635,11 @@ _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 _DOOR_LOCK = Lock()
 
 
+def _make_spend_pair():
+    """Shared live/spent id sets plus pins; not instance state."""
+    return (set(), set(), {})
+
+
 class _SpendCell:
     """Identity token for one-use admission; extra mints stay spent."""
 
@@ -669,12 +674,6 @@ class _SpendCell:
         raise TypeError("opaque capture handle")
 
 
-class _Spent(_SpendCell):
-    """Terminal doorway type; capture treats it as already spent."""
-
-    __slots__ = ()
-
-
 def _plan_artifact_bound(value, name=None):
     """Return whether ``value`` is a bound plan artifact."""
     if type(value) is not dict:
@@ -703,13 +702,16 @@ class HistoricalStudyVerifier:
         refused  # True
     """
 
-    def __init__(self, authority):
+    def __init__(self, authority, *, _spend=_make_spend_pair()):
         if not isinstance(authority, LifecycleAuthority):
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound = {}
+        live, _spent, pins = _spend
         cell = object.__new__(_SpendCell)
-        self._minted = (cell,)
+        cid = id(cell)
+        live.add(cid)
+        pins[cid] = cell
         self._admission_spent = cell
         self._capture_lock = Lock()
         self.deployment_eligible = False
@@ -786,15 +788,12 @@ class HistoricalStudyVerifier:
             When ScopeIntent, CES, PEA, BVP, CAS, or consumed admission
             is not bound, or when that admission is already spent.
         """
+        live, spent = type(self).__init__.__kwdefaults__["_spend"][:2]
         with self._capture_lock:
             with _DOOR_LOCK:
-                cell = self._admission_spent
-                minted = getattr(self, "_minted", (None,))
-                if (
-                    type(cell) is _Spent
-                    or type(minted) is not tuple
-                    or cell is not minted[0]
-                ):
+                cell = getattr(self, "_admission_spent", None)
+                cid = id(cell)
+                if cell is None or cid in spent or cid not in live:
                     raise ValueError(
                         "CAPTURED refuses after consumed admission is spent"
                     )
@@ -808,5 +807,6 @@ class HistoricalStudyVerifier:
                         "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
                         "CAS, and consumed admission are bound"
                     )
-                object.__setattr__(cell, "__class__", _Spent)
+                live.discard(cid)
+                spent.add(cid)
         return self._authority.capture(published, frozen, port, **kwargs)
