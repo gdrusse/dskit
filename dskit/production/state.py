@@ -2094,6 +2094,9 @@ class Recovery:
 
     def _replay(self):
         """Restore a fresh fold from the last snapshot, then fold everything after the head."""
+        from dskit.production.ledger import validate_cache_head
+
+        validate_cache_head(*self._state.head(), self._ledger)
         snapshot = self._ledger.latest_snapshot()
         if snapshot is not None and self._state.head()[0] == 0:
             self._state.restore(snapshot)

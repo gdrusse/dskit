@@ -2314,6 +2314,27 @@ def test_recovering_twice_appends_no_second_recovery():
     assert sorted(second.snapshot().working) == ["ref-2", "ref-3"]
 
 
+def test_c0_nonancestor_account_refuses():
+    """Recovery must not append using an account fold from another chain."""
+    ledger = FakeLedger()
+    canonical = SeriesState(SERIES_ID)
+    ledger.state = canonical
+    ledger.append({"kind": "tick_start", "id": "canonical-tick",
+                   "body": {"tick_id": "canonical-tick", "tick_at_ms": BASE_MS}})
+
+    foreign = SeriesState(SERIES_ID)
+    foreign_chain = Chain()
+    foreign.apply(foreign_chain.env(
+        "tick_start", {"tick_id": "foreign-tick", "tick_at_ms": BASE_MS}
+    ))
+    before = (tuple(ledger.records), canonical.head(), foreign.head())
+
+    with pytest.raises(ProductionError, match="diverges|not an ancestor"):
+        Recovery(ledger, foreign, FakeIdSource(), FakeExecutor()).run(FakeClock())
+
+    assert (tuple(ledger.records), canonical.head(), foreign.head()) == before
+
+
 def test_each_recovery_names_its_own_process_record():
     # R9: a record `id` is unique across the SERIES. Two recoveries of one
     # series both append a `recovered` process record, so the id must move
