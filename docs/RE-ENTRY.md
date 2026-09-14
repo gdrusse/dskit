@@ -1,5 +1,17 @@
 # Re-entry
 
+## Current wrap: remaining feature closeout directions (2026-09-14)
+
+[Closeout plan index](plans/closeout-2026-09-14/README.md): nine workstream plans,
+all 21 remaining backtester nodes, clustering/RL, maintenance and other open
+TODO decisions. Automatic implementation routing selects one bounded packet.
+Each ends in reviewed merge, push, verified branch purge and wrap if complete.
+Partial packets do not close a whole feature; existing approval gates remain.
+
+Next choices: coordinate the existing Claude trial, F5a design checkpoint,
+replay document reconciliation, or C0 accounting proof. Check live branch status
+before assignment. These directions do not start implementation or real runs.
+
 ## Current wrap: adopted implementation workflow (2026-09-14)
 
 Default agent routing uses [implementation-workflow](skills/implementation-workflow.md):

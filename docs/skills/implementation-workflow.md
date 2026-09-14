@@ -62,8 +62,10 @@ verify affected interfaces, push, verify the remote, then delete contained
 branches safely. A main update that changes a reviewed dependency invalidates
 the affected approval and needs review before landing.
 
-For the active historical backtester, use the audit's ordered completion plan
-and the controlling DAG. F5a's stopped consume-once Major remains open; its
+For remaining work, select a bounded packet from the
+[closeout plan index](../plans/closeout-2026-09-14/README.md). For the active
+historical backtester, preserve the controlling master DAG. F5a's stopped
+consume-once Major remains open; its
 driver-only revised design needs a clean Phase 0. Do not claim whole-F5a closure
 from its earlier partial exits, or start dependent F3/F5b prematurely. Reconcile
 the replay V2 plan/ADR collision before its implementation. Clustering/RL is
