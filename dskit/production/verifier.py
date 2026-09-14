@@ -635,16 +635,6 @@ _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 _DOOR_LOCK = Lock()
 
 
-class _DoorMeta(type):
-    """Refuse resurrecting a spent per-doorway type."""
-
-    def __setattr__(cls, name, value):
-        """Refuse clearing a spent doorway flag."""
-        if name == "_dead" and cls.__dict__.get("_dead") is True:
-            raise TypeError("opaque capture handle")
-        super().__setattr__(name, value)
-
-
 class _SpendCell:
     """Identity token for one-use admission; extra mints stay spent."""
 
@@ -677,6 +667,12 @@ class _SpendCell:
     def __reduce_ex__(self, protocol):
         """Refuse pickle protocol reduction of the spend cell."""
         raise TypeError("opaque capture handle")
+
+
+class _Spent(_SpendCell):
+    """Terminal doorway type; capture treats it as already spent."""
+
+    __slots__ = ()
 
 
 def _plan_artifact_bound(value, name=None):
@@ -712,7 +708,8 @@ class HistoricalStudyVerifier:
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound = {}
-        door = _DoorMeta("_Door", (_SpendCell,), {"__slots__": (), "_dead": False})
+        door = type("_Door", (_SpendCell,), {"__slots__": ()})
+        self._door = door
         self._admission_spent = object.__new__(door)
         self._capture_lock = Lock()
         self.deployment_eligible = False
@@ -791,8 +788,9 @@ class HistoricalStudyVerifier:
         """
         with self._capture_lock:
             with _DOOR_LOCK:
-                cls = type(self._admission_spent)
-                if cls is _SpendCell or cls.__dict__.get("_dead", True) is not False:
+                cell = self._admission_spent
+                door = getattr(self, "_door", _Spent)
+                if type(cell) is _Spent or type(cell) is not door:
                     raise ValueError(
                         "CAPTURED refuses after consumed admission is spent"
                     )
@@ -806,5 +804,6 @@ class HistoricalStudyVerifier:
                         "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
                         "CAS, and consumed admission are bound"
                     )
-                cls._dead = True
+                object.__setattr__(cell, "__class__", _Spent)
+                self._door = _Spent
         return self._authority.capture(published, frozen, port, **kwargs)
