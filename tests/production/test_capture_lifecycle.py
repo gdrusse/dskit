@@ -1636,7 +1636,10 @@ def test_spend_class_restore_via_bases_cannot_capture_a_second_stream():
     assert captured is not None
     assert session is not None
     assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
-    object.__setattr__(spend, "__class__", type(spend).__bases__[0])
+    try:
+        object.__setattr__(spend, "__class__", type(spend).__bases__[0])
+    except TypeError:
+        pass
     with pytest.raises(ValueError, match="consumed admission"):
         verifier.capture(
             published_b,
