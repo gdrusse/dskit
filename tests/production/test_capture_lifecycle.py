@@ -124,6 +124,17 @@ def _discovered_mappings(spend, verifier):
                 yield obj
 
 
+def _readd_into(holders, cell):
+    for holder in holders:
+        adder = getattr(holder, "add", None)
+        if callable(adder):
+            try:
+                adder(cell)
+            except Exception:
+                continue
+
+
+
 def test_private_plan_precedes_capture():
     broker, published, frozen, port, verifier = _study_capture_setup()
     with pytest.raises(
@@ -759,6 +770,85 @@ def test_slots_setattr_cannot_capture_a_second_stream():
             object.__setattr__(cell, name, False)
         except Exception:
             continue
+    twin = _clone_doorway(verifier, cell)
+    captured, session = verifier.capture(
+        published_a,
+        frozen_a,
+        port_a,
+        consumer_run_identity="consumer-a",
+        process_measurement_sha256=f4._SHA["consumer_process"],
+        runtime_sha256=f4._SHA["consumer_runtime"],
+        transition_nonce="nonce-captured-a",
+    )
+    assert captured is not None
+    assert session is not None
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    with pytest.raises(ValueError, match="consumed admission"):
+        twin.capture(
+            published_b,
+            frozen_b,
+            port_b,
+            consumer_run_identity="consumer-b",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured-b",
+        )
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_live_set_readd_cannot_capture_a_second_stream():
+    (
+        broker,
+        published_a,
+        frozen_a,
+        port_a,
+        published_b,
+        frozen_b,
+        port_b,
+        verifier,
+    ) = _bound_two_stream_setup()
+    spend = _opaque_copy_value(verifier)
+    holders = list(_discovered_mappings(spend, verifier))
+    captured, session = verifier.capture(
+        published_a,
+        frozen_a,
+        port_a,
+        consumer_run_identity="consumer-a",
+        process_measurement_sha256=f4._SHA["consumer_process"],
+        runtime_sha256=f4._SHA["consumer_runtime"],
+        transition_nonce="nonce-captured-a",
+    )
+    assert captured is not None
+    assert session is not None
+    assert broker._receipt_audit(published_a)[-1]["event"] == "CAPTURED"
+    _readd_into(holders, spend)
+    with pytest.raises(ValueError, match="consumed admission"):
+        verifier.capture(
+            published_b,
+            frozen_b,
+            port_b,
+            consumer_run_identity="consumer-b",
+            process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"],
+            transition_nonce="nonce-captured-b",
+        )
+    assert broker._receipt_audit(published_b)[-1]["event"] == "PUBLISHED"
+
+
+def test_live_set_new_cell_cannot_capture_a_second_stream():
+    (
+        broker,
+        published_a,
+        frozen_a,
+        port_a,
+        published_b,
+        frozen_b,
+        port_b,
+        verifier,
+    ) = _bound_two_stream_setup()
+    spend = _opaque_copy_value(verifier)
+    cell = object.__new__(type(spend))
+    _readd_into(list(_discovered_mappings(spend, verifier)), cell)
     twin = _clone_doorway(verifier, cell)
     captured, session = verifier.capture(
         published_a,
