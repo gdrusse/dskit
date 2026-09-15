@@ -554,7 +554,7 @@ def _complete_signed_graph(*, replay=False, count=1):
         published_entry = dict(entry, input_id="output/" + identity, publication_receipt_schema=receipt["schema"],
                                publication_receipt_sha256=receipt["lifecycle_publication_receipt_sha256"])
         outputs.append({"producer_action_id": identity, "producer_output_id": "bundle", "output_schema": action["output_contract"]["output_schema"],
-                        "publication_identity_sha256": receipt["lifecycle_publication_receipt_sha256"],
+                        "publication_identity_sha256": _graph_hash(("stage-publication-identity/" + identity).encode()),
                         "historical_study_stage_admission_sha256": stage["historical_study_stage_admission_sha256"], "published_input": published_entry})
     if not replay:
         graph.selected = graph.refs["admission/" + actions[0]["action_id"]]
