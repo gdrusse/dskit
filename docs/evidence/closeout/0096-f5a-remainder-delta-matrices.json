@@ -9,7 +9,7 @@
     "delta": {
       "positive_grammar": "The only legal descriptor is the complete value of one declared node input: {$captured_artifact:{root_ref,snapshot_version,document_sha256,node,output,purpose}}. Six keys, no optional fields, no keys spelled inside the descriptor that the parser derives (consumer_document_sha256/consumer_node/consumer_input are parser-computed, never descriptor fields).",
       "location": "The parser derives ConsumerCapturedPort={consumer_document_sha256,consumer_node,consumer_input,purpose} from the containing document digest, node key, and input name. The planner compiles to a non-JSON CapturedArtifactPort. Spelling in params, outputs, defaults, lists, maps, carry references, artifacts, or any nested non-input location refuses.",
-      "refusal_before_effects": "Forbidden stages/carry/$prev, params, outputs, defaults, lists/maps/nesting, artifact/read/path/model-load poison, and mutation refuse before planning, provider or filesystem access, broker construction, node import, or output creation.",
+      "refusal_before_effects": "Forbidden stages/carry/$prev, params, outputs, defaults, lists/maps/nesting, artifact/read/path/model-load poison, and foreach/stages descriptor spellings refuse before planning, provider or filesystem access, broker construction, node import, or output creation. (Descriptor mutation-after-parse/freeze is broker-route Packet 4 + Packet 6 substitution, out of Packet 5 scope.)",
       "new_or_changed_invariants": [
         "freeze the exact six-key descriptor shape and reject missing/extra/duplicate/null/non-string/non-sha256 members",
         "enforce the only-legal-location rule across every public parse/plan/CLI entry point in the shared pack",

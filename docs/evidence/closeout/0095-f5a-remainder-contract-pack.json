@@ -90,7 +90,7 @@
     "disposition_until": "Retained open until the Packet 8 owner decision and GREEN proof."
   },
   "failure_families": {
-    "packet5_captured_artifact_grammar": ["descriptor in forbidden location (params/outputs/defaults/lists/maps/nesting/carry/artifacts)", "missing/extra/duplicate/aliased descriptor keys", "non-string or non-sha256 document_sha256", "wrong purpose / mismatched producer identity", "mutation after freeze", "descriptor-shaped substitute used as authority", "capture before PUBLISHED root/receipt"],
+    "packet5_captured_artifact_grammar": ["descriptor in forbidden location (params/outputs/defaults/lists/maps/nesting/carry/artifacts/foreach/stages)", "missing/extra/duplicate/aliased descriptor keys", "non-string or non-sha256 document_sha256", "wrong purpose / mismatched producer identity", "descriptor-shaped substitute used as authority", "capture before PUBLISHED root/receipt"],
     "packet6_equality_and_restart": ["equal-looking but differently bound captures", "producer/root/member/receipt/session substitution", "partial failure/retry", "wrong process/run/purpose", "stale restart identity", "one authorization silently becoming a second consumption authority"],
     "packet7_replay_tape": ["tape_manifest-only / tape_data-only", "missing outer or parent", "extra/duplicate/aliased/nested descriptors", "swapped outer/parent roots/snapshots/producers/members/receipts", "inner digest/policy/count/order mismatch", "purpose and authorization-descriptor swaps", "equal ConsumerCapturedPorts with different captures"],
     "packet8_durable_consume_once": ["concurrent calls", "write-then-raise", "clone/replay", "process restart", "second-process contention", "partial persistence", "recovery", "exact consume-once outcome"]
