@@ -13,9 +13,9 @@
   "reviewer_model": "DeepSeek (owner override 2026-09-15)",
 
   "scope": {
-    "owned_paths": ["dskit/pipeline/trust.py", "tests/pipeline/test_trust.py", "tests/pipeline/test_captured_authorization.py"],
-    "entry_points": ["_DevelopmentBroker.produce/seal/publish/descriptor/freeze_consumer_document/derive_consumer_port/capture/open_capture/captured_bindings/_consume_binding/release", "HistoricalStudyVerifier.capture/bind", "HistoricalStudyCaptureDriver.capture", "CapturedAuthorizationAuthority.authorize_capture_set"],
-    "non_goal": "durable or cross-process consume-once and reconstruction remain Packet 8; this packet proves in-process equality and fail-closed restart identity only."
+    "owned_paths": ["dskit/pipeline/trust.py", "dskit/production/verifier.py", "tests/pipeline/test_trust.py", "tests/pipeline/test_captured_authorization.py"],
+    "entry_points": ["_DevelopmentBroker.start_producer_session/end_session/produce/seal/publish/descriptor/freeze_consumer_document/derive_consumer_port/capture/open_capture/captured_bindings/_consume_binding/release", "VerifiedCapture.member / CapturedMemberHandle.read_bytes/read_text / CapturedJsonArtifact.value/audit / CapturedBindings.require (the handle API), and the _LIFECYCLE_VIEWS handle registry", "HistoricalStudyVerifier.capture/bind", "HistoricalStudyCaptureDriver.capture", "CapturedAuthorizationAuthority.authorize_capture_set"],
+    "non_goal": "durable or cross-process consume-once and reconstruction remain Packet 8; this packet proves in-process equality and fail-closed restart identity only. Signature forgery under the caller-known development _DEV_KEY is ADR-0126-deferred, not closed here."
   },
 
   "identity_bindings": [
@@ -24,18 +24,20 @@
     {"id": "capture_port", "binding": "capture/_prepare_legacy_capture requires port == derive_consumer_port(frozen), the frozen intern to match published, consumer run distinct from producer session run, and the producer session ended."},
     {"id": "session_stream", "binding": "open_capture/captured_bindings/_consume_binding bind session, bound_session, stream_id, run_identity, and transition_nonce; a session from another run/process/purpose refuses."},
     {"id": "member_manifest", "binding": "open_capture re-checks member_manifest_sha256 and each member sha256/bytes against the sealed digests; a mutated or substituted member refuses."},
-    {"id": "receipt_chain", "binding": "receipts enforce PRODUCED->SEALED->PUBLISHED->CAPTURED->CONSUMED order, exact sequence, and predecessor-hash linkage; a graft/reorder/forged predecessor refuses."},
+    {"id": "producer_session", "binding": "start_producer_session/end_session carry the producer-session identity that capture_port/session_stream depend on (consumer run distinct from producer session run; producer session must end before capture)."},
+    {"id": "receipt_chain", "binding": "receipts enforce PRODUCED->SEALED->PUBLISHED->CAPTURED->CONSUMED order, exact sequence, and predecessor-hash structural linkage. NOTE: a forged predecessor whose signature validates under the caller-known development _DEV_KEY is ADR-0126-deferred and is NOT closed by this packet; only structural sequence/hash linkage and in-process chain integrity are swept."},
     {"id": "purpose_identity", "binding": "descriptor purpose and subject purpose must match at every seam."},
-    {"id": "one_consumption", "binding": "one CAPTURED stream yields exactly one CONSUMED; a second consume of the same stream refuses (in-process)."}
+    {"id": "one_consumption", "binding": "one CAPTURED stream yields exactly one CONSUMED; a second consume of the same stream refuses (in-process). The authorization-entry dedupe in authorize_capture_set (commit dedupe, trust.py ~4891) is retained."}
   ],
 
   "substitution_families": [
     {"family": "equal_looking_different_binding", "cases": ["two published tokens with equal root_ref but different document_sha256", "equal snapshot_version different node/output", "equal descriptor bytes, different producer run_identity"]},
-    {"family": "producer_root_member_receipt_substitution", "cases": ["substitute published token, frozen document, derived port, sealed member, or a CAPTURED/VerifiedCapture/bindings handle from another stream"]},
+    {"family": "producer_root_member_receipt_substitution", "cases": ["substitute published token, frozen document, derived port, sealed member, or a CAPTURED/VerifiedCapture/bindings handle from another stream", "a VerifiedCapture/CapturedBindings/CapturedMemberHandle from a DIFFERENT broker instance (cross-broker handle substitution via _LIFECYCLE_VIEWS identity)"]},
     {"family": "partial_failure_retry", "cases": ["retry capture after a refusal with the same nonce", "retry with corrected evidence after each staged failure", "partial member read then retry"]},
     {"family": "wrong_process_run_purpose", "cases": ["consumer run_identity equals producer session run", "purpose mismatch at freeze/capture", "session bound to a different run"]},
-    {"family": "stale_restart_identity", "cases": ["a stream_id/session that looks equal after an in-process reset; refuse rather than silently accept (no durability claim here)"]},
-    {"family": "second_consumption_authority", "cases": ["one CAPTURED authorization must not become a second CONSUMED authority via a replayed handle, duplicate nonce, or re-derived port"]}
+    {"family": "stale_restart_identity", "cases": ["a stream_id/session that looks equal after an in-process reload must still refuse if its _stream_pin/receipt-store identity is not exactly the committed lineage; refusal mode is fail-closed (no silent accept, no durability claim here)"]},
+    {"family": "second_consumption_authority", "cases": ["one CAPTURED authorization must not become a second CONSUMED authority via a replayed handle, duplicate nonce, or re-derived port"]},
+    {"family": "copy_pickle_reconstruction", "cases": ["(already green: _Opaque blocks copy/deepcopy/pickle/reduce on all handles, test_trust.py:868) — retained as an existing-covered family, not NEW RED"]}
   ],
 
   "forbidden_effects": [
