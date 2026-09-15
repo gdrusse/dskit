@@ -1,0 +1,73 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "reviewed_candidate": {
+    "commit": "f0707475b93ad30c1ff6e8acc43953daafe4a4a4",
+    "tree": "f0e528f2b0c408d8c42ef62f8231abd50cf98781",
+    "base": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "blobs": {
+      "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d",
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"
+    }
+  },
+  "phase0": {
+    "matrix": "docs/evidence/closeout/0053-f5a-p3-phase0-field-adjacency-matrix-v8.json",
+    "clean_review": "docs/evidence/closeout/0054-f5a-p3-phase0-skeptic-v8.json",
+    "scope": "exact eleven-byte, eight-signed structural/signature preflight with no lifecycle authority"
+  },
+  "final_reviews": [
+    {
+      "lens": "correctness/authority",
+      "path": "docs/evidence/closeout/0065-f5a-p3-final-correctness-authority-v4.json",
+      "sha256": "5180b402ae8f5dd9faa9600da3088ec9b9947d886d706e595462e8d6a1c24802",
+      "critical": 0,
+      "major": 0,
+      "minor": 1,
+      "approval": true
+    },
+    {
+      "lens": "test-quality/integration",
+      "path": "docs/evidence/closeout/0066-f5a-p3-final-tests-integration-v3.json",
+      "sha256": "1c72e279e3b729371284a03c7afe5134180c8ae6bde5520346b780c76061da6d",
+      "critical": 0,
+      "major": 0,
+      "minor": 1,
+      "approval": true
+    }
+  ],
+  "verification": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py",
+      "result": "482 passed"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py dskit/pipeline/trust.py tests/production/test_adr0125_preflight.py",
+      "result": "All checks passed"
+    },
+    {
+      "command": "git diff --check 390dc851 f070747",
+      "result": "pass"
+    }
+  ],
+  "accepted_scope": {
+    "symbols": ["HistoricalStudyRevocations", "HistoricalStudyEnvelopePreflight", "NonAuthorizingAdr0125StructuralSignaturePreflight"],
+    "proof": "canonical closed local grammar, selected same-request adjacency, exact public signature/time/revocation calls, and opaque deployment_eligible=false success",
+    "effects": "none"
+  },
+  "deferred_minor": {
+    "id": "F5A-P3-R24-late-byte-type-prevalidation",
+    "description": "A later non-bytes tuple position refuses after earlier byte positions are locally parsed instead of prevalidating all eleven types first.",
+    "impact": "No invalid acceptance or trusted/effectful call; defer without changing the locked candidate."
+  },
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "full IssuanceBasis and BVP/PlannedCaptureSet verification", "no trust.py edit", "no capture/lifecycle authority", "no F3/F5b unblock", "no deployment or real activity"],
+  "verdict": {
+    "packet_review_exit": true,
+    "critical": 0,
+    "major": 0,
+    "deployment_eligible": false,
+    "whole_f5a_closed": false
+  },
+  "next": "Integrate this reviewed packet to current main, push and verify, preserve the PR14 source branch, then start Packet 4 only in a new isolated current-main worktree with its own Phase 0 gate."
+}

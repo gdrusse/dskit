@@ -1,0 +1,39 @@
+{
+  "schema_version": "FinalTestsIntegrationReview.v3",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "reviewer": {"agent_task": "/root/f5a_p3_final_tests_integration_v3", "lens": "second fresh sequential final test-quality/integration after checkpoint 0063"},
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "base_tree": "5a82e041cc5c0c449130eff165121f259d1226e9",
+    "candidate_commit": "f0707475b93ad30c1ff6e8acc43953daafe4a4a4",
+    "candidate_tree": "f0e528f2b0c408d8c42ef62f8231abd50cf98781",
+    "candidate_blobs": {"dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d", "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844", "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"},
+    "candidate_only": true,
+    "uncommitted_0065": "Read as first-lens review evidence only; not candidate code or identity."
+  },
+  "scope_reviewed": [
+    "Root and production AGENTS.md/CLAUDE.md, implementation workflow, RE-ENTRY, Packet-3 closeout plan and controlling master-plan F5a/DAG material.",
+    "ADR-0125 decision-log.md lines 8317-8952; 0053 matrix, 0054 Phase 0, and all 0055-0065 closeout evidence.",
+    "Complete immutable 390dc851..f070747 code/test/evidence diff, changed verifier/preflight-test code, and frozen trust boundary."
+  ],
+  "contract_evidence_sha256": {"adr_0125_lines_8317_8952": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930", "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae", "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c", "matrix_0053": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85", "phase0_0054": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9", "red_green_0055": "0b24887208958a727ee7ea9a3f3f8f101e8e17d5ffbe570e0d7039a9d80edac", "authority_0065_worktree_evidence": "5180b402ae8f5dd9faa9600da3088ec9b9947d886d706e595462e8d6a1c24802"},
+  "test_assessment": {
+    "strict_signature_oracle": "Clean. The test-owned ReleaseKeyring subclass independently decodes raw envelopes and derives an ordered eight-call queue. It checks all five public arguments (key id, key version, issued time, canonical preimage omitting only named self/signature, signature), then synthetically binds the signature without verifier or trust private helpers. Valid bootstrap, scope-action, and replay-pre-final profiles assert the complete queue; bootstrap deliberately asserts its equal root PIS twice.",
+    "signature_mutations": "Clean. Every profile/slot forged-signature tuple refuses through production; bootstrap maintains equal root/phase bytes. Every profile/slot strict-oracle row rejects changed key id, key version, issued time, preimage, signature, and order. The retained legacy count-only RED demonstrates why the predecessor oracle accepted a forged CES signature.",
+    "revocation_clock_and_fail_closed": "Clean. The revocation double independently builds and asserts the ordered four-argument queue (snapshot, key id, key version, common now). Valid profiles prove exactly one clock call. At every logical signed slot/profile, False, non-bool, and exception results from both seams refuse while preserving the expected queue prefix.",
+    "regression_and_validity": "Clean. Direct regressions retain rehashed/resigned dangling predecessor-ref and selected replay predecessor-output-with-empty-CES/CAS refusal. Exact valid tuples cover bootstrap, scope-action, and replay-pre-final. Doubles exercise HistoricalStudyEnvelopePreflight.verify; independent raw-envelope public-seam probes reproduced the outcomes.",
+    "integration_boundaries": "Clean. Valid and representative signature-refusal no-effect sentinels trap capture, lifecycle/WORM construction-consumption, session, resolver, execution, and dynamic import at zero calls. Public verifier exports remain deliberate; dskit.production stays curated. Focused trust, capture-lifecycle, and purity tests pass; no Packet-2/F4 route or trust.py behavior changed. Success remains opaque and deployment_eligible=false."
+  },
+  "commands": [
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py -k 'accepts_exact_profiles or forged_signatures_at_every_signed_logical_slot or strict_keyring_rejects_every_public_argument_mutation or every_keyring_outcome or every_revocation_outcome or no_effect_surfaces or dangling_predecessor_ref or replay_predecessor_output_without_ces'", "interpreter": "Python 3.12.3", "result": "319 passed, 30 deselected in 0.79s"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py", "interpreter": "Python 3.12.3", "result": "482 passed in 7.50s"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python - (independent raw-envelope public ReleaseKeyring/Revocations probe)", "interpreter": "Python 3.12.3", "result": "bootstrap exact=8 forged_refusals=8 shared_clock=1; scope-action exact=8 forged_refusals=8 shared_clock=1; replay-pre-final exact=8 forged_refusals=8 shared_clock=1"},
+    {"command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py dskit/pipeline/trust.py tests/production/test_adr0125_preflight.py", "result": "All checks passed"},
+    {"command": "git diff --check 390dc851 f070747; git rev-parse 390dc851^{commit} 390dc851^{tree} f070747^{commit} f070747^{tree}; git ls-tree f070747 dskit/production/verifier.py dskit/pipeline/trust.py tests/production/test_adr0125_preflight.py", "result": "diff check passed; identities and candidate blobs match the lock"}
+  ],
+  "findings": [{"id": "F5A-P3-0065-m01", "severity": "Minor", "status": "retained deferred", "invariant": "0053 requires all eleven positional inputs to have exact bytes type before JSON parsing.", "location": "dskit/production/verifier.py:1200-1213", "consequence": "A late non-bytes argument is refused only after earlier local byte positions parse; no invalid result, public-seam call, or forbidden effect results.", "disposition": "Do not change this frozen candidate; future work may prevalidate all eleven types before parsing."}],
+  "summary": {"critical": 0, "major": 0, "minor": 1, "nit": 0, "verdict": "approved with deferred Minor", "approval": true, "deployment_eligible": false},
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "full issuance-basis and BVP/PCE verification", "no trust.py edit", "no capture/lifecycle effect", "no F3/F5b unblock"],
+  "next_gate": "This completes only the second final lens for immutable f070747. It does not authorize deployment, capture/lifecycle execution, whole-F5a closure, or dependent F3/F5b work."
+}

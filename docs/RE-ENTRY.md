@@ -1,5 +1,30 @@
 # Re-entry
 
+## Current wrap: F5a Packet 3 structural/signature preflight reviewed (2026-09-14)
+
+Packet 3 adds an exact eleven-byte ADR-0125 structural/signature preflight in
+`dskit/production/verifier.py`. It verifies closed local grammar, selected
+same-request links, signatures, trusted time and revocation through public
+seams, then returns only an opaque `deployment_eligible=false` result. It has
+no resolver, capture, lifecycle, session, WORM, construction or execution
+route. The reviewed immutable candidate is `f070747`; ReviewExit is
+`docs/evidence/closeout/0067-f5a-p3-review-exit.json`.
+
+Both fresh final lenses found zero Critical/Major. Focused preflight,
+capture-lifecycle, frozen F4 trust and purity coverage passed 482 tests; ruff
+and diff checks were clean. Deferred Minor `F5A-P3-R24` records that a late
+non-bytes tuple position refuses after earlier local JSON parsing rather than
+prevalidating all eleven types first; it creates no trusted or effectful call.
+
+This does not verify IssuanceBasis or BVP/PlannedCaptureSet payloads, authorize
+capture, close Packet 2 or F5A-R23, close whole F5a, unblock F3/F5b, or permit
+deployment/real activity. Preserve
+`origin/cursor/r5-f5a-private-plan-0f39@c489199` and do not bulk-merge PR 14.
+
+Next: after reviewed integration/push verification, start Packet 4
+(`CapturedAuthorizationSet.v2`) in a new current-main isolated worktree with
+its own Phase 0 matrix and fresh skeptic gate.
+
 ## Current wrap: F5a driver-only facade landed (2026-09-14)
 
 Packet 2 adds `HistoricalStudyVerifier` and the identity-bound

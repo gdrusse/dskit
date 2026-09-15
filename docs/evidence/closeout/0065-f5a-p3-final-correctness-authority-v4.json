@@ -1,0 +1,102 @@
+{
+  "schema_version": "FinalCorrectnessAuthorityReview.v4",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "reviewer": {
+    "agent_task": "/root/f5a_p3_final_correctness_authority_v4",
+    "lens": "fresh final correctness/authority after 0063 convergence and 0064 strict-signature-oracle correction"
+  },
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "base_tree": "5a82e041cc5c0c449130eff165121f259d1226e9",
+    "candidate_commit": "f0707475b93ad30c1ff6e8acc43953daafe4a4a4",
+    "candidate_tree": "f0e528f2b0c408d8c42ef62f8231abd50cf98781",
+    "candidate_blobs": {
+      "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d",
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"
+    },
+    "checkpoint_0063_lock": "verified: production verifier and trust blobs exactly retain 6d202b3/e670bc9; only the preflight test oracle and closeout evidence changed after c12c6cc."
+  },
+  "contract_evidence_sha256": {
+    "adr_0125_lines_8317_8952": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930",
+    "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae",
+    "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c",
+    "matrix_0053": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85",
+    "phase0_0054": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9",
+    "red_green_0055": "0b24887208958a727ee7ea9a3f3f8f101e8e17d5ffbe570e0d7039a9d80edac",
+    "prior_authority_0056": "b85fbaf36b16be728280c930fb34102edeec76b21e2c0a89bafb2f35ce7c0df4",
+    "c15_correction_0057": "018229a3b9fbb9d247d15c34535ccc321e29f9189dc2af4994d12349d6317951",
+    "prior_authority_0058": "bedd5f1acf5f4faf7a9d6a4c90a5a898b48c27cdd77e11feb435fb4349c77c3c",
+    "prior_tests_0059": "619f35a023e707fdc5cfb1bcd7cded400ba0d8265d7cf4e77542009feb2a0e2c",
+    "replay_correction_0060": "f9d1e0cb8f620ad6e8091e90a70e9775f068e8b4d6df1f3d4bd1890e34b61c47",
+    "prior_authority_0061": "c152e423054f9fe62ce7ec3c2a245920c0fa49a3f33300399ea2fab16fde88b6",
+    "prior_tests_0062": "d195836b6405ee8135a0c09fb1ba86c04a206c306d6b9aa391f873372c0579fd",
+    "convergence_0063": "cca30785cc1a49b315efb59322350e47ce4debe048d6e3881eb3493bf4eb8d9a",
+    "signature_oracle_0064": "eb7bfdb46a3dfe060cf42640f8a89e5af009190d2e9be73a701c58414b3e0801"
+  },
+  "assessment": {
+    "candidate_scope": "Complete immutable 390dc851..f070747 diff and all changed production/test/evidence files were read. The sole post-checkpoint executable change is the strict synthetic test oracle; it does not broaden the non-authorizing production preflight.",
+    "parser_schema_signature_time_revocation": "Clean for the bounded Packet-3 contract. Exact-byte canonical parsing, closed schemas, named self/signature preimages, suffix/role/use rules, one shared inclusive trusted instant, exact public ReleaseKeyring arguments, and bool-only fail-closed revocation calls were traced. The strict test oracle independently builds ordered keyring and revocation queues from raw envelopes without verifier/trust private helpers; valid bootstrap, scope-action, and replay-pre-final tuples assert eight logical signed calls (the bootstrap root PIS is the deliberate duplicate). Forged signatures, all five argument mutations, false/non-bool/exception seam outcomes, and revocation failures refuse.",
+    "c01_c24": "Clean for the stated limited tuple. C01-C10 equality/profile/selection conditions, C11-C13 subject/admission/document closure, C14-C15 bidirectional action predecessor/ref/edge/contract/producer-output closure, C16-C21 phase/purpose/PIS/digest/authority links, and C22-C24 selected published-input CES/PIS/PCE/CAS bijections/descriptors were traced. Selected replay predecessor-output is deliberately refused because the supplied replay tuple has no exact C15 representation; selected published-input replay remains admissible. Unselected children remain intentionally self/set/schema-only, and L02 external hashes plus L03 source_ref remain syntax-only as the matrix requires.",
+    "reproduced_counterexamples": "The rehashed/resigned dangling ActionIntent predecessor ref, selected replay predecessor-output with empty CES/CAS, and every profile/slot forged-signature family all refuse. The legacy count-only fake still accepts the forged CES signature only in its explicitly retained test-oracle RED, while the strict fake rejects it through the public seam.",
+    "opacity_no_effect_authority": "Clean. Success is opaque, non-callable, non-copyable, non-serializable and deployment_eligible=false. Valid and representative refusal paths triggered no capture, lifecycle/WORM, session, resolver, import, construction, execution, or admission-consumption call. No trust.py edit, private-trust import, Packet-2/F4 behavior change, or production export change was found.",
+    "test_only_claim": "Not misleading: 0064 describes a test-oracle correction, not a production behavior or ADR-0125 lifecycle acceptance. It retains deployment_eligible=false and explicitly preserves whole-F5a, issuance-basis/BVP-PCE, capture/lifecycle, and F3/F5b boundaries."
+  },
+  "checks": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py -k 'dangling_predecessor_ref or replay_predecessor_output_without_ces or forged_signatures_at_every_signed_logical_slot'",
+      "interpreter": "Python 3.12.3",
+      "result": "26 passed, 323 deselected in 0.17s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py",
+      "interpreter": "Python 3.12.3",
+      "result": "482 passed in 7.66s"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py dskit/pipeline/trust.py tests/production/test_adr0125_preflight.py",
+      "result": "All checks passed"
+    },
+    {
+      "command": "git hash-object dskit/production/verifier.py dskit/pipeline/trust.py tests/production/test_adr0125_preflight.py; git diff --check 390dc851 f070747",
+      "result": "6d202b325ac601816284908980d392baecb9d54d; e670bc96db3abf96d7625482c01d8f0d796de844; a2601ebb4df2713dce771f5807cc571649f6b717; diff check passed"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0065-f5a-p3-final-correctness-authority-v4.json >/dev/null; git diff --check --no-index /dev/null docs/evidence/closeout/0065-f5a-p3-final-correctness-authority-v4.json",
+      "result": "JSON parse passed; evidence diff check passed (the expected --no-index add-file status was handled)."
+    }
+  ],
+  "findings": [
+    {
+      "id": "F5A-P3-0065-m01",
+      "severity": "Minor",
+      "invariant": "0053 requires each of eleven positional inputs to be exact bytes before JSON parsing.",
+      "location": "dskit/production/verifier.py:1200-1213",
+      "status": "preserved from 0061",
+      "worked_counterexample": "Ten valid byte positions followed by str at selected_admission cause the preceding ten positions to parse before TypeError rejects the str.",
+      "consequence": "Local sequencing nonconformance and avoidable parsing only; no clock, keyring, revocation, capture, lifecycle, resolver, session, WORM, import, construction, execution, or authority effect occurs and no invalid tuple is accepted.",
+      "disposition": "Deferred; do not change the frozen candidate. A future candidate may prevalidate all eleven types before parsing."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "major": 0,
+    "minor": 1,
+    "nit": 0,
+    "verdict": "approved with deferred Minor",
+    "approval": true,
+    "deployment_eligible": false
+  },
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend",
+    "Packets 4/6/8",
+    "whole F5a",
+    "full issuance-basis and BVP/PCE verification",
+    "no trust.py edit",
+    "no capture/lifecycle effect",
+    "no F3/F5b unblock"
+  ],
+  "next_gate": "This is only the first fresh final lens for immutable f070747. The required sequential fresh test-quality/integration lens remains; this approval does not authorize deployment, capture, lifecycle execution, whole-F5a closure, or dependent work."
+}
