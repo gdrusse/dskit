@@ -1,0 +1,73 @@
+{
+  "schema_version": "F5aPacket3SignatureOracleCorrection.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "authorization": {
+    "checkpoint": "0063-f5a-p3-final-convergence-checkpoint.json",
+    "candidate": "c12c6cc6a9141c2972cb213ca9b574f8a34d100c",
+    "allowed_paths": [
+      "tests/production/test_adr0125_preflight.py",
+      "docs/evidence/closeout/0064-f5a-p3-signature-oracle-correction.json"
+    ],
+    "implementation_unchanged": true,
+    "commit_created": false
+  },
+  "frozen_blobs": {
+    "dskit/production/verifier.py": {
+      "git_blob": "6d202b325ac601816284908980d392baecb9d54d",
+      "sha256": "c02628305d7d0403213e077e6107f745c5bb09e2c3494846a517b05a7f440719"
+    },
+    "dskit/pipeline/trust.py": {
+      "git_blob": "e670bc96db3abf96d7625482c01d8f0d796de844",
+      "sha256": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5"
+    }
+  },
+  "correction": {
+    "test_blob": "a2601ebb4df2713dce771f5807cc571649f6b717",
+    "test_sha256": "2459cd1d19aa63060aababe7a40232efb335cba96274bdc0da00fe47ebaebfca",
+    "strict_oracle": "Synthetic signatures deterministically bind key_id, key_version, issued_at_ms, canonical preimage, and signature. The ReleaseKeyring and HistoricalStudyRevocations doubles independently derive their complete ordered queues from raw test envelopes; no verifier or trust private helper is used.",
+    "coverage": [
+      "All bootstrap, scope-action, and replay-pre-final valid tuples assert all eight ordered signed calls; bootstrap independently expects the equal root PIS twice.",
+      "Every signed logical slot/profile forged-signature path refuses; bootstrap root/phase mutation updates both equal raw bytes together.",
+      "Every signed slot/profile directly rejects key id, key version, issued time, preimage, signature, and argument-order mutation.",
+      "Every signed slot/profile rejects False, non-bool, and exception results from both keyring and revocation seams while asserting the ordered queue prefix; revocations use exactly one shared clock instant.",
+      "Valid and representative keyring-refusal paths have explicit zero-call traps for capture, lifecycle/WORM, session, resolver, import, construction, execution, and admission-consumption surfaces."
+    ],
+    "legacy_oracle_red": "The pre-0064 count-only keyring accepted a forged replay CES signature whose self digest remained valid: 8 keyring calls, one clock call, opaque result. This demonstrates a test-oracle RED only; frozen production behavior was not changed."
+  },
+  "commands": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python - (legacy count-only forged CES probe)",
+      "interpreter": "Python 3.12.3",
+      "result": "legacy_count_only_oracle_red=accepted_forged_same_self_signature calls=8 clock=1"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py",
+      "interpreter": "Python 3.12.3",
+      "result": "349 passed in 0.90s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py",
+      "interpreter": "Python 3.12.3",
+      "result": "482 passed in 7.61s"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py dskit/pipeline/trust.py tests/production/test_adr0125_preflight.py",
+      "result": "All checks passed"
+    },
+    {
+      "command": "git diff --check; git hash-object dskit/production/verifier.py dskit/pipeline/trust.py; git diff --name-only",
+      "result": "diff check passed; frozen blobs matched checkpoint; only tests/production/test_adr0125_preflight.py was changed before this evidence append"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0064-f5a-p3-signature-oracle-correction.json >/dev/null; git diff --check; git hash-object dskit/production/verifier.py dskit/pipeline/trust.py",
+      "result": "JSON parse and final diff check passed; both frozen blobs still matched checkpoint 0063"
+    }
+  ],
+  "status": {
+    "production_red": false,
+    "deployment_eligible": false,
+    "whole_f5a_closed": false,
+    "next_gate": "Freeze this test-only candidate and restart the fresh correctness/authority and sequential test-quality/integration lenses required by checkpoint 0063."
+  }
+}

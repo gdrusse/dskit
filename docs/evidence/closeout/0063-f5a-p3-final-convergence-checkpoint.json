@@ -1,0 +1,107 @@
+{
+  "assessment": {
+    "candidate_verdict": "not approved",
+    "implementation_behavior": "frozen",
+    "implementation_defect_found": false,
+    "test_method_failure": "Yes: bounded to the L01c public-signature seam, but systemic within that seam. The one always-True _Keyring and call-count-only assertion cover every profile and all eight logical signed slots, so they cannot detect a forged signature, altered preimage, or swapped public-keyring argument.",
+    "test_only_correction_is_sufficient": true
+  },
+  "authorization": {
+    "allowed_paths": [
+      "tests/production/test_adr0125_preflight.py",
+      "docs/evidence/closeout/"
+    ],
+    "implementation_paths_forbidden": [
+      "dskit/production/verifier.py",
+      "dskit/pipeline/trust.py"
+    ],
+    "no_effect_boundary_must_remain": true,
+    "red_authorization": "Only the bounded test-oracle correction below is authorized. No production-code RED, behavior change, authority broadening, capture/lifecycle work, or dependency change is authorized."
+  },
+  "candidate": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "base_tree": "5a82e041cc5c0c449130eff165121f259d1226e9",
+    "commit": "c12c6cc6a9141c2972cb213ca9b574f8a34d100c",
+    "tree": "23fd37bc456f5bd26216d3ef7dc39f05e697c5c5",
+    "blobs": {
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844",
+      "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d",
+      "tests/production/test_adr0125_preflight.py": "1b0271dfcfa156342d7b1b4135544e93138625"
+    },
+    "lock_rule": "The next candidate must retain the verifier and trust blobs exactly; only the focused test blob may change."
+  },
+  "contract_evidence_sha256": {
+    "adr_0125_document": "023423830eca35871e67ea87bee51e88450a97ac3b1723588cd9c969ef859cc9",
+    "adr_0125_lines_8317_8952": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930",
+    "final_authority_0056": "b85fbaf36b16be728280c930fb34102edeec76b21e2c0a89bafb2f35ce7c0df4",
+    "final_authority_0058": "bedd5f1acf5f4faf7a9d6a4c90a5a898b48c27cdd77e11feb435fb4349c77c3c",
+    "final_authority_0061": "c152e423054f9fe62ce7ec3c2a245920c0fa49a3f33300399ea2fab16fde88b6",
+    "final_tests_0059": "619f35a023e707fdc5cfb1bcd7cded400ba0d8265d7cf4e77542009feb2a0e2c",
+    "final_tests_0062": "d195836b6405ee8135a0c09fb1ba86c04a206c306d6b9aa391f873372c0579fd",
+    "major_correction_0057": "018229a3b9fbb9d247d15c34535ccc321e29f9189dc2af4994d12349d6317951",
+    "major_correction_0060": "f9d1e0cb8f620ad6e8091e90a70e9775f068e8b4d6df1f3d4bd1890e34b61c47",
+    "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c",
+    "matrix_0053": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85",
+    "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae",
+    "phase0_0054": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9",
+    "red_green_0055": "0b24887208958a727ee7ea9a3f3f8f101e8e17d5ffbe570e0d7039a9d80edac"
+  },
+  "final_review_reset": {
+    "reason": "Any focused test change produces a new immutable candidate and invalidates 0061/0062 as final approvals.",
+    "required": [
+      "freeze the test-only candidate with unchanged verifier/trust blobs",
+      "fresh correctness/authority review",
+      "fresh sequential test-quality/integration review"
+    ],
+    "whole_f5a_or_deployment_approval": false
+  },
+  "go_no_go": {
+    "go": "Proceed only with the authorized family-wide test correction.",
+    "no_go": "Do not approve c12c6cc, edit implementation, merge, deploy, claim Packet 3 closure, or unblock F3/F5b."
+  },
+  "history_and_recurrence": {
+    "cycle_1": "d0ac79d / 0056: C15 reverse predecessor-reference closure was absent; de22cca repaired implementation and added a direct regression.",
+    "cycle_2": "de22cca / 0059: selected replay predecessor-output had no disposition; c12c6cc repaired implementation and added the empty-CES regression.",
+    "cycle_3": "c12c6cc / 0062: the signature oracle accepted any five arguments and asserted only eight calls. This is not another accepted-input implementation defect, but it is a repeated narrow-test-method failure after two aggregate-mutation misses.",
+    "convergence_decision": "The recurrence requires one complete L01c seam redesign now, not a CES-only assertion. It does not justify a wider implementation rewrite because an independent strict-seam probe passed every required argument identity and forged-slot refusal path on the frozen candidate."
+  },
+  "required_red_green": {
+    "red": [
+      "Retain a focused reproducer proving the legacy count-only keyring accepts a forged same-self signature; record it as the test-oracle RED, not an implementation RED.",
+      "For every strict-seam mutation, prove the legacy oracle would not distinguish the forged call while the new assertion would fail; do not modify verifier behavior to manufacture RED."
+    ],
+    "green": [
+      "All valid bootstrap, scope-action, and replay-pre-final tuples pass the strict complete-call oracle with exactly eight logical signed-slot calls (bootstrap expects the root PIS twice).",
+      "Every signed slot's forged signature refuses; bootstrap mutates its equal root/phase bytes together, while scope-action and replay-pre-final mutate each of their eight supplied signed slots independently.",
+      "Focused preflight, capture-lifecycle, trust, purity, and ruff checks pass; a no-effect sentinel proves valid and refusal paths do not enter capture, lifecycle, session, WORM, resolver, import, construction, execution, or admission-consumption routes."
+    ]
+  },
+  "required_test_approach": [
+    "Replace the permissive _Keyring success oracle with a strict ReleaseKeyring subclass that independently derives an ordered expected queue from the raw test envelopes and compares all five arguments: key_id, key_version, issued_at_ms, canonical envelope preimage with only named self and signature removed, and signature.",
+    "Make the synthetic signature deterministically depend on that independently constructed preimage; do not call verifier private helpers. Assert the complete ordered queue, not merely its length, for all three profiles and all eight logical slots.",
+    "Add direct signature and preimage sensitivity rows across the complete slot/profile family, including the bootstrap duplicate root-PIS call. The strict oracle must reject argument reordering, changed key/version/issued time, changed preimage, and changed signature.",
+    "Replace revocation count-only coverage with an ordered expected four-argument queue (snapshot_sha256, key_id, key_version, one shared now_ms); retain exactly-one clock read and assert identity for each profile.",
+    "Exercise false, non-bool, and exception outcomes for both public seams at every logical signed slot across profiles, with the strict expected calls preserved through the refusal point.",
+    "Add explicit no-effect sentinels for the forbidden public capture/lifecycle/session/WORM/resolver/import/construction/execution/consumption surfaces and assert zero calls on one valid and representative signature/refusal paths."
+  ],
+  "reviewer": {
+    "agent_task": "/root/f5a_p3_final_convergence_checkpoint",
+    "lens": "independent post-three-cycle convergence and adjacent signature-seam audit"
+  },
+  "schema_version": "F5aPacket3FinalConvergenceCheckpoint.v1",
+  "slice_id": "F5a",
+  "verification": [
+    {
+      "command": "read-only independent strict ReleaseKeyring/Revocations probe",
+      "result": "bootstrap exact_calls=8/forged_slots_rejected=7 unique envelopes; scope-action=8/8; replay-pre-final=8/8. The bootstrap root PIS legitimately occupies two logical slots."
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py",
+      "result": "167 passed in 7.19s"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py tests/production/test_adr0125_preflight.py",
+      "result": "All checks passed"
+    }
+  ]
+}

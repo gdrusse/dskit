@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import pickle
+import sys
 
 import pytest
 
@@ -52,8 +53,29 @@ def _signed(payload, self_name, role, usage, issued_at_ms):
         }
     )
     value[self_name] = _digest(value)
-    value["signature"] = "synthetic-signature-" + self_name
+    preimage = dict(value)
+    preimage.pop(self_name)
+    value["signature"] = _synthetic_signature(
+        value["key"]["key_id"],
+        value["key"]["key_version"],
+        value["issued_at_ms"],
+        _canonical(preimage),
+    )
     return value
+
+
+def _synthetic_signature(key_id, key_version, issued_at_ms, preimage):
+    """Return a deterministic test-only signature over every public argument."""
+    return _digest(
+        _canonical(
+            {
+                "issued_at_ms": issued_at_ms,
+                "key_id": key_id,
+                "key_version": key_version,
+                "preimage": preimage.decode("ascii"),
+            }
+        )
+    )
 
 
 def _pis_entry(input_id, run_identity):
@@ -609,14 +631,98 @@ def _build_tuple(profile="bootstrap", **mutations):
     )
 
 
-class _Keyring(ReleaseKeyring):
-    def __init__(self, result=True):
-        self.result = result
+_SIGNED_SLOT_RAW_INDEX = (
+    ("root_pis", 0),
+    ("phase_pis", 1),
+    ("scope", 2),
+    ("ces", 6),
+    ("pea", 7),
+    ("bvp", 8),
+    ("cas", 9),
+    ("admission", 10),
+)
+_RAW_INDEX_BY_SLOT = dict(_SIGNED_SLOT_RAW_INDEX)
+_SIGNED_SLOT_INDEX = {
+    slot: position for position, (slot, _raw_index) in enumerate(_SIGNED_SLOT_RAW_INDEX)
+}
+_SELF_BY_SCHEMA = {
+    "dskit.published-input-set/v2": "published_input_set_sha256",
+    "dskit.historical-study-scope-intent/v1": "historical_study_scope_intent_sha256",
+    "dskit.capture-expectation-set/v1": "capture_expectation_set_sha256",
+    "dskit.plan-evaluation-authorization/v1": "plan_evaluation_authorization_sha256",
+    "dskit.broker-verified-plan/v1": "broker_verified_plan_sha256",
+    "dskit.capture-admission-set/v1": "capture_admission_set_sha256",
+    "dskit.action-execution-admission/v1": "action_execution_admission_sha256",
+    "dskit.final-replay-admission/v1": "final_replay_admission_sha256",
+}
+
+
+def _signed_envelopes(raw_tuple):
+    """Decode raw test envelopes in verifier call order without verifier helpers."""
+    return tuple(
+        (slot, json.loads(raw_tuple[index]))
+        for slot, index in _SIGNED_SLOT_RAW_INDEX
+    )
+
+
+def _signature_call(envelope):
+    """Derive one public ReleaseKeyring call from a raw signed envelope."""
+    payload = dict(envelope)
+    payload.pop(_SELF_BY_SCHEMA[payload["schema"]])
+    signature = payload.pop("signature")
+    key = payload["key"]
+    return (
+        key["key_id"],
+        key["key_version"],
+        payload["issued_at_ms"],
+        _canonical(payload),
+        signature,
+    )
+
+
+def _keyring_queue(raw_tuple):
+    """Return the independently derived complete ordered keyring queue."""
+    return tuple(_signature_call(envelope) for _slot, envelope in _signed_envelopes(raw_tuple))
+
+
+def _revocation_queue(raw_tuple, now_ms):
+    """Return the independently derived complete ordered revocation queue."""
+    return tuple(
+        (
+            envelope["revocation_snapshot_sha256"],
+            envelope["key"]["key_id"],
+            envelope["key"]["key_version"],
+            now_ms,
+        )
+        for _slot, envelope in _signed_envelopes(raw_tuple)
+    )
+
+
+class _StrictKeyring(ReleaseKeyring):
+    """Public-seam oracle rejecting calls unlike the raw-envelope queue."""
+
+    def __init__(self, raw_tuple, outcomes=()):
+        self.expected = _keyring_queue(raw_tuple)
+        self.outcomes = outcomes or (True,) * len(self.expected)
         self.calls = []
 
     def verify(self, key_id, key_version, issued_at_ms, message, signature):
-        self.calls.append((key_id, key_version, issued_at_ms, message, signature))
-        return self.result
+        call = (key_id, key_version, issued_at_ms, message, signature)
+        position = len(self.calls)
+        assert position < len(self.expected), "unexpected ReleaseKeyring call"
+        assert call == self.expected[position], "wrong ReleaseKeyring arguments"
+        self.calls.append(call)
+        expected_signature = _synthetic_signature(*call[:4])
+        outcome = self.outcomes[position]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome if signature == expected_signature else False
+
+    def assert_calls(self, count):
+        assert tuple(self.calls) == self.expected[:count]
+
+    def assert_complete(self):
+        self.assert_calls(len(self.expected))
 
 
 class _Clock(TrustedClock):
@@ -627,6 +733,86 @@ class _Clock(TrustedClock):
     def now_ms(self):
         self.calls += 1
         return self.value
+
+
+class _StrictRevocations(verifier_module.HistoricalStudyRevocations):
+    """Public-seam oracle rejecting calls unlike the raw-envelope queue."""
+
+    def __init__(self, raw_tuple, now_ms, outcomes=()):
+        self.expected = _revocation_queue(raw_tuple, now_ms)
+        self.outcomes = outcomes or (True,) * len(self.expected)
+        self.calls = []
+
+    def is_unrevoked(self, snapshot_sha256, key_id, key_version, now_ms):
+        call = (snapshot_sha256, key_id, key_version, now_ms)
+        position = len(self.calls)
+        assert position < len(self.expected), "unexpected revocation call"
+        assert call == self.expected[position], "wrong revocation arguments"
+        self.calls.append(call)
+        outcome = self.outcomes[position]
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    def assert_calls(self, count):
+        assert tuple(self.calls) == self.expected[:count]
+
+    def assert_complete(self):
+        self.assert_calls(len(self.expected))
+
+
+class _LegacyCountOnlyKeyring(ReleaseKeyring):
+    """The intentionally inadequate pre-0064 test oracle, retained for RED."""
+
+    def __init__(self):
+        self.calls = []
+
+    def verify(self, key_id, key_version, issued_at_ms, message, signature):
+        self.calls.append((key_id, key_version, issued_at_ms, message, signature))
+        return True
+
+
+def _outcomes(result, count=8):
+    return (result,) * count
+
+
+def _preflight(
+    *,
+    raw_tuple=None,
+    profile="bootstrap",
+    keyring_result=True,
+    keyring_outcomes=(),
+    clock_value=100,
+    revocation_result=True,
+    revocation_outcomes=(),
+):
+    raw_tuple = raw_tuple or _build_tuple(profile)
+    keyring = _StrictKeyring(
+        raw_tuple, keyring_outcomes or _outcomes(keyring_result)
+    )
+    clock = _Clock(clock_value)
+    revocations = _StrictRevocations(
+        raw_tuple,
+        clock_value,
+        revocation_outcomes or _outcomes(revocation_result),
+    )
+    preflight = verifier_module.HistoricalStudyEnvelopePreflight(
+        keyring, clock, revocations
+    )
+    return preflight, keyring, clock, revocations
+
+
+def _legacy_preflight(raw_tuple):
+    """Build the previous count-only keyring beside the strict revocation oracle."""
+    keyring = _LegacyCountOnlyKeyring()
+    clock = _Clock()
+    revocations = _StrictRevocations(raw_tuple, clock.value)
+    return (
+        verifier_module.HistoricalStudyEnvelopePreflight(keyring, clock, revocations),
+        keyring,
+        clock,
+        revocations,
+    )
 
 
 def _revocations(result=True):
@@ -643,21 +829,12 @@ def _revocations(result=True):
     return Revocations()
 
 
-def _preflight(*, keyring_result=True, clock_value=100, revocation_result=True):
-    keyring = _Keyring(keyring_result)
-    clock = _Clock(clock_value)
-    revocations = _revocations(revocation_result)
-    preflight = verifier_module.HistoricalStudyEnvelopePreflight(
-        keyring, clock, revocations
-    )
-    return preflight, keyring, clock, revocations
-
-
 @pytest.mark.parametrize("profile", ["bootstrap", "scope-action", "replay-pre-final"])
 def test_preflight_accepts_exact_profiles_and_returns_opaque_no_effect(profile):
-    preflight, keyring, clock, revocations = _preflight()
+    raw_tuple = _build_tuple(profile)
+    preflight, keyring, clock, revocations = _preflight(raw_tuple=raw_tuple)
 
-    result = preflight.verify(*_build_tuple(profile))
+    result = preflight.verify(*raw_tuple)
 
     assert (
         type(result)
@@ -666,8 +843,8 @@ def test_preflight_accepts_exact_profiles_and_returns_opaque_no_effect(profile):
     assert result.deployment_eligible is False
     assert not callable(result)
     assert clock.calls == 1
-    assert len(keyring.calls) == 8
-    assert len(revocations.calls) == 8
+    keyring.assert_complete()
+    revocations.assert_complete()
     for operation in (
         lambda: copy.copy(result),
         lambda: copy.deepcopy(result),
@@ -707,6 +884,183 @@ def test_preflight_fails_closed_at_public_trust_seams(kwargs):
     preflight, _keyring, _clock, _revocations = _preflight(**kwargs)
     with pytest.raises(ValueError):
         preflight.verify(*_build_tuple())
+
+
+def _forged_signature_tuple(profile, slot):
+    """Forge one signed logical slot, keeping bootstrap's equal PIS bytes equal."""
+    raw_tuple = list(_build_tuple(profile))
+    raw_index = _RAW_INDEX_BY_SLOT[slot]
+    indices = (
+        (0, 1)
+        if profile == "bootstrap" and slot in {"root_pis", "phase_pis"}
+        else (raw_index,)
+    )
+    for index in indices:
+        envelope = json.loads(raw_tuple[index])
+        envelope["signature"] = "forged-" + slot
+        raw_tuple[index] = _canonical(envelope)
+    return tuple(raw_tuple)
+
+
+def _slot_outcomes(slot, outcome):
+    """Return one trust outcome at the selected ordered logical slot."""
+    outcomes = [True] * len(_SIGNED_SLOT_RAW_INDEX)
+    outcomes[_SIGNED_SLOT_INDEX[slot]] = outcome
+    return tuple(outcomes)
+
+
+@pytest.mark.parametrize("profile", ["bootstrap", "scope-action", "replay-pre-final"])
+@pytest.mark.parametrize("slot", [slot for slot, _index in _SIGNED_SLOT_RAW_INDEX])
+def test_preflight_refuses_forged_signatures_at_every_signed_logical_slot(
+    profile, slot
+):
+    raw_tuple = _forged_signature_tuple(profile, slot)
+    preflight, keyring, _clock, revocations = _preflight(raw_tuple=raw_tuple)
+
+    with pytest.raises(ValueError):
+        preflight.verify(*raw_tuple)
+
+    refusal_slot = 0 if profile == "bootstrap" and slot == "phase_pis" else _SIGNED_SLOT_INDEX[slot]
+    keyring.assert_calls(refusal_slot + 1)
+    revocations.assert_calls(refusal_slot + 1)
+
+
+@pytest.mark.parametrize("profile", ["bootstrap", "scope-action", "replay-pre-final"])
+@pytest.mark.parametrize("slot", [slot for slot, _index in _SIGNED_SLOT_RAW_INDEX])
+@pytest.mark.parametrize(
+    "mutation", ["key_id", "key_version", "issued_at_ms", "preimage", "signature", "order"]
+)
+def test_strict_keyring_rejects_every_public_argument_mutation(profile, slot, mutation):
+    raw_tuple = _build_tuple(profile)
+    keyring = _StrictKeyring(raw_tuple)
+    slot_index = _SIGNED_SLOT_INDEX[slot]
+    for call in keyring.expected[:slot_index]:
+        assert keyring.verify(*call) is True
+    call = list(keyring.expected[slot_index])
+    if mutation == "key_id":
+        call[0] = "forged-key"
+    elif mutation == "key_version":
+        call[1] += 1
+    elif mutation == "issued_at_ms":
+        call[2] += 1
+    elif mutation == "preimage":
+        call[3] = b"forged-preimage"
+    elif mutation == "signature":
+        call[4] = "forged-signature"
+    else:
+        call[1], call[2] = call[2], call[1]
+
+    with pytest.raises(AssertionError, match="wrong ReleaseKeyring arguments"):
+        keyring.verify(*call)
+
+
+@pytest.mark.parametrize("profile", ["bootstrap", "scope-action", "replay-pre-final"])
+@pytest.mark.parametrize("slot", [slot for slot, _index in _SIGNED_SLOT_RAW_INDEX])
+@pytest.mark.parametrize("outcome", [False, 1, RuntimeError("unavailable")])
+def test_preflight_fails_closed_for_every_keyring_outcome(profile, slot, outcome):
+    raw_tuple = _build_tuple(profile)
+    preflight, keyring, _clock, revocations = _preflight(
+        raw_tuple=raw_tuple,
+        keyring_outcomes=_slot_outcomes(slot, outcome),
+    )
+    slot_index = _SIGNED_SLOT_INDEX[slot]
+
+    with pytest.raises(ValueError):
+        preflight.verify(*raw_tuple)
+
+    keyring.assert_calls(slot_index + 1)
+    revocations.assert_calls(slot_index if isinstance(outcome, BaseException) else slot_index + 1)
+
+
+@pytest.mark.parametrize("profile", ["bootstrap", "scope-action", "replay-pre-final"])
+@pytest.mark.parametrize("slot", [slot for slot, _index in _SIGNED_SLOT_RAW_INDEX])
+@pytest.mark.parametrize("outcome", [False, 1, RuntimeError("unavailable")])
+def test_preflight_fails_closed_for_every_revocation_outcome(profile, slot, outcome):
+    raw_tuple = _build_tuple(profile)
+    preflight, keyring, _clock, revocations = _preflight(
+        raw_tuple=raw_tuple,
+        revocation_outcomes=_slot_outcomes(slot, outcome),
+    )
+    slot_index = _SIGNED_SLOT_INDEX[slot]
+
+    with pytest.raises(ValueError):
+        preflight.verify(*raw_tuple)
+
+    keyring.assert_calls(slot_index + 1)
+    revocations.assert_calls(slot_index + 1)
+
+
+def test_legacy_count_only_oracle_red_accepts_a_forged_same_self_signature():
+    """Record the former oracle's test-only RED without alleging production RED."""
+    raw_tuple = _forged_signature_tuple("replay-pre-final", "ces")
+    preflight, keyring, clock, revocations = _legacy_preflight(raw_tuple)
+
+    result = preflight.verify(*raw_tuple)
+
+    assert type(result) is verifier_module.NonAuthorizingAdr0125StructuralSignaturePreflight
+    assert clock.calls == 1
+    assert len(keyring.calls) == 8
+    assert keyring.calls[3][-1] == "forged-ces"
+    revocations.assert_complete()
+
+
+class _NoEffectImportSentinel:
+    """Count imports attempted while the preflight is supposed to be pure."""
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    def find_spec(self, fullname, path=None, target=None):
+        self.calls["import"] += 1
+        return None
+
+
+@pytest.mark.parametrize("keyring_result", [True, False])
+def test_preflight_never_enters_the_no_effect_surfaces(monkeypatch, keyring_result):
+    """Valid and refusal paths stay outside capture/lifecycle/effect routes."""
+    calls = {
+        "capture": 0,
+        "lifecycle_worm_construction_consumption": 0,
+        "session": 0,
+        "resolver": 0,
+        "execution": 0,
+        "import": 0,
+    }
+
+    def trap(surface):
+        def refused(*args, **kwargs):
+            calls[surface] += 1
+            raise AssertionError(surface + " must not run")
+
+        return refused
+
+    monkeypatch.setattr(
+        verifier_module, "HistoricalStudyCaptureDriver", trap("capture")
+    )
+    monkeypatch.setattr(
+        verifier_module,
+        "HistoricalStudyVerifier",
+        trap("lifecycle_worm_construction_consumption"),
+    )
+    monkeypatch.setattr(verifier_module, "TickState", trap("session"))
+    monkeypatch.setattr(verifier_module, "verify_release", trap("resolver"))
+    monkeypatch.setattr(verifier_module, "empty_ack", trap("execution"))
+    sentinel = _NoEffectImportSentinel(calls)
+    sys.meta_path.insert(0, sentinel)
+    try:
+        raw_tuple = _build_tuple()
+        preflight, _keyring, _clock, _revocations = _preflight(
+            raw_tuple=raw_tuple, keyring_result=keyring_result
+        )
+        if keyring_result:
+            preflight.verify(*raw_tuple)
+        else:
+            with pytest.raises(ValueError):
+                preflight.verify(*raw_tuple)
+    finally:
+        sys.meta_path.remove(sentinel)
+
+    assert calls == {name: 0 for name in calls}
 
 
 @pytest.mark.parametrize(
@@ -759,8 +1113,8 @@ def test_preflight_refuses_extra_or_missing_position_and_untrusted_dependencies(
 
     for args in (
         (object(), _Clock(), _revocations()),
-        (_Keyring(), object(), _revocations()),
-        (_Keyring(), _Clock(), object()),
+        (_StrictKeyring(values), object(), _revocations()),
+        (_StrictKeyring(values), _Clock(), object()),
     ):
         with pytest.raises(TypeError):
             verifier_module.HistoricalStudyEnvelopePreflight(*args)

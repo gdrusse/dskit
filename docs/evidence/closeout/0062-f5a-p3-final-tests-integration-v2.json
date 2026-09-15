@@ -1,0 +1,45 @@
+{
+  "schema_version": "FinalTestsIntegrationReview.v2",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "reviewer": {"agent_task": "/root/f5a_p3_final_tests_integration_v2", "lens": "second fresh sequential final test-quality/integration"},
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899", "base_tree": "5a82e041cc5c0c449130eff165121f259d1226e9",
+    "candidate_commit": "c12c6cc6a9141c2972cb213ca9b574f8a34d100c", "candidate_tree": "23fd37bc456f5bd26216d3ef7dc39f05e697c5c5",
+    "candidate_blobs": {"dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d", "tests/production/test_adr0125_preflight.py": "1b0271dfcfa156342d7b1b4135544e93138625", "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844"},
+    "candidate_only": true,
+    "uncommitted_review_evidence_not_candidate_code": ["docs/evidence/closeout/0061-f5a-p3-final-correctness-authority-v3.json"]
+  },
+  "contract_evidence_sha256": {
+    "adr_0125_lines_8317_8952": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930", "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae", "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c",
+    "matrix_0053": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85", "phase0_0054": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9", "red_green_0055": "0b24887208958a727ee7ea9a3f3f8f101e8e17d5ffbe570e0d7039a9d80edac",
+    "prior_final_0056": "b85fbaf36b16be728280c930fb34102edeec76b21e2c0a89bafb2f35ce7c0df4", "c15_correction_0057": "018229a3b9fbb9d247d15c34535ccc321e29f9189dc2af4994d12349d6317951", "prior_authority_0058": "bedd5f1acf5f4faf7a9d6a4c90a5a898b48c27cdd77e11feb435fb4349c77c3c",
+    "prior_integration_0059": "619f35a023e707fdc5cfb1bcd7cded400ba0d8265d7cf4e77542009feb2a0e2c", "replay_correction_0060": "f9d1e0cb8f620ad6e8091e90a70e9775f068e8b4d6df1f3d4bd1890e34b61c47", "authority_v3_evidence_0061": "c152e423054f9fe62ce7ec3c2a245920c0fa49a3f33300399ea2fab16fde88b6"
+  },
+  "scope_reviewed": ["complete immutable 390dc851..c12c6cc diff and all candidate code/tests", "ADR-0125 lines 8317-8952; Packet 3 and master plans; 0053-0061 history", "canonical/schema/suffix/trust/profile/C01-C24, C15/C22, selected and unselected replay behavior, exports/imports, Packet-2/F4/purity/no-effect boundaries"],
+  "findings": [{
+    "id": "F5A-P3-0062-M01", "severity": "Major",
+    "invariant": "0053 L01c requires each signature mutation to refuse through ReleaseKeyring.verify(key_id, key_version, issued_at_ms, exact_preimage, signature); future RED rows explicitly include every signature mutation and public-seam argument behavior.",
+    "locations": ["tests/production/test_adr0125_preflight.py:612-620", "tests/production/test_adr0125_preflight.py:657-677", "dskit/production/verifier.py:1794-1815"],
+    "worked_counterexample": "Take a valid replay-pre-final tuple and replace only CES.signature with forged-but-same-self-digest. The named self digest remains valid because signature is excluded. The committed _Keyring returns True regardless of all five arguments and the sole success assertion checks only len(keyring.calls)==8; its double accepts the forged signature and records it. A signature-sensitive ReleaseKeyring double rejects the same tuple with ValueError.",
+    "observed_result": "Read-only exact-interpreter snippet: committed_count_only_double_accepts_changed_signature=NonAuthorizingAdr0125StructuralSignaturePreflight; recorded_signature=forged-but-same-self-digest; signature-sensitive public seam=ValueError. AST inventory found keyring.calls accessed only at line 669.",
+    "consequence": "The committed suite cannot detect a regression that supplies a wrong signature, wrong preimage, or wrong public-keyring argument ordering for any envelope. This hides the approved contract's essential signature protection even though the current implementation was manually observed to pass the intended argument types.",
+    "disposition": "open: add a strict, signature-sensitive ReleaseKeyring fake that asserts the complete five-argument call for every signed slot and direct rehashed/resigned altered-signature/preimage regressions across profiles. Freeze a new candidate and restart both final lenses."
+  }],
+  "assessment": {
+    "prior_counterexamples": "Both prior material families now refuse: dangling ActionIntent predecessor ref and selected replay predecessor-output with empty CES/CAS.",
+    "contracts_and_profiles": "Read-only rehashed/resigned selected nonroot scope-action predecessor-output with empty CES/CAS accepts. Selected replay control published-input accepts; selected replay predecessor-output refuses. Rehashed/resigned unselected crash-restart predecessor-output/source_ref variation accepts without effect, consistent with 0053 selected-child C11-C24 scope and L03 external-only source_ref boundary.",
+    "implementation_integration": "C15 graph closure is bidirectional for action refs/edges/contracts/producer outputs; C22 is selected published-input/CES bijection. Canonical, ordering, closed-schema, suffix, profile, C01-C24, public ReleaseKeyring/TrustedClock/revocation, opaque-result and no-effect paths were traced. No trust.py edit/private trust helper, Packet-2/F4 lifecycle route, capture/session/resolver/WORM/execution effect, or production package export regression was observed.",
+    "deferred_minor_from_0061": "Preserved: input type checking parses preceding byte positions before a later non-bytes position refuses; no authority effect was demonstrated."
+  },
+  "commands": [
+    {"command": "git rev-parse c12c6cc^{commit} c12c6cc^{tree} 390dc851^{commit} 390dc851^{tree}; git ls-tree c12c6cc ...", "result": "exact identities and blobs recorded"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py", "interpreter": "Python 3.12.3", "result": "167 passed in 7.30s"},
+    {"command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py tests/production/test_adr0125_preflight.py; git diff --check 390dc851 c12c6cc", "result": "All checks passed; diff check passed"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python - (read-only rehashed/resigned selected nonroot and unselected replay probes)", "interpreter": "Python 3.12.3", "result": "both accepted opaque no-effect result as contract permits"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python - (read-only changed CES signature with committed versus signature-sensitive keyring)", "interpreter": "Python 3.12.3", "result": "committed double accepted forged signature; strict double refused"}
+  ],
+  "summary": {"critical": 0, "major": 1, "minor": 1, "nit": 0, "verdict": "not approved", "approval": false, "deployment_eligible": false},
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "full issuance-basis and BVP/PCE verification", "no trust.py edit", "no capture/lifecycle effect", "no F3/F5b unblock"],
+  "next_gate": "Correct M01 signature/preimage/argument-order test family without changing approved behavior, freeze a new immutable candidate, and restart both fresh final lenses."
+}

@@ -1,0 +1,97 @@
+{
+  "schema_version": "FinalCorrectnessAuthorityReview.v3",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "reviewer": {
+    "agent_task": "/root/f5a_p3_final_correctness_authority_v3",
+    "lens": "fresh final correctness/authority after C15 and replay required-input corrections"
+  },
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "base_tree": "5a82e041cc5c0c449130eff165121f259d1226e9",
+    "candidate_commit": "c12c6cc6a9141c2972cb213ca9b574f8a34d100c",
+    "candidate_tree": "23fd37bc456f5bd26216d3ef7dc39f05e697c5c5",
+    "candidate_blobs": {
+      "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d",
+      "tests/production/test_adr0125_preflight.py": "1b0271dfcfa156342d7a7b1b4135544e93138625",
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844"
+    },
+    "candidate_scope": "Complete immutable 390dc851..c12c6cc diff. Candidate code/test changes are verifier preflight plus its synthetic tests; evidence files are reviewed as contract history, not executable authority."
+  },
+  "contract_evidence_sha256": {
+    "adr_0125_lines_8317_8952": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930",
+    "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae",
+    "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c",
+    "matrix_0053": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85",
+    "phase0_0054": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9",
+    "prior_final_0056": "b85fbaf36b16be728280c930fb34102edeec76b21e2c0a89bafb2f35ce7c0df4",
+    "c15_correction_0057": "018229a3b9fbb9d247d15c34535ccc321e29f9189dc2af4994d12349d6317951",
+    "prior_authority_review_0058": "bedd5f1acf5f4faf7a9d6a4c90a5a898b48c27cdd77e11feb435fb4349c77c3c",
+    "prior_tests_review_0059": "619f35a023e707fdc5cfb1bcd7cded400ba0d8265d7cf4e77542009feb2a0e2c",
+    "replay_correction_0060": "f9d1e0cb8f620ad6e8091e90a70e9775f068e8b4d6df1f3d4bd1890e34b61c47"
+  },
+  "authority_and_matrix_assessment": {
+    "parser_schema_trust": "Clean for material authority. Canonical exact bytes, closed shapes, named self/signature preimages, public ReleaseKeyring and TrustedClock seams, one clock instant, inclusive validity, role/use matrix, and bool-only fail-closed revocation results were traced against 0053. Frozen trust.py is the candidate blob recorded above and no private trust helper is imported.",
+    "profiles_selection_projection": "Clean. Bootstrap alone requires root/phase byte identity; scope-action and replay-pre-final intentionally permit distinct phase PIS. CES/PEA/BVP/CAS subjects select exactly one Scope child; profile/tag/admission, contract, environment/profile, purpose/document, phase, digest, PIS/CES/CAS/PCE links have the stated limited comparisons and do not invent absent BVP/PCE/basis/resolver targets.",
+    "C01_C24": "Clean for material correctness. C01-C24 were traced to the local validators. The action graph enforces root/nonroot, position, predecessor, ref, edge, contract and producer-output closure in all three directions. Selected published-input contracts have the C22 CES bijection; action predecessor-output contracts have C15 and no CES. Selected replay predecessor-output contracts now refuse before C22 because the supplied tuple has no replay ref/edge representation for an exact C15 closure; selected replay published-input contracts retain C22. Unselected Scope children remain self/set/schema checked and are intentionally outside selected-child C11-C24 field comparison per 0053.",
+    "counterexamples": "Both prior material families reproduce as refusals on c12c6cc: a rehashed/resigned dangling ActionIntent predecessor ref refuses under the reverse ref traversal; a rehashed/resigned selected replay predecessor-output contract with empty CES/CAS refuses under the replay-pre-final disposition guard.",
+    "no_effect_opacity": "Clean. Success is an opaque, non-callable, non-copyable and non-serializable object with deployment_eligible=false. The candidate only parses supplied bytes and calls supplied public keyring, clock and revocation collaborators; it neither imports nor invokes capture, lifecycle, resolver, session, WORM, admission-consumption, member/provider open, measured-code import/construction, execution or real-data authority paths. Mutable in-process Python remains outside the stated external-authority model."
+  },
+  "checks": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py -k 'dangling_predecessor_ref or replay_predecessor_output_without_ces'",
+      "interpreter": "Python 3.12.3",
+      "result": "2 passed, 32 deselected in 0.09s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py",
+      "interpreter": "Python 3.12.3",
+      "result": "167 passed in 7.09s"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py tests/production/test_adr0125_preflight.py",
+      "result": "All checks passed!"
+    },
+    {
+      "command": "git diff --check 390dc851 c12c6cc",
+      "result": "pass"
+    },
+    {
+      "command": "read-only parser spy: replace verifier._hs_parse_canonical for one call with the final positional argument as str",
+      "interpreter": "Python 3.12.3",
+      "result": "TypeError exact bytes are required after 11 parser calls: ten bytes then str; no clock/keyring/revocation or authority route is reached"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F5A-P3-0061-m01",
+      "severity": "Minor",
+      "invariant": "0053 raw_evidence_tuple requires every one of the eleven positional values to have type(value) is bytes and says a non-bytes value refuses before JSON parsing.",
+      "location": "dskit/production/verifier.py:1200-1213",
+      "worked_counterexample": "Supply valid canonical bytes for positions 1-10 and str at position 11. The dict comprehension calls _hs_parse_canonical on the ten preceding byte values before _hs_parse_canonical rejects the str.",
+      "observed_result": "The input refuses with TypeError, but the required all-position type gate is not completed before earlier local JSON parsing.",
+      "consequence": "Limited sequencing nonconformance and avoidable local parsing work only. No signature, clock, revocation, capture, lifecycle, resolver, session, WORM, member/provider, import, construction, execution, or authority effect occurs before the refusal, so no material authority breach or wrong accepted preflight result was demonstrated.",
+      "disposition": "Recorded deferred Minor; do not alter the frozen candidate. A later candidate may prevalidate all eleven exact types before parsing."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "major": 0,
+    "minor": 1,
+    "nit": 0,
+    "verdict": "approved with deferred Minor",
+    "approval": true,
+    "deployment_eligible": false
+  },
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend",
+    "Packets 4/6/8",
+    "whole F5a",
+    "full issuance-basis and BVP/PCE verification",
+    "no trust.py edit",
+    "no capture/lifecycle effect",
+    "no F3/F5b unblock"
+  ],
+  "next_gate": "This correctness/authority approval is limited to immutable c12c6cc and does not authorize deployment, capture, lifecycle, execution, whole-F5a closure, or dependent F3/F5b work. The separate fresh final test-quality/integration lens is still required for this corrected candidate."
+}
