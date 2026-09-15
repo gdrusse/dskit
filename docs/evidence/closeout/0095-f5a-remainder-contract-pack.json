@@ -1,0 +1,126 @@
+{
+  "schema_version": "F5aRemainderContractPack.v1",
+  "slice_id": "F5a",
+  "packet": "5-8-remainder-shared-contract-pack",
+  "status": "gate-0-inventory-complete",
+  "base_main": "1fc290f6f2a8cd1d1944994d351f608f00ca1734",
+  "preserved_source": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "governing": {
+    "proposal": "origin/docs/f5a-deepseek-proposal-20260915:docs/memos/2026-09-15-deepseek-f5a-remainder-proposal.md",
+    "adr0125": "docs/architecture/decision-log.md ADR-0125 (capture planning and historical-study chronology)",
+    "adr0126_f4": "docs/architecture/decision-log.md ADR-0126 (F4 single-surface threat model)",
+    "packet4_matrix": "docs/evidence/closeout/0089-f5a-p4-phase0-authorized-transaction-matrix-v9.json",
+    "master_plan": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md",
+    "closeout_plan": "docs/plans/closeout-2026-09-14/01-capture-admission.md"
+  },
+  "lane_ownership": {
+    "model_release": ["F1", "F2", "A1-A4", "I1", "I2"],
+    "forecast_capital": ["F3", "F4", "F5a", "F5b", "B0-B3", "E1", "C1"],
+    "replay_ops": ["C0", "R1-R5"],
+    "authority": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md line 1084",
+    "note": "dskit/pipeline/trust.py is physically in the pipeline package but is F4/F5a (forecast-capital) owned. F1 document/planner/driver/stages/__main__ parser and CLI surfaces are model-release owned."
+  },
+  "public_entry_points": {
+    "parse": [
+      {"path": "dskit/pipeline/document.py", "owner": "model-release (F1)", "symbols": ["PipelineDocument.from_obj:2222", "PipelineDocument.to_obj:2181", "PipelineDocument:1918", "NodeSpec.from_obj:596", "NodeSpec:505", "ExecutionBacktestSpec.from_obj:720", "_execution_backtest_node_errors:629", "_execution_backtest_section_errors:621", "load_document:2396", "save_document:2416"]},
+      {"path": "dskit/pipeline/io.py", "owner": "model-release (F1)", "symbols": ["load_config", "save_config"]}
+    ],
+    "plan": [
+      {"path": "dskit/pipeline/planner.py", "owner": "model-release (F1)", "symbols": ["plan:507 (exported as dskit.pipeline.plan)", "refuse_execution_backtest:110", "require_in_memory_document:92"]},
+      {"path": "dskit/pipeline/driver.py", "owner": "model-release (F1)", "symbols": ["run_document:2314", "plan_document (alias of planner.plan via import at driver.py:103)"]},
+      {"path": "dskit/pipeline/node.py", "owner": "model-release (F1)", "symbols": ["resolve_uses:1258"]},
+      {"path": "dskit/pipeline/stages.py", "owner": "model-release (F1)", "symbols": ["plan_stages:239"]}
+    ],
+    "cli": [
+      {"path": "dskit/pipeline/__main__.py", "owner": "model-release (F1)", "symbols": ["load_and_preflight_public_document:218", "cmd_validate:305", "cmd_plan:374", "cmd_run:406", "cmd_walkforward:440", "cmd_staged:475", "cmd_nodemap:789"]}
+    ],
+    "f5a_lifecycle": [
+      {"path": "dskit/pipeline/trust.py", "owner": "forecast-capital (F4/F5a)", "symbols": ["LifecycleAuthority:267", "CapturedAuthorizationAuthority:302", "ImmutableSnapshotProvider:178", "ReleaseKeyring:210", "TrustedClock:229", "TrustedRuntimeVerifier:248", "_DevelopmentBroker:910", "descriptor:1195", "freeze_consumer_document:1202", "derive_consumer_port:1255", "capture:1268", "open_capture:1344", "captured_bindings:1409", "_descriptor_from:1857", "_DESCRIPTOR_KEYS:56"]}
+    ],
+    "f5a_verifier_facade": [
+      {"path": "dskit/production/verifier.py", "owner": "forecast-capital (F5a)", "symbols": ["HistoricalStudyVerifier:707", "bind:768", "capture:794", "authorize_capture_set:843", "HistoricalStudyCaptureDriver:901"]}
+    ],
+    "replay_descriptor": [
+      {"path": "dskit/production/bundles.py", "owner": "replay-ops (C0/R1-R5)", "symbols": ["ReplayTape", "CapturedBindings", "CapturedLifecyclePort", "CapturedJsonArtifact", "CapturedMemberHandle"]},
+      {"path": "dskit/production/feed.py", "owner": "replay-ops", "symbols": ["event/feed seams"]},
+      {"note": "tape_manifest / tape_data ReplayRun consumer descriptor grammar is not yet implemented on main; the ADR-0126 V2 replay storage classes AtomicJournalReplace / AtomicSeriesStateReplace named in the master plan R1-R3 are proposed, not yet present in ledger.py/state.py."}
+    ],
+    "durable_seams": [
+      {"path": "dskit/production/ledger.py", "owner": "replay-ops / core", "symbols": ["Ledger:407", "ChainLedger:815", "JsonlLedger:1258", "_Durability:595", "_Rotation:695", "Checkpoint:1716", "HeadBoundCache:1552"]},
+      {"path": "dskit/production/state.py", "owner": "replay-ops / core", "symbols": ["SeriesState:951", "Recovery:1983"]}
+    ]
+  },
+  "existing_test_inventory": {
+    "tests/pipeline/test_document.py": 69,
+    "tests/pipeline/test_planner.py": 42,
+    "tests/pipeline/test_driver.py": 94,
+    "tests/pipeline/test_stages.py": 16,
+    "tests/pipeline/test_main.py": 5,
+    "tests/pipeline/test_main_adapter_flag.py": "present",
+    "tests/pipeline/test_main_nodemap.py": "present",
+    "tests/pipeline/test_node.py": 43,
+    "tests/pipeline/test_resolve.py": 17,
+    "tests/pipeline/test_trust.py": 75,
+    "tests/pipeline/test_captured_authorization.py": 53,
+    "tests/production/test_capture_lifecycle.py": 9,
+    "tests/production/test_captured_authorization.py": 8,
+    "tests/production/test_adr0125_preflight.py": 14,
+    "tests/production/test_bundles.py": 17,
+    "tests/production/test_purity.py": 18,
+    "controlling_sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture"
+  },
+  "compatibility_baseline": {
+    "accepted_v1_behavior": "Ordinary non-execution PipelineDocument parse/plan/CLI and ordinary v1 lifecycle capture remain byte-identical; canonical JSON/hash recipe unchanged (sorted keys, compact, ASCII, NaN refused).",
+    "packet2": "HistoricalStudyVerifier facade and HistoricalStudyCaptureDriver identity-bound facade in dskit/production/verifier.py.",
+    "packet3": "Eleven-byte ADR-0125 structural/signature preflight relocated to dskit/pipeline/trust.py; dskit/production/verifier.py re-exports the exact classes; no pipeline-to-production import.",
+    "packet4": "CapturedAuthorizationSet.v2 authority and same-ledger atomic consumed-admission -> complete batch -> session-start publication; sole-writer authority; terminal external anchor composition; genesis receipt identity recipe. Locked blobs recorded in 0094.",
+    "preserved": "Accepted Packets 2-4 behavior and the Packet 4 sole-writer authority are preserved; F4 GREEN e4c3a2a is not edited."
+  },
+  "actors_and_authority": {
+    "untrusted_input": "application/fixture callers can supply closed data, mutate their original data after factory return, call all public lifecycle/facade methods, pass forged/cross-broker handles, and race operations. JSON documents are untrusted input.",
+    "trusted_authorities": "broker-held fixed signer/keyring/clock/revocation authorities and the fixed external terminal-verification authority are trust roots, never caller choices. Only LifecycleAuthority writes admission/capture/session state.",
+    "sole_writer": "The existing same-ledger sole writer from Packet 4 is the single authoritative writer; no second writer, planner, ledger, or tape engine may be introduced.",
+    "not_a_boundary": "Mutable Python internals (constructor __kwdefaults__ tuples, intern tables, process-local locks, object identity) are not a durable security boundary."
+  },
+  "f5a_r23": {
+    "id": "F5A-R23-ctor-intern-unspend",
+    "status": "open",
+    "summary": "HistoricalStudyVerifier.capture reads type(self).__init__.__kwdefaults__['_spend'][:2] (verifier.py:820); the _spend default pair (set(), set(), {}) created by _make_spend_pair (verifier.py:654) is a public constructor kwdefault tuple. A caller can walk __kwdefaults__.values(), update live with spent and clear spent, so one bound instance writes two CAPTURED events.",
+    "holding": "consume-once stays stopped and not ReviewExited (owner decisions 0028/0029 on the preserved source). Do not relabel as ADR-0126-deferred. Packet 6 must not overclaim durability; only Packet 8 may resolve this via an owner-approved durable authority boundary.",
+    "disposition_until": "Retained open until the Packet 8 owner decision and GREEN proof."
+  },
+  "failure_families": {
+    "packet5_captured_artifact_grammar": ["descriptor in forbidden location (params/outputs/defaults/lists/maps/nesting/carry/artifacts)", "missing/extra/duplicate/aliased descriptor keys", "non-string or non-sha256 document_sha256", "wrong purpose / mismatched producer identity", "mutation after freeze", "descriptor-shaped substitute used as authority", "capture before PUBLISHED root/receipt"],
+    "packet6_equality_and_restart": ["equal-looking but differently bound captures", "producer/root/member/receipt/session substitution", "partial failure/retry", "wrong process/run/purpose", "stale restart identity", "one authorization silently becoming a second consumption authority"],
+    "packet7_replay_tape": ["tape_manifest-only / tape_data-only", "missing outer or parent", "extra/duplicate/aliased/nested descriptors", "swapped outer/parent roots/snapshots/producers/members/receipts", "inner digest/policy/count/order mismatch", "purpose and authorization-descriptor swaps", "equal ConsumerCapturedPorts with different captures"],
+    "packet8_durable_consume_once": ["concurrent calls", "write-then-raise", "clone/replay", "process restart", "second-process contention", "partial persistence", "recovery", "exact consume-once outcome"]
+  },
+  "cross_owner_decision_requested": {
+    "id": "F5A-P5-XOWN-PARSER-CLI",
+    "packet": "5",
+    "requested_from": "model-release lane owner",
+    "requested_paths": ["dskit/pipeline/document.py", "dskit/pipeline/planner.py", "dskit/pipeline/driver.py", "dskit/pipeline/stages.py", "dskit/pipeline/__main__.py", "dskit/pipeline/node.py"],
+    "why": "Packet 5's $captured_artifact descriptor grammar and its only-legal-location enforcement is parser/plan/CLI work in the F1 (model-release) lane. forecast-capital (F5a) does not own these files. The master plan F1 section and ADR-0125 specify the grammar, but an ownership correction/approval is required before forecast-capital edits F1 parser surfaces."
+  },
+  "packet6_vs_packet8_separation": {
+    "packet6": "Proves descriptor/receipt equality and fail-closed restart identity only. It binds descriptor, derived port, published root/receipt, producer, member manifest, captured receipt, authorization entry, run, process, purpose, and session identities. It must NOT claim durable consume-once or reconstruction.",
+    "packet8": "Owns durable mutable state, transaction and locking semantics, crash/restart recovery, idempotency key, unknown-outcome resolver, and authority for admission consumption and unspend refusal. Requires an owner decision naming the owning process/service before any code."
+  },
+  "reviewer_model_override": {
+    "owner_directive": "2026-09-15: two fresh final lenses and any Phase 0 skeptic may be fresh DeepSeek reviewers rather than Terra. Recorded to keep the review model explicit and traceable.",
+    "applies_to": "Phase 0 skeptic, final correctness/authority lens, final tests/integration lens for Packets 5-8"
+  },
+  "non_goals": [
+    "F3/F5b unblock", "whole-F5a closure claim before Packets 5-8 and F5A-R23 truthfully close",
+    "real data/replay execution, training, HPO/refit, full backtest, paper/live activity, deployment",
+    "environment changes, an unjustified full suite",
+    "a second writer/planner/ledger/tape engine",
+    "bulk-merging or deleting origin/cursor/r5-f5a-private-plan-0f39@c489199"
+  ],
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0095-f5a-remainder-contract-pack.json",
+    "git diff --check"
+  ],
+  "delta_matrices": "docs/evidence/closeout/0096-f5a-remainder-delta-matrices.json",
+  "next_gate": "Obtain owner resolution for the Packet 5 cross-owner parser/CLI change (owner-gate 0097) and the Packet 8 durable-state owner decision (owner-gate 0098) before any RED. Each packet then adds only its thin delta matrix and runs its own Phase 0 skeptic before RED."
+}

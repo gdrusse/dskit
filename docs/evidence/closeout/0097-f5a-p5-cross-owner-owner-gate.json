@@ -1,0 +1,38 @@
+{
+  "schema_version": "OwnerGate.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "status": "blocked-before-RED-cross-owner",
+  "base_main": "1fc290f6f2a8cd1d1944994d351f608f00ca1734",
+  "contract_pack": "docs/evidence/closeout/0095-f5a-remainder-contract-pack.json",
+  "delta_matrix": "docs/evidence/closeout/0096-f5a-remainder-delta-matrices.json",
+  "blocker": {
+    "id": "F5A-P5-XOWN-PARSER-CLI",
+    "kind": "cross-owner parser/planner/CLI change",
+    "what_packet5_requires": "Freeze the exact legal $captured_artifact descriptor and its only legal location (the complete value of one declared node input); reject the descriptor in params, outputs, defaults, lists, maps, carry, artifacts, and nested locations before planning, provider or filesystem access, broker construction, node import, or output creation. This is enforced across every public parse/plan/CLI entry point in the shared contract pack.",
+    "current_state": "The F1 execution_backtest block grammar and public-entry execution denial are already implemented on main (document.py ExecutionBacktestSpec + _execution_backtest_node_errors for $prev/mode-load/artifact-pins; planner.refuse_execution_backtest; __main__.load_and_preflight_public_document; resolve_uses guard). The $captured_artifact descriptor-shape validation exists only in the broker route (trust.py _descriptor_from/_DESCRIPTOR_KEYS/freeze_consumer_document). The parser/planner/CLI do not yet enforce the descriptor grammar or its only-legal-location rule.",
+    "why_not_local": "The parser/planner/CLI surfaces (dskit/pipeline/document.py, planner.py, driver.py, stages.py, node.py, __main__.py) are model-release (F1) lane, not forecast-capital. forecast-capital owns only trust.py's broker-route descriptor validation. A forecast-capital edit of F1 parser surfaces would cross a lane boundary without ownership authority."
+  },
+  "decision_requested": {
+    "owner": "model-release (F1) lane owner / coordinator",
+    "approve": "Authorize forecast-capital to implement Packet 5's parser/plan/CLI captured-artifact grammar and only-legal-location enforcement in dskit/pipeline/document.py, planner.py, driver.py, stages.py, node.py, and __main__.py, with a committed ownership correction before any RED. This permits the F1 parser to enforce the $captured_artifact location rule while preserving ordinary non-execution document behavior.",
+    "alternative_approve": "Assign Packet 5's parser/plan/CLI slice to the model-release lane owner and restrict forecast-capital to the trust.py descriptor-shape validation slice.",
+    "refuse": "Keep Packet 5 open and blocked; do not begin parser/CLI RED, do not edit F1 parser surfaces from forecast-capital, and do not merge this branch to main."
+  },
+  "reviewer_model": "DeepSeek (owner override 2026-09-15; fresh Phase 0 skeptic and two fresh final lenses may be DeepSeek rather than Terra)",
+  "branch": {
+    "name": "codex/f5a-remainder-20260915",
+    "preserve": true,
+    "merge_to_main": false,
+    "purge": false
+  },
+  "preserved_open": [
+    "F5A-R23-ctor-intern-unspend (until Packet 8 owner decision)",
+    "Packet 5", "Packet 6", "Packet 7", "Packet 8",
+    "whole F5a",
+    "no F3/F5b unblock",
+    "no deployment or real activity",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "reentry": "Resume only after an explicit approve/refuse decision. On approval, first commit the F1 ownership correction, then create the Packet 5 Phase 0 matrix and a fresh DeepSeek skeptic review before RED."
+}

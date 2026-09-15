@@ -1,0 +1,40 @@
+{
+  "schema_version": "OwnerGate.v1",
+  "slice_id": "F5a",
+  "packet": "8-durable-consume-once-authority",
+  "status": "blocked-before-owner-decision",
+  "base_main": "1fc290f6f2a8cd1d1944994d351f608f00ca1734",
+  "contract_pack": "docs/evidence/closeout/0095-f5a-remainder-contract-pack.json",
+  "delta_matrix": "docs/evidence/closeout/0096-f5a-remainder-delta-matrices.json",
+  "blocker": {
+    "id": "F5A-R23-ctor-intern-unspend",
+    "kind": "durable consume-once authority decision",
+    "current_failure": "HistoricalStudyVerifier.capture reads type(self).__init__.__kwdefaults__['_spend'][:2] (dskit/production/verifier.py:820). The _spend default pair (set(), set(), {}) created by _make_spend_pair (verifier.py:654) is a public constructor kwdefault tuple, so a caller can walk __kwdefaults__.values(), update live with spent and clear spent, and one bound instance writes two CAPTURED events. This is a single-surface Major, not an ADR-0126-deferred multi-private combination.",
+    "holding": "consume-once stays stopped and not ReviewExited (owner decisions 0028/0029 on the preserved source). Owner selected decision C: stop consume-once; do not dispatch Review24; do not merge.",
+    "what_is_needed": "A named process/service that owns durable mutable state, transaction and locking semantics, crash/restart recovery, idempotency key, unknown-outcome resolver, and authority for admission consumption and unspend refusal.",
+    "what_is_not_acceptable": "Mutable object identity, constructor aliases, intern tables, or process-local locks are not a durable security boundary. Another Python identity container does not close F5A-R23."
+  },
+  "decision_requested": {
+    "owner": "forecast-capital owner / coordinator",
+    "question": "Which process/service owns durable mutable state for F5a admission consumption and unspend refusal? Name the durable authority and its persistence/locking/recovery boundary, or name the existing durable seam (e.g. an OS-owned WORM/ledger store with compare-and-set) to reuse.",
+    "approve": "Name the durable owner and permitted persistence boundary; then Packet 8 may implement it with focused RED->GREEN (concurrent calls, write-then-raise, clone/replay, process restart, second-process contention, partial persistence, recovery, exact consume-once outcome), reusing Packet 4's transaction shape and one authoritative ledger. F5A-R23 then receives a truthful disposition.",
+    "refuse_or_unavailable": "If the owner refuses or the durable service is unavailable, Packet 8 stops with a precise blocker; no in-memory simulation of closure. F5A-R23 remains open and whole-F5a/F3/F5b stay blocked."
+  },
+  "reuse_guidance": "Reuse existing durable/ledger seams where approved (dskit/production/ledger.py Ledger/ChainLedger/JsonlLedger, state.py SeriesState/Recovery). Do not invent a second writer, planner, ledger, or tape engine. ADR-0126's proposed AtomicJournalReplace/AtomicSeriesStateReplace are replay-ops R1-R3 and are not yet on main; they are not the F5a admission authority unless the owner so decides.",
+  "reviewer_model": "DeepSeek (owner override 2026-09-15; fresh Phase 0 skeptic and two fresh final lenses may be DeepSeek rather than Terra)",
+  "branch": {
+    "name": "codex/f5a-remainder-20260915",
+    "preserve": true,
+    "merge_to_main": false,
+    "purge": false
+  },
+  "preserved_open": [
+    "F5A-R23-ctor-intern-unspend (until this decision and GREEN proof)",
+    "Packet 5", "Packet 6", "Packet 7", "Packet 8",
+    "whole F5a",
+    "no F3/F5b unblock",
+    "no deployment or real activity",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "reentry": "Resume only after the owner names the durable state owner and permitted persistence boundary. Do not begin Packet 8 RED, edit trust.py/verifier.py capture semantics, or claim closure before that decision."
+}
