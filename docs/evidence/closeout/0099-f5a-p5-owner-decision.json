@@ -1,0 +1,39 @@
+{
+  "schema_version": "OwnerDecision.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "decision": "approve-cross-owner",
+  "decision_source": "explicit user response: (1) Yes, authorize the F1 parser change",
+  "date": "2026-09-15",
+  "owner": "coordinator / model-release (F1) lane owner",
+  "supersedes_gate": "docs/evidence/closeout/0097-f5a-p5-cross-owner-owner-gate.json",
+  "approved_scope": {
+    "files": [
+      "dskit/pipeline/document.py",
+      "dskit/pipeline/planner.py",
+      "dskit/pipeline/driver.py",
+      "dskit/pipeline/stages.py",
+      "dskit/pipeline/node.py",
+      "dskit/pipeline/__main__.py"
+    ],
+    "purpose": "bounded Packet 5 captured-artifact grammar change: enforce the exact six-key $captured_artifact descriptor and its only-legal-location rule (complete value of one declared node input) across public parse/plan/CLI entry points, refusing params/outputs/defaults/lists/maps/nesting/carry/artifacts before planning, provider or filesystem access, broker construction, node import, or output creation.",
+    "ownership_correction": "forecast-capital is authorized for this bounded F1 parser surface change; no new planner, no capture authority in JSON, ordinary non-execution document behavior preserved byte-for-byte."
+  },
+  "still_forbidden": [
+    "a second planner or tape engine",
+    "capture authority placed in JSON",
+    "breaking ordinary non-execution PipelineDocument behavior or canonical hash identity",
+    "pipeline-to-production import",
+    "real data, replay, HPO/refit, backtest, paper/live, deployment"
+  ],
+  "reviewer_model": "DeepSeek (owner override 2026-09-15)",
+  "preserved_open": [
+    "F5A-R23-ctor-intern-unspend (until Packet 8 owner decision GREEN)",
+    "Packet 5 until full packet exit",
+    "Packet 6", "Packet 7", "Packet 8",
+    "whole F5a",
+    "F3/F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "next_gate": "Create a self-contained Packet 5 Phase 0 matrix for the exact grammar and obtain a fresh DeepSeek skeptic verdict with zero unresolved in-scope Critical/Major before RED."
+}

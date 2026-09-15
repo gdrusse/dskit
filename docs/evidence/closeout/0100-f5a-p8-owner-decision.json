@@ -1,0 +1,32 @@
+{
+  "schema_version": "OwnerDecision.v1",
+  "slice_id": "F5a",
+  "packet": "8-durable-consume-once-authority",
+  "decision": "approve-chainledger",
+  "decision_source": "explicit user response: (2) A, reuse the on-disk ChainLedger seam",
+  "date": "2026-09-15",
+  "owner": "forecast-capital owner / coordinator",
+  "supersedes_gate": "docs/evidence/closeout/0098-f5a-p8-durable-owner-gate.json",
+  "approved_scope": {
+    "durable_owner": "dskit/production/ledger.py ChainLedger/JsonlLedger on-disk ledger (fsync'd, hash-chained, append-only, idempotent-by-seq, torn-tail recovery) as the authoritative durable store for F5a admission consumption and unspend refusal.",
+    "purpose": "replace the publicly reachable constructor-kwdefaults _spend tuple with a ledger-backed consume-once check under a single transition lock, keyed by an admission-derived idempotency key.",
+    "package_boundary": "trust.py is dskit.pipeline and cannot import dskit.production (purity). The durable spend state therefore lives on the production side (HistoricalStudyVerifier) or in a lifted primitive; the sole-writer capture authority in trust.py is preserved and delegates through the existing seam.",
+    "honest_labeling": "closes F5A-R23 at the development/synthetic boundary (state no longer publicly reachable and durable across process restart within the process boundary); does NOT claim the OS-owned external broker deployment durability. deployment_eligible remains false."
+  },
+  "still_forbidden": [
+    "a second writer, planner, ledger, or tape engine",
+    "process-local identity as the durability boundary",
+    "claiming external-broker deployment durability",
+    "breaking Packet 4 sole-writer authority or v1 behavior",
+    "real data, replay, HPO/refit, backtest, paper/live, deployment"
+  ],
+  "reviewer_model": "DeepSeek (owner override 2026-09-15)",
+  "preserved_open": [
+    "F5A-R23 until Packet 8 GREEN proof",
+    "Packet 5", "Packet 6", "Packet 7", "Packet 8",
+    "whole F5a",
+    "F3/F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "next_gate": "Packet 8 is reached only after Packets 5-7 close; at that point create a Packet 8 Phase 0 matrix for the ledger-backed consume-once design and obtain a fresh DeepSeek skeptic verdict before RED."
+}
