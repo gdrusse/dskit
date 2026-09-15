@@ -1225,10 +1225,10 @@ class _DevelopmentBroker(LifecycleAuthority):
     def descriptor(self, published, purpose):
         if not isinstance(published, _Published):
             raise ValueError("PUBLISHED descriptor is required")
-        self._stream_for_published(published, "PUBLISHED descriptor is required")
-        if purpose != published.descriptor["purpose"]:
+        _, descriptor = self._publication_snapshot(published, "PUBLISHED descriptor is required")
+        if purpose != descriptor["purpose"]:
             raise ValueError("purpose mismatch")
-        return dict(published.descriptor)
+        return dict(descriptor)
 
     def freeze_consumer_document(
         self,
@@ -1248,18 +1248,18 @@ class _DevelopmentBroker(LifecycleAuthority):
         if purpose != descriptor.get("purpose"):
             raise ValueError("purpose mismatch")
         published = self._published_for_descriptor(descriptor)
-        self._stream_for_published(published, "published descriptor identity mismatch")
-        if descriptor.get("purpose") != published.descriptor["purpose"]:
+        _, retained = self._publication_snapshot(published, "published descriptor identity mismatch")
+        if descriptor.get("purpose") != retained["purpose"]:
             raise ValueError("published purpose mismatch")
-        if descriptor.get("root_ref") != published.descriptor["root_ref"]:
+        if descriptor.get("root_ref") != retained["root_ref"]:
             raise ValueError("published root mismatch")
-        if descriptor.get("snapshot_version") != published.descriptor["snapshot_version"]:
+        if descriptor.get("snapshot_version") != retained["snapshot_version"]:
             raise ValueError("published snapshot mismatch")
-        if document_sha256 != published.descriptor["document_sha256"]:
+        if document_sha256 != retained["document_sha256"]:
             raise ValueError("published document_sha256 mismatch")
-        if descriptor.get("node") != published.descriptor["node"]:
+        if descriptor.get("node") != retained["node"]:
             raise ValueError("published node mismatch")
-        if descriptor.get("output") != published.descriptor["output"]:
+        if descriptor.get("output") != retained["output"]:
             raise ValueError("published output mismatch")
         source_sha256 = _digest(_canonical_bytes(source))
         port = {
@@ -1333,13 +1333,8 @@ class _DevelopmentBroker(LifecycleAuthority):
             frozen.consumer_node,
             frozen.consumer_input,
         )
-        if (
-            source_desc.get("root_ref") != published.descriptor.get("root_ref")
-            or source_desc.get("snapshot_version")
-            != published.descriptor.get("snapshot_version")
-            or source_desc.get("document_sha256")
-            != published.descriptor.get("document_sha256")
-        ):
+        _, retained = self._publication_snapshot(published, "PUBLISHED capture is required")
+        if source_desc != retained:
             raise ValueError("document port does not match published root")
         expected = self.derive_consumer_port(frozen)
         if port != expected:
@@ -1609,11 +1604,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         return CapturedRelease(_MAKE, stream_id)
 
     def _receipt_audit(self, published):
-        stream_id = self._stream_for_published(
-            published,
-            "PUBLISHED token is required",
-            require_intern_match=False,
-        )
+        stream_id = self._diagnostic_stream_for_published(published)
         return [dict(row) for row in self._streams[stream_id]]
 
     def _receipt_digests(self, published):
@@ -1869,43 +1860,33 @@ class _DevelopmentBroker(LifecycleAuthority):
                 return dict(row["actor_runtime"])
         raise ValueError("CAPTURED actor runtime is required")
 
-    def _stream_for_published(self, published, message, require_intern_match=True):
-        intern_sid = self._load_interned(
-            self._publish_stream,
-            self._publish_stream_intern,
-            id(published),
-            message,
-        )
-        descriptor = published.descriptor
-        found = None
-        for stream_id, rows in self._streams.items():
-            for row in rows:
-                if row.get("event") != "PUBLISHED":
-                    continue
-                if (
-                    row["root_ref"] == descriptor.get("root_ref")
-                    and row["snapshot_version"] == descriptor.get("snapshot_version")
-                    and row["producer_document_sha256"]
-                    == descriptor.get("document_sha256")
-                ):
-                    if found is not None and found != stream_id:
-                        raise ValueError(message)
-                    found = stream_id
-        if found is None:
-            raise ValueError(message)
-        if str(intern_sid) != str(found) and require_intern_match:
-            raise ValueError(message)
-        if require_intern_match:
-            self._validate_publication_descriptor(published, found)
-        return found
-
-    def _validate_publication_descriptor(self, published, stream):
-        """Bind all descriptor fields to the retained signed stream identity."""
+    def _publication_snapshot(self, published, message):
+        """Resolve one authenticated token and retain its validated descriptor."""
+        stream = self._load_interned(self._publish_stream, self._publish_stream_intern,
+                                     id(published), message)
         self._reload_stream(stream)
+        descriptor = self._retained_publication_descriptor(published, stream)
+        if published.descriptor != descriptor:
+            raise ValueError("published descriptor identity mismatch")
+        return stream, descriptor
+
+    def _stream_for_published(self, published, message):
+        return self._publication_snapshot(published, message)[0]
+
+    def _diagnostic_stream_for_published(self, published):
+        """Inspect retained committed evidence without recovering exposed storage."""
+        sealed, _ = self._publication_members(published)
+        stream = sealed.prepared.stream_id
+        self._retained_publication_descriptor(published, stream)
+        return stream
+
+    def _retained_publication_descriptor(self, published, stream):
+        """Bind receipt, pin and sealed producer facts; never select by a prefix."""
         rows = self._streams.get(stream, ())
         publications = [row for row in rows if row["event"] == "PUBLISHED"]
         pin = self._stream_pin.get(stream)
-        if len(publications) != 1 or pin is None:
+        if (len(publications) != 1 or pin is None or len(rows) < 3
+                or [row["event"] for row in rows[:3]] != ["PRODUCED", "SEALED", "PUBLISHED"]):
             raise ValueError("published stream identity required")
         row = publications[0]
         producer = {"document_sha256": row["producer_document_sha256"],
@@ -1914,22 +1895,30 @@ class _DevelopmentBroker(LifecycleAuthority):
         root = {name: row[name] for name in ("root_ref", "root_id", "snapshot_version")}
         expected_stream = _digest(_canonical_bytes(
             {"producer": producer, "root": root, "purpose": pin.purpose}))
+        sealed, output_member = self._publication_members(published)
+        prepared = sealed.prepared
         if (expected_stream != stream or pin.stream_id != stream
                 or dict(pin.producer) != producer or dict(pin.root) != root
-                or pin.session_run_identity != rows[0]["actor_runtime"]["run_identity"]):
+                or pin.session_run_identity != rows[0]["actor_runtime"]["run_identity"]
+                or prepared.stream_id != stream or dict(prepared.producer) != producer
+                or dict(prepared.root) != root or prepared.purpose != pin.purpose
+                or prepared.session_run_identity != pin.session_run_identity):
             raise ValueError("published stream identity mismatch")
-        expected = {"root_ref": root["root_ref"], "snapshot_version": root["snapshot_version"],
-                    "document_sha256": producer["document_sha256"], "node": producer["node"],
-                    "output": producer["output"], "purpose": pin.purpose}
-        if published.descriptor != expected:
-            raise ValueError("published descriptor identity mismatch")
-        sealed, output_member = self._publication_members(published)
+        facts = ("producer_document_sha256", "producer_run_identity", "producer_node",
+                 "producer_output", "root_ref", "root_id", "snapshot_version", "stream_id")
+        if any(prior[name] != row[name] for prior in rows[:3] for name in facts):
+            raise ValueError("published receipt identity mismatch")
         manifest = rows[1]["member_manifest_sha256"]
         if (pin.output_member != output_member
                 or output_member not in {item["relative_path"] for item in sealed._digests}
                 or sealed._member_manifest_sha256 != manifest
+                or row["member_manifest_sha256"] != manifest
                 or self._manifest_digest(sealed._digests) != manifest):
             raise ValueError("published member manifest or original output member mismatch")
+        return MappingProxyType({
+            "root_ref": root["root_ref"], "snapshot_version": root["snapshot_version"],
+            "document_sha256": producer["document_sha256"], "node": producer["node"],
+            "output": producer["output"], "purpose": pin.purpose})
 
     def _frozen_publication(self, frozen):
         """Validate the original frozen port before returning its publication."""
@@ -1945,9 +1934,9 @@ class _DevelopmentBroker(LifecycleAuthority):
                 or frozen.source_sha256 != current["consumer_document_sha256"]
                 or frozen.document_sha256 != current["consumer_document_sha256"]):
             raise ValueError("document changed after freeze: port identity mismatch")
-        self._stream_for_published(published, "frozen published identity mismatch")
+        _, retained = self._publication_snapshot(published, "frozen published identity mismatch")
         source = self._descriptor_from(frozen.source, frozen.consumer_node, frozen.consumer_input)
-        if source != published.descriptor:
+        if source != retained:
             raise ValueError("frozen descriptor differs from published identity")
         return published
 
@@ -2039,30 +2028,18 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("frozen consumer document is required") from exc
 
     def _published_for_descriptor(self, descriptor):
-        for rows in self._streams.values():
-            if not rows:
-                continue
-            head = rows[-1]
-            if head["event"] != "PUBLISHED":
-                continue
-            if (
-                head["root_ref"] == descriptor.get("root_ref")
-                and head["snapshot_version"] == descriptor.get("snapshot_version")
-                and head["producer_document_sha256"] == descriptor.get("document_sha256")
-            ):
-                # Recover the live published token from stream identity.
-                break
-        else:
-            raise ValueError("published root is required")
-        # Search live objects by matching stream receipts already recorded.
-        # Freeze is called with the live published token's descriptor; look up
-        # via producer identities on the last PUBLISHED receipt.
-        return self._live_published(descriptor)
+        published = self._live_published(descriptor)
+        stream = self._stream_for_published(published, "published root is required")
+        self._require_head(stream, "PUBLISHED")
+        return published
 
     def _live_published(self, descriptor):
-        """Resolve exactly one complete descriptor, never a partial-key fallback."""
-        matches = [published for published in self._published_tokens
-                   if published.descriptor == descriptor]
+        """Resolve exactly one retained descriptor, never a mutable prefix."""
+        matches = []
+        for published in self._published_tokens:
+            _, retained = self._publication_snapshot(published, "published identity required")
+            if retained == descriptor:
+                matches.append(published)
         if len(matches) != 1:
             raise ValueError("exact published descriptor identity required")
         return matches[0]
@@ -4543,7 +4520,7 @@ def _p4_close_admission(resolver, snapshot, admission_ref, live_projection):
     _hs_refuse(len(cas["entries"]) == len(captures), "P4 live capture cardinality differs")
     for entry, (published, frozen, port) in zip(cas["entries"], captures):
         equal(entry, port, ("consumer_document_sha256", "consumer_node", "consumer_input", "purpose"))
-        descriptor = published.descriptor
+        _, descriptor = authority._publication_snapshot(published, "P4 publication identity required")
         for field, source in (("descriptor_root_ref", "root_ref"), ("descriptor_snapshot_version", "snapshot_version"),
                               ("descriptor_document_sha256", "document_sha256"), ("descriptor_node", "node"),
                               ("descriptor_output", "output"), ("descriptor_purpose", "purpose")):
@@ -5005,7 +4982,8 @@ class _LifecycleAuthorizationLedger(_Opaque):
             _hs_refuse(type(capture) is tuple and len(capture) == 3)
             published, frozen, port = capture
             _hs_refuse(type(published) is _Published and type(frozen) is _Frozen and type(port) is dict)
-            projected.append([id(published), id(frozen), port, published.descriptor, _digest(_canonical_bytes(frozen.source))])
+            _, descriptor = self._authority._publication_snapshot(published, "P4 publication identity required")
+            projected.append([id(published), id(frozen), port, dict(descriptor), _digest(_canonical_bytes(frozen.source))])
         copied_runtime = dict(runtime, transition_nonces=list(runtime["transition_nonces"]))
         return _hs_canonical_bytes({"captures": projected, "admission": admission_ref, "runtime": copied_runtime})
 

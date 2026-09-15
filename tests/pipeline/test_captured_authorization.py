@@ -1905,25 +1905,25 @@ def test_invalid_request_refuses_before_fixture_lookup_and_any_effect(change):
     assert not broker._member_events
 
 
-@pytest.mark.parametrize("field", ["node", "output"])
-@pytest.mark.parametrize("selected", [0, 1])
-def test_p6_p4_authorizes_exact_publication_with_same_prefix_sibling(monkeypatch, field, selected):
-    graph_probe = True
+@pytest.mark.parametrize("field", ["node", "output", "purpose"])
+@pytest.mark.parametrize("sibling_first", [False, True])
+def test_p6_p4_authorizes_exact_publication_with_same_prefix_sibling(monkeypatch, field, sibling_first):
+    graph, document = _complete_signed_graph()
+    original_publish = f4._publish
 
     def publish_selected(broker):
-        nonlocal graph_probe
-        labels = (("a" if selected == 0 else "b"),) if graph_probe else ("a", "b")
-        publications = f4._p6_identity_siblings(broker, field, labels)
-        target = 0 if graph_probe else selected
-        graph_probe = False
-        for index, (session, _, _, _) in enumerate(publications):
-            if index != target:
-                broker.end_session(session)
-        session, publication, _, _ = publications[target]
-        return session, publication, None
+        def sibling():
+            session, _, _, _ = f4._p6_identity_siblings(broker, field, ("b",))[0]
+            broker.end_session(session)
+
+        if sibling_first:
+            sibling()
+        result = original_publish(broker)
+        if not sibling_first:
+            sibling()
+        return result
 
     monkeypatch.setattr(f4, "_publish", publish_selected)
-    graph, document = _complete_signed_graph()
     broker, captures, runtime, _ = _graph_live(graph, document, 1)
     record, session = broker.authorize_capture_set(captures, graph.selected, **runtime)
     audit = broker._p4_ledger._audit(record)
@@ -1931,4 +1931,4 @@ def test_p6_p4_authorizes_exact_publication_with_same_prefix_sibling(monkeypatch
     assert len(audit["streams"]) == 1
     publication = broker._receipt_audit(captures[0][0])[-1]
     assert audit["streams"][0] == publication["stream_id"]
-    assert publication["producer_run_identity"] == "producer-" + ("a" if selected == 0 else "b")
+    assert publication["producer_run_identity"] == "producer-run"
