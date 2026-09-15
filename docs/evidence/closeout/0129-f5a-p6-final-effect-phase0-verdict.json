@@ -38,6 +38,6 @@
       "nit": 0
     },
     "disposition": "Correct accidental matrix promise; preserve accepted facade behavior and explicitly defer durable admission unknown-outcome semantics to Packet8. No runtime rollback or scope/threat-model weakening.",
-    "historical_check": "Reviewer cited c72340b and a write-then-raise regression; exact command/path requested before retaining a test result as verified."
+    "historical_check": "CORRECTION from reviewer: historical test was NOT run. Current pytest -q tests/production/test_capture_lifecycle.py -k \"write_then_raise or private_plan_precedes_capture\" gave1 passed11 deselected, only sentinel. -k write_then_raise selected none (12 deselected exit5). Named regression exists in historical c72340b:tests/production/test_capture_lifecycle.py; c72340b is NOT ancestor of aac2a25 (merge-base36553aed...). No extraction/run. Do not claim a passing write-then-raise test or accepted current ancestry from that historical source."
   }
 }
