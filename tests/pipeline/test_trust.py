@@ -2946,3 +2946,245 @@ def test_backing_store_and_watermark_cannot_rewind_consumed():
     assert replayed["issued_at_ms"] == issued_at
     assert artifact.value["rows"][0]["id"] == "AAA"
     assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
+
+
+# Packet 6: independent field substitutions preserve the retained identity.
+def _p6_effects(broker):
+    return (
+        tuple((key, tuple(value)) for key, value in broker._receipt_store.items()),
+        tuple(broker._session_events), tuple(broker._member_events),
+        frozenset(broker._freeze_published),
+    )
+
+
+_P6_DESCRIPTOR_CHANGES = (
+    ("root_ref", "capture://synthetic/other"),
+    ("snapshot_version", "other"),
+    ("document_sha256", "a" * 64),
+    ("node", "other-publisher"),
+    ("output", "other-output"),
+    ("purpose", "other-purpose"),
+)
+
+
+@pytest.mark.parametrize("field,value", _P6_DESCRIPTOR_CHANGES)
+def test_p6_descriptor_fields_bind_publication_with_coordinated_caller(field, value):
+    broker = _trust()._development_broker()
+    producer, published, _ = _publish(broker)
+    broker.end_session(producer)
+    descriptor = broker.descriptor(published, purpose="synthetic")
+    descriptor[field] = value
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        broker.freeze_consumer_document(
+            _consumer_document(descriptor), "consume", "bundle", descriptor["purpose"],
+        )
+    assert _p6_effects(broker) == before
+    _, frozen = _freeze(broker, published)
+    captured, session = _capture(broker, published, frozen)
+    assert broker.open_capture(session, captured).member("artifacts/bundle.json").read_bytes()
+
+
+@pytest.mark.parametrize("field,value", _P6_DESCRIPTOR_CHANGES)
+@pytest.mark.parametrize("route", ["descriptor", "freeze", "capture"])
+def test_p6_mutated_published_descriptor_cannot_bless_itself(field, value, route):
+    broker = _trust()._development_broker()
+    producer, published, _ = _publish(broker)
+    broker.end_session(producer)
+    _, frozen = _freeze(broker, published)
+    original = dict(published.descriptor)
+    published.descriptor[field] = value
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        if route == "descriptor":
+            broker.descriptor(published, purpose=published.descriptor["purpose"])
+        elif route == "freeze":
+            broker.freeze_consumer_document(
+                _consumer_document(dict(published.descriptor)), "consume", "bundle",
+                published.descriptor["purpose"],
+            )
+        else:
+            _capture(broker, published, frozen)
+    assert _p6_effects(broker) == before
+    published.descriptor.clear()
+    published.descriptor.update(original)
+    captured, session = _capture(broker, published, frozen)
+    assert broker.open_capture(session, captured).member("artifacts/bundle.json").read_bytes()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("purpose", "other-purpose"), ("consumer_input", "second"),
+    ("consumer_node", "other"), ("source_sha256", "a" * 64),
+])
+@pytest.mark.parametrize("route", ["derive", "capture"])
+def test_p6_frozen_port_cannot_move_to_an_equal_descriptor(field, value, route):
+    broker = _trust()._development_broker()
+    producer, published, _ = _publish(broker)
+    broker.end_session(producer)
+    document = _consumer_document(broker.descriptor(published, "synthetic"))
+    document["pipeline"]["consume"]["inputs"]["second"] = copy.deepcopy(
+        document["pipeline"]["consume"]["inputs"]["bundle"])
+    document["pipeline"]["other"] = copy.deepcopy(document["pipeline"]["consume"])
+    _, frozen = _freeze(broker, published, document=document)
+    original_port = broker.derive_consumer_port(frozen)
+    original = getattr(frozen, field)
+    object.__setattr__(frozen, field, value)
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        if route == "derive":
+            broker.derive_consumer_port(frozen)
+        else:
+            _capture(broker, published, frozen, port=original_port)
+    assert _p6_effects(broker) == before
+    object.__setattr__(frozen, field, original)
+    assert broker.derive_consumer_port(frozen) == original_port
+    _capture(broker, published, frozen, port=original_port)
+
+
+def _p6_consumed():
+    broker, published, _, frozen, captured, session, verified = _captured_flow()
+    bindings = broker.captured_bindings(session, frozen, verified,
+        consumer_node="consume", transition_nonce="nonce-consumed")
+    port = bindings.require("bundle")
+    return broker, published, frozen, captured, session, verified, bindings, port
+
+
+def _p6_retained_or_refused(operation, expected, *, identity=False):
+    try:
+        actual = operation()
+    except (TypeError, ValueError, AttributeError):
+        return
+    if identity:
+        assert actual is expected
+    else:
+        assert actual == expected
+
+
+@pytest.mark.parametrize("target", ["member", "port-artifact", "port-audit", "value", "artifact-audit"])
+def test_p6_returned_handles_cannot_deliver_substituted_payload_or_audit(target):
+    broker, _, _, _, _, verified, _, port = _p6_consumed()
+    foreign = _p6_consumed()
+    foreign_verified, foreign_port = foreign[5], foreign[7]
+    before = _p6_effects(broker), _p6_effects(foreign[0])
+    artifact = port.artifact
+    if target == "member":
+        expected = verified.member("artifacts/bundle.json")
+        verified._members["artifacts/bundle.json"] = foreign_verified.member("artifacts/bundle.json")
+        operation = lambda: verified.member("artifacts/bundle.json")
+        identity = True
+    elif target == "port-artifact":
+        expected = artifact
+        object.__setattr__(port, "_artifact", foreign_port.artifact)
+        operation = lambda: port.artifact
+        identity = True
+    elif target == "port-audit":
+        expected = dict(port.audit)
+        object.__setattr__(port, "_audit", {"consumer_port": {"purpose": "forged"}})
+        operation = lambda: port.audit
+        identity = False
+    elif target == "value":
+        expected = artifact.value
+        object.__setattr__(artifact, "_value", {"rows": [{"id": "FORGED"}]})
+        operation = lambda: artifact.value
+        identity = False
+    else:
+        expected = dict(artifact.audit)
+        object.__setattr__(artifact, "_audit", {"sha256": "a" * 64})
+        operation = lambda: artifact.audit
+        identity = False
+    _p6_retained_or_refused(operation, expected, identity=identity)
+    assert (_p6_effects(broker), _p6_effects(foreign[0])) == before
+
+
+@pytest.mark.parametrize("route", ["read_bytes", "read_text"])
+def test_p6_member_bytes_are_retained_and_read_flag_cannot_be_reset(route):
+    broker, _, _, _, _, _, verified = _captured_flow()
+    member = verified.member("artifacts/bundle.json")
+    expected = _json_bytes({"rows": [{"id": "one", "value": 7}]})
+    object.__setattr__(member, "_bytes", b'{"forged":true}')
+    before = _p6_effects(broker)
+    _p6_retained_or_refused(getattr(member, route), expected if route == "read_bytes" else expected.decode())
+    assert _p6_effects(broker) == before
+
+
+@pytest.mark.parametrize("route", ["read_bytes", "read_text"])
+def test_p6_reset_member_read_flag_never_grants_a_second_read(route):
+    broker, _, _, _, _, _, verified = _captured_flow()
+    member = verified.member("artifacts/bundle.json")
+    assert getattr(member, route)()
+    object.__setattr__(member, "_read", False)
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        getattr(member, route)()
+    assert _p6_effects(broker) == before
+
+
+def test_p6_reset_binding_used_flag_never_grants_a_second_consumption():
+    broker, published, _, _, _, _, bindings, _ = _p6_consumed()
+    bindings._used.clear()
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        bindings.require("bundle")
+    assert _p6_effects(broker) == before
+    assert [row["event"] for row in broker._receipt_audit(published)].count("CONSUMED") == 1
+
+
+@pytest.mark.parametrize("field,value,match", [
+    ("sequence", 99, "sequence"),
+    ("previous_receipt_sha256", "a" * 64, "predecessor"),
+    ("stream_id", "b" * 64, "stream"),
+])
+def test_p6_receipt_structural_linkage_refuses_before_capture_and_allows_recovery(field, value, match):
+    storage = {}
+    broker = _trust()._development_broker(receipt_store=storage)
+    producer, published, _ = _publish(broker)
+    broker.end_session(producer)
+    _, frozen = _freeze(broker, published)
+    stream = broker._receipt_audit(published)[0]["stream_id"]
+    original = storage[stream]
+    changed = json.loads(original[2])
+    changed[field] = value
+    storage[stream] = original[:2] + (_json_bytes(changed),)
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError, match=match):
+        _capture(broker, published, frozen)
+    assert _p6_effects(broker) == before
+    storage[stream] = original
+    _capture(broker, published, frozen)
+    assert broker._receipt_audit(published)[-1]["event"] == "CAPTURED"
+
+
+@pytest.mark.parametrize("route", ["capture", "open", "bindings", "consume"])
+def test_p6_equal_looking_cross_broker_handles_cannot_move_authority(route):
+    local = _p6_consumed()
+    foreign = _p6_consumed()
+    broker, published, frozen, captured, session, verified, bindings, _ = local
+    other, other_pub, other_frozen, other_captured, _, other_verified, other_bindings, _ = foreign
+    assert broker._receipt_audit(published) == other._receipt_audit(other_pub)
+    before = _p6_effects(broker), _p6_effects(other)
+    with pytest.raises(ValueError):
+        if route == "capture":
+            _capture(broker, other_pub, other_frozen)
+        elif route == "open":
+            broker.open_capture(session, other_captured)
+        elif route == "bindings":
+            broker.captured_bindings(session, frozen, other_verified,
+                consumer_node="consume", transition_nonce="foreign-consumed")
+        else:
+            broker._consume_binding(other_bindings, "bundle")
+    assert (_p6_effects(broker), _p6_effects(other)) == before
+
+
+def test_p6_new_broker_with_same_receipts_cannot_reconstruct_old_session():
+    storage, members = {}, {}
+    broker, published, _, frozen, captured, session, verified = _captured_flow(
+        receipt_store=storage, snapshot_storage=members)
+    restarted = _trust()._development_broker(receipt_store=storage, snapshot_storage=members)
+    before = _p6_effects(restarted)
+    with pytest.raises(ValueError):
+        restarted.open_capture(session, captured)
+    with pytest.raises(ValueError):
+        restarted.captured_bindings(session, frozen, verified,
+            consumer_node="consume", transition_nonce="restarted-consumed")
+    assert _p6_effects(restarted) == before
+    assert broker._receipt_audit(published)[-1]["event"] == "CAPTURED"
