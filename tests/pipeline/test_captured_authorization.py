@@ -1195,6 +1195,127 @@ def test_new_transaction_dependencies_refuse_one_surface_substitution(surface, m
     assert frozenset(broker._nonces) == before[3]
 
 
+_SIGNED_FIELDS = "issuance_basis_sha256 issuer_role key_usage signature_alg issued_at_ms not_before_ms expires_at_ms revocation_snapshot_sha256 key signature".split()
+_BATCH_FIELDS = {
+    "ports": "schema study_id execution_authority_ref logical_execution_id run_id subject_ref plan_evaluation_authorization_sha256 capture_expectation_set_sha256 broker_verified_plan_sha256 capture_admission_set_sha256 planned_entry_sha256 captured_port_authorization_sha256",
+    "receipts": "schema stream_id sequence previous_lifecycle_captured_receipt_sha256 study_id consumer_kind consumer_id execution_authority_ref logical_execution_id run_id subject_ref predecessor_publication_receipt_schema predecessor_publication_receipt_sha256 plan_evaluation_authorization_sha256 capture_expectation_set_sha256 broker_verified_plan_sha256 planned_capture_set_sha256 capture_admission_set_sha256 planned_entry_sha256 captured_port_authorization_sha256 actor_runtime_sha256 transition_nonce lifecycle_captured_receipt_sha256",
+    "set": "schema study_id execution_authority_ref logical_execution_id run_id subject_ref plan_evaluation_authorization_sha256 capture_expectation_set_sha256 broker_verified_plan_sha256 planned_capture_set_sha256 capture_admission_set_sha256 entries captured_authorization_set_sha256",
+    "replay": "schema study_id final_manifest_sha256 final_replay_admission_sha256 final_replay_entry_sha256 replay_id replay_intent_sha256 plan_evaluation_authorization_sha256 capture_expectation_set_sha256 broker_verified_plan_sha256 planned_capture_set_sha256 capture_admission_set_sha256 issued_ports captured_authorization_set_sha256 replay_capture_admission_evidence_sha256",
+}
+
+
+@pytest.fixture(scope="module")
+def committed_replay_batch():
+    return _issue_complete(replay=True, count=2)
+
+
+@pytest.mark.parametrize("slot,field", [(slot, field) for slot, names in _BATCH_FIELDS.items()
+                                       for field in (*names.split(), *_SIGNED_FIELDS)])
+@pytest.mark.parametrize("change", ["missing", "substituted", "resigned"])
+def test_every_emitted_field_is_closed_and_bound_independently(committed_replay_batch, slot, field, change):
+    graph, broker, captures, runtime, _before, record, _session = committed_replay_batch
+    audit = broker._p4_ledger._audit(record)
+    batch = {name: [json.loads(raw) for raw in audit[name]] for name in ("ports", "receipts", "bases")}
+    batch.update(set=json.loads(audit["set"]), replay=json.loads(audit["replay"]))
+    value = batch[slot][0] if slot in ("ports", "receipts") else batch[slot]
+    assert set(value) == set(_BATCH_FIELDS[slot].split()) | set(_SIGNED_FIELDS)
+    if change == "missing":
+        value.pop(field)
+    else:
+        original = value[field]
+        value[field] = (original + 1 if type(original) is int else
+                        {"substituted": "identity"} if type(original) is dict else
+                        [] if type(original) is list else "e" * 64)
+        if change == "resigned" and field not in ("issuer_role", "key_usage", "signature", _BATCH_FIELDS[slot].split()[-1]):
+            self_field = _BATCH_FIELDS[slot].split()[-1]
+            value.update(_resign_exact(value, self_field))
+    with pytest.raises((TypeError, ValueError)):
+        trust._P4_VERIFY_BYTES(trust._P4_CONTRACT, f4._json_bytes(batch), broker._p4_resolver, graph.selected,
+            audit["streams"], {key: val for key, val in runtime.items() if key != "transition_nonces"}, runtime["transition_nonces"])
+    assert broker._p4_ledger._audit(record) == audit
+    assert not broker._member_events
+
+
+@pytest.mark.parametrize("value", [None, "", "0" * 64, "A" * 64, "f" * 64])
+def test_first_v2_genesis_has_no_default_or_alternate_sentinel(committed_replay_batch, value):
+    graph, broker, _captures, runtime, _before, record, _session = committed_replay_batch
+    audit = broker._p4_ledger._audit(record)
+    batch = {name: [json.loads(raw) for raw in audit[name]] for name in ("ports", "receipts", "bases")}
+    batch.update(set=json.loads(audit["set"]), replay=json.loads(audit["replay"]))
+    receipt = batch["receipts"][0]
+    receipt["previous_lifecycle_captured_receipt_sha256"] = value
+    receipt.update(_resign_exact(receipt, "lifecycle_captured_receipt_sha256"))
+    with pytest.raises((TypeError, ValueError)):
+        trust._P4_VERIFY_BYTES(trust._P4_CONTRACT, f4._json_bytes(batch), broker._p4_resolver, graph.selected,
+            audit["streams"], {key: val for key, val in runtime.items() if key != "transition_nonces"}, runtime["transition_nonces"])
+
+
+@pytest.mark.parametrize("facade", ["direct", "verifier", "driver"])
+def test_legacy_capture_waits_for_the_same_lock_then_observes_p4_commit(facade):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from dskit.production.verifier import HistoricalStudyCaptureDriver, HistoricalStudyVerifier
+
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    published, frozen, port = captures[0]
+    verifier = HistoricalStudyVerifier(broker)
+    from tests.production.test_capture_lifecycle import _PLAN
+    verifier.bind(**_PLAN)
+    doorway = broker if facade == "direct" else verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier)
+    started, done = Event(), Event()
+
+    def loser():
+        started.set()
+        try:
+            doorway.capture(published, frozen, port, **{key: val for key, val in runtime.items() if key != "transition_nonces"},
+                            transition_nonce="legacy-loser")
+        except (TypeError, ValueError):
+            return "refused"
+        finally:
+            done.set()
+        return "incorrectly captured"
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with broker._p4_ledger._lock:
+            future = pool.submit(loser)
+            assert started.wait(timeout=5)
+            assert not done.is_set()
+            broker.authorize_capture_set(captures, graph.selected, **runtime)
+        assert future.result(timeout=5) == "refused"
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("point", ["preflight", "prepared", "commit-before", "commit-after", "return"])
+def test_legacy_capture_commits_receipt_session_and_claim_in_the_same_ledger(point):
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    ledger = broker._p4_ledger
+    ledger._test_fault = "legacy-" + point
+
+    def capture():
+        return broker.capture(*captures[0], **{key: val for key, val in runtime.items() if key != "transition_nonces"},
+                              transition_nonce="legacy-atomic")
+
+    with pytest.raises(RuntimeError, match="injected P4 legacy-"):
+        capture()
+    committed = point in ("commit-after", "return")
+    assert len(ledger._legacy_captures()) == int(committed)
+    assert not ledger._committed()
+    if not committed:
+        _assert_graph_no_effect(broker, captures, before)
+        assert "legacy-atomic" not in broker._nonces
+        capture()
+    assert len(ledger._legacy_captures()) == 1
+    with pytest.raises((TypeError, ValueError)):
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    with pytest.raises((TypeError, ValueError)):
+        capture()
+    assert len([event for event in broker._session_events if event[0] == "start" and event[1] == "consumer-run"]) == 1
+    assert [row["event"] for row in broker._receipt_audit(captures[0][0])].count("CAPTURED") == 1
+    assert not broker._member_events
+
+
 def _request():
     """Return a syntactically valid reference to an unavailable admission."""
     return {
