@@ -163,6 +163,17 @@ def test_captured_descriptor_in_params_refused():
         },
         {"env": {"secrets": {"$captured_artifact": "x"}}},
         {"splits": {"ratio": {"$captured_artifact": "x"}}},
+        {
+            "pipeline": {
+                "source": {
+                    "uses": "synthetic-frame",
+                    "artifact": {"$captured_artifact": "x"},
+                }
+            }
+        },
+        {"schedule": {"$captured_artifact": "x"}},
+        {"clock": {"$captured_artifact": "x"}},
+        {"walkforward": {"$captured_artifact": "x"}},
     ),
 )
 def test_captured_descriptor_in_forbidden_location_refused(sections):
@@ -288,6 +299,7 @@ def test_captured_descriptor_round_trips_and_is_hash_material():
 def test_captured_descriptor_mixed_type_key_refuses_without_crashing():
     descriptor = _descriptor()
     descriptor[123] = "int-key"
+    descriptor["forged"] = "string-key"
     with pytest.raises(ConfigError, match="unknown"):
         PipelineDocument.from_obj(_captured_input_document(descriptor))
 
