@@ -6,10 +6,21 @@
   "reviewer_model": "gpt-5.6-terra",
   "checks": [
     "13 new lookup/control tests pass in 1.85s",
-    "Trust suite: 178 passed, 1 failed in 0.85s"
+    "Trust suite: 178 passed, 1 failed in 0.85s",
+    "84 Packet6 tests passed in 2.25s after adding retained snapshot and P4 mid-operation mutation controls",
+    "Changed-file ruff and diff check pass"
   ],
   "failure": "Existing test_sealed_prepared_setattr_cannot_move_consumed_cas requires original verified artifact to remain usable after sealed.prepared slot substitution. New validator incorrectly trusts that mutable pointer for original producer identity and refuses.",
   "correction_approach": "Retain original prepared object alongside sealed handle and original output path in the SAME existing authenticated publication record. Operational and diagnostic identity checks use original prepared reference, so changing sealed.prepared cannot move authority or break retained original consumption. No new writer or ledger.",
   "next": "Correct retained original prepared reference, rerun affected trust tests/full focused suite.",
-  "deployment_eligible": false
+  "deployment_eligible": false,
+  "resolved": "Original prepared object retained in existing authenticated publication record. Trust suite179 passed0.71s. Existing prepared-pointer substitution retains original artifact and independent diagnostics.",
+  "candidate_status": "GREEN; fresh final lenses required",
+  "blobs": {
+    "dskit/pipeline/trust.py": "01def6e020d76abf383235e90d63c5cc73358b0a",
+    "tests/pipeline/test_trust.py": "9a64332d231dc79a20242620a3a34481fb0097dd",
+    "tests/pipeline/test_captured_authorization.py": "9f48aeef760375a52227bf0454949dfcaf2c6fc3",
+    "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json": "954ca33f67e58e9341bfebd3ef9a8b67bab145b7"
+  },
+  "full_focused": "pending"
 }

@@ -1198,7 +1198,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             self._publish_sealed,
             self._publish_sealed_intern,
             id(published),
-            (sealed, original_output),
+            (sealed, original_output, prepared),
         )
         self._store_interned(
             self._publish_stream,
@@ -1779,20 +1779,23 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("original output member identity mismatch")
         return path
 
-    def _publication_members(self, published):
-        """Resolve the authenticated sealed handle and original output path."""
+    def _publication_record(self, published):
+        """Resolve the original sealed, output-path and prepared association."""
         if type(published) is not _Published:
             raise ValueError("PUBLISHED token is required")
         record = self._load_interned(
             self._publish_sealed, self._publish_sealed_intern, id(published),
             "PUBLISHED token is required",
         )
-        if (type(record) is not tuple or len(record) != 2
+        if (type(record) is not tuple or len(record) != 3
                 or type(record[0]) is not _Sealed or type(record[1]) is not str
-                or type(record[0].prepared) is not _Prepared
-                or record[0].prepared.output_member != record[1]):
+                or type(record[2]) is not _Prepared
+                or record[2].output_member != record[1]):
             raise ValueError("published original output member mismatch")
         return record
+
+    def _publication_members(self, published):
+        return self._publication_record(published)[:2]
 
     def _sealed_for(self, published):
         return self._publication_members(published)[0]
@@ -1875,8 +1878,8 @@ class _DevelopmentBroker(LifecycleAuthority):
 
     def _diagnostic_stream_for_published(self, published):
         """Inspect retained committed evidence without recovering exposed storage."""
-        sealed, _ = self._publication_members(published)
-        stream = sealed.prepared.stream_id
+        _, _, prepared = self._publication_record(published)
+        stream = prepared.stream_id
         self._retained_publication_descriptor(published, stream)
         return stream
 
@@ -1895,8 +1898,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         root = {name: row[name] for name in ("root_ref", "root_id", "snapshot_version")}
         expected_stream = _digest(_canonical_bytes(
             {"producer": producer, "root": root, "purpose": pin.purpose}))
-        sealed, output_member = self._publication_members(published)
-        prepared = sealed.prepared
+        sealed, output_member, prepared = self._publication_record(published)
         if (expected_stream != stream or pin.stream_id != stream
                 or dict(pin.producer) != producer or dict(pin.root) != root
                 or pin.session_run_identity != rows[0]["actor_runtime"]["run_identity"]

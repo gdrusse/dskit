@@ -3307,9 +3307,9 @@ def test_p6_single_published_member_intern_mint_cannot_change_output(stage):
         captured, session = _capture(broker, published, frozen)
     if stage == "bindings":
         verified = broker.open_capture(session, captured)
-    sealed = broker._sealed_for(published)
+    sealed, _, prepared = broker._publication_record(published)
     _hmac_mint(broker, broker._publish_sealed, broker._publish_sealed_intern,
-              id(published), (sealed, "config.json"))
+              id(published), (sealed, "config.json", prepared))
     before = _p6_effects(broker)
     with pytest.raises(ValueError):
         if stage == "capture":
@@ -3378,3 +3378,21 @@ def test_p6_identical_complete_retained_descriptors_refuse_ambiguous_freeze():
     with pytest.raises(ValueError):
         broker.freeze_consumer_document(_consumer_document(descriptor), "consume", "bundle", "synthetic")
     assert _p6_effects(broker) == before
+
+
+def test_p6_descriptor_returns_retained_snapshot_after_mid_operation_mutation(monkeypatch):
+    broker = _trust()._development_broker()
+    _, published, _ = _publish(broker)
+    expected = broker.descriptor(published, "synthetic")
+    original = broker._publication_snapshot
+    observed = []
+
+    def snapshot(*args):
+        result = original(*args)
+        published.descriptor["purpose"] = "changed-after-validation"
+        observed.append(True)
+        return result
+
+    monkeypatch.setattr(broker, "_publication_snapshot", snapshot)
+    assert broker.descriptor(published, "synthetic") == expected
+    assert observed

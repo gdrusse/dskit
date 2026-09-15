@@ -1932,3 +1932,24 @@ def test_p6_p4_authorizes_exact_publication_with_same_prefix_sibling(monkeypatch
     publication = broker._receipt_audit(captures[0][0])[-1]
     assert audit["streams"][0] == publication["stream_id"]
     assert publication["producer_run_identity"] == "producer-run"
+
+
+def test_p6_p4_mid_operation_descriptor_poke_refuses_before_effects(monkeypatch):
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    original = broker._publication_snapshot
+    observed = []
+
+    def snapshot(*args):
+        result = original(*args)
+        if not observed:
+            captures[0][0].descriptor["purpose"] = "changed-after-validation"
+            observed.append(True)
+        return result
+
+    monkeypatch.setattr(broker, "_publication_snapshot", snapshot)
+    with pytest.raises(ValueError):
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert observed
+    assert not broker._p4_ledger._committed()
+    _assert_graph_no_effect(broker, captures, before)
