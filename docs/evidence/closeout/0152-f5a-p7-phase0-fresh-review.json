@@ -1,0 +1,21 @@
+{
+  "schema_version": "F5aDesignReview.v1",
+  "packet": "7-replay-tape-descriptors-slice1-fresh",
+  "candidate": "0151-f5a-p7-phase0-fresh.json",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "reviewer_id": "opencode-go/deepseek-v4-flash (fresh Phase 0 R1)",
+  "verdict": "conditional design blocked; 1 Critical + 3 Major",
+  "counts": {"critical": 1, "major": 3, "minor": 3, "nit": 1},
+  "findings": [
+    {"id": "C1", "severity": "Critical", "summary": "owned 'replay' kind has no registration path: trust.py is imported by nothing at package init; document.py would cycle with node.py; __init__.py (the kind-registration owner) is not in implementation_files. Defect family: unreachable class (F2 recurrence)."},
+    {"id": "M1", "severity": "Major", "summary": "parse rule is still string authority; class-ref spelling of the owned class bypasses the grammar in execution docs (they never reach plan's owned-role check)."},
+    {"id": "M2", "severity": "Major", "summary": "ReplayRun.run() returning an opaque ReplayTapeBinding fabricates the post-verification composed-tape capability; no broker injects CapturedBindings this slice."},
+    {"id": "M3", "severity": "Major", "summary": "'parse is the single enforcement point' is asserted, not established: trust.py _descriptor_from reads raw dicts, bypassing from_obj."}
+  ],
+  "clean": [
+    "ROLES addition breaks no conformance/synthetic census",
+    "plan-time stat_test-pattern refusal is reachable for non-execution docs",
+    "production 'replay' collision is registry-separated; purity holds"
+  ],
+  "recorded_at_utc": "2026-09-16T00:05:00.000000+00:00"
+}
