@@ -82,23 +82,42 @@ def _terminal_parent(terminal_class):
     return basis
 
 
-def _terminal_setup(terminal_class):
+def _terminal_setup(terminal_class, *, change_parent=False):
     _terminal_type("TerminalArtifactVerifier")
     fact = _terminal_fact(terminal_class)
-    parent = _terminal_parent(terminal_class)
-    parent_fact = {
-        "ref": {
-            "kind": "issuance-basis", "role": parent["issuer_role"],
-            "schema": parent["schema"], "sha256": parent["issuance_basis_sha256"],
-        }, "bytes": f4._json_bytes(parent),
-    }
-    broker = _factory()(fixture_facts={"artifacts": [fact, parent_fact]})
+    graph, _ = _complete_signed_graph()
+    name = "scope-intent" if terminal_class == "fixed-owner-policy" else "root-pis"
+    parent = graph.values[name + "/basis"]
+    if change_parent:
+        record = next(item for item in graph.facts["artifacts"] if item["ref"] == graph.refs[name])
+        value = json.loads(record["bytes"])
+        self_field = "historical_study_scope_intent_sha256" if name == "scope-intent" else "published_input_set_sha256"
+        value.pop(self_field)
+        value.pop("signature")
+        if name == "scope-intent":
+            value["candidate_inventory_sha256"] = "f" * 64
+        else:
+            value["entries"][0]["root_id"] = "f" * 64
+        value = _local_signed(value, self_field, value["issuer_role"], value["key_usage"])
+        record["ref"] = dict(record["ref"], sha256=value[self_field])
+        record["bytes"] = f4._json_bytes(value)
+    broker = _factory()(fixture_facts=graph.facts)
     resolver = broker._p4_resolver
     args = (
         resolver.snapshot(), f4._json_bytes(parent), terminal_class,
         f4._json_bytes(fact["ref"]), fact["bytes"],
     )
     return broker, resolver, args
+
+
+@pytest.mark.parametrize("terminal_class", [
+    "G1-dataset-authorization", "G2-dataset-authorization", "fixed-owner-policy",
+])
+def test_terminal_proof_rejects_resigned_parent_outside_exact_external_policy(terminal_class):
+    broker, resolver, args = _terminal_setup(terminal_class, change_parent=True)
+    with pytest.raises((TypeError, ValueError), match="policy|projection|parent"):
+        resolver._terminal.verify_terminal(*args)
+    assert not broker._session_events and not broker._member_events
 
 
 @pytest.mark.parametrize("terminal_class", [
