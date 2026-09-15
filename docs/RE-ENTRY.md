@@ -1,29 +1,43 @@
 # Re-entry
 
-## Current checkpoint: Packet 6 expanded Phase 0 review (2026-09-15)
+## Current checkpoint: Packet 6 exact-publication candidate under final review (2026-09-15)
 
-Task worktree `/home/russell/wt/f5a-remainder-20260915`, branch
-`codex/f5a-remainder-p6`, still based on Packet 5 main `0ec6671`.
-Main checkout is untouched; preserved source still `c489199`.
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p6`; main remains Packet 5 `0ec6671`. Dirty main checkout
+untouched; preserved source remains `c489199`. All work uses WSL2 and
+`PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python` from this task worktree.
+Owner authorized Terra (`gpt-5.6-terra`) independent reviewers; GPT-6 implements.
+At most one reviewer is active, and final lenses are fresh and sequential.
 
-Owner authorized `gpt-5.6-terra` for independent reviews in this session,
-superseding the GLM 5.3 request (unavailable here). Implementer is GPT-6.
-Matrix RR-001 correction committed as `befa80b`. Terra found RR-002 mutable
-published descriptor identity and RR-003 missing P4 facades; independent early
-convergence checkpoint is `0114`. Successor `0115` found RR-004 mutable
-post-capture artifact/port accessors and authorized the full retained handle
-graph correction; no owner/architecture decision is required.
+**Frozen candidate `7e2743b6a79942da62ed314df60576a1f7d4e727`.** Packet 6 now
+binds publication purpose and all descriptor fields to retained receipt/stream
+identity, retains original frozen ports and the verified member/port/artifact
+graph, and checks original output-member identity. Repeated lookup defects
+FA002/FA003 prompted the independent convergence checkpoint in `0124`:
+operational tokens resolve exact authenticated streams, descriptor lookup uses
+complete retained identities, and diagnostic audits use independent original
+prepared identity plus retained committed rows without recovering exposed storage.
+All mutable descriptor projections now use validated retained snapshots.
 
-Current matrix candidate `2f76623` binds publication/frozen/member/port/artifact
-identity through existing broker/view/intern ownership and lifecycle lock,
-including parent/path association, payload/audit, and one-shot read/consume
-state. A fresh Terra Phase 0 reviewer is checking that matrix. No runtime edits
-or new RED yet. Next unused evidence number: 0116 (fresh verdict).
+Phase 0 `0125` is clean in its reviewer addendum (C0/M0/minor1); the reviewer
+withdrew its unproven P4 race Major after tracing the final guards. That history
+is retained. RED `0126` proves same-prefix node/output/purpose collisions;
+GREEN/correction record `0127` records original-prepared compatibility and
+checks. **1528 focused tests pass (64.41s)**; explicit private-plan sentinel,
+changed-file Ruff, diff check, and full v1 receipt-byte baseline comparison pass.
+Code/test/matrix identities remain frozen across evidence-only appends.
 
-Next: retain the fresh verdict; only after zero Critical/Major, add meaningful
-RED tests for the complete corrected family, then GREEN, focused checks, two
-fresh sequential Terra final lenses, merge/push/verify/purge/wrap. Then P7/P8.
-R23 durability, whole F5a, F3/F5b remain open; deployment_eligible=false.
+Fresh correctness reviewer `/root/p6_lookup_final_correctness_terra` is running
+on `7e2743b`; tests/integration lens has NOT run on this candidate. Next unused
+evidence number: **0128**. Record that verdict; stop/return to Phase0 if a
+boundary-invalidating finding emerges, otherwise obtain the second fresh lens
+on the same candidate before batching any material corrections. Merge only
+with two clean completed final lenses and the required lock/evidence. Then
+fetch/merge --no-ff/push/verify/purge/wrap and continue Packets 7 and 8.
+
+Packet 7 and Packet 8/F5A-R23 remain open; no whole-F5a/F3/F5b or deployment
+closure. Packet 8 owner `0100` already chose the existing on-disk
+ChainLedger/JsonlLedger seam. No new owner decision has been needed.
 
 ## Current wrap: Packet 5 closed; Packet 6 Phase 0 in progress (2026-09-15)
 
