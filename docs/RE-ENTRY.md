@@ -1,5 +1,40 @@
 # Re-entry
 
+## Current wrap: Packet 8 design handed off; implementation stopped (2026-09-15)
+
+User requested Packet8 design only, then stop/wrap and a DeepSeek prompt.
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7`; preserve this unmerged design/checkpoint branch.
+Main remains `48ae2fb`; P5/P6 closed/merged. Dirty main checkout untouched;
+protected source remains `c489199`.
+
+**Design:**0138; independent Terra findings0139; corrections/owner gates0140;
+fresh Terra handoff review0141; nonce/fresh-state clarifications0142 at96c50ca;
+reviewer correction disposition0143 confirms those technical findings resolved.
+This is an owner-gated design handoff, NOT clean Phase0 or implementation ready.
+No runtime/test files changed and no tests rerun. JSON/diff checks passed.
+
+**Remaining decisions:** approve legacy verifier API migration; define the
+trusted issuer/authenticated binding of admission, capture authority and durable
+namespace; approve P8 implementation ahead of P7 or keep ordering. Bare public
+ledger injection was rejected: a fresh ledger would let the same admission spend
+again. No opaque wrapper/public factory may simply relocate that bypass.
+0100 already chooses ChainLedger/JsonlLedger; do not ask that technology choice
+again. Proposed metadata accessor remains nonauthorizing; no preflight promotion.
+After decisions: fresh clean Phase0, real synthetic RED/GREEN, two final lenses.
+
+**DeepSeek prompt:**
+[2026-09-15-deepseek-f5a-final-handoff.md](memos/2026-09-15-deepseek-f5a-final-handoff.md).
+It contains environment, completed work, exact pending gates, design, tests,
+review/merge instructions and scope limits. DeepSeek primary, Terra reviewers
+unless owner changes that. Never more than one active reviewer.
+
+P7 missing F3/replay interfaces remains0137; P8/R23/wholeF5a/F3/F5b stay open.
+No merge/purge for this blocked branch. Next unused evidence:0144.
+Approximate checkpoint minutes: design2.4, implementation0, tests0, review6.3,
+corrections1.4, wrap/integration1.0. Initial unmeasured reading excluded;
+0143 contains timing anchors/method. No deployment or environment changes.
+
 ## Current checkpoint: Packet 7 dependency; owner sequencing decision needed (2026-09-15)
 
 Task worktree `/home/russell/wt/f5a-remainder-20260915`, branch
