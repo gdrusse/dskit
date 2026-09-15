@@ -1,8 +1,8 @@
-"""Packet 4 capability and refusal boundaries from the approved Matrix v7.
+"""Packet 4 fixed capabilities and signed closure under approved Matrix v8.
 
-These initial RED cases cover the fixed factory, unresolvable admissions, and
-preservation of ordinary lifecycle behavior. They do not stand in for the
-required complete signed action/replay, transaction, or concurrency matrix.
+Real synthetic Ed25519 action/replay graphs exercise local recursive validation
+and opaque external anchors. Every successful verification still ends at the
+explicit atomic-issuance refusal; transaction/session/concurrency RED is later.
 """
 
 import copy

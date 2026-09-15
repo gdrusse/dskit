@@ -36,9 +36,11 @@ __all__ = [
     "LifecycleAuthority",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
     "ReleaseKeyring",
+    "TerminalArtifactVerifier",
     "TrustedClock",
     "TrustedRuntimeVerifier",
     "VerifiedCapture",
+    "VerifiedExternalArtifactAnchor",
 ]
 
 _MAKE = object()
@@ -1967,6 +1969,7 @@ _P4_ADMISSION_SCHEMAS = MappingProxyType({
     "final-replay-admission": "dskit.final-replay-admission/v1",
 })
 _P4_PENDING_TOKENS = set()
+_P4_PENDING_RESOLVER_TOKENS = set()
 _P4_ISSUED = WeakKeyDictionary()
 
 
@@ -2005,11 +2008,14 @@ def _p4_copy_facts(value, seen=None):
 
 
 class _FixedWormTrustedArtifactResolver(_Opaque):
-    """Hold copied hostile admission bytes; presence confers no trust."""
+    """Hold one immutable hostile-data snapshot and its fixed terminal root."""
 
-    __slots__ = ("_records",)
+    __slots__ = ("_records", "_snapshot", "_terminal", "__weakref__")
 
-    def __init__(self, fixture_facts):
+    def __init__(self, token, fixture_facts):
+        if token not in _P4_PENDING_RESOLVER_TOKENS:
+            raise TypeError("P4 resolver requires fixed broker construction")
+        _P4_PENDING_RESOLVER_TOKENS.remove(token)
         records = []
         facts = {"artifacts": []} if fixture_facts is None else _p4_copy_facts(fixture_facts)
         if type(facts) is not dict or set(facts) != {"artifacts"}:
@@ -2019,16 +2025,27 @@ class _FixedWormTrustedArtifactResolver(_Opaque):
         for entry in facts["artifacts"]:
             if type(entry) is not dict or set(entry) != {"ref", "bytes"}:
                 raise ValueError("P4 fixture artifact requires only ref and bytes")
-            key = _p4_reference_bytes(entry["ref"])
+            key = _p4_artifact_reference_bytes(entry["ref"])
             if type(entry["bytes"]) is not bytes:
                 raise TypeError("P4 fixture artifact must contain exact bytes")
-            parsed, raw = _load_canonical_json(entry["bytes"])
-            if type(parsed) is not dict or parsed.get("schema") != entry["ref"]["schema"]:
+            raw = entry["bytes"]
+            parsed = _hs_parse_canonical(raw)
+            external = key in _P4_EXTERNAL_BY_REF
+            if not external and entry["ref"]["schema"] != "dskit.final-replay-entry/v1" and (
+                type(parsed) is not dict or parsed.get("schema") != entry["ref"]["schema"]
+            ):
                 raise ValueError("P4 fixture artifact schema differs from reference")
             if any(previous == key for previous, _raw in records):
                 raise ValueError("duplicate P4 fixture reference")
             records.append((key, raw))
         object.__setattr__(self, "_records", tuple(records))
+        snapshot = object.__new__(_P4ResolverSnapshot)
+        object.__setattr__(snapshot, "_generation", 0)
+        terminal = object.__new__(_FixedTerminalArtifactVerifier)
+        object.__setattr__(self, "_snapshot", snapshot)
+        object.__setattr__(self, "_terminal", terminal)
+        _P4_RESOLVERS[self] = (self._records, snapshot, terminal, 0)
+        _P4_TERMINALS[terminal] = (self, snapshot, _P4_EXTERNAL_RECORDS)
 
     def __setattr__(self, name, value):
         raise AttributeError("P4 fixture resolver is frozen")
@@ -2039,6 +2056,29 @@ class _FixedWormTrustedArtifactResolver(_Opaque):
             if reference == key:
                 return raw
         raise ValueError("missing admission in fixed P4 fixture snapshot")
+
+    def snapshot(self):
+        """Return the same opaque immutable snapshot; never choose a generation."""
+        _p4_snapshot_integrity(self, self._snapshot)
+        return self._snapshot
+
+    def resolve(self, snapshot, exact_ref_bytes):
+        """Resolve exact retained bytes without granting trust or lifecycle use."""
+        return _P4_CHECKED_RESOLVE(self, snapshot, exact_ref_bytes)
+
+    def _checked_resolve(self, snapshot, exact_ref_bytes):
+        """Check issued identity/dispatch before reading the immutable records."""
+        _p4_snapshot_integrity(self, snapshot)
+        if type(exact_ref_bytes) is not bytes:
+            raise TypeError("exact P4 snapshot reference bytes required")
+        ref = _hs_parse_canonical(exact_ref_bytes)
+        if _p4_artifact_reference_bytes(ref) != exact_ref_bytes:
+            raise ValueError("P4 snapshot reference mismatch")
+        return _P4_RESOLVER_LOOKUP(self, exact_ref_bytes)
+
+    def close_admission(self, snapshot, admission_ref, live_projection):
+        """Verify recursive local/terminal evidence without creating authority."""
+        return _P4_CLOSE_ADMISSION(self, snapshot, admission_ref, live_projection)
 
 
 class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
@@ -2154,9 +2194,12 @@ def _p4_checked_dispatch(authority, captures, admission_ref, **runtime):
     nonces = runtime.pop("transition_nonces")
     _P4_REQUEST_CHECK(authority, captures, runtime, nonces)
     _P4_RESOLVER_LOOKUP(issued[0], key)
-    # A held byte match is data only. No record, nonce, admission, receipt,
-    # session, or member capability is created by this foundation increment.
-    raise ValueError("P4 complete artifact closure and atomic issuance are unavailable")
+    _P4_SNAPSHOT_INTEGRITY(issued[0], issued[0]._snapshot)
+    result = _P4_CLOSE_ADMISSION(issued[0], issued[0]._snapshot, admission_ref, (authority, captures, runtime))
+    _hs_refuse(result is None, "P4 unexpected closure result refused")
+    # Verification is not issuance. The ledger/batch/session increment remains
+    # explicitly absent and no nonce, receipt or admission is advanced here.
+    raise ValueError("P4 atomic issuance is unavailable")
 
 
 def _development_p4_broker(*, fixture_facts=None):
@@ -2166,9 +2209,9 @@ def _development_p4_broker(*, fixture_facts=None):
     ----------
     fixture_facts : dict or None
         Hostile data only: ``artifacts`` is a list of exact ``ref``/``bytes``
-        entries. References currently name action or replay admissions. Copied
-        canonical bytes confer no authority, and matching fixtures still refuse
-        until complete recursive verification and atomic issuance are supplied.
+        entries. References name closed ADR artifacts or fixed external corpus
+        identities. Copied bytes confer no authority. Even complete verified
+        closure refuses at the unavailable atomic-issuance boundary.
 
     Returns
     -------
@@ -2183,13 +2226,15 @@ def _development_p4_broker(*, fixture_facts=None):
         A fixture has aliases, unknown fields, duplicate references, or
         noncanonical artifact bytes.
     """
-    resolver = _FixedWormTrustedArtifactResolver(fixture_facts)
     token = object()
-    _P4_PENDING_TOKENS.add(token)
+    _P4_PENDING_RESOLVER_TOKENS.add(token)
     try:
+        resolver = _FixedWormTrustedArtifactResolver(token, fixture_facts)
+        _P4_PENDING_TOKENS.add(token)
         authority = _SyntheticP4CapturedAuthorizationAuthority(token, resolver)
     finally:
         _P4_PENDING_TOKENS.discard(token)
+        _P4_PENDING_RESOLVER_TOKENS.discard(token)
     _P4_ISSUED[authority] = (resolver, resolver._records)
     return authority
 
@@ -3342,35 +3387,1044 @@ class HistoricalStudyEnvelopePreflight:
             ),
         )
         for slot, envelope_name, role_slot in slots:
-            envelope = values[slot]
             role, usage = _HS_ROLE_USE[role_slot]
-            _hs_refuse(
-                envelope["issuer_role"] == role and envelope["key_usage"] == usage
+            self._verify_one_signed(
+                values[slot], _HS_SELF_FIELDS[envelope_name], role, usage, now_ms,
             )
-            _hs_refuse(
-                envelope["not_before_ms"]
-                <= envelope["issued_at_ms"]
-                <= envelope["expires_at_ms"]
+
+    def _verify_one_signed(self, envelope, self_field, role, usage, now_ms):
+        """Apply the shared exact signature/time/revocation check to one envelope."""
+        _hs_refuse(
+            envelope["issuer_role"] == role and envelope["key_usage"] == usage
+        )
+        _hs_refuse(
+            envelope["not_before_ms"]
+            <= envelope["issued_at_ms"]
+            <= envelope["expires_at_ms"]
+        )
+        _hs_refuse(envelope["not_before_ms"] <= now_ms <= envelope["expires_at_ms"])
+        preimage = _hs_self_digest(
+            envelope, self_field, signed=True
+        )
+        key = envelope["key"]
+        try:
+            verified = self._keyring.verify(
+                key["key_id"],
+                key["key_version"],
+                envelope["issued_at_ms"],
+                preimage,
+                envelope["signature"],
             )
-            _hs_refuse(envelope["not_before_ms"] <= now_ms <= envelope["expires_at_ms"])
-            preimage = _hs_self_digest(
-                envelope, _HS_SELF_FIELDS[envelope_name], signed=True
+            unrevoked = self._revocations.is_unrevoked(
+                envelope["revocation_snapshot_sha256"],
+                key["key_id"],
+                key["key_version"],
+                now_ms,
             )
-            key = envelope["key"]
-            try:
-                verified = self._keyring.verify(
-                    key["key_id"],
-                    key["key_version"],
-                    envelope["issued_at_ms"],
-                    preimage,
-                    envelope["signature"],
-                )
-                unrevoked = self._revocations.is_unrevoked(
-                    envelope["revocation_snapshot_sha256"],
-                    key["key_id"],
-                    key["key_version"],
-                    now_ms,
-                )
-            except BaseException as exc:
-                raise ValueError("signature or revocation refused") from exc
-            _hs_refuse(verified is True and unrevoked is True)
+        except BaseException as exc:
+            raise ValueError("signature or revocation refused") from exc
+        _hs_refuse(verified is True and unrevoked is True)
+
+
+class TerminalArtifactVerifier(ABC, _Opaque):
+    """Broker-held external proof authority, never a lifecycle writer.
+
+    Application callers cannot construct or select this capability. For example,
+    passing ``terminal_verifier=...`` to the fixed P4 factory is a TypeError.
+    Only the held resolver calls these verification methods on its exact issued
+    implementation; an arbitrary subclass supplies no accepted authority.
+    """
+
+    @abstractmethod
+    def verify_terminal(self, snapshot, parent_basis_bytes, terminal_class,
+                        terminal_ref_bytes, canonical_artifact_bytes):
+        """Return one opaque parent/snapshot-bound proof or refuse without effects."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def require_current(self, snapshot, anchors):
+        """Refuse unless every exact issued anchor remains current in this snapshot."""
+        raise NotImplementedError
+
+
+class VerifiedExternalArtifactAnchor(_Opaque):
+    """Nonconstructible, nonserializable external proof with no public payload.
+
+    This is neither admission nor session authority. For example,
+    ``VerifiedExternalArtifactAnchor()`` always raises TypeError; bytes or a
+    mapping can never reconstruct an issuer-registered proof.
+    """
+
+    __slots__ = ("_binding", "__weakref__")
+
+    def __new__(cls, *args, **kwargs):
+        """Refuse application construction of an external proof."""
+        raise TypeError("opaque external artifact anchor")
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse subclasses that could imitate an issued external proof."""
+        raise TypeError("external artifact anchor is final")
+
+    def __setattr__(self, name, value):
+        """Keep the issuer-owned binding immutable."""
+        raise TypeError("opaque external artifact anchor is frozen")
+
+
+class _P4ResolverSnapshot(_Opaque):
+    """Opaque generation identity; content stays in its one owning resolver."""
+
+    __slots__ = ("_generation", "__weakref__")
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("opaque P4 resolver snapshot")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("P4 resolver snapshot is final")
+
+    def __setattr__(self, name, value):
+        raise TypeError("P4 resolver snapshot is frozen")
+
+
+# These public keys and signatures authenticate a fixed external TEST corpus.
+# There is no production external JSON schema, private key, signing operation,
+# file/URL lookup, caller policy, or caller-supplied verification flag here.
+_P4_EXTERNAL_RECORDS = (
+    ("G1-dataset-authorization",
+     "dd0bf83208b54f2a8a91cb2871433de2d89671a6cfbc8168255dd63c2c7708b6",
+     "bc523a89d99cc79c966c0924aab985b513648d69bf7200d11287e685fa5ba47bd0"
+     "84ab2b8e12f14a8c395e749a8b71dae4e4fc46e76055e869885db6922bed04"),
+    ("G2-dataset-authorization",
+     "b9d715941f6876916d93d32b74e1420c75e8835cfb0d725b5f5aaae235998f9e",
+     "efe43b16ee67a049c0aa4485cb3993d789854fc362e1ac2ebb8f0219be9791c4ad7"
+     "d3d47c764b88fb2b2a2d68cfadc82fddef3e2fad9e788d4d44a84accefb08"),
+    ("fixed-owner-policy",
+     "d63a8be495af2120fdee26cc55bbc7cb8b24a1872049ad3bee37f112f2094010",
+     "13c00c529d67cb2cfb0fcc496338b0c96b575402520ba5691ca8bb77a661d636d4"
+     "558ffb548757b2f8e15b850e67712d44173a3090b37d6af849f8f0d080c50e"),
+)
+_P4_APPROVED_SCOPE_PROJECTIONS = (
+    "e61b568822008c9e9fcbe4f0149d39c3ec2b1196dab7d72caf593b1a848b811f",
+    "923fa789dc1051fd8576e6af8588d97731f890f6d1a0f1404494b345a4c566dc",
+)
+_P4_APPROVED_ROOT_PROJECTIONS = (
+    "f490ad52c7da54f3d7cffd898e30f535b69457e538ae0be5bb0f74dcc1cc5a0a",
+    "586acc5a7a76e2f1c429153a959243ce6c7feb02df4dd6ff3f68a46b3caf4930",
+)
+
+
+def _p4_external_record(record):
+    """Project one fixed external corpus identity, not an application schema."""
+    terminal_class, public_key, signature = record
+    raw = _hs_canonical_bytes("nondeployment " + terminal_class + " fixture")
+    ref = {
+        "kind": "external-authorization", "role": terminal_class,
+        "schema": "urn:dskit:synthetic-external:" + terminal_class,
+        "sha256": _digest(raw),
+    }
+    return _hs_canonical_bytes(ref), (terminal_class, raw, public_key, signature)
+
+
+_P4_EXTERNAL_BY_REF = MappingProxyType(dict(map(_p4_external_record, _P4_EXTERNAL_RECORDS)))
+_P4_RESOLVERS = WeakKeyDictionary()
+_P4_TERMINALS = WeakKeyDictionary()
+_P4_ANCHORS = WeakKeyDictionary()
+_P4_LOCAL_PUBLIC_KEYS = MappingProxyType({
+    "data-publisher/published-input-set-g1-g2":
+        "1e7d223f558e8866ef35747e04b497b50033f5f6c41bf5429001d55bbed6a46b",
+    "data-publisher/root-publication-g1-g2":
+        "0b1268e01671a347df2289ed03895daa2dd9482c05c7dc9f684033d0aa783d06",
+    "study-lifecycle/historical-study-scope-intent":
+        "e72f8c3779bb6e31e5745705d0b5271583ffc56fbf74d13a17fb9995e1da3ee3",
+    "study-lifecycle/capture-expectation":
+        "259b9f668b40276435b8084be7345e42915ae17ec31ba6620662367970348d4a",
+    "study-lifecycle/capture-admission":
+        "63de1932c89026c374795175c6573d0271e7ae8d6d2c8692fe4c71b56daacac1",
+    "study-lifecycle/action-execution-admission":
+        "4e396693b5ab841125ed11192eaef0f36e3a16fef69d760666983b05fe4bbb96",
+    "study-lifecycle/final-replay-admission":
+        "c2585433a163a3bb37d13f76fa6f36f79278172435dc7c7cdcbdb0f13088eac3",
+    "study-lifecycle/published-input-set-study":
+        "0554afffafcfba4de02f5102270bcdf10a52fba5b2faba2de7af2a2bfd8d45ab",
+    "study-lifecycle/historical-study-scope":
+        "9e348543c0c58c986905e08fa76f9208c1a497bc2412159bff52a060c08fc866",
+    "study-lifecycle/stage-admission":
+        "48b43d273878da3c376494beb6676462cfc62819d2e8599af0039a8bc3d5f756",
+    "study-lifecycle/study-stage-publication":
+        "e9738634184d44a55f6d3923ab523099fa262baa21117b3b55e307a639d85375",
+    "study-lifecycle/historical-study-manifest":
+        "04e48a6b9ae7a8dd315514b26ff2571b6833ee30657f51735fdf5774a50d87a8",
+    "security-broker/plan-evaluation":
+        "8a44a3d69c3a27a44b5d1c416e31af40de544db3862d790386ca3cb3989c3279",
+    "security-broker/plan-verifier":
+        "92e3b5e8c07782ac2237793a75360a7298c77736d5162666ffa864837b41469c",
+    "architecture-owner/architecture-gate":
+        "c1f4689a261efd16e06e7db013efd36c5e6366d6c644ab50a8819fef462b7c4c",
+    "security-owner/security-gate":
+        "20e65bde6046d0618593f9256bc6e54c9fb80083452f44f60225ca83e2cf9a99",
+    "data-owner/data-gate":
+        "3a7aed2cfd3e79b5f8f75cf2a710165a6f76da444a627dd7886e36c381d206e0",
+    "model-owner/model-gate":
+        "4d93d5aab502c2e5bd69988cbb586e3e0f842ffddc5cac1fe2d9bebec13b8465",
+    "risk-owner/risk-gate":
+        "2490bbd14dc85bc0aae98af2f980ac278eb8f0f12f0b933c03054f409f0430be",
+    "execution-owner/execution-gate":
+        "d8e43b5d30de038d8f0566f04bed6e100b0b9776577c06e3859de254583009c8",
+    "operations-owner/operations-gate":
+        "aa5a5479abac895605c9dd1d8e9d5911800786d76510e710eaa1c0cb1eeec607",
+    "research-owner/research-gate":
+        "6c1dfcf6e900191247d5b1c65d5c02f234c13e8605f9b422316e93edee2b25da",
+})
+
+
+def _p4_artifact_reference_bytes(ref):
+    """Validate closed local refs or an exact independently pinned external ref."""
+    _hs_refuse(type(ref) is dict and set(ref) == {"kind", "role", "schema", "sha256"})
+    _hs_refuse(all(type(value) is str and value for value in ref.values()))
+    _require_sha256(ref["sha256"], "P4 artifact")
+    raw = _hs_canonical_bytes(ref)
+    if raw in _P4_EXTERNAL_BY_REF:
+        return raw
+    schemas = set(_P4_ARTIFACT_SPECS) | {"dskit.issuance-basis/v1"}
+    _hs_refuse(ref["schema"] in schemas, "unknown P4 artifact schema or external terminal")
+    _hs_refuse(ref["kind"] != "external-authorization", "unknown external terminal")
+    return raw
+
+
+def _p4_fields(*, hashes="", strings="", numbers="", **extra):
+    """Build only the explicit ADR field table; no field is inferred from data."""
+    return {**dict.fromkeys(hashes.split(), "H"), **dict.fromkeys(strings.split(), "S"),
+            **dict.fromkeys(numbers.split(), "I"), **extra}
+
+
+_P4_PUBLICATION_FACTS = _p4_fields(
+    hashes="member_manifest_sha256 producer_document_sha256",
+    strings="root_ref root_id snapshot_version producer_run_identity producer_node producer_output",
+)
+_P4_TUPLE_FIELDS = _p4_fields(hashes="plan_evaluation_authorization_sha256 capture_expectation_set_sha256 "
+    "broker_verified_plan_sha256 plan_sha256 planned_capture_set_sha256 capture_admission_set_sha256")
+_P4_EXECUTION_REF = {
+    "kind": ("literal", "action"), "action_execution_admission_sha256": "H",
+}
+_P4_SHAPES = {
+    **_HS_SHAPES,
+    "BasisRef": _p4_fields(strings="kind role schema", hashes="sha256"),
+    "ExecutionRef": _P4_EXECUTION_REF,
+    "RootPublicationRef": {"kind": ("literal", "dataset-capture"), "dataset_capture_authorization_sha256": "H"},
+    "StagePublicationRef": {"kind": ("literal", "study-stage"), "historical_study_stage_admission_sha256": "H"},
+    "RootReceipt": {
+        "schema": ("literal", "dskit.root-publication-receipt/v1"),
+        "kind": ("literal", "dataset-capture"), "capture_kind": ("literal", "source-roster", "raw-event-dataset"),
+        "publication_authorization_ref": ("shape", "RootPublicationRef"),
+        **_P4_PUBLICATION_FACTS, **_HS_SIGNED_SUFFIX, "root_publication_receipt_sha256": "H",
+    },
+    "StageReceipt": {
+        "schema": ("literal", "dskit.lifecycle-publication-receipt/v2"), "kind": ("literal", "study-stage"),
+        "study_id": "S", "action_id": "ActionId", "execution_authority_ref": ("shape", "ExecutionRef"),
+        "logical_execution_id": "S", "run_id": "S", "publication_authorization_ref": ("shape", "StagePublicationRef"),
+        **_P4_PUBLICATION_FACTS, **_HS_SIGNED_SUFFIX, "lifecycle_publication_receipt_sha256": "H",
+    },
+    "Gate": {
+        "schema": ("literal", "dskit.gate-evidence-ref/v1"),
+        **_p4_fields(strings="gate owner_role key_purpose", hashes="scope_intent_sha256 evidence_sha256 approved_identity_sha256 gate_evidence_ref_sha256"),
+        **_HS_SIGNED_SUFFIX,
+    },
+    "Bootstrap": {
+        "action_id": "ActionId", "action_intent_sha256": "H", "consumer_document_contract_sha256": "H",
+        "authority_ref": "AuthorityRef", **_P4_TUPLE_FIELDS,
+    },
+    "PredecessorPublication": {
+        **_HS_SHAPES["PredecessorOutputRef"], "published_input": ("shape", "PublishedInputEntry"),
+    },
+    "Stage": {
+        "schema": ("literal", "dskit.historical-study-stage-admission/v1"),
+        **_p4_fields(strings="study_id", numbers="topological_position", hashes="scope_authorization_sha256 scope_intent_sha256 "
+                    "action_intent_sha256 consumer_document_contract_sha256 consumer_document_sha256 closed_parameters_sha256 "
+                    "component_manifest_sha256 candidate_selection_sha256 historical_study_stage_admission_sha256"),
+        "action_id": "ActionId", "predecessor_publications": ("array", "PredecessorPublication"),
+        "required_inputs": ("array", "PlannedCaptureEntry"), "output_contract": ("shape", "OutputContract"),
+        **_P4_TUPLE_FIELDS, **_HS_SIGNED_SUFFIX,
+    },
+    "FinalEntry": {
+        **_p4_fields(hashes="replay_intent_sha256 consumer_document_sha256 environment_identity_sha256 execution_profile_sha256 "
+                    "component_manifest_sha256 crash_schedule_sha256 final_replay_entry_sha256"),
+        "replay_id": ("literal", "control", "crash-restart"), "required_inputs": ("array", "PlannedCaptureEntry"),
+        **_P4_TUPLE_FIELDS,
+    },
+    "StageOutput": {
+        "producer_action_id": "ActionId", **_p4_fields(strings="producer_output_id output_schema",
+        hashes="publication_identity_sha256 historical_study_stage_admission_sha256"),
+        "published_input": ("shape", "PublishedInputEntry"),
+    },
+    "PlannedSet": {
+        "schema": ("literal", "dskit.planned-capture-set/v1"), "study_id": "S",
+        "subject_ref": ("union", "ActionSubject", "ReplaySubject"),
+        "entries": ("array", "PlannedCaptureEntry"), "planned_capture_set_sha256": "H",
+    },
+}
+_P4_SHAPES["ScopeAuthorization"] = {
+    **{key: value for key, value in _HS_ENVELOPES["ScopeIntent"].items()
+       if key not in ("schema", "historical_study_scope_intent_sha256")},
+    "schema": ("literal", "dskit.historical-study-scope-authorization/v2"),
+    "scope_intent_sha256": "H", "bootstrap_artifacts": ("array", "Bootstrap"), "gates": ("array", "Gate"),
+    "gate_set_sha256": "H", "historical_study_scope_authorization_sha256": "H", **_HS_SIGNED_SUFFIX,
+}
+_P4_SHAPES["FinalManifest"] = {
+    "schema": ("literal", "dskit.historical-study-manifest/v2"), "study_id": "S",
+    **_p4_fields(hashes="scope_authorization_sha256 scope_intent_sha256 published_input_set_sha256 gate_set_sha256 "
+                "environment_identity_sha256 execution_profile_sha256 component_manifest_sha256 historical_study_manifest_sha256"),
+    "gates": ("array", "Gate"), "stage_admissions": ("array", "Stage"), "stage_outputs": ("array", "StageOutput"),
+    "release_output": ("shape", "StageOutput"), "replay_entries": ("array", "FinalEntry"), **_HS_SIGNED_SUFFIX,
+}
+_P4_ARTIFACT_SPECS = {
+    _HS_ENVELOPES[name]["schema"][1]: (kind, _HS_SELF_FIELDS[name], role, usage,
+                                    {**_HS_ENVELOPES[name], **_HS_SIGNED_SUFFIX})
+    for name, kind, role, usage in (
+        ("PublishedInputSet", "pis", "", ""),
+        ("ScopeIntent", "scope-intent", "study-lifecycle", "historical-study-scope-intent"),
+        ("CES", "ces", "study-lifecycle", "capture-expectation"),
+        ("PEA", "pea", "security-broker", "plan-evaluation"),
+        ("BVP", "bvp", "security-broker", "plan-verifier"),
+        ("CAS", "cas", "study-lifecycle", "capture-admission"),
+        ("ActionAdmission", "action-execution-admission", "study-lifecycle", "action-execution-admission"),
+        ("ReplayAdmission", "final-replay-admission", "study-lifecycle", "final-replay-admission"),
+    )
+}
+for _p4_name, _p4_schema, _p4_kind, _p4_self, _p4_role, _p4_usage in (
+    ("RootReceipt", "root-publication-receipt/v1", "root-publication", "root_publication_receipt_sha256", "data-publisher", "root-publication-g1-g2"),
+    ("StageReceipt", "lifecycle-publication-receipt/v2", "stage-publication", "lifecycle_publication_receipt_sha256", "study-lifecycle", "study-stage-publication"),
+    ("Gate", "gate-evidence-ref/v1", "gate-evidence", "gate_evidence_ref_sha256", "", ""),
+    ("ScopeAuthorization", "historical-study-scope-authorization/v2", "scope-authorization", "historical_study_scope_authorization_sha256", "study-lifecycle", "historical-study-scope"),
+    ("Stage", "historical-study-stage-admission/v1", "stage-admission", "historical_study_stage_admission_sha256", "study-lifecycle", "stage-admission"),
+    ("FinalManifest", "historical-study-manifest/v2", "final-manifest", "historical_study_manifest_sha256", "study-lifecycle", "historical-study-manifest"),
+    ("ActionIntent", "action-intent/v1", "action-intent", "action_intent_sha256", "study-lifecycle", None),
+    ("ReplayIntent", "replay-intent/v1", "replay-intent", "replay_intent_sha256", "study-lifecycle", None),
+    ("PlannedSet", "planned-capture-set/v1", "planned-capture-set", "planned_capture_set_sha256", "security-broker", None),
+    ("FinalEntry", "final-replay-entry/v1", "final-replay-entry", "final_replay_entry_sha256", "study-lifecycle", None),
+):
+    _P4_ARTIFACT_SPECS["dskit." + _p4_schema] = (_p4_kind, _p4_self, _p4_role, _p4_usage, _P4_SHAPES[_p4_name])
+
+
+def _p4_validate_object(value, fields):
+    """Use existing scalar/union validators with explicit additional ADR shapes."""
+    _hs_refuse(type(value) is dict and set(value) == set(fields), "P4 artifact field closure refused")
+    for key, spec in fields.items():
+        item = value[key]
+        if type(spec) is str and spec in _P4_SHAPES:
+            _p4_validate_object(item, _P4_SHAPES[spec])
+        elif type(spec) is tuple and spec[0] == "shape" and spec[1] in _P4_SHAPES:
+            _p4_validate_object(item, _P4_SHAPES[spec[1]])
+        elif type(spec) is tuple and spec[0] == "array" and spec[1] in _P4_SHAPES:
+            _hs_refuse(type(item) is list)
+            for child in item:
+                _p4_validate_object(child, _P4_SHAPES[spec[1]])
+        else:
+            _hs_validate_spec(item, spec)
+
+
+class _FixedP4VerificationKeyring(ReleaseKeyring):
+    """Fixed nondeployment Ed25519 verification keys; no key registration route."""
+
+    def verify(self, key_id, key_version, issued_at_ms, preimage, signature):
+        if type(key_id) is not str or key_id not in _P4_LOCAL_PUBLIC_KEYS or type(key_version) is not int or key_version != 1:
+            return False
+        value = _hs_parse_canonical(preimage)
+        if key_id != value["issuer_role"] + "/" + value["key_usage"] or issued_at_ms != value["issued_at_ms"]:
+            return False
+        _p4_verify_ed25519(_P4_LOCAL_PUBLIC_KEYS[key_id], preimage, signature)
+        return True
+
+
+class _FixedP4VerificationRevocations(HistoricalStudyRevocations):
+    """One authenticated immutable synthetic revocation generation."""
+
+    def is_unrevoked(self, snapshot_sha256, key_id, key_version, now_ms):
+        return (snapshot_sha256 == _digest(b"p4-fixed-revocations") and key_id in _P4_LOCAL_PUBLIC_KEYS
+                and type(key_version) is int and key_version == 1 and type(now_ms) is int and now_ms == 500)
+
+
+class _FixedP4VerificationClock(TrustedClock):
+    """Read one immutable synthetic verification instant without lifecycle effects."""
+
+    def __init__(self, start_ms=500):
+        if type(start_ms) is not int or start_ms != 500:
+            raise TypeError("fixed P4 verification instant required")
+
+    def now_ms(self):
+        return 500
+
+
+_P4_SHARED_SIGNATURE = HistoricalStudyEnvelopePreflight._verify_one_signed
+_P4_VERIFICATION = HistoricalStudyEnvelopePreflight(
+    _FixedP4VerificationKeyring(), _FixedP4VerificationClock(), _FixedP4VerificationRevocations(),
+)
+
+
+def _p4_verify_local_signed(value, self_field, role, usage):
+    """Invoke the same Packet 3 trust check with construction-owned dependencies."""
+    now_ms = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+    _P4_SHARED_SIGNATURE(_P4_VERIFICATION, value, self_field, role, usage, now_ms)
+    _hs_refuse(value["issued_at_ms"] <= now_ms, "P4 future artifact issuance refused")
+
+
+def _p4_verify_ed25519(public_key, raw, signature):
+    """Verify with a fixed key; no import or algorithm name comes from evidence."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    try:
+        _hs_refuse(type(signature) is str and re.fullmatch(r"[0-9a-f]{128}", signature) is not None)
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(public_key)).verify(
+            bytes.fromhex(signature), raw,
+        )
+    except Exception as exc:
+        raise ValueError("P4 signature verification refused") from exc
+
+
+def _p4_verify_terminal_basis(raw):
+    """Verify a terminal-parent basis through the shared local trust check."""
+    value = _hs_parse_canonical(raw)
+    _hs_refuse(type(value) is dict)
+    role_use = {
+        "root-pis": ("data-publisher", "published-input-set-g1-g2"),
+        "root-publication": ("data-publisher", "root-publication-g1-g2"),
+        "scope-intent": ("study-lifecycle", "historical-study-scope-intent"),
+    }.get(value.get("kind"))
+    _hs_refuse(role_use is not None, "terminal parent basis kind refused")
+    return _p4_basis(raw, value["kind"], *role_use)
+
+class _FixedTerminalArtifactVerifier(TerminalArtifactVerifier):
+    """Verify a fixed authenticated external test corpus, never lifecycle state."""
+
+    __slots__ = ()
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("terminal capability requires fixed broker construction")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("fixed terminal verifier is final")
+
+    def verify_terminal(self, snapshot, parent_basis_bytes, terminal_class,
+                        terminal_ref_bytes, canonical_artifact_bytes):
+        """Authenticate the exact external object and its signed parent position."""
+        issued = _P4_TERMINALS.get(self)
+        _hs_refuse(issued is not None, "terminal capability is unregistered")
+        resolver, expected_snapshot, corpus = issued
+        _hs_refuse(resolver._terminal is self, "terminal broker/root identity refused")
+        _p4_snapshot_integrity(resolver, snapshot)
+        _hs_refuse(snapshot is expected_snapshot and corpus is _P4_EXTERNAL_RECORDS)
+        _hs_refuse(type(terminal_ref_bytes) is bytes and type(canonical_artifact_bytes) is bytes)
+        expected = _P4_EXTERNAL_BY_REF.get(terminal_ref_bytes)
+        _hs_refuse(expected is not None and type(terminal_class) is str)
+        expected_class, raw, public_key, signature = expected
+        _hs_refuse(terminal_class == expected_class and canonical_artifact_bytes == raw)
+        _hs_refuse(_P4_CHECKED_RESOLVE(resolver, snapshot, terminal_ref_bytes) == raw)
+        parent = _p4_verify_terminal_basis(parent_basis_bytes)
+        parent_ref = _hs_canonical_bytes({
+            "kind": "issuance-basis", "role": parent["issuer_role"],
+            "schema": parent["schema"], "sha256": parent["issuance_basis_sha256"],
+        })
+        _hs_refuse(_P4_CHECKED_RESOLVE(resolver, snapshot, parent_ref) == parent_basis_bytes)
+        parent_refs = [_hs_canonical_bytes(ref) for ref in parent["refs"]]
+        _hs_refuse(parent_refs.count(terminal_ref_bytes) == 1)
+        classes = [
+            _P4_EXTERNAL_BY_REF[ref][0] for ref in parent_refs if ref in _P4_EXTERNAL_BY_REF
+        ]
+        required = (["fixed-owner-policy"] if parent["kind"] == "scope-intent" else
+                    ["G1-dataset-authorization", "G2-dataset-authorization"])
+        _hs_refuse(sorted(classes) == required, "terminal parent class/cardinality refused")
+        certificate = _p4_terminal_certificate(terminal_class, raw)
+        _p4_verify_ed25519(public_key, certificate, signature)
+        parents = _p4_terminal_parent_projection(resolver, snapshot, parent)
+        binding = (
+            self, resolver, snapshot, corpus, parent_basis_bytes, terminal_ref_bytes,
+            _digest(raw), terminal_class, "fixed-nondeployment-policy/v1",
+            public_key, signature, 500, (0, 1000), _digest(b"p4-fixed-revocations"),
+            parents, _digest(certificate), _hs_parse_canonical(terminal_ref_bytes)["sha256"], 0,
+        )
+        anchor = object.__new__(VerifiedExternalArtifactAnchor)
+        object.__setattr__(anchor, "_binding", binding)
+        _P4_ANCHORS[anchor] = binding
+        return anchor
+
+    def require_current(self, snapshot, anchors):
+        """Check exact proof issuance and fixed trusted generation without spending."""
+        issued = _P4_TERMINALS.get(self)
+        _hs_refuse(issued is not None, "terminal capability is unregistered")
+        _hs_refuse(issued[0]._terminal is self, "terminal broker/root identity refused")
+        _p4_snapshot_integrity(issued[0], snapshot)
+        _hs_refuse(type(anchors) is tuple and len({id(anchor) for anchor in anchors}) == len(anchors))
+        for anchor in anchors:
+            _hs_refuse(type(anchor) is VerifiedExternalArtifactAnchor)
+            binding = _P4_ANCHORS.get(anchor)
+            _hs_refuse(binding is not None and anchor._binding is binding)
+            _hs_refuse(binding[0] is self and binding[2] is snapshot and binding[-1] == 0)
+            _hs_refuse(binding[3] is _P4_EXTERNAL_RECORDS)
+            parent = _p4_verify_terminal_basis(binding[4])
+            _hs_refuse(binding[14] == _p4_terminal_parent_projection(issued[0], snapshot, parent),
+                       "terminal parent verification generation refused")
+
+
+_P4_CHECKED_RESOLVE = _FixedWormTrustedArtifactResolver._checked_resolve
+_P4_RESOLVER_METHODS = (
+    _FixedWormTrustedArtifactResolver.snapshot,
+    _FixedWormTrustedArtifactResolver.resolve,
+    _P4_CHECKED_RESOLVE,
+)
+_P4_TERMINAL_METHODS = (
+    _FixedTerminalArtifactVerifier.verify_terminal,
+    _FixedTerminalArtifactVerifier.require_current,
+)
+
+
+def _p4_snapshot_integrity(resolver, snapshot):
+    """Check the construction-owned graph before any resolver or proof action."""
+    _hs_refuse(_p4_snapshot_integrity is _P4_SNAPSHOT_INTEGRITY and
+               _p4_fixed_integrity is _P4_FIXED_INTEGRITY, "P4 fixed dispatch integrity refused")
+    _P4_FIXED_INTEGRITY()
+    _hs_refuse(type(resolver) is _FixedWormTrustedArtifactResolver, "P4 snapshot integrity refused")
+    pin = _P4_RESOLVERS.get(resolver)
+    _hs_refuse(pin is not None, "P4 snapshot capability is unregistered")
+    records, expected, terminal, generation = pin
+    terminal_pin = _P4_TERMINALS.get(terminal)
+    _hs_refuse(terminal_pin is not None and terminal_pin[0] is resolver
+               and terminal_pin[1] is snapshot and terminal_pin[2] is _P4_EXTERNAL_RECORDS,
+               "P4 terminal root integrity refused")
+    _hs_refuse(
+        resolver._records is records and resolver._snapshot is expected
+        and snapshot is expected and type(snapshot) is _P4ResolverSnapshot
+        and type(snapshot._generation) is int and type(generation) is int and snapshot._generation == generation == 0
+        and resolver._terminal is terminal and type(terminal) is _FixedTerminalArtifactVerifier
+        and not terminal.__dict__
+        and tuple(getattr(type(resolver), name) for name in (
+            "snapshot", "resolve", "_checked_resolve",
+        )) == _P4_RESOLVER_METHODS
+        and tuple(getattr(type(terminal), name) for name in (
+            "verify_terminal", "require_current",
+        )) == _P4_TERMINAL_METHODS,
+        "P4 snapshot integrity refused",
+    )
+
+
+def _p4_basis(raw, kind, role, usage):
+    """Verify one exact signed basis with the shared Packet 3 trust primitive."""
+    value = _hs_parse_canonical(raw)
+    fields = {name: spec for name, spec in _HS_SIGNED_SUFFIX.items() if name != "issuance_basis_sha256"}
+    fields.update(schema=("literal", "dskit.issuance-basis/v1"), kind="S", study_id="S",
+                  refs=("array", "BasisRef"), issuance_basis_sha256="H")
+    _p4_validate_object(value, fields)
+    _hs_refuse(value["kind"] == kind and value["study_id"] == "synthetic-study", "P4 basis kind/study refused")
+    _hs_strict_sorted(value["refs"], lambda ref: tuple(ref[key] for key in ("kind", "role", "schema", "sha256")))
+    for ref in value["refs"]:
+        _p4_artifact_reference_bytes(ref)
+        _hs_refuse(ref["sha256"] != value["issuance_basis_sha256"], "P4 self-referential basis refused")
+    _p4_verify_local_signed(value, "issuance_basis_sha256", role, usage)
+    return value
+
+
+def _p4_identity(value, schema):
+    """Select closed kind/role/use from a known schema, never from supplied trust."""
+    kind, self_field, role, usage, fields = _P4_ARTIFACT_SPECS[schema]
+    if kind == "pis":
+        phase = value["phase"]
+        kind, role, usage = {
+            "root-g1-g2": ("root-pis", "data-publisher", "published-input-set-g1-g2"),
+            "stage-consumer": ("stage-pis", "study-lifecycle", "published-input-set-study"),
+            "replay-consumer": ("replay-pis", "study-lifecycle", "published-input-set-study"),
+        }[phase]
+    elif kind == "gate-evidence":
+        owners = ("architecture", "security", "data", "model", "risk", "execution", "operations", "research")
+        _hs_refuse(value["gate"] in tuple("G" + str(index) for index in range(8)), "unknown P4 gate")
+        owner = owners[int(value["gate"][1])]
+        role, usage = owner + "-owner", owner + "-gate"
+        _hs_refuse(value["owner_role"] == role and value["key_purpose"] == usage)
+    return kind, self_field, role, usage, fields
+
+
+def _p4_closed_edges(scope):
+    """Resolve declared predecessor contracts bijectively; never invent an edge."""
+    edges = []
+    for action in scope["action_intents"]:
+        for contract in action["required_input_contracts"]:
+            if contract["source_kind"] != "predecessor-output":
+                continue
+            matches = [ref for ref in action["predecessor_output_refs"]
+                       if all(ref[key] == contract[key] for key in ("output_schema", "output_version", "purpose"))]
+            _hs_refuse(len(matches) == 1, "ambiguous P4 predecessor edge")
+            edges.append({"consumer_action_id": action["action_id"], "binding_id": contract["binding_id"], **matches[0]})
+    edges.sort(key=lambda edge: _hs_tuple_key(*(edge[key] for key in (
+        "consumer_action_id", "binding_id", "predecessor_action_id", "output_name", "output_schema", "output_version", "purpose",
+    ))))
+    _hs_refuse(_digest(_hs_canonical_bytes(edges)) == scope["edge_set_sha256"], "P4 declared edge digest differs")
+    return edges
+
+
+def _p4_close_admission(resolver, snapshot, admission_ref, live_projection):
+    """Close a held signed graph and live PCE projection without any writer effect."""
+    _p4_snapshot_integrity(resolver, snapshot)
+    refs = [_hs_parse_canonical(key) for key, _raw in resolver._records]
+    verified, active, anchors = {}, set(), []
+
+    def find(kind, digest):
+        matches = [ref for ref in refs if ref["kind"] == kind and ref["sha256"] == digest]
+        _hs_refuse(len(matches) == 1, "P4 closure requires one exact referenced artifact")
+        return matches[0]
+
+    def get(kind, digest):
+        return visit(find(kind, digest))
+
+    def receipt_ref(entry):
+        kind = {"dskit.root-publication-receipt/v1": "root-publication",
+                "dskit.lifecycle-publication-receipt/v2": "stage-publication"}[entry["publication_receipt_schema"]]
+        return find(kind, entry["publication_receipt_sha256"])
+
+    def subject_ref(value):
+        subject = value.get("subject_ref", value)
+        if "action_intent_sha256" in subject:
+            return find("action-intent", subject["action_intent_sha256"])
+        return find("replay-intent", subject["replay_intent_sha256"])
+
+    def pis_ref(digest):
+        matches = [ref for ref in refs if ref["kind"] in ("root-pis", "stage-pis", "replay-pis") and ref["sha256"] == digest]
+        _hs_refuse(len(matches) == 1, "P4 closure requires exact PIS identity")
+        return matches[0]
+
+    def tuple_refs(value):
+        return [find(kind, value[field]) for kind, field in (
+            ("pea", "plan_evaluation_authorization_sha256"), ("ces", "capture_expectation_set_sha256"),
+            ("bvp", "broker_verified_plan_sha256"), ("cas", "capture_admission_set_sha256"),
+        )]
+
+    def gate_refs(intent_digest, set_digest):
+        candidates = []
+        for ref in refs:
+            if ref["kind"] != "gate-evidence":
+                continue
+            value = _hs_parse_canonical(_P4_CHECKED_RESOLVE(resolver, snapshot, _hs_canonical_bytes(ref)))
+            if value.get("scope_intent_sha256") == intent_digest:
+                candidates.append((ref, value))
+        candidates.sort(key=lambda item: item[1].get("gate", ""))
+        _hs_refuse([value.get("gate") for _ref, value in candidates] == ["G" + str(index) for index in range(8)])
+        _hs_refuse(_digest(_hs_canonical_bytes([value for _ref, value in candidates])) == set_digest, "P4 gate set digest refused")
+        return [ref for ref, _value in candidates]
+
+    def external_refs(classes):
+        return [_hs_parse_canonical(key) for key, record in _P4_EXTERNAL_BY_REF.items() if record[0] in classes]
+
+    def dependencies(kind, value):
+        if kind == "root-publication":
+            return external_refs(("G1-dataset-authorization", "G2-dataset-authorization"))
+        if kind == "root-pis":
+            return external_refs(("G1-dataset-authorization", "G2-dataset-authorization")) + [receipt_ref(entry) for entry in value["entries"]]
+        if kind in ("stage-pis", "replay-pis"):
+            scopes = [ref for ref in refs if ref["kind"] == "scope-authorization"]
+            _hs_refuse(len(scopes) == 1, "P4 PIS requires unique held scope")
+            _hs_refuse(all(entry["publication_receipt_schema"] == "dskit.lifecycle-publication-receipt/v2" for entry in value["entries"]))
+            publications = [receipt_ref(entry) for entry in value["entries"]]
+            predecessors = []
+            if kind == "stage-pis":
+                for publication in publications:
+                    receipt = visit(publication)
+                    predecessor = find("stage-admission", receipt["publication_authorization_ref"]["historical_study_stage_admission_sha256"])
+                    if predecessor not in predecessors:
+                        predecessors.append(predecessor)
+            return scopes + predecessors + publications
+        if kind == "scope-intent":
+            return [pis_ref(value["published_input_set_sha256"])] + external_refs(("fixed-owner-policy",))
+        if kind == "gate-evidence":
+            return [find("scope-intent", value["scope_intent_sha256"])]
+        if kind == "ces":
+            return [pis_ref(value["published_input_set_sha256"]), subject_ref(value)]
+        if kind == "pea":
+            result = [pis_ref(value["published_input_set_sha256"]), find("ces", value["capture_expectation_set_sha256"]), subject_ref(value)]
+            authority = value["authority_ref"]
+            if authority["kind"] == "scope-intent-gate-set":
+                return result + gate_refs(authority["scope_intent_sha256"], authority["gate_set_sha256"])
+            return result + [find("scope-authorization", authority["scope_authorization_sha256"])]
+        if kind == "bvp":
+            ces = get("ces", value["capture_expectation_set_sha256"])
+            return [find("pea", value["plan_evaluation_authorization_sha256"]), find("ces", value["capture_expectation_set_sha256"]),
+                    pis_ref(ces["published_input_set_sha256"]), subject_ref(value)]
+        if kind == "cas":
+            return [find("pea", value["plan_evaluation_authorization_sha256"]), find("ces", value["capture_expectation_set_sha256"]),
+                    find("bvp", value["broker_verified_plan_sha256"]), subject_ref(value)]
+        if kind == "scope-authorization":
+            return [find("scope-intent", value["scope_intent_sha256"]), *gate_refs(value["scope_intent_sha256"], value["gate_set_sha256"]),
+                    *(ref for entry in value["bootstrap_artifacts"] for ref in tuple_refs(entry))]
+        if kind == "stage-admission":
+            return [find("scope-authorization", value["scope_authorization_sha256"]), subject_ref(value), *tuple_refs(value),
+                    *(receipt_ref(entry["published_input"]) for entry in value["predecessor_publications"])]
+        if kind == "action-execution-admission":
+            return [find("stage-admission", value["historical_study_stage_admission_sha256"]), *tuple_refs(value)]
+        if kind == "stage-publication":
+            return [find("stage-admission", value["publication_authorization_ref"]["historical_study_stage_admission_sha256"]),
+                    find("action-execution-admission", value["execution_authority_ref"]["action_execution_admission_sha256"])]
+        if kind == "final-manifest":
+            return [find("scope-authorization", value["scope_authorization_sha256"]), find("scope-intent", value["scope_intent_sha256"]),
+                    pis_ref(value["published_input_set_sha256"]), *gate_refs(value["scope_intent_sha256"], value["gate_set_sha256"]),
+                    *(find("stage-admission", entry["historical_study_stage_admission_sha256"]) for entry in value["stage_admissions"]),
+                    *(receipt_ref(entry["published_input"]) for entry in value["stage_outputs"]),
+                    *(find("final-replay-entry", entry["final_replay_entry_sha256"]) for entry in value["replay_entries"])]
+        if kind == "final-replay-admission":
+            return [find("final-manifest", value["final_manifest_sha256"]), find("final-replay-entry", value["final_replay_entry_sha256"]),
+                    subject_ref(value), *tuple_refs(value)]
+        if kind == "final-replay-entry":
+            return [subject_ref(value), *tuple_refs(value)]
+        return []
+
+    def equal(left, right, fields):
+        _hs_refuse(all(_hs_canonical_bytes(left[field]) == _hs_canonical_bytes(right[field]) for field in fields), "P4 linked artifact adjacency refused")
+
+    def verify_tuple(value, required_inputs=None):
+        pea, ces, bvp, cas = [visit(ref) for ref in tuple_refs(value)]
+        intent = visit(subject_ref(cas))
+        pis = visit(pis_ref(ces["published_input_set_sha256"]))
+        equal(pea, ces, ("study_id", "phase", "subject_ref", "consumer_document_contract_sha256", "consumer_document_sha256",
+                         "purpose", "component_manifest_sha256", "published_input_set_sha256"))
+        for other in (bvp, cas):
+            equal(other, ces, ("study_id", "subject_ref", "consumer_document_contract_sha256", "consumer_document_sha256", "purpose"))
+        equal(bvp, ces, ("component_manifest_sha256",))
+        HistoricalStudyEnvelopePreflight._validate_digest_chain(ces, pea, bvp, cas, value)
+        HistoricalStudyEnvelopePreflight._validate_capture_entries(ces, cas, pis, intent)
+        _hs_refuse(ces["consumer_document_contract_sha256"] == intent["consumer_document_contract_sha256"])
+        if required_inputs is not None:
+            _hs_refuse(_hs_canonical_bytes(required_inputs) == _hs_canonical_bytes(cas["entries"]), "P4 complete PCE projection differs")
+        subject = ces["subject_ref"]
+        if subject["kind"] == "action":
+            is_root = not intent["predecessor_output_refs"]
+            _hs_refuse(ces["phase"] == ("bootstrap" if is_root else "scope-action"))
+        else:
+            _hs_refuse(ces["phase"] == "replay-pre-final")
+        authority = pea["authority_ref"]
+        if authority["kind"] == "scope-intent-gate-set":
+            scope_intent = get("scope-intent", authority["scope_intent_sha256"])
+        else:
+            scope = get("scope-authorization", authority["scope_authorization_sha256"])
+            scope_intent = get("scope-intent", scope["scope_intent_sha256"])
+        root_pis = visit(pis_ref(scope_intent["published_input_set_sha256"]))
+        # Packet 3 owns the exact phase/tag/subject and approved-intent checks.
+        HistoricalStudyEnvelopePreflight._validate_profiles(
+            {"root_pis": root_pis, "phase_pis": pis, "ces": ces, "pea": pea,
+             "bvp": bvp, "cas": cas, "scope": scope_intent},
+            {"root_pis": _hs_canonical_bytes(root_pis), "phase_pis": _hs_canonical_bytes(pis)},
+            "ActionAdmission" if subject["kind"] == "action" else "ReplayAdmission",
+        )
+        return pea, ces, bvp, cas, intent, pis
+
+    def check(kind, value):
+        if "study_id" in value:
+            _hs_refuse(value["study_id"] == "synthetic-study", "fixed P4 study policy refused")
+        if kind.endswith("pis"):
+            _hs_strict_sorted(value["entries"], lambda entry: _hs_scalar_key(entry["input_id"]))
+            _hs_refuse(bool(value["entries"]), "empty P4 PIS refused")
+            for entry in value["entries"]:
+                receipt = visit(receipt_ref(entry))
+                equal(receipt, entry, _P4_PUBLICATION_FACTS)
+        elif kind == "root-publication":
+            expected_authorization = next(_hs_parse_canonical(key)["sha256"] for key, rec in _P4_EXTERNAL_BY_REF.items() if rec[0] == "G1-dataset-authorization")
+            _hs_refuse(value["publication_authorization_ref"]["dataset_capture_authorization_sha256"] == expected_authorization)
+            _hs_refuse(value["root_ref"] in ("capture://synthetic/root", "capture://synthetic/root-b"), "fixed external root policy refused")
+        elif kind in ("action-intent", "replay-intent"):
+            _hs_strict_sorted(value["required_input_contracts"], lambda item: _hs_scalar_key(item["binding_id"]))
+        elif kind == "scope-intent":
+            root = visit(pis_ref(value["published_input_set_sha256"]))
+            _hs_refuse(root["phase"] == "root-g1-g2")
+            expected_policy = next(_hs_parse_canonical(key)["sha256"] for key, rec in _P4_EXTERNAL_BY_REF.items() if rec[0] == "fixed-owner-policy")
+            _hs_refuse(value["policy_set_sha256"] == expected_policy, "fixed external owner policy refused")
+            for array, id_key, digest_key, kind_name in (
+                ("action_intents", "action_id", "action_intent_sha256", "action-intent"),
+                ("replay_intents", "replay_id", "replay_intent_sha256", "replay-intent"),
+            ):
+                for entry in value[array]:
+                    _hs_refuse(_hs_canonical_bytes(entry) == _hs_canonical_bytes(get(kind_name, entry[digest_key])))
+                _hs_refuse(len({entry[id_key] for entry in value[array]}) == len(value[array]))
+            _hs_refuse({entry["action_id"] for entry in value["action_intents"]} == _HS_ACTION_IDS)
+            _hs_refuse([entry["replay_id"] for entry in value["replay_intents"]] == ["control", "crash-restart"])
+            for name in ("action", "replay"):
+                payload = {"schema": "dskit." + name + "-intent-set/v1", "entries": value[name + "_intents"]}
+                _hs_refuse(_digest(_hs_canonical_bytes(payload)) == value[name + "_intent_set_sha256"])
+            edges = _p4_closed_edges(value)
+            _hs_refuse(_digest(_hs_canonical_bytes({"action_intents": value["action_intents"],
+                "action_intent_set_sha256": value["action_intent_set_sha256"], "edge_set_sha256": value["edge_set_sha256"]})) == value["action_dag_sha256"])
+            HistoricalStudyEnvelopePreflight._validate_graph(value, edges, root)
+        elif kind == "bvp":
+            planned = get("planned-capture-set", value["planned_capture_set_sha256"])
+            equal(planned, value, ("study_id", "subject_ref"))
+            payload = {key: item for key, item in value.items() if key not in (
+                "schema", "broker_verified_plan_sha256", "plan_sha256", *_HS_SIGNED_SUFFIX,
+            )}
+            payload["planned_capture_set"] = planned
+            _hs_refuse(_digest(_hs_canonical_bytes(payload)) == value["plan_sha256"], "P4 exact BVP plan payload refused")
+        elif kind in ("planned-capture-set", "cas"):
+            _hs_strict_sorted(value["entries"], lambda entry: (entry["planned_entry_sha256"], _hs_canonical_bytes(entry)))
+            for entry in value["entries"]:
+                _hs_self_digest(entry, "planned_entry_sha256")
+            if kind == "cas":
+                planned = get("planned-capture-set", value["planned_capture_set_sha256"])
+                equal(planned, value, ("study_id", "subject_ref", "entries"))
+        elif kind == "scope-authorization":
+            intent = get("scope-intent", value["scope_intent_sha256"])
+            fields = set(_HS_ENVELOPES["ScopeIntent"]) - {"schema", "historical_study_scope_intent_sha256"}
+            equal(value, intent, fields)
+            roots = sorted(entry["action_id"] for entry in intent["action_intents"] if not entry["predecessor_output_refs"])
+            _hs_refuse([entry["action_id"] for entry in value["bootstrap_artifacts"]] == roots)
+            _hs_refuse(_digest(_hs_canonical_bytes(value["gates"])) == value["gate_set_sha256"])
+            for item in value["bootstrap_artifacts"]:
+                pea, _ces, _bvp, _cas, action, _pis = verify_tuple(item)
+                equal(item, action, ("action_id", "action_intent_sha256", "consumer_document_contract_sha256"))
+                _hs_refuse(pea["authority_ref"] == item["authority_ref"])
+                _hs_refuse(item["authority_ref"] == {"kind": "scope-intent-gate-set",
+                    "scope_intent_sha256": value["scope_intent_sha256"], "gate_set_sha256": value["gate_set_sha256"]})
+        elif kind == "stage-admission":
+            scope = get("scope-authorization", value["scope_authorization_sha256"])
+            action = get("action-intent", value["action_intent_sha256"])
+            equal(value, action, ("action_id", "topological_position", "consumer_document_contract_sha256", "closed_parameters_sha256",
+                                 "component_manifest_sha256", "candidate_selection_sha256", "output_contract"))
+            _hs_refuse(value["scope_intent_sha256"] == scope["scope_intent_sha256"])
+            pea, _ces, _bvp, cas, _intent, _pis = verify_tuple(value, value["required_inputs"])
+            equal(value, cas, ("consumer_document_sha256", "consumer_document_contract_sha256"))
+            refs_expected = action["predecessor_output_refs"]
+            _hs_refuse([{key: entry[key] for key in _HS_SHAPES["PredecessorOutputRef"]} for entry in value["predecessor_publications"]] == refs_expected)
+            if not refs_expected:
+                matches = [item for item in scope["bootstrap_artifacts"] if item["action_id"] == value["action_id"]]
+                _hs_refuse(len(matches) == 1)
+                equal(value, matches[0], _P4_TUPLE_FIELDS)
+                _hs_refuse(pea["authority_ref"] == matches[0]["authority_ref"])
+            else:
+                _hs_refuse(pea["authority_ref"]["scope_authorization_sha256"] == value["scope_authorization_sha256"])
+                for publication in value["predecessor_publications"]:
+                    receipt = visit(receipt_ref(publication["published_input"]))
+                    _hs_refuse(receipt["action_id"] == publication["predecessor_action_id"])
+        elif kind == "action-execution-admission":
+            stage = get("stage-admission", value["historical_study_stage_admission_sha256"])
+            equal(value, stage, (*_P4_TUPLE_FIELDS, "study_id", "scope_authorization_sha256", "action_id", "action_intent_sha256"))
+            verify_tuple(value, stage["required_inputs"])
+        elif kind == "stage-publication":
+            stage = get("stage-admission", value["publication_authorization_ref"]["historical_study_stage_admission_sha256"])
+            admission = get("action-execution-admission", value["execution_authority_ref"]["action_execution_admission_sha256"])
+            equal(value, admission, ("study_id", "action_id", "logical_execution_id", "run_id"))
+            _hs_refuse(admission["historical_study_stage_admission_sha256"] == stage["historical_study_stage_admission_sha256"])
+            _hs_refuse(value["producer_run_identity"] == admission["run_id"] and value["producer_document_sha256"] == stage["consumer_document_sha256"])
+            equal(value, stage["output_contract"], ("producer_node", "producer_output"))
+        elif kind == "final-replay-entry":
+            _pea, _ces, _bvp, cas, intent, _pis = verify_tuple(value, value["required_inputs"])
+            equal(value, intent, ("replay_id", "replay_intent_sha256", "environment_identity_sha256", "execution_profile_sha256", "component_manifest_sha256", "crash_schedule_sha256"))
+            equal(value, cas, ("consumer_document_sha256",))
+        elif kind == "final-manifest":
+            scope = get("scope-authorization", value["scope_authorization_sha256"])
+            equal(value, scope, ("study_id", "scope_intent_sha256", "published_input_set_sha256", "gate_set_sha256", "gates",
+                                 "environment_identity_sha256", "execution_profile_sha256", "component_manifest_sha256"))
+            _hs_refuse([entry["action_id"] for entry in value["stage_admissions"]] == [entry["action_id"] for entry in scope["action_intents"]])
+            for stage in value["stage_admissions"]:
+                _hs_refuse(stage == get("stage-admission", stage["historical_study_stage_admission_sha256"]))
+                _hs_refuse(stage["scope_authorization_sha256"] == value["scope_authorization_sha256"])
+            _hs_refuse([entry["replay_id"] for entry in value["replay_entries"]] == ["control", "crash-restart"])
+            for entry in value["replay_entries"]:
+                _hs_refuse(entry == get("final-replay-entry", entry["final_replay_entry_sha256"]))
+                pea, _ces, _bvp, _cas, intent, _pis = verify_tuple(entry, entry["required_inputs"])
+                _hs_refuse(intent in scope["replay_intents"])
+                _hs_refuse(pea["authority_ref"]["scope_authorization_sha256"] == value["scope_authorization_sha256"])
+                equal(entry, scope, ("environment_identity_sha256", "execution_profile_sha256", "component_manifest_sha256"))
+            _hs_strict_sorted(value["stage_outputs"], lambda entry: (entry["producer_action_id"], entry["producer_output_id"],
+                entry["output_schema"], entry["publication_identity_sha256"], _hs_canonical_bytes(entry)))
+            _hs_refuse({entry["producer_action_id"] for entry in value["stage_outputs"]} == _HS_ACTION_IDS and len(value["stage_outputs"]) == len(_HS_ACTION_IDS))
+            for output in value["stage_outputs"]:
+                receipt = visit(receipt_ref(output["published_input"]))
+                stage = get("stage-admission", output["historical_study_stage_admission_sha256"])
+                _hs_refuse(output["producer_action_id"] == receipt["action_id"] == stage["action_id"])
+                _hs_refuse(output["producer_output_id"] == receipt["producer_output"] and output["output_schema"] == stage["output_contract"]["output_schema"])
+                # Publication identity is an opaque signed identity owned by
+                # stage publication, not an alias for the outer receipt hash.
+                equal(receipt, output["published_input"], _P4_PUBLICATION_FACTS)
+            _hs_refuse(value["release_output"] == next(entry for entry in value["stage_outputs"] if entry["producer_action_id"] == "A4"))
+        elif kind == "final-replay-admission":
+            manifest = get("final-manifest", value["final_manifest_sha256"])
+            entry = get("final-replay-entry", value["final_replay_entry_sha256"])
+            _hs_refuse(entry in manifest["replay_entries"])
+            equal(value, entry, (*_P4_TUPLE_FIELDS, "replay_id", "replay_intent_sha256"))
+            verify_tuple(value, entry["required_inputs"])
+
+    def visit(reference):
+        key = _p4_artifact_reference_bytes(reference)
+        if key in verified:
+            return verified[key]
+        _hs_refuse(key not in active, "P4 cyclic or future artifact closure refused")
+        _hs_refuse(key not in _P4_EXTERNAL_BY_REF, "external terminal requires a closed parent basis position")
+        active.add(key)
+        value = _hs_parse_canonical(_P4_CHECKED_RESOLVE(resolver, snapshot, key))
+        schema = reference["schema"]
+        _hs_refuse(schema in _P4_ARTIFACT_SPECS, "P4 unsupported local artifact")
+        fields = _P4_ARTIFACT_SPECS[schema][4]
+        _p4_validate_object(value, fields)
+        kind, self_field, role, usage, _fields = _p4_identity(value, schema)
+        _hs_refuse(reference == {"kind": kind, "role": role, "schema": schema, "sha256": value[self_field]}, "P4 exact artifact reference refused")
+        _hs_self_digest(value, self_field, signed=usage is not None)
+        if usage is not None:
+            _p4_verify_local_signed(value, self_field, role, usage)
+        required = dependencies(kind, value)
+        if usage is not None:
+            basis_ref = find("issuance-basis", value["issuance_basis_sha256"])
+            _hs_refuse(basis_ref["role"] == role and basis_ref["schema"] == "dskit.issuance-basis/v1")
+            basis_raw = _P4_CHECKED_RESOLVE(resolver, snapshot, _hs_canonical_bytes(basis_ref))
+            basis = _p4_basis(basis_raw, kind, role, usage)
+            _hs_refuse(basis["issuance_basis_sha256"] == value["issuance_basis_sha256"])
+            expected = sorted(required, key=lambda ref: tuple(ref[field] for field in ("kind", "role", "schema", "sha256")))
+            _hs_refuse(basis["refs"] == expected, "P4 closed basis reference projection refused")
+            _hs_refuse(basis["issued_at_ms"] <= value["issued_at_ms"], "P4 basis issued after artifact")
+        for child_ref in required:
+            child_key = _hs_canonical_bytes(child_ref)
+            if child_key in _P4_EXTERNAL_BY_REF:
+                _hs_refuse(kind in ("root-pis", "root-publication", "scope-intent"))
+                terminal_class = _P4_EXTERNAL_BY_REF[child_key][0]
+                anchor = _P4_TERMINAL_METHODS[0](resolver._terminal, snapshot, basis_raw, terminal_class, child_key,
+                                                _P4_CHECKED_RESOLVE(resolver, snapshot, child_key))
+                _P4_TERMINAL_METHODS[1](resolver._terminal, snapshot, (anchor,))
+                _hs_refuse(anchor._binding[4] == basis_raw and anchor._binding[5] == child_key)
+                anchors.append(anchor)
+            else:
+                child = visit(child_ref)
+                if usage is not None and "issued_at_ms" in child:
+                    _hs_refuse(child["issued_at_ms"] <= basis["issued_at_ms"] <= value["issued_at_ms"],
+                               "P4 future signed dependency refused")
+        check(kind, value)
+        active.remove(key)
+        verified[key] = value
+        return value
+
+    admission = visit(admission_ref)
+    authority, captures, runtime = live_projection
+    _hs_refuse(type(authority) is _SyntheticP4CapturedAuthorizationAuthority and authority._p4_resolver is resolver)
+    _hs_refuse(admission["run_id"] == runtime["consumer_run_identity"], "P4 admission run differs from live request")
+    cas = get("cas", admission["capture_admission_set_sha256"])
+    _hs_refuse(len(cas["entries"]) == len(captures), "P4 live capture cardinality differs")
+    for entry, (published, frozen, port) in zip(cas["entries"], captures):
+        equal(entry, port, ("consumer_document_sha256", "consumer_node", "consumer_input", "purpose"))
+        descriptor = published.descriptor
+        for field, source in (("descriptor_root_ref", "root_ref"), ("descriptor_snapshot_version", "snapshot_version"),
+                              ("descriptor_document_sha256", "document_sha256"), ("descriptor_node", "node"),
+                              ("descriptor_output", "output"), ("descriptor_purpose", "purpose")):
+            _hs_refuse(entry[field] == descriptor[source], "P4 frozen descriptor projection differs")
+        audit = _DevelopmentBroker._receipt_audit(authority, published)[-1]
+        equal(entry["published_input"], audit, _P4_PUBLICATION_FACTS)
+        _hs_refuse(_digest(_canonical_bytes(frozen.source)) == entry["consumer_document_sha256"])
+    _p4_snapshot_integrity(resolver, snapshot)
+    _P4_TERMINAL_METHODS[1](resolver._terminal, snapshot, tuple(anchors))
+    return None
+
+
+_P4_CLOSE_ADMISSION = _p4_close_admission
+
+
+def _p4_terminal_certificate(terminal_class, raw):
+    """Return the independently signed fixed test-policy attestation preimage.
+
+    This private certificate is not an external production artifact schema or
+    fixture input. The trusted corpus fixes its keys, subjects and policy grants.
+    """
+    return _hs_canonical_bytes({
+        "artifact_sha256": _digest(raw), "canonical_bytes_sha256": _digest(raw),
+        "terminal_class": terminal_class, "policy_identity": "fixed-nondeployment-policy/v1",
+        "scope_projections": list(_P4_APPROVED_SCOPE_PROJECTIONS),
+        "root_projections": list(_P4_APPROVED_ROOT_PROJECTIONS),
+        "authorization_subject": _digest(_hs_canonical_bytes("nondeployment G1-dataset-authorization fixture")),
+        "owner_key_use": terminal_class, "not_before_ms": 0, "expires_at_ms": 1000,
+        "revocation_identity": _digest(b"p4-fixed-revocations"), "generation": 0,
+    })
+
+
+def _p4_terminal_parent_projection(resolver, snapshot, basis):
+    """Authenticate exact local parent facts against the fixed external grants."""
+    parents = []
+    for ref_bytes, raw in resolver._records:
+        ref = _hs_parse_canonical(ref_bytes)
+        if ref["kind"] != basis["kind"]:
+            continue
+        value = _hs_parse_canonical(raw)
+        if type(value) is not dict or value.get("issuance_basis_sha256") != basis["issuance_basis_sha256"]:
+            continue
+        _hs_refuse(ref["schema"] in _P4_ARTIFACT_SPECS, "terminal parent schema refused")
+        kind, self_field, role, usage, fields = _p4_identity(value, ref["schema"])
+        _p4_validate_object(value, fields)
+        _hs_refuse(kind == basis["kind"] and ref == {"kind": kind, "role": role,
+            "schema": value["schema"], "sha256": value[self_field]}, "terminal parent identity refused")
+        _p4_verify_local_signed(value, self_field, role, usage)
+        _hs_refuse(basis["issued_at_ms"] <= value["issued_at_ms"], "terminal parent chronology refused")
+        projection = {key: item for key, item in value.items() if key not in _HS_SIGNED_SUFFIX and key != self_field}
+        projection_digest = _digest(_hs_canonical_bytes(projection))
+        terminal_refs = [_hs_parse_canonical(key) for key, record in _P4_EXTERNAL_BY_REF.items()
+                         if (record[0] == "fixed-owner-policy") == (kind == "scope-intent")]
+        required_refs = list(terminal_refs)
+        if kind == "scope-intent":
+            _hs_refuse(projection_digest in _P4_APPROVED_SCOPE_PROJECTIONS, "fixed external owner policy projection refused")
+            required_refs.append({"kind": "root-pis", "role": "data-publisher",
+                                  "schema": "dskit.published-input-set/v2", "sha256": value["published_input_set_sha256"]})
+        elif kind == "root-publication":
+            _hs_refuse(projection_digest in _P4_APPROVED_ROOT_PROJECTIONS, "fixed external root policy projection refused")
+        else:
+            _hs_refuse(value["phase"] == "root-g1-g2" and value["study_id"] == "synthetic-study")
+            _hs_refuse(bool(value["entries"]), "terminal root parent requires receipts")
+            for entry in value["entries"]:
+                child_ref = {"kind": "root-publication", "role": "data-publisher",
+                             "schema": "dskit.root-publication-receipt/v1", "sha256": entry["publication_receipt_sha256"]}
+                _hs_refuse(entry["publication_receipt_schema"] == child_ref["schema"])
+                required_refs.append(child_ref)
+                child_raw = _P4_CHECKED_RESOLVE(resolver, snapshot, _hs_canonical_bytes(child_ref))
+                receipt = _hs_parse_canonical(child_raw)
+                _p4_validate_object(receipt, _P4_SHAPES["RootReceipt"])
+                _p4_verify_local_signed(receipt, "root_publication_receipt_sha256", "data-publisher", "root-publication-g1-g2")
+                _hs_refuse(receipt["root_publication_receipt_sha256"] == child_ref["sha256"])
+                receipt_projection = {key: item for key, item in receipt.items()
+                    if key not in _HS_SIGNED_SUFFIX and key != "root_publication_receipt_sha256"}
+                _hs_refuse(_digest(_hs_canonical_bytes(receipt_projection)) in _P4_APPROVED_ROOT_PROJECTIONS,
+                           "fixed external root policy projection refused")
+                _hs_refuse(all(entry[key] == receipt[key] for key in _P4_PUBLICATION_FACTS),
+                           "terminal root parent projection differs from receipt")
+        required_refs.sort(key=lambda ref: tuple(ref[key] for key in ("kind", "role", "schema", "sha256")))
+        _hs_refuse(basis["refs"] == required_refs, "terminal exact parent basis projection refused")
+        parents.append((ref_bytes, _digest(raw), projection_digest))
+    _hs_refuse(bool(parents), "terminal verified local parent is unavailable")
+    return tuple(sorted(parents))
+
+
+def _p4_fixed_integrity():
+    """Reject one-surface changes to fixed data, helpers, trust or class dispatch."""
+    if _p4_close_admission is not _P4_CLOSE_ADMISSION:
+        raise TypeError("P4 closure dispatch integrity refused")
+    if not all(globals().get(name) is value for name, value in _P4_FIXED_GLOBALS):
+        raise TypeError("P4 fixed dependency integrity refused")
+    _hs_refuse(_digest(repr((_P4_SHAPES, _P4_ARTIFACT_SPECS, _HS_SHAPES, _HS_ENVELOPES)).encode()) == _P4_SHAPE_COMMITMENT,
+               "P4 shape policy integrity refused")
+    verification, keyring, clock, revocations, key_verify, now, unrevoked = _P4_VERIFICATION_PIN
+    _hs_refuse(_P4_VERIFICATION is verification and verification._keyring is keyring
+               and verification._clock is clock and verification._revocations is revocations,
+               "P4 held verification dependency integrity refused")
+    _hs_refuse(type(keyring) is _FixedP4VerificationKeyring and type(clock) is _FixedP4VerificationClock
+               and type(revocations) is _FixedP4VerificationRevocations
+               and type(keyring).verify is key_verify and type(clock).now_ms is now
+               and type(revocations).is_unrevoked is unrevoked
+               and not keyring.__dict__ and not clock.__dict__ and not revocations.__dict__,
+               "P4 verification dispatch integrity refused")
+    _hs_refuse(HistoricalStudyEnvelopePreflight._verify_one_signed is _P4_SHARED_SIGNATURE,
+               "P4 shared signature dispatch integrity refused")
+    _hs_refuse(all(getattr(HistoricalStudyEnvelopePreflight, name) is method for name, method in _P4_SHARED_METHODS),
+               "P4 shared validation dispatch integrity refused")
+
+
+_P4_SNAPSHOT_INTEGRITY = _p4_snapshot_integrity
+_P4_FIXED_INTEGRITY = _p4_fixed_integrity
+_P4_VERIFICATION_PIN = (
+    _P4_VERIFICATION, _P4_VERIFICATION._keyring, _P4_VERIFICATION._clock, _P4_VERIFICATION._revocations,
+    _FixedP4VerificationKeyring.verify, _FixedP4VerificationClock.now_ms, _FixedP4VerificationRevocations.is_unrevoked,
+)
+_P4_SHAPE_COMMITMENT = _digest(repr((_P4_SHAPES, _P4_ARTIFACT_SPECS, _HS_SHAPES, _HS_ENVELOPES)).encode())
+_P4_SHARED_METHODS = tuple((name, getattr(HistoricalStudyEnvelopePreflight, name)) for name in (
+    "_validate_capture_entries", "_validate_digest_chain", "_validate_graph", "_validate_profiles",
+))
+_P4_FIXED_GLOBALS = tuple((name, globals()[name]) for name in (
+    "_P4_EXTERNAL_RECORDS", "_P4_EXTERNAL_BY_REF", "_P4_LOCAL_PUBLIC_KEYS", "_P4_ARTIFACT_SPECS", "_P4_SHAPES",
+    "_P4_APPROVED_SCOPE_PROJECTIONS", "_P4_APPROVED_ROOT_PROJECTIONS",
+    "_p4_artifact_reference_bytes", "_p4_validate_object", "_p4_verify_local_signed", "_p4_verify_ed25519",
+    "_p4_verify_terminal_basis", "_p4_basis", "_p4_identity", "_p4_closed_edges",
+    "_p4_terminal_certificate", "_p4_terminal_parent_projection", "_hs_parse_canonical", "_hs_self_digest",
+    "_hs_validate_object", "_hs_validate_spec", "_hs_strict_sorted", "_hs_canonical_bytes", "_hs_refuse",
+    "_P4_CHECKED_RESOLVE", "_P4_RESOLVER_LOOKUP", "_P4_RESOLVER_METHODS", "_P4_TERMINAL_METHODS", "_P4_SHARED_SIGNATURE",
+    "_P4_ANCHORS", "_P4_TERMINALS", "_P4_RESOLVERS", "_P4_ISSUED", "_P4_VERIFICATION_PIN", "_P4_SHARED_METHODS",
+))
