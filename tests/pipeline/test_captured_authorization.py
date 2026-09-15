@@ -1154,6 +1154,47 @@ def test_nonroot_predecessor_action_and_its_replay_form_a_complete_positive_dag(
     _assert_graph_no_effect(broker, captures, before)
 
 
+def test_private_prepared_batch_is_opaque_nonserializable_and_nonauthorizing():
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    streams = tuple(broker._stream_for_published(item[0], "test") for item in captures)
+    prepared = trust._P4_PREPARE(trust._P4_CONTRACT, broker._p4_resolver, graph.selected, streams,
+        {key: value for key, value in runtime.items() if key != "transition_nonces"}, runtime["transition_nonces"])
+    assert not isinstance(prepared, (bytes, str, dict, tuple, list)), "private prepared bytes must not escape as data"
+    for operation in (copy.copy, copy.deepcopy, pickle.dumps, dict, bytes):
+        with pytest.raises(TypeError):
+            operation(prepared)
+    assert not broker._p4_ledger._committed()
+    with pytest.raises((TypeError, ValueError)):
+        broker._p4_ledger._audit(prepared)
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("surface", ["commit-capsule", "ledger-root", "ledger-lock", "ledger-pin", "contract", "signer"])
+def test_new_transaction_dependencies_refuse_one_surface_substitution(surface, monkeypatch):
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    ledger = broker._p4_ledger
+    if surface == "commit-capsule":
+        monkeypatch.setattr(trust, "_P4_COMMIT", lambda *args: ("forged-record", "forged-session"))
+    elif surface == "ledger-root":
+        ledger._root = ("forged",)
+    elif surface == "ledger-lock":
+        from threading import RLock
+        ledger._lock = RLock()
+    elif surface == "ledger-pin":
+        trust._P4_LEDGER_PINS[ledger] = tuple(list(ledger._pin))
+    elif surface == "contract":
+        monkeypatch.setattr(trust, "_P4_CONTRACT", type(trust._P4_CONTRACT)())
+    else:
+        monkeypatch.setattr(trust, "_P4_SIGNER", type(trust._P4_SIGNER)())
+    with pytest.raises((TypeError, ValueError)):
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    # A deliberately corrupted ledger is not queried as an oracle afterward.
+    assert tuple(broker._session_events) == before[1] and tuple(broker._member_events) == before[2]
+    assert frozenset(broker._nonces) == before[3]
+
+
 def _request():
     """Return a syntactically valid reference to an unavailable admission."""
     return {
