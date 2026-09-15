@@ -1,0 +1,37 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6-descriptor-receipt-equality-restart-linkage",
+  "candidate": "a5a24a15eb1c41fdec96797b3ab74c1ea2ced23e",
+  "matrix": "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_phase0_terra_after_checkpoint",
+    "lens": "fresh independent Phase 0 after convergence checkpoint"
+  },
+  "verdict": "not-clean",
+  "critical": 0,
+  "major": 1,
+  "minor": 0,
+  "nit": 0,
+  "findings": [
+    {
+      "id": "P6-RR-004",
+      "severity": "major",
+      "summary": "Post-capture port and artifact accessors lack retained identity validation.",
+      "location": "trust.py CapturedLifecyclePort.artifact/audit and CapturedJsonArtifact.value/audit, around line 512",
+      "counterexample": "After bindings.require() consumes a valid stream, a single handle poke replaces port._artifact or artifact._value. Accessors return forged data.",
+      "consequence": "Unverified data delivery violates ADR-0123 final immutable captured value and ADR-0126 public opaque-handle/single-poke rule. Publication/freeze validators cannot catch this post-capture path.",
+      "disposition": "Open; successor full-handle convergence checkpoint requested before another matrix correction."
+    }
+  ],
+  "reviewer_conclusion": "The retained publication/stream-pin design otherwise closes the post-PUBLISHED descriptor and frozen-identity family stated in 0114.",
+  "reviewer_checks": [
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py::test_placeholder_self_wrong_root_and_unknown_descriptor_fields_refuse tests/pipeline/test_trust.py::test_descriptor_mutation_after_freeze_refuses_before_port_derivation tests/pipeline/test_trust.py::test_producer_session_must_end_and_consumer_run_and_session_must_be_distinct tests/pipeline/test_trust.py::test_wrong_document_port_cross_plan_and_consumer_substitution_refuse: 10 passed in 0.11s",
+    "JSON parse of 0095/0096/0111-0114: pass",
+    "git diff --check: pass"
+  ],
+  "reviewer_limits": "Read-only design review; no new RED, full focused suite, real execution, or environment changes.",
+  "next_gate": "Independent full-handle convergence checkpoint, family-wide matrix correction, fresh clean Terra Phase 0 before RED.",
+  "deployment_eligible": false
+}
