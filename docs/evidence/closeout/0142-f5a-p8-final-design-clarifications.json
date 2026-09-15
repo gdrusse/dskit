@@ -1,0 +1,30 @@
+{
+  "schema_version": "F5aPacket8DesignDelta.v1",
+  "packet": 8,
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "cites": [
+    "0138-f5a-p8-design-and-matrix.json",
+    "0140-f5a-p8-design-corrections-and-owner-gates.json",
+    "0141-f5a-p8-design-handoff-review.json"
+  ],
+  "status": "Final local technical clarifications; owner provisioning/API/sequence gates remain open; no RED approval",
+  "nonce_contract": {
+    "addresses": "P8-D1-M2",
+    "signature": "inspect_capture_admission(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces)",
+    "validation": "Pass runtime triple and separate exact nonempty nonce tuple to existing _P4_REQUEST_CHECK, with exact cardinality, scalar types and unused nonce checks; then existing no-effect full closure. Run before reserve and again after successful reserve immediately before delegate. Post-reserve refusal stays spent. Nonce/process identity never changes spend key. For approved one-entry legacy adapter exactly one nonce; multi-entry routes remain P4 atomic batch.",
+    "limit": "Metadata validation does not grant authority or create a transferable approval token. The proposed accessor still needs owner migration approval and fresh Phase0 of implementation contract."
+  },
+  "state_recovery": {
+    "addresses": "P8-D2-M5",
+    "contract": "After any uncertain store/sync/state.apply/snapshot outcome, do not reuse the possibly partially-mutated SeriesState. Trusted owner constructs a fresh sole SeriesState and replays the entire verified chain, including admission_use, from genesis; reconstruct ledger index from the same verified chain. Full replay is selected for this bounded admission route rather than trusting a potentially stale snapshot. Snapshot records are validated and remain audit records; they do not replace replay state in this path. Require state head seq/hash exactly equals the verified ledger head before HEALTHY, any new reservation, or snapshot. Failure at any replay point refuses reopen and preserves bytes. No second fold or direct mutation of folded attributes.",
+    "existing_seam": "Use existing SeriesState.apply for each verified envelope; do not duplicate folding code or assume JsonlLedger._open performs it. If configured without state, snapshot cadence must be disabled, and no stateful resume occurs until a fresh complete fold is supplied. Other store/operational recovery paths retain their approved behavior unless separately reviewed.",
+    "tests": [
+      "Fault inside state.apply after partial mutation, then reopen: fresh fold equals independently replayed verified history and its exact ledger head.",
+      "Snapshot commit/fold/barrier faults: no delegate; recovery cannot project stale/poisoned state; admission remains spent when reservation line exists.",
+      "Complete chain with an older snapshot and suffix: full replay includes suffix and admission_use, no snapshot rewind.",
+      "Replay validation failure: no HEALTHY state, snapshot, new claim, truncation of complete records or broker effect."
+    ]
+  },
+  "remaining_gates": "P8-D1-M1 and M4 remain explicit owner decisions. Clarifications do not approve API migration, provisioning boundary or P8 implementation before P7. No implementation performed."
+}
