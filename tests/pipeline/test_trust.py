@@ -47,6 +47,7 @@ _PUBLIC_TYPES = {
     "LifecycleAuthority",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
     "ReleaseKeyring",
+    "ReplayRun",
     "TerminalArtifactVerifier",
     "TrustedClock",
     "TrustedRuntimeVerifier",

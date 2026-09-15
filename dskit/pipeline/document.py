@@ -123,6 +123,7 @@ ROLES = (
     "capital",
     "report",
     "fitted_transform",
+    "replay",
 )
 
 #: Roles that may carry ``mode``/``artifact``: the ones whose node either
@@ -758,6 +759,12 @@ _EXECUTION_BACKTEST_FORBIDDEN_SECTIONS = ("stages", "foreach", "walkforward")
 _EVENT_ENVELOPE_SCHEMA = "dskit.event-envelope/v2"
 _SHA256_OK = re.compile(r"^[0-9a-f]{64}$")
 
+#: The toolkit-owned ReplayRun consumer kind (ADR-0127). A node that uses
+#: this kind declares exactly two captured inputs, ``tape_manifest`` and
+#: ``tape_data``, and is legal only in an ``execution_backtest`` document.
+REPLAY_RUN_KIND = "replay"
+_REPLAY_TAPE_INPUTS = ("tape_manifest", "tape_data")
+
 
 def _execution_backtest_section_errors(sections):
     return [
@@ -791,6 +798,38 @@ def _execution_backtest_node_errors(node_maps):
                 errors.append(
                     f"{node_where}: execution_backtest documents forbid "
                     "artifact pins"
+                )
+    return errors
+
+
+def _replay_node_errors(node_maps, has_execution):
+    """Return the ReplayRun consumer tape-pair grammar refusals.
+
+    A node whose ``uses`` is the owned ``replay`` kind must live in an
+    ``execution_backtest`` document and declare exactly the two captured
+    inputs ``tape_manifest`` and ``tape_data``. The pair is keyed on the
+    owned kind name (ADR-0127), never on a uses-string resemblance.
+    """
+    errors = []
+    for where, specs in node_maps:
+        if not isinstance(specs, dict):
+            continue
+        for key, spec in specs.items():
+            if not isinstance(spec, NodeSpec) or spec.uses != REPLAY_RUN_KIND:
+                continue
+            node_where = f"{where}.{key}"
+            if not has_execution:
+                errors.append(
+                    f"{node_where}: the 'replay' kind is legal only in an "
+                    "execution_backtest document"
+                )
+                continue
+            ports = tuple(spec.inputs)
+            if ports != _REPLAY_TAPE_INPUTS:
+                errors.append(
+                    f"{node_where}: the 'replay' node must declare exactly the "
+                    "inputs tape_manifest and tape_data, got "
+                    f"{list(ports) or 'none'}"
                 )
     return errors
 
@@ -2165,6 +2204,9 @@ class PipelineDocument:
                             f"stages: keys must match {_NODE_KEY_OK}, got {key!r}"
                         )
                     _check_child(errors, f"stages.{key}", spec, StageSpec)
+        node_maps = [("pipeline", self.pipeline)]
+        if isinstance(self.foreach, ForeachSpec):
+            node_maps.append(("foreach.pipeline", self.foreach.pipeline))
         if self.execution_backtest is not None:
             errors.extend(
                 _execution_backtest_section_errors(
@@ -2173,10 +2215,10 @@ class PipelineDocument:
                     if getattr(self, section) is not None
                 )
             )
-            node_maps = [("pipeline", self.pipeline)]
-            if isinstance(self.foreach, ForeachSpec):
-                node_maps.append(("foreach.pipeline", self.foreach.pipeline))
             errors.extend(_execution_backtest_node_errors(node_maps))
+        errors.extend(
+            _replay_node_errors(node_maps, self.execution_backtest is not None)
+        )
         _check_str(errors, "notes", self.notes, non_empty=False)
         # The derived pair defaults to the declared map — with no foreach
         # that IS the answer, and the expansion overwrites it otherwise.
