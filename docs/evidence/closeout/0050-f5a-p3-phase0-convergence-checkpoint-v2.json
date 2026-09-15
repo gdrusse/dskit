@@ -1,0 +1,109 @@
+{
+  "schema_version": "ConvergenceCheckpoint.v2",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "checkpoint_kind": "independent-post-checkpoint-convergence-review",
+  "reviewer_provenance": {
+    "agent_task": "/root/f5a_p3_convergence_checkpoint_v2",
+    "lens": "ADR exact fields, supplied-local relationship closure, current public seams, and no-effect authority"
+  },
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+    "preserved_source_ref": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+    "artifacts": {
+      "checkpoint_0043": {"path": "docs/review-evidence/F5a/0043-phase0-convergence-checkpoint.v1.json", "sha256": "181560f6ef6d2f312f6d63633c64fac4a8e6305d7b9e14c328e682e578474ae6"},
+      "matrix_0044": {"path": "docs/review-evidence/F5a/0044-phase0-unsigned-schemas-signatures.v4.json", "sha256": "94f76cefc4cfbea345b6332c1a9818e916f648d5861068dcceb63d23fb5fbb21"},
+      "review_0045": {"path": "docs/evidence/closeout/0045-f5a-p3-phase0-skeptic-v4.json", "sha256": "52847d72b49982b66df719e8ec3e4462595259fc13eb6a1a19f31ba98d8c09cc"},
+      "matrix_0046": {"path": "docs/evidence/closeout/0046-f5a-p3-phase0-matrix-v5.json", "sha256": "a7cbb842cf7d581dde28a1e1c7b09f4b86461937c7246b688081c3d1f0efb0f9"},
+      "review_0047": {"path": "docs/evidence/closeout/0047-f5a-p3-phase0-skeptic-v5.json", "sha256": "d7ba5f6ebd0e7037af509023a217887e17eca772ca711cf8681dae5cf851d074"},
+      "matrix_0048": {"path": "docs/evidence/closeout/0048-f5a-p3-phase0-matrix-v6.json", "sha256": "85b735720a805a8a3bc912c81b0296a6d2c1ab0469e331800cadb6c9eb85f733"},
+      "review_0049": {"path": "docs/evidence/closeout/0049-f5a-p3-phase0-skeptic-v6.json", "sha256": "12bb9ff63817d9d4681f30d38cd809e8f52dd9d7cb343105b11c10f593b349fe"},
+      "adr_0125": {"path": "docs/architecture/decision-log.md", "lines": "8317-8952", "sha256": "023423830eca35871e67ea87bee51e88450a97ac3b1723588cd9c969ef859cc9", "line_range_sha256": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930"},
+      "packet_plan": {"path": "docs/plans/closeout-2026-09-14/01-capture-admission.md", "sha256": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae"},
+      "master_plan": {"path": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md", "sha256": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c"},
+      "frozen_trust": {"path": "dskit/pipeline/trust.py", "sha256": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5", "git_blob": "e670bc96db3abf96d7625482c01d8f0d796de844"},
+      "current_verifier": {"path": "dskit/production/verifier.py", "sha256": "5ced6cdb669ef0ae42fb337fe411136e99ba8370c19791d93851edc5e3d384fb", "git_blob": "e1e74196b1c47e6eaf94ed69e3b38c54129e4ec6"},
+      "current_capture_test": {"path": "tests/production/test_capture_lifecycle.py", "git_blob": "36e6f29e4a31a66787439642749d84c6c5e5cb04"}
+    }
+  },
+  "recurrence_analysis": {
+    "post_checkpoint_failed_cycles": [
+      {"matrix": "0044-v4", "review": "0045", "majors": 5, "pattern": "incoherent supplied operands, incomplete grammar/DAG, and unpinned revocation seam"},
+      {"matrix": "0046-v5", "review": "0047", "majors": 5, "pattern": "private canonicalization dependency plus field-table/profile/selection omissions"},
+      {"matrix": "0048-v6", "review": "0049", "majors": 3, "pattern": "a named nonexistent-field link and omitted directly supplied Scope/DAG links"}
+    ],
+    "conclusion": "The no-effect slice and its unresolved-target limit remain coherent, but the repeated defect family is systemic in the specification method: prose buckets called common/direct/local were not derived from a complete actual-field adjacency inventory. The three 0049 findings are bounded local omissions in code shape, yet they are not safely isolated because the same audit exposes adjacent supplied-field omissions below.",
+    "not_required": "No ADR-authority, Packet-3 ownership, trust-boundary, or runtime-seam change is justified. Correct the review artifact method, not the runtime scope."
+  },
+  "independent_adjacency_audit": {
+    "0049_findings_confirmed": [
+      {"id": "P0-0049-M01", "required_rule": "Only CES.published_input_set_sha256 and PEA.published_input_set_sha256 equal phase-PIS self; BVP and CAS have no such field. BVP/CAS bind through actual CES/PEA/BVP/CAS digest fields."},
+      {"id": "P0-0049-M02", "required_rule": "ScopeIntent.published_input_set_sha256 always equals root-PIS self, regardless of profile. Stage/replay phase PIS remains neither equal nor unequal to root PIS."},
+      {"id": "P0-0049-M03", "required_rule": "Each predecessor output ref selects its named supplied predecessor ActionIntent and equals that OutputContract's output_name, output_schema, output_version, and purpose."}
+    ],
+    "additional_directly_supplied_links": [
+      {
+        "id": "P0-0050-M01",
+        "severity": "Major",
+        "rule": "Every ActionIntent and ReplayIntent study_id equals ScopeIntent.study_id; ScopeIntent.component_manifest_sha256 equals every child component_manifest_sha256; ScopeIntent.environment_identity_sha256 and execution_profile_sha256 equal the corresponding ReplayIntent fields.",
+        "reason": "All operands are in supplied Scope bytes. v6 validates child self digests and selects by ID/self, but never binds these duplicate parent/child identity facts.",
+        "adr_citations": ["decision-log.md:8498-8511", "decision-log.md:8550-8577", "decision-log.md:8580-8603"]
+      },
+      {
+        "id": "P0-0050-M02",
+        "severity": "Major",
+        "rule": "Each CES entry consumer_document_sha256 and purpose equal the enclosing CES. Its binding_id, consumer_node, consumer_input, and purpose match exactly one required_input_contract of the selected Scope child; source_ref remains unclaimed because no matching supplied encoding exists.",
+        "reason": "v6 converts an entry directly into a PCE and compares CAS, but never proves that the claimed port belongs to the selected supplied intent or even its enclosing consumer/purpose.",
+        "adr_citations": ["decision-log.md:8539-8563", "decision-log.md:8606-8625", "decision-log.md:8663-8681"]
+      },
+      {
+        "id": "P0-0050-M03",
+        "severity": "Major",
+        "rule": "Each CES descriptor_root_ref, descriptor_snapshot_version, descriptor_document_sha256, descriptor_node, and descriptor_output equals its nested PublishedInputEntry root_ref, snapshot_version, producer_document_sha256, producer_node, and producer_output; descriptor_purpose equals CES entry/envelope purpose. The full phase-PIS item comparison remains required.",
+        "reason": "v6 proves only that the nested PIS item occurs in phase PIS, not that descriptor fields name that item. A root/snapshot/producer/port substitution remains locally admissible.",
+        "adr_citations": ["decision-log.md:8399-8428", "decision-log.md:8606-8625", "decision-log.md:8663-8681"]
+      }
+    ],
+    "reviewed_no_counterpart_or_external_only": [
+      "Issuance bases, revocation snapshot contents, gate set, scope authorization, stage admission, BVP plan/PCE payload, receipts, actual document, and resolver targets remain syntax-only external references or the preexisting fail-closed injected seam; no target traversal is authorized.",
+      "InputContract.source_ref is only S in the ADR grammar. Do not invent an encoding or resolver rule.",
+      "No BVP/CAS phase-PIS or component comparison may be asserted where the closed shape lacks that operand."
+    ]
+  },
+  "current_interface_observations": {
+    "trust": "trust.py publicly exports ReleaseKeyring and TrustedClock ABCs; canonical JSON helpers are private. LifecycleAuthority is public but this packet may neither use it nor edit trust.py.",
+    "verifier": "verifier.py currently exports HistoricalStudyVerifier and HistoricalStudyCaptureDriver. They are Packet-2/F4 capture facades; bind accepts ordinary artifact dictionaries and capture delegates to LifecycleAuthority. There is no Packet-3 preflight, revocation interface, or authorized integration point.",
+    "boundary": "Any later structural result remains opaque and deployment_eligible=false; it cannot resolve, authorize, capture, consume, open, import, construct, start a session, write WORM state, or create an execution handle."
+  },
+  "decision": {
+    "same_approach": "no-go",
+    "narrowed_matrix_correction": "go",
+    "red_authorization": false,
+    "deployment_eligible": false,
+    "rationale": "A fourth ordinary patch would repeat the failed prose-table method. One bounded docs-only v7 correction is worthwhile only if it first creates the exhaustive actual-field adjacency ledger and makes every comparator phase- and schema-conditioned. This splits remaining Phase-0 work into relationship inventory then fresh review, not the runtime packet."
+  },
+  "authorized_next_scope": {
+    "allowed_paths": ["docs/evidence/closeout/0048-f5a-p3-phase0-matrix-v6.json or a successor matrix record", "docs/evidence/closeout/0050-f5a-p3-phase0-convergence-checkpoint-v2.json"],
+    "allowed_work": [
+      "Docs-only matrix revision that replaces blanket common/direct-link prose with an exhaustive field-adjacency ledger over root PIS, phase PIS, Scope, ActionIntent/ReplayIntent, CES/CesEntry, PEA, BVP, CAS/PCE, and selected admission.",
+      "For every directly supplied field, record exactly one disposition: local self check, exact same-request comparator naming its counterpart, syntax-only external reference, or no counterpart. Assert a relation only where both closed schemas carry operands.",
+      "Correct P0-0049-M01 through M03 and P0-0050-M01 through M03; repair 0045 provenance hash; add RED rows for each comparator and forbidden nonexistent-field comparison.",
+      "Submit the frozen matrix, hashes, and ledger to a fresh independent Phase-0 skeptic. RED remains false unless that review has zero unresolved in-scope Critical/Major."
+    ],
+    "nonnegotiable_corrections": [
+      "CES/PEA-only phase-PIS link; Scope/root-PIS link in all profiles; predecessor-ref to producer-OutputContract link.",
+      "Scope-child study/component/profile links, CES-entry-to-envelope/selected-InputContract links, and descriptor-to-nested-PIS links, only across fields actually present.",
+      "Retain the BVP payload/PCE, basis, receipt, resolver, and source_ref limits; name all deliberately absent root/phase comparisons.",
+      "No generic 'all matching fields' rule: name fields and comparator so closed-schema absence cannot become a universal invalidity rule."
+    ],
+    "required_future_tests": [
+      "Future RED specifications cover all 0049/0050 Majors: action/replay profile substitutions, predecessor output name/schema/version/purpose grafts, parent/child study-component-profile swaps, outer-versus-entry consumer/purpose swaps, and descriptor/PIS root-snapshot-producer-port substitutions.",
+      "No tests are created or run here. Later RED preserves the no-effect sentinel and proves no capture/session/lifecycle call on every refusal."
+    ],
+    "forbidden": ["code", "tests", "trust.py edit", "verifier integration", "capture/session/admission consumption", "WORM mutation", "real activity", "merge", "push", "whole-F5a exit", "F3/F5b unblock"]
+  },
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "full ADR-0125 issuance-basis and BVP/PCE verification", "no trust.py edit", "no capture authorization", "no lifecycle effects", "no F3/F5b unblock"],
+  "checks": ["python3 -m json.tool docs/evidence/closeout/0050-f5a-p3-phase0-convergence-checkpoint-v2.json", "git diff --check"],
+  "next_gate": "Fresh independent Phase-0 review of the complete v7 field-adjacency matrix; no RED before zero unresolved Critical/Major."
+}

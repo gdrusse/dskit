@@ -1,0 +1,58 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "review_kind": "fresh independent Phase 0 adversarial review of v7 field-adjacency ledger",
+  "reviewer": {"agent_task": "/root/f5a_p3_phase0_skeptic_v7", "lens": "ADR exact grammar/actual supplied-field adjacency, public seams, and no-effect authority"},
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+    "artifacts": {
+      "matrix_v7": {"path": "docs/evidence/closeout/0051-f5a-p3-phase0-field-adjacency-matrix-v7.json", "sha256": "7d0c2c81fa5af3e762465147f3c9eabbf20a205203184711d55f331540a41b08"},
+      "checkpoint_0050": {"path": "docs/evidence/closeout/0050-f5a-p3-phase0-convergence-checkpoint-v2.json", "sha256": "5672c00232bdb9bd5229b8d31acb8822e05440a60b76f04474ef5f4d5bbd31ca"},
+      "matrix_v6": {"path": "docs/evidence/closeout/0048-f5a-p3-phase0-matrix-v6.json", "sha256": "85b735720a805a8a3bc912c81b0296a6d2c1ab0469e331800cadb6c9eb85f733"},
+      "review_v6": {"path": "docs/evidence/closeout/0049-f5a-p3-phase0-skeptic-v6.json", "sha256": "12bb9ff63817d9d4681f30d38cd809e8f52dd9d7cb343105b11c10f593b349fe"},
+      "adr_0125": {"path": "docs/architecture/decision-log.md", "lines": "8317-8952", "sha256": "023423830eca35871e67ea87bee51e88450a97ac3b1723588cd9c969ef859cc9", "line_range_sha256": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930"},
+      "packet_plan": {"path": "docs/plans/closeout-2026-09-14/01-capture-admission.md", "sha256": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae"},
+      "master_plan": {"path": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md", "sha256": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c"},
+      "frozen_trust": {"path": "dskit/pipeline/trust.py", "sha256": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5"},
+      "current_verifier": {"path": "dskit/production/verifier.py", "sha256": "5ced6cdb669ef0ae42fb337fe411136e99ba8370c19791d93851edc5e3d384fb"}
+    }
+  },
+  "scope_checked": ["ADR-0125:8317-8952 and Packet-3/master-plan limits", "all v7 L/C rows, profiles, actual schema operands, retained grammar, suffix/signature/revocation, and deliberate absences", "all 0049/0050 corrections and public ReleaseKeyring/TrustedClock-only no-effect seam"],
+  "findings": [
+    {
+      "id": "P0-0052-M01",
+      "severity": "Major",
+      "location": "0051:13-16 (retained_v6_exact_contract and L01); 0048:47-99, signed_envelope_rules",
+      "invariant": "A complete field-adjacency successor must retain v6's exact closed grammar, not replace it with an unenumerated local-check bucket.",
+      "evidence": "L01 says only ‘all named schema literals, scalar types, arrays, ordering ... roles/uses’; 0051.shapes is merely comma-separated field names. It omits the actual schema/literal/type tables, ActionId set, replay-set cardinality, AuthorityRef alternatives, array keys, and per-envelope role/use matrix that 0048 explicitly supplied. No v7 rule identifies which constant each field must equal.",
+      "worked_counterexample": "A preflight built from v7 can accept an arbitrary ActionIntent.schema, an arbitrary ActionIntentSet membership, or a CES issuer_role/key_usage while satisfying canonical parsing, the listed key names, self digest, signature, and every C01-C24 comparator; selecting the v6/ADR literal is not implementable from the v7 record.",
+      "consequence": "The claimed exhaustive ledger is both an overbroad grouped row and a regression in retained grammar: valid inputs are ambiguous and invalid grammar can pass. This defeats Packet 3's closed-schema/signature objective before any adjacency check.",
+      "required_correction": "Carry forward the complete v6 closed-shape, scalar/literal, array-sort, signed-suffix role/use, and profile tables verbatim (or an equally explicit per-envelope replacement), then make L01 enumerate only the precise local fields it owns. Preserve C01-C24 as additional explicit comparisons.",
+      "citations": ["0051:13-16", "0048:47-99", "decision-log.md:8328-8345", "decision-log.md:8548-8587", "decision-log.md:8606-8689"],
+      "disposition": "open"
+    },
+    {
+      "id": "P0-0052-M02",
+      "severity": "Major",
+      "location": "0051:C22-C24",
+      "invariant": "CES entries must be an exact, source-kind-correct binding of the selected intent's captured published-input contracts; a predecessor-output contract cannot be admitted as a CES/PCE capture and no required published-input contract may be omitted or repeated.",
+      "evidence": "C22 gives only CES-entry -> ‘exactly one’ selected InputContract comparison of four fields. It neither requires InputContract.source_kind == published-input nor the reverse/cardinality direction. Thus required_input_contracts has no exhaustive CES disposition; C15 governs predecessor edges but does not repair C22's one-way relation.",
+      "worked_counterexample": "For a selected action, supply two distinct CES entries with the same binding_id/node/input/purpose and different valid phase-PIS PublishedInputEntry values, while omit a second required published-input contract; each entry selects that first contract and C23/C24 mirror both into CAS. Alternatively select a predecessor-output contract with those four fields. All named v7 rows pass, but the tuple captures an extra/wrong port and omits a declared required input.",
+      "consequence": "A directly supplied input-contract/port substitution remains locally admissible, contradicting ADR's closed input-contract, CES/PCE projection, and missing/extra capture refusal requirements.",
+      "required_correction": "Require a bijection between CES entries and exactly the selected child contracts with source_kind published-input: each such contract occurs once with binding_id/consumer_node/consumer_input/purpose equal; predecessor-output contracts have no CES entry and retain C15's edge/ref rules. Keep source_ref syntax-only because the tuple has no peer encoding.",
+      "citations": ["0051:C15,C22-C24", "decision-log.md:8550-8563", "decision-log.md:8606-8625", "decision-log.md:8652-8689", "decision-log.md:8913-8927"],
+      "disposition": "open"
+    }
+  ],
+  "assessment": {
+    "prior_corrections": "0049 M01-M03 and 0050 M01-M03 are individually represented by C02/C15/C18-C24 and C08-C13, subject to the two open completeness failures above.",
+    "public_interface": "trust.py publicly exposes ReleaseKeyring and TrustedClock; verifier.py currently exposes only the Packet-2 HistoricalStudyVerifier/CaptureDriver facades. v7 correctly proposes no use of LifecycleAuthority or a private trust helper.",
+    "no_effect_boundary": "Still correctly non-authorizing in intent: no resolver, capture, session, WORM, admission consumption, import, construction, execution, or deployment is authorized. The open findings require docs-only contract repair, not a runtime expansion."
+  },
+  "summary": {"critical": 0, "major": 2, "minor": 0, "nit": 0, "verdict": "blocked", "red_authorization": false, "deployment_eligible": false, "reason": "v7 fixes prior named links but loses the executable closed grammar and omits a bidirectional CES-to-input-contract/source-kind binding."},
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "full basis and BVP/PCE verification", "no trust.py edit", "no capture/lifecycle effect", "no F3/F5b unblock"],
+  "commands": ["python3 -m json.tool docs/evidence/closeout/0052-f5a-p3-phase0-skeptic-v7.json", "git diff --check"],
+  "required_next_gate": "Repair both Major families in a successor docs-only matrix, retain all explicit prior links and no-effect limits, then obtain a fresh independent Phase-0 review; RED remains false."
+}

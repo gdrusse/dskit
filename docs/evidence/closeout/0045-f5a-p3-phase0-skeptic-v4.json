@@ -1,0 +1,74 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "review_kind": "fresh independent Phase 0 adversarial review of v4",
+  "reviewer": {"agent_task": "/root/f5a_p3_phase0_skeptic_v4", "lens": "ADR conformance, finite local grammar, direct links, trusted seams, and non-authorizing boundary"},
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "artifacts": {
+      "matrix_v4": {"path": "docs/review-evidence/F5a/0044-phase0-unsigned-schemas-signatures.v4.json", "sha256": "94f76cefc4cfbea345b6332c1a9818e916f648d5861068dcceb63d23fb5fbb21"},
+      "checkpoint_0043": {"path": "docs/review-evidence/F5a/0043-phase0-convergence-checkpoint.v1.json", "sha256": "181560f6ef6d2f312f6d63633c64fac4a8e6305d7b9e14c328e682e578474ae6"},
+      "adr_0125": {"path": "docs/architecture/decision-log.md", "lines": "8317-8952", "sha256": "023423830eca35871e67ea87bee51e88450a97ac3b1723588cd9c969ef859cc9"},
+      "packet_plan": {"path": "docs/plans/closeout-2026-09-14/01-capture-admission.md", "sha256": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae"},
+      "frozen_trust": {"path": "dskit/pipeline/trust.py", "sha256": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5"},
+      "current_capture_facade": {"path": "dskit/production/verifier.py", "sha256": "5ced6cdb669ef0ae42fb337fe411136e99ba8370c19791d93851edc5e3d384fb"}
+    }
+  },
+  "scope_checked": ["exact supplied-byte/envelope count and schemas", "scalar, signature, ID, recursive-shape, sort, uniqueness, and self-digest grammars", "P(CES)/P(BVP)/P(CAS), profiles, chronology, equality, and inequality rules", "injected signer/clock/revocation boundary and output/effect semantics", "local decidability without a resolver or caller-selected schema"],
+  "findings": [
+    {
+      "id": "P0-0045-M01", "severity": "Major",
+      "invariant": "The packet must define one executable, exact supplied-byte set that can prove the ADR PIS and P(CES)==P(BVP)==P(CAS) requirements.",
+      "location": "0044:5, 0044:19, 0044:26-29, 0044:36-38",
+      "evidence": "The six listed positions are ScopeIntent, CES, PEA, BVP, CAS, and one selected admission, although the request and every time rule say seven. PIS is absent. BVP contains only planned_capture_set_sha256, not the exact PlannedCaptureSet/PCE bytes needed to compute P(BVP); plan_sha256 is likewise only a token. CAS has entries, so the claimed local three-way projection comparison has no BVP operand.",
+      "adr_citations": ["ADR-0125 decision-log.md:8430-8445 defines the signed PIS and requires CES/PCE projections byte-identical to its named entry.", "ADR-0125 decision-log.md:8663-8680 defines the exact PlannedCaptureSet/PCE operand and requires byte-for-byte P(CES)==P(BVP), including PIS projections, order, and cardinality.", "ADR-0125 decision-log.md:8681-8691 extends that equality to CAS."],
+      "worked_counterexample": "A six-byte input can contain a canonical, correctly signed BVP whose planned_capture_set_sha256 equals CAS but whose unseen PlannedCaptureSet has different PCE entries. All v4 H and direct-digest checks can pass because no BVP PCE bytes were supplied, yet P(CES)!=P(BVP). Conversely, adding PIS and PlannedCaptureSet bytes violates the stated exact-seven/cardinality rule.",
+      "consequence": "The matrix either rejects a required operand or accepts an unprovable predecessor substitution; P3V4-02 and P3V4-07 cannot be implemented as claimed.",
+      "required_correction": "Choose and name a coherent supplied-byte set, with its exact cardinality and position map, and include every local operand needed for each claimed equality. Otherwise delete the P(BVP)/PIS verification claim and do not label the result ADR verification.", "disposition": "open"
+    },
+    {
+      "id": "P0-0045-M02", "severity": "Major",
+      "invariant": "A code-pinned exact schema must determine every accepted application scalar and the digest/signature bytes without a hidden schema.",
+      "location": "0044:6-7, 0044:20, 0044:23-29",
+      "evidence": "The envelope tables list bare application keys (for example study_id, phase, purpose, consumer_document_sha256, action_id, logical_execution_id, and run_id) rather than scalar/shape rules. The local-self sentence first says to omit only self, then gives a different signed-envelope rule. B64 is called canonical but has no alphabet, padding, decoded-byte, or keyring argument contract. The only existing keyring interface accepts an unspecified signature argument (trust.py:198-214), so the table cannot determine whether distinct encoded strings or decoded bytes reach Ed25519 verification.",
+      "adr_citations": ["ADR-0125 decision-log.md:8355-8362 requires closed default-deny canonical JSON and says both digest and Ed25519 preimage omit the named self digest and signature.", "ADR-0125 decision-log.md:8539-8565 and 8620-8674 give the exact typed ActionIntent and CES/PEA/BVP application shapes, not merely key names."],
+      "worked_counterexample": "A validly signed CES with a numeric consumer_document_sha256 or an invalid phase representation is not refused by any v4 table entry: it is a bare key. Two implementations can also select different B64 padding/alphabet/decoding rules yet both satisfy the prose canonical base64, producing incompatible signature verification for identical supplied bytes.",
+      "consequence": "The promised private constants cannot independently implement P3V4-03/P3V4-05. Acceptance becomes an implementation-specific or hidden schema decision, contrary to the checkpoint's finite code-pinned grammar approach.",
+      "required_correction": "Replace every bare application key with an exact scalar, closed union, array, or nested-shape rule; state one unambiguous signed-object digest/preimage rule; and define B64's RFC variant, padding, decoding, and the exact value passed to ReleaseKeyring.verify.", "disposition": "open"
+    },
+    {
+      "id": "P0-0045-M03", "severity": "Major",
+      "invariant": "A value called an ADR-0125 verified envelope must verify its issuance basis and the required direct basis refs; a syntax-only H token is not that proof.",
+      "location": "0044:5, 0044:20, 0044:37, 0044:39",
+      "evidence": "v4 explicitly classifies issuance_basis_sha256 as unresolved and forbids fetching/parsing/validating its target. It therefore never supplies or verifies IssuanceBasis.v1, its signature, kind, sorted refs, phase-specific tuple, or key-use mapping. Revocation is separately delegated, but no analogous trusted basis verifier/injected basis bytes exists.",
+      "adr_citations": ["ADR-0125 decision-log.md:8359-8388 requires a verifier to check basis and every linked digest, and defines IssuanceBasis.v1 plus its closed refs and required signer/key-use mapping.", "ADR-0125 decision-log.md:8613-8639 requires PEA's exact phase/tag basis facts; decision-log.md:8663-8666 requires the BVP basis and exact PCE-bearing plan."],
+      "worked_counterexample": "A correctly signed PEA with the right visible issuer_role/key_usage can name an arbitrary syntactically valid issuance_basis_sha256 rather than a basis naming its PIS, CES, intent, and phase authority. The v4 parser returns a VerifiedEnvelopes value because no supplied or trusted basis check can reject it.",
+      "consequence": "Wrong-predecessor and wrong-authority substitutions that ADR-0125 requires to refuse are accepted as verified. Making the output non-authorizing limits immediate effects but does not make the claimed verification or Packet 3 predecessor-refusal criterion true.",
+      "required_correction": "Either add exact basis evidence/verification to the supplied local set (with a closed, trusted verifier contract), or explicitly reduce the result to a non-ADR syntactic parser and remove the verified/predecessor-refusal claims; that scope change needs approval before RED.", "disposition": "open"
+    },
+    {
+      "id": "P0-0045-M04", "severity": "Major",
+      "invariant": "The embedded six-action DAG must locally reject malformed predecessor, edge, and input bindings even when external digest targets remain unresolved.",
+      "location": "0044:11-15, 0044:32-37",
+      "evidence": "v4 sorts lists but never requires predecessor_action_ids to equal the distinct predecessor_action_id values in predecessor_output_refs, requires neither to name a different in-scope action at an earlier topological position, and does not bind predecessor-output InputContract.source_ref to either list. action_dag_sha256 and edge_set_sha256 are explicitly unresolved. Profile/direct-link rows only compare the selected subject and outer digests.",
+      "adr_citations": ["ADR-0125 decision-log.md:8539-8565 requires the closed action DAG, exact predecessor-output refs, root/nonroot rules, and EdgeSetEntry; it states no graph, edge, port, parameter, candidate, or contract is inferred.", "ADR-0125 decision-log.md:8738-8745 requires Stage validation to reject DAG skip, reorder, branch graft, and cross-output bindings."],
+      "worked_counterexample": "Set A2's sorted predecessor_action_ids and predecessor_output_refs to A2 itself, give it a predecessor-output InputContract whose source_ref names an unrelated value, and keep its direct subject/digest links self-consistent. It is nonroot and satisfies every stated local sort/root/profile/direct-link rule, despite a self-cycle and unbound input.",
+      "consequence": "The finite local grammar still permits graph and predecessor substitutions that need no resolver to detect. P3V4-05, P3V4-06, P3V4-08, and P3V4-10 overstate their coverage.",
+      "required_correction": "Add locally decidable cross-field rules for action membership, strict predecessor order, ID/ref set equality, and predecessor-output contract binding; explicitly test each mutation. Keep genuinely external digest targets unresolved only after these embedded facts are closed.", "disposition": "open"
+    },
+    {
+      "id": "P0-0045-M05", "severity": "Major",
+      "invariant": "Every trusted injection must have a frozen, independently testable interface and no caller-selected schema or hidden policy.",
+      "location": "0044:5-7, 0044:20, 0044:38",
+      "evidence": "v4 names HistoricalStudyRevocations and a method call but defines no ABC, input/output types, construction authority, or exact snapshot semantics in its code-pinned tables. Repository search finds no such interface; the only frozen analogous interfaces are ReleaseKeyring and TrustedClock ABCs in trust.py:198-233. Thus a future implementation must invent a trust boundary outside the matrix, while the matrix's tests merely say injection substitution refuses.",
+      "adr_citations": ["ADR-0125 decision-log.md:8359-8362 requires trusted time and revocation snapshot verification for each envelope; the packet plan at 01-capture-admission.md:38-41 requires trusted signer/clock/revocation inputs and a proportional contract matrix."],
+      "worked_counterexample": "Two implementations can both expose is_unrevoked(snapshot,key_id,key_version,now_ms) but one treats an unknown snapshot as False and the other lazily treats it as an empty unrevoked set; neither behavior is selected by v4, so the same supplied envelope is not locally decidable from the frozen contract.",
+      "consequence": "P3V4-01/P3V4-04 cannot prove the claimed fail-closed revocation boundary, and a materially trusted seam remains caller/implementation-chosen.",
+      "required_correction": "Freeze a closed ABC/protocol and its fail-closed semantics in the matrix and module design, including exact-bool handling, unknown snapshots, exceptions, and injected-instance admission. Pin it alongside the schema tables before RED.", "disposition": "open"
+    }
+  ],
+  "summary": {"critical": 0, "major": 5, "minor": 0, "nit": 0, "verdict": "blocked", "red_authorization": false, "deployment_eligible": false, "reason": "Five independent Major defects leave v4 unable to define and prove its stated local envelope set, exact grammar, PCE comparison, issuance chain, embedded DAG, and revocation seam."},
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "no trust.py route or lifecycle effect"],
+  "required_next_gate": "Revise the Phase 0 contract to resolve every Major, then obtain a fresh independent skeptic review before any RED work."
+}

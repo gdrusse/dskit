@@ -1,0 +1,95 @@
+{
+  "schema_version": "ReviewVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "review_kind": "Phase 0 design skeptic",
+  "reviewer_provenance": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/f5a_p3_phase0_skeptic",
+    "lens": "authority, schema closure, transitive binding, and pre-effect refusal"
+  },
+  "reviewed_base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "preserved_source_ref": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "matrix": {
+    "path": "docs/review-evidence/F5a/0037-phase0-unsigned-schemas-signatures.v1.json",
+    "sha256": "4367ec71b0bb2eba0b03f78710c78533e89bac3151f143ee7c61d8fe9e7207cc",
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868"
+  },
+  "contract_sources": {
+    "adr_0125": "docs/architecture/decision-log.md:8317-8952",
+    "packet_plan": "docs/plans/closeout-2026-09-14/01-capture-admission.md",
+    "source_evidence": [
+      "c489199:docs/review-evidence/F5a/0027-review-verdict.v1.json",
+      "c489199:docs/review-evidence/F5a/0028-owner-decision.v1.json",
+      "c489199:docs/review-evidence/F5a/0029-owner-decision.v1.json",
+      "c489199:docs/review-evidence/F5a/0030-phase0-driver-only.v1.json",
+      "c489199:docs/review-evidence/F5a/0031-phase0-design-verdict.v1.json",
+      "c489199:docs/review-evidence/F5a/0032-phase0-driver-only.v1.json"
+    ],
+    "implementation_surfaces": [
+      "dskit/production/verifier.py:HistoricalStudyVerifier.__init__/bind/capture",
+      "dskit/production/verifier.py:HistoricalStudyCaptureDriver.capture",
+      "dskit/pipeline/trust.py:LifecycleAuthority and _DevelopmentBroker.capture"
+    ]
+  },
+  "findings": [
+    {
+      "id": "F5A-P3-P0-001",
+      "severity": "major",
+      "invariant": "Every ADR-0125 issuance basis, linked digest, PIS projection, planned capture set, and admission predecessor required by the six artifacts is resolved from exact canonical bytes and verified; a hash spelling is not verification of its target.",
+      "location_entry_point": "0037 object_set/trusted_inputs/contract and P3-05/P3-17/P3-18; HistoricalStudyVerifier.bind.",
+      "worked_counterexample": "Supply six individually canonical, correctly signed objects. CES names an issuance_basis_sha256 for an unavailable or unrelated basis/PIS; BVP names a planned_capture_set_sha256 for a different PlannedCaptureSet; an action admission names a stage admission, or a replay admission names a final manifest/final replay entry, that is not supplied. bind receives only the six bytes and has no trusted resolver or attestation collaborator. It can compare exposed hash strings but cannot obtain and verify the IssuanceBasis.v1 refs, PIS, PCE set, StageAdmission, ScopeAuthorization, FinalManifest, or FinalReplayEntry. Thus an implementation satisfying the matrix can accept signed dangling or substituted predecessors and cannot prove P(CES)==P(BVP), the basis mapping, or the stated predecessor chain.",
+      "consequence": "A capture can be admitted from a signed but unrelated or unproven planning chain. This defeats the required basis/predecessor/equality protections and makes the claimed six-object closure false.",
+      "defect_family": "unresolvable transitive artifact closure",
+      "required_disposition": "Do not authorize RED. Obtain an owner-approved matrix/ADR clarification: either bind the exact additional canonical artifacts needed for each asserted check, or add a frozen trusted resolver/attestation seam with an exhaustive object and effect contract. If Packet 3 intentionally defers any of these links to Packets 4-8, remove the corresponding acceptance claims and positive capture authority from this packet, then repeat Phase 0."
+    },
+    {
+      "id": "F5A-P3-P0-002",
+      "severity": "major",
+      "invariant": "The verified chain must bind the actual F4 capture arguments to the authorized consumer document, port, and published input before LifecycleAuthority.capture can create CAPTURED or a LaunchSession.",
+      "location_entry_point": "0037 contract.atomicity and P3-15/P3-17/P3-21; HistoricalStudyVerifier.capture and HistoricalStudyCaptureDriver.capture; dskit/pipeline/trust.py:_DevelopmentBroker.capture.",
+      "worked_counterexample": "Bind a valid action chain whose CES/PEA/BVP/CAS authorize consumer-document digest D and one PIS descriptor. Invoke capture with a separately F4-frozen, self-consistent document and derived port for digest D2/published input B. The matrix requires revalidation of six raw artifacts, but does not require a comparison from frozen/port/published to those artifacts; LifecycleAuthority exposes no generic capture-context attestation API and the frozen trust handle is opaque. The existing F4 broker validates only that published, frozen, and port agree with each other, then appends CAPTURED and creates a session. Therefore the matrix permits an implementation that validates the artifact chain yet captures a different F4 document/input.",
+      "consequence": "The promised document/PIS/predecessor equality does not protect the effectful capture boundary; a valid chain can be used to open a session for an unauthorized frozen document or published input.",
+      "defect_family": "artifact-to-effect binding omission",
+      "required_disposition": "Do not authorize RED. Add an explicit fail-before-delegation capture-context binding invariant and matrix rows for substituted frozen document, port, and published handle. Define a permitted generic attestation/equality seam (or a sufficient public port projection) without editing frozen trust.py; if none exists, obtain owner approval for the necessary seam or defer this capture-positive behavior."
+    },
+    {
+      "id": "F5A-P3-P0-003",
+      "severity": "major",
+      "invariant": "Only an atomically consumed ActionExecutionAdmission or FinalReplayAdmission is execution authority; a static signed admission must not itself authorize capture/session creation.",
+      "location_entry_point": "0037 object_set closure, trusted_inputs.lifecycle, contract.atomicity/positive, and P3-04/P3-21/P3-22; HistoricalStudyVerifier.capture.",
+      "worked_counterexample": "The proposed action/replay admission schemas contain no consumed boolean (0037 correctly forbids one), and Packet 3 explicitly adds no durable admission-consumption authority while F5A-R23 remains open. Nevertheless P3-22 requires a fully signed synthetic chain to reach the unchanged F4 capture doorway. Replaying the same signed raw admission through a fresh verifier/process has no trusted WORM state showing that its first port/session consumption occurred. Any local verifier flag is the stopped F5A-R23 family, not ADR-0125 admission consumption. The unchanged F4 writer then makes CAPTURED and LaunchSession without the required atomic consume.",
+      "consequence": "Packet 3's positive path can turn a reusable signed admission into execution authority, violating ADR-0125 chronology and leaving capture/session effects reachable before valid admission consumption.",
+      "defect_family": "missing durable admission-consumption authority",
+      "required_disposition": "Do not authorize RED for capture-positive Packet 3. Keep schema/signature parsing strictly non-effectful until an owner-approved durable admission/port-issuance seam exists, or explicitly move the positive capture path and its assertions to the packet that owns durable consumption. Retain F5A-R23 as open; no local identity container or payload field is an acceptable substitute."
+    }
+  ],
+  "validated_design_points": [
+    "ReleaseKeyring and TrustedClock are proportional existing seams for signature verification and trusted time, provided callers enforce exact Ed25519, role, key use, and closed key shape before keyring verification.",
+    "A separate fail-closed revocation abstraction is non-duplicative in principle: keyring verifies a signature while revocation decides snapshot/key/version status at trusted now. Its exact method contract and trusted snapshot source still need specification before implementation.",
+    "Raw exact built-in bytes, canonical decoding, duplicate-key refusal, and nested default-deny validation are appropriate for objects actually supplied or resolved; they cannot establish omitted transitive objects.",
+    "The current public driver retains the Packet 2 exact-verifier delegation boundary; no new parser, CLI, production export, pipeline import, or trust.py change was proposed by 0037."
+  ],
+  "probes_run": [
+    "Read root AGENTS.md, docs/skills/implementation-workflow.md, docs/skills/skeptic-review.md, the Packet 3 plan, ADR-0125 lines 8317-8952, current verifier/tests, and source evidence 0027-0032 at c489199.",
+    "Verified HEAD=390dc851e3704e8db4d2a6a4d4e7aa0412a69899 and origin/cursor/r5-f5a-private-plan-0f39=c48919944588a2b29ba047e4cb551050a1ff9868; did not alter the source ref.",
+    "Computed 0037 matrix SHA-256=4367ec71b0bb2eba0b03f78710c78533e89bac3151f143ee7c61d8fe9e7207cc.",
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py: 115 passed in 0.65s (Packet 2/F4 baseline only; no Packet 3 implementation exists).",
+    "Static F4 trace: _DevelopmentBroker.capture checks the published/frozen/port tuple's internal consistency, appends CAPTURED, and creates LaunchSession; LifecycleAuthority has no generic artifact-chain or admission-consumption attestation method."
+  ],
+  "untested_limits": [
+    "No Packet 3 code or RED fixtures exist, so Ed25519, canonical-byte, revocation, and proposed resolver behavior could not be executed.",
+    "No real data, replay, HPO, refit, backtest, paper/live action, deployment, merge, push, or edit to dskit/pipeline/trust.py was performed.",
+    "This review treats hostile input as in scope and does not assert an in-process Python interpreter-security boundary beyond the separately retained F5A-R23 finding."
+  ],
+  "unresolved_counts": {
+    "critical": 0,
+    "major": 3,
+    "minor": 0,
+    "nit": 0
+  },
+  "conclusion": "not-clean: three unresolved Major design defects; RED is not authorized. Whole F5a and F5A-R23-ctor-intern-unspend remain open.",
+  "deployment_eligible": false
+}

@@ -1,0 +1,74 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "review_kind": "fresh independent Phase 0 adversarial review of v6",
+  "reviewer": {"agent_task": "/root/f5a_p3_phase0_skeptic_v6", "lens": "ADR accuracy, finite local implementability, public seams, and no-effect boundary"},
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+    "artifacts": {
+      "matrix_v6": {"path": "docs/evidence/closeout/0048-f5a-p3-phase0-matrix-v6.json", "sha256": "85b735720a805a8a3bc912c81b0296a6d2c1ab0469e331800cadb6c9eb85f733"},
+      "review_0047_v5": {"path": "docs/evidence/closeout/0047-f5a-p3-phase0-skeptic-v5.json", "sha256": "d7ba5f6ebd0e7037af509023a217887e17eca772ca711cf8681dae5cf851d074"},
+      "review_0045_v4": {"path": "docs/evidence/closeout/0045-f5a-p3-phase0-skeptic-v4.json", "sha256": "52847d72b49982b66df719e8ec3e4462595259fc13eb6a1a19f31ba98d8c09cc"},
+      "checkpoint_0043": {"path": "docs/review-evidence/F5a/0043-phase0-convergence-checkpoint.v1.json", "sha256": "181560f6ef6d2f312f6d63633c64fac4a8e6305d7b9e14c328e682e578474ae6"},
+      "adr_0125": {"path": "docs/architecture/decision-log.md", "lines": "8317-8952", "sha256": "023423830eca35871e67ea87bee51e88450a97ac3b1723588cd9c969ef859cc9"},
+      "packet_plan": {"path": "docs/plans/closeout-2026-09-14/01-capture-admission.md", "sha256": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae"},
+      "frozen_trust": {"path": "dskit/pipeline/trust.py", "sha256": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5"},
+      "current_verifier": {"path": "dskit/production/verifier.py", "sha256": "5ced6cdb669ef0ae42fb337fe411136e99ba8370c19791d93851edc5e3d384fb"}
+    }
+  },
+  "scope_checked": ["all 0047 correction mappings", "every supplied schema field, suffix, self/preimage/signature and comparator", "Scope/PIS/profile/subject/DAG/PIS-CES-CAS direct relationships", "public ReleaseKeyring and TrustedClock seam, proposed revocation seam, and opaque no-effect result", "stated RED coverage"],
+  "findings": [
+    {
+      "id": "P0-0049-M01", "severity": "Major", "location": "0048:92-95,100",
+      "invariant": "A local-link comparison may name only fields carried by every closed schema it claims to compare.",
+      "evidence": "The common profile rule requires CES/PEA/BVP/CAS.published_input_set_sha256 to equal phase PIS. The exact BVP table has no such field, and the exact CAS table has no such field.",
+      "worked_counterexample": "An ADR-shaped BVP and CAS validate their closed key sets but cannot supply the comparison operand. An implementation must reject every valid tuple, skip the declared link, or add forbidden keys.",
+      "consequence": "The retained v6 preflight is internally unimplementable for every valid BVP/CAS and its PIS-link RED cannot be written truthfully.",
+      "required_correction": "Restrict direct phase-PIS digest equality to CES and PEA. Bind BVP/CAS through their actual PEA/CES/PCE fields, and add separate RED mutations for each allowed link.",
+      "citations": ["0048:92-95,100", "decision-log.md:8606-8619", "decision-log.md:8627-8643", "decision-log.md:8652-8659", "decision-log.md:8683-8691"], "disposition": "open"
+    },
+    {
+      "id": "P0-0049-M02", "severity": "Major", "location": "0048:89,101-105",
+      "invariant": "The supplied root PIS must be the root PIS bound by ScopeIntent in every profile; stage/replay phase-PIS non-equality does not remove that independent relationship.",
+      "evidence": "ScopeIntent carries published_input_set_sha256, and the tuple always supplies root_pis_bytes. v6 compares those only in bootstrap. Scope-action and replay-pre-final explicitly avoid only a root-PIS/phase-PIS comparison, but state no Scope/root-PIS equality.",
+      "worked_counterexample": "For a scope-action tuple, use Scope.published_input_set_sha256=h_scope and a valid separately signed root PIS with self digest h_other. Keep phase PIS, CES, PEA, BVP, CAS, subject, signatures, root action memberships, and admission consistent. Every stated v6 rule passes despite Scope naming a different root PIS.",
+      "consequence": "A directly supplied root identity substitution passes the claimed local Scope/PIS/DAG preflight, and root-PIS membership is checked against the wrong supplied set.",
+      "required_correction": "Always require ScopeIntent.published_input_set_sha256 == root PIS self. Continue to impose no equality or inequality between root PIS and the separate stage/replay phase PIS.",
+      "citations": ["0048:29-31,89,101-105", "decision-log.md:8430-8448", "decision-log.md:8498-8511"], "disposition": "open"
+    },
+    {
+      "id": "P0-0049-M03", "severity": "Major", "location": "0048:74-77,108",
+      "invariant": "A predecessor-output ref and its matching edge/input contract must name the output contract of the supplied predecessor action, so an output graft cannot pass the embedded DAG checks.",
+      "evidence": "v6 relates predecessor IDs, refs, edges, and the consuming input contract, but never compares a ref's output_name/output_schema/output_version/purpose with the OutputContract of the action named by predecessor_action_id.",
+      "worked_counterexample": "Let A2 name A1 as a prior predecessor and use a ref/edge/input-contract tuple for (forged-output, forged-schema, v9, forged-purpose), while supplied A1.output_contract is (actual-output, actual-schema, v1, actual-purpose). Ordering, membership, ref/edge/input matching, and all signatures pass under v6.",
+      "consequence": "A directly supplied cross-output graft survives the asserted local DAG validation, contrary to ADR's input/output-contract and cross-output refusal requirement.",
+      "required_correction": "For every predecessor ref, select its supplied predecessor action and require equality of output_name, output_schema, output_version, and purpose with that action's OutputContract; cover forged-output/schema/version/purpose mutations in RED.",
+      "citations": ["0048:74-77,108,111-118", "decision-log.md:8550-8563", "decision-log.md:8737-8747", "decision-log.md:8921-8927"], "disposition": "open"
+    },
+    {
+      "id": "P0-0049-m01", "severity": "Minor", "location": "0048:12",
+      "invariant": "Evidence-source hashes identify the reviewed byte stream exactly.",
+      "evidence": "0048 records 0045's hash as ...a1a19; sha256sum of the named file is ...a1e19.",
+      "consequence": "The v6 provenance link to 0045 is not mechanically reproducible, although the actual v5 review hash and substantive inputs are correct.",
+      "required_correction": "Replace the one incorrect hash character before the next matrix revision.",
+      "citations": ["0048:12"], "disposition": "open"
+    }
+  ],
+  "assessment": {
+    "0047_corrections_verified": {
+      "P0-0047-M01": "resolved: the proposed preflight uses a private verifier serializer and only public ReleaseKeyring/TrustedClock interfaces; trust.py exports both at lines 22-35 and defines their ABCs at 198-233.",
+      "P0-0047-M02": "resolved: v6 correctly excludes CAS from component_manifest_sha256 comparison.",
+      "P0-0047-M03": "resolved: v6 selects Scope child by complete subject kind, ID, and child self digest before child comparisons.",
+      "P0-0047-M04": "resolved: v6 requires every root input ID to identify exactly one supplied root-PIS entry.",
+      "P0-0047-M05": "resolved: v6 specifies a canonical-byte B/K comparator, strict identities, and a non-ASCII case."
+    },
+    "retained_valid_boundary": "The narrow structural result remains explicitly non-authorizing: no captured input, resolver, lifecycle authority, WORM transition, capture, session, import, construction, execution, or output is accepted. The proposed revocation ABC is implementable as a new verifier public seam, subject to exporting it in verifier.__all__.",
+    "red_coverage": "Current RED rows cover the five v5 corrections, but do not cover M01's absent BVP/CAS fields, M02's Scope/root-PIS substitution outside bootstrap, or M03's predecessor OutputContract graft."
+  },
+  "summary": {"critical": 0, "major": 3, "minor": 1, "nit": 0, "verdict": "blocked", "red_authorization": false, "deployment_eligible": false, "reason": "v6 resolves the five 0047 findings but still names nonexistent BVP/CAS fields and omits two directly supplied Scope/DAG relationships."},
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "no trust.py edit", "no capture authorization", "no lifecycle effects", "no F3/F5b unblock"],
+  "commands": ["python3 -m json.tool docs/evidence/closeout/0049-f5a-p3-phase0-skeptic-v6.json", "git diff --check"],
+  "required_next_gate": "Correct all three Majors, preserve the narrow no-effect boundary, and obtain a fresh independent Phase 0 review before RED."
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": "RedGreenEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "phase0_gate": {
+    "matrix": {"path": "docs/evidence/closeout/0053-f5a-p3-phase0-field-adjacency-matrix-v8.json", "sha256": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85"},
+    "review": {"path": "docs/evidence/closeout/0054-f5a-p3-phase0-skeptic-v8.json", "sha256": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9"},
+    "verdict": "clean",
+    "red_authorization": true
+  },
+  "red": {
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py",
+    "result": "32 failed",
+    "reason": "HistoricalStudyRevocations and the bounded preflight/result symbols did not exist.",
+    "authorized_scope": "synthetic non-authorizing structural/signature preflight only"
+  },
+  "green": {
+    "focused_command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py",
+    "focused_result": "32 passed in 0.17s",
+    "proportional_command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py",
+    "proportional_result": "147 passed in 0.32s",
+    "lint_command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py tests/production/test_adr0125_preflight.py",
+    "lint_result": "All checks passed",
+    "diff_check": "git diff --check: pass"
+  },
+  "implementation": {
+    "files": {
+      "dskit/production/verifier.py": "5ef1ce5c512a77b1be606dc26e6d38deb299eb1976a3254c6e5be3f3ae505a86",
+      "tests/production/test_adr0125_preflight.py": "6fa7dc089ac6b4d0afe2213a8ccb36bebd88b372c74e5118ff9e1601fde1c400",
+      "dskit/pipeline/trust.py": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5",
+      "tests/production/test_capture_lifecycle.py": "e357f7c71e93b63e29d4ae5c92ff8f5ef9c60a63269dcfb7220e9f3e1d88d782",
+      "tests/pipeline/test_trust.py": "ec3b43002c0f60343da95c9a181ca28413aef5b334fdb01a287163dec2c3e242"
+    },
+    "new_public_symbols": ["HistoricalStudyRevocations", "HistoricalStudyEnvelopePreflight", "NonAuthorizingAdr0125StructuralSignaturePreflight"],
+    "effects": "none: the verifier accepts only eleven exact byte values plus public keyring/clock and verifier-local revocation collaborators; it has no lifecycle, resolver, capture, session, WORM, import, construction, execution, or admission-consumption route",
+    "result": "opaque, non-copyable, non-serializable, deployment_eligible=false"
+  },
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "full issuance-basis and BVP/PCE verification", "no trust.py edit", "no capture/lifecycle effect", "no F3/F5b unblock"],
+  "next_gate": "Freeze an immutable candidate commit, then obtain two sequential fresh final reviews."
+}

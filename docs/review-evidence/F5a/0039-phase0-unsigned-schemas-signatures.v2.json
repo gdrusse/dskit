@@ -1,0 +1,119 @@
+{
+  "schema_version": "Phase0Matrix.v2",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "preserved_source_ref": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "supersedes": {
+    "matrix": "docs/review-evidence/F5a/0037-phase0-unsigned-schemas-signatures.v1.json",
+    "review": "docs/review-evidence/F5a/0038-phase0-unsigned-schema-review.v1.json",
+    "reason": "0038 proved that 0037 claimed unresolvable transitive verification and an effectful positive path. This successor narrows Packet 3 to a non-effectful canonical verification value and makes any claimed transitive closure an exact supplied input."
+  },
+  "owner_decision": {
+    "decision": "Packet 3 is only a canonical schema, digest, signature, time, revocation, and supplied-artifact-closure verifier.",
+    "forbidden": [
+      "It does not construct, bind, retain, inspect, or call HistoricalStudyVerifier.",
+      "It does not import, receive, retain, or call LifecycleAuthority, LifecycleAuthority.capture, _DevelopmentBroker, or any capture/session/member/import/root/output API.",
+      "It does not turn a verified value, signed admission, or raw artifact into capture authority, session authority, a consumed admission, or deployment eligibility."
+    ],
+    "packet_2_boundary": "Packet 2 remains byte-for-byte behaviorally unchanged. Its HistoricalStudyVerifier placeholder bind and F5A-R23-ctor-intern-unspend are inherited open integration risks, not evidence of Packet 3 closure."
+  },
+  "contract_sources": {
+    "adr_0125": "docs/architecture/decision-log.md:8317-8952",
+    "packet_plan": "docs/plans/closeout-2026-09-14/01-capture-admission.md",
+    "prior_findings": ["F5A-P3-P0-001", "F5A-P3-P0-002", "F5A-P3-P0-003", "F5A-R23-ctor-intern-unspend"],
+    "frozen_dependency": "dskit/pipeline/trust.py is not edited by this packet."
+  },
+  "public_entry_points": {
+    "new": [
+      "HistoricalStudyCanonicalVerifier.__init__(keyring, clock, revocations, schema_registry)",
+      "HistoricalStudyCanonicalVerifier.verify(request_bytes)",
+      "OpaqueVerifiedHistoricalStudyChain"
+    ],
+    "unchanged_not_packet_3_entries": [
+      "HistoricalStudyVerifier.__init__", "HistoricalStudyVerifier.bind", "HistoricalStudyVerifier.capture", "HistoricalStudyCaptureDriver.capture", "LifecycleAuthority.capture"
+    ],
+    "output": "verify returns only an opaque, non-copyable/non-serializable verified-chain value with deployment_eligible exactly false. It exposes no raw authority, lifecycle handle, capture method, session, admission-consumed state, or callable effect route. Constructor and verify return no lifecycle object on either success or refusal."
+  },
+  "verification_request": {
+    "input_type": "exact built-in bytes only; dict, str, bytearray, bytes subclass, decoded JSON, iterable of objects, and pre-indexed resolver values refuse",
+    "request_schema": "dskit.historical-study-verification-request/v1",
+    "exact_top_level_keys": ["artifacts", "profile", "schema", "target"],
+    "canonical_encoding": "UTF-8, ASCII-only canonical JSON with sorted keys, compact separators, finite numbers, duplicate-key refusal, and byte-for-byte canonical re-encoding equality. Every artifact payload is exact canonical UTF-8 JSON bytes encoded as unpadded base64url; decoding and re-encoding must be identical.",
+    "target": "Exactly one {schema,sha256} target. profile is exactly action-execution-admission or final-replay-admission and must agree with the target schema.",
+    "artifact_item": "Exactly {schema,sha256,canonical_json_b64}; items sort by (schema,sha256), are unique by that pair and by sha256, and sha256 is the named self-digest of the decoded object. No item is a supplied parsed object or a URL/path/resolver handle.",
+    "exact_closure_rule": "After parsing the target, the artifact set must equal—not merely contain—the transitive closure of all artifact identities named by every validated application field and every IssuanceBasisRef reachable from the target. Each named identity resolves to exactly one supplied item with the expected schema, kind, role, and canonical self-digest. A missing target, duplicate, unreachable extra, unknown schema, unrecognized reference form, cycle, self-reference, future-output reference, or unresolved hash refuses. A syntactically lower-case hash is never described as verified until this resolution and its target validation finish.",
+    "external_dependency_rule": "A closure edge whose schema is outside the pinned registry is not an opaque success: verify refuses as unsupported-external-schema. It may be admitted only after a later approved registry entry supplies that exact schema, canonical validator, issuer/key-use rule, and dependency blob pin. revocation_snapshot_sha256 is the sole exception: it is a trusted revocation-seam lookup identifier, not an artifact closure claim."
+  },
+  "required_artifact_profiles": {
+    "action-execution-admission": [
+      "Target ActionExecutionAdmission.v1 and its IssuanceBasis.v1.",
+      "The exact HistoricalStudyStageAdmission.v1 tuple, ScopeAuthorization.v2, ScopeIntent.v1, ActionIntent.v1, ActionIntentSet.v1, ReplayIntentSet.v1, all complete G0--G7 GateEvidenceRef.v1 values, gate-set inputs, and all their issuance bases and referenced closure.",
+      "Every bootstrap PEA/CES/BVP/CaptureAdmissionSet tuple required by ScopeAuthorization, its ExecutionDocumentContract.v1, PlannedCaptureSet.v1, every PlannedCaptureEntry.v1, the exact PIS and every referenced root publication authorization/receipt/PIS entry, plus every issuance basis and recursively referenced object.",
+      "For the target stage, the exact PEA/CES/BVP/CaptureAdmissionSet/PlannedCaptureSet/PCE tuple, ExecutionDocumentContract, PIS, and all predecessor StageAdmission/ActionExecutionAdmission/publication-receipt/PIS objects named by it, with every issuance basis/ref closure."
+    ],
+    "final-replay-admission": [
+      "Target FinalReplayAdmission.v1 and its IssuanceBasis.v1.",
+      "The exact HistoricalStudyManifest.v2, both FinalReplayEntry.v1 values, both ReplayIntent.v1 values and ReplayIntentSet.v1, the full ScopeAuthorization/ScopeIntent/action-intent/gate closure, and every issuance basis/ref closure.",
+      "Every stage admission, action execution admission, stage publication receipt/output, release output, PIS and predecessor artifact that the Final Manifest validates, including all complete root bootstrap tuples.",
+      "For each of the two pre-final replay entries, its exact replay PIS/CES/PEA/BVP/CaptureAdmissionSet/PlannedCaptureSet/PCE/ExecutionDocumentContract tuple, each named published receipt, and all issuance bases/ref closure."
+    ],
+    "excluded_from_both": "CapturedPortAuthorization.v2, LifecycleCapturedReceipt.v2, CapturedAuthorizationSet.v2, ReplayCaptureAdmissionEvidence.v1, LaunchSession, live ports, frozen documents, published handles, member handles, runtime measurements, and all mutable/WORM consumption state are not valid request artifacts or outputs in Packet 3."
+  },
+  "trusted_seams": {
+    "keyring": "Injected instance of dskit.pipeline.trust.ReleaseKeyring only. After local closure, schema, key-shape, issuer/key-use, and signature_alg == Ed25519 checks, it is called exactly as verify(key_id, key_version, issued_at_ms, canonical_preimage_bytes, signature). True of exact bool type is required; False, a non-bool, or a raise refuses. The configured keyring is the trusted source for the (key_id,key_version,issued_at_ms) Ed25519 public-key selection; Packet 3 has no signing key, algorithm fallback, key fallback, or caller key material.",
+    "clock": "Injected instance of dskit.pipeline.trust.TrustedClock only. now_ms() must return a non-bool int and is read for validation; caller timestamps never substitute for it. not_before_ms <= issued_at_ms <= expires_at_ms and not_before_ms <= now_ms <= expires_at_ms are mandatory; a clock error or invalid result refuses.",
+    "revocations": "Injected HistoricalStudyRevocations with exactly is_unrevoked(revocation_snapshot_sha256, key_id, key_version, now_ms) -> bool. The snapshot id must be a lower-case SHA-256 token already present in each signed envelope, but its source/content is asserted only by this trusted seam, not by a dangling artifact claim. Exact bool True is required independently for every signed artifact at the same trusted now_ms; False, non-bool, unknown snapshot/key/version, or a raise refuses.",
+    "schema_registry": "A static, code-pinned registry of the exact closed schemas named in required_artifact_profiles. It maps each schema to one default-deny parser, named self-digest field, issuer/key-use rule where signed, and permitted reference grammar. It has no dynamic import, URL, file, plugin, registry lookup, provider open, or application-data read."
+  },
+  "verified_invariants": {
+    "canonical_and_envelope": "For every supplied artifact that the profile reaches: canonical bytes, complete/default-deny key closure (including nested key, subject_ref, authority_ref, execution_authority_ref, entry, PIS projection, PCE, receipt, stage, final, and basis/ref shapes), named self-digest, exact Ed25519 preimage, signature, issuer role, exclusive key use, key id/version, time, and revocation all verify or the request refuses.",
+    "transitive_links": "For every reached link: IssuanceBasis kind/ref set; PIS entry/receipt projection; CES-to-PCE conversion; PlannedCaptureSet/PCE cardinality/order/digest; P(CES)==P(BVP)==P(CAS), and the applicable StageAdmission or FinalReplayEntry/Manifest equality and chronology are checked only from the supplied exact closure. The verifier makes no assertion about a link outside that closure.",
+    "chronology": "The complete selected profile must satisfy the ADR ordering and all predecessor/future-output prohibitions, including ScopeIntent <= CES <= PEA <= BVP <= CAS <= target admission, action predecessor publication order, and final-manifest-before-final-replay-admission. Equality is byte equality of canonical projections, never equal-looking decoded values.",
+    "failure": "Any failure returns no chain/value and leaves deployment_eligible false. It performs no cache/store write, network call, member/provider open, import, node construction, execution-root creation, output creation, capture, session, admission consumption, or authority mutation."
+  },
+  "deferred_effect_gates": {
+    "packet_4": "CapturedAuthorizationSet.v2 owns captured-entry completeness and equality after capture; Packet 3 neither produces nor accepts a captured set.",
+    "packet_6": "Descriptor/receipt equality, runtime/session/restart linkage, and binding of an authorized canonical chain to the actual frozen document, port, published handle, and receipt are later capture-boundary work; Packet 3 has no effect boundary.",
+    "packet_8": "Durable atomic consumption of ActionExecutionAdmission or FinalReplayAdmission before any port/session is later authority work. F5A-R23-ctor-intern-unspend remains open and is neither represented by a boolean field nor weakened by this packet."
+  },
+  "finding_corrections": {
+    "F5A-P3-P0-001": "Corrected by exact request closure: every claimed basis/ref/PIS/PCE/planned-set/stage/final edge must resolve to supplied canonical bytes and a pinned schema validator; unknown external edges refuse. Therefore no dangling hash is called verified.",
+    "F5A-P3-P0-002": "Corrected by removing verifier.capture, driver.capture, frozen/port/published inputs, and every capture-positive assertion from Packet 3. Actual artifact-to-effect binding is explicitly deferred to Packet 6 rather than silently omitted.",
+    "F5A-P3-P0-003": "Corrected by making verification non-authorizing and non-effectful. A signed ActionExecutionAdmission or FinalReplayAdmission only yields an opaque deployment-ineligible value; durable atomic consumption remains Packet 8/F5A-R23 work."
+  },
+  "matrix": [
+    {"id": "P3V2-01", "family": "public entries", "case": "constructor receives wrong/missing keyring, clock, revocations, or registry", "expect": "refuse before parsing", "forbidden": "HistoricalStudyVerifier/LifecycleAuthority reference, capture, session, write"},
+    {"id": "P3V2-02", "family": "public entries", "case": "verify with valid or invalid bytes; returned opaque value is copied, pickled, inspected for authority, or used as a callable", "expect": "only opaque deployment_eligible=false value on valid input; otherwise refuse", "forbidden": "capture/session/authority/admission-consumption route"},
+    {"id": "P3V2-03", "family": "request closure", "case": "missing/extra/duplicate artifact item, target, profile, schema, or request key", "expect": "refuse exact request", "forbidden": "partial or superset verification"},
+    {"id": "P3V2-04", "family": "canonical bytes", "case": "dict/string/bytearray/subclass, whitespace/key-order/non-ASCII/NaN/duplicate-key/base64 change", "expect": "refuse before artifact signature", "forbidden": "normalization acceptance"},
+    {"id": "P3V2-05", "family": "schema closure", "case": "missing/extra key in every top-level/nested artifact, key, subject_ref, authority_ref, execution_authority_ref, PIS entry, PCE, stage, final, basis, or ref", "expect": "refuse default-deny parser", "forbidden": "nullable/default/legacy/placeholder field"},
+    {"id": "P3V2-06", "family": "artifact set", "case": "unknown schema, unsupported external schema, self/cycle/future ref, wrong schema/kind/role at a resolved ref", "expect": "refuse", "forbidden": "opaque or dangling success"},
+    {"id": "P3V2-07", "family": "digest", "case": "missing/self/zero/upper-case/wrong named digest or request item sha", "expect": "refuse before signature success", "forbidden": "digest repair/recomputation as acceptance"},
+    {"id": "P3V2-08", "family": "signature", "case": "unsigned, empty, wrong signature, altered signed payload, algorithm other than Ed25519", "expect": "refuse; algorithm mismatch precedes keyring", "forbidden": "downgrade or stale-signature acceptance"},
+    {"id": "P3V2-09", "family": "authority", "case": "wrong issuer role/key usage/key id/version/type or key substitution for every signed schema", "expect": "refuse", "forbidden": "cross-purpose/fallback key acceptance"},
+    {"id": "P3V2-10", "family": "time/revocation", "case": "non-int/bool timestamps, invalid order, trusted-now expiry/not-before, changed-after-verify time, unknown/wrong snapshot, revoked key, false/non-bool/raised seam", "expect": "refuse", "forbidden": "caller time or cached revocation authorization"},
+    {"id": "P3V2-11", "family": "basis closure", "case": "every IssuanceBasis kind/ref missing, extra, reordered, substituted, self/future, or unrelated", "expect": "refuse complete recursive closure", "forbidden": "hash spelling treated as verified"},
+    {"id": "P3V2-12", "family": "PIS/receipt", "case": "PIS phase/map/entry/flat published projection/receipt or root/stage predecessor substitution", "expect": "refuse exact bytes and basis closure", "forbidden": "nested/alternate publication projection"},
+    {"id": "P3V2-13", "family": "planned set", "case": "CES/PCE/BVP/CAS missing/extra/duplicate/reordered PCE, plan/planned-set digest substitution, or unequal P(CES)/P(BVP)/P(CAS)", "expect": "refuse", "forbidden": "signed but unrelated plan"},
+    {"id": "P3V2-14", "family": "stage/final", "case": "scope/gate/bootstrap/action/replay intent, predecessor publication, stage tuple, final entry/manifest, or final replay admission substitution", "expect": "refuse exact action or replay profile", "forbidden": "partial stage/final-chain claim"},
+    {"id": "P3V2-15", "family": "identity/chronology", "case": "study/purpose/subject/action/replay/document/contract/component/PIS substitution or any predecessor order inversion", "expect": "refuse", "forbidden": "cross-study, cross-purpose, or reordered chain"},
+    {"id": "P3V2-16", "family": "atomicity", "case": "valid siblings plus one invalid artifact in every order; then retry with a corrected request", "expect": "no retained partial chain; corrected request is independently evaluated", "forbidden": "stateful bind, memoized authority, or partial acceptance"},
+    {"id": "P3V2-17", "family": "no effects", "case": "each success/refusal path through every public entry with sentinels for capture, session, member open, import, node, root, output, file/network/store write", "expect": "all sentinels remain untouched", "forbidden": "LifecycleAuthority.capture or any lifecycle/session/member/import/root/output effect"},
+    {"id": "P3V2-18", "family": "compatibility", "case": "Packet 2 verifier/driver and direct F4 development-broker tests", "expect": "unchanged and not called by Packet 3 tests", "forbidden": "trust.py edit, production-to-pipeline route, or claimed Packet 2/F5a closure"}
+  ],
+  "red_plan": [
+    "RED first for exact request/artifact closure and unsupported external-schema refusal; fixtures are synthetic canonical bytes and no fixture obtains a broker, lifecycle authority, handle, member, document, port, or session.",
+    "Parameterize all signed-schema, basis/ref, PIS, PCE/planned-set, stage, and final substitution rows over both profiles; assert seam call arguments and refuse-on-false/raise/non-bool.",
+    "Instrument every public entry with effect sentinels proving zero capture/session/member/import/root/output effects on success and failure. Do not reuse Packet 2 capture-positive fixtures as a Packet 3 positive path."
+  ],
+  "allowed_paths": ["dskit/production/verifier.py", "tests/production/test_capture_lifecycle.py", "docs/review-evidence/F5a", "docs/RE-ENTRY.md"],
+  "non_goals": [
+    "No edit to dskit/pipeline/trust.py; no LifecycleAuthority capture call; no HistoricalStudyVerifier bind/capture integration.",
+    "No capture-positive, actual frozen/port/published binding, CapturedAuthorizationSet.v2, receipt/session/restart, parser/CLI/compose, replay-tape, or durable admission-consumption implementation.",
+    "No real capture/data/replay/HPO/refit/backtest/paper/live/deployment, merge, push, source-ref alteration, whole-F5a ReviewExit, or F3/F5b start."
+  ],
+  "exit_criteria": "A fresh independent Terra Phase 0 skeptic reports zero unresolved Critical/Major against this v2 matrix before RED. That result authorizes only Packet 3's non-effectful verifier work; it does not close Packet 2, F5A-R23, Packet 4/6/8, or whole F5a.",
+  "deployment_eligible": false
+}

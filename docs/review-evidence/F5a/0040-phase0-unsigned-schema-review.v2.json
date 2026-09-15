@@ -1,0 +1,98 @@
+{
+  "schema_version": "ReviewVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "review_kind": "Phase 0 design skeptic",
+  "reviewer_provenance": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/f5a_p3_phase0_skeptic_v2",
+    "lens": "authority, supplied transitive closure, schema-registry pinning, and zero-effect verification"
+  },
+  "reviewed_base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "preserved_source_ref": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "matrix": {
+    "path": "docs/review-evidence/F5a/0039-phase0-unsigned-schemas-signatures.v2.json",
+    "sha256": "9010f4e30421e4ec89a4c80bab652d59cb93eaebda40ac67a04935157a75fa72",
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868"
+  },
+  "contract_sources": {
+    "adr_0125": "docs/architecture/decision-log.md:8317-8952",
+    "packet_plan": "docs/plans/closeout-2026-09-14/01-capture-admission.md",
+    "prior_family_ledger": "docs/review-evidence/F5a/0038-phase0-unsigned-schema-review.v1.json",
+    "implementation_surfaces": [
+      "proposed HistoricalStudyCanonicalVerifier.__init__/verify and OpaqueVerifiedHistoricalStudyChain",
+      "dskit/production/verifier.py:HistoricalStudyVerifier.__init__/bind/capture (unchanged and excluded)",
+      "dskit/production/verifier.py:HistoricalStudyCaptureDriver.capture (unchanged and excluded)",
+      "dskit/pipeline/trust.py:ReleaseKeyring, TrustedClock, LifecycleAuthority (frozen dependency)"
+    ]
+  },
+  "prior_findings": [
+    {
+      "id": "F5A-P3-P0-001",
+      "disposition": "not resolved as specified; v2 supplies artifacts and rejects unknown/cyclic/external edges, but its caller-selected registry and incomplete exact registry inventory still permit an unpinned/incomplete transitive validator. See F5A-P3-P0-004 and F5A-P3-P0-005.",
+      "severity": "major"
+    },
+    {
+      "id": "F5A-P3-P0-002",
+      "disposition": "resolved within narrowed Packet 3: verify has no lifecycle/frozen/port/published input and no capture-positive path. Artifact-to-effect binding is deferred to Packet 6.",
+      "severity": "none"
+    },
+    {
+      "id": "F5A-P3-P0-003",
+      "disposition": "resolved within narrowed Packet 3: successful verification yields only deployment_eligible=false and no effect route; consumption remains Packet 8/F5A-R23.",
+      "severity": "none"
+    }
+  ],
+  "findings": [
+    {
+      "id": "F5A-P3-P0-004",
+      "severity": "major",
+      "invariant": "The parser/reference grammar/issuer-key-use map deciding whether a supplied chain is verified is a fixed code-pinned trusted boundary, not caller-selected data or behavior.",
+      "location_entry_point": "0039 HistoricalStudyCanonicalVerifier.__init__(keyring, clock, revocations, schema_registry); trusted_seams.schema_registry; P3V2-01/P3V2-05/P3V2-06.",
+      "worked_counterexample": "A caller supplies a registry whose validator accepts an extra application key or whose reference grammar omits a required IssuanceBasisRef/PIS/PCE edge. Canonical, correctly signed bytes pass that supplied validator. V2 neither requires schema_registry to be one exact internal object/blob identity nor rejects a different mapping, so a conforming constructor can return an opaque verified chain whose closure is weaker than ADR-0125.",
+      "consequence": "Caller-selected schema policy can downgrade default-deny and transitive-link validation, producing materially wrong verified-chain results. Opaqueness/no effects prevents immediate capture but does not make an incorrect verifier result acceptable.",
+      "defect_family": "caller-selected trust/schema policy",
+      "required_disposition": "Do not authorize RED. Remove schema_registry from the public constructor or require exact identity to one internal immutable code-pinned registry whose complete entries and validator/dependency blob pins are specified. Keyring, clock, and revocations are the only injected trusted seams. Repeat Phase 0."
+    },
+    {
+      "id": "F5A-P3-P0-005",
+      "severity": "major",
+      "invariant": "Each advertised action/final profile is finite and implementable only when every reachable schema, reference kind/role, validator, and dependency is exhaustively enumerated and pinned before verification.",
+      "location_entry_point": "0039 exact_closure_rule/external_dependency_rule; required_artifact_profiles; trusted_seams.schema_registry; P3V2-05/P3V2-06/P3V2-11/P3V2-14.",
+      "worked_counterexample": "An action profile reaches RootPublicationReceipt.v1 through required root PIS. ADR-0125 requires that receipt to validate its exact G1/G2 DatasetCaptureAuthorization and issuance basis. 0039 requires root publication authorization/receipt/PIS closure but does not name the DatasetCaptureAuthorization schema/version, closed grammar, signer/key-use, basis/ref grammar, or validator/dependency blob pin. Broad phrases such as 'all ... recursively referenced object' and 'fixed owner policy' leave the same missing finite table. Treating an omission as external refuses a profile-required dependency; admitting it makes validation invented or dynamic.",
+      "consequence": "The closure cannot both be exact/default-deny and verify the advertised complete profiles. It either rejects otherwise valid profiles at a mandatory omitted dependency or makes closure semantics implementation-defined, so Packet 3 is insufficiently specified for RED.",
+      "defect_family": "incomplete transitive registry/closure enumeration",
+      "required_disposition": "Do not authorize RED. Publish a finite registry table for every reachable schema, including root-publication authorization and policy/basis dependencies, with exact schema/version, key grammar, named digest, issuer/key-use, typed refs, and code/dependency blob pin. Profiles must reference that closed table only. Repeat Phase 0."
+    }
+  ],
+  "validated_design_points": [
+    "A supplied finite byte request plus cycle/self/future/unreachable-extra refusal gives a sound finite traversal shape once a complete fixed registry exists.",
+    "V2 resolves 0038's artifact-to-effect defect: Packet 3 accepts no HistoricalStudyVerifier, driver, LifecycleAuthority, frozen document, port, published handle, capture, or session path; zero capture/session/member/import/root/output effects are testable.",
+    "V2 resolves 0038's reusable-admission positive-path defect in scope: opaque output is non-authorizing and deployment_eligible is exactly false; consumption remains Packet 8/F5A-R23.",
+    "Exact built-in bytes, canonical re-encoding, duplicate-key refusal, local Ed25519/key-shape checks before keyring, exact-bool keyring/revocation results, and a non-bool-int trusted clock are appropriate once parser policy is fixed and exhaustive.",
+    "Unsupported links, altered payload/signature, key/purpose/authority substitutions, chronology inversions, and changed time/revocation are correctly required to refuse by v2, subject to the unresolved registry specification."
+  ],
+  "probes_run": [
+    "Read root AGENTS.md, implementation-workflow.md, skeptic-review.md, RE-ENTRY, Packet 3 plan, ADR-0125 lines 8317-8952, current verifier/tests/trust boundary, and evidence 0037/0038/0039; reviewed 0039 v2 as candidate and 0038 as family ledger.",
+    "Verified HEAD=390dc851e3704e8db4d2a6a4d4e7aa0412a69899 and preserved source ref origin/cursor/r5-f5a-private-plan-0f39=c48919944588a2b29ba047e4cb551050a1ff9868; did not alter the source ref.",
+    "Computed 0039 SHA-256=9010f4e30421e4ec89a4c80bab652d59cb93eaebda40ac67a04935157a75fa72 and validated its JSON before this verdict.",
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py: 115 passed in 0.28s (Packet 2/F4 baseline only; no Packet 3 implementation exists).",
+    "Static trace: current HistoricalStudyVerifier/driver delegate to LifecycleAuthority.capture and _DevelopmentBroker.capture creates CAPTURED/LaunchSession; v2 excludes those entries and inputs."
+  ],
+  "untested_limits": [
+    "No Packet 3 code, closed registry table, or RED fixtures exist, so canonical parsing, Ed25519, revocation, opaque-value mechanics, and zero-effect sentinels could not be executed.",
+    "No real capture/data/replay/HPO/refit/backtest/paper/live action/deployment, merge, push, or dskit/pipeline/trust.py edit was performed.",
+    "Injected keyring/clock/revocation implementations are treated as trusted collaborators, not hostile in-process interpreter code; F5A-R23 remains open."
+  ],
+  "unresolved_counts": {
+    "critical": 0,
+    "major": 2,
+    "minor": 0,
+    "nit": 0
+  },
+  "red_authorization": false,
+  "conclusion": "not-clean: F5A-P3-P0-004 and F5A-P3-P0-005 are unresolved Majors. RED is not authorized. Packet 2, F5A-R23-ctor-intern-unspend, Packets 4/6/8, and whole F5a remain open.",
+  "deployment_eligible": false
+}

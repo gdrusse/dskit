@@ -1,0 +1,85 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "previous_packet_evidence": "docs/review-evidence/F5a/0036-driver-implementation-review.v1.json",
+  "delegated_owner_decision": {
+    "decision": "Packet 3 validates the six signed ADR-0125 artifacts already accepted by HistoricalStudyVerifier.bind; it does not implement a second lifecycle, planner, capture writer, or CapturedAuthorizationSet.",
+    "rationale": "This closes the retained unsigned-placeholder family without pre-empting Packets 4-8. Canonical bytes preserve duplicate-key and encoding evidence; the existing ReleaseKeyring and TrustedClock remain the signature and time seams; one abstract revocation view is the missing trusted input.",
+    "affected_scope": ["dskit/production/verifier.py", "tests/production/test_capture_lifecycle.py", "docs/review-evidence/F5a", "docs/RE-ENTRY.md"]
+  },
+  "pins": {
+    "adr_0125_blob": "2a69cb9e05aa6c6beb958d81c78cd0f2e247b3ff",
+    "master_manifest_blob": "1ad198306897956b1e2647e4c2fd41a9794ca1ed",
+    "verifier_base_blob": "e1e74196b1c47e6eaf94ed69e3b38c54129e4ec6",
+    "capture_tests_base_blob": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+    "dependencies": {"F1": "b45e67bde3bba5f25c4cfe7b71b86a4f950ac01f", "F2": "fc43e373d910e135c45c7c4aaa1135877e7b79fb", "F4": "36bdc041fd1e3ff288a65d174a501b5194dd5ca1"},
+    "packet_2_review": "3a58af7ace8aef6f63e66ee458ce48ca818e05b3"
+  },
+  "owner": "forecast-capital",
+  "public_entry_points": ["HistoricalStudyVerifier.__init__", "HistoricalStudyVerifier.bind", "HistoricalStudyVerifier.capture", "HistoricalStudyCaptureDriver.capture"],
+  "object_set": {
+    "scope_intent": "HistoricalStudyScopeIntent.v1",
+    "ces": "CaptureExpectationSet.v1",
+    "pea": "PlanEvaluationAuthorization.v1",
+    "bvp": "BrokerVerifiedPlan.v1",
+    "cas": "CaptureAdmissionSet.v1",
+    "admission": ["ActionExecutionAdmission.v1", "FinalReplayAdmission.v1"],
+    "closure": "Each top-level object, key object, subject_ref, authority_ref, execution_authority_ref, and application array/object named by these six schemas is exact/default-deny as stated by ADR-0125. Packet 3 accepts no alternate, v1 fallback, nullable default, placeholder, or consumed boolean field."
+  },
+  "trusted_inputs": {
+    "signature": "Injected dskit.pipeline.trust.ReleaseKeyring verifies the exact canonical preimage with the named self-digest and signature omitted. The envelope algorithm must be Ed25519; dskit does not hold signing keys or mint signatures.",
+    "clock": "Injected dskit.pipeline.trust.TrustedClock is the only source of now_ms; caller time is never accepted.",
+    "revocation": "A new abstract HistoricalStudyRevocations verifies the exact revocation snapshot and key id/version at trusted now_ms. False or raised verification refuses.",
+    "lifecycle": "The existing frozen LifecycleAuthority remains the only CAPTURED writer. Packet 3 neither edits trust.py nor claims durable admission consumption; F5A-R23 remains open."
+  },
+  "contract": {
+    "input": "bind accepts exact built-in bytes containing canonical UTF-8/sorted-key/compact/ASCII/finite JSON for the named artifact. Dicts, strings, bytearray, subclasses, decoded or noncanonical JSON refuse.",
+    "digest": "Each named self-digest equals SHA-256 of the complete object with only that digest and signature omitted; the signature covers those same canonical bytes.",
+    "envelope": "Exact issuer_role/key_usage/schema pairs, Ed25519, exact {key_id,key_version}, integer instants, not_before_ms <= issued_at_ms <= expires_at_ms, current trusted time within the inclusive validity window, and trusted unrevoked snapshot/key are required.",
+    "chronology": "scope_intent <= CES <= PEA <= BVP <= CAS <= admission by issued_at_ms. Shared study, subject, purpose, document/contract/component/PIS and predecessor digests are byte-equal where the ADR-0125 objects expose them; the admission union must match its action or replay subject and every named predecessor digest.",
+    "atomicity": "A refused bind stores none of that call. capture and driver.capture revalidate all six raw artifacts, current time, revocation and chain equality immediately before delegating; any refusal leaves the publication at PUBLISHED and creates no session.",
+    "positive": "A fully canonical, signed, current, unrevoked, chronology-consistent synthetic action or replay chain reaches the unchanged F4 capture doorway and remains deployment_eligible=false."
+  },
+  "authority_map": [
+    ["HistoricalStudyScopeIntent.v1", "study-lifecycle", "historical-study-scope-intent"],
+    ["CaptureExpectationSet.v1", "study-lifecycle", "capture-expectation"],
+    ["PlanEvaluationAuthorization.v1", "security-broker", "plan-evaluation"],
+    ["BrokerVerifiedPlan.v1", "security-broker", "plan-verifier"],
+    ["CaptureAdmissionSet.v1", "study-lifecycle", "capture-admission"],
+    ["ActionExecutionAdmission.v1", "study-lifecycle", "action-execution-admission"],
+    ["FinalReplayAdmission.v1", "study-lifecycle", "final-replay-admission"]
+  ],
+  "matrix": [
+    {"id": "P3-01", "family": "object set", "case": "missing each named artifact", "expect": "refuse before LifecycleAuthority.capture", "forbidden": "CAPTURED or LaunchSession"},
+    {"id": "P3-02", "family": "object set", "case": "unknown bind name or extra/missing top-level key", "expect": "atomic refuse", "forbidden": "partial stored artifact"},
+    {"id": "P3-03", "family": "canonical input", "case": "dict/string/bytearray/subclass/noncanonical whitespace/key order/non-ASCII/NaN/duplicate key", "expect": "refuse before signature verification", "forbidden": "normalized acceptance"},
+    {"id": "P3-04", "family": "schema", "case": "wrong schema, v1 fallback, null/default or consumed placeholder", "expect": "refuse exact closed schema", "forbidden": "legacy/placeholder capture"},
+    {"id": "P3-05", "family": "nested closure", "case": "missing/extra key in key, subject_ref, authority_ref, execution_authority_ref or required application entry", "expect": "refuse", "forbidden": "partial nested validation"},
+    {"id": "P3-06", "family": "digest", "case": "missing/self/zero/upper-case/wrong self-digest", "expect": "refuse before signature acceptance", "forbidden": "digest recomputation used as repair"},
+    {"id": "P3-07", "family": "signature", "case": "missing/empty/wrong/altered payload after signing", "expect": "keyring refusal", "forbidden": "unsigned or stale signature acceptance"},
+    {"id": "P3-08", "family": "signature", "case": "signature_alg other than exact Ed25519", "expect": "refuse before keyring", "forbidden": "algorithm downgrade"},
+    {"id": "P3-09", "family": "authority", "case": "wrong issuer_role or key_usage for each of seven schemas", "expect": "refuse", "forbidden": "cross-purpose key acceptance"},
+    {"id": "P3-10", "family": "key", "case": "missing/extra key member, wrong id/version/type or key substitution", "expect": "refuse", "forbidden": "fallback key/version"},
+    {"id": "P3-11", "family": "time", "case": "bool/float/string instant, issued before not-before, issued after expiry", "expect": "refuse", "forbidden": "coercion"},
+    {"id": "P3-12", "family": "time", "case": "trusted now before not-before or after expiry; expiry/revocation changes after bind", "expect": "capture-time refusal", "forbidden": "bind-time-only authorization"},
+    {"id": "P3-13", "family": "revocation", "case": "unknown/wrong snapshot, revoked key, verifier false or raise", "expect": "refuse", "forbidden": "caller-supplied revocation result"},
+    {"id": "P3-14", "family": "chronology", "case": "later predecessor issued before earlier artifact", "expect": "refuse chain", "forbidden": "reordered admission"},
+    {"id": "P3-15", "family": "identity", "case": "study_id or purpose substitution", "expect": "refuse chain", "forbidden": "cross-study/purpose capture"},
+    {"id": "P3-16", "family": "identity", "case": "subject/action/replay substitution or wrong admission union", "expect": "refuse chain", "forbidden": "action/replay authority swap"},
+    {"id": "P3-17", "family": "predecessor", "case": "CES/PIS/document/contract/component predecessor substitution", "expect": "refuse byte equality", "forbidden": "equal-looking alternate chain"},
+    {"id": "P3-18", "family": "predecessor", "case": "PEA/CES/BVP/plan/planned-set/CAS digest substitution in a later artifact", "expect": "refuse", "forbidden": "signed but unrelated predecessor"},
+    {"id": "P3-19", "family": "partial bind", "case": "valid siblings plus one invalid artifact in either argument order", "expect": "store none from call", "forbidden": "non-atomic bind"},
+    {"id": "P3-20", "family": "mutation", "case": "source bytearray/dict mutation or replacement of stored private value", "expect": "public mutable inputs refuse; capture revalidates retained bytes", "forbidden": "post-bind authority change"},
+    {"id": "P3-21", "family": "effects", "case": "every refusal through verifier.capture and driver.capture", "expect": "last audit event PUBLISHED and no session", "forbidden": "member open/import/node/output/root/session/CAPTURED"},
+    {"id": "P3-22", "family": "compatibility", "case": "canonical synthetic action chain", "expect": "one unchanged F4 CAPTURED/session result", "forbidden": "deployment eligibility or alternate writer"},
+    {"id": "P3-23", "family": "compatibility", "case": "direct F4 development broker tests", "expect": "unchanged", "forbidden": "trust.py edit or broker wrap"},
+    {"id": "P3-24", "family": "compatibility", "case": "pipeline purity/public export inventory", "expect": "pipeline imports no production; only approved verifier surfaces added", "forbidden": "CLI/compose/pipeline capture route"}
+  ],
+  "red_plan": ["Parameterize exact canonical signed fixtures for action and replay admission schemas.", "Prove every negative family fails on unchanged base because placeholders still bind/capture or the required trust inputs/surfaces do not exist.", "Use broker receipt audit and returned-session sentinels to prove no forbidden effect."],
+  "checks": ["PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py", "/home/russell/dskit/.venv/bin/ruff check dskit/production/verifier.py tests/production/test_capture_lifecycle.py", "git diff --check"],
+  "non_goals": ["No CapturedAuthorizationSet.v2 equality, descriptor grammar, restart linkage, replay-tape semantics, parser/CLI/compose route, or new writer.", "No edit to dskit/pipeline/trust.py, F3/F5b, real capture/data, replay, HPO/refit, backtest, paper/live or deployment.", "Do not close, relabel or weaken F5A-R23-ctor-intern-unspend; do not emit whole-F5a ReviewExit.", "Preserve origin/cursor/r5-f5a-private-plan-0f39 at c489199; never bulk-merge PR 14."],
+  "exit_criteria": "One independent Terra Phase 0 review finds zero unresolved Critical/Major against this matrix before RED. Packet closure later requires focused RED/GREEN, compatibility checks, an immutable candidate, two fresh sequential Terra final lenses, retained evidence, main push verification, and contained cleanup."
+}

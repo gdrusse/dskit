@@ -1,0 +1,115 @@
+{
+  "schema_version": "ReviewVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "review_kind": "Phase 0 design skeptic",
+  "reviewer_provenance": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/f5a_p3_phase0_skeptic_v3",
+    "lens": "exact local-schema closure, direct ADR links, trusted seams, and non-authorizing boundary"
+  },
+  "reviewed_base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "preserved_source_ref": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "matrix": {
+    "path": "docs/review-evidence/F5a/0041-phase0-unsigned-schemas-signatures.v3.json",
+    "sha256": "aa921367045e9ba660296d18e4eaa4c506155393cd23b9148c7bfe0115ffd0de",
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868"
+  },
+  "contract_sources": {
+    "adr_0125": "docs/architecture/decision-log.md:8317-8952",
+    "packet_plan": "docs/plans/closeout-2026-09-14/01-capture-admission.md",
+    "family_ledger": [
+      "docs/review-evidence/F5a/0038-phase0-unsigned-schema-review.v1.json",
+      "docs/review-evidence/F5a/0040-phase0-unsigned-schema-review.v2.json"
+    ],
+    "implementation_surfaces": [
+      "proposed HistoricalStudyEnvelopeVerifier.__init__/verify and NonAuthorizingVerifiedEnvelopes",
+      "dskit/production/verifier.py:HistoricalStudyVerifier.__init__/bind/capture (unchanged and forbidden consumer)",
+      "dskit/production/verifier.py:HistoricalStudyCaptureDriver.capture (unchanged and forbidden consumer)",
+      "dskit/pipeline/trust.py:ReleaseKeyring, TrustedClock, LifecycleAuthority (frozen dependency)"
+    ]
+  },
+  "prior_finding_dispositions": [
+    {
+      "id": "F5A-P3-P0-001",
+      "disposition": "resolved in the expressly narrowed v3 result: no unresolved hash target is called verified or authorized; success means only supplied-envelope and direct-link checks. This does not approve any later target resolver."
+    },
+    {
+      "id": "F5A-P3-P0-002",
+      "disposition": "resolved in the narrowed packet: no capture, frozen document, port, published handle, lifecycle authority, or effectful entry is accepted. Artifact-to-effect binding remains Packet 6."
+    },
+    {
+      "id": "F5A-P3-P0-003",
+      "disposition": "resolved in the narrowed packet: output is explicitly deployment_eligible=false and non-authorizing; durable admission consumption remains Packet 8/F5A-R23."
+    },
+    {
+      "id": "F5A-P3-P0-004",
+      "disposition": "resolved: v3 removes caller-provided schema_registry and requires private immutable code constants pinned before RED."
+    },
+    {
+      "id": "F5A-P3-P0-005",
+      "disposition": "resolved only as to the abandoned recursive-profile claim: v3 advertises seven local envelope variants, not a transitive closure. Its separate incomplete local grammar is F5A-P3-P0-006."
+    }
+  ],
+  "findings": [
+    {
+      "id": "F5A-P3-P0-006",
+      "severity": "major",
+      "invariant": "A successful v3 verification must reject every locally malformed ADR-0125 field and nested object in the seven supplied envelopes; a finite private table must specify the exact scalar/tag/array grammar it claims to enforce.",
+      "location_entry_point": "0041 embedded_shape_table/embedded_shape_rules and P3V3-02; proposed HistoricalStudyEnvelopeVerifier.verify.",
+      "worked_counterexample": "Supply canonical, correctly signed ScopeIntent bytes whose ActionIntent has an extra key in predecessor_output_refs[*], a malformed required_input_contracts[*] or output_contract, a reordered root_published_input_ids/predecessor_output_refs/required_input_contracts array, or an invalid ActionIntent/ReplayIntent self-digest. The v3 table lists ActionIntent and ReplayIntent only at their outer key level; it gives no exact shapes, sort keys, uniqueness/cardinality, fixed action/replay IDs, phase enum, or self-digest rule for those children. Likewise it names CES/PEA/CAS/PCE maps but does not state scalar/tag values for subject_ref.kind, authority_ref.kind, phase, receipt-schema selector, IDs, or positions. P3V3-02 promises every embedded wrong key/scalar/array refuses, but a conforming implementation has no code-pinned value grammar with which to make those refusals and must either accept a malformed signed envelope or invent policy.",
+      "consequence": "The advertised exact local-schema verifier can return a verified value for bytes ADR-0125 requires to refuse. Although v3 deliberately has no effect route, that is a materially incorrect verification result and defeats the fixed default-deny boundary needed before any later consumer can rely on it.",
+      "defect_family": "incomplete finite local embedded grammar",
+      "required_disposition": "Do not authorize RED. Add finite private-table rows for every nested ActionIntent, ReplayIntent, predecessor-output, input-contract, output-contract, CES/PCE/CAS and PublishedInputEntry child; state scalar grammars, literal tags/enums, exact array sort/unique/cardinality rules, and every embedded self-digest/preimage validated locally. List any deliberately unvalidated field as unresolved without describing its schema as exact. Repeat Phase 0."
+    },
+    {
+      "id": "F5A-P3-P0-007",
+      "severity": "major",
+      "invariant": "All ADR-0125 links directly comparable among the six supplied envelopes must be compared, including PEA phase/authority-tag/subject compatibility and the selected action-or-replay admission's compatibility with the common subject; unresolved external targets cannot erase these same-request equalities.",
+      "location_entry_point": "0041 direct_link_table, embedded_shape_rules, unresolved_refs, and P3V3-05; proposed HistoricalStudyEnvelopeVerifier.verify.",
+      "worked_counterexample": "For bootstrap, provide ScopeIntent S1 and a canonical signed action CES/PEA/BVP/CAS chain whose PEA authority_ref is {kind:scope-intent-gate-set,scope_intent_sha256:S2,gate_set_sha256:G}; S2 is syntactically valid but differs from S1. The table labels that PEA field unresolved and never compares it to S1's supplied self-digest, despite ADR-0125 requiring the tag to equal its phase Scope fact. Separately, give every CES/PEA/BVP/CAS an action subject {action_id:A,action_intent_sha256:IA} but select a signed ActionExecutionAdmission for B/IB that repeats the same supplied CAS/PEA/CES/BVP digest strings; or use a replay subject with a FinalReplayAdmission for another replay. All listed v3 pair rows pass: they never compare admission action_id/action_intent_sha256 or replay_id/replay_intent_sha256 to the common subject, nor require action admission only for action phases and final replay admission only for replay-pre-final. The table also does not define the required phase-to-authority_ref-kind map or compare scope-action/replay authority_ref intent digest to the same subject tag.",
+      "consequence": "A signed but foreign Scope tag or a mismatched action/replay admission can be returned as one non-authorizing verified envelope set. It breaks ADR-0125's required phase/subject/authority binding at the direct boundary and gives a later effect packet an ambiguously assembled chain.",
+      "defect_family": "omitted direct phase-and-subject equality",
+      "required_disposition": "Do not authorize RED. Extend direct_link_table with bootstrap PEA authority_ref.scope_intent_sha256 == supplied ScopeIntent digest; phase-to-subject and phase-to-authority_ref-kind mapping; scope-action/replay authority-ref intent == subject intent; and selected admission kind/ID/intent == the shared subject. Record every comparison that remains impossible only because its target is absent, and remove any table equality not actually required by ADR-0125. Repeat Phase 0."
+    },
+    {
+      "id": "F5A-P3-P0-008",
+      "severity": "major",
+      "invariant": "The direct-link table must not impose an ADR-0125 equality that rejects a valid phase; ScopeIntent's root PIS is not the later stage or replay PIS carried by scope-action/replay-pre-final CES and PEA.",
+      "location_entry_point": "0041 direct_link_table rows scope_intent--ces and scope_intent--pea; P3V3-05.",
+      "worked_counterexample": "Supply a valid scope-action chain. ScopeIntent is necessarily bound to the root PIS (its basis names the root PIS), while a stage PIS is separately signed from Scope plus predecessor StageAdmissions/publication receipts. CES and PEA for that action carry the stage PIS. The same conflict occurs for replay-pre-final CES/PEA, whose PIS is the replay PIS made from already PUBLISHED tape/release/profile outputs and never depends on Final Manifest. v3 unconditionally requires scope_intent.published_input_set_sha256 == ces.published_input_set_sha256 and == pea.published_input_set_sha256, so it refuses both ADR-valid non-bootstrap profiles.",
+      "consequence": "The advertised action-or-final-replay verifier is materially incompatible with every valid later action and pre-final replay chain; an implementer can only pass its positive path by treating a wrong root PIS as the stage/replay PIS or by rejecting the legitimate profile.",
+      "defect_family": "extra cross-phase direct equality",
+      "required_disposition": "Do not authorize RED. Make the ScopeIntent-to-CES/PEA PIS equality conditional on bootstrap only. For scope-action and replay-pre-final, treat the stage/replay PIS target as unresolved in this narrowed packet, or add only an ADR-authorized supplied direct relation. Sweep every other unconditional scope-to-later-phase equality and record its ADR basis before repeating Phase 0."
+    }
+  ],
+  "validated_design_points": [
+    "All seven envelope_schema_table top-level field sets reproduce the corresponding ADR-0125 top-level sets: ScopeIntent, CES, PEA, BVP, CAS, ActionExecutionAdmission, and FinalReplayAdmission.",
+    "The common named-digest/signature preimage, strict canonical-byte rule, exact-bool keyring result, one trusted non-bool-int clock reading, and per-envelope revocation result are stated without a caller-selected resolver or dynamic-effect seam.",
+    "v3 correctly removes HistoricalStudyVerifier/LifecycleAuthority integration, capture-positive behavior, session creation, durable consumption, and transitive target-validity claims; the output is declared opaque and deployment_eligible=false.",
+    "No additional direct equality was proven to contradict ADR-0125 during this review; the material direct-link defects are the PIS overconstraint and omitted required comparisons."
+  ],
+  "probes_run": [
+    "Read root AGENTS.md, docs/skills/implementation-workflow.md, docs/skills/skeptic-review.md, and docs/plans/closeout-2026-09-14/01-capture-admission.md.",
+    "Compared docs/architecture/decision-log.md:8317-8952 with every 0041 envelope_schema_table, embedded_shape_table, direct_link_table, unresolved_refs entry, and matrix row.",
+    "Read 0037/0038/0040 as the prior family ledger and inspected the frozen verifier.py and trust.py seam contracts without changing them.",
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/review-evidence/F5a/0041-phase0-unsigned-schemas-signatures.v3.json."
+  ],
+  "untested_limits": [
+    "Design-only: no Packet 3 code or RED fixtures exist, so canonical parsing, Ed25519 verification, opaque-value mechanics, keyring/clock/revocation calls, and effect sentinels were not executable.",
+    "No real capture/data/replay/HPO/refit/backtest/paper/live action/deployment, merge, push, source-ref change, or dskit/pipeline/trust.py edit was performed.",
+    "Trusted injected collaborators are assessed as contract seams, not hostile in-process interpreter code; F5A-R23-ctor-intern-unspend remains open out of Packet 3 scope."
+  ],
+  "unresolved_counts": {
+    "critical": 0,
+    "major": 3,
+    "minor": 0,
+    "nit": 0
+  },
+  "red_authorization": false,
+  "deployment_eligible": false,
+  "conclusion": "not-clean: F5A-P3-P0-006 through F5A-P3-P0-008 are unresolved Majors, so RED is not authorized. This is the third consecutive failed correction review (0038, 0040, 0042); the independent convergence checkpoint is mandatory and no fourth patch is allowed before it records a changed approach. Packet 2, F5A-R23-ctor-intern-unspend, Packets 4/6/8, and whole F5a remain open.",
+  "next_gate": "Independent convergence checkpoint: inventory every local nested field and same-request direct relation, publish one finite corrected table/matrix with the demonstrated family sweep, explain why 0039/0041 omitted it, then obtain a fresh Phase 0 review before any fourth patch or RED."
+}

@@ -1,0 +1,34 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "review_kind": "fresh independent Phase 0 adversarial review of v8 field-adjacency matrix",
+  "reviewer": {"agent_task": "/root/f5a_p3_phase0_skeptic_v8", "lens": "ADR exact grammar, supplied-field adjacency, public seams, and no-effect authority"},
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+    "hashes": {
+      "matrix_v8": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85",
+      "review_0052": "968b20c5e6ad1ba785c5c3c40ed55ac4777573d7ac6dc18de78adeb57b5d01d3",
+      "checkpoint_0050": "5672c00232bdb9bd5229b8d31acb8822e05440a60b76f04474ef5f4d5bbd31ca",
+      "adr_0125_range": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930",
+      "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae",
+      "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c",
+      "trust_py": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5",
+      "verifier_py": "5ced6cdb669ef0ae42fb337fe411136e99ba8370c19791d93851edc5e3d384fb"
+    }
+  },
+  "scope_checked": ["v8 canonical/scalar/schema/literal/array/suffix/role-use/profile tables and C01-C24", "ActionId/cardinality/topology; CES/PIS/PCE and predecessor-output disposition; signature/time/revocation", "0052 Majors and retained 0045/0047/0049/0050 corrections; public trust.py/verifier.py and no-effect RED boundary"],
+  "findings": [],
+  "assessment": {
+    "contract": "v8 is self-contained for the expressly bounded 11-byte structural/signature preflight. It gives exact shapes, literals, scalar rules, byte ordering, cardinality, signed suffix/preimage/role/use/time checks, and profile-conditioned comparisons; absent basis, authority, receipt, document, resolver, BVP payload/PlannedCaptureSet, and source_ref targets remain explicitly out of scope.",
+    "0052_resolution": "The explicit grammar/tables resolve 0052-M01. C22 makes CES entries and exactly the selected child published-input contracts a source-kind-correct bijection; predecessor-output contracts use C15 and have no CES entry, resolving 0052-M02. C23-C24 retain descriptor/PIS and CES/CAS PCE equality.",
+    "preservation": "C01-C24 retain the 0045/0047/0049/0050 corrections without nonexistent-field comparisons; P(CES)==P(CAS), never P(BVP), is correct because BVP payload/PCE bytes are not supplied.",
+    "boundary": "ReleaseKeyring and TrustedClock are public trust APIs; private helpers, LifecycleAuthority, existing capture facades, resolvers, and effects remain forbidden. The result is opaque/non-authorizing and RED coverage requires zero resolver, capture, session, WORM, import, construction, execution, or consumption call."
+  },
+  "citations": ["decision-log.md:8328-8345", "decision-log.md:8399-8469", "decision-log.md:8471-8587", "decision-log.md:8606-8768", "decision-log.md:8776-8952", "01-capture-admission.md:38-49", "2026-09-12-json-pipeline-historical-backtester-tdd.md:632-701", "0052-f5a-p3-phase0-skeptic-v7.json:24-47", "0053-f5a-p3-phase0-field-adjacency-matrix-v8.json:10-89", "dskit/pipeline/trust.py:22-32,198-233", "dskit/production/verifier.py:68-71,696-865"],
+  "summary": {"critical": 0, "major": 0, "minor": 0, "nit": 0, "verdict": "clean", "red_authorization": true, "deployment_eligible": false, "reason": "Only focused synthetic RED is authorized; no capture, lifecycle effect, broader F5a work, or deployment."},
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "full issuance-basis and BVP/PCE verification", "no trust.py edit", "no capture/lifecycle effect", "no F3/F5b unblock"],
+  "commands": ["python3 -m json.tool docs/evidence/closeout/0054-f5a-p3-phase0-skeptic-v8.json", "git diff --check"],
+  "required_next_gate": "Implement only the v8-authorized focused synthetic RED/GREEN structural preflight, retain the no-effect sentinel, then obtain fresh final lenses."
+}
