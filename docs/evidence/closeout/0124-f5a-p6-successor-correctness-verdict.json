@@ -1,0 +1,31 @@
+{
+  "schema_version": "SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "candidate": "e967aa15d64c127a74b4fd18b24ffa2183be1487",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_successor_correctness_terra",
+    "lens": "fresh successor correctness/authority"
+  },
+  "verdict": "not clean; boundary-invalidating; candidate stopped",
+  "critical": 0,
+  "major": 1,
+  "minor": 0,
+  "nit": 0,
+  "findings": [
+    {
+      "id": "P6-FA-003",
+      "severity": "Major",
+      "family": "live-publication lookup / descriptor-to-freeze lifecycle",
+      "location": "dskit/pipeline/trust.py:1872-1900",
+      "invariant": "All six descriptor fields select the exact valid publication without partial-key ambiguity.",
+      "reproducer": "Two WORM-compatible publications with equal root_ref/snapshot_version/document_sha256, distinct producer nodes and members artifacts/a.json and artifacts/b.json publish successfully; descriptor(pub, synthetic) then refuses both.",
+      "consequence": "Valid captured artifacts cannot enter freeze/capture.",
+      "disposition": "Return to Phase0; repeated family requires independent convergence checkpoint before more patches."
+    }
+  ],
+  "retained_reviewer_output": "Candidate e967aa15d64c127a74b4fd18b24ffa2183be1487. Verdict not clean; boundary-invalidating. Major P6-FA-003: trust.py:1872-1900 finds streams using only root/snapshot/document. Two valid WORM publications sharing those fields but distinct producer nodes/members publish successfully; afterward descriptor() refuses for both. Fix scope: all six descriptor fields in _stream_for_published and _published_for_descriptor receipt prefilter; same-root/snapshot/document differing-node/output positive controls. Checks: targeted existing two_valid_snapshots: 2 passed; diff check passed. C0/M1/minor0/nit0. Stopped after boundary-invalidating finding; no extra scan. Limits retained: ADR-0126 deferred combined/multi-internal/_DEV_KEY; P7/P8/R23.",
+  "next_gate": "Independent convergence checkpoint, revised matrix and fresh clean Phase0 before RED; no second final lens on stopped candidate.",
+  "deployment_eligible": false
+}

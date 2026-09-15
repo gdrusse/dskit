@@ -19,9 +19,10 @@
   "checks": [
     "172 trust tests passed in 0.63s",
     "ruff check changed Python files: pass",
-    "git diff --check: pass"
+    "git diff --check: pass",
+    "Complete synthetic v1 PRODUCED-to-CONSUMED encoded receipt sequence SHA256 matches unchanged main 0ec6671: bced1f11fc2fffd0386149356a6dd6b604c4f325185055503ef998fccd39dbb9"
   ],
-  "full_focused": "pending on frozen successor candidate",
+  "full_focused": "1513 passed in 61.59s on e967aa15d64c127a74b4fd18b24ffa2183be1487",
   "deployment_eligible": false,
   "next_gate": "Two fresh sequential Terra final lenses on the successor; prior final verdict remains not clean and is never carried forward."
 }
