@@ -19,11 +19,14 @@ import math
 import os
 import re
 from abc import ABC, abstractmethod
+from functools import wraps
+from threading import RLock
 from types import MappingProxyType
 from weakref import WeakKeyDictionary
 
 __all__ = [
     "CapturedAuthorizationAuthority",
+    "CapturedAuthorizationRecord",
     "CapturedBindings",
     "CapturedJsonArtifact",
     "CapturedLifecyclePort",
@@ -299,10 +302,10 @@ class LifecycleAuthority(ABC):
 class CapturedAuthorizationAuthority(LifecycleAuthority):
     """Broker-issued capability for the versioned capture-set doorway.
 
-    This foundation validates requests but always refuses authorization. Exact
-    artifact verification and atomic admission/batch publication must exist
-    before this doorway can issue any record or launch session. Ordinary v1
-    lifecycle authorities retain their original abstract method set.
+    The fixed nondeployment broker verifies the complete held artifact closure
+    and atomically commits admission consumption, the exact signed batch and
+    one opaque session. It grants no member access. Ordinary v1 authorities
+    retain their original abstract method set.
 
     Parameters
     ----------
@@ -325,7 +328,7 @@ class CapturedAuthorizationAuthority(LifecycleAuthority):
         self, captures, admission_ref, *, consumer_run_identity,
         process_measurement_sha256, runtime_sha256, transition_nonces,
     ):
-        """Validate a held-authority request without issuing a capture.
+        """Authorize one complete capture set in the held authority's ledger.
 
         Parameters
         ----------
@@ -345,8 +348,8 @@ class CapturedAuthorizationAuthority(LifecycleAuthority):
         Returns
         -------
         tuple
-            Reserved for the future verified opaque record and launch session;
-            this foundation returns no authorization result.
+            The opaque CapturedAuthorizationRecord and P4 LaunchSession.
+            An identical retry resolves these same committed objects.
 
         Raises
         ------
@@ -354,8 +357,8 @@ class CapturedAuthorizationAuthority(LifecycleAuthority):
             The receiver is not an exact broker-issued capability or an input
             has a forbidden type.
         ValueError
-            Request identity is invalid, admission is missing, or complete
-            artifact closure and atomic issuance are unavailable.
+            Request identity, complete artifact closure or atomic admission
+            preconditions fail. No partial capture or member access is granted.
         """
         return _p4_checked_dispatch(
             self, captures, admission_ref,
@@ -409,6 +412,25 @@ class LaunchSession(_Opaque):
         object.__setattr__(self, name, value)
 
 
+def _captured_view_transition(method):
+    """Arbitrate the entire v1 member/require operation, including local flags."""
+    @wraps(method)
+    def locked(view, *args, **kwargs):
+        identity = _LIFECYCLE_VIEWS.get(view)
+        if identity is None:
+            raise ValueError("broker-registered legacy captured view required")
+        authority, stream = identity
+        ledger = _LIFECYCLE_LEDGERS.get(authority)
+        if ledger is None:
+            raise ValueError("captured view lifecycle ledger required")
+        with ledger._lock:
+            ledger._check()
+            ledger._legacy_gate((view,))
+            ledger._require_unclaimed(stream)
+            return method(view, *args, **kwargs)
+    return locked
+
+
 class VerifiedCapture(_Opaque):
     """Verified retained members for one captured root.
 
@@ -423,7 +445,7 @@ class VerifiedCapture(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_members", "_published", "_port", "_frozen", "_session", "_retained", "_locked")
+    __slots__ = ("_members", "_published", "_port", "_frozen", "_session", "_retained", "_locked", "__weakref__")
 
     def __init__(self, token, members, published, port, frozen, session, retained):
         if token is not _MAKE:
@@ -443,6 +465,7 @@ class VerifiedCapture(_Opaque):
             raise AttributeError("verified capture is frozen")
         object.__setattr__(self, name, value)
 
+    @_captured_view_transition
     def member(self, relative_path):
         """Return the one-shot handle for a retained member."""
         if relative_path not in self._members:
@@ -464,7 +487,7 @@ class CapturedMemberHandle(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_bytes", "_read")
+    __slots__ = ("_bytes", "_read", "__weakref__")
 
     def __init__(self, token, data):
         if token is not _MAKE:
@@ -472,6 +495,7 @@ class CapturedMemberHandle(_Opaque):
         self._bytes = data
         self._read = False
 
+    @_captured_view_transition
     def read_bytes(self):
         """Return the retained bytes exactly once."""
         if self._read:
@@ -479,6 +503,7 @@ class CapturedMemberHandle(_Opaque):
         self._read = True
         return self._bytes
 
+    @_captured_view_transition
     def read_text(self):
         """Return the retained UTF-8 text exactly once."""
         return self.read_bytes().decode("utf-8")
@@ -564,7 +589,7 @@ class CapturedBindings(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_ports", "_used", "_broker", "_session", "_stream_id", "_locked")
+    __slots__ = ("_ports", "_used", "_broker", "_session", "_stream_id", "_locked", "__weakref__")
 
     def __init__(self, token, ports, broker, session, stream_id):
         if token is not _MAKE:
@@ -583,6 +608,7 @@ class CapturedBindings(_Opaque):
             raise AttributeError("captured bindings are frozen")
         object.__setattr__(self, name, value)
 
+    @_captured_view_transition
     def require(self, input_name):
         """Return the exact declared input once, then refuse replay."""
         if input_name not in self._ports:
@@ -867,6 +893,20 @@ class _Captured:
         object.__setattr__(self, name, value)
 
 
+def _lifecycle_transition(method):
+    """Serialize complete v1 operations in the same authority-owned P4 domain."""
+    @wraps(method)
+    def locked(authority, *args, **kwargs):
+        ledger = _LIFECYCLE_LEDGERS.get(authority)
+        if ledger is None:
+            raise TypeError("lifecycle ledger identity required")
+        with ledger._lock:
+            ledger._check()
+            ledger._legacy_gate((*args, *kwargs.values()))
+            return method(authority, *args, **kwargs)
+    return locked
+
+
 class _DevelopmentBroker(LifecycleAuthority):
     """Synthetic lifecycle authority for focused tests only."""
 
@@ -924,7 +964,11 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._capture_bind_intern = {}
         self._publish_sealed_intern = {}
         self._map_key = os.urandom(32)
+        ledger = _LifecycleAuthorizationLedger(self)
+        self._p4_ledger = ledger
+        _LIFECYCLE_LEDGERS[self] = ledger
 
+    @_lifecycle_transition
     def start_producer_session(
         self,
         run_identity,
@@ -947,10 +991,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._session_events.append(("start", run_identity, id(session)))
         return session
 
+    @_lifecycle_transition
     def end_session(self, session):
         self._require_session(session)
         object.__setattr__(session, "_ended", True)
 
+    @_lifecycle_transition
     def produce(
         self,
         session,
@@ -1042,6 +1088,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         return prepared
 
+    @_lifecycle_transition
     def seal(self, session, prepared, transition_nonce):
         self._require_session(session, kind="producer", allow_open=True)
         if not isinstance(prepared, _Prepared):
@@ -1078,6 +1125,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         return sealed
 
+    @_lifecycle_transition
     def publish(self, session, sealed, transition_nonce):
         self._require_session(session, kind="producer", allow_open=True)
         if isinstance(sealed, _Prepared):
@@ -1216,6 +1264,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             "purpose": frozen.purpose,
         }
 
+    @_lifecycle_transition
     def capture(
         self,
         published,
@@ -1226,6 +1275,18 @@ class _DevelopmentBroker(LifecycleAuthority):
         runtime_sha256,
         transition_nonce,
     ):
+        return self._p4_ledger.commit_legacy_capture(
+            published, frozen, port, consumer_run_identity,
+            process_measurement_sha256, runtime_sha256, transition_nonce,
+        )
+
+    def _prepare_legacy_capture(
+        self, published, frozen, port, consumer_run_identity,
+        process_measurement_sha256, runtime_sha256, transition_nonce,
+    ):
+        """Validate and build unregistered v1 handles; do not publish any state."""
+        if transition_nonce in self._nonces or self._p4_ledger._nonce_used(transition_nonce):
+            raise ValueError("duplicate transition nonce")
         if not isinstance(published, _Published):
             raise ValueError("PUBLISHED capture is required")
         frozen = self._require_frozen(frozen)
@@ -1276,31 +1337,10 @@ class _DevelopmentBroker(LifecycleAuthority):
             },
         )
         object.__setattr__(session, "_stream_id", str(stream_id))
-        self._remember_session(session)
-        self._session_events.append(("start", consumer_run_identity, id(session)))
         captured = _Captured(published, frozen, dict(expected), session)
-        self._append_receipt(
-            pin,
-            "CAPTURED",
-            session,
-            transition_nonce,
-            extra={"consumer_captured_port": dict(expected)},
-        )
-        self._captured_streams[id(captured)] = stream_id
-        self._store_interned(
-            self._session_streams,
-            self._session_stream_intern,
-            id(session),
-            (id(session), str(stream_id)),
-        )
-        self._store_interned(
-            self._capture_bind,
-            self._capture_bind_intern,
-            id(captured),
-            (published, frozen, session, stream_id),
-        )
-        return captured, session
+        return captured, session, pin
 
+    @_lifecycle_transition
     def open_capture(self, session, captured):
         if not isinstance(captured, _Captured):
             raise ValueError("CAPTURED token is required")
@@ -1338,6 +1378,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                 raise ValueError("snapshot member digest mutation")
             retained[path] = bytes(raw)
             handles[path] = CapturedMemberHandle(_MAKE, retained[path])
+            _LIFECYCLE_VIEWS[handles[path]] = (self, str(stream_id))
         verified = VerifiedCapture(
             _MAKE,
             handles,
@@ -1361,8 +1402,10 @@ class _DevelopmentBroker(LifecycleAuthority):
             id(verified),
             pin,
         )
+        _LIFECYCLE_VIEWS[verified] = (self, str(stream_id))
         return verified
 
+    @_lifecycle_transition
     def captured_bindings(
         self,
         session,
@@ -1427,6 +1470,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         ports = {frozen.consumer_input: port}
         bindings = CapturedBindings(_MAKE, ports, self, session, stream_id)
+        _LIFECYCLE_VIEWS[bindings] = (self, str(stream_id))
         self._store_interned(
             self._bindings_pin,
             self._bindings_intern,
@@ -1450,6 +1494,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         )
         return bindings
 
+    @_lifecycle_transition
     def _consume_binding(self, bindings, input_name):
         rec = self._load_interned(
             self._bindings_pin,
@@ -1502,6 +1547,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._consumed_streams.add(stream_id)
         return ports[input_name]
 
+    @_lifecycle_transition
     def release(self, session):
         self._require_session(session, kind="consumer", allow_open=True)
         if id(session) in self._released:
@@ -1709,6 +1755,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         return sealed
 
     def _require_head(self, stream_id, event):
+        self._p4_ledger._require_unclaimed(stream_id)
         rows = self._streams.get(stream_id) or []
         if not rows or rows[-1]["event"] != event:
             raise ValueError("replay of %s is refused" % event)
@@ -1855,12 +1902,28 @@ class _DevelopmentBroker(LifecycleAuthority):
     def _remember_published(self, published):
         self._published_list = self._published_tokens + [published]
 
+    @_lifecycle_transition
     def _append_receipt(self, prepared, event, session, transition_nonce, extra):
+        self._p4_ledger._require_unclaimed(prepared.stream_id)
+        rows = self._streams.get(prepared.stream_id, [])
+        actor = self._captured_actor_runtime(rows) if event == "CONSUMED" else self._actor_runtime(session)
+        body = self._prepare_receipt(prepared, event, actor, transition_nonce, extra)
+        stream_id = prepared.stream_id
+        encoded = tuple(self._receipt_store.get(stream_id, ())) + (_canonical_bytes(body),)
+        self._receipt_store[stream_id] = encoded
+        self._nonces.add(transition_nonce)
+        self._streams.setdefault(stream_id, []).append(body)
+        self._note_len(stream_id, len(encoded))
+        return body
+
+    def _prepare_receipt(self, prepared, event, actor_runtime, transition_nonce, extra):
+        """Build the unchanged v1 signed receipt without spending or appending."""
+        if self._p4_ledger._nonce_used(transition_nonce):
+            raise ValueError("duplicate P4 transition nonce")
         if transition_nonce in self._nonces:
             raise ValueError("duplicate transition nonce")
-        self._nonces.add(transition_nonce)
         stream_id = prepared.stream_id
-        rows = self._streams.setdefault(stream_id, [])
+        rows = self._streams.get(stream_id, [])
         expected = _EVENTS[len(rows)]
         if event != expected:
             raise ValueError("replay of %s is refused" % expected)
@@ -1884,11 +1947,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             "root_id": prepared.root["root_id"],
             "snapshot_version": prepared.root["snapshot_version"],
             "member_manifest_sha256": member_manifest,
-            "actor_runtime": (
-                self._captured_actor_runtime(rows)
-                if event == "CONSUMED"
-                else self._actor_runtime(session)
-            ),
+            "actor_runtime": actor_runtime,
             "transition_nonce": transition_nonce,
             "issued_at_ms": self._clock.now_ms(),
             "deployment_eligible": False,
@@ -1918,10 +1977,6 @@ class _DevelopmentBroker(LifecycleAuthority):
             hashlib.sha256,
         ).hexdigest()
         body["signature"] = signature
-        rows.append(body)
-        encoded = tuple(self._receipt_store.get(stream_id, ())) + (_canonical_bytes(body),)
-        self._receipt_store[stream_id] = encoded
-        self._note_len(stream_id, len(encoded))
         return body
 
 def _development_broker(
@@ -2084,7 +2139,7 @@ class _FixedWormTrustedArtifactResolver(_Opaque):
 class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
                                                  CapturedAuthorizationAuthority,
                                                  _Opaque):
-    """Fixed nondeployment foundation; every P4 issuance remains refused."""
+    """Fixed nondeployment issuer of one atomic, in-process captured batch."""
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("P4 synthetic authority is final")
@@ -2105,7 +2160,7 @@ class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
         self, captures, admission_ref, *, consumer_run_identity,
         process_measurement_sha256, runtime_sha256, transition_nonces,
     ):
-        """Run the checked base doorway; this foundation never issues."""
+        """Issue through the same checked authority and lifecycle ledger."""
         return CapturedAuthorizationAuthority.authorize_capture_set(
             self, captures, admission_ref,
             consumer_run_identity=consumer_run_identity,
@@ -2150,6 +2205,8 @@ class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
             if intern is not published:
                 raise ValueError("P4 frozen publication binding differs")
             stream = self._stream_for_published(published, "P4 live publication is required")
+            if any(entry[1] == stream for entry in self._p4_ledger._legacy_captures()):
+                raise ValueError("P4 stream was already captured by the same legacy ledger")
             self._recover(stream)
             self._require_head(stream, "PUBLISHED")
             subject = self._stream_pin[stream]
@@ -2173,8 +2230,8 @@ _P4_REQUEST_CHECK = _SyntheticP4CapturedAuthorizationAuthority._validate_capture
 _P4_RESOLVER_LOOKUP = _FixedWormTrustedArtifactResolver._lookup
 
 
-def _p4_checked_dispatch(authority, captures, admission_ref, **runtime):
-    """Check broker identity and frozen dependencies before all P4 validation."""
+def _p4_require_issued_authority(authority):
+    """Recheck exact broker identity and dispatch without spending authority."""
     if type(authority) is not _SyntheticP4CapturedAuthorizationAuthority:
         raise TypeError("exact broker-issued P4 capability is required")
     issued = _P4_ISSUED.get(authority)
@@ -2190,28 +2247,33 @@ def _p4_checked_dispatch(authority, captures, admission_ref, **runtime):
         or "authorize_capture_set" in authority.__dict__
     ):
         raise TypeError("exact broker-issued P4 capability is required")
-    key = _p4_reference_bytes(admission_ref)
-    nonces = runtime.pop("transition_nonces")
-    _P4_REQUEST_CHECK(authority, captures, runtime, nonces)
-    _P4_RESOLVER_LOOKUP(issued[0], key)
-    _P4_SNAPSHOT_INTEGRITY(issued[0], issued[0]._snapshot)
-    result = _P4_CLOSE_ADMISSION(issued[0], issued[0]._snapshot, admission_ref, (authority, captures, runtime))
-    _hs_refuse(result is None, "P4 unexpected closure result refused")
-    # Verification is not issuance. The ledger/batch/session increment remains
-    # explicitly absent and no nonce, receipt or admission is advanced here.
-    raise ValueError("P4 atomic issuance is unavailable")
+
+
+_P4_ISSUED_CHECK = _p4_require_issued_authority
+
+
+def _p4_checked_dispatch(authority, captures, admission_ref, **runtime):
+    """Check broker identity and frozen dependencies before all P4 validation."""
+    if _p4_require_issued_authority is not _P4_ISSUED_CHECK:
+        raise TypeError("P4 authority identity dispatch integrity refused")
+    _P4_ISSUED_CHECK(authority)
+    _p4_reference_bytes(admission_ref)
+    ledger = _LIFECYCLE_LEDGERS.get(authority)
+    if ledger is None or authority._p4_ledger is not ledger or _P4_COMMIT is not _LifecycleAuthorizationLedger.commit_p4_batch:
+        raise TypeError("P4 same-domain ledger required")
+    return _P4_COMMIT(ledger, captures, admission_ref, runtime)
 
 
 def _development_p4_broker(*, fixture_facts=None):
-    """Construct the fixed synthetic P4 foundation without selectable trust.
+    """Construct the fixed synthetic P4 issuer without selectable trust.
 
     Parameters
     ----------
     fixture_facts : dict or None
         Hostile data only: ``artifacts`` is a list of exact ``ref``/``bytes``
         entries. References name closed ADR artifacts or fixed external corpus
-        identities. Copied bytes confer no authority. Even complete verified
-        closure refuses at the unavailable atomic-issuance boundary.
+        identities. Copied bytes confer no authority: complete held closure and
+        live identity checks precede the atomic in-process ledger transaction.
 
     Returns
     -------
@@ -3273,6 +3335,11 @@ class HistoricalStudyEnvelopePreflight:
             for contract in selected["required_input_contracts"]
             if contract["source_kind"] == "published-input"
         ]
+        HistoricalStudyEnvelopePreflight._validate_capture_projection(ces, cas, phase_pis, published_contracts)
+
+    @staticmethod
+    def _validate_capture_projection(ces, cas, phase_pis, published_contracts):
+        """Validate the exact projection for the caller's already-verified contracts."""
 
         def contract_key(item):
             return (
@@ -3490,21 +3557,23 @@ class _P4ResolverSnapshot(_Opaque):
 # file/URL lookup, caller policy, or caller-supplied verification flag here.
 _P4_EXTERNAL_RECORDS = (
     ("G1-dataset-authorization",
-     "dd0bf83208b54f2a8a91cb2871433de2d89671a6cfbc8168255dd63c2c7708b6",
-     "bc523a89d99cc79c966c0924aab985b513648d69bf7200d11287e685fa5ba47bd0"
-     "84ab2b8e12f14a8c395e749a8b71dae4e4fc46e76055e869885db6922bed04"),
+     "03e4a325a9adde7fec26ee1835c6cdef9f6b84eea226e7fedfebb351a21a72b4",
+     "48afcac1de36bb1eb45475a66ec4e61563cf66fe4cc10f0e7c8f2d10ddca7a2389"
+     "5fe5238f19b7a008353dcc610d2956c0decea8bb1ad1c6cae5c8c2393b6b01"),
     ("G2-dataset-authorization",
-     "b9d715941f6876916d93d32b74e1420c75e8835cfb0d725b5f5aaae235998f9e",
-     "efe43b16ee67a049c0aa4485cb3993d789854fc362e1ac2ebb8f0219be9791c4ad7"
-     "d3d47c764b88fb2b2a2d68cfadc82fddef3e2fad9e788d4d44a84accefb08"),
+     "871ce2c3f83d488b08b3df46b5dac40c7693239904d4e076c08c3d857283d645",
+     "bd6a813d14a6f461ab54d894bd62cc962a4759184b4f812cb46a567d4a7627376c"
+     "c8c27a37fcd5d4caf8c21b48438a91ad11bbd314d1634da4199affd6766100"),
     ("fixed-owner-policy",
-     "d63a8be495af2120fdee26cc55bbc7cb8b24a1872049ad3bee37f112f2094010",
-     "13c00c529d67cb2cfb0fcc496338b0c96b575402520ba5691ca8bb77a661d636d4"
-     "558ffb548757b2f8e15b850e67712d44173a3090b37d6af849f8f0d080c50e"),
+     "456884347696ca39296e2442b21268838ec5b9e728a0c3ca28bf0396a661753e",
+     "5939a9f5b4709563c0be0695083e5abbce3f41f482d2d2b27a984203b733855be"
+     "34792e3d82b9f26ecc1cacf0fc330eb980aaa455434a1846c14fc94c427c904"),
 )
 _P4_APPROVED_SCOPE_PROJECTIONS = (
     "e61b568822008c9e9fcbe4f0149d39c3ec2b1196dab7d72caf593b1a848b811f",
     "923fa789dc1051fd8576e6af8588d97731f890f6d1a0f1404494b345a4c566dc",
+    "3d125ac8581f1a06b6996697b8277a30481025332bc2df43087ca1d159b3e965",
+    "53b0cc17b04c5922e25d6a9629014faf2243ed718b5480cde7a00bac12c9f0b5",
 )
 _P4_APPROVED_ROOT_PROJECTIONS = (
     "f490ad52c7da54f3d7cffd898e30f535b69457e538ae0be5bb0f74dcc1cc5a0a",
@@ -3529,6 +3598,14 @@ _P4_RESOLVERS = WeakKeyDictionary()
 _P4_TERMINALS = WeakKeyDictionary()
 _P4_ANCHORS = WeakKeyDictionary()
 _P4_LOCAL_PUBLIC_KEYS = MappingProxyType({
+    "security-broker/captured-port-authorization":
+        "4ef8056bd9f7ad8c5cd456ccb3b7953d1dbc454838dbf9760057bb92ddfb5537",
+    "security-broker/lifecycle-capture":
+        "62c92260b36169dfa60fccbcbe89747b25a6c418bbc79b1e2fb457972fad3733",
+    "security-broker/captured-authorization":
+        "a4e8b5a6043ee808b9bcb8f8ded614a8eee84ad2db37ef4ef6d33b52abb76670",
+    "security-broker/replay-capture-admission":
+        "3588daad4b5400671c5af1b6b62e9559b4082c8e3c2cb4e9299cfccaf310be04",
     "data-publisher/published-input-set-g1-g2":
         "1e7d223f558e8866ef35747e04b497b50033f5f6c41bf5429001d55bbed6a46b",
     "data-publisher/root-publication-g1-g2":
@@ -4083,7 +4160,7 @@ def _p4_close_admission(resolver, snapshot, admission_ref, live_projection):
             equal(other, ces, ("study_id", "subject_ref", "consumer_document_contract_sha256", "consumer_document_sha256", "purpose"))
         equal(bvp, ces, ("component_manifest_sha256",))
         HistoricalStudyEnvelopePreflight._validate_digest_chain(ces, pea, bvp, cas, value)
-        HistoricalStudyEnvelopePreflight._validate_capture_entries(ces, cas, pis, intent)
+        HistoricalStudyEnvelopePreflight._validate_capture_projection(ces, cas, pis, intent["required_input_contracts"])
         _hs_refuse(ces["consumer_document_contract_sha256"] == intent["consumer_document_contract_sha256"])
         if required_inputs is not None:
             _hs_refuse(_hs_canonical_bytes(required_inputs) == _hs_canonical_bytes(cas["entries"]), "P4 complete PCE projection differs")
@@ -4416,7 +4493,7 @@ _P4_VERIFICATION_PIN = (
 )
 _P4_SHAPE_COMMITMENT = _digest(repr((_P4_SHAPES, _P4_ARTIFACT_SPECS, _HS_SHAPES, _HS_ENVELOPES)).encode())
 _P4_SHARED_METHODS = tuple((name, getattr(HistoricalStudyEnvelopePreflight, name)) for name in (
-    "_validate_capture_entries", "_validate_digest_chain", "_validate_graph", "_validate_profiles",
+    "_validate_capture_entries", "_validate_capture_projection", "_validate_digest_chain", "_validate_graph", "_validate_profiles",
 ))
 _P4_FIXED_GLOBALS = tuple((name, globals()[name]) for name in (
     "_P4_EXTERNAL_RECORDS", "_P4_EXTERNAL_BY_REF", "_P4_LOCAL_PUBLIC_KEYS", "_P4_ARTIFACT_SPECS", "_P4_SHAPES",
@@ -4427,4 +4504,473 @@ _P4_FIXED_GLOBALS = tuple((name, globals()[name]) for name in (
     "_hs_validate_object", "_hs_validate_spec", "_hs_strict_sorted", "_hs_canonical_bytes", "_hs_refuse",
     "_P4_CHECKED_RESOLVE", "_P4_RESOLVER_LOOKUP", "_P4_RESOLVER_METHODS", "_P4_TERMINAL_METHODS", "_P4_SHARED_SIGNATURE",
     "_P4_ANCHORS", "_P4_TERMINALS", "_P4_RESOLVERS", "_P4_ISSUED", "_P4_VERIFICATION_PIN", "_P4_SHARED_METHODS",
+))
+
+
+class CapturedAuthorizationRecord(_Opaque):
+    """Opaque identity for one committed nondeployment capture transaction.
+
+    Examples
+    --------
+    Only the issued authority returns a record::
+
+        record, session = authority.authorize_capture_set(captures, admission_ref,
+            consumer_run_identity=run_id, process_measurement_sha256=measurement,
+            runtime_sha256=runtime, transition_nonces=nonces)
+
+    The record has no bytes, mapping, member, lookup or reconstruction API.
+    """
+
+    __slots__ = ("__weakref__",)
+
+    def __new__(cls, *args, **kwargs):
+        """Refuse construction from public or reconstructed data."""
+        raise TypeError("CapturedAuthorizationRecord is broker-issued")
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse subtype substitution for the issued record."""
+        raise TypeError("CapturedAuthorizationRecord is final")
+
+
+_LIFECYCLE_LEDGERS = WeakKeyDictionary()
+_LIFECYCLE_VIEWS = WeakKeyDictionary()
+_P4_LEDGER_PINS = WeakKeyDictionary()
+_P4_RECORDS = WeakKeyDictionary()
+_P4_PREPARED = WeakKeyDictionary()
+_P4_BATCH_USES = MappingProxyType({
+    "captured-port": ("dskit.captured-port-authorization/v2", "captured_port_authorization_sha256", "captured-port-authorization"),
+    "captured-receipt": ("dskit.lifecycle-captured-receipt/v2", "lifecycle_captured_receipt_sha256", "lifecycle-capture"),
+    "captured-set": ("dskit.captured-authorization-set/v2", "captured_authorization_set_sha256", "captured-authorization"),
+    "replay-capture-evidence": ("dskit.replay-capture-admission-evidence/v1", "replay_capture_admission_evidence_sha256", "replay-capture-admission"),
+})
+
+
+class _FixedP4Signer(_Opaque):
+    """Fixed synthetic Ed25519 issuer, with no registration or algorithm selector."""
+
+    def _sign(self, payload, self_field, usage):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        _hs_refuse(usage in {item[2] for item in _P4_BATCH_USES.values()})
+        value = dict(payload, issuer_role="security-broker", key_usage=usage,
+            signature_alg="Ed25519", issued_at_ms=500, not_before_ms=0, expires_at_ms=1000,
+            revocation_snapshot_sha256=_digest(b"p4-fixed-revocations"),
+            key={"key_id": "security-broker/" + usage, "key_version": 1})
+        raw = _hs_canonical_bytes(value)
+        seed = _digest(("p4-fixed-test-key/security-broker/" + usage).encode())
+        signature = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(seed)).sign(raw).hex()
+        return dict(value, **{self_field: _digest(raw), "signature": signature})
+
+
+class _PreparedP4Batch(_Opaque):
+    """Registered private candidate; never returned by the public authority."""
+
+    __slots__ = ("_raw", "_binding", "__weakref__")
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("P4 prepared batch is opaque")
+
+    def __setattr__(self, name, value):
+        raise TypeError("P4 prepared batch is immutable")
+
+
+class _FixedCapturedAuthorizationContract(_Opaque):
+    """Pure private batch preparation/verification; no ledger or lifecycle writer."""
+
+    def _prepare(self, resolver, admission_ref, streams, runtime, nonces):
+        snapshot = resolver.snapshot()
+
+        def resolved(kind, digest):
+            matches = [raw for key, raw in resolver._records
+                       if (ref := _hs_parse_canonical(key))["kind"] == kind and ref["sha256"] == digest]
+            _hs_refuse(len(matches) == 1, "P4 exact batch dependency required")
+            return _hs_parse_canonical(matches[0])
+
+        admission = _hs_parse_canonical(_P4_CHECKED_RESOLVE(resolver, snapshot, _hs_canonical_bytes(admission_ref)))
+        cas = resolved("cas", admission["capture_admission_set_sha256"])
+        subject = cas["subject_ref"]
+        replay = subject["kind"] == "replay"
+        identity = {"execution_authority_ref": {"kind": subject["kind"],
+            "final_replay_admission_sha256" if replay else "action_execution_admission_sha256": admission_ref["sha256"]},
+            "logical_execution_id": admission["logical_execution_id"], "run_id": admission["run_id"]}
+        common = {"study_id": admission["study_id"], **identity, "subject_ref": subject,
+            **{name: admission[name] for name in ("plan_evaluation_authorization_sha256", "capture_expectation_set_sha256",
+                                                 "broker_verified_plan_sha256", "capture_admission_set_sha256")}}
+        tuple_refs = [dict(admission_ref)]
+        for kind, field in (("pea", "plan_evaluation_authorization_sha256"), ("ces", "capture_expectation_set_sha256"),
+                            ("bvp", "broker_verified_plan_sha256"), ("cas", "capture_admission_set_sha256")):
+            tuple_refs.extend(_hs_parse_canonical(key) for key, _raw in resolver._records
+                              if (ref := _hs_parse_canonical(key))["kind"] == kind and ref["sha256"] == admission[field])
+        _hs_refuse(len(tuple_refs) == 5)
+        pce_refs = [{"kind": "planned-capture-entry", "role": "security-broker",
+            "schema": "dskit.planned-capture-entry/v1", "sha256": entry["planned_entry_sha256"]} for entry in cas["entries"]]
+        bases, ports, receipts, entries = [], [], [], []
+
+        def signed(kind, payload, refs):
+            schema, self_field, usage = _P4_BATCH_USES[kind]
+            refs = sorted(refs, key=lambda ref: tuple(ref[key] for key in ("kind", "role", "schema", "sha256")))
+            _hs_refuse(len({_hs_canonical_bytes(ref) for ref in refs}) == len(refs))
+            basis = _P4_SIGN(_P4_SIGNER, {"schema": "dskit.issuance-basis/v1", "kind": kind,
+                "study_id": admission["study_id"], "refs": refs}, "issuance_basis_sha256", usage)
+            bases.append(basis)
+            return _P4_SIGN(_P4_SIGNER, dict(payload, schema=schema, issuance_basis_sha256=basis["issuance_basis_sha256"]), self_field, usage)
+
+        for index, pce in enumerate(cas["entries"]):
+            refs = tuple_refs + [pce_refs[index]]
+            port = signed("captured-port", dict(common, planned_entry_sha256=pce["planned_entry_sha256"]), refs)
+            publication = pce["published_input"]
+            genesis = {"schema": "dskit.lifecycle-captured-receipt-genesis/v1", "stream_id": streams[index],
+                "predecessor_publication_receipt_schema": publication["publication_receipt_schema"],
+                "predecessor_publication_receipt_sha256": publication["publication_receipt_sha256"]}
+            receipt = signed("captured-receipt", dict(common, stream_id=streams[index], sequence=1,
+                previous_lifecycle_captured_receipt_sha256=_digest(_hs_canonical_bytes(genesis)),
+                consumer_kind=subject["kind"], consumer_id=subject["replay_id" if replay else "action_id"],
+                predecessor_publication_receipt_schema=publication["publication_receipt_schema"],
+                predecessor_publication_receipt_sha256=publication["publication_receipt_sha256"],
+                planned_capture_set_sha256=admission["planned_capture_set_sha256"], planned_entry_sha256=pce["planned_entry_sha256"],
+                captured_port_authorization_sha256=port["captured_port_authorization_sha256"],
+                actor_runtime_sha256=runtime["runtime_sha256"], transition_nonce=nonces[index]), refs)
+            ports.append(port)
+            receipts.append(receipt)
+            entries.append(dict(identity, planned_entry_sha256=pce["planned_entry_sha256"],
+                captured_port_authorization_sha256=port["captured_port_authorization_sha256"],
+                lifecycle_captured_receipt_sha256=receipt["lifecycle_captured_receipt_sha256"]))
+        captured_set = signed("captured-set", dict(common, planned_capture_set_sha256=admission["planned_capture_set_sha256"],
+                                                  entries=entries), tuple_refs + pce_refs)
+        evidence = None
+        if replay:
+            refs = list(tuple_refs)
+            for kind, field in (("final-manifest", "final_manifest_sha256"), ("final-replay-entry", "final_replay_entry_sha256"),
+                                ("replay-intent", "replay_intent_sha256")):
+                refs.extend(_hs_parse_canonical(key) for key, _raw in resolver._records
+                            if (ref := _hs_parse_canonical(key))["kind"] == kind and ref["sha256"] == admission[field])
+            refs.append({"kind": "captured-set", "role": "security-broker", "schema": captured_set["schema"],
+                         "sha256": captured_set["captured_authorization_set_sha256"]})
+            evidence = signed("replay-capture-evidence", {
+                **{field: admission[field] for field in ("study_id", "final_manifest_sha256", "final_replay_entry_sha256", "replay_id",
+                    "replay_intent_sha256", "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256",
+                    "broker_verified_plan_sha256", "planned_capture_set_sha256", "capture_admission_set_sha256")},
+                "final_replay_admission_sha256": admission_ref["sha256"],
+                "captured_authorization_set_sha256": captured_set["captured_authorization_set_sha256"],
+                "issued_ports": [{key: entry[key] for key in ("planned_entry_sha256", "captured_port_authorization_sha256",
+                                                             "lifecycle_captured_receipt_sha256")} for entry in entries]}, refs)
+        raw = _hs_canonical_bytes({"ports": ports, "receipts": receipts, "set": captured_set, "replay": evidence, "bases": bases})
+        binding = (resolver, snapshot, _hs_canonical_bytes(admission_ref), streams, _hs_canonical_bytes(runtime), nonces)
+        prepared = object.__new__(_PreparedP4Batch)
+        object.__setattr__(prepared, "_raw", raw)
+        object.__setattr__(prepared, "_binding", binding)
+        _P4_PREPARED[prepared] = (raw, binding)
+        return prepared
+
+    def _verify(self, prepared, resolver, admission_ref, streams, runtime, nonces):
+        """Require an exact registered candidate from this snapshot and request."""
+        _hs_refuse(type(prepared) is _PreparedP4Batch)
+        issued = _P4_PREPARED.get(prepared)
+        _hs_refuse(issued is not None and prepared._raw is issued[0] and prepared._binding is issued[1],
+                   "P4 prepared candidate integrity refused")
+        _hs_refuse(prepared._binding == (resolver, resolver.snapshot(), _hs_canonical_bytes(admission_ref),
+                   streams, _hs_canonical_bytes(runtime), nonces), "P4 prepared candidate binding refused")
+        return _P4_VERIFY_BYTES(self, prepared._raw, resolver, admission_ref, streams, runtime, nonces)
+
+    def _verify_bytes(self, raw, resolver, admission_ref, streams, runtime, nonces):
+        """Reparse every byte and compare the full deterministic closed projection."""
+        parsed = _hs_parse_canonical(raw)
+        _hs_refuse(set(parsed) == {"ports", "receipts", "set", "replay", "bases"})
+        expected = _P4_PREPARE(self, resolver, admission_ref, streams, runtime, nonces)
+        _hs_refuse(raw == expected._raw, "P4 complete signed batch adjacency refused")
+        for kind, slot in (("captured-port", "ports"), ("captured-receipt", "receipts"),
+                           ("captured-set", "set"), ("replay-capture-evidence", "replay")):
+            values = parsed[slot] if slot in ("ports", "receipts") else [parsed[slot]]
+            for value in values:
+                if value is None:
+                    continue
+                _schema, self_field, usage = _P4_BATCH_USES[kind]
+                _p4_verify_local_signed(value, self_field, "security-broker", usage)
+                bases = [basis for basis in parsed["bases"] if basis["issuance_basis_sha256"] == value["issuance_basis_sha256"]]
+                _hs_refuse(len(bases) == 1 and bases[0]["kind"] == kind)
+                _p4_verify_local_signed(bases[0], "issuance_basis_sha256", "security-broker", usage)
+        return parsed
+
+
+_P4_SIGNER = _FixedP4Signer()
+_P4_CONTRACT = _FixedCapturedAuthorizationContract()
+_P4_SIGN = _FixedP4Signer._sign
+_P4_PREPARE = _FixedCapturedAuthorizationContract._prepare
+_P4_VERIFY_BATCH = _FixedCapturedAuthorizationContract._verify
+_P4_VERIFY_BYTES = _FixedCapturedAuthorizationContract._verify_bytes
+
+
+class _LifecycleAuthorizationLedger(_Opaque):
+    """One process-local lock and immutable admission/batch/session record domain."""
+
+    def __init__(self, authority):
+        self._authority = authority
+        self._lock = RLock()
+        self._root = ()
+        self._reserving = ()
+        self._test_fault = None
+        self._pin = (authority, self._lock, self._root)
+        _P4_LEDGER_PINS[self] = self._pin
+
+    def _check(self):
+        _hs_refuse(self._test_fault is None or type(self._test_fault) is str,
+                   "P4 synthetic fault schedule requires exact data")
+        _hs_refuse(_P4_LEDGER_PINS.get(self) is self._pin and self._pin == (self._authority, self._lock, self._root),
+                   "P4 ledger identity or history integrity refused")
+        _hs_refuse(_LIFECYCLE_LEDGERS.get(self._authority) is self and self._authority._p4_ledger is self,
+                   "P4 authority ledger substitution refused")
+        _hs_refuse(all(getattr(type(self), name) is method for name, method in _P4_LEDGER_METHODS), "P4 ledger dispatch integrity refused")
+        _hs_refuse(_P4_COMMIT is type(self).commit_p4_batch and _p4_require_issued_authority is _P4_ISSUED_CHECK,
+                   "P4 commit/authority capsule integrity refused")
+        if type(self._authority) is _SyntheticP4CapturedAuthorizationAuthority:
+            _P4_ISSUED_CHECK(self._authority)
+        _hs_refuse(all(getattr(_DevelopmentBroker, name) is method for name, method in _P4_LEGACY_PREPARE_METHODS),
+                   "legacy preparation dispatch integrity refused")
+        _hs_refuse(_FixedP4Signer._sign is _P4_SIGN and _FixedCapturedAuthorizationContract._prepare is _P4_PREPARE
+                   and _FixedCapturedAuthorizationContract._verify is _P4_VERIFY_BATCH
+                   and _FixedCapturedAuthorizationContract._verify_bytes is _P4_VERIFY_BYTES, "P4 batch dispatch integrity refused")
+        _hs_refuse(_P4_SIGNER is _P4_BATCH_PINS[0] and _P4_CONTRACT is _P4_BATCH_PINS[1]
+                   and _P4_BATCH_USES is _P4_BATCH_PINS[2] and not _P4_SIGNER.__dict__ and not _P4_CONTRACT.__dict__,
+                   "P4 batch dependency integrity refused")
+
+    def _fault(self, point):
+        """One-shot private synthetic refusal schedule; no callback or trust grant."""
+        if self._test_fault == point:
+            self._test_fault = None
+            raise RuntimeError("injected P4 " + point)
+
+    def _committed(self):
+        with self._lock:
+            self._check()
+            return tuple(entry[4] for entry in self._p4_entries())
+
+    def _p4_entries(self):
+        return tuple(entry for entry in self._root if type(entry[0]) is tuple)
+
+    def _legacy_captures(self):
+        with self._lock:
+            self._check()
+            return tuple(entry for entry in self._root if entry[0] == "CAPTURED_V1")
+
+    def commit_legacy_capture(self, published, frozen, port, consumer_run_identity,
+                              process_measurement_sha256, runtime_sha256, transition_nonce):
+        """Stage v1 compatibility projections and commit them in this domain."""
+        with self._lock:
+            self._check()
+            self._legacy_gate((published, frozen))
+            _hs_refuse(not any(entry[0][3] == consumer_run_identity for entry in self._p4_entries()),
+                       "legacy capture cannot reuse a P4 execution run")
+            self._fault("legacy-preflight")
+            authority = self._authority
+            captured, session, subject = _DevelopmentBroker._prepare_legacy_capture(
+                authority, published, frozen, port, consumer_run_identity,
+                process_measurement_sha256, runtime_sha256, transition_nonce)
+            stream = subject.stream_id
+            body = _DevelopmentBroker._prepare_receipt(authority, subject, "CAPTURED", dict(session._runtime),
+                transition_nonce, {"consumer_captured_port": dict(captured.port)})
+            receipt = _canonical_bytes(body)
+            encoded = tuple(authority._receipt_store.get(stream, ())) + (receipt,)
+            # Build all allocations and MAC-bound intern records before the
+            # commit. None of these local copies is an authority lookup table.
+            tables = {name: dict(getattr(authority, name)) for name in (
+                "_sessions", "_session_runtime", "_session_runtime_intern", "_captured_streams",
+                "_session_streams", "_session_stream_intern", "_capture_bind", "_capture_bind_intern",
+                "_streams", "_receipt_len", "_receipt_high")}
+            tables["_sessions"][id(session)] = session
+            tables["_captured_streams"][id(captured)] = stream
+            for left, right, key, value in (
+                ("_session_runtime", "_session_runtime_intern", id(session), (id(session), tuple(sorted(dict(session._runtime).items())))),
+                ("_session_streams", "_session_stream_intern", id(session), (id(session), str(stream))),
+                ("_capture_bind", "_capture_bind_intern", id(captured), (published, frozen, session, stream)),
+            ):
+                _DevelopmentBroker._store_interned(authority, tables[left], tables[right], key, value)
+            tables["_streams"][stream] = [*authority._streams[stream], body]
+            tables["_receipt_len"][stream] = len(encoded)
+            tables["_receipt_high"][stream] = max(tables["_receipt_high"].get(stream, 0), len(encoded))
+            nonces = authority._nonces | {transition_nonce}
+            events = [*authority._session_events, ("start", consumer_run_identity, id(session))]
+            root = (*self._root, ("CAPTURED_V1", stream, receipt, captured, session, events[-1]))
+            pin = (authority, self._lock, root)
+            self._fault("legacy-prepared")
+            self._check()
+            authority._require_head(stream, "PUBLISHED")
+            self._fault("legacy-commit-before")
+            # The fixed P4 authority uses the built-in WORM store. A legacy
+            # caller-owned store may refuse here, before compatibility effects.
+            authority._receipt_store[stream] = encoded
+            for name, table in tables.items():
+                setattr(authority, name, table)
+            authority._nonces = nonces
+            authority._session_events[:] = events
+            self._root, self._pin = root, pin
+            _P4_LEDGER_PINS[self] = pin
+            self._fault("legacy-commit-after")
+            self._fault("legacy-return")
+            return captured, session
+
+    def _require_unclaimed(self, stream):
+        self._check()
+        if any(stream in _hs_parse_canonical(entry[3])["streams"] for entry in self._p4_entries()):
+            raise ValueError("P4 committed stream cannot enter legacy capture")
+
+    def _nonce_used(self, nonce):
+        return any(nonce in _hs_parse_canonical(entry[3])["nonces"] for entry in self._p4_entries())
+
+    def _legacy_gate(self, values):
+        if self._reserving:
+            raise ValueError("P4 reservation excludes legacy transitions")
+        for value in values:
+            if any(value is entry[4] or value is entry[5] for entry in self._p4_entries()):
+                raise ValueError("P4 opaque capability cannot enter v1 lifecycle")
+            if isinstance(value, _Captured):
+                value = value.published
+            if isinstance(value, _Published):
+                stream = self._authority._stream_for_published(value, "live publication required")
+                self._require_unclaimed(stream)
+
+    def _request(self, captures, admission_ref, runtime):
+        _hs_refuse(type(captures) is tuple and bool(captures))
+        _hs_refuse(type(runtime["transition_nonces"]) is tuple)
+        projected = []
+        for capture in captures:
+            _hs_refuse(type(capture) is tuple and len(capture) == 3)
+            published, frozen, port = capture
+            _hs_refuse(type(published) is _Published and type(frozen) is _Frozen and type(port) is dict)
+            projected.append([id(published), id(frozen), port, published.descriptor, _digest(_canonical_bytes(frozen.source))])
+        copied_runtime = dict(runtime, transition_nonces=list(runtime["transition_nonces"]))
+        return _hs_canonical_bytes({"captures": projected, "admission": admission_ref, "runtime": copied_runtime})
+
+    def _audit(self, record):
+        with self._lock:
+            self._check()
+            found = [entry for entry in self._p4_entries() if entry[4] is record]
+            _hs_refuse(len(found) == 1 and _P4_RECORDS.get(record) is self, "P4 committed record required")
+            value = _hs_parse_canonical(found[0][3])
+            value["execution_key"] = found[0][0]
+            for slot in ("ports", "receipts", "bases"):
+                value[slot] = tuple(_hs_canonical_bytes(item) for item in value[slot])
+            for slot in ("set", "session", "session_start"):
+                value[slot] = _hs_canonical_bytes(value[slot])
+            if value["replay"] is not None:
+                value["replay"] = _hs_canonical_bytes(value["replay"])
+            value["streams"], value["nonces"] = tuple(value["streams"]), tuple(value["nonces"])
+            return value
+
+    def resolve_p4(self, execution_key, admission_ref):
+        """Resolve one exact committed identity; never prepare, consume or remint."""
+        with self._lock:
+            self._check()
+            _hs_refuse(type(execution_key) is tuple and len(execution_key) == 4, "P4 exact execution key required")
+            _hs_refuse(type(execution_key[1]) is bytes and all(type(execution_key[index]) is str and execution_key[index]
+                       for index in (0, 2, 3)), "P4 execution key scalar types refused")
+            authority_ref = _hs_parse_canonical(execution_key[1])
+            _hs_refuse(type(authority_ref) is dict and authority_ref.get("kind") in ("action", "replay"))
+            digest_field = "action_execution_admission_sha256" if authority_ref["kind"] == "action" else "final_replay_admission_sha256"
+            _hs_refuse(set(authority_ref) == {"kind", digest_field})
+            _hs_validate_spec(authority_ref[digest_field], "H")
+            admission_bytes = _p4_reference_bytes(admission_ref)
+            for entry in self._p4_entries():
+                if entry[0] == execution_key and entry[1] == admission_bytes:
+                    session = entry[5]
+                    _hs_refuse(_p4_session_pin(session) == entry[6] and _P4_RECORDS.get(entry[4]) is self,
+                               "P4 session or record integrity refused")
+                    _hs_refuse(hmac.compare_digest(entry[7], hmac.new(self._authority._map_key,
+                        b"P4 LaunchSession\x00" + _hs_canonical_bytes(dict(session._runtime)), hashlib.sha256).hexdigest()),
+                        "P4 broker session signature refused")
+                    return entry[4], session
+            return None
+
+    def commit_p4_batch(self, captures, admission_ref, runtime):
+        """Publish consumption and the complete verified immutable batch together."""
+        with self._lock:
+            self._check()
+            authority, resolver = self._authority, self._authority._p4_resolver
+            _P4_SNAPSHOT_INTEGRITY(resolver, resolver._snapshot)
+            fingerprint = self._request(captures, admission_ref, runtime)
+            admission_bytes = _p4_reference_bytes(admission_ref)
+            for entry in self._p4_entries():
+                if entry[1] == admission_bytes:
+                    _hs_refuse(entry[2] == fingerprint, "P4 committed admission request conflict")
+                    return self.resolve_p4(entry[0], admission_ref)
+            self._fault("preflight")
+            nonces = runtime["transition_nonces"]
+            checked_runtime = {key: value for key, value in runtime.items() if key != "transition_nonces"}
+            _P4_REQUEST_CHECK(authority, captures, checked_runtime, nonces)
+            _hs_refuse(not any(self._nonce_used(nonce) for nonce in nonces), "P4 nonce already committed")
+            _hs_refuse(_P4_CLOSE_ADMISSION(resolver, resolver._snapshot, admission_ref, (authority, captures, checked_runtime)) is None)
+            streams = tuple(authority._stream_for_published(item[0], "P4 publication required") for item in captures)
+            raw = _P4_PREPARE(_P4_CONTRACT, resolver, admission_ref, streams, checked_runtime, nonces)
+            self._fault("prepared")
+            self._reserving = streams
+            try:
+                self._fault("reserved")
+                batch = _P4_VERIFY_BATCH(_P4_CONTRACT, raw, resolver, admission_ref, streams, checked_runtime, nonces)
+                self._fault("verified")
+                self._check()
+                _P4_REQUEST_CHECK(authority, captures, checked_runtime, nonces)
+                _hs_refuse(_P4_CLOSE_ADMISSION(resolver, resolver._snapshot, admission_ref, (authority, captures, checked_runtime)) is None)
+                _hs_refuse(self._request(captures, admission_ref, runtime) == fingerprint)
+                captured_set = batch["set"]
+                cas = next(_hs_parse_canonical(raw) for ref, raw in resolver._records
+                           if _hs_parse_canonical(ref)["sha256"] == captured_set["capture_admission_set_sha256"])
+                key = (captured_set["study_id"], _hs_canonical_bytes(captured_set["execution_authority_ref"]),
+                       captured_set["logical_execution_id"], captured_set["run_id"])
+                _hs_refuse(not any(entry[0] == key or entry[0][3] == key[3] for entry in self._p4_entries()), "P4 execution identity conflict")
+                _hs_refuse(not any(entry[4]._run_identity == key[3] for entry in self._legacy_captures()),
+                           "P4 capture cannot reuse a legacy execution run")
+                decision = {field: captured_set[field] for field in ("study_id", "execution_authority_ref", "logical_execution_id", "run_id",
+                            "broker_verified_plan_sha256", "captured_authorization_set_sha256")}
+                decision.update(consumer_document_sha256=cas["consumer_document_sha256"], purpose=cas["purpose"],
+                    process_measurement_sha256=runtime["process_measurement_sha256"], issued_at_ms=500, expires_at_ms=1000,
+                    session_nonce=os.urandom(32).hex())
+                record = object.__new__(CapturedAuthorizationRecord)
+                session = LaunchSession(_MAKE, "captured-authorization-v2", key[3], cas["consumer_document_sha256"], decision)
+                session_start = {"event": "SessionStartRecord", "session": decision}
+                value = dict(batch, admission_ref=dict(admission_ref), consumed=True, execution_key=[key[0], key[1].decode(), key[2], key[3]],
+                    session=decision, session_start=session_start, streams=list(streams), nonces=list(nonces))
+                value["batch_sha256"] = _digest(_hs_canonical_bytes(value))
+                audit = _hs_canonical_bytes(value)
+                session_seal = hmac.new(authority._map_key, b"P4 LaunchSession\x00" + _hs_canonical_bytes(decision), hashlib.sha256).hexdigest()
+                entry = (key, admission_bytes, fingerprint, audit, record, session, _p4_session_pin(session), session_seal)
+                root = (*self._root, entry)
+                pin = (authority, self._lock, root)
+                # Pre-interning is not authority: every lookup additionally
+                # requires membership in the committed immutable ledger root.
+                self._fault("intern-before")
+                _P4_RECORDS[record] = self
+                self._fault("intern-after")
+                self._fault("commit-before")
+                # The final boundary follows every test schedule and all
+                # candidate allocations. Revalidate the held authority, full
+                # local/terminal closure and live aliases while still locked.
+                self._check()
+                _P4_REQUEST_CHECK(authority, captures, checked_runtime, nonces)
+                _hs_refuse(_P4_CLOSE_ADMISSION(resolver, resolver._snapshot, admission_ref,
+                           (authority, captures, checked_runtime)) is None)
+                _hs_refuse(self._request(captures, admission_ref, runtime) == fingerprint)
+                # Sole logical publication: consumption, artifacts, claims and
+                # session-start are inseparable fields in this immutable root.
+                self._root, self._pin = root, pin
+                _P4_LEDGER_PINS[self] = pin
+                self._fault("commit-after")
+                self._fault("return")
+                return record, session
+            finally:
+                self._reserving = ()
+
+
+def _p4_session_pin(session):
+    """Bind every existing opaque LaunchSession slot to its committed identity."""
+    return (session._kind, session._run_identity, session._ended, session._plan_sha256,
+            _hs_canonical_bytes(dict(session._runtime)), session._stream_id, session._locked)
+
+
+_P4_BATCH_PINS = (_P4_SIGNER, _P4_CONTRACT, _P4_BATCH_USES)
+_P4_COMMIT = _LifecycleAuthorizationLedger.commit_p4_batch
+_P4_LEGACY_PREPARE_METHODS = tuple((name, getattr(_DevelopmentBroker, name)) for name in (
+    "_prepare_legacy_capture", "_prepare_receipt", "_store_interned",
+))
+_P4_LEDGER_METHODS = tuple((name, getattr(_LifecycleAuthorizationLedger, name)) for name in (
+    "_check", "_fault", "_legacy_gate", "_require_unclaimed", "_nonce_used", "_request", "resolve_p4", "commit_p4_batch",
+    "_p4_entries", "_legacy_captures", "commit_legacy_capture",
 ))

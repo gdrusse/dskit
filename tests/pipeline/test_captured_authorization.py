@@ -1674,6 +1674,40 @@ def test_single_surface_substitution_during_reservation_or_precommit_is_empty(ph
     assert broker.authorize_capture_set(captures, graph.selected, **runtime)
 
 
+@pytest.mark.parametrize("facade", ["direct", "verifier", "driver"])
+def test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect(facade):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from dskit.production.verifier import HistoricalStudyCaptureDriver, HistoricalStudyVerifier
+    from tests.production.test_capture_lifecycle import _PLAN
+
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, _before = _graph_live(graph, document, 1)
+    verifier = HistoricalStudyVerifier(broker)
+    verifier.bind(**_PLAN)
+    doorway = broker if facade == "direct" else verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier)
+    started, done = Event(), Event()
+
+    def contender():
+        started.set()
+        try:
+            return broker.authorize_capture_set(captures, graph.selected, **runtime)
+        finally:
+            done.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with broker._p4_ledger._lock:
+            future = pool.submit(contender)
+            assert started.wait(timeout=5) and not done.wait(timeout=0.05)
+            doorway.capture(*captures[0], **{key: val for key, val in runtime.items() if key != "transition_nonces"},
+                            transition_nonce="legacy-lock-winner")
+        with pytest.raises((TypeError, ValueError)):
+            future.result(timeout=5)
+    assert not broker._p4_ledger._committed()
+    assert len(broker._p4_ledger._legacy_captures()) == 1
+    assert not broker._member_events
+
+
 def _request():
     """Return a syntactically valid reference to an unavailable admission."""
     return {

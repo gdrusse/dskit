@@ -864,8 +864,7 @@ class HistoricalStudyVerifier:
         Returns
         -------
         tuple
-            Reserved for a verified record/session. The current foundation
-            always refuses because full P4 issuance is not implemented.
+            The held authority's opaque committed record and P4 launch session.
 
         Raises
         ------
@@ -873,7 +872,7 @@ class HistoricalStudyVerifier:
             The held authority is not a broker-issued P4 capability.
         ValueError
             The facade or authority was substituted, the request is invalid,
-            or complete verified P4 issuance is unavailable.
+            or complete closure and atomic admission preconditions fail.
         """
         if type(self) is not HistoricalStudyVerifier:
             raise ValueError("opaque bound P4 authority and verifier are required")
@@ -981,7 +980,7 @@ class HistoricalStudyCaptureDriver:
         Returns
         -------
         tuple
-            Reserved for the verified P4 result; the foundation always refuses.
+            The same held authority's opaque committed record and P4 session.
 
         Raises
         ------
