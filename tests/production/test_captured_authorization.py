@@ -13,6 +13,22 @@ from tests.production import test_capture_lifecycle as legacy
 from tests.pipeline import test_captured_authorization as p4
 
 
+@pytest.mark.parametrize("facade", ["verifier", "driver"])
+@pytest.mark.parametrize("dependency", [
+    "terminal_verifier", "terminal_policy", "anchors", "snapshot", "generation",
+])
+def test_terminal_authority_cannot_be_injected_through_either_p4_facade(facade, dependency):
+    p4._terminal_type("TerminalArtifactVerifier")
+    broker = p4._factory()()
+    verifier = verifier_module.HistoricalStudyVerifier(broker)
+    doorway = verifier if facade == "verifier" else verifier_module.HistoricalStudyCaptureDriver(verifier)
+    with pytest.raises(TypeError):
+        doorway.authorize_capture_set(
+            (), p4._request(), **p4._runtime(), **{dependency: object()},
+        )
+    assert not broker._session_events and not broker._member_events
+
+
 @pytest.mark.parametrize("name", [
     "HistoricalStudyEnvelopePreflight", "HistoricalStudyRevocations",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
