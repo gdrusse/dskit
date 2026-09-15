@@ -1,0 +1,71 @@
+{
+  "schema_version": "F5aPacket8DesignDelta.v1",
+  "packet": 8,
+  "supersedes": "0138 proposed bare-ledger injection and underspecified reserve/recovery details only; other invariants retained",
+  "base_review": "0139-f5a-p8-design-review.json",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "status": "Finished local design detail; authority provisioning and API/sequence owner gates remain blocking. No clean Phase0 or implementation claim.",
+  "authority_gate": {
+    "finding": "P8-D1-M4",
+    "rejected": "HistoricalStudyVerifier(authority, admission_spend_ledger=caller_ledger) as a closure solution. Pinning that caller-selected ledger is insufficient.",
+    "required_contract": "Capture-capable verifier must be created by an owner-issued composition capability that authenticates BOTH the existing capture authority and exactly one durable namespace/store. Caller cannot mint that capability, select another root, enroll a new namespace, replace the store, or register a new owner for the same admission. Reopening is done only by that owner against the same trusted namespace. Authority bootstrap must refuse root/series aliases or replacement that detach the existing spend history.",
+    "why_not_implemented": "No such authenticated provisioning seam is currently supplied by the v1 constructor or 0100. An opaque Python wrapper or new public factory accepting a ledger merely relocates the bypass. Specifying who may provision that capability and how its root binding is authenticated is an owner architecture decision, not another intern map fix.",
+    "owner_decision_needed": "Name/approve the production bootstrap issuer, its authenticated admission-to-namespace binding, and trusted source of the stable ServeRoot. Approve migration of public verifier construction accordingly. If no such boundary is available within development scope, retain R23 open instead of inventing closure.",
+    "nondeployment": "Do not silently expand to OS-owned external broker deployment. Record the exact permitted development attacker surface and provisioning exception as an owner decision."
+  },
+  "identity_contract_proposed": {
+    "finding": "P8-D1-M2",
+    "owner": "Existing issued CapturedAuthorizationAuthority / _SyntheticP4CapturedAuthorizationAuthority and its _FixedWormTrustedArtifactResolver, never HistoricalStudyEnvelopePreflight or the production caller.",
+    "operation": "Proposed read-only method inspect_capture_admission(captures, admission_ref, runtime) on that existing authority, accessed through exact checked dispatch. It is metadata validation, not a grant, not a writer, and not a new authority.",
+    "algorithm": [
+      "Verify existing issued authority and dispatch, held resolver/snapshot integrity, then exact live request via existing _P4_REQUEST_CHECK.",
+      "Run existing _P4_CLOSE_ADMISSION over exact selected admission and live projection; resolve exact retained bytes and verify full canonical reference (kind, role, schema, sha256).",
+      "Return immutable canonical bytes of the full verified reference plus canonical bound capture/plan projection digest. The spend key uses kind/schema/sha256; role and full projection remain exact validated body context. Do not use object ids or live process ids to distinguish admission keys.",
+      "Production verifier derives ID only from this directly checked result, not from stored caller data or a supplied proof token. Recheck owner/authority/admission/binding immediately before reserve; P6 capture rechecks remain at actual effect."
+    ],
+    "binding_definition": "Digest canonical {admission_ref, consumer_document_sha256, ordered entries of descriptor plus derived consumer port and published root/member-manifest identity, verified CES/PEA/BVP/CAS references}. Exact entries/order come from the verified CAS. Runtime/nonce changes never remint a key. Complete tuple/cardinality checked, not only selected port.",
+    "association": "No transferable new approval token. Immutable return bytes are audit data only and cannot be submitted to authorize capture. Fresh capture recomputes through the issued authority. Mutation/foreign instance/snapshot/default dispatch must refuse by existing checked authority associations.",
+    "v1_migration": "Bare development broker + six arbitrary dicts cannot supply this identity. Recommended new bind takes the exact selected admission reference; authoritative plan values are resolved from its closed graph. Owner must approve replacing that successful legacy contract and decide whether the existing single-port capture adapter is restricted to one-entry verified CAS; multi-entry issuance remains the existing P4 atomic batch route. Do not sequentially consume a multi-entry admission.",
+    "still_blocking": "This exact proposed operation must be approved as part of the owner capability/API migration, then embodied in the successor Phase0 matrix with synthetic issued-authority fixtures before RED. No claim of an existing accessor."
+  },
+  "reserve_contract": {
+    "findings": [
+      "P8-D1-M3",
+      "P8-D1-m1",
+      "P8-D1-m2"
+    ],
+    "api": "ChainLedger.reserve_once(record) -> (created, seq), an exact immutable pair with exact bool and positive int. (True,new_seq) only after required barriers and snapshot work succeed; (False,prior_seq) is spent. Any conflict or unhealthy/readonly/closed state raises ProductionError. A result is never accepted as a caller-supplied permission.",
+    "lock": "A single ChainLedger-owned RLock covers reserve_once, append, append_many, barrier, snapshot and close, including automatic snapshot calls. No per-verifier lock can stand in for it. Existing lifetime flock continues to exclude independent process writers. Capture calls delegate outside this ledger lock only after reserve returns True.",
+    "states": {
+      "OPENING": "Acquire existing writer lock and store recovery, then validate full storage walk before exposing a healthy writer. Rebuild index only from verified complete records. No reserving in this state.",
+      "HEALTHY": "Only state permitting writes/reservations. Readonly writer flag independently refuses writes.",
+      "UNCERTAIN": "Any exception once storage/commit has been entered, including store, sync, state.apply, barrier, automatic snapshot or snapshot barrier, transitions here before returning error. All mutating methods refuse except close. No retry, no delegate, no index-based new permission. Pure input/conflict validation before storage leaves HEALTHY.",
+      "CLOSED": "No writes. close transitions here even if shutdown raises; retained error remains visible. Owner may construct a fresh OPENING writer only after the old lock/descriptor lifetime is resolved.",
+      "READONLY": "Existing reading open: no writer flock, no recovery/truncation, all mutation including reserve refused. Queries report damage/torn state rather than repair."
+    },
+    "new_claim_steps": [
+      "Validate body/id plus state while holding RLock; existing ID same payload returns (False,seq); different payload refuses.",
+      "Use existing commit machinery to append admission_use.",
+      "Mandatory barrier, regardless of configured fsync grade.",
+      "Honor existing snapshot cadence: if due, invoke existing automatic snapshot machinery and barrier any emitted snapshot before returning. Any failure quarantines and yields no newly-created result.",
+      "Return (True,seq). Exactly this call may delegate once."
+    ],
+    "read_semantics": "lookup/scan evidence may return prior seq/body or unknown; no query result carries created=True. No repaired writer opened by status. Status does not resend or release a reservation.",
+    "recovery_validation": "After existing writer tail recovery, verify every complete record: dense seq, previous/hash chain, expected series_id, envelope shape, recomputed caller payload_digest, valid record body, and uniqueness of record IDs (any duplicate stored ID refuses, even matching payload; legitimate idempotent append never writes it twice). Rebuild index from that validated walk. Only final incomplete non-newline JSONL tail is truncatable; complete corrupt or sealed/interior damage refuses. A complete reservation remains spent.",
+    "body_schema": "Closed admission_use body: {schema, admission_ref, binding_sha256}; schema exactly dskit.admission-use/v1, admission_ref exactly the existing four-field IssuanceBasisRef.v1 shape for action/final-replay, binding_sha256 lowercase nonplaceholder SHA256. ID must equal prescribed hash of validated kind/schema/sha256. No optional fields.",
+    "body_owner": "One production/state.py SeriesState admission-use validation routine, called by its non-economic fold. Expose/reuse that validation before ledger storage via the existing validation integration or a function-depth import to avoid module cycles; never write a second validator. Do not change snapshot fields: this fold validates and advances head only; ChainLedger existing index remains duplicate authority. Freeze exact import wiring in implementation Phase0 and test purity.",
+    "store_extension_scope": "0100 targets JsonlLedger. Shared ChainLedger locking/health changes must retain other stores append/read contracts and receive focused store conformance tests; do not claim other stores durable admission eligibility without equivalent reopen/claim proofs."
+  },
+  "additional_red_rows": [
+    "Direct verifier construction with two different fresh ledgers and same verified admission must not obtain two accepted composition capabilities.",
+    "Owner namespace/root/store replacement, caller factory, bootstrap reenrollment, foreign admission owner and root aliases refuse without creating spend/output state.",
+    "Unverified/ref-only/structural token, forged reference role/schema/digest, expired/revoked closure, changed CAS entry/order/cardinality, foreign issued authority and direct mutable return substitution refuse.",
+    "Same reservation presented to one-port adapter with a multi-entry CAS refuses; existing atomic P4 route preserves batch semantics.",
+    "Every HEALTHY->UNCERTAIN edge: store, sync, fold, first barrier, snapshot commit/fold, final snapshot barrier; subsequent append/append_many/reserve/snapshot/barrier all refuse.",
+    "Input validation before storage stays healthy; same-id/same-body returns exact (False, prior_seq); no test accepts integer seq alone as new grant.",
+    "Auto-snapshot due/not-due, state absent/present, all fsync grades: successful True always durable; failure never delegates; reopen proves admission remains spent if complete.",
+    "Recovery duplicate identical/conflicting IDs, payload mismatch, series mismatch; readonly torn-tail query makes no writes."
+  ],
+  "remaining_disposition": "M1 and M4 owner architecture/sequence gates remain open. M2 is now a concrete recommended identity contract but depends on those approvals; M3/minors have explicit proposed corrections, pending fresh review. Stop after design wrap as user requested."
+}
