@@ -1,5 +1,59 @@
 # Re-entry
 
+## Current wrap: F5a Packet 4 reviewed; integration pending (2026-09-15)
+
+Packet 4's immutable candidate is
+`f866eb0706bccc653265b971832f6165a001a96d`. Matrix v9 `0089` and clean
+Phase 0 `0090` govern its exact synthetic captured-authorization transaction.
+Fresh sequential Terra reviews `0091` (`6db2472`) and `0092` (`b0e0fba`)
+each report 0 Critical/Major/Minor/Nit; the focused suite passed **1,443 tests**,
+with ruff/diff checks clean. Bounded ReviewExit and full hash/RED/GREEN lineage:
+`docs/evidence/closeout/0093-f5a-p4-review-exit.json`.
+
+The same authority now verifies held local/terminal closure and atomically
+publishes consumed admission, exact v2 batch, opaque P4 session and session-start
+record; ordinary v1 routes share its lifecycle lock. Reviewed code/tests and
+contract/matrix identities remain unchanged by this documentation-only wrap.
+Remote packet branch holds `f866eb0`; observed main remains `b5ec572`.
+Root still must integrate, run the post-main review, push/verify and safely
+clean up the completed task branch. This is not a claim those steps occurred.
+
+`deployment_eligible=false`: no P4 member open/consume/release, durable/restart
+or cross-process guarantee, parser/CLI/compose route, real activity or deployment.
+F5A-R23, broader Packet 2 obligations, Packets 5–8, whole F5a and F3/F5b remain
+open. Preserve `origin/cursor/r5-f5a-private-plan-0f39@c489199`; no bulk PR 14 merge.
+
+**Stop after /wrap as the user requested. No Packet 5 work has started.**
+The next future bounded packet is **Packet 5: captured-artifact grammar**, with
+its own inventory, ownership and Phase 0 gates. Earlier wrap snapshots below
+are retained history; this entry supersedes their Packet 4 readiness status only.
+
+## Current wrap: F5a Packet 4 blocked before RED (2026-09-14)
+
+Owner update: the F4/core seam evolution was explicitly approved and recorded
+in `docs/evidence/closeout/0073-f5a-p4-owner-decision.json`. The prior blocker
+is resolved only at the ownership level; RED remains disabled until a successor
+exact-seam matrix and fresh skeptic are clean.
+
+Packet 3 is integrated and verified on remote main at `b5ec572`. Packet 4's
+self-contained corrected matrix is
+`docs/evidence/closeout/0070-f5a-p4-phase0-authority-seam-matrix-v2.json`;
+the fresh skeptic verdict is
+`docs/evidence/closeout/0071-f5a-p4-phase0-skeptic-v2.json`.
+
+Phase 0 confirms one unresolved Major: frozen F4's public lifecycle seam
+creates a consumer session before appending a generic v1 CAPTURED receipt,
+while ADR-0125 requires port authorization, exact v2 receipt, verified set,
+replay evidence when applicable, then a distinct bound session. No compliant
+existing public seam was found. RED, trust.py edits, merge and deployment are
+not authorized.
+
+Next gate: the F4/core owner must approve or refuse the exact versioned broker
+seam and ownership correction recorded in
+`docs/evidence/closeout/0072-f5a-p4-owner-gate.json`. Preserve
+`codex/f5a-p4-captured-auth-20260914` and
+`origin/cursor/r5-f5a-private-plan-0f39@c489199`; do not merge or purge either.
+
 ## Current wrap: F5a Packet 3 structural/signature preflight reviewed (2026-09-14)
 
 Packet 3 adds an exact eleven-byte ADR-0125 structural/signature preflight in

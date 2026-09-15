@@ -1,0 +1,182 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "current-main authority-seam and field-adjacency matrix",
+  "base_commit": "b5ec57262ba53c7b47ee95639658a7a05f4c4048",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "authority": {
+    "delegated_scope": "Phase 0 design evidence only; no RED, GREEN, lifecycle write, session, member open, execution, or real activity.",
+    "red_authorization": false,
+    "deployment_eligible": false,
+    "reason": "The accepted ADR chronology has no current public owner seam capable of producing its port authorization, captured receipt, authorization set, then session order."
+  },
+  "source_hashes": {
+    "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae",
+    "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c",
+    "adr_0125": "023423830eca35871e67ea87bee51e88450a97ac3b1723588cd9c969ef859cc9",
+    "frozen_trust": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5",
+    "current_verifier": "c02628305d7d0403213e077e6107f745c5bb09e2c3494846a517b05a7f440719"
+  },
+  "controlling_contract": {
+    "required_order": [
+      "PUBLISHED immutable root and receipt",
+      "frozen consumer document and derived exact ConsumerCapturedPort",
+      "consumed ActionExecutionAdmission or FinalReplayAdmission",
+      "CapturedPortAuthorization.v2 for each planned entry",
+      "LifecycleCapturedReceipt.v2 for each matching port authorization",
+      "signed CapturedAuthorizationSet.v2 over the complete sorted entries",
+      "broker-signed nonserializable LaunchSession bound to the verified set",
+      "only then member open/import/construction/run/publication"
+    ],
+    "citations": [
+      "docs/architecture/decision-log.md:8773-8828",
+      "docs/plans/closeout-2026-09-14/01-capture-admission.md:43-49",
+      "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:648-700"
+    ],
+    "packet_exit": "Prove canonical ordering, exact descriptor/port/receipt/runtime/release equality, self-digest, duplicate/missing entries, post-freeze mutation, same-session misuse, and the valid publication-to-distinct-session path."
+  },
+  "exact_shapes": {
+    "ExecutionAuthorityRef": {
+      "one_of": [
+        {"kind": "literal:action", "action_execution_admission_sha256": "H"},
+        {"kind": "literal:replay", "final_replay_admission_sha256": "H"}
+      ]
+    },
+    "CapturedPortAuthorization.v2": [
+      "schema", "study_id", "execution_authority_ref", "logical_execution_id", "run_id", "subject_ref",
+      "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256", "broker_verified_plan_sha256",
+      "capture_admission_set_sha256", "planned_entry_sha256", "issuance_basis_sha256", "issuer_role", "key_usage",
+      "signature_alg", "issued_at_ms", "not_before_ms", "expires_at_ms", "revocation_snapshot_sha256", "key",
+      "captured_port_authorization_sha256", "signature"
+    ],
+    "LifecycleCapturedReceipt.v2": [
+      "schema", "stream_id", "sequence", "previous_lifecycle_captured_receipt_sha256", "study_id", "consumer_kind",
+      "consumer_id", "execution_authority_ref", "logical_execution_id", "run_id", "subject_ref",
+      "predecessor_publication_receipt_schema", "predecessor_publication_receipt_sha256",
+      "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256", "broker_verified_plan_sha256",
+      "planned_capture_set_sha256", "capture_admission_set_sha256", "planned_entry_sha256",
+      "captured_port_authorization_sha256", "actor_runtime_sha256", "transition_nonce", "issuance_basis_sha256",
+      "issuer_role", "key_usage", "signature_alg", "issued_at_ms", "not_before_ms", "expires_at_ms",
+      "revocation_snapshot_sha256", "key", "lifecycle_captured_receipt_sha256", "signature"
+    ],
+    "CapturedAuthorizationEntry.v2": [
+      "execution_authority_ref", "logical_execution_id", "run_id", "planned_entry_sha256",
+      "captured_port_authorization_sha256", "lifecycle_captured_receipt_sha256"
+    ],
+    "CapturedAuthorizationSet.v2": [
+      "schema", "study_id", "execution_authority_ref", "logical_execution_id", "run_id", "subject_ref",
+      "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256", "broker_verified_plan_sha256",
+      "planned_capture_set_sha256", "capture_admission_set_sha256", "entries", "issuance_basis_sha256", "issuer_role",
+      "key_usage", "signature_alg", "issued_at_ms", "not_before_ms", "expires_at_ms", "revocation_snapshot_sha256",
+      "key", "captured_authorization_set_sha256", "signature"
+    ],
+    "LaunchSession": [
+      "study_id", "execution_authority_ref", "logical_execution_id", "run_id", "consumer_document_sha256",
+      "broker_verified_plan_sha256", "captured_authorization_set_sha256", "process_measurement_sha256", "purpose",
+      "issued_at_ms", "expires_at_ms", "session_nonce"
+    ],
+    "canonical_rules": "Exact closed objects; duplicate/missing/extra keys refuse. Signed self-digests hash deterministic canonical bytes with only self and signature omitted. Entries are strictly ascending and unique by planned_entry_sha256; cardinality is exactly one per PCE. Every set, entry, port, receipt, session, and runtime binding has byte-identical execution authority ref, logical execution ID, and run ID."
+  },
+  "adjacency_ledger": [
+    {"id": "P4-C01", "from": "PCE", "to": "CapturedPortAuthorization.v2", "equality": "planned_entry_sha256 plus PEA/CES/BVP/CAS chain, study, subject, execution tuple; one authorization per PCE"},
+    {"id": "P4-C02", "from": "frozen descriptor and derived port", "to": "PCE and port authorization", "equality": "consumer document, node, input, purpose and descriptor root/snapshot/document/node/output/purpose are exact; no caller-selected alternate projection"},
+    {"id": "P4-C03", "from": "consumed admission", "to": "first port authorization", "equality": "authority tag/digest, logical execution and run match; issuance atomically consumes the WORM admission before minting"},
+    {"id": "P4-C04", "from": "CapturedPortAuthorization.v2", "to": "LifecycleCapturedReceipt.v2", "equality": "complete execution tuple, subject, chain digests and planned entry; receipt names exact port authorization"},
+    {"id": "P4-C05", "from": "PUBLISHED receipt/root", "to": "LifecycleCapturedReceipt.v2", "equality": "exact predecessor schema/digest and resolved immutable PCE root; strictly increasing same-stream predecessor and WORM-unique nonce"},
+    {"id": "P4-C06", "from": "actor runtime and release", "to": "LifecycleCapturedReceipt.v2", "equality": "exact measured actor_runtime_sha256 and lifecycle release identity; no runtime or release substitution"},
+    {"id": "P4-C07", "from": "PCE/port/receipt triples", "to": "CapturedAuthorizationSet.v2.entries", "equality": "bijection by planned_entry_sha256; exact three digests; strict canonical order; no duplicate, missing, extra, or alternate resolved projection"},
+    {"id": "P4-C08", "from": "CES/BVP/CAS/stage-or-replay legs", "to": "CapturedAuthorizationSet.v2", "equality": "complete P(CES)==P(BVP)==P(CAS)==P(Stage)==P(Captured), or the four replay pre-capture legs"},
+    {"id": "P4-C09", "from": "CapturedAuthorizationSet.v2", "to": "LaunchSession", "equality": "study/execution tuple, consumer document, BVP, set self, measurement, purpose and bounded trusted time; set is verified before session mint"},
+    {"id": "P4-C10", "from": "LaunchSession", "to": "runtime/member open", "equality": "same nonserializable broker-bound identity; producer/same-run/same-session/restart substitution refuses before open/import/construction/output"},
+    {"id": "P4-C11", "from": "issuance basis/signatures/revocations", "to": "port, receipt and set", "equality": "exact basis and role/use per artifact, Ed25519, inclusive trusted time and fail-closed immutable revocation snapshot"},
+    {"id": "P4-C12", "from": "post-freeze source", "to": "port/authorization/receipt/set/session", "equality": "recomputed document and descriptor bytes remain exact at every transition; mutation refuses before subsequent effect"}
+  ],
+  "current_main_seam_audit": {
+    "public_LifecycleAuthority": {
+      "citation": "dskit/pipeline/trust.py:255-287",
+      "observed": "capture(published,frozen,port,**kwargs) and open_capture(session,captured) exist; no public issue-port-authorization, return-receipt, build/verify-set, or mint-session-after-set method exists."
+    },
+    "development_capture": {
+      "citation": "dskit/pipeline/trust.py:1128-1211",
+      "observed": "derive_consumer_port recomputes the frozen document. capture validates it, creates and records a consumer LaunchSession at lines 1188-1201, then appends CAPTURED and returns captured/session."
+    },
+    "development_receipt": {
+      "citation": "dskit/pipeline/trust.py:1779-1846",
+      "observed": "CAPTURED emits dskit.lifecycle-receipt/v1 with generic lifecycle fields and HMAC development signature. It is not the exact LifecycleCapturedReceipt.v2 object and is not returned by the public capture API."
+    },
+    "historical_driver": {
+      "citation": "dskit/production/verifier.py:1887-2050",
+      "observed": "HistoricalStudyVerifier consumes its local one-use cell before delegating to LifecycleAuthority.capture; it neither issues CapturedPortAuthorization.v2 nor constructs/verifies CapturedAuthorizationSet.v2, and the delegated call exposes the already-created session."
+    },
+    "frozen_boundary": "Packet plan freezes F4 dskit/pipeline/trust.py and forbids a parallel lifecycle writer or bypass broker."
+  },
+  "candidate_dispositions": [
+    {
+      "option": "A-approved-F4-seam-evolution",
+      "would_require": "The F4/core owner approves a versioned public broker seam that atomically consumes admission, issues port authorizations, records/returns exact v2 receipts, verifies/builds the complete set, and only then mints a set-bound session.",
+      "status": "requires design and ownership approval before RED",
+      "packet_capable": true
+    },
+    {
+      "option": "B-verifier-local-parallel-writer",
+      "would_require": "F5a adds its own receipt/session authority beside LifecycleAuthority.",
+      "status": "refused: second writer/trust root and ownership violation",
+      "packet_capable": false
+    },
+    {
+      "option": "C-bytes-only-preflight",
+      "would_require": "Verify supplied port/receipt/set bytes without resolving the live published/frozen/captured/session objects.",
+      "status": "insufficient: proves grammar/signatures only and cannot satisfy exact live equality or valid path",
+      "packet_capable": false
+    },
+    {
+      "option": "D-treat-v1-as-v2-or-session-before-set",
+      "would_require": "Equate generic lifecycle-receipt/v1 with LifecycleCapturedReceipt.v2 or hide/relabel the already-created session.",
+      "status": "refused: schema and chronology contradiction",
+      "packet_capable": false
+    },
+    {
+      "option": "E-edit-frozen-trust-without-owner",
+      "would_require": "Modify dskit/pipeline/trust.py inside this F5a packet without an approved manifest correction.",
+      "status": "refused: frozen F4 boundary",
+      "packet_capable": false
+    }
+  ],
+  "future_red_matrix_after_approval": [
+    "Every exact key, scalar, literal, self-digest, role/use, signature, time and revocation mutation for port, receipt and set.",
+    "Unknown/extra/missing/duplicate/unsorted entry and every P4-C01 through P4-C12 single-field substitution.",
+    "CAPTURED before frozen document/hash, prefreeze port, publish omission, descriptor mutation, wrong document/root/receipt, and runtime/release substitution.",
+    "Admission reuse, same producer/consumer run, same session, copied/wrapped/subclassed/serialized handle, restart identity, partial failure and retry.",
+    "Valid synthetic PUBLISHED -> frozen document -> exact port -> consumed admission -> port authorization -> v2 receipt -> complete signed set -> distinct set-bound session; no member open/import/construction/output before the last step.",
+    "No real provider, network, filesystem source, capture data, replay, backtest, paper/live, or deployment."
+  ],
+  "phase0_verdict": {
+    "contract_is_precise": true,
+    "current_seam_can_implement_contract": false,
+    "unresolved_critical": 0,
+    "unresolved_major": 1,
+    "major": {
+      "id": "F5A-P4-P0-M01-authority-seam",
+      "impact": "Any implementation on current public seams must either create/expose the session before the verified set, use the wrong receipt schema, omit live equality, or create a forbidden second authority.",
+      "required_resolution": "Obtain an explicit F4/core ownership decision and accepted versioned seam design; update the controlling manifest if trust.py ownership changes."
+    },
+    "red_authorization": false,
+    "merge_authorization": false
+  },
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend",
+    "Packets 4/6/8",
+    "whole F5a",
+    "no trust.py edit",
+    "no F3/F5b unblock",
+    "no deployment or real activity",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "checks": [
+    "python3 -m json.tool docs/evidence/closeout/0069-f5a-p4-phase0-authority-seam-matrix.json",
+    "git diff --check"
+  ],
+  "next_gate": "Fresh Terra skeptic must validate the seam audit and blocker. If confirmed, stop before RED and request the explicit F4/core owner decision; do not invent authority."
+}

@@ -44,15 +44,17 @@ the ``SubmittingExecutor`` contract (§5.7).
 """
 
 import dataclasses
-import hashlib
-import json
-import math
-import re
-from abc import ABC, abstractmethod
 from threading import Lock
 from types import MappingProxyType
+from weakref import WeakKeyDictionary
 
-from dskit.pipeline.trust import LifecycleAuthority, ReleaseKeyring, TrustedClock
+from dskit.pipeline.trust import (
+    CapturedAuthorizationAuthority,
+    HistoricalStudyEnvelopePreflight,
+    HistoricalStudyRevocations,
+    LifecycleAuthority,
+    NonAuthorizingAdr0125StructuralSignaturePreflight,
+)
 from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
@@ -643,1192 +645,10 @@ class SubmissionVerifier:
         if not decision.allowed:
             raise _Refused(decision.reason)
 
-
-# ---------------------------------------------------------------------------
-# ADR-0125 structural/signature preflight (F5a Packet 3)
-# ---------------------------------------------------------------------------
-
-
-class HistoricalStudyRevocations(ABC):
-    """Verify one already-authenticated immutable revocation snapshot."""
-
-    @abstractmethod
-    def is_unrevoked(self, snapshot_sha256, key_id, key_version, now_ms):
-        """Return True only when the named key is unrevoked at ``now_ms``."""
-
-
-class NonAuthorizingAdr0125StructuralSignaturePreflight:
-    """Opaque proof of local syntax and signatures, never lifecycle authority."""
-
-    __slots__ = ()
-    deployment_eligible = False
-
-    def __new__(cls, *args, **kwargs):
-        """Refuse direct construction; only the verifier may mint this result."""
-        raise TypeError("opaque preflight result")
-
-    def __copy__(self):
-        """Refuse shallow copies of the opaque result."""
-        raise TypeError("opaque preflight result")
-
-    def __deepcopy__(self, memo):
-        """Refuse deep copies of the opaque result."""
-        raise TypeError("opaque preflight result")
-
-    def __getstate__(self):
-        """Refuse pickle state for the opaque result."""
-        raise TypeError("opaque preflight result")
-
-    def __reduce__(self):
-        """Refuse pickle reduction for the opaque result."""
-        raise TypeError("opaque preflight result")
-
-    def __reduce_ex__(self, protocol):
-        """Refuse protocol-specific pickle reduction for the opaque result."""
-        raise TypeError("opaque preflight result")
-
-
-_HS_HASH = re.compile(r"[0-9a-f]{64}")
-_HS_ACTION_IDS = frozenset(
-    (
-        "tape-data-materialization",
-        "tape-manifest-materialization",
-        "A1",
-        "A2",
-        "A3",
-        "A4",
-    )
-)
-_HS_PROFILE_PHASES = frozenset(("bootstrap", "scope-action", "replay-pre-final"))
-
-_HS_SHAPES = {
-    "Key": {"key_id": "S", "key_version": "I"},
-    "ActionSubject": {
-        "kind": ("literal", "action"),
-        "action_id": "ActionId",
-        "action_intent_sha256": "H",
-    },
-    "ReplaySubject": {
-        "kind": ("literal", "replay"),
-        "replay_id": ("literal", "control", "crash-restart"),
-        "replay_intent_sha256": "H",
-    },
-    "PublishedInputEntry": {
-        "input_id": "S",
-        "kind": "S",
-        "root_ref": "S",
-        "root_id": "S",
-        "snapshot_version": "S",
-        "member_manifest_sha256": "H",
-        "producer_run_identity": "S",
-        "producer_document_sha256": "H",
-        "producer_node": "S",
-        "producer_output": "S",
-        "publication_receipt_schema": (
-            "literal",
-            "dskit.root-publication-receipt/v1",
-            "dskit.lifecycle-publication-receipt/v2",
-        ),
-        "publication_receipt_sha256": "H",
-        "contract_sha256": "H",
-    },
-    "InputContract": {
-        "binding_id": "S",
-        "consumer_node": "S",
-        "consumer_input": "S",
-        "source_kind": ("literal", "published-input", "predecessor-output"),
-        "source_ref": "S",
-        "output_schema": "S",
-        "output_version": "S",
-        "purpose": "S",
-    },
-    "OutputContract": {
-        "output_name": "S",
-        "output_schema": "S",
-        "output_version": "S",
-        "purpose": "S",
-        "producer_node": "S",
-        "producer_output": "S",
-        "media_type": "S",
-    },
-    "PredecessorOutputRef": {
-        "predecessor_action_id": "ActionId",
-        "output_name": "S",
-        "output_schema": "S",
-        "output_version": "S",
-        "purpose": "S",
-    },
-    "EdgeSetEntry": {
-        "consumer_action_id": "ActionId",
-        "binding_id": "S",
-        "predecessor_action_id": "ActionId",
-        "output_name": "S",
-        "output_schema": "S",
-        "output_version": "S",
-        "purpose": "S",
-    },
-    "ActionIntent": {
-        "schema": ("literal", "dskit.action-intent/v1"),
-        "study_id": "S",
-        "action_id": "ActionId",
-        "consumer_document_contract_sha256": "H",
-        "kind": "S",
-        "topological_position": "I",
-        "predecessor_action_ids": ("array", "ActionId"),
-        "predecessor_output_refs": ("array", "PredecessorOutputRef"),
-        "root_published_input_ids": ("array", "S"),
-        "required_input_contracts": ("array", "InputContract"),
-        "output_contract": ("shape", "OutputContract"),
-        "closed_parameters_sha256": "H",
-        "component_manifest_sha256": "H",
-        "candidate_selection_sha256": "H",
-        "policy_sha256": "H",
-        "action_intent_sha256": "H",
-    },
-    "ReplayIntent": {
-        "schema": ("literal", "dskit.replay-intent/v1"),
-        "study_id": "S",
-        "replay_id": ("literal", "control", "crash-restart"),
-        "consumer_document_contract_sha256": "H",
-        "required_input_contracts": ("array", "InputContract"),
-        "environment_identity_sha256": "H",
-        "execution_profile_sha256": "H",
-        "component_manifest_sha256": "H",
-        "crash_schedule_sha256": "H",
-        "recovery_policy_sha256": "H",
-        "policy_sha256": "H",
-        "replay_intent_sha256": "H",
-    },
-    "CesEntry": {
-        "binding_id": "S",
-        "consumer_document_sha256": "H",
-        "consumer_node": "S",
-        "consumer_input": "S",
-        "purpose": "S",
-        "descriptor_root_ref": "S",
-        "descriptor_snapshot_version": "S",
-        "descriptor_document_sha256": "H",
-        "descriptor_node": "S",
-        "descriptor_output": "S",
-        "descriptor_purpose": "S",
-        "published_input": ("shape", "PublishedInputEntry"),
-    },
-    "PlannedCaptureEntry": {
-        "schema": ("literal", "dskit.planned-capture-entry/v1"),
-        "subject_ref": ("union", "ActionSubject", "ReplaySubject"),
-        "binding_id": "S",
-        "consumer_document_sha256": "H",
-        "consumer_node": "S",
-        "consumer_input": "S",
-        "purpose": "S",
-        "descriptor_root_ref": "S",
-        "descriptor_snapshot_version": "S",
-        "descriptor_document_sha256": "H",
-        "descriptor_node": "S",
-        "descriptor_output": "S",
-        "descriptor_purpose": "S",
-        "published_input": ("shape", "PublishedInputEntry"),
-        "planned_entry_sha256": "H",
-    },
-    "ActionIntentSet": {
-        "schema": ("literal", "dskit.action-intent-set/v1"),
-        "entries": ("array", "ActionIntent"),
-        "action_intent_set_sha256": "H",
-    },
-    "ReplayIntentSet": {
-        "schema": ("literal", "dskit.replay-intent-set/v1"),
-        "entries": ("array", "ReplayIntent"),
-        "replay_intent_set_sha256": "H",
-    },
-}
-
-
-_HS_AUTHORITY_REFS = (
-    {
-        "kind": ("literal", "scope-intent-gate-set"),
-        "scope_intent_sha256": "H",
-        "gate_set_sha256": "H",
-    },
-    {
-        "kind": ("literal", "scope-authorization-action"),
-        "scope_authorization_sha256": "H",
-        "action_intent_sha256": "H",
-    },
-    {
-        "kind": ("literal", "scope-authorization-replay"),
-        "scope_authorization_sha256": "H",
-        "replay_intent_sha256": "H",
-    },
-)
-
-_HS_ENVELOPES = {
-    "PublishedInputSet": {
-        "schema": ("literal", "dskit.published-input-set/v2"),
-        "study_id": "S",
-        "phase": ("literal", "root-g1-g2", "stage-consumer", "replay-consumer"),
-        "purpose": "S",
-        "entries": ("array", "PublishedInputEntry"),
-        "published_input_set_sha256": "H",
-    },
-    "ScopeIntent": {
-        "schema": ("literal", "dskit.historical-study-scope-intent/v1"),
-        "study_id": "S",
-        "purpose": "S",
-        "published_input_set_sha256": "H",
-        "action_intents": ("array", "ActionIntent"),
-        "action_intent_set_sha256": "H",
-        "action_dag_sha256": "H",
-        "edge_set_sha256": "H",
-        "replay_intents": ("array", "ReplayIntent"),
-        "replay_intent_set_sha256": "H",
-        "environment_identity_sha256": "H",
-        "execution_profile_sha256": "H",
-        "component_manifest_sha256": "H",
-        "candidate_inventory_sha256": "H",
-        "policy_set_sha256": "H",
-        "historical_study_scope_intent_sha256": "H",
-    },
-    "CES": {
-        "schema": ("literal", "dskit.capture-expectation-set/v1"),
-        "study_id": "S",
-        "phase": "ProfilePhase",
-        "subject_ref": ("union", "ActionSubject", "ReplaySubject"),
-        "consumer_document_contract_sha256": "H",
-        "consumer_document_sha256": "H",
-        "purpose": "S",
-        "component_manifest_sha256": "H",
-        "published_input_set_sha256": "H",
-        "entries": ("array", "CesEntry"),
-        "capture_expectation_set_sha256": "H",
-    },
-    "PEA": {
-        "schema": ("literal", "dskit.plan-evaluation-authorization/v1"),
-        "study_id": "S",
-        "phase": "ProfilePhase",
-        "subject_ref": ("union", "ActionSubject", "ReplaySubject"),
-        "consumer_document_contract_sha256": "H",
-        "consumer_document_sha256": "H",
-        "purpose": "S",
-        "component_manifest_sha256": "H",
-        "published_input_set_sha256": "H",
-        "capture_expectation_set_sha256": "H",
-        "authority_ref": "AuthorityRef",
-        "plan_evaluation_authorization_sha256": "H",
-    },
-    "BVP": {
-        "schema": ("literal", "dskit.broker-verified-plan/v1"),
-        "plan_evaluation_authorization_sha256": "H",
-        "capture_expectation_set_sha256": "H",
-        "subject_ref": ("union", "ActionSubject", "ReplaySubject"),
-        "study_id": "S",
-        "consumer_document_contract_sha256": "H",
-        "consumer_document_sha256": "H",
-        "purpose": "S",
-        "component_manifest_sha256": "H",
-        "planning_rules_sha256": "H",
-        "plan_sha256": "H",
-        "planned_capture_set_sha256": "H",
-        "broker_verified_plan_sha256": "H",
-    },
-    "CAS": {
-        "schema": ("literal", "dskit.capture-admission-set/v1"),
-        "study_id": "S",
-        "subject_ref": ("union", "ActionSubject", "ReplaySubject"),
-        "consumer_document_contract_sha256": "H",
-        "consumer_document_sha256": "H",
-        "purpose": "S",
-        "plan_evaluation_authorization_sha256": "H",
-        "capture_expectation_set_sha256": "H",
-        "broker_verified_plan_sha256": "H",
-        "planned_capture_set_sha256": "H",
-        "entries": ("array", "PlannedCaptureEntry"),
-        "capture_admission_set_sha256": "H",
-    },
-    "ActionAdmission": {
-        "schema": ("literal", "dskit.action-execution-admission/v1"),
-        "study_id": "S",
-        "scope_authorization_sha256": "H",
-        "action_id": "ActionId",
-        "action_intent_sha256": "H",
-        "historical_study_stage_admission_sha256": "H",
-        "plan_evaluation_authorization_sha256": "H",
-        "capture_expectation_set_sha256": "H",
-        "broker_verified_plan_sha256": "H",
-        "plan_sha256": "H",
-        "planned_capture_set_sha256": "H",
-        "capture_admission_set_sha256": "H",
-        "logical_execution_id": "S",
-        "run_id": "S",
-        "recovery_journal_sha256": "H",
-        "recovery_fence_sha256": "H",
-        "recovery_attempt_rules_sha256": "H",
-        "action_execution_admission_sha256": "H",
-    },
-    "ReplayAdmission": {
-        "schema": ("literal", "dskit.final-replay-admission/v1"),
-        "study_id": "S",
-        "final_manifest_sha256": "H",
-        "final_replay_entry_sha256": "H",
-        "replay_id": ("literal", "control", "crash-restart"),
-        "replay_intent_sha256": "H",
-        "plan_evaluation_authorization_sha256": "H",
-        "capture_expectation_set_sha256": "H",
-        "broker_verified_plan_sha256": "H",
-        "plan_sha256": "H",
-        "planned_capture_set_sha256": "H",
-        "capture_admission_set_sha256": "H",
-        "logical_execution_id": "S",
-        "run_id": "S",
-        "recovery_journal_sha256": "H",
-        "recovery_fence_sha256": "H",
-        "recovery_attempt_rules_sha256": "H",
-        "final_replay_admission_sha256": "H",
-    },
-}
-
-_HS_SIGNED_SUFFIX = {
-    "issuance_basis_sha256": "H",
-    "issuer_role": "S",
-    "key_usage": "S",
-    "signature_alg": ("literal", "Ed25519"),
-    "issued_at_ms": "I",
-    "not_before_ms": "I",
-    "expires_at_ms": "I",
-    "revocation_snapshot_sha256": "H",
-    "key": ("shape", "Key"),
-    "signature": "S",
-}
-
-_HS_SELF_FIELDS = {
-    "PublishedInputSet": "published_input_set_sha256",
-    "ScopeIntent": "historical_study_scope_intent_sha256",
-    "CES": "capture_expectation_set_sha256",
-    "PEA": "plan_evaluation_authorization_sha256",
-    "BVP": "broker_verified_plan_sha256",
-    "CAS": "capture_admission_set_sha256",
-    "ActionAdmission": "action_execution_admission_sha256",
-    "ReplayAdmission": "final_replay_admission_sha256",
-}
-
-_HS_ROLE_USE = {
-    "root_pis": ("data-publisher", "published-input-set-g1-g2"),
-    "phase_pis": ("study-lifecycle", "published-input-set-study"),
-    "scope": ("study-lifecycle", "historical-study-scope-intent"),
-    "ces": ("study-lifecycle", "capture-expectation"),
-    "pea": ("security-broker", "plan-evaluation"),
-    "bvp": ("security-broker", "plan-verifier"),
-    "cas": ("study-lifecycle", "capture-admission"),
-    "action_admission": ("study-lifecycle", "action-execution-admission"),
-    "replay_admission": ("study-lifecycle", "final-replay-admission"),
-}
-
-
-def _hs_refuse(condition, message="ADR-0125 preflight refused"):
-    if not condition:
-        raise ValueError(message)
-
-
-def _hs_canonical_bytes(value):
-    def admissible(item):
-        if item is None or type(item) in (str, bool, int):
-            return
-        if type(item) is float:
-            _hs_refuse(math.isfinite(item))
-            return
-        if type(item) is list:
-            for child in item:
-                admissible(child)
-            return
-        if type(item) is dict:
-            for key, child in item.items():
-                _hs_refuse(type(key) is str)
-                admissible(child)
-            return
-        raise ValueError("non-JSON value")
-
-    admissible(value)
-    try:
-        return json.dumps(
-            value,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-            allow_nan=False,
-        ).encode("ascii")
-    except (TypeError, ValueError, UnicodeError) as exc:
-        raise ValueError("canonical JSON refused") from exc
-
-
-def _hs_parse_canonical(raw):
-    if type(raw) is not bytes:
-        raise TypeError("exact bytes are required")
-
-    def reject_constant(value):
-        raise ValueError("non-finite JSON constant")
-
-    def unique_object(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError("duplicate JSON key")
-            result[key] = value
-        return result
-
-    try:
-        value = json.loads(
-            raw.decode("utf-8", "strict"),
-            parse_constant=reject_constant,
-            object_pairs_hook=unique_object,
-        )
-    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
-        raise ValueError("canonical JSON refused") from exc
-    _hs_refuse(_hs_canonical_bytes(value) == raw, "non-canonical JSON")
-    return value
-
-
-def _hs_validate_spec(value, spec):
-    if spec == "S":
-        _hs_refuse(type(value) is str)
-    elif spec == "H":
-        _hs_refuse(type(value) is str and _HS_HASH.fullmatch(value) is not None)
-    elif spec == "I":
-        _hs_refuse(type(value) is int)
-    elif spec == "ActionId":
-        _hs_refuse(type(value) is str and value in _HS_ACTION_IDS)
-    elif spec == "ProfilePhase":
-        _hs_refuse(type(value) is str and value in _HS_PROFILE_PHASES)
-    elif spec == "AuthorityRef":
-        matches = 0
-        for fields in _HS_AUTHORITY_REFS:
-            try:
-                _hs_validate_object(value, fields)
-            except ValueError:
-                continue
-            matches += 1
-        _hs_refuse(matches == 1)
-    elif type(spec) is tuple and spec[0] == "literal":
-        _hs_refuse(type(value) is str and value in spec[1:])
-    elif type(spec) is tuple and spec[0] == "shape":
-        _hs_validate_object(value, _HS_SHAPES[spec[1]])
-    elif type(spec) is tuple and spec[0] == "array":
-        _hs_refuse(type(value) is list)
-        for item in value:
-            child = spec[1]
-            if child in _HS_SHAPES:
-                _hs_validate_object(item, _HS_SHAPES[child])
-            else:
-                _hs_validate_spec(item, child)
-    elif type(spec) is tuple and spec[0] == "union":
-        matches = 0
-        for name in spec[1:]:
-            try:
-                _hs_validate_object(value, _HS_SHAPES[name])
-            except ValueError:
-                continue
-            matches += 1
-        _hs_refuse(matches == 1)
-    else:
-        raise ValueError("unknown preflight schema")
-
-
-def _hs_validate_object(value, fields):
-    _hs_refuse(type(value) is dict and set(value) == set(fields))
-    for name, spec in fields.items():
-        _hs_validate_spec(value[name], spec)
-
-
-def _hs_validate_envelope(value, name):
-    fields = dict(_HS_ENVELOPES[name])
-    fields.update(_HS_SIGNED_SUFFIX)
-    _hs_validate_object(value, fields)
-
-
-def _hs_self_digest(value, self_name, *, signed=False):
-    payload = dict(value)
-    payload.pop(self_name)
-    if signed:
-        payload.pop("signature")
-    preimage = _hs_canonical_bytes(payload)
-    _hs_refuse(hashlib.sha256(preimage).hexdigest() == value[self_name])
-    return preimage
-
-
-def _hs_strict_sorted(items, key):
-    keys = [key(item) for item in items]
-    _hs_refuse(all(left < right for left, right in zip(keys, keys[1:])))
-
-
-def _hs_scalar_key(value):
-    return _hs_canonical_bytes(value)
-
-
-def _hs_tuple_key(*values):
-    return _hs_canonical_bytes(list(values))
-
-
-class HistoricalStudyEnvelopePreflight:
-    """Validate a fixed synthetic ADR-0125 byte tuple without granting authority."""
-
-    __slots__ = ("_keyring", "_clock", "_revocations")
-
-    def __init__(self, keyring, clock, revocations):
-        if not isinstance(keyring, ReleaseKeyring):
-            raise TypeError("ReleaseKeyring is required")
-        if not isinstance(clock, TrustedClock):
-            raise TypeError("TrustedClock is required")
-        if not isinstance(revocations, HistoricalStudyRevocations):
-            raise TypeError("HistoricalStudyRevocations is required")
-        self._keyring = keyring
-        self._clock = clock
-        self._revocations = revocations
-
-    def verify(
-        self,
-        root_pis_bytes,
-        phase_pis_bytes,
-        scope_intent_bytes,
-        action_intent_set_bytes,
-        edge_set_bytes,
-        replay_intent_set_bytes,
-        ces_bytes,
-        pea_bytes,
-        bvp_bytes,
-        cas_bytes,
-        selected_admission_bytes,
-    ):
-        """Return an opaque no-effect result for the exact eleven-byte tuple."""
-        raw = {
-            "root_pis": root_pis_bytes,
-            "phase_pis": phase_pis_bytes,
-            "scope": scope_intent_bytes,
-            "action_set": action_intent_set_bytes,
-            "edges": edge_set_bytes,
-            "replay_set": replay_intent_set_bytes,
-            "ces": ces_bytes,
-            "pea": pea_bytes,
-            "bvp": bvp_bytes,
-            "cas": cas_bytes,
-            "admission": selected_admission_bytes,
-        }
-        values = {name: _hs_parse_canonical(value) for name, value in raw.items()}
-        admission_name = self._validate_shapes_and_self(values)
-        profile, selected = self._validate_profiles(values, raw, admission_name)
-        self._validate_ordering(values)
-        self._validate_adjacency(values, raw, profile, selected, admission_name)
-        self._verify_trust(values, profile, admission_name)
-        return object.__new__(NonAuthorizingAdr0125StructuralSignaturePreflight)
-
-    @staticmethod
-    def _validate_shapes_and_self(values):
-        envelope_names = {
-            "root_pis": "PublishedInputSet",
-            "phase_pis": "PublishedInputSet",
-            "scope": "ScopeIntent",
-            "ces": "CES",
-            "pea": "PEA",
-            "bvp": "BVP",
-            "cas": "CAS",
-        }
-        for slot, name in envelope_names.items():
-            _hs_validate_envelope(values[slot], name)
-            _hs_self_digest(values[slot], _HS_SELF_FIELDS[name], signed=True)
-
-        admission_schema = (
-            values["admission"].get("schema")
-            if type(values["admission"]) is dict
-            else None
-        )
-        if admission_schema == "dskit.action-execution-admission/v1":
-            admission_name = "ActionAdmission"
-        elif admission_schema == "dskit.final-replay-admission/v1":
-            admission_name = "ReplayAdmission"
-        else:
-            raise ValueError("selected admission schema refused")
-        _hs_validate_envelope(values["admission"], admission_name)
-        _hs_self_digest(
-            values["admission"], _HS_SELF_FIELDS[admission_name], signed=True
-        )
-
-        _hs_validate_object(values["action_set"], _HS_SHAPES["ActionIntentSet"])
-        _hs_validate_object(values["replay_set"], _HS_SHAPES["ReplayIntentSet"])
-        _hs_refuse(type(values["edges"]) is list)
-        for edge in values["edges"]:
-            _hs_validate_object(edge, _HS_SHAPES["EdgeSetEntry"])
-
-        action_groups = (
-            values["scope"]["action_intents"],
-            values["action_set"]["entries"],
-        )
-        for actions in action_groups:
-            for action in actions:
-                _hs_self_digest(action, "action_intent_sha256")
-        replay_groups = (
-            values["scope"]["replay_intents"],
-            values["replay_set"]["entries"],
-        )
-        for replays in replay_groups:
-            for replay in replays:
-                _hs_self_digest(replay, "replay_intent_sha256")
-        _hs_self_digest(values["action_set"], "action_intent_set_sha256")
-        _hs_self_digest(values["replay_set"], "replay_intent_set_sha256")
-        for entry in values["cas"]["entries"]:
-            _hs_self_digest(entry, "planned_entry_sha256")
-        return admission_name
-
-    @staticmethod
-    def _validate_profiles(values, raw, admission_name):
-        root_pis = values["root_pis"]
-        phase_pis = values["phase_pis"]
-        ces = values["ces"]
-        pea = values["pea"]
-        profile = ces["phase"]
-        _hs_refuse(pea["phase"] == profile)
-        _hs_refuse(root_pis["phase"] == "root-g1-g2")
-
-        subjects = (
-            ces["subject_ref"],
-            pea["subject_ref"],
-            values["bvp"]["subject_ref"],
-            values["cas"]["subject_ref"],
-        )
-        subject_bytes = [_hs_canonical_bytes(subject) for subject in subjects]
-        _hs_refuse(len(set(subject_bytes)) == 1)
-        subject = subjects[0]
-
-        if profile == "bootstrap":
-            _hs_refuse(raw["root_pis"] == raw["phase_pis"])
-            _hs_refuse(phase_pis["phase"] == "root-g1-g2")
-            _hs_refuse(
-                subject["kind"] == "action" and admission_name == "ActionAdmission"
-            )
-            ref = pea["authority_ref"]
-            _hs_refuse(ref["kind"] == "scope-intent-gate-set")
-            _hs_refuse(
-                ref["scope_intent_sha256"]
-                == values["scope"]["historical_study_scope_intent_sha256"]
-            )
-        elif profile == "scope-action":
-            _hs_refuse(phase_pis["phase"] == "stage-consumer")
-            _hs_refuse(
-                subject["kind"] == "action" and admission_name == "ActionAdmission"
-            )
-            ref = pea["authority_ref"]
-            _hs_refuse(ref["kind"] == "scope-authorization-action")
-            _hs_refuse(ref["action_intent_sha256"] == subject["action_intent_sha256"])
-        elif profile == "replay-pre-final":
-            _hs_refuse(phase_pis["phase"] == "replay-consumer")
-            _hs_refuse(
-                subject["kind"] == "replay" and admission_name == "ReplayAdmission"
-            )
-            ref = pea["authority_ref"]
-            _hs_refuse(ref["kind"] == "scope-authorization-replay")
-            _hs_refuse(ref["replay_intent_sha256"] == subject["replay_intent_sha256"])
-        else:
-            raise ValueError("profile refused")
-
-        if subject["kind"] == "action":
-            matches = [
-                child
-                for child in values["scope"]["action_intents"]
-                if child["action_id"] == subject["action_id"]
-                and child["action_intent_sha256"] == subject["action_intent_sha256"]
-            ]
-        else:
-            matches = [
-                child
-                for child in values["scope"]["replay_intents"]
-                if child["replay_id"] == subject["replay_id"]
-                and child["replay_intent_sha256"] == subject["replay_intent_sha256"]
-            ]
-        _hs_refuse(len(matches) == 1)
-        return profile, matches[0]
-
-    @staticmethod
-    def _validate_ordering(values):
-        for slot in ("root_pis", "phase_pis"):
-            _hs_strict_sorted(
-                values[slot]["entries"],
-                lambda item: _hs_scalar_key(item["input_id"]),
-            )
-
-        def action_key(item):
-            return _hs_tuple_key(item["topological_position"], item["action_id"])
-
-        for actions in (
-            values["scope"]["action_intents"],
-            values["action_set"]["entries"],
-        ):
-            _hs_strict_sorted(actions, action_key)
-            _hs_refuse(
-                len(actions) == len(_HS_ACTION_IDS)
-                and {item["action_id"] for item in actions} == _HS_ACTION_IDS
-            )
-            for action in actions:
-                _hs_strict_sorted(action["predecessor_action_ids"], _hs_scalar_key)
-                _hs_strict_sorted(
-                    action["predecessor_output_refs"],
-                    lambda item: _hs_tuple_key(
-                        item["predecessor_action_id"],
-                        item["output_name"],
-                        item["output_schema"],
-                        item["output_version"],
-                        item["purpose"],
-                    ),
-                )
-                _hs_strict_sorted(action["root_published_input_ids"], _hs_scalar_key)
-                _hs_strict_sorted(
-                    action["required_input_contracts"],
-                    lambda item: _hs_scalar_key(item["binding_id"]),
-                )
-
-        for replays in (
-            values["scope"]["replay_intents"],
-            values["replay_set"]["entries"],
-        ):
-            _hs_strict_sorted(replays, lambda item: _hs_scalar_key(item["replay_id"]))
-            _hs_refuse(
-                [item["replay_id"] for item in replays] == ["control", "crash-restart"]
-            )
-            for replay in replays:
-                _hs_strict_sorted(
-                    replay["required_input_contracts"],
-                    lambda item: _hs_scalar_key(item["binding_id"]),
-                )
-
-        _hs_strict_sorted(
-            values["edges"],
-            lambda item: _hs_tuple_key(
-                item["consumer_action_id"],
-                item["binding_id"],
-                item["predecessor_action_id"],
-                item["output_name"],
-                item["output_schema"],
-                item["output_version"],
-                item["purpose"],
-            ),
-        )
-        _hs_strict_sorted(values["ces"]["entries"], _hs_canonical_bytes)
-        _hs_strict_sorted(
-            values["cas"]["entries"],
-            lambda item: (
-                _hs_scalar_key(item["planned_entry_sha256"]),
-                _hs_canonical_bytes(item),
-            ),
-        )
-
-    @staticmethod
-    def _validate_adjacency(values, raw, profile, selected, admission_name):
-        root_pis = values["root_pis"]
-        phase_pis = values["phase_pis"]
-        scope = values["scope"]
-        action_set = values["action_set"]
-        replay_set = values["replay_set"]
-        ces = values["ces"]
-        pea = values["pea"]
-        bvp = values["bvp"]
-        cas = values["cas"]
-        admission = values["admission"]
-
-        _hs_refuse(
-            len(
-                {
-                    item["study_id"]
-                    for item in (
-                        root_pis,
-                        phase_pis,
-                        scope,
-                        ces,
-                        pea,
-                        bvp,
-                        cas,
-                        admission,
-                    )
-                }
-            )
-            == 1
-        )
-        _hs_refuse(
-            scope["published_input_set_sha256"]
-            == root_pis["published_input_set_sha256"]
-        )
-        _hs_refuse(
-            _hs_canonical_bytes(scope["action_intents"])
-            == _hs_canonical_bytes(action_set["entries"])
-        )
-        _hs_refuse(
-            scope["action_intent_set_sha256"] == action_set["action_intent_set_sha256"]
-        )
-        _hs_refuse(
-            _hs_canonical_bytes(scope["replay_intents"])
-            == _hs_canonical_bytes(replay_set["entries"])
-        )
-        _hs_refuse(
-            scope["replay_intent_set_sha256"] == replay_set["replay_intent_set_sha256"]
-        )
-        _hs_refuse(hashlib.sha256(raw["edges"]).hexdigest() == scope["edge_set_sha256"])
-
-        for child in scope["action_intents"] + scope["replay_intents"]:
-            _hs_refuse(child["study_id"] == scope["study_id"])
-            _hs_refuse(
-                child["component_manifest_sha256"] == scope["component_manifest_sha256"]
-            )
-        _hs_refuse(
-            all(
-                item["component_manifest_sha256"] == scope["component_manifest_sha256"]
-                for item in (ces, pea, bvp)
-            )
-        )
-        if profile == "replay-pre-final":
-            _hs_refuse(
-                selected["environment_identity_sha256"]
-                == scope["environment_identity_sha256"]
-            )
-            _hs_refuse(
-                selected["execution_profile_sha256"]
-                == scope["execution_profile_sha256"]
-            )
-
-        _hs_refuse(
-            all(
-                item["consumer_document_contract_sha256"]
-                == selected["consumer_document_contract_sha256"]
-                for item in (ces, pea, bvp, cas)
-            )
-        )
-        _hs_refuse(len({item["purpose"] for item in (scope, ces, pea, bvp, cas)}) == 1)
-        _hs_refuse(
-            len({item["consumer_document_sha256"] for item in (ces, pea, bvp, cas)})
-            == 1
-        )
-        _hs_refuse(
-            ces["published_input_set_sha256"]
-            == pea["published_input_set_sha256"]
-            == phase_pis["published_input_set_sha256"]
-        )
-
-        if profile == "replay-pre-final":
-            _hs_refuse(
-                all(
-                    contract["source_kind"] != "predecessor-output"
-                    for contract in selected["required_input_contracts"]
-                )
-            )
-
-        HistoricalStudyEnvelopePreflight._validate_graph(
-            scope, values["edges"], root_pis
-        )
-        HistoricalStudyEnvelopePreflight._validate_capture_entries(
-            ces, cas, phase_pis, selected
-        )
-        HistoricalStudyEnvelopePreflight._validate_digest_chain(
-            ces, pea, bvp, cas, admission
-        )
-
-        subject = ces["subject_ref"]
-        if admission_name == "ActionAdmission":
-            _hs_refuse(admission["action_id"] == subject["action_id"])
-            _hs_refuse(
-                admission["action_intent_sha256"] == subject["action_intent_sha256"]
-            )
-        else:
-            _hs_refuse(admission["replay_id"] == subject["replay_id"])
-            _hs_refuse(
-                admission["replay_intent_sha256"] == subject["replay_intent_sha256"]
-            )
-
-    @staticmethod
-    def _validate_graph(scope, edges, root_pis):
-        actions = scope["action_intents"]
-        by_id = {action["action_id"]: action for action in actions}
-        root_ids = [entry["input_id"] for entry in root_pis["entries"]]
-
-        for action in actions:
-            refs = action["predecessor_output_refs"]
-            projected = []
-            for ref in refs:
-                if ref["predecessor_action_id"] not in projected:
-                    projected.append(ref["predecessor_action_id"])
-            _hs_refuse(projected == action["predecessor_action_ids"])
-            for predecessor_id in action["predecessor_action_ids"]:
-                _hs_refuse(
-                    predecessor_id in by_id and predecessor_id != action["action_id"]
-                )
-                _hs_refuse(
-                    by_id[predecessor_id]["topological_position"]
-                    < action["topological_position"]
-                )
-            if not action["predecessor_action_ids"]:
-                for input_id in action["root_published_input_ids"]:
-                    _hs_refuse(root_ids.count(input_id) == 1)
-            else:
-                _hs_refuse(not action["root_published_input_ids"])
-
-            for contract in action["required_input_contracts"]:
-                same_binding_edges = [
-                    edge
-                    for edge in edges
-                    if edge["consumer_action_id"] == action["action_id"]
-                    and edge["binding_id"] == contract["binding_id"]
-                ]
-                if contract["source_kind"] == "published-input":
-                    _hs_refuse(not same_binding_edges)
-                    continue
-                matches = []
-                for edge in same_binding_edges:
-                    refs_for_edge = [
-                        ref
-                        for ref in refs
-                        if all(
-                            ref[name] == edge[name]
-                            for name in (
-                                "predecessor_action_id",
-                                "output_name",
-                                "output_schema",
-                                "output_version",
-                                "purpose",
-                            )
-                        )
-                    ]
-                    if (
-                        len(refs_for_edge) == 1
-                        and contract["output_schema"] == edge["output_schema"]
-                        and contract["output_version"] == edge["output_version"]
-                        and contract["purpose"] == edge["purpose"]
-                    ):
-                        matches.append((edge, refs_for_edge[0]))
-                _hs_refuse(len(matches) == 1)
-                edge, ref = matches[0]
-                producer = by_id[edge["predecessor_action_id"]]["output_contract"]
-                for name in (
-                    "output_name",
-                    "output_schema",
-                    "output_version",
-                    "purpose",
-                ):
-                    _hs_refuse(ref[name] == producer[name])
-
-            for ref in refs:
-                matching_edges = [
-                    edge
-                    for edge in edges
-                    if edge["consumer_action_id"] == action["action_id"]
-                    and all(
-                        edge[name] == ref[name]
-                        for name in (
-                            "predecessor_action_id",
-                            "output_name",
-                            "output_schema",
-                            "output_version",
-                            "purpose",
-                        )
-                    )
-                ]
-                _hs_refuse(len(matching_edges) == 1)
-                edge = matching_edges[0]
-                matching_contracts = [
-                    contract
-                    for contract in action["required_input_contracts"]
-                    if contract["source_kind"] == "predecessor-output"
-                    and contract["binding_id"] == edge["binding_id"]
-                    and contract["output_schema"] == ref["output_schema"]
-                    and contract["output_version"] == ref["output_version"]
-                    and contract["purpose"] == ref["purpose"]
-                ]
-                _hs_refuse(len(matching_contracts) == 1)
-                producer = by_id[ref["predecessor_action_id"]]["output_contract"]
-                for name in (
-                    "output_name",
-                    "output_schema",
-                    "output_version",
-                    "purpose",
-                ):
-                    _hs_refuse(ref[name] == producer[name])
-
-        for edge in edges:
-            _hs_refuse(edge["consumer_action_id"] in by_id)
-            consumer = by_id[edge["consumer_action_id"]]
-            contracts = [
-                contract
-                for contract in consumer["required_input_contracts"]
-                if contract["source_kind"] == "predecessor-output"
-                and contract["binding_id"] == edge["binding_id"]
-                and contract["output_schema"] == edge["output_schema"]
-                and contract["output_version"] == edge["output_version"]
-                and contract["purpose"] == edge["purpose"]
-            ]
-            refs = [
-                ref
-                for ref in consumer["predecessor_output_refs"]
-                if all(
-                    ref[name] == edge[name]
-                    for name in (
-                        "predecessor_action_id",
-                        "output_name",
-                        "output_schema",
-                        "output_version",
-                        "purpose",
-                    )
-                )
-            ]
-            _hs_refuse(len(contracts) == len(refs) == 1)
-
-    @staticmethod
-    def _validate_capture_entries(ces, cas, phase_pis, selected):
-        published_contracts = [
-            contract
-            for contract in selected["required_input_contracts"]
-            if contract["source_kind"] == "published-input"
-        ]
-
-        def contract_key(item):
-            return (
-                item["binding_id"],
-                item["consumer_node"],
-                item["consumer_input"],
-                item["purpose"],
-            )
-
-        _hs_refuse(
-            sorted(contract_key(entry) for entry in ces["entries"])
-            == sorted(contract_key(contract) for contract in published_contracts)
-        )
-
-        phase_entries = phase_pis["entries"]
-        converted = []
-        for entry in ces["entries"]:
-            _hs_refuse(
-                entry["consumer_document_sha256"] == ces["consumer_document_sha256"]
-            )
-            _hs_refuse(entry["purpose"] == ces["purpose"])
-            pis = entry["published_input"]
-            comparisons = (
-                ("descriptor_root_ref", "root_ref"),
-                ("descriptor_snapshot_version", "snapshot_version"),
-                ("descriptor_document_sha256", "producer_document_sha256"),
-                ("descriptor_node", "producer_node"),
-                ("descriptor_output", "producer_output"),
-            )
-            for descriptor, published in comparisons:
-                _hs_refuse(entry[descriptor] == pis[published])
-            _hs_refuse(
-                entry["descriptor_purpose"] == entry["purpose"] == ces["purpose"]
-            )
-            matches = [
-                candidate
-                for candidate in phase_entries
-                if candidate["input_id"] == pis["input_id"]
-            ]
-            _hs_refuse(
-                len(matches) == 1
-                and _hs_canonical_bytes(matches[0]) == _hs_canonical_bytes(pis)
-            )
-            planned = dict(entry)
-            planned["schema"] = "dskit.planned-capture-entry/v1"
-            planned["subject_ref"] = ces["subject_ref"]
-            planned["planned_entry_sha256"] = hashlib.sha256(
-                _hs_canonical_bytes(planned)
-            ).hexdigest()
-            converted.append(planned)
-        converted.sort(
-            key=lambda item: (
-                _hs_scalar_key(item["planned_entry_sha256"]),
-                _hs_canonical_bytes(item),
-            )
-        )
-        _hs_refuse(
-            _hs_canonical_bytes(converted) == _hs_canonical_bytes(cas["entries"])
-        )
-
-    @staticmethod
-    def _validate_digest_chain(ces, pea, bvp, cas, admission):
-        _hs_refuse(
-            ces["capture_expectation_set_sha256"]
-            == pea["capture_expectation_set_sha256"]
-            == bvp["capture_expectation_set_sha256"]
-            == cas["capture_expectation_set_sha256"]
-            == admission["capture_expectation_set_sha256"]
-        )
-        _hs_refuse(
-            pea["plan_evaluation_authorization_sha256"]
-            == bvp["plan_evaluation_authorization_sha256"]
-            == cas["plan_evaluation_authorization_sha256"]
-            == admission["plan_evaluation_authorization_sha256"]
-        )
-        _hs_refuse(
-            bvp["broker_verified_plan_sha256"]
-            == cas["broker_verified_plan_sha256"]
-            == admission["broker_verified_plan_sha256"]
-        )
-        _hs_refuse(
-            bvp["plan_sha256"] == admission["plan_sha256"]
-            and bvp["planned_capture_set_sha256"]
-            == cas["planned_capture_set_sha256"]
-            == admission["planned_capture_set_sha256"]
-            and cas["capture_admission_set_sha256"]
-            == admission["capture_admission_set_sha256"]
-        )
-
-    def _verify_trust(self, values, profile, admission_name):
-        try:
-            now_ms = self._clock.now_ms()
-        except BaseException as exc:
-            raise ValueError("trusted clock refused") from exc
-        _hs_refuse(type(now_ms) is int)
-
-        phase_slot = "root_pis" if profile == "bootstrap" else "phase_pis"
-        slots = (
-            ("root_pis", "PublishedInputSet", "root_pis"),
-            ("phase_pis", "PublishedInputSet", phase_slot),
-            ("scope", "ScopeIntent", "scope"),
-            ("ces", "CES", "ces"),
-            ("pea", "PEA", "pea"),
-            ("bvp", "BVP", "bvp"),
-            ("cas", "CAS", "cas"),
-            (
-                "admission",
-                admission_name,
-                "action_admission"
-                if admission_name == "ActionAdmission"
-                else "replay_admission",
-            ),
-        )
-        for slot, envelope_name, role_slot in slots:
-            envelope = values[slot]
-            role, usage = _HS_ROLE_USE[role_slot]
-            _hs_refuse(
-                envelope["issuer_role"] == role and envelope["key_usage"] == usage
-            )
-            _hs_refuse(
-                envelope["not_before_ms"]
-                <= envelope["issued_at_ms"]
-                <= envelope["expires_at_ms"]
-            )
-            _hs_refuse(envelope["not_before_ms"] <= now_ms <= envelope["expires_at_ms"])
-            preimage = _hs_self_digest(
-                envelope, _HS_SELF_FIELDS[envelope_name], signed=True
-            )
-            key = envelope["key"]
-            try:
-                verified = self._keyring.verify(
-                    key["key_id"],
-                    key["key_version"],
-                    envelope["issued_at_ms"],
-                    preimage,
-                    envelope["signature"],
-                )
-                unrevoked = self._revocations.is_unrevoked(
-                    envelope["revocation_snapshot_sha256"],
-                    key["key_id"],
-                    key["key_version"],
-                    now_ms,
-                )
-            except BaseException as exc:
-                raise ValueError("signature or revocation refused") from exc
-            _hs_refuse(verified is True and unrevoked is True)
-
-
 _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 _DOOR_LOCK = Lock()
+_P4_VERIFIER_PINS = WeakKeyDictionary()
+_P4_DRIVER_PINS = WeakKeyDictionary()
 
 
 def _make_spend_pair():
@@ -1907,6 +727,7 @@ class HistoricalStudyVerifier:
         if not isinstance(authority, LifecycleAuthority):
             raise TypeError("lifecycle authority is required")
         self._authority = authority
+        self._bound_authority = authority
         self._bound = {}
         live, _spent, pins = _spend
         cell = object.__new__(_SpendCell)
@@ -1916,6 +737,8 @@ class HistoricalStudyVerifier:
         self._admission_spent = cell
         self._capture_lock = Lock()
         self.deployment_eligible = False
+        if type(self) is HistoricalStudyVerifier:
+            _P4_VERIFIER_PINS[self] = authority
 
     def __copy__(self):
         """Refuse shallow copies of the capture facade."""
@@ -2016,16 +839,94 @@ class HistoricalStudyVerifier:
                 live.discard(cid)
                 spent.add(cid)
         return self._authority.capture(published, frozen, port, **kwargs)
-class HistoricalStudyCaptureDriver:
-    """Identity-bound facade for the private historical-study capture doorway."""
 
-    __slots__ = ("_verifier", "_bound_verifier")
+    def authorize_capture_set(
+        self, captures, admission_ref, *, consumer_run_identity,
+        process_measurement_sha256, runtime_sha256, transition_nonces,
+    ):
+        """Delegate only to the same constructor-bound issued P4 capability.
+
+        Parameters
+        ----------
+        captures : tuple
+            Exact ordered published/frozen/derived-port tuples.
+        admission_ref : dict
+            Exact action or replay admission reference.
+        consumer_run_identity : str
+            Consumer run distinct from the producer runs.
+        process_measurement_sha256 : str
+            Exact consumer process measurement digest.
+        runtime_sha256 : str
+            Exact consumer runtime digest.
+        transition_nonces : tuple
+            One distinct unused nonce per capture.
+
+        Returns
+        -------
+        tuple
+            The held authority's opaque committed record and P4 launch session.
+
+        Raises
+        ------
+        TypeError
+            The held authority is not a broker-issued P4 capability.
+        ValueError
+            The facade or authority was substituted, the request is invalid,
+            or complete closure and atomic admission preconditions fail.
+        """
+        if type(self) is not HistoricalStudyVerifier:
+            raise ValueError("opaque bound P4 authority and verifier are required")
+        authority = getattr(self, "_authority", None)
+        pin = _P4_VERIFIER_PINS.get(self)
+        if (
+            pin is None or pin is not authority
+            or getattr(self, "_bound_authority", None) is not authority
+            or type(self).authorize_capture_set is not _HS_P4_VERIFIER_DISPATCH
+            or "authorize_capture_set" in self.__dict__
+        ):
+            raise ValueError("opaque bound P4 authority and verifier are required")
+        if not isinstance(authority, CapturedAuthorizationAuthority):
+            raise TypeError("broker-issued P4 authority capability is required")
+        if CapturedAuthorizationAuthority.authorize_capture_set is not _HS_P4_AUTHORITY_DISPATCH:
+            raise ValueError("bound P4 authority dispatch was replaced")
+        return _HS_P4_AUTHORITY_DISPATCH(
+            authority, captures, admission_ref,
+            consumer_run_identity=consumer_run_identity,
+            process_measurement_sha256=process_measurement_sha256,
+            runtime_sha256=runtime_sha256,
+            transition_nonces=transition_nonces,
+        )
+
+
+class HistoricalStudyCaptureDriver:
+    """Identity-bound facade for the private historical-study capture doorway.
+
+    Parameters
+    ----------
+    verifier : HistoricalStudyVerifier
+        Exact verifier retained by identity. Ordinary v1 capture remains valid;
+        only the separate P4 method requires an issued P4 authority.
+
+    Examples
+    --------
+    A non-verifier cannot construct this facade::
+
+        try:
+            HistoricalStudyCaptureDriver(None)
+        except TypeError:
+            refused = True
+        refused  # True
+    """
+
+    __slots__ = ("_verifier", "_bound_verifier", "__weakref__")
 
     def __init__(self, verifier):
         if type(verifier) is not HistoricalStudyVerifier:
             raise TypeError("exact HistoricalStudyVerifier is required")
         self._verifier = verifier
         self._bound_verifier = verifier
+        if type(self) is HistoricalStudyCaptureDriver:
+            _P4_DRIVER_PINS[self] = verifier
 
     def __copy__(self):
         """Refuse shallow copies of the capture facade."""
@@ -2054,3 +955,61 @@ class HistoricalStudyCaptureDriver:
         if type(verifier) is not HistoricalStudyVerifier or verifier is not bound:
             raise ValueError("opaque bound verifier is required")
         return HistoricalStudyVerifier.capture(verifier, published, frozen, port, **kwargs)
+
+    def authorize_capture_set(
+        self, captures, admission_ref, *, consumer_run_identity,
+        process_measurement_sha256, runtime_sha256, transition_nonces,
+    ):
+        """Invoke the checked P4 class method on the exact bound verifier.
+
+        Parameters
+        ----------
+        captures : tuple
+            Exact ordered published/frozen/derived-port tuples.
+        admission_ref : dict
+            Exact action or replay admission reference.
+        consumer_run_identity : str
+            Distinct consumer run identity.
+        process_measurement_sha256 : str
+            Consumer process measurement digest.
+        runtime_sha256 : str
+            Consumer runtime digest.
+        transition_nonces : tuple
+            One unique unused nonce per capture.
+
+        Returns
+        -------
+        tuple
+            The same held authority's opaque committed record and P4 session.
+
+        Raises
+        ------
+        TypeError
+            The verifier holds only an ordinary v1 authority.
+        ValueError
+            The bound verifier or dispatch changed, or P4 validation refuses.
+        """
+        if type(self) is not HistoricalStudyCaptureDriver:
+            raise ValueError("opaque bound verifier P4 dispatch is required")
+        verifier = getattr(self, "_verifier", None)
+        pin = _P4_DRIVER_PINS.get(self)
+        if (
+            type(verifier) is not HistoricalStudyVerifier
+            or verifier is not getattr(self, "_bound_verifier", None)
+            or pin is None or pin is not verifier
+            or type(self).authorize_capture_set is not _HS_P4_DRIVER_DISPATCH
+            or type(verifier).authorize_capture_set is not _HS_P4_VERIFIER_DISPATCH
+        ):
+            raise ValueError("opaque bound verifier P4 dispatch is required")
+        return _HS_P4_VERIFIER_DISPATCH(
+            verifier, captures, admission_ref,
+            consumer_run_identity=consumer_run_identity,
+            process_measurement_sha256=process_measurement_sha256,
+            runtime_sha256=runtime_sha256,
+            transition_nonces=transition_nonces,
+        )
+
+
+_HS_P4_AUTHORITY_DISPATCH = CapturedAuthorizationAuthority.authorize_capture_set
+_HS_P4_VERIFIER_DISPATCH = HistoricalStudyVerifier.authorize_capture_set
+_HS_P4_DRIVER_DISPATCH = HistoricalStudyCaptureDriver.authorize_capture_set

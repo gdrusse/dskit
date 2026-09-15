@@ -1,0 +1,491 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "scope": "Bounded synthetic in-process Packet 4 development review exit and wrap preparation only; never a whole-F5a exit or an assertion that integration/push/cleanup has completed.",
+  "reviewed_candidate": {
+    "commit": "f866eb0706bccc653265b971832f6165a001a96d",
+    "tree": "9bbd20986b1965635b9a93f7a7ad9c97d9e00257",
+    "base": "c6b476329175feeff6a64af2e1a06cd4562ef42d",
+    "base_tree": "b40d2c1c7b9807ab30be3a01b0a7ad28e444b6ad",
+    "packet_history_base": "b5ec57262ba53c7b47ee95639658a7a05f4c4048",
+    "blobs": {
+      "dskit/pipeline/trust.py": "202a48885f93edadbe293dd1caed8845a4bef502",
+      "dskit/production/verifier.py": "c64c395e9cf3163350b90640090434d618cc76c2",
+      "tests/pipeline/test_captured_authorization.py": "7b12534fcab56bb545af9077d0aa7791d0f4a398",
+      "tests/pipeline/test_purity.py": "34565ae3a8e8c0d4e283827706109ce0f676be88",
+      "tests/pipeline/test_trust.py": "bfde7192ee114f7c72d282d524caaab4f896d285",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+      "tests/production/test_captured_authorization.py": "f3117eec3bdb4085030cf19612debdf1f1175f5a",
+      "tests/production/test_purity.py": "94afd3c479cac273e3835d29f6778adf7c80d27c"
+    },
+    "contract_and_workflow_blobs": {
+      "docs/architecture/decision-log.md": "2a69cb9e05aa6c6beb958d81c78cd0f2e247b3ff",
+      "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md": "1ad198306897956b1e2647e4c2fd41a9794ca1ed",
+      "docs/plans/closeout-2026-09-14/01-capture-admission.md": "73d6c8dbd1574bc6a074911f4e91b830ce3a5866",
+      "docs/skills/implementation-workflow.md": "f7b82c42bfb2512fbf7d19ac81269ac104b5dc61",
+      "docs/skills/skeptic-review.md": "515c04ebc326f7fa0d80e2ddb4e52f14fa7e063a",
+      "docs/skills/wrap.md": "a050c9ab89e77801acebde1d003a90f88adc405f"
+    }
+  },
+  "phase0": {
+    "owner_decision": {
+      "path": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json",
+      "sha256": "c4e2d5b9237a581d146b1d0586eec3a79738aa426c2cb64f89ea8045ca0b030e",
+      "commit": "76f68e064524fbd0f57ac72d7f35c9ddda243436"
+    },
+    "retained_matrix_v7": {
+      "path": "docs/evidence/closeout/0083-f5a-p4-phase0-authorized-transaction-matrix-v7.json",
+      "sha256": "d34df2a4ab42ab6a1bc184796a4650bd89b03d76cd60c39086341d2ff888db40",
+      "commit": "20f8bd7adae3c9cf23b32f2c54fdd6418e552bad"
+    },
+    "retained_clean_verdict": {
+      "path": "docs/evidence/closeout/0084-f5a-p4-phase0-skeptic-verdict-v8.json",
+      "sha256": "3d60f4892ff19fbd3bf6b1bef44c46097c7d2e45034e11107d4cac7ea77b1881",
+      "commit": "c6b476329175feeff6a64af2e1a06cd4562ef42d"
+    },
+    "terminal_matrix_v8": {
+      "path": "docs/evidence/closeout/0085-f5a-p4-phase0-authorized-transaction-matrix-v8.json",
+      "sha256": "23927840ef0ed9b3ed70baa9ead98ca9c6fd8cd9a1c9e071143b46d269c6ebb6",
+      "commit": "af5b6188470ed793b30c678d9b7bd6eaadaba82b"
+    },
+    "terminal_clean_verdict": {
+      "path": "docs/evidence/closeout/0086-f5a-p4-phase0-terminal-skeptic-verdict.json",
+      "sha256": "97555867f4b611ec0bf6d82bd98b5c6aa8f951bb2a377512e8dd1a041f5ffae4",
+      "commit": "5a519421513641844e78903354a742b7c8ef89df"
+    },
+    "matrix": {
+      "path": "docs/evidence/closeout/0089-f5a-p4-phase0-authorized-transaction-matrix-v9.json",
+      "sha256": "6887f5561e8e22f4d4ebdf2cf8bb71ce5a4e2759ae8aabc0d7db1b214443a1f5",
+      "commit": "a867632c22f6c26fece19ca8653a0dd57c9986f7"
+    },
+    "clean_review": {
+      "path": "docs/evidence/closeout/0090-f5a-p4-phase0-genesis-skeptic-verdict.json",
+      "sha256": "094d587d6115bd5ede936bc5bc313ec78f473e01e8543711f3b97967d016973f",
+      "commit": "55ba12a34e78e8cf2fe56d6d8d30a0b31f4344b9"
+    },
+    "controlling_adrs": [
+      "ADR-0125",
+      "ADR-0126"
+    ]
+  },
+  "final_reviews": [
+    {
+      "lens": "correctness/authority",
+      "reviewer": "gpt-5.6-terra",
+      "agent_task": "/root/f5a_p4_final_correctness_authority",
+      "path": "docs/evidence/closeout/0091-f5a-p4-final-correctness-authority-review.json",
+      "sha256": "98a2bb027dd417273cdf70890738d5fec34be767c2164675cd9efe5fa2c4b0d4",
+      "commit": "6db2472f9a1de43d60ddf7c4b96e7a1714d5ae51",
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0,
+      "approval": true
+    },
+    {
+      "lens": "test-quality/integration",
+      "reviewer": "gpt-5.6-terra",
+      "agent_task": "/root/f5a_p4_final_tests_integration",
+      "path": "docs/evidence/closeout/0092-f5a-p4-final-tests-integration-review.json",
+      "sha256": "4689a79a4aa6e88d62802cc079e3444b7707bdac845088a4dfc78739c926dbfe",
+      "commit": "b0e0fba71d15a66b786a8167d76b9a8abbcda197",
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0,
+      "approval": true
+    }
+  ],
+  "review_order": "Fresh independent contexts, sequential correctness/authority then tests/integration, on the identical candidate and Matrix v9. Actual reports are retained at the hashed paths; neither report alone claimed merge or deployment authority.",
+  "lineage": {
+    "stages": [
+      {
+        "name": "Ownership and Phase 0 convergence",
+        "summary": "0073 authorized the one existing lifecycle writer evolution. Design corrections and independent checkpoint 0082 preceded clean v7 matrix 0083/verdict 0084; no earlier blocker is erased.",
+        "commits": [
+          "de4801e4771170c98bee4fe292394b87a79b08bd",
+          "bbe9c777e7b5890818f051642277e79508e6e808",
+          "c93bb2545ef82158b4e598d4b5b1a9472ed8c60d",
+          "597f8d1323231945382b5d70f5ad6905e1bd3631",
+          "76f68e064524fbd0f57ac72d7f35c9ddda243436",
+          "beada570ac9ebe5602b1924379f175d7a813198d",
+          "0e88761f278bc9f8b77a681d87507cb88a6b425c",
+          "2092e7eee8891d734b957cf55860150a01f2b67a",
+          "0c76a0352dcc7b5344fbcf3c20e05303462414dc",
+          "170c9575642683b2e3da207967c5f27147212b52",
+          "01fd68709a8ea1afdda62bc44bda90bb1ed349f4",
+          "85a713ee6bd2a25f12937f0aaff1a3129bda6acb",
+          "c9c51d043dd569493058f6e02c946d125ef707a6",
+          "23a630fe0ec5120c102cb9881b3a689a5041b3aa",
+          "20f8bd7adae3c9cf23b32f2c54fdd6418e552bad",
+          "c6b476329175feeff6a64af2e1a06cd4562ef42d"
+        ]
+      },
+      {
+        "name": "Capability and facade foundation",
+        "red": [
+          "66270fdbecb244006c76794fc50a04fca29f0d13",
+          "edfccac63e22ca58c49d91dc8fcd119acdc1d82d"
+        ],
+        "green": "d4303f812cc0d3bb38662fa624b88645b3e491cb",
+        "summary": "Strict broker-issued capability, exact same-authority facade gating and hostile request validation; issuance intentionally unavailable."
+      },
+      {
+        "name": "Shared Packet 3 validator relocation",
+        "red": [
+          "eaa3bcfe9de3f6881d5b1137ef257687efa3bf15"
+        ],
+        "green": "90fa9d8563ba4e0b01a6cc47500b7e82459b6c8f",
+        "summary": "Behavior/API-compatible relocation into pipeline trust with production re-exporting the identical public preflight; no second verifier or pipeline-to-production import."
+      },
+      {
+        "name": "Terminal anchors and recursive closure",
+        "red": [
+          "f552172f9dbd8b17848305974c8de97380c7addb",
+          "e84198dd1ee6ed2f231186bb63fe95bfa06e71a5",
+          "70c4ad20024d7424b34947da38d3922ef35ca526",
+          "98aa62db6894af6aa3b708875460c795bc011419",
+          "a48ce01eb68821acfea5973372c259abe12213f0",
+          "dc8d201ca670656202d48706ce76cbb7c1b245c6",
+          "353eb78d7e97c74a7279ab3edfe678cad58fa555",
+          "dcdc180dd14cdaed6a43a33c1147fb972907e167",
+          "96e9873e9da83d61c2a07069407b5a112e23ccdd",
+          "4dc2cbcb238615ccf884df008aab0be7dab82111"
+        ],
+        "green": "bfb2b0cc4e1b99e1a94a6379aca035a1d24f09d3",
+        "intermediate_reviews": [
+          "80f804e9eff01b0778f3924a321f9763785c464c",
+          "9e1b1181fc4e4ccb8cd2fd8c2b5805596511cb36"
+        ],
+        "summary": "Fixed hostile-fixture resolver snapshot, opaque external terminal anchors, full local signed artifact/basis/action/replay closure and independent mutations; 925 focused checks at the closure increment. Issuance remained fail-closed pending the batch increment."
+      },
+      {
+        "name": "Atomic batch, v9 genesis, sessions and arbitration",
+        "red": [
+          "1d5f2d13adecd571a10af8a2fbbc21475aa3d75f",
+          "f58b7f81c1af6abd52e7a202419e87e18f26cfe4",
+          "aeeb50b639f621144b0b42cabf5a1c80f767dba0",
+          "f3366fe2e808c396dd6b5dc501406c8e6edc0696",
+          "a4eed99b342d681d09d141f067303dde47212ca4",
+          "764536cc3234bcdb37b785a9fc3af27f3aacc8dc",
+          "8cf52773e41ae80be6a1f1d4110a1d4428550df5",
+          "666269acaecc60153a7c7078f7f66d57867166f8",
+          "6b5ae6ddb1c7c093a51a6f25ea789f9614ba8e85",
+          "def2ec2336d5d6b8446f068ab444a474eb854233",
+          "a8aef47b000fe3a4f4fa0bc0c56a3332f33a49df"
+        ],
+        "green": "f866eb0706bccc653265b971832f6165a001a96d",
+        "summary": "Exact one/two-PCE action/replay and nonroot graphs; genesis and every emitted signed field; opaque preparation/record/session; same-ledger v1/P4 arbitration, receipt/member bypass refusals, fault schedules, concurrent admissions, corrected retry and exact unknown-outcome resolution. Final-boundary revalidation covers authority/attestation/dispatch/trust/live substitutions."
+      }
+    ],
+    "history_command": "git log --reverse --format='%H%x09%s' b5ec572..b0e0fba",
+    "commit_inventory": [
+      {
+        "commit": "de4801e4771170c98bee4fe292394b87a79b08bd",
+        "summary": "docs: map F5a Packet 4 authority seam"
+      },
+      {
+        "commit": "bbe9c777e7b5890818f051642277e79508e6e808",
+        "summary": "docs: correct F5a Packet 4 Phase 0 matrix"
+      },
+      {
+        "commit": "c93bb2545ef82158b4e598d4b5b1a9472ed8c60d",
+        "summary": "docs: record F5a Packet 4 Phase 0 blocker"
+      },
+      {
+        "commit": "597f8d1323231945382b5d70f5ad6905e1bd3631",
+        "summary": "docs: wrap blocked F5a Packet 4 gate"
+      },
+      {
+        "commit": "76f68e064524fbd0f57ac72d7f35c9ddda243436",
+        "summary": "docs: approve F5a Packet 4 authority seam"
+      },
+      {
+        "commit": "beada570ac9ebe5602b1924379f175d7a813198d",
+        "summary": "docs: define F5a Packet 4 authorized transaction"
+      },
+      {
+        "commit": "0e88761f278bc9f8b77a681d87507cb88a6b425c",
+        "summary": "docs: record F5a Packet 4 Phase 0 skeptic verdict v4"
+      },
+      {
+        "commit": "2092e7eee8891d734b957cf55860150a01f2b67a",
+        "summary": "docs: correct P4 authority transaction design"
+      },
+      {
+        "commit": "0c76a0352dcc7b5344fbcf3c20e05303462414dc",
+        "summary": "docs: retain P4 Phase 0 skeptic verdict"
+      },
+      {
+        "commit": "170c9575642683b2e3da207967c5f27147212b52",
+        "summary": "docs: correct P4 authority transaction design v5"
+      },
+      {
+        "commit": "01fd68709a8ea1afdda62bc44bda90bb1ed349f4",
+        "summary": "docs: retain P4 Phase 0 skeptic verdict v6"
+      },
+      {
+        "commit": "85a713ee6bd2a25f12937f0aaff1a3129bda6acb",
+        "summary": "docs: correct P4 authority composition boundary"
+      },
+      {
+        "commit": "c9c51d043dd569493058f6e02c946d125ef707a6",
+        "summary": "docs: record P4 Phase 0 skeptic blocker"
+      },
+      {
+        "commit": "23a630fe0ec5120c102cb9881b3a689a5041b3aa",
+        "summary": "docs: record P4 convergence checkpoint"
+      },
+      {
+        "commit": "20f8bd7adae3c9cf23b32f2c54fdd6418e552bad",
+        "summary": "docs: correct P4 facade capability matrix"
+      },
+      {
+        "commit": "c6b476329175feeff6a64af2e1a06cd4562ef42d",
+        "summary": "docs: record P4 Phase 0 skeptic verdict v8"
+      },
+      {
+        "commit": "66270fdbecb244006c76794fc50a04fca29f0d13",
+        "summary": "test: record Packet 4 fixed capability and facade RED"
+      },
+      {
+        "commit": "edfccac63e22ca58c49d91dc8fcd119acdc1d82d",
+        "summary": "test: extend Packet 4 foundation RED request boundaries"
+      },
+      {
+        "commit": "d4303f812cc0d3bb38662fa624b88645b3e491cb",
+        "summary": "feat: add fail-closed Packet 4 capability foundation"
+      },
+      {
+        "commit": "eaa3bcfe9de3f6881d5b1137ef257687efa3bf15",
+        "summary": "test: pin shared Packet 3 validator relocation RED"
+      },
+      {
+        "commit": "90fa9d8563ba4e0b01a6cc47500b7e82459b6c8f",
+        "summary": "refactor: share unchanged Packet 3 preflight with lifecycle core"
+      },
+      {
+        "commit": "af5b6188470ed793b30c678d9b7bd6eaadaba82b",
+        "summary": "docs: define Packet 4 terminal-anchor Phase 0 matrix v8"
+      },
+      {
+        "commit": "5a519421513641844e78903354a742b7c8ef89df",
+        "summary": "docs: record P4 terminal-anchor Phase 0 skeptic verdict"
+      },
+      {
+        "commit": "f552172f9dbd8b17848305974c8de97380c7addb",
+        "summary": "test: add RED for fixed Packet 4 terminal trust capabilities"
+      },
+      {
+        "commit": "e84198dd1ee6ed2f231186bb63fe95bfa06e71a5",
+        "summary": "test: add RED for recursive signed action and replay closure"
+      },
+      {
+        "commit": "70c4ad20024d7424b34947da38d3922ef35ca526",
+        "summary": "test: pin RED for single-surface closure trust replacement"
+      },
+      {
+        "commit": "98aa62db6894af6aa3b708875460c795bc011419",
+        "summary": "test: add RED for resigned terminal parent policy substitution"
+      },
+      {
+        "commit": "a48ce01eb68821acfea5973372c259abe12213f0",
+        "summary": "test: pin BVP payload RED including the named planned-set digest"
+      },
+      {
+        "commit": "dc8d201ca670656202d48706ce76cbb7c1b245c6",
+        "summary": "test: distinguish opaque publication identity from receipt digest"
+      },
+      {
+        "commit": "353eb78d7e97c74a7279ab3edfe678cad58fa555",
+        "summary": "test(pipeline): RED re-signed P4 replay authority substitution"
+      },
+      {
+        "commit": "dcdc180dd14cdaed6a43a33c1147fb972907e167",
+        "summary": "test(pipeline): RED future-dated P4 admission and opaque binding coverage"
+      },
+      {
+        "commit": "96e9873e9da83d61c2a07069407b5a112e23ccdd",
+        "summary": "test(pipeline): RED basis cannot precede its signed dependencies"
+      },
+      {
+        "commit": "4dc2cbcb238615ccf884df008aab0be7dab82111",
+        "summary": "test(pipeline): complete replay-only ancestor refusal cases"
+      },
+      {
+        "commit": "bfb2b0cc4e1b99e1a94a6379aca035a1d24f09d3",
+        "summary": "feat(pipeline): bounded P4 terminal and recursive verification foundation"
+      },
+      {
+        "commit": "80f804e9eff01b0778f3924a321f9763785c464c",
+        "summary": "docs(evidence): record P4 closure correctness review"
+      },
+      {
+        "commit": "9e1b1181fc4e4ccb8cd2fd8c2b5805596511cb36",
+        "summary": "docs: retain P4 closure tests integration review"
+      },
+      {
+        "commit": "1d5f2d13adecd571a10af8a2fbbc21475aa3d75f",
+        "summary": "test(pipeline): RED exact P4 batch session and transaction failure boundary"
+      },
+      {
+        "commit": "a867632c22f6c26fece19ca8653a0dd57c9986f7",
+        "summary": "docs: propose Packet 4 Matrix v9 captured receipt genesis"
+      },
+      {
+        "commit": "55ba12a34e78e8cf2fe56d6d8d30a0b31f4344b9",
+        "summary": "docs(evidence): record P4 genesis Phase 0 skeptic verdict"
+      },
+      {
+        "commit": "f58b7f81c1af6abd52e7a202419e87e18f26cfe4",
+        "summary": "test(pipeline): RED v9 genesis and shared-live transaction contenders"
+      },
+      {
+        "commit": "aeeb50b639f621144b0b42cabf5a1c80f767dba0",
+        "summary": "test(pipeline): RED nonroot predecessor action and replay issuance"
+      },
+      {
+        "commit": "f3366fe2e808c396dd6b5dc501406c8e6edc0696",
+        "summary": "test(pipeline): RED opaque preparation and transaction dispatch integrity"
+      },
+      {
+        "commit": "a4eed99b342d681d09d141f067303dde47212ca4",
+        "summary": "test: require exact batch fields and same-ledger legacy capture RED"
+      },
+      {
+        "commit": "764536cc3234bcdb37b785a9fc3af27f3aacc8dc",
+        "summary": "test: close receipt-writer bypass and expand genesis batch race vectors"
+      },
+      {
+        "commit": "8cf52773e41ae80be6a1f1d4110a1d4428550df5",
+        "summary": "test: RED full legacy member lock and data-only failure schedules"
+      },
+      {
+        "commit": "666269acaecc60153a7c7078f7f66d57867166f8",
+        "summary": "test: RED mixed-route execution run reuse and exact session start"
+      },
+      {
+        "commit": "6b5ae6ddb1c7c093a51a6f25ea789f9614ba8e85",
+        "summary": "test: RED exact unknown-outcome resolution key grammar"
+      },
+      {
+        "commit": "def2ec2336d5d6b8446f068ab444a474eb854233",
+        "summary": "test: RED authority revalidation under reservation and before commit"
+      },
+      {
+        "commit": "a8aef47b000fe3a4f4fa0bc0c56a3332f33a49df",
+        "summary": "test: RED final prepublication revalidation boundary"
+      },
+      {
+        "commit": "f866eb0706bccc653265b971832f6165a001a96d",
+        "summary": "feat: complete synthetic Packet4 atomic captured authorization ledger"
+      },
+      {
+        "commit": "6db2472f9a1de43d60ddf7c4b96e7a1714d5ae51",
+        "summary": "docs: record Packet4 correctness authority verdict"
+      },
+      {
+        "commit": "b0e0fba71d15a66b786a8167d76b9a8abbcda197",
+        "summary": "docs: record Packet4 tests integration verdict"
+      }
+    ],
+    "red_evidence": "Test-only RED commits precede their GREEN source commits. The retained 0092 review includes its independent detached-worktree RED reproduction; implementation-session RED runs also caught the legacy receipt/session split, receipt-writer bypass, pre-lock read/require flags, callable fault schedule, run reuse and final-boundary revalidation defects. Later extensions retain the earlier executable RED tests rather than replacing them.",
+    "material_final_deltas": "The final reviewed candidate factors the shared nonauthorizing projection validator so Packet 3 keeps its prior published-input selection while P4 verifies nonroot contracts too. Fixed synthetic terminal certificates/public keys were refreshed and the fixed owner-policy corpus expanded to four root/nonroot scope projections. No external production schema or caller-selectable trust root was introduced."
+  },
+  "verification": [
+    {
+      "actor": "gpt-6-astra implementation",
+      "cwd": "/home/russell/wt/f5a-p4-captured-auth-20260914",
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_capture_lifecycle.py tests/production/test_adr0125_preflight.py tests/production/test_purity.py tests/pipeline/test_purity.py",
+      "result": "1443 passed in 66.24s",
+      "exit_code": 0
+    },
+    {
+      "actor": "gpt-6-astra implementation",
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_capture_lifecycle.py",
+      "result": "All checks passed",
+      "exit_code": 0
+    },
+    {
+      "actor": "gpt-6-astra implementation",
+      "command": "git diff --check",
+      "result": "pass before the immutable GREEN commit",
+      "exit_code": 0
+    },
+    {
+      "actor": "fresh final reviewers",
+      "result": "Each retained final review records 1443 passing focused tests, ruff and candidate diff checks; 0092 additionally records 530 affected-interface tests. Exact reviewer commands/results remain in 0091 and 0092."
+    }
+  ],
+  "interpreter": {
+    "path": "/home/russell/dskit/.venv/bin/python",
+    "observed_sys_executable": "/home/russell/dskit/.venv/bin/python",
+    "observed_sys_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+    "environment": "WSL2, Ubuntu-24.04, PYTHONPATH=$PWD; identity read during wrap preparation; no environment mutation or full-suite rerun."
+  },
+  "accepted_scope": {
+    "public_symbols": [
+      "CapturedAuthorizationAuthority",
+      "CapturedAuthorizationRecord",
+      "HistoricalStudyVerifier.authorize_capture_set",
+      "HistoricalStudyCaptureDriver.authorize_capture_set"
+    ],
+    "proof": "Exact held local and terminal closure precedes the one authority-owned in-process WORM commit consuming admission and publishing the complete port/receipt/set/replay batch, claims, opaque session and SessionStartRecord. Identical/unknown-outcome retries resolve one identity. Whole legacy capture/member/read/require/consume/release arbitration shares that authority's lock; v1 APIs remain compatible.",
+    "effects": "Only the authorized synthetic in-process ledger/session effects. P4 creates no open/bind/member/consume/release, parser/CLI/compose, application import/construction/run/output, real-data or deployment route.",
+    "matrix_disposition": "No known unimplemented in-scope Matrix v9 row reported by the implementer; both complete independent final lenses reported zero unresolved findings. This is bounded review evidence, not a claim of exhaustive interpreter security."
+  },
+  "deferred_minor": [],
+  "preserved_open": [
+    "Packet 2's broader consume-once obligations",
+    "F5A-R23-ctor-intern-unspend",
+    "Packets 5, 6, 7 and 8",
+    "whole F5a",
+    "F3/F5b dependency gates",
+    "durable/restart and cross-process consume-once",
+    "ADR-0126 deferred coordinated multi-private-mutation attacks",
+    "G1/G2/F3-owned external production terminal schemas and deployment trust configuration",
+    "Packet 3 deferred Minor F5A-P3-R24-late-byte-type-prevalidation, unchanged by this packet",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c48919944588a2b29ba047e4cb551050a1ff9868; do not bulk-merge or purge its unmerged remainder"
+  ],
+  "candidate_lock": {
+    "compared_to": "b0e0fba71d15a66b786a8167d76b9a8abbcda197",
+    "check": "git diff --exit-code f866eb0 HEAD -- dskit tests docs/architecture/decision-log.md docs/plans docs/skills; git diff --exit-code f866eb0 -- dskit tests docs/architecture/decision-log.md docs/plans docs/skills",
+    "result": "Both comparisons empty with exit 0 before this docs-only append. All reviewed code/test blobs, controlling contract/plan/workflow blobs and hashed Matrix/Phase0/review files remain unchanged. Only new 0093 evidence and the top RE-ENTRY handoff are authorized here.",
+    "approval_rule": "Editorial wrap evidence preserves these unchanged final approvals. A material integration change to a reviewed identity reopens the affected candidate and requires the prescribed reviews."
+  },
+  "remote_state_observed": {
+    "command": "git ls-remote origin refs/heads/main refs/heads/codex/f5a-p4-captured-auth-20260914",
+    "origin_main": "b5ec57262ba53c7b47ee95639658a7a05f4c4048",
+    "origin_packet_branch": "f866eb0706bccc653265b971832f6165a001a96d",
+    "local_branch": "codex/f5a-p4-captured-auth-20260914",
+    "local_pre_wrap_head": "b0e0fba71d15a66b786a8167d76b9a8abbcda197",
+    "status": "Candidate is present on the remote packet branch. Final-review evidence and this wrap preparation are local follow-on documentation at this observation. Main integration, post-main review, push verification and branch cleanup are not yet performed by this preparation."
+  },
+  "wrap_verification": [
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0093-f5a-p4-review-exit.json",
+      "result": "pass; JSON parses without changing the evidence file"
+    },
+    {
+      "command": "git diff --check; git diff --exit-code f866eb0 -- dskit tests docs/architecture/decision-log.md docs/plans docs/skills",
+      "result": "pass; reviewed source/tests/contracts/dependencies unchanged"
+    },
+    {
+      "command": "sha256sum docs/evidence/closeout/0089* docs/evidence/closeout/0090* docs/evidence/closeout/0091* docs/evidence/closeout/0092*",
+      "result": "all four files match their recorded SHA-256 identities"
+    }
+  ],
+  "verdict": {
+    "packet_review_exit": true,
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "deployment_eligible": false,
+    "whole_f5a_closed": false,
+    "integration_pending": true
+  },
+  "next": "Root performs the separately authorized current-main integration, required post-main review, push/remote verification and safe task-branch cleanup. Stop after /wrap as requested by the user. The next future bounded packet is Packet 5 captured-artifact grammar with its own inventory/ownership/Phase 0 gates; no Packet 5 work has started."
+}

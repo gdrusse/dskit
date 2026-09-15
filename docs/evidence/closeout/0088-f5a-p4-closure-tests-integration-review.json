@@ -1,0 +1,43 @@
+{
+  "schema_version": "FinalTestsIntegrationReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2-closure-only",
+  "review_kind": "fresh final implementation test-quality/integration review",
+  "reviewer": {"model": "gpt-5.6-terra", "agent_task": "/root/f5a_p4_closure_tests_review", "lens": "tests/integration"},
+  "reviewed": {
+    "base_commit": "c6b4763",
+    "candidate_commit": "bfb2b0cc4e1b99e1a94a6379aca035a1d24f09d3",
+    "candidate_tree": "c35a5b9b9031f5827c2eb8a7114e453f9ed0a575",
+    "matrix": {"path": "docs/evidence/closeout/0085-f5a-p4-phase0-authorized-transaction-matrix-v8.json", "sha256": "23927840ef0ed9b3ed70baa9ead98ca9c6fd8cd9a1c9e071143b46d269c6ebb6"},
+    "phase0_verdict": {"path": "docs/evidence/closeout/0086-f5a-p4-phase0-terminal-skeptic-verdict.json", "sha256": "97555867f4b611ec0bf6d82bd98b5c6aa8f951bb2a377512e8dd1a041f5ffae4"},
+    "prior_correctness_lens_evidence_only": {"path": "docs/evidence/closeout/0087-f5a-p4-closure-correctness-review.json", "sha256": "046eb15379365e2b82927954f4da8c9bb78b3f1beef6855e034f673ec07cdb79", "candidate_commit": "bfb2b0cc4e1b99e1a94a6379aca035a1d24f09d3", "candidate_tree": "c35a5b9b9031f5827c2eb8a7114e453f9ed0a575", "disposition": "Read as retained evidence only; it did not alter the independently reviewed candidate, tests, or this lens."},
+    "authorized_candidate_blobs": {
+      "dskit/pipeline/trust.py": "ebf451c6f97d754ac56bf2ee55604425c5d0966c",
+      "dskit/production/verifier.py": "d73d511aa8d2a2dec10da2aefe5dc0dff380e3b1",
+      "tests/pipeline/test_captured_authorization.py": "f705ce5d3443fb988c3d72552174c7b210a5abdb",
+      "tests/production/test_captured_authorization.py": "5f38d3a712c010866c8b95852dc7272e82096337",
+      "tests/pipeline/test_trust.py": "c6a17d6eac7774826f41ed95167a7df2d47963fc",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04"
+    },
+    "shared_unchanged_packet3_dependency": {"tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"},
+    "post_candidate_difference_before_this_review": "Only 0087 was appended; all frozen candidate blobs above remain exact."
+  },
+  "scope": {"boundary": "Matrix-v8 terminal-anchor and recursive action/replay closure only. Valid closure must still raise the exact atomic-issuance-unavailable refusal; batch, admission consumption, record, ledger, session, replay evidence and deployment are deliberately absent.", "reviewed_families": ["RED provenance and independent fixture construction", "public export, Packet-3 relocation, import direction and purity", "factory/facade API closure, aliases, subclasses, copies, pickles and state substitution", "terminal class/ref/bytes/parent/snapshot/authentication/currentness mutations", "action and replay recursive closure, one/two-PCE live projections and both facades", "refusal no-effect assertions and retained v1 capture behavior"]},
+  "proven_invariant_results": [
+    {"invariant": "Tests have executable RED provenance and do not merely assert the implementation exists.", "location": "RED commits eaa3bcf, f552172, e84198d, 70c4ad2, 98aa62d, a48ce01, dc8d201, 353eb78, dcdc180, 96e9873 and 4dc2cbc; tests/pipeline/test_captured_authorization.py.", "result": "The frozen parent 4dc2cbcb238615ccf884df008aab0be7dab82111, extracted without modifying the candidate, produced 347 failed and 48 passed focused tests. Failures include the missing terminal capability and recursive closure; bfb2b0c supplies that GREEN. Fixtures construct canonical bytes and Ed25519 signatures independently from the runtime verifier, then mutate real graph facts rather than accepting a caller-supplied verified marker."},
+    {"invariant": "The relocated Packet-3 API is one compatible public class with no production-to-pipeline cycle, and public export/purity remain closed.", "location": "tests/production/test_captured_authorization.py:50-79; tests/pipeline/test_trust.py public-surface inventory; tests/pipeline/test_purity.py and tests/production/test_purity.py.", "result": "Both imports are identity-equal, both __all__ declarations contain the three relocated names, constructor/verify signatures are pinned, and a fresh subprocess importing pipeline trust observes no production module. Existing Packet-3 preflight and lifecycle/purity suites remain green."},
+    {"invariant": "All meaningful closure paths distinguish valid verification from invalid bypasses while preserving zero lifecycle effects.", "location": "tests/pipeline/test_captured_authorization.py:659-875; tests/production/test_captured_authorization.py:35-48.", "result": "Action and replay graphs with one and two PCEs reach only the exact unavailable-issuance boundary through direct authority, verifier and driver. Signed ancestor, basis, terminal, trust dependency, time/revocation, replay-only, and linkage mutations must fail before that boundary. Both direct and facade paths assert unchanged receipt audits, session/member events and nonce sets across retry."},
+    {"invariant": "No public API, fixture, alias/state reconstruction or ordinary-v1 route silently upgrades to P4 authority.", "location": "tests/pipeline/test_captured_authorization.py:195-290, 928-1102; tests/production/test_captured_authorization.py:20-34, 81-181.", "result": "Exact signatures and rejected injection keywords are asserted at the factory and both facades. Terminal anchors, authority, verifier and driver copy/pickle/subclass/state and late-substitution cases refuse. A v1-only verifier/driver refusal leaves audit/session/member state unchanged, then its ordinary bind/capture route succeeds."}
+  ],
+  "findings": {"critical": [], "major": [], "minor": [], "nit": []},
+  "checks": [
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py", "result": "528 passed"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/production/test_purity.py tests/pipeline/test_purity.py", "result": "397 passed"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py", "result": "All checks passed"},
+    {"command": "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0085-f5a-p4-phase0-authorized-transaction-matrix-v8.json; git diff --check c6b4763 bfb2b0cc4e1b99e1a94a6379aca035a1d24f09d3", "result": "passed"},
+    {"command": "git archive bfb2b0cc4e1b99e1a94a6379aca035a1d24f09d3^ | focused temporary-tree pytest tests/pipeline/test_captured_authorization.py", "result": "347 failed, 48 passed; expected RED before bfb2b0c implementation"}
+  ],
+  "limits": ["Clean only for the frozen closure increment. It is not Packet 4 completion and does not authorize batch/session RED or GREEN.", "The intentionally unavailable issuance boundary means no test can evidence atomic batch publication, admission consumption, record/ledger/session-start, retry resolution, same-lock arbitration, durable/restart or cross-process consume-once behavior in this increment.", "F5A-R23, Packets 2 and 5-8, whole F5a, F3/F5b, external production terminal schemas/trust configuration, real activity, deployment and ADR-0126 coordinated multi-private mutation attacks remain open."],
+  "summary": {"critical": 0, "major": 0, "minor": 0, "nit": 0, "verdict": "clean-closure-increment-tests-integration", "approval": true, "merge_authorized": false, "deployment_eligible": false},
+  "next_gate": "Lock this closure-only increment using both final lenses, then select and review the separate Matrix-v8 atomic batch/admission/session increment."
+}

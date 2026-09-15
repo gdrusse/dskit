@@ -1,0 +1,96 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "fresh independent Phase 0 authority/design skeptic after OwnerDecision 0073",
+  "reviewer": {"model": "gpt-5.6-terra", "agent_task": "/root/f5a_p4_phase0_skeptic_v4"},
+  "reviewed": {
+    "commit": "beada570ac9ebe5602b1924379f175d7a813198d",
+    "base_commit": "b5ec57262ba53c7b47ee95639658a7a05f4c4048",
+    "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+    "matrix": "docs/evidence/closeout/0074-f5a-p4-phase0-authorized-transaction-matrix-v3.json",
+    "matrix_sha256": "1c9aebcf1174f3e84fccc977f98574b3e000bf47447bef28d57ff5eebe01de7e",
+    "owner_decision": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json",
+    "controlling_adrs": ["ADR-0125", "ADR-0126"]
+  },
+  "evidence_chain": {
+    "supersedes_review": "docs/evidence/closeout/0071-f5a-p4-phase0-skeptic-v2.json",
+    "owner_resolution": "0073 approves only a narrowly versioned F4/core sole-writer seam and keeps v1 behavior plus F5A-R23 open",
+    "candidate_scope": "beada57 is documentation-only; no implementation, RED, execution, replay, deployment, or R23 closure was reviewed or authorized"
+  },
+  "findings": {
+    "critical": [],
+    "major": [
+      {
+        "id": "F5A-P4-P0-M02-legacy-capture-bypass",
+        "severity": "Major",
+        "invariant": "ADR-0125 permits a P4 action/replay consumer session only after consumed admission, all v2 port/receipt artifacts, complete verified set, and replay evidence where required; 0073 also forbids a session-before-required-artifact route while preserving v1 compatibility.",
+        "location": "0074 new_public_contracts.LaunchSession_evolution and broker_controlled_order; existing public LifecycleAuthority.capture/open_capture at dskit/pipeline/trust.py:282-287 and _DevelopmentBroker.capture/open_capture at :1140-1223.",
+        "entry_points": ["LifecycleAuthority.capture", "_DevelopmentBroker.capture", "HistoricalStudyVerifier.capture", "open_capture", "captured_bindings"],
+        "worked_counterexample": "Create the same live PUBLISHED/frozen/derived-port tuple supplied to authorize_capture_set, then call the inherited capture(published, frozen, port, ...) entry point. The existing authority creates and records a consumer LaunchSession before CAPTURED receipt creation; open_capture and captured_bindings then make the captured members usable. Matrix v3 neither marks P4-bound frozen/live handles nor requires every legacy capture/open entry to refuse them.",
+        "consequence": "A P4 consumer can obtain the legacy session and usable capture without a consumed signed admission, v2 artifacts, set, or replay evidence. Keeping legacy v1 behavior does not require accepting P4-bound inputs through that route, so the omission is an authority/chronology bypass rather than a compatibility requirement.",
+        "family": "all legacy lifecycle capture/session facades reachable from the same authority",
+        "recommended_disposition": "confirmed-blocker; specify an identity-bound P4 admission state at the F4 authority and require capture, open_capture, captured_bindings, member/open, and equivalent facade routes to refuse that state. Keep ordinary v1 objects and F4 unit-broker calls compatible, but prove the separation across every listed entry point before RED."
+      },
+      {
+        "id": "F5A-P4-P0-M03-admission-consumption-transaction-split",
+        "severity": "Major",
+        "invariant": "ADR-0125 requires the first port authorization atomically to consume the selected WORM ActionExecutionAdmission or FinalReplayAdmission before minting it; 0073 requires one sole writer and matrix P4V3-C04 requires one transaction while preserving a corrected retry before store.",
+        "location": "0074 CapturedAuthorizationContract.methods_in_broker_order, broker_controlled_order steps 4-10, P4V3-C04, and failure_atomicity.before_store/retry.",
+        "entry_points": ["CapturedAuthorizationAuthority.authorize_capture_set", "CapturedAuthorizationContract.issue_port_authorizations", "dedicated authorization-store put-if-absent"],
+        "worked_counterexample": "issue_port_authorizations must consume the admission to satisfy its stated first-port transaction, but a later receipt/set/replay/verify failure occurs before step-10 store commit. A WORM consumption then makes the promised corrected retry impossible. If it is rolled back or delayed until step 10, the matrix permits a port issuance before consumption. If the held contract performs the spend while the authority owns the batch commit, the proposed ABC has become a second writer of the same admission transaction. Two concurrent calls widen the same ambiguity: both can pass the absent-store check and reach issuance unless a single reservation/transaction is defined.",
+        "consequence": "The design permits either an irreversible admission burn on a pre-store refusal, an unsigned/unconsumed port issuance, or split writer authority. Each contradicts an explicit chronology or failure-atomicity guarantee; this is not the deferred durable/restart consume-once question in F5A-R23.",
+        "family": "action and replay admission spend, issuer failure, verification failure, retry, and concurrent duplicate authorization",
+        "recommended_disposition": "confirmed-blocker; obtain an owner/ADR-level transaction rule naming exactly one component that reserves/consumes the admission and commits the complete batch, plus the legal outcome of every pre-commit failure and concurrent contender. The redesigned API must not delegate a hidden spend callback or admission-store write to the signing contract. Preserve R23 as the separate durable/restart closure."
+      },
+      {
+        "id": "F5A-P4-P0-M04-unverifiable-issuance-basis-chain",
+        "severity": "Major",
+        "invariant": "ADR-0125 requires every signed artifact verifier to check its exact issuance basis, closed refs, signer/key use, and every linked digest; a digest reference alone is not the signed basis artifact.",
+        "location": "0074 request.evidence.common_keys, action_only_key, replay_only_keys, and preflight_before_issuance.packet3_reuse; ADR-0125 canonical signed-envelope and IssuanceBasis rules at docs/architecture/decision-log.md:8339-8390.",
+        "entry_points": ["CapturedAuthorizationContract.preflight", "action authorization", "replay authorization"],
+        "worked_counterexample": "Provide canonical bytes for every declared matrix evidence key, including a valid selected admission whose issuance_basis_sha256 points to an unavailable, wrong-ref, or revoked IssuanceBasis.v1. The evidence grammar has no issuance-basis bytes (nor an explicit trusted resolver with its identity and closure rules). The selected artifact carries only the digest, so preflight can verify its outer signature yet cannot independently parse, signature-check, and compare the mandatory basis refs. The same gap applies to linked scope/action artifacts available only by digest unless an undeclared resolver is invented.",
+        "consequence": "An implementation satisfying the stated request grammar can accept an admission/artifact chain that ADR-0125 requires it to reject, breaking exact artifact grammar and signature ownership at the trust boundary.",
+        "family": "all action/replay signed artifact basis and linked-digest resolution",
+        "recommended_disposition": "confirmed-blocker; make the complete evidence closure explicit (including every required IssuanceBasis.v1 and linked signed artifact) or approve a concrete held trusted resolver with exact lookup identity, WORM/fail-closed behavior, and no caller-selected path. Map each ADR-0125 basis/ref requirement to a preflight input and refusal test before RED."
+      },
+      {
+        "id": "F5A-P4-P0-M05-post-commit-session-event-gap",
+        "severity": "Major",
+        "invariant": "The sole writer must atomically leave one complete authorization batch, one bound session, and its required session-start event; no failed path may make the committed execution indistinguishable from an unstarted or partially started one.",
+        "location": "0074 broker_controlled_order steps 10-11 and failure_atomicity.after_store/retry; existing _DevelopmentBroker.capture emits its session event independently at dskit/pipeline/trust.py:1195-1208.",
+        "entry_points": ["authorization-store commit", "CapturedAuthorizationRecord/LaunchSession interning", "session-start event emission", "post-commit retry"],
+        "worked_counterexample": "The complete batch is put-if-absent at step 10. Deterministic object construction succeeds, but the separate session-event sink/list append raises or process termination occurs before emission. The key is now occupied, while Packet 4 refuses a second session. A retry therefore cannot create or announce the required session, and the matrix defines neither recovery of the same session/event nor an atomic event record in the batch.",
+        "consequence": "A committed authorization can be stranded without the required chronological session evidence, or a caller can receive a session whose mandated event was never recorded. This violates the proposed sole-writer event contract and failure-atomicity boundary.",
+        "family": "all failures/crashes after batch commit and before durable session/event observation",
+        "recommended_disposition": "confirmed-blocker; either include an immutable session-start record and session identity in the one atomic authorization-batch commit, or explicitly revise the contract with owner approval to define a recoverable same-session event completion. Do not call this the R23 durable/restart consume-once solution; it is the Packet 4 commit/event atomicity needed for the claimed transaction."
+      }
+    ],
+    "minor": [],
+    "nit": []
+  },
+  "assessment": {
+    "contract_is_clean": false,
+    "red_authorization": false,
+    "merge_authorization": false,
+    "deployment_eligible": false,
+    "verdict": "blocked-before-RED",
+    "reason": "Four in-scope Major design defects permit chronology bypass, split/irreversible admission consumption, incomplete signature-basis verification, or a stranded committed authorization."
+  },
+  "untested_limits": [
+    "No implementation exists at beada57; no runtime, concurrency, crash, signature, or compatibility test could be executed for the proposed seam.",
+    "F5A-R23-ctor-intern-unspend and durable/restart consume-once remain explicitly open. This verdict neither accepts a Packet 4 substitute nor proposes to close that finding.",
+    "ADR-0126 development-broker multiple-private-surface exclusions remain unchanged; these findings use public/equivalent entry points and the approved P4 contract, not a broadened in-process attacker model.",
+    "No real data, replay, HPO/refit, backtest, paper/live action, deployment, parser, CLI, compose route, or production import was exercised or authorized."
+  ],
+  "summary": {
+    "critical": 0,
+    "major": 4,
+    "minor": 0,
+    "unresolved_critical": 0,
+    "unresolved_major": 4,
+    "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "F3/F5b", "origin/cursor/r5-f5a-private-plan-0f39 at c48919944588a2b29ba047e4cb551050a1ff9868"]
+  },
+  "required_next_gate": "Retain this blocker verdict, revise the authority/transaction/evidence/event design under explicit F4/core owner authority as needed, then freeze a new matrix/candidate and obtain a fresh independent skeptic verdict with zero unresolved in-scope Critical/Major before RED.",
+  "checks": ["python3 -m json.tool docs/evidence/closeout/0075-f5a-p4-phase0-skeptic-verdict-v4.json", "git diff --check"]
+}

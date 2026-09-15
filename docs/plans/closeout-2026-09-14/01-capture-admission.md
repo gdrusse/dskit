@@ -18,6 +18,23 @@ F4 GREEN `e4c3a2a` and its `dskit/pipeline/trust.py` boundary remain frozen.
 Start a current-main task worktree; inspect the source diff and carry only the
 selected packet's necessary code/evidence. Do not restart the 23-round loop.
 
+### Approved Packet 4 ownership correction (2026-09-14)
+
+The F4/core lifecycle authority owner approves one narrowly versioned public
+broker seam for Packet 4. It may evolve `dskit/pipeline/trust.py` only to keep
+the existing authority as the sole writer while ordering consumed admission ->
+per-PCE `CapturedPortAuthorization.v2` -> exact
+`LifecycleCapturedReceipt.v2` -> complete verified
+`CapturedAuthorizationSet.v2` ->, for replay, exact
+`ReplayCaptureAdmissionEvidence.v1` -> distinct bound `LaunchSession`.
+
+This correction does not authorize a parallel writer, caller-supplied receipt,
+session-before-set/evidence route, existing v1 behavior break, parser/CLI/compose
+capture route, durable/restart consume-once claim, real activity, or deployment.
+`F5A-R23-ctor-intern-unspend` remains open. Before RED, a successor Phase 0
+matrix and fresh skeptic must approve the exact public methods, opaque states,
+failure atomicity, signature ownership, and compatibility tests.
+
 ## Ordered packets
 
 1. **Resolve the driver-only design.** Independently review matrix 0032 against

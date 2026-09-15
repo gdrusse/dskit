@@ -1,0 +1,70 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "fresh independent Phase 0 terminal-anchor authority skeptic of frozen Matrix v8",
+  "reviewer": {"model": "gpt-5.6-terra", "agent_task": "/root/f5a_p4_terminal_phase0_skeptic"},
+  "reviewed": {
+    "candidate_commit": "af5b6188470ed793b30c678d9b7bd6eaadaba82b",
+    "candidate_tree": "1e9e18575abd5d6dc3dae0b2bbf4fdacc7481c50",
+    "candidate_scope": "documentation-only Matrix v8 successor; current P4 authority remains fail-closed and no terminal anchor, recursive closure, batch, record, session, ledger or writer implementation exists",
+    "evidence_sha256": {
+      "0073": "c4e2d5b9237a581d146b1d0586eec3a79738aa426c2cb64f89ea8045ca0b030e",
+      "0074": "1c9aebcf1174f3e84fccc977f98574b3e000bf47447bef28d57ff5eebe01de7e",
+      "0075": "4332b0d92c9f775991469df6f54eec16a971372c40e9dcda762e5a3852bec0a0",
+      "0076": "42caed7c2a82b32fe1c3734914dd23c4a08e91d15d128db1e9440a0e574e6022",
+      "0077": "6dd452cbd957e58dd6593c23f844b9420b0933a01dd7f2f3616f97f644ecfab6",
+      "0078": "4a1f1ac4b3ee5b9dc8e50c67ead651b26c55c026f4a9549c6aadb64603abb4f6",
+      "0079": "2862fcf68785a125678a25d16afe47dc30dab1e31248ff458b551b330b5eaebd",
+      "0080": "b5d65638c5b73c03236fd7a36e229582b53ee6a9e88bca4d6756065f62053dbf",
+      "0081": "f5b302ca413a4adb4bf8df4187d00f28de4e9c9af7bc146a3b65f632836ce76b",
+      "0082": "45130ed3ccda8e96eef6f1101961cc65e749674969604fff8ecb8ba49d265b41",
+      "0083": "d34df2a4ab42ab6a1bc184796a4650bd89b03d76cd60c39086341d2ff888db40",
+      "0084": "3d60f4892ff19fbd3bf6b1bef44c46097c7d2e45034e11107d4cac7ea77b1881",
+      "0085": "23927840ef0ed9b3ed70baa9ead98ca9c6fd8cd9a1c9e071143b46d269c6ebb6"
+    },
+    "matrix": "docs/evidence/closeout/0085-f5a-p4-phase0-authorized-transaction-matrix-v8.json",
+    "owner_decision": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json",
+    "controlling_adrs": ["ADR-0125", "ADR-0126"],
+    "inventoried_blobs": {
+      "dskit/pipeline/trust.py": "a4b7297e0d02f66e20c1d02ed8c1d84d3c1b7d26",
+      "dskit/production/verifier.py": "d73d511aa8d2a2dec10da2aefe5dc0dff380e3b1",
+      "tests/pipeline/test_captured_authorization.py": "52bc8a40ee25e741ad6bb4ffe15752d1eafb03ae",
+      "tests/production/test_captured_authorization.py": "a38cfbeacedac5866146bdf93cfd1ceb3d7cc6f3",
+      "tests/pipeline/test_trust.py": "1844d048b18451d7aee2bc7fd2104b29832f4c58",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"
+    },
+    "relocation_commits": {"red": "eaa3bcfe9de3f6881d5b1137ef257687efa3bf15", "shared_unchanged_preflight": "90fa9d8563ba4e0b01a6cc47500b7e82459b6c8f"}
+  },
+  "findings": {"critical": [], "major": [], "minor": [], "nit": []},
+  "proven_invariant_results": [
+    {"invariant": "Held terminal authority; no caller-selected verifier/trust root.", "location": "0085 terminal_authority_contract/private_composition/synthetic_terminal_composition.", "result": "Only the fixed broker-owned final verifier/policy can issue anchors. Public lifecycle, facade and factory signatures expose no verifier, root, policy, key, clock, revocation source, snapshot, generation, callback, path or URL; hostile fixture bytes cannot assert verification or install an anchor."},
+    {"invariant": "No invented or silent production-schema acceptance.", "location": "0085 terminal_gap_inventory and closed_terminal_routing.", "result": "Only ADR-0125's schema-undefined G1/G2 DatasetCaptureAuthorization and fixed-owner-policy leaves are opaque external artifacts. Exact four-key refs, canonical external bytes, independent bytes digest, parent kind/position/subject and fixed corpus/policy commitments are required; schema text cannot select a route and unknown, unsupported, malformed or locally failed artifacts refuse. This is acceptable bounded nondeployment composition because the controlling master plan already assigns G1/G2 external capture authority and a fixed-fixture authority, while v8 creates no production schema or deployment claim."},
+    {"invariant": "Exact terminal closure and G1/G2/fixed-policy separation.", "location": "0085 closed_terminal_routing, terminal_freshness_and_atomicity, P4V8-T03 through T13.", "result": "Root-PIS/root-publication require exactly one independently authenticated G1 and one G2 anchor, each bound to the same tagged dataset authorization and complete local receipt facts; ScopeIntent requires exactly one separately parent-bound fixed-owner-policy anchor. All other positions remain local-only. Ref/bytes/digest/broker/root/snapshot/policy/signer-role-use/time/revocation/generation, cardinality, duplicate/substitution and cross-snapshot/broker checks are revalidated inside the same transition decision."},
+    {"invariant": "No anchor construction/substitution or lifecycle effect.", "location": "0085 public_types, integrity, facade_method_split, P4V8-T01/T02/T09/T10/T11 and ADR-0126.", "result": "Verifier/anchors are nonconstructible, noncopyable and nonserializable; exact issuance registration, final class and checked dispatch are mandatory. One-surface replacement refuses before preparation or commit; coordinated multi-private mutation remains deferred. Terminal verification cannot reserve/consume, write a ledger, issue artifacts/sessions/events, open members, import, execute or publish."},
+    {"invariant": "M02-M09/v1/same-lock/same-ledger/session-start/R23/nondeployment retained.", "location": "0085 facade_method_split, M02_to_M08_retained_transaction, retained_major_closure_obligations and authority_and_limits.", "result": "v1 constructor/bind/capture remain positive; only the new P4 method capability-gates. Terminal verification is private/non-authoritative. Same ledger/lock, atomic admission-plus-batch/session-start, and legacy arbitration remain obligations; R23, deployment, parser/CLI/compose, real activity, F3/F5b and Packet 4 completion remain open."},
+    {"invariant": "Packet 3 relocation cannot serve as terminal closure.", "location": "eaa3bcf, 90fa9d8, current trust.py/verifier.py and 0085 P4V8-T14.", "result": "Both imports retain the identical nonauthorizing preflight class without pipeline-to-production import. V8 requires complete local recursive resolution plus terminal anchors, never the public preflight result."}
+  ],
+  "tested_evidence": [
+    "Read governing rules, OwnerDecision 0073, Packet 4 evidence 0074-0085, ADR-0125/0126, master plan external G1/G2 fixed-fixture boundary, current code/tests and relocation commits.",
+    "Confirmed candidate/tree, all recorded evidence/blob hashes and documentation-only candidate diff.",
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_captured_authorization.py tests/production/test_adr0125_preflight.py: 361 passed; this verifies retained behavior only."
+  ],
+  "limits": [
+    "Authorize only synthetic terminal-anchor and recursive-closure RED/GREEN through a still fail-closed P4 issuance boundary; no record, port/receipt/set/replay-evidence, admission consumption, ledger/session, merge or deployment.",
+    "Freeze/review that closure increment before selecting the remaining Matrix v8 batch/session work; retain all terminal currentness and M02-M09 obligations.",
+    "R23 durable/restart/cross-process consume-once, Packet 2, Packets 5/6/7/8, whole F5a, F3/F5b, production external-schema ownership/trust configuration, real activity and ADR-0126 coordinated multi-private attacks remain open."
+  ],
+  "assessment": {
+    "unresolved_counts": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "verdict": "clean-phase0-authorize-terminal-anchor-RED-GREEN-only",
+    "red_authorized": true,
+    "authorized_scope": ["dskit/pipeline/trust.py", "dskit/production/verifier.py", "tests/pipeline/test_captured_authorization.py", "tests/production/test_captured_authorization.py", "tests/pipeline/test_trust.py", "tests/production/test_capture_lifecycle.py"],
+    "authorization_limit": "Only fixed terminal verifier/policy/anchor and recursive-closure work, with every successful path still refusing before P4 batch/admission/session effects.",
+    "merge_authorized": false,
+    "deployment_eligible": false
+  },
+  "required_next_gate": "Implement only the authorized fail-closed terminal-anchor closure RED/GREEN increment, freeze and freshly review it, then select the remaining Matrix v8 batch/session increment.",
+  "checks": ["/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0086-f5a-p4-phase0-terminal-skeptic-verdict.json", "git diff --check"]
+}

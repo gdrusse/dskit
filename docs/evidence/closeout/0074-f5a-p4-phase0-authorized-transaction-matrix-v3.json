@@ -1,0 +1,153 @@
+{
+  "schema_version": "Phase0Matrix.v3",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "post-owner-decision exact sole-writer transaction contract",
+  "base_commit": "76f68e064524fbd0f57ac72d7f35c9ddda243436",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "supersedes": "docs/evidence/closeout/0070-f5a-p4-phase0-authority-seam-matrix-v2.json",
+  "owner_decision": {
+    "path": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json",
+    "scope": "One versioned F4/core sole-writer seam; no parallel authority, v1 break, durable consume-once closure, real activity, or deployment."
+  },
+  "authority": {
+    "delegated_scope": "Phase 0 design only. RED remains disabled pending a fresh clean skeptic verdict.",
+    "red_authorization": false,
+    "deployment_eligible": false,
+    "production_route": false
+  },
+  "new_public_contracts": {
+    "CapturedAuthorizationContract": {
+      "kind": "ABC held by the authority at construction, never supplied per call",
+      "methods_in_broker_order": [
+        "preflight(context, evidence) -> immutable normalized issuance plan",
+        "issue_port_authorizations(plan) -> tuple[bytes,...]",
+        "issue_lifecycle_receipts(plan, port_authorizations) -> tuple[bytes,...]",
+        "issue_authorization_set(plan, port_authorizations, receipts) -> bytes",
+        "issue_replay_evidence(plan, port_authorizations, receipts, authorization_set) -> bytes|None",
+        "verify_complete(context, evidence, port_authorizations, receipts, authorization_set, replay_evidence) -> immutable exact session decision"
+      ],
+      "trust_boundary": "The contract owns ADR-0125 canonical grammar, signing preimages, signer/keyring/clock/revocation policy, field adjacency and artifact construction. It owns no receipt store, session table, member/provider handle, import, construction, execution or output route."
+    },
+    "CapturedAuthorizationAuthority": {
+      "kind": "LifecycleAuthority subclass; adds one abstract authorize_capture_set method without changing LifecycleAuthority.__abstractmethods__ or legacy subclasses",
+      "method": "authorize_capture_set(captures, evidence, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces) -> (CapturedAuthorizationRecord, LaunchSession)",
+      "sole_writer": "The authority alone validates live handles, invokes its held contract, commits one complete WORM authorization batch, interns the record/session and emits the session-start event."
+    },
+    "CapturedAuthorizationRecord": {
+      "kind": "opaque non-copyable, non-pickleable, non-mapping capability",
+      "surface": "No JSON, bytes, dict, path, member, provider, receipt-store or signer accessor. It is identity-bound to the returned session and batch."
+    },
+    "LaunchSession_evolution": {
+      "rule": "Legacy producer/consumer construction and fields remain compatible. The new session privately pins the exact immutable session decision, authorization-record identity and all live stream identities; it is created only after the WORM batch commit.",
+      "packet4_limit": "Packet 4 exposes no open_capture/captured_bindings/consume/release route for this new session. Those effects must refuse; later approved packets may consume the record without reconstructing it from data."
+    }
+  },
+  "constructor_and_dependency_rules": {
+    "development_broker": "_development_broker gains optional captured_authorization_contract and captured_authorization_store. Both are retained privately. Existing callers omitting them retain byte-for-byte v1 behavior; authorize_capture_set refuses before effects when the contract is absent.",
+    "contract_admission": "captured_authorization_contract must be an instance of CapturedAuthorizationContract. Callable, mapping, duck, subclass of an unrelated ABC, per-call override and null refuse.",
+    "store": "The optional store is a dedicated append-only mapping keyed by exact (study_id, canonical execution_authority_ref bytes, logical_execution_id, run_id). One value is the complete canonical artifact-byte batch. Truncation, mutation, conflict and second session refuse. It does not claim restart-safe admission consumption; F5A-R23 stays open.",
+    "production_layering": "trust.py imports no production module. dskit.production.verifier may implement CapturedAuthorizationContract by importing only its public trust ABC. No pipeline-to-production import is added."
+  },
+  "request": {
+    "captures": "type is tuple, nonempty, one exact built-in tuple(published,frozen,port) per PlannedCaptureSet entry. Lists, mappings, iterators, aliases, duplicate live stream, duplicate port, missing/extra capture and reordered capture refuse. Each published/frozen pair is an interned live F4 identity and each port exactly equals derive_consumer_port(frozen).",
+    "evidence": {
+      "type": "exact built-in dict whose values are exact built-in canonical bytes; missing/extra/decoded/subclass/path/URL/iterator values refuse",
+      "common_keys": [
+        "root_pis", "phase_pis", "scope_intent", "action_intent_set", "edge_set", "replay_intent_set", "ces", "pea", "bvp", "cas", "selected_admission", "planned_capture_set"
+      ],
+      "action_only_key": "stage_admission",
+      "replay_only_keys": ["final_replay_entry", "historical_study_manifest"],
+      "profile_rule": "Exactly action or replay profile is selected by selected_admission schema and subject. Action requires only stage_admission. Replay requires both final objects and no stage_admission."
+    },
+    "runtime": "consumer_run_identity is a nonempty exact str distinct from every producer/session run. process_measurement_sha256 and runtime_sha256 are non-placeholder lowercase SHA-256. transition_nonces is an exact tuple, one unique nonempty exact str per live capture; no prior lifecycle or authorization nonce may repeat."
+  },
+  "preflight_before_issuance": {
+    "packet3_reuse": "The concrete production contract reuses the exact Packet 3 canonical parser, schema/self/signature/time/revocation and eleven-artifact adjacency checks, but returns only a private normalized plan to its held authority. Public NonAuthorizingAdr0125StructuralSignaturePreflight remains opaque and non-authorizing.",
+    "planned_capture_set": "Exact dskit.planned-capture-set/v1 keys are schema,study_id,subject_ref,entries,planned_capture_set_sha256. Self omits only the named self. Entries are exact PCEs strictly sorted by planned_entry_sha256 and complete bytes; set entries equal converted CES and CAS entries item-for-item, and its self equals BVP/CAS/admission planned_capture_set_sha256.",
+    "action_context": "Exact signed HistoricalStudyStageAdmission.v1 is verified with study-lifecycle/stage-admission. Its study, subject/action, consumer document/contract, PEA/CES/BVP/plan/planned-set/CAS, required_inputs and execution authority adjacency equal the selected action chain. required_inputs equals PlannedCaptureSet entries.",
+    "replay_context": "Exact FinalReplayEntry.v1 self and signed HistoricalStudyManifest.v2 are verified. FinalReplayAdmission equals their study/final-manifest/final-entry/replay/intent/PEA/CES/BVP/plan/planned-set/CAS fields. FinalReplayEntry.required_inputs equals PlannedCaptureSet entries. No final object is accepted on action and no stage object on replay.",
+    "live_projection": "Each ordered PCE equals one ordered live context: consumer document/node/input/purpose equals frozen/port; descriptor root/snapshot/document/node/output/purpose equals the live PUBLISHED descriptor; nested published_input root/root_id/member-manifest/producer/document/node/output/purpose equals the interned live publication subject and its exact predecessor publication receipt schema/digest.",
+    "no_effect_sentinel": "Every preflight refusal leaves held contract issuance methods, authorization store, legacy receipt store, session table/events, provider/member events, imports, construction, output and admission-spend sentinels untouched."
+  },
+  "broker_controlled_order": [
+    "1 validate request types/cardinality, live published/frozen/port identities, distinct run, unique streams/nonces and unchanged PUBLISHED heads",
+    "2 construct immutable context with no paths/providers/members and call held contract.preflight",
+    "3 revalidate every live document/port/publication fingerprint",
+    "4 call issue_port_authorizations once",
+    "5 call issue_lifecycle_receipts once with those exact authorization bytes",
+    "6 call issue_authorization_set once with those exact authorization/receipt tuples",
+    "7 for replay call issue_replay_evidence once; for action require None without calling a replay issuer",
+    "8 call verify_complete once over exact context/evidence/output identities",
+    "9 revalidate live fingerprints, PUBLISHED heads, nonce uniqueness and absent authorization-store key",
+    "10 commit exactly one complete canonical byte batch to the dedicated append-only store",
+    "11 create/intern CapturedAuthorizationRecord and exact set/evidence-bound LaunchSession, then emit one session-start event",
+    "12 return record/session; no open/import/construct/run/publish occurs"
+  ],
+  "issued_exact_shapes": {
+    "CapturedPortAuthorization.v2": "exact ADR-0125 fields at decision-log.md:8777-8786; role/use security-broker/captured-port-authorization",
+    "LifecycleCapturedReceipt.v2": "exact fields at decision-log.md:8788-8804; role/use security-broker/lifecycle-capture; per-stream strictly increasing predecessor and WORM-unique nonce",
+    "CapturedAuthorizationEntry.v2": "exact six fields at decision-log.md:8806-8808; strict planned_entry_sha256 order",
+    "CapturedAuthorizationSet.v2": "exact fields at decision-log.md:8809-8820; role/use security-broker/captured-authorization",
+    "ReplayCaptureAdmissionEvidence.v1": "replay only, exact fields and issued_ports at decision-log.md:8894-8909; role/use security-broker/replay-capture-admission",
+    "common_signed_rule": "Exact canonical bytes; self digest/signing preimage omits only named self and signature; literal Ed25519; exact held signer/key, inclusive trusted time and fail-closed immutable revocation snapshot. Issued artifacts are independently reparsed and verified by verify_complete."
+  },
+  "field_adjacency": [
+    {"id": "P4V3-C01", "rule": "Packet3 chain, PlannedCaptureSet, action stage or replay final context share exact study, subject, consumer document/contract, purpose and PEA/CES/BVP/plan/planned-set/CAS digests."},
+    {"id": "P4V3-C02", "rule": "P(CES)==P(BVP)==P(CAS)==P(Stage or FinalReplayEntry)==ordered live captures by complete PCE bytes and cardinality."},
+    {"id": "P4V3-C03", "rule": "Each PCE/live tuple produces exactly one port authorization whose study, subject, execution authority ref, logical execution/run and plan chain match the selected admission and whose planned entry matches that PCE."},
+    {"id": "P4V3-C04", "rule": "First port issuance consumes only the selected admission through the held contract transaction; later ports reuse the same exact tuple. Another admission/run/session or second transaction refuses; durable restart closure remains R23."},
+    {"id": "P4V3-C05", "rule": "Each v2 receipt names its exact port authorization, PCE, plan chain, execution tuple, live predecessor publication schema/digest, stream sequence/predecessor, consumer kind/id, runtime digest and unique transition nonce."},
+    {"id": "P4V3-C06", "rule": "Set entries are a strict one-for-one projection of ordered PCE/port/receipt triples. Set outer study/subject/execution tuple/PEA/CES/BVP/planned-set/CAS equals every applicable input and issued artifact."},
+    {"id": "P4V3-C07", "rule": "Action session decision equals verified set study/execution tuple, live consumer document, BVP, set self, process measurement, purpose and time; no replay evidence exists."},
+    {"id": "P4V3-C08", "rule": "Replay evidence equals Final Manifest/FinalReplayAdmission/FinalReplayEntry/replay intent/PEA/CES/BVP/planned-set/CAS/set and its issued_ports equals set triples item-for-item; replay session requires that exact evidence."},
+    {"id": "P4V3-C09", "rule": "Session decision and private LaunchSession pin exact study/execution tuple, consumer document, BVP, set digest, process measurement, purpose, issued/expiry and all stream identities. Same-run/session/evidence/set/runtime substitution refuses."},
+    {"id": "P4V3-C10", "rule": "Post-freeze mutation, published-handle substitution, reordered live captures, receipt/authorization byte replacement, contract return aliasing or mutation is detected by independent frozen copies, canonical byte equality and before-commit revalidation."},
+    {"id": "P4V3-C11", "rule": "LifecycleCapturedReceipt.v2 binds actor_runtime_sha256 only. No invented release field/equality is claimed; release remains outside this exact schema absent a later approved contract."},
+    {"id": "P4V3-C12", "rule": "Authorization record/session are identity-bound and nonserializable. Direct construction, copy/deepcopy/pickle, wrapper/subclass/duck, held-contract swap and internal table substitution refuse."}
+  ],
+  "failure_atomicity": {
+    "before_store": "Any request, live, preflight, issuer, verifier, signature, field, mutation or output failure creates no record/session, writes no authorization batch, touches no legacy lifecycle receipt and emits no session event. Contract signer calls after successful preflight are not claimed reversible, but their returned bytes have no authority until the sole writer commits the verified complete batch.",
+    "store_commit": "One complete immutable batch is put-if-absent under the execution tuple. Byte-identical replay still refuses a second record/session in Packet 4; conflicting content refuses. No partial per-port store visibility exists.",
+    "after_store": "Only deterministic opaque object construction and in-memory interning occur; tests inject failures before commit boundaries, never claim crash-atomic durable session mint, and leave restart/consume-once closure to R23/Packet8.",
+    "retry": "A refusal before store permits a corrected retry on the same live request; a committed batch never permits a second session."
+  },
+  "red_matrix": [
+    "Public surface/ABC/opaque construction, copy, pickle, mapping, subclass/duck/wrapper and held-contract substitution family.",
+    "Every request type/cardinality/order/duplicate/live identity/port/document/publication/run/runtime/nonce mutation.",
+    "Every PlannedCaptureSet key/type/self/order/cardinality/PCE mutation and every P4V3-C01..C12 single-field substitution for action and replay.",
+    "Every missing/extra/duplicate/wrong-type/literal/self/signature/preimage/role/use/key/time/revocation mutation in port, receipt, set and replay evidence outputs from adversarial held-contract fixtures.",
+    "Issuer call-order spies; no receipt before port, no set before all receipts, no replay evidence before set, no session/store/event before verify_complete.",
+    "Partial issuer failure at every method, malformed result, exception, alias/post-return mutation and corrected retry; store remains absent and no session event.",
+    "Post-freeze document/descriptor/published/table mutation before preflight, between every contract phase and immediately before commit.",
+    "Happy action with one and multiple sorted captures; happy replay with one and multiple sorted captures and exact evidence; one WORM batch then one distinct session.",
+    "Legacy tests/pipeline/test_trust.py and tests/production/test_capture_lifecycle.py remain green; exact legacy LifecycleAuthority abstract method set and existing v1 receipt/session behavior remain unchanged.",
+    "New set-bound session refuses open_capture, captured_bindings, member/provider open, import, construction, execution, output and release in Packet 4."
+  ],
+  "implementation_files_if_clean": [
+    "dskit/pipeline/trust.py",
+    "dskit/production/verifier.py",
+    "tests/pipeline/test_captured_authorization.py",
+    "tests/production/test_captured_authorization.py"
+  ],
+  "focused_checks_if_clean": [
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_capture_lifecycle.py tests/production/test_adr0125_preflight.py tests/production/test_purity.py",
+    "/home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py",
+    "git diff --check"
+  ],
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend and durable/restart consume-once",
+    "Packets 5/6/7/8",
+    "whole F5a",
+    "no production route or open/consume/release integration",
+    "no F3/F5b unblock",
+    "no real activity or deployment",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "checks": [
+    "python3 -m json.tool docs/evidence/closeout/0074-f5a-p4-phase0-authorized-transaction-matrix-v3.json",
+    "git diff --check"
+  ],
+  "next_gate": "Fresh independent Terra skeptic. RED is authorized only if that review finds zero unresolved in-scope Critical/Major and explicitly accepts the bounded nondeployment/R23 boundary."
+}

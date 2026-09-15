@@ -1,0 +1,107 @@
+{
+  "schema_version": "FinalCorrectnessAuthorityReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2-closure-only",
+  "review_kind": "fresh final implementation correctness/authority review",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/f5a_p4_closure_correctness_review",
+    "lens": "correctness/authority"
+  },
+  "reviewed": {
+    "base_commit": "c6b4763",
+    "candidate_commit": "bfb2b0cc4e1b99e1a94a6379aca035a1d24f09d3",
+    "candidate_tree": "c35a5b9b9031f5827c2eb8a7114e453f9ed0a575",
+    "matrix": {
+      "path": "docs/evidence/closeout/0085-f5a-p4-phase0-authorized-transaction-matrix-v8.json",
+      "sha256": "23927840ef0ed9b3ed70baa9ead98ca9c6fd8cd9a1c9e071143b46d269c6ebb6"
+    },
+    "phase0_verdict": {
+      "path": "docs/evidence/closeout/0086-f5a-p4-phase0-terminal-skeptic-verdict.json",
+      "sha256": "97555867f4b611ec0bf6d82bd98b5c6aa8f951bb2a377512e8dd1a041f5ffae4"
+    },
+    "controlling_adrs": ["ADR-0125", "ADR-0126"],
+    "candidate_blobs": {
+      "dskit/pipeline/trust.py": "ebf451c6f97d754ac56bf2ee55604425c5d0966c",
+      "dskit/production/verifier.py": "d73d511aa8d2a2dec10da2aefe5dc0dff380e3b1",
+      "tests/pipeline/test_captured_authorization.py": "f705ce5d3443fb988c3d72552174c7b210a5abdb",
+      "tests/production/test_captured_authorization.py": "5f38d3a712c010866c8b95852dc7272e82096337",
+      "tests/pipeline/test_trust.py": "c6a17d6eac7774826f41ed95167a7df2d47963fc",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"
+    }
+  },
+  "scope": {
+    "reviewed_delta": "c6b4763..bfb2b0c",
+    "boundary": "Only the Matrix-v8 fixed synthetic terminal-anchor and recursive action/replay closure increment. A valid graph must end at the exact atomic-issuance-unavailable refusal; issuance, ledger, record, batch, session, replay evidence, consume-once and deployment are intentionally absent.",
+    "inspected": [
+      "fixed broker construction and public/facade dispatch",
+      "Packet 3 relocation and equivalent v1 capture/preflight surfaces",
+      "terminal opaque anchors, fixed policy/corpus/currentness and one-surface substitution gates",
+      "Ed25519/basis/ref recursion, action/replay ancestors and exact live-capture projection",
+      "request and fixture default-deny boundaries, copies, pickles, state replacement, wrappers and subclasses under ADR-0126"
+    ]
+  },
+  "proven_invariant_results": [
+    {
+      "invariant": "Only fixed, broker-issued capability construction can enter P4 closure.",
+      "location": "trust.py:_development_p4_broker, _SyntheticP4CapturedAuthorizationAuthority, _p4_checked_dispatch; verifier.py:HistoricalStudyVerifier/HistoricalStudyCaptureDriver.authorize_capture_set",
+      "result": "Factory and facade signatures admit no authority/dependency selector. Exact issued identity, final class, private pins and class-dispatch capsules are rechecked; v1 and substituted/copy/state/wrapper routes refuse before P4 work."
+    },
+    {
+      "invariant": "Terminal external leaves are opaque, exact and nonauthorizing.",
+      "location": "trust.py:_FixedTerminalArtifactVerifier, VerifiedExternalArtifactAnchor, _p4_terminal_parent_projection",
+      "result": "G1/G2 and fixed-owner-policy anchors require fixed corpus bytes, Ed25519 certificate, exact signed parent basis/reference projection, snapshot and generation. Anchors are registered opaque proofs only; they neither expose a writer nor advance lifecycle state."
+    },
+    {
+      "invariant": "Action and replay closure is recursive and adjacency-bound.",
+      "location": "trust.py:_p4_close_admission and its dependencies/check/visit helpers",
+      "result": "Closed refs, canonical bytes, self digests, signatures, roles/uses, time/revocation, basis chronology, cycles, root/stage/replay dependencies, PEA/CES/BVP/CAS equality and complete live port/receipt/frozen-document projection are checked before the terminal boundary."
+    },
+    {
+      "invariant": "Every accepted closure remains fail-closed with no effect.",
+      "location": "trust.py:_p4_checked_dispatch",
+      "result": "After the complete closure returns only None, the sole path raises exactly 'P4 atomic issuance is unavailable'; no nonce, receipt, admission, session, member or release state is advanced. Focused action/replay direct and both-facade tests cover one/two-PCE valid graphs and invalid graph families."
+    },
+    {
+      "invariant": "Packet 3 relocation and v1 capture compatibility remain intact.",
+      "location": "trust.py public preflight exports; verifier.py imports and legacy capture facades; tests/production/test_capture_lifecycle.py",
+      "result": "The shared preflight is the identical pipeline class without a pipeline-to-production import. Existing LifecycleAuthority verifier/driver bind/capture paths remain positive, while a v1-only authority refuses only the P4 method without burning legacy capture."
+    }
+  ],
+  "findings": [],
+  "checks": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py",
+      "result": "528 passed"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/production/test_purity.py tests/pipeline/test_purity.py",
+      "result": "397 passed"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py",
+      "result": "All checks passed"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0085-f5a-p4-phase0-authorized-transaction-matrix-v8.json; git diff --check c6b4763..bfb2b0c",
+      "result": "passed"
+    }
+  ],
+  "limits": [
+    "This is a clean verdict for the closure-only increment, not Packet 4 completion or batch RED/GREEN.",
+    "No issuance/ledger/session/record/batch/replay-evidence, same-lock transaction, retry-resolution, durable/restart or cross-process consume-once result was reviewed as implemented because this candidate deliberately refuses before that boundary.",
+    "F5A-R23, Packets 2 and 5-8, whole F5a, F3/F5b, external production terminal schemas/trust configuration, real activity, deployment and ADR-0126 coordinated multi-private mutation attacks remain open."
+  ],
+  "summary": {
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "verdict": "clean-closure-increment-correctness-authority",
+    "approval": true,
+    "merge_authorized": false,
+    "deployment_eligible": false
+  },
+  "next_gate": "Retain this frozen closure candidate and obtain the independent final test/integration lens before locking this increment; then select the still-open Matrix-v8 atomic batch/admission/session work separately."
+}
