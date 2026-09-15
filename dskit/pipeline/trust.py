@@ -427,7 +427,9 @@ def _captured_view_transition(method):
             ledger._check()
             ledger._legacy_gate((view,))
             ledger._require_unclaimed(stream)
-            authority._view_record(view)
+            record = authority._view_record(view)
+            if record[1] in ("verified", "member") and stream not in authority._consumed_streams:
+                _DevelopmentBroker._validate_bound_v1_effect(authority, view=view)
             return method(view, *args, **kwargs)
     return locked
 
@@ -1383,8 +1385,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         if handle_sid is None or str(stream_id) != str(handle_sid):
             raise ValueError("CAPTURED token is required")
         stream_id = str(handle_sid)
+        subject, expected_port = _DevelopmentBroker._validate_bound_v1_effect(
+            self, published, frozen, self.derive_consumer_port(frozen), session=session)
+        if subject.stream_id != stream_id:
+            raise ValueError("captured stream identity mismatch")
         sealed = self._sealed_for(published)
-        pin = self._stream_pin[stream_id]
+        pin = subject
         snapshot = self._provider.describe(
             pin.root["root_ref"],
             pin.root["snapshot_version"],
@@ -1407,7 +1413,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             _MAKE,
             handles,
             published,
-            dict(captured.port),
+            dict(expected_port),
             frozen,
             session,
             retained,
@@ -1465,9 +1471,11 @@ class _DevelopmentBroker(LifecycleAuthority):
         intern_pub = self._frozen_publication(frozen)
         if intern_pub is not published:
             raise ValueError("plan document does not match captured freeze")
+        subject, expected_port = _DevelopmentBroker._validate_bound_v1_effect(self, view=verified)
+        if subject.stream_id != stream_id:
+            raise ValueError("verified stream identity mismatch")
         sealed = self._sealed_for(published)
-        subject = self._stream_pin[stream_id]
-        output_path = self._publication_members(published)[1]
+        output_path = subject.output_member
         parsed, _canonical = _load_canonical_json(retained[output_path])
         declared = {
             item["relative_path"]: item for item in sealed._digests
@@ -1493,7 +1501,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         ports = {frozen.consumer_input: port}
         bindings = CapturedBindings(_MAKE, ports, self, session, stream_id)
         self._register_view(bindings, "bindings", stream_id, verified,
-                            (session, _canonical_bytes(expected_port)))
+                            (session, _canonical_bytes(expected_port), str(transition_nonce)))
         for port in ports.values():
             self._register_view(port, "port", stream_id, bindings,
                                 (artifact, port._audit))
@@ -1561,9 +1569,15 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("replay of CONSUMED is refused")
         self._reload_stream(stream_id)
         self._require_head(stream_id, "CAPTURED")
-        subject = self._publication_subject(stream_id)
-        if subject is None:
-            raise ValueError("captured bindings are required")
+        subject, expected_port = _DevelopmentBroker._validate_bound_v1_effect(self, view=bindings)
+        if subject.stream_id != stream_id or expected_port != dict(port_items):
+            raise ValueError("captured bindings effect mismatch")
+        if (set(bindings._ports) != set(ports)
+                or any(bindings._ports[name] is not value for name, value in ports.items())):
+            raise ValueError("captured bindings port identity mismatch")
+        effect_port = ports[input_name]
+        port_record = self._view_record(effect_port, require_consumed=False)
+        self._view_record(port_record[4][0], require_consumed=False)
         self._append_receipt(
             subject,
             "CONSUMED",
@@ -1942,6 +1956,56 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("frozen descriptor differs from published identity")
         return published
 
+    def _validate_bound_v1_effect(self, published=None, frozen=None, port=None,
+                                  *, session=None, view=None, head="CAPTURED"):
+        """Validate retained v1 identity immediately before an effect or delivery."""
+        view_record = None
+        if view is not None:
+            view_record = self._view_record(view, require_consumed=False)
+            parent = view_record
+            while parent[1] != "verified":
+                parent = self._view_record(parent[3], require_consumed=False)
+            pin = self._load_interned(self._verified_pin, self._verified_intern,
+                                      id(parent[0]), "verified capture identity required")
+            published, frozen, session, bound_stream, _, port_items = pin
+            port = dict(port_items)
+            if parent[2] != bound_stream:
+                raise ValueError("verified capture stream mismatch")
+            if view_record[1] == "bindings" and view_record[4][0] is not session:
+                raise ValueError("captured bindings session mismatch")
+        stream, descriptor = self._publication_snapshot(published, "published effect identity required")
+        if self._frozen_publication(frozen) is not published:
+            raise ValueError("frozen publication effect mismatch")
+        expected_port = self.derive_consumer_port(frozen)
+        if port != expected_port:
+            raise ValueError("captured effect port mismatch")
+        self._require_head(stream, head)
+        if view_record is not None and view_record[2] != stream:
+            raise ValueError("captured effect stream mismatch")
+        if session is not None:
+            self._require_session(session, kind="consumer", allow_open=True)
+            bound = self._load_interned(self._session_streams, self._session_stream_intern,
+                                        id(session), "captured session identity required")
+            actor = self._actor_runtime(session)
+            if (bound != [id(session), stream] and bound != (id(session), stream)):
+                raise ValueError("captured session stream mismatch")
+            if (self._sessions.get(id(session)) is not session or session._stream_id != stream
+                    or session._run_identity != actor["run_identity"]):
+                raise ValueError("captured session runtime mismatch")
+            captures = [row for row in self._streams[stream] if row["event"] == "CAPTURED"]
+            if (len(captures) != 1 or captures[0]["actor_runtime"] != actor
+                    or captures[0]["consumer_captured_port"] != expected_port):
+                raise ValueError("captured receipt session or port mismatch")
+        row = next(row for row in self._streams[stream] if row["event"] == "PUBLISHED")
+        subject = _ReceiptSubject(stream,
+            {"document_sha256": row["producer_document_sha256"],
+             "run_identity": row["producer_run_identity"], "node": row["producer_node"],
+             "output": row["producer_output"]},
+            {name: row[name] for name in ("root_ref", "root_id", "snapshot_version")},
+            self._streams[stream][0]["actor_runtime"]["run_identity"],
+            self._publication_record(published)[1], descriptor["purpose"])
+        return subject, expected_port
+
     def _register_view(self, view, kind, stream, parent, data):
         """Retain immutable view identity in the existing lifecycle authority."""
         stream = str(stream)
@@ -1949,7 +2013,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                              (view, kind, stream, parent, data, False))
         _LIFECYCLE_VIEWS[view] = (self, stream)
 
-    def _view_record(self, view):
+    def _view_record(self, view, *, require_consumed=True):
         """Validate retained parent and slot identities without reopening bytes."""
         record = self._load_interned(self._view_pins, self._view_intern,
                                      id(view), "captured view identity required")
@@ -1976,10 +2040,10 @@ class _DevelopmentBroker(LifecycleAuthority):
                            "port": "bindings", "artifact": "port"}[kind]
         if type(parent) is not types[expected_parent]:
             raise ValueError("captured view parent mismatch")
-        parent_record = self._view_record(parent)
+        parent_record = self._view_record(parent, require_consumed=require_consumed)
         if parent_record[1] != expected_parent or parent_record[2] != stream:
             raise ValueError("captured view parent mismatch")
-        if type(data) is not tuple or len(data) != 2:
+        if type(data) is not tuple or len(data) != (3 if kind == "bindings" else 2):
             raise ValueError("captured view payload identity required")
         if kind == "member":
             pin = self._load_interned(self._verified_pin, self._verified_intern,
@@ -1990,9 +2054,9 @@ class _DevelopmentBroker(LifecycleAuthority):
         elif kind == "bindings":
             pin = self._load_interned(self._bindings_pin, self._bindings_intern,
                                       id(view), "captured bindings identity required")
-            if (view._broker is not self or view._session is not data[0]
+            if (view._broker is not self or view._session is not data[0] or view._stream_id != stream
                     or pin[0] != id(view) or pin[1] != stream or pin[4] != id(data[0])
-                    or _canonical_bytes(dict(pin[3])) != data[1]):
+                    or pin[2] != data[2] or _canonical_bytes(dict(pin[3])) != data[1]):
                 raise ValueError("captured bindings session or port mismatch")
         else:
             if kind == "port":
@@ -2006,9 +2070,9 @@ class _DevelopmentBroker(LifecycleAuthority):
                 if (parent_record[4][0] is not view
                         or view._value is not data[0] or view._audit is not data[1]):
                     raise ValueError("captured artifact retained identity mismatch")
-                binding = self._view_record(parent_record[3])
+                binding = self._view_record(parent_record[3], require_consumed=require_consumed)
             rows = self._streams[stream]
-            if (stream not in self._consumed_streams or rows[-1]["event"] != "CONSUMED"
+            if require_consumed and (stream not in self._consumed_streams or rows[-1]["event"] != "CONSUMED"
                     or _canonical_bytes(rows[-1]["consumer_captured_port"]) != binding[4][1]):
                 raise ValueError("captured artifact requires exact consumed input")
         return record
@@ -4943,6 +5007,11 @@ class _LifecycleAuthorizationLedger(_Opaque):
             self._check()
             authority._require_head(stream, "PUBLISHED")
             self._fault("legacy-commit-before")
+            final_subject, final_port = _DevelopmentBroker._validate_bound_v1_effect(
+                authority, published, frozen, port, head="PUBLISHED")
+            if (final_subject.stream_id != stream or final_port != body["consumer_captured_port"]
+                    or body["previous_receipt_sha256"] != _digest(_canonical_bytes(authority._streams[stream][-1]))):
+                raise ValueError("staged capture identity mismatch")
             # The fixed P4 authority uses the built-in WORM store. A legacy
             # caller-owned store may refuse here, before compatibility effects.
             authority._receipt_store[stream] = encoded
@@ -5117,7 +5186,7 @@ def _p4_session_pin(session):
 _P4_BATCH_PINS = (_P4_SIGNER, _P4_CONTRACT, _P4_BATCH_USES)
 _P4_COMMIT = _LifecycleAuthorizationLedger.commit_p4_batch
 _P4_LEGACY_PREPARE_METHODS = tuple((name, getattr(_DevelopmentBroker, name)) for name in (
-    "_prepare_legacy_capture", "_prepare_receipt", "_store_interned",
+    "_prepare_legacy_capture", "_prepare_receipt", "_store_interned", "_validate_bound_v1_effect",
 ))
 _P4_LEDGER_METHODS = tuple((name, getattr(_LifecycleAuthorizationLedger, name)) for name in (
     "_check", "_fault", "_legacy_gate", "_require_unclaimed", "_nonce_used", "_request", "resolve_p4", "commit_p4_batch",

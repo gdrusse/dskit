@@ -3529,3 +3529,24 @@ def test_p6_staged_legacy_capture_revalidates_after_final_fault_schedule(monkeyp
         restore()
     _capture(broker, published, frozen, port=port)
     assert [row["event"] for row in broker._receipt_audit(published)].count("CAPTURED") == 1
+
+
+@pytest.mark.parametrize("stage", ["bindings", "consume"])
+def test_p6_verified_retained_bytes_intern_cannot_change_final_effect(stage):
+    broker, published, frozen, _, session, verified, bindings, _ = _p6_consumed_setup_without_consumption()
+    original = broker._load_interned(broker._verified_pin, broker._verified_intern, id(verified), "test")
+    replacement = list(original)
+    retained = dict(replacement[4])
+    retained["artifacts/bundle.json"] = _json_bytes({"rows": [{"id": "forged"}]})
+    replacement[4] = MappingProxyType(retained)
+    _hmac_mint(broker, broker._verified_pin, broker._verified_intern, id(verified), tuple(replacement))
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        if stage == "bindings":
+            broker.captured_bindings(session, frozen, verified,
+                consumer_node="consume", transition_nonce="other-consumed")
+        else:
+            bindings.require("bundle")
+    assert _p6_effects(broker) == before
+    _hmac_mint(broker, broker._verified_pin, broker._verified_intern, id(verified), original)
+    assert bindings.require("bundle").artifact.value["rows"][0]["id"] == "one"

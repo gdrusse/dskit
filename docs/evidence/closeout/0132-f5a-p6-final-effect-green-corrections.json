@@ -1,0 +1,20 @@
+{
+  "schema_version": "TddEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "phase": "GREEN correction checkpoint with retained-member RED",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "phase0": "0130-f5a-p6-final-effect-phase0-clean.json",
+  "red": "0131-f5a-p6-final-effect-red.json",
+  "checks": [
+    "64 stage-gap tests pass0.59s",
+    "Trust suite244 passed1.27s after preserving original actor runtime rather than requiring ignored mutable session._runtime slot equality",
+    "Changed-file Ruff/diff pass before added member-intern regression",
+    "New verified-retained-bytes intern substitution tests:2 expected failures in0.29s at bindings construction and final consume"
+  ],
+  "correction": "Shared final-effect validator must compare verified retained payloads to independent member view records and signed sealed digests, not only identity keys. One authenticated verified-pin mint currently changes bytes after verification; this is within existing member/intern substitution matrix.",
+  "runtime_change": "One shared broker validator at final staged CAPTURED commit, pre-provider/view/member delivery, and CONSUMED; session/port/head validation; retained binding nonce; immutable final receipt subject; no production facade spend changes.",
+  "next": "Finish retained-member comparison; focused checks; immutable candidate and fresh final lenses.",
+  "deployment_eligible": false
+}
