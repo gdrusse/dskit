@@ -1,0 +1,74 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a",
+  "packet": "6-descriptor-receipt-equality-restart-linkage",
+  "status": "phase0-design",
+  "base_main": "0ec667129c27d64b487b2962295f3b495d5e44e1",
+  "cites": [
+    "docs/evidence/closeout/0095-f5a-remainder-contract-pack.json",
+    "docs/evidence/closeout/0096-f5a-remainder-delta-matrices.json",
+    "docs/evidence/closeout/0100-f5a-p8-owner-decision.json"
+  ],
+  "governing": "ADR-0123 signed-immutable-captures; ADR-0125 capture chronology; ADR-0126 F4 single-surface threat model; Packet 4 Matrix v9 (0089).",
+  "reviewer_model": "DeepSeek (owner override 2026-09-15)",
+
+  "scope": {
+    "owned_paths": ["dskit/pipeline/trust.py", "tests/pipeline/test_trust.py", "tests/pipeline/test_captured_authorization.py"],
+    "entry_points": ["_DevelopmentBroker.produce/seal/publish/descriptor/freeze_consumer_document/derive_consumer_port/capture/open_capture/captured_bindings/_consume_binding/release", "HistoricalStudyVerifier.capture/bind", "HistoricalStudyCaptureDriver.capture", "CapturedAuthorizationAuthority.authorize_capture_set"],
+    "non_goal": "durable or cross-process consume-once and reconstruction remain Packet 8; this packet proves in-process equality and fail-closed restart identity only."
+  },
+
+  "identity_bindings": [
+    {"id": "descriptor_published", "binding": "freeze_consumer_document requires the descriptor's root_ref/snapshot_version/document_sha256/node/output/purpose to equal the already-PUBLISHED descriptor exactly; a substituted producer/root/member identity refuses."},
+    {"id": "derived_port", "binding": "ConsumerCapturedPort is derived (consumer_document_sha256 = SHA-256 of the frozen consumer document bytes; consumer_node/consumer_input/purpose from the freeze) and never caller-spelled; derive_consumer_port re-hashes and refuses on change."},
+    {"id": "capture_port", "binding": "capture/_prepare_legacy_capture requires port == derive_consumer_port(frozen), the frozen intern to match published, consumer run distinct from producer session run, and the producer session ended."},
+    {"id": "session_stream", "binding": "open_capture/captured_bindings/_consume_binding bind session, bound_session, stream_id, run_identity, and transition_nonce; a session from another run/process/purpose refuses."},
+    {"id": "member_manifest", "binding": "open_capture re-checks member_manifest_sha256 and each member sha256/bytes against the sealed digests; a mutated or substituted member refuses."},
+    {"id": "receipt_chain", "binding": "receipts enforce PRODUCED->SEALED->PUBLISHED->CAPTURED->CONSUMED order, exact sequence, and predecessor-hash linkage; a graft/reorder/forged predecessor refuses."},
+    {"id": "purpose_identity", "binding": "descriptor purpose and subject purpose must match at every seam."},
+    {"id": "one_consumption", "binding": "one CAPTURED stream yields exactly one CONSUMED; a second consume of the same stream refuses (in-process)."}
+  ],
+
+  "substitution_families": [
+    {"family": "equal_looking_different_binding", "cases": ["two published tokens with equal root_ref but different document_sha256", "equal snapshot_version different node/output", "equal descriptor bytes, different producer run_identity"]},
+    {"family": "producer_root_member_receipt_substitution", "cases": ["substitute published token, frozen document, derived port, sealed member, or a CAPTURED/VerifiedCapture/bindings handle from another stream"]},
+    {"family": "partial_failure_retry", "cases": ["retry capture after a refusal with the same nonce", "retry with corrected evidence after each staged failure", "partial member read then retry"]},
+    {"family": "wrong_process_run_purpose", "cases": ["consumer run_identity equals producer session run", "purpose mismatch at freeze/capture", "session bound to a different run"]},
+    {"family": "stale_restart_identity", "cases": ["a stream_id/session that looks equal after an in-process reset; refuse rather than silently accept (no durability claim here)"]},
+    {"family": "second_consumption_authority", "cases": ["one CAPTURED authorization must not become a second CONSUMED authority via a replayed handle, duplicate nonce, or re-derived port"]}
+  ],
+
+  "forbidden_effects": [
+    "member/provider access before equality checks pass",
+    "session creation or CONSUMED/effect before substitution refusal",
+    "a second consumption of an already-consumed stream",
+    "any Packet 4 or v1 path break"
+  ],
+
+  "compatibility": {
+    "packet4": "accepted Packet 4 CapturedAuthorizationSet.v2 sole-writer authority and all v1 lifecycle behavior remain green; no trust.py authority change.",
+    "tests": ["tests/pipeline/test_trust.py (75)", "tests/pipeline/test_captured_authorization.py (53)", "tests/production/test_capture_lifecycle.py (9)", "tests/production/test_captured_authorization.py (8)"] 
+  },
+
+  "tests": {
+    "new": ["tests/pipeline/test_trust.py: substitution-family RED for each identity binding", "tests/pipeline/test_captured_authorization.py: equal-port/different-capture and one-consumption authority RED"],
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture stays green",
+    "note": "inventory existing test_trust.py / test_captured_authorization.py before declaring a test NEW"
+  },
+
+  "focused_checks_if_implemented": [
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py tests/pipeline/test_captured_authorization.py tests/production/test_capture_lifecycle.py tests/production/test_captured_authorization.py tests/production/test_adr0125_preflight.py",
+    "/home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py tests/pipeline/test_trust.py tests/pipeline/test_captured_authorization.py",
+    "git diff --check"
+  ],
+
+  "success_and_exit": {
+    "phase0": "a fresh DeepSeek skeptic must approve this matrix with zero unresolved in-scope Critical/Major before RED.",
+    "whole_packet": "substitutions refuse before member access/session/effects; Packet 4 and v1 paths green; two fresh sequential DeepSeek final lenses; merge/push/verify/purge/wrap."
+  },
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json",
+    "git diff --check"
+  ]
+}
