@@ -37,5 +37,6 @@
     "compatibility: ordinary documents (with and without foreach/stages/tracking) with no descriptor remain byte/hash-identical",
     "sentinel: tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture stays green"
   ],
-  "next_gate": "Fresh DeepSeek skeptic re-review of the v4 changed-approach matrix before RED."
+  "next_gate": "Fresh DeepSeek skeptic re-review of the v4 changed-approach matrix before RED.",
+  "superseded_note": "The foreach.pipeline.<template>.inputs.<port> legal clause stated in this checkpoint's changed_approach was corrected in matrix v5 (0101): foreach is forbidden in execution_backtest documents and trust.py _descriptor_from cannot read foreach, so a foreach descriptor is always refused. See 0106-f5a-p5-phase0-skeptic-verdict-v4.json P5-G10."
 }
