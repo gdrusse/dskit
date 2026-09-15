@@ -1,0 +1,23 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "matrix": "docs/evidence/closeout/0101-f5a-p5-phase0-grammar-matrix.json",
+  "reviewer": {"model": "deepseek-v4-pro (owner override 2026-09-15)", "agent_task": "ses_f59c84a1fffebMOR0I7Rveuf6F", "lens": "fresh independent Phase 0 re-review (round 4, post-convergence)"},
+  "verdict": "not-clean",
+  "conclusion": "The full-document walk genuinely closes the prior open-dict holes within the node-map grammar, but two self-consistency defects remain: the foreach-template legal clause is dead/contradictory, and the 'single shared parse entry' premise is false for the retired stage-list grammar.",
+  "findings": [
+    {"id": "P5-G10", "severity": "major", "summary": "foreach.pipeline template input listed as legal is self-contradictory and unreachable (foreach forbidden in execution_backtest, and _descriptor_from can't read foreach).", "disposition": "corrected: positional_legality now names only pipeline.<node>.inputs.<port>; foreach descriptor is always refused (documented via _EXECUTION_BACKTEST_FORBIDDEN_SECTIONS and trust.py _descriptor_from)."},
+    {"id": "P5-G11", "severity": "major", "summary": "'single shared parse entry' premise false: the retired stage-list grammar (PipelineConfig.from_obj via io.load_config/_legacy_validate) is a second parser that bypasses the walk.", "disposition": "corrected: retired stage-list grammar de-scoped from Packet 5 (no 'pipeline' node-map key; trust.py cannot consume it); entry_points_swept cmd_validate scoped to the node-map path."}
+  ],
+  "probes_run_verbatim": [
+    "Read 0101 v4, 0104 checkpoint, prior verdicts, 0095/0096, ADR-0125.",
+    "Confirmed _DESCRIPTOR_KEYS == inner_keys; _require_sha256 matches document_sha256 spec.",
+    "Confirmed _descriptor_from reads only pipeline.<node>.inputs.<input>.",
+    "Confirmed _EXECUTION_BACKTEST_FORBIDDEN_SECTIONS includes foreach; from_obj raises when execution_backtest + foreach coexist.",
+    "Confirmed PipelineConfig.from_obj (base.py:1696) is a second parser via io.load_config; model.params open dict (base.py:702).",
+    "Confirmed node-map public entry points all re-parse via from_obj.",
+    "Verified test files exist and all JSON parses."
+  ],
+  "next_gate": "Fresh DeepSeek skeptic re-review of the corrected matrix (v5) before RED."
+}
