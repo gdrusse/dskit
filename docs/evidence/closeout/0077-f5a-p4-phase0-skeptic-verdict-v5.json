@@ -1,0 +1,84 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "fresh independent Phase 0 authority/design skeptic of successor matrix v4",
+  "reviewer": {"model": "gpt-5.6-terra", "agent_task": "/root/f5a_p4_phase0_skeptic_v5"},
+  "reviewed": {
+    "candidate_commit": "2092e7eee8891d734b957cf55860150a01f2b67a",
+    "candidate_tree": "21134c3cb06b77c2b3f3192efb05f980c59b43e9",
+    "candidate_scope": "documentation-only successor matrix; no RED implementation exists",
+    "matrix": "docs/evidence/closeout/0076-f5a-p4-phase0-authorized-transaction-matrix-v4.json",
+    "matrix_sha256": "42caed7c2a82b32fe1c3734914dd23c4a08e91d15d128db1e9440a0e574e6022",
+    "owner_decision": {"path": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json", "sha256": "c4e2d5b9237a581d146b1d0586eec3a79738aa426c2cb64f89ea8045ca0b030e"},
+    "prior_verdict": {"path": "docs/evidence/closeout/0075-f5a-p4-phase0-skeptic-verdict-v4.json", "sha256": "4332b0d92c9f775991469df6f54eec16a971372c40e9dcda762e5a3852bec0a0"},
+    "inventoried_blobs": {
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844",
+      "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d",
+      "tests/pipeline/test_trust.py": "d96e8d3891659bb83f4f1199d79db8b5e8682e2e",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"
+    },
+    "controlling_adrs": ["ADR-0125", "ADR-0126"]
+  },
+  "prior_major_disposition": [
+    {"id": "F5A-P4-P0-M02-legacy-capture-bypass", "status": "not closed", "reason": "The new P4 mark lists denials, but does not require legacy capture's mark check and P4 marking to be one shared atomic transition."},
+    {"id": "F5A-P4-P0-M03-admission-consumption-transaction-split", "status": "not closed", "reason": "Reserved/aborted drafts either mint before the ADR-required WORM consumption or make consumption rollbackable."},
+    {"id": "F5A-P4-P0-M04-unverifiable-issuance-basis-chain", "status": "closed at design level", "reason": "A held, caller-unselectable immutable WORM resolver snapshot now recursively resolves and verifies artifacts, bases, and refs before reservation."},
+    {"id": "F5A-P4-P0-M05-post-commit-session-event-gap", "status": "closed at design level", "reason": "The atomic batch now includes SessionDecision, session identity/nonce, and SessionStartRecord; post-commit interning is specified non-effectful."}
+  ],
+  "findings": {
+    "critical": [],
+    "major": [
+      {
+        "id": "F5A-P4-P0-M06-legacy-p4-mark-toctou",
+        "severity": "Major",
+        "invariant": "Once the P4 route claims a live identity, every equivalent legacy capture route must deterministically refuse before it can create a legacy session, receipt, or usable captured capability; ordinary v1 remains available only when it wins as one atomic transition.",
+        "location": "0076 states_and_transaction.p4_binding and legacy_equivalent_entry_denials; current _DevelopmentBroker.capture is an unlocked multi-step public route at dskit/pipeline/trust.py:1140-1223, while HistoricalStudyVerifier.capture delegates to it at dskit/production/verifier.py:1997-2018.",
+        "entry_points": ["LifecycleAuthority.capture", "_DevelopmentBroker.capture", "HistoricalStudyVerifier.capture", "HistoricalStudyCaptureDriver.capture", "open_capture", "captured_bindings"],
+        "worked_counterexample": "An implementation allowed by the matrix checks that the frozen/published identity has no P4 mark at the start of legacy capture. Before that unlocked method reaches LaunchSession creation at trust.py:1188-1202, authorize_capture_set sets p4-reserved. Legacy capture then continues to append a v1 CAPTURED receipt and return its consumer session. P4 can later preflight or abort, but the P4-bound identity already obtained the forbidden legacy capability. The statement that a legacy winner advances the PUBLISHED head is an intended outcome, not a requirement that both operations use the same lock/compare-and-transition.",
+        "consequence": "A concurrent caller can bypass consumed-admission, v2 port/receipt/set, replay-evidence, and P4 session ordering. The P4 mark is merely observed at a time, not an identity-bound arbitration boundary, so prior Major M02 remains materially open.",
+        "family": "all action/replay P4-vs-legacy races across direct authority, verifier/driver facade, and subsequent open/bind routes",
+        "disposition": "confirmed-blocker; require one authority-owned lock or compare-and-transition covering P4 mark reservation and every legacy capture transition through its session/receipt commit, with explicit winner/loser effects and schedule-controlled tests for every inventoried facade. A late check only is insufficient."
+      },
+      {
+        "id": "F5A-P4-P0-M07-reserved-draft-violates-first-port-consume-order",
+        "severity": "Major",
+        "invariant": "ADR-0125 and OwnerDecision 0073 require the first CapturedPortAuthorization to atomically consume the referenced WORM ActionExecutionAdmission or FinalReplayAdmission before minting it; a refused pre-commit path must not invent rollback of a consumed WORM admission.",
+        "location": "0076 public_contracts.CapturedAuthorizationStore.operations, states_and_transaction.states/order/minted_authority, and failure_concurrency_retry.reserved_precommit; ADR-0125 decision-log.md:8763-8766, 8784-8786, and 8911-8915.",
+        "entry_points": ["CapturedAuthorizationAuthority.authorize_capture_set", "CapturedAuthorizationStore.reserve_admission", "CapturedAuthorizationContract.mint_port_authorizations", "CapturedAuthorizationStore.abort", "CapturedAuthorizationStore.commit"],
+        "worked_counterexample": "reserve_admission changes Unused to Reserved and mint_port_authorizations then creates exact signed port bytes. A later receipt/set/verification failure invokes abort and returns the admission to Unused. If Reserved is not the ADR's consumed WORM admission, the first port was minted before consumption. If Reserved is consumption, abort grants a hidden rollback of an already consumed WORM admission and permits retry. Calling the drafts nonauthoritative/unobservable changes neither branch: ADR-0125 says consume before minting, and the owner-approved order says consumed admission precedes the per-PCE authorization. The separate dedicated transaction store also has no specified atomic primitive with the referenced admission's authoritative WORM ledger.",
+        "consequence": "The successor still permits precisely the M03 alternatives: signed port mint before consumption, an irreversible burn on a later failure if abort is removed, or a rollbackable consumed admission if abort remains. Concurrent contenders cannot repair that missing cross-store transaction. F5A-R23's separate restart/durability limit does not excuse this in-process Packet 4 chronology defect.",
+        "family": "action and replay first-port admission spend, issuer/verification failure, corrected retry, and same-admission concurrency",
+        "disposition": "confirmed-blocker; obtain an owner/ADR-level transaction rule that either supplies a genuine atomic WORM admission-consume-plus-complete-batch primitive before any port mint, or explicitly changes ADR-0125's ordering and retry semantics. Do not represent Reserved/Aborted as a consumed admission without that approval; keep signing contract free of a hidden writer/spend callback."
+      }
+    ],
+    "minor": [],
+    "nit": []
+  },
+  "assessment": {
+    "contract_is_clean": false,
+    "red_authorization": false,
+    "merge_authorization": false,
+    "deployment_eligible": false,
+    "verdict": "blocked-before-RED",
+    "reason": "Two in-scope Major authority/chronology defects remain: non-atomic legacy-route exclusion and a reserved-draft reinterpretation that conflicts with first-port WORM consumption-before-mint."
+  },
+  "tests_and_limits": {
+    "inspected": ["current public lifecycle and facade entry points", "current focused trust, capture-lifecycle, and ADR-0125-preflight test inventory", "OwnerDecision 0073, matrices 0074/0076, verdict 0075, ADR-0125/0126, closeout README and packet plan"],
+    "not_run": "No behavioral test was run because the frozen candidate changes only the matrix and contains no P4 implementation; existing tests cannot prove the proposed transaction semantics.",
+    "untested_limits": ["No implementation, concurrency harness, crash test, resolver, signer, WORM admission store, or P4 session type exists on the candidate.", "F5A-R23-ctor-intern-unspend and durable/restart consume-once remain open and were not used to lower either Packet 4 finding.", "ADR-0126's development-broker multiple-private-surface exclusions remain unchanged; both findings use public/equivalent lifecycle entry points and the approved P4 contract.", "No real data, replay, HPO/refit, backtest, paper/live action, deployment, parser, CLI, compose route, or production import was exercised or authorized."]
+  },
+  "summary": {
+    "critical": 0,
+    "major": 2,
+    "minor": 0,
+    "unresolved_critical": 0,
+    "unresolved_major": 2,
+    "prior_majors_closed_at_design_level": 2,
+    "prior_majors_remaining_or_reopened": 2,
+    "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend and durable/restart consume-once", "Packets 4/5/6/7/8", "whole F5a", "F3/F5b", "origin/cursor/r5-f5a-private-plan-0f39 at c48919944588a2b29ba047e4cb551050a1ff9868"]
+  },
+  "required_next_gate": "Retain this verdict. Revise the P4 authority transaction under explicit F4/core owner authority, freeze a successor matrix/candidate, and obtain a fresh independent Phase 0 skeptic verdict with zero unresolved in-scope Critical/Major before RED.",
+  "checks": ["python3 -m json.tool docs/evidence/closeout/0077-f5a-p4-phase0-skeptic-verdict-v5.json", "git diff --check"]
+}
