@@ -1,0 +1,25 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "matrix": "docs/evidence/closeout/0101-f5a-p5-phase0-grammar-matrix.json",
+  "reviewer": {"model": "deepseek-v4-pro (owner override 2026-09-15)", "agent_task": "ses_f59ce7eeeffe2wv0oWlmIbc7Ll", "lens": "fresh independent Phase 0 re-review (round 3)"},
+  "verdict": "not-clean",
+  "conclusion": "v3 'closed_sections' assertion is factually false: tracking.sinks[].params (SinkConfig.params) is an open dict never swept, the same class of hole as the previously-corrected StageSpec.params (P5-G8).",
+  "findings": [
+    {"id": "P5-G8", "severity": "major", "summary": "tracking.sinks[].params is an open dict (base.py:1359/1386, _check_open_dict) never swept for $captured_artifact, evading the only-legal-location enforcement.", "disposition": "convergence checkpoint 0104: changed approach to a single full-document recursive positional sweep; no section asserted closed; tracking and every other depth covered."},
+    {"id": "P5-G9", "severity": "minor", "summary": "forbidden_shape under-enumerated: no case for a non-dict descriptor value nor a $-reference in a scalar field.", "disposition": "corrected in matrix v4: forbidden_shape now includes 'descriptor VALUE not a dict' and 'a $-reference inside any scalar field'."}
+  ],
+  "probes_run_verbatim": [
+    "Read 0101 v3, 0102, 0103, 0095, 0096, ADR-0125 captured-ports section.",
+    "Confirmed _DESCRIPTOR_KEYS == matrix inner_keys; _require_sha256 refuses self/placeholder/non-lowercase.",
+    "Confirmed _descriptor_from reads pipeline.<node>.inputs.<input>['$captured_artifact']; freeze_consumer_document equality-only purpose.",
+    "Confirmed ADR-0125 imposes NO root_ref shape and NO closed purpose set.",
+    "Enumerated every open dict reachable from PipelineDocument: NodeSpec.params, StageSpec.params (swept), and SinkConfig.params in tracking (NOT swept -> P5-G8).",
+    "Confirmed _expand/_instantiate/_rewrite_refs/_substitute_each preserve dict keys and cannot introduce a $captured_artifact key.",
+    "Confirmed _load_strict_json duplicate-key refusal.",
+    "Confirmed every entry_points_swept symbol exists.",
+    "Verified test inventory counts and existence of test_foreach.py / test_main_nodemap.py / sentinel."
+  ],
+  "next_gate": "Fresh DeepSeek skeptic re-review of the v4 changed-approach matrix after the convergence checkpoint."
+}
