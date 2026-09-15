@@ -1,0 +1,91 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "fresh independent Phase 0 authority/compatibility skeptic of frozen successor matrix v6",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/f5a_p4_phase0_skeptic_v7"
+  },
+  "reviewed": {
+    "candidate_commit": "85a713ee6bd2a25f12937f0aaff1a3129bda6acb",
+    "candidate_scope": "documentation-only successor matrix; no P4 implementation or RED tests exist",
+    "matrix": "docs/evidence/closeout/0080-f5a-p4-phase0-authorized-transaction-matrix-v6.json",
+    "matrix_sha256": "b5d65638c5b73c03236fd7a36e229582b53ee6a9e88bca4d6756065f62053dbf",
+    "owner_decision": {
+      "path": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json",
+      "sha256": "c4e2d5b9237a581d146b1d0586eec3a79738aa426c2cb64f89ea8045ca0b030e"
+    },
+    "prior_verdict": {
+      "path": "docs/evidence/closeout/0079-f5a-p4-phase0-skeptic-verdict-v6.json",
+      "sha256": "2862fcf68785a125678a25d16afe47dc30dab1e31248ff458b551b330b5eaebd"
+    },
+    "controlling_adrs": ["ADR-0125", "ADR-0126"],
+    "inventoried_blobs": {
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844",
+      "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d",
+      "tests/pipeline/test_trust.py": "d96e8d3891659bb83f4f1199d79db8b5e8682e2e",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"
+    }
+  },
+  "prior_major_disposition": {
+    "0075_M02_M05": "Closed at the stated design level: one same-domain lock/ledger terminalizes P4 versus legacy, preparation is non-authoritative, the held recursive resolver closes bases and refs, and SessionStartRecord is in the one committed record.",
+    "0077_M06_M07": "Closed at the stated design level: all inventoried legacy routes share the transition arbitration, and admission consumption plus complete publication occur in one immutable commit with resolve-before-remint.",
+    "0079_M08": "Closed at the stated constructor/dependency level by the broker-issued exact public capability, private final synthetic factory, fixed graph, hostile-data-only fixture grammar, and class-bound verifier/driver delegation. This disposition does not repair the independent v1 facade compatibility contradiction below.",
+    "F5A_R23": "Remains open exactly as stated: Packet 4 claims neither durable/restart nor cross-process consume-once closure."
+  },
+  "findings": {
+    "critical": [],
+    "major": [
+      {
+        "id": "F5A-P4-P0-M09-verifier-constructor-breaks-packet2-v1",
+        "severity": "Major",
+        "invariant": "OwnerDecision 0073 preserves Packet 2 and forbids breaking existing LifecycleAuthority v1 behavior; the matrix also retains ordinary-v1 positives and says HistoricalStudyVerifier legacy capture remains the existing route. A valid v1 LifecycleAuthority must therefore retain the existing Packet 2 verifier/driver capture doorway, while authorize_capture_set alone requires the broker-issued P4 capability.",
+        "location": "0080 public_contracts_and_composition.HistoricalStudyVerifier.constructor/delegation (lines 52-55) versus inventoried current dskit/production/verifier.py:1906-2018 and tests/production/test_capture_lifecycle.py:43-145; 0080 authority_and_limits.preserved_open (line 19) and required_red_tests.retained (line 106).",
+        "entry_points": [
+          "HistoricalStudyVerifier(LifecycleAuthority)",
+          "HistoricalStudyCaptureDriver(HistoricalStudyVerifier)",
+          "HistoricalStudyVerifier.capture",
+          "HistoricalStudyCaptureDriver.capture"
+        ],
+        "worked_counterexample": "Create the existing valid v1 synthetic authority with _development_broker(), publish and freeze as test_capture_lifecycle._setup does, construct HistoricalStudyVerifier(broker), bind the existing plan, then capture through HistoricalStudyCaptureDriver. Current code and test_capture_lifecycle.py:test_driver_delegates_bound_verifier_capture accept this Packet 2 route. Matrix v6 instead requires HistoricalStudyVerifier(authority) to accept only an exact broker-issued CapturedAuthorizationAuthority capability, so the same valid v1 authority must refuse at construction and the preserved verifier/driver capture route cannot exist.",
+        "consequence": "An implementation cannot simultaneously obey v6 and retain the existing Packet 2 v1 facade behavior. Rejecting the v1 broker breaks a focused compatibility surface and its positive tests; accepting it contrary to v6 leaves the required constructor contract false. This is a material compatibility contradiction, not an ADR-0126 multi-private-mutation case and not R23 durability/restart scope.",
+        "family": "all existing HistoricalStudyVerifier/HistoricalStudyCaptureDriver legacy construction and capture paths over an ordinary LifecycleAuthority, for action and replay-compatible lifecycle inputs.",
+        "disposition": "confirmed-blocker. RED is not authorized. The implementation workflow convergence checkpoint is required before a fourth patch: record the three failed correction cycles (0075->0076, 0077->0078, 0079->0080), inventory every legacy and P4 verifier/driver entry, and adopt one concrete compatibility approach. A compatible design may preserve the existing verifier constructor for a pinned ordinary LifecycleAuthority legacy mode while making authorize_capture_set refuse unless that pinned authority is the exact broker-issued P4 capability; it must not accept caller-selected P4 dependencies or weaken M02-M08. Obtain any required owner approval, freeze a successor, and run fresh Phase 0 review."
+      }
+    ],
+    "minor": [],
+    "nit": []
+  },
+  "tested_evidence": [
+    "Read OwnerDecision 0073; Packet 4 matrices 0074/0076/0078/0080; verdicts 0075/0077/0079; ADR-0125/0126; governing workflow and re-entry instructions.",
+    "Confirmed frozen HEAD is 85a713ee6bd2a25f12937f0aaff1a3129bda6acb and the matrix/source blobs match the v6 inventory exactly.",
+    "Inspected all current lifecycle/facade surfaces: LifecycleAuthority, _DevelopmentBroker.capture/open_capture/captured_bindings/_consume_binding/release, HistoricalStudyVerifier.capture, and HistoricalStudyCaptureDriver.capture; current Packet 2 tests positively construct the verifier with _development_broker().",
+    "Confirmed v6 explicitly covers public nonconstruction, fixed private factory dependencies, hostile fixture data, exact class-bound delegation, substitution, wrapper/duck/subclass, copy/pickle/state, dependency replacement, and the same-lock/same-ledger M02-M08 families."
+  ],
+  "untested_limits": [
+    "No P4 implementation, factory, contract, resolver, ledger, concurrency harness, or RED tests exist on the documentation-only candidate; required runtime cases P4V5-R01..R08 and P4V6-R09..R13 remain unexecuted.",
+    "F5A-R23, durable/restart/cross-process consume-once, Packet 2 completion, whole F5a, F3/F5b, real data/replay/HPO/refit/backtest/paper/live/deployment, and parser/CLI/compose routes remain open or unauthorized.",
+    "ADR-0126 deferred coordinated multi-private-mutation attacks remain deferred; this finding uses the documented public verifier constructor and existing positive Packet 2 path only."
+  ],
+  "assessment": {
+    "unresolved_counts": {
+      "critical": 0,
+      "major": 1,
+      "minor": 0,
+      "nit": 0
+    },
+    "red_authorized": false,
+    "merge_authorization": false,
+    "deployment_eligible": false,
+    "convergence_checkpoint_required_before_fourth_patch": true,
+    "verdict": "blocked-before-RED",
+    "reason": "v6's P4-only HistoricalStudyVerifier constructor contradicts the preserved existing Packet 2 v1 verifier/driver capture surface."
+  },
+  "required_next_gate": "Do not make a fourth correction patch. First complete the independent implementation-workflow convergence checkpoint, preserve M02-M08/v1/R23/nondeployment boundaries, then freeze a successor and obtain a fresh skeptic verdict with zero unresolved in-scope Critical/Major before RED.",
+  "checks": [
+    "python3 -m json.tool docs/evidence/closeout/0081-f5a-p4-phase0-skeptic-verdict-v7.json",
+    "git diff --check"
+  ]
+}
