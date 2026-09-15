@@ -297,7 +297,11 @@ class _SignedGraph:
                "sha256": value[self_field]}
         self.refs[name] = ref
         self.values[name] = value
-        self.facts["artifacts"].append({"ref": ref, "bytes": f4._json_bytes(value)})
+        record = {"ref": ref, "bytes": f4._json_bytes(value)}
+        previous = [item for item in self.facts["artifacts"] if item["ref"] == ref]
+        assert not previous or previous == [record], "fixture WORM identity conflict"
+        if not previous:
+            self.facts["artifacts"].append(record)
         return value
 
     def unsigned(self, name, kind, payload, self_field, role="study-lifecycle"):
@@ -685,6 +689,38 @@ def test_replay_only_ancestors_cannot_be_missing_or_substituted(target):
     item = next(item for item in graph.facts["artifacts"] if item["ref"] == graph.refs[target])
     graph.facts["artifacts"].remove(item)
     broker, captures, runtime, before = _graph_live(graph, document, 1)
+    with pytest.raises((TypeError, ValueError)) as failure:
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert "atomic issuance is unavailable" not in str(failure.value)
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("surface", [
+    "closure-dispatch", "closure-function", "keyring", "clock", "revocations",
+    "external-corpus", "local-keys", "local-shapes", "signature-method",
+])
+def test_complete_closure_refuses_each_single_trust_dependency_replacement(replay, surface, monkeypatch):
+    _closure_ready()
+    graph, document = _complete_signed_graph(replay=replay)
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    if surface == "closure-dispatch":
+        monkeypatch.setattr(trust, "_P4_CLOSE_ADMISSION", lambda *args: None)
+    elif surface == "closure-function":
+        monkeypatch.setattr(trust, "_p4_close_admission", lambda *args: None)
+    elif surface == "external-corpus":
+        monkeypatch.setattr(trust, "_P4_EXTERNAL_BY_REF", dict(trust._P4_EXTERNAL_BY_REF))
+    elif surface == "local-keys":
+        monkeypatch.setattr(trust, "_P4_LOCAL_PUBLIC_KEYS", dict(trust._P4_LOCAL_PUBLIC_KEYS))
+    elif surface == "local-shapes":
+        monkeypatch.setattr(trust, "_P4_ARTIFACT_SPECS", dict(trust._P4_ARTIFACT_SPECS))
+    elif surface == "signature-method":
+        monkeypatch.setattr(trust.HistoricalStudyEnvelopePreflight, "_verify_one_signed", lambda *args: None)
+    else:
+        field = "_" + surface
+        original = getattr(trust._P4_VERIFICATION, field)
+        replacement = type(original)(500) if surface == "clock" else type(original)()
+        monkeypatch.setattr(trust._P4_VERIFICATION, field, replacement)
     with pytest.raises((TypeError, ValueError)) as failure:
         broker.authorize_capture_set(captures, graph.selected, **runtime)
     assert "atomic issuance is unavailable" not in str(failure.value)
