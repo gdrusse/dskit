@@ -13,7 +13,9 @@
     "Changed-file Ruff/diff pass before added member-intern regression",
     "New verified-retained-bytes intern substitution tests:2 expected failures in0.29s at bindings construction and final consume",
     "246 trust tests passed1.44s",
-    "Changed-file Ruff and git diff --check pass"
+    "Changed-file Ruff and git diff --check pass",
+    "Explicit private-plan sentinel1passed0.10s",
+    "v1 complete encoded receipt hash bced1f11fc2fffd0386149356a6dd6b604c4f325185055503ef998fccd39dbb9 equals verified unchanged-main baseline"
   ],
   "correction": "Shared final-effect validator must compare verified retained payloads to independent member view records and signed sealed digests, not only identity keys. One authenticated verified-pin mint currently changes bytes after verification; this is within existing member/intern substitution matrix.",
   "runtime_change": "One shared broker validator at final staged CAPTURED commit, pre-provider/view/member delivery, and CONSUMED; session/port/head validation; retained binding nonce; immutable final receipt subject; no production facade spend changes.",
@@ -26,5 +28,6 @@
     "tests/pipeline/test_captured_authorization.py": "9f48aeef760375a52227bf0454949dfcaf2c6fc3",
     "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json": "b8a4ad2d9aa6a646a5b520a999a29b726b050a76"
   },
-  "full_focused": "pending"
+  "full_focused": "1594 passed in64.02s on849ff673aaa219c01d68969c781d102c9ffb9882",
+  "review_identity": "All recorded runtime/test/matrix blobs unchanged from849ff67; evidence-only append"
 }
