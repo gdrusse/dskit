@@ -1,5 +1,30 @@
 # Re-entry
 
+## Current checkpoint: F3/replay-ops prerequisite authorized; ADR-0127 proposed, awaiting approval (2026-09-15)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7` (pushed, unmerged). Main `48ae2fb`; P5/P6 closed/merged.
+Protected source `c489199` untouched; dirty main checkout untouched. DeepSeek v4
+Pro primary implementer. No runtime/test changes made this turn.
+
+Owner authorized DeepSeek to build the F3/replay-ops interfaces P7 depends on
+(`0145`): the class-declared ReplayRun/NodeSpec identity seam plus the verified
+captured-tape (manifest/data) producer/capture hierarchy, in `dskit/`, then use
+them to close Packet7. This does not change P8's sequencing (P8 still follows P7).
+
+ADR-0127 is **proposed** in `docs/architecture/decision-log.md` and awaits owner
+approval before any implementation: class-declared ReplayRun consumer identity
+(no uses-string heuristic), a one-acyclic F4-style WORM capture hierarchy
+(`ReplayTapeDataCapture` -> `ReplayTapeManifestProducer` -> `ReplayTapeManifestCapture`
+-> composed tape capability) reusing trust.py primitives, with `production/bundles.py`
+owning the `CapturedReplayTape.v1` parser. Non-goals: full R1-R5 replay
+transaction machinery, F1/F2 envelope reordering, the full F3 feed lane, real
+data/replay.
+
+Next: owner approves ADR-0127 (or corrects it), then fresh clean Phase 0 skeptic,
+then RED/GREEN, two fresh Terra final lenses, integrate. P7/P8/F5A-R23/wholeF5a/
+F5b remain open; `deployment_eligible=false`. Next unused evidence number: 0146.
+
 ## Current checkpoint: P8 owner gates resolved; P8 still sequenced behind P7, which awaits F3 (2026-09-15)
 
 Worktree `/home/russell/wt/f5a-remainder-20260915`, branch

@@ -1,0 +1,38 @@
+{
+  "schema_version": "OwnerDecision.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite",
+  "date": "2026-09-15",
+  "owner": "forecast-capital owner / coordinator",
+  "decision_source": "explicit owner response to the P7 dependency question",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "Terra (owner-authorized) unless changed",
+  "decision": "authorize-f3-replay-ops-interfaces",
+  "detail": "Owner authorized DeepSeek to design and implement the generic F3/replay-ops interfaces that P7 depends on — the class-declared ReplayRun/NodeSpec identity seam and the verified captured-tape (manifest/data) producer/capture interfaces — in dskit/ as a new prerequisite workstream, then use them to close Packet7. This supersedes the prior keep-original-ordering stance for the P8 sequencing only insofar as it now authorizes the F3/replay-ops prerequisite work that unblocks P7; P8 itself remains sequenced behind P7 closure.",
+  "scope": {
+    "required_by_p7": [
+      "Resolved class-declared ReplayRun identity and NodeSpec contract (identification without a uses-string heuristic).",
+      "Verified outer manifest/data PUBLISHED identities.",
+      "Prior manifest-producer parent CAPTURED receipt.",
+      "Members, policy, envelope count/order and composed-tape verification interfaces."
+    ],
+    "in_scope": "The F3 captured-tape capture hierarchy (ReplayTapeDataCapture -> ReplayTapeManifestProducer -> ReplayTapeManifestCapture -> composed tape capability) plus the class-declared ReplayRun consumer identity seam, sufficient to close P7.",
+    "non_goals": [
+      "Full R1-R5 replay transaction machinery (AtomicJournalReplace, AtomicSeriesStateReplace, FrozenReplayPlan.v2, lease/idempotency journal) — not needed for P7 descriptor/binding enforcement.",
+      "F1/F2 EventEnvelope causal reordering and the full feed/roster data-capture lane beyond what P7 verification requires.",
+      "Real data, replay execution, training, HPO/refit, backtest, paper/live, deployment."
+    ]
+  },
+  "process": "ADR-before-code: draft ADR-0127 as a proposal, obtain owner approval, then fresh clean Phase 0 skeptic, then RED/GREEN, two fresh sequential Terra final lenses, then integrate. No implementation before ADR approval.",
+  "preserved_open": [
+    "Packet7 (until this prerequisite + P7 descriptor enforcement close)",
+    "Packet8",
+    "F5A-R23",
+    "whole F5a",
+    "F3 (full lane, beyond the captured-tape slice)",
+    "F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39@c489199"
+  ],
+  "deployment_eligible": false,
+  "protected_source": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "recorded_at_utc": "2026-09-15T22:45:00.000000+00:00"
+}
