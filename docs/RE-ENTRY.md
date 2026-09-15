@@ -2,6 +2,11 @@
 
 ## Current wrap: F5a Packet 4 blocked before RED (2026-09-14)
 
+Owner update: the F4/core seam evolution was explicitly approved and recorded
+in `docs/evidence/closeout/0073-f5a-p4-owner-decision.json`. The prior blocker
+is resolved only at the ownership level; RED remains disabled until a successor
+exact-seam matrix and fresh skeptic are clean.
+
 Packet 3 is integrated and verified on remote main at `b5ec572`. Packet 4's
 self-contained corrected matrix is
 `docs/evidence/closeout/0070-f5a-p4-phase0-authority-seam-matrix-v2.json`;

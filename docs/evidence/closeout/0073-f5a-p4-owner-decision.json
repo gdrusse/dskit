@@ -1,0 +1,43 @@
+{
+  "schema_version": "OwnerDecision.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "decision": "approve",
+  "decision_source": "explicit user response: approve",
+  "date": "2026-09-14",
+  "owner": "F4/core lifecycle authority owner in the forecast-capital lane",
+  "supersedes_gate": "docs/evidence/closeout/0072-f5a-p4-owner-gate.json",
+  "approved_scope": {
+    "file": "dskit/pipeline/trust.py",
+    "purpose": "one narrowly versioned public sole-writer broker seam for ADR-0125 captured authorization",
+    "required_order": [
+      "consumed ActionExecutionAdmission or FinalReplayAdmission",
+      "per-PCE CapturedPortAuthorization.v2",
+      "exact LifecycleCapturedReceipt.v2",
+      "complete verified CapturedAuthorizationSet.v2",
+      "for replay, exact ReplayCaptureAdmissionEvidence.v1",
+      "distinct set/evidence-bound LaunchSession"
+    ],
+    "manifest_correction": "docs/plans/closeout-2026-09-14/01-capture-admission.md#approved-packet-4-ownership-correction-2026-09-14"
+  },
+  "still_forbidden": [
+    "parallel lifecycle writer or trust root",
+    "caller-supplied or unsigned receipt authority",
+    "session before verified set or required replay evidence",
+    "breaking existing LifecycleAuthority v1 behavior",
+    "pipeline-to-production import",
+    "parser, CLI or compose capture route",
+    "durable or restart-safe consume-once closure",
+    "real data, replay, HPO/refit, backtest, paper/live, deployment"
+  ],
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend",
+    "Packet 4 until full packet exit",
+    "Packets 6/8",
+    "whole F5a",
+    "F3/F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "next_gate": "Create a self-contained successor Phase 0 matrix for the exact seam and obtain a fresh independent skeptic verdict with zero unresolved in-scope Critical/Major before RED."
+}
