@@ -32,14 +32,17 @@ def test_terminal_authority_cannot_be_injected_through_either_p4_facade(facade, 
 @pytest.mark.parametrize("facade", ["verifier", "driver"])
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("count", [1, 2])
-def test_both_facades_verify_full_closure_but_never_issue_a_p4_session(facade, replay, count):
+def test_both_facades_issue_the_same_authority_bound_p4_transaction(facade, replay, count):
     p4._closure_ready()
     graph, document = p4._complete_signed_graph(replay=replay, count=count)
     broker, captures, runtime, before = p4._graph_live(graph, document, count)
     verifier = verifier_module.HistoricalStudyVerifier(broker)
     doorway = verifier if facade == "verifier" else verifier_module.HistoricalStudyCaptureDriver(verifier)
-    with pytest.raises(ValueError, match="^P4 atomic issuance is unavailable$"):
-        doorway.authorize_capture_set(captures, graph.selected, **runtime)
+    record, session = doorway.authorize_capture_set(captures, graph.selected, **runtime)
+    assert type(record) is trust.CapturedAuthorizationRecord
+    assert type(session) is trust.LaunchSession and session._kind == "captured-authorization-v2"
+    assert doorway.authorize_capture_set(captures, graph.selected, **runtime) == (record, session)
+    assert broker._p4_ledger._committed() == (record,)
     p4._assert_graph_no_effect(broker, captures, before)
 
 

@@ -338,7 +338,7 @@ class _SignedGraph:
         return self.add(name, kind, value, self_field, role)
 
 
-def _complete_signed_graph(*, replay=False, count=1):
+def _complete_signed_graph(*, replay=False, count=1, nonroot=False):
     """Construct exact action and replay closure including every signed ancestor."""
     from tests.production import test_adr0125_preflight as p3
 
@@ -395,12 +395,25 @@ def _complete_signed_graph(*, replay=False, count=1):
         "output_schema": "dskit.synthetic-output/v1", "output_version": "1", "purpose": "synthetic",
     } for index in range(count)]
     contract_digest = _graph_hash(b"F1-owned-fixed-document-contract")
+    edges = []
     for action in actions:
         action.pop("action_intent_sha256")
         action.update(study_id="synthetic-study", predecessor_action_ids=[], predecessor_output_refs=[],
                       root_published_input_ids=[item["input_id"] for item in root_entries],
                       required_input_contracts=contracts, consumer_document_contract_sha256=contract_digest)
         action["output_contract"].update(producer_node="publisher", producer_output="bundle", purpose="synthetic")
+        if nonroot and action["topological_position"] < count:
+            action["output_contract"]["output_schema"] = f"dskit.synthetic-predecessor-{action['topological_position']}/v1"
+        if nonroot and action["action_id"] == "A4":
+            predecessors = actions[:count]
+            refs = [{"predecessor_action_id": item["action_id"], **{key: item["output_contract"][key]
+                     for key in ("output_name", "output_schema", "output_version", "purpose")}} for item in predecessors]
+            action.update(predecessor_action_ids=[item["action_id"] for item in predecessors],
+                predecessor_output_refs=refs, root_published_input_ids=[],
+                required_input_contracts=[dict(contract, source_kind="predecessor-output", source_ref=ref["predecessor_action_id"],
+                    output_schema=ref["output_schema"]) for contract, ref in zip(contracts, refs, strict=True)])
+            edges = [dict(ref, consumer_action_id="A4", binding_id=contract["binding_id"])
+                     for ref, contract in zip(refs, action["required_input_contracts"], strict=True)]
         graph.unsigned("intent/" + action["action_id"], "action-intent", action, "action_intent_sha256")
     actions = [graph.values["intent/" + action["action_id"]] for action in actions]
     for replay_intent in replays:
@@ -416,9 +429,9 @@ def _complete_signed_graph(*, replay=False, count=1):
         "schema": "dskit.historical-study-scope-intent/v1", "study_id": "synthetic-study",
         "purpose": "synthetic", "published_input_set_sha256": root_pis["published_input_set_sha256"],
         "action_intents": actions, "action_intent_set_sha256": action_set_sha,
-        "edge_set_sha256": _graph_hash([]),
+        "edge_set_sha256": _graph_hash(edges),
         "action_dag_sha256": _graph_hash({"action_intents": actions, "action_intent_set_sha256": action_set_sha,
-                                           "edge_set_sha256": _graph_hash([])}),
+                                           "edge_set_sha256": _graph_hash(edges)}),
         "replay_intents": replays, "replay_intent_set_sha256": replay_set_sha,
         "environment_identity_sha256": p3._h("environment"),
         "execution_profile_sha256": p3._h("execution-profile"), "component_manifest_sha256": p3._h("component"),
@@ -443,7 +456,7 @@ def _complete_signed_graph(*, replay=False, count=1):
         subject_kind = "action" if "action_id" in intent else "replay"
         identity = intent[subject_kind + "_id"]
         plan_document_sha = (document_sha if subject_kind == "replay" or
-                             (not replay and identity == actions[0]["action_id"]) else "1" * 64)
+                             (not replay and identity == ("A4" if nonroot else actions[0]["action_id"])) else "1" * 64)
         subject = {"kind": subject_kind, subject_kind + "_id": identity,
                    subject_kind + "_intent_sha256": intent[subject_kind + "_intent_sha256"]}
         prefix = "tuple/" + identity + "/"
@@ -453,7 +466,7 @@ def _complete_signed_graph(*, replay=False, count=1):
             "descriptor_root_ref": entry["root_ref"], "descriptor_snapshot_version": entry["snapshot_version"],
             "descriptor_document_sha256": entry["producer_document_sha256"], "descriptor_node": entry["producer_node"],
             "descriptor_output": entry["producer_output"], "descriptor_purpose": "synthetic", "published_input": entry,
-        } for contract, entry in zip(contracts, pis["entries"][:count])]
+        } for contract, entry in zip(intent["required_input_contracts"], pis["entries"][:count])]
         entries.sort(key=f4._json_bytes)
         common = {"study_id": "synthetic-study", "subject_ref": subject,
                   "consumer_document_contract_sha256": contract_digest, "consumer_document_sha256": plan_document_sha,
@@ -464,8 +477,8 @@ def _complete_signed_graph(*, replay=False, count=1):
         }, "capture_expectation_set_sha256", "study-lifecycle", "capture-expectation", [pis_name, "intent/" + identity])
         authority_ref = ({"kind": "scope-intent-gate-set", "scope_intent_sha256": scope_intent["historical_study_scope_intent_sha256"],
                           "gate_set_sha256": gate_set_sha} if phase == "bootstrap" else
-                         {"kind": "scope-authorization-replay", "scope_authorization_sha256": graph.refs["scope"]["sha256"],
-                          "replay_intent_sha256": intent["replay_intent_sha256"]})
+                         {"kind": "scope-authorization-" + subject_kind, "scope_authorization_sha256": graph.refs["scope"]["sha256"],
+                          subject_kind + "_intent_sha256": intent[subject_kind + "_intent_sha256"]})
         pea = graph.signed(prefix + "pea", "pea", {
             "schema": "dskit.plan-evaluation-authorization/v1", **common, "phase": phase,
             "published_input_set_sha256": pis["published_input_set_sha256"],
@@ -500,7 +513,7 @@ def _complete_signed_graph(*, replay=False, count=1):
                 "broker_verified_plan_sha256": bvp["broker_verified_plan_sha256"], "plan_sha256": bvp["plan_sha256"],
                 "planned_capture_set_sha256": planned["planned_capture_set_sha256"], "capture_admission_set_sha256": cas["capture_admission_set_sha256"]}
 
-    bootstrap = [plan_tuple(action, root_pis, "root-pis", "bootstrap") for action in actions]
+    bootstrap = [plan_tuple(action, root_pis, "root-pis", "bootstrap") for action in actions if not action["predecessor_output_refs"]]
     bootstrap.sort(key=lambda item: item["action_id"])
     scope_body = {key: value for key, value in scope_payload.items() if key != "schema"}
     scope_body.update(schema="dskit.historical-study-scope-authorization/v2",
@@ -508,28 +521,44 @@ def _complete_signed_graph(*, replay=False, count=1):
                       bootstrap_artifacts=bootstrap, gates=gates, gate_set_sha256=gate_set_sha)
     scope = graph.signed("scope", "scope-authorization", scope_body, "historical_study_scope_authorization_sha256",
                          "study-lifecycle", "historical-study-scope", ["scope-intent", *gate_names,
-                         *("tuple/" + action["action_id"] + "/" + slot for action in actions for slot in ("pea", "ces", "bvp", "cas"))])
+                         *("tuple/" + action["action_id"] + "/" + slot for action in actions if not action["predecessor_output_refs"]
+                           for slot in ("pea", "ces", "bvp", "cas"))])
     stages, outputs = [], []
     for index, action in enumerate(actions):
         identity = action["action_id"]
         prefix = "tuple/" + identity + "/"
-        selected_tuple = next(item for item in bootstrap if item["action_id"] == identity)
+        predecessor_publications = []
+        predecessor_names = []
+        if action["predecessor_output_refs"]:
+            for ref in action["predecessor_output_refs"]:
+                predecessor = ref["predecessor_action_id"]
+                output = next(item for item in outputs if item["producer_action_id"] == predecessor)
+                predecessor_publications.append(dict(ref, published_input=output["published_input"]))
+                predecessor_names.append("output/" + predecessor)
+            stage_pis = graph.signed("stage-pis/" + identity, "stage-pis", {
+                "schema": "dskit.published-input-set/v2", "study_id": "synthetic-study", "phase": "stage-consumer", "purpose": "synthetic",
+                "entries": [item["published_input"] for item in predecessor_publications],
+            }, "published_input_set_sha256", "study-lifecycle", "published-input-set-study",
+                ["scope", *("stage/" + ref["predecessor_action_id"] for ref in action["predecessor_output_refs"]), *predecessor_names])
+            selected_tuple = plan_tuple(action, stage_pis, "stage-pis/" + identity, "scope-action")
+        else:
+            selected_tuple = next(item for item in bootstrap if item["action_id"] == identity)
         tuple_fields = {key: value for key, value in selected_tuple.items() if key not in ("action_id", "action_intent_sha256", "authority_ref")}
         stage = graph.signed("stage/" + identity, "stage-admission", {
             "schema": "dskit.historical-study-stage-admission/v1", "study_id": "synthetic-study",
             "scope_authorization_sha256": scope["historical_study_scope_authorization_sha256"],
             "scope_intent_sha256": scope_intent["historical_study_scope_intent_sha256"], "action_id": identity,
             "action_intent_sha256": action["action_intent_sha256"], "topological_position": index,
-            "predecessor_publications": [], "required_inputs": graph.values[prefix + "cas"]["entries"],
+            "predecessor_publications": predecessor_publications, "required_inputs": graph.values[prefix + "cas"]["entries"],
             "consumer_document_sha256": graph.values[prefix + "cas"]["consumer_document_sha256"], "closed_parameters_sha256": action["closed_parameters_sha256"],
             "component_manifest_sha256": action["component_manifest_sha256"], "candidate_selection_sha256": action["candidate_selection_sha256"],
             "output_contract": action["output_contract"], **tuple_fields,
         }, "historical_study_stage_admission_sha256", "study-lifecycle", "stage-admission",
-            ["scope", "intent/" + identity, *(prefix + slot for slot in ("pea", "ces", "bvp", "cas"))])
+            ["scope", "intent/" + identity, *(prefix + slot for slot in ("pea", "ces", "bvp", "cas")), *predecessor_names])
         stages.append(stage)
         common_admission = {key: value for key, value in tuple_fields.items() if key != "consumer_document_contract_sha256"}
         common_admission.update(study_id="synthetic-study", logical_execution_id="logical/" + identity,
-                                run_id="consumer-run" if not replay and index == 0 else root_entries[index % count]["producer_run_identity"],
+                                run_id="consumer-run" if not replay and identity == ("A4" if nonroot else actions[0]["action_id"]) else root_entries[index % count]["producer_run_identity"],
                                 recovery_journal_sha256=p3._h("journal"), recovery_fence_sha256=p3._h("fence"),
                                 recovery_attempt_rules_sha256=p3._h("attempt-rules"))
         admission = graph.signed("admission/" + identity, "action-execution-admission", {
@@ -557,7 +586,7 @@ def _complete_signed_graph(*, replay=False, count=1):
                         "publication_identity_sha256": _graph_hash(("stage-publication-identity/" + identity).encode()),
                         "historical_study_stage_admission_sha256": stage["historical_study_stage_admission_sha256"], "published_input": published_entry})
     if not replay:
-        graph.selected = graph.refs["admission/" + actions[0]["action_id"]]
+        graph.selected = graph.refs["admission/" + ("A4" if nonroot else actions[0]["action_id"])]
         return graph, document
     outputs.sort(key=lambda value: (value["producer_action_id"], value["producer_output_id"], value["output_schema"], value["publication_identity_sha256"], f4._json_bytes(value)))
     replay_pis = graph.signed("replay-pis", "replay-pis", {
@@ -656,13 +685,15 @@ def _assert_graph_no_effect(broker, captures, before):
 
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("count", [1, 2])
-def test_complete_signed_closure_reaches_only_the_later_atomic_issuance_boundary(replay, count):
+def test_complete_signed_closure_itself_remains_nonauthorizing(replay, count):
     _closure_ready()
     graph, document = _complete_signed_graph(replay=replay, count=count)
     broker, captures, runtime, before = _graph_live(graph, document, count)
     for _attempt in range(2):
-        with pytest.raises(ValueError, match="^P4 atomic issuance is unavailable$"):
-            broker.authorize_capture_set(captures, graph.selected, **runtime)
+        resolver = broker._p4_resolver
+        assert resolver.close_admission(resolver.snapshot(), graph.selected,
+            (broker, captures, {key: value for key, value in runtime.items() if key != "transition_nonces"})) is None
+        assert not broker._p4_ledger._committed()
         _assert_graph_no_effect(broker, captures, before)
 
 
@@ -1102,6 +1133,25 @@ def test_p4_and_legacy_are_mutually_exclusive_for_the_same_live_publication(winn
     with pytest.raises((TypeError, ValueError)):
         second()
     assert not broker._member_events
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("count", [1, 2])
+def test_nonroot_predecessor_action_and_its_replay_form_a_complete_positive_dag(replay, count):
+    graph, document = _complete_signed_graph(replay=replay, count=count, nonroot=True)
+    scope = graph.values["scope"]
+    assert len(scope["bootstrap_artifacts"]) == 5
+    stage = graph.values["stage/A4"]
+    assert len(stage["predecessor_publications"]) == count
+    assert graph.values["tuple/A4/pea"]["phase"] == "scope-action"
+    broker, captures, runtime, before = _graph_live(graph, document, count)
+    try:
+        record, session = broker.authorize_capture_set(captures, graph.selected, **runtime)
+    except ValueError as exc:
+        pytest.fail(f"approved nonroot graph must issue its complete transaction: {exc}")
+    assert type(record) is trust.CapturedAuthorizationRecord
+    assert session._kind == "captured-authorization-v2"
+    _assert_graph_no_effect(broker, captures, before)
 
 
 def _request():

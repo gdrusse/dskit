@@ -34,6 +34,7 @@ _ROOT = {
 }
 _PUBLIC_TYPES = {
     "CapturedAuthorizationAuthority",
+    "CapturedAuthorizationRecord",
     "CapturedBindings",
     "CapturedJsonArtifact",
     "CapturedLifecyclePort",
