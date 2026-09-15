@@ -3320,3 +3320,61 @@ def test_p6_single_published_member_intern_mint_cannot_change_output(stage):
             broker.captured_bindings(session, frozen, verified,
                 consumer_node="consume", transition_nonce="nonce-consumed")
     assert _p6_effects(broker) == before
+
+
+def _p6_identity_siblings(broker, field, labels=("a", "b")):
+    """Publish real WORM siblings whose descriptor prefix is identical."""
+    result = []
+    for label in labels:
+        producer = dict(_PRODUCER, run_identity="producer-" + label)
+        purpose = "synthetic"
+        if field in ("node", "output"):
+            producer[field] += "-" + label
+        elif field == "purpose" and label == "b":
+            purpose = "synthetic-b"
+        session = broker.start_producer_session(run_identity=producer["run_identity"],
+            process_measurement_sha256=_SHA["producer_process"],
+            runtime_sha256=_SHA["producer_runtime"], plan_sha256=_SHA["producer_plan"])
+        path = "artifacts/" + label + ".json"
+        members = [{"relative_path": path, "media_type": "application/json",
+                    "bytes": _json_bytes({"label": label}), "file_type": "regular", "link_count": 1}]
+        prepared = broker.produce(session, producer=producer, root=dict(_ROOT), purpose=purpose,
+            expected_members=(path,), members=members, output_member=path,
+            completed=True, planned=True, transition_nonce="produced-" + label)
+        sealed = broker.seal(session, prepared, transition_nonce="sealed-" + label)
+        published = broker.publish(session, sealed, transition_nonce="published-" + label)
+        result.append((session, published, label, purpose))
+    return result
+
+
+@pytest.mark.parametrize("field", ["node", "output", "purpose"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_p6_same_prefix_publications_complete_each_exact_lifecycle(field, reverse):
+    broker = _trust()._development_broker()
+    publications = _p6_identity_siblings(broker, field)
+    for session, _, _, _ in publications:
+        broker.end_session(session)
+    for _, published, label, purpose in publications[:: -1 if reverse else 1]:
+        descriptor = broker.descriptor(published, purpose)
+        frozen = broker.freeze_consumer_document(_consumer_document(descriptor), "consume", "bundle", purpose)
+        captured, session = _capture(broker, published, frozen,
+            run_identity="consumer-" + label, nonce="captured-" + label)
+        verified = broker.open_capture(session, captured)
+        artifact = broker.captured_bindings(session, frozen, verified,
+            consumer_node="consume", transition_nonce="consumed-" + label).require("bundle").artifact
+        assert artifact.value == {"label": label}
+        audit = broker._receipt_audit(published)
+        assert [row["event"] for row in audit] == ["PRODUCED", "SEALED", "PUBLISHED", "CAPTURED", "CONSUMED"]
+        assert audit[-1]["producer_run_identity"] == "producer-" + label
+
+
+def test_p6_identical_complete_retained_descriptors_refuse_ambiguous_freeze():
+    broker = _trust()._development_broker()
+    publications = _p6_identity_siblings(broker, None)
+    for session, _, _, _ in publications:
+        broker.end_session(session)
+    before = _p6_effects(broker)
+    descriptor = dict(publications[0][1].descriptor)
+    with pytest.raises(ValueError):
+        broker.freeze_consumer_document(_consumer_document(descriptor), "consume", "bundle", "synthetic")
+    assert _p6_effects(broker) == before

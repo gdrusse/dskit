@@ -1,0 +1,17 @@
+{
+  "schema_version": "TddEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "phase": "RED",
+  "base": "2040a22",
+  "runtime_base": "e967aa15d64c127a74b4fd18b24ffa2183be1487",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "phase0": "0125-f5a-p6-exact-lookup-phase0-verdict.json addendum: zero Critical/Major",
+  "finding": "P6-FA-003",
+  "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py tests/pipeline/test_captured_authorization.py -k \"same_prefix or identical_complete_retained\" --tb=line",
+  "result": "10 failed, 1 passed, 1085 deselected in 0.48s",
+  "expected_failures": "Six same-prefix node/output/purpose v1 cases fail at descriptor; four P4 integration cases with a completed valid signed graph fail in actual broker freeze before authorization due to the partial stream selector. Duplicate complete descriptor refusal is already green. Initial P4 fixture also hit the defect during graph building; fixture corrected to build signed graph from selected publication only, then install the sibling on the real broker.",
+  "next": "Shared retained identity selector correction, full focused checks, two fresh final lenses.",
+  "deployment_eligible": false
+}

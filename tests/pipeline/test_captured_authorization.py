@@ -1903,3 +1903,32 @@ def test_invalid_request_refuses_before_fixture_lookup_and_any_effect(change):
     assert "missing admission" not in str(failure.value)
     assert (broker._receipt_audit(published), tuple(broker._session_events)) == before
     assert not broker._member_events
+
+
+@pytest.mark.parametrize("field", ["node", "output"])
+@pytest.mark.parametrize("selected", [0, 1])
+def test_p6_p4_authorizes_exact_publication_with_same_prefix_sibling(monkeypatch, field, selected):
+    graph_probe = True
+
+    def publish_selected(broker):
+        nonlocal graph_probe
+        labels = (("a" if selected == 0 else "b"),) if graph_probe else ("a", "b")
+        publications = f4._p6_identity_siblings(broker, field, labels)
+        target = 0 if graph_probe else selected
+        graph_probe = False
+        for index, (session, _, _, _) in enumerate(publications):
+            if index != target:
+                broker.end_session(session)
+        session, publication, _, _ = publications[target]
+        return session, publication, None
+
+    monkeypatch.setattr(f4, "_publish", publish_selected)
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, _ = _graph_live(graph, document, 1)
+    record, session = broker.authorize_capture_set(captures, graph.selected, **runtime)
+    audit = broker._p4_ledger._audit(record)
+    assert session is not None
+    assert len(audit["streams"]) == 1
+    publication = broker._receipt_audit(captures[0][0])[-1]
+    assert audit["streams"][0] == publication["stream_id"]
+    assert publication["producer_run_identity"] == "producer-" + ("a" if selected == 0 else "b")
