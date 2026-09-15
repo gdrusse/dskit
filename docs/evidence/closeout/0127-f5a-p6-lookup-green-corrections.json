@@ -8,7 +8,9 @@
     "13 new lookup/control tests pass in 1.85s",
     "Trust suite: 178 passed, 1 failed in 0.85s",
     "84 Packet6 tests passed in 2.25s after adding retained snapshot and P4 mid-operation mutation controls",
-    "Changed-file ruff and diff check pass"
+    "Changed-file ruff and diff check pass",
+    "Explicit private_plan_precedes_capture sentinel: 1 passed",
+    "Complete synthetic v1 encoded receipt SHA256 bced1f11fc2fffd0386149356a6dd6b604c4f325185055503ef998fccd39dbb9 matches previously verified unchanged-main0ec6671 baseline"
   ],
   "failure": "Existing test_sealed_prepared_setattr_cannot_move_consumed_cas requires original verified artifact to remain usable after sealed.prepared slot substitution. New validator incorrectly trusts that mutable pointer for original producer identity and refuses.",
   "correction_approach": "Retain original prepared object alongside sealed handle and original output path in the SAME existing authenticated publication record. Operational and diagnostic identity checks use original prepared reference, so changing sealed.prepared cannot move authority or break retained original consumption. No new writer or ledger.",
@@ -22,5 +24,6 @@
     "tests/pipeline/test_captured_authorization.py": "9f48aeef760375a52227bf0454949dfcaf2c6fc3",
     "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json": "954ca33f67e58e9341bfebd3ef9a8b67bab145b7"
   },
-  "full_focused": "pending"
+  "full_focused": "1528 passed in 64.41s on candidate7e2743b6a79942da62ed314df60576a1f7d4e727",
+  "unchanged_review_identities": "All recorded code/test/matrix blobs unchanged from7e2743b; evidence-only append"
 }
