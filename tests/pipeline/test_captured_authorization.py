@@ -1037,6 +1037,12 @@ def test_p4_complete_atomic_record_has_exact_signed_batch_and_one_session(replay
         assert len({f4._json_bytes(ref) for ref in basis["refs"]}) == len(basis["refs"])
         assert all(set(ref) == {"kind", "role", "schema", "sha256"} for ref in basis["refs"])
     decision = json.loads(audit["session"])
+    assert set(decision) == {"study_id", "execution_authority_ref", "logical_execution_id", "run_id", "consumer_document_sha256",
+        "broker_verified_plan_sha256", "captured_authorization_set_sha256", "process_measurement_sha256", "purpose",
+        "issued_at_ms", "expires_at_ms", "session_nonce"}
+    assert json.loads(audit["session_start"]) == {"event": "SessionStartRecord", "session": decision}
+    assert decision["purpose"] == cas["purpose"] and decision["issued_at_ms"] == 500 and decision["expires_at_ms"] == 1000
+    assert len(bytes.fromhex(decision["session_nonce"])) == 32
     assert all(decision[key] == expected for key, expected in identities.items())
     assert decision["consumer_document_sha256"] == cas["consumer_document_sha256"]
     assert decision["captured_authorization_set_sha256"] == captured_set["captured_authorization_set_sha256"]
@@ -1556,6 +1562,25 @@ def test_private_fault_schedule_never_executes_a_caller_object():
         broker.authorize_capture_set(captures, graph.selected, **runtime)
     assert not invoked
     _assert_graph_no_effect(broker, captures, before)
+
+
+def test_unrelated_v1_capture_stays_positive_but_cannot_reuse_p4_session_run():
+    _graph, broker, _captures, _runtime_value, _before, record, p4_session = _issue_complete()
+    published = f4._foreign_publish(broker)[0]
+    _document, frozen = f4._freeze(broker, published)
+    port = broker.derive_consumer_port(frozen)
+    before = (tuple(broker._session_events), tuple(broker._receipt_audit(published)), frozenset(broker._nonces))
+    runtime = {key: val for key, val in _runtime().items() if key != "transition_nonces"}
+    with pytest.raises((TypeError, ValueError)):
+        broker.capture(published, frozen, port, **runtime, transition_nonce="unrelated-nonce")
+    assert (tuple(broker._session_events), tuple(broker._receipt_audit(published)), frozenset(broker._nonces)) == before
+    captured, session = broker.capture(published, frozen, port, **dict(runtime, consumer_run_identity="unrelated-v1-consumer"),
+                                      transition_nonce="unrelated-nonce")
+    assert session is not p4_session
+    verified = broker.open_capture(session, captured)
+    assert verified.member("artifacts/bundle.json").read_bytes()
+    assert broker._p4_ledger._committed() == (record,)
+    assert len(broker._p4_ledger._legacy_captures()) == 1
 
 
 def _request():
