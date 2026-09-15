@@ -747,6 +747,85 @@ def test_complete_closure_refuses_each_single_trust_dependency_replacement(repla
     _assert_graph_no_effect(broker, captures, before)
 
 
+def _resign_exact(value, self_field):
+    """Re-sign deliberately changed metadata, independently of runtime helpers."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    value = copy.deepcopy(value)
+    value.pop(self_field)
+    value.pop("signature")
+    raw = f4._json_bytes(value)
+    seed = hashlib.sha256(("p4-fixed-test-key/" + value["issuer_role"] + "/" + value["key_usage"]).encode()).digest()
+    return dict(value, **{self_field: hashlib.sha256(raw).hexdigest(),
+                         "signature": Ed25519PrivateKey.from_private_bytes(seed).sign(raw).hex()})
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("change", [
+    "future", "expired", "not-yet-valid", "revocation", "key-version", "owner", "use",
+    "basis-duplicate", "basis-missing", "basis-extra", "basis-kind", "basis-unknown",
+])
+def test_resigned_complete_graph_cannot_bypass_trust_or_closed_basis_checks(replay, change, monkeypatch):
+    original = _local_signed
+
+    def changed(payload, self_field, role, usage):
+        value = original(payload, self_field, role, usage)
+        if change == "future":
+            value["issued_at_ms"] = 700
+        elif change == "expired":
+            value["expires_at_ms"] = 499
+        elif change == "not-yet-valid":
+            value["not_before_ms"], value["issued_at_ms"] = 501, 501
+        elif change == "revocation":
+            value["revocation_snapshot_sha256"] = "e" * 64
+        elif change == "key-version":
+            value["key"]["key_version"] = 2
+        elif change == "owner":
+            value["issuer_role"] = "untrusted-owner"
+        elif change == "use":
+            value["key_usage"] = "captured-authorization"
+        elif value["schema"] == "dskit.issuance-basis/v1":
+            if change == "basis-duplicate":
+                value["refs"].append(copy.deepcopy(value["refs"][0]))
+            elif change == "basis-missing":
+                value["refs"].pop()
+            elif change == "basis-extra":
+                value["refs"].append(_terminal_fact("fixed-owner-policy")["ref"])
+            elif change == "basis-kind":
+                value["kind"] = "captured-set"
+            elif change == "basis-unknown":
+                value["refs"][0]["schema"] = "dskit.unknown/v1"
+            value["refs"].sort(key=lambda ref: tuple(ref[key] for key in ("kind", "role", "schema", "sha256")))
+        return _resign_exact(value, self_field)
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["_local_signed"]), "_local_signed", changed)
+    graph, document = _complete_signed_graph(replay=replay)
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    with pytest.raises((TypeError, ValueError)) as failure:
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert "atomic issuance is unavailable" not in str(failure.value)
+    _assert_graph_no_effect(broker, captures, before)
+
+
+def test_resigned_replay_pea_authority_cannot_substitute_its_subject(monkeypatch):
+    original = _local_signed
+
+    def changed(payload, self_field, role, usage):
+        value = original(payload, self_field, role, usage)
+        if value["schema"] == "dskit.plan-evaluation-authorization/v1" and value["phase"] == "replay-pre-final":
+            value["authority_ref"]["replay_intent_sha256"] = "f" * 64
+            return _resign_exact(value, self_field)
+        return value
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["_local_signed"]), "_local_signed", changed)
+    graph, document = _complete_signed_graph(replay=True)
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    with pytest.raises((TypeError, ValueError)) as failure:
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert "atomic issuance is unavailable" not in str(failure.value)
+    _assert_graph_no_effect(broker, captures, before)
+
+
 def _factory():
     """Locate the approved factory with an explicit executable RED assertion."""
     factory = getattr(trust, "_development_p4_broker", None)
