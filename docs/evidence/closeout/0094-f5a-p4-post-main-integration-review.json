@@ -1,0 +1,55 @@
+{
+  "schema_version": "PostMainIntegrationReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "fresh post-main integration correctness/authority and tests/integration review",
+  "reviewer": {"model": "gpt-5.6-terra", "agent_task": "/root/f5a_p4_post_main_integration_review", "lens": "post-merge correctness/authority and integration cleanliness"},
+  "reviewed": {
+    "merge_commit": "9c0109f00515d0e6714028b73eb8d504cb58ff79",
+    "merge_tree": "10bf602000f18ac3fc1a41b3a953c8ca5c445f80",
+    "required_parents": ["b5ec57262ba53c7b47ee95639658a7a05f4c4048", "91029e477c0e9c4f8e4cc784f90a5d25a8065b5e"],
+    "candidate_commit": "f866eb0706bccc653265b971832f6165a001a96d",
+    "candidate_tree": "9bbd20986b1965635b9a93f7a7ad9c97d9e00257"
+  },
+  "topology_evidence": {
+    "branch": "integrate/f5a-p4-20260915",
+    "head_equals_required_merge": true,
+    "origin_main_equals_required_first_parent": true,
+    "merge_base_of_origin_main_and_wrapped_topic": "b5ec57262ba53c7b47ee95639658a7a05f4c4048",
+    "wrapped_topic_tree": "10bf602000f18ac3fc1a41b3a953c8ca5c445f80",
+    "merge_tree_equals_wrapped_topic_tree": true,
+    "wrapped_topic_to_merge_diff_paths": 0,
+    "worktree_clean_before_closeout": true,
+    "merge_resolution_drift_in_locked_paths": false
+  },
+  "locked_candidate_blobs": {
+    "dskit/pipeline/trust.py": "202a48885f93edadbe293dd1caed8845a4bef502",
+    "dskit/production/verifier.py": "c64c395e9cf3163350b90640090434d618cc76c2",
+    "tests/pipeline/test_captured_authorization.py": "7b12534fcab56bb545af9077d0aa7791d0f4a398",
+    "tests/pipeline/test_trust.py": "bfde7192ee114f7c72d282d524caaab4f896d285",
+    "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717",
+    "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+    "tests/production/test_captured_authorization.py": "f3117eec3bdb4085030cf19612debdf1f1175f5a"
+  },
+  "blob_evidence": {"all_seven_merge_blobs_equal_candidate": true, "candidate_to_merge_locked_path_diff_count": 0},
+  "prior_final_reviews": {
+    "0091": {"path": "docs/evidence/closeout/0091-f5a-p4-final-correctness-authority-review.json", "counts": {"critical": 0, "major": 0, "minor": 0, "nit": 0}, "approval": true},
+    "0092": {"path": "docs/evidence/closeout/0092-f5a-p4-final-tests-integration-review.json", "counts": {"critical": 0, "major": 0, "minor": 0, "nit": 0}, "approval": true},
+    "0093": {"path": "docs/evidence/closeout/0093-f5a-p4-review-exit.json", "reviewed_candidate": "f866eb0706bccc653265b971832f6165a001a96d", "integration_not_yet_claimed_by_exit": true}
+  },
+  "independent_review": {
+    "authority_assessment": "Targeted read confirmed the broker-only, exact-issued capability check; same-ledger atomic P4 commit/resolve; pre-boundary closure and request rechecks; single immutable-root publication; and exact verifier/driver facade dispatch. No post-merge alteration changes the reviewed candidate implementation or its locked affected tests.",
+    "findings": {"critical": 0, "major": 0, "minor": 0, "nit": 0}
+  },
+  "checks": [
+    {"command": "git rev-parse/head, show parents/tree, merge-base, status, and topic/merge diffs", "result": "required merge/parents/topology verified; clean worktree before evidence; topic tree equals merge tree"},
+    {"command": "git rev-parse <candidate:path> and <merge:path> for all seven locked blobs", "result": "all seven exact object IDs equal; zero locked-path diff"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py -k 'single_surface_substitution_during_reservation_or_precommit_is_empty or unknown_outcome or same_authority_lock'", "result": "41 passed, 872 deselected in 17.61s"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_purity.py tests/production/test_purity.py", "result": "530 passed in 14.11s"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py", "result": "All checks passed"},
+    {"command": "git diff --check b5ec57262ba53c7b47ee95639658a7a05f4c4048..9c0109f00515d0e6714028b73eb8d504cb58ff79; git show --check --format= f866eb0706bccc653265b971832f6165a001a96d", "result": "clean"}
+  ],
+  "reported_post_merge_focus": {"command": "full locked focused Packet 4 command", "result": "1,443 passed after merge (root-provided integration record); this reviewer independently reran bounded targeted checks above"},
+  "summary": {"critical": 0, "major": 0, "minor": 0, "nit": 0, "verdict": "clean-post-main-integration-packet4-only", "approval_to_push_integrated_tree_to_origin_main": true, "deployment_eligible": false, "whole_f5a_closed": false},
+  "limits": ["Packet 4 only; this authorizes pushing the reviewed integrated tree to origin/main, not deployment.", "No whole-F5a, F5A-R23, Packets 5-8, durable/restart/cross-process behavior, real data, replay, HPO, refit, training, backtest, paper/live, deploy, or environment/dependency claim is closed or authorized.", "ADR-0126 deferred coordinated multi-private-mutation boundary remains deferred."]
+}
