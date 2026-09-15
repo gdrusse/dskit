@@ -8994,10 +8994,11 @@ R42–R46 are deferred citing this ADR, not Major. F4 may ReviewExit at
 
 ## ADR-0127 — F3 captured-tape capture hierarchy and ReplayRun identity seam (P7 prerequisite)
 
-**Status:** proposed — awaiting owner approval. This docs-only proposal
-authorizes no implementation until approved and a fresh Phase 0 skeptic passes.
-It does not authorize real data, replay execution, training, HPO/refit, backtest,
-paper/live operation, or deployment.
+**Status:** accepted (2026-09-15; owner approved "Approve ADR-0127"). This
+authorizes synthetic TDD implementation of the captured-tape hierarchy and
+ReplayRun identity seam only; a fresh Phase 0 skeptic precedes RED. It does not
+authorize real data, replay execution, training, HPO/refit, backtest, paper/live
+operation, or deployment.
 
 **Context.** Packet7 enforces that a node resolved as the generic `ReplayRun`
 consumer in an execution `PipelineDocument` declares exactly two canonical
