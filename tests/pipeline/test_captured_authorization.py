@@ -1068,7 +1068,8 @@ def test_p4_record_and_session_cannot_be_copied_serialized_or_used_by_legacy(rep
 
 
 @pytest.mark.parametrize("replay", [False, True])
-@pytest.mark.parametrize("point", ["preflight", "prepared", "reserved", "verified", "commit-before", "commit-after", "return"])
+@pytest.mark.parametrize("point", ["preflight", "prepared", "reserved", "verified", "intern-before", "intern-after",
+                                  "commit-before", "commit-after", "return"])
 def test_p4_failure_is_empty_or_resolves_the_one_complete_committed_identity(replay, point):
     graph, document = _complete_signed_graph(replay=replay)
     broker, captures, runtime, before = _graph_live(graph, document, 1)
@@ -1314,6 +1315,200 @@ def test_legacy_capture_commits_receipt_session_and_claim_in_the_same_ledger(poi
     assert len([event for event in broker._session_events if event[0] == "start" and event[1] == "consumer-run"]) == 1
     assert [row["event"] for row in broker._receipt_audit(captures[0][0])].count("CAPTURED") == 1
     assert not broker._member_events
+
+
+def _check_committed_batch(graph, broker, runtime, audit, batch):
+    return trust._P4_VERIFY_BYTES(trust._P4_CONTRACT, f4._json_bytes(batch), broker._p4_resolver, graph.selected,
+        audit["streams"], {key: val for key, val in runtime.items() if key != "transition_nonces"}, runtime["transition_nonces"])
+
+
+def _batch_copy(audit):
+    value = {name: [json.loads(raw) for raw in audit[name]] for name in ("ports", "receipts", "bases")}
+    return dict(value, set=json.loads(audit["set"]), replay=None if audit["replay"] is None else json.loads(audit["replay"]))
+
+
+@pytest.mark.parametrize("change", ["domain", "stream", "publication-schema", "publication-digest", "missing", "extra", "noncanonical"])
+def test_genesis_preimage_is_exact_nonartifact_domain_separated_identity(committed_replay_batch, change):
+    graph, broker, _captures, runtime, _before, record, _session = committed_replay_batch
+    audit = broker._p4_ledger._audit(record)
+    batch = _batch_copy(audit)
+    receipt = batch["receipts"][0]
+    genesis = {"schema": "dskit.lifecycle-captured-receipt-genesis/v1", "stream_id": receipt["stream_id"],
+        "predecessor_publication_receipt_schema": receipt["predecessor_publication_receipt_schema"],
+        "predecessor_publication_receipt_sha256": receipt["predecessor_publication_receipt_sha256"]}
+    if change == "domain":
+        genesis["schema"] = "dskit.lifecycle-captured-receipt/v2"
+    elif change == "stream":
+        genesis["stream_id"] = batch["receipts"][1]["stream_id"]
+    elif change == "publication-schema":
+        genesis["predecessor_publication_receipt_schema"] = "dskit.lifecycle-receipt/v1"
+    elif change == "publication-digest":
+        genesis["predecessor_publication_receipt_sha256"] = batch["receipts"][1]["predecessor_publication_receipt_sha256"]
+    elif change == "missing":
+        genesis.pop("stream_id")
+    elif change == "extra":
+        genesis["sequence"] = 1
+    raw = json.dumps(genesis, indent=2).encode() if change == "noncanonical" else f4._json_bytes(genesis)
+    receipt["previous_lifecycle_captured_receipt_sha256"] = hashlib.sha256(raw).hexdigest()
+    receipt.update(_resign_exact(receipt, "lifecycle_captured_receipt_sha256"))
+    with pytest.raises((TypeError, ValueError)):
+        _check_committed_batch(graph, broker, runtime, audit, batch)
+    with pytest.raises((TypeError, ValueError)):
+        _factory()(fixture_facts={"artifacts": [{"ref": {"kind": "captured-receipt-genesis", "role": "security-broker",
+            "schema": "dskit.lifecycle-captured-receipt-genesis/v1", "sha256": hashlib.sha256(raw).hexdigest()}, "bytes": raw}]})
+
+
+@pytest.mark.parametrize("sequence", [True, False, 0, 2, -1, "1", 1.0, None])
+def test_genesis_first_sequence_is_exact_integer_one(committed_replay_batch, sequence):
+    graph, broker, _captures, runtime, _before, record, _session = committed_replay_batch
+    audit = broker._p4_ledger._audit(record)
+    batch = _batch_copy(audit)
+    batch["receipts"][0]["sequence"] = sequence
+    if type(sequence) is not float:
+        batch["receipts"][0].update(_resign_exact(batch["receipts"][0], "lifecycle_captured_receipt_sha256"))
+    with pytest.raises((TypeError, ValueError)):
+        _check_committed_batch(graph, broker, runtime, audit, batch)
+
+
+@pytest.mark.parametrize("kind", ["captured-port", "captured-receipt", "captured-set", "replay-capture-evidence"])
+@pytest.mark.parametrize("change", ["missing", "extra", "kind", "study", "ref-kind", "ref-role", "ref-schema", "ref-digest",
+                                  "duplicate", "order", "missing-ref", "self", "signature", "revocation", "time", "use"])
+def test_emitted_basis_exact_fields_and_refs_are_independently_bound(committed_replay_batch, kind, change):
+    graph, broker, _captures, runtime, _before, record, _session = committed_replay_batch
+    audit = broker._p4_ledger._audit(record)
+    batch = _batch_copy(audit)
+    basis = next(item for item in batch["bases"] if item["kind"] == kind)
+    assert set(basis) == {"schema", "kind", "study_id", "refs", "issuance_basis_sha256", *_SIGNED_FIELDS}
+    if change == "missing":
+        basis.pop("kind")
+    elif change == "extra":
+        basis["unknown"] = "field"
+    elif change in ("kind", "study"):
+        basis["kind" if change == "kind" else "study_id"] = "substituted"
+    elif change.startswith("ref-"):
+        field = change.removeprefix("ref-")
+        basis["refs"][0]["sha256" if field == "digest" else field] = "d" * 64 if field == "digest" else "unknown"
+    elif change == "duplicate":
+        basis["refs"].append(dict(basis["refs"][0]))
+    elif change == "order":
+        basis["refs"].reverse()
+    elif change == "missing-ref":
+        basis["refs"].pop()
+    elif change == "self":
+        basis["issuance_basis_sha256"] = "d" * 64
+    elif change == "signature":
+        basis["signature"] = "ab" * 64
+    elif change == "revocation":
+        basis["revocation_snapshot_sha256"] = "d" * 64
+    elif change == "time":
+        basis["issued_at_ms"] = 501
+    else:
+        basis["key_usage"] = "historical-study-plan"
+    if change not in ("self", "signature", "use"):
+        basis.update(_resign_exact(basis, "issuance_basis_sha256"))
+    with pytest.raises((TypeError, ValueError)):
+        _check_committed_batch(graph, broker, runtime, audit, batch)
+    assert broker._p4_ledger._audit(record) == audit
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("different_run", [False, True])
+def test_two_valid_admissions_with_different_keys_racing_one_live_identity_have_one_winner(replay, different_run):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    graph, document = _complete_signed_graph(replay=replay)
+    original = next(value for value in graph.values.values() if value.get("schema") == graph.selected["schema"] and
+        value.get("action_execution_admission_sha256", value.get("final_replay_admission_sha256")) == graph.selected["sha256"])
+    self_field = "final_replay_admission_sha256" if replay else "action_execution_admission_sha256"
+    altered = dict(original, issued_at_ms=101)
+    if different_run:
+        altered["run_id"] = "another-consumer-run"
+        altered["logical_execution_id"] = "another-logical-id"
+    altered = _resign_exact(altered, self_field)
+    alternate = dict(graph.selected, sha256=altered[self_field])
+    graph.facts["artifacts"].append({"ref": alternate, "bytes": f4._json_bytes(altered)})
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    requests = [runtime, dict(runtime, consumer_run_identity=altered["run_id"], transition_nonces=("alternate-nonce",))]
+    refs = [graph.selected, alternate]
+    # Both contenders independently close before racing; neither is a merely
+    # malformed loser masquerading as a concurrency test.
+    for ref, request in zip(refs, requests):
+        assert broker._p4_resolver.close_admission(broker._p4_resolver.snapshot(), ref,
+            (broker, captures, {key: value for key, value in request.items() if key != "transition_nonces"})) is None
+    barrier = Barrier(2)
+
+    def contender(index):
+        barrier.wait(timeout=5)
+        try:
+            return broker.authorize_capture_set(captures, refs[index], **requests[index])
+        except (TypeError, ValueError):
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(contender, range(2)))
+    assert sum(result is not None for result in results) == 1
+    assert len(broker._p4_ledger._committed()) == 1
+    _assert_graph_no_effect(broker, captures, before)
+
+
+def test_legacy_receipt_writer_cannot_append_a_capture_behind_a_committed_p4_stream():
+    _graph, broker, captures, _runtime_value, before, _record, _session = _issue_complete()
+    stream = broker._stream_for_published(captures[0][0], "test")
+    producer_session = next(iter(broker._sessions.values()))
+    with pytest.raises((TypeError, ValueError)):
+        broker._append_receipt(broker._stream_pin[stream], "CAPTURED", producer_session, "private-v1-bypass",
+                               {"consumer_captured_port": captures[0][2]})
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("slot", ["_kind", "_run_identity", "_ended", "_plan_sha256", "_runtime", "_stream_id", "_locked"])
+def test_resolve_refuses_each_single_private_session_slot_substitution(slot):
+    graph, broker, captures, runtime, before, record, session = _issue_complete()
+    audit = broker._p4_ledger._audit(record)
+    object.__setattr__(session, slot, {"forged": "session"} if slot == "_runtime" else "forged")
+    with pytest.raises((TypeError, ValueError)):
+        broker._p4_ledger.resolve_p4(audit["execution_key"], graph.selected)
+    with pytest.raises((TypeError, ValueError)):
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert len(broker._p4_ledger._committed()) == 1
+    _assert_graph_no_effect(broker, captures, before)
+
+
+def test_post_return_audit_and_input_aliases_cannot_change_or_remint_the_committed_batch():
+    graph, broker, captures, runtime, before, record, session = _issue_complete(count=2)
+    ledger = broker._p4_ledger
+    audit = ledger._audit(record)
+    original = copy.deepcopy(audit)
+    audit["admission_ref"]["sha256"] = "f" * 64
+    audit["ports"] = ()
+    audit["session"] = b"{}"
+    assert ledger._audit(record) == original
+    alias = broker
+    assert alias.authorize_capture_set(captures, dict(graph.selected), **dict(runtime)) == (record, session)
+    captures[0][2]["consumer_input"] = "mutated"
+    with pytest.raises((TypeError, ValueError)):
+        alias.authorize_capture_set(captures, graph.selected, **runtime)
+    assert ledger.resolve_p4(original["execution_key"], graph.selected) == (record, session)
+    assert ledger._audit(record) == original
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("change", ["missing", "duplicate", "swapped"])
+@pytest.mark.parametrize("slot", ["ports", "receipts", "entries", "issued_ports"])
+def test_complete_batch_arrays_reject_omission_duplication_and_cross_pce_order(committed_replay_batch, slot, change):
+    graph, broker, _captures, runtime, _before, record, _session = committed_replay_batch
+    audit = broker._p4_ledger._audit(record)
+    batch = _batch_copy(audit)
+    values = batch["set"][slot] if slot == "entries" else batch["replay"][slot] if slot == "issued_ports" else batch[slot]
+    if change == "missing":
+        values.pop()
+    elif change == "duplicate":
+        values[1] = copy.deepcopy(values[0])
+    else:
+        values.reverse()
+    with pytest.raises((TypeError, ValueError)):
+        _check_committed_batch(graph, broker, runtime, audit, batch)
 
 
 def _request():
