@@ -1583,6 +1583,26 @@ def test_unrelated_v1_capture_stays_positive_but_cannot_reuse_p4_session_run():
     assert len(broker._p4_ledger._legacy_captures()) == 1
 
 
+@pytest.mark.parametrize("key", [None, [], "execution", ("study", b"{}", "logical", "run"), ("study", "not-bytes", "logical", "run")])
+def test_unknown_outcome_resolution_accepts_only_an_exact_canonical_execution_key(key):
+    graph, broker, captures, _runtime_value, before, record, _session = _issue_complete()
+    with pytest.raises((TypeError, ValueError)):
+        broker._p4_ledger.resolve_p4(key, graph.selected)
+    assert broker._p4_ledger._committed() == (record,)
+    _assert_graph_no_effect(broker, captures, before)
+
+
+def test_failed_missing_admission_request_can_retry_the_same_held_valid_snapshot():
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    with pytest.raises((TypeError, ValueError)):
+        broker.authorize_capture_set(captures, dict(graph.selected, sha256="e" * 64), **runtime)
+    assert not broker._p4_ledger._committed()
+    _assert_graph_no_effect(broker, captures, before)
+    record, session = broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert broker.authorize_capture_set(captures, graph.selected, **runtime) == (record, session)
+
+
 def _request():
     """Return a syntactically valid reference to an unavailable admission."""
     return {
