@@ -1,0 +1,16 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6-descriptor-receipt-equality-restart-linkage",
+  "matrix": "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json",
+  "reviewer": {"model": "deepseek-v4-pro (owner override 2026-09-15)", "agent_task": "ses_f598d77e1ffepQ4Wp2IbVnQVM4", "lens": "fresh Phase 0 re-review (round 2)"},
+  "verdict": "not-clean",
+  "critical": 0,
+  "major": 1,
+  "minor": 0,
+  "conclusion": "Prior three majors + four minors correctly corrected; one remaining major: freeze_consumer_document does not bind descriptor purpose to the published descriptor, so an equal-root/snapshot/document/node/output-but-different-purpose substitution is admitted through the v1 lifecycle.",
+  "findings": [
+    {"id": "P6-RR-001", "severity": "major", "summary": "freeze_consumer_document (trust.py:1217) checks purpose only against the caller-controlled descriptor, and the published-equality block (1220-1229) omits purpose; a purpose substitution is never refused in the v1 freeze/capture/consume path.", "disposition": "UNRESOLVED at wrap. Fix for RED/GREEN: add descriptor-purpose vs published-purpose equality in freeze_consumer_document, and add an equal-everything-but-purpose case to equal_looking_different_binding. This is a real defect the RED will pin."}
+  ],
+  "next_gate": "Apply the P6-RR-001 matrix correction (record purpose binding + case), then a fresh DeepSeek skeptic re-review, then RED."
+}

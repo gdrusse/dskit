@@ -1,5 +1,37 @@
 # Re-entry
 
+## Current wrap: Packet 5 closed; Packet 6 Phase 0 in progress (2026-09-15)
+
+Branch `codex/f5a-remainder-p6` (from `origin/main@0ec6671`, which already
+contains Packet 5). Preserved `origin/cursor/r5-f5a-private-plan-0f39@c489199`.
+
+**Packet 5 DONE** (merged to main `0ec6671`, branch purged, remote verified).
+`dskit/pipeline/document.py` freezes the ADR-0123 `$captured_artifact`
+descriptor grammar via a full-document positional sweep; 37 tests in
+`tests/pipeline/test_captured_artifact_grammar.py`; two clean DeepSeek lenses
+(`0110` review exit). Focused suite 1855 passed; sentinel green.
+
+**Packet 6 in progress (Phase 0, not yet RED).** Matrix `0111` (equality/
+restart linkage) went through two skeptic rounds (`0112` round 1: 3 major+4
+minor all corrected; `0113` round 2). ONE remaining Major to apply before RED:
+
+- **P6-RR-001 (unresolved):** `freeze_consumer_document` (trust.py:1217) checks
+  purpose only against the caller-controlled descriptor; the published-equality
+  block (trust.py:1220-1229) omits purpose, so an equal-root/snapshot/document/
+  node/output-but-different-purpose substitution is admitted through the v1
+  lifecycle. **Fix:** add `descriptor.get("purpose") == published.descriptor["purpose"]`
+  to `freeze_consumer_document` right after the published lookup, and add an
+  "equal-everything-but-purpose" case to `equal_looking_different_binding`.
+
+Next session: (1) patch matrix `0111` to record the purpose binding + case;
+(2) fresh DeepSeek Phase 0 skeptic; (3) RED (purpose-substitution + the full
+substitution families) → GREEN; (4) two fresh DeepSeek final lenses; (5)
+merge/push/purge/wrap. Then Packets 7 (replay-tape descriptors) and 8
+(ChainLedger consume-once, closes F5A-R23; owner decision `0100` = ChainLedger).
+
+Reviewers: DeepSeek (owner override). No whole-F5a/F3/F5b claim yet;
+`deployment_eligible=false`.
+
 ## Current wrap: F5a Packet 5 closed (captured-artifact grammar) (2026-09-15)
 
 Branch `codex/f5a-remainder-20260915` (from `origin/main@1fc290f`). Preserved
