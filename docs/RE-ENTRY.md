@@ -1,6 +1,6 @@
 # Re-entry
 
-## Current checkpoint: Packet 6 exact-publication candidate under final review (2026-09-15)
+## Current checkpoint: Packet 6 final v1 effect Phase 0 (2026-09-15)
 
 Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
 `codex/f5a-remainder-p6`; main remains Packet 5 `0ec6671`. Dirty main checkout
@@ -9,7 +9,7 @@ untouched; preserved source remains `c489199`. All work uses WSL2 and
 Owner authorized Terra (`gpt-5.6-terra`) independent reviewers; GPT-6 implements.
 At most one reviewer is active, and final lenses are fresh and sequential.
 
-**Frozen candidate `7e2743b6a79942da62ed314df60576a1f7d4e727`.** Packet 6 now
+**Stopped candidate `7e2743b6a79942da62ed314df60576a1f7d4e727`.** Packet 6 now
 binds publication purpose and all descriptor fields to retained receipt/stream
 identity, retains original frozen ports and the verified member/port/artifact
 graph, and checks original output-member identity. Repeated lookup defects
@@ -27,13 +27,21 @@ checks. **1528 focused tests pass (64.41s)**; explicit private-plan sentinel,
 changed-file Ruff, diff check, and full v1 receipt-byte baseline comparison pass.
 Code/test/matrix identities remain frozen across evidence-only appends.
 
-Fresh correctness reviewer `/root/p6_lookup_final_correctness_terra` is running
-on `7e2743b`; tests/integration lens has NOT run on this candidate. Next unused
-evidence number: **0128**. Record that verdict; stop/return to Phase0 if a
-boundary-invalidating finding emerges, otherwise obtain the second fresh lens
-on the same candidate before batching any material corrections. Merge only
-with two clean completed final lenses and the required lock/evidence. Then
-fetch/merge --no-ff/push/verify/purge/wrap and continue Packets 7 and 8.
+Fresh correctness reviewer `/root/p6_lookup_final_correctness_terra` found
+one Major in `0128`: after bindings creation, mutating publication/frozen/original
+output-member identity still permits CONSUMED. This is the third failed final
+candidate and repeats a family. The independent convergence checkpoint requires
+one shared v1 effect-boundary validator across final CAPTURED publication,
+provider/member delivery, bindings creation and CONSUMED append, using retained
+facts and stage-appropriate session/head checks. P4 final checks stay intact;
+post-CONSUMED reads stay retained-only without exposed-store recovery.
+
+Revised matrix candidate `aac2a25b4db7329abe6a8c0b02088a73bd0c718c` is under
+fresh Phase0 review by `/root/p6_final_effect_phase0_terra`. **No new runtime
+patch or RED for this correction yet.** Next unused evidence: **0129**. Retain
+fresh design verdict, resolve Critical/Major, then batch stage-gap RED/GREEN
+before two new final lenses. No tests/integration final lens has completed on
+any current successor, and no Packet 6 merge is authorized by its gate yet.
 
 Packet 7 and Packet 8/F5A-R23 remain open; no whole-F5a/F3/F5b or deployment
 closure. Packet 8 owner `0100` already chose the existing on-disk
