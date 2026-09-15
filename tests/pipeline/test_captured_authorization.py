@@ -1511,6 +1511,53 @@ def test_complete_batch_arrays_reject_omission_duplication_and_cross_pce_order(c
         _check_committed_batch(graph, broker, runtime, audit, batch)
 
 
+@pytest.mark.parametrize("route", ["member", "read_bytes", "read_text", "require"])
+def test_legacy_member_and_require_entire_operation_uses_authority_lock(route):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    broker, _published, _document, frozen, _captured, session, verified = f4._captured_flow()
+    member = verified.member("artifacts/bundle.json")
+    bindings = broker.captured_bindings(session, frozen, verified, "consume", "locked-consume")
+    operation = (lambda: verified.member("artifacts/bundle.json")) if route == "member" else (
+        lambda: bindings.require("bundle")) if route == "require" else getattr(member, route)
+    started, done = Event(), Event()
+
+    def contender():
+        started.set()
+        try:
+            return operation()
+        finally:
+            done.set()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with broker._p4_ledger._lock:
+            future = pool.submit(contender)
+            assert started.wait(timeout=5)
+            # Event wait yields the GIL and establishes a controlled blocked
+            # interval; require must not burn _used before acquiring the lock.
+            assert not done.wait(timeout=0.05)
+            assert not bindings._used and not member._read
+        assert future.result(timeout=5) is not None
+
+
+def test_private_fault_schedule_never_executes_a_caller_object():
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    invoked = []
+
+    class Impostor:
+        def __eq__(self, _other):
+            invoked.append(True)
+            return False
+
+    broker._p4_ledger._test_fault = Impostor()
+    with pytest.raises((TypeError, ValueError)):
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert not invoked
+    _assert_graph_no_effect(broker, captures, before)
+
+
 def _request():
     """Return a syntactically valid reference to an unavailable admission."""
     return {
