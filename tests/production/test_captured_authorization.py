@@ -1,13 +1,50 @@
 """P4 method gating must preserve both existing v1 capture facades."""
 
 import inspect
+import subprocess
+import sys
 
 import pytest
 
 from dskit.production import verifier as verifier_module
+from dskit.pipeline import trust
 from tests.pipeline import test_trust as f4
 from tests.production import test_capture_lifecycle as legacy
 from tests.pipeline import test_captured_authorization as p4
+
+
+@pytest.mark.parametrize("name", [
+    "HistoricalStudyEnvelopePreflight", "HistoricalStudyRevocations",
+    "NonAuthorizingAdr0125StructuralSignaturePreflight",
+])
+def test_packet3_shared_validator_is_the_same_public_class_at_both_imports(name):
+    shared = getattr(trust, name, None)
+    assert shared is not None, "Packet 3 shared validator relocation is missing"
+    assert shared is getattr(verifier_module, name)
+    assert name in trust.__all__ and name in verifier_module.__all__
+
+
+def test_packet3_shared_validator_keeps_signatures_and_pipeline_import_direction():
+    shared = getattr(trust, "HistoricalStudyEnvelopePreflight", None)
+    assert shared is not None, "Packet 3 shared validator relocation is missing"
+    assert tuple(inspect.signature(shared.__init__).parameters) == (
+        "self", "keyring", "clock", "revocations",
+    )
+    assert tuple(inspect.signature(shared.verify).parameters) == (
+        "self", "root_pis_bytes", "phase_pis_bytes", "scope_intent_bytes",
+        "action_intent_set_bytes", "edge_set_bytes", "replay_intent_set_bytes",
+        "ces_bytes", "pea_bytes", "bvp_bytes", "cas_bytes",
+        "selected_admission_bytes",
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import sys; from dskit.pipeline.trust import HistoricalStudyEnvelopePreflight; "
+            "assert not any(name == 'dskit.production' or "
+            "name.startswith('dskit.production.') for name in sys.modules)"
+        )],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("facade", ["verifier", "driver"])
