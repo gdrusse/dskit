@@ -1,0 +1,81 @@
+{
+  "schema_version": "F5aPacket3MajorCorrection.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "finding": {
+    "id": "F5A-P3-0059-M01",
+    "severity": "Major",
+    "invariant": "Every selected ActionIntent or ReplayIntent required_input_contract has a C15 or C22 disposition.",
+    "prior_failure": "A selected ReplayIntent predecessor-output contract with empty CES/CAS was accepted because ReplayIntent has no predecessor refs or edges and only ActionIntent contracts entered C15 traversal.",
+    "correction": "replay-pre-final now refuses before success if the selected ReplayIntent contains a predecessor-output contract. ActionIntent C15 ref/edge/producer-output closure and replay C22 published-input CES bijection are unchanged."
+  },
+  "contract_evidence": {
+    "matrix_0053_sha256": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85",
+    "matrix_require_input_contract_audit": "Every selected ActionIntent or ReplayIntent occurrence is exhaustive: predecessor-output is C15 with no CES; published-input is C22 CES bijection.",
+    "c15": "one-to-one ref/contract/edge with producer OutputContract equality",
+    "c22": "selected published-input contracts and CES entries are a source-kind-correct bijection",
+    "review_0058_sha256": "bedd5f1acf5f4faf7a9d6a4c90a5a898b48c27cdd77e11feb435fb4349c77c3c",
+    "review_0059_sha256": "619f35a023e707fdc5cfb1bcd7cded400ba0d8265d7cf4e77542009feb2a0e2c"
+  },
+  "identity": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "base_tree": "5a82e041cc5c0c449130eff165121f259d1226e9",
+    "prior_candidate_commit": "de22ccae7c695522b4f6406a08243fe4d3264d79",
+    "prior_candidate_tree": "0052ce8ba67ff21402aecd4b3a374a767482b6e5",
+    "current_uncommitted_blobs": {
+      "dskit/production/verifier.py": {
+        "git_blob": "6d202b325ac601816284908980d392baecb9d54d",
+        "sha256": "c02628305d7d0403213e077e6107f745c5bb09e2c3494846a517b05a7f440719"
+      },
+      "tests/production/test_adr0125_preflight.py": {
+        "git_blob": "1b0271dfcfa156342d7a7b1b4135544e93138625",
+        "sha256": "d0f197eb6a0687db72479174fcedc2fc53cc87063000a92337a5ff906b576715"
+      }
+    },
+    "commit_status": "No commit created by instruction."
+  },
+  "tdd": {
+    "red": {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py -k replay_predecessor_output_without_ces",
+      "interpreter": "Python 3.12.3",
+      "result": "1 failed, 33 deselected in 0.11s; Failed: DID NOT RAISE ValueError"
+    },
+    "regression": "test_preflight_refuses_rehashed_resigned_replay_predecessor_output_without_ces constructs replay-pre-final with the selected control ReplayIntent changed to predecessor-output and CES/CAS entries empty. The helper rehashes ReplayIntent, ReplayIntentSet, Scope, CES, PEA, BVP, CAS, and FinalReplayAdmission and resigns every signed envelope."
+  },
+  "checks": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py -k replay_predecessor_output_without_ces",
+      "interpreter": "Python 3.12.3",
+      "result": "1 passed, 33 deselected in 0.10s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py",
+      "interpreter": "Python 3.12.3",
+      "result": "167 passed in 6.84s"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py tests/production/test_adr0125_preflight.py",
+      "result": "All checks passed!"
+    },
+    {
+      "command": "python3 -m json.tool docs/evidence/closeout/0060-f5a-p3-replay-contract-major-correction.json",
+      "result": "exit code 0; stdout empty when redirected to /dev/null"
+    },
+    {
+      "command": "git diff --check",
+      "result": "exit code 0; stdout empty"
+    }
+  ],
+  "preserved_no_effect_boundary": "Only verifier preflight refusal logic and its synthetic test changed. No trust.py, capture, lifecycle, resolver, session, WORM, admission consumption, member/provider open, import, construction, execution, or real-data authority route changed or is invoked; success remains opaque and deployment_eligible=false.",
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend",
+    "Packets 4/6/8",
+    "whole F5a",
+    "full issuance-basis and BVP/PCE verification",
+    "no trust.py edit",
+    "no capture/lifecycle effect",
+    "no F3/F5b unblock"
+  ],
+  "next_gate": "Freeze a candidate and restart both fresh final review lenses; this correction does not authorize deployment or close whole F5a."
+}

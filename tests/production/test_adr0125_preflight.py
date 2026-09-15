@@ -736,6 +736,19 @@ def test_preflight_refuses_rehashed_resigned_dangling_predecessor_ref():
         preflight.verify(*_build_tuple(dangling_predecessor_ref=True))
 
 
+def test_preflight_refuses_rehashed_resigned_replay_predecessor_output_without_ces():
+    preflight, _keyring, _clock, _revocations = _preflight()
+
+    with pytest.raises(ValueError):
+        preflight.verify(
+            *_build_tuple(
+                "replay-pre-final",
+                contract_kind="predecessor-output",
+                omit_ces=True,
+            )
+        )
+
+
 def test_preflight_refuses_extra_or_missing_position_and_untrusted_dependencies():
     values = _build_tuple()
     preflight, _keyring, _clock, _revocation_spy = _preflight()

@@ -1506,6 +1506,14 @@ class HistoricalStudyEnvelopePreflight:
             == phase_pis["published_input_set_sha256"]
         )
 
+        if profile == "replay-pre-final":
+            _hs_refuse(
+                all(
+                    contract["source_kind"] != "predecessor-output"
+                    for contract in selected["required_input_contracts"]
+                )
+            )
+
         HistoricalStudyEnvelopePreflight._validate_graph(
             scope, values["edges"], root_pis
         )

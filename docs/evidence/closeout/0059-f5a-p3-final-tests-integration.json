@@ -1,0 +1,44 @@
+{
+  "schema_version": "FinalTestsIntegrationReview.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "reviewer": {"agent_task": "/root/f5a_p3_final_tests_integration", "lens": "second fresh sequential final test-quality/integration"},
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "base_tree": "5a82e041cc5c0c449130eff165121f259d1226e9",
+    "candidate_commit": "de22ccae7c695522b4f6406a08243fe4d3264d79",
+    "candidate_tree": "0052ce8ba67ff21402aecd4b3a374a767482b6e5",
+    "candidate_blobs": {"dskit/production/verifier.py": "162f7a117167ef31eda2c54545f8633d83ab4af0", "tests/production/test_adr0125_preflight.py": "3578341d5d74c09974a9c24850c1ac56c7bdec43", "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844"},
+    "candidate_only": true,
+    "worktree_evidence_ignored_as_candidate_code": ["docs/evidence/closeout/0058-f5a-p3-final-correctness-authority-v2.json"]
+  },
+  "contract_evidence_sha256": {"adr_0125_lines_8317_8952": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930", "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae", "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c", "matrix_0053": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85", "phase0_0054": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9", "red_green_0055": "0b24887208958a727ee7ea9a3f3f8f101e8e17d5ffbe570e0d7039a9d80edac", "prior_final_0056": "b85fbaf36b16be728280c930fb34102edeec76b21e2c0a89bafb2f35ce7c0df4", "c15_correction_0057": "018229a3b9fbb9d247d15c34535ccc321e29f9189dc2af4994d12349d6317951", "fresh_authority_approval_0058": "bedd5f1acf5f4faf7a9d6a4c90a5a898b48c27cdd77e11feb435fb4349c77c3c"},
+  "scope_reviewed": ["complete 390dc851..de22cca code/test diff", "ADR-0125 lines 8317-8952; Packet 3 and master plan", "0053 matrix, 0054 Phase 0, 0055 RED/GREEN, 0056 failed review, 0057 correction, 0058 fresh approval", "parser/schema/suffix/trust/profile/C01-C24/no-effect/import/export/Packet-2/F4 boundaries"],
+  "findings": [{
+    "id": "F5A-P3-0059-M01",
+    "severity": "Major",
+    "invariant": "0053 required-input disposition audit requires every selected ReplayIntent predecessor-output contract to participate in C15 exact ref/edge/producer-output closure and to have no CES entry.",
+    "locations": ["dskit/production/verifier.py:1509-1517", "dskit/production/verifier.py:1532-1637", "tests/production/test_adr0125_preflight.py:233-269", "tests/production/test_adr0125_preflight.py:712-730"],
+    "worked_counterexample": "From a valid replay-pre-final tuple, change selected control ReplayIntent.required_input_contracts[0].source_kind to predecessor-output; recompute ReplayIntent, ReplayIntentSet, Scope, all subject-bearing signed envelopes and FinalReplayAdmission; use empty CES/CAS entries, as C22 requires for predecessor-output. Candidate accepts it. ReplayIntent supplies no refs/edges, and _validate_graph only traverses Scope.action_intents, so C15 never disposes of this selected contract.",
+    "observed_result": "replay predecessor-output accepted: NonAuthorizingAdr0125StructuralSignaturePreflight False",
+    "test_quality_failure": "The committed contract_kind mutation retains a CES entry derived from the changed contract; it fails C22 CES-vs-published-input comparison, not replay C15. It never makes the correctly empty-CES replay case, sharing the missing implementation condition instead of independently proving it.",
+    "consequence": "An invalid selected replay required-input contract passes the required C15/C22 structural preflight; this is a material closed-DAG/input-adjacency acceptance failure.",
+    "disposition": "open: reject selected replay predecessor-output without a supplied complete C15 representation, add the rehashed/resigned empty-CES regression, freeze a new candidate, then restart both final lenses."
+  }],
+  "test_assessment": {
+    "valid_profiles": "Committed successes cover all three profile labels but select only root action/control replay. A separate rehashed/resigned nonroot scope-action tuple accepted; no observed valid-profile false reject, but no committed direct test.",
+    "matrix_independence": "M01 proves the suite does not independently cover every selected required-input occurrence; its aggregate substitutions are not one mutation family per 0053 future_red_rows category.",
+    "integration": "Candidate uses only public ReleaseKeyring/TrustedClock; verifier.__all__ exposes the new module surface; production package remains curated ProductionError-only. No changed capture/lifecycle/resolver/WORM/session/execution/trust.py route was observed. Focused Packet-2/F4/trust/purity checks pass, but do not cure M01."
+  },
+  "commands": [
+    {"command": "git rev-parse de22cca^{commit} de22cca^{tree} 390dc851^{commit} 390dc851^{tree}; git ls-tree de22cca dskit/production/verifier.py tests/production/test_adr0125_preflight.py dskit/pipeline/trust.py", "result": "exact commit/tree/blob identities recorded"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py", "interpreter": "Python 3.12.3", "result": "166 passed in 7.36s"},
+    {"command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py tests/production/test_adr0125_preflight.py", "result": "All checks passed"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python - (read-only fully rehashed/resigned selected replay predecessor-output mutation with empty CES/CAS)", "interpreter": "Python 3.12.3", "result": "candidate accepted invalid tuple (M01)"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python - (read-only rehashed/resigned valid nonroot scope-action mutation)", "interpreter": "Python 3.12.3", "result": "accepted opaque no-effect result"},
+    {"command": "git diff --check 390dc851 de22cca", "result": "pass"}
+  ],
+  "summary": {"critical": 0, "major": 1, "minor": 0, "nit": 0, "verdict": "not approved", "approval": false, "deployment_eligible": false},
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "full issuance-basis and BVP/PCE verification", "no trust.py edit", "no capture/lifecycle effect", "no F3/F5b unblock"],
+  "next_gate": "Correct M01 with direct replay predecessor-output refusal coverage, freeze a new immutable candidate, and restart the two sequential fresh final reviews."
+}

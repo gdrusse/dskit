@@ -1,0 +1,82 @@
+{
+  "schema_version": "FinalCorrectnessAuthorityReview.v2",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "reviewer": {
+    "agent_task": "/root/f5a_p3_final_correctness_authority_v2",
+    "lens": "fresh final correctness/authority after C15 correction"
+  },
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "candidate_commit": "de22ccae7c695522b4f6406a08243fe4d3264d79",
+    "candidate_tree": "0052ce8ba67ff21402aecd4b3a374a767482b6e5",
+    "candidate_blobs": {
+      "dskit/production/verifier.py": "162f7a117167ef31eda2c54545f8633d83ab4af0",
+      "tests/production/test_adr0125_preflight.py": "3578341d5d74c09974a9c24850c1ac56c7bdec43",
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844"
+    }
+  },
+  "contract_evidence": {
+    "adr_0125_lines_8317_8952_sha256": "ba90a3e6e9945288c272ec4cf02612007fbeb2de0c6a37fb705886e1f7f58930",
+    "matrix_0053_sha256": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85",
+    "phase0_0054_sha256": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9",
+    "prior_final_0056_sha256": "b85fbaf36b16be728280c930fb34102edeec76b21e2c0a89bafb2f35ce7c0df4",
+    "correction_0057_sha256": "018229a3b9fbb9d247d15c34535ccc321e29f9189dc2af4994d12349d6317951"
+  },
+  "scope_and_authority": {
+    "diff_reviewed": "Complete 390dc851..de22cca diff, including all new preflight parser/schema/signature code and tests; de22cca additionally changes only the C15 reverse traversal and its regression from d0ac79d.",
+    "dependency_identity": "The candidate imports only public ReleaseKeyring and TrustedClock from trust.py. The frozen trust.py blob is unchanged; revocation is a local abstract collaborator with fail-closed bool-only results.",
+    "opacity": "Success is a slot-only, non-callable, non-copyable, non-serializable object exposing only deployment_eligible=false. Direct construction refuses. In-process object construction remains outside the stated external-authority boundary.",
+    "no_effect_boundary": "No candidate route invokes or changes capture, lifecycle, resolver, session, WORM, admission consumption, member/provider open, import, construction, execution, or real-data authority. The preflight only parses supplied exact bytes and calls its public keyring, clock, and revocation collaborators."
+  },
+  "assessment": {
+    "parser_schema_signature_time_revocation": "Clean. Exact bytes and canonical UTF-8 JSON are required; duplicate keys/constants/noncanonical values and closed-shape deviations refuse. Named self/signing preimages omit only the specified fields. Role/use, Ed25519 literal, one trusted-clock read, inclusive validity, public keyring verification, and bool-only fail-closed revocation checks match 0053's bounded preflight contract.",
+    "C01_C24": "Clean. C01-C24 were traced against 0053. C15 now closes all three directions: each predecessor-output contract selects one edge/ref/producer output; each ref selects one edge, one contract, and matching producer output; each edge selects one contract/ref. The correction refuses the formerly accepted rehashed/resigned dangling ref. Other closure directions reject extra/missing/duplicate/grafted action IDs, refs, edges, contracts, CES entries, PCEs, or digest links. L02/L03 external targets remain syntax-only exactly as the matrix requires.",
+    "profiles_and_non_grafts": "Clean. Bootstrap byte-equality is limited to bootstrap; scope-action and replay-pre-final retain intentionally distinct phase PIS bytes. Subject selection is unique and profile/tag/admission constrained. No nonexistent BVP payload/PCE or external basis/receipt/source_ref comparison was invented."
+  },
+  "correction_reproduction": {
+    "prior_defect": "F5A-P3-0056-M01: a fully rehashed/resigned extra predecessor_output_ref without an edge or predecessor-output InputContract was accepted by d0ac79d.",
+    "candidate_result": "The retained synthetic mutation test now raises ValueError. Code review confirms the reverse ref traversal requires exactly one matching edge, exactly one matching predecessor-output contract by that edge binding, and the four-field selected producer OutputContract equality."
+  },
+  "checks": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py -k dangling_predecessor_ref",
+      "interpreter": "Python 3.12.3",
+      "result": "1 passed, 32 deselected in 0.09s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py",
+      "interpreter": "Python 3.12.3",
+      "result": "148 passed in 0.29s"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py tests/production/test_adr0125_preflight.py",
+      "result": "All checks passed"
+    },
+    {
+      "command": "git diff --check 390dc851 de22cca",
+      "result": "pass"
+    }
+  ],
+  "findings": [],
+  "summary": {
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "verdict": "approved",
+    "approval": true,
+    "deployment_eligible": false
+  },
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend",
+    "Packets 4/6/8",
+    "whole F5a",
+    "full issuance-basis and BVP/PCE verification",
+    "no trust.py edit",
+    "no capture/lifecycle effect",
+    "no F3/F5b unblock"
+  ],
+  "next_gate": "A separate fresh test-quality/integration final lens is still required for this immutable candidate; this approval does not authorize capture, lifecycle, execution, deployment, whole-F5a closure, or dependent F3/F5b work."
+}
