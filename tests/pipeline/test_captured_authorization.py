@@ -1603,6 +1603,73 @@ def test_failed_missing_admission_request_can_retry_the_same_held_valid_snapshot
     assert broker.authorize_capture_set(captures, graph.selected, **runtime) == (record, session)
 
 
+@pytest.mark.parametrize("phase", ["reserved", "verified"])
+@pytest.mark.parametrize("surface", ["commit-capsule", "authority-dispatch", "attestation", "signer", "contract",
+                                    "ledger-lock", "ledger-root", "keyring", "terminal", "generation"])
+def test_single_surface_substitution_during_reservation_or_precommit_is_empty(phase, surface, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event, RLock
+    import sys
+
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    ledger = broker._p4_ledger
+    paused, resume = Event(), Event()
+    fault_code = type(ledger)._fault.__code__
+
+    def trace(frame, event, _arg):
+        if event == "call" and frame.f_code is fault_code and frame.f_locals.get("point") == phase:
+            paused.set()
+            assert resume.wait(timeout=10)
+        return None
+
+    def contender():
+        # Test-only interpreter scheduling: production receives no callback,
+        # alternate lock, trust dependency or callable fault hook.
+        sys.settrace(trace)
+        try:
+            return broker.authorize_capture_set(captures, graph.selected, **runtime)
+        finally:
+            sys.settrace(None)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(contender)
+        assert paused.wait(timeout=10)
+        frozen_restore = None
+        try:
+            with monkeypatch.context() as patch:
+                if surface == "commit-capsule":
+                    patch.setattr(trust, "_P4_COMMIT", lambda *args: (None, None))
+                elif surface == "authority-dispatch":
+                    patch.setattr(type(broker), "authorize_capture_set", lambda *args, **kwargs: (None, None))
+                elif surface == "attestation":
+                    patch.delitem(trust._P4_ISSUED, broker)
+                elif surface in ("signer", "contract"):
+                    patch.setattr(trust, "_P4_" + surface.upper(), object())
+                elif surface == "ledger-lock":
+                    patch.setattr(ledger, "_lock", RLock())
+                elif surface == "ledger-root":
+                    patch.setattr(ledger, "_root", (("forged",),))
+                elif surface == "keyring":
+                    patch.setattr(trust._P4_VERIFICATION, "_keyring", object())
+                elif surface == "terminal":
+                    frozen_restore = (broker._p4_resolver, "_terminal", broker._p4_resolver._terminal)
+                    object.__setattr__(broker._p4_resolver, "_terminal", object())
+                else:
+                    frozen_restore = (broker._p4_resolver._snapshot, "_generation", broker._p4_resolver._snapshot._generation)
+                    object.__setattr__(broker._p4_resolver._snapshot, "_generation", 2)
+                resume.set()
+                with pytest.raises((TypeError, ValueError)):
+                    future.result(timeout=10)
+        finally:
+            resume.set()
+            if frozen_restore is not None:
+                object.__setattr__(*frozen_restore)
+    assert not ledger._committed() and not ledger._reserving
+    _assert_graph_no_effect(broker, captures, before)
+    assert broker.authorize_capture_set(captures, graph.selected, **runtime)
+
+
 def _request():
     """Return a syntactically valid reference to an unavailable admission."""
     return {
