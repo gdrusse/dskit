@@ -1121,6 +1121,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._require_session(session, kind="producer", allow_open=True)
         if not isinstance(prepared, _Prepared):
             raise ValueError("SEALED requires a PRODUCED token")
+        self._original_prepared_output(prepared)
         self._reload_stream(prepared.stream_id)
         self._require_head(prepared.stream_id, "PRODUCED")
         digests = []
@@ -1161,6 +1162,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not isinstance(sealed, _Sealed):
             raise ValueError("PUBLISHED requires a SEALED token")
         prepared = sealed.prepared
+        original_output = self._original_prepared_output(prepared)
         self._reload_stream(prepared.stream_id)
         self._require_head(prepared.stream_id, "SEALED")
         if not self._worm:
@@ -1196,7 +1198,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             self._publish_sealed,
             self._publish_sealed_intern,
             id(published),
-            sealed,
+            (sealed, original_output),
         )
         self._store_interned(
             self._publish_stream,
@@ -1470,7 +1472,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("plan document does not match captured freeze")
         sealed = self._sealed_for(published)
         subject = self._stream_pin[stream_id]
-        output_path = subject.output_member
+        output_path = self._publication_members(published)[1]
         parsed, _canonical = _load_canonical_json(retained[output_path])
         declared = {
             item["relative_path"]: item for item in sealed._digests
@@ -1774,16 +1776,35 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("frozen consumer document is required")
         return frozen
 
-    def _sealed_for(self, published):
-        if not isinstance(published, _Published):
+    def _original_prepared_output(self, prepared):
+        """Require independent prepared and stream-pin output-member agreement."""
+        if type(prepared) is not _Prepared:
+            raise ValueError("prepared output member identity required")
+        pin = self._stream_pin.get(prepared.stream_id)
+        path = prepared.output_member
+        if (type(pin) is not _ReceiptSubject or type(path) is not str
+                or path != pin.output_member
+                or path not in {member["relative_path"] for member in prepared.members}):
+            raise ValueError("original output member identity mismatch")
+        return path
+
+    def _publication_members(self, published):
+        """Resolve the authenticated sealed handle and original output path."""
+        if type(published) is not _Published:
             raise ValueError("PUBLISHED token is required")
-        sealed = self._load_interned(
-            self._publish_sealed,
-            self._publish_sealed_intern,
-            id(published),
+        record = self._load_interned(
+            self._publish_sealed, self._publish_sealed_intern, id(published),
             "PUBLISHED token is required",
         )
-        return sealed
+        if (type(record) is not tuple or len(record) != 2
+                or type(record[0]) is not _Sealed or type(record[1]) is not str
+                or type(record[0].prepared) is not _Prepared
+                or record[0].prepared.output_member != record[1]):
+            raise ValueError("published original output member mismatch")
+        return record
+
+    def _sealed_for(self, published):
+        return self._publication_members(published)[0]
 
     def _require_head(self, stream_id, event):
         self._p4_ledger._require_unclaimed(stream_id)
@@ -1902,6 +1923,13 @@ class _DevelopmentBroker(LifecycleAuthority):
                     "output": producer["output"], "purpose": pin.purpose}
         if published.descriptor != expected:
             raise ValueError("published descriptor identity mismatch")
+        sealed, output_member = self._publication_members(published)
+        manifest = rows[1]["member_manifest_sha256"]
+        if (pin.output_member != output_member
+                or output_member not in {item["relative_path"] for item in sealed._digests}
+                or sealed._member_manifest_sha256 != manifest
+                or self._manifest_digest(sealed._digests) != manifest):
+            raise ValueError("published member manifest or original output member mismatch")
 
     def _frozen_publication(self, frozen):
         """Validate the original frozen port before returning its publication."""
@@ -2032,17 +2060,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         return self._live_published(descriptor)
 
     def _live_published(self, descriptor):
-        for published in getattr(self, "_live", ()):
-            if published.descriptor == descriptor:
-                return published
-        # Fall back: the caller always freezes from descriptor() of a live token
-        # in these tests, so remember published tokens as they are created.
-        for published in self._published_tokens:
-            if published.descriptor["root_ref"] == descriptor["root_ref"] and published.descriptor[
-                "document_sha256"
-            ] == descriptor["document_sha256"]:
-                return published
-        raise ValueError("published root is required")
+        """Resolve exactly one complete descriptor, never a partial-key fallback."""
+        matches = [published for published in self._published_tokens
+                   if published.descriptor == descriptor]
+        if len(matches) != 1:
+            raise ValueError("exact published descriptor identity required")
+        return matches[0]
 
     @property
     def _published_tokens(self):

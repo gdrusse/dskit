@@ -13,5 +13,11 @@
     "ten output-member side/stage substitutions admitted (DID NOT RAISE ValueError)",
     "two valid snapshot lookup orders fail with published snapshot mismatch"
   ],
-  "deployment_eligible": false
+  "deployment_eligible": false,
+  "baseline_confirmation": {
+    "base": "0ec667129c27d64b487b2962295f3b495d5e44e1",
+    "method": "temporarily detached task worktree at unchanged main; replayed only the new snapshot test file; restored tracked test and returned to task branch, dirty main checkout untouched",
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k two_valid_snapshots --tb=short",
+    "result": "2 failed, 167 deselected in 0.37s with the same published snapshot mismatch"
+  }
 }

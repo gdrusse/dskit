@@ -3295,3 +3295,28 @@ def test_p6_two_valid_snapshots_resolve_the_exact_publication_in_either_order(re
             consumer_node="consume", transition_nonce="consumed-" + version).require("bundle").artifact
         assert artifact.value == {"version": version}
         assert broker._receipt_audit(published)[-1]["snapshot_version"] == version
+
+
+@pytest.mark.parametrize("stage", ["capture", "open", "bindings"])
+def test_p6_single_published_member_intern_mint_cannot_change_output(stage):
+    broker = _trust()._development_broker()
+    producer, published, _ = _publish(broker)
+    broker.end_session(producer)
+    _, frozen = _freeze(broker, published)
+    if stage != "capture":
+        captured, session = _capture(broker, published, frozen)
+    if stage == "bindings":
+        verified = broker.open_capture(session, captured)
+    sealed = broker._sealed_for(published)
+    _hmac_mint(broker, broker._publish_sealed, broker._publish_sealed_intern,
+              id(published), (sealed, "config.json"))
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        if stage == "capture":
+            _capture(broker, published, frozen)
+        elif stage == "open":
+            broker.open_capture(session, captured)
+        else:
+            broker.captured_bindings(session, frozen, verified,
+                consumer_node="consume", transition_nonce="nonce-consumed")
+    assert _p6_effects(broker) == before
