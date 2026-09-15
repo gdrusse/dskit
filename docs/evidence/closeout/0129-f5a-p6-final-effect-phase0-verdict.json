@@ -1,0 +1,30 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "candidate": "aac2a25b4db7329abe6a8c0b02088a73bd0c718c",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_final_effect_phase0_terra",
+    "lens": "fresh final-v1-effect Phase0"
+  },
+  "verdict": "not clean; scope adjudication pending",
+  "critical": 0,
+  "major": 1,
+  "minor": 0,
+  "nit": 0,
+  "findings": [
+    {
+      "id": "P6-P0-002",
+      "severity": "Major",
+      "family": "facade admission spend versus pre-effect retry",
+      "location": "HistoricalStudyVerifier.capture and driver facade",
+      "counterexample": "Mutate frozen source; verifier.capture marks admission spent and authority refuses. Restore source; same nonce retry refuses admission spent although no CAPTURED receipt.",
+      "invariant": "New0111 stage-gap retry/no-spend wording appears to promise restored valid retry across facade.",
+      "disposition": "Reviewer assessing accepted P6/P8 boundary and existing intentional burn-before-delegate semantics; no implementation or author severity change."
+    }
+  ],
+  "retained_reviewer_output": "C0/M1/minor0/nit0 not clean. Major P6-P0-002 facade spends before final-boundary refusal. Verifier marks _admission_spent before authority.capture; driver delegates. Final helper refusal makes restored valid retry fail, violating matrix retry/no-spend rule. Reproduced frozen mutation -> refused; restore -> admission spent; no CAPTURED. Require commit/rollback-safe facade spend after successful capture. Matrix JSON/diff checks pass. No runtime edits/tests written. Proposed implementation untested.",
+  "scope_question": "Owner0100 explicitly reserves replacing exposed _spend, authoritative durable admission consumption/unspend and unknown-outcome handling for Packet8 AFTER5-7. Existing burn-before-delegate prevents write-then-raise replay. Determine exact intended broker-only retry versus facade promise without inventing unsafe rollback or narrowing accepted threat model.",
+  "deployment_eligible": false
+}
