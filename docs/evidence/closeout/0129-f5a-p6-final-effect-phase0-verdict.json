@@ -26,5 +26,18 @@
   ],
   "retained_reviewer_output": "C0/M1/minor0/nit0 not clean. Major P6-P0-002 facade spends before final-boundary refusal. Verifier marks _admission_spent before authority.capture; driver delegates. Final helper refusal makes restored valid retry fail, violating matrix retry/no-spend rule. Reproduced frozen mutation -> refused; restore -> admission spent; no CAPTURED. Require commit/rollback-safe facade spend after successful capture. Matrix JSON/diff checks pass. No runtime edits/tests written. Proposed implementation untested.",
   "scope_question": "Owner0100 explicitly reserves replacing exposed _spend, authoritative durable admission consumption/unspend and unknown-outcome handling for Packet8 AFTER5-7. Existing burn-before-delegate prevents write-then-raise replay. Determine exact intended broker-only retry versus facade promise without inventing unsafe rollback or narrowing accepted threat model.",
-  "deployment_eligible": false
+  "deployment_eligible": false,
+  "independent_scope_addendum": {
+    "reviewer_model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_final_effect_phase0_terra",
+    "retained_output": "Do not change facade burn semantics in P6. Prior P6-P0-002 runtime Major withdrawn: intentional burn-before-delegation prevents write-then-raise replay; unknown outcome/unspend belongs to P8/owner0100. Major matrix defect remains: no-spent-state/retry wording contradicts accepted facade behavior and permits unsafe rollback. Restrict retry to broker-local precommit state; verifier/driver may remain burned after any delegated attempt. Fresh Phase0 required after correction.",
+    "counts": {
+      "critical": 0,
+      "major": 1,
+      "minor": 0,
+      "nit": 0
+    },
+    "disposition": "Correct accidental matrix promise; preserve accepted facade behavior and explicitly defer durable admission unknown-outcome semantics to Packet8. No runtime rollback or scope/threat-model weakening.",
+    "historical_check": "Reviewer cited c72340b and a write-then-raise regression; exact command/path requested before retaining a test result as verified."
+  }
 }

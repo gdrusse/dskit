@@ -12,7 +12,8 @@
     "docs/evidence/closeout/0115-f5a-p6-phase0-terra-handle-verdict.json",
     "docs/evidence/closeout/0120-f5a-p6-correctness-boundary-verdict.json",
     "docs/evidence/closeout/0124-f5a-p6-successor-correctness-verdict.json",
-    "docs/evidence/closeout/0128-f5a-p6-consume-boundary-verdict.json"
+    "docs/evidence/closeout/0128-f5a-p6-consume-boundary-verdict.json",
+    "docs/evidence/closeout/0129-f5a-p6-final-effect-phase0-verdict.json"
   ],
   "governing": "ADR-0123 signed-immutable-captures; ADR-0125 capture chronology; ADR-0126 F4 single-surface threat model; Packet 4 Matrix v9 (0089).",
   "reviewer_model": "gpt-5.6-terra (owner override 2026-09-15; supersedes GLM 5.3 request)",
@@ -33,7 +34,7 @@
       "HistoricalStudyCaptureDriver.authorize_capture_set",
       "CapturedLifecyclePort.artifact/audit; CapturedJsonArtifact.value/audit (including post-CONSUMED access)"
     ],
-    "non_goal": "durable or cross-process consume-once and reconstruction remain Packet 8; this packet proves in-process equality and fail-closed restart identity only. Signature forgery under the caller-known development _DEV_KEY is ADR-0126-deferred, not closed here."
+    "non_goal": "durable or cross-process consume-once and reconstruction remain Packet 8; this packet proves in-process equality and fail-closed restart identity only. Signature forgery under the caller-known development _DEV_KEY is ADR-0126-deferred, not closed here. Existing HistoricalStudyVerifier/driver admission burn-before-delegation is preserved in Packet6. Any delegated attempt may burn that facade admission even when the broker subsequently refuses without a receipt. Durable spend, unknown outcome, and admission-unspend policy belong exclusively to Packet8/owner0100; never roll back admission merely because delegation raises."
   },
   "identity_bindings": [
     {
@@ -113,9 +114,9 @@
     {
       "family": "partial_failure_retry",
       "cases": [
-        "retry capture after a refusal with the same nonce",
-        "retry with corrected evidence after each staged failure",
-        "partial member read then retry"
+        "Broker-local retry after a precommit capture refusal using corrected evidence and the same nonce; no guarantee of retrying a facade admission already burned by delegation.",
+        "Broker-local corrected retry after staged failure before receipt commit; facade admission spend/unknown-outcome handling remains P8.",
+        "Partial member read then retry retains one-shot member behavior; no admission rollback."
       ]
     },
     {
@@ -200,7 +201,7 @@
         "At legacy staged/precommit fault schedule, mutate retained publication/frozen/port identity once; final validation refuses with no CAPTURED/session publication.",
         "One authenticated intern substitution alone in capture/verified/bindings/publication records must not create a new consumption authority; do not combine with handle poke.",
         "After successful CONSUMED, repeated valid retained artifact reads remain usable despite later exposed-store tamper; no new receipt, provider reopen, or consume.",
-        "Corrected retry following pre-effect mismatch uses restored valid identity with unchanged nonce and succeeds once; no spent-state update before refusal."
+        "Broker-local corrected retry after a precommit mismatch uses restored valid identity and unchanged nonce, succeeds once, and does not update broker input-used/CONSUMED state before refusal. HistoricalStudyVerifier/driver may remain burned after any delegated attempt; no facade admission retry/unspend promise. Packet8 owns durable spend and unknown-outcome semantics."
       ]
     }
   ],
@@ -218,7 +219,8 @@
       "tests/pipeline/test_captured_authorization.py (53)",
       "tests/production/test_capture_lifecycle.py (9)",
       "tests/production/test_captured_authorization.py (8)"
-    ]
+    ],
+    "facade_admission_spend": "Preserve intentional burn-before-delegation through verifier/driver, including delegate write-then-raise. Packet6 refusal-before-effects means broker CAPTURED/CONSUMED/provider/session effects; it does not roll back an already attempted facade admission. Packet8/0100 owns authoritative durable spend and unknown-outcome resolution."
   },
   "tests": {
     "new": [
@@ -291,6 +293,12 @@
       "source": "0128-f5a-p6-consume-boundary-verdict.json",
       "status": "third failed final cycle and repeated family; independent changed approach incorporated before runtime correction",
       "implementation": "One shared v1 effect-boundary validator with stage-appropriate exact head/session/port and retained full graph. Sweep gaps through require/direct consume, staged CAPTURED commit, member delivery and view construction. Keep post-CONSUMED reads retained-only."
+    },
+    {
+      "finding": "P6-P0-002 matrix scope correction",
+      "source": "0129-f5a-p6-final-effect-phase0-verdict.json",
+      "status": "Independent reviewer withdrew runtime Major; accidental matrix facade rollback promise corrected; fresh Phase0 required",
+      "implementation": "No production facade spend change in Packet6. Broker-local final effect checks and retry only; facade admission burn after delegation persists until owner-approved P8 durable seam."
     }
   ]
 }
