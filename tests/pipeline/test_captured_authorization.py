@@ -703,11 +703,29 @@ def test_recursive_local_artifact_and_basis_mutations_never_reach_issuance(repla
 
 
 @pytest.mark.parametrize("target", ["output/A4", "replay-pis", "final-entry/control", "final", "replay-admission"])
-def test_replay_only_ancestors_cannot_be_missing_or_substituted(target):
+@pytest.mark.parametrize("change", ["missing", "extra-field", "noncanonical", "self", "linked-digest"])
+def test_replay_only_ancestors_cannot_be_missing_or_substituted(target, change):
     _closure_ready()
     graph, document = _complete_signed_graph(replay=True)
     item = next(item for item in graph.facts["artifacts"] if item["ref"] == graph.refs[target])
-    graph.facts["artifacts"].remove(item)
+    if change == "missing":
+        graph.facts["artifacts"].remove(item)
+    elif change == "noncanonical":
+        item["bytes"] += b" "
+        with pytest.raises((TypeError, ValueError)):
+            _factory()(fixture_facts=graph.facts)
+        return
+    else:
+        value = json.loads(item["bytes"])
+        if change == "extra-field":
+            value["future_authority"] = "untrusted"
+        elif change == "self":
+            self_field = next(key for key, val in value.items() if key.endswith("sha256") and val == item["ref"]["sha256"])
+            value[self_field] = "e" * 64
+        else:
+            linked = next(key for key, val in value.items() if key.endswith("sha256") and val != item["ref"]["sha256"])
+            value[linked] = "f" * 64
+        item["bytes"] = f4._json_bytes(value)
     broker, captures, runtime, before = _graph_live(graph, document, 1)
     with pytest.raises((TypeError, ValueError)) as failure:
         broker.authorize_capture_set(captures, graph.selected, **runtime)
