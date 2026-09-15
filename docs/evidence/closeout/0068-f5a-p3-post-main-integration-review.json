@@ -1,0 +1,59 @@
+{
+  "schema_version": "ReviewVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "lens": "post-current-main-integration",
+  "reviewer": "gpt-5.6-terra",
+  "reviewed_merge": "026961690de8baa7a573b29b0c927892913a2fb5",
+  "parents": {
+    "packet_wrap": "769fb3ccf717e00e9335fea71962e70738879fd1",
+    "integrated_main": "64aee15159596c12eb4fa609ce44e27908fb68a4"
+  },
+  "locked_candidate": {
+    "commit": "f0707475b93ad30c1ff6e8acc43953daafe4a4a4",
+    "blobs": {
+      "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d",
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"
+    }
+  },
+  "findings": {
+    "critical": [],
+    "major": [],
+    "minor": [
+      {
+        "id": "F5A-P3-R24-late-byte-type-prevalidation",
+        "disposition": "deferred",
+        "reason": "A late non-bytes slot refuses after earlier local parsing; it cannot accept the request or reach a trusted/effectful seam."
+      }
+    ]
+  },
+  "verification": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py tests/production/test_purity.py tests/pipeline/test_stages.py",
+      "result": "498 passed"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py dskit/pipeline/trust.py tests/production/test_adr0125_preflight.py dskit/pipeline/stages.py dskit/pipeline/__main__.py",
+      "result": "All checks passed"
+    },
+    {
+      "command": "git diff --check 64aee15159596c12eb4fa609ce44e27908fb68a4..026961690de8baa7a573b29b0c927892913a2fb5",
+      "result": "pass"
+    }
+  ],
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend",
+    "Packets 4/6/8",
+    "whole F5a",
+    "no deployment or real activity",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "verdict": {
+    "approval": true,
+    "push_authorized": true,
+    "deployment_eligible": false,
+    "whole_f5a_closed": false
+  }
+}

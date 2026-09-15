@@ -10,6 +10,10 @@ no resolver, capture, lifecycle, session, WORM, construction or execution
 route. The reviewed immutable candidate is `f070747`; ReviewExit is
 `docs/evidence/closeout/0067-f5a-p3-review-exit.json`.
 
+Current main `64aee15` was integrated as `0269616`; the fresh post-integration
+lens approved with zero Critical/Major in
+`docs/evidence/closeout/0068-f5a-p3-post-main-integration-review.json`.
+
 Both fresh final lenses found zero Critical/Major. Focused preflight,
 capture-lifecycle, frozen F4 trust and purity coverage passed 482 tests; ruff
 and diff checks were clean. Deferred Minor `F5A-P3-R24` records that a late
