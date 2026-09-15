@@ -1,0 +1,104 @@
+{
+  "schema_version": "Phase0Matrix.v2",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "current-main authority-seam and field-adjacency correction",
+  "base_commit": "de4801e4771170c98bee4fe292394b87a79b08bd",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "supersedes": "docs/evidence/closeout/0069-f5a-p4-phase0-authority-seam-matrix.json",
+  "authority": {
+    "delegated_scope": "Phase 0 design evidence only; no RED, GREEN, lifecycle write, session, member open, execution, or real activity.",
+    "red_authorization": false,
+    "deployment_eligible": false,
+    "reason": "Current public seams cannot provide the required port authorization, exact receipt, complete set, replay evidence, then session chronology."
+  },
+  "source_hashes": {
+    "packet_plan": "24cc8010d80da7ca0a253c62f3d93c71a70b2c93cbc652773ffe30a74e93f8ae",
+    "master_plan": "5c7eda8f5b749e9715267640f4cd159969c5e278dce4c401d86415ff0fa3cb9c",
+    "adr_0125": "023423830eca35871e67ea87bee51e88450a97ac3b1723588cd9c969ef859cc9",
+    "frozen_trust": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5",
+    "current_verifier": "c02628305d7d0403213e077e6107f745c5bb09e2c3494846a517b05a7f440719"
+  },
+  "controlling_contract": {
+    "citations": [
+      "docs/architecture/decision-log.md:8762-8824",
+      "docs/architecture/decision-log.md:8900-8917",
+      "docs/plans/closeout-2026-09-14/01-capture-admission.md:43-49",
+      "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:684-690"
+    ],
+    "action_order": "PUBLISHED immutable root/receipt -> frozen consumer/derived port -> consumed ActionExecutionAdmission -> per-PCE CapturedPortAuthorization.v2 -> matching LifecycleCapturedReceipt.v2 -> complete signed CapturedAuthorizationSet.v2 -> distinct set-bound LaunchSession -> only then open/import/construct/run/publish.",
+    "replay_order": "replay PIS -> CES -> PEA -> private BVP/PCE -> equality -> replay CAS -> FinalReplayEntry -> Final Manifest -> FinalReplayAdmission -> consumed FinalReplayAdmission -> per-PCE port authorization -> matching v2 receipt -> complete signed set -> signed ReplayCaptureAdmissionEvidence.v1 -> distinct replay LaunchSession -> only then open/import/construct/run/publish.",
+    "release_boundary": "The closeout-plan phrase 'runtime/release equality' cannot add a field to an exact ADR object: LifecycleCapturedReceipt.v2 has actor_runtime_sha256 and no release-identity field."
+  },
+  "exact_shapes": {
+    "ExecutionAuthorityRef": {"one_of": [{"kind": "literal:action", "action_execution_admission_sha256": "H"}, {"kind": "literal:replay", "final_replay_admission_sha256": "H"}]},
+    "CapturedPortAuthorization.v2": ["schema", "study_id", "execution_authority_ref", "logical_execution_id", "run_id", "subject_ref", "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256", "broker_verified_plan_sha256", "capture_admission_set_sha256", "planned_entry_sha256", "issuance_basis_sha256", "issuer_role", "key_usage", "signature_alg", "issued_at_ms", "not_before_ms", "expires_at_ms", "revocation_snapshot_sha256", "key", "captured_port_authorization_sha256", "signature"],
+    "LifecycleCapturedReceipt.v2": ["schema", "stream_id", "sequence", "previous_lifecycle_captured_receipt_sha256", "study_id", "consumer_kind", "consumer_id", "execution_authority_ref", "logical_execution_id", "run_id", "subject_ref", "predecessor_publication_receipt_schema", "predecessor_publication_receipt_sha256", "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256", "broker_verified_plan_sha256", "planned_capture_set_sha256", "capture_admission_set_sha256", "planned_entry_sha256", "captured_port_authorization_sha256", "actor_runtime_sha256", "transition_nonce", "issuance_basis_sha256", "issuer_role", "key_usage", "signature_alg", "issued_at_ms", "not_before_ms", "expires_at_ms", "revocation_snapshot_sha256", "key", "lifecycle_captured_receipt_sha256", "signature"],
+    "CapturedAuthorizationEntry.v2": ["execution_authority_ref", "logical_execution_id", "run_id", "planned_entry_sha256", "captured_port_authorization_sha256", "lifecycle_captured_receipt_sha256"],
+    "CapturedAuthorizationSet.v2": ["schema", "study_id", "execution_authority_ref", "logical_execution_id", "run_id", "subject_ref", "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256", "broker_verified_plan_sha256", "planned_capture_set_sha256", "capture_admission_set_sha256", "entries", "issuance_basis_sha256", "issuer_role", "key_usage", "signature_alg", "issued_at_ms", "not_before_ms", "expires_at_ms", "revocation_snapshot_sha256", "key", "captured_authorization_set_sha256", "signature"],
+    "ReplayCaptureAdmissionEvidence.v1": ["schema", "study_id", "final_manifest_sha256", "final_replay_admission_sha256", "final_replay_entry_sha256", "replay_id", "replay_intent_sha256", "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256", "broker_verified_plan_sha256", "planned_capture_set_sha256", "capture_admission_set_sha256", "issued_ports", "captured_authorization_set_sha256", "issuance_basis_sha256", "issuer_role", "key_usage", "signature_alg", "issued_at_ms", "not_before_ms", "expires_at_ms", "revocation_snapshot_sha256", "key", "replay_capture_admission_evidence_sha256", "signature"],
+    "ReplayCaptureAdmissionEvidence.v1.issued_ports_entry": ["planned_entry_sha256", "captured_port_authorization_sha256", "lifecycle_captured_receipt_sha256"],
+    "LaunchSession": ["study_id", "execution_authority_ref", "logical_execution_id", "run_id", "consumer_document_sha256", "broker_verified_plan_sha256", "captured_authorization_set_sha256", "process_measurement_sha256", "purpose", "issued_at_ms", "expires_at_ms", "session_nonce"],
+    "canonical_rules": "Closed objects refuse missing/extra/duplicate keys. Signed self-digests use deterministic canonical bytes excluding only self/signature. Set entries are unique, strictly ascending by planned_entry_sha256, and one-for-one with PCEs. Entry/port/receipt/set/session/runtime bindings have identical execution authority ref, logical execution ID, and run ID."
+  },
+  "adjacency_ledger": [
+    {"id": "P4-C01", "rule": "PCE -> port authorization: exact planned entry, study/subject/execution tuple and PEA/CES/BVP/CAS chain; one authorization per PCE."},
+    {"id": "P4-C02", "rule": "Frozen descriptor/derived port -> PCE/authorization: exact consumer document/node/input/purpose and descriptor root/snapshot/document/node/output/purpose; no alternate projection."},
+    {"id": "P4-C03", "rule": "Consumed action/replay admission -> first port authorization: exact authority tag/digest, logical execution, run; WORM consumption before mint."},
+    {"id": "P4-C04", "rule": "Port authorization -> v2 receipt: exact execution tuple, subject, plan chain, planned entry, and port-authorization digest."},
+    {"id": "P4-C05", "rule": "PUBLISHED receipt/root -> v2 receipt: exact predecessor schema/digest and resolved immutable PCE root; ordered stream and WORM-unique nonce."},
+    {"id": "P4-C06", "rule": "Measured actor runtime -> v2 receipt: exact actor_runtime_sha256; runtime substitution refuses. No receipt-to-release equality is asserted because this exact schema has no release field."},
+    {"id": "P4-C07", "rule": "PCE/port/receipt triples -> set.entries: bijection by planned_entry_sha256; exact three digests; canonical order; no duplicate/missing/extra/alternate projection."},
+    {"id": "P4-C08", "rule": "CES/BVP/CAS/stage-or-replay legs -> set: complete P(CES)==P(BVP)==P(CAS)==P(Stage)==P(Captured), or equivalent four replay pre-capture legs."},
+    {"id": "P4-C09-action", "rule": "Verified action set -> distinct LaunchSession: exact study/execution tuple, consumer document, BVP, set digest, measurement, purpose, trusted time; action path remains set -> session."},
+    {"id": "P4-C09-replay", "rule": "Replay set -> ReplayCaptureAdmissionEvidence.v1 -> distinct LaunchSession: set uses literal replay FinalReplayAdmission ref and same logical execution/run; evidence binds exact study/final-manifest/final-admission/final-entry/replay/replay-intent/PEA/CES/BVP/planned-set/CAS/set digest; issued_ports equals set triples item-for-item in PCE order. Broker resolves exact Final Manifest, FinalReplayAdmission, verified evidence, and verified set before session; a replay set alone cannot mint a session."},
+    {"id": "P4-C10", "rule": "LaunchSession -> runtime/member open: same nonserializable broker-bound identity; producer/same-run/same-session/restart substitution refuses before effect."},
+    {"id": "P4-C11", "rule": "Port/receipt/set/replay evidence: exact issuance basis, role/use, Ed25519, inclusive trusted time, immutable fail-closed revocation snapshot."},
+    {"id": "P4-C12", "rule": "Post-freeze source -> all later artifacts: recomputed document/descriptor bytes remain exact; mutation refuses before effect."}
+  ],
+  "correction_mapping": {
+    "skeptic-M02": "Corrected by replay_order, exact ReplayCaptureAdmissionEvidence.v1 and issued_ports shapes, P4-C09-replay, owner decision, and replay RED rows. This makes the replay-only set -> evidence -> distinct session chronology explicit while retaining action set -> session.",
+    "skeptic-M03": "Corrected by P4-C06 and release_boundary: actor_runtime_sha256 remains exact; unsupported receipt-to-release identity and release substitution claims are removed. A future release binding needs a separate approved controlling contract."
+  },
+  "current_main_seam_audit": {
+    "public_LifecycleAuthority": {"citation": "dskit/pipeline/trust.py:255-287", "observed": "capture and open_capture exist; no public issue-port-authorization, return exact v2 receipt, build/verify set, issue replay evidence, or mint-session-after-set/evidence seam exists."},
+    "development_capture": {"citation": "dskit/pipeline/trust.py:1128-1211", "observed": "capture validates frozen port but creates/records consumer LaunchSession before CAPTURED and returns captured/session."},
+    "development_receipt": {"citation": "dskit/pipeline/trust.py:1779-1846", "observed": "CAPTURED emits HMAC-signed dskit.lifecycle-receipt/v1, not LifecycleCapturedReceipt.v2, and public capture does not return it."},
+    "historical_driver": {"citation": "dskit/production/verifier.py:1887-2050", "observed": "HistoricalStudyVerifier consumes a local cell then delegates capture; it issues neither v2 port/receipt/set nor replay evidence, and delegated capture exposes the already-created session."},
+    "frozen_boundary": "Packet plan freezes F4 trust.py and forbids a parallel lifecycle writer or bypass broker."
+  },
+  "candidate_dispositions": [
+    {"option": "A-approved-F4-seam-evolution", "would_require": "F4/core approves a versioned public broker seam: atomically consume admission, issue port authorization, record/return exact v2 receipt, verify/build complete set, then mint set-bound session. Replay additionally signs/verifies ReplayCaptureAdmissionEvidence.v1 after set and before distinct session, resolving exact Final Manifest and FinalReplayAdmission.", "status": "requires design and ownership approval before RED", "packet_capable": true},
+    {"option": "B-verifier-local-parallel-writer", "would_require": "F5a writes its own receipt/session/replay-evidence authority beside LifecycleAuthority.", "status": "refused: second writer/trust root and ownership violation", "packet_capable": false},
+    {"option": "C-bytes-only-preflight", "would_require": "Verify supplied port/receipt/set/replay-evidence bytes without live published/frozen/captured/session resolution.", "status": "insufficient: grammar/signatures cannot prove live equality or chronology", "packet_capable": false},
+    {"option": "D-v1-or-session-shortcut", "would_require": "Treat lifecycle-receipt/v1 as v2, hide/relabel existing session, or mint replay session before replay evidence.", "status": "refused: schema and chronology contradiction", "packet_capable": false},
+    {"option": "E-edit-frozen-trust-without-owner", "would_require": "Modify trust.py in Packet 4 without approved manifest correction.", "status": "refused: frozen F4 boundary", "packet_capable": false}
+  ],
+  "required_owner_decision": {
+    "owner": "F4/core lifecycle authority owner",
+    "decision": "Approve or refuse option A, including exact replay-evidence ownership and chronology.",
+    "must_pin": ["action: consumed ActionExecutionAdmission -> port -> v2 receipt -> verified set -> distinct session", "replay: consumed FinalReplayAdmission -> port -> v2 receipt -> verified set -> exact signed replay evidence -> distinct replay session", "replay evidence final-manifest/admission/final-entry/replay/intent/PEA/CES/BVP/planned-set/CAS/set/issued_ports bindings", "no parallel writer, bypass broker, or session-before-required-artifact route", "v2 receipt binds actor_runtime_sha256 only; release identity is outside this packet absent a separate approved contract"],
+    "until_decided": "M01 remains unresolved and red_authorization remains false."
+  },
+  "future_red_matrix_after_approval": [
+    "Mutate every exact key/scalar/literal/self-digest/role/use/signature/time/revocation field of port, receipt, set, and replay evidence.",
+    "For every P4-C01..C12 relation, substitute one field; include final-manifest/admission/entry/replay/intent/plan-chain/set/issued-port replay mutations and set/evidence mismatch.",
+    "Refuse prefreeze/mutation/publish omission/wrong descriptor-root-receipt/runtime substitution; refuse an asserted receipt release field or receipt-to-release equality as outside v2 schema.",
+    "Refuse admission reuse, same producer/consumer run, same session, copied/wrapped/subclassed/serialized handle, restart substitution, partial failure/retry.",
+    "GREEN action: PUBLISHED -> frozen -> consumed admission -> port -> v2 receipt -> signed set -> distinct set-bound session; no earlier effect.",
+    "GREEN replay: FinalReplayAdmission -> consumed admission -> port -> v2 receipt -> signed set -> exact signed evidence whose issued_ports equals set -> distinct replay session; refuse set-alone session and evidence-before-set.",
+    "No provider/network/filesystem source, capture data, replay/backtest, paper/live, deployment, or real activity."
+  ],
+  "phase0_verdict": {
+    "contract_is_precise": true,
+    "current_seam_can_implement_contract": false,
+    "unresolved_critical": 0,
+    "unresolved_major": 1,
+    "major": {"id": "F5A-P4-P0-M01-authority-seam", "impact": "Current public seams require session-before-set/evidence, wrong receipt schema, omitted live equality, or a forbidden second authority.", "required_resolution": "Explicit F4/core ownership decision and accepted versioned seam design, including replay evidence; update controlling manifest if trust.py ownership changes."},
+    "red_authorization": false,
+    "merge_authorization": false
+  },
+  "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "Packets 4/6/8", "whole F5a", "no trust.py edit", "no F3/F5b unblock", "no deployment or real activity", "origin/cursor/r5-f5a-private-plan-0f39 at c489199"],
+  "checks": ["python3 -m json.tool docs/evidence/closeout/0070-f5a-p4-phase0-authority-seam-matrix-v2.json", "git diff --check"],
+  "next_gate": "Fresh Terra skeptic validates this corrected seam audit and blocker. If confirmed, stop before RED and request the explicit F4/core owner decision; do not invent authority."
+}
