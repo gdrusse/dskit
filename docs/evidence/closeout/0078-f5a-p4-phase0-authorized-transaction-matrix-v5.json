@@ -1,0 +1,110 @@
+{
+  "schema_version": "Phase0Matrix.v5",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "successor authority transaction correction for 0077 M06/M07",
+  "base_commit": "0c76a0352dcc7b5344fbcf3c20e05303462414dc",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "supersedes": {
+    "matrix": "docs/evidence/closeout/0076-f5a-p4-phase0-authorized-transaction-matrix-v4.json",
+    "verdict_disposed": "docs/evidence/closeout/0077-f5a-p4-phase0-skeptic-verdict-v5.json",
+    "disposition": "0077 M06 and M07 are corrected by this design, subject to a fresh independent Phase 0 verdict. 0075 M04/M05 closures remain required and are retained below. Earlier evidence is append-only."
+  },
+  "authority_and_limits": {
+    "owner_decision": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json",
+    "controlling_adrs": ["ADR-0125", "ADR-0126"],
+    "authorization": "OwnerDecision 0073 grants the bounded F4/core design authority for this sole-writer correction only.",
+    "phase": "Design only. RED, implementation, merge, deployment, and real activity remain disabled until a fresh skeptic finds zero unresolved in-scope Critical/Major.",
+    "preserved_open": ["Packet 2", "F5A-R23-ctor-intern-unspend", "durable/restart and cross-process consume-once", "Packets 5/6/7/8", "whole F5a", "F3/F5b", "origin/cursor/r5-f5a-private-plan-0f39 at c48919944588a2b29ba047e4cb551050a1ff9868"],
+    "non_claim": "This is one in-process concrete LifecycleAuthority instance. It does not claim an OS-owned durable ledger, restart recovery, cross-process lock, reconstruction, or a wider development-broker attacker model; those remain F5A-R23, not an excuse to weaken M06 or M07."
+  },
+  "inventoried_current_surface": {
+    "blobs": {
+      "dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844",
+      "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d",
+      "tests/pipeline/test_trust.py": "d96e8d3891659bb83f4f1199d79db8b5e8682e2e",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"
+    },
+    "direct_legacy": ["LifecycleAuthority.capture(published, frozen, port, **kwargs)", "CapturedAuthorizationAuthority.capture(published, frozen, port, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonce)", "CapturedAuthorizationAuthority.open_capture(session, captured)", "CapturedAuthorizationAuthority.captured_bindings(session, frozen, verified, consumer_node, transition_nonce)", "VerifiedCapture.member(relative_path)", "CapturedMemberHandle.read_bytes()", "CapturedMemberHandle.read_text()", "CapturedBindings.require(input_name)", "CapturedAuthorizationAuthority._consume_binding(bindings, input_name)", "CapturedAuthorizationAuthority.release(session)"],
+    "facades": ["HistoricalStudyVerifier.capture(published, frozen, port, **kwargs)", "HistoricalStudyCaptureDriver.capture(published, frozen, port, **kwargs)", "HistoricalStudyVerifier.authorize_capture_set(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces)", "HistoricalStudyCaptureDriver.authorize_capture_set(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces)"],
+    "construction_helpers": ["descriptor", "freeze_consumer_document", "derive_consumer_port", "provider/member helpers", "receipt audit/recovery", "direct construction/copy/pickle/subclass/duck/wrapper/internal-table substitution"],
+    "scope_rule": "The base LifecycleAuthority ABC stays exactly produce/seal/publish/capture/open_capture, preserving v1 subclasses. The concrete P4 authority and every listed facade are required to route through the one arbitration primitive; an arbitrary unrelated v1 subclass is not represented as P4-capable."
+  },
+  "exact_contracts": {
+    "CapturedAuthorizationAuthority": {
+      "kind": "opt-in concrete LifecycleAuthority subclass and the only P4 writer",
+      "constructor": "CapturedAuthorizationAuthority(..., captured_authorization_contract, trusted_artifact_resolver, authorization_ledger)",
+      "method": "authorize_capture_set(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces) -> tuple[CapturedAuthorizationRecord, LaunchSession]",
+      "input": "captures is an exact built-in nonempty tuple of exact built-in (published, frozen, derived_port) tuples in complete PlannedCaptureSet order; admission_ref is an exact IssuanceBasisRef.v1 action-execution-admission or final-replay-admission reference; identities, run, SHA-256 values, and unique transition nonces meet 0076's retained closed grammar. No caller supplies artifact bytes, signer, resolver generation, ledger/store, path, URL, provider, callback, or session.",
+      "output": "CapturedAuthorizationRecord and LaunchSession(kind='captured-authorization-v2') are opaque, noncopyable, nonpickleable, nonmapping, and identity-bound. P4 creates neither _Captured nor VerifiedCapture/CapturedBindings and exposes no member/provider/receipt/signer/store capability."
+    },
+    "HistoricalStudyVerifier": {
+      "method": "authorize_capture_set(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces) -> tuple[CapturedAuthorizationRecord, LaunchSession]",
+      "rule": "Requires its constructor-bound authority to be the exact P4-capable authority and delegates only to that authority's class method. It owns no lock, P4 map, admission state, receipt, session, or ledger write. capture remains a legacy facade and uses the same legacy arbitration route."
+    },
+    "HistoricalStudyCaptureDriver": {
+      "method": "authorize_capture_set(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces) -> tuple[CapturedAuthorizationRecord, LaunchSession]",
+      "rule": "Requires and class-delegates only to its exact constructor-bound HistoricalStudyVerifier. It owns no authority state; substitution, subclass, duck, wrapper, copy, and pickle refuse."
+    },
+    "CapturedAuthorizationContract": {
+      "held_dependencies": "Only the authority constructs and privately retains the contract, trusted resolver snapshot factory, Ed25519 keyring, trusted clock, and immutable revocation authority.",
+      "methods": ["prepare_batch(snapshot, captures, admission_ref, runtime) -> _PreparedCapturedAuthorizationBatch", "verify_prepared_batch(snapshot, prepared_batch) -> _PreparedSessionDecision"],
+      "denial": "The contract has no reserve, consume, abort, commit, lookup, writer, admission-spend callback, session/event construction, member/provider open, import, construction, execution, or output method. It cannot observe or mutate the authority ledger."
+    },
+    "LifecycleAuthorizationLedger": {
+      "kind": "private, authority-owned, in-process transactional WORM primitive; its one mutex is the LifecycleAuthority capture-transition lock",
+      "legacy_method": "commit_legacy_capture(*, live_identity, expected_published_head, legacy_payload) -> _LegacyCommitted",
+      "p4_method": "commit_p4_batch(*, live_identities, expected_published_heads, admission_identity, execution_key, prepared_batch, session_decision) -> _P4Committed | _P4Refused | _P4OutcomeUnknown",
+      "resolve_method": "resolve_p4(execution_key, admission_identity) -> _P4Committed | _Absent",
+      "authoritative_domain": "One ledger record domain contains the per-live-identity head/claim, admission state, execution-key uniqueness index, complete canonical authorization batch, session identity, and SessionStartRecord. Admission consumption and batch publication are fields of the same immutable committed record, not two stores and not cross-store coordination."
+    }
+  },
+  "authoritative_states": {
+    "live_identity": ["PUBLISHED", "LEGACY_COMMITTING (lock-private)", "CAPTURED_V1", "P4_RESERVING (lock-private)", "P4_COMMITTED(execution_key,batch_digest)"],
+    "admission": ["UNUSED", "COMMITTED(execution_key,batch_digest)"],
+    "execution_key": "canonical (study_id, canonical execution_authority_ref bytes, logical_execution_id, run_id)",
+    "invariants": ["Only PUBLISHED is admissible to either capture path.", "LEGACY_COMMITTING and P4_RESERVING exist only while the one lock is held; they are neither observable public states nor ledger commits.", "CAPTURED_V1 and P4_COMMITTED are terminal for the matched live identity within this authority instance.", "An admission has no Reserved or Aborted authoritative state: before commit it remains UNUSED; after commit it is COMMITTED forever in this process.", "A P4 committed record is one immutable WORM value containing consumed admission identity, ordered port bytes, ordered receipt bytes, set bytes, replay evidence or action-none, verified SessionDecision, session identity/nonce, SessionStartRecord, and frozen live projection."]
+  },
+  "single_lock_arbitration": {
+    "lock_scope": "Every direct legacy capture, P4 capture, verifier/driver delegation, and legacy open/bind/member/consume/release gate acquires or checks through the same authority-owned capture-transition lock and ledger state. No facade may perform a prior unlocked 'not P4' check.",
+    "legacy_commit": ["Validate legacy inputs outside and again inside the lock; inside compare exact live identity and PUBLISHED head.", "Atomically transition PUBLISHED -> LEGACY_COMMITTING -> CAPTURED_V1 while appending the v1 CAPTURED receipt, binding/interning its legacy session, and recording its session-start identity as the legacy commit's one in-process result.", "Release the lock only after the complete legacy commit. The returned legacy capability is ordinary v1 behavior.", "Any P4 call entering later observes CAPTURED_V1, refuses before P4 reservation, and leaves zero P4 batch/session/event/admission effect."],
+    "p4_commit": ["Obtain immutable resolver snapshot and run contract prepare_batch plus verify_prepared_batch before entering the ledger. No authority effect occurs here.", "Inside the one lock, compare every frozen live identity/head is exactly PUBLISHED, every transition nonce is unused, admission is UNUSED, and execution_key is absent. Then transition every identity PUBLISHED -> P4_RESERVING without releasing the lock.", "Recheck the prepared batch against the locked live projection and all ADR-0125 field adjacency. The one logical commit order is: (1) consume admission in the committed record, then (2) publish/mint the complete already-verified port/receipt/set/replay batch plus session identity and SessionStartRecord, and transition all identities P4_RESERVING -> P4_COMMITTED.", "No legacy route can run between reservation and complete commit. On a pre-commit refusal the lock-private reservation is discarded, each identity remains PUBLISHED, admission remains UNUSED, prepared data is destroyed, and a corrected retry is legal."],
+    "post_p4_denials": "For P4_RESERVING or P4_COMMITTED, all listed legacy capture/open/bind/member/consume/release routes refuse before receipt, session, provider/member, import, construction, execution, output, or release effects. For P4_RESERVING this is enforced by the lock; for P4_COMMITTED it is a ledger-state refusal. Helper and construction routes cannot manufacture a P4 record or bypass the gate."
+  },
+  "prepared_batch_is_not_issued": {
+    "definition": "_PreparedCapturedAuthorizationBatch is a private, non-exportable, nonserializable authority-local value. It may contain canonical signed candidate bytes only while the caller is inside authorize_capture_set; it has no public bytes accessor, artifact lookup key, resolver registration, store entry, execution-key binding, session identity, session-start record, or authority-valid status.",
+    "consequence": "The signing operation in prepare_batch is preparation, not ADR-0125 issuance/minting. The bytes cannot be observed, returned, stored, resolved, used to open/capture/bind a member, or associated with admission/session state; any preparation or pre-commit failure destroys them. Only commit_p4_batch's single ledger publication confers authority, names them as issued artifacts, binds the admission/key/session, and makes the batch resolvable.",
+    "adr_order": "Thus the first issued CapturedPortAuthorization is atomically preceded by the admission's consumption in the same committed WORM record. There is no signed-and-issued port before consumption and no rollback of a consumed admission."
+  },
+  "transaction_failure_and_concurrency": {
+    "preparation_failure": "Resolver, canonical/schema/signature/basis/time/revocation, request, planned-set, live fingerprint, signer, or prepared-batch verification failure occurs before ledger entry; admission is UNUSED, all heads stay PUBLISHED, no batch/session/event/legacy receipt/provider/member effect exists, and retry is legal.",
+    "precommit_failure": "A failure after P4_RESERVING but before the one ledger mutation clears only lock-private reservation. It cannot write, mint, publish, return, look up, or authorize any artifact. Admission remains UNUSED and retry is legal.",
+    "commit": "commit_p4_batch is all-or-nothing: it either creates exactly one immutable record containing consumed admission plus complete batch/session start, or writes nothing. It cannot expose a partial port, receipt, set, replay evidence, session, or event.",
+    "unknown_outcome": "If the primitive reports after an uncertain commit boundary, callers must call resolve_p4(execution_key, admission_identity). _P4Committed returns the same committed identity only; _Absent proves no commit and permits a fresh preparation. They never remint/resend first. A committed/consumed admission is never aborted or rolled back.",
+    "concurrency": "Same execution_key, same admission, or any shared live identity serialize on the one lock. The first complete legacy or P4 transition wins; a same-key P4 contender sees the exact committed record/refusal, while a contender after an explicitly precommit-aborted P4 attempt may retry. Different key/admission contenders sharing an identity also serialize and cannot split its route."
+  },
+  "adr0125_and_prior_closures_retained": {
+    "M04_basis_closure": "A held caller-unselectable immutable TrustedArtifactResolver snapshot recursively resolves every signed artifact, IssuanceBasis.v1, and exact ref; it verifies canonical grammar, named self, Ed25519, role/use, time/revocation, closed basis/ref set, no cycle/future output, and full action/replay adjacency before preparation.",
+    "M05_start_closure": "Session identity/nonce and canonical SessionStartRecord are fields of the same P4 committed record. Post-commit opaque interning/return performs no new authority effect; an intern failure resolves the existing record rather than creating a second session/event.",
+    "required_artifact_adjacency": ["P(CES)==P(BVP)==P(CAS)==P(StageAdmission or FinalReplayEntry)==ordered PlannedCaptureSet==ordered live captures by complete PCE bytes/cardinality.", "Each PCE has exactly one v2 port and v2 receipt; receipt binds its PCE/port, predecessor publication schema/digest, stream sequence/predecessor, consumer kind/id, runtime digest, and WORM-unique nonce.", "Set and replay evidence are strict planned-entry-order projections; action has action-none replay evidence, replay has exact FinalManifest/FinalReplayAdmission/FinalReplayEntry/intent and issued_ports equal the set triples.", "Session decision matches study, execution authority ref, logical execution, run, document, BVP, set self, process measurement, purpose, time, and the committed live identities."]
+  },
+  "required_red_tests": {
+    "M06_schedules": [
+      {"id": "P4V5-R01", "schedule": "Legacy direct capture acquires the shared transition lock first, commits v1 CAPTURED head/session/receipt, then direct P4 enters.", "assert": "P4 refuses at locked PUBLISHED comparison; no P4 reservation/batch/session-start/admission mutation occurs."},
+      {"id": "P4V5-R02", "schedule": "P4 reaches lock first, marks every identity P4_RESERVING, pauses before logical commit; direct legacy capture, verifier.capture, and driver.capture attempt concurrently.", "assert": "All block/refuse through the same lock; none append v1 receipt or return legacy session. Resume commits only P4 complete batch."},
+      {"id": "P4V5-R03", "schedule": "P4 commits, then invoke each direct/verifier/driver legacy capture plus open_capture, captured_bindings, member, read_bytes/read_text, require/_consume_binding, and release using P4-related identities.", "assert": "Each refuses before legacy receipt/session/member/provider/import/construct/run/output/release effect; ordinary unrelated v1 capture remains positive."},
+      {"id": "P4V5-R04", "schedule": "Two P4 calls share one identity but differ in key/admission; two calls share key/admission; a legacy and P4 start on a barrier repeatedly.", "assert": "Exactly one full winner per identity; no check-then-act window, mixed v1/P4 history, duplicate session, or partial P4 effect."}
+    ],
+    "M07_schedules": [
+      {"id": "P4V5-R05", "schedule": "prepare_batch or verify_prepared_batch fails before transaction; repeat with corrected evidence.", "assert": "No authoritative artifact/session/event/ledger lookup exists, admission remains UNUSED, and retry succeeds."},
+      {"id": "P4V5-R06", "schedule": "Instrument prepared signed candidate bytes before commit and attempt bytes/dict/pickle/lookup/store/key/session/member access; then force receipt/set/replay/revalidation failure while P4_RESERVING.", "assert": "All access refuses; no issue exists, reservation clears, admission is UNUSED, and corrected retry is legal."},
+      {"id": "P4V5-R07", "schedule": "At commit spy the logical mutation order and inject faults immediately before it and immediately after the immutable record publish; call resolve_p4.", "assert": "Before: no record and UNUSED. After: one record shows admission consumed before complete batch/session-start publication; resolve returns same record, never remints, aborts, or rolls back."},
+      {"id": "P4V5-R08", "schedule": "Concurrent same admission/key contenders and action/replay one- and multi-PCE success cases.", "assert": "One serialized committed WORM record holds both admission consumption and complete exact batch; no second session/event and no separate admission/batch store coordination."}
+    ],
+    "retained_family": ["Exact public signatures, opacity, constructor/copy/pickle/mapping/subclass/duck/wrapper/dependency/internal-table refusals.", "All request/cardinality/order/duplicate/live/head/run/runtime/nonce mutations, resolver/basis/ref/key/use/signature/time/revocation/cycle/future substitutions, and ADR-0125 field/self/preimage/ordering/adjacency mutations.", "Issuer/preparation ordering and no effect before commit; malformed/aliased/post-return mutation; action/replay multiple happy paths; no import/open/construct/run/output/release.", "Existing tests/pipeline/test_trust.py, tests/production/test_capture_lifecycle.py, and tests/production/test_adr0125_preflight.py retain ordinary-v1 and Packet 3 positives."]
+  },
+  "implementation_files_if_fresh_verdict_clean": ["dskit/pipeline/trust.py", "dskit/production/verifier.py", "tests/pipeline/test_captured_authorization.py", "tests/production/test_captured_authorization.py", "tests/pipeline/test_trust.py", "tests/production/test_capture_lifecycle.py"],
+  "focused_checks_if_implemented": ["PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_capture_lifecycle.py tests/production/test_adr0125_preflight.py tests/production/test_purity.py", "/home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py", "python3 -m json.tool docs/evidence/closeout/0078-f5a-p4-phase0-authorized-transaction-matrix-v5.json", "git diff --check"],
+  "next_gate": "Freeze this successor and obtain a fresh independent Phase 0 skeptic verdict. Only zero unresolved in-scope Critical/Major authorizes RED; this document neither grants RED nor closes F5A-R23."
+}
