@@ -1,0 +1,48 @@
+{
+  "schema_version": "OwnerGate.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "status": "blocked-before-RED",
+  "base_main": "b5ec57262ba53c7b47ee95639658a7a05f4c4048",
+  "phase0": {
+    "matrix_commit": "bbe9c777e7b5890818f051642277e79508e6e808",
+    "matrix": "docs/evidence/closeout/0070-f5a-p4-phase0-authority-seam-matrix-v2.json",
+    "skeptic_commit": "c93bb2545ef82158b4e598d4b5b1a9472ed8c60d",
+    "skeptic": "docs/evidence/closeout/0071-f5a-p4-phase0-skeptic-v2.json",
+    "critical": 0,
+    "major": 1,
+    "red_authorization": false
+  },
+  "blocker": {
+    "id": "F5A-P4-P0-M01-authority-seam",
+    "accepted_order": "consumed admission -> CapturedPortAuthorization.v2 -> LifecycleCapturedReceipt.v2 -> verified CapturedAuthorizationSet.v2 -> for replay ReplayCaptureAdmissionEvidence.v1 -> distinct set/evidence-bound LaunchSession",
+    "current_order": "LifecycleAuthority.capture validates the frozen port, creates a consumer LaunchSession, appends generic dskit.lifecycle-receipt/v1, and returns captured/session",
+    "why_not_local": "F5a cannot obtain exact v2 receipt bytes or defer session mint through the public API. A verifier-local workaround would be a forbidden parallel writer/trust root; a bytes-only preflight would not prove the live path."
+  },
+  "decision_requested": {
+    "owner": "F4/core lifecycle authority owner",
+    "approve": "Own and approve a versioned public broker seam that atomically consumes action/replay admission, issues exact per-PCE port authorizations and v2 receipts, verifies/builds the complete signed set, emits exact replay evidence when applicable, and only then mints a bound distinct session. Commit a controlling-manifest ownership correction before any trust.py edit.",
+    "refuse": "Keep Packet 4 open and blocked; do not begin RED, edit trust.py, add a parallel authority, weaken the schemas, or merge this branch to main."
+  },
+  "minor": {
+    "id": "F5A-P4-P0-m01-citation-end",
+    "disposition": "corrected in this handoff: development capture spans dskit/pipeline/trust.py:1128-1223"
+  },
+  "branch": {
+    "name": "codex/f5a-p4-captured-auth-20260914",
+    "preserve": true,
+    "merge_to_main": false,
+    "purge": false
+  },
+  "preserved_open": [
+    "Packet 2",
+    "F5A-R23-ctor-intern-unspend",
+    "Packet 4",
+    "Packets 6/8",
+    "whole F5a",
+    "no F3/F5b unblock",
+    "no deployment or real activity",
+    "origin/cursor/r5-f5a-private-plan-0f39 at c489199"
+  ],
+  "reentry": "Resume only after an explicit approve/refuse decision. On approval, first commit the F4/core ownership and versioned seam contract, then create a successor Phase 0 matrix and fresh skeptic review before RED."
+}
