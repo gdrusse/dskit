@@ -2,7 +2,7 @@
   "schema_version": "Phase0Matrix.v1",
   "slice_id": "F5a",
   "packet": "6-descriptor-receipt-equality-restart-linkage",
-  "status": "successor-phase0-after-repeated-publication-lookup-boundary",
+  "status": "successor-phase0-final-v1-effect-convergence",
   "base_main": "0ec667129c27d64b487b2962295f3b495d5e44e1",
   "cites": [
     "docs/evidence/closeout/0095-f5a-remainder-contract-pack.json",
@@ -11,7 +11,8 @@
     "docs/evidence/closeout/0114-f5a-p6-phase0-terra-convergence.json",
     "docs/evidence/closeout/0115-f5a-p6-phase0-terra-handle-verdict.json",
     "docs/evidence/closeout/0120-f5a-p6-correctness-boundary-verdict.json",
-    "docs/evidence/closeout/0124-f5a-p6-successor-correctness-verdict.json"
+    "docs/evidence/closeout/0124-f5a-p6-successor-correctness-verdict.json",
+    "docs/evidence/closeout/0128-f5a-p6-consume-boundary-verdict.json"
   ],
   "governing": "ADR-0123 signed-immutable-captures; ADR-0125 capture chronology; ADR-0126 F4 single-surface threat model; Packet 4 Matrix v9 (0089).",
   "reviewer_model": "gpt-5.6-terra (owner override 2026-09-15; supersedes GLM 5.3 request)",
@@ -86,6 +87,10 @@
     {
       "id": "non_authorizing_retained_audit",
       "binding": "Separate diagnostic lookup derives original stream from existing authenticated publish-sealed -> sealed -> prepared identity, ignores mutable descriptor and publish-stream selector, validates retained in-memory PRODUCED/SEALED/PUBLISHED facts, stream digest, original output path and sealed manifest. It never reloads/recovers/reads exposed receipt_store or issues authority. Existing post-tamper committed-view diagnostics and A-to-B stream-intern mint assertions remain valid: return original A or refuse inconsistent retained identity, never report B as A."
+    },
+    {
+      "id": "final_v1_effect_boundary",
+      "binding": "Use one broker-owned validation helper over retained publication/frozen/capture/verified/bindings graph at each v1 effect boundary. It checks complete publication snapshot, original output/member manifest, original frozen source/port, and exact session/stream/port association from authenticated records; mutable slots cannot replace those associations. Stage-specific head is PUBLISHED before CAPTURED commit and CAPTURED before provider/member delivery, bindings construction, or CONSUMED append. Pre-CAPTURED candidate session is not registered yet: validate publication/frozen/request facts without requiring registration; after CAPTURED require exact registered session and captured actor/port. Resolve existing graph records rather than caller handle fields. Return retained validated facts for the effect. Revalidate after staging/fault schedules immediately before sole-writer CAPTURED/CONSUMED publication. P4 retains its existing repeated final validation; no second writer. After successful CONSUMED, retained port/artifact access continues through immutable view checks only without exposed-store reload."
     }
   ],
   "substitution_families": [
@@ -186,6 +191,17 @@
         "Two distinct runs yielding identical complete retained six-field descriptors: descriptor-to-token lookup must refuse ambiguity before freeze/session/member/receipt effects.",
         "Mint publish-stream A to B: operational capture refuses; independent non-authorizing audits still report actual A and B streams. Existing exposed-store truncation diagnostics read retained committed view without recovery."
       ]
+    },
+    {
+      "family": "v1_stage_gap_final_effect",
+      "cases": [
+        "After bindings creation but before require or direct _consume_binding: independently mutate published descriptor six fields, original prepared/pin output path and identity, frozen source/node/input/purpose/digest, session stream/run, binding stream/port, and sealed manifest; refuse before CONSUMED/provider/session effects.",
+        "After capture before open, after verified before bindings, and after verified before pre-consumption member delivery: sweep the same retained identity family before effects.",
+        "At legacy staged/precommit fault schedule, mutate retained publication/frozen/port identity once; final validation refuses with no CAPTURED/session publication.",
+        "One authenticated intern substitution alone in capture/verified/bindings/publication records must not create a new consumption authority; do not combine with handle poke.",
+        "After successful CONSUMED, repeated valid retained artifact reads remain usable despite later exposed-store tamper; no new receipt, provider reopen, or consume.",
+        "Corrected retry following pre-effect mismatch uses restored valid identity with unchanged nonce and succeeds once; no spent-state update before refusal."
+      ]
     }
   ],
   "forbidden_effects": [
@@ -269,6 +285,12 @@
       "source": "0124-f5a-p6-successor-correctness-verdict.json",
       "status": "repeated boundary; independent convergence changed approach adopted; fresh Phase0 required",
       "implementation": "Replace prefix scans with direct intern token selector plus one shared retained descriptor validator; descriptor lookup exact retained identities; separate non-authorizing retained audit identity path. Sweep same-prefix node/output/purpose positives and ambiguous complete identities across v1/P4."
+    },
+    {
+      "finding": "P6-M1",
+      "source": "0128-f5a-p6-consume-boundary-verdict.json",
+      "status": "third failed final cycle and repeated family; independent changed approach incorporated before runtime correction",
+      "implementation": "One shared v1 effect-boundary validator with stage-appropriate exact head/session/port and retained full graph. Sweep gaps through require/direct consume, staged CAPTURED commit, member delivery and view construction. Keep post-CONSUMED reads retained-only."
     }
   ]
 }
