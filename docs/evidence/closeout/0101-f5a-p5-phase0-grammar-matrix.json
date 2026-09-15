@@ -1,0 +1,122 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "status": "phase0-design",
+  "base_main": "1fc290f6f2a8cd1d1944994d351f608f00ca1734",
+  "cites": [
+    "docs/evidence/closeout/0095-f5a-remainder-contract-pack.json",
+    "docs/evidence/closeout/0096-f5a-remainder-delta-matrices.json",
+    "docs/evidence/closeout/0099-f5a-p5-owner-decision.json"
+  ],
+  "governing_grammar": "docs/architecture/decision-log.md ADR-0125 'Captured ports and enforced multi-run stages' (the only document spelling, valid only as the complete value of one declared node input).",
+  "reviewer_model": "DeepSeek (owner override 2026-09-15)",
+
+  "positive_grammar": {
+    "descriptor": {
+      "outer": "a node input value is the exact built-in dict {\"$captured_artifact\": <descriptor>}; no other key beside \"$captured_artifact\" on that outer object",
+      "inner_keys": ["root_ref", "snapshot_version", "document_sha256", "node", "output", "purpose"],
+      "types": {
+        "root_ref": "non-empty str",
+        "snapshot_version": "non-empty str",
+        "document_sha256": "exact lowercase 64-hex SHA-256, not the 64-zero placeholder, not 'self'",
+        "node": "non-empty str",
+        "output": "non-empty str",
+        "purpose": "non-empty str"
+      },
+      "cardinality": "exactly six keys; no missing, extra, duplicate, or null member",
+      "no_nesting": "the descriptor value contains only those six scalar strings; no nested $captured_artifact, no list/map value, no $node.output / $prev reference inside it",
+      "derived_not_spelled": "consumer_document_sha256, consumer_node, consumer_input are parser-derived (ConsumerCapturedPort) and must NOT be spelled inside the descriptor"
+    },
+    "only_legal_location": "the complete value of one declared node input (top-level entry of NodeSpec.inputs)."
+  },
+
+  "negative_families": [
+    {"family": "forbidden_location", "cases": ["descriptor in NodeSpec.params (top-level or nested)", "descriptor as a $prev carry default", "descriptor in PipelineDocument.outputs", "descriptor in NodeSpec.artifact", "descriptor nested inside a list or map anywhere in inputs/params", "descriptor as an extra key beside another input form", "descriptor in a legacy stages section"]},
+    {"family": "forbidden_shape", "cases": ["missing any of the six keys", "extra seventh key", "duplicate key (canonical JSON already refuses)", "null value", "non-str root_ref/snapshot_version/node/output/purpose", "document_sha256 not lowercase 64-hex", "document_sha256 equals the 64-zero placeholder", "document_sha256 equals 'self'", "nested $captured_artifact inside the descriptor", "spelled consumer_document_sha256 / consumer_node / consumer_input inside the descriptor"]},
+    {"family": "forbidden_semantics", "cases": ["$prev / carry / $node.output reference anywhere a captured descriptor is the only legal form", "mode 'load' + captured descriptor", "artifact pin + captured descriptor", "a descriptor-shaped dict that is NOT under a $captured_artifact key must not be treated as authority"]},
+    {"family": "mutation_and_alias", "cases": ["mutation of the parsed descriptor object after from_obj does not change the frozen document identity", "a descriptor-shaped substitute in params/outputs is refused, not silently accepted"]}
+  ],
+
+  "entry_points_swept": [
+    "dskit.pipeline.document.PipelineDocument.from_obj / load_document",
+    "dskit.pipeline.document.NodeSpec.from_obj",
+    "dskit.pipeline.planner.plan (exported dskit.pipeline.plan)",
+    "dskit.pipeline.driver.plan_document / run_document",
+    "dskit.pipeline.node.resolve_uses",
+    "dskit.pipeline.stages.plan_stages",
+    "dskit.pipeline.__main__ cmd_plan / cmd_run / cmd_validate / cmd_staged / cmd_walkforward / cmd_nodemap"
+  ],
+
+  "context_rule": {
+    "principle": "A captured-artifact descriptor is recognized and shape-validated at the node level; it is a legal node input ONLY in an execution_backtest document. An ordinary (non-execution) document containing a $captured_artifact descriptor refuses at PipelineDocument level with a clear diagnostic; ordinary documents with no descriptor remain byte-identical in canonical JSON, hash, plan hash, and run identity.",
+    "execution_gate": "the existing planner.refuse_execution_backtest and __main__.load_and_preflight_public_document continue to refuse execution documents before planning/provider/broker/node import; the descriptor grammar does not open an ordinary-pipeline execution route."
+  },
+
+  "forbidden_effects": [
+    "planning or stage compilation before grammar refusal",
+    "provider or filesystem access",
+    "broker construction",
+    "node/adapter import or construction",
+    "output creation",
+    "treating a descriptor-shaped dict as capture authority in JSON"
+  ],
+
+  "compatibility": {
+    "v1_and_packets_2_4": "ordinary non-execution PipelineDocument behavior, canonical JSON bytes, config hash, plan hash, and run identity are byte-for-byte unchanged. Packet 4 sole-writer authority and trust.py descriptor handling unchanged.",
+    "frozen": "dskit/pipeline/trust.py _DESCRIPTOR_KEYS and freeze_consumer_document broker-route validation are not edited by this packet."
+  },
+
+  "tests": {
+    "new": [
+      "tests/pipeline/test_document.py: descriptor positive parse and every negative family",
+      "tests/pipeline/test_planner.py: plan/resolve surfaces refuse captured descriptors in ordinary documents and refuse forbidden locations",
+      "tests/pipeline/test_driver.py: run_document/plan_document refuse before node construction",
+      "tests/pipeline/test_main.py + test_main_nodemap.py: CLI surfaces refuse before adapter import/provider open"
+    ],
+    "existing_inventoried": [
+      "tests/pipeline/test_document.py (69)", "test_planner.py (42)", "test_driver.py (94)", "test_stages.py (16)", "test_main.py (5)", "test_node.py (43)", "test_resolve.py (17)", "test_trust.py (75)", "test_captured_authorization.py (53)"
+    ],
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture must remain green",
+    "note": "no duplicate test may be declared NEW before the inventoried files are checked"
+  },
+
+  "implementation_files": [
+    "dskit/pipeline/document.py",
+    "dskit/pipeline/planner.py",
+    "dskit/pipeline/driver.py",
+    "dskit/pipeline/stages.py",
+    "dskit/pipeline/node.py",
+    "dskit/pipeline/__main__.py",
+    "tests/pipeline/test_document.py",
+    "tests/pipeline/test_planner.py",
+    "tests/pipeline/test_driver.py",
+    "tests/pipeline/test_main.py",
+    "tests/pipeline/test_main_nodemap.py"
+  ],
+
+  "focused_checks_if_implemented": [
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_document.py tests/pipeline/test_planner.py tests/pipeline/test_driver.py tests/pipeline/test_stages.py tests/pipeline/test_main.py tests/pipeline/test_main_nodemap.py tests/pipeline/test_node.py tests/pipeline/test_resolve.py tests/pipeline/test_trust.py tests/pipeline/test_captured_authorization.py tests/production/test_capture_lifecycle.py",
+    "/home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/document.py dskit/pipeline/planner.py dskit/pipeline/driver.py dskit/pipeline/stages.py dskit/pipeline/node.py dskit/pipeline/__main__.py",
+    "git diff --check"
+  ],
+
+  "success_and_exit": {
+    "phase0": "a fresh DeepSeek skeptic must approve this frozen matrix with zero unresolved in-scope Critical/Major before RED.",
+    "whole_packet": "exact positive grammar plus the full inventoried negative family, ordinary JSON/hash compatibility, focused RED->GREEN, compatibility tests, two fresh sequential DeepSeek final lenses, then merge/push/remote verification/purge/wrap."
+  },
+
+  "non_goals": [
+    "a second planner or tape engine",
+    "capture authority in JSON",
+    "breaking ordinary non-execution document behavior or identity",
+    "pipeline-to-production import",
+    "Packet 6/7/8 scope",
+    "real data/replay/HPO/backtest/paper/live/deployment"
+  ],
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0101-f5a-p5-phase0-grammar-matrix.json",
+    "git diff --check"
+  ]
+}
