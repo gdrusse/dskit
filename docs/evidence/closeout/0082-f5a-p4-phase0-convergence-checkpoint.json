@@ -1,0 +1,77 @@
+{
+  "schema_version": "Phase0ConvergenceCheckpoint.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "independent third-failed-cycle convergence checkpoint for M09",
+  "checkpoint_date": "2026-09-15",
+  "authority": {
+    "owner_decision": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json",
+    "owner_decision_sha256": "c4e2d5b9237a581d146b1d0586eec3a79738aa426c2cb64f89ea8045ca0b030e",
+    "allowed_now": "One fourth successor Phase 0 design correction only; no RED, implementation, test edit, merge, deployment, or real activity.",
+    "preserved": ["Packet 2 v1 LifecycleAuthority verifier/driver construction and capture", "M02-M08 closures", "F5A-R23 durable/restart/cross-process consume-once remains open", "nondeployment; no parser/CLI/compose, real data/replay/HPO/refit/backtest/paper/live, or F3/F5b unblock"]
+  },
+  "frozen_parent_candidate": {
+    "commit": "c9c51d043dd569493058f6e02c946d125ef707a6",
+    "matrix": {"path": "docs/evidence/closeout/0080-f5a-p4-phase0-authorized-transaction-matrix-v6.json", "sha256": "b5d65638c5b73c03236fd7a36e229582b53ee6a9e88bca4d6756065f62053dbf"},
+    "verdict": {"path": "docs/evidence/closeout/0081-f5a-p4-phase0-skeptic-verdict-v7.json", "sha256": "f5b302ca413a4adb4bf8df4187d00f28de4e9c9af7bc146a3b65f632836ce76b"},
+    "source_blobs": {"dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844", "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d", "tests/pipeline/test_trust.py": "d96e8d3891659bb83f4f1199d79db8b5e8682e2e", "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04", "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"}
+  },
+  "append_only_history": [
+    {"id":"0069","commit":"de4801e4771170c98bee4fe292394b87a79b08bd","file":"0069-f5a-p4-phase0-authority-seam-matrix.json","sha256":"9ad76481c493bca3489c5bee530b05541e3a5a0f7a20ae0d45a0b1e430691d41","result":"M01: no public sole-writer seam; blocked."},
+    {"id":"0070","commit":"bbe9c777e7b5890818f051642277e79508e6e808","file":"0070-f5a-p4-phase0-authority-seam-matrix-v2.json","sha256":"17562e0fe8cc3042ee3bb29b48eea9ff64adbe5e6564f3da14bfba3848c8b5b5","result":"replay chronology/receipt-field correction; M01 retained."},
+    {"id":"0071","commit":"c93bb2545ef82158b4e598d4b5b1a9472ed8c60d","file":"0071-f5a-p4-phase0-skeptic-v2.json","sha256":"c35519d3b63906cf48fe50b6e92176f0c1aa0b1575ff147277c0917b5326362f","result":"M01 confirmed; owner gate."},
+    {"id":"0072","commit":"597f8d1323231945382b5d70f5ad6905e1bd3631","file":"0072-f5a-p4-owner-gate.json","sha256":"f5cc38526f4a4d58029c33e50a488ab0312867f1b487970ecbbb67020519bd08","result":"requested F4/core decision."},
+    {"id":"0073","commit":"76f68e064524fbd0f57ac72d7f35c9ddda243436","file":"0073-f5a-p4-owner-decision.json","sha256":"c4e2d5b9237a581d146b1d0586eec3a79738aa426c2cb64f89ea8045ca0b030e","result":"approved sole-writer seam; v1 break forbidden."},
+    {"id":"0074","commit":"beada570ac9ebe5602b1924379f175d7a813198d","file":"0074-f5a-p4-phase0-authorized-transaction-matrix-v3.json","sha256":"1c9aebcf1174f3e84fccc977f98574b3e000bf47447bef28d57ff5eebe01de7e","result":"first post-owner transaction design."},
+    {"id":"0075","commit":"0e88761f278bc9f8b77a681d87507cb88a6b425c","file":"0075-f5a-p4-phase0-skeptic-verdict-v4.json","sha256":"4332b0d92c9f775991469df6f54eec16a971372c40e9dcda762e5a3852bec0a0","result":"M02 legacy bypass, M03 transaction split, M04 basis closure, M05 session-event gap."},
+    {"id":"0076","commit":"2092e7eee8891d734b957cf55860150a01f2b67a","file":"0076-f5a-p4-phase0-authorized-transaction-matrix-v4.json","sha256":"42caed7c2a82b32fe1c3734914dd23c4a08e91d15d128db1e9440a0e574e6022","result":"first correction: ledger/reservation, resolver, SessionStartRecord."},
+    {"id":"0077","commit":"0c76a0352dcc7b5344fbcf3c20e05303462414dc","file":"0077-f5a-p4-phase0-skeptic-verdict-v5.json","sha256":"6dd452cbd957e58dd6593c23f844b9420b0933a01dd7f2f3616f97f644ecfab6","result":"M06 legacy/P4 TOCTOU, M07 consume-before-mint; M04/M05 closed at design level."},
+    {"id":"0078","commit":"170c9575642683b2e3da207967c5f27147212b52","file":"0078-f5a-p4-phase0-authorized-transaction-matrix-v5.json","sha256":"4a1f1ac4b3ee5b9dc8e50c67ead651b26c55c026f4a9549c6aadb64603abb4f6","result":"second correction: one lock/ledger and non-authoritative preparation."},
+    {"id":"0079","commit":"01fd68709a8ea1afdda62bc44bda90bb1ed349f4","file":"0079-f5a-p4-phase0-skeptic-verdict-v6.json","sha256":"2862fcf68785a125678a25d16afe47dc30dab1e31248ff458b551b330b5eaebd","result":"M08 constructor-selected trust root."},
+    {"id":"0080","commit":"85a713ee6bd2a25f12937f0aaff1a3129bda6acb","file":"0080-f5a-p4-phase0-authorized-transaction-matrix-v6.json","sha256":"b5d65638c5b73c03236fd7a36e229582b53ee6a9e88bca4d6756065f62053dbf","result":"third correction: issued exact capability/fixed graph; made verifier P4-only."},
+    {"id":"0081","commit":"c9c51d043dd569493058f6e02c946d125ef707a6","file":"0081-f5a-p4-phase0-skeptic-verdict-v7.json","sha256":"f5b302ca413a4adb4bf8df4187d00f28de4e9c9af7bc146a3b65f632836ce76b","result":"M09: P4-only verifier constructor breaks Packet 2 v1."}
+  ],
+  "failed_cycles": [
+    {"history":"0075 findings -> 0076 -> 0077 Majors","why_missed":"legacy denial was a mark rather than one atomic transition, and Reserved/Aborted did not satisfy immutable consume-before-mint.","family":"M02 became M06; M03 became M07."},
+    {"history":"0077 findings -> 0078 -> 0079 Major","why_missed":"the same-ledger repair left the authority constructor dependency-injectable.","family":"M08 reopened M04/M06/M07 through selected resolver/contract/ledger/lock."},
+    {"history":"0079 finding -> 0080 -> 0081 Major M09","why_missed":"the fixed capability boundary was imposed on the existing verifier constructor rather than only on the new P4 method.","family":"all legacy HistoricalStudyVerifier/HistoricalStudyCaptureDriver v1 construction/capture."}
+  ],
+  "complete_entry_inventory": {
+    "LifecycleAuthority_ABC": ["produce", "seal", "publish", "capture", "open_capture"],
+    "_DevelopmentBroker_and_v1_helpers": ["_development_broker(snapshot_storage, receipt_store, session_events, member_events, start_ms, provider_worm)", "start_producer_session", "end_session", "produce", "seal", "publish", "descriptor", "freeze_consumer_document", "derive_consumer_port", "capture", "open_capture", "captured_bindings", "VerifiedCapture.member", "CapturedMemberHandle.read_bytes/read_text", "CapturedBindings.require", "_consume_binding", "release", "_receipt_audit/recovery/provider/member helpers"],
+    "Packet2_facades": ["HistoricalStudyVerifier(LifecycleAuthority)", "HistoricalStudyVerifier.bind", "HistoricalStudyVerifier.capture", "HistoricalStudyCaptureDriver(exact HistoricalStudyVerifier)", "HistoricalStudyCaptureDriver.capture"],
+    "Packet4_only": ["CapturedAuthorizationAuthority nonconstructible ABC capability.authorize_capture_set", "private _development_p4_broker(*, fixture_facts=None)", "HistoricalStudyVerifier.authorize_capture_set", "HistoricalStudyCaptureDriver.authorize_capture_set", "authority-owned _LifecycleAuthorizationLedger.commit_legacy_capture/commit_p4_batch/resolve_p4"],
+    "relevant_tests": ["test_capture_lifecycle.py: test_private_plan_precedes_capture; all eight driver construction/substitution/class-method/positive/refusal/copy tests", "test_trust.py: public/opaque, capture/open/bind/member/consume/release, WORM chain, frozen port, session identity, and receipt recovery families", "test_adr0125_preflight.py::test_preflight_never_enters_the_no_effect_surfaces"]
+  },
+  "changed_approach": {
+    "decision":"Accept the proposed capability-gated method split. This differs materially from v6: constructor eligibility stays v1 LifecycleAuthority; P4 eligibility is checked only at the new authorize_capture_set doorway against that already-bound object.",
+    "verifier":"HistoricalStudyVerifier(authority) accepts any valid isinstance(authority, LifecycleAuthority), identity-pins it, and retains bind/capture unchanged. authorize_capture_set first requires exact HistoricalStudyVerifier, operational authority identical to its constructor pin, isinstance(pinned, CapturedAuthorizationAuthority), then private broker attestation of the exact object plus exact registered final class and immutable class-owned dispatch capsule. It invokes only that capsule. A v1 authority refuses before all effects; no authority/dependency argument, upgrade, wrapper, duck, subclass, copy, state rebuild, instance override, or post-construction replacement is a P4 route.",
+    "driver":"HistoricalStudyCaptureDriver preserves its exact verifier constructor/pin and legacy capture delegation. Its new authorize_capture_set invokes HistoricalStudyVerifier's checked class-bound method on that one verifier; it accepts no authority, factory, fixture, or dependency and owns no writer/state/lock/ledger/admission/receipt/session.",
+    "composition":"Only the external broker or private fixed _development_p4_broker creates/registers an exact P4 capability. _development_broker stays v1-only with its existing signature. Hostile closed fixture facts never select dependencies/trust roots. The P4 capability stays nonconstructible, exact-attested, fixed-graph, one-ledger/one-lock, and deployment_eligible=false.",
+    "no_dual_authority":"The P4 authority can only be the object originally passed to and pinned by the verifier. authorize_capture_set has no authority parameter; bind still accepts only legacy artifacts; a legacy verifier cannot be upgraded by assignment or a second facade."
+  },
+  "substitution_and_toctou_fixes": [
+    "Verifier pins authority identity; driver pins verifier identity. P4 checks both at invocation, and the authority repeats issuance/dependency/dispatch checks before preparation and under its one transition lock before commit.",
+    "isinstance(CapturedAuthorizationAuthority) is only the first filter. Private registration of exact object and final class plus captured class dispatch rejects ABC virtual registration, foreign/subclass, wrapper, duck, alias to another object, copy, pickle, and reconstructed state.",
+    "Legacy capture/open/bind/member/consume/release stays on the same ledger lock as P4. No facade has an unlocked not-P4 check; a P4 reservation/commit races legacy only through that one transition.",
+    "Prepared bytes remain inaccessible/non-authoritative. The same immutable commit consumes admission before publishing the complete batch/session-start; uncertain outcome resolves same identity and never remints."
+  ],
+  "required_successor_tests": [
+    "Positive compatibility: _development_broker remains accepted; existing bind/capture and driver.capture behavior, including test_driver_delegates_bound_verifier_capture, stays green.",
+    "V1 negative: a valid v1-only authority verifier/driver refuses authorize_capture_set before capture receipt, P4 record/ledger, session event, member/provider, or admission effects; ordinary direct v1 capture remains positive.",
+    "P4 positive: only the private P4 factory capability succeeds through direct verifier and driver class-bound methods using its one held authority/ledger.",
+    "Substitution: authority/verifier swap, late authority injection, virtual/foreign/private-final subclass, duck/wrapper, instance/class rebinding, copy/pickle/reduce/state/dict/slots reconstruction all refuse before P4 effects; preserve the legacy driver class-method-capture test.",
+    "TOCTOU: swap verifier authority after validation, between verifier dispatch and authority lock, and mutate one dependency/attestation/dispatch capsule before prepare, during reservation, and before commit. Each refuses or leaves no effect. ADR-0126 coordinated multi-private rewrites remain deferred.",
+    "Retain P4V5-R01..R08 and P4V6-R09..R13, adding direct verifier/driver compatibility cases to the facade schedules."
+  ],
+  "assessment": {
+    "M09":"closed at design level by preserving constructor/capture compatibility and gating only the new P4 method.",
+    "M02_M08":"retained without weakening: fixed factory/composition, recursive basis closure, same lock/ledger, atomic batch/admission/session-start, and P4 legacy-route denials are unchanged.",
+    "owner_approval":"No further owner decision is required for this design correction: 0073 already authorizes the narrow seam and expressly forbids v1 break. This adds neither authority nor effect route nor threat-model change.",
+    "authorization":"Authorizes one fourth successor Phase 0 design correction under 0073. Freeze it and obtain a fresh independent zero-Critical/Major verdict before RED.",
+    "red_authorized":false,
+    "merge_authorized":false,
+    "deployment_eligible":false
+  },
+  "validation":["python3 -m json.tool docs/evidence/closeout/0082-f5a-p4-phase0-convergence-checkpoint.json","git diff --check"]
+}
