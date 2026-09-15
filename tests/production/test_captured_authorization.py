@@ -7,6 +7,7 @@ import pytest
 from dskit.production import verifier as verifier_module
 from tests.pipeline import test_trust as f4
 from tests.production import test_capture_lifecycle as legacy
+from tests.pipeline import test_captured_authorization as p4
 
 
 @pytest.mark.parametrize("facade", ["verifier", "driver"])
@@ -63,3 +64,27 @@ def test_p4_facades_do_not_accept_another_authority_or_dependency(owner):
     for name in tuple(parameters)[3:]:
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
         assert parameters[name].default is inspect.Parameter.empty
+
+
+@pytest.mark.parametrize("facade", ["verifier", "driver"])
+def test_p4_facade_rejects_copied_state_and_late_authority_substitution(facade):
+    original = p4._factory()()
+    replacement = p4._factory()()
+    verifier = verifier_module.HistoricalStudyVerifier(original)
+    doorway = (
+        verifier if facade == "verifier"
+        else verifier_module.HistoricalStudyCaptureDriver(verifier)
+    )
+    verifier._authority = replacement
+    method = getattr(type(doorway), "authorize_capture_set", None)
+    assert callable(method), "Matrix v7 checked P4 facade method is missing"
+    with pytest.raises(ValueError, match="bound.*authority"):
+        method(doorway, (), p4._request(), **p4._runtime())
+    assert not original._session_events and not replacement._session_events
+    verifier._authority = original
+    twin = object.__new__(verifier_module.HistoricalStudyVerifier)
+    twin.__dict__.update(verifier.__dict__)
+    with pytest.raises(ValueError, match="bound.*authority"):
+        verifier_module.HistoricalStudyVerifier.authorize_capture_set(
+            twin, (), p4._request(), **p4._runtime()
+        )
