@@ -1,0 +1,20 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6-descriptor-receipt-equality-restart-linkage",
+  "candidate": "2f766232a7be97f6c58e2e28637e054538be38bb",
+  "matrix": "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_phase0_terra_full_graph",
+    "lens": "fresh independent Phase 0 full retained graph"
+  },
+  "verdict": "design-clean",
+  "critical": 0,
+  "major": 0,
+  "minor": 0,
+  "nit": 0,
+  "retained_reviewer_output": "Candidate 2f766232a7be97f6c58e2e28637e054538be38bb -- gpt-5.6-terra Phase 0 skeptic: design-clean.\nFindings: Critical 0, Major 0, Minor 0, Nit 0.\nMatrix covers publication->freeze->verified member->binding->port->artifact; all listed facades, view/intern substitutions, cross-broker swaps, and reset _read/_used.\nChecks: candidate exists; matrix JSON parse passed; git diff --check candidate^..candidate passed.\nLimits: read-only design review; no RED/runtime probes or full suite. Runtime gaps remain intentionally for RED/GREEN; not implementation approval.",
+  "next_gate": "Meaningful synthetic RED, then smallest generic GREEN, focused checks and two fresh sequential Terra final lenses.",
+  "deployment_eligible": false
+}
