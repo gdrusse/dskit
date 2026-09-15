@@ -1,5 +1,31 @@
 # Re-entry
 
+## Current checkpoint: Packet 7 dependency; owner sequencing decision needed (2026-09-15)
+
+Task worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7`, from main `48ae2fb`. Packet6 remains closed/merged.
+Evidence `0137` at `bcfc59d` records a fresh Terra scope inventory: no executable
+local P7 seam exists before F3/replay-ops supplies resolved ReplayRun identity,
+verified outer/parent capture interfaces, manifest policy/count/order evidence.
+P5 grammar and P6 generic equality already exist; neither proves the tape pair.
+No runtime/test edits, invented RED, Phase0 approval, or P7 closure is claimed.
+
+**Owner decision required:** `0100` says "Packet 8 is reached only after
+Packets 5-7 close." Terra identified one Major authority blocker if an empty
+local slice were called closed to bypass that gate. Recommended next action:
+authorize Packet8 independently while Packet7 remains explicitly open; otherwise
+wait for replay-ops/F3 to supply the missing interfaces. Do not start P8 RED before
+its own ledger-backed matrix and fresh clean Terra Phase0. No new durable-owner
+choice is needed:0100 already selects ChainLedger/JsonlLedger.
+
+This is an unmerged checkpoint branch; preserve it. Main/protected source remain
+`48ae2fb` / `c489199`; dirty main checkout untouched. P7/P8/F5A-R23/wholeF5a/F3/F5b
+remain open; deployment_eligible=false. Next unused evidence number:0138.
+JSON parse and diff check passed; no code changes justify rerunning tests.
+Approximate P7 wall-time attribution through this checkpoint: design 4.5 minutes,
+review 2 minutes, integration/checkpoint 1.5 minutes; implementation/tests/
+corrections 0. Categories are estimates, overlap is assigned once, not CPU timing.
+
 ## Current wrap: Packet 6 closed and merged (2026-09-15)
 
 Task worktree `/home/russell/wt/f5a-remainder-20260915`, currently `main`.
