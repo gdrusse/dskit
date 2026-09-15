@@ -1,0 +1,41 @@
+{
+  "schema_version": "Phase0SkepticReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "fresh independent Phase 0 authority/concurrency skeptic of frozen successor matrix v5",
+  "reviewer": {"model": "gpt-5.6-terra", "agent_task": "/root/f5a_p4_phase0_skeptic_v6"},
+  "reviewed": {
+    "candidate_commit": "170c9575642683b2e3da207967c5f27147212b52",
+    "candidate_scope": "documentation-only successor matrix; no RED implementation exists",
+    "matrix": "docs/evidence/closeout/0078-f5a-p4-phase0-authorized-transaction-matrix-v5.json",
+    "matrix_sha256": "4a1f1ac4b3ee5b9dc8e50c67ead651b26c55c026f4a9549c6aadb64603abb4f6",
+    "owner_decision": {"path": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json", "sha256": "c4e2d5b9237a581d146b1d0586eec3a79738aa426c2cb64f89ea8045ca0b030e"},
+    "prior_matrix": {"path": "docs/evidence/closeout/0076-f5a-p4-phase0-authorized-transaction-matrix-v4.json", "sha256": "42caed7c2a82b32fe1c3734914dd23c4a08e91d15d128db1e9440a0e574e6022"},
+    "prior_verdict": {"path": "docs/evidence/closeout/0077-f5a-p4-phase0-skeptic-verdict-v5.json", "sha256": "4332b0d92c9f775991469df6f54eec16a971372c40e9dcda762e5a3852bec0a0"},
+    "controlling_adrs": ["ADR-0125", "ADR-0126"],
+    "inventoried_blobs": {"dskit/pipeline/trust.py": "e670bc96db3abf96d7625482c01d8f0d796de844", "dskit/production/verifier.py": "6d202b325ac601816284908980d392baecb9d54d", "tests/pipeline/test_trust.py": "d96e8d3891659bb83f4f1199d79db8b5e8682e2e", "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04", "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717"}
+  },
+  "prior_major_disposition": {
+    "0075_M02": "Closed at the stated design level by the one authority-owned lock, terminal shared-ledger live head, and all legacy/facade/open/bind/member/consume/release denials.",
+    "0075_M03": "Closed at the stated design level by a same-ledger immutable record containing consumption and the complete batch/session-start; prepared bytes are non-authoritative.",
+    "0075_M04": "Closed by the stated held recursive resolver closure, but M08 prevents it being caller-unselectable.",
+    "0075_M05": "Closed by the same-record SessionStartRecord/identity and resolve-after-intern-failure rule.",
+    "0077_M06": "Closed at the stated design level; current unlocked legacy capture/open/bind/consume/release and facade routes make P4V5-R01..R04 mandatory.",
+    "0077_M07": "Closed at the stated design level; publication/mint follows consumption in one commit and unknown outcome resolves before remint."
+  },
+  "findings": {"critical": [], "major": [{
+    "id": "F5A-P4-P0-M08-constructor-selectable-trust-root",
+    "severity": "Major",
+    "invariant": "The P4 authority is sole writer and M04's resolver/key/revocation closure is held and caller-unselectable; no caller selects the contract, resolver, or transactional ledger/lock deciding validity, issuance, or admission.",
+    "location": "0078 lines 35-40 name a constructor accepting captured_authorization_contract, trusted_artifact_resolver, and authorization_ledger; lines 50-60 say only the authority constructs/privately retains them and owns the ledger; line 88 calls the resolver caller-unselectable.",
+    "entry_points": ["CapturedAuthorizationAuthority(...) construction", "HistoricalStudyVerifier(authority)", "HistoricalStudyCaptureDriver(verifier)", "authorize_capture_set(...)"],
+    "worked_counterexample": "Construct the exact P4 authority with a caller-held resolver returning a convenient non-WORM/revoked/wrong-basis chain, a contract preparing an arbitrary matching batch, or a ledger whose commit/resolve/lock is not its single record domain; wrap it in the documented verifier/driver and call authorize_capture_set. The matrix neither makes construction private nor defines a sealed exact composition root/rejects aliases, subclasses, and wrappers.",
+    "consequence": "A conforming implementation can accept an invalid basis chain or evade single-ledger arbitration while returning a P4 record/session. This reopens material M04 trust authority and undermines M06/M07; it is neither ADR-0126's deferred multi-private-poke model nor F5A-R23 durability/restart.",
+    "family": "P4 construction/dependency injection, resolver/key/revocation choice, contract preparation, and ledger/lock ownership for action and replay.",
+    "disposition": "confirmed-blocker. RED is not authorized. Revise to an authority-owned private factory with fixed exact dependencies, or obtain owner approval for an explicit sealed composition-root contract. Add constructor/factory and alias/subclass/wrapper, resolver/basis, contract-output, and ledger/lock substitution RED cases before fresh Phase 0."
+  }], "minor": [], "nit": []},
+  "tested_evidence": ["Read OwnerDecision 0073; 0074/0076/0078; 0075/0077; ADR-0125/0126; and workflow/re-entry instructions.", "Confirmed frozen HEAD and all 0078 source blobs exactly match; inspected capture trust.py:1140-1451 and verifier/driver facade verifier.py:1971-2056.", "No runtime tests: documentation-only Phase 0 candidate has no P4 implementation or RED tests."],
+  "untested_limits": ["P4V5-R01..R08 await implementation.", "F5A-R23, durable/restart/cross-process closure, whole F5a/F3/F5b remain open.", "ADR-0126 deferred multi-private-mutation attacks were not reclassified."],
+  "assessment": {"unresolved_counts": {"critical": 0, "major": 1, "minor": 0, "nit": 0}, "red_authorized": false, "reason": "M08 contradicts sole-writer/caller-unselectable trust at the public construction boundary."},
+  "required_next_gate": "Correct the constructor/composition authority boundary in a successor matrix, with owner approval if the seam changes; obtain a fresh independent Phase 0 verdict with zero unresolved Critical/Major. Preserve v1, R23, and nondeployment limits."
+}
