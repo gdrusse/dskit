@@ -1,5 +1,37 @@
 # Re-entry
 
+## Current checkpoint: P8 owner gates resolved; P8 still sequenced behind P7, which awaits F3 (2026-09-15)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7` (pushed, unmerged). Main `48ae2fb`; P5/P6 closed/merged.
+Protected source `c489199` untouched; dirty main checkout untouched. DeepSeek v4
+Pro primary implementer. No runtime/test changes made this turn; no packet closed.
+
+**Owner decisions `0144`** resolve the three immediate P8 gates from
+0139/0140/0141/0143:
+
+1. **Sequencing — keep original ordering.** P8 implementation is NOT authorized
+   ahead of Packet7. P8 begins only after P5–7 close.
+2. **Migration — approve.** Capture-capable `HistoricalStudyVerifier` must require
+   authenticated owner composition and immutable authority-verified admission
+   identity; no successful non-durable fallback.
+3. **Issuer — existing issued authority + owner ServeRoot.** The existing issued
+   `CapturedAuthorizationAuthority` supplies verified admission identity; the
+   durable namespace comes from the owner-configured stable ServeRoot/genesis,
+   never a caller-passed ledger. No new issuer class; bare ledger injection stays
+   rejected.
+
+**Resulting blocker.** P7 remains blocked on the missing F3/replay-ops interfaces
+(`0137`): resolved ReplayRun/NodeSpec contract, verified PUBLISHED manifest/data
+identities, parent manifest-producer CAPTURED receipt, and members/policy/count/
+order verification. No locally decidable P7 runtime slice; do not fabricate or
+start unrelated F3 work without authorization. The approved P8 migration/issuer
+contract is frozen for use once P7 closes; then a fresh clean Phase0 precedes RED.
+
+P7/P8/F5A-R23/wholeF5a/F3/F5b remain open; `deployment_eligible=false`. Next
+unused evidence number: 0145. Approximate checkpoint minutes (design only): design
+0.8, implementation 0, tests 0, review 0, corrections 0, integration/wrap 0.2.
+
 ## Current wrap: Packet 8 design handed off; implementation stopped (2026-09-15)
 
 User requested Packet8 design only, then stop/wrap and a DeepSeek prompt.
