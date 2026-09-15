@@ -1,0 +1,491 @@
+{
+  "schema_version": "Phase0Matrix.v8",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "material successor Phase 0: exact external terminal anchors for schema-undefined ADR-0125 leaves",
+  "base_commit": "90fa9d8563ba4e0b01a6cc47500b7e82459b6c8f",
+  "source_pin": "c48919944588a2b29ba047e4cb551050a1ff9868",
+  "supersedes": {
+    "matrix": "docs/evidence/closeout/0083-f5a-p4-phase0-authorized-transaction-matrix-v7.json",
+    "matrix_sha256": "d34df2a4ab42ab6a1bc184796a4650bd89b03d76cd60c39086341d2ff888db40",
+    "retained_clean_verdict": "docs/evidence/closeout/0084-f5a-p4-phase0-skeptic-verdict-v8.json",
+    "retained_clean_verdict_sha256": "3d60f4892ff19fbd3bf6b1bef44c46097c7d2e45034e11107d4cac7ea77b1881",
+    "checkpoint": "docs/evidence/closeout/0082-f5a-p4-phase0-convergence-checkpoint.json",
+    "disposition": "All v7 method-split, fixed-composition, lifecycle arbitration, atomicity, compatibility and M02-M09 obligations are restated below and retained. This successor adds an explicit verification authority for two schema-undefined external leaf families; 0084 does not approve this new authority boundary. All earlier evidence remains unchanged."
+  },
+  "authority_and_limits": {
+    "owner_decision": "docs/evidence/closeout/0073-f5a-p4-owner-decision.json",
+    "controlling_adrs": [
+      "ADR-0125",
+      "ADR-0126"
+    ],
+    "authorization": "The user's explicit bounded design authority and OwnerDecision 0073 authorize this append-only design record only. The new terminal-verifier trust boundary requires a fresh independent Phase 0 verdict with zero unresolved in-scope Critical/Major before its RED or implementation. This record grants no merge, deployment, real activity, terminal verification, anchor issuance or lifecycle effect.",
+    "deployment_eligible": false,
+    "preserved_open": [
+      "Packet 2",
+      "F5A-R23-ctor-intern-unspend",
+      "durable/restart and cross-process consume-once",
+      "Packets 5/6/7/8",
+      "whole F5a",
+      "F3/F5b",
+      "origin/cursor/r5-f5a-private-plan-0f39 at c48919944588a2b29ba047e4cb551050a1ff9868",
+      "Full Matrix v8 implementation and both fresh final review lenses",
+      "G1/G2/F3-owned external terminal schemas and deployment trust configuration"
+    ],
+    "non_claim": "This is one in-process synthetic P4 authority design only. It does not claim ADR-0123 OS-owned durable authority, restart reconstruction, cross-process locking, closure of R23, a parser/CLI/compose route, protected-data access, replay, HPO/refit, backtest, paper/live activity, or deployment. ADR-0126 deferred coordinated multi-private-mutation attacks remain deferred. The terminal seam is temporary composition for externally owned G1/G2/F3 authorization and fixed-owner-policy semantics, not an invented production JSON schema or a claim that external verification is deployed."
+  },
+  "inventoried_current_surface": {
+    "blobs": {
+      "dskit/pipeline/trust.py": "a4b7297e0d02f66e20c1d02ed8c1d84d3c1b7d26",
+      "dskit/production/verifier.py": "d73d511aa8d2a2dec10da2aefe5dc0dff380e3b1",
+      "tests/pipeline/test_captured_authorization.py": "52bc8a40ee25e741ad6bb4ffe15752d1eafb03ae",
+      "tests/pipeline/test_trust.py": "1844d048b18451d7aee2bc7fd2104b29832f4c58",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+      "tests/production/test_captured_authorization.py": "a38cfbeacedac5866146bdf93cfd1ceb3d7cc6f3"
+    },
+    "v1_authority": [
+      "LifecycleAuthority ABC: produce, seal, publish, capture, open_capture",
+      "_development_broker(...) and all ordinary LifecycleAuthority subclasses",
+      "direct capture/open_capture/captured_bindings/member/read/require/_consume_binding/release"
+    ],
+    "packet2_facades": [
+      "HistoricalStudyVerifier(LifecycleAuthority)",
+      "HistoricalStudyVerifier.bind",
+      "HistoricalStudyVerifier.capture",
+      "HistoricalStudyCaptureDriver(exact HistoricalStudyVerifier)",
+      "HistoricalStudyCaptureDriver.capture"
+    ],
+    "packet4_additions_only": [
+      "CapturedAuthorizationAuthority.authorize_capture_set",
+      "private _development_p4_broker(*, fixture_facts=None)",
+      "HistoricalStudyVerifier.authorize_capture_set",
+      "HistoricalStudyCaptureDriver.authorize_capture_set",
+      "authority-owned _LifecycleAuthorizationLedger.commit_p4_batch/resolve_p4 alongside commit_legacy_capture",
+      "Proposed TerminalArtifactVerifier nonconstructible broker-issued verification capability",
+      "Proposed VerifiedExternalArtifactAnchor nonconstructible opaque proof; never returned by authorize_capture_set",
+      "Proposed private fixed terminal verifier and immutable terminal-policy binding within the same broker-owned resolver graph"
+    ],
+    "compatibility_rule": "The existing verifier accepts a valid LifecycleAuthority exactly as it does now, pins that exact object, and retains its bind/capture behavior. The existing driver accepts the exact verifier and retains class-bound capture delegation. A normal v1 authority remains a positive legacy route and is not P4-capable."
+  },
+  "public_contracts_and_fixed_composition": {
+    "LifecycleAuthority": "Unchanged public ABC and unchanged v1 abstract set. CapturedAuthorizationAuthority is also a LifecycleAuthority instance, not a parallel lifecycle writer: its inherited legacy capture method and its P4 method share one writer, one transition lock, and one lifecycle ledger.",
+    "CapturedAuthorizationAuthority": {
+      "kind": "Public nonconstructible ABC/capability surface exported beside LifecycleAuthority. It inherits the unchanged v1 abstract set and adds abstract authorize_capture_set(...). Direct ABC construction refuses.",
+      "method": "authorize_capture_set(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces) -> tuple[CapturedAuthorizationRecord, LaunchSession]",
+      "input": "captures is an exact nonempty built-in tuple of exact built-in (published, frozen, derived_port) tuples in complete PlannedCaptureSet order. admission_ref is exact built-in IssuanceBasisRef.v1 for the selected action-execution or final-replay admission. Existing v6 run, SHA-256, identity, cardinality, ordering, duplicate, live-head, and nonce rules remain closed. There is no authority, signer, keyring, resolver, clock, revocation source, contract, ledger/store, lock, callback, factory, provider, path, URL, session, artifact bytes, adapter, or override parameter.",
+      "output": "CapturedAuthorizationRecord and LaunchSession(kind='captured-authorization-v2') are opaque, identity-bound, nonmapping, noncopyable, nonpickleable, and expose no bytes, member/provider, signer, resolver, store, lock, dependency, or construction capability. P4 creates no _Captured, VerifiedCapture, or CapturedBindings capability.",
+      "broker_issued_exactness": "The authority broker alone registers an exact final concrete instance during construction. Every P4 entry checks exact registered object identity, private broker attestation, exact final class identity, and the immutable class-owned dispatch capsule; isinstance alone is insufficient. Registration, attestation, dispatch capsule, dependencies, and graph have no public mutation, serialization, or reconstruction API."
+    },
+    "synthetic_private_authority": {
+      "kind": "_SyntheticP4CapturedAuthorizationAuthority is private, exact final, nonconstructible except with a private one-shot factory token, permanently deployment_eligible=false, and refuses direct construction/copy/deepcopy/pickle/reduce/state/mapping reconstruction.",
+      "sole_factory": "Only _development_p4_broker(*, fixture_facts=None), a new private fixed synthetic factory, constructs and registers it. It takes no dependency object, class, wrapper, callback, store, lock, signer, keyring, resolver, clock, revocation authority, contract, session, or per-call override and returns only the public CapturedAuthorizationAuthority capability.",
+      "fixed_graph": [
+        "_FixedP4Signer",
+        "_FixedP4Keyring",
+        "_FixedWormTrustedArtifactResolver",
+        "_FixedP4Clock",
+        "_FixedP4RevocationAuthority",
+        "_FixedTerminalArtifactVerifier (private exact final TerminalArtifactVerifier implementation)",
+        "_FixedTerminalVerificationPolicy (private immutable broker-owned external identity/role/corpus commitment)",
+        "_FixedCapturedAuthorizationContract",
+        "_LifecycleAuthorizationLedger and its one capture-transition lock domain",
+        "_SyntheticP4CapturedAuthorizationAuthority"
+      ],
+      "fixture_data": "fixture_facts is hostile data only with the exact closed grammar defined in synthetic_terminal_composition. Copied bytes can request verification but never select a verifier, policy, key, clock, revocation source, snapshot, generation, anchor, resolver, ledger or lock. No supplied boolean, signed-looking envelope or digest is a trust decision.",
+      "v1_preservation": "_development_broker(...) retains its exact current signature and byte-for-byte v1 behavior, has no P4 opt-in, and never returns the P4 capability. The P4 capability is nevertheless a LifecycleAuthority instance, so it is valid at the preserved verifier constructor and remains the only P4-capable authority."
+    },
+    "held_dependencies": {
+      "contract": "_FixedCapturedAuthorizationContract only prepares and verifies an immutable batch from a fixed resolver snapshot. It cannot reserve/consume/abort admissions, write/lookup a ledger, construct sessions/events, open members/providers, import, construct, execute, output, invoke a callback, or spend authority.",
+      "resolver": "The held WORM resolver owns one immutable snapshot and recursively verifies the selected admission, all ADR-defined signed artifacts, IssuanceBasis.v1 and exact references with shared local validators: canonical grammar, named self, SHA-256, Ed25519, role/use, trusted time, revocation, closed basis/ref sets, cycles, future output and action/replay adjacency. Exactly the terminal positions listed below additionally require broker-issued opaque external anchors from its held TerminalArtifactVerifier. The P4 contract never interprets their externally owned application schemas or treats unresolved bytes as verified. No request selects bytes beyond copied fixture facts, a generation, path, URL, fallback, store, resolver, callback or trust root.",
+      "integrity": "Before preparation and again inside the sole transition lock before commit, the authority verifies exact private dependency identities/classes, immutable construction commitments, broker attestation, and final dispatch capsule. Dependencies expose no getter and retain only copied frozen state. Any mismatch, replacement, unexpected result, or altered commitment refuses before preparation or ledger entry. These checks include the held terminal-verifier/policy/dispatch identities, the snapshot's exact root and generation, every anchor issuance registration and all opaque binding commitments. Anchor currentness is revalidated inside the sole transition lock before commit; an earlier cached verification cannot authorize a stale generation."
+    }
+  },
+  "facade_method_split": {
+    "HistoricalStudyVerifier": {
+      "constructor": "HistoricalStudyVerifier(authority) remains the existing LifecycleAuthority constructor: it accepts any valid isinstance(authority, LifecycleAuthority), identity-pins that exact authority, and neither constructs nor upgrades it. bind and capture remain unchanged and ordinary v1 capture remains available through the held v1 authority.",
+      "new_method": "authorize_capture_set(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces) -> tuple[CapturedAuthorizationRecord, LaunchSession]",
+      "gate_and_dispatch": "The new method accepts no second authority or dependency argument. Before any effect it requires exact HistoricalStudyVerifier self, the current operational authority identical to the constructor pin, that already-held object to be isinstance(CapturedAuthorizationAuthority), and private broker attestation of that exact object plus the exact registered final class and immutable class-owned authorize_capture_set dispatch capsule. It invokes only that capsule. A plain v1 authority refuses before prepare, legacy receipt, P4 record/ledger, admission, session/event, member/provider, import, construction, execution, output, or release effect.",
+      "refusals": "No assignment, late injection, replacement, second verifier, adapter, duck, wrapper, composition proxy, subclass, virtual ABC registration, bound-method/instance override, copied verifier state, pickle/reduce/state rebuild, or reconstructing __dict__/slots converts this facade into a P4 route. The verifier owns no P4 writer/state/lock/ledger/admission/receipt/session/event capability."
+    },
+    "HistoricalStudyCaptureDriver": {
+      "constructor": "HistoricalStudyCaptureDriver(verifier) remains the existing exact HistoricalStudyVerifier constructor and identity pin. It does not construct a verifier and accepts no authority, P4 authority, factory, fixture, dependency, or override separately.",
+      "legacy": "capture remains the current exact class-bound delegation to its same bound verifier and therefore preserves ordinary v1 capture behavior.",
+      "new_method": "authorize_capture_set(captures, admission_ref, *, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces) -> tuple[CapturedAuthorizationRecord, LaunchSession]",
+      "delegation": "At call time it rechecks exact driver-held verifier identity/class and invokes HistoricalStudyVerifier's checked exact class-bound authorize_capture_set on that one verifier. It never accepts or injects/swaps a P4 authority and owns no writer/state/lock/ledger/admission/receipt/session/event. Wrapper, subclass, duck, copy, pickle, state reconstruction, attribute swap, instance/class rebinding, or monkeypatched callable paths refuse before P4 effects."
+    }
+  },
+  "M02_to_M08_retained_transaction": {
+    "one_domain": "_LifecycleAuthorizationLedger remains private and authority-owned. Its sole mutex is the same LifecycleAuthority capture-transition lock used by direct legacy and both facade routes. One record domain contains per-live-identity heads/claims, admission state, execution-key uniqueness, complete P4 batch, session identity/nonce, and SessionStartRecord; there is no second admission store or cross-store coordination.",
+    "states": {
+      "live_identity": [
+        "PUBLISHED",
+        "LEGACY_COMMITTING (lock-private)",
+        "CAPTURED_V1",
+        "P4_RESERVING (lock-private)",
+        "P4_COMMITTED(execution_key,batch_digest)"
+      ],
+      "admission": [
+        "UNUSED",
+        "COMMITTED(execution_key,batch_digest)"
+      ],
+      "execution_key": "canonical (study_id, canonical execution_authority_ref bytes, logical_execution_id, run_id)"
+    },
+    "legacy": "Validate outside and inside the shared lock; atomically transition PUBLISHED through LEGACY_COMMITTING to CAPTURED_V1 while appending the v1 receipt, binding/interning the legacy session, and recording its sole start identity. Later P4 sees CAPTURED_V1 and refuses before P4 reservation/batch/session/admission effect.",
+    "p4": "The fixed contract resolves and prepares/verifies without authority effect. Under the same lock, recheck exact PUBLISHED heads, unused nonces/admission, absent key, dependency commitments, fixed snapshot, complete field adjacency, frozen live projection, broker attestation, and dispatch capsule. The one immutable commit first consumes the admission, then publishes/mints the complete verified port/receipt/set/replay batch, session identity, and atomic SessionStartRecord, then transitions all identities to P4_COMMITTED without releasing the lock. The under-lock recheck includes terminal root/policy/snapshot/anchor commitments, validity and verification-generation currentness. A stale or revoked anchor rejects the entire batch before consumption, never by partially committing or later rolling back a WORM admission.",
+    "resolver_and_basis": "The held recursive resolver retains full ADR-0125 basis closure: P(CES)==P(BVP)==P(CAS)==P(StageAdmission or FinalReplayEntry)==ordered PlannedCaptureSet==ordered live captures by complete PCE bytes/cardinality, with exact action/replay admission, signer/use, time, revocation, self/preimage, predecessor-publication, port/receipt/set, replay-evidence, and session-decision adjacency. For the two external families, this closure additionally requires the complete exact terminal anchor set and authenticated parent/publication-policy linkage under the same snapshot. An anchor is not a CaptureAdmissionSet, execution admission, port authorization, receipt, session or consumption authority.",
+    "failure_retry_race": "Preparation, verification, dependency, fixture, trust, mutation, or precommit failure leaves heads PUBLISHED and admission UNUSED; only lock-private reservation is discarded and a corrected retry is legal. The commit publishes one complete record or nothing. An uncertain post-boundary caller resolves exact key/admission before any remint. Legacy/P4 races serialize on the one lock; all listed capture/open/bind/member/consume/release routes refuse for P4_RESERVING/P4_COMMITTED matched identities before effect, while unrelated ordinary v1 remains positive. A failed or stale terminal proof leaves the admission UNUSED and live heads PUBLISHED. A corrected retry obtains a fresh complete closure from the held current snapshot; it cannot reuse a stale anchor, bypass full local verification or remint after an uncertain committed outcome.",
+    "prepared_and_session": "Prepared bytes are private, inaccessible, nonserializable, and nonauthoritative until same-ledger publication. Session identity/nonce and canonical SessionStartRecord are fields of the same committed record; postcommit opaque interning/return cannot mint another session or event. This preserves M02-M08 without claiming durable/restart consume-once closure."
+  },
+  "required_red_tests_after_fresh_clean_phase0": {
+    "v1_compatibility": [
+      "_development_broker remains accepted by HistoricalStudyVerifier; existing bind/capture and HistoricalStudyCaptureDriver.capture, including test_driver_delegates_bound_verifier_capture, stay green.",
+      "A valid v1-only authority verifier and driver refuse authorize_capture_set before all capture receipt, P4 record/ledger, admission, session/event, member/provider, import, construction, execution, output, and release effects; direct ordinary v1 capture remains positive."
+    ],
+    "p4_positive_and_facades": [
+      "Only private _development_p4_broker capability succeeds through direct authority, verifier class-bound method, and driver class-bound method using its one held authority/ledger.",
+      "P4 action and replay one/multi-PCE positives retain exact complete batch, sorted set/evidence, recursive basis closure, atomic admission plus SessionStartRecord, and no open/import/construct/run/output/release route."
+    ],
+    "construction_substitution_and_dispatch": [
+      "Attempt public ABC construction, foreign/virtual/ordinary v1 subclasses, direct private-final construction, old v1-factory opt-in, alternate factory, and every positional/keyword dependency argument; all refuse.",
+      "Attempt verifier/driver authority or verifier swap, late P4 injection, alias replacement, subclass, duck, wrapper/proxy/decorator, instance/class rebinding, bound-method substitution, copied/pickled/reduced/state/dict/slots reconstructed authority/verifier/driver, and copied verifier state; only the pinned exact broker-attested final capability can reach P4 and every substitute refuses before effects.",
+      "Mutate one attestation, final-class registration, dispatch capsule, signer/keyring/resolver/clock/revocation/contract/ledger/lock/internal table before prepare, between verifier dispatch and authority lock, during reservation, and before commit; each refuses or leaves no effect. ADR-0126 coordinated multi-private rewrites are documented as deferred."
+    ],
+    "prior_families": [
+      "Retain P4V5-R01..R08 and P4V6-R09..R13, adding direct verifier/driver v1 compatibility and method-split schedules.",
+      "Retain exact public signatures; opaque mapping/subclass/duck/wrapper/internal-table refusals; request/cardinality/order/duplicate/live/head/run/runtime/nonce mutations; resolver/basis/ref/key/use/signature/time/revocation/cycle/future substitutions; issuer ordering; partial failures/retry; post-freeze mutation; atomicity; and no-effect sentinels.",
+      "Retain tests/pipeline/test_trust.py, tests/production/test_capture_lifecycle.py, and tests/production/test_adr0125_preflight.py, including Packet 3 preflight no-effect coverage and the unchanged LifecycleAuthority abstract method set."
+    ],
+    "retained_schedule_matrix": [
+      {
+        "id": "P4V5-R01",
+        "schedule": "Legacy direct capture commits v1 under the shared transition lock, then direct P4 enters.",
+        "expected": "P4 refuses at the locked PUBLISHED comparison; no P4 reservation, batch, session-start or admission mutation."
+      },
+      {
+        "id": "P4V5-R02",
+        "schedule": "P4 holds P4_RESERVING before commit while direct legacy capture, verifier.capture and driver.capture contend.",
+        "expected": "All block or refuse through the same lock; no v1 receipt/session; resuming the P4 winner commits only its complete batch."
+      },
+      {
+        "id": "P4V5-R03",
+        "schedule": "After P4 commit invoke direct/verifier/driver legacy capture, open_capture, captured_bindings, member, read_bytes/read_text, require/_consume_binding and release on matched identities.",
+        "expected": "Each refuses before legacy receipt/session, member/provider, import/construction/run/output or release effect; unrelated ordinary v1 remains positive."
+      },
+      {
+        "id": "P4V5-R04",
+        "schedule": "Repeated barrier-controlled races share a live identity with differing P4 keys/admissions, share the same key/admission, and race legacy against P4.",
+        "expected": "Exactly one complete winner; no check-then-act window, mixed v1/P4 history, duplicate session or partial effect."
+      },
+      {
+        "id": "P4V5-R05",
+        "schedule": "Fail resolver/canonical/signature/basis/time/revocation or contract prepare/verify checks, then retry corrected evidence.",
+        "expected": "No authoritative artifact/session/event/lookup; admission remains UNUSED and heads PUBLISHED; corrected complete retry succeeds when the ledger increment exists."
+      },
+      {
+        "id": "P4V5-R06",
+        "schedule": "Probe prepared candidates for bytes/dict/pickle/lookup/store/key/session/member access; fail receipt/set/replay/revalidation during reservation.",
+        "expected": "No access or issuance; lock-private reservation clears and admission remains UNUSED."
+      },
+      {
+        "id": "P4V5-R07",
+        "schedule": "Spy precommit and immediately postpublish fault boundaries, then resolve the exact execution key/admission.",
+        "expected": "Before publication there is no record or consumption; after it one immutable record orders consumption before complete batch/session start. Resolution returns that same identity without remint, abort or rollback."
+      },
+      {
+        "id": "P4V5-R08",
+        "schedule": "Concurrent same admission/key contenders and action/replay one/multi-PCE positives, then every field/self/preimage/order/adjacency mutation independently.",
+        "expected": "One serialized same-ledger WORM commit; exact complete batch only; no second session/event or cross-store split."
+      },
+      {
+        "id": "P4V6-R09",
+        "schedule": "Try public ABC construction, foreign/virtual concrete classes, private-final construction, old v1 factory opt-in, alternate factory and every dependency argument.",
+        "expected": "Only the private fixed _development_p4_broker with hostile facts returns the exact deployment-ineligible capability; the ordinary v1 factory is unchanged and cannot opt into P4."
+      },
+      {
+        "id": "P4V6-R10",
+        "schedule": "Offer fixture aliases, subclasses, Mapping/Sequence impostors, callables/wrappers, unknown keys, paths/URLs, mutable stores, prebuilt artifacts or noncanonical bytes; mutate valid original facts after construction.",
+        "expected": "Closed validation rejects invalid inputs and independently copies valid facts; no caller fact selects code, key, trust root, resolver, ledger or lock, and later source mutation cannot change the snapshot."
+      },
+      {
+        "id": "P4V6-R11",
+        "schedule": "Offer an exact issued P4 authority and its identity alias, ordinary v1 authority, ABC subclass, duck/wrapper/proxy/decorator, stale/copied/pickled/rebuilt object and swapped authority/verifier attributes through both facades.",
+        "expected": "Constructors retain v7 ordinary-v1 compatibility. Only the exact pinned broker-issued identity reaches the P4 method; its alias is the same domain. Substitutes never upgrade a v1 facade or introduce writer/dependency state."
+      },
+      {
+        "id": "P4V6-R12",
+        "schedule": "Replace each held signer/keyring/resolver/clock/revocation/contract/ledger/lock/attestation/dispatch/internal-table surface or callable/resolver result independently before prepare, under reservation and before commit.",
+        "expected": "Every single-surface alteration refuses before P4 artifact/session/admission/legacy effect or leaves no authority effect. Coordinated multi-private rewrites remain explicitly deferred under ADR-0126."
+      },
+      {
+        "id": "P4V6-R13",
+        "schedule": "Copy/deepcopy/pickle/reduce/getstate/setstate the authority, token, dependency, prepared batch, record, session and facades; rebuild dict/slots lookalikes and use identity aliases.",
+        "expected": "Serialization/reconstruction cannot acquire issuance attestation; lookalikes refuse, and a same-object alias cannot replace a dependency or create another ledger/lock domain. Retained ordinary-v1 behavior is not silently widened or narrowed."
+      }
+    ],
+    "terminal_matrix": [
+      {
+        "id": "P4V8-T01",
+        "case": "Public TerminalArtifactVerifier/VerifiedExternalArtifactAnchor construction, private-final construction without one-shot token, foreign/virtual subclasses, ducks/wrappers, alias to another authority, copy/deepcopy/pickle/reduce/state/dict/slot reconstruction.",
+        "expected": "Only the exact held broker-issued verifier can issue an accepted anchor; all substitutes refuse before local preparation or lifecycle effects."
+      },
+      {
+        "id": "P4V8-T02",
+        "case": "Try every constructor/factory/facade keyword or positional verifier/policy/key/time/revocation/snapshot/generation/anchor/callback/provider injection and add each forbidden fixture field independently.",
+        "expected": "Closed signatures/data reject every choice. No ordinary v1 authority is upgraded and the existing v1 factory signature stays identical."
+      },
+      {
+        "id": "P4V8-T03",
+        "case": "Root-PIS with complete G1+G2 anchors and exact local root receipts; omit G1, omit G2, duplicate either, two of one class, extra third anchor, wrong owner/key use and swapped G1/G2 independently.",
+        "expected": "Only the complete independently verified pair matching the same root authorization subject passes terminal closure; each mutation leaves admission UNUSED and no capture/session/member effect."
+      },
+      {
+        "id": "P4V8-T04",
+        "case": "Root receipt dataset-capture tag or authorization digest/root/producer/member facts disagree with either anchor; same-looking external bytes with different exact refs; valid owner approvals for different authorization subjects.",
+        "expected": "Authenticated dual-owner linkage must match the receipt's exact tagged subject and facts. No assumed equality between owner-approval digests, no unsigned receipt fallback."
+      },
+      {
+        "id": "P4V8-T05",
+        "case": "ScopeIntent with exact fixed owner policy/root PIS; substitute policy/study/environment/profile/component/candidate/policy digest or closed intent projection independently; missing/extra/duplicate policy anchor.",
+        "expected": "Exact external policy and parent-covered projection are mandatory; altered, unbound or future-dependent policy refuses."
+      },
+      {
+        "id": "P4V8-T06",
+        "case": "Change each of kind, role, schema and sha256 in a terminal ref; add/remove a ref key; reorder/duplicate basis refs; place a valid terminal ref in PEA/CES/BVP/CAS/stage/admission/final/captured/replay-evidence basis.",
+        "expected": "Exact four-key bytes, parent kind/position, terminal class and cardinality are closed; no unknown/failed local schema gains a terminal fallback."
+      },
+      {
+        "id": "P4V8-T07",
+        "case": "Tamper canonical bytes, named artifact identity, independently computed bytes digest, signature/preimage/key ID/version, owner role/use, not-before/issued/expiry or revocation identity for each terminal class.",
+        "expected": "The fixed independent external verifier rejects every forged fact, including a self-consistent caller rehash/relabel. Inclusive/exclusive time rules follow the authenticated owning policy and are pinned at both boundaries; no caller default is accepted."
+      },
+      {
+        "id": "P4V8-T08",
+        "case": "Use an otherwise valid anchor from another broker/root/resolver snapshot or verification generation; equal canonical data in another snapshot; stale/revoked anchor before prepare and between prepare and commit.",
+        "expected": "Exact snapshot/root/generation and currentness revalidation refuse; no cache or byte-equality shortcut accepts the anchor."
+      },
+      {
+        "id": "P4V8-T09",
+        "case": "Alter one anchor field, issuance table, verifier/policy identity, corpus commitment, class/instance dispatch, resolver result or snapshot table before resolution, during preparation, under reservation and immediately before commit.",
+        "expected": "One-surface alteration refuses or creates no authoritative effect; combined-private attacks are recorded separately under ADR-0126."
+      },
+      {
+        "id": "P4V8-T10",
+        "case": "Fixture Mapping/list/bytes subclasses, callbacks, paths/URLs, repeated mutable aliases/cycles, duplicate refs, noncanonical bytes, caller verified flags or prebuilt anchors; mutate original valid fixture tree after construction.",
+        "expected": "Invalid grammar refuses before any dependency callback; valid facts are independent immutable copied data and cannot change trusted policy or snapshot."
+      },
+      {
+        "id": "P4V8-T11",
+        "case": "Terminal verifier returns None/True/dict/bytes/wrong-type/unregistered anchor, raises before/after one proof, or fails currentness after the other proofs succeed; corrected retry.",
+        "expected": "No partial proof set or draft has lifecycle authority. No receipt/admission/session/event/member effect; corrected complete retry is legal before commit."
+      },
+      {
+        "id": "P4V8-T12",
+        "case": "Independently signed complete action and replay graphs, one and multiple PCEs, through direct authority and both class-bound facades; repeat with each local canonical/schema/self/signature/basis/ref/cycle/future/adjacency family mutated.",
+        "expected": "Local validators remain mandatory and unchanged where reused. Valid closure reaches the atomic batch boundary; only the later complete same-ledger commit can return a P4 record/session. Matching hostile bytes alone never pass."
+      },
+      {
+        "id": "P4V8-T13",
+        "case": "Concurrent generation/revocation update versus authorization commit; same-key/admission competitors; P4 versus direct/verifier/driver legacy capture; postpublish raised result followed by resolve.",
+        "expected": "One serialized in-process winner. An update accepted before the commit decision invalidates stale anchors; unknown committed outcome resolves the same identity without remint. All v7 no-partial-batch and legacy-denial rules remain."
+      },
+      {
+        "id": "P4V8-T14",
+        "case": "Import shared Packet 3 public classes from trust and production, compare exact class identity/signatures, run existing eleven-artifact-tuple nonauthorizing profiles and no-effect sentinels, and fresh-process pipeline import/purity tests.",
+        "expected": "Old imports and behavior remain valid, no duplicate weaker verifier, no pipeline-to-production dependency, and no public preflight result can stand in for full recursive closure or a terminal anchor."
+      }
+    ],
+    "coverage_rule": "All new terminal cases run independently for G1, G2 and fixed-owner-policy where applicable, and for action/replay graphs across direct/verifier/driver entry points. Tests must assert the rejected invariant and untouched forbidden-effect sentinels, not merely any exception or an always-refusing implementation. Valid full-closure tests are required alongside mutations."
+  },
+  "implementation_files_if_fresh_verdict_clean": [
+    "dskit/pipeline/trust.py",
+    "dskit/production/verifier.py",
+    "tests/pipeline/test_captured_authorization.py",
+    "tests/production/test_captured_authorization.py",
+    "tests/pipeline/test_trust.py",
+    "tests/production/test_capture_lifecycle.py"
+  ],
+  "focused_checks_if_implemented": [
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_capture_lifecycle.py tests/production/test_adr0125_preflight.py tests/production/test_purity.py tests/pipeline/test_purity.py",
+    "/home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py",
+    "git diff --check"
+  ],
+  "next_gate": "Freeze this documentation-only v8 successor and obtain a fresh independent Terra Phase 0 authority/terminal-closure skeptic verdict. No code/tests, terminal seam, anchor issuance, recursive-closure GREEN, merge, deployment or real activity is authorized by this candidate. Preserve all prior evidence and the incomplete foundation/refactor commits.",
+  "implementation_history": {
+    "initial_red": "66270fdbecb244006c76794fc50a04fca29f0d13",
+    "foundation_red": "edfccac63e22ca58c49d91dc8fcd119acdc1d82d",
+    "foundation_green": "d4303f812cc0d3bb38662fa624b88645b3e491cb",
+    "shared_validator_red": "eaa3bcfe9de3f6881d5b1137ef257687efa3bf15",
+    "shared_validator_refactor": "90fa9d8563ba4e0b01a6cc47500b7e82459b6c8f",
+    "status": "Foundation and shared-validator checkpoint only. The current P4 doorway always refuses issuance, even for matching hostile fixture bytes. No full signed artifact/basis closure, terminal verifier/anchor, P4 authorization record/session or shared atomic lifecycle ledger exists.",
+    "relocation": "The existing Packet 3 implementation was moved verbatim into dskit/pipeline/trust.py; dskit/production/verifier.py re-exports the exact HistoricalStudyEnvelopePreflight, HistoricalStudyRevocations and NonAuthorizingAdr0125StructuralSignaturePreflight classes with unchanged public signatures. The two import paths must continue to name the same classes. Production-specific submission policy remains in verifier.py; no pipeline-to-production import or duplicate validator is allowed.",
+    "checkpoint_validation": "At 90fa9d8, the focused 0083 set plus tests/pipeline/test_purity.py passed 556 tests; ruff and diff checks passed. These results prove only the existing foundation/refactor, not the proposed terminal authority or full Packet 4."
+  },
+  "retained_major_closure_obligations": {
+    "M02_legacy_capture_bypass": "All direct/facade capture/open/bind/member/read/require/consume/release routes deny P4-reserved or P4-committed matched identities before effect; unrelated v1 remains positive.",
+    "M03_admission_transaction_split": "Admission consumption and complete exact batch are fields of one immutable same-ledger publication; the contract has no hidden spend callback or second writer.",
+    "M04_recursive_basis_chain": "The held caller-unselectable snapshot closes every ADR-defined signed artifact/basis/ref recursively. V8 adds only the explicit closed external-terminal authority; it does not weaken any local verifier or interpret digest-only references as proof.",
+    "M05_session_event_gap": "Session identity/nonce, session decision and SessionStartRecord belong to the same committed batch. Postcommit interning/result failure resolves the original record and cannot mint another session or start event.",
+    "M06_legacy_p4_toctou": "One capture-transition lock covers both complete legacy and P4 compare-and-transition paths, not only a preliminary mark check. Schedule-controlled tests prove each winning and losing route.",
+    "M07_first_port_consume_order": "Prepared bytes have no authority or observable issue; the sole logical commit consumes the admission before publishing/minting the complete batch. No consumed WORM admission rolls back, and uncertain outcomes resolve before remint.",
+    "M08_constructor_selectable_trust": "Private fixed broker composition alone issues the exact authority and its dependencies, now including the terminal verifier and policy. Public/request/fixture/facade arguments cannot select or replace a trust root or writer.",
+    "M09_v1_facade_compatibility": "HistoricalStudyVerifier retains its valid LifecycleAuthority constructor and bind/capture methods; HistoricalStudyCaptureDriver retains its exact verifier constructor and class-bound capture. Only new authorize_capture_set requires the same already-held exact P4 capability; there is no second authority or late upgrade.",
+    "status": "These are retained required design obligations, not a claim that the incomplete foundation has implemented the ledger or that the new terminal seam has received independent approval. R23 remains open."
+  },
+  "terminal_gap_inventory": {
+    "root_publication_and_root_pis": {
+      "source": "docs/architecture/decision-log.md:8440,8475",
+      "requirement": "root-pis bases name exact G1/G2 DatasetCaptureAuthorization artifacts and root receipts; a RootPublicationReceipt.v1 requires its exact dataset-capture authorization.",
+      "gap": "DatasetCaptureAuthorization.v1 is named in master-plan lines 42,431,462 but its owning closed production byte schema and exact four-key external ref identity are not defined here. Its existing publication tag is {kind:'dataset-capture',dataset_capture_authorization_sha256}; that tag alone is not proof of either owner approval."
+    },
+    "scope_intent": {
+      "source": "docs/architecture/decision-log.md:8508",
+      "requirement": "ScopeIntent's basis names its root PIS and fixed owner policy.",
+      "gap": "No closed production artifact schema or external four-key ref identity for that fixed owner policy is specified here."
+    },
+    "policy": "Only these two external families may terminate local recursive schema validation. All ADR-defined artifacts, including root publication receipts and IssuanceBasis.v1, remain locally validated. No unknown schema, missing artifact, unsupported local validator or failed signature may fall back to terminal verification."
+  },
+  "terminal_authority_contract": {
+    "trust_boundary": "TerminalArtifactVerifier is an explicit external verification trust root held by the broker-owned TrustedArtifactResolver. It is not a data callback, caller extension point, or lifecycle writer. It can attest external validity only; it cannot reserve/consume an admission, write the lifecycle ledger, issue port/receipt/set artifacts, construct sessions/events, open members/providers, import application code, execute or publish outputs.",
+    "public_types": {
+      "TerminalArtifactVerifier": {
+        "kind": "Nonconstructible public ABC/capability declaration in dskit.pipeline.trust. Only the broker-owned fixed composition may construct/register an exact final concrete instance; foreign/virtual subclasses, ducks, wrappers or caller instances confer no authority. No lifecycle method or facade accepts this capability as an argument.",
+        "methods": [
+          "verify_terminal(snapshot, parent_basis_bytes, terminal_class, terminal_ref_bytes, canonical_artifact_bytes) -> VerifiedExternalArtifactAnchor",
+          "require_current(snapshot, anchors) -> None"
+        ],
+        "method_inputs": "These methods are called only by the fixed resolver/contract using its held opaque snapshot, already locally verified exact canonical IssuanceBasis bytes, derived terminal class/position, exact four-key ref bytes, and bytes resolved from that same snapshot. No path, URL, callback, generation, policy, trust root, clock, verifier, key or result override is accepted. require_current accepts only an exact tuple of the same issuer's registered anchors and never issues an anchor or spends authority.",
+        "method_results": "verify_terminal either returns one exact registered anchor after external owner/signature/key-use/time/revocation/policy verification or raises. None, boolean, dict, bytes, unsigned marker, alias to a different anchor, subclass, unexpected result or missing verification identity refuses. require_current raises on any stale/revoked/substituted anchor; None means only all requested anchors remain valid at the held trusted check."
+      },
+      "VerifiedExternalArtifactAnchor": {
+        "kind": "Opaque nonconstructible final value issued only by the registered terminal authority; exported as a type, with no public data constructor, getters, bytes/dict/mapping/iteration/path/member access, callable behavior, copy/deepcopy/pickle/reduce/getstate/setstate or deserialization.",
+        "private_bindings": [
+          "exact issuing terminal-verifier identity and immutable dispatch attestation",
+          "exact broker identity and trust-root identity",
+          "exact immutable resolver snapshot object and snapshot content commitment",
+          "exact canonical IssuanceBasisRef.v1 four-key bytes and its ref.sha256 artifact identity",
+          "SHA-256 of the exact canonical external bytes resolved from that snapshot, independently of the artifact's externally defined named digest",
+          "closed terminal class: G1-dataset-authorization, G2-dataset-authorization, or fixed-owner-policy",
+          "exact parent IssuanceBasis identity/kind and permitted terminal position",
+          "external policy identity and authenticated publication/policy subject linkage",
+          "verified signer/owner identity, exclusive key usage, key ID/version and signature-verification identity",
+          "trusted verification instant, validity interval and immutable authenticated revocation-verification identity",
+          "terminal verification generation and snapshot generation"
+        ],
+        "authentication": "All bindings are issuer-owned frozen commitments, not fields asserted by the fixture or caller. The issuer externally validates both the named artifact identity and the canonical-bytes digest according to the owning policy. The local contract checks exact anchor issuance identity, all requested bindings and currentness through broker-held checked dispatch; object type or digest equality alone never establishes trust."
+      }
+    },
+    "private_composition": {
+      "names": [
+        "_FixedTerminalArtifactVerifier",
+        "_FixedTerminalVerificationPolicy",
+        "_FixedWormTrustedArtifactResolver",
+        "_FixedCapturedAuthorizationContract"
+      ],
+      "methods": [
+        "_FixedWormTrustedArtifactResolver.load_fixture_facts(fixture_facts) -> None (construction-only, once)",
+        "_FixedWormTrustedArtifactResolver.snapshot() -> private immutable snapshot",
+        "_FixedWormTrustedArtifactResolver.resolve(snapshot, exact_ref_bytes) -> private retained canonical artifact",
+        "_FixedWormTrustedArtifactResolver.close_admission(snapshot, admission_ref, live_projection) -> private verified closure",
+        "_FixedCapturedAuthorizationContract.prepare_batch(snapshot, captures, admission_ref, runtime) -> private prepared batch",
+        "_FixedCapturedAuthorizationContract.verify_prepared_batch(snapshot, prepared_batch) -> private session decision"
+      ],
+      "construction": "The one private _development_p4_broker(*, fixture_facts=None) constructs and registers the exact graph internally. Dependencies are privately held, have no getter, and expose no mutable policy/corpus/registry/table or reconstruction API. No alternate factory argument, opt-in on _development_broker, late registration or facade upgrade can introduce a verifier or anchor.",
+      "unavailable": "Absent external terminal authority, absent trusted policy binding, missing external authentication/linkage, unknown terminal class or unsupported verifier state fails closed before preparation/ledger/session effects. There is no synthetic or local-signature fallback in a deployment context."
+    }
+  },
+  "closed_terminal_routing": {
+    "selection": "The resolver first classifies an exact ref by its already verified parent basis kind and fixed expected reference projection. An ADR-defined schema always uses its local validator. An external terminal position is available only when the broker-held external policy already binds its exact four-key ref identity, expected terminal class and parent subject; ref.schema alone never chooses the terminal route. Literal external schema identifiers are opaque policy-bound identities, not new DSKit artifact schemas or wildcard allowances.",
+    "routes": [
+      {
+        "parent_basis_kind": "root-pis",
+        "terminal_positions": [
+          "G1-dataset-authorization",
+          "G2-dataset-authorization"
+        ],
+        "cardinality": "Exactly one verified G1 anchor and one verified G2 anchor for the root-PIS authorization subject, plus the complete exact local root-publication-receipt ref projection. Neither one alone, two of one class, an extra anchor, missing receipt, unrelated authorization or duplicate complete ref is valid.",
+        "requirements": "G1 and G2 are independently verified as their respective dataset-authorization terminal classes under the fixed external policy, including that policy's authenticated owner, signer and exclusive authorized key-use requirements. This seam does not assign the ADR GateEvidenceRef security-gate/data-gate uses to the externally specified dataset authorizations or invent their production key-use identifiers. The two anchors must authenticate the same exact dataset authorization subject and the publication_authorization_ref of each relevant locally verified RootPublicationReceipt. The parent basis refs and the PIS receipt/entry projection must match completely."
+      },
+      {
+        "parent_basis_kind": "root-publication",
+        "terminal_positions": [
+          "G1-dataset-authorization",
+          "G2-dataset-authorization"
+        ],
+        "cardinality": "The same exact G1/G2 authorization references and authenticated owner approvals required by its parent root-PIS are checked for the root receipt's existing dataset-capture publication_authorization_ref. Each parent use requires its own correctly parent-bound opaque anchors within the same immutable snapshot; an anchor issued for another parent cannot be substituted. This links the same two approvals without creating a new terminal class, unsigned receipt fallback or fresh dataset authorization.",
+        "requirements": "The local root-receipt validator verifies its full ADR-0125 schema, self, signature, basis and root/producer/member facts. Only the externally owned authorization behind its dataset-capture tag is terminal; both approvals must bind that tag and those declared publication facts."
+      },
+      {
+        "parent_basis_kind": "scope-intent",
+        "terminal_positions": [
+          "fixed-owner-policy"
+        ],
+        "cardinality": "Exactly one fixed-owner-policy anchor plus the exact locally verified root-PIS reference; no extra/missing policy or local-artifact substitution.",
+        "requirements": "The anchor authenticates the one broker-selected owner policy identity and the ScopeIntent's complete policy-covered study/environment/profile/component/candidate/policy/closed-intent projection. Digest-only equality, a different study policy, a gate-derived policy or a policy referring to future execution output refuses."
+      }
+    ],
+    "all_other_positions": "No other basis kind/position permits an external terminal. In particular PEA, CES, BVP, CAS, ScopeAuthorization, GateEvidenceRef, StageAdmission, ActionExecutionAdmission, stage publications, final manifest, FinalReplayAdmission, capture artifacts and replay evidence cannot become terminals because a local schema or link is absent.",
+    "dual_owner_linkage": "The existing dataset-capture publication tag has one authorization digest; the resolver must not guess whether an external authority encodes G1/G2 as two signatures over one artifact or as linked owner approvals. The fixed external verification policy must authenticate both role-specific exact refs to that same tagged authorization subject. This linkage is part of the opaque anchors' private commitments. Missing or ambiguous linkage refuses. No new production wire representation for dual approval is defined by this matrix.",
+    "local_closure_retained": "All local refs, all basis shapes/kinds/ref sets, canonical order and duplicate checks, signed self/preimage/key-use/time/revocation checks, predecessor-publication equality, BVP/PlannedCaptureSet payload and P(CES)==P(BVP)==P(CAS)==P(Stage or FinalReplayEntry)==ordered live capture equality remain mandatory. Cycles or future-output dependencies cannot be hidden behind an anchor; terminal policy attests the external object is a leaf for this closed authorization subject.",
+    "no_fallback": "Unknown schema, unsupported schema version, absent local resolver entry, malformed canonical bytes, failed local signature/basis/currentness or unavailable terminal authority always refuses. Neither a fixture entry nor a permissive subclass can register a new terminal route."
+  },
+  "synthetic_terminal_composition": {
+    "scope": "A fixed private synthetic terminal verifier provides nondeployment test authority only. Its acceptance corpus, signer keys/roles/uses, trusted time, revocation policy, external policy identity and verification-generation rules are construction-owned constants. They cannot be selected or overridden by fixture data.",
+    "fixture_grammar": {
+      "outer": "None (empty facts) or exact built-in dict with only artifacts",
+      "artifacts": "exact built-in list of exact built-in dicts with only ref and bytes",
+      "ref": "exact IssuanceBasisRef.v1 dict with only kind, role, schema, sha256; all exact strings, valid nonplaceholder lowercase SHA-256",
+      "bytes": "exact built-in canonical JSON bytes, copied and retained once; no application-specific external schema is inferred",
+      "closed_loading": "Every local artifact is classified by the fixed local schema/ref policy. Only the exact broker-policy-pinned external references can be offered at their closed terminal positions. Unknown fields, aliases/cycles, duplicate refs or complete items, subclasses, Mapping/Sequence impostors, callables, handles, paths/URLs, stores and noncanonical bytes refuse. The outer source is recursively copied, and post-return source mutation cannot alter the snapshot.",
+      "forbidden_fields": [
+        "terminal_verifier",
+        "terminal_policy",
+        "trusted",
+        "verified",
+        "anchor",
+        "anchors",
+        "generation",
+        "snapshot",
+        "signer",
+        "keyring",
+        "clock",
+        "revocations",
+        "ledger",
+        "lock",
+        "callback",
+        "factory",
+        "provider"
+      ],
+      "compatibility": "This widens the existing foundation loader's admission-only artifact inventory only after a clean v8 verdict; it does not change the private factory signature or the public authorize_capture_set signatures."
+    },
+    "fixed_positive_evidence": "The private synthetic verifier holds an independently authenticated fixed external test corpus and role/policy bindings, including valid G1/G2 and owner-policy cases. Submitted bytes and exact refs must match that corpus and pass the fixed external verification policy before anchor issuance. It must not bless arbitrary bytes by hashing them, echoing their ref, signing them with a test key, or accepting a caller's verified flag. The corpus is test data for an external format, not a DSKit production artifact schema. Invalid, expired, revoked, wrong-owner/use and tampered corpus variants must fail against independently pinned expected outcomes.",
+    "snapshots": "The resolver constructs one private immutable snapshot from copied artifacts and the fixed trusted policy/root commitment. Snapshot identity/content/generation are internally chosen; callers cannot request or reconstruct a generation. Anchors never cross snapshots or brokers, even if canonical bytes/digests look equal. Snapshot content or verification-generation changes require fresh verification; cached prior anchors refuse.",
+    "private_attack_checks": "Exact final verifier/policy/lookup/dispatch identities, registration and copied corpus commitments are checked before resolution and again inside the lifecycle transition lock before commit. One dependency/table/anchor/attestation/generation/class-method replacement must refuse or create no authority effect. Coordinated multiple-private rewrites remain ADR-0126-deferred; they are not offered as a real external security boundary.",
+    "chronology": "Anchor verification itself is nonauthorizing evidence production. It emits no lifecycle receipt, admission consumption, batch, LaunchSession, SessionStartRecord, provider/member access, application import/construction/run/output or release. Partial anchor verification failure abandons that private closure; no partial anchor set can escape to a caller or later satisfy a different request."
+  },
+  "terminal_freshness_and_atomicity": {
+    "freshness": "Both local and terminal trust checks use broker-held trusted time and authenticated immutable revocation state, never a request timestamp. Verification records its generation and validity; immediately before the one ledger publication, require_current checks every anchor against the same held root/policy/snapshot commitments and the broker's current trusted verification generation.",
+    "ordering": "The authority serializes acceptance of trusted snapshot/generation updates and the final currentness check with its capture-transition decision. If an accepted revocation/policy/generation update precedes that decision, stale prepared anchors refuse. A snapshot is never mutated in place to simulate freshness. This is the stated in-process decision order only, not a distributed revocation/crash-consistency promise.",
+    "verification_only": "The terminal verifier cannot hold a hidden spend callback or its own admission/session store. The only authoritative action remains the existing same-ledger consume-plus-complete-batch publication after full local and terminal verification. Terminal-proof interning is not admission reservation, consumption or a second lifecycle writer.",
+    "refusal": "External verification exception, unavailable policy, expiry, revoked key, wrong snapshot/generation, malformed/unregistered anchor, partial proof set, changed corpus/dispatch, no exact parent match or post-prepare substitution refuses before the logical commit. No terminal failure is softened to an unsigned marker or a later check."
+  },
+  "threat_model": {
+    "actors": "Hostile application/fixture callers can supply closed data, alter their original data after factory return, call all public lifecycle/facade methods, pass forged/cross-broker handles and race operations. Only the held broker composition owns verification policy, snapshot/anchor issuance and lifecycle state.",
+    "trusted_authorities": "The fixed local signer/keyring/clock/revocation authorities and the new fixed external terminal-verification authority are trust roots, not caller choices. Each has an exact issued identity, registered final implementation and private dispatch commitment. The terminal root verifies external semantics; only LifecycleAuthority writes admission/capture/session state.",
+    "single_surface": "Retain ADR-0126's single public-API, one intern-map, one handle poke, receipt-store or recovery-check mutation model. Apply it to new terminal/snapshot/anchor/policy/dispatch surfaces as well. A single-substitution success that yields a genuine P4 authorization/session or advances CAS is in scope.",
+    "deferred": "Coordinated multiple-private/interpreter rewrites, deployment key compromise, OS-owned broker implementation, durable/restart and cross-process consume-once remain explicitly unproved. No theorem about malicious code with total interpreter control is claimed."
+  },
+  "success_and_exit": {
+    "phase0": "A fresh independent design skeptic must approve this exact frozen v8 matrix with zero unresolved in-scope Critical/Major before new terminal/ref-closure RED or GREEN. The author cannot count 0084 as approval of this material delta.",
+    "incremental": "A closure-only increment may prove exact local/terminal verification and still refuse at the not-yet-implemented atomic issuance boundary, but must label that result incomplete and demonstrate valid-versus-invalid closure with meaningful distinct assertions. It cannot claim Packet 4 GREEN or hide absent writer/batch/session work.",
+    "whole_packet": "Only complete action/replay one/multi-PCE success, all local and external refusal families, exact v2 port/receipt/set/replay output, shared legacy/P4 arbitration, same-record admission/session-start commit, uncertainty resolution, v1 compatibility, required checks and two fresh independent final lenses can close the bounded Packet 4 candidate. R23/whole-F5a/deployment remain separate.",
+    "migration": "Once owning F3/G1/G2 or fixed-policy schemas are approved, replace the temporary opaque terminal composition only through a reviewed ownership/schema migration that preserves exact existing anchors/refs and refuses silent reinterpretation. No automatic promotion of synthetic corpus anchors to production authority is permitted."
+  },
+  "this_candidate_scope": [
+    "docs/evidence/closeout/0085-f5a-p4-phase0-authorized-transaction-matrix-v8.json"
+  ],
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0085-f5a-p4-phase0-authorized-transaction-matrix-v8.json",
+    "git diff --check"
+  ]
+}
