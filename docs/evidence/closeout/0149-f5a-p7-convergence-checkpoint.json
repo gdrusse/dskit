@@ -1,0 +1,23 @@
+{
+  "schema_version": "F5aConvergenceCheckpoint.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice1",
+  "status": "convergence-checkpoint; three consecutive failed Phase 0 correction cycles",
+  "base_main": "48ae2fb37a6f176fd52f8c983eaf9f1b37ddfad1",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "rounds": [
+    {"matrix": "0146", "review": "round-1", "unresolved": "C1, C2, M1-M5"},
+    {"matrix": "0147", "review": "round-2", "unresolved": "Major-1, Major-2, Major-3"},
+    {"matrix": "0148", "review": "round-3", "unresolved": "F1 (plan-time pair unreachable), F2 (parse string authority)"}
+  ],
+  "root_cause": "A grammar-only 'ReplayRun tape pair' slice is not separable from the ReplayRun class and the execution-document resolution path. Class-declared identity requires a resolved class; the current code has no path that resolves node classes for execution_backtest documents (planner.plan refuses them via refuse_execution_backtest, and the trust.py broker route is class-blind over descriptor values). Every attempt to key the pair rule ended either as string authority at parse (no class exists) or as an unreachable plan-time branch (execution docs refused). 0137's conclusion stands: no locally decidable grammar slice exists independent of the F3/replay-ops class + resolution seam.",
+  "changed_approach": "Fold the ReplayRun class-declared identity, the execution-document class resolution, and the tape-pair grammar into ONE coherent F3 captured-tape identity seam. Order: (1) introduce the pipeline ReplayRun node class (new ROLES member 'replay', owned kind REPLAY_RUN_KIND='replay', registered owned=True) and its NodeSpec two-input contract; (2) establish where execution documents are resolved (the trust.py broker route, which may import pipeline resolve_uses and identify the consumer by issubclass before private planning); (3) enforce the pair grammar keyed on the RESOLVED class, never on a bare uses string. The captured-tape hierarchy (ReplayTapeDataCapture/ReplayTapeManifestProducer/ReplayTapeManifestCapture, composed tape capability) is the same slice's downstream half, as the owner's 'build the F3 interfaces' authorization already contemplated. This is strictly larger than a grammar-only slice.",
+  "why_this_succeeds": "Prior rounds failed because the identity was keyed to either a string or a plan-time branch that execution docs never reach. Keying on the resolved class inside the broker route removes the string-authority defect (F2) and makes the enforcement reachable (F1), because the broker route is the one path that processes execution documents before private planning/root creation.",
+  "preserved_open": [
+    "Packet7", "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39@c489199"
+  ],
+  "deployment_eligible": false,
+  "next_action": "Owner confirmation of the enlarged first slice (identity class + broker resolution + pair grammar together), then a FRESH Phase 0 (not a fourth patch on the 0148 contract) over the changed approach.",
+  "recorded_at_utc": "2026-09-15T23:30:00.000000+00:00"
+}
