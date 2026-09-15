@@ -1,0 +1,18 @@
+{
+  "schema_version": "OwnerDecision.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite",
+  "date": "2026-09-15",
+  "owner": "forecast-capital owner / coordinator",
+  "decision_source": "explicit owner response to the convergence-checkpoint scope question",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (owner substituted for unavailable Terra)",
+  "decision": "build-class-resolution-grammar",
+  "detail": "Approve the enlarged first slice: introduce the pipeline ReplayRun class-declared identity (new ROLES member 'replay', owned kind REPLAY_RUN_KIND='replay'), establish execution-document node-class resolution, and enforce the tape-pair grammar keyed on the RESOLVED class — never a bare uses string. A fresh Phase 0 (not a fourth patch on 0148) precedes RED.",
+  "supersedes": "0149-f5a-p7-convergence-checkpoint.json",
+  "preserved_open": [
+    "Packet7", "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39@c489199"
+  ],
+  "deployment_eligible": false,
+  "recorded_at_utc": "2026-09-15T23:45:00.000000+00:00"
+}
