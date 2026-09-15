@@ -480,7 +480,8 @@ def _complete_signed_graph(*, replay=False, count=1):
         }, "planned_capture_set_sha256", "security-broker")
         plan_body = {**common, "plan_evaluation_authorization_sha256": pea["plan_evaluation_authorization_sha256"],
                      "capture_expectation_set_sha256": ces["capture_expectation_set_sha256"],
-                     "planning_rules_sha256": p3._h("planning-rules"), "planned_capture_set": planned}
+                     "planning_rules_sha256": p3._h("planning-rules"),
+                     "planned_capture_set_sha256": planned["planned_capture_set_sha256"], "planned_capture_set": planned}
         bvp = graph.signed(prefix + "bvp", "bvp", {
             "schema": "dskit.broker-verified-plan/v1", **{key: value for key, value in plan_body.items() if key != "planned_capture_set"},
             "plan_sha256": _graph_hash(plan_body), "planned_capture_set_sha256": planned["planned_capture_set_sha256"],
