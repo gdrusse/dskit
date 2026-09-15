@@ -27,5 +27,21 @@
   ],
   "retained_reviewer_output": "Candidate e967aa15d64c127a74b4fd18b24ffa2183be1487. Verdict not clean; boundary-invalidating. Major P6-FA-003: trust.py:1872-1900 finds streams using only root/snapshot/document. Two valid WORM publications sharing those fields but distinct producer nodes/members publish successfully; afterward descriptor() refuses for both. Fix scope: all six descriptor fields in _stream_for_published and _published_for_descriptor receipt prefilter; same-root/snapshot/document differing-node/output positive controls. Checks: targeted existing two_valid_snapshots: 2 passed; diff check passed. C0/M1/minor0/nit0. Stopped after boundary-invalidating finding; no extra scan. Limits retained: ADR-0126 deferred combined/multi-internal/_DEV_KEY; P7/P8/R23.",
   "next_gate": "Independent convergence checkpoint, revised matrix and fresh clean Phase0 before RED; no second final lens on stopped candidate.",
-  "deployment_eligible": false
+  "deployment_eligible": false,
+  "independent_convergence_checkpoint": {
+    "reviewer_model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_successor_correctness_terra",
+    "status": "changed approach required before patch; final clarified checkpoint retained",
+    "prior_failure": "FA002 fixed downstream _live_published only; descriptor entry still hit partial three-field _stream_for_published. Snapshot-only positives kept that prefix unique, missing same-prefix node/output/purpose siblings.",
+    "inventory": [
+      "descriptor -> _stream_for_published",
+      "freeze -> _published_for_descriptor -> _live_published -> _stream_for_published",
+      "_frozen_publication and _prepare_legacy_capture",
+      "P4 request validation, authority authorize_capture_set, verifier/driver facades",
+      "P4 _legacy_gate and commit_p4_batch",
+      "non-authorizing _receipt_audit/_receipt_digests"
+    ],
+    "retained_output": "Operational _stream_for_published: authenticated publish-stream selects exact stream, then validate retained six-field identity; never prefix scan. Shared retained descriptor helper derives facts from exact PUBLISHED receipt plus stream pin and sealed/prepared identity. _published_for_descriptor compares caller descriptor to retained six fields across live tokens, requires exactly one match, and removes partial receipt prefilter. Positive node/output/purpose siblings at same root/snapshot/document, both lookup orders, v1 and P4. Negative missing/extra/substituted fields, coordinated mutable descriptor, and duplicate complete retained identities refuse before effects. Preserve encoded receipt bytes. Audit correction: prior checkpoint advice to follow publish-stream was wrong; mint A->B would hide A. Diagnostic audit derives A independently from authenticated publish-sealed -> sealed -> prepared, checks retained self._streams[A] PRODUCED/SEALED/PUBLISHED facts, stream digest, sealed manifest, and original output path. Never reload/recover/read exposed receipt_store; existing truncation/watermark post-tamper diagnostics require preserved committed in-memory view. Return A or refuse; diagnostic grants no authority. Operational paths alone reload/recover before authority.",
+    "gate": "Revised matrix then fresh Phase0 skeptic before RED."
+  }
 }
