@@ -959,6 +959,14 @@ def test_p4_complete_atomic_record_has_exact_signed_batch_and_one_session(replay
         assert receipt["predecessor_publication_receipt_sha256"] == pce["published_input"]["publication_receipt_sha256"]
         assert receipt["actor_runtime_sha256"] == runtime["runtime_sha256"]
         assert receipt["transition_nonce"] == runtime["transition_nonces"][index]
+        genesis = f4._json_bytes({"schema": "dskit.lifecycle-captured-receipt-genesis/v1",
+            "stream_id": audit["streams"][index],
+            "predecessor_publication_receipt_schema": pce["published_input"]["publication_receipt_schema"],
+            "predecessor_publication_receipt_sha256": pce["published_input"]["publication_receipt_sha256"]})
+        assert type(receipt["sequence"]) is int and receipt["sequence"] == 1
+        assert receipt["stream_id"] == audit["streams"][index]
+        assert receipt["previous_lifecycle_captured_receipt_sha256"] == hashlib.sha256(genesis).hexdigest()
+        assert receipt["previous_lifecycle_captured_receipt_sha256"] != receipt["predecessor_publication_receipt_sha256"]
         assert receipt["consumer_kind"] == cas["subject_ref"]["kind"]
         assert receipt["consumer_id"] == cas["subject_ref"]["replay_id" if replay else "action_id"]
         expected_entries.append({**identities, "planned_entry_sha256": pce["planned_entry_sha256"],
@@ -1043,6 +1051,57 @@ def test_p4_failure_is_empty_or_resolves_the_one_complete_committed_identity(rep
     result = broker.authorize_capture_set(captures, graph.selected, **runtime)
     assert len(ledger._committed()) == 1
     assert broker.authorize_capture_set(captures, graph.selected, **runtime) == result
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("different_request", [False, True])
+def test_p4_concurrent_same_admission_never_remints_or_mixes_requests(replay, different_request):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    graph, document = _complete_signed_graph(replay=replay, count=2)
+    broker, captures, runtime, before = _graph_live(graph, document, 2)
+    barrier = Barrier(4)
+
+    def contender(index):
+        request = dict(runtime)
+        if different_request:
+            request["transition_nonces"] = (f"race-{index}-0", f"race-{index}-1")
+        barrier.wait(timeout=5)
+        try:
+            return broker.authorize_capture_set(captures, graph.selected, **request)
+        except (TypeError, ValueError):
+            return None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(contender, range(4)))
+    winners = [result for result in results if result is not None]
+    assert len(winners) == (1 if different_request else 4), "one immutable transaction must win"
+    assert all(result[0] is winners[0][0] and result[1] is winners[0][1] for result in winners)
+    assert len(broker._p4_ledger._committed()) == 1
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("winner", ["legacy", "p4"])
+def test_p4_and_legacy_are_mutually_exclusive_for_the_same_live_publication(winner):
+    graph, document = _complete_signed_graph()
+    broker, captures, runtime, _before = _graph_live(graph, document, 1)
+
+    def legacy():
+        return broker.capture(*captures[0], **{key: value for key, value in runtime.items() if key != "transition_nonces"},
+                              transition_nonce="legacy-winner")
+
+    def p4():
+        return broker.authorize_capture_set(captures, graph.selected, **runtime)
+
+    first, second = (legacy, p4) if winner == "legacy" else (p4, legacy)
+    try:
+        assert first() is not None
+    except ValueError as exc:
+        pytest.fail(f"intended arbitration winner did not complete: {exc}")
+    with pytest.raises((TypeError, ValueError)):
+        second()
+    assert not broker._member_events
 
 
 def _request():
