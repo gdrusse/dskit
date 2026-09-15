@@ -826,6 +826,56 @@ def test_resigned_replay_pea_authority_cannot_substitute_its_subject(monkeypatch
     _assert_graph_no_effect(broker, captures, before)
 
 
+@pytest.mark.parametrize("replay", [False, True])
+def test_resigned_selected_admission_cannot_be_issued_after_trusted_now(replay, monkeypatch):
+    original = _local_signed
+    schema = "dskit.final-replay-admission/v1" if replay else "dskit.action-execution-admission/v1"
+
+    def changed(payload, self_field, role, usage):
+        value = original(payload, self_field, role, usage)
+        if value["schema"] == schema:
+            value["issued_at_ms"] = 700
+            return _resign_exact(value, self_field)
+        return value
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["_local_signed"]), "_local_signed", changed)
+    graph, document = _complete_signed_graph(replay=replay)
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    with pytest.raises((TypeError, ValueError)) as failure:
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert "atomic issuance is unavailable" not in str(failure.value)
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("terminal_class", [
+    "G1-dataset-authorization", "G2-dataset-authorization", "fixed-owner-policy",
+])
+@pytest.mark.parametrize("slot", range(18))
+def test_opaque_anchor_rejects_each_independent_binding_substitution(terminal_class, slot):
+    broker, resolver, args = _terminal_setup(terminal_class)
+    anchor = resolver._terminal.verify_terminal(*args)
+    binding = list(anchor._binding)
+    binding[slot] = object()
+    object.__setattr__(anchor, "_binding", tuple(binding))
+    with pytest.raises((TypeError, ValueError)):
+        resolver._terminal.require_current(args[0], (anchor,))
+    assert not broker._session_events and not broker._member_events
+
+
+@pytest.mark.parametrize("terminal_class", [
+    "G1-dataset-authorization", "G2-dataset-authorization", "fixed-owner-policy",
+])
+def test_opaque_anchor_rejects_duplicate_and_unregistered_proofs(terminal_class):
+    broker, resolver, args = _terminal_setup(terminal_class)
+    anchor = resolver._terminal.verify_terminal(*args)
+    forged = object.__new__(trust.VerifiedExternalArtifactAnchor)
+    object.__setattr__(forged, "_binding", anchor._binding)
+    for anchors in ((anchor, anchor), (forged,)):
+        with pytest.raises((TypeError, ValueError)):
+            resolver._terminal.require_current(args[0], anchors)
+    assert not broker._session_events and not broker._member_events
+
+
 def _factory():
     """Locate the approved factory with an explicit executable RED assertion."""
     factory = getattr(trust, "_development_p4_broker", None)
