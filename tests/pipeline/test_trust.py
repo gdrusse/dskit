@@ -33,6 +33,7 @@ _ROOT = {
     "snapshot_version": "1",
 }
 _PUBLIC_TYPES = {
+    "CapturedAuthorizationAuthority",
     "CapturedBindings",
     "CapturedJsonArtifact",
     "CapturedLifecyclePort",

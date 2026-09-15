@@ -51,8 +51,14 @@ import re
 from abc import ABC, abstractmethod
 from threading import Lock
 from types import MappingProxyType
+from weakref import WeakKeyDictionary
 
-from dskit.pipeline.trust import LifecycleAuthority, ReleaseKeyring, TrustedClock
+from dskit.pipeline.trust import (
+    CapturedAuthorizationAuthority,
+    LifecycleAuthority,
+    ReleaseKeyring,
+    TrustedClock,
+)
 from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
@@ -1829,6 +1835,8 @@ class HistoricalStudyEnvelopePreflight:
 
 _REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
 _DOOR_LOCK = Lock()
+_P4_VERIFIER_PINS = WeakKeyDictionary()
+_P4_DRIVER_PINS = WeakKeyDictionary()
 
 
 def _make_spend_pair():
@@ -1907,6 +1915,7 @@ class HistoricalStudyVerifier:
         if not isinstance(authority, LifecycleAuthority):
             raise TypeError("lifecycle authority is required")
         self._authority = authority
+        self._bound_authority = authority
         self._bound = {}
         live, _spent, pins = _spend
         cell = object.__new__(_SpendCell)
@@ -1916,6 +1925,8 @@ class HistoricalStudyVerifier:
         self._admission_spent = cell
         self._capture_lock = Lock()
         self.deployment_eligible = False
+        if type(self) is HistoricalStudyVerifier:
+            _P4_VERIFIER_PINS[self] = authority
 
     def __copy__(self):
         """Refuse shallow copies of the capture facade."""
@@ -2016,16 +2027,95 @@ class HistoricalStudyVerifier:
                 live.discard(cid)
                 spent.add(cid)
         return self._authority.capture(published, frozen, port, **kwargs)
-class HistoricalStudyCaptureDriver:
-    """Identity-bound facade for the private historical-study capture doorway."""
 
-    __slots__ = ("_verifier", "_bound_verifier")
+    def authorize_capture_set(
+        self, captures, admission_ref, *, consumer_run_identity,
+        process_measurement_sha256, runtime_sha256, transition_nonces,
+    ):
+        """Delegate only to the same constructor-bound issued P4 capability.
+
+        Parameters
+        ----------
+        captures : tuple
+            Exact ordered published/frozen/derived-port tuples.
+        admission_ref : dict
+            Exact action or replay admission reference.
+        consumer_run_identity : str
+            Consumer run distinct from the producer runs.
+        process_measurement_sha256 : str
+            Exact consumer process measurement digest.
+        runtime_sha256 : str
+            Exact consumer runtime digest.
+        transition_nonces : tuple
+            One distinct unused nonce per capture.
+
+        Returns
+        -------
+        tuple
+            Reserved for a verified record/session. The current foundation
+            always refuses because full P4 issuance is not implemented.
+
+        Raises
+        ------
+        TypeError
+            The held authority is not a broker-issued P4 capability.
+        ValueError
+            The facade or authority was substituted, the request is invalid,
+            or complete verified P4 issuance is unavailable.
+        """
+        if type(self) is not HistoricalStudyVerifier:
+            raise ValueError("opaque bound P4 authority and verifier are required")
+        authority = getattr(self, "_authority", None)
+        pin = _P4_VERIFIER_PINS.get(self)
+        if (
+            pin is None or pin is not authority
+            or getattr(self, "_bound_authority", None) is not authority
+            or type(self).authorize_capture_set is not _HS_P4_VERIFIER_DISPATCH
+            or "authorize_capture_set" in self.__dict__
+        ):
+            raise ValueError("opaque bound P4 authority and verifier are required")
+        if not isinstance(authority, CapturedAuthorizationAuthority):
+            raise TypeError("broker-issued P4 authority capability is required")
+        if CapturedAuthorizationAuthority.authorize_capture_set is not _HS_P4_AUTHORITY_DISPATCH:
+            raise ValueError("bound P4 authority dispatch was replaced")
+        return _HS_P4_AUTHORITY_DISPATCH(
+            authority, captures, admission_ref,
+            consumer_run_identity=consumer_run_identity,
+            process_measurement_sha256=process_measurement_sha256,
+            runtime_sha256=runtime_sha256,
+            transition_nonces=transition_nonces,
+        )
+
+
+class HistoricalStudyCaptureDriver:
+    """Identity-bound facade for the private historical-study capture doorway.
+
+    Parameters
+    ----------
+    verifier : HistoricalStudyVerifier
+        Exact verifier retained by identity. Ordinary v1 capture remains valid;
+        only the separate P4 method requires an issued P4 authority.
+
+    Examples
+    --------
+    A non-verifier cannot construct this facade::
+
+        try:
+            HistoricalStudyCaptureDriver(None)
+        except TypeError:
+            refused = True
+        refused  # True
+    """
+
+    __slots__ = ("_verifier", "_bound_verifier", "__weakref__")
 
     def __init__(self, verifier):
         if type(verifier) is not HistoricalStudyVerifier:
             raise TypeError("exact HistoricalStudyVerifier is required")
         self._verifier = verifier
         self._bound_verifier = verifier
+        if type(self) is HistoricalStudyCaptureDriver:
+            _P4_DRIVER_PINS[self] = verifier
 
     def __copy__(self):
         """Refuse shallow copies of the capture facade."""
@@ -2054,3 +2144,61 @@ class HistoricalStudyCaptureDriver:
         if type(verifier) is not HistoricalStudyVerifier or verifier is not bound:
             raise ValueError("opaque bound verifier is required")
         return HistoricalStudyVerifier.capture(verifier, published, frozen, port, **kwargs)
+
+    def authorize_capture_set(
+        self, captures, admission_ref, *, consumer_run_identity,
+        process_measurement_sha256, runtime_sha256, transition_nonces,
+    ):
+        """Invoke the checked P4 class method on the exact bound verifier.
+
+        Parameters
+        ----------
+        captures : tuple
+            Exact ordered published/frozen/derived-port tuples.
+        admission_ref : dict
+            Exact action or replay admission reference.
+        consumer_run_identity : str
+            Distinct consumer run identity.
+        process_measurement_sha256 : str
+            Consumer process measurement digest.
+        runtime_sha256 : str
+            Consumer runtime digest.
+        transition_nonces : tuple
+            One unique unused nonce per capture.
+
+        Returns
+        -------
+        tuple
+            Reserved for the verified P4 result; the foundation always refuses.
+
+        Raises
+        ------
+        TypeError
+            The verifier holds only an ordinary v1 authority.
+        ValueError
+            The bound verifier or dispatch changed, or P4 validation refuses.
+        """
+        if type(self) is not HistoricalStudyCaptureDriver:
+            raise ValueError("opaque bound verifier P4 dispatch is required")
+        verifier = getattr(self, "_verifier", None)
+        pin = _P4_DRIVER_PINS.get(self)
+        if (
+            type(verifier) is not HistoricalStudyVerifier
+            or verifier is not getattr(self, "_bound_verifier", None)
+            or pin is None or pin is not verifier
+            or type(self).authorize_capture_set is not _HS_P4_DRIVER_DISPATCH
+            or type(verifier).authorize_capture_set is not _HS_P4_VERIFIER_DISPATCH
+        ):
+            raise ValueError("opaque bound verifier P4 dispatch is required")
+        return _HS_P4_VERIFIER_DISPATCH(
+            verifier, captures, admission_ref,
+            consumer_run_identity=consumer_run_identity,
+            process_measurement_sha256=process_measurement_sha256,
+            runtime_sha256=runtime_sha256,
+            transition_nonces=transition_nonces,
+        )
+
+
+_HS_P4_AUTHORITY_DISPATCH = CapturedAuthorizationAuthority.authorize_capture_set
+_HS_P4_VERIFIER_DISPATCH = HistoricalStudyVerifier.authorize_capture_set
+_HS_P4_DRIVER_DISPATCH = HistoricalStudyCaptureDriver.authorize_capture_set

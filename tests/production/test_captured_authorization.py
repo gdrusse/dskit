@@ -88,3 +88,28 @@ def test_p4_facade_rejects_copied_state_and_late_authority_substitution(facade):
         verifier_module.HistoricalStudyVerifier.authorize_capture_set(
             twin, (), p4._request(), **p4._runtime()
         )
+
+
+@pytest.mark.parametrize("facade", ["verifier", "driver"])
+def test_issued_p4_facades_reach_only_the_same_held_admission_lookup(facade):
+    broker = p4._factory()()
+    producer, published, _values = f4._publish(broker)
+    broker.end_session(producer)
+    _document, frozen = f4._freeze(broker, published)
+    port = broker.derive_consumer_port(frozen)
+    verifier = verifier_module.HistoricalStudyVerifier(broker)
+    verifier.bind(**legacy._PLAN)
+    doorway = (
+        verifier if facade == "verifier"
+        else verifier_module.HistoricalStudyCaptureDriver(verifier)
+    )
+    before = (broker._receipt_audit(published), tuple(broker._session_events))
+    with pytest.raises(ValueError, match="missing admission"):
+        type(doorway).authorize_capture_set(
+            doorway, ((published, frozen, port),), p4._request(), **p4._runtime()
+        )
+    assert (broker._receipt_audit(published), tuple(broker._session_events)) == before
+    captured, session = legacy._capture(doorway, published, frozen, port)
+    assert captured is not None and session is not None
+    assert broker._receipt_audit(published)[-1]["event"] == "CAPTURED"
+    assert not broker._member_events

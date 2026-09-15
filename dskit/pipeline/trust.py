@@ -18,8 +18,10 @@ import json
 import os
 from abc import ABC, abstractmethod
 from types import MappingProxyType
+from weakref import WeakKeyDictionary
 
 __all__ = [
+    "CapturedAuthorizationAuthority",
     "CapturedBindings",
     "CapturedJsonArtifact",
     "CapturedLifecyclePort",
@@ -285,6 +287,76 @@ class LifecycleAuthority(ABC):
     @abstractmethod
     def open_capture(self, session, captured):
         """Return a verified capture bound to ``session``."""
+
+
+class CapturedAuthorizationAuthority(LifecycleAuthority):
+    """Broker-issued capability for the versioned capture-set doorway.
+
+    This foundation validates requests but always refuses authorization. Exact
+    artifact verification and atomic admission/batch publication must exist
+    before this doorway can issue any record or launch session. Ordinary v1
+    lifecycle authorities retain their original abstract method set.
+
+    Parameters
+    ----------
+    None
+        The public ABC cannot be constructed; only a private broker issues it.
+
+    Examples
+    --------
+    Direct capability construction refuses::
+
+        try:
+            CapturedAuthorizationAuthority()
+        except TypeError:
+            refused = True
+        refused  # True
+    """
+
+    @abstractmethod
+    def authorize_capture_set(
+        self, captures, admission_ref, *, consumer_run_identity,
+        process_measurement_sha256, runtime_sha256, transition_nonces,
+    ):
+        """Validate a held-authority request without issuing a capture.
+
+        Parameters
+        ----------
+        captures : tuple
+            Nonempty exact tuples of published handle, frozen document and port.
+        admission_ref : dict
+            Exact action-execution or final-replay IssuanceBasisRef.v1.
+        consumer_run_identity : str
+            Nonempty run identity distinct from every producer run.
+        process_measurement_sha256 : str
+            Nonplaceholder lowercase SHA-256 of the consumer measurement.
+        runtime_sha256 : str
+            Nonplaceholder lowercase SHA-256 of the consumer runtime.
+        transition_nonces : tuple
+            One unique, unused nonempty string per capture.
+
+        Returns
+        -------
+        tuple
+            Reserved for the future verified opaque record and launch session;
+            this foundation returns no authorization result.
+
+        Raises
+        ------
+        TypeError
+            The receiver is not an exact broker-issued capability or an input
+            has a forbidden type.
+        ValueError
+            Request identity is invalid, admission is missing, or complete
+            artifact closure and atomic issuance are unavailable.
+        """
+        return _p4_checked_dispatch(
+            self, captures, admission_ref,
+            consumer_run_identity=consumer_run_identity,
+            process_measurement_sha256=process_measurement_sha256,
+            runtime_sha256=runtime_sha256,
+            transition_nonces=transition_nonces,
+        )
 
 
 class LaunchSession(_Opaque):
@@ -1883,3 +1955,235 @@ def _development_broker(
         start_ms,
         provider_worm,
     )
+
+
+_P4_ADMISSION_SCHEMAS = MappingProxyType({
+    "action-execution-admission": "dskit.action-execution-admission/v1",
+    "final-replay-admission": "dskit.final-replay-admission/v1",
+})
+_P4_PENDING_TOKENS = set()
+_P4_ISSUED = WeakKeyDictionary()
+
+
+def _p4_reference_bytes(value):
+    """Validate the closed selected-admission reference before canonicalizing."""
+    if type(value) is not dict or set(value) != {"kind", "role", "schema", "sha256"}:
+        raise ValueError("exact P4 admission reference is required")
+    if any(type(item) is not str for item in value.values()):
+        raise TypeError("exact P4 reference strings are required")
+    if (
+        value["role"] != "study-lifecycle"
+        or value["kind"] not in _P4_ADMISSION_SCHEMAS
+        or value["schema"] != _P4_ADMISSION_SCHEMAS[value["kind"]]
+    ):
+        raise ValueError("P4 admission kind, role and schema must agree")
+    _require_sha256(value["sha256"], "admission")
+    return _canonical_bytes(value)
+
+
+def _p4_copy_facts(value, seen=None):
+    """Copy a closed built-in fixture tree and reject shared mutable nodes."""
+    if seen is None:
+        seen = set()
+    if type(value) in (str, bytes):
+        return value
+    if type(value) not in (dict, list):
+        raise TypeError("P4 fixture facts require built-in mapping/list/bytes data")
+    if id(value) in seen:
+        raise ValueError("P4 fixture aliases and cycles are refused")
+    seen.add(id(value))
+    if type(value) is list:
+        return [_p4_copy_facts(item, seen) for item in value]
+    if any(type(key) is not str for key in value):
+        raise TypeError("P4 fixture keys must be exact strings")
+    return {key: _p4_copy_facts(item, seen) for key, item in value.items()}
+
+
+class _FixedWormTrustedArtifactResolver(_Opaque):
+    """Hold copied hostile admission bytes; presence confers no trust."""
+
+    __slots__ = ("_records",)
+
+    def __init__(self, fixture_facts):
+        records = []
+        facts = {"artifacts": []} if fixture_facts is None else _p4_copy_facts(fixture_facts)
+        if type(facts) is not dict or set(facts) != {"artifacts"}:
+            raise ValueError("P4 fixture facts must contain only artifacts")
+        if type(facts["artifacts"]) is not list:
+            raise TypeError("P4 fixture artifacts must be an exact list")
+        for entry in facts["artifacts"]:
+            if type(entry) is not dict or set(entry) != {"ref", "bytes"}:
+                raise ValueError("P4 fixture artifact requires only ref and bytes")
+            key = _p4_reference_bytes(entry["ref"])
+            if type(entry["bytes"]) is not bytes:
+                raise TypeError("P4 fixture artifact must contain exact bytes")
+            parsed, raw = _load_canonical_json(entry["bytes"])
+            if type(parsed) is not dict or parsed.get("schema") != entry["ref"]["schema"]:
+                raise ValueError("P4 fixture artifact schema differs from reference")
+            if any(previous == key for previous, _raw in records):
+                raise ValueError("duplicate P4 fixture reference")
+            records.append((key, raw))
+        object.__setattr__(self, "_records", tuple(records))
+
+    def __setattr__(self, name, value):
+        raise AttributeError("P4 fixture resolver is frozen")
+
+    def _lookup(self, key):
+        """Return copied bytes only for the exact held reference."""
+        for reference, raw in self._records:
+            if reference == key:
+                return raw
+        raise ValueError("missing admission in fixed P4 fixture snapshot")
+
+
+class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
+                                                 CapturedAuthorizationAuthority,
+                                                 _Opaque):
+    """Fixed nondeployment foundation; every P4 issuance remains refused."""
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("P4 synthetic authority is final")
+
+    def __init__(self, token, resolver):
+        if token not in _P4_PENDING_TOKENS:
+            raise TypeError("P4 authority requires a one-shot private factory token")
+        _P4_PENDING_TOKENS.remove(token)
+        _DevelopmentBroker.__init__(self, {}, None, [], [], 0, True)
+        self._p4_resolver = resolver
+
+    @property
+    def deployment_eligible(self):
+        """Return False for this permanently synthetic capability."""
+        return False
+
+    def authorize_capture_set(
+        self, captures, admission_ref, *, consumer_run_identity,
+        process_measurement_sha256, runtime_sha256, transition_nonces,
+    ):
+        """Run the checked base doorway; this foundation never issues."""
+        return CapturedAuthorizationAuthority.authorize_capture_set(
+            self, captures, admission_ref,
+            consumer_run_identity=consumer_run_identity,
+            process_measurement_sha256=process_measurement_sha256,
+            runtime_sha256=runtime_sha256,
+            transition_nonces=transition_nonces,
+        )
+
+    def _validate_capture_request(self, captures, runtime, nonces):
+        """Validate complete live tuples without advancing any lifecycle state."""
+        if type(captures) is not tuple or not captures:
+            raise TypeError("P4 captures require a nonempty exact tuple")
+        if type(nonces) is not tuple or len(nonces) != len(captures):
+            raise ValueError("P4 nonce tuple must match capture cardinality")
+        if any(type(nonce) is not str or not nonce for nonce in nonces):
+            raise ValueError("P4 nonces must be exact nonempty strings")
+        if len(set(nonces)) != len(nonces) or any(nonce in self._nonces for nonce in nonces):
+            raise ValueError("P4 transition nonces must be unique and unused")
+        run = runtime["consumer_run_identity"]
+        if type(run) is not str or not run:
+            raise ValueError("P4 consumer run must be an exact nonempty string")
+        for name in ("process_measurement_sha256", "runtime_sha256"):
+            if type(runtime[name]) is not str:
+                raise TypeError("P4 runtime digests must be exact strings")
+            _require_sha256(runtime[name], name)
+        streams, ports, documents = set(), set(), set()
+        for capture in captures:
+            if type(capture) is not tuple or len(capture) != 3:
+                raise TypeError("P4 capture entries require exact three-item tuples")
+            published, frozen, port = capture
+            if type(published) is not _Published or type(frozen) is not _Frozen:
+                raise TypeError("P4 requires exact live published and frozen handles")
+            if type(port) is not dict or any(type(item) is not str for item in port.values()):
+                raise TypeError("P4 port requires exact built-in string fields")
+            expected = _DevelopmentBroker.derive_consumer_port(self, frozen)
+            if port != expected:
+                raise ValueError("P4 port differs from the frozen derived port")
+            intern = self._load_interned(
+                self._freeze_published, self._freeze_intern, id(frozen),
+                "P4 frozen publication binding is required",
+            )
+            if intern is not published:
+                raise ValueError("P4 frozen publication binding differs")
+            stream = self._stream_for_published(published, "P4 live publication is required")
+            self._recover(stream)
+            self._require_head(stream, "PUBLISHED")
+            subject = self._stream_pin[stream]
+            if run in (subject.producer["run_identity"], subject.session_run_identity):
+                raise ValueError("P4 consumer run must differ from producer run")
+            key = _canonical_bytes(port)
+            if stream in streams or key in ports:
+                raise ValueError("duplicate P4 stream or consumer port")
+            streams.add(stream)
+            ports.add(key)
+            documents.add(port["consumer_document_sha256"])
+        if len(documents) != 1:
+            raise ValueError("P4 captures must belong to one frozen consumer document")
+        if any(session._kind == "producer" and not session._ended for session in self._sessions.values()):
+            raise ValueError("producer session must end before P4 capture")
+
+
+_P4_BASE_DISPATCH = CapturedAuthorizationAuthority.authorize_capture_set
+_P4_FINAL_DISPATCH = _SyntheticP4CapturedAuthorizationAuthority.authorize_capture_set
+_P4_REQUEST_CHECK = _SyntheticP4CapturedAuthorizationAuthority._validate_capture_request
+_P4_RESOLVER_LOOKUP = _FixedWormTrustedArtifactResolver._lookup
+
+
+def _p4_checked_dispatch(authority, captures, admission_ref, **runtime):
+    """Check broker identity and frozen dependencies before all P4 validation."""
+    if type(authority) is not _SyntheticP4CapturedAuthorizationAuthority:
+        raise TypeError("exact broker-issued P4 capability is required")
+    issued = _P4_ISSUED.get(authority)
+    if (
+        issued is None
+        or authority._p4_resolver is not issued[0]
+        or type(issued[0]) is not _FixedWormTrustedArtifactResolver
+        or issued[0]._records is not issued[1]
+        or CapturedAuthorizationAuthority.authorize_capture_set is not _P4_BASE_DISPATCH
+        or type(authority).authorize_capture_set is not _P4_FINAL_DISPATCH
+        or type(authority)._validate_capture_request is not _P4_REQUEST_CHECK
+        or type(issued[0])._lookup is not _P4_RESOLVER_LOOKUP
+        or "authorize_capture_set" in authority.__dict__
+    ):
+        raise TypeError("exact broker-issued P4 capability is required")
+    key = _p4_reference_bytes(admission_ref)
+    nonces = runtime.pop("transition_nonces")
+    _P4_REQUEST_CHECK(authority, captures, runtime, nonces)
+    _P4_RESOLVER_LOOKUP(issued[0], key)
+    # A held byte match is data only. No record, nonce, admission, receipt,
+    # session, or member capability is created by this foundation increment.
+    raise ValueError("P4 complete artifact closure and atomic issuance are unavailable")
+
+
+def _development_p4_broker(*, fixture_facts=None):
+    """Construct the fixed synthetic P4 foundation without selectable trust.
+
+    Parameters
+    ----------
+    fixture_facts : dict or None
+        Hostile data only: ``artifacts`` is a list of exact ``ref``/``bytes``
+        entries. References currently name action or replay admissions. Copied
+        canonical bytes confer no authority, and matching fixtures still refuse
+        until complete recursive verification and atomic issuance are supplied.
+
+    Returns
+    -------
+    CapturedAuthorizationAuthority
+        Noncopyable synthetic capability with ordinary v1 lifecycle methods.
+
+    Raises
+    ------
+    TypeError
+        A fixture uses an object, subclass, or forbidden data type.
+    ValueError
+        A fixture has aliases, unknown fields, duplicate references, or
+        noncanonical artifact bytes.
+    """
+    resolver = _FixedWormTrustedArtifactResolver(fixture_facts)
+    token = object()
+    _P4_PENDING_TOKENS.add(token)
+    try:
+        authority = _SyntheticP4CapturedAuthorizationAuthority(token, resolver)
+    finally:
+        _P4_PENDING_TOKENS.discard(token)
+    _P4_ISSUED[authority] = (resolver, resolver._records)
+    return authority
