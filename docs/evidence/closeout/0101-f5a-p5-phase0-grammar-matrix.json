@@ -22,7 +22,7 @@
         "document_sha256": "exact lowercase 64-hex SHA-256, not the 64-zero placeholder, not 'self'",
         "node": "non-empty str",
         "output": "non-empty str",
-        "purpose": "non-empty str"
+        "purpose": "non-empty str (parser is intentionally stricter than the broker route, which accepts empty purpose by equality; no closed purpose value set exists in ADR-0125 — its example is 'paper', tests use 'synthetic', and the execution_backtest block's own purpose set is separate)"
       },
       "cardinality": "exactly six keys; no missing, extra, duplicate, or null member",
       "no_nesting": "the descriptor value contains only those six scalar strings; no nested $captured_artifact, no list/map value, no $node.output / $prev reference inside it",
@@ -32,10 +32,10 @@
   },
 
   "negative_families": [
-    {"family": "forbidden_location", "cases": ["descriptor in NodeSpec.params (top-level or nested)", "descriptor as a $prev carry default", "descriptor in PipelineDocument.outputs", "descriptor in NodeSpec.artifact", "descriptor nested inside a list or map anywhere in inputs/params", "descriptor as an extra key beside another input form", "descriptor in a legacy stages section"]},
+    {"family": "forbidden_location", "cases": ["descriptor in NodeSpec.params (top-level or nested)", "descriptor as a $prev carry default", "descriptor in PipelineDocument.outputs", "descriptor in NodeSpec.artifact", "descriptor nested inside a list or map anywhere in inputs/params", "descriptor as an extra key beside another input form", "descriptor in StageSpec.params of the node-map stages section (PipelineDocument.stages, StageSpec.params is an open dict and must be swept)", "descriptor in StageSpec.inputs of the node-map stages section (already refused as non-$stage.output, keep it refused and covered by a test)", "descriptor in the retired stage-list grammar (legacy demo/synthetic configs)"]},
     {"family": "forbidden_shape", "cases": ["missing any of the six keys", "extra seventh key", "duplicate key (canonical JSON already refuses)", "null value", "non-str root_ref/snapshot_version/node/output/purpose", "document_sha256 not lowercase 64-hex", "document_sha256 equals the 64-zero placeholder", "document_sha256 equals 'self'", "nested $captured_artifact inside the descriptor", "spelled consumer_document_sha256 / consumer_node / consumer_input inside the descriptor"]},
     {"family": "forbidden_semantics", "cases": ["$prev / carry / $node.output reference anywhere a captured descriptor is the only legal form", "mode 'load' + captured descriptor", "artifact pin + captured descriptor", "a descriptor-shaped dict that is NOT under a $captured_artifact key must not be treated as authority"]},
-    {"family": "mutation_and_alias", "cases": ["mutation of the parsed descriptor object after from_obj does not change the frozen document identity", "a descriptor-shaped substitute in params/outputs is refused, not silently accepted"]}
+    {"family": "mutation_and_alias", "cases": ["a descriptor-shaped dict that is NOT under a $captured_artifact key must not be treated as authority", "a descriptor-shaped substitute in params/outputs/stages is refused, not silently accepted"], "scope_note": "Packet 5 freezes grammar and location only. It introduces NO deep-copy/freeze of the parsed descriptor and no new mutable alias beyond the parser's pre-existing shallow-copy behavior (_copy_mapping_or_raw is dict(value) for all inputs/params). Descriptor mutation-after-parse and freeze protection are re-validated by the broker route (trust.py freeze_consumer_document + derive_consumer_port re-hash, Packet 4) and are swept in Packet 6 equality/substitution; they are out of Packet 5 scope."}
   ],
 
   "entry_points_swept": [
@@ -50,6 +50,7 @@
 
   "context_rule": {
     "principle": "A captured-artifact descriptor is recognized and shape-validated at the node level; it is a legal node input ONLY in an execution_backtest document. An ordinary (non-execution) document containing a $captured_artifact descriptor refuses at PipelineDocument level with a clear diagnostic; ordinary documents with no descriptor remain byte-identical in canonical JSON, hash, plan hash, and run identity.",
+    "node_level_role": "NodeSpec.from_obj only SHAPE-validates (accepts) a legal descriptor shape in inputs; it has no document context. Legality (execution_backtest required, and the document-level location sweep over stages/outputs/etc.) is enforced solely by PipelineDocument.__post_init__.",
     "execution_gate": "the existing planner.refuse_execution_backtest and __main__.load_and_preflight_public_document continue to refuse execution documents before planning/provider/broker/node import; the descriptor grammar does not open an ordinary-pipeline execution route."
   },
 
@@ -72,7 +73,8 @@
       "tests/pipeline/test_document.py: descriptor positive parse and every negative family",
       "tests/pipeline/test_planner.py: plan/resolve surfaces refuse captured descriptors in ordinary documents and refuse forbidden locations",
       "tests/pipeline/test_driver.py: run_document/plan_document refuse before node construction",
-      "tests/pipeline/test_main.py + test_main_nodemap.py: CLI surfaces refuse before adapter import/provider open"
+      "tests/pipeline/test_main.py + test_main_nodemap.py: CLI surfaces refuse before adapter import/provider open",
+      "tests/pipeline/test_stages.py: descriptor in the node-map stages section (StageSpec.params/inputs) refuses"
     ],
     "existing_inventoried": [
       "tests/pipeline/test_document.py (69)", "test_planner.py (42)", "test_driver.py (94)", "test_stages.py (16)", "test_main.py (5)", "test_node.py (43)", "test_resolve.py (17)", "test_trust.py (75)", "test_captured_authorization.py (53)"

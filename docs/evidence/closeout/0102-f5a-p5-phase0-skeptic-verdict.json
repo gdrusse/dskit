@@ -1,0 +1,32 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "matrix": "docs/evidence/closeout/0101-f5a-p5-phase0-grammar-matrix.json",
+  "reviewer": {"model": "deepseek-v4-pro (owner override 2026-09-15)", "agent_task": "ses_f59dafd7affevtIAaM1WpMuVKu", "lens": "adversarial Phase 0 design review"},
+  "verdict": "not-clean",
+  "conclusion": "Frozen with two majors unresolved: the matrix claims a mutation-invariance the shallow-copy parser does not provide (P5-G1), and its forbidden-location sweep omits stages.<key>.params, letting a descriptor spelling slip through un-rejected against its own 'any nested location' rule (P5-G2).",
+  "findings": [
+    {"id": "P5-G1", "severity": "major", "summary": "matrix claims mutation-after-from_obj cannot change identity, but NodeSpec.from_obj shallow-copies (dict(value)), so the inner descriptor dict is shared and mutation changes the canonical hash.", "disposition": "corrected in matrix v2: mutation/freeze protection moved out of Packet 5 scope; explicitly noted as broker-route (Packet 4 freeze_consumer_document/derive_consumer_port) + Packet 6 substitution."},
+    {"id": "P5-G2", "severity": "major", "summary": "location hole: StageSpec.params is an open dict that accepts a $captured_artifact descriptor with no detection, contradicting the matrix's ordinary-document refusal and ADR-0125 'any nested location'.", "disposition": "corrected in matrix v2: forbidden_location now names StageSpec.params/inputs of the node-map stages section; test_stages.py added to new tests."},
+    {"id": "P5-G3", "severity": "minor", "summary": "NodeSpec.from_obj has no document context, so it cannot express execution_backtest-only legality; unclear whether standalone NodeSpec accepts or refuses.", "disposition": "corrected in matrix v2: node_level_role states NodeSpec only shape-validates; legality enforced by PipelineDocument.__post_init__."},
+    {"id": "P5-G4", "severity": "nit", "summary": "purpose 'non-empty str' is stricter than trust.py equality (empty allowed); benign divergence undocumented.", "disposition": "corrected in matrix v2: purpose value documented as intentionally stricter than broker route; no closed purpose set exists in ADR-0125."}
+  ],
+  "probes_run_verbatim": [
+    "Read 0101 grammar matrix, 0095 contract pack, 0096 delta matrices, ADR-0125 'Captured ports and enforced multi-run stages' (decision-log.md:8168-8195) and 'Decision and canonical rules' (8331-8399).",
+    "Confirmed _DESCRIPTOR_KEYS (trust.py:56-65) == matrix inner_keys (six keys, exact match).",
+    "Confirmed _require_sha256 (trust.py:144-154) refuses 'self', 64-zero placeholder, non-lowercase 64-hex.",
+    "Confirmed published descriptor is exactly the six keys (trust.py:1157-1164), and _descriptor_from reads pipeline.<node>.inputs.<input>['$captured_artifact'] (trust.py:1857-1862).",
+    "Grepped decision-log.md for 'purpose': no closed descriptor-purpose vocabulary; matrix 'non-empty str' is correct, not an under-constraint.",
+    "Read NodeSpec.__post_init__ (document.py:522-580): current code rejects any non-'$'-string input; RED must add a descriptor branch.",
+    "Read _execution_backtest_node_errors/_section_errors (document.py:621-654).",
+    "Read PipelineDocument.__post_init__ (document.py:1965-2048): no document-level descriptor sweep exists today.",
+    "Read _copy_mapping_or_raw (document.py:174-176) = shallow dict() copy; _dataclass_to_obj deep-copies at to_obj time only (finding P5-G1).",
+    "Read StageSpec.__post_init__ (document.py:785-811): params via _check_open_dict only, no descriptor detection (finding P5-G2).",
+    "Read planner.plan, require_in_memory_document/refuse_execution_backtest, resolve_uses, plan_stages, run_document, load_and_preflight_public_document: all refuse execution docs before import/provider.",
+    "Verified test inventory counts against source: all match 0095/0101.",
+    "Validated all three closeout JSON files parse with json.tool.",
+    "Worked mutation example: desc mutated after from_obj -> to_obj()/config_hash change."
+  ],
+  "next_gate": "Fresh DeepSeek skeptic re-review of the corrected matrix v2 before RED."
+}
