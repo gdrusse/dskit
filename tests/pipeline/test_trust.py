@@ -3188,3 +3188,33 @@ def test_p6_new_broker_with_same_receipts_cannot_reconstruct_old_session():
             consumer_node="consume", transition_nonce="restarted-consumed")
     assert _p6_effects(restarted) == before
     assert broker._receipt_audit(published)[-1]["event"] == "CAPTURED"
+
+
+@pytest.mark.parametrize("target", ["member", "port", "artifact"])
+def test_p6_single_view_intern_mint_cannot_change_retained_data(target):
+    broker, _, _, _, _, verified, _, port = _p6_consumed()
+    foreign = _p6_consumed()
+    if target == "member":
+        view = verified.member("artifacts/bundle.json")
+        expected = _json_bytes({"rows": [{"id": "one", "value": 7}]})
+        operation = view.read_bytes
+        data = ("artifacts/bundle.json", b'{"forged":true}')
+        identity = False
+    elif target == "port":
+        view = port
+        expected = port.artifact
+        operation = lambda: port.artifact
+        data = (foreign[7].artifact, port.audit)
+        identity = True
+    else:
+        view = port.artifact
+        expected = view.value
+        operation = lambda: view.value
+        data = ({"rows": [{"id": "FORGED"}]}, view.audit)
+        identity = False
+    record = broker._view_record(view)
+    _hmac_mint(broker, broker._view_pins, broker._view_intern, id(view),
+              (*record[:4], data, record[5]))
+    before = _p6_effects(broker)
+    _p6_retained_or_refused(operation, expected, identity=identity)
+    assert _p6_effects(broker) == before
