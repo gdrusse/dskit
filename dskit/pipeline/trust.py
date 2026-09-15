@@ -1960,6 +1960,7 @@ class _DevelopmentBroker(LifecycleAuthority):
                                   *, session=None, view=None, head="CAPTURED"):
         """Validate retained v1 identity immediately before an effect or delivery."""
         view_record = None
+        retained_members = None
         if view is not None:
             view_record = self._view_record(view, require_consumed=False)
             parent = view_record
@@ -1967,8 +1968,13 @@ class _DevelopmentBroker(LifecycleAuthority):
                 parent = self._view_record(parent[3], require_consumed=False)
             pin = self._load_interned(self._verified_pin, self._verified_intern,
                                       id(parent[0]), "verified capture identity required")
-            published, frozen, session, bound_stream, _, port_items = pin
+            published, frozen, session, bound_stream, retained_members, port_items = pin
             port = dict(port_items)
+            for path, member in parent[4].items():
+                member_record = self._view_record(member, require_consumed=False)
+                if (member_record[3] is not parent[0] or member_record[4][0] != path
+                        or member_record[4][1] != retained_members[path]):
+                    raise ValueError("verified retained member identity mismatch")
             if parent[2] != bound_stream:
                 raise ValueError("verified capture stream mismatch")
             if view_record[1] == "bindings" and view_record[4][0] is not session:
@@ -1977,6 +1983,15 @@ class _DevelopmentBroker(LifecycleAuthority):
         if self._frozen_publication(frozen) is not published:
             raise ValueError("frozen publication effect mismatch")
         expected_port = self.derive_consumer_port(frozen)
+        if retained_members is not None:
+            sealed = self._publication_record(published)[0]
+            declared = {item["relative_path"]: item for item in sealed._digests}
+            if set(retained_members) != set(declared):
+                raise ValueError("verified retained member manifest mismatch")
+            for path, raw in retained_members.items():
+                if (type(raw) is not bytes or _digest(raw) != declared[path]["sha256"]
+                        or len(raw) != declared[path]["bytes"]):
+                    raise ValueError("verified retained member digest mismatch")
         if port != expected_port:
             raise ValueError("captured effect port mismatch")
         self._require_head(stream, head)
