@@ -1599,6 +1599,43 @@ class HistoricalStudyEnvelopePreflight:
                 ):
                     _hs_refuse(ref[name] == producer[name])
 
+            for ref in refs:
+                matching_edges = [
+                    edge
+                    for edge in edges
+                    if edge["consumer_action_id"] == action["action_id"]
+                    and all(
+                        edge[name] == ref[name]
+                        for name in (
+                            "predecessor_action_id",
+                            "output_name",
+                            "output_schema",
+                            "output_version",
+                            "purpose",
+                        )
+                    )
+                ]
+                _hs_refuse(len(matching_edges) == 1)
+                edge = matching_edges[0]
+                matching_contracts = [
+                    contract
+                    for contract in action["required_input_contracts"]
+                    if contract["source_kind"] == "predecessor-output"
+                    and contract["binding_id"] == edge["binding_id"]
+                    and contract["output_schema"] == ref["output_schema"]
+                    and contract["output_version"] == ref["output_version"]
+                    and contract["purpose"] == ref["purpose"]
+                ]
+                _hs_refuse(len(matching_contracts) == 1)
+                producer = by_id[ref["predecessor_action_id"]]["output_contract"]
+                for name in (
+                    "output_name",
+                    "output_schema",
+                    "output_version",
+                    "purpose",
+                ):
+                    _hs_refuse(ref[name] == producer[name])
+
         for edge in edges:
             _hs_refuse(edge["consumer_action_id"] in by_id)
             consumer = by_id[edge["consumer_action_id"]]

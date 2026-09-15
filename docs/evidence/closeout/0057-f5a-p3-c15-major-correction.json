@@ -1,0 +1,60 @@
+{
+  "schema_version": "MajorCorrectionEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "3-unsigned-adr-0125-schema-signatures",
+  "finding": {
+    "id": "F5A-P3-0056-M01",
+    "severity": "Major",
+    "disposition": "corrected; fresh final lenses remain required",
+    "invariant": "Every predecessor_output_ref has exactly one matching predecessor-output InputContract and EdgeSetEntry, and the referenced producer OutputContract matches its output tuple."
+  },
+  "reviewed": {
+    "base_commit": "390dc851e3704e8db4d2a6a4d4e7aa0412a69899",
+    "corrected_from_candidate": "d0ac79d8615ee62931da7c31f57fcce958104398",
+    "matrix_0053_sha256": "1e2d10dbc4a21188d1b56ed7b33c6dbdb52e9f04ba24079a6f4bed3060356f85",
+    "phase0_0054_sha256": "0595168d7e14844dd2f38866b088c10f824abd7135969e6e09293e222471b3f9",
+    "final_authority_0056_sha256": "b85fbaf36b16be728280c930fb34102edeec76b21e2c0a89bafb2f35ce7c0df4",
+    "corrected_blobs": {
+      "dskit/production/verifier.py": "162f7a117167ef31eda2c54545f8633d83ab4af0",
+      "tests/production/test_adr0125_preflight.py": "3578341d5d74c09974a9c24850c1ac56c7bdec43"
+    },
+    "unchanged_boundary": {
+      "dskit/pipeline/trust.py": "68b9beea26fe2f336fa458806413a826f99dc0fb6fdaf4e17dbcce2549d48fc5",
+      "capture_or_lifecycle_paths": "not modified"
+    }
+  },
+  "red": {
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py -k dangling_predecessor_ref",
+    "result": "1 failed, 32 deselected in 0.14s; Failed: DID NOT RAISE ValueError",
+    "proof": "A fully rehashed/resigned tuple with an extra canonically ordered A1 predecessor_output_ref and no matching edge or predecessor-output contract was accepted before the correction."
+  },
+  "correction": "_validate_graph now also traverses every predecessor_output_ref and requires exactly one matching edge, exactly one predecessor-output contract for that edge, and the four-field producer OutputContract match.",
+  "green": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py -k dangling_predecessor_ref",
+      "result": "1 passed, 32 deselected in 0.10s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py",
+      "result": "33 passed in 0.17s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_trust.py",
+      "result": "148 passed in 0.30s"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/production/verifier.py tests/production/test_adr0125_preflight.py",
+      "result": "All checks passed!"
+    },
+    {
+      "command": "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0057-f5a-p3-c15-major-correction.json",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    }
+  ],
+  "no_effect_boundary": "The retained valid-profile test accepts bootstrap, scope-action, and replay-pre-final only as opaque NonAuthorizingAdr0125StructuralSignaturePreflight results with deployment_eligible=false; no trust.py, capture, lifecycle, resolver, session, WORM, import, construction, execution, or admission-consumption path changed.",
+  "next_gate": "Freeze this corrected candidate and obtain two fresh final lenses before approval."
+}

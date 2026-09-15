@@ -114,6 +114,7 @@ def _action_set(
     selected_study=None,
     selected_component=None,
     contract_kind=None,
+    dangling_predecessor_ref=False,
     output_graft=False,
 ):
     actions = []
@@ -152,6 +153,16 @@ def _action_set(
                     "purpose": purpose,
                 }
             ]
+            if dangling_predecessor_ref and action_id == "A1":
+                predecessor_refs.append(
+                    {
+                        "predecessor_action_id": predecessor_id,
+                        "output_name": "unlinked-output",
+                        "output_schema": "dskit.synthetic-output/v1",
+                        "output_version": "1",
+                        "purpose": "historical-study",
+                    }
+                )
             root_ids = []
             contracts = [
                 {
@@ -312,6 +323,7 @@ def _build_tuple(profile="bootstrap", **mutations):
         if profile != "replay-pre-final"
         else None,
         contract_kind=contract_kind if profile != "replay-pre-final" else None,
+        dangling_predecessor_ref=mutations.get("dangling_predecessor_ref", False),
         output_graft=mutations.get("output_graft", False),
     )
     replays = _replay_set(
@@ -715,6 +727,13 @@ def test_preflight_refuses_locally_decidable_substitutions(mutation):
     preflight, _keyring, _clock, _revocations = _preflight()
     with pytest.raises(ValueError):
         preflight.verify(*_build_tuple(**mutation))
+
+
+def test_preflight_refuses_rehashed_resigned_dangling_predecessor_ref():
+    preflight, _keyring, _clock, _revocations = _preflight()
+
+    with pytest.raises(ValueError):
+        preflight.verify(*_build_tuple(dangling_predecessor_ref=True))
 
 
 def test_preflight_refuses_extra_or_missing_position_and_untrusted_dependencies():
