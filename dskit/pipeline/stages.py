@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from dskit.pipeline.base import ConfigError, import_ref, is_class_ref
-from dskit.pipeline.document import PipelineDocument, parse_node_ref
+from dskit.pipeline.document import parse_node_ref
 from dskit.pipeline.runs import resolve_run_root
 
 __all__ = [
