@@ -1906,9 +1906,9 @@ class _DevelopmentBroker(LifecycleAuthority):
     def _frozen_publication(self, frozen):
         """Validate the original frozen port before returning its publication."""
         record = self._load_interned(self._freeze_published, self._freeze_intern,
-                                     id(frozen), "frozen publication identity required")
+                                     id(frozen), "frozen published identity required")
         if type(record) is not tuple or len(record) != 2 or type(record[1]) is not bytes:
-            raise ValueError("frozen publication identity required")
+            raise ValueError("frozen published identity required")
         published, raw_port = record
         current = {"consumer_document_sha256": _digest(_canonical_bytes(frozen.source)),
                    "consumer_node": frozen.consumer_node, "consumer_input": frozen.consumer_input,
@@ -1931,33 +1931,67 @@ class _DevelopmentBroker(LifecycleAuthority):
         _LIFECYCLE_VIEWS[view] = (self, stream)
 
     def _view_record(self, view):
-        """Validate the full retained parent graph without trusting handle slots."""
+        """Validate retained parent and slot identities without reopening bytes."""
         record = self._load_interned(self._view_pins, self._view_intern,
                                      id(view), "captured view identity required")
         if type(record) is not tuple or len(record) != 6 or record[0] is not view:
             raise ValueError("captured view identity required")
-        _view, kind, stream, parent, data, _read = record
-        if _LIFECYCLE_VIEWS.get(view) != (self, stream):
+        _view, kind, stream, parent, data, was_read = record
+        types = {"verified": VerifiedCapture, "member": CapturedMemberHandle,
+                 "bindings": CapturedBindings, "port": CapturedLifecyclePort,
+                 "artifact": CapturedJsonArtifact}
+        if (type(kind) is not str or type(view) is not types.get(kind)
+                or type(was_read) is not bool
+                or _LIFECYCLE_VIEWS.get(view) != (self, stream)):
             raise ValueError("captured view broker or stream mismatch")
         if kind == "verified":
-            if self._stream_for_published(parent, "verified publication required") != stream:
-                raise ValueError("verified publication stream mismatch")
+            pin = self._load_interned(self._verified_pin, self._verified_intern,
+                                      id(view), "verified capture identity required")
+            if (type(pin) is not tuple or len(pin) != 6 or pin[0] is not parent
+                    or pin[3] != stream or set(data) != set(pin[4])
+                    or set(view._members) != set(data)
+                    or any(view._members[path] is not member for path, member in data.items())):
+                raise ValueError("verified capture member identity mismatch")
+            return record
+        expected_parent = {"member": "verified", "bindings": "verified",
+                           "port": "bindings", "artifact": "port"}[kind]
+        if type(parent) is not types[expected_parent]:
+            raise ValueError("captured view parent mismatch")
+        parent_record = self._view_record(parent)
+        if parent_record[1] != expected_parent or parent_record[2] != stream:
+            raise ValueError("captured view parent mismatch")
+        if type(data) is not tuple or len(data) != 2:
+            raise ValueError("captured view payload identity required")
+        if kind == "member":
+            pin = self._load_interned(self._verified_pin, self._verified_intern,
+                                      id(parent), "verified member identity required")
+            if (parent_record[4].get(data[0]) is not view
+                    or pin[4].get(data[0]) != data[1] or view._bytes != data[1]):
+                raise ValueError("captured member retained bytes mismatch")
+        elif kind == "bindings":
+            pin = self._load_interned(self._bindings_pin, self._bindings_intern,
+                                      id(view), "captured bindings identity required")
+            if (view._broker is not self or view._session is not data[0]
+                    or pin[0] != id(view) or pin[1] != stream or pin[4] != id(data[0])
+                    or _canonical_bytes(dict(pin[3])) != data[1]):
+                raise ValueError("captured bindings session or port mismatch")
         else:
-            parent_record = self._view_record(parent)
-            expected_parent = {"member": "verified", "bindings": "verified",
-                               "port": "bindings", "artifact": "port"}
-            if parent_record[1] != expected_parent.get(kind) or parent_record[2] != stream:
-                raise ValueError("captured view parent mismatch")
-            if kind == "member" and parent_record[4].get(data[0]) is not view:
-                raise ValueError("captured member parent mismatch")
-            if kind == "bindings" and (view._broker is not self or view._session is not data[0]):
-                raise ValueError("captured bindings session mismatch")
-            if kind in {"port", "artifact"}:
-                binding = parent_record if kind == "port" else self._view_record(parent_record[3])
-                rows = self._streams[stream]
-                if (stream not in self._consumed_streams or rows[-1]["event"] != "CONSUMED"
-                        or _canonical_bytes(rows[-1]["consumer_captured_port"]) != binding[4][1]):
-                    raise ValueError("captured artifact requires exact consumed input")
+            if kind == "port":
+                ports = self._load_interned(self._bindings_ports, self._ports_intern,
+                                            id(parent), "captured port identity required")[1]
+                if (not any(port is view for port in ports.values())
+                        or view._artifact is not data[0] or view._audit is not data[1]):
+                    raise ValueError("captured port retained identity mismatch")
+                binding = parent_record
+            else:
+                if (parent_record[4][0] is not view
+                        or view._value is not data[0] or view._audit is not data[1]):
+                    raise ValueError("captured artifact retained identity mismatch")
+                binding = self._view_record(parent_record[3])
+            rows = self._streams[stream]
+            if (stream not in self._consumed_streams or rows[-1]["event"] != "CONSUMED"
+                    or _canonical_bytes(rows[-1]["consumer_captured_port"]) != binding[4][1]):
+                raise ValueError("captured artifact requires exact consumed input")
         return record
 
     def _manifest_digest(self, digests):

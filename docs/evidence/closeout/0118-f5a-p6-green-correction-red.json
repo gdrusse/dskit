@@ -26,5 +26,19 @@
     }
   ],
   "status": "not ready; no final review or merge",
-  "deployment_eligible": false
+  "deployment_eligible": false,
+  "followup_checks": [
+    {
+      "result": "156 trust tests passed in 0.61s; ruff/diff clean; sentinel 1 passed in 0.11s"
+    },
+    {
+      "command": "required six-file focused pytest command",
+      "result": "1497 passed in 59.65s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py::test_p6_port_audit_is_deeply_immutable --tb=short",
+      "result": "1 failed in 0.23s: nested consumer_port dictionary remains writable, DID NOT RAISE TypeError",
+      "runtime_blob": "2761abb4b0b9fb2b43a90005fd859a404e8a98d4"
+    }
+  ]
 }

@@ -3218,3 +3218,12 @@ def test_p6_single_view_intern_mint_cannot_change_retained_data(target):
     before = _p6_effects(broker)
     _p6_retained_or_refused(operation, expected, identity=identity)
     assert _p6_effects(broker) == before
+
+
+def test_p6_port_audit_is_deeply_immutable():
+    broker, _, _, _, _, _, _, port = _p6_consumed()
+    before = _p6_effects(broker)
+    with pytest.raises(TypeError):
+        port.audit["consumer_port"]["purpose"] = "forged"
+    assert port.audit["consumer_port"]["purpose"] == "synthetic"
+    assert _p6_effects(broker) == before
