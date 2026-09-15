@@ -46,9 +46,11 @@ _PUBLIC_TYPES = {
     "LifecycleAuthority",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
     "ReleaseKeyring",
+    "TerminalArtifactVerifier",
     "TrustedClock",
     "TrustedRuntimeVerifier",
     "VerifiedCapture",
+    "VerifiedExternalArtifactAnchor",
 }
 
 
@@ -2943,4 +2945,3 @@ def test_backing_store_and_watermark_cannot_rewind_consumed():
     assert replayed["issued_at_ms"] == issued_at
     assert artifact.value["rows"][0]["id"] == "AAA"
     assert broker._receipt_audit(published_b)[-1]["event"] == "CAPTURED"
-

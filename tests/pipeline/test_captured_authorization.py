@@ -276,6 +276,421 @@ def test_external_fixture_reference_cannot_register_an_unknown_terminal(ref_muta
         _factory()(fixture_facts={"artifacts": [fact]})
 
 
+def _graph_hash(value):
+    return hashlib.sha256(value if type(value) is bytes else f4._json_bytes(value)).hexdigest()
+
+
+class _SignedGraph:
+    """Independent exact-byte fixture builder; never a runtime resolver or signer."""
+
+    def __init__(self):
+        self.facts = {"artifacts": []}
+        self.refs = {}
+        self.values = {}
+        for terminal_class in ("G1-dataset-authorization", "G2-dataset-authorization", "fixed-owner-policy"):
+            fact = _terminal_fact(terminal_class)
+            self.facts["artifacts"].append(fact)
+            self.refs[terminal_class] = fact["ref"]
+
+    def add(self, name, kind, value, self_field, role):
+        ref = {"kind": kind, "role": role, "schema": value.get("schema", "dskit.final-replay-entry/v1"),
+               "sha256": value[self_field]}
+        self.refs[name] = ref
+        self.values[name] = value
+        self.facts["artifacts"].append({"ref": ref, "bytes": f4._json_bytes(value)})
+        return value
+
+    def unsigned(self, name, kind, payload, self_field, role="study-lifecycle"):
+        return self.add(name, kind, dict(payload, **{self_field: _graph_hash(payload)}), self_field, role)
+
+    def signed(self, name, kind, payload, self_field, role, usage, dependencies):
+        refs = [dict(self.refs[child]) for child in dependencies]
+        refs.sort(key=lambda ref: tuple(ref[key] for key in ("kind", "role", "schema", "sha256")))
+        basis = _local_signed({"schema": "dskit.issuance-basis/v1", "kind": kind,
+                               "study_id": "synthetic-study", "refs": refs},
+                              "issuance_basis_sha256", role, usage)
+        self.add(name + "/basis", "issuance-basis", basis, "issuance_basis_sha256", role)
+        value = _local_signed(dict(payload, issuance_basis_sha256=basis["issuance_basis_sha256"]),
+                              self_field, role, usage)
+        return self.add(name, kind, value, self_field, role)
+
+
+def _complete_signed_graph(*, replay=False, count=1):
+    """Construct exact action and replay closure including every signed ancestor."""
+    from tests.production import test_adr0125_preflight as p3
+
+    graph = _SignedGraph()
+    probe = trust._development_broker()
+    producer, published, _ = f4._publish(probe)
+    probe.end_session(producer)
+    publications = [published]
+    if count == 2:
+        publications.append(f4._foreign_publish(probe)[0])
+    descriptor = probe.descriptor(published, purpose="synthetic")
+    document = f4._consumer_document(descriptor)
+    if count == 2:
+        document["pipeline"]["consume"]["inputs"]["second"] = {
+            "$captured_artifact": probe.descriptor(publications[1], purpose="synthetic"),
+        }
+    document_sha = _graph_hash(document)
+    root_entries = []
+    root_names = []
+    for index, publication in enumerate(publications):
+        audit = probe._receipt_audit(publication)[-1]
+        facts = {key: audit[key] for key in (
+            "root_ref", "root_id", "snapshot_version", "member_manifest_sha256",
+            "producer_run_identity", "producer_document_sha256", "producer_node", "producer_output",
+        )}
+        name = f"root-receipt-{index}"
+        receipt = graph.signed(name, "root-publication", {
+            "schema": "dskit.root-publication-receipt/v1", "kind": "dataset-capture",
+            "capture_kind": "raw-event-dataset", **facts,
+            "publication_authorization_ref": {
+                "kind": "dataset-capture",
+                "dataset_capture_authorization_sha256": graph.refs["G1-dataset-authorization"]["sha256"],
+            },
+        }, "root_publication_receipt_sha256", "data-publisher", "root-publication-g1-g2",
+            ["G1-dataset-authorization", "G2-dataset-authorization"])
+        root_names.append(name)
+        root_entries.append({
+            "input_id": f"root-{index}", "kind": "synthetic", **facts,
+            "publication_receipt_schema": receipt["schema"],
+            "publication_receipt_sha256": receipt["root_publication_receipt_sha256"],
+            "contract_sha256": _graph_hash(f"input-contract-{index}".encode()),
+        })
+    root_pis = graph.signed("root-pis", "root-pis", {
+        "schema": "dskit.published-input-set/v2", "study_id": "synthetic-study",
+        "phase": "root-g1-g2", "purpose": "synthetic", "entries": root_entries,
+    }, "published_input_set_sha256", "data-publisher", "published-input-set-g1-g2",
+        ["G1-dataset-authorization", "G2-dataset-authorization", *root_names])
+    actions, _ = p3._action_set()
+    replays = p3._replay_set()
+    contracts = [{
+        "binding_id": f"input-{index}", "consumer_node": "consume",
+        "consumer_input": "bundle" if index == 0 else "second",
+        "source_kind": "published-input", "source_ref": f"root-{index}",
+        "output_schema": "dskit.synthetic-output/v1", "output_version": "1", "purpose": "synthetic",
+    } for index in range(count)]
+    contract_digest = _graph_hash(b"F1-owned-fixed-document-contract")
+    for action in actions:
+        action.pop("action_intent_sha256")
+        action.update(study_id="synthetic-study", predecessor_action_ids=[], predecessor_output_refs=[],
+                      root_published_input_ids=[item["input_id"] for item in root_entries],
+                      required_input_contracts=contracts, consumer_document_contract_sha256=contract_digest)
+        action["output_contract"].update(producer_node="publisher", producer_output="bundle", purpose="synthetic")
+        graph.unsigned("intent/" + action["action_id"], "action-intent", action, "action_intent_sha256")
+    actions = [graph.values["intent/" + action["action_id"]] for action in actions]
+    for replay_intent in replays:
+        replay_intent.pop("replay_intent_sha256")
+        replay_intent.update(study_id="synthetic-study", required_input_contracts=contracts,
+                             consumer_document_contract_sha256=contract_digest)
+        graph.unsigned("intent/" + replay_intent["replay_id"], "replay-intent", replay_intent, "replay_intent_sha256")
+    replays = [graph.values["intent/" + item["replay_id"]] for item in replays]
+    action_set = {"schema": "dskit.action-intent-set/v1", "entries": actions}
+    replay_set = {"schema": "dskit.replay-intent-set/v1", "entries": replays}
+    action_set_sha, replay_set_sha = _graph_hash(action_set), _graph_hash(replay_set)
+    scope_payload = {
+        "schema": "dskit.historical-study-scope-intent/v1", "study_id": "synthetic-study",
+        "purpose": "synthetic", "published_input_set_sha256": root_pis["published_input_set_sha256"],
+        "action_intents": actions, "action_intent_set_sha256": action_set_sha,
+        "edge_set_sha256": _graph_hash([]),
+        "action_dag_sha256": _graph_hash({"action_intents": actions, "action_intent_set_sha256": action_set_sha,
+                                           "edge_set_sha256": _graph_hash([])}),
+        "replay_intents": replays, "replay_intent_set_sha256": replay_set_sha,
+        "environment_identity_sha256": p3._h("environment"),
+        "execution_profile_sha256": p3._h("execution-profile"), "component_manifest_sha256": p3._h("component"),
+        "candidate_inventory_sha256": p3._h("inventory"),
+        "policy_set_sha256": graph.refs["fixed-owner-policy"]["sha256"],
+    }
+    scope_intent = graph.signed("scope-intent", "scope-intent", scope_payload,
+                               "historical_study_scope_intent_sha256", "study-lifecycle",
+                               "historical-study-scope-intent", ["root-pis", "fixed-owner-policy"])
+    gates = []
+    for gate, owner in enumerate(("architecture", "security", "data", "model", "risk", "execution", "operations", "research")):
+        gates.append(graph.signed(f"gate-{gate}", "gate-evidence", {
+            "schema": "dskit.gate-evidence-ref/v1", "gate": f"G{gate}",
+            "owner_role": owner + "-owner", "key_purpose": owner + "-gate",
+            "scope_intent_sha256": scope_intent["historical_study_scope_intent_sha256"],
+            "evidence_sha256": p3._h("gate-evidence-" + owner), "approved_identity_sha256": p3._h("gate-identity-" + owner),
+        }, "gate_evidence_ref_sha256", owner + "-owner", owner + "-gate", ["scope-intent"]))
+    gate_names = [f"gate-{index}" for index in range(8)]
+    gate_set_sha = _graph_hash(gates)
+
+    def plan_tuple(intent, pis, pis_name, phase):
+        subject_kind = "action" if "action_id" in intent else "replay"
+        identity = intent[subject_kind + "_id"]
+        plan_document_sha = (document_sha if subject_kind == "replay" or
+                             (not replay and identity == actions[0]["action_id"]) else "1" * 64)
+        subject = {"kind": subject_kind, subject_kind + "_id": identity,
+                   subject_kind + "_intent_sha256": intent[subject_kind + "_intent_sha256"]}
+        prefix = "tuple/" + identity + "/"
+        entries = [{
+            "binding_id": contract["binding_id"], "consumer_document_sha256": plan_document_sha,
+            "consumer_node": "consume", "consumer_input": contract["consumer_input"], "purpose": "synthetic",
+            "descriptor_root_ref": entry["root_ref"], "descriptor_snapshot_version": entry["snapshot_version"],
+            "descriptor_document_sha256": entry["producer_document_sha256"], "descriptor_node": entry["producer_node"],
+            "descriptor_output": entry["producer_output"], "descriptor_purpose": "synthetic", "published_input": entry,
+        } for contract, entry in zip(contracts, pis["entries"][:count])]
+        entries.sort(key=f4._json_bytes)
+        common = {"study_id": "synthetic-study", "subject_ref": subject,
+                  "consumer_document_contract_sha256": contract_digest, "consumer_document_sha256": plan_document_sha,
+                  "purpose": "synthetic", "component_manifest_sha256": p3._h("component")}
+        ces = graph.signed(prefix + "ces", "ces", {
+            "schema": "dskit.capture-expectation-set/v1", **common, "phase": phase,
+            "published_input_set_sha256": pis["published_input_set_sha256"], "entries": entries,
+        }, "capture_expectation_set_sha256", "study-lifecycle", "capture-expectation", [pis_name, "intent/" + identity])
+        authority_ref = ({"kind": "scope-intent-gate-set", "scope_intent_sha256": scope_intent["historical_study_scope_intent_sha256"],
+                          "gate_set_sha256": gate_set_sha} if phase == "bootstrap" else
+                         {"kind": "scope-authorization-replay", "scope_authorization_sha256": graph.refs["scope"]["sha256"],
+                          "replay_intent_sha256": intent["replay_intent_sha256"]})
+        pea = graph.signed(prefix + "pea", "pea", {
+            "schema": "dskit.plan-evaluation-authorization/v1", **common, "phase": phase,
+            "published_input_set_sha256": pis["published_input_set_sha256"],
+            "capture_expectation_set_sha256": ces["capture_expectation_set_sha256"], "authority_ref": authority_ref,
+        }, "plan_evaluation_authorization_sha256", "security-broker", "plan-evaluation",
+            [pis_name, prefix + "ces", "intent/" + identity, *(gate_names if phase == "bootstrap" else ["scope"])])
+        pces = [dict(entry, schema="dskit.planned-capture-entry/v1", subject_ref=subject) for entry in entries]
+        pces = [dict(entry, planned_entry_sha256=_graph_hash(entry)) for entry in pces]
+        pces.sort(key=lambda entry: (entry["planned_entry_sha256"], f4._json_bytes(entry)))
+        planned = graph.unsigned(prefix + "planned", "planned-capture-set", {
+            "schema": "dskit.planned-capture-set/v1", "study_id": "synthetic-study", "subject_ref": subject, "entries": pces,
+        }, "planned_capture_set_sha256", "security-broker")
+        plan_body = {**common, "plan_evaluation_authorization_sha256": pea["plan_evaluation_authorization_sha256"],
+                     "capture_expectation_set_sha256": ces["capture_expectation_set_sha256"],
+                     "planning_rules_sha256": p3._h("planning-rules"), "planned_capture_set": planned}
+        bvp = graph.signed(prefix + "bvp", "bvp", {
+            "schema": "dskit.broker-verified-plan/v1", **{key: value for key, value in plan_body.items() if key != "planned_capture_set"},
+            "plan_sha256": _graph_hash(plan_body), "planned_capture_set_sha256": planned["planned_capture_set_sha256"],
+        }, "broker_verified_plan_sha256", "security-broker", "plan-verifier", [prefix + "pea", prefix + "ces", pis_name, "intent/" + identity])
+        cas = graph.signed(prefix + "cas", "cas", {
+            "schema": "dskit.capture-admission-set/v1", **{key: value for key, value in common.items() if key != "component_manifest_sha256"},
+            "plan_evaluation_authorization_sha256": pea["plan_evaluation_authorization_sha256"],
+            "capture_expectation_set_sha256": ces["capture_expectation_set_sha256"],
+            "broker_verified_plan_sha256": bvp["broker_verified_plan_sha256"],
+            "planned_capture_set_sha256": planned["planned_capture_set_sha256"], "entries": pces,
+        }, "capture_admission_set_sha256", "study-lifecycle", "capture-admission", [prefix + "pea", prefix + "ces", prefix + "bvp", "intent/" + identity])
+        return {"action_id": identity, "action_intent_sha256": intent.get("action_intent_sha256"),
+                "consumer_document_contract_sha256": contract_digest, "authority_ref": authority_ref,
+                "plan_evaluation_authorization_sha256": pea["plan_evaluation_authorization_sha256"],
+                "capture_expectation_set_sha256": ces["capture_expectation_set_sha256"],
+                "broker_verified_plan_sha256": bvp["broker_verified_plan_sha256"], "plan_sha256": bvp["plan_sha256"],
+                "planned_capture_set_sha256": planned["planned_capture_set_sha256"], "capture_admission_set_sha256": cas["capture_admission_set_sha256"]}
+
+    bootstrap = [plan_tuple(action, root_pis, "root-pis", "bootstrap") for action in actions]
+    bootstrap.sort(key=lambda item: item["action_id"])
+    scope_body = {key: value for key, value in scope_payload.items() if key != "schema"}
+    scope_body.update(schema="dskit.historical-study-scope-authorization/v2",
+                      scope_intent_sha256=scope_intent["historical_study_scope_intent_sha256"],
+                      bootstrap_artifacts=bootstrap, gates=gates, gate_set_sha256=gate_set_sha)
+    scope = graph.signed("scope", "scope-authorization", scope_body, "historical_study_scope_authorization_sha256",
+                         "study-lifecycle", "historical-study-scope", ["scope-intent", *gate_names,
+                         *("tuple/" + action["action_id"] + "/" + slot for action in actions for slot in ("pea", "ces", "bvp", "cas"))])
+    stages, outputs = [], []
+    for index, action in enumerate(actions):
+        identity = action["action_id"]
+        prefix = "tuple/" + identity + "/"
+        selected_tuple = next(item for item in bootstrap if item["action_id"] == identity)
+        tuple_fields = {key: value for key, value in selected_tuple.items() if key not in ("action_id", "action_intent_sha256", "authority_ref")}
+        stage = graph.signed("stage/" + identity, "stage-admission", {
+            "schema": "dskit.historical-study-stage-admission/v1", "study_id": "synthetic-study",
+            "scope_authorization_sha256": scope["historical_study_scope_authorization_sha256"],
+            "scope_intent_sha256": scope_intent["historical_study_scope_intent_sha256"], "action_id": identity,
+            "action_intent_sha256": action["action_intent_sha256"], "topological_position": index,
+            "predecessor_publications": [], "required_inputs": graph.values[prefix + "cas"]["entries"],
+            "consumer_document_sha256": graph.values[prefix + "cas"]["consumer_document_sha256"], "closed_parameters_sha256": action["closed_parameters_sha256"],
+            "component_manifest_sha256": action["component_manifest_sha256"], "candidate_selection_sha256": action["candidate_selection_sha256"],
+            "output_contract": action["output_contract"], **tuple_fields,
+        }, "historical_study_stage_admission_sha256", "study-lifecycle", "stage-admission",
+            ["scope", "intent/" + identity, *(prefix + slot for slot in ("pea", "ces", "bvp", "cas"))])
+        stages.append(stage)
+        common_admission = {key: value for key, value in tuple_fields.items() if key != "consumer_document_contract_sha256"}
+        common_admission.update(study_id="synthetic-study", logical_execution_id="logical/" + identity,
+                                run_id="consumer-run" if not replay and index == 0 else root_entries[index % count]["producer_run_identity"],
+                                recovery_journal_sha256=p3._h("journal"), recovery_fence_sha256=p3._h("fence"),
+                                recovery_attempt_rules_sha256=p3._h("attempt-rules"))
+        admission = graph.signed("admission/" + identity, "action-execution-admission", {
+            "schema": "dskit.action-execution-admission/v1", **common_admission,
+            "scope_authorization_sha256": scope["historical_study_scope_authorization_sha256"],
+            "action_id": identity, "action_intent_sha256": action["action_intent_sha256"],
+            "historical_study_stage_admission_sha256": stage["historical_study_stage_admission_sha256"],
+        }, "action_execution_admission_sha256", "study-lifecycle", "action-execution-admission",
+            ["stage/" + identity, *(prefix + slot for slot in ("pea", "ces", "bvp", "cas"))])
+        entry = root_entries[index % count]
+        output_facts = {key: entry[key] for key in ("root_ref", "root_id", "snapshot_version", "member_manifest_sha256",
+                        "producer_run_identity", "producer_document_sha256", "producer_node", "producer_output")}
+        receipt = graph.signed("output/" + identity, "stage-publication", {
+            "schema": "dskit.lifecycle-publication-receipt/v2", "kind": "study-stage", "study_id": "synthetic-study",
+            "action_id": identity, "execution_authority_ref": {"kind": "action",
+            "action_execution_admission_sha256": admission["action_execution_admission_sha256"]},
+            "logical_execution_id": admission["logical_execution_id"], "run_id": admission["run_id"],
+            "publication_authorization_ref": {"kind": "study-stage", "historical_study_stage_admission_sha256": stage["historical_study_stage_admission_sha256"]},
+            **output_facts,
+        }, "lifecycle_publication_receipt_sha256", "study-lifecycle", "study-stage-publication",
+            ["stage/" + identity, "admission/" + identity])
+        published_entry = dict(entry, input_id="output/" + identity, publication_receipt_schema=receipt["schema"],
+                               publication_receipt_sha256=receipt["lifecycle_publication_receipt_sha256"])
+        outputs.append({"producer_action_id": identity, "producer_output_id": "bundle", "output_schema": action["output_contract"]["output_schema"],
+                        "publication_identity_sha256": receipt["lifecycle_publication_receipt_sha256"],
+                        "historical_study_stage_admission_sha256": stage["historical_study_stage_admission_sha256"], "published_input": published_entry})
+    if not replay:
+        graph.selected = graph.refs["admission/" + actions[0]["action_id"]]
+        return graph, document
+    outputs.sort(key=lambda value: (value["producer_action_id"], value["producer_output_id"], value["output_schema"], value["publication_identity_sha256"], f4._json_bytes(value)))
+    replay_pis = graph.signed("replay-pis", "replay-pis", {
+        "schema": "dskit.published-input-set/v2", "study_id": "synthetic-study", "phase": "replay-consumer", "purpose": "synthetic",
+        "entries": sorted([item["published_input"] for item in outputs], key=lambda entry: entry["input_id"]),
+    }, "published_input_set_sha256", "study-lifecycle", "published-input-set-study", ["scope", *("output/" + action["action_id"] for action in actions)])
+    final_entries = []
+    for replay_intent in replays:
+        identity = replay_intent["replay_id"]
+        tuple_value = plan_tuple(replay_intent, replay_pis, "replay-pis", "replay-pre-final")
+        fields = {key: value for key, value in tuple_value.items() if key not in ("action_id", "action_intent_sha256", "authority_ref", "consumer_document_contract_sha256")}
+        entry = graph.unsigned("final-entry/" + identity, "final-replay-entry", {
+            "replay_id": identity, "replay_intent_sha256": replay_intent["replay_intent_sha256"],
+            "consumer_document_sha256": document_sha, **fields, "required_inputs": graph.values["tuple/" + identity + "/cas"]["entries"],
+            **{key: replay_intent[key] for key in ("environment_identity_sha256", "execution_profile_sha256", "component_manifest_sha256", "crash_schedule_sha256")},
+        }, "final_replay_entry_sha256")
+        final_entries.append(entry)
+    manifest = graph.signed("final", "final-manifest", {
+        "schema": "dskit.historical-study-manifest/v2", "study_id": "synthetic-study",
+        "scope_authorization_sha256": scope["historical_study_scope_authorization_sha256"],
+        "scope_intent_sha256": scope_intent["historical_study_scope_intent_sha256"],
+        "published_input_set_sha256": root_pis["published_input_set_sha256"], "gate_set_sha256": gate_set_sha,
+        "gates": gates, "stage_admissions": stages, "stage_outputs": outputs,
+        "release_output": next(item for item in outputs if item["producer_action_id"] == "A4"), "replay_entries": final_entries,
+        **{key: scope[key] for key in ("environment_identity_sha256", "execution_profile_sha256", "component_manifest_sha256")},
+    }, "historical_study_manifest_sha256", "study-lifecycle", "historical-study-manifest",
+        ["scope", "scope-intent", "root-pis", *gate_names, *("stage/" + action["action_id"] for action in actions),
+         *("output/" + action["action_id"] for action in actions), *("final-entry/" + item["replay_id"] for item in replays)])
+    entry = final_entries[0]
+    graph.signed("replay-admission", "final-replay-admission", {
+        "schema": "dskit.final-replay-admission/v1", "study_id": "synthetic-study", "final_manifest_sha256": manifest["historical_study_manifest_sha256"],
+        "final_replay_entry_sha256": entry["final_replay_entry_sha256"],
+        **{key: entry[key] for key in ("replay_id", "replay_intent_sha256", "plan_evaluation_authorization_sha256", "capture_expectation_set_sha256",
+             "broker_verified_plan_sha256", "plan_sha256", "planned_capture_set_sha256", "capture_admission_set_sha256")},
+        "logical_execution_id": "logical/replay", "run_id": "consumer-run", "recovery_journal_sha256": p3._h("journal"),
+        "recovery_fence_sha256": p3._h("fence"), "recovery_attempt_rules_sha256": p3._h("attempt-rules"),
+    }, "final_replay_admission_sha256", "study-lifecycle", "final-replay-admission",
+        ["final", "final-entry/control", "intent/control", *("tuple/control/" + slot for slot in ("pea", "ces", "bvp", "cas"))])
+    graph.selected = graph.refs["replay-admission"]
+    return graph, document
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("count", [1, 2])
+def test_complete_closure_fixture_has_real_ed25519_signatures_and_available_bases(replay, count):
+    """Check the RED fixture itself without depending on the missing resolver."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    graph, _ = _complete_signed_graph(replay=replay, count=count)
+    digests = {item["ref"]["sha256"] for item in graph.facts["artifacts"]}
+    for value in graph.values.values():
+        if "signature" not in value:
+            continue
+        self_field = next(item["ref"]["sha256"] for item in graph.facts["artifacts"] if item["bytes"] == f4._json_bytes(value))
+        preimage = {key: item for key, item in value.items() if key != "signature" and not (key.endswith("sha256") and item == self_field)}
+        assert _graph_hash(preimage) == self_field
+        key_id = value["key"]["key_id"]
+        public = Ed25519PrivateKey.from_private_bytes(hashlib.sha256(("p4-fixed-test-key/" + key_id).encode()).digest()).public_key()
+        public.verify(bytes.fromhex(value["signature"]), f4._json_bytes(preimage))
+        assert value["issuance_basis_sha256"] in digests
+
+
+def _closure_ready():
+    """Require executable recursive verification, not merely an always-refuser."""
+    method = getattr(type(_factory()()._p4_resolver), "close_admission", None)
+    assert callable(method), "Matrix v8 complete recursive closure is missing"
+
+
+def _graph_live(graph, document, count):
+    broker = _factory()(fixture_facts=graph.facts)
+    producer, published, _ = f4._publish(broker)
+    broker.end_session(producer)
+    publications = [published]
+    if count == 2:
+        publications.append(f4._foreign_publish(broker)[0])
+    captures = []
+    for index, publication in enumerate(publications):
+        frozen = broker.freeze_consumer_document(document, "consume", "bundle" if index == 0 else "second", "synthetic")
+        captures.append((publication, frozen, broker.derive_consumer_port(frozen)))
+    selected = next(value for value in graph.values.values() if value.get("schema") == graph.selected["schema"] and
+                    value.get("action_execution_admission_sha256", value.get("final_replay_admission_sha256")) == graph.selected["sha256"])
+    cas = next(value for value in graph.values.values() if value.get("schema") == "dskit.capture-admission-set/v1" and
+               value["capture_admission_set_sha256"] == selected["capture_admission_set_sha256"])
+    by_input = {capture[2]["consumer_input"]: capture for capture in captures}
+    captures = tuple(by_input[entry["consumer_input"]] for entry in cas["entries"])
+    before = (tuple(broker._receipt_audit(publication) for publication in publications),
+              tuple(broker._session_events), tuple(broker._member_events), frozenset(broker._nonces))
+    runtime = dict(_runtime(), transition_nonces=tuple(f"p4-{index}" for index in range(count)))
+    return broker, captures, runtime, before
+
+
+def _assert_graph_no_effect(broker, captures, before):
+    assert (tuple(broker._receipt_audit(capture[0]) for capture in sorted(captures, key=lambda item: item[2]["consumer_input"])),
+            tuple(broker._session_events), tuple(broker._member_events), frozenset(broker._nonces)) == before
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("count", [1, 2])
+def test_complete_signed_closure_reaches_only_the_later_atomic_issuance_boundary(replay, count):
+    _closure_ready()
+    graph, document = _complete_signed_graph(replay=replay, count=count)
+    broker, captures, runtime, before = _graph_live(graph, document, count)
+    for _attempt in range(2):
+        with pytest.raises(ValueError, match="^P4 atomic issuance is unavailable$"):
+            broker.authorize_capture_set(captures, graph.selected, **runtime)
+        _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("target", [
+    "root-receipt-0", "root-pis", "scope-intent", "gate-1", "scope",
+    "tuple/tape-data-materialization/ces", "tuple/tape-data-materialization/pea",
+    "tuple/tape-data-materialization/bvp", "tuple/tape-data-materialization/cas",
+    "stage/tape-data-materialization", "admission/tape-data-materialization",
+])
+@pytest.mark.parametrize("change", ["missing", "extra-field", "signature", "self", "basis-ref", "basis-kind"])
+def test_recursive_local_artifact_and_basis_mutations_never_reach_issuance(replay, target, change):
+    _closure_ready()
+    graph, document = _complete_signed_graph(replay=replay)
+    ref = graph.refs[target + "/basis" if change.startswith("basis-") else target]
+    item = next(item for item in graph.facts["artifacts"] if item["ref"] == ref)
+    if change == "missing":
+        graph.facts["artifacts"].remove(item)
+    else:
+        value = json.loads(item["bytes"])
+        if change == "extra-field":
+            value["unexpected"] = "untrusted"
+        elif change == "signature":
+            value["signature"] = "ab" * 64
+        elif change == "self":
+            self_name = next(key for key, val in value.items() if key.endswith("sha256") and val == ref["sha256"])
+            value[self_name] = "d" * 64
+        elif change == "basis-ref":
+            value["refs"][0]["sha256"] = "e" * 64
+        elif change == "basis-kind":
+            value["kind"] = "captured-set"
+        item["bytes"] = f4._json_bytes(value)
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    with pytest.raises((TypeError, ValueError)) as failure:
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert "atomic issuance is unavailable" not in str(failure.value)
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("target", ["output/A4", "replay-pis", "final-entry/control", "final", "replay-admission"])
+def test_replay_only_ancestors_cannot_be_missing_or_substituted(target):
+    _closure_ready()
+    graph, document = _complete_signed_graph(replay=True)
+    item = next(item for item in graph.facts["artifacts"] if item["ref"] == graph.refs[target])
+    graph.facts["artifacts"].remove(item)
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    with pytest.raises((TypeError, ValueError)) as failure:
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert "atomic issuance is unavailable" not in str(failure.value)
+    _assert_graph_no_effect(broker, captures, before)
+
+
 def _factory():
     """Locate the approved factory with an explicit executable RED assertion."""
     factory = getattr(trust, "_development_p4_broker", None)
