@@ -1,0 +1,61 @@
+{
+  "schema_version": "TddEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "phase": "GREEN candidate; final reviews pending",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "base_main": "0ec667129c27d64b487b2962295f3b495d5e44e1",
+  "phase0": "0116-f5a-p6-phase0-terra-clean.json",
+  "matrix_blob": "e2f5d3745135a71825d89666d5b16c544bd68c3e",
+  "runtime_blob": "ed6f3bb9918ee6222092dcd8a6f8a814ef024c55",
+  "tests_blob": "a74fef38ee8dc3dcda59d542d05f8d665745b96e",
+  "red_evidence": [
+    "0117-f5a-p6-red.json",
+    "0118-f5a-p6-green-correction-red.json"
+  ],
+  "changes": [
+    "All six descriptor fields bind to verified publication receipts and stream identity; purpose anchored by existing stream digest, including pinned producer session.",
+    "Original frozen consumer port metadata retained in existing authenticated freeze intern and checked across v1 and P4 readers.",
+    "Authenticated retained member/bindings/port/artifact graph under existing lifecycle lock; single handle or intern substitution refuses; parent/broker/stream associations checked.",
+    "Read state retained broker-side and checked alongside handle state; bindings mark local used only after successful consumption.",
+    "Artifact payload and deeply frozen audit stay backed by retained data; already verified data reads do not reopen provider/receipt store or grant another consumption."
+  ],
+  "coverage": {
+    "new_cases": 54,
+    "retained_families": [
+      "producer session ending/distinct run and session-stream identity",
+      "sealed/member manifest integrity and source mutation",
+      "receipt sequence/predecessor/publication linkage and signed chain",
+      "cross-stream/cross-broker opaque handles and one-consumption",
+      "Packet4 authorization-entry equality, atomic complete batch, all verifier/driver facades",
+      "fail-closed new broker restart identity; no durable reconstruction claim"
+    ]
+  },
+  "checks": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py --tb=short",
+      "result": "157 passed in 0.62s after final deep-audit freeze"
+    },
+    {
+      "command": "six-file focused suite before last deep-audit freeze",
+      "result": "1497 passed in 59.65s; complete final-candidate run pending"
+    },
+    {
+      "command": "sentinel test_private_plan_precedes_capture",
+      "result": "1 passed in 0.11s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py tests/pipeline/test_trust.py; git diff --check",
+      "result": "pass"
+    }
+  ],
+  "limits": [
+    "Packet8 durable spend and F5A-R23 still open",
+    "P7 replay descriptor grammar not started",
+    "No real activity, deployment, environment change, or full suite",
+    "ADR0126 deferred development-key forgery and combined/multiple internal rewrites unchanged"
+  ],
+  "deployment_eligible": false,
+  "next_gate": "Two fresh sequential Terra final lenses on this immutable code/test/matrix candidate; final focused suite then lock and integrate if clean."
+}

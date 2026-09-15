@@ -1491,7 +1491,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         port = CapturedLifecyclePort(
             _MAKE,
             artifact,
-            MappingProxyType({"consumer_port": expected_port}),
+            _freeze_json({"consumer_port": expected_port}),
         )
         ports = {frozen.consumer_input: port}
         bindings = CapturedBindings(_MAKE, ports, self, session, stream_id)
