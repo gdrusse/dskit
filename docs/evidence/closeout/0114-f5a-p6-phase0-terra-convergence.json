@@ -1,0 +1,47 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6-descriptor-receipt-equality-restart-linkage",
+  "candidate": "befa80be39060bab756b94ef5443f0e11fdcce46",
+  "matrix": "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_phase0_terra",
+    "lens": "fresh independent Phase 0 and early convergence checkpoint"
+  },
+  "verdict": "not-clean",
+  "critical": 0,
+  "major": 1,
+  "minor": 1,
+  "nit": 0,
+  "findings": [
+    {
+      "id": "P6-RR-002",
+      "severity": "major",
+      "summary": "Mutable published descriptor bypasses the proposed purpose fix.",
+      "location": "trust.py _Published.descriptor, descriptor, freeze_consumer_document, _prepare_legacy_capture, _stream_for_published",
+      "counterexample": "Mutate the published descriptor purpose, node, or output after PUBLISHED, then call descriptor/freeze/capture with coordinated changed values. Proposed comparator reads the same altered dict and passes. Capture preparation and stream lookup compare only root/snapshot/document.",
+      "consequence": "CAPTURED/session effects under altered identity from an ADR-0126 in-scope single handle-dict mutation.",
+      "disposition": "Open; family-wide immutable receipt/stream binding correction authorized by independent convergence checkpoint."
+    },
+    {
+      "id": "P6-RR-003",
+      "severity": "minor",
+      "summary": "P4 facade inventory omits HistoricalStudyVerifier.authorize_capture_set and HistoricalStudyCaptureDriver.authorize_capture_set.",
+      "disposition": "Add both equivalent public entry points to matrix."
+    }
+  ],
+  "convergence_checkpoint": {
+    "trigger": "Repeated purpose-identity boundary after 0113 correction; triggered early.",
+    "reviewer_authorization": "I authorize the family-wide immutable receipt/stream binding approach above before any further localized matrix patch; no implementation is requested now.",
+    "changed_approach": "Establish expected six-field descriptor identity from validated immutable PUBLISHED receipt/stream binding; enforce at descriptor, freeze, capture preparation, stream lookup. RED covers individual post-PUBLISHED purpose/node/output mutations with coordinated caller/document values, before frozen registration/session/member/provider/CAPTURED/CONSUMED effects. Preserve valid v1 and Packet 4."
+  },
+  "reviewer_checks": [
+    "git diff --check HEAD^ HEAD: pass",
+    "JSON parse 0111: pass",
+    "Focused existing lifecycle tests: 10 passed in 0.15s (exact pytest invocation not returned in final report; requested for retained evidence)"
+  ],
+  "reviewer_limits": "No new RED exists or was run; no full suite, real data/replay/training/HPO/backtest/deployment, environment change, or mutation was performed.",
+  "next_gate": "Correct matrix as a family, then a fresh independent Terra Phase 0 review before RED. RR-001 runtime defect remains open for RED/GREEN.",
+  "deployment_eligible": false
+}
