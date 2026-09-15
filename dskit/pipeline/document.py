@@ -178,6 +178,22 @@ def _copy_mapping_or_raw(value):
 
 PREV_KEY = "$prev"
 
+#: The captured-artifact descriptor key (ADR-0123). Legal only as the
+#: complete value of one declared node input; the parser recognizes it and
+#: the document-level sweep rejects every other position.
+CAPTURED_KEY = "$captured_artifact"
+
+#: The exact six keys of a ``$captured_artifact`` descriptor, in the same
+#: closed set as ``dskit/pipeline/trust.py::_DESCRIPTOR_KEYS``.
+CAPTURED_DESCRIPTOR_KEYS = (
+    "root_ref",
+    "snapshot_version",
+    "document_sha256",
+    "node",
+    "output",
+    "purpose",
+)
+
 #: The ``foreach`` fan-out token (ADR-0039 rule 3). A template ``params``
 #: value that is EXACTLY this string becomes the key string; substring
 #: interpolation is never performed, which is the line between fan-out
@@ -298,6 +314,119 @@ def _contains_prev_ref(obj):
     if isinstance(obj, (list, tuple)):
         return any(_contains_prev_ref(value) for value in obj)
     return False
+
+
+def _contains_captured_ref(obj):
+    """Whether a ``$captured_artifact`` key hides anywhere in ``obj``.
+
+    The single detection primitive for Packet 5: it recurses dict values
+    and list/tuple items exactly like :func:`_contains_prev_ref`, so a
+    descriptor nested under a list or map cannot evade a dict-only sweep.
+    """
+    if isinstance(obj, dict) and CAPTURED_KEY in obj:
+        return True
+    if isinstance(obj, dict):
+        return any(_contains_captured_ref(value) for value in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_contains_captured_ref(value) for value in obj)
+    return False
+
+
+def _captured_descriptor_shape_errors(inner, where):
+    """Accumulate shape errors for one ``$captured_artifact`` descriptor.
+
+    The exact six-key shape with scalar string values and an exact
+    lowercase SHA-256 ``document_sha256`` (no placeholder, no ``self``).
+    A ``$``-prefixed scalar is a wire, not a literal, and refuses.
+    """
+    errors = []
+    if not isinstance(inner, dict):
+        return [f"{where}: $captured_artifact must be an object, got {inner!r}"]
+    unknown = sorted(
+        (key for key in inner if key not in CAPTURED_DESCRIPTOR_KEYS), key=repr
+    )
+    if unknown:
+        errors.append(
+            f"{where}: $captured_artifact unknown key(s) {unknown} — allowed: "
+            f"{list(CAPTURED_DESCRIPTOR_KEYS)}"
+        )
+    missing = sorted(set(CAPTURED_DESCRIPTOR_KEYS) - set(inner))
+    if missing:
+        errors.append(f"{where}: $captured_artifact missing key(s) {missing}")
+    if unknown or missing:
+        return errors
+    for key in ("root_ref", "snapshot_version", "node", "output", "purpose"):
+        value = inner[key]
+        if not isinstance(value, str) or not value or value.startswith("$"):
+            errors.append(
+                f"{where}: $captured_artifact.{key} must be a non-empty "
+                f"literal string, got {value!r}"
+            )
+    document_sha256 = inner["document_sha256"]
+    if not isinstance(document_sha256, str) or not _SHA256_OK.fullmatch(document_sha256):
+        errors.append(
+            f"{where}: $captured_artifact.document_sha256 must be an exact "
+            f"lowercase SHA-256, got {document_sha256!r}"
+        )
+    elif document_sha256 == "0" * 64:
+        errors.append(f"{where}: $captured_artifact.document_sha256 placeholder is refused")
+    return errors
+
+
+def _captured_position_errors(obj):
+    """Return errors for every ``$captured_artifact`` outside a legal position.
+
+    One full-document walk (Packet 5 changed approach): the only legal
+    position is the complete (sole-key) value of a
+    ``pipeline.<node>.inputs.<port>`` entry in an execution_backtest
+    document. Every other occurrence — in params, tracking sinks, stages,
+    foreach templates, outputs, env, schedule, clock, splits, walkforward,
+    a ``$prev`` default, artifact, nested lists/maps, or any depth — refuses.
+    """
+    errors = []
+    has_execution = obj.get("execution_backtest") is not None
+    pipeline = obj.get("pipeline")
+    if isinstance(pipeline, dict):
+        for node_key, node_obj in pipeline.items():
+            if not isinstance(node_obj, dict):
+                continue
+            inputs = node_obj.get("inputs")
+            if isinstance(inputs, dict):
+                for port, value in inputs.items():
+                    where = f"pipeline.{node_key}.inputs.{port}"
+                    if isinstance(value, dict) and CAPTURED_KEY in value:
+                        if set(value) != {CAPTURED_KEY}:
+                            errors.append(
+                                f"{where}: $captured_artifact must be the "
+                                "complete input value"
+                            )
+                        if not has_execution:
+                            errors.append(
+                                f"{where}: $captured_artifact requires an "
+                                "execution_backtest document"
+                            )
+                    elif _contains_captured_ref(value):
+                        errors.append(
+                            f"{where}: $captured_artifact is only legal as the "
+                            "complete value of a declared node input"
+                        )
+            for field, child in node_obj.items():
+                if field == "inputs":
+                    continue
+                if _contains_captured_ref(child):
+                    errors.append(
+                        f"pipeline.{node_key}.{field}: $captured_artifact is "
+                        "only legal as the complete value of a declared node input"
+                    )
+    for key, child in obj.items():
+        if key in ("pipeline", "execution_backtest"):
+            continue
+        if _contains_captured_ref(child):
+            errors.append(
+                f"{key}: $captured_artifact is only legal as the complete "
+                "value of a declared node input"
+            )
+    return errors
 
 
 def parse_prev_ref(value):
@@ -546,6 +675,18 @@ class NodeSpec:
                         f"inputs.{port}: $prev carries are only legal inside "
                         "params — inputs wire THIS run's DAG"
                     )
+                elif isinstance(ref, dict) and CAPTURED_KEY in ref:
+                    if set(ref) != {CAPTURED_KEY}:
+                        errors.append(
+                            f"inputs.{port}: $captured_artifact must be the "
+                            "complete input value"
+                        )
+                    else:
+                        errors.extend(
+                            _captured_descriptor_shape_errors(
+                                ref[CAPTURED_KEY], f"inputs.{port}"
+                            )
+                        )
                 elif not is_node_ref(ref):
                     errors.append(
                         f"inputs.{port}: every input wires another node's output "
@@ -2269,6 +2410,7 @@ class PipelineDocument:
                 )
             )
         errors = []
+        errors.extend(_captured_position_errors(obj))
         nodes = {}
         raw_pipeline = obj.get("pipeline", {})
         if isinstance(raw_pipeline, dict):

@@ -1,5 +1,66 @@
 # Re-entry
 
+## Current wrap: F5a Packet 5 closed (captured-artifact grammar) (2026-09-15)
+
+Branch `codex/f5a-remainder-20260915` (from `origin/main@1fc290f`). Preserved
+`origin/cursor/r5-f5a-private-plan-0f39@c489199` (untouched).
+
+**Packet 5 landed and reviewed.** `dskit/pipeline/document.py` now freezes the
+ADR-0123 `$captured_artifact` descriptor (six scalar keys, exact lowercase
+SHA-256 `document_sha256`) as legal ONLY as the complete value of a declared
+node input in an `execution_backtest` document, refused everywhere else via a
+full-document positional sweep (`_contains_captured_ref`,
+`_captured_descriptor_shape_errors`, `_captured_position_errors`). Ordinary
+non-execution documents are byte/hash-identical. New tests:
+`tests/pipeline/test_captured_artifact_grammar.py` (37).
+
+Phase 0 converged through 5 DeepSeek skeptic rounds + a convergence checkpoint
+(`0104`) after repeated open-dict enumeration holes; clean verdict `0107`.
+Two fresh DeepSeek final lenses clean (correctness `ses_f59a0041…`, tests
+`ses_f5997c4c…`). Review exit `0110`. Focused suite 1855 passed; sentinel
+`test_private_plan_precedes_capture` green; ruff/diff clean. Candidate `af5997e`.
+
+**Owner decisions recorded.** Packet 5 cross-owner parser approval `0099`;
+Packet 8 durable owner = existing on-disk `ChainLedger` seam `0100`. Reviewer
+model override: DeepSeek (not Terra).
+
+**Next.** Integrate Packet 5 into main (push/verify/purge), then Packet 6
+(descriptor/receipt equality + restart linkage, trust.py/verifier.py),
+Packet 7 (replay-tape descriptors, local grammar slice), Packet 8 (ChainLedger
+consume-once closes F5A-R23). No whole-F5a/F3/F5b claim yet.
+
+## Current wrap: F5a remainder Gate 0 contract pack; Packets 5/8 blocked on owner (2026-09-15)
+
+Starting from `origin/main@1fc290f` in an isolated worktree
+`codex/f5a-remainder-20260915`. Preserved
+`origin/cursor/r5-f5a-private-plan-0f39@c489199` (untouched).
+
+**Landed (this session, on the task branch, not merged).** The shared F5a
+remainder contract/inventory pack
+`docs/evidence/closeout/0095-f5a-remainder-contract-pack.json` enumerates the
+public parse/plan/CLI/verifier/lifecycle/facade/replay-descriptor entry points,
+lane ownership (F1=model-release, F4/F5a=forecast-capital, replay=replay-ops),
+actors/authority, identities, transitions, failure families, existing test
+inventory, the v1 + Packets 2–4 compatibility baseline, the Packet 6-vs-8
+separation, and F5A-R23 held open. Thin per-packet delta matrices are
+`0096-f5a-remainder-delta-matrices.json`.
+
+**Blocked on two owner decisions (no RED yet).**
+1. Packet 5 requires parser/plan/CLI changes to `dskit/pipeline/document.py`,
+   `planner.py`, `driver.py`, `stages.py`, `node.py`, `__main__.py` to enforce
+   the `$captured_artifact` descriptor's only-legal-location rule. Those surfaces
+   are model-release (F1), not forecast-capital. Owner gate:
+   `docs/evidence/closeout/0097-f5a-p5-cross-owner-owner-gate.json`.
+2. Packet 8 requires the owner to name the process/service owning durable mutable
+   state for admission consumption/unspend refusal (F5A-R23). Owner gate:
+   `docs/evidence/closeout/0098-f5a-p8-durable-owner-gate.json`.
+
+Reviewers may be fresh DeepSeek (owner override 2026-09-15) instead of Terra.
+
+**Next.** Owner resolves the two gates; then Packet 5 RED with its Phase 0
+DeepSeek skeptic, then Packets 6–8 sequentially. No whole-F5a/F3/F5b claim yet;
+`deployment_eligible=false`. Earlier wraps below are retained history.
+
 ## Current wrap: F5a Packet 4 reviewed; integration pending (2026-09-15)
 
 Packet 4's immutable candidate is

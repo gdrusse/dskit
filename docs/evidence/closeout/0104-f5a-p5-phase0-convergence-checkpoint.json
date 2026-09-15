@@ -1,0 +1,42 @@
+{
+  "schema_version": "Phase0ConvergenceCheckpoint.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "review_kind": "independent third-failed-cycle convergence checkpoint (repeated open-dict boundary failure)",
+  "checkpoint_date": "2026-09-15",
+  "authority": {
+    "owner_decision": "docs/evidence/closeout/0099-f5a-p5-owner-decision.json",
+    "allowed_now": "One successor Phase 0 design correction (v4) only; no RED, implementation, test edit, merge, deployment, or real activity.",
+    "preserved": [
+      "accepted Packets 2-4 and Packet 4 sole-writer authority",
+      "ordinary non-execution PipelineDocument byte/hash/plan/run identity",
+      "trust.py _DESCRIPTOR_KEYS and freeze_consumer_document broker-route validation (not edited)",
+      "F5A-R23 open until Packet 8",
+      "nondeployment; no real data/replay/HPO/refit/backtest/paper/live, no F3/F5b unblock"
+    ]
+  },
+  "reviewer_model": "DeepSeek (owner override 2026-09-15)",
+  "failed_cycles": [
+    {"history": "round 1 (0102): P5-G1 mutation-invariance over-claim, P5-G2 StageSpec.params hole", "why_missed": "matrix claimed a freeze the shallow-copy parser does not provide, and enumerated NodeSpec.params/outputs but omitted StageSpec.params open dict.", "family": "mutation scope + open-dict enumeration"},
+    {"history": "round 2 (0103): P5-G5 foreach template hole, P5-G6 predicate unspecified, P5-G7 contract inconsistency", "why_missed": "sweep was specified as a location list (self.pipeline + stages) but omitted foreach templates; the detection predicate was never pinned so list/tuple nesting evades; mutation re-scope contradicted 0095/0096.", "family": "open-dict enumeration + missing predicate + contract drift"},
+    {"history": "round 3 (0105): P5-G8 tracking.sinks[].params open dict unswept", "why_missed": "the 'closed_sections' assertion was factually false: SinkConfig.params (base.py:1359/1386) is an open dict via _check_open_dict, so the enumerate-each-open-dict approach missed yet another open dict.", "family": "REPEATED boundary failure: enumerate-and-sweep-each-section keeps missing open dicts (StageSpec.params, then SinkConfig.params)"}
+  ],
+  "root_cause": "The v1-v3 matrix enumerated open dicts to sweep and asserted other sections 'closed'. The codebase has several open dicts (NodeSpec.params, StageSpec.params, SinkConfig.params), and the enumeration is fragile: each round a skeptic found another open dict the matrix had mis-asserted closed.",
+  "changed_approach": {
+    "decision": "Replace section enumeration with a single full-document recursive positional sweep. Do not list sections to sweep or assert any section closed.",
+    "walker": "One recursive walk over the complete raw parsed document object in PipelineDocument.from_obj (the single parse entry shared by load_document and all public parse paths). The walker collects every occurrence of the key \"$captured_artifact\" with its position.",
+    "positional_legality": "An occurrence is legal only when the dict carrying the \"$captured_artifact\" key is (a) the exact complete value (sole key) of a pipeline.<node>.inputs.<port> or foreach.pipeline.<template>.inputs.<port> entry, AND (b) the document has an execution_backtest block. Every other occurrence — in params, tracking.sinks[].params, stages, outputs, nested lists/maps, a $prev default, artifact, or any depth — refuses.",
+    "shape_validation": "A single helper _validate_captured_descriptor(inner) enforces the exact six-key shape (root_ref/snapshot_version/document_sha256/node/output/purpose, all non-empty strings, document_sha256 exact lowercase 64-hex non-placeholder non-self). NodeSpec recognizes a legal input descriptor by this helper; the walker shape-checks every other occurrence for a correct diagnostic.",
+    "single_owner": "One predicate _contains_captured_ref(obj) (dict key \"$captured_artifact\", recursing dict+list+tuple) is the sole detection primitive; the walker is built on it. No second spelling check exists.",
+    "no_enumeration": "The matrix no longer asserts any section is closed or enumerates open dicts; the full-document walk makes the design robust to any present or future open dict."
+  },
+  "required_successor_tests": [
+    "positive: a legal descriptor as a complete node input in an execution document parses",
+    "negative: descriptor in NodeSpec.params, StageSpec.params, tracking.sinks[].params, foreach template inputs/params, outputs, artifact, $prev default, and nested in a list/map — each refuses",
+    "shape: missing/extra/duplicate/null/non-str/non-sha256/placeholder/self/nested-descriptor/spelled-derived-keys/non-dict-descriptor-value/$-reference-in-scalar — each refuses",
+    "compatibility: ordinary documents (with and without foreach/stages/tracking) with no descriptor remain byte/hash-identical",
+    "sentinel: tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture stays green"
+  ],
+  "next_gate": "Fresh DeepSeek skeptic re-review of the v4 changed-approach matrix before RED.",
+  "superseded_note": "The foreach.pipeline.<template>.inputs.<port> legal clause stated in this checkpoint's changed_approach was corrected in matrix v5 (0101): foreach is forbidden in execution_backtest documents and trust.py _descriptor_from cannot read foreach, so a foreach descriptor is always refused. See 0106-f5a-p5-phase0-skeptic-verdict-v4.json P5-G10."
+}

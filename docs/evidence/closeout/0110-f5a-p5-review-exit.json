@@ -1,0 +1,36 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "status": "packet-exit",
+  "base_main": "1fc290f6f2a8cd1d1944994d351f608f00ca1734",
+  "candidate_commit": "ce3fbe2a510a1431edd26313bee6b7a96b81a933",
+  "candidate_tree": "see commit",
+  "matrix": "docs/evidence/closeout/0101-f5a-p5-phase0-grammar-matrix.json",
+  "phase0_clean": "docs/evidence/closeout/0107-f5a-p5-phase0-clean-verdict.json",
+  "final_lenses": [
+    {"lens": "correctness/authority", "reviewer_model": "deepseek-v4-pro", "agent_task": "ses_f59a0041fffewVgAGNDaiUNGt9", "reviewed_production": "bb095442ae1c89632e92c73ea219fd154bf1fcad (document.py identical in ce3fbe2)", "verdict": "clean", "critical": 0, "major": 0, "minor": 0, "nit": 0},
+    {"lens": "tests/integration", "reviewer_model": "deepseek-v4-pro", "agent_task": "ses_f5997c4cbffeFyKtK7lig20cmb", "reviewed": "ce3fbe2a510a1431edd26313bee6b7a96b81a933", "verdict": "clean", "critical": 0, "major": 0, "minor": 0, "nit": 3}
+  ],
+  "nit_backlog": [
+    {"id": "P5-NIT-1", "severity": "nit", "note": "missing-key test pops only 'node'; other five keys share the uniform set-difference branch."},
+    {"id": "P5-NIT-2", "severity": "nit", "note": "consumer_node/consumer_input and non-str root_ref not individually spelled; pinned by same-branch exemplars."},
+    {"id": "P5-NIT-3", "severity": "nit", "note": "map/tuple nesting covered only via the list-in-params recursion test; tuple branch unreachable via JSON load."}
+  ],
+  "checks": {
+    "focused_suite": "1855 passed over tests/pipeline/{test_document,test_foreach,test_stages,test_planner,test_driver,test_main,test_main_nodemap,test_node,test_resolve,test_trust,test_captured_authorization,test_captured_artifact_grammar} + tests/production/{test_capture_lifecycle,test_adr0125_preflight}",
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture green",
+    "ruff": "clean",
+    "diff_check": "clean"
+  },
+  "reviewer_model_override": "DeepSeek reviewers per owner directive 2026-09-15",
+  "preserved": [
+    "accepted Packets 2-4 and Packet 4 sole-writer authority",
+    "ordinary non-execution PipelineDocument byte/hash/plan/run identity",
+    "trust.py _DESCRIPTOR_KEYS and freeze_consumer_document (not edited)",
+    "F5A-R23 open until Packet 8",
+    "origin/cursor/r5-f5a-private-plan-0f39@c489199",
+    "deployment_eligible=false; no real data/replay/HPO/backtest/paper/live/deployment"
+  ],
+  "next_gate": "integrate Packet 5 into current main, push, verify remote, purge contained branch, wrap. Then Packet 6."
+}

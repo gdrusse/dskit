@@ -1,0 +1,33 @@
+{
+  "schema_version": "RedGreenImplementation.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "base_main": "1fc290f6f2a8cd1d1944994d351f608f00ca1734",
+  "phase0_clean": "docs/evidence/closeout/0107-f5a-p5-phase0-clean-verdict.json",
+  "matrix": "docs/evidence/closeout/0101-f5a-p5-phase0-grammar-matrix.json",
+  "implementation": {
+    "files": [
+      "dskit/pipeline/document.py (CAPTURED_KEY, CAPTURED_DESCRIPTOR_KEYS, _contains_captured_ref, _captured_descriptor_shape_errors, _captured_position_errors; NodeSpec input descriptor recognition; PipelineDocument.from_obj full-document sweep)",
+      "tests/pipeline/test_captured_artifact_grammar.py (new)"
+    ]
+  },
+  "red": {
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_artifact_grammar.py",
+    "result": "22 failed, 3 passed (the 3 were incidental: foreach template caught by generic NodeSpec repr, $-ref scalar caught by generic repr, and an ordinary round-trip compatibility test).",
+    "note": "every negative-location and shape case failed because the parser either accepted the descriptor (params/tracking/stages open dicts) or rejected it only with a generic 'every input wires another node output' message that did not pin the descriptor grammar."
+  },
+  "green": {
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_artifact_grammar.py",
+    "result": "26 passed"
+  },
+  "compatibility": {
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_document.py tests/pipeline/test_foreach.py tests/pipeline/test_stages.py tests/pipeline/test_planner.py tests/pipeline/test_driver.py tests/pipeline/test_main.py tests/pipeline/test_main_nodemap.py tests/pipeline/test_node.py tests/pipeline/test_resolve.py tests/pipeline/test_trust.py tests/pipeline/test_captured_authorization.py tests/production/test_capture_lifecycle.py tests/production/test_adr0125_preflight.py",
+    "result": "1818 passed"
+  },
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/document.py tests/pipeline/test_captured_artifact_grammar.py",
+    "git diff --check"
+  ],
+  "reviewer_model": "DeepSeek (owner override 2026-09-15)",
+  "next_gate": "two fresh sequential DeepSeek final lenses on the immutable candidate (correctness/authority, then tests/integration)."
+}

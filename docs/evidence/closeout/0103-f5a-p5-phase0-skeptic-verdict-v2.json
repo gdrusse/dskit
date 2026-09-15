@@ -1,0 +1,25 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "matrix": "docs/evidence/closeout/0101-f5a-p5-phase0-grammar-matrix.json",
+  "reviewer": {"model": "deepseek-v4-pro (owner override 2026-09-15)", "agent_task": "ses_f59d3f681ffeVlMM8lntahOhjC", "lens": "fresh independent Phase 0 re-review (round 2)"},
+  "verdict": "not-clean",
+  "conclusion": "Prior majors P5-G1/P5-G2 genuinely corrected in v2, but three remaining defects: foreach.pipeline/expanded location un-swept (P5-G5), captured-descriptor detection predicate un-pinned (P5-G6), and the mutation re-scoping contradicts 0095/0096 without a recorded contract change (P5-G7).",
+  "findings": [
+    {"id": "P5-G5", "severity": "major", "summary": "foreach.pipeline template nodes and expanded instances are not descriptor-swept; a descriptor in a template input survives in an ordinary document.", "disposition": "corrected in matrix v3: sweep_locations now names self.foreach.pipeline templates and stages; test_foreach.py added to new tests."},
+    {"id": "P5-G6", "severity": "major", "summary": "detection predicate unspecified; no _contains_captured_ref analog, so a list/tuple-nested descriptor evades _contains_refs/_contains_prev_ref/_check_ref_tree.", "disposition": "corrected in matrix v3: detection_predicate defines _contains_captured_ref (recursing dict+list+tuple) as the single owner."},
+    {"id": "P5-G7", "severity": "major", "summary": "matrix v2 moved mutation out of Packet 5 but 0095/0096 still list it; no material-contract-change recorded.", "disposition": "corrected: 0095 packet5 failure family and 0096 refusal_before_effects reconciled to remove Packet 5 mutation scope; recorded as shared-contract change."}
+  ],
+  "probes_run_verbatim": [
+    "Read 0101 v2, 0102 prior verdict, 0095, 0096, ADR-0125 captured-ports section.",
+    "Confirmed only open-dict sections are NodeSpec.params and StageSpec.params; all typed configs closed via _reject_unknown.",
+    "Confirmed foreach template NodeSpecs built in ForeachSpec.from_obj (document.py:1526-1549) and not descriptor-swept.",
+    "Confirmed _contains_refs (281-289), _contains_prev_ref (292-300), _check_ref_tree (441-471) are blind to $captured_artifact dicts.",
+    "Confirmed _DESCRIPTOR_KEYS == matrix inner_keys; _descriptor_from reads pipeline.<node>.inputs.<input>['$captured_artifact'].",
+    "Confirmed no closed purpose set in ADR-0125.",
+    "Confirmed refuse_execution_backtest/require_in_memory_document refuse execution docs before import.",
+    "Verified tests/pipeline/test_foreach.py exists and was absent from 0101 existing_inventoried."
+  ],
+  "next_gate": "Fresh DeepSeek skeptic re-review of the corrected matrix v3 before RED."
+}

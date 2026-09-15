@@ -1,0 +1,28 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "matrix": "docs/evidence/closeout/0101-f5a-p5-phase0-grammar-matrix.json",
+  "reviewer": {"model": "deepseek-v4-pro (owner override 2026-09-15)", "agent_task": "ses_f59c25f8dffeZcbZ9CUQElg1Xe", "lens": "fresh independent Phase 0 final convergence check (round 5)"},
+  "verdict": "clean",
+  "critical": 0,
+  "major": 0,
+  "minor": 0,
+  "nit": 3,
+  "conclusion": "The v5 matrix is internally self-consistent and complete. The full-document recursive walk plus positional legality plus the six-key shape helper enforce ADR-0123's descriptor grammar and only-legal-location rule, and structurally close every prior open-dict hole. Zero Critical and zero Major remain.",
+  "findings": [
+    {"id": "P5-NIT-1", "severity": "nit", "summary": "governing_grammar and types.purpose mislabeled the authority as ADR-0125; the descriptor grammar lives in ADR-0123.", "disposition": "corrected in matrix: governing_grammar now cites ADR-0123 (~8168) with ADR-0125 noted as chronology-only; types.purpose cites ADR-0123."},
+    {"id": "P5-NIT-2", "severity": "nit", "summary": "duplicate negative case across forbidden_semantics and mutation_and_alias.", "disposition": "corrected in matrix: the case is stated once under forbidden_semantics; mutation_and_alias carries a cross-reference note."},
+    {"id": "P5-NIT-3", "severity": "nit", "summary": "convergence checkpoint 0104 still contains the pre-correction foreach-legal clause.", "disposition": "0104 annotated with a superseded_note pointing to v5 and 0106 P5-G10; 0101 v5 is the controlling matrix."}
+  ],
+  "probes_run_verbatim": [
+    "Parsed 0101 v5, 0104, 0106, 0095, 0096; confirmed inner_keys == trust.py _DESCRIPTOR_KEYS.",
+    "Mapped decision-log headings: 'Captured ports and enforced multi-run stages' is under ADR-0123 (8050), not ADR-0125 (8317); $captured_artifact occurs only at 8172.",
+    "Verified document.py: _contains_prev_ref 292-300; _copy_mapping_or_raw shallow 174-176; _EXECUTION_BACKTEST_FORBIDDEN_SECTIONS 616; NodeSpec 522-611; PipelineDocument.__post_init__ 1965-2048; from_obj 2222-2350 shared parse entry.",
+    "Verified trust.py: _require_sha256 144-154; _descriptor_from 1857-1862; freeze_consumer_document 1202-1253.",
+    "Verified foreach-legal removal self-consistent; legacy de-scope factually grounded (PipelineConfig has no pipeline key).",
+    "Verified open-dict holes closed by full-doc walk; test inventory matches."
+  ],
+  "phase0_exit": true,
+  "next_gate": "Proceed to Packet 5 RED."
+}

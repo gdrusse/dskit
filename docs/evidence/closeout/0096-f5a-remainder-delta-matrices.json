@@ -1,0 +1,61 @@
+{
+  "schema_version": "F5aRemainderDeltaMatrices.v1",
+  "slice_id": "F5a",
+  "packet": "5-8-remainder-thin-delta-matrices",
+  "cites": "docs/evidence/closeout/0095-f5a-remainder-contract-pack.json",
+  "note": "Each delta matrix cites the shared contract pack and records only new or changed invariants for its packet. A material shared-contract change still requires a fresh Phase 0 review.",
+  "packet5": {
+    "packet": "5-captured-artifact-grammar",
+    "delta": {
+      "positive_grammar": "The only legal descriptor is the complete value of one declared node input: {$captured_artifact:{root_ref,snapshot_version,document_sha256,node,output,purpose}}. Six keys, no optional fields, no keys spelled inside the descriptor that the parser derives (consumer_document_sha256/consumer_node/consumer_input are parser-computed, never descriptor fields).",
+      "location": "The parser derives ConsumerCapturedPort={consumer_document_sha256,consumer_node,consumer_input,purpose} from the containing document digest, node key, and input name. The planner compiles to a non-JSON CapturedArtifactPort. Spelling in params, outputs, defaults, lists, maps, carry references, artifacts, or any nested non-input location refuses.",
+      "refusal_before_effects": "Forbidden stages/carry/$prev, params, outputs, defaults, lists/maps/nesting, artifact/read/path/model-load poison, and foreach/stages descriptor spellings refuse before planning, provider or filesystem access, broker construction, node import, or output creation. (Descriptor mutation-after-parse/freeze is broker-route Packet 4 + Packet 6 substitution, out of Packet 5 scope.)",
+      "new_or_changed_invariants": [
+        "freeze the exact six-key descriptor shape and reject missing/extra/duplicate/null/non-string/non-sha256 members",
+        "enforce the only-legal-location rule across every public parse/plan/CLI entry point in the shared pack",
+        "sweep forbidden stages and $prev/carry spellings before provider/filesystem/broker/node import",
+        "ordinary JSON/hash compatibility preserved for non-execution documents"
+      ],
+      "ownership": "parser/plan/CLI enforcement is model-release (F1); forecast-capital owns the descriptor-shape validation already in trust.py freeze_consumer_document/_descriptor_from. Cross-owner approval required (owner-gate 0097)."
+    }
+  },
+  "packet6": {
+    "packet": "6-descriptor-receipt-equality-restart-linkage",
+    "delta": {
+      "binding": "Bind descriptor, derived port, published root/receipt, producer, member manifest, captured receipt, authorization entry, run, process, purpose, and session identities.",
+      "sweep": "Equal-looking substitutions, partial failure/retry, wrong process/run/purpose, stale restart identity, and equivalent entry points.",
+      "scope_limit": "Proves equality and fail-closed restart identity only. Does not claim durable consume-once or reconstruction (those remain Packet 8).",
+      "new_or_changed_invariants": [
+        "substitutions refuse before member access/session/effects",
+        "one authorization must not silently become a second consumption authority",
+        "accepted Packet 4 and v1 paths remain green",
+        "restart identity refusal is fail-closed and does not overclaim durability"
+      ],
+      "ownership": "primarily forecast-capital (dskit/pipeline/trust.py, dskit/production/verifier.py); depends on Packet 5 grammar freeze first."
+    }
+  },
+  "packet7": {
+    "packet": "7-replay-tape-descriptors",
+    "delta": {
+      "binding": "Require exactly the approved top-level tape_manifest and tape_data descriptors with outer/parent/policy/count/order bindings.",
+      "sweep": "Missing, extra, duplicate, aliased, nested, swapped, and equal-port/different-capture families before planning or root creation.",
+      "reuse": "Reuse existing bundle/capture authorities; do not create a parallel tape engine or run a market replay.",
+      "local_slice": "If Packet 7 depends on an unavailable F3-owned producer identity, implement only the locally decidable grammar/binding slice and record the exact dependency instead of fabricating a placeholder.",
+      "ownership": "replay-ops (C0/R1-R5) owns ReplayRun/tape; forecast-capital owns only the locally decidable grammar/binding slice."
+    }
+  },
+  "packet8": {
+    "packet": "8-durable-consume-once-authority-and-f5a-r23",
+    "delta": {
+      "owner_decision_first": "Begin with an owner decision naming the process/service that owns durable mutable state, transaction and locking semantics, crash/restart recovery, idempotency key, unknown-outcome resolver, and authority for admission consumption and unspend refusal. Mutable object identity, constructor aliases, intern tables, or process-local locks are not a durable security boundary.",
+      "sweep": "Concurrent calls, write-then-raise, clone/replay, process restart, second-process contention, partial persistence, recovery, and exact consume-once outcome.",
+      "reuse": "Reuse Packet 4's transaction shape and one authoritative ledger; do not create a second writer.",
+      "stop_rule": "If the owner refuses or the durable service is unavailable, stop with a precise blocker; do not simulate closure in memory.",
+      "ownership": "requires owner decision (owner-gate 0098)."
+    }
+  },
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0096-f5a-remainder-delta-matrices.json",
+    "git diff --check"
+  ]
+}
