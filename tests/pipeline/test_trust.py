@@ -3396,3 +3396,136 @@ def test_p6_descriptor_returns_retained_snapshot_after_mid_operation_mutation(mo
     monkeypatch.setattr(broker, "_publication_snapshot", snapshot)
     assert broker.descriptor(published, "synthetic") == expected
     assert observed
+
+
+def _p6_mutate_effect_identity(broker, published, frozen, session, bindings, change):
+    """Change one exposed identity surface and return its restoration."""
+    stream = broker._diagnostic_stream_for_published(published)
+    sealed, _, prepared = broker._publication_record(published)
+    if change.startswith("descriptor-"):
+        key = change.removeprefix("descriptor-")
+        old = published.descriptor[key]
+        published.descriptor[key] = dict(_P6_DESCRIPTOR_CHANGES)[key]
+        return lambda: published.descriptor.__setitem__(key, old)
+    if change == "source":
+        old = frozen.source.get("name")
+        frozen.source["name"] = "changed-after-bind"
+        return lambda: frozen.source.__setitem__("name", old)
+    targets = {
+        "pin-output": (broker._stream_pin[stream], "output_member", "config.json"),
+        "prepared-output": (prepared, "output_member", "config.json"),
+        "pin-purpose": (broker._stream_pin[stream], "purpose", "changed"),
+        "prepared-purpose": (prepared, "purpose", "changed"),
+        "frozen-purpose": (frozen, "purpose", "changed"),
+        "frozen-node": (frozen, "consumer_node", "changed"),
+        "frozen-input": (frozen, "consumer_input", "changed"),
+        "frozen-digest": (frozen, "source_sha256", "f" * 64),
+        "session-stream": (session, "_stream_id", "f" * 64),
+        "session-run": (session, "_run_identity", "changed"),
+        "session-kind": (session, "_kind", "producer"),
+        "bindings-stream": (bindings, "_stream_id", "f" * 64),
+        "manifest": (sealed, "_member_manifest_sha256", "f" * 64),
+    }
+    if change == "binding-nonce-intern":
+        old = broker._load_interned(broker._bindings_pin, broker._bindings_intern, id(bindings), "test")
+        replacement = list(old)
+        replacement[2] = "changed-consume-nonce"
+        _hmac_mint(broker, broker._bindings_pin, broker._bindings_intern, id(bindings), replacement)
+        return lambda: _hmac_mint(broker, broker._bindings_pin, broker._bindings_intern, id(bindings), old)
+    target, key, replacement = targets[change]
+    old = getattr(target, key)
+    object.__setattr__(target, key, replacement)
+    return lambda: object.__setattr__(target, key, old)
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("change", [
+    *["descriptor-" + field for field, _ in _P6_DESCRIPTOR_CHANGES],
+    "source", "pin-output", "prepared-output", "pin-purpose", "prepared-purpose",
+    "frozen-purpose", "frozen-node", "frozen-input", "frozen-digest",
+    "session-stream", "session-run", "session-kind", "bindings-stream", "manifest",
+    "binding-nonce-intern",
+])
+def test_p6_final_consume_revalidates_identity_and_allows_broker_local_retry(change, direct):
+    broker, published, frozen, _, session, _, bindings, _ = _p6_consumed_setup_without_consumption()
+    before = _p6_effects(broker)
+    restore = _p6_mutate_effect_identity(broker, published, frozen, session, bindings, change)
+    with pytest.raises(ValueError):
+        if direct:
+            broker._consume_binding(bindings, "bundle")
+        else:
+            bindings.require("bundle")
+    assert _p6_effects(broker) == before
+    restore()
+    artifact = bindings.require("bundle").artifact
+    assert artifact.value["rows"][0]["id"] == "one"
+    assert [row["event"] for row in broker._receipt_audit(published)].count("CONSUMED") == 1
+
+
+def _p6_consumed_setup_without_consumption():
+    broker, published, _, frozen, captured, session, verified = _captured_flow()
+    bindings = broker.captured_bindings(session, frozen, verified,
+        consumer_node="consume", transition_nonce="nonce-consumed")
+    return broker, published, frozen, captured, session, verified, bindings, None
+
+
+@pytest.mark.parametrize("stage", ["open", "bindings", "member"])
+@pytest.mark.parametrize("change", ["source", "pin-output", "prepared-output", "descriptor-purpose", "session-stream", "manifest"])
+def test_p6_pre_delivery_stage_gap_refuses_before_effects(stage, change):
+    broker, published, frozen, captured, session, verified, bindings, _ = _p6_consumed_setup_without_consumption()
+    before = _p6_effects(broker)
+    restore = _p6_mutate_effect_identity(broker, published, frozen, session, bindings, change)
+    with pytest.raises(ValueError):
+        if stage == "open":
+            broker.open_capture(session, captured)
+        elif stage == "bindings":
+            broker.captured_bindings(session, frozen, verified,
+                consumer_node="consume", transition_nonce="other-consumed")
+        else:
+            verified.member("artifacts/bundle.json").read_bytes()
+    assert _p6_effects(broker) == before
+    restore()
+
+
+@pytest.mark.parametrize("change", ["descriptor", "source", "output", "port"])
+def test_p6_staged_legacy_capture_revalidates_after_final_fault_schedule(monkeypatch, change):
+    broker = _trust()._development_broker()
+    producer, published, _ = _publish(broker)
+    broker.end_session(producer)
+    _, frozen = _freeze(broker, published)
+    port = broker.derive_consumer_port(frozen)
+    stream = broker._diagnostic_stream_for_published(published)
+    observed = []
+    restorations = []
+
+    def schedule(point):
+        if point != "legacy-commit-before" or observed:
+            return
+        observed.append(True)
+        if change == "descriptor":
+            old = published.descriptor["purpose"]
+            published.descriptor["purpose"] = "changed"
+            restorations.append(lambda: published.descriptor.__setitem__("purpose", old))
+        elif change == "source":
+            old = frozen.source["name"]
+            frozen.source["name"] = "changed"
+            restorations.append(lambda: frozen.source.__setitem__("name", old))
+        elif change == "output":
+            target = broker._stream_pin[stream]
+            old = target.output_member
+            object.__setattr__(target, "output_member", "config.json")
+            restorations.append(lambda: object.__setattr__(target, "output_member", old))
+        else:
+            old = port["consumer_input"]
+            port["consumer_input"] = "changed"
+            restorations.append(lambda: port.__setitem__("consumer_input", old))
+
+    monkeypatch.setattr(broker._p4_ledger, "_fault", schedule)
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        _capture(broker, published, frozen, port=port)
+    assert observed and _p6_effects(broker) == before
+    for restore in restorations:
+        restore()
+    _capture(broker, published, frozen, port=port)
+    assert [row["event"] for row in broker._receipt_audit(published)].count("CAPTURED") == 1
