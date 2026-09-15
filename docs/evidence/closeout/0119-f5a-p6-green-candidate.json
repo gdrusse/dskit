@@ -48,6 +48,10 @@
     {
       "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py tests/pipeline/test_trust.py; git diff --check",
       "result": "pass"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py tests/pipeline/test_captured_authorization.py tests/production/test_capture_lifecycle.py tests/production/test_captured_authorization.py tests/production/test_adr0125_preflight.py tests/pipeline/test_captured_artifact_grammar.py --tb=short",
+      "result": "1498 passed in 63.11s on final candidate"
     }
   ],
   "limits": [
@@ -57,5 +61,6 @@
     "ADR0126 deferred development-key forgery and combined/multiple internal rewrites unchanged"
   ],
   "deployment_eligible": false,
-  "next_gate": "Two fresh sequential Terra final lenses on this immutable code/test/matrix candidate; final focused suite then lock and integrate if clean."
+  "next_gate": "Two fresh sequential Terra final lenses on this immutable code/test/matrix candidate; final focused suite then lock and integrate if clean.",
+  "candidate": "0633c4e2baa4f6256090367d164ae2b67c934956"
 }
