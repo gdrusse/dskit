@@ -827,14 +827,18 @@ def test_resigned_replay_pea_authority_cannot_substitute_its_subject(monkeypatch
 
 
 @pytest.mark.parametrize("replay", [False, True])
-def test_resigned_selected_admission_cannot_be_issued_after_trusted_now(replay, monkeypatch):
+@pytest.mark.parametrize("change", ["future-admission", "basis-before-dependency"])
+def test_resigned_selected_admission_cannot_be_issued_after_trusted_now(replay, change, monkeypatch):
     original = _local_signed
     schema = "dskit.final-replay-admission/v1" if replay else "dskit.action-execution-admission/v1"
 
     def changed(payload, self_field, role, usage):
         value = original(payload, self_field, role, usage)
-        if value["schema"] == schema:
+        if change == "future-admission" and value["schema"] == schema:
             value["issued_at_ms"] = 700
+            return _resign_exact(value, self_field)
+        if change == "basis-before-dependency" and value["schema"] == "dskit.issuance-basis/v1" and value["kind"] == schema[6:-3]:
+            value["issued_at_ms"] = 50
             return _resign_exact(value, self_field)
         return value
 
