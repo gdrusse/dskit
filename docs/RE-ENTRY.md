@@ -1,9 +1,10 @@
 # Re-entry
 
-## Current wrap: Packet 6 reviewed and ready to integrate (2026-09-15)
+## Current wrap: Packet 6 closed and merged (2026-09-15)
 
-Task worktree `/home/russell/wt/f5a-remainder-20260915`, branch
-`codex/f5a-remainder-p6`; main base `0ec6671`. Dirty main checkout untouched;
+Task worktree `/home/russell/wt/f5a-remainder-20260915`, currently `main`.
+Packet 6 merged --no-ff and pushed as `ddcae6f`; remote verified, contained
+packet branch purged locally/remotely. Dirty main checkout untouched;
 preserved source remains `c489199`. WSL2 interpreter
 `PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python` from this worktree.
 
@@ -22,13 +23,21 @@ member bytes and binding nonce. Existing retained post-CONSUMED reads and
 original actor/prepared-pointer compatibility remain intact. Three earlier
 failed final candidates and convergence history are retained in0114-0132.
 
-Next: integrate authorized Packet 6 into freshly fetched main with --no-ff,
-push/verify, purge only its contained branch, and append integration/timing
-record. Then Packet 7 local replay-descriptor slice and Packet 8 durable
-consume-once through owner0100's existing ChainLedger/JsonlLedger. Facade
-burn-before-delegation is intentionally preserved until P8; no rollback after
-an unknown delegate outcome. P7/P8/F5A-R23/wholeF5a/F3/F5b remain open;
-`deployment_eligible=false`. Next unused evidence number:0136.
+**Integration and timing:0136.** All reviewed hashes survived the merge unchanged.
+The existing merge hook had a missing render_all.py path; fallback rendering
+completed, worktree stayed clean, and no environment/config changes were made.
+
+Next: create Packet 7 branch from current main in this task worktree; implement
+only locally decidable replay-descriptor grammar/binding, record exact missing
+F3/replay dependency, and use Phase0/RED/GREEN/two fresh Terra lenses. Then
+Packet 8 durable consume-once through owner0100's ChainLedger/JsonlLedger seam.
+Facade burn-before-delegation remains preserved until P8; no rollback after an
+unknown delegate outcome. P7/P8/F5A-R23/wholeF5a/F3/F5b remain open;
+`deployment_eligible=false`. Next unused evidence number:0137.
+
+Checkpoint-attributed elapsed minutes (approximate, includes overlapping
+review/test work; initial pre-commit reading is unmeasured):
+design 8.7, implementation 5.1, tests 16.3, review 34.2, corrections 17.4, integration 11.9. Detailed intervals are in0136.
 
 ## Current wrap: Packet 5 closed; Packet 6 Phase 0 in progress (2026-09-15)
 

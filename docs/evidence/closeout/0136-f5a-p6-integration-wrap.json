@@ -1,0 +1,256 @@
+{
+  "schema_version": "IntegrationEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "status": "merged-pushed-verified-branch-purged",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "review_exit": "0135-f5a-p6-review-exit.json",
+  "reviewed_candidate": "849ff673aaa219c01d68969c781d102c9ffb9882",
+  "accepted_branch_head": "d1714dc8c074ea97b9cd9adc97145fd272cb0fc5",
+  "merge_commit": "ddcae6f4a8a7a37e5fee99ddcabb6c2af76fd9ca",
+  "remote_main_verified": "ddcae6f4a8a7a37e5fee99ddcabb6c2af76fd9ca",
+  "checks": [
+    "Fresh origin/main0ec6671 unchanged from reviewed base; --no-ff merge succeeded",
+    "All locked runtime/test/matrix/dependency blobs match849ff67 after merge",
+    "1594 focused tests64.02s; explicit sentinel1passed0.10s; Ruff/diffpass; v1 bytes unchanged",
+    "Remote branch expected head d1714dc contained in remote main; deleted with exact --force-with-lease guard; local contained branch deleted",
+    "Remote main verified; packet branch absent; protected source c48919944588a2b29ba047e4cb551050a1ff9868 unchanged; task worktree clean"
+  ],
+  "merge_hook_note": "Existing post-merge hook reported missing /home/russell/dskit/tools/merge/render_all.py, then fallback render-journal completed. Merge/push succeeded; task worktree stayed clean and reviewed hashes unchanged. No hook/config/environment changes made; dirty main checkout not edited.",
+  "elapsed_time_by_category": {
+    "basis": "Approximate primary-task wall-clock attribution from successive committed checkpoints, including evidence-writing and overlapping reviewer/test work; not isolated CPU or per-agent duration. Initial read/fetch work before first measured commit is unmeasured, not invented. Exact interval attribution retained below.",
+    "measured_from": "2026-09-15T20:00:38+00:00",
+    "measured_to": "2026-09-15T21:34:07.304335+00:00",
+    "seconds": {
+      "design": 519,
+      "implementation": 306,
+      "tests": 978,
+      "review": 2051,
+      "corrections": 1042,
+      "integration": 713
+    },
+    "rounded_minutes": {
+      "design": 8.7,
+      "implementation": 5.1,
+      "tests": 16.3,
+      "review": 34.2,
+      "corrections": 17.4,
+      "integration": 11.9
+    },
+    "total_measured_seconds": 5609,
+    "checkpoint_spans": [
+      {
+        "through_commit": "b5f5d8e",
+        "category": "review",
+        "seconds": 247
+      },
+      {
+        "through_commit": "a5a24a1",
+        "category": "design",
+        "seconds": 73
+      },
+      {
+        "through_commit": "f07d6d5",
+        "category": "review",
+        "seconds": 278
+      },
+      {
+        "through_commit": "788c353",
+        "category": "review",
+        "seconds": 38
+      },
+      {
+        "through_commit": "2f76623",
+        "category": "design",
+        "seconds": 30
+      },
+      {
+        "through_commit": "7dc1ffc",
+        "category": "integration",
+        "seconds": 59
+      },
+      {
+        "through_commit": "509a1c1",
+        "category": "review",
+        "seconds": 96
+      },
+      {
+        "through_commit": "8eddeee",
+        "category": "tests",
+        "seconds": 143
+      },
+      {
+        "through_commit": "a4b2bf4",
+        "category": "implementation",
+        "seconds": 306
+      },
+      {
+        "through_commit": "9e97d9b",
+        "category": "corrections",
+        "seconds": 221
+      },
+      {
+        "through_commit": "0633c4e",
+        "category": "corrections",
+        "seconds": 47
+      },
+      {
+        "through_commit": "fd3f414",
+        "category": "tests",
+        "seconds": 111
+      },
+      {
+        "through_commit": "c7cd1ce",
+        "category": "review",
+        "seconds": 187
+      },
+      {
+        "through_commit": "4469885",
+        "category": "design",
+        "seconds": 30
+      },
+      {
+        "through_commit": "8487053",
+        "category": "review",
+        "seconds": 147
+      },
+      {
+        "through_commit": "0d2bd8a",
+        "category": "tests",
+        "seconds": 71
+      },
+      {
+        "through_commit": "e967aa1",
+        "category": "corrections",
+        "seconds": 158
+      },
+      {
+        "through_commit": "42a8a95",
+        "category": "review",
+        "seconds": 359
+      },
+      {
+        "through_commit": "a057a26",
+        "category": "design",
+        "seconds": 176
+      },
+      {
+        "through_commit": "89f16b5",
+        "category": "review",
+        "seconds": 191
+      },
+      {
+        "through_commit": "2040a22",
+        "category": "review",
+        "seconds": 105
+      },
+      {
+        "through_commit": "e9cc2ec",
+        "category": "tests",
+        "seconds": 100
+      },
+      {
+        "through_commit": "b2f6d59",
+        "category": "corrections",
+        "seconds": 179
+      },
+      {
+        "through_commit": "7e2743b",
+        "category": "corrections",
+        "seconds": 92
+      },
+      {
+        "through_commit": "e56d3e3",
+        "category": "tests",
+        "seconds": 89
+      },
+      {
+        "through_commit": "ef8d1e2",
+        "category": "integration",
+        "seconds": 61
+      },
+      {
+        "through_commit": "67aecad",
+        "category": "review",
+        "seconds": 148
+      },
+      {
+        "through_commit": "aac2a25",
+        "category": "design",
+        "seconds": 143
+      },
+      {
+        "through_commit": "11d865f",
+        "category": "integration",
+        "seconds": 107
+      },
+      {
+        "through_commit": "f9041c6",
+        "category": "review",
+        "seconds": 108
+      },
+      {
+        "through_commit": "0668eaf",
+        "category": "design",
+        "seconds": 67
+      },
+      {
+        "through_commit": "4d96480",
+        "category": "review",
+        "seconds": 22
+      },
+      {
+        "through_commit": "8260379",
+        "category": "tests",
+        "seconds": 167
+      },
+      {
+        "through_commit": "98b8b81",
+        "category": "review",
+        "seconds": 100
+      },
+      {
+        "through_commit": "a3fa993",
+        "category": "tests",
+        "seconds": 178
+      },
+      {
+        "through_commit": "b03c4d5",
+        "category": "corrections",
+        "seconds": 259
+      },
+      {
+        "through_commit": "849ff67",
+        "category": "corrections",
+        "seconds": 86
+      },
+      {
+        "through_commit": "eacca34",
+        "category": "tests",
+        "seconds": 119
+      },
+      {
+        "through_commit": "4f609be",
+        "category": "review",
+        "seconds": 25
+      },
+      {
+        "through_commit": "d1714dc",
+        "category": "integration",
+        "seconds": 340
+      },
+      {
+        "through": "merge/push/remote verification/contained branch purge",
+        "category": "integration",
+        "seconds": 146
+      }
+    ]
+  },
+  "remaining": [
+    "P7 locally decidable replay descriptor slice and explicit F3/replay dependencies",
+    "P8 authoritative durable ChainLedger spend and F5A-R23",
+    "WholeF5a integration gates and F3/F5b remain open"
+  ],
+  "deployment_eligible": false
+}

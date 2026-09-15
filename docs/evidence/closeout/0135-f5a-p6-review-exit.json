@@ -2,7 +2,7 @@
   "schema_version": "ReviewExit.v1",
   "slice_id": "F5a",
   "packet": "6-descriptor-receipt-equality-restart-linkage",
-  "status": "packet-exit; integration pending",
+  "status": "packet-exit; merged and remote verified",
   "base_main": "0ec667129c27d64b487b2962295f3b495d5e44e1",
   "candidate_commit": "849ff673aaa219c01d68969c781d102c9ffb9882",
   "candidate_tree": "c0e15fd89e84d4349d0a8fa3dd1667ccdd95c534",
@@ -66,5 +66,6 @@
   ],
   "history": "Three failed final candidates and independent convergence checkpoints retained; only849ff67 has two clean final lenses. Historical reviewer misattributions corrected in0129, not erased.",
   "next_gate": "Fetch current main; merge --no-ff; push verify remote containment; safely purge contained task branch; wrap timing and RE-ENTRY; then P7 and P8.",
-  "deployment_eligible": false
+  "deployment_eligible": false,
+  "integration": "0136-f5a-p6-integration-wrap.json"
 }
