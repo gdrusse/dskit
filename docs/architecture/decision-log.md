@@ -9017,14 +9017,19 @@ and capture hierarchy, not a second grammar or a parallel tape engine.
 **Decision.**
 
 1. **Class-declared ReplayRun consumer identity.** The pipeline identifies the
-   replay consumer by resolved class identity, never by a uses-string or an
-   import-path text match. A new pipeline-owned marker/ABC (placed in
-   `dskit.pipeline`, purity-safe) declares the replay-consumer contract: its
-   `NodeSpec` owns exactly the two required input ports `tape_manifest` and
-   `tape_data`. `dskit.production.replay.ReplayRun` (the R1 runnable entry point,
-   out of scope here) may reference that identity through the existing
-   production→pipeline import seam. The exact marker shape, name, and
-   registry/role wiring is frozen in Phase 0 and inspected against P4 before RED.
+   replay consumer by class-declared identity, never by a uses-string resemblance
+   or an import-path text match. The identity is the existing owned-kind +
+   role doctrine (the `stat_test`/`validate` discipline): a new `ROLES` member
+   `"replay"` and a single owned kind literal `REPLAY_RUN_KIND = "replay"` live
+   in `dskit/pipeline/document.py`; the concrete ReplayRun node class declares
+   `role = "replay"` and is registered `owned=True` (follow-on F3/F5b/R1).
+   The pair rule is enforced at two class-declared points: parse time, keyed on
+   `NodeSpec.uses == REPLAY_RUN_KIND` (the owned literal — the registered
+   spelling), and plan time, keyed on `resolved.cls.role == "replay"` (refusing
+   any non-owned/class-ref spelling and enforcing the pair, exactly as
+   `planner.py` already does for `stat_test`). `dskit.production.replay.ReplayRun`
+   (the R1 runnable entry point, out of scope here) may reference that identity
+   through the existing production→pipeline import seam.
 
 2. **Captured-tape capture hierarchy, one acyclic F4-style WORM chain.** Add three
    generic capture collaborators, reusing trust.py's existing opaque capture and
