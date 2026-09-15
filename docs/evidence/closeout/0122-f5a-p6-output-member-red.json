@@ -1,0 +1,23 @@
+{
+  "schema_version": "TddEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "phase0": "0121-f5a-p6-output-member-phase0-clean.json",
+  "runtime_base": "8487053",
+  "phase": "correction RED",
+  "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k \"original_output_member or two_valid_snapshots\" --tb=short",
+  "result": "12 failed, 157 deselected in 0.67s",
+  "expected_failure_families": [
+    "ten output-member side/stage substitutions admitted (DID NOT RAISE ValueError)",
+    "two valid snapshot lookup orders fail with published snapshot mismatch"
+  ],
+  "deployment_eligible": false,
+  "baseline_confirmation": {
+    "base": "0ec667129c27d64b487b2962295f3b495d5e44e1",
+    "method": "temporarily detached task worktree at unchanged main; replayed only the new snapshot test file; restored tracked test and returned to task branch, dirty main checkout untouched",
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k two_valid_snapshots --tb=short",
+    "result": "2 failed, 167 deselected in 0.37s with the same published snapshot mismatch"
+  }
+}

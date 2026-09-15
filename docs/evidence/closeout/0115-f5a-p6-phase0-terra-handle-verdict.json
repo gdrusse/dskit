@@ -1,0 +1,43 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6-descriptor-receipt-equality-restart-linkage",
+  "candidate": "a5a24a15eb1c41fdec96797b3ab74c1ea2ced23e",
+  "matrix": "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_phase0_terra_after_checkpoint",
+    "lens": "fresh independent Phase 0 after convergence checkpoint"
+  },
+  "verdict": "not-clean",
+  "critical": 0,
+  "major": 1,
+  "minor": 0,
+  "nit": 0,
+  "findings": [
+    {
+      "id": "P6-RR-004",
+      "severity": "major",
+      "summary": "Post-capture port and artifact accessors lack retained identity validation.",
+      "location": "trust.py CapturedLifecyclePort.artifact/audit and CapturedJsonArtifact.value/audit, around line 512",
+      "counterexample": "After bindings.require() consumes a valid stream, a single handle poke replaces port._artifact or artifact._value. Accessors return forged data.",
+      "consequence": "Unverified data delivery violates ADR-0123 final immutable captured value and ADR-0126 public opaque-handle/single-poke rule. Publication/freeze validators cannot catch this post-capture path.",
+      "disposition": "Open; successor full-handle convergence checkpoint requested before another matrix correction."
+    }
+  ],
+  "reviewer_conclusion": "The retained publication/stream-pin design otherwise closes the post-PUBLISHED descriptor and frozen-identity family stated in 0114.",
+  "reviewer_checks": [
+    "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py::test_placeholder_self_wrong_root_and_unknown_descriptor_fields_refuse tests/pipeline/test_trust.py::test_descriptor_mutation_after_freeze_refuses_before_port_derivation tests/pipeline/test_trust.py::test_producer_session_must_end_and_consumer_run_and_session_must_be_distinct tests/pipeline/test_trust.py::test_wrong_document_port_cross_plan_and_consumer_substitution_refuse: 10 passed in 0.11s",
+    "JSON parse of 0095/0096/0111-0114: pass",
+    "git diff --check: pass"
+  ],
+  "reviewer_limits": "Read-only design review; no new RED, full focused suite, real execution, or environment changes.",
+  "next_gate": "Independent full-handle convergence checkpoint, family-wide matrix correction, fresh clean Terra Phase 0 before RED.",
+  "deployment_eligible": false,
+  "convergence_checkpoint": {
+    "reviewer": "/root/p6_phase0_terra_after_checkpoint",
+    "model": "gpt-5.6-terra",
+    "status": "changed approach authorized; no owner decision needed",
+    "retained_reviewer_output": "Independent successor convergence checkpoint: RR004 requires a family-wide handle correction.\nChanged approach authorized within existing broker/view/intern ownership:\n1. Retain authenticated immutable records for the whole graph: publication -> frozen port -> verified capture -> member path/handle -> bindings input -> lifecycle port -> artifact payload/audit.\n2. Make every accessor validate that record under the existing lifecycle lock: VerifiedCapture.member, member read_bytes/read_text, CapturedBindings.require, lifecycle-port artifact/audit, artifact value/audit.\n3. Bind each member handle to its exact verified parent, broker, stream, path, retained bytes, and unread state. A foreign member inserted into a valid parent must refuse; resetting _read must not enable a second read.\n4. Bind lifecycle-port/artifact accessors to the exact consumed input and retained verified payload/audit. Return the retained record values, never mutable handle slots.\n5. Sweep single pokes of parent maps, member/port/artifact fields, _used, and _read; assert no forged value, cross-broker association, second read/consume, provider access, or additional receipt/session effects.\n_LIFECYCLE_VIEWS alone authenticates a view's broker/stream; it does not bind a returned member to its parent, and lifecycle-port/artifact currently have no corresponding retained association. This correction covers publication, frozen, member, port, and artifact identity together, avoiding another isolated patch.\nLimits retained: Packet 8 durable restart/spend; development-key signature forgery; combined intern mint plus handle poke; multi-internal rewrites; P7 replay grammar. No owner decision needed."
+  }
+}

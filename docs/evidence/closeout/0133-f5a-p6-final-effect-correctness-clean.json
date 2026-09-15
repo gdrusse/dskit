@@ -1,0 +1,20 @@
+{
+  "schema_version": "SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "candidate": "849ff673aaa219c01d68969c781d102c9ffb9882",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_effect_final_correctness_terra",
+    "lens": "fresh correctness/authority"
+  },
+  "verdict": "clean",
+  "critical": 0,
+  "major": 0,
+  "minor": 0,
+  "nit": 0,
+  "retained_reviewer_output": "Clean C0/M0/minor0/nit0. No boundary-invalidating finding. Validated final-effect paths statically: staged CAPTURED, provider/member delivery, bindings/direct consume, retained post-CONSUMED access, exact port/session/receipt subject. Probe with external receipt-store truncation passed; retained artifact/audit remained available. Untested concurrent callback mutation during provider access; combined intern+handle/_DEV_KEY attacks ADR0126-deferred. Focused suite left to parent.",
+  "parent_checks": "0132:1594 focused passed64.02s, sentinel1passed0.10s, Ruff/diffpass, v1 receipt bytes unchanged; all code/test/matrix blobs match candidate.",
+  "next_gate": "Second fresh independent tests/integration lens on same849ff67 candidate before closure.",
+  "deployment_eligible": false
+}

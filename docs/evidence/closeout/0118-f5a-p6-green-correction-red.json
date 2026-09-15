@@ -1,0 +1,44 @@
+{
+  "schema_version": "TddEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "phase": "GREEN-in-progress; additional RED for existing single-intern threat family",
+  "runtime_blob": "4d3ec6533b702db27c45fb6e85cfd9d8bd4651ab",
+  "checks": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k test_p6 --tb=short",
+      "result": "50 passed, 103 deselected in 0.39s"
+    },
+    {
+      "command": "required six-file focused pytest command",
+      "result": "2 failed, 1492 passed in 60.89s",
+      "failures": [
+        "test_freeze_and_publish_stream_maps_cannot_capture_another_stream: refusal error wording no longer matches existing regex",
+        "test_backing_store_and_watermark_cannot_rewind_consumed: retained artifact now rereads corrupted receipt store; preserve access to already verified immutable payload without reopening provider or granting new authority"
+      ]
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k test_p6_single_view_intern --tb=short",
+      "result": "3 failed, 153 deselected in 0.34s",
+      "expected_failures": "One authenticated view-intern replacement alone returns forged member bytes, foreign artifact, or forged payload; bind graph/slot identity against independent retained parent record."
+    }
+  ],
+  "status": "not ready; no final review or merge",
+  "deployment_eligible": false,
+  "followup_checks": [
+    {
+      "result": "156 trust tests passed in 0.61s; ruff/diff clean; sentinel 1 passed in 0.11s"
+    },
+    {
+      "command": "required six-file focused pytest command",
+      "result": "1497 passed in 59.65s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py::test_p6_port_audit_is_deeply_immutable --tb=short",
+      "result": "1 failed in 0.23s: nested consumer_port dictionary remains writable, DID NOT RAISE TypeError",
+      "runtime_blob": "2761abb4b0b9fb2b43a90005fd859a404e8a98d4"
+    }
+  ]
+}

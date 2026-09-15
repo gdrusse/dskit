@@ -1,0 +1,24 @@
+{
+  "schema_version": "TddEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "phase0": "0116-f5a-p6-phase0-terra-clean.json",
+  "runtime_base": "509a1c1",
+  "phase": "RED",
+  "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k test_p6 --tb=short",
+  "result": "25 failed, 25 passed, 103 deselected in 1.11s",
+  "expected_failure_families": [
+    "coordinated descriptor/caller purpose: DID NOT RAISE ValueError",
+    "mutable published descriptor all six fields via descriptor and purpose/node/output via freeze/capture: DID NOT RAISE ValueError",
+    "frozen purpose/node/input changes at derive: DID NOT RAISE ValueError",
+    "cross-broker member and artifact substitution: returned wrong object",
+    "mutable port/artifact audit and payload: returned forged data",
+    "member retained bytes replaced: returned forged bytes/text",
+    "reset member _read: second read admitted"
+  ],
+  "already_green": "Existing producer-session/session-stream/member-manifest/receipt-chain/one-consumption/single-intern defenses remain covered by retained tests. New controls for other descriptor fields, structural receipt sequence/predecessor/stream mismatch and retry, cross-broker public lifecycle facades, and restart session refusal already pass; no failures fabricated.",
+  "test_file": "tests/pipeline/test_trust.py",
+  "deployment_eligible": false
+}

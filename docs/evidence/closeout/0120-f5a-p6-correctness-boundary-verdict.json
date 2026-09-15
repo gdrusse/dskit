@@ -1,0 +1,49 @@
+{
+  "schema_version": "SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "candidate": "0633c4e2baa4f6256090367d164ae2b67c934956",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_final_correctness_terra",
+    "lens": "fresh final correctness/authority"
+  },
+  "verdict": "not-clean; boundary-invalidating; return to Phase0",
+  "critical": 0,
+  "major": 2,
+  "minor": 0,
+  "nit": 0,
+  "findings": [
+    {
+      "id": "P6-FA-001",
+      "severity": "major",
+      "summary": "Output-member authority is unauthenticated.",
+      "location": "trust.py captured_bindings around1471 and _validate_publication_descriptor around1881",
+      "counterexample": "After open_capture, object.__setattr__(broker._stream_pin[sid], output_member, config.json); captured_bindings/require admits and consumes producer config JSON as bundle.",
+      "consequence": "Wrong verified member delivered under valid bundle identity; ADR0123/ADR0126 single-poke boundary and matrix member_manifest/retained_handle_graph violated.",
+      "disposition": "Boundary-invalidating: stop candidate before second lens, return to Phase0."
+    },
+    {
+      "id": "P6-FA-002",
+      "severity": "major",
+      "summary": "Valid second-publication v1 freeze incompatibility.",
+      "location": "trust.py _live_published fallback around2031",
+      "counterexample": "Publish a second stream with same root_ref/producer document but different snapshot; descriptor(p2) succeeds but freeze chooses p1 by root_ref/document only and refuses published snapshot mismatch.",
+      "consequence": "Valid descriptor-to-freeze route fails the equal-looking identity compatibility family.",
+      "origin": "Pre-existing at 0ec6671, but in Packet6 stated compatibility scope.",
+      "disposition": "Include exact multi-publication lookup in successor Phase0 and positive regression."
+    }
+  ],
+  "convergence_checkpoint": {
+    "reviewer_changed_approach": "Bind pin.output_member to independently authenticated sealed/prepared original output member at capture, open, and bind; a poke of either side or wrong path must refuse before CAPTURED/CONSUMED effects. Preserve existing writer and v1 receipt bytes.",
+    "followup": "Include pre-existing exact-publication lookup compatibility defect in new matrix; fresh Phase0 before correction RED."
+  },
+  "reviewer_checks": [
+    "targeted P6 plus existing stream-pin test: 55 passed",
+    "git diff --check: pass",
+    "synthetic output-member substitution and second-publication probes: defects demonstrated"
+  ],
+  "reviewer_limits": "Stopped after boundary-invalidating finding; no second final lens, full suite, or state changes.",
+  "deployment_eligible": false,
+  "next_gate": "Successor Phase0 matrix then fresh independent Terra verdict; no second final lens on invalid candidate."
+}

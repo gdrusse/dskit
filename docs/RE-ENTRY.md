@@ -1,5 +1,67 @@
 # Re-entry
 
+## Current wrap: Packet 6 reviewed and ready to integrate (2026-09-15)
+
+Task worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p6`; main base `0ec6671`. Dirty main checkout untouched;
+preserved source remains `c489199`. WSL2 interpreter
+`PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python` from this worktree.
+
+**Packet 6 exit `0135`: candidate `849ff673aaa219c01d68969c781d102c9ffb9882`.**
+Two fresh sequential Terra final lenses (`0133` correctness, `0134` tests/integration)
+are clean: zero Critical/Major/Minor/Nit. GPT-6 implemented. Final focused suite
+1594 passed64.02s; explicit private-plan sentinel, Ruff/diff checks, and complete
+v1 encoded receipt baseline comparison pass. Reviewed code/test/matrix and
+relevant dependency blobs are locked in0135; evidence-only appends preserve them.
+
+Publication lookup binds complete retained six-field identity and original
+output/member/producer lineage; frozen ports and retained capture views cannot
+be substituted. One shared v1 effect validator covers final CAPTURED staging,
+provider/member/bindings delivery and CONSUMED, including independent retained
+member bytes and binding nonce. Existing retained post-CONSUMED reads and
+original actor/prepared-pointer compatibility remain intact. Three earlier
+failed final candidates and convergence history are retained in0114-0132.
+
+Next: integrate authorized Packet 6 into freshly fetched main with --no-ff,
+push/verify, purge only its contained branch, and append integration/timing
+record. Then Packet 7 local replay-descriptor slice and Packet 8 durable
+consume-once through owner0100's existing ChainLedger/JsonlLedger. Facade
+burn-before-delegation is intentionally preserved until P8; no rollback after
+an unknown delegate outcome. P7/P8/F5A-R23/wholeF5a/F3/F5b remain open;
+`deployment_eligible=false`. Next unused evidence number:0136.
+
+## Current wrap: Packet 5 closed; Packet 6 Phase 0 in progress (2026-09-15)
+
+Branch `codex/f5a-remainder-p6` (from `origin/main@0ec6671`, which already
+contains Packet 5). Preserved `origin/cursor/r5-f5a-private-plan-0f39@c489199`.
+
+**Packet 5 DONE** (merged to main `0ec6671`, branch purged, remote verified).
+`dskit/pipeline/document.py` freezes the ADR-0123 `$captured_artifact`
+descriptor grammar via a full-document positional sweep; 37 tests in
+`tests/pipeline/test_captured_artifact_grammar.py`; two clean DeepSeek lenses
+(`0110` review exit). Focused suite 1855 passed; sentinel green.
+
+**Packet 6 in progress (Phase 0, not yet RED).** Matrix `0111` (equality/
+restart linkage) went through two skeptic rounds (`0112` round 1: 3 major+4
+minor all corrected; `0113` round 2). ONE remaining Major to apply before RED:
+
+- **P6-RR-001 (unresolved):** `freeze_consumer_document` (trust.py:1217) checks
+  purpose only against the caller-controlled descriptor; the published-equality
+  block (trust.py:1220-1229) omits purpose, so an equal-root/snapshot/document/
+  node/output-but-different-purpose substitution is admitted through the v1
+  lifecycle. **Fix:** add `descriptor.get("purpose") == published.descriptor["purpose"]`
+  to `freeze_consumer_document` right after the published lookup, and add an
+  "equal-everything-but-purpose" case to `equal_looking_different_binding`.
+
+Next session: (1) patch matrix `0111` to record the purpose binding + case;
+(2) fresh DeepSeek Phase 0 skeptic; (3) RED (purpose-substitution + the full
+substitution families) → GREEN; (4) two fresh DeepSeek final lenses; (5)
+merge/push/purge/wrap. Then Packets 7 (replay-tape descriptors) and 8
+(ChainLedger consume-once, closes F5A-R23; owner decision `0100` = ChainLedger).
+
+Reviewers: DeepSeek (owner override). No whole-F5a/F3/F5b claim yet;
+`deployment_eligible=false`.
+
 ## Current wrap: F5a Packet 5 closed (captured-artifact grammar) (2026-09-15)
 
 Branch `codex/f5a-remainder-20260915` (from `origin/main@1fc290f`). Preserved

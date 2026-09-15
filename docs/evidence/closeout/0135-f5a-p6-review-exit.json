@@ -1,0 +1,70 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "F5a",
+  "packet": "6-descriptor-receipt-equality-restart-linkage",
+  "status": "packet-exit; integration pending",
+  "base_main": "0ec667129c27d64b487b2962295f3b495d5e44e1",
+  "candidate_commit": "849ff673aaa219c01d68969c781d102c9ffb9882",
+  "candidate_tree": "c0e15fd89e84d4349d0a8fa3dd1667ccdd95c534",
+  "matrix": "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json",
+  "phase0_clean": "docs/evidence/closeout/0130-f5a-p6-final-effect-phase0-clean.json",
+  "reviewed_blobs": {
+    "dskit/pipeline/trust.py": "1ec526fc5324cfcc44aba8c46f580e2c91819cc9",
+    "tests/pipeline/test_trust.py": "032d565bc95c75b938090dbd63ad0e9396456e26",
+    "tests/pipeline/test_captured_authorization.py": "9f48aeef760375a52227bf0454949dfcaf2c6fc3",
+    "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json": "b8a4ad2d9aa6a646a5b520a999a29b726b050a76"
+  },
+  "dependency_blobs": {
+    "docs/evidence/closeout/0095-f5a-remainder-contract-pack.json": "f6b8e31efcecfc8a695d723da57f848736253ce9",
+    "docs/evidence/closeout/0096-f5a-remainder-delta-matrices.json": "b459c2050bff172511ddb6d31b0267cb086ec0c3",
+    "docs/architecture/decision-log.md": "2a69cb9e05aa6c6beb958d81c78cd0f2e247b3ff",
+    "dskit/production/verifier.py": "c64c395e9cf3163350b90640090434d618cc76c2",
+    "dskit/pipeline/document.py": "60d188a9bffa885d876a25d36eb004dcb20a317e"
+  },
+  "final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "reviewer_model": "gpt-5.6-terra",
+      "agent_task": "/root/p6_effect_final_correctness_terra",
+      "reviewed": "849ff673aaa219c01d68969c781d102c9ffb9882",
+      "evidence": "0133-f5a-p6-final-effect-correctness-clean.json",
+      "verdict": "clean",
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    {
+      "lens": "tests/integration",
+      "reviewer_model": "gpt-5.6-terra",
+      "agent_task": "/root/p6_effect_final_tests_terra",
+      "reviewed": "849ff673aaa219c01d68969c781d102c9ffb9882",
+      "evidence": "0134-f5a-p6-tests-integration-clean.json",
+      "verdict": "clean",
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    }
+  ],
+  "nit_backlog": [],
+  "minor_backlog": [],
+  "checks": {
+    "focused_suite": "1594 passed64.02s; prescribed six modules",
+    "sentinel": "private_plan_precedes_capture1passed0.10s",
+    "ruff": "changed Python files clean",
+    "diff_check": "clean",
+    "v1_receipt_bytes": "Complete synthetic PRODUCED-to-CONSUMED hash bced1f11fc2fffd0386149356a6dd6b604c4f325185055503ef998fccd39dbb9 matches unchanged main0ec6671"
+  },
+  "reviewer_model_override": "Owner explicitly authorized Terra; implementer GPT-6",
+  "preserved": [
+    "Packet4 sole writer and accepted v1/Packets2-5 behavior",
+    "No production facade admission rollback: burn-before-delegation preserved; P8 owns durable unknown outcomes",
+    "P7/P8/F5A-R23/wholeF5a/F3/F5b open",
+    "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+    "Synthetic development only; no real data/replay/training/HPO/backtest/paper/live/deployment/environment changes"
+  ],
+  "history": "Three failed final candidates and independent convergence checkpoints retained; only849ff67 has two clean final lenses. Historical reviewer misattributions corrected in0129, not erased.",
+  "next_gate": "Fetch current main; merge --no-ff; push verify remote containment; safely purge contained task branch; wrap timing and RE-ENTRY; then P7 and P8.",
+  "deployment_eligible": false
+}

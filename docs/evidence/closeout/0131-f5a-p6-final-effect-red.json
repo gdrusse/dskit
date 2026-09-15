@@ -1,0 +1,25 @@
+{
+  "schema_version": "TddEvidence.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "phase": "RED",
+  "base": "98b8b81",
+  "runtime_base": "7e2743b6a79942da62ed314df60576a1f7d4e727",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "phase0": "0130-f5a-p6-final-effect-phase0-clean.json",
+  "commands": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k \"final_consume_revalidates or pre_delivery_stage_gap\" --tb=line",
+      "result": "47 failed (DID NOT RAISE ValueError),13 passed,180 deselected in0.40s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k staged_legacy_capture_revalidates --tb=short",
+      "result": "4 failed (DID NOT RAISE ValueError),240 deselected in0.35s"
+    }
+  ],
+  "coverage": "Post-bind six descriptor fields, original output/purpose, source/frozen port/digest, session/bindings stream/run/kind, manifest and single nonce-intern mint; require and direct consume; pre-open/bind/member gaps; after final legacy fault schedule descriptor/source/output/caller-port mutation. Refusal asserts no broker effects and restored broker-local retry succeeds once.",
+  "setup_correction": "Initial collection error from treating tuple descriptor cases as dict corrected before recorded intended RED; not counted as RED.",
+  "next": "One shared retained v1 effect validator, no facade admission rollback, retained-only post-CONSUMED reads; full focused checks and fresh final lenses.",
+  "deployment_eligible": false
+}

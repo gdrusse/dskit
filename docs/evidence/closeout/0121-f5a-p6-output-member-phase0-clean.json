@@ -1,0 +1,19 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "candidate": "446988580f7ff4ccc0c45b0130f1918470d3fdb2",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_phase0_output_member_terra",
+    "lens": "fresh successor Phase0 after output-member boundary"
+  },
+  "verdict": "design-clean",
+  "critical": 0,
+  "major": 0,
+  "minor": 0,
+  "nit": 0,
+  "retained_reviewer_output": "No proven design finding. The retained original output-member matrix closes FA001: sealed handle plus immutable path in authenticated publish-sealed intern, agreement checks at seal/publish/capture/open/bind before member/provider/effects, and retained-path selection. FA002 closes through six-field live lookup and two-snapshot bidirectional positive cases; ambiguous/substituted identities refuse. Checked 0095/0096/0111/0114-16/0119-20, ADR0123/0125/0126, trust/verifier entrypoints; JSON parse and candidate diff --check pass. Limits: design-only; no RED/runtime probes/full suite; P7/P8/R23 and ADR0126 deferred combined/multi-internal/_DEV_KEY remain open.",
+  "next_gate": "Correction RED/GREEN then two new fresh sequential final lenses.",
+  "deployment_eligible": false
+}

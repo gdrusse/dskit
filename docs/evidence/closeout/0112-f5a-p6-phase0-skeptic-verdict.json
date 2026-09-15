@@ -1,0 +1,22 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6-descriptor-receipt-equality-restart-linkage",
+  "matrix": "docs/evidence/closeout/0111-f5a-p6-phase0-equality-matrix.json",
+  "reviewer": {"model": "deepseek-v4-pro (owner override 2026-09-15)", "agent_task": "ses_f5991b289ffet2mQ8lnwU6BaQ8", "lens": "adversarial Phase 0 design review"},
+  "verdict": "not-clean",
+  "critical": 0,
+  "major": 3,
+  "minor": 4,
+  "conclusion": "Packet 6/8 separation, sole-writer preservation, and non-goals are consistent with 0095/0096/0100, but three Major gaps: producer-session entry points omitted, the _LIFECYCLE_VIEWS handle registry/cross-broker substitution unlisted, and the receipt_chain 'forged predecessor refuses' claim over-claims beyond ADR-0126's deferred signature-forgery boundary.",
+  "findings": [
+    {"id": "P6-001", "severity": "major", "summary": "start_producer_session/end_session missing from entry_points (they carry producer-session identity).", "disposition": "corrected: added to entry_points; added producer_session identity binding."},
+    {"id": "P6-002", "severity": "major", "summary": "_LIFECYCLE_VIEWS registry + handle API (require/member/read_bytes) never named; substitution covers only 'another stream' not 'another broker instance'.", "disposition": "corrected: added handle API + _LIFECYCLE_VIEWS to entry_points; added cross-broker-instance substitution case."},
+    {"id": "P6-003", "severity": "major", "summary": "receipt_chain 'forged predecessor refuses' over-claims: _recover verifies under caller-known _DEV_KEY, so signature forgery is ADR-0126-deferred.", "disposition": "corrected: receipt_chain scoped to structural sequence/hash linkage; signature forgery explicitly ADR-0126-deferred."},
+    {"id": "P6-004", "severity": "minor", "summary": "authorization-entry binding (commit dedupe) under-claimed vs 0096.", "disposition": "corrected: one_consumption notes the authorization-entry commit dedupe (trust.py ~4891)."},
+    {"id": "P6-005", "severity": "minor", "summary": "stale_restart_identity unpinned (_stream_pin never rebuilt on reload).", "disposition": "corrected: stale_restart_identity specifies fail-closed refusal when _stream_pin/receipt-store identity is not the committed lineage."},
+    {"id": "P6-006", "severity": "minor", "summary": "copy/pickle family already green (_Opaque) but unlisted.", "disposition": "corrected: added as existing-covered family, not NEW RED."},
+    {"id": "P6-007", "severity": "minor", "summary": "owned_paths omits verifier.py while entry_points/compat reach into it.", "disposition": "corrected: added dskit/production/verifier.py to owned_paths."}
+  ],
+  "next_gate": "fresh DeepSeek skeptic re-review of the corrected matrix before RED."
+}

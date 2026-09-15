@@ -1,0 +1,42 @@
+{
+  "schema_version": "Phase0SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "candidate": "a057a2677db4b3d2461305d81aae050bc6d8ac6d",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_phase0_exact_lookup_terra",
+    "lens": "fresh exact-lookup successor Phase0"
+  },
+  "verdict": "not clean",
+  "critical": 0,
+  "major": 1,
+  "minor": 0,
+  "nit": 0,
+  "findings": [
+    {
+      "id": "P6-P0-001",
+      "severity": "Major",
+      "family": "retained publication identity propagation",
+      "invariant": "P4 signed projection/request fingerprint uses the validated retained descriptor identity throughout the operation.",
+      "location": "_p4_close_admission and ledger _request",
+      "counterexample": "An implementation can fix selectors but retain subsequent mutable published.descriptor reads. A racing single handle-descriptor poke after validation changes signed P4 validation/fingerprinting identity.",
+      "disposition": "Independent convergence addendum and full retained snapshot propagation matrix correction before new Phase0."
+    }
+  ],
+  "retained_reviewer_output": "C0/M1/minor0/nit0 not clean. Major P6-P0-001: matrix shared retained descriptor does not explicitly require every P4 projection/request path to use returned immutable snapshot. Fix selectors alone could leave _p4_close_admission and ledger _request reading mutable fields; racing single descriptor poke can change signed validation/fingerprinting after retained check. Require snapshot propagation through descriptor/freeze/legacy/P4 request-and-close projections, and mid-operation mutation no-effect test. Inspected all lifecycle/verifier facades and ledger paths. JSON validation and git diff --check pass; no pytest per gate. ADR0126 deferred combined intern+handle/_DEV_KEY; P7/P8/R23 untouched.",
+  "next_gate": "Matrix correction; fresh clean Phase0 before RED.",
+  "deployment_eligible": false,
+  "addendum": {
+    "reviewer_model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_phase0_exact_lookup_terra",
+    "verdict": "design-clean with Minor hardening suggestion; prior Major withdrawn by reviewer",
+    "critical": 0,
+    "major": 0,
+    "minor": 1,
+    "nit": 0,
+    "retained_output": "Prior P6-P0-001 Major withdrawn: cannot substantiate incorrect P4 outcome under single permanent descriptor poke. commit_p4_batch repeats validation and signed projection and final fingerprint equality; mutation refuses on recheck, or after final boundary commit remains bound to validated A streams/raw batch and grants no B authority. Prior finding superseded, at most Minor hardening/test clarity. Reader inventory: descriptor1229-31, freeze1252-62, legacy1337-41, frozen1950, live2065, P4 close4546-50, ledger request5008. Recommended shared retained descriptor snapshot for all projections; mutable descriptor used only exact comparison. Diagnostic remains separate/no authority. Deterministic barriers after snapshot, before close/final fingerprint; permanent mutation refuses before boundary, after boundary only already-validated A can commit. JSON/diff checks pass; no pytest. Revised C0/M0/minor1/nit0.",
+    "minor_disposition": "Retained descriptor return will be used by inventoried readers as part of accepted shared helper correction; add deterministic mutation control. No threat-model change."
+  },
+  "effective_gate": "Fresh Phase0 reviewer revised to zero Critical/Major; RED may proceed on a057a26 matrix. Original mistaken verdict remains retained above."
+}

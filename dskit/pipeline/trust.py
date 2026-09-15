@@ -427,8 +427,19 @@ def _captured_view_transition(method):
             ledger._check()
             ledger._legacy_gate((view,))
             ledger._require_unclaimed(stream)
+            record = authority._view_record(view)
+            if record[1] in ("verified", "member") and stream not in authority._consumed_streams:
+                _DevelopmentBroker._validate_bound_v1_effect(authority, view=view)
             return method(view, *args, **kwargs)
     return locked
+
+
+def _retained_view(view):
+    """Resolve a view only through its authenticated lifecycle owner."""
+    identity = _LIFECYCLE_VIEWS.get(view)
+    if identity is None:
+        raise ValueError("broker-registered captured view required")
+    return identity[0]._view_record(view)
 
 
 class VerifiedCapture(_Opaque):
@@ -468,9 +479,15 @@ class VerifiedCapture(_Opaque):
     @_captured_view_transition
     def member(self, relative_path):
         """Return the one-shot handle for a retained member."""
-        if relative_path not in self._members:
+        members = _retained_view(self)[4]
+        if relative_path not in members:
             raise ValueError("missing captured member")
-        return self._members[relative_path]
+        member = members[relative_path]
+        if self._members.get(relative_path) is not member:
+            raise ValueError("captured member parent mismatch")
+        if _retained_view(member)[3] is not self:
+            raise ValueError("captured member parent mismatch")
+        return member
 
 
 class CapturedMemberHandle(_Opaque):
@@ -498,10 +515,16 @@ class CapturedMemberHandle(_Opaque):
     @_captured_view_transition
     def read_bytes(self):
         """Return the retained bytes exactly once."""
-        if self._read:
+        authority, _stream = _LIFECYCLE_VIEWS[self]
+        record = authority._view_record(self)
+        if self._read or record[5]:
             raise ValueError("member bytes already consumed")
+        authority._store_interned(
+            authority._view_pins, authority._view_intern, id(self),
+            (*record[:5], True),
+        )
         self._read = True
-        return self._bytes
+        return record[4][1]
 
     @_captured_view_transition
     def read_text(self):
@@ -523,7 +546,7 @@ class CapturedJsonArtifact(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_value", "_audit")
+    __slots__ = ("_value", "_audit", "__weakref__")
 
     def __init__(self, token, value, audit):
         if token is not _MAKE:
@@ -532,14 +555,16 @@ class CapturedJsonArtifact(_Opaque):
         self._audit = audit
 
     @property
+    @_captured_view_transition
     def value(self):
         """Frozen JSON object decoded from retained bytes."""
-        return self._value
+        return _retained_view(self)[4][0]
 
     @property
+    @_captured_view_transition
     def audit(self):
         """Frozen audit mapping with no filesystem fields."""
-        return self._audit
+        return _retained_view(self)[4][1]
 
 
 class CapturedLifecyclePort(_Opaque):
@@ -556,7 +581,7 @@ class CapturedLifecyclePort(_Opaque):
         refused  # True
     """
 
-    __slots__ = ("_artifact", "_audit")
+    __slots__ = ("_artifact", "_audit", "__weakref__")
 
     def __init__(self, token, artifact, audit):
         if token is not _MAKE:
@@ -565,14 +590,16 @@ class CapturedLifecyclePort(_Opaque):
         self._audit = audit
 
     @property
+    @_captured_view_transition
     def artifact(self):
         """The captured JSON artifact for this port."""
-        return self._artifact
+        return _retained_view(self)[4][0]
 
     @property
+    @_captured_view_transition
     def audit(self):
         """Frozen port audit, including ``consumer_port``."""
-        return self._audit
+        return _retained_view(self)[4][1]
 
 
 class CapturedBindings(_Opaque):
@@ -615,8 +642,9 @@ class CapturedBindings(_Opaque):
             raise ValueError("missing captured input")
         if input_name in self._used:
             raise ValueError("captured input already consumed")
+        port = self._broker._consume_binding(self, input_name)
         self._used.add(input_name)
-        return self._broker._consume_binding(self, input_name)
+        return port
 
 
 class CapturedRelease(_Opaque):
@@ -951,6 +979,8 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._stream_pin = {}
         self._publish_stream = {}
         self._verified_pin = {}
+        self._view_pins = {}
+        self._view_intern = {}
         self._bindings_pin = {}
         self._bindings_ports = {}
         self._session_runtime = {}
@@ -1093,6 +1123,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         self._require_session(session, kind="producer", allow_open=True)
         if not isinstance(prepared, _Prepared):
             raise ValueError("SEALED requires a PRODUCED token")
+        self._original_prepared_output(prepared)
         self._reload_stream(prepared.stream_id)
         self._require_head(prepared.stream_id, "PRODUCED")
         digests = []
@@ -1133,6 +1164,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not isinstance(sealed, _Sealed):
             raise ValueError("PUBLISHED requires a SEALED token")
         prepared = sealed.prepared
+        original_output = self._original_prepared_output(prepared)
         self._reload_stream(prepared.stream_id)
         self._require_head(prepared.stream_id, "SEALED")
         if not self._worm:
@@ -1168,7 +1200,7 @@ class _DevelopmentBroker(LifecycleAuthority):
             self._publish_sealed,
             self._publish_sealed_intern,
             id(published),
-            sealed,
+            (sealed, original_output, prepared),
         )
         self._store_interned(
             self._publish_stream,
@@ -1195,9 +1227,10 @@ class _DevelopmentBroker(LifecycleAuthority):
     def descriptor(self, published, purpose):
         if not isinstance(published, _Published):
             raise ValueError("PUBLISHED descriptor is required")
-        if purpose != published.descriptor["purpose"]:
+        _, descriptor = self._publication_snapshot(published, "PUBLISHED descriptor is required")
+        if purpose != descriptor["purpose"]:
             raise ValueError("purpose mismatch")
-        return dict(published.descriptor)
+        return dict(descriptor)
 
     def freeze_consumer_document(
         self,
@@ -1217,15 +1250,18 @@ class _DevelopmentBroker(LifecycleAuthority):
         if purpose != descriptor.get("purpose"):
             raise ValueError("purpose mismatch")
         published = self._published_for_descriptor(descriptor)
-        if descriptor.get("root_ref") != published.descriptor["root_ref"]:
+        _, retained = self._publication_snapshot(published, "published descriptor identity mismatch")
+        if descriptor.get("purpose") != retained["purpose"]:
+            raise ValueError("published purpose mismatch")
+        if descriptor.get("root_ref") != retained["root_ref"]:
             raise ValueError("published root mismatch")
-        if descriptor.get("snapshot_version") != published.descriptor["snapshot_version"]:
+        if descriptor.get("snapshot_version") != retained["snapshot_version"]:
             raise ValueError("published snapshot mismatch")
-        if document_sha256 != published.descriptor["document_sha256"]:
+        if document_sha256 != retained["document_sha256"]:
             raise ValueError("published document_sha256 mismatch")
-        if descriptor.get("node") != published.descriptor["node"]:
+        if descriptor.get("node") != retained["node"]:
             raise ValueError("published node mismatch")
-        if descriptor.get("output") != published.descriptor["output"]:
+        if descriptor.get("output") != retained["output"]:
             raise ValueError("published output mismatch")
         source_sha256 = _digest(_canonical_bytes(source))
         port = {
@@ -1248,12 +1284,13 @@ class _DevelopmentBroker(LifecycleAuthority):
             self._freeze_published,
             self._freeze_intern,
             id(frozen),
-            published,
+            (published, _canonical_bytes(port)),
         )
         return frozen
 
     def derive_consumer_port(self, frozen):
         frozen = self._require_frozen(frozen)
+        self._frozen_publication(frozen)
         current = _digest(_canonical_bytes(frozen.source))
         if current != frozen.source_sha256:
             raise ValueError("consumer document changed after freeze")
@@ -1290,12 +1327,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         if not isinstance(published, _Published):
             raise ValueError("PUBLISHED capture is required")
         frozen = self._require_frozen(frozen)
-        intern_pub = self._load_interned(
-            self._freeze_published,
-            self._freeze_intern,
-            id(frozen),
-            "document port does not match published root",
-        )
+        intern_pub = self._frozen_publication(frozen)
         if intern_pub is not published:
             raise ValueError("document port does not match published root")
         source_desc = self._descriptor_from(
@@ -1303,13 +1335,8 @@ class _DevelopmentBroker(LifecycleAuthority):
             frozen.consumer_node,
             frozen.consumer_input,
         )
-        if (
-            source_desc.get("root_ref") != published.descriptor.get("root_ref")
-            or source_desc.get("snapshot_version")
-            != published.descriptor.get("snapshot_version")
-            or source_desc.get("document_sha256")
-            != published.descriptor.get("document_sha256")
-        ):
+        _, retained = self._publication_snapshot(published, "PUBLISHED capture is required")
+        if source_desc != retained:
             raise ValueError("document port does not match published root")
         expected = self.derive_consumer_port(frozen)
         if port != expected:
@@ -1358,8 +1385,12 @@ class _DevelopmentBroker(LifecycleAuthority):
         if handle_sid is None or str(stream_id) != str(handle_sid):
             raise ValueError("CAPTURED token is required")
         stream_id = str(handle_sid)
+        subject, expected_port = _DevelopmentBroker._validate_bound_v1_effect(
+            self, published, frozen, self.derive_consumer_port(frozen), session=session)
+        if subject.stream_id != stream_id:
+            raise ValueError("captured stream identity mismatch")
         sealed = self._sealed_for(published)
-        pin = self._stream_pin[stream_id]
+        pin = subject
         snapshot = self._provider.describe(
             pin.root["root_ref"],
             pin.root["snapshot_version"],
@@ -1378,12 +1409,11 @@ class _DevelopmentBroker(LifecycleAuthority):
                 raise ValueError("snapshot member digest mutation")
             retained[path] = bytes(raw)
             handles[path] = CapturedMemberHandle(_MAKE, retained[path])
-            _LIFECYCLE_VIEWS[handles[path]] = (self, str(stream_id))
         verified = VerifiedCapture(
             _MAKE,
             handles,
             published,
-            dict(captured.port),
+            dict(expected_port),
             frozen,
             session,
             retained,
@@ -1402,7 +1432,10 @@ class _DevelopmentBroker(LifecycleAuthority):
             id(verified),
             pin,
         )
-        _LIFECYCLE_VIEWS[verified] = (self, str(stream_id))
+        self._register_view(verified, "verified", stream_id, published,
+                            MappingProxyType(dict(handles)))
+        for path, handle in handles.items():
+            self._register_view(handle, "member", stream_id, verified, (path, retained[path]))
         return verified
 
     @_lifecycle_transition
@@ -1435,16 +1468,13 @@ class _DevelopmentBroker(LifecycleAuthority):
         if handle_sid is None or str(stream_id) != str(handle_sid):
             raise ValueError("verified capture is required")
         stream_id = str(handle_sid)
-        intern_pub = self._load_interned(
-            self._freeze_published,
-            self._freeze_intern,
-            id(frozen),
-            "plan document does not match captured freeze",
-        )
+        intern_pub = self._frozen_publication(frozen)
         if intern_pub is not published:
             raise ValueError("plan document does not match captured freeze")
+        subject, expected_port = _DevelopmentBroker._validate_bound_v1_effect(self, view=verified)
+        if subject.stream_id != stream_id:
+            raise ValueError("verified stream identity mismatch")
         sealed = self._sealed_for(published)
-        subject = self._stream_pin[stream_id]
         output_path = subject.output_member
         parsed, _canonical = _load_canonical_json(retained[output_path])
         declared = {
@@ -1466,11 +1496,17 @@ class _DevelopmentBroker(LifecycleAuthority):
         port = CapturedLifecyclePort(
             _MAKE,
             artifact,
-            MappingProxyType({"consumer_port": expected_port}),
+            _freeze_json({"consumer_port": expected_port}),
         )
         ports = {frozen.consumer_input: port}
         bindings = CapturedBindings(_MAKE, ports, self, session, stream_id)
-        _LIFECYCLE_VIEWS[bindings] = (self, str(stream_id))
+        self._register_view(bindings, "bindings", stream_id, verified,
+                            (session, _canonical_bytes(expected_port), str(transition_nonce)))
+        for port in ports.values():
+            self._register_view(port, "port", stream_id, bindings,
+                                (artifact, port._audit))
+            self._register_view(artifact, "artifact", stream_id, port,
+                                (artifact._value, artifact._audit))
         self._store_interned(
             self._bindings_pin,
             self._bindings_intern,
@@ -1533,9 +1569,15 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("replay of CONSUMED is refused")
         self._reload_stream(stream_id)
         self._require_head(stream_id, "CAPTURED")
-        subject = self._publication_subject(stream_id)
-        if subject is None:
-            raise ValueError("captured bindings are required")
+        subject, expected_port = _DevelopmentBroker._validate_bound_v1_effect(self, view=bindings)
+        if subject.stream_id != stream_id or expected_port != dict(port_items):
+            raise ValueError("captured bindings effect mismatch")
+        if (set(bindings._ports) != set(ports)
+                or any(bindings._ports[name] is not value for name, value in ports.items())):
+            raise ValueError("captured bindings port identity mismatch")
+        effect_port = ports[input_name]
+        port_record = self._view_record(effect_port, require_consumed=False)
+        self._view_record(port_record[4][0], require_consumed=False)
         self._append_receipt(
             subject,
             "CONSUMED",
@@ -1576,11 +1618,7 @@ class _DevelopmentBroker(LifecycleAuthority):
         return CapturedRelease(_MAKE, stream_id)
 
     def _receipt_audit(self, published):
-        stream_id = self._stream_for_published(
-            published,
-            "PUBLISHED token is required",
-            require_intern_match=False,
-        )
+        stream_id = self._diagnostic_stream_for_published(published)
         return [dict(row) for row in self._streams[stream_id]]
 
     def _receipt_digests(self, published):
@@ -1743,16 +1781,38 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("frozen consumer document is required")
         return frozen
 
-    def _sealed_for(self, published):
-        if not isinstance(published, _Published):
+    def _original_prepared_output(self, prepared):
+        """Require independent prepared and stream-pin output-member agreement."""
+        if type(prepared) is not _Prepared:
+            raise ValueError("prepared output member identity required")
+        pin = self._stream_pin.get(prepared.stream_id)
+        path = prepared.output_member
+        if (type(pin) is not _ReceiptSubject or type(path) is not str
+                or path != pin.output_member
+                or path not in {member["relative_path"] for member in prepared.members}):
+            raise ValueError("original output member identity mismatch")
+        return path
+
+    def _publication_record(self, published):
+        """Resolve the original sealed, output-path and prepared association."""
+        if type(published) is not _Published:
             raise ValueError("PUBLISHED token is required")
-        sealed = self._load_interned(
-            self._publish_sealed,
-            self._publish_sealed_intern,
-            id(published),
+        record = self._load_interned(
+            self._publish_sealed, self._publish_sealed_intern, id(published),
             "PUBLISHED token is required",
         )
-        return sealed
+        if (type(record) is not tuple or len(record) != 3
+                or type(record[0]) is not _Sealed or type(record[1]) is not str
+                or type(record[2]) is not _Prepared
+                or record[2].output_member != record[1]):
+            raise ValueError("published original output member mismatch")
+        return record
+
+    def _publication_members(self, published):
+        return self._publication_record(published)[:2]
+
+    def _sealed_for(self, published):
+        return self._publication_members(published)[0]
 
     def _require_head(self, stream_id, event):
         self._p4_ledger._require_unclaimed(stream_id)
@@ -1817,33 +1877,220 @@ class _DevelopmentBroker(LifecycleAuthority):
                 return dict(row["actor_runtime"])
         raise ValueError("CAPTURED actor runtime is required")
 
-    def _stream_for_published(self, published, message, require_intern_match=True):
-        intern_sid = self._load_interned(
-            self._publish_stream,
-            self._publish_stream_intern,
-            id(published),
-            message,
-        )
-        descriptor = published.descriptor
-        found = None
-        for stream_id, rows in self._streams.items():
-            for row in rows:
-                if row.get("event") != "PUBLISHED":
-                    continue
-                if (
-                    row["root_ref"] == descriptor.get("root_ref")
-                    and row["snapshot_version"] == descriptor.get("snapshot_version")
-                    and row["producer_document_sha256"]
-                    == descriptor.get("document_sha256")
-                ):
-                    if found is not None and found != stream_id:
-                        raise ValueError(message)
-                    found = stream_id
-        if found is None:
-            raise ValueError(message)
-        if str(intern_sid) != str(found) and require_intern_match:
-            raise ValueError(message)
-        return found
+    def _publication_snapshot(self, published, message):
+        """Resolve one authenticated token and retain its validated descriptor."""
+        stream = self._load_interned(self._publish_stream, self._publish_stream_intern,
+                                     id(published), message)
+        self._reload_stream(stream)
+        descriptor = self._retained_publication_descriptor(published, stream)
+        if published.descriptor != descriptor:
+            raise ValueError("published descriptor identity mismatch")
+        return stream, descriptor
+
+    def _stream_for_published(self, published, message):
+        return self._publication_snapshot(published, message)[0]
+
+    def _diagnostic_stream_for_published(self, published):
+        """Inspect retained committed evidence without recovering exposed storage."""
+        _, _, prepared = self._publication_record(published)
+        stream = prepared.stream_id
+        self._retained_publication_descriptor(published, stream)
+        return stream
+
+    def _retained_publication_descriptor(self, published, stream):
+        """Bind receipt, pin and sealed producer facts; never select by a prefix."""
+        rows = self._streams.get(stream, ())
+        publications = [row for row in rows if row["event"] == "PUBLISHED"]
+        pin = self._stream_pin.get(stream)
+        if (len(publications) != 1 or pin is None or len(rows) < 3
+                or [row["event"] for row in rows[:3]] != ["PRODUCED", "SEALED", "PUBLISHED"]):
+            raise ValueError("published stream identity required")
+        row = publications[0]
+        producer = {"document_sha256": row["producer_document_sha256"],
+                    "run_identity": row["producer_run_identity"],
+                    "node": row["producer_node"], "output": row["producer_output"]}
+        root = {name: row[name] for name in ("root_ref", "root_id", "snapshot_version")}
+        expected_stream = _digest(_canonical_bytes(
+            {"producer": producer, "root": root, "purpose": pin.purpose}))
+        sealed, output_member, prepared = self._publication_record(published)
+        if (expected_stream != stream or pin.stream_id != stream
+                or dict(pin.producer) != producer or dict(pin.root) != root
+                or pin.session_run_identity != rows[0]["actor_runtime"]["run_identity"]
+                or prepared.stream_id != stream or dict(prepared.producer) != producer
+                or dict(prepared.root) != root or prepared.purpose != pin.purpose
+                or prepared.session_run_identity != pin.session_run_identity):
+            raise ValueError("published stream identity mismatch")
+        facts = ("producer_document_sha256", "producer_run_identity", "producer_node",
+                 "producer_output", "root_ref", "root_id", "snapshot_version", "stream_id")
+        if any(prior[name] != row[name] for prior in rows[:3] for name in facts):
+            raise ValueError("published receipt identity mismatch")
+        manifest = rows[1]["member_manifest_sha256"]
+        if (pin.output_member != output_member
+                or output_member not in {item["relative_path"] for item in sealed._digests}
+                or sealed._member_manifest_sha256 != manifest
+                or row["member_manifest_sha256"] != manifest
+                or self._manifest_digest(sealed._digests) != manifest):
+            raise ValueError("published member manifest or original output member mismatch")
+        return MappingProxyType({
+            "root_ref": root["root_ref"], "snapshot_version": root["snapshot_version"],
+            "document_sha256": producer["document_sha256"], "node": producer["node"],
+            "output": producer["output"], "purpose": pin.purpose})
+
+    def _frozen_publication(self, frozen):
+        """Validate the original frozen port before returning its publication."""
+        record = self._load_interned(self._freeze_published, self._freeze_intern,
+                                     id(frozen), "frozen published identity required")
+        if type(record) is not tuple or len(record) != 2 or type(record[1]) is not bytes:
+            raise ValueError("frozen published identity required")
+        published, raw_port = record
+        current = {"consumer_document_sha256": _digest(_canonical_bytes(frozen.source)),
+                   "consumer_node": frozen.consumer_node, "consumer_input": frozen.consumer_input,
+                   "purpose": frozen.purpose}
+        if (_canonical_bytes(current) != raw_port
+                or frozen.source_sha256 != current["consumer_document_sha256"]
+                or frozen.document_sha256 != current["consumer_document_sha256"]):
+            raise ValueError("document changed after freeze: port identity mismatch")
+        _, retained = self._publication_snapshot(published, "frozen published identity mismatch")
+        source = self._descriptor_from(frozen.source, frozen.consumer_node, frozen.consumer_input)
+        if source != retained:
+            raise ValueError("frozen descriptor differs from published identity")
+        return published
+
+    def _validate_bound_v1_effect(self, published=None, frozen=None, port=None,
+                                  *, session=None, view=None, head="CAPTURED"):
+        """Validate retained v1 identity immediately before an effect or delivery."""
+        view_record = None
+        retained_members = None
+        if view is not None:
+            view_record = self._view_record(view, require_consumed=False)
+            parent = view_record
+            while parent[1] != "verified":
+                parent = self._view_record(parent[3], require_consumed=False)
+            pin = self._load_interned(self._verified_pin, self._verified_intern,
+                                      id(parent[0]), "verified capture identity required")
+            published, frozen, session, bound_stream, retained_members, port_items = pin
+            port = dict(port_items)
+            for path, member in parent[4].items():
+                member_record = self._view_record(member, require_consumed=False)
+                if (member_record[3] is not parent[0] or member_record[4][0] != path
+                        or member_record[4][1] != retained_members[path]):
+                    raise ValueError("verified retained member identity mismatch")
+            if parent[2] != bound_stream:
+                raise ValueError("verified capture stream mismatch")
+            if view_record[1] == "bindings" and view_record[4][0] is not session:
+                raise ValueError("captured bindings session mismatch")
+        stream, descriptor = self._publication_snapshot(published, "published effect identity required")
+        if self._frozen_publication(frozen) is not published:
+            raise ValueError("frozen publication effect mismatch")
+        expected_port = self.derive_consumer_port(frozen)
+        if retained_members is not None:
+            sealed = self._publication_record(published)[0]
+            declared = {item["relative_path"]: item for item in sealed._digests}
+            if set(retained_members) != set(declared):
+                raise ValueError("verified retained member manifest mismatch")
+            for path, raw in retained_members.items():
+                if (type(raw) is not bytes or _digest(raw) != declared[path]["sha256"]
+                        or len(raw) != declared[path]["bytes"]):
+                    raise ValueError("verified retained member digest mismatch")
+        if port != expected_port:
+            raise ValueError("captured effect port mismatch")
+        self._require_head(stream, head)
+        if view_record is not None and view_record[2] != stream:
+            raise ValueError("captured effect stream mismatch")
+        if session is not None:
+            self._require_session(session, kind="consumer", allow_open=True)
+            bound = self._load_interned(self._session_streams, self._session_stream_intern,
+                                        id(session), "captured session identity required")
+            actor = self._actor_runtime(session)
+            if (bound != [id(session), stream] and bound != (id(session), stream)):
+                raise ValueError("captured session stream mismatch")
+            if (self._sessions.get(id(session)) is not session or session._stream_id != stream
+                    or session._run_identity != actor["run_identity"]):
+                raise ValueError("captured session runtime mismatch")
+            captures = [row for row in self._streams[stream] if row["event"] == "CAPTURED"]
+            if (len(captures) != 1 or captures[0]["actor_runtime"] != actor
+                    or captures[0]["consumer_captured_port"] != expected_port):
+                raise ValueError("captured receipt session or port mismatch")
+        row = next(row for row in self._streams[stream] if row["event"] == "PUBLISHED")
+        subject = _ReceiptSubject(stream,
+            {"document_sha256": row["producer_document_sha256"],
+             "run_identity": row["producer_run_identity"], "node": row["producer_node"],
+             "output": row["producer_output"]},
+            {name: row[name] for name in ("root_ref", "root_id", "snapshot_version")},
+            self._streams[stream][0]["actor_runtime"]["run_identity"],
+            self._publication_record(published)[1], descriptor["purpose"])
+        return subject, expected_port
+
+    def _register_view(self, view, kind, stream, parent, data):
+        """Retain immutable view identity in the existing lifecycle authority."""
+        stream = str(stream)
+        self._store_interned(self._view_pins, self._view_intern, id(view),
+                             (view, kind, stream, parent, data, False))
+        _LIFECYCLE_VIEWS[view] = (self, stream)
+
+    def _view_record(self, view, *, require_consumed=True):
+        """Validate retained parent and slot identities without reopening bytes."""
+        record = self._load_interned(self._view_pins, self._view_intern,
+                                     id(view), "captured view identity required")
+        if type(record) is not tuple or len(record) != 6 or record[0] is not view:
+            raise ValueError("captured view identity required")
+        _view, kind, stream, parent, data, was_read = record
+        types = {"verified": VerifiedCapture, "member": CapturedMemberHandle,
+                 "bindings": CapturedBindings, "port": CapturedLifecyclePort,
+                 "artifact": CapturedJsonArtifact}
+        if (type(kind) is not str or type(view) is not types.get(kind)
+                or type(was_read) is not bool
+                or _LIFECYCLE_VIEWS.get(view) != (self, stream)):
+            raise ValueError("captured view broker or stream mismatch")
+        if kind == "verified":
+            pin = self._load_interned(self._verified_pin, self._verified_intern,
+                                      id(view), "verified capture identity required")
+            if (type(pin) is not tuple or len(pin) != 6 or pin[0] is not parent
+                    or pin[3] != stream or set(data) != set(pin[4])
+                    or set(view._members) != set(data)
+                    or any(view._members[path] is not member for path, member in data.items())):
+                raise ValueError("verified capture member identity mismatch")
+            return record
+        expected_parent = {"member": "verified", "bindings": "verified",
+                           "port": "bindings", "artifact": "port"}[kind]
+        if type(parent) is not types[expected_parent]:
+            raise ValueError("captured view parent mismatch")
+        parent_record = self._view_record(parent, require_consumed=require_consumed)
+        if parent_record[1] != expected_parent or parent_record[2] != stream:
+            raise ValueError("captured view parent mismatch")
+        if type(data) is not tuple or len(data) != (3 if kind == "bindings" else 2):
+            raise ValueError("captured view payload identity required")
+        if kind == "member":
+            pin = self._load_interned(self._verified_pin, self._verified_intern,
+                                      id(parent), "verified member identity required")
+            if (parent_record[4].get(data[0]) is not view
+                    or pin[4].get(data[0]) != data[1] or view._bytes != data[1]):
+                raise ValueError("captured member retained bytes mismatch")
+        elif kind == "bindings":
+            pin = self._load_interned(self._bindings_pin, self._bindings_intern,
+                                      id(view), "captured bindings identity required")
+            if (view._broker is not self or view._session is not data[0] or view._stream_id != stream
+                    or pin[0] != id(view) or pin[1] != stream or pin[4] != id(data[0])
+                    or pin[2] != data[2] or _canonical_bytes(dict(pin[3])) != data[1]):
+                raise ValueError("captured bindings session or port mismatch")
+        else:
+            if kind == "port":
+                ports = self._load_interned(self._bindings_ports, self._ports_intern,
+                                            id(parent), "captured port identity required")[1]
+                if (not any(port is view for port in ports.values())
+                        or view._artifact is not data[0] or view._audit is not data[1]):
+                    raise ValueError("captured port retained identity mismatch")
+                binding = parent_record
+            else:
+                if (parent_record[4][0] is not view
+                        or view._value is not data[0] or view._audit is not data[1]):
+                    raise ValueError("captured artifact retained identity mismatch")
+                binding = self._view_record(parent_record[3], require_consumed=require_consumed)
+            rows = self._streams[stream]
+            if require_consumed and (stream not in self._consumed_streams or rows[-1]["event"] != "CONSUMED"
+                    or _canonical_bytes(rows[-1]["consumer_captured_port"]) != binding[4][1]):
+                raise ValueError("captured artifact requires exact consumed input")
+        return record
 
     def _manifest_digest(self, digests):
         return _digest(_canonical_bytes([dict(item) for item in digests]))
@@ -1862,38 +2109,21 @@ class _DevelopmentBroker(LifecycleAuthority):
             raise ValueError("frozen consumer document is required") from exc
 
     def _published_for_descriptor(self, descriptor):
-        for rows in self._streams.values():
-            if not rows:
-                continue
-            head = rows[-1]
-            if head["event"] != "PUBLISHED":
-                continue
-            if (
-                head["root_ref"] == descriptor.get("root_ref")
-                and head["snapshot_version"] == descriptor.get("snapshot_version")
-                and head["producer_document_sha256"] == descriptor.get("document_sha256")
-            ):
-                # Recover the live published token from stream identity.
-                break
-        else:
-            raise ValueError("published root is required")
-        # Search live objects by matching stream receipts already recorded.
-        # Freeze is called with the live published token's descriptor; look up
-        # via producer identities on the last PUBLISHED receipt.
-        return self._live_published(descriptor)
+        published = self._live_published(descriptor)
+        stream = self._stream_for_published(published, "published root is required")
+        self._require_head(stream, "PUBLISHED")
+        return published
 
     def _live_published(self, descriptor):
-        for published in getattr(self, "_live", ()):
-            if published.descriptor == descriptor:
-                return published
-        # Fall back: the caller always freezes from descriptor() of a live token
-        # in these tests, so remember published tokens as they are created.
+        """Resolve exactly one retained descriptor, never a mutable prefix."""
+        matches = []
         for published in self._published_tokens:
-            if published.descriptor["root_ref"] == descriptor["root_ref"] and published.descriptor[
-                "document_sha256"
-            ] == descriptor["document_sha256"]:
-                return published
-        raise ValueError("published root is required")
+            _, retained = self._publication_snapshot(published, "published identity required")
+            if retained == descriptor:
+                matches.append(published)
+        if len(matches) != 1:
+            raise ValueError("exact published descriptor identity required")
+        return matches[0]
 
     @property
     def _published_tokens(self):
@@ -2198,10 +2428,7 @@ class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
             expected = _DevelopmentBroker.derive_consumer_port(self, frozen)
             if port != expected:
                 raise ValueError("P4 port differs from the frozen derived port")
-            intern = self._load_interned(
-                self._freeze_published, self._freeze_intern, id(frozen),
-                "P4 frozen publication binding is required",
-            )
+            intern = self._frozen_publication(frozen)
             if intern is not published:
                 raise ValueError("P4 frozen publication binding differs")
             stream = self._stream_for_published(published, "P4 live publication is required")
@@ -4374,7 +4601,7 @@ def _p4_close_admission(resolver, snapshot, admission_ref, live_projection):
     _hs_refuse(len(cas["entries"]) == len(captures), "P4 live capture cardinality differs")
     for entry, (published, frozen, port) in zip(cas["entries"], captures):
         equal(entry, port, ("consumer_document_sha256", "consumer_node", "consumer_input", "purpose"))
-        descriptor = published.descriptor
+        _, descriptor = authority._publication_snapshot(published, "P4 publication identity required")
         for field, source in (("descriptor_root_ref", "root_ref"), ("descriptor_snapshot_version", "snapshot_version"),
                               ("descriptor_document_sha256", "document_sha256"), ("descriptor_node", "node"),
                               ("descriptor_output", "output"), ("descriptor_purpose", "purpose")):
@@ -4795,6 +5022,11 @@ class _LifecycleAuthorizationLedger(_Opaque):
             self._check()
             authority._require_head(stream, "PUBLISHED")
             self._fault("legacy-commit-before")
+            final_subject, final_port = _DevelopmentBroker._validate_bound_v1_effect(
+                authority, published, frozen, port, head="PUBLISHED")
+            if (final_subject.stream_id != stream or final_port != body["consumer_captured_port"]
+                    or body["previous_receipt_sha256"] != _digest(_canonical_bytes(authority._streams[stream][-1]))):
+                raise ValueError("staged capture identity mismatch")
             # The fixed P4 authority uses the built-in WORM store. A legacy
             # caller-owned store may refuse here, before compatibility effects.
             authority._receipt_store[stream] = encoded
@@ -4836,7 +5068,8 @@ class _LifecycleAuthorizationLedger(_Opaque):
             _hs_refuse(type(capture) is tuple and len(capture) == 3)
             published, frozen, port = capture
             _hs_refuse(type(published) is _Published and type(frozen) is _Frozen and type(port) is dict)
-            projected.append([id(published), id(frozen), port, published.descriptor, _digest(_canonical_bytes(frozen.source))])
+            _, descriptor = self._authority._publication_snapshot(published, "P4 publication identity required")
+            projected.append([id(published), id(frozen), port, dict(descriptor), _digest(_canonical_bytes(frozen.source))])
         copied_runtime = dict(runtime, transition_nonces=list(runtime["transition_nonces"]))
         return _hs_canonical_bytes({"captures": projected, "admission": admission_ref, "runtime": copied_runtime})
 
@@ -4968,7 +5201,7 @@ def _p4_session_pin(session):
 _P4_BATCH_PINS = (_P4_SIGNER, _P4_CONTRACT, _P4_BATCH_USES)
 _P4_COMMIT = _LifecycleAuthorizationLedger.commit_p4_batch
 _P4_LEGACY_PREPARE_METHODS = tuple((name, getattr(_DevelopmentBroker, name)) for name in (
-    "_prepare_legacy_capture", "_prepare_receipt", "_store_interned",
+    "_prepare_legacy_capture", "_prepare_receipt", "_store_interned", "_validate_bound_v1_effect",
 ))
 _P4_LEDGER_METHODS = tuple((name, getattr(_LifecycleAuthorizationLedger, name)) for name in (
     "_check", "_fault", "_legacy_gate", "_require_unclaimed", "_nonce_used", "_request", "resolve_p4", "commit_p4_batch",
