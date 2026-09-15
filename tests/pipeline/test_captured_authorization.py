@@ -905,6 +905,146 @@ def _factory():
     return factory
 
 
+def _issue_complete(*, replay=False, count=1):
+    """Exercise the real public doorway; incomplete issuance is an assertion RED."""
+    graph, document = _complete_signed_graph(replay=replay, count=count)
+    broker, captures, runtime, before = _graph_live(graph, document, count)
+    try:
+        result = broker.authorize_capture_set(captures, graph.selected, **runtime)
+    except ValueError as exc:
+        pytest.fail(f"complete Packet 4 issuance did not succeed: {exc}")
+    assert type(result) is tuple and len(result) == 2
+    record, session = result
+    assert type(record) is getattr(trust, "CapturedAuthorizationRecord", None)
+    assert type(session) is trust.LaunchSession
+    assert session._kind == "captured-authorization-v2"
+    return graph, broker, captures, runtime, before, record, session
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("count", [1, 2])
+def test_p4_complete_atomic_record_has_exact_signed_batch_and_one_session(replay, count):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    graph, broker, captures, runtime, before, record, session = _issue_complete(replay=replay, count=count)
+    audit = broker._p4_ledger._audit(record)
+    assert set(audit) == {"execution_key", "admission_ref", "consumed", "ports", "receipts", "set", "replay",
+                          "bases", "session", "session_start", "streams", "nonces", "batch_sha256"}
+    assert audit["admission_ref"] == graph.selected and audit["consumed"] is True
+    assert len(audit["ports"]) == len(audit["receipts"]) == count
+    assert audit["nonces"] == runtime["transition_nonces"]
+    parsed = {slot: [json.loads(raw) for raw in audit[slot]] for slot in ("ports", "receipts", "bases")}
+    captured_set = json.loads(audit["set"])
+    assert captured_set["schema"] == "dskit.captured-authorization-set/v2"
+    admission = next(value for value in graph.values.values() if value.get("schema") == graph.selected["schema"]
+                     and value.get("action_execution_admission_sha256", value.get("final_replay_admission_sha256")) == graph.selected["sha256"])
+    cas = next(value for value in graph.values.values() if value.get("schema") == "dskit.capture-admission-set/v1"
+               and value["capture_admission_set_sha256"] == admission["capture_admission_set_sha256"])
+    authority_ref = {"kind": "replay" if replay else "action",
+                     "final_replay_admission_sha256" if replay else "action_execution_admission_sha256": graph.selected["sha256"]}
+    identities = {"execution_authority_ref": authority_ref, "logical_execution_id": admission["logical_execution_id"], "run_id": admission["run_id"]}
+    expected_entries = []
+    signed = []
+    for index, (port, receipt, pce) in enumerate(zip(parsed["ports"], parsed["receipts"], cas["entries"], strict=True)):
+        assert port["schema"] == "dskit.captured-port-authorization/v2"
+        assert receipt["schema"] == "dskit.lifecycle-captured-receipt/v2"
+        for value in (port, receipt, captured_set):
+            assert all(value[key] == expected for key, expected in identities.items())
+            assert value["study_id"] == admission["study_id"] and value["subject_ref"] == cas["subject_ref"]
+            for key in ("plan_evaluation_authorization_sha256", "capture_expectation_set_sha256", "broker_verified_plan_sha256", "capture_admission_set_sha256"):
+                assert value[key] == admission[key]
+        assert port["planned_entry_sha256"] == receipt["planned_entry_sha256"] == pce["planned_entry_sha256"]
+        assert receipt["captured_port_authorization_sha256"] == port["captured_port_authorization_sha256"]
+        assert receipt["predecessor_publication_receipt_schema"] == pce["published_input"]["publication_receipt_schema"]
+        assert receipt["predecessor_publication_receipt_sha256"] == pce["published_input"]["publication_receipt_sha256"]
+        assert receipt["actor_runtime_sha256"] == runtime["runtime_sha256"]
+        assert receipt["transition_nonce"] == runtime["transition_nonces"][index]
+        assert receipt["consumer_kind"] == cas["subject_ref"]["kind"]
+        assert receipt["consumer_id"] == cas["subject_ref"]["replay_id" if replay else "action_id"]
+        expected_entries.append({**identities, "planned_entry_sha256": pce["planned_entry_sha256"],
+            "captured_port_authorization_sha256": port["captured_port_authorization_sha256"],
+            "lifecycle_captured_receipt_sha256": receipt["lifecycle_captured_receipt_sha256"]})
+        signed.extend(((audit["ports"][index], "captured_port_authorization_sha256", "captured-port-authorization"),
+                       (audit["receipts"][index], "lifecycle_captured_receipt_sha256", "lifecycle-capture")))
+    assert captured_set["entries"] == expected_entries
+    signed.append((audit["set"], "captured_authorization_set_sha256", "captured-authorization"))
+    if replay:
+        evidence = json.loads(audit["replay"])
+        assert evidence["schema"] == "dskit.replay-capture-admission-evidence/v1"
+        assert evidence["captured_authorization_set_sha256"] == captured_set["captured_authorization_set_sha256"]
+        assert evidence["issued_ports"] == [{key: entry[key] for key in (
+            "planned_entry_sha256", "captured_port_authorization_sha256", "lifecycle_captured_receipt_sha256",
+        )} for entry in expected_entries]
+        for key in ("final_manifest_sha256", "final_replay_entry_sha256", "replay_id", "replay_intent_sha256"):
+            assert evidence[key] == admission[key]
+        signed.append((audit["replay"], "replay_capture_admission_evidence_sha256", "replay-capture-admission"))
+    else:
+        assert audit["replay"] is None
+    bases = {value["issuance_basis_sha256"]: value for value in parsed["bases"]}
+    for raw, self_field, usage in signed:
+        value = json.loads(raw)
+        assert f4._json_bytes(value) == raw
+        assert value["issuer_role"] == "security-broker" and value["key_usage"] == usage
+        assert value["signature_alg"] == "Ed25519" and value["key"] == {"key_id": "security-broker/" + usage, "key_version": 1}
+        assert value["not_before_ms"] <= value["issued_at_ms"] <= 500 <= value["expires_at_ms"]
+        assert value["revocation_snapshot_sha256"] == hashlib.sha256(b"p4-fixed-revocations").hexdigest()
+        preimage = f4._json_bytes({key: item for key, item in value.items() if key not in (self_field, "signature")})
+        assert hashlib.sha256(preimage).hexdigest() == value[self_field]
+        seed = hashlib.sha256(("p4-fixed-test-key/security-broker/" + usage).encode()).digest()
+        Ed25519PrivateKey.from_private_bytes(seed).public_key().verify(bytes.fromhex(value["signature"]), preimage)
+        basis = bases[value["issuance_basis_sha256"]]
+        assert basis["issuer_role"] == "security-broker" and basis["key_usage"] == usage
+        assert graph.selected in basis["refs"]
+        assert len({f4._json_bytes(ref) for ref in basis["refs"]}) == len(basis["refs"])
+        assert all(set(ref) == {"kind", "role", "schema", "sha256"} for ref in basis["refs"])
+    decision = json.loads(audit["session"])
+    assert all(decision[key] == expected for key, expected in identities.items())
+    assert decision["consumer_document_sha256"] == cas["consumer_document_sha256"]
+    assert decision["captured_authorization_set_sha256"] == captured_set["captured_authorization_set_sha256"]
+    assert decision["process_measurement_sha256"] == runtime["process_measurement_sha256"]
+    assert broker._p4_ledger.resolve_p4(audit["execution_key"], graph.selected) == (record, session)
+    assert broker.authorize_capture_set(captures, graph.selected, **runtime) == (record, session)
+    assert broker._p4_ledger._audit(record) == audit
+    _assert_graph_no_effect(broker, captures, before)  # No v1 receipt/session/member side channel.
+
+
+@pytest.mark.parametrize("replay", [False, True])
+def test_p4_record_and_session_cannot_be_copied_serialized_or_used_by_legacy(replay):
+    _graph, broker, captures, _runtime_value, before, record, session = _issue_complete(replay=replay)
+    for value in (record, session):
+        for operation in (copy.copy, copy.deepcopy, pickle.dumps, dict, bytes):
+            with pytest.raises(TypeError):
+                operation(value)
+    for operation in (
+        lambda: broker.open_capture(session, record),
+        lambda: broker.captured_bindings(session, captures[0][1], record, "consume", "forbidden"),
+        lambda: broker.release(session),
+        lambda: broker._consume_binding(record, "bundle"),
+    ):
+        with pytest.raises((TypeError, ValueError, AttributeError)):
+            operation()
+    with pytest.raises(TypeError):
+        trust.CapturedAuthorizationRecord()
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("replay", [False, True])
+@pytest.mark.parametrize("point", ["preflight", "prepared", "reserved", "verified", "commit-before", "commit-after", "return"])
+def test_p4_failure_is_empty_or_resolves_the_one_complete_committed_identity(replay, point):
+    graph, document = _complete_signed_graph(replay=replay)
+    broker, captures, runtime, before = _graph_live(graph, document, 1)
+    ledger = getattr(broker, "_p4_ledger", None)
+    assert ledger is not None, "same-domain P4 ledger is missing"
+    ledger._test_fault = point
+    with pytest.raises(RuntimeError, match="injected P4"):
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert len(ledger._committed()) == (1 if point in ("commit-after", "return") else 0)
+    _assert_graph_no_effect(broker, captures, before)
+    result = broker.authorize_capture_set(captures, graph.selected, **runtime)
+    assert len(ledger._committed()) == 1
+    assert broker.authorize_capture_set(captures, graph.selected, **runtime) == result
+
+
 def _request():
     """Return a syntactically valid reference to an unavailable admission."""
     return {
