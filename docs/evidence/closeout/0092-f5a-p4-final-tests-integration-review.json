@@ -1,0 +1,60 @@
+{
+  "schema_version": "FinalTestsIntegrationReview.v1",
+  "slice_id": "F5a",
+  "packet": "4-captured-authorization-set-v2",
+  "review_kind": "fresh independent final test-quality/integration review",
+  "reviewer": {"model": "gpt-5.6-terra", "agent_task": "/root/f5a_p4_final_tests_integration", "lens": "tests/integration"},
+  "reviewed": {
+    "candidate_commit": "f866eb0706bccc653265b971832f6165a001a96d",
+    "candidate_tree": "9bbd20986b1965635b9a93f7a7ad9c97d9e00257",
+    "implementation_parent": "a8aef47b000fe3a4f4fa0bc0c56a3332f33a49df",
+    "phase0_base_commit": "1d5f2d13adecd571a10af8a2fbbc21475aa3d75f",
+    "remote": "origin/codex/f5a-p4-captured-auth-20260914 at f866eb0706bccc653265b971832f6165a001a96d",
+    "matrix": {"path": "docs/evidence/closeout/0089-f5a-p4-phase0-authorized-transaction-matrix-v9.json", "sha256": "6887f5561e8e22f4d4ebdf2cf8bb71ce5a4e2759ae8aabc0d7db1b214443a1f5"},
+    "phase0_verdict": {"path": "docs/evidence/closeout/0090-f5a-p4-phase0-genesis-skeptic-verdict.json", "sha256": "094d587d6115bd5ede936bc5bc313ec78f473e01e8543711f3b97967d016973f"},
+    "independent_correctness_review": {"path": "docs/evidence/closeout/0091-f5a-p4-final-correctness-authority-review.json", "sha256": "98a2bb027dd417273cdf70890738d5fec34be767c2164675cd9efe5fa2c4b0d4", "commit": "6db2472f9a1de43d60ddf7c4b96e7a1714d5ae51"},
+    "controlling_adrs": ["ADR-0125", "ADR-0126"],
+    "candidate_blobs": {
+      "dskit/pipeline/trust.py": "202a48885f93edadbe293dd1caed8845a4bef502",
+      "dskit/production/verifier.py": "c64c395e9cf3163350b90640090434d618cc76c2",
+      "tests/pipeline/test_captured_authorization.py": "7b12534fcab56bb545af9077d0aa7791d0f4a398",
+      "tests/pipeline/test_trust.py": "bfde7192ee114f7c72d282d524caaab4f896d285",
+      "tests/production/test_adr0125_preflight.py": "a2601ebb4df2713dce771f5807cc571649f6b717",
+      "tests/production/test_capture_lifecycle.py": "36e6f29e4a31a66787439642749d84c6c5e5cb04",
+      "tests/production/test_captured_authorization.py": "f3117eec3bdb4085030cf19612debdf1f1175f5a"
+    },
+    "candidate_diff_paths": ["dskit/pipeline/trust.py", "dskit/production/verifier.py", "tests/pipeline/test_captured_authorization.py"]
+  },
+  "red_lineage": {
+    "implementation_commits_after_phase0": ["f58b7f81c1af6abd52e7a202419e87e18f26cfe4", "aeeb50b639f621144b0b42cabf5a1c80f767dba0", "f3366fe2e808c396dd6b5dc501406c8e6edc0696", "a4eed99b342d681d09d141f067303dde47212ca4", "764536cc3234bcdb37b785a9fc3af27f3aacc8dc", "8cf52773e41ae80be6a1f1d4110a1d4428550df5", "666269acaecc60153a7c7078f7f66d57867166f8", "6b5ae6ddb1c7c093a51a6f25ea789f9614ba8e85", "def2ec2336d5d6b8446f068ab444a474eb854233", "a8aef47b000fe3a4f4fa0bc0c56a3332f33a49df"],
+    "green_commit": "f866eb0706bccc653265b971832f6165a001a96d",
+    "representative_reproducer": {
+      "commit": "def2ec2336d5d6b8446f068ab444a474eb854233",
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py -k 'test_single_surface_substitution_during_reservation_or_precommit_is_empty' --maxfail=1",
+      "result": "expected RED: test_single_surface_substitution_during_reservation_or_precommit_is_empty[commit-capsule-reserved] failed with AttributeError because _SyntheticP4CapturedAuthorizationAuthority had no _p4_ledger; 1 failed, 874 deselected in 0.45s",
+      "isolation": "temporary detached git worktree at def2ec2 parent; removed after the run; candidate was not modified"
+    }
+  },
+  "test_inventory": {
+    "exact_focused_total": 1443,
+    "by_file": {"tests/pipeline/test_captured_authorization.py": 913, "tests/production/test_captured_authorization.py": 30, "tests/pipeline/test_trust.py": 103, "tests/production/test_adr0125_preflight.py": 349, "tests/production/test_capture_lifecycle.py": 12, "tests/pipeline/test_purity.py": 18, "tests/production/test_purity.py": 18},
+    "assessment": "Executable assertions independently derive and verify canonical batch bytes, self-digests and Ed25519 signatures; inspect exact opaque identity and audit state; and assert untouched legacy receipt/session/member/nonce state. They do not merely mirror a private implementation helper or pass on the baseline placeholder."
+  },
+  "proven_invariant_results": [
+    {"severity": "none", "invariant": "Meaningful RED-to-GREEN lineage covers the complete P4 increment", "location": "f58b7f8 through a8aef47 test-only commits precede f866eb0; representative test at tests/pipeline/test_captured_authorization.py:1605", "reproducer": "At def2ec2 parent, the reservation/precommit substitution test fails before the P4 ledger exists; it is not a baseline pass.", "consequence": "The final implementation is required for the test family to pass.", "family": "tdd-lineage", "disposition": "closed"},
+    {"severity": "none", "invariant": "Action/replay, root/nonroot, and one/two-PCE complete issuance remain independently checked", "location": "tests/pipeline/test_captured_authorization.py:957,1096,1147,1422; tests/production/test_captured_authorization.py:35", "reproducer": "Parameterized valid action/replay and nonroot predecessor graphs issue exactly one opaque record/session, while differing contenders leave one winner.", "consequence": "A route-specific or cardinality-specific batch/session regression fails the focused set.", "family": "transaction-route-cardinality", "disposition": "closed"},
+    {"severity": "none", "invariant": "Schema closure, signed-field integrity, omission/duplicate/order substitutions, and no-effect refusal are covered", "location": "tests/pipeline/test_captured_authorization.py:708,1222,1382,1505,1791", "reproducer": "Missing, substituted and re-signed field families are checked against canonical audit bytes; malformed or unavailable admissions are retried and normal v1 capture remains positive.", "consequence": "Partial, reordered, forged, or prematurely effectful issuance fails rather than being masked by implementation-shaped assertions.", "family": "schema-mutation-and-no-effect", "disposition": "closed"},
+    {"severity": "none", "invariant": "Fault schedules, unknown outcomes, and whole-operation locking have deterministic assertions", "location": "tests/pipeline/test_captured_authorization.py:1079,1261,1521,1550,1587,1605,1678", "reproducer": "Fixed string fault points, barriers/events and explicit timeouts prove empty-or-one-committed resolution; legacy capture/member/require wait on the same authority lock and observe the committed/refused outcome.", "consequence": "No observed schedule permits reminting, mixed legacy/P4 effects, or a pre-lock consume/read side effect.", "family": "concurrency-fault-unknown-outcome", "disposition": "closed"},
+    {"severity": "none", "invariant": "v1 API preservation and P4 public/export/facade boundaries are executable", "location": "tests/pipeline/test_trust.py:36,311; tests/pipeline/test_captured_authorization.py:1731; tests/production/test_captured_authorization.py:20,35,84,126,140", "reproducer": "Exact abstract set, factory signature, public __all__, P4 method signatures, nonconstructibility, exact verifier/driver substitution refusal, positive facade delegation, and positive legacy fallback are asserted.", "consequence": "An accidental re-export/API/signature drift, injected dependency, facade swap, or loss of ordinary v1 behavior is caught in the focused contract suite.", "family": "public-api-facade-compatibility", "disposition": "closed"}
+  ],
+  "findings": {"critical": [], "major": [], "minor": [], "nit": []},
+  "checks": [
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_purity.py tests/production/test_purity.py", "result": "1443 passed; fresh collection reported 1443 tests and the current-worktree lastfailed cache was empty after the run"},
+    {"command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_adr0125_preflight.py tests/production/test_capture_lifecycle.py tests/pipeline/test_purity.py tests/production/test_purity.py", "result": "530 passed in 13.78s"},
+    {"command": "/home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py tests/production/test_captured_authorization.py tests/pipeline/test_trust.py", "result": "All checks passed"},
+    {"command": "git diff --check c6b4763..f866eb0706bccc653265b971832f6165a001a96d; git diff --name-only f866eb0706bccc653265b971832f6165a001a96d^ f866eb0706bccc653265b971832f6165a001a96d", "result": "clean; candidate implementation changes only the three authorized code/test paths"}
+  ],
+  "full_suite_disposition": "No hidden full-suite requirement was identified. Matrix v9 specifies this exact focused command, it covers every modified module plus affected v1, production-facade, ADR-0125 and purity interfaces, and the task does not authorize a full suite.",
+  "limits": ["This is a clean tests/integration lens for the frozen synthetic in-process Packet 4 candidate only, not a whole-F5a exit or deployment approval.", "F5A-R23, durable/restart/cross-process consume-once, Packets 2 and 5-8, whole F5a, F3/F5b, external production terminal schemas/trust configuration, parser/CLI/compose routes, real activity and deployment remain open.", "ADR-0126's explicitly deferred coordinated multi-private-mutation attacks remain deferred and are not relabeled or narrowed by this review."],
+  "assessment": {"unresolved_counts": {"critical": 0, "major": 0, "minor": 0, "nit": 0}, "verdict": "clean-final-tests-integration-for-frozen-p4-candidate-only", "candidate_clean": true, "merge_authorized": false, "deployment_eligible": false, "whole_f5a_closed": false}
+}
