@@ -1,0 +1,31 @@
+{
+  "schema_version": "SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "candidate": "7e2743b6a79942da62ed314df60576a1f7d4e727",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_lookup_final_correctness_terra",
+    "lens": "fresh correctness/authority"
+  },
+  "verdict": "not clean; boundary-invalidating; candidate stopped",
+  "critical": 0,
+  "major": 1,
+  "minor": 0,
+  "nit": 0,
+  "findings": [
+    {
+      "id": "P6-M1",
+      "severity": "Major",
+      "family": "original output-member identity at final consumption",
+      "invariant": "0111 post-open output-member substitution refuses before CONSUMED.",
+      "location": "CapturedBindings.require -> _consume_binding, trust.py:1526-1576",
+      "reproducer": "After captured_bindings returns, object.__setattr__(broker._stream_pin[stream], output_member, config.json); bindings.require(bundle).artifact succeeds and appends CONSUMED.",
+      "consequence": "Final consumption accepts changed publication identity; diagnostic audit then refuses. Existing mutation-before-bindings test misses this final interval.",
+      "disposition": "Candidate stopped; repeated original-member boundary requires independent convergence checkpoint and fresh Phase0 before RED."
+    }
+  ],
+  "retained_reviewer_output": "C0/M1/minor0/nit0 not clean; candidate invalidated. P6-M1: after captured_bindings but before bindings.require changing stream pin output_member still permits CONSUMED. Observed retained _streams: PRODUCED,SEALED,PUBLISHED,CAPTURED,CONSUMED. Violates matrix0111 post-open output-member refusal-before-CONSUMED. Existing test mutates before bindings creation, missing final interval. No edits; full suite not rerun.",
+  "next_gate": "Independent convergence and revised Phase0; no second final lens on invalidated candidate.",
+  "deployment_eligible": false
+}
