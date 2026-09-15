@@ -39,5 +39,13 @@
     },
     "disposition": "Correct accidental matrix promise; preserve accepted facade behavior and explicitly defer durable admission unknown-outcome semantics to Packet8. No runtime rollback or scope/threat-model weakening.",
     "historical_check": "CORRECTION from reviewer: historical test was NOT run. Current pytest -q tests/production/test_capture_lifecycle.py -k \"write_then_raise or private_plan_precedes_capture\" gave1 passed11 deselected, only sentinel. -k write_then_raise selected none (12 deselected exit5). Named regression exists in historical c72340b:tests/production/test_capture_lifecycle.py; c72340b is NOT ancestor of aac2a25 (merge-base36553aed...). No extraction/run. Do not claim a passing write-then-raise test or accepted current ancestry from that historical source."
+  },
+  "current_checkout_scope_probe": {
+    "implementer_model": "GPT-6",
+    "cwd": "/home/russell/wt/f5a-remainder-20260915",
+    "interpreter": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -",
+    "setup_correction": "First probe used nonexistent bind_plan and failed AttributeError before capture; corrected to existing bind. No test pass claimed for failed setup.",
+    "script": "from tests.production import test_capture_lifecycle as f5\nfrom dskit.production.verifier import HistoricalStudyVerifier\nbroker,published,frozen,port=f5._setup()\nverifier=HistoricalStudyVerifier(broker)\nverifier.bind(**f5._PLAN)\noriginal=broker.capture\ncalls=[]\ndef write_then_raise(*args,**kwargs):\n result=original(*args,**kwargs)\n calls.append(result)\n raise RuntimeError(\"synthetic post-write fault\")\nbroker.capture=write_then_raise\ntry:\n f5._capture(verifier,published,frozen,port)\nexcept RuntimeError as exc:\n assert str(exc)==\"synthetic post-write fault\"\nelse:\n raise AssertionError(\"fault not raised\")\nassert broker._receipt_audit(published)[-1][\"event\"]==\"CAPTURED\"\ntry:\n f5._capture(verifier,published,frozen,port)\nexcept ValueError as exc:\n assert \"spent\" in str(exc)\nelse:\n raise AssertionError(\"facade admission reused\")\nassert len(calls)==1",
+    "result": "Pass on current checkout4d96480, 0.33s: one CAPTURED; retry refused spent; delegate called once. Only synthetic in-memory fixture instance changed; no repository/runtime files changed. Existing behavior characterization, not P8 closure."
   }
 }
