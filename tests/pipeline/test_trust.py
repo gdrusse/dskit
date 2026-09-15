@@ -3227,3 +3227,71 @@ def test_p6_port_audit_is_deeply_immutable():
         port.audit["consumer_port"]["purpose"] = "forged"
     assert port.audit["consumer_port"]["purpose"] == "synthetic"
     assert _p6_effects(broker) == before
+
+
+@pytest.mark.parametrize("side", ["pin", "prepared"])
+@pytest.mark.parametrize("stage", ["seal", "publish", "capture", "open", "bindings"])
+def test_p6_original_output_member_cannot_be_replaced_by_another_valid_member(side, stage):
+    broker = _trust()._development_broker()
+    producer, prepared, _ = _produce(broker)
+    stream = prepared.stream_id
+    if stage != "seal":
+        sealed = broker.seal(producer, prepared, transition_nonce="nonce-sealed")
+    if stage not in {"seal", "publish"}:
+        published = broker.publish(producer, sealed, transition_nonce="nonce-published")
+        broker.end_session(producer)
+        _, frozen = _freeze(broker, published)
+    if stage in {"open", "bindings"}:
+        captured, session = _capture(broker, published, frozen)
+    if stage == "bindings":
+        verified = broker.open_capture(session, captured)
+    target = broker._stream_pin[stream] if side == "pin" else prepared
+    object.__setattr__(target, "output_member", "config.json")
+    before = _p6_effects(broker)
+    with pytest.raises(ValueError):
+        if stage == "seal":
+            broker.seal(producer, prepared, transition_nonce="nonce-sealed")
+        elif stage == "publish":
+            broker.publish(producer, sealed, transition_nonce="nonce-published")
+        elif stage == "capture":
+            _capture(broker, published, frozen)
+        elif stage == "open":
+            broker.open_capture(session, captured)
+        else:
+            broker.captured_bindings(session, frozen, verified,
+                consumer_node="consume", transition_nonce="nonce-consumed")
+    assert _p6_effects(broker) == before
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_p6_two_valid_snapshots_resolve_the_exact_publication_in_either_order(reverse):
+    broker = _trust()._development_broker()
+    publications = []
+    for version in ("one", "two"):
+        run = "producer-" + version
+        session = broker.start_producer_session(run_identity=run,
+            process_measurement_sha256=_SHA["producer_process"],
+            runtime_sha256=_SHA["producer_runtime"], plan_sha256=_SHA["producer_plan"])
+        prepared = broker.produce(session, producer=dict(_PRODUCER, run_identity=run),
+            root=dict(_ROOT, snapshot_version=version), purpose="synthetic",
+            expected_members=("config.json", "artifacts/bundle.json"),
+            members=_members({"version": version}), output_member="artifacts/bundle.json",
+            completed=True, planned=True, transition_nonce="produced-" + version)
+        sealed = broker.seal(session, prepared, transition_nonce="sealed-" + version)
+        published = broker.publish(session, sealed, transition_nonce="published-" + version)
+        broker.end_session(session)
+        publications.append((version, published))
+    if reverse:
+        publications.reverse()
+    for version, published in publications:
+        descriptor = broker.descriptor(published, "synthetic")
+        assert descriptor["snapshot_version"] == version
+        frozen = broker.freeze_consumer_document(_consumer_document(descriptor),
+            "consume", "bundle", "synthetic")
+        captured, session = _capture(broker, published, frozen,
+            run_identity="consumer-" + version, nonce="captured-" + version)
+        verified = broker.open_capture(session, captured)
+        artifact = broker.captured_bindings(session, frozen, verified,
+            consumer_node="consume", transition_nonce="consumed-" + version).require("bundle").artifact
+        assert artifact.value == {"version": version}
+        assert broker._receipt_audit(published)[-1]["snapshot_version"] == version
