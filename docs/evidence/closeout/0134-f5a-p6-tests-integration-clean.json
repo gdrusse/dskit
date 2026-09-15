@@ -1,0 +1,32 @@
+{
+  "schema_version": "SkepticVerdict.v1",
+  "slice_id": "F5a",
+  "packet": "6",
+  "candidate": "849ff673aaa219c01d68969c781d102c9ffb9882",
+  "reviewer": {
+    "model": "gpt-5.6-terra",
+    "agent_task": "/root/p6_effect_final_tests_terra",
+    "lens": "fresh tests/integration"
+  },
+  "verdict": "clean",
+  "critical": 0,
+  "major": 0,
+  "minor": 0,
+  "nit": 0,
+  "retained_reviewer_output": "Clean C0/M0/minor0/nit0. No P6 defect found. Candidate849ff67 core_diff0; clean worktree/diff.72 final-effect tests,5 runtime/stream controls,12 verifier/driver checks pass. Probes: prepared.output_member refused pre-CONSUMED; changed session._runtime preserved original captured actor; post-CONSUMED artifact/audit readable with _reload_stream forced to fail. v1 receipt-sequence SHA256 bced1f11fc2fffd0386149356a6dd6b604c4f325185055503ef998fccd39dbb9 matches mainbaseline. No fixture policy bypass; explicit adversarial intern controls, ordinary real broker/facades. ADR0126 arbitrary callback-code control forgery, combined intern+handle/_DEV_KEY excluded; P8 durability/unknown outcomes remain excluded.",
+  "checks": [
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k \"p6 and (final_consume_revalidates_identity_and_allows_broker_local_retry or pre_delivery_stage_gap_refuses_before_effects or verified_retained_bytes_intern_cannot_change_final_effect or single_published_member_intern_mint_cannot_change_output or same_prefix_publications_complete_each_exact_lifecycle or identical_complete_retained_descriptors_refuse_ambiguous_freeze)\" --tb=short",
+      "result": "72 passed0.65s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py -k \"bindings_pin_and_runtime_cannot_forge_consumed_identity or hmac_mint_session_runtime_cannot_forge_consumed_actor or receipt_store_truncation_cannot_rewind_consumed or dual_intern_runtime_cannot_forge_consumed_actor or stream_pin_producer_root_inplace_cannot_forge_consumed_publication\" --tb=short",
+      "result": "5 passed0.16s"
+    },
+    {
+      "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/production/test_capture_lifecycle.py tests/production/test_captured_authorization.py -k \"driver_delegates_bound_verifier_capture or unbound_driver_refuses_without_broker_fallback_then_f4_broker_still_works or v1_p4_refusal_has_no_effect_and_does_not_burn_legacy_admission or both_facades_issue_the_same_authority_bound_p4_transaction\" --tb=short",
+      "result": "12 passed3.11s"
+    }
+  ],
+  "deployment_eligible": false
+}

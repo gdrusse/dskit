@@ -1,51 +1,34 @@
 # Re-entry
 
-## Current checkpoint: Packet 6 final v1 effect Phase 0 (2026-09-15)
+## Current wrap: Packet 6 reviewed and ready to integrate (2026-09-15)
 
-Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
-`codex/f5a-remainder-p6`; main remains Packet 5 `0ec6671`. Dirty main checkout
-untouched; preserved source remains `c489199`. All work uses WSL2 and
-`PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python` from this task worktree.
-Owner authorized Terra (`gpt-5.6-terra`) independent reviewers; GPT-6 implements.
-At most one reviewer is active, and final lenses are fresh and sequential.
+Task worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p6`; main base `0ec6671`. Dirty main checkout untouched;
+preserved source remains `c489199`. WSL2 interpreter
+`PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python` from this worktree.
 
-**Stopped candidate `7e2743b6a79942da62ed314df60576a1f7d4e727`.** Packet 6 now
-binds publication purpose and all descriptor fields to retained receipt/stream
-identity, retains original frozen ports and the verified member/port/artifact
-graph, and checks original output-member identity. Repeated lookup defects
-FA002/FA003 prompted the independent convergence checkpoint in `0124`:
-operational tokens resolve exact authenticated streams, descriptor lookup uses
-complete retained identities, and diagnostic audits use independent original
-prepared identity plus retained committed rows without recovering exposed storage.
-All mutable descriptor projections now use validated retained snapshots.
+**Packet 6 exit `0135`: candidate `849ff673aaa219c01d68969c781d102c9ffb9882`.**
+Two fresh sequential Terra final lenses (`0133` correctness, `0134` tests/integration)
+are clean: zero Critical/Major/Minor/Nit. GPT-6 implemented. Final focused suite
+1594 passed64.02s; explicit private-plan sentinel, Ruff/diff checks, and complete
+v1 encoded receipt baseline comparison pass. Reviewed code/test/matrix and
+relevant dependency blobs are locked in0135; evidence-only appends preserve them.
 
-Phase 0 `0125` is clean in its reviewer addendum (C0/M0/minor1); the reviewer
-withdrew its unproven P4 race Major after tracing the final guards. That history
-is retained. RED `0126` proves same-prefix node/output/purpose collisions;
-GREEN/correction record `0127` records original-prepared compatibility and
-checks. **1528 focused tests pass (64.41s)**; explicit private-plan sentinel,
-changed-file Ruff, diff check, and full v1 receipt-byte baseline comparison pass.
-Code/test/matrix identities remain frozen across evidence-only appends.
+Publication lookup binds complete retained six-field identity and original
+output/member/producer lineage; frozen ports and retained capture views cannot
+be substituted. One shared v1 effect validator covers final CAPTURED staging,
+provider/member/bindings delivery and CONSUMED, including independent retained
+member bytes and binding nonce. Existing retained post-CONSUMED reads and
+original actor/prepared-pointer compatibility remain intact. Three earlier
+failed final candidates and convergence history are retained in0114-0132.
 
-Fresh correctness reviewer `/root/p6_lookup_final_correctness_terra` found
-one Major in `0128`: after bindings creation, mutating publication/frozen/original
-output-member identity still permits CONSUMED. This is the third failed final
-candidate and repeats a family. The independent convergence checkpoint requires
-one shared v1 effect-boundary validator across final CAPTURED publication,
-provider/member delivery, bindings creation and CONSUMED append, using retained
-facts and stage-appropriate session/head checks. P4 final checks stay intact;
-post-CONSUMED reads stay retained-only without exposed-store recovery.
-
-Revised matrix candidate `aac2a25b4db7329abe6a8c0b02088a73bd0c718c` is under
-fresh Phase0 review by `/root/p6_final_effect_phase0_terra`. **No new runtime
-patch or RED for this correction yet.** Next unused evidence: **0129**. Retain
-fresh design verdict, resolve Critical/Major, then batch stage-gap RED/GREEN
-before two new final lenses. No tests/integration final lens has completed on
-any current successor, and no Packet 6 merge is authorized by its gate yet.
-
-Packet 7 and Packet 8/F5A-R23 remain open; no whole-F5a/F3/F5b or deployment
-closure. Packet 8 owner `0100` already chose the existing on-disk
-ChainLedger/JsonlLedger seam. No new owner decision has been needed.
+Next: integrate authorized Packet 6 into freshly fetched main with --no-ff,
+push/verify, purge only its contained branch, and append integration/timing
+record. Then Packet 7 local replay-descriptor slice and Packet 8 durable
+consume-once through owner0100's existing ChainLedger/JsonlLedger. Facade
+burn-before-delegation is intentionally preserved until P8; no rollback after
+an unknown delegate outcome. P7/P8/F5A-R23/wholeF5a/F3/F5b remain open;
+`deployment_eligible=false`. Next unused evidence number:0136.
 
 ## Current wrap: Packet 5 closed; Packet 6 Phase 0 in progress (2026-09-15)
 
