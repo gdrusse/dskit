@@ -342,7 +342,9 @@ def _captured_descriptor_shape_errors(inner, where):
     errors = []
     if not isinstance(inner, dict):
         return [f"{where}: $captured_artifact must be an object, got {inner!r}"]
-    unknown = sorted(set(inner) - set(CAPTURED_DESCRIPTOR_KEYS))
+    unknown = sorted(
+        (key for key in inner if key not in CAPTURED_DESCRIPTOR_KEYS), key=repr
+    )
     if unknown:
         errors.append(
             f"{where}: $captured_artifact unknown key(s) {unknown} — allowed: "

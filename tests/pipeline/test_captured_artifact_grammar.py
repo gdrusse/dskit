@@ -88,7 +88,7 @@ def test_ordinary_document_refuses_captured_descriptor_input():
 
 
 def test_captured_descriptor_in_params_refused():
-    with pytest.raises(ConfigError, match=r"\$captured_artifact"):
+    with pytest.raises(ConfigError, match="only legal"):
         PipelineDocument.from_obj(
             _document(
                 {
@@ -122,12 +122,31 @@ def test_captured_descriptor_in_params_refused():
             }
         },
         {
+            "stages": {
+                "first": {
+                    "uses": "synthetic-frame",
+                    "inputs": {"gate": {"$captured_artifact": _descriptor()}},
+                }
+            }
+        },
+        {
             "foreach": {
                 "keys": ["one"],
                 "pipeline": {
                     "template": {
                         "uses": "synthetic-frame",
                         "inputs": {"bundle": {"$captured_artifact": _descriptor()}},
+                    }
+                },
+            }
+        },
+        {
+            "foreach": {
+                "keys": ["one"],
+                "pipeline": {
+                    "template": {
+                        "uses": "synthetic-frame",
+                        "params": {"x": {"$captured_artifact": "x"}},
                     }
                 },
             }
@@ -142,15 +161,17 @@ def test_captured_descriptor_in_params_refused():
                 }
             }
         },
+        {"env": {"secrets": {"$captured_artifact": "x"}}},
+        {"splits": {"ratio": {"$captured_artifact": "x"}}},
     ),
 )
 def test_captured_descriptor_in_forbidden_location_refused(sections):
-    with pytest.raises(ConfigError, match=r"\$captured_artifact"):
+    with pytest.raises(ConfigError, match="only legal"):
         PipelineDocument.from_obj(_document(sections))
 
 
 def test_captured_descriptor_nested_in_list_refused():
-    with pytest.raises(ConfigError, match=r"\$captured_artifact"):
+    with pytest.raises(ConfigError, match="only legal"):
         PipelineDocument.from_obj(
             _document(
                 {
@@ -177,7 +198,7 @@ def test_captured_descriptor_nested_in_list_refused():
         (_descriptor(document_sha256="abc"), "SHA-256"),
         (_descriptor(document_sha256="0" * 64), "placeholder"),
         (_descriptor(document_sha256="self"), "SHA-256"),
-        (_descriptor(root_ref="$other.output"), r"\$"),
+        (_descriptor(root_ref="$other.output"), "literal string"),
         (_descriptor(extra="forged"), "unknown"),
         (_descriptor(consumer_document_sha256="c" * 64), "unknown"),
     ),
@@ -250,3 +271,30 @@ def test_ordinary_document_round_trips_byte_identical():
     document = PipelineDocument.from_obj(obj)
     assert document.to_obj()["pipeline"]["source"]["uses"] == "synthetic-frame"
     assert "execution_backtest" not in document.to_obj()
+
+
+def test_captured_descriptor_round_trips_and_is_hash_material():
+    descriptor = _descriptor()
+    document = PipelineDocument.from_obj(_captured_input_document(descriptor))
+    assert document.to_obj()["pipeline"]["consume"]["inputs"]["bundle"] == {
+        "$captured_artifact": descriptor
+    }
+    other = PipelineDocument.from_obj(
+        _captured_input_document(_descriptor(document_sha256="b" * 64))
+    )
+    assert document.to_obj() != other.to_obj()
+
+
+def test_captured_descriptor_mixed_type_key_refuses_without_crashing():
+    descriptor = _descriptor()
+    descriptor[123] = "int-key"
+    with pytest.raises(ConfigError, match="unknown"):
+        PipelineDocument.from_obj(_captured_input_document(descriptor))
+
+
+def test_execution_document_with_descriptor_refused_before_planning():
+    from dskit.pipeline.planner import plan
+
+    document = PipelineDocument.from_obj(_captured_input_document(_descriptor()))
+    with pytest.raises(ConfigError, match="execution_backtest"):
+        plan(document)

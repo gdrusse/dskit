@@ -1,0 +1,32 @@
+{
+  "schema_version": "FinalReview.v1",
+  "slice_id": "F5a",
+  "packet": "5-captured-artifact-grammar",
+  "lens": "tests/integration (final lens 2)",
+  "reviewer": {"model": "deepseek-v4-pro (owner override 2026-09-15)", "agent_task": "ses_f59a9731affeZHQMCliaIVjvRs"},
+  "candidate_reviewed": "6a052d7532f8dd33c637ec0108e1a26ceb67dc9c",
+  "verdict": "not-clean",
+  "critical": 0,
+  "major": 1,
+  "minor": 4,
+  "conclusion": "Production change is correct (all forbidden positions/shapes refuse; ordinary suites + sentinel green), but two of 26 tests are false positives that pass on the pre-change parser via generic reprs, plus four minors (untested no-effect surfaces, untested matrix cases, missing round-trip assertion, a mixed-type-key crash).",
+  "findings": [
+    {"id": "P5-TQ-1", "severity": "major", "summary": "two tests false-positive (foreach forbidden-location, $-ref scalar) via generic error repr", "disposition": "corrected: forbidden-location tests now match the specific 'only legal' sweep diagnostic; $-ref scalar matches the specific 'literal string' shape diagnostic."},
+    {"id": "P5-TQ-2", "severity": "minor", "summary": "no-effect/public-surface refusal untested (planner/driver/main)", "disposition": "corrected: added test_execution_document_with_descriptor_refused_before_planning (proves plan() refuses an execution doc carrying a legal descriptor before any effect)."},
+    {"id": "P5-TQ-3", "severity": "minor", "summary": "matrix negative families untested (StageSpec.inputs, foreach params, env/splits, artifact)", "disposition": "corrected: added StageSpec.inputs, foreach-template params, env, and splits parametrized location cases."},
+    {"id": "P5-TQ-4", "severity": "minor", "summary": "positive test does not assert round-trip/hash identity", "disposition": "corrected: added test_captured_descriptor_round_trips_and_is_hash_material."},
+    {"id": "P5-TQ-5", "severity": "minor", "summary": "_captured_descriptor_shape_errors crashes (TypeError) on mixed-type descriptor keys via sorted()", "disposition": "corrected: unknown-key sort now uses key=repr; added test_captured_descriptor_mixed_type_key_refuses_without_crashing."}
+  ],
+  "probes_run_verbatim": [
+    "git show 6a052d7 (full diff) + 0101 matrix + 0107 verdict + test file",
+    "pytest test_captured_artifact_grammar.py -> 26 passed",
+    "pytest 13 affected files incl. sentinel -> 1818 passed",
+    "pre-change worktree + copied test file -> 23 failed, 3 passed (2 false positives + 1 round-trip)",
+    "probe: artifact/env/schedule/clock/splits/walkforward/notes all refused; to_obj preserves descriptor",
+    "probe: mixed-type descriptor key -> unhandled TypeError",
+    "probe: captured doc config_hash stable; save/load round-trip byte/hash-identical",
+    "ruff clean; git diff --check clean"
+  ],
+  "correction_commit": "see next commit (test-tightening + mixed-type-key crash fix)",
+  "next_gate": "fresh re-review of the corrected candidate (code + tests changed) by two fresh sequential DeepSeek lenses."
+}
