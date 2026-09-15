@@ -1,5 +1,30 @@
 # Re-entry
 
+## Current checkpoint: Packet 6 expanded Phase 0 review (2026-09-15)
+
+Task worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p6`, still based on Packet 5 main `0ec6671`.
+Main checkout is untouched; preserved source still `c489199`.
+
+Owner authorized `gpt-5.6-terra` for independent reviews in this session,
+superseding the GLM 5.3 request (unavailable here). Implementer is GPT-6.
+Matrix RR-001 correction committed as `befa80b`. Terra found RR-002 mutable
+published descriptor identity and RR-003 missing P4 facades; independent early
+convergence checkpoint is `0114`. Successor `0115` found RR-004 mutable
+post-capture artifact/port accessors and authorized the full retained handle
+graph correction; no owner/architecture decision is required.
+
+Current matrix candidate `2f76623` binds publication/frozen/member/port/artifact
+identity through existing broker/view/intern ownership and lifecycle lock,
+including parent/path association, payload/audit, and one-shot read/consume
+state. A fresh Terra Phase 0 reviewer is checking that matrix. No runtime edits
+or new RED yet. Next unused evidence number: 0116 (fresh verdict).
+
+Next: retain the fresh verdict; only after zero Critical/Major, add meaningful
+RED tests for the complete corrected family, then GREEN, focused checks, two
+fresh sequential Terra final lenses, merge/push/verify/purge/wrap. Then P7/P8.
+R23 durability, whole F5a, F3/F5b remain open; deployment_eligible=false.
+
 ## Current wrap: Packet 5 closed; Packet 6 Phase 0 in progress (2026-09-15)
 
 Branch `codex/f5a-remainder-p6` (from `origin/main@0ec6671`, which already
