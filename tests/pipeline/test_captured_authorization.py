@@ -1603,9 +1603,9 @@ def test_failed_missing_admission_request_can_retry_the_same_held_valid_snapshot
     assert broker.authorize_capture_set(captures, graph.selected, **runtime) == (record, session)
 
 
-@pytest.mark.parametrize("phase", ["reserved", "verified"])
+@pytest.mark.parametrize("phase", ["reserved", "verified", "commit-before"])
 @pytest.mark.parametrize("surface", ["commit-capsule", "authority-dispatch", "attestation", "signer", "contract",
-                                    "ledger-lock", "ledger-root", "keyring", "terminal", "generation"])
+                                    "ledger-lock", "ledger-root", "keyring", "terminal", "generation", "live-port", "frozen-document"])
 def test_single_surface_substitution_during_reservation_or_precommit_is_empty(phase, surface, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event, RLock
@@ -1655,6 +1655,10 @@ def test_single_surface_substitution_during_reservation_or_precommit_is_empty(ph
                 elif surface == "terminal":
                     frozen_restore = (broker._p4_resolver, "_terminal", broker._p4_resolver._terminal)
                     object.__setattr__(broker._p4_resolver, "_terminal", object())
+                elif surface == "live-port":
+                    patch.setitem(captures[0][2], "consumer_input", "substituted")
+                elif surface == "frozen-document":
+                    patch.setitem(captures[0][1].source, "substituted", "document")
                 else:
                     frozen_restore = (broker._p4_resolver._snapshot, "_generation", broker._p4_resolver._snapshot._generation)
                     object.__setattr__(broker._p4_resolver._snapshot, "_generation", 2)
