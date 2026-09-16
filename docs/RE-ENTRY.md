@@ -27,6 +27,7 @@ read-only signed synthetic fixture commitments; independent preapproval review
 found zero blocking findings. Owner approved ADR-0134; fresh Phase 0 and two final lenses cleared with
 zero Critical/Major. Focused 31 and affected 1088 tests passed. One Minor test
 fixture byte-length mismatch is deferred until raw-byte integration.
+The reviewed slice merged at e512247; code/test/contract blobs are unchanged.
 Packet8 remains gated on P7 closure.
 deployment_eligible=false.
 

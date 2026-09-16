@@ -346,5 +346,16 @@
     "shared_minor": "Positive signed test fixture claims byte_length=12 while hashed b'fixture-a\\n' is 10 bytes. Read-only verifier cannot inspect raw bytes; fix before raw-byte integration.",
     "disposition": "Deferred Minor in locked read-only candidate. No effecting authority or raw-byte claim. Two fresh completed lenses found zero unresolved in-scope Critical/Major.",
     "deployment_eligible": false
+  },
+  "adr0134_integration": {
+    "merge_commit": "e51224705db6d7065dcae55b8ccab45a6b81e8a6",
+    "parents": [
+      "28c68dec912e0a47992c114ce7322d33024f4fd5",
+      "92059d970ca2d8a2a86ae5f055bc9c9d56f6aca4"
+    ],
+    "merge_tree_equals_reviewed_branch": true,
+    "reviewed_code_test_contract_blobs_unchanged": true,
+    "result": "No conflicts; diff check passed; worktree clean before evidence append.",
+    "limit": "No raw-byte inspection, shared authorization spend, F4/P4, P7/Packet8 or deployment."
   }
 }
