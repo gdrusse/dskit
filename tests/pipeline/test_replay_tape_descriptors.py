@@ -193,6 +193,33 @@ def test_custom_replay_role_class_ref_refuses_as_non_owned():
         plan(parsed)
 
 
+def test_replay_node_wired_input_refuses():
+    doc = _document(
+        {
+            "source": {"uses": "synthetic-frame"},
+            "replay": {
+                "uses": "replay",
+                "inputs": {
+                    "tape_manifest": "$source.out",
+                    "tape_data": "$source.out",
+                },
+            },
+        }
+    )
+    with pytest.raises(ConfigError):
+        PipelineDocument.from_obj(doc)
+
+
+def test_replay_pair_order_is_insignificant():
+    inputs = {
+        "tape_data": {"$captured_artifact": _descriptor()},
+        "tape_manifest": {"$captured_artifact": _descriptor()},
+    }
+    doc = _document({"replay": {"uses": "replay", "inputs": inputs}})
+    parsed = PipelineDocument.from_obj(doc)
+    assert set(parsed.pipeline["replay"].inputs) == {"tape_manifest", "tape_data"}
+
+
 def test_replay_kind_in_foreach_template_refuses():
     doc = _document(
         {"source": {"uses": "synthetic-frame"}}, execution=False

@@ -824,13 +824,22 @@ def _replay_node_errors(node_maps, has_execution):
                     "execution_backtest document"
                 )
                 continue
-            ports = tuple(spec.inputs)
-            if ports != _REPLAY_TAPE_INPUTS:
+            ports = set(spec.inputs)
+            if ports != set(_REPLAY_TAPE_INPUTS):
                 errors.append(
                     f"{node_where}: the 'replay' node must declare exactly the "
                     "inputs tape_manifest and tape_data, got "
-                    f"{list(ports) or 'none'}"
+                    f"{sorted(ports) or 'none'}"
                 )
+                continue
+            for port in _REPLAY_TAPE_INPUTS:
+                value = spec.inputs[port]
+                if not (isinstance(value, dict) and set(value) == {CAPTURED_KEY}):
+                    errors.append(
+                        f"{node_where}.inputs.{port}: the 'replay' input must be "
+                        "a complete $captured_artifact descriptor, not a wired "
+                        "or non-descriptor value"
+                    )
     return errors
 
 

@@ -5255,10 +5255,18 @@ def register(registry=None) -> None:
     """Claim the toolkit-owned ``replay`` kind (owned=True).
 
     Called by the orchestrator at package import, never at import time.
-    Idempotent: a name already present is skipped, never shadowed.
+    A pre-existing ``replay`` entry is verified, never silently accepted:
+    a foreign class squatting the owned name raises.
     """
     from dskit.pipeline.node import DEFAULT_NODE_KINDS
 
     registry = DEFAULT_NODE_KINDS if registry is None else registry
-    if "replay" not in registry:
-        registry.register("replay", ReplayRun, owned=True)
+    if "replay" in registry:
+        cls, owned = registry.get("replay")
+        if cls is not ReplayRun or not owned:
+            raise ValueError(
+                "kind 'replay' is already registered to a foreign class — "
+                "refusing to shadow the owned ReplayRun kind"
+            )
+        return
+    registry.register("replay", ReplayRun, owned=True)
