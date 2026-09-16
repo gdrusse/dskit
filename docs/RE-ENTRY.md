@@ -2,7 +2,7 @@
 
 ## Current checkpoint: P7 two-root bridge landed (2026-09-16)
 
-Remote main verified at 269807a. ADR-0141 issued one signed two-root
+Remote main verified at db9a522. ADR-0141 issued one signed two-root
 PublishedInputSet.v2 after live roster/v2 and raw/v1 publications, with a
 durable one-use root-PIS row and nonauthorizing read-only proof (64c461c).
 ADR-0142 added the issuer-owned read-only 12-artifact dynamic root graph
