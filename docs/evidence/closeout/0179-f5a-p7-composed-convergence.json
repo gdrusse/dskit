@@ -306,5 +306,12 @@
     "matrix": "canonical bytes/duplicates/types, fixed domain/key/signature, grant recheck, auth/time/snapshot/revocation, one-per-source members, facades, alias/subclass/mutation, repeat, no effects",
     "uncovered": "real key custody/provider origin, shared spend, raw bytes/event semantics, F4/P4 and P7/Packet8",
     "tests_run": "none; design review"
+  },
+  "adr0134_red": {
+    "base_commit": "4b815a2",
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py::test_adr134_signed_fixture_commitments_are_read_only_and_exact",
+    "result": "Expected assertion failure: NonAuthorizingSyntheticFixtureVerifier missing; 1 failed in 0.26s",
+    "kind": "behavioral RED; no import/setup error"
   }
 }

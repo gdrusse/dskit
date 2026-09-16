@@ -2325,3 +2325,65 @@ def test_adr133_refuses_current_revocation_even_with_matching_signed_snapshot(mo
         grants.append(_resign_synthetic_grant(grant))
     with pytest.raises(ValueError, match="revocation|revoked"):
         trust.NonAuthorizingSyntheticGrantVerifier().verify(authorization, *grants)
+
+
+def _synthetic_fixture_attestation(authorization, g2):
+    """Offline G2 signature over exact synthetic fixture member commitments."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    auth = json.loads(authorization)
+    grant = json.loads(g2)
+    members = [
+        {
+            "member_name": "fixture_A.ndjson",
+            "source_id": "src:A",
+            "byte_length": 12,
+            "sha256": hashlib.sha256(b"fixture-a\n").hexdigest(),
+        },
+        {
+            "member_name": "fixture_B.ndjson",
+            "source_id": "src:B",
+            "byte_length": 0,
+            "sha256": hashlib.sha256(b"").hexdigest(),
+        },
+    ]
+    body = {
+        "schema_version": "dskit.synthetic-dataset-fixture-attestation/v1",
+        "issuer_key_id": "synthetic-g2/dataset-fixture-attestation/v1",
+        "authorization_sha256": hashlib.sha256(authorization).hexdigest(),
+        "issued_at_ms": auth["issued_at_ms"],
+        "not_before_ms": auth["not_before_ms"],
+        "expires_at_ms": auth["expires_at_ms"],
+        "revocation_snapshot_sha256": grant["revocation_snapshot_sha256"],
+        "ordered_members": members,
+    }
+    seed = hashlib.sha256(
+        b"dskit.synthetic-dataset-fixture-attestation/G2/v1"
+    ).digest()
+    body["signature"] = Ed25519PrivateKey.from_private_bytes(seed).sign(
+        f4._json_bytes(body)
+    ).hex()
+    return f4._json_bytes(body)
+
+
+def test_adr134_signed_fixture_commitments_are_read_only_and_exact():
+    cls = getattr(trust, "NonAuthorizingSyntheticFixtureVerifier", None)
+    assert cls is not None, "ADR-0134 fixture verifier is missing"
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    attestation = _synthetic_fixture_attestation(authorization, g2)
+    result = cls().verify(authorization, g1, g2, attestation)
+    assert result["authorization_sha256"] == hashlib.sha256(authorization).hexdigest()
+    assert result["attestation_sha256"] == hashlib.sha256(attestation).hexdigest()
+    assert result["checked_at_ms"] == 500
+    assert result["authorizing"] is False
+    assert result["deployment_eligible"] is False
+    assert tuple(row["source_id"] for row in result["ordered_members"]) == (
+        "src:A", "src:B",
+    )
+    with pytest.raises(TypeError):
+        result["authorizing"] = True
+    with pytest.raises(TypeError):
+        result["ordered_members"][0]["source_id"] = "src:evil"
+    assert not any(hasattr(result, name) for name in (
+        "read_member", "consume", "publish", "mint", "authorize",
+    ))
