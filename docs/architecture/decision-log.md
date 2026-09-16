@@ -10466,9 +10466,13 @@ semantics, composed tape, Packet8, deployment or P7 closure.
 
 ## ADR-0143 - same-domain dynamic P4 capture authority
 
-**Status:** proposed. Not yet reviewed or approved; no Phase 0, RED/GREEN
-or code exists for this slice. This is a design proposal only and grants
-no capture, member access or deployment eligibility.
+**Status:** accepted (2026-09-16 under the owner's standing P7 authorization;
+independent preapproval review and a fresh independent recheck both found
+zero Critical/Major/Minor/Nit after the signed_id-derivation and dispatch-
+safety corrections recorded in evidence 0180). Phase 0 skeptic review is
+still required before RED — this slice crosses a trust boundary. No Phase 0,
+RED/GREEN or code exists yet for this slice; acceptance authorizes design
+proceeding to Phase 0, not capture, member access or deployment eligibility.
 
 **Context.** ADR-0141 retains one signed synthetic two-root
 PublishedInputSet.v2 and its NonAuthorizingSyntheticRootPisProof. ADR-0142
