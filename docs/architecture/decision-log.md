@@ -9075,8 +9075,9 @@ final lenses (correctness/authority, then tests/integration), then integrate.
 
 ## ADR-0128 — bounded V2 multi-consumer capture (correction to ADR-0127 Decision.2)
 
-**Status:** proposed — awaiting owner approval (owner chose option A of gate
-`0164`; the ADR itself still needs approval before RED).
+**Status:** accepted (2026-09-16; owner approved "Approve" after choosing
+option A of gate `0164`). This authorizes the bounded multi-consumer capture
+seam only; a fresh Phase 0 skeptic precedes RED.
 
 **Context.** ADR-0127 Decision.2 lays the F3 captured-tape hierarchy as three
 consumers of one data PUBLISH root: the `ReplayTapeManifestProducer` captures the
@@ -9115,12 +9116,19 @@ bounded extension (option A of gate `0164`).
    is untouched. Multi-capture does not make a stream multi-consumable by one
    consumer, and does not mint a reopen/handle-sharing path.
 
-4. **Surgical seam.** The change is confined to `_validate_capture_request`
-   (P4 path): replace the blanket `_require_head → _require_unclaimed` refusal
-   with (a) the existing head-is-PUBLISHED check and (b) a distinct-port check
-   against prior P4 ports for that stream. `_require_unclaimed` is retained and
-   still governs the legacy path. No v1 receipt shape, no descriptor grammar, no
-   planner, no `__all__`/purity change.
+4. **Surgical seam.** Three bounded trust.py edits, no v1 receipt shape /
+   descriptor grammar / planner / `__all__` / purity change:
+   - split `_require_head` so the P4-blanket `_require_unclaimed` no longer
+     fires on the P4 capture path or the freeze path; `_require_unclaimed` is
+     retained and called explicitly on the legacy capture path (and the v1
+     view/append paths, unchanged);
+   - `_validate_capture_request` (P4 path): replace the blanket unclaimed
+     refusal with (a) v1 head-is-`PUBLISHED` and (b) a distinct-port check —
+     the incoming port's canonical bytes must differ from every prior P4 port
+     committed for that stream;
+   - `_published_for_descriptor` (freeze): allow a P4-captured-but-v1-`PUBLISHED`
+     stream (drop the unclaimed refusal; the head check still blocks
+     legacy-`CAPTURED`/`CONSUMED` streams).
 
 **Non-goals.** Multi-consumer CAPTURED on the legacy v1 chain, relaxing
 one-time CONSUMED, sharing handles/sessions across consumers, any change to
