@@ -1,0 +1,30 @@
+{
+  "schema_version": "F5aRedGreenImplementation.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2b-multiconsumer",
+  "packet": "7-replay-tape-descriptors-multiconsumer-capture",
+  "base_main": "29f02542f8ce94171d47e2112693ec9b0b51de84",
+  "phase0_contract": "0170 (multiconsumer matrix; ADR-0128 accepted and corrected)",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (Phase 0 skeptic 0171)",
+  "red": {
+    "test_file": "tests/pipeline/test_captured_authorization.py",
+    "observed": "test_second_distinct_document_captures_the_same_publication failed at freeze_consumer_document -> _published_for_descriptor -> _require_head -> _require_unclaimed ('P4 committed stream cannot enter legacy capture')",
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/pipeline/test_captured_authorization.py::test_second_distinct_document_captures_the_same_publication -q"
+  },
+  "green": {
+    "changes": [
+      "dskit/pipeline/trust.py: _require_head no longer calls _p4_ledger._require_unclaimed (legacy path still gated by _legacy_gate/_require_unclaimed and v1 view/append paths keep their own check); _validate_capture_request gains a distinct-document refusal via a new read-only _LifecycleAuthorizationLedger._p4_stream_documents derivation (fingerprint entry[2] captures[i][2].consumer_document_sha256 aligned with audit entry[3] streams[i]).",
+      "tests/pipeline/test_captured_authorization.py: _merge_facts + _two_consumer_setup helpers; test_second_distinct_document_captures_the_same_publication (positive) and test_same_document_cannot_capture_the_same_stream_twice (negative)."
+    ],
+    "tests": {
+      "new": "2 (positive distinct-document capture; negative same-document refusal)",
+      "focused_passed": "1592 (test_trust + test_captured_authorization + production capture_lifecycle/captured_authorization/adr0125_preflight + replay_tape_descriptors + purity); 367 (grammar + purity/producers/oop + sentinel)",
+      "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture green",
+      "checks": "ruff clean on changed files; git diff --check clean"
+    }
+  },
+  "scope_boundary": "Multi-consumer capture seam only (ADR-0128). The composed-tape verification (slice 2b follow-on) consumes this seam and is still open.",
+  "preserved_open": ["Packet7 (composed-tape verification half remains)", "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b", "origin/cursor/r5-f5a-private-plan-0f39@c489199"],
+  "deployment_eligible": false,
+  "recorded_at_utc": "2026-09-16T06:15:00.000000+00:00"
+}

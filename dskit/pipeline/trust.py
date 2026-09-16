@@ -1818,7 +1818,6 @@ class _DevelopmentBroker(LifecycleAuthority):
         return self._publication_members(published)[0]
 
     def _require_head(self, stream_id, event):
-        self._p4_ledger._require_unclaimed(stream_id)
         rows = self._streams.get(stream_id) or []
         if not rows or rows[-1]["event"] != event:
             raise ValueError("replay of %s is refused" % event)
@@ -2439,6 +2438,8 @@ class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
                 raise ValueError("P4 stream was already captured by the same legacy ledger")
             self._recover(stream)
             self._require_head(stream, "PUBLISHED")
+            if port["consumer_document_sha256"] in self._p4_ledger._p4_stream_documents(stream):
+                raise ValueError("P4 consumer document already captured this stream")
             subject = self._stream_pin[stream]
             if run in (subject.producer["run_identity"], subject.session_run_identity):
                 raise ValueError("P4 consumer run must differ from producer run")
@@ -4976,6 +4977,17 @@ class _LifecycleAuthorizationLedger(_Opaque):
 
     def _p4_entries(self):
         return tuple(entry for entry in self._root if type(entry[0]) is tuple)
+
+    def _p4_stream_documents(self, stream):
+        """Return committed consumer-document identities already captured for a stream."""
+        documents = set()
+        for entry in self._p4_entries():
+            request = _hs_parse_canonical(entry[2])
+            audit = _hs_parse_canonical(entry[3])
+            for index, committed_stream in enumerate(audit["streams"]):
+                if committed_stream == stream:
+                    documents.add(request["captures"][index][2]["consumer_document_sha256"])
+        return documents
 
     def _legacy_captures(self):
         with self._lock:

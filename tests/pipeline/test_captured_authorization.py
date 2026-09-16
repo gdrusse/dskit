@@ -338,7 +338,7 @@ class _SignedGraph:
         return self.add(name, kind, value, self_field, role)
 
 
-def _complete_signed_graph(*, replay=False, count=1, nonroot=False):
+def _complete_signed_graph(*, replay=False, count=1, nonroot=False, document_name="consumer"):
     """Construct exact action and replay closure including every signed ancestor."""
     from tests.production import test_adr0125_preflight as p3
 
@@ -350,7 +350,7 @@ def _complete_signed_graph(*, replay=False, count=1, nonroot=False):
     if count == 2:
         publications.append(f4._foreign_publish(probe)[0])
     descriptor = probe.descriptor(published, purpose="synthetic")
-    document = f4._consumer_document(descriptor)
+    document = f4._consumer_document(descriptor, name=document_name)
     if count == 2:
         document["pipeline"]["consume"]["inputs"]["second"] = {
             "$captured_artifact": probe.descriptor(publications[1], purpose="synthetic"),
@@ -1466,6 +1466,66 @@ def test_legacy_receipt_writer_cannot_append_a_capture_behind_a_committed_p4_str
         broker._append_receipt(broker._stream_pin[stream], "CAPTURED", producer_session, "private-v1-bypass",
                                {"consumer_captured_port": captures[0][2]})
     _assert_graph_no_effect(broker, captures, before)
+
+
+def _merge_facts(*graphs):
+    """Union artifact lists by ref identity so two closures share one resolver."""
+    seen = {}
+    for graph in graphs:
+        for item in graph.facts["artifacts"]:
+            seen[f4._json_bytes(item["ref"])] = item
+    return {"artifacts": list(seen.values())}
+
+
+def _two_consumer_setup(*, same_document=False):
+    """Build one resolver holding two admissions over one shared publication."""
+    self_field = "action_execution_admission_sha256"
+    document_name_b = "consumer-a" if same_document else "consumer-b"
+    graph_a, document_a = _complete_signed_graph(document_name="consumer-a")
+    graph_b, document_b = _complete_signed_graph(document_name=document_name_b)
+    admission_b = next(value for value in graph_b.values.values()
+                       if value.get("schema") == graph_b.selected["schema"]
+                       and value.get(self_field) == graph_b.selected["sha256"])
+    altered_b = _resign_exact(dict(admission_b, run_id="consumer-b-run",
+                                   logical_execution_id="logical/consumer-b"), self_field)
+    alternate_b = dict(graph_b.selected, sha256=altered_b[self_field])
+    graph_b.facts["artifacts"].append({"ref": alternate_b, "bytes": f4._json_bytes(altered_b)})
+    broker = _factory()(fixture_facts=_merge_facts(graph_a, graph_b))
+    producer, published, _ = f4._publish(broker)
+    broker.end_session(producer)
+    return broker, published, graph_a, document_a, document_b, alternate_b
+
+
+def test_second_distinct_document_captures_the_same_publication():
+    broker, published, graph_a, document_a, document_b, alternate_b = _two_consumer_setup()
+
+    frozen_a = broker.freeze_consumer_document(document_a, "consume", "bundle", "synthetic")
+    captures_a = ((published, frozen_a, broker.derive_consumer_port(frozen_a)),)
+    record_a, session_a = broker.authorize_capture_set(captures_a, graph_a.selected, **_runtime())
+
+    frozen_b = broker.freeze_consumer_document(document_b, "consume", "bundle", "synthetic")
+    captures_b = ((published, frozen_b, broker.derive_consumer_port(frozen_b)),)
+    runtime_b = dict(_runtime(), consumer_run_identity="consumer-b-run", transition_nonces=("p4-b",))
+    record_b, session_b = broker.authorize_capture_set(captures_b, alternate_b, **runtime_b)
+
+    assert record_a is not record_b
+    assert session_a is not session_b
+    assert len(broker._p4_ledger._committed()) == 2
+
+
+def test_same_document_cannot_capture_the_same_stream_twice():
+    broker, published, graph_a, document_a, document_b, alternate_b = _two_consumer_setup(same_document=True)
+
+    frozen_a = broker.freeze_consumer_document(document_a, "consume", "bundle", "synthetic")
+    captures_a = ((published, frozen_a, broker.derive_consumer_port(frozen_a)),)
+    broker.authorize_capture_set(captures_a, graph_a.selected, **_runtime())
+
+    frozen_b = broker.freeze_consumer_document(document_b, "consume", "bundle", "synthetic")
+    captures_b = ((published, frozen_b, broker.derive_consumer_port(frozen_b)),)
+    runtime_b = dict(_runtime(), consumer_run_identity="consumer-b-run", transition_nonces=("p4-b",))
+    with pytest.raises(ValueError, match="already captured"):
+        broker.authorize_capture_set(captures_b, alternate_b, **runtime_b)
+    assert len(broker._p4_ledger._committed()) == 1
 
 
 @pytest.mark.parametrize("slot", ["_kind", "_run_identity", "_ended", "_plan_sha256", "_runtime", "_stream_id", "_locked"])
