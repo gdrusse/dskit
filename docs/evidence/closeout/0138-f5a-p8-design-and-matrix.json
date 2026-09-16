@@ -1,0 +1,143 @@
+{
+  "schema_version": "F5aPacket8Design.v1",
+  "packet": 8,
+  "status": "design proposal complete for review; API/identity migration requires owner approval; RED not authorized",
+  "base_commit": "530d5a8d709b7851a0f43396be8616455f6af4b9",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "user_scope": "2026-09-15: finish any Packet8 design, then stop/wrap and provide a DeepSeek continuation prompt. Authorizes design ahead of P7 only; does not authorize implementation or declare P7 closed.",
+  "cites": [
+    "0095-f5a-remainder-contract-pack.json",
+    "0096-f5a-remainder-delta-matrices.json",
+    "0100-f5a-p8-owner-decision.json",
+    "0137-f5a-p7-dependency-checkpoint.json"
+  ],
+  "approved": {
+    "store": "Existing production ChainLedger/JsonlLedger, one authoritative writer; never pipeline import of production.",
+    "boundary": "Development/synthetic only; deployment_eligible=false.",
+    "target": "Replace HistoricalStudyVerifier.capture constructor-kwdefault spend state; close F5A-R23 only after proofs and two final lenses."
+  },
+  "inventory": {
+    "verifier.py": "HistoricalStudyVerifier.__init__ stores public kwdefault _spend tuple; bind checks six placeholder dicts and consumed=True; capture burns before authority.capture. HistoricalStudyCaptureDriver.capture class-dispatches to bound verifier. P4 authorize_capture_set follows a separate checked same-broker path.",
+    "ledger.py": "ChainLedger owns envelope/index/idempotency/barriers; JsonlLedger owns storage hooks/recovery. Duplicate append returns old seq, not new authority. Lifetime flock excludes another process but is not a thread transition lock. _open rebuilds index without full verify; _store/_sync exceptions may leave bytes ahead of memory.",
+    "state.py/vocab.py": "SeriesState is the only fold. New record vocabulary requires exact fold coverage. Existing authority_use means reduction right and cannot be overloaded.",
+    "trust.py": "P4 issued authority/verified closure owns admission authority. HistoricalStudyEnvelopePreflight is explicitly nonauthorizing; its token cannot be promoted into a spend grant.",
+    "compatibility": "Current test_driver_delegates_bound_verifier_capture succeeds with authority-only constructor and arbitrary _PLAN. No automatic durable store or authenticated stable admission identity is supplied by that contract."
+  },
+  "owner_gate": {
+    "id": "P8-DESIGN-API-IDENTITY",
+    "reason": "0100 chose the durable store, but did not authorize breaking the preserved successful v1 constructor/bind contract or define its migration to an authenticated admission identity.",
+    "recommended": "Approve migration of the existing capture-capable HistoricalStudyVerifier route: require explicit trusted durable-store injection plus immutable authority-verified admission identity; replace placeholder positive fixtures with real synthetic verified fixtures. Leave no successful non-durable fallback.",
+    "alternative": "If successful authority-only v1 must remain, a separate durable API cannot close R23 for old capture. Keep R23 open; do not label this an equivalent closure.",
+    "approval_status": "pending; this document proposes, not approves, the migration",
+    "sequencing": "Implementation after this design-only turn still needs an explicit P8-before-P7 sequencing disposition or satisfaction of 0100. Current user instruction stops before implementation."
+  },
+  "recommended_design": {
+    "composition": "Trusted production composition passes the already-open sole JsonlLedger writer into HistoricalStudyVerifier as required keyword admission_spend_ledger for capture-capable construction. Reuse existing configured ServeRoot and genesis namespace across all verifier clones/restarts. No implicit tempfile, cwd/env fallback, path argument, caller factory, per-request store, second writer, or store setter. P4 facade compatibility must be explicitly considered in the approved migration.",
+    "store_identity": "Pin writer and immutable namespace at construction through the existing opaque binding discipline. Single handle/map/default replacement must not redirect it. Pins validate association only; committed disk history is spend authority. Host-selected namespace is trusted configuration, never an admission request field. Arbitrary host/file deletion or deliberate namespace replacement is not prevented by an in-process development boundary.",
+    "admission_identity": "Use an existing authority-verified selected action/final-replay admission reference (kind, schema, signed content digest), retained immutably with its verified binding context. Obtain it from the existing issued authority closure; extend that existing seam only as necessary to expose a read-only verified identity. Never promote structural preflight, consumed=True, caller self-hash, arbitrary six dicts, or canonical hashing alone into authority. Exact accessor/API must be frozen after owner migration approval and inspected against P4 before RED.",
+    "key": "admission_use:v1: + canonical_hash({kind, schema, sha256} of the immutable verified admission reference). Namespace is the trusted ledger series, not a caller-selectable key component. No process/run/nonce/object-id/clock/constructor identity in this key. If scope distinguishes admissions, it must already be signed into that admission identity; do not append mutable scope to create extra spend rights.",
+    "body": "New admission_use record, schema dskit.admission-use/v1; exact fields schema, admission_ref, binding_sha256. binding_sha256 hashes the retained verified plan/capture scope and is payload conflict evidence, never an alternate spend key. Request nonce/process stamp remain envelope/audit context, not permission identity. Default-deny body validation before write.",
+    "fold": "Add admission_use once to production/vocab.py RECORD_KINDS and the SeriesState fold table with a non-economic validating handler. Preserve all existing snapshot/hash recipes. Reuse ChainLedger idempotency index; no second mutable spend-set/fold in verifier.",
+    "atomic_api": "Add a generic ChainLedger reserve_once(record) operation using the existing index/_commit/barrier implementation. Under the same ledger-owned reentrant transition lock shared by append/append_many/barrier/close/snapshot: validate writable healthy verified writer and record; existing same-id/same-payload returns an already-present result with NO permission; existing different payload refuses; missing id appends and unconditionally barriers then returns newly-reserved seq. Verifier only delegates on newly-reserved in that invocation. Existing append idempotency semantics remain unchanged.",
+    "read_api": "Read-only query of the same record ID returns absent/present/conflict or damaged/unknown, plus existing immutable record evidence. Use existing scan/verify or a small public indexed lookup owned by ChainLedger; no cross-module private index access. A query result never authorizes a retry. Ordinary reading opens remain no-lock/no-repair.",
+    "capture_order": [
+      "Validate exact facade/driver/authority/store binding and complete immutable verified admission/plan/port context before any reserve.",
+      "Atomically reserve admission_use and barrier through the existing sole ledger writer.",
+      "Only the call receiving newly-reserved invokes existing authority.capture once; existing P6 final effect checks remain authoritative.",
+      "After reservation, any delegate error or unknown result leaves it spent. No delete, rollback, unspend, retry, or fresh constructor escape."
+    ],
+    "recovery": "Before accepting a reopened writer, verify sequence/hash chain AND namespace/payload digest consistency plus duplicate IDs; do not trust _open index reconstruction alone. On any uncertain append/sync/fold error quarantine the writer for all further writes, never inspect a stale index and retry. Close/reopen through trusted owner, recover only incomplete final line using JsonlLedger, then verify/rebuild before new claims. A complete valid reservation is spent even if append raised. If no complete reservation survived and no barrier acknowledgement occurred, no delegation could have begun; a later verified fresh reserve may proceed. Sealed/interior or complete corrupt records refuse; no repair by erasing spend.",
+    "unknown_outcome": "Reservation proves spent, not that capture completed. Query the existing capture authority for exact matching committed evidence if it can provide it; otherwise report spent/outcome-unknown and stop. Do not reconstruct opaque live handles from a JSONL audit record. Crash after reserve/barrier but before delegate may yield zero capture effects permanently. No automatic recovery sender.",
+    "guarantee": "Exactly one durable admission reservation and at most one delegated capture attempt per verified admission in the configured namespace. NOT exactly one broker effect across a reserve/delegate crash gap. No OS-owned external broker or malicious filesystem rollback guarantee.",
+    "p4": "No double spend of authorize_capture_set, no second CAPTURED/CONSUMED writer. Existing same-ledger P4 transaction/receipt owner remains intact. Direct F4 broker.capture remains its accepted lower-level lifecycle API, not an F5a admission route; do not claim global prevention of every possible direct broker call."
+  },
+  "matrix": [
+    [
+      "identity",
+      "same verified admission across copied dictionaries/new verifier/new process; changed nonce/process/runtime does not create key",
+      "one reservation; second refuses before delegate"
+    ],
+    [
+      "binding",
+      "same admission id, changed plan/port/root/purpose/context body",
+      "conflict/refusal, no second permission"
+    ],
+    [
+      "distinct",
+      "two independently verified admissions in same owner namespace",
+      "independent claims, no accidental alias"
+    ],
+    [
+      "input authority",
+      "placeholder dict, consumed flag, forged self-hash, structural preflight token, foreign authority/namespace",
+      "refuse before ledger/broker effects"
+    ],
+    [
+      "single-surface substitution",
+      "constructor kwdefaults; verifier/store/driver handle poke; one association map mutation; public result mutation; close and reopen; readonly/closed writer",
+      "no unspend or redirection; missing store has no fallback"
+    ],
+    [
+      "thread concurrency",
+      "same/different verifier objects sharing one writer, same admission; mixed append/reserve and reentrant callback",
+      "dense valid chain; one newly-reserved and <=1 delegate; no deadlock"
+    ],
+    [
+      "second process",
+      "spawn separate interpreter; same real tmp_path ServeRoot with writer held; reopen after release",
+      "contender fails writer lock; recovered existing claim refuses"
+    ],
+    [
+      "write-then-raise",
+      "delegate writes CAPTURED then raises; facade retry/new facade/restarted owner",
+      "one call and durable spend; query evidence or unknown; never resend"
+    ],
+    [
+      "partial persistence",
+      "short os.write; complete write then exception; sync failure; state.apply raises; failure before append",
+      "no delegate before barrier; quarantine stale writer; reopen/verify gives correct spent/absent"
+    ],
+    [
+      "crash stages",
+      "process exits before write, during torn final line, after full line, after barrier before delegate, after delegate before return",
+      "recovery obeys actual persisted state; zero-effect gap disclosed; never duplicate attempt after durable claim"
+    ],
+    [
+      "store corruption",
+      "interior/sealed tear, complete corrupt record, hash/seq/prev/namespace/payload mismatch, duplicate conflicting ID",
+      "fail closed, no destructive repair or new capture"
+    ],
+    [
+      "read-only",
+      "status while writer active via reading open",
+      "no flock, no tail repair, no append/barrier/delegate"
+    ],
+    [
+      "compatibility",
+      "approved migrated positive v1 fixture, private-plan sentinel, P4 facades/sole writer/P6 receipts",
+      "real successful capture retained under approved API; prior same-mode receipt bytes and hashes unchanged"
+    ]
+  ],
+  "tests_plan": {
+    "method": "Synthetic tmp_path real JsonlLedger and subprocesses with pipe/event coordination; no wall sleeps, real datasets, training, replay or deployment. Fault injection in tests only. No tests executed or code changed in this design turn.",
+    "reuse": [
+      "tests/production/test_ledger.py idempotency/reopen, flock, fsync/barrier, short-write/torn-tail cases",
+      "tests/production/test_capture_lifecycle.py",
+      "tests/production/test_captured_authorization.py",
+      "tests/pipeline/test_captured_authorization.py",
+      "tests/pipeline/test_trust.py"
+    ],
+    "required": "Before RED: owner migration/sequence decisions + concrete verified identity seam + fresh clean Phase0. Run meaningful new RED, then smallest GREEN. Focused lifecycle/ledger/state/vocab and affected purity/OOP/producers gates, P4/P6 compatibility, sentinel, changed-file Ruff, git diff --check. No unjustified full suite."
+  },
+  "allowed_paths_proposed": [
+    "dskit/production/verifier.py",
+    "dskit/production/ledger.py",
+    "dskit/production/vocab.py",
+    "dskit/production/state.py",
+    "dskit/pipeline/trust.py only if required existing verified-identity accessor; no production import",
+    "corresponding focused tests and evidence"
+  ],
+  "exit": "F5A-R23 stays open until approved contract implemented, durable tests pass, two fresh sequential final lenses on immutable candidate, merge/push/verify/wrap. Whole F5a additionally needs P7 and whole integration gate.",
+  "recorded_at_utc": "2026-09-15T22:16:02.067699+00:00"
+}

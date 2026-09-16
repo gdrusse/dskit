@@ -1,0 +1,107 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite",
+  "packet": "7-replay-tape-descriptors-slice1",
+  "status": "phase0-design-proposed",
+  "base_main": "48ae2fb37a6f176fd52f8c983eaf9f1b37ddfad1",
+  "cites": [
+    "docs/evidence/closeout/0137-f5a-p7-dependency-checkpoint.json",
+    "docs/evidence/closeout/0145-f5a-f3-replay-ops-authorization.json",
+    "docs/architecture/decision-log.md ADR-0127",
+    "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:208-209,554-588,717-735",
+    "docs/architecture/decision-log.md ADR-0125 (replay-consumer phase, ReplayPIS)"
+  ],
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (owner substituted; Terra/gpt-5.6-terra unavailable in this environment)",
+  "slice_scope": "FIRST slice only: the class-declared ReplayRun consumer identity seam and the two-descriptor tape_manifest/tape_data grammar/binding, sufficient to enforce the pair at parse/plan time before planning or root creation. The verified captured-tape producer/capture hierarchy (ReplayTapeDataCapture/ReplayTapeManifestProducer/ReplayTapeManifestCapture, composed tape capability) and resolution to verified PUBLISHED/CAPTURED identities are the explicitly-recorded FOLLOW-ON slice, not this slice.",
+  "non_goals": [
+    "verified PUBLISHED/CAPTURED identity resolution (follow-on)",
+    "ReplayTapeDataCapture/ReplayTapeManifestProducer/ReplayTapeManifestCapture runtime (follow-on)",
+    "composed tape capability / runtime ReplayTape construction (follow-on)",
+    "full R1-R5 replay transaction machinery",
+    "F1/F2 EventEnvelope causal reordering",
+    "a second planner, ledger, or tape engine",
+    "imposing the tape pair on every P4 replay admission",
+    "a uses-string heuristic for ReplayRun identity",
+    "real data/replay/HPO/backtest/paper/live/deployment"
+  ],
+
+  "actors_and_authority": {
+    "document": "untrusted user-authored JSON; parsed via PipelineDocument.from_obj / NodeSpec.from_obj",
+    "resolved_node_class": "trusted code (registered node kind or class ref) resolved by _resolve_uses_ordinary",
+    "planner": "trusted; dskit.pipeline.planner.plan (exported dskit.pipeline.plan) attaches role rules",
+    "broker": "trusted; trust.py capture/admission route (unchanged in this slice)",
+    "production_ReplayRun": "dskit.production.replay.ReplayRun runnable (R1, OUT OF SCOPE this slice)",
+    "no_external_authority": "this slice is parse/plan-time grammar; no broker, filesystem, or capture authority is invoked"
+  },
+
+  "identity_seam": {
+    "mechanism": "class-declared identity, never a uses-string or import-path text match. A new pipeline-owned ReplayRun consumer node class declares its identity; the planner recognizes it by resolved class (issubclass of the pipeline-owned marker/base), never by string comparison.",
+    "placement": "dskit/pipeline/trust.py (the existing F4/F5a capture module) or a new dskit/pipeline/replay.py; frozen in Phase 0. Purity-safe: pipeline defines it, production may subclass/reference via the production->pipeline import seam (allowed).",
+    "role": "a new ROLES member (e.g. \"replay\") declared by the class, consistent with 'roles are declared by the class, never config'; document NodeSpec.role is cross-checked redundancy only.",
+    "node_spec_contract": "the ReplayRun consumer declares exactly two required top-level inputs named tape_manifest and tape_data, each the complete legal $captured_artifact descriptor (P5 shape). No third descriptor, alias key, duplicate, nested, list/map, or missing member is legal on that node."
+  },
+
+  "positive_grammar": {
+    "pair": "a node whose resolved class is the ReplayRun consumer declares inputs equal to exactly {tape_manifest: {$captured_artifact: D1}, tape_data: {$captured_artifact: D2}}; D1 and D2 are each the exact P5 six-field descriptor.",
+    "distinct_descriptors": "D1 and D2 are two independently complete descriptors (normally distinct node/output); their exact equality relationship is a verification concern (follow-on), not a grammar concern in this slice."
+  },
+
+  "negative_families": [
+    {"family": "missing", "cases": ["tape_manifest only", "tape_data only", "neither descriptor on a ReplayRun consumer node"]},
+    {"family": "extra", "cases": ["a third captured descriptor beside the pair", "an extra non-descriptor input wire beside the pair"]},
+    {"family": "duplicate", "cases": ["same descriptor spelled twice (strict JSON loader refuses duplicate JSON keys; the design must also refuse a repeated identical descriptor value under distinct aliases)"]},
+    {"family": "aliased", "cases": ["a renamed port (e.g. manifest/data) carrying the same descriptor", "a third key naming one of the two roots under another input name"]},
+    {"family": "nested", "cases": ["a descriptor inside a list/map input value on the ReplayRun consumer", "a $captured_artifact nested under a non-top-level input position"]},
+    {"family": "swapped", "cases": ["manifest and data roots/descriptors swapped between the two ports", "tape_manifest bound to a data-shaped descriptor and vice versa (verification-level in follow-on; grammar-level: the two port NAMES must be exactly tape_manifest and tape_data)"]},
+    {"family": "equal_port", "cases": ["two equal ConsumerCapturedPorts with different captures (follow-on verification; grammar-level: the pair names are distinct and exact)"]},
+    {"family": "identity", "cases": ["a node whose uses STRING merely resembles 'replay' or 'ReplayRun' is not identified", "a non-ReplayRun node declaring the two tape ports is NOT swept into the pair rule (compatibility)", "an import-path class ref spelling 'ReplayRun' textually is not identified by string"]}
+  ],
+
+  "compatibility": {
+    "p4_replay": "the tape pair is imposed ONLY on nodes whose resolved class is the pipeline ReplayRun consumer; accepted P4 final-replay fixtures with generic bundle/second inputs of cardinality one or two remain green.",
+    "p5_p6": "per-descriptor shape grammar (P5) and generic descriptor/receipt/port equality (P6) are unchanged; the pair rule is additive and keyed on the resolved identity.",
+    "ordinary_docs": "non-execution documents and non-ReplayRun execution documents are byte/hash-identical.",
+    "purity": "pipeline never imports production; no new module-level non-stdlib import."
+  },
+
+  "forbidden_effects": [
+    "planning or stage compilation completes before grammar refusal",
+    "provider or filesystem access",
+    "broker construction",
+    "node/adapter construction or run",
+    "output creation",
+    "identifying ReplayRun by a uses-string heuristic"
+  ],
+
+  "entry_points": [
+    "dskit.pipeline.document.PipelineDocument.from_obj / NodeSpec.from_obj (descriptor shape, unchanged)",
+    "dskit.pipeline.planner.plan (pair rule keyed on resolved class)",
+    "dskit.pipeline.driver.plan_document / run_document",
+    "dskit.pipeline.__main__ cmd_plan / cmd_run / cmd_validate / cmd_staged / cmd_walkforward"
+  ],
+
+  "tests": {
+    "new": "tests/pipeline/test_replay_tape_descriptors.py: positive pair + every negative family (missing/extra/duplicate/aliased/nested/swapped/equal-port), identity-refusal (uses-string heuristic), and compatibility (P4 generic cardinality, ordinary docs).",
+    "existing_inventoried": [
+      "tests/pipeline/test_captured_artifact_grammar.py",
+      "tests/pipeline/test_trust.py",
+      "tests/pipeline/test_captured_authorization.py",
+      "tests/pipeline/test_planner.py",
+      "tests/pipeline/test_document.py"
+    ],
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture"
+  },
+
+  "open_questions_for_skeptic": [
+    "exact marker base (Node subclass with deferred run vs pure ABC marker) and module placement",
+    "whether the pair rule is enforced in planner.py alone or also surfaced at parse for the registered-kind route",
+    "the import-ordering tension: class-ref resolution imports a module; confirm no hostile import before refusal for the registered-kind route",
+    "new ROLES member vs a class-level marker flag, and the conformance/planner census consequences"
+  ],
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0146-f5a-p7-phase0-matrix.json",
+    "git diff --check"
+  ]
+}

@@ -152,6 +152,8 @@ from dskit.pipeline.kinds_stats import StatTest, Validate
 from dskit.pipeline.kinds_stats import register as _register_stats_kinds
 from dskit.pipeline.kinds_table import TableFile
 from dskit.pipeline.kinds_table import register as _register_table_kinds
+from dskit.pipeline.trust import ReplayRun
+from dskit.pipeline.trust import register as _register_trust_kinds
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     Node,
@@ -210,6 +212,7 @@ _register_search_kinds()
 _register_report_kinds()
 _register_table_kinds()
 _register_fitted_kinds()
+_register_trust_kinds()
 
 __all__ = [
     "ApplyTransform",
@@ -238,6 +241,7 @@ __all__ = [
     "PipelineDocument",
     "Plan",
     "RandomSplitSpec",
+    "ReplayRun",
     "RunReport",
     "ScheduleConfig",
     "Standardize",

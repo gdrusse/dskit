@@ -83,6 +83,7 @@ KIND_EFFECTS = {
     "hpo-grid": ("forbidden", "forbidden"),
     "join": ("pure", "pure"),
     "records-write": ("forbidden", "forbidden"),
+    "replay": ("forbidden", "forbidden"),
     "run-report": ("forbidden", "forbidden"),
     "standardize": ("forbidden", "release_read"),
     "stat_test": ("pure", "pure"),

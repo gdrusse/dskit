@@ -1,0 +1,95 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite",
+  "packet": "7-replay-tape-descriptors-slice1-fresh",
+  "status": "phase0-fresh-design (post convergence checkpoint 0149; owner decision 0150)",
+  "base_main": "48ae2fb37a6f176fd52f8c983eaf9f1b37ddfad1",
+  "cites": [
+    "docs/architecture/decision-log.md ADR-0127 (accepted; Decision.1 amended)",
+    "docs/architecture/decision-log.md ADR-0125",
+    "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:208-209,554-588,705-735",
+    "docs/evidence/closeout/0149-f5a-p7-convergence-checkpoint.json",
+    "docs/evidence/closeout/0150-f5a-f3-seam-scope-decision.json"
+  ],
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+
+  "scope": "ONE coherent F3 captured-tape identity seam: the pipeline ReplayRun class-declared identity (class + role + owned kind + two-input NodeSpec contract) and the tape-pair grammar keyed on that class-declared identity. The class EXISTS and is registered owned this slice, so the owned-kind name is a registry key, not a bare string.",
+  "non_goals": [
+    "verified PUBLISHED/CAPTURED identity resolution and the composed tape capability (follow-on)",
+    "ReplayTapeDataCapture/ReplayTapeManifestProducer/ReplayTapeManifestCapture runtime (follow-on)",
+    "full R1-R5 replay transaction machinery",
+    "F1/F2 EventEnvelope causal reordering",
+    "a second planner, ledger, or tape engine",
+    "imposing the tape pair on every P4 replay admission",
+    "a uses-string resemblance heuristic",
+    "real data/replay/HPO/backtest/paper/live/deployment"
+  ],
+
+  "identity": {
+    "class": "dskit.pipeline ReplayRun (Node subclass), role = \"replay\", registered register_node_kind(REPLAY_RUN_KIND, ReplayRun, owned=True).",
+    "role": "new ROLES member \"replay\" (document.py). The document NodeSpec.role key remains cross-checked redundancy.",
+    "kind_literal": "REPLAY_RUN_KIND = \"replay\" in document.py, single owner.",
+    "node_spec_contract": "ReplayRun declares exactly two required inputs tape_manifest and tape_data, each a complete legal P5 $captured_artifact descriptor.",
+    "run": "ReplayRun.run consumes the two captured inputs through CapturedBindings and returns an opaque ReplayTapeBinding (the F3 composed-tape->runtime-ReplayTape seam is follow-on). This is the identity seam's minimal honest behavior, not fabricated verification."
+  },
+
+  "enforcement": {
+    "parse": "document.py, keyed on NodeSpec.uses == REPLAY_RUN_KIND (the owned registry key — class-declared because the class is registered owned this slice): the node must be in an execution_backtest document AND declare inputs exactly {tape_manifest, tape_data}, each a complete P5 descriptor. A non-execution document referencing REPLAY_RUN_KIND refuses.",
+    "class_ref_spelling": "the owned-role doctrine (planner stat_test pattern) refuses a class ref whose cls.role == \"replay\" as non-owned for any document that reaches plan; execution documents do not reach plan, and their class-ref spelling is the broker route's follow-on concern. This slice's pair rule keys on the owned-kind spelling.",
+    "resolves": "convergence F1 (parse is the single reachable enforcement point; no plan-time claim) and F2 (the class is registered owned, so the owned name is the class, not a squatted string)."
+  },
+
+  "positive_grammar": {
+    "pair": "inputs == {tape_manifest: {$captured_artifact: D1}, tape_data: {$captured_artifact: D2}}; D1, D2 each an exact P5 six-field descriptor."
+  },
+
+  "negative_families": [
+    {"family": "missing", "cases": ["tape_manifest only", "tape_data only", "neither"]},
+    {"family": "extra", "cases": ["a third input key beside the pair"]},
+    {"family": "aliased", "cases": ["a renamed port carrying a descriptor"]},
+    {"family": "nested", "cases": ["a descriptor as a list/map input value"]},
+    {"family": "wrong_name", "cases": ["port names not exactly tape_manifest/tape_data"]},
+    {"family": "identity", "cases": ["uses resembling 'replay' only (substring) not identified", "a non-ReplayRun node declaring the two tape ports not swept", "a class ref with cls.role == 'replay' refused as non-owned (stat_test pattern)"]}
+  ],
+  "follow_on_not_grammar": [
+    "duplicate identical D1==D2",
+    "swapped manifest/data CONTENT",
+    "equal ConsumerCapturedPort with different captures"
+  ],
+
+  "compatibility": {
+    "p4_replay": "pair rule fires only on the ReplayRun owned kind; accepted P4 final-replay fixtures remain green.",
+    "p5_p6": "descriptor shape and generic equality unchanged.",
+    "ordinary_docs": "byte/hash-identical.",
+    "purity": "pipeline never imports production; ReplayRun is pipeline-owned."
+  },
+
+  "forbidden_effects": [
+    "planning/stage compilation completes before grammar refusal",
+    "provider/filesystem access",
+    "broker construction",
+    "node/adapter import or construction",
+    "output creation",
+    "uses-string resemblance or document role key as identity authority"
+  ],
+
+  "tests": {
+    "new": "tests/pipeline/test_replay_tape_descriptors.py: positive pair; missing/extra/aliased/nested/wrong_name/identity; non-execution replay-kind refusal; class-ref-with-replay-role owned refusal (synthetic test class); P4 compatibility.",
+    "existing": ["tests/pipeline/test_captured_artifact_grammar.py", "tests/pipeline/test_trust.py", "tests/pipeline/test_captured_authorization.py", "tests/pipeline/test_planner.py", "tests/pipeline/test_document.py"],
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture retained as general regression only."
+  },
+
+  "implementation_files": [
+    "dskit/pipeline/document.py",
+    "dskit/pipeline/planner.py",
+    "dskit/pipeline/trust.py",
+    "tests/pipeline/test_replay_tape_descriptors.py",
+    "tests/pipeline/test_captured_artifact_grammar.py (extend)"
+  ],
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0151-f5a-p7-phase0-fresh.json",
+    "git diff --check"
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": "F5aDesignReview.v1",
+  "packet": 8,
+  "candidate": "c196543",
+  "design": "0138-f5a-p8-design-and-matrix.json",
+  "reviewer_model": "gpt-5.6-terra",
+  "reviewer_id": "/root/p8_design_review_terra",
+  "verdict": "conditional design blocked; not ready for RED",
+  "counts": {
+    "critical": 0,
+    "major": 4,
+    "minor": 2,
+    "nit": 0
+  },
+  "findings": [
+    {
+      "id": "P8-D1-M1",
+      "severity": "Major",
+      "finding": "Explicit owner approval needed for v1 API migration and P8 implementation ahead of P7.",
+      "disposition": "Open owner gate; design-only permission is not implementation permission."
+    },
+    {
+      "id": "P8-D1-M2",
+      "severity": "Major",
+      "finding": "Verified admission identity/accessor unspecified: freeze capability owner, immutable fields/digest, association checks, timing, P4 compatibility, refusal matrix.",
+      "disposition": "Requires concrete authority-owned read-only seam; no preflight token promotion."
+    },
+    {
+      "id": "P8-D1-M3",
+      "severity": "Major",
+      "finding": "Reserve/recovery needs exact health states, result API, every post-store/sync/fold/snapshot failure quarantine, verified rebuild requirements.",
+      "disposition": "Design correction required."
+    },
+    {
+      "id": "P8-D1-M4",
+      "severity": "Major",
+      "finding": "Public ledger injection lets a caller construct fresh JsonlLedger/ServeRoot and replay same verified admission against an empty index. Trusted-composition prose and instance pins alone do not authenticate namespace provenance.",
+      "disposition": "Replace bare ledger injection with authority-bound owner capability; provisioning/root trust is an explicit architecture gate."
+    },
+    {
+      "id": "P8-D1-m1",
+      "severity": "Minor",
+      "finding": "Specify snapshot cadence and new-versus-prior reservation result shape.",
+      "disposition": "Design correction required."
+    },
+    {
+      "id": "P8-D1-m2",
+      "severity": "Minor",
+      "finding": "Specify default-deny body validator owner/schema/reference shape.",
+      "disposition": "Design correction required."
+    }
+  ],
+  "positive": "One ledger index/no second fold, no query authorization, restart/persistence matrix, explicit reserve-to-delegate crash gap and preserved P4 scope.",
+  "checks": "Read-only source/design review; no runtime changes or tests.",
+  "authority": "This is a retained independent design verdict, not approval or packet closure."
+}

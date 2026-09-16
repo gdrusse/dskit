@@ -1,0 +1,42 @@
+{
+  "schema_version": "F5aDesignCorrectionDisposition.v1",
+  "packet": 8,
+  "candidate": "96c50ca",
+  "reviewer_model": "gpt-5.6-terra",
+  "reviewer_id": "/root/p8_design_handoff_review_terra",
+  "scope": "Bounded follow-up disposition of nonce and poisoned-fold findings from0141; not a new final lens or clean Phase0",
+  "verdict": "0142 resolves both bounded technical findings. Retain M1/M4 owner API, provisioning and sequencing gates; fresh Phase0 required. No implementation-readiness claim.",
+  "resolved": {
+    "P8-D1-M2": "Explicit runtime/nonce signature, existing request-check inputs, nonce excluded from key, pre/post-reserve recheck and spent-on-post-reserve-error. Proposed accessor still requires approved migration.",
+    "P8-D2-M5": "Discard poisoned SeriesState, replay verified full chain incl admission_use with existing apply, match state/ledger head before healthy/snapshots/claims; fault tests specified."
+  },
+  "remaining": [
+    "P8-D1-M1: approve legacy API migration and P8 implementation sequencing",
+    "P8-D1-M4: approve authenticated owner provisioning and admission-to-durable-namespace binding",
+    "Fresh clean Phase0 after decisions, then RED/GREEN/two fresh final lenses"
+  ],
+  "changes": "Documentation/design only; no runtime or test changes; no tests executed. JSON parse and git diff --check validation.",
+  "handoff": "docs/memos/2026-09-15-deepseek-f5a-final-handoff.md",
+  "closure": "Packet7/Packet8/F5A-R23/wholeF5a/F3/F5b remain open; deployment_eligible=false",
+  "timing": {
+    "method": "Checkpoint-attributed wall time, not CPU time; overlapping work attributed once. Initial reading/inventory before first clock observation22:13:38 UTC is unmeasured and excluded; user waiting gap after previous turn excluded.",
+    "minutes_approx": {
+      "design": 2.4,
+      "implementation": 0,
+      "tests": 0,
+      "review": 6.3,
+      "corrections": 1.4,
+      "integration_wrap": 1.0
+    },
+    "anchors_utc": [
+      "2026-09-15 22:13:38 first observed clock",
+      "22:16:02 initial design commit",
+      "22:19:02 first review record",
+      "22:20:25 correction design commit",
+      "22:23:14 second review record",
+      "22:23:15 final clarification commit",
+      "22:23:36 correction disposition received around this checkpoint"
+    ],
+    "integration_note": "Wrap/push estimate; no merge performed because design remains blocked."
+  }
+}

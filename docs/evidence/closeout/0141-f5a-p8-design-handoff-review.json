@@ -1,0 +1,44 @@
+{
+  "schema_version": "F5aDesignReview.v1",
+  "packet": 8,
+  "candidate": "96cd21c",
+  "reviewer_model": "gpt-5.6-terra",
+  "reviewer_id": "/root/p8_design_handoff_review_terra",
+  "reviewed": [
+    "0138-f5a-p8-design-and-matrix.json",
+    "0140-f5a-p8-design-corrections-and-owner-gates.json",
+    "docs/memos/2026-09-15-deepseek-f5a-final-handoff.md (uncommitted handoff wording)"
+  ],
+  "verdict": "Conditional handoff sufficient to stop honestly; not ready for RED",
+  "counts": {
+    "critical": 0,
+    "major": 4,
+    "minor": 0,
+    "nit": 0
+  },
+  "findings": [
+    {
+      "id": "P8-D1-M1",
+      "status": "open",
+      "detail": "Owner API migration and P8-before-P7 sequencing approval."
+    },
+    {
+      "id": "P8-D1-M4",
+      "status": "open",
+      "detail": "Owner authenticated bootstrap, authority-to-namespace binding and trusted ServeRoot provisioning."
+    },
+    {
+      "id": "P8-D1-M2",
+      "status": "open",
+      "detail": "Freeze explicit runtime and transition_nonces signature; actual _P4_REQUEST_CHECK requires nonces."
+    },
+    {
+      "id": "P8-D2-M5",
+      "status": "open",
+      "detail": "After state.apply failure, supplied SeriesState can be stale/partially mutated. _open restores ledger head/index only. Recovery must discard/rebuild/replay the sole SeriesState and verify head before snapshots/new claims."
+    }
+  ],
+  "resolved": "0140 specifies result API, health states, snapshot cadence and body validator ownership; rejects bare ledger injection without fake bootstrap claim.",
+  "checks": "Read-only source/document review; no runtime code/tests changed or executed.",
+  "next": "Correct explicit nonce signature and state recovery detail; owner gates remain. This verdict is retained, not overwritten by corrections."
+}

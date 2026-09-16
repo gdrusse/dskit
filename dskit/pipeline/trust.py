@@ -24,6 +24,8 @@ from threading import RLock
 from types import MappingProxyType
 from weakref import WeakKeyDictionary
 
+from dskit.pipeline.node import Node, reject_unknown_params
+
 __all__ = [
     "CapturedAuthorizationAuthority",
     "CapturedAuthorizationRecord",
@@ -39,6 +41,7 @@ __all__ = [
     "LifecycleAuthority",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
     "ReleaseKeyring",
+    "ReplayRun",
     "TerminalArtifactVerifier",
     "TrustedClock",
     "TrustedRuntimeVerifier",
@@ -5207,3 +5210,63 @@ _P4_LEDGER_METHODS = tuple((name, getattr(_LifecycleAuthorizationLedger, name)) 
     "_check", "_fault", "_legacy_gate", "_require_unclaimed", "_nonce_used", "_request", "resolve_p4", "commit_p4_batch",
     "_p4_entries", "_legacy_captures", "commit_legacy_capture",
 ))
+
+
+class ReplayRun(Node):
+    """The generic ReplayRun consumer node (ADR-0127), role ``replay``.
+
+    Declares exactly two captured inputs, ``tape_manifest`` and
+    ``tape_data``, enforced by the document grammar keyed on the owned
+    kind name ``replay``. The node's execution — consuming the composed
+    tape capability and producing the replay result — is the F3
+    captured-tape follow-on; ``run`` therefore refuses rather than mint
+    any opaque capability this slice.
+
+    Examples
+    --------
+    The node is named by the owned kind, never constructed directly::
+
+        node = ReplayRun("replay", {})
+        node.role
+        # -> 'replay'
+    """
+
+    role = "replay"
+    outputs = ("result",)
+    _PARAMS = ()
+
+    @classmethod
+    def validate_params(cls, params):
+        """ReplayRun accepts no knobs: default-deny, no ``space`` or other param."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        return problems
+
+    def run(self, ctx, inputs):
+        """Refuse execution: the composed-tape broker is the F3 follow-on."""
+        raise RuntimeError(
+            "replay execution requires the F3 composed-tape broker "
+            "(follow-on); the ReplayRun node is declared for its "
+            "tape-pair grammar only"
+        )
+
+
+def register(registry=None) -> None:
+    """Claim the toolkit-owned ``replay`` kind (owned=True).
+
+    Called by the orchestrator at package import, never at import time.
+    A pre-existing ``replay`` entry is verified, never silently accepted:
+    a foreign class squatting the owned name raises.
+    """
+    from dskit.pipeline.node import DEFAULT_NODE_KINDS
+
+    registry = DEFAULT_NODE_KINDS if registry is None else registry
+    if "replay" in registry:
+        cls, owned = registry.get("replay")
+        if cls is not ReplayRun or not owned:
+            raise ValueError(
+                "kind 'replay' is already registered to a foreign class — "
+                "refusing to shadow the owned ReplayRun kind"
+            )
+        return
+    registry.register("replay", ReplayRun, owned=True)

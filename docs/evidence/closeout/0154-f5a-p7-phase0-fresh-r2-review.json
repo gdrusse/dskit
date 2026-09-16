@@ -1,0 +1,19 @@
+{
+  "schema_version": "F5aDesignReview.v1",
+  "packet": "7-replay-tape-descriptors-slice1-fresh",
+  "candidate": "0153-f5a-p7-phase0-fresh-v2.json",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "reviewer_id": "opencode-go/deepseek-v4-flash (fresh Phase 0 R2)",
+  "verdict": "conditional design blocked; 2 Critical + 3 Major; reviewer recommends concrete return path",
+  "counts": {"critical": 2, "major": 3, "minor": 3},
+  "findings": [
+    {"id": "C1", "severity": "Critical", "summary": "document->replay->node->document import cycle; new module violates ADR-0127 literal home + AGENTS ask-before-files. Fix: literal back in document.py, no new file, register via existing module."},
+    {"id": "C2", "severity": "Critical", "summary": "issubclass(cls, ReplayRun) predicate is weaker than ADR's resolved.cls.role=='replay'; a custom class declaring role='replay' escapes both points. Fix: use the ADR predicate."},
+    {"id": "M4", "severity": "Major", "summary": "registering 'replay' breaks tests/pipeline/test_serving_effect.py KIND_EFFECTS census. Fix: extend KIND_EFFECTS."},
+    {"id": "M5", "severity": "Major", "summary": "new file dskit/pipeline/replay.py without approval."},
+    {"id": "M1/M3", "severity": "Major", "summary": "'authoritative broker route' is phantom: trust.py has no node resolution; it is the follow-on F3 broker. The owned-kind spelling at parse is the only reachable enforcement this slice."}
+  ],
+  "resolved": ["M2 (honest raising run(), hpo-grid/clock precedent is acceptable)"],
+  "reviewer_recommendation": "literal in document.py per ADR-0127; no new module; register via existing kinds register(); place reachable class-declared refusal in planner.py role check (stat_test precedent) keyed on resolved.cls.role=='replay'; parse rule keyed on the owned kind name (the single legal spelling of an owned kind).",
+  "recorded_at_utc": "2026-09-16T00:35:00.000000+00:00"
+}

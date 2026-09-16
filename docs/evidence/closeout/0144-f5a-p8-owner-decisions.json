@@ -1,0 +1,44 @@
+{
+  "schema_version": "OwnerDecision.v1",
+  "slice_id": "F5a",
+  "packet": "8-durable-consume-once-authority",
+  "date": "2026-09-15",
+  "owner": "forecast-capital owner / coordinator",
+  "decision_source": "explicit owner responses to the three immediate P8 gates named in 0139/0140/0141/0143 and the DeepSeek remainder prompt",
+  "supersedes_gate": "docs/evidence/closeout/0140-f5a-p8-design-corrections-and-owner-gates.json",
+  "implementer_model": "DeepSeek v4 Pro",
+  "decisions": [
+    {
+      "id": "P8-D1-M1-sequencing",
+      "question": "Permit P8 implementation independently while Packet7 remains open, or preserve the original ordering (0100: P8 reached only after P5-7 close).",
+      "decision": "keep-original-ordering",
+      "detail": "P8 implementation is NOT authorized ahead of Packet7. Packet8 begins only after Packets 5-7 close. Packet7 remains blocked on the missing F3/replay-ops interfaces recorded in 0137; no locally decidable P7 runtime slice was identified.",
+      "effect": "P8 implementation remains blocked. The approved migration and issuer decisions below are recorded now and become executable only once Packet7 closes."
+    },
+    {
+      "id": "P8-D1-M1-migration",
+      "question": "Approve migration of the capture-capable HistoricalStudyVerifier constructor away from authority-only plus six arbitrary nonempty plan dictionaries with admission.consumed=True.",
+      "decision": "approve-migration",
+      "detail": "Capture-capable HistoricalStudyVerifier construction must require authenticated owner composition and an immutable authority-verified admission identity; the current successful authority-only plus six placeholder dicts route supplies neither a trusted durable store nor a verified stable admission identity. No successful non-durable fallback remains; leaving one would keep R23 open for the old capture route.",
+      "effect": "Inherits the design contract in 0138/0140/0142: remove the public _spend constructor-kwdefault authority; explicit inputs captures, admission_ref, consumer_run_identity, process_measurement_sha256, runtime_sha256, transition_nonces; inspect_capture_admission is read-only metadata validation on the existing authority, not a new grant."
+    },
+    {
+      "id": "P8-D1-M4-issuer",
+      "question": "Name/approve the trusted bootstrap issuer and its authenticated binding of admission, capture authority and durable namespace.",
+      "decision": "existing-issued-authority-plus-owner-serveroot",
+      "detail": "The existing issued CapturedAuthorizationAuthority supplies the verified admission identity; the durable namespace comes from the owner-configured stable ServeRoot/genesis, never a caller-passed ledger. No new dedicated bootstrap issuer class. A public constructor accepting an arbitrary JsonlLedger would let a caller replay the same admission against a fresh empty ledger; pins, opaque wrappers, or another public factory accepting arbitrary ledgers merely relocate that bypass and remain rejected.",
+      "effect": "Bare ledger injection stays rejected. When P8 becomes implementable, the trusted namespace must be authenticated owner-provided configuration, and reopening happens only through that owner against the same namespace."
+    }
+  ],
+  "resulting_state": {
+    "packet7": "blocked on missing F3/replay-ops interfaces (0137). No locally decidable runtime slice; do not fabricate or start unrelated F3 implementation without authorization.",
+    "packet8": "blocked by keep-original-ordering sequencing; migration and issuer architecture now approved and frozen for use once P7 closes.",
+    "f5a_r23": "open until P8 GREEN proof and two final lenses.",
+    "whole_f5a": "open",
+    "f3_f5b": "open",
+    "deployment_eligible": false
+  },
+  "next_action": "Wait for replay-ops/F3 to supply the resolved ReplayRun/NodeSpec contract, verified PUBLISHED manifest/data identities, parent manifest-producer CAPTURED receipt, and members/policy/count/order verification interfaces, then close Packet7; only then may P8 implementation proceed under the approved migration and issuer decisions with a fresh clean Phase0.",
+  "protected_source": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "recorded_at_utc": "2026-09-15T22:32:16.408995+00:00"
+}

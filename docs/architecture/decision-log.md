@@ -8991,3 +8991,84 @@ R29–R41 stay closed. R42–R46 are deferred under this model.
 **Consequences.** F4 reviews hunt in-scope single-surface Majors. Re-proven
 R42–R46 are deferred citing this ADR, not Major. F4 may ReviewExit at
 `deployment_eligible: false`. F5a does not start until that exit exists.
+
+## ADR-0127 — F3 captured-tape capture hierarchy and ReplayRun identity seam (P7 prerequisite)
+
+**Status:** accepted (2026-09-15; owner approved "Approve ADR-0127"). This
+authorizes synthetic TDD implementation of the captured-tape hierarchy and
+ReplayRun identity seam only; a fresh Phase 0 skeptic precedes RED. It does not
+authorize real data, replay execution, training, HPO/refit, backtest, paper/live
+operation, or deployment.
+
+**Context.** Packet7 enforces that a node resolved as the generic `ReplayRun`
+consumer in an execution `PipelineDocument` declares exactly two canonical
+top-level inputs — `tape_manifest` and `tape_data` — and refuses missing, extra,
+duplicate, aliased, nested, swapped, and equal-port/different-capture cases before
+planning or root creation. Evidence `0137` established that the runtime classes
+`ReplayRun`, `ReplayTapeDataCapture`, `ReplayTapeManifestProducer`,
+`ReplayTapeManifestCapture` and their verified captured-tape seam do not exist
+anywhere in `dskit/`; the legacy `bundles.ReplayTape` ABC supplies DATA
+(`start_ms`, `feed_results`, `id_allocations`) and is not that seam. The owner
+authorized DeepSeek to build these prerequisite interfaces (`0145`). The
+descriptor grammar, capture chronology, and `replay-consumer` phase already exist
+in ADR-0123/ADR-0125 and the F5a/F3 plan; this ADR adds only the runtime identity
+and capture hierarchy, not a second grammar or a parallel tape engine.
+
+**Decision.**
+
+1. **Class-declared ReplayRun consumer identity.** The pipeline identifies the
+   replay consumer by class-declared identity, never by a uses-string resemblance
+   or an import-path text match. The identity is the existing owned-kind +
+   role doctrine (the `stat_test`/`validate` discipline): a new `ROLES` member
+   `"replay"` and a single owned kind literal `REPLAY_RUN_KIND = "replay"` live
+   in `dskit/pipeline/document.py`; the concrete ReplayRun node class declares
+   `role = "replay"` and is registered `owned=True` (follow-on F3/F5b/R1).
+   The pair rule is enforced at two class-declared points: parse time, keyed on
+   `NodeSpec.uses == REPLAY_RUN_KIND` (the owned literal — the registered
+   spelling), and plan time, keyed on `resolved.cls.role == "replay"` (refusing
+   any non-owned/class-ref spelling and enforcing the pair, exactly as
+   `planner.py` already does for `stat_test`). `dskit.production.replay.ReplayRun`
+   (the R1 runnable entry point, out of scope here) may reference that identity
+   through the existing production→pipeline import seam.
+
+2. **Captured-tape capture hierarchy, one acyclic F4-style WORM chain.** Add three
+   generic capture collaborators, reusing trust.py's existing opaque capture and
+   lifecycle primitives (`VerifiedCapture`, `CapturedMemberHandle`,
+   `CapturedLifecyclePort`, `CapturedBindings`, `authorize_capture_set`,
+   `commit_p4_batch`) rather than a second engine:
+   - `ReplayTapeDataCapture` — the parent data WORM capture (`raw_event_dataset`,
+     `source_roster`), whose root is PUBLISHED.
+   - `ReplayTapeManifestProducer` — the distinct later consumer that derives the
+     inner canonical `CapturedReplayTape.v1` bytes (event envelope schema,
+     data-capture root/receipt, source-rank policy digest, envelope count,
+     ordered envelope digests, ordered-envelopes digest, `tape_digest`) and
+     PUBLISHES them in its own `ReplayTapeManifestCapture` root/receipt.
+   - The composed tape capability — the only thing that may become a runtime
+     `ReplayTape`; it is issued only after verifying the outer manifest
+     `VerifiedCapture`/bytes, the inner prior manifest-producer data receipt
+     against the parent root/members/policy, and the separate replay-data
+     CAPTURED receipt against the replay data port.
+
+   `production/bundles.py` owns the default-deny `CapturedReplayTape.v1`
+   parser/canonical bytes and its private verification seam (per the plan);
+   `source_rank_policy_sha256` names the pre-document F3 `SourceRosterCapture`
+   policy and is never derived from a resulting tape.
+
+3. **Sequencing and scope.** First slice: establish the class-declared ReplayRun
+   identity and `NodeSpec` contract, then implement Packet7's locally decidable
+   two-descriptor grammar/binding enforcement against it. Follow-on slices add the
+   verified captured-tape producer/capture hierarchy and composed-tape capability
+   so the descriptors resolve to verified PUBLISHED/CAPTURED identities and P7
+   closes. This ADR's implementation boundary is P7 closure only.
+
+**Non-goals.** Full R1–R5 replay transaction machinery (`AtomicJournalReplace`,
+`AtomicSeriesStateReplace`, `FrozenReplayPlan.v2`, lease/idempotency journal),
+F1/F2 `EventEnvelope` causal reordering, the full F3 feed/roster data-capture
+lane beyond what P7 verification requires, and any second planner, ledger, or tape
+engine.
+
+**Process.** After owner approval: fresh clean Phase 0 skeptic over the frozen
+identity/hierarchy contract and matrix, then RED→GREEN with synthetic fixtures
+and real temp on-disk JSONL for any persistence proof, two fresh sequential Terra
+final lenses (correctness/authority, then tests/integration), then integrate.
+`deployment_eligible` stays false.

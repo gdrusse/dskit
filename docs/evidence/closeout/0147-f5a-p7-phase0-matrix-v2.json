@@ -1,0 +1,103 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite",
+  "packet": "7-replay-tape-descriptors-slice1",
+  "status": "phase0-design-corrected-v2",
+  "supersedes": "0146-f5a-p7-phase0-matrix.json",
+  "base_main": "48ae2fb37a6f176fd52f8c983eaf9f1b37ddfad1",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "phase0_round1_reviewer_id": "opencode-go/deepseek-v4-flash (Phase0 R1)",
+  "disposition_of_round1": {
+    "critical": ["C1 no reachable enforcement site", "C2 class-ref import-before-refusal"],
+    "major": ["M1 duplicate vs distinct contradiction", "M2 swapped/equal-port unfalsifiable at grammar", "M3 ROLES member is a second identity spelling", "M4 marker run() unspecified", "M5 sentinel does not guard slice"],
+    "resolution": "see corrected sections below; each maps to a frozen decision."
+  },
+
+  "frozen_identity": {
+    "mechanism": "toolkit-OWNED node kind, the existing stat_test/validate doctrine (node.py register_node_kind(name, cls, owned=True); planner.py:540-543 refuses any non-owned spelling). ReplayRun consumer is a pipeline-owned Node subclass registered under a single pipeline-owned literal REPLAY_RUN_KIND. Identity is the owned kind name, never a uses-string resemblance match, never the document role key, never an import-path text match.",
+    "literal": "REPLAY_RUN_KIND = \"replay\" lives in dskit/pipeline/document.py beside ROLES/MODES as the single owner; the registry registers it owned=True.",
+    "class": "The concrete ReplayRun node class and its run() are the FOLLOW-ON slice (F3/F5b/R1). This grammar slice keys the rule on the owned kind NAME, so run() semantics and class registration are out of slice scope; a test-local registry registers a synthetic ReplayRun class to prove the parse-time rule fires on the kind name.",
+    "resolves": "C1 (no class resolution needed at parse), C2 (no import; exact equality on an owned literal), M3 (identity is the owned kind, NOT a ROLES member or role key), M4 (positive test is kind-name keyed, independent of run())."
+  },
+
+  "frozen_enforcement": {
+    "site": "parse time in dskit/pipeline/document.py, extending the existing Packet5 grammar: PipelineDocument.from_obj and NodeSpec.__post_init__. The pair rule fires for execution_backtest documents (the same parse path P5 already sweeps), before planning, provider/filesystem, broker, node import, or output creation.",
+    "rule": "a node whose NodeSpec.uses == REPLAY_RUN_KIND must declare inputs equal to exactly {tape_manifest, tape_data}; each value is a complete legal P5 $captured_artifact descriptor. The replay kind is execution-only: a non-execution document referencing REPLAY_RUN_KIND refuses (parallel to the captured-descriptor execution-only rule).",
+    "resolves": "C1 (parse-time host reaches execution docs), C2 (no class-ref import)."
+  },
+
+  "positive_grammar": {
+    "pair": "inputs == {tape_manifest: {$captured_artifact: D1}, tape_data: {$captured_artifact: D2}}; D1, D2 each an exact P5 six-field descriptor.",
+    "note": "D1 and D2 equality/roles are follow-on verification, explicitly NOT grammar."
+  },
+
+  "negative_families": [
+    {"family": "missing", "cases": ["tape_manifest only", "tape_data only", "neither descriptor"]},
+    {"family": "extra", "cases": ["a third input key beside the pair (descriptor or ordinary wire)"]},
+    {"family": "aliased", "cases": ["a renamed port (any name other than the exact two) carrying a descriptor", "a third key naming one of the two roots"]},
+    {"family": "nested", "cases": ["a descriptor as a list/map input value", "a $captured_artifact under a non-top-level input position"]},
+    {"family": "wrong_name", "cases": ["port names not exactly tape_manifest/tape_data (covers the grammar-level half of 'swapped': manifest and data descriptors exchanged between the two names is follow-on content verification, out of slice)"]},
+    {"family": "identity", "cases": ["uses string merely containing 'replay' is not identified", "a non-ReplayRun node declaring the two tape ports is not swept into the pair rule", "an import-path class ref spelling ReplayRun is not identified by string (it is refused as non-owned at plan, but the pair rule does not key on it)"]}
+  ],
+  "removed_from_grammar_slice": {
+    "duplicate_identical": "D1 == D2 on the two ports is follow-on verification (same-admission conflict), not grammar.",
+    "swapped_content": "manifest-shaped vs data-shaped descriptor CONTENT is follow-on verification, not grammar.",
+    "equal_port": "equal ConsumerCapturedPort with different captures is follow-on verification, not grammar.",
+    "resolves": "M1, M2 (no contradictory or unfalsifiable grammar rows; the removed families are recorded as follow-on)."
+  },
+
+  "compatibility": {
+    "p4_replay": "pair rule fires ONLY on uses == REPLAY_RUN_KIND; accepted P4 final-replay fixtures with generic bundle/second inputs of cardinality one or two remain green.",
+    "p5_p6": "per-descriptor shape (P5) and generic equality (P6) unchanged.",
+    "ordinary_docs": "non-execution documents without the replay kind are byte/hash-identical.",
+    "purity": "pipeline never imports production; no new module-level non-stdlib import; the replay kind literal and rule live in document.py.",
+    "resolves": "M3/M4 compatibility half."
+  },
+
+  "forbidden_effects": [
+    "planning or stage compilation completes before grammar refusal",
+    "provider or filesystem access",
+    "broker construction",
+    "node/adapter import or construction",
+    "output creation",
+    "identifying ReplayRun by a uses-string resemblance or the document role key"
+  ],
+
+  "entry_points": [
+    "dskit.pipeline.document.PipelineDocument.from_obj / NodeSpec.from_obj (pair rule)",
+    "dskit.pipeline.driver.plan_document / run_document (refuse before planning via the parse-time rule)",
+    "dskit.pipeline.__main__ cmd_plan / cmd_run / cmd_validate / cmd_staged / cmd_walkforward (same parse path)",
+    "dskit.pipeline.planner.plan (unchanged; continues to refuse execution docs for ordinary planning)"
+  ],
+
+  "tests": {
+    "new": "tests/pipeline/test_replay_tape_descriptors.py: positive pair + missing/extra/aliased/nested/wrong_name/identity families; ordinary-doc replay-kind refusal; compatibility (P4 generic cardinality unaffected).",
+    "sentinel_note": "M5 accepted: tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture does NOT guard this slice (class-blind broker path); it is retained as a general regression check only, not claimed as this slice's guard. The slice's guard is the new test_replay_tape_descriptors.py plus the extended test_captured_artifact_grammar.py.",
+    "existing_inventoried": [
+      "tests/pipeline/test_captured_artifact_grammar.py",
+      "tests/pipeline/test_trust.py",
+      "tests/pipeline/test_captured_authorization.py",
+      "tests/pipeline/test_planner.py",
+      "tests/pipeline/test_document.py"
+    ]
+  },
+
+  "implementation_files": [
+    "dskit/pipeline/document.py",
+    "tests/pipeline/test_replay_tape_descriptors.py",
+    "tests/pipeline/test_captured_artifact_grammar.py (extend, not rewrite)"
+  ],
+
+  "frozen_open_answers": {
+    "q1_marker_base": "owned kind name; the concrete class and run() are follow-on. No new module this slice; rule lives in document.py.",
+    "q2_enforcement": "parse time only (document.py), not planner (planner refuses execution docs before resolution).",
+    "q3_import_order": "resolved: exact equality on an owned literal; no import, no class resolution at parse.",
+    "q4_role": "no new ROLES member; identity is the owned kind name."
+  },
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0147-f5a-p7-phase0-matrix-v2.json",
+    "git diff --check"
+  ]
+}

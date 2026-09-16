@@ -1,0 +1,16 @@
+{
+  "schema_version": "F5aDesignReview.v1",
+  "packet": "7-replay-tape-descriptors-slice1-fresh",
+  "candidate": "0155-f5a-p7-phase0-fresh-v3.json",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "reviewer_id": "opencode-go/deepseek-v4-flash (fresh Phase 0 R3)",
+  "verdict": "close; 0 Critical, 3 Major all concrete/fixable",
+  "counts": {"critical": 0, "major": 3, "minor": 3},
+  "findings": [
+    {"id": "M-A", "severity": "Major", "summary": "plan-time role/pair rules unreachable for execution docs (refuse_execution_backtest precedes the role loop); class-ref spelling in an execution doc is refused by nothing this slice. Fix: accept as documented scope boundary — the owned kind's single legal spelling ('replay') is enforced at parse; class-ref spelling in execution docs is the F3 broker's follow-on; the class-ref/custom-role owned refusal test targets ordinary docs where it is reachable."},
+    {"id": "M-C", "severity": "Major", "summary": "ReplayRun must implement default-deny validate_params or test_foreach census (all DEFAULT_NODE_KINDS kinds refuse a space param) breaks on registration."},
+    {"id": "M-D", "severity": "Major", "summary": "non-execution replay-kind refusal has no home: _execution_backtest_node_errors only runs when execution_backtest is not None. Fix: enforce the pair+execution-only rule at PipelineDocument.from_obj level (document context), not _execution_backtest_node_errors."}
+  ],
+  "resolved": ["C1 cycle (with false 'already imports node.py' premise noted)", "C2 role predicate", "M4 census (partially; M-C adds the foreach census)"],
+  "recorded_at_utc": "2026-09-16T01:05:00.000000+00:00"
+}

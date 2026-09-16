@@ -1,0 +1,78 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite",
+  "packet": "7-replay-tape-descriptors-slice1-fresh",
+  "status": "phase0-final-contract",
+  "supersedes": "0155-f5a-p7-phase0-fresh-v3.json",
+  "base_main": "48ae2fb37a6f176fd52f8c983eaf9f1b37ddfad1",
+  "cites": ["ADR-0127 (Decision.1 predicate)", "ADR-0125", "plan:208-209,554-588,705-735", "0156-f5a-p7-phase0-fresh-r3-review.json"],
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+
+  "scope": "ReplayRun owned-kind class-declared identity + tape-pair grammar. The owned kind has exactly ONE legal spelling ('replay'); the class-ref spelling is illegal by the owned-kind doctrine and, for execution docs, is the F3 broker's follow-on concern (documented scope boundary, not a hidden gap).",
+  "non_goals": ["verified PUBLISHED/CAPTURED identity resolution", "composed tape capability", "ReplayTapeDataCapture/ManifestProducer/ManifestCapture runtime", "class-ref spelling enforcement inside execution docs (F3 broker follow-on)", "R1-R5 replay machinery", "F1/F2 envelope reorder", "second planner/ledger/tape engine", "pair on every P4 replay admission", "uses-string resemblance", "real data/replay/deployment"],
+
+  "registration": {
+    "literal": "REPLAY_RUN_KIND = \"replay\" in dskit/pipeline/document.py (single owner).",
+    "role": "\"replay\" added to ROLES in document.py.",
+    "class": "ReplayRun(Node) in dskit/pipeline/trust.py (no new file). It imports Node from node.py; document.py imports NOTHING from trust, so no cycle.",
+    "register": "trust.py gains register(); dskit/pipeline/__init__.py imports and calls it: register_node_kind(REPLAY_RUN_KIND, ReplayRun, owned=True).",
+    "class_contract": "role=\"replay\"; non-empty outputs tuple; default-deny validate_params (refuses any space param); run() RAISES an honest refusal (replay execution requires the F3 composed-tape broker, follow-on)."
+  },
+
+  "enforcement": {
+    "parse": "dskit/pipeline/document.py at PipelineDocument.from_obj level (document context): a node whose NodeSpec.uses == REPLAY_RUN_KIND must be in an execution_backtest document AND declare inputs exactly {tape_manifest, tape_data}, each a complete P5 descriptor. A non-execution document referencing REPLAY_RUN_KIND refuses. This is the single reachable enforcement point for execution docs.",
+    "plan": "planner.py, stat_test precedent: resolved.cls.role == \"replay\" requires owned=True (refuses class-ref/custom-role spellings) for ordinary documents. (Unreachable for execution docs, which refuse_execution_backtest excludes; the class-ref spelling in execution docs is the F3 broker's follow-on.)"
+  },
+
+  "positive_grammar": "inputs == {tape_manifest: {$captured_artifact: D1}, tape_data: {$captured_artifact: D2}}; D1, D2 each an exact P5 six-field descriptor.",
+
+  "negative_families": [
+    {"family": "missing", "cases": ["tape_manifest only", "tape_data only", "neither"]},
+    {"family": "extra", "cases": ["a third input key beside the pair"]},
+    {"family": "aliased", "cases": ["a renamed port carrying a descriptor"]},
+    {"family": "nested", "cases": ["a descriptor as a list/map input value"]},
+    {"family": "wrong_name", "cases": ["port names not exactly tape_manifest/tape_data"]},
+    {"family": "identity", "cases": ["uses resembling 'replay' only not identified", "a non-ReplayRun node declaring the two ports not swept", "a class-ref/custom class with role='replay' refused as non-owned on ordinary docs"]}
+  ],
+  "follow_on_not_grammar": ["duplicate identical D1==D2", "swapped manifest/data CONTENT", "equal ConsumerCapturedPort different captures", "class-ref spelling inside execution docs"],
+
+  "compatibility": {
+    "p4_replay": "pair rule fires only on the ReplayRun owned kind; accepted P4 final-replay fixtures remain green.",
+    "p5_p6": "descriptor shape and generic equality unchanged.",
+    "ordinary_docs": "byte/hash-identical.",
+    "purity": "pipeline never imports production; trust.py is stdlib-only."
+  },
+
+  "forbidden_effects": [
+    "planning/stage compilation completes before grammar refusal",
+    "provider/filesystem access",
+    "broker construction before grammar refusal",
+    "node/adapter import or construction before refusal",
+    "output creation",
+    "uses-string resemblance or document role key as identity authority",
+    "ReplayRun.run() minting any opaque capability"
+  ],
+
+  "tests": {
+    "new": "tests/pipeline/test_replay_tape_descriptors.py: positive pair; missing/extra/aliased/nested/wrong_name/identity; non-execution replay-kind refusal; class-ref/custom role='replay' owned refusal on ordinary docs; ReplayRun.run() refusal; one-name pin (ReplayRun.role == 'replay' == REPLAY_RUN_KIND == owned kind).",
+    "existing": ["tests/pipeline/test_captured_artifact_grammar.py", "tests/pipeline/test_trust.py", "tests/pipeline/test_captured_authorization.py", "tests/pipeline/test_planner.py", "tests/pipeline/test_document.py"],
+    "census": "extend tests/pipeline/test_serving_effect.py KIND_EFFECTS and add ReplayRun default-deny validate_params so test_foreach census passes.",
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture (general regression only)."
+  },
+
+  "implementation_files": [
+    "dskit/pipeline/document.py",
+    "dskit/pipeline/trust.py",
+    "dskit/pipeline/__init__.py",
+    "dskit/pipeline/planner.py",
+    "tests/pipeline/test_replay_tape_descriptors.py",
+    "tests/pipeline/test_serving_effect.py",
+    "tests/pipeline/test_captured_artifact_grammar.py (extend)"
+  ],
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0157-f5a-p7-phase0-final.json",
+    "git diff --check"
+  ]
+}

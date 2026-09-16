@@ -543,6 +543,12 @@ def plan(document, registry=None) -> Plan:
                 f"{spec.uses!r} must be the registered owned kind, never a "
                 "custom class (the discipline is doctrine, spec §5)"
             )
+        if cls.role == "replay" and not resolved[key].owned:
+            errors.append(
+                f"pipeline.{key}: role 'replay' is toolkit-owned — "
+                f"{spec.uses!r} must be the registered owned kind, never a "
+                "custom class or import path (ADR-0127)"
+            )
     if errors:
         raise ConfigError(errors)
 

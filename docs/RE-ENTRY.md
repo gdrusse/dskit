@@ -1,5 +1,159 @@
 # Re-entry
 
+## Current wrap: P7 slice 1 (ReplayRun identity + tape-pair grammar) closed and merged (2026-09-16)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7`. Main was `48ae2fb`; this slice merges on top. Protected
+source `c489199` untouched; dirty main checkout untouched. DeepSeek v4 Pro
+implementer; reviewer `opencode-go/deepseek-v4-flash` (owner substituted for the
+unavailable Terra/gpt-5.6-terra).
+
+**Scope.** Owner authorized building the F3/replay-ops prerequisite (`0145`,
+`0150`); ADR-0127 accepted then amended (`Decision.1`). Six Phase 0 skeptic rounds
+with a convergence checkpoint (`0149`) established that the tape-pair grammar
+cannot precede the ReplayRun class. This slice delivers the ReplayRun
+class-declared identity + the tape-pair grammar:
+
+- `dskit/pipeline/document.py`: `"replay"` in `ROLES`; `REPLAY_RUN_KIND="replay"`;
+  `_replay_node_errors` enforces at parse time that a `uses:"replay"` node is
+  execution-only and declares exactly `{tape_manifest, tape_data}`, each a
+  complete P5 descriptor (sweeps `pipeline` and `foreach.pipeline`).
+- `dskit/pipeline/trust.py`: `ReplayRun(Node)` role `replay`, owned kind,
+  default-deny `validate_params`, `run()` refuses (composed-tape broker is F3).
+- `dskit/pipeline/planner.py`: `role == "replay"` requires owned (stat_test
+  precedent), refusing class-ref/custom spellings on ordinary docs.
+
+**Review.** Two clean independent final lenses (`0160` correctness, then
+tests/integration) on the locked candidate; zero Critical/Major. Minor backlog
+recorded (squatter-raise pin, validate_params reachability, a few negative-case
+pin gaps). Sentinel green; focused suite 1609 passed; Ruff + `git diff --check`
+clean.
+
+**Remaining.** Packet7 verification half (resolve the descriptors to verified
+PUBLISHED/CAPTURED identities) and the F3 captured-tape hierarchy
+(`ReplayTapeDataCapture`/`ReplayTapeManifestProducer`/`ReplayTapeManifestCapture`
++ composed tape capability) remain open — the class-ref spelling inside an
+execution document is that broker's follow-on. Packet8, F5A-R23, whole-F5a and
+F5b remain open; `deployment_eligible=false`. Next unused evidence: 0162.
+
+## Current checkpoint: F3/replay-ops prerequisite authorized; ADR-0127 proposed, awaiting approval (2026-09-15)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7` (pushed, unmerged). Main `48ae2fb`; P5/P6 closed/merged.
+Protected source `c489199` untouched; dirty main checkout untouched. DeepSeek v4
+Pro primary implementer. No runtime/test changes made this turn.
+
+Owner authorized DeepSeek to build the F3/replay-ops interfaces P7 depends on
+(`0145`): the class-declared ReplayRun/NodeSpec identity seam plus the verified
+captured-tape (manifest/data) producer/capture hierarchy, in `dskit/`, then use
+them to close Packet7. This does not change P8's sequencing (P8 still follows P7).
+
+ADR-0127 is **proposed** in `docs/architecture/decision-log.md` and awaits owner
+approval before any implementation: class-declared ReplayRun consumer identity
+(no uses-string heuristic), a one-acyclic F4-style WORM capture hierarchy
+(`ReplayTapeDataCapture` -> `ReplayTapeManifestProducer` -> `ReplayTapeManifestCapture`
+-> composed tape capability) reusing trust.py primitives, with `production/bundles.py`
+owning the `CapturedReplayTape.v1` parser. Non-goals: full R1-R5 replay
+transaction machinery, F1/F2 envelope reordering, the full F3 feed lane, real
+data/replay.
+
+Next: owner approves ADR-0127 (or corrects it), then fresh clean Phase 0 skeptic,
+then RED/GREEN, two fresh Terra final lenses, integrate. P7/P8/F5A-R23/wholeF5a/
+F5b remain open; `deployment_eligible=false`. Next unused evidence number: 0146.
+
+## Current checkpoint: P8 owner gates resolved; P8 still sequenced behind P7, which awaits F3 (2026-09-15)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7` (pushed, unmerged). Main `48ae2fb`; P5/P6 closed/merged.
+Protected source `c489199` untouched; dirty main checkout untouched. DeepSeek v4
+Pro primary implementer. No runtime/test changes made this turn; no packet closed.
+
+**Owner decisions `0144`** resolve the three immediate P8 gates from
+0139/0140/0141/0143:
+
+1. **Sequencing — keep original ordering.** P8 implementation is NOT authorized
+   ahead of Packet7. P8 begins only after P5–7 close.
+2. **Migration — approve.** Capture-capable `HistoricalStudyVerifier` must require
+   authenticated owner composition and immutable authority-verified admission
+   identity; no successful non-durable fallback.
+3. **Issuer — existing issued authority + owner ServeRoot.** The existing issued
+   `CapturedAuthorizationAuthority` supplies verified admission identity; the
+   durable namespace comes from the owner-configured stable ServeRoot/genesis,
+   never a caller-passed ledger. No new issuer class; bare ledger injection stays
+   rejected.
+
+**Resulting blocker.** P7 remains blocked on the missing F3/replay-ops interfaces
+(`0137`): resolved ReplayRun/NodeSpec contract, verified PUBLISHED manifest/data
+identities, parent manifest-producer CAPTURED receipt, and members/policy/count/
+order verification. No locally decidable P7 runtime slice; do not fabricate or
+start unrelated F3 work without authorization. The approved P8 migration/issuer
+contract is frozen for use once P7 closes; then a fresh clean Phase0 precedes RED.
+
+P7/P8/F5A-R23/wholeF5a/F3/F5b remain open; `deployment_eligible=false`. Next
+unused evidence number: 0145. Approximate checkpoint minutes (design only): design
+0.8, implementation 0, tests 0, review 0, corrections 0, integration/wrap 0.2.
+
+## Current wrap: Packet 8 design handed off; implementation stopped (2026-09-15)
+
+User requested Packet8 design only, then stop/wrap and a DeepSeek prompt.
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7`; preserve this unmerged design/checkpoint branch.
+Main remains `48ae2fb`; P5/P6 closed/merged. Dirty main checkout untouched;
+protected source remains `c489199`.
+
+**Design:**0138; independent Terra findings0139; corrections/owner gates0140;
+fresh Terra handoff review0141; nonce/fresh-state clarifications0142 at96c50ca;
+reviewer correction disposition0143 confirms those technical findings resolved.
+This is an owner-gated design handoff, NOT clean Phase0 or implementation ready.
+No runtime/test files changed and no tests rerun. JSON/diff checks passed.
+
+**Remaining decisions:** approve legacy verifier API migration; define the
+trusted issuer/authenticated binding of admission, capture authority and durable
+namespace; approve P8 implementation ahead of P7 or keep ordering. Bare public
+ledger injection was rejected: a fresh ledger would let the same admission spend
+again. No opaque wrapper/public factory may simply relocate that bypass.
+0100 already chooses ChainLedger/JsonlLedger; do not ask that technology choice
+again. Proposed metadata accessor remains nonauthorizing; no preflight promotion.
+After decisions: fresh clean Phase0, real synthetic RED/GREEN, two final lenses.
+
+**DeepSeek prompt:**
+[2026-09-15-deepseek-f5a-final-handoff.md](memos/2026-09-15-deepseek-f5a-final-handoff.md).
+It contains environment, completed work, exact pending gates, design, tests,
+review/merge instructions and scope limits. DeepSeek primary, Terra reviewers
+unless owner changes that. Never more than one active reviewer.
+
+P7 missing F3/replay interfaces remains0137; P8/R23/wholeF5a/F3/F5b stay open.
+No merge/purge for this blocked branch. Next unused evidence:0144.
+Approximate checkpoint minutes: design2.4, implementation0, tests0, review6.3,
+corrections1.4, wrap/integration1.0. Initial unmeasured reading excluded;
+0143 contains timing anchors/method. No deployment or environment changes.
+
+## Current checkpoint: Packet 7 dependency; owner sequencing decision needed (2026-09-15)
+
+Task worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7`, from main `48ae2fb`. Packet6 remains closed/merged.
+Evidence `0137` at `bcfc59d` records a fresh Terra scope inventory: no executable
+local P7 seam exists before F3/replay-ops supplies resolved ReplayRun identity,
+verified outer/parent capture interfaces, manifest policy/count/order evidence.
+P5 grammar and P6 generic equality already exist; neither proves the tape pair.
+No runtime/test edits, invented RED, Phase0 approval, or P7 closure is claimed.
+
+**Owner decision required:** `0100` says "Packet 8 is reached only after
+Packets 5-7 close." Terra identified one Major authority blocker if an empty
+local slice were called closed to bypass that gate. Recommended next action:
+authorize Packet8 independently while Packet7 remains explicitly open; otherwise
+wait for replay-ops/F3 to supply the missing interfaces. Do not start P8 RED before
+its own ledger-backed matrix and fresh clean Terra Phase0. No new durable-owner
+choice is needed:0100 already selects ChainLedger/JsonlLedger.
+
+This is an unmerged checkpoint branch; preserve it. Main/protected source remain
+`48ae2fb` / `c489199`; dirty main checkout untouched. P7/P8/F5A-R23/wholeF5a/F3/F5b
+remain open; deployment_eligible=false. Next unused evidence number:0138.
+JSON parse and diff check passed; no code changes justify rerunning tests.
+Approximate P7 wall-time attribution through this checkpoint: design 4.5 minutes,
+review 2 minutes, integration/checkpoint 1.5 minutes; implementation/tests/
+corrections 0. Categories are estimates, overlap is assigned once, not CPU timing.
+
 ## Current wrap: Packet 6 closed and merged (2026-09-15)
 
 Task worktree `/home/russell/wt/f5a-remainder-20260915`, currently `main`.

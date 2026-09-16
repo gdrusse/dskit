@@ -1,0 +1,91 @@
+{
+  "schema_version": "F5aPacketDependencyCheckpoint.v1",
+  "packet": 7,
+  "date": "2026-09-15",
+  "base_commit": "48ae2fb37a6f176fd52f8c983eaf9f1b37ddfad1",
+  "status": "blocked-before-phase0; no runtime candidate or packet closure",
+  "implementer_model": "GPT-6",
+  "reviewer_model": "gpt-5.6-terra",
+  "reviewer_id": "/root/p7_scope_inventory_terra",
+  "authority": [
+    "docs/evidence/closeout/0095-f5a-remainder-contract-pack.json",
+    "docs/evidence/closeout/0096-f5a-remainder-delta-matrices.json",
+    "docs/evidence/closeout/0100-f5a-p8-owner-decision.json"
+  ],
+  "proposal": {
+    "ref": "origin/docs/f5a-deepseek-proposal-20260915",
+    "commit": "da4f15f873850edcf4e40515e3d2abffff32dbf6",
+    "path": "docs/memos/2026-09-15-deepseek-f5a-remainder-proposal.md",
+    "read_only": true
+  },
+  "inventory": [
+    {
+      "path": "dskit/production/bundles.py",
+      "finding": "ReplayTape is a legacy data ABC: start_ms, feed_results, id_allocations; no captured tape verification identity."
+    },
+    {
+      "path": "dskit/production/replay.py",
+      "finding": "Absent. No ReplayRun, ReplayTapeDataCapture, ReplayTapeManifestProducer, ReplayTapeManifestCapture class definitions found recursively under dskit."
+    },
+    {
+      "path": "dskit/pipeline/AGENTS.md",
+      "finding": "Roles are declared by the class, never config. A uses-string heuristic cannot establish the resolved ReplayRun identity."
+    },
+    {
+      "path": "dskit/pipeline/document.py",
+      "finding": "P5 already supplies six-key complete top-level captured descriptor grammar and strict duplicate-JSON-key refusal. No ReplayRun-resolved pair contract exists."
+    },
+    {
+      "path": "dskit/pipeline/trust.py",
+      "finding": "P6 generic descriptor/receipt/port equality and P4 unique stream/port plus exact authorized capture projection exist. Accepted P4 final-replay fixtures allow generic bundle/second inputs with cardinality one or two; imposing the tape pair globally breaks compatibility."
+    }
+  ],
+  "missing_dependencies": [
+    "Replay-ops resolved generic ReplayRun class identity and NodeSpec contract, with an accepted class-declared identification seam before planning/root creation.",
+    "F3 default-deny verified outer manifest parser/canonical bytes and authoritative PUBLISHED manifest/data identities.",
+    "F3 parent manifest-producer CAPTURED receipt, member/policy evidence, complete ordered envelope digests/count and composed tape capability verification seam."
+  ],
+  "contract_locations": [
+    "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:209",
+    "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:517",
+    "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:717"
+  ],
+  "disposition": "No new executable locally decidable P7 slice was identified. Existing generic P5/P6 behavior stays unchanged. Recording missing dependencies does not claim P7 closure or a clean Phase0. Do not invent a producer identity, placeholder validator, second tape engine, or RED failure.",
+  "reviewer_report": {
+    "scope": "Independent read-only scope/dependency inventory, not a final review or Phase0 approval.",
+    "critical": 0,
+    "major": 1,
+    "minor": 0,
+    "nit": 0,
+    "finding": {
+      "id": "P7-SCOPE-001",
+      "severity": "Major",
+      "invariant": "0100 sequencing authority",
+      "counterexample": "Declare an evidence-only empty local slice closed, then start Packet8 despite the explicit requirement that Packets5-7 close first. This creates an unauthorized dependency-gate bypass.",
+      "disposition": "No such closure claimed; preserve blocker and request owner sequencing decision."
+    },
+    "conclusion": "Evidence-only dependency record cannot by itself authorize P8. Proposal permits a locally decidable implemented scope but forbids whole-packet claims; current local runtime slice is empty. No current executable code defect was proven.",
+    "options": [
+      "Owner changes 0100 sequencing to allow Packet8 independently while Packet7 remains open.",
+      "Owner explicitly accepts a P7 dependency-disposition exit for sequencing only, retaining the complete ReplayRun contract as open F3/replay-ops work.",
+      "Keep ordering and wait for replay-ops/F3 interfaces."
+    ]
+  },
+  "checks": {
+    "method": "Static source/document inventory only; no behavior changed, no tests rerun, no manufactured RED. JSON parse and git diff --check required at checkpoint.",
+    "runtime_changes": false,
+    "tests_changes": false,
+    "phase0_clean": false,
+    "final_lenses": null
+  },
+  "preserved_open": [
+    "Packet7",
+    "Packet8",
+    "F5A-R23",
+    "whole F5a",
+    "F3/F5b"
+  ],
+  "protected_source": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "deployment_eligible": false,
+  "recorded_at_utc": "2026-09-15T21:41:32.513223+00:00"
+}
