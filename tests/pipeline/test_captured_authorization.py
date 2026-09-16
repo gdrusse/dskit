@@ -2806,3 +2806,212 @@ def test_adr135_bootstrap_refuses_noncanonical_bytes_and_subtypes():
     assert not hasattr(verifier, "publish")
     assert not hasattr(verifier, "reserve")
     assert not hasattr(verifier, "sign")
+
+
+
+def test_adr136_roster_reservation_is_shared_and_one_use(tmp_path):
+    cls = getattr(trust, "_SyntheticAuthorizationReserve", None)
+    assert cls is not None, "ADR-0136 shared reserve is missing"
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    with pytest.raises(ValueError):
+        cls(path)
+    cls._provision(path)
+    first, second = cls(path), cls(path)
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    assert first._reserve_roster(authorization, g1, g2, intent) is None
+    with pytest.raises(ValueError, match="spent|reserved"):
+        second._reserve_roster(authorization, g1, g2, intent)
+    assert "_SyntheticAuthorizationReserve" not in trust.__all__
+
+
+
+def test_adr136_roster_reserve_rechecks_time_at_commit(tmp_path, monkeypatch):
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    store = cls(path)
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    original = trust._p4_verify_ed25519
+    calls = 0
+
+    def expire_during_signature(public_key, raw, signature):
+        nonlocal calls
+        original(public_key, raw, signature)
+        calls += 1
+        if calls == 1:
+            monkeypatch.setattr(
+                trust._FixedP4VerificationClock, "now_ms",
+                lambda _clock: 901,
+            )
+
+    monkeypatch.setattr(trust, "_p4_verify_ed25519", expire_during_signature)
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    with pytest.raises(ValueError, match="time|expired"):
+        store._reserve_roster(authorization, g1, g2, intent)
+    monkeypatch.undo()
+    assert store._reserve_roster(authorization, g1, g2, intent) is None
+
+
+
+def test_adr136_shared_revocation_prevents_roster_reserve(tmp_path):
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    admin, broker = cls(path), cls(path)
+    admin._revoke("bootstrap-1")
+    generation, revoked, snapshot = broker._snapshot()
+    assert generation == 1 and revoked == frozenset({"bootstrap-1"})
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    grants = []
+    for raw in (g1, g2):
+        grant = json.loads(raw)
+        grant["revocation_snapshot_sha256"] = snapshot
+        grants.append(_resign_roster_bootstrap_grant(grant))
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    with pytest.raises(ValueError, match="revocation"):
+        broker._reserve_roster(authorization, *grants, intent)
+
+
+def test_adr136_reserve_refuses_missing_schema_uri_and_sync_downgrade(tmp_path):
+    import sqlite3
+
+    cls = trust._SyntheticAuthorizationReserve
+    missing = str(tmp_path / "missing.sqlite")
+    with pytest.raises(ValueError):
+        cls(missing)
+    empty = str(tmp_path / "empty.sqlite")
+    sqlite3.connect(empty).close()
+    with pytest.raises(ValueError):
+        cls(empty)
+    with pytest.raises(ValueError):
+        cls("file:" + empty + "?mode=rw")
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    store = cls(path)
+    store._connection.execute("PRAGMA synchronous=NORMAL")
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    with pytest.raises(ValueError, match="WAL/FULL"):
+        store._reserve_roster(authorization, g1, g2, intent)
+    with pytest.raises(ValueError, match="WAL/FULL"):
+        store._revoke("G1")
+    store._connection.execute("PRAGMA synchronous=FULL")
+    assert store._reserve_roster(authorization, g1, g2, intent) is None
+
+
+
+def _adr136_reserve_in_process(path, authorization, g1, g2, intent,
+                               start, results):
+    """Attempt one reservation from a separate WSL process."""
+    store = trust._SyntheticAuthorizationReserve(path)
+    start.wait()
+    try:
+        store._reserve_roster(authorization, g1, g2, intent)
+    except ValueError:
+        results.put("spent")
+    else:
+        results.put("reserved")
+    finally:
+        store._close()
+
+
+def test_adr136_roster_signed_id_has_one_cross_process_winner(tmp_path):
+    import multiprocessing
+
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    ctx = multiprocessing.get_context("fork")
+    start, results = ctx.Event(), ctx.Queue()
+    workers = [
+        ctx.Process(
+            target=_adr136_reserve_in_process,
+            args=(path, authorization, g1, g2, intent, start, results),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    start.set()
+    for worker in workers:
+        worker.join(timeout=10)
+        assert worker.exitcode == 0
+    assert sorted(results.get(timeout=2) for _ in workers) == [
+        "reserved", "spent",
+    ]
+
+
+
+def test_adr136_ambiguous_commit_never_returns_reservation(tmp_path):
+    import sqlite3
+
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    store = cls(path)
+    real = store._connection
+
+    class AmbiguousCommit:
+        @property
+        def in_transaction(self):
+            return real.in_transaction
+
+        def execute(self, sql, *args):
+            result = real.execute(sql, *args)
+            if sql == "COMMIT":
+                raise sqlite3.OperationalError("ambiguous commit")
+            return result
+
+    store._connection = AmbiguousCommit()
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    with pytest.raises(sqlite3.OperationalError, match="ambiguous"):
+        store._reserve_roster(authorization, g1, g2, intent)
+    with pytest.raises(ValueError, match="spent"):
+        cls(path)._reserve_roster(authorization, g1, g2, intent)
+
+
+def test_adr136_rejects_changed_schema_with_same_table_names(tmp_path):
+    import sqlite3
+
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("ALTER TABLE reserve_uses ADD COLUMN injected TEXT")
+    with pytest.raises(ValueError, match="schema"):
+        cls(path)
+
+
+
+def _adr136_crash_with_uncommitted_insert(path):
+    """Leave an uncommitted reservation row in a crashed WSL process."""
+    import os
+
+    store = trust._SyntheticAuthorizationReserve(path)
+    store._connection.execute("BEGIN IMMEDIATE")
+    store._connection.execute(
+        "INSERT INTO reserve_uses VALUES (?,?,?,?,?,?,?,?)",
+        ("roster-bootstrap", "bootstrap-1", "0" * 64, "0" * 64,
+         "0" * 64, "0" * 64, "0" * 64, "RESERVED"),
+    )
+    os._exit(17)
+
+
+def test_adr136_crash_before_commit_does_not_spend_id(tmp_path):
+    import multiprocessing
+
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    process = multiprocessing.get_context("fork").Process(
+        target=_adr136_crash_with_uncommitted_insert, args=(path,),
+    )
+    process.start()
+    process.join(timeout=10)
+    assert process.exitcode == 17
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    assert cls(path)._reserve_roster(authorization, g1, g2, intent) is None

@@ -18,6 +18,7 @@ import json
 import math
 import os
 import re
+import sqlite3
 from abc import ABC, abstractmethod
 from functools import wraps
 from threading import RLock
@@ -5863,3 +5864,213 @@ class NonAuthorizingRosterBootstrapVerifier:
             "authorizing": False,
             "deployment_eligible": False,
         })
+
+
+
+_SYNTHETIC_RESERVE_DOMAIN = "dskit.synthetic-authorization-reserve/v1"
+_SYNTHETIC_RESERVE_SCHEMA = (
+    "CREATE TABLE reserve_meta (singleton INTEGER PRIMARY KEY CHECK (singleton=1), "
+    "domain TEXT NOT NULL, generation INTEGER NOT NULL)",
+    "CREATE TABLE reserve_revoked (token TEXT PRIMARY KEY, generation INTEGER NOT NULL)",
+    "CREATE TABLE reserve_uses (kind TEXT NOT NULL, signed_id TEXT NOT NULL, "
+    "authorization_sha256 TEXT NOT NULL, g1_sha256 TEXT NOT NULL, "
+    "g2_sha256 TEXT NOT NULL, snapshot_sha256 TEXT NOT NULL, "
+    "intent_sha256 TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (kind,signed_id))",
+    "CREATE TABLE reserve_audit (seq INTEGER PRIMARY KEY, kind TEXT NOT NULL, "
+    "signed_id TEXT NOT NULL, old_state TEXT, new_state TEXT NOT NULL, "
+    "generation INTEGER NOT NULL)",
+)
+
+
+class _SyntheticAuthorizationReserve:
+    """Keep one trusted, non-effecting reservation domain across processes.
+
+    Examples
+    --------
+    Provision once from trusted host setup, then open the same store::
+
+        _SyntheticAuthorizationReserve._provision("/tmp/reserve.sqlite")
+        store = _SyntheticAuthorizationReserve("/tmp/reserve.sqlite")
+        store._close()
+    """
+
+    __slots__ = ("_path", "_connection")
+
+    def __init_subclass__(cls, **kwargs):
+        """Keep the internal store final."""
+        raise TypeError("the fixed synthetic reserve is final")
+
+    @staticmethod
+    def _path_ok(path):
+        """Require a trusted absolute path, never a SQLite URI."""
+        _hs_refuse(type(path) is str and os.path.isabs(path)
+                   and not path.startswith("file:")
+                   and not os.path.islink(path),
+                   "trusted absolute reserve path required")
+
+    @classmethod
+    def _provision(cls, path):
+        """Create a fixed domain only from trusted host setup."""
+        cls._path_ok(path)
+        _hs_refuse(not os.path.exists(path), "reserve database already exists")
+        connection = sqlite3.connect(path, isolation_level=None)
+        try:
+            _hs_refuse(connection.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+                       == "wal", "reserve WAL required")
+            connection.execute("PRAGMA synchronous=FULL")
+            _hs_refuse(connection.execute("PRAGMA synchronous").fetchone()[0]
+                       == 2, "reserve FULL sync required")
+            connection.execute("BEGIN IMMEDIATE")
+            for statement in _SYNTHETIC_RESERVE_SCHEMA:
+                connection.execute(statement)
+            connection.execute("INSERT INTO reserve_meta VALUES (1, ?, 0)",
+                               (_SYNTHETIC_RESERVE_DOMAIN,))
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        finally:
+            connection.close()
+
+    def __init__(self, path):
+        """Open only a pre-provisioned host-owned local database."""
+        from urllib.parse import quote
+
+        self._path_ok(path)
+        _hs_refuse(os.path.isfile(path), "pre-provisioned reserve required")
+        uri = "file:" + quote(path, safe="/") + "?mode=rw"
+        try:
+            connection = sqlite3.connect(uri, uri=True, isolation_level=None,
+                                         timeout=5)
+        except sqlite3.Error as exc:
+            raise ValueError("pre-provisioned reserve required") from exc
+        self._path, self._connection = path, connection
+        try:
+            connection.execute("PRAGMA synchronous=FULL")
+            self._check()
+            schema = {row[0] for row in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table'"
+            )}
+            _hs_refuse(schema == set(_SYNTHETIC_RESERVE_SCHEMA),
+                       "fixed reserve schema required")
+            rows = connection.execute(
+                "SELECT singleton,domain,generation FROM reserve_meta"
+            ).fetchall()
+            _hs_refuse(len(rows) == 1 and rows[0][0] == 1
+                       and rows[0][1] == _SYNTHETIC_RESERVE_DOMAIN
+                       and type(rows[0][2]) is int and rows[0][2] >= 0,
+                       "fixed reserve domain required")
+        except Exception:
+            connection.close()
+            raise
+
+    def _check(self):
+        """Refuse WAL, sync or file downgrades before a transaction."""
+        _hs_refuse(
+            self._connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+            and self._connection.execute("PRAGMA synchronous").fetchone()[0] == 2
+            and os.path.isfile(self._path),
+            "reserve WAL/FULL/local database required",
+        )
+
+    def _snapshot(self):
+        """Read shared revocation generation, set and signed digest."""
+        generation = self._connection.execute(
+            "SELECT generation FROM reserve_meta WHERE singleton=1"
+        ).fetchone()[0]
+        revoked = frozenset(row[0] for row in self._connection.execute(
+            "SELECT token FROM reserve_revoked"
+        ))
+        snapshot = _digest(_hs_canonical_bytes({
+            "schema_version": "dskit.synthetic-dataset-revocations/v1",
+            "revoked": sorted(revoked),
+        }))
+        return generation, revoked, snapshot
+
+    def _reserve_roster(self, authorization_bytes, g1_grant_bytes,
+                        g2_grant_bytes, intent_sha256):
+        """Spend one signed bootstrap ID without issuing a permit."""
+        NonAuthorizingSyntheticGrantVerifier._hash(intent_sha256)
+        authorization, _policy = (
+            NonAuthorizingRosterBootstrapVerifier._authorization(
+                authorization_bytes,
+            )
+        )
+        bootstrap_sha256 = _digest(authorization_bytes)
+        self._check()
+        connection = self._connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._check()
+            generation, revoked, snapshot = self._snapshot()
+            now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+            _hs_refuse(
+                authorization["not_before_ms"] <= now
+                < authorization["expires_at_ms"]
+                and authorization["bootstrap_id"] not in revoked,
+                "roster reserve time or revocation refused",
+            )
+            verifier = NonAuthorizingRosterBootstrapVerifier
+            verifier._grant(g1_grant_bytes, "G1", authorization,
+                            bootstrap_sha256, snapshot, revoked, now)
+            verifier._grant(g2_grant_bytes, "G2", authorization,
+                            bootstrap_sha256, snapshot, revoked, now)
+            connection.execute(
+                "INSERT INTO reserve_uses VALUES (?,?,?,?,?,?,?,?)",
+                ("roster-bootstrap", authorization["bootstrap_id"],
+                 bootstrap_sha256, _digest(g1_grant_bytes),
+                 _digest(g2_grant_bytes), snapshot, intent_sha256, "RESERVED"),
+            )
+            connection.execute(
+                "INSERT INTO reserve_audit "
+                "(kind,signed_id,old_state,new_state,generation) "
+                "VALUES (?,?,NULL,?,?)",
+                ("roster-bootstrap", authorization["bootstrap_id"],
+                 "RESERVED", generation),
+            )
+            final_now = _FixedP4VerificationClock.now_ms(
+                _P4_VERIFICATION._clock
+            )
+            _hs_refuse(
+                authorization["not_before_ms"] <= final_now
+                < authorization["expires_at_ms"],
+                "roster reserve time expired before commit",
+            )
+            connection.execute("COMMIT")
+        except sqlite3.IntegrityError as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise ValueError("signed bootstrap ID already spent") from exc
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+    def _revoke(self, token):
+        """Atomically append one trusted revocation and generation."""
+        _hs_refuse(type(token) is str
+                   and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(token) is not None,
+                   "canonical revocation token required")
+        self._check()
+        connection = self._connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._check()
+            generation, revoked, _digest_value = self._snapshot()
+            _hs_refuse(token not in revoked, "revocation already recorded")
+            connection.execute("INSERT INTO reserve_revoked VALUES (?,?)",
+                               (token, generation + 1))
+            connection.execute(
+                "UPDATE reserve_meta SET generation=? WHERE singleton=1",
+                (generation + 1,),
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+    def _close(self):
+        """Close without releasing any signed ID."""
+        self._connection.close()
