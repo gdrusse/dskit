@@ -9144,3 +9144,54 @@ itself (still a follow-on that consumes this seam).
 matrix, then RED→GREEN with synthetic fixtures, two fresh sequential final lenses
 (correctness/authority, then tests/integration), then integrate.
 `deployment_eligible` stays false.
+
+## ADR-0129 — bounded P4 member-read and CAPTURED-receipt accessor (correction to ADR-0127 Decision.2)
+
+**Status:** proposed — awaiting owner approval (owner chose option A of gate
+`0176`; the ADR itself still needs approval before RED).
+
+**Context.** ADR-0127 Decision.2's composed-tape verification requires a
+consumer, after a P4 `authorize_capture_set`, to (a) read a captured root's
+retained member bytes (to parse the inner `CapturedReplayTape.v1`) and (b)
+obtain the CAPTURED receipt digest (to verify the inner `data_captured_receipt`
+and the separate replay-data receipt). The current P4 model returns only an
+empty `CapturedAuthorizationRecord` plus a `captured-authorization-v2`
+`LaunchSession`; member bytes are readable only through the v1 `open_capture`
+(single-CAPTURED per stream), and the receipt digest is private. Run-identity
+exclusivity (legacy-vs-P4) forbids mixing the two models in one run. Gate `0176`
+recorded this; the owner chose option A.
+
+**Decision.**
+
+1. **One-way member read.** After a committed `authorize_capture_set`, the
+   returned `CapturedAuthorizationRecord` exposes a one-way, single-read,
+   session-bound read of a captured publication's retained member bytes. It
+   reuses the existing opaque single-read byte discipline (`CapturedMemberHandle`
+   semantics: read exactly once, no path/reopen/dict/reconstruction), bound to
+   the exact committed record and its `LaunchSession`. It does not reuse the full
+   v1 `VerifiedCapture`/`CapturedBindings`/`CONSUMED` hierarchy, so the v1
+   single-CAPTURED chain and one-time `CONSUMED` are untouched.
+
+2. **Read-only receipt digest.** The record exposes a read-only, nonauthorizing
+   accessor returning each capture's `lifecycle_captured_receipt_sha256`, keyed
+   by `(stream, consumer_document_sha256)`. It grants no member access and no
+   lifecycle transition.
+
+3. **Invariants.** The member read is one-way and single-read; no reopen; no new
+   capture or lifecycle transition; run-identity exclusivity and the v1/P4
+   separation are unchanged; the accessor reaches the committed ledger only
+   through the module-local record→ledger map (a public name, never a
+   private-name cross-package reach).
+
+4. **Bounded seam.** No change to the codec, the descriptor grammar, the P4
+   batch content, or `commit_p4_batch`'s commit path. The accessor is additive
+   on the returned record.
+
+**Non-goals.** R1–R5 replay transaction machinery, F1/F2 `EventEnvelope`
+reordering, the full F3 feed/roster lane, any second engine, and relaxing the
+v1 single-CAPTURED chain or one-time `CONSUMED`.
+
+**Process.** After owner approval: fresh clean Phase 0 skeptic, then RED→GREEN
+with synthetic fixtures, two fresh sequential final lenses
+(correctness/authority, then tests/integration), then integrate.
+`deployment_eligible` stays false.

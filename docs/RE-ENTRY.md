@@ -1,5 +1,34 @@
 # Re-entry
 
+## Current wrap: composed-tape gate resolved to option A; ADR-0129 drafted (2026-09-16)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`. Main `e795f8e`; protected
+source `c489199` untouched; dirty main checkout untouched. DeepSeek v4 Pro
+implementer.
+
+**Owner decision `0177`.** Owner chose option A of gate `0176`: add a bounded P4
+member-read + CAPTURED-receipt accessor. ADR-0129 is **proposed** in
+`docs/architecture/decision-log.md` and awaits owner approval before any RED.
+It adds, after a committed `authorize_capture_set`: a one-way single-read
+session-bound member-byte accessor (reusing `CapturedMemberHandle`'s discipline,
+not the full v1 `VerifiedCapture`/`CONSUMED` hierarchy) and a read-only
+`lifecycle_captured_receipt_sha256` accessor keyed by `(stream,
+consumer_document_sha256)` — without relaxing the v1 single-CAPTURED chain,
+one-time `CONSUMED`, or run-identity exclusivity.
+
+**Landed this session.** Multi-consumer capture (ADR-0128, `0943b8d`); the
+`CapturedReplayTape.v1` codec (earlier). Both are prerequisites the composed-tape
+seam now consumes.
+
+**Next.** Approve ADR-0129 (or correct it), then fresh Phase 0 skeptic, RED/GREEN,
+two fresh final lenses, integrate; that closes P7's verification half. Then
+Packet 8 (durable consume-once), F5A-R23, whole-F5a, F3/F5b.
+`deployment_eligible=false`. Next unused evidence: 0178.
+
+Approximate checkpoint minutes (design/impl/tests/review/corrections/integration):
+design 45, implementation 0, tests 0, review 25, corrections 0, integration 10.
+Initial unmeasured reading excluded.
+
 ## Current checkpoint: composed-tape verification blocked on architecture gate (2026-09-16)
 
 Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
