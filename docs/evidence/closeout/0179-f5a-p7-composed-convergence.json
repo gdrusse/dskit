@@ -2,7 +2,7 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0133 read-only synthetic G1/G2 verifier merged and verified on remote main 28c68de; P7 and Packet8 remain open. ADR-0134 proposed for review.",
+  "status": "ADR-0133/0134 merged on main; P7 remains open. Independent whole-P7 audit found four architecture blockers; ADR-0135 bootstrap chronology proposed and cleanly pre-reviewed.",
   "proposal": "ADR-0133 accepted and implemented as a nonauthorizing prerequisite; ADR-0130/0132 effecting proposals remain blocked.",
   "cycles": [
     {
@@ -357,5 +357,27 @@
     "reviewed_code_test_contract_blobs_unchanged": true,
     "result": "No conflicts; diff check passed; worktree clean before evidence append.",
     "limit": "No raw-byte inspection, shared authorization spend, F4/P4, P7/Packet8 or deployment."
+  },
+  "p7_closure_architecture_audit": {
+    "reviewer": "/root/p7_closure_arch",
+    "result": "Four blocking design gaps prevent P7 closure under current contracts.",
+    "blockers": [
+      "DatasetCaptureAuthorization.v1 names future roster receipt, while RootPublicationReceipt.v1 names that authorization digest: a cryptographic cycle.",
+      "P4 fixed terminal corpus and root receipt/v1 grammar cannot admit new signed roster/raw roots.",
+      "Per-broker state cannot enforce cross-process durable one-use authorization before raw reads; Packet8 remains ordered after P7.",
+      "Six-field raw-event/v1 and four-field envelope projection cannot derive full master F3 EventEnvelope.v2 causality, provenance, correction and total order."
+    ],
+    "next": "Version a dual-signed pre-roster bootstrap/receipt chronology, then shared durable reserve and dynamic root resolver, full raw/envelope codecs, raw publication/data proof, manifest/composition, and Packet8.",
+    "tests_run": "none; independent architecture audit"
+  },
+  "adr0135_preapproval": {
+    "branch": "codex/f5a-p7-bootstrap-adr135-20260916",
+    "base_main": "e5d1a403070cb2b6618dc0343fa2f61a9b487c34",
+    "reviewer": "/root/adr135_preapproval",
+    "initial": "0 Critical, 4 Major, 2 Minor: missing roster-root basis, post-roster equality, closed bootstrap grant grammar, full retry/receipt key; root digest and PIS order clarifications.",
+    "correction": "One batch froze distinct signed basis/ref, exact grant wire/signature, full durable publish intent and crash quarantine, exact equality/root digest, sorted two-entry PIS and equivalent facades.",
+    "recheck": "0 Critical, 0 Major, 0 Minor, 0 Nit; owner-reviewable as non-effecting architecture amendment.",
+    "checks": "git diff --check passed; no code tests for design-only proposal.",
+    "gate": "Proposal only. ADR-before-code owner approval required; fresh Phase 0 plus separate durable reserve and dynamic trusted resolver contracts before effecting RED."
   }
 }

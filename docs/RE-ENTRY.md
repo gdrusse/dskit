@@ -1,6 +1,6 @@
 # Re-entry
 
-## Current checkpoint: ADR-0133 reviewed read-only grant verifier (2026-09-16)
+## Current checkpoint: P7 bootstrap chronology proposed (2026-09-16)
 
 ADR-0129 accessor merged to main at 8371634; remote main verified. P7
 composition remains open. Three failed whole-composition Phase 0 cycles and an
@@ -28,6 +28,11 @@ found zero blocking findings. Owner approved ADR-0134; fresh Phase 0 and two fin
 zero Critical/Major. Focused 31 and affected 1088 tests passed. One Minor test
 fixture byte-length mismatch is deferred until raw-byte integration.
 The reviewed slice merged at e512247; code/test/contract blobs are unchanged.
+Independent whole-P7 audit found a roster authorization/receipt cycle, fixed
+P4 root corpus, missing shared durable spend and incomplete raw/envelope wire.
+ADR-0135 proposes a dual-signed pre-roster bootstrap and versioned receipt;
+independent preapproval review is clean. It awaits owner approval. Shared
+reserve, dynamic root resolution and full F3 semantics remain later gates.
 Packet8 remains gated on P7 closure.
 deployment_eligible=false.
 

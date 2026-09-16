@@ -9598,3 +9598,159 @@ integration.
 **Non-goals.** Raw reads, one-use spending, roster inspection,
 F4/P4 effects, external acquisition/provider provenance or integration,
 F3/P7/Packet8 closure or deployment. deployment_eligible=false.
+
+
+## ADR-0135 - pre-roster bootstrap chronology for P7
+
+**Status:** proposed (2026-09-16); material amendment to ADR-0125 root
+publication and the F3 plan, requiring owner approval before effecting RED.
+ADR-0133/0134 remain read-only and nonauthorizing.
+
+**Context.** DatasetCaptureAuthorization.v1 names the future source-roster
+root and publication receipt. ADR-0125's RootPublicationReceipt.v1 names the
+digest of that same authorization. Neither signed digest can be fixed first.
+The hardcoded P4 root corpus also cannot admit a newly published roster.
+No synthetic fixture or same-process object identity resolves this cycle.
+
+**Decision.**
+
+1. A distinct, exact canonical ASCII RosterBootstrapAuthorization.v1 is
+   signed by separate fixed G1 security-owner and G2 data-owner bootstrap
+   issuers before any roster publication. It contains exactly
+   schema_version=dskit.roster-bootstrap-authorization/v1,
+   bootstrap_id, nonempty sorted unique canonical source_ids,
+   scope (availability_start_ms, availability_end_ms,
+   source_provenance_sha256), sorted unique license_digests,
+   event_schema=dskit.raw-event/v1, media_type=application/x-ndjson,
+   source_rank_policy_sha256, issued_at_ms, not_before_ms,
+   expires_at_ms. The policy digest is computed from the canonical
+   SourceRankPolicy.v1 derived solely from those source IDs with ranks
+   0..n-1; no caller policy or observed event set supplies it. The
+   bootstrap contains no root ID, roster receipt or future datum.
+   Each bootstrap grant has exactly schema_version=
+   dskit.roster-bootstrap-grant/v1, role (literal G1 or G2),
+   issuer_key_id, bootstrap_sha256, issued_at_ms, not_before_ms,
+   expires_at_ms, revocation_snapshot_sha256 and signature. The fixed
+   role-to-key map has distinct G1/G2 Ed25519 public keys; each lowercase
+   128-hex signature covers exact canonical grant bytes with only
+   signature omitted. All digests are lowercase SHA-256; IDs use
+   ADR-0133's canonical grammar, times are exact integer milliseconds
+   (booleans refuse), and grant times equal the bootstrap with
+   issued<=not_before<=trusted_now<expires. Unknown, missing or
+   duplicate keys, role/key swaps, noncanonical bytes, stale snapshots,
+   revoked issuers/keys/bootstrap IDs or an alternate algorithm refuse.
+   No runtime signer or key injection exists; test-fixture code alone
+   signs. Hostile bytes, not code controlling the interpreter, are the
+   threat.
+2. A trusted roster publisher derives exact canonical
+   SourceRosterCapture.v1 bytes from the verified bootstrap and writes
+   one pre-document F4 WORM root with only its declared output member.
+   It requires both live grants, the fixed trusted clock and current
+   revocation, and a shared durable one-use bootstrap reservation before
+   F4 effects. The reservation binds bootstrap ID, exact bootstrap and
+   G1/G2 grant digests, roster bytes, expected member order/media/digest,
+   F4 root_ref/root_id/snapshot_version, producer run/document/node/
+   output/purpose, output_member and the complete RootPublicationReceipt.v2
+   WORM key. Its publish-intent digest covers those canonical fields.
+   Every broker/process uses the same durable namespace. The reservation
+   is written and synced before the first F4 effect; ambiguous write
+   outcomes are treated as spent. Recovery queries only the reserved
+   F4 stream and exact receipt key, checks complete byte-identical WORM
+   members and a single matching receipt, and may return that original
+   identity. Partial writes, changed producer metadata, a second
+   receipt or any uncertain mismatch quarantine the bootstrap ID;
+   no fresh F4 write is authorized. No provider or raw source read occurs
+   in this roster stage. The shared reserve and dynamic trusted root
+   resolver are separate reviewed prerequisites; this ADR alone
+   authorizes no roster effect.
+3. Source-roster publication uses RootPublicationReceipt.v2 with the
+   ADR-0125 root receipt fields but
+   schema=dskit.root-publication-receipt/v2,
+   capture_kind=source-roster and the single tagged
+   publication_authorization_ref
+   {kind:roster-bootstrap,roster_bootstrap_authorization_sha256}.
+   A distinct signed roster-root-publication issuance basis v2 has
+   exactly schema=dskit.issuance-basis/v2,
+   kind=roster-root-publication, study_id, sorted refs to the one
+   bootstrap authorization and its role-matched G1/G2 grants,
+   publish_intent_sha256, and the ADR-0125 signed-basis suffix
+   (issuance_basis_sha256, issuer_role, key_usage, signature_alg,
+   issued_at_ms, not_before_ms, expires_at_ms,
+   revocation_snapshot_sha256, key, signature). The self digest hashes
+   canonical basis bytes omitting only itself and signature; Ed25519
+   signs those bytes. Each parent ref has exactly kind, role, schema,
+   sha256: (roster-bootstrap-authorization, security-data,
+   dskit.roster-bootstrap-authorization/v1), and
+   (roster-bootstrap-grant, G1 or G2,
+   dskit.roster-bootstrap-grant/v1) exactly once per role. The
+   authorization ref is identity only; both role-matched signed grants
+   carry authority. The role/key usage are fixed to data-publisher/
+   root-publication-bootstrap-g1-g2. The v2 receipt has that same
+   issuer_role, key_usage and fixed signer key ID/version as this
+   basis; its issuance_basis_sha256 equals this basis's verified digest.
+   It never names a future DatasetCaptureAuthorization. The fixed
+   data-publisher root signer checks this exact basis,
+   reservation and published WORM bytes. The receipt binds the
+   resulting root, producer, member manifest and bootstrap digest.
+   Existing RootPublicationReceipt.v1 and its v1 basis remain exact
+   for raw-event-dataset roots with the dataset-capture tag. No
+   cross-version fallback or coercion.
+4. Only after the roster root and v2 receipt are PUBLISHED may G1 and
+   G2 sign the existing DatasetCaptureAuthorization.v1 for raw capture.
+   Its source_roster_root_sha256,
+   source_roster_publication_receipt_sha256 and
+   source_roster_policy_sha256 equal that exact published roster. Its
+   source universe, scope/provenance and policy digest equal both
+   bootstrap and canonical roster exactly. Its license digests,
+   event schema and media type equal the bootstrap exactly. A subset,
+   widened set or changed field refuses. Its validity window is contained
+   in the bootstrap window; bootstrap and dataset grants must be live
+   and unrevoked at raw admission. The canonical
+   source_roster_root_sha256 is SHA-256 of exact canonical ASCII JSON
+   {root_ref,root_id,snapshot_version,member_manifest_sha256} from the
+   retained v2 receipt and live F4 root; every field must match. The
+   source_roster_publication_receipt_sha256 is the verified v2 receipt's
+   self-digest. ADR-0133/0134 signatures and fixture commitments
+   reverify the post-roster authorization, but their checked facts
+   never grant a read. Raw publication retains the v1 dataset-capture
+   receipt/ref and needs its own durable one-use reservation before
+   raw member access.
+5. The root-g1-g2 PublishedInputSet.v2 envelope stays byte-for-byte
+   unchanged. Its root-pis issuance basis uses the same closed
+   dskit.issuance-basis/v2 signed suffix with kind=root-pis and sorted
+   refs to both exact bootstrap grants/authorization, the roster v2
+   receipt, post-roster dataset grants/authorization and raw v1 receipt.
+   It has no publish_intent_sha256 field; that field belongs only to
+   the roster-root-publication basis.
+   This lane has exactly two PIS entries, one source-roster/v2 and one
+   raw-event-dataset/v1, sorted by input_id as ADR-0125 requires.
+   Signed basis/receipt issuance order, not entry order, proves that
+   roster publication preceded the dataset authorization and raw
+   publication. Extra, aliased or substituted roots refuse. The
+   roster-root-publication basis v2, root-PIS basis v2 and receipt v2
+   must be added to every equivalent pipeline/production validator:
+   terminal signature/basis closure, root-PIS/PCE/CES/admission, P4
+   capture resolution and public facade. No partial v1/v2 downgrade
+   or caller-made terminal fact is accepted. The existing fixed test
+   corpus and old root-pis basis remain immutable; a later ADR adds
+   a trusted dynamic resolver for the new identities.
+6. This chronology corrects the F3 pre-document step. It does not
+   weaken the master F3 full raw-event and EventEnvelope.v2 semantics,
+   P4 capture identities or Packet8 ordering. Later ADRs must define
+   the shared durable reserve/dynamic resolver, full raw/envelope
+   codecs, raw publication/data proof, and manifest/composed tape
+   before P7 can close.
+
+**Sequence.** Independent preapproval design review, owner approval,
+fresh Phase 0 on exact receipt/basis grammar, fixed G1/G2 key IDs,
+root-digest projection and shared-reserve handoff. Challenge expiry/
+revocation at F4 and receipt issue, bootstrap ID alias/re-sign, every
+crash point, partial WORM writes, producer-metadata substitution,
+v1/v2 downgrade and all equivalent facades. Implement the bootstrap
+and receipt only after their durable authority and resolver
+prerequisites are reviewable. No effecting RED under this proposal
+alone.
+
+**Non-goals.** Real provider access, raw member reads, F4/P4 effects under
+this proposal, partial P7/Packet8 closure or deployment.
+deployment_eligible=false.
