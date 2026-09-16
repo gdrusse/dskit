@@ -332,5 +332,21 @@
 
   "deployment_eligible": false,
   "tests_run": "none; design inspection",
-  "gate": "Phase 0 matrix authored by implementer; requires independent Phase 0 skeptic review before RED."
+  "phase0_skeptic_review": {
+    "reviewer": "independent, fresh-context adversarial skeptic (Phase 0 round)",
+    "result": "0 Critical, 0 Major, 3 Minor, 2 non-issue",
+    "resolved_open_findings": {
+      "F1": "Minor - recommend adding _p4_dynamic_fixed_integrity mirroring legacy _p4_fixed_integrity; not required to gate RED (hostile interpreter code is out of the stated threat model per implementation-workflow.md point 4)",
+      "F2": "Minor - resolver must delegate to graph.snapshot()/resolve()'s own before/after vector fence only, not add a second independent fence (avoids TOCTOU); pin this exact delegation shape in implementation",
+      "F3": "Minor - reserve-spend for the dynamic-p4-authority row must be ordered BEFORE resolver/terminal-verifier object construction, not after; rows 9 and 11's expected outcomes depend on this ordering",
+      "F4": "non-issue - HistoricalStudyVerifier.authorize_capture_set dispatches via isinstance(authority, CapturedAuthorizationAuthority) plus pinned-method checks, never exact-type; production facade is transparent to both authority instances, no verifier.py edit required",
+      "F5": "non-issue - root_capture_admission_sha256 self-field already pinned as the 7th required field in document_shapes_pinned, closing the gap between ADR text and the dependency-table usage"
+    },
+    "matrix_rows_1_to_12": "all 12 verified correct as pinned; row 11 (concurrent construction race) explicitly requires F3's reserve-first ordering to hold denial-only (no authority breach) even under a lost race",
+    "authority_boundary_check": "confirmed consistent with ADR-0141/0142 threat-model scoping; hostile DATA (arguments, stale tokens) is adversarial, the trusted host's SQLite reserve file and Python process are not",
+    "code_verification": "spot-checked reserve RESERVED->ISSUED shape, _p4_snapshot_integrity's two-stage structure, _p4_require_issued_authority's 8 OR-ed clauses, and NonAuthorizingDynamicRootGraph's before/after _vector() fence directly against dskit/pipeline/trust.py; matrix pins matched code",
+    "disposition": "RED_MAY_PROCEED: yes. Implementer must apply F1/F2/F3 as implementation pins during GREEN; none block RED test authoring.",
+    "tests_run": "none; design inspection"
+  },
+  "gate": "Phase 0 clean (0 Critical/Major; 3 Minor pins for GREEN). RED may proceed."
 }
