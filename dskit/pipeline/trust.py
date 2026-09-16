@@ -6068,10 +6068,7 @@ class _SyntheticAuthorizationReserve:
         ).fetchone()
         _hs_refuse(row is not None and type(row[0]) is int
                    and row[0] >= 500, "trusted synthetic clock required")
-        return max(
-            row[0],
-            _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock),
-        )
+        return row[0]
 
     def _advance_clock(self, now_ms):
         """Trusted host administration advances shared logical time only."""

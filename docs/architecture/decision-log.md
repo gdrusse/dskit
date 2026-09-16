@@ -9948,9 +9948,10 @@ one shared durable namespace with a completed write before first read.
    and successful durable COMMIT; it cannot rewind or accept request
    bytes as time. Every roster/raw effecting reserve, transition, receipt
    admission and live roster proof reads this same row inside its
-   transaction. A fixed baseline clock can only raise the effective time
-   above that row for existing synthetic expiry fault injection; in
-   normal operation it stays 500, so the durable row is the shared time.
+   transaction. Effecting synthetic time is exactly reserve_meta.now_ms.
+   The legacy fixed verification clock cannot satisfy not-before, set
+   receipt issuance time, change effecting expiry or advance the row.
+   Expiry fault injection advances the trusted row between admissions.
    Time advance serializes before or after an effecting writer and is
    visible to the next admission; no halfway clock change is observed.
    Read-only ADR-0133/0134/0135 legacy verifiers and the unrelated P4

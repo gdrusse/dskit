@@ -2826,32 +2826,19 @@ def test_adr136_roster_reservation_is_shared_and_one_use(tmp_path):
 
 
 
-def test_adr136_roster_reserve_rechecks_time_at_commit(tmp_path, monkeypatch):
+def test_adr136_roster_reserve_uses_durable_expiry(tmp_path):
     cls = trust._SyntheticAuthorizationReserve
     path = str(tmp_path / "synthetic-reserve.sqlite")
     cls._provision(path)
     store = cls(path)
     authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
-    original = trust._p4_verify_ed25519
-    calls = 0
-
-    def expire_during_signature(public_key, raw, signature):
-        nonlocal calls
-        original(public_key, raw, signature)
-        calls += 1
-        if calls == 1:
-            monkeypatch.setattr(
-                trust._FixedP4VerificationClock, "now_ms",
-                lambda _clock: 901,
-            )
-
-    monkeypatch.setattr(trust, "_p4_verify_ed25519", expire_during_signature)
+    store._advance_clock(901)
     intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
     with pytest.raises(ValueError, match="time|expired"):
         store._reserve_roster(authorization, g1, g2, intent)
-    monkeypatch.undo()
-    assert store._reserve_roster(authorization, g1, g2, intent) is None
-
+    assert store._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses"
+    ).fetchone() == (0,)
 
 
 def test_adr136_shared_revocation_prevents_roster_reserve(tmp_path):
@@ -3279,10 +3266,7 @@ def test_adr138_expiry_before_produce_refuses_without_produce(
 
     def start_then_expire(**kwargs):
         session = original(**kwargs)
-        monkeypatch.setattr(
-            trust._FixedP4VerificationClock, "now_ms",
-            lambda _clock: 901,
-        )
+        publisher._reserve._advance_clock(901)
         return session
 
     monkeypatch.setattr(publisher._broker, "start_producer_session",
@@ -3680,9 +3664,7 @@ def test_adr137_roster_proof_refuses_shared_revocation_and_restart(
         publisher.proof().verify(
             authorization, g1, g2, basis, receipt,
         )
-    monkeypatch.setattr(
-        trust._FixedP4VerificationClock, "now_ms", lambda _clock: 901,
-    )
+    publisher._reserve._advance_clock(901)
     with pytest.raises(ValueError):
         publisher.proof().verify(
             authorization, g1, g2, basis, receipt,
@@ -4026,6 +4008,10 @@ def test_adr132_raw_preflight_requires_trusted_clock_advance(
         tmp_path, monkeypatch, advance=False,
     )
     source = trust._SyntheticFixtureSource(members)
+    monkeypatch.setattr(
+        trust._FixedP4VerificationClock, "now_ms", lambda _clock: 600,
+    )
+    assert publisher._reserve._now() == 500
     with pytest.raises(ValueError, match="time|chronology|window"):
         trust._SyntheticRawPreflight(publisher, source).verify(
             *signed, *roster,
