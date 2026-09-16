@@ -30,10 +30,13 @@ fixture byte-length mismatch is deferred until raw-byte integration.
 The reviewed slice merged at e512247; code/test/contract blobs are unchanged.
 Independent whole-P7 audit found a roster authorization/receipt cycle, fixed
 P4 root corpus, missing shared durable spend and incomplete raw/envelope wire.
-ADR-0135 proposes a dual-signed pre-roster bootstrap and versioned receipt;
-independent preapproval review is clean. It awaits owner approval. Shared
-reserve, dynamic root resolution and full F3 semantics remain later gates.
-Packet8 remains gated on P7 closure.
+ADR-0135 proposes a dual-signed pre-roster bootstrap and versioned receipt.
+ADR-0136 proposes a shared durable one-use reserve with atomic revocation
+and committed admission for each F4/receipt/raw-read effect. An independent
+convergence checkpoint revised the timing contract; two joint design lenses
+then found zero Critical/Major/Minor. Both ADRs await owner approval and a
+fresh Phase 0 before code. Dynamic root resolution, durable F4 recovery and
+full F3 semantics remain separate gates. Packet8 follows P7 closure.
 deployment_eligible=false.
 
 ## Current checkpoint: ADR-0129 P4 read accessor reviewed (2026-09-16)

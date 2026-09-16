@@ -9645,9 +9645,12 @@ No synthetic fixture or same-process object identity resolves this cycle.
 2. A trusted roster publisher derives exact canonical
    SourceRosterCapture.v1 bytes from the verified bootstrap and writes
    one pre-document F4 WORM root with only its declared output member.
-   It requires both live grants, the fixed trusted clock and current
-   revocation, and a shared durable one-use bootstrap reservation before
-   F4 effects. The reservation binds bootstrap ID, exact bootstrap and
+   It requires both grants live at each committed F4 or receipt
+   transition admission under the fixed trusted clock and current
+   shared revocation, and a shared durable one-use bootstrap
+   reservation before F4 effects. A revocation after an admitted
+   transition cannot undo its one immediate in-call effect; it blocks
+   the next transition. No queued, retried or reopened effect is admitted. The reservation binds bootstrap ID, exact bootstrap and
    G1/G2 grant digests, roster bytes, expected member order/media/digest,
    F4 root_ref/root_id/snapshot_version, producer run/document/node/
    output/purpose, output_member and the complete RootPublicationReceipt.v2
@@ -9690,7 +9693,9 @@ No synthetic fixture or same-process object identity resolves this cycle.
    basis; its issuance_basis_sha256 equals this basis's verified digest.
    It never names a future DatasetCaptureAuthorization. The fixed
    data-publisher root signer checks this exact basis,
-   reservation and published WORM bytes. The receipt binds the
+   reservation and published WORM bytes at the committed receipt
+   admission point, with the signer role/key and issuance window live
+   under the shared revocation state. The receipt binds the
    resulting root, producer, member manifest and bootstrap digest.
    Existing RootPublicationReceipt.v1 and its v1 basis remain exact
    for raw-event-dataset roots with the dataset-capture tag. No
@@ -9754,3 +9759,160 @@ alone.
 **Non-goals.** Real provider access, raw member reads, F4/P4 effects under
 this proposal, partial P7/Packet8 closure or deployment.
 deployment_eligible=false.
+
+
+## ADR-0136 - shared durable synthetic authorization reserve
+
+**Status:** proposed (2026-09-16); owner approval and fresh Phase 0
+required before RED. This is the one-use prerequisite for ADR-0135 roster
+publication and ADR-0132 raw preflight. It does not authorize either read
+or publication.
+
+**Context.** A per-broker lock/set permits two brokers or processes to
+spend one signed authorization. Packet8's study-admission reserve follows
+P7 and cannot be used to justify P7 raw access. The P7 authority needs
+one shared durable namespace with a completed write before first read.
+
+**Decision.**
+
+1. One host-owned SyntheticAuthorizationReserve uses a pre-provisioned,
+   trusted absolute SQLite database path and domain identity fixed at
+   broker bootstrap, never supplied by authorization/grant/fixture bytes.
+   All official synthetic roster/raw brokers on that host receive this
+   same construction-owned authority; no request may select another
+   path, domain, signer or reserve implementation. The pipeline owns
+   this seam; it does not import production. Standard-library sqlite3
+   with a real WSL filesystem is the only store for this nondeployment
+   slice. No memory-only mode or per-broker fallback can issue a permit.
+   Copied/restored databases are unsupported and excluded by the trusted
+   host invariant. Host configuration, disk integrity and no rollback/
+   restore of the shared database are trusted operational invariants; a same-domain
+   stale copy cannot be detected by this protocol. Hostile request
+   bytes, not hostile host code/filesystem, are the threat.
+2. At trusted bootstrap, verify the fixed schema/domain and refuse a
+   missing, incompatible or writable-by-request namespace. A copied
+   same-domain database is excluded by the trusted no-restore host
+   invariant, not claimed detectable from the SQLite file alone.
+   Every connection must report journal_mode=WAL and synchronous=FULL
+   before issuing a permit; OFF/MEMORY/NORMAL/rollback modes and a VFS
+   without durable sync refuse. The store is on a local WSL filesystem,
+   not a network mount. The reservation table has one row per (kind, signed_id). Kind is
+   exactly roster-bootstrap or raw-dataset; signed_id is the exact
+   grammar-checked RosterBootstrapAuthorization.v1 bootstrap_id or
+   DatasetCaptureAuthorization.v1 authorization_id, respectively.
+   No digest, caller alias or generated ID substitutes for signed_id.
+   The row binds exact canonical authorization SHA-256, G1/G2 grant
+   digests, current revocation snapshot, publish/read intent SHA-256
+   and monotone state. The raw intent also binds the signed fixture
+   attestation digest and ordered member commitments, exact original
+   ADR-0135 bootstrap authorization/G1/G2 grant digests, retained
+   roster v2 receipt, live F4 root identity and post-roster equality
+   proof; the roster
+   intent binds ADR-0135's complete F4/receipt publish facts. The
+   primary key is independent of grant-pair signatures, so re-signing
+   the same ID cannot mint another use. State advances only RESERVED
+   to RAW_READ_STARTED or roster SESSION_STARTED/PRODUCED/SEALED/
+   PUBLISHED/SESSION_ENDED/RECEIPT_ISSUED, or to terminal QUARANTINED.
+   State and its append-only audit entry commit atomically. These state
+   names mark one effect's admission, before the corresponding F4 call;
+   they do not claim the effect has completed. No delete, reset, release or alternate namespace
+   operation is public. A trusted administrative writer in this same database owns an
+   append-only revocation generation and canonical revoked issuer/key/
+   authorization set; request bytes cannot update it. Before each revocation write, that admin connection must verify
+   WAL+FULL and local durable sync just like a permit writer; downgrade,
+   sync error or ambiguous COMMIT fails closed and never acknowledges
+   a revocation. Each generation increment and its revoked-set additions
+   commit atomically under the same SQLite writer lock. Revocation takes
+   effect only at a successful durable COMMIT;
+   each broker reserve/transition admission is serialized before or
+   after it, never against a half-updated snapshot. The current
+   snapshot is derived from that shared set, not process-local
+   _SYNTHETIC_GRANT_REVOKED.
+3. A fixed broker validates original canonical G1/G2 bytes, exact
+   authority role/key and trusted current time, then opens one SQLite
+   BEGIN IMMEDIATE transaction. Under that writer lock it reads the
+   shared revocation generation, rechecks original G1/G2 signatures,
+   signed snapshot/current set and trusted time, and inserts the row
+   under that primary key. For raw-dataset kind it also rechecks
+   original ADR-0134 attestation bytes: distinct G2-fixture signature,
+   authorization/member binding, window, current shared snapshot and
+   unrevoked fixture issuer/key/authorization. It also rechecks the
+   exact original bootstrap authorization and G1/G2 grants under the
+   same shared snapshot/time, the retained roster v2 receipt and live
+   F4 root, and all ADR-0135 post-roster field/root equality. Any
+   expired or revoked bootstrap authority refuses raw reserve. A
+   WAL+FULL successful COMMIT is required before
+   any roster F4 effect or candidate raw member read. ADR-0133/0134
+   process-local checked facts are never accepted as permits; the
+   effecting verifier independently checks original bytes against the
+   shared snapshot. A lock timeout, database error or ambiguous COMMIT
+   returns no capability and causes no read/effect. A row that exists
+   always refuses a new reservation, even for byte-identical grants or
+   a different broker. Concurrent processes have one winner. No
+   authority is reconstructed from a caller-supplied row or facts.
+4. A successful raw reservation returns one opaque process-local
+   single-consume read capability bound to the committed row and exact
+   signed fixture commitments. The future raw preflight alone may
+   consume it. Immediately before its first named member read it
+   atomically advances RAW_READ_STARTED under BEGIN IMMEDIATE after
+   a fresh shared-revocation/time check of both original dataset grants,
+   both original bootstrap grants and original fixture attestation,
+   including issuer/key/authorization revocation and signed member
+   commitments. It rechecks the original bootstrap bytes, retained
+   roster v2 receipt and live F4 root against the exact reserved raw
+   intent and ADR-0135 field/root equality; this commit is the
+   read-admission
+   linearization point. Later revocation cannot undo
+   an admitted read, and any failure leaves the ID spent. A successful
+   roster reservation returns an opaque publish capability for only
+   the exact ADR-0135 intent. SESSION_STARTED, PRODUCED, SEALED,
+   PUBLISHED and SESSION_ENDED each require a fresh check of both
+   original bootstrap grants, shared revocation/time and exact reserved
+   F4 intent under BEGIN IMMEDIATE. Each successful durable state/audit
+   commit is the sole admission point for one immediate in-call F4
+   start/produce/seal/publish/end effect, respectively. There is no
+   queue, delayed use, retry, reopen or second effect after an ambiguous
+   result. Revocation/expiry after one admission cannot undo that
+   admitted effect; it blocks the next transition. After SESSION_ENDED,
+   the fixed signer checks both original bootstrap grants and the
+   data-publisher receipt issuer/key, current shared revocation/time,
+   exact signed issuance basis and its window, reserved publish intent,
+   live F4 bytes and receipt key under BEGIN IMMEDIATE. Its durable
+   RECEIPT_ISSUED state/audit commit admits exactly one immediate
+   in-call sign-and-put of RootPublicationReceipt.v2. Failure before
+   commit issues none; failure after commit never permits another
+   signing or put attempt. A crash after this commit may recover
+   only one already persisted byte-identical receipt at that key; it
+   cannot sign or put a new receipt. If publication is interrupted,
+   read-only recovery queries the one reserved F4 stream and receipt
+   key, and returns only a complete, byte-identical original WORM
+   publication. Restart recovery requires a separately reviewed
+   durable F4 provider/resolver; the present process-local F4 provider
+   cannot prove restart identity and must quarantine after restart. Partial/mismatched/ambiguous state quarantines that
+   ID; no second F4 write occurs. A raw reservation has no retry/
+   reopen/re-read path after commit.
+5. A later dynamic-root/P4 ADR must prove that a published roster/raw
+   root descends from the exact committed reservation and F4 tokens.
+   This reserve alone grants no F4/P4 root, receipt, provider access,
+   raw byte validation, EventEnvelope.v2 semantics, composed tape or
+   Packet8 authority. deployment_eligible=false.
+
+**Matrix.** Phase 0 and RED cover two brokers in one process and two WSL
+processes sharing one database; same ID with different signed grant
+pairs/intents; alternate path/domain injection; WAL/FULL downgrade,
+unsupported VFS and power-loss recovery; shared revocation updates
+visible across processes before reserve and capability use; atomic
+admin generation/set commit racing broker admission, admin WAL/FULL
+downgrade or power-loss/error ambiguity; same signed ID
+with changed authorization digest or grants; expiry/revocation between verification and transaction, between F4 PUBLISH
+and receipt admission, and bootstrap-grant revocation/expiry before
+raw reserve or RAW_READ_STARTED; commit-then-revoke/expire at each
+roster transition, sign-before-put interruption, all F4 session and
+member effects, no queue/retry; crash before/after insert, during
+COMMIT, before first read, after read failure, and at each F4/receipt
+write; partial WORM members; restart recovery; readonly/error/locked
+database; both public facades and no pre-reserve effects. No full test
+suite absent a touched-code reason.
+
+**Non-goals.** Real issuer/provider integration, deployment, Packet8
+study-admission implementation or P7 closure.

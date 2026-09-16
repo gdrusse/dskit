@@ -2,7 +2,7 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0133/0134 merged on main; P7 remains open. Independent whole-P7 audit found four architecture blockers; ADR-0135 bootstrap chronology proposed and cleanly pre-reviewed.",
+  "status": "ADR-0133/0134 merged on main; P7 remains open. ADR-0135/0136 chronology and shared reserve proposals jointly pre-reviewed with zero Critical/Major/Minor; owner ADR approval and effecting prerequisites remain.",
   "proposal": "ADR-0133 accepted and implemented as a nonauthorizing prerequisite; ADR-0130/0132 effecting proposals remain blocked.",
   "cycles": [
     {
@@ -379,5 +379,35 @@
     "recheck": "0 Critical, 0 Major, 0 Minor, 0 Nit; owner-reviewable as non-effecting architecture amendment.",
     "checks": "git diff --check passed; no code tests for design-only proposal.",
     "gate": "Proposal only. ADR-before-code owner approval required; fresh Phase 0 plus separate durable reserve and dynamic trusted resolver contracts before effecting RED."
+  },
+  "adr0136_preapproval": {
+    "branch": "codex/f5a-p7-bootstrap-adr135-20260916",
+    "base_main": "e5d1a403070cb2b6618dc0343fa2f61a9b487c34",
+    "scope": "Shared durable synthetic one-use reserve, exact signed ID mapping, atomic shared revocation, F4/receipt/read admission linearization; design only.",
+    "convergence": {
+      "reviewer": "/root/adr136_convergence",
+      "finding": "Original multi-cycle draft lacked F4/receipt effect admission timing across start/produce/seal/publish/end and receipt sign/put.",
+      "changed_approach": "Each durable transition COMMIT is the sole admission for one immediate in-call effect; next transition checks fresh authority, with no queue/retry/reopen. ADR-0135 timing amended; full sibling matrix frozen."
+    },
+    "correction_families": [
+      "WAL+FULL/local durable sync for permit and administrative revocation writers; same-domain database rollback is excluded by explicit trusted-host invariant.",
+      "Shared generation and revoked-set additions commit atomically under one SQLite writer lock, ordered against broker admissions.",
+      "Roster key is signed bootstrap_id; raw key is signed authorization_id. Re-signing or altered digests cannot spend an ID again.",
+      "Raw reserve and read admission recheck original bootstrap/data grants, fixture attestation, roster v2 receipt/live root and exact equality.",
+      "Roster F4 start/produce/seal/publish/end and receipt sign/put each have fresh authority and one durable admission; restart recovery awaits durable F4."
+    ],
+    "final_lenses": [
+      {
+        "reviewer": "/root/adr135_preapproval",
+        "result": "0 Critical, 0 Major, 0 Minor; joint ADR-0135/0136 chronology/authority recheck"
+      },
+      {
+        "reviewer": "/root/adr136_preapproval",
+        "result": "0 Critical, 0 Major, 0 Minor; joint ADR-0135/0136 reserve/recovery recheck"
+      }
+    ],
+    "checks": "git diff --check passed; design only, no code tests.",
+    "gate": "Proposal only. Repository ADR-before-code owner approval and fresh Phase 0 required before RED. Dynamic trusted P4 resolver and durable F4 restart proof are separate prerequisites.",
+    "deployment_eligible": false
   }
 }
