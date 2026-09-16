@@ -54,6 +54,7 @@ from dskit.pipeline.trust import (
     HistoricalStudyRevocations,
     LifecycleAuthority,
     NonAuthorizingAdr0125StructuralSignaturePreflight,
+    NonAuthorizingSyntheticGrantVerifier,
 )
 from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
@@ -79,6 +80,7 @@ __all__ = [
     "HistoricalStudyRevocations",
     "HistoricalStudyVerifier",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
+    "NonAuthorizingSyntheticGrantVerifier",
     "SubmissionVerifier",
 ]
 

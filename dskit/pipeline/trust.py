@@ -40,6 +40,7 @@ __all__ = [
     "LaunchSession",
     "LifecycleAuthority",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
+    "NonAuthorizingSyntheticGrantVerifier",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
@@ -5409,3 +5410,152 @@ def register(registry=None) -> None:
             )
         return
     registry.register("replay", ReplayRun, owned=True)
+
+
+_SYNTHETIC_GRANT_PUBLIC_KEYS = MappingProxyType({
+    "G1": ("synthetic-g1/dataset-capture/v1",
+           "2dc29709202f88bb35b158fca6db46c9b2c112e5e1403dfef035cda27965af86"),
+    "G2": ("synthetic-g2/dataset-capture/v1",
+           "0fe1b197035dcba56f3fa49c0bfe63ccb18bab6bd4731d1401371513044ebf1a"),
+})
+_SYNTHETIC_GRANT_REVOKED = frozenset()
+_SYNTHETIC_GRANT_SOURCE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
+_SYNTHETIC_GRANT_AUTH_KEYS = frozenset({
+    "schema_version", "authorization_id", "source_ids", "scope",
+    "license_digests", "event_schema", "media_type",
+    "source_roster_root_sha256", "source_roster_publication_receipt_sha256",
+    "source_roster_policy_sha256", "correction_bust_metadata_sha256",
+    "allow_empty_capture", "issued_at_ms", "not_before_ms", "expires_at_ms",
+})
+_SYNTHETIC_GRANT_KEYS = frozenset({
+    "schema_version", "role", "issuer_key_id", "authorization_sha256",
+    "issued_at_ms", "not_before_ms", "expires_at_ms",
+    "revocation_snapshot_sha256", "signature",
+})
+
+
+class NonAuthorizingSyntheticGrantVerifier:
+    """Check fixed synthetic G1/G2 signatures without granting any lifecycle use."""
+
+    __slots__ = ()
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse a subtype that could impersonate the fixed verifier."""
+        raise TypeError("the fixed synthetic grant verifier is final")
+
+    @staticmethod
+    def _require(ok, message):
+        if not ok:
+            raise ValueError(message)
+
+    @classmethod
+    def _hash(cls, value):
+        cls._require(type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value) is not None,
+                     "lowercase SHA-256 is required")
+
+    @classmethod
+    def _authorization(cls, value):
+        cls._require(type(value) is dict and set(value) == _SYNTHETIC_GRANT_AUTH_KEYS,
+                     "closed dataset authorization is required")
+        cls._require(value["schema_version"] == "dskit.dataset-capture-authorization/v1",
+                     "dataset authorization version refused")
+        cls._require(type(value["authorization_id"]) is str
+                     and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(
+                         value["authorization_id"]) is not None,
+                     "authorization id refused")
+        sources = value["source_ids"]
+        cls._require(type(sources) is list
+                     and all(type(item) is str
+                             and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(item) is not None
+                             for item in sources)
+                     and sources == sorted(set(sources)), "canonical source ids refused")
+        licenses = value["license_digests"]
+        cls._require(type(licenses) is list and all(type(item) is str for item in licenses)
+                     and licenses == sorted(set(licenses)),
+                     "canonical license digests refused")
+        for digest in licenses:
+            cls._hash(digest)
+        scope = value["scope"]
+        cls._require(type(scope) is dict and set(scope) == {
+            "availability_start_ms", "availability_end_ms", "source_provenance_sha256",
+        }, "closed dataset scope is required")
+        start, end = scope["availability_start_ms"], scope["availability_end_ms"]
+        cls._require(type(start) is int and type(end) is int and start <= end,
+                     "dataset availability scope refused")
+        cls._hash(scope["source_provenance_sha256"])
+        for name in ("source_roster_root_sha256",
+                     "source_roster_publication_receipt_sha256",
+                     "source_roster_policy_sha256",
+                     "correction_bust_metadata_sha256"):
+            cls._hash(value[name])
+        cls._require(value["event_schema"] == "dskit.raw-event/v1"
+                     and value["media_type"] == "application/x-ndjson"
+                     and type(value["allow_empty_capture"]) is bool,
+                     "dataset schema, media or empty policy refused")
+        issued, first, last = (value[name] for name in (
+            "issued_at_ms", "not_before_ms", "expires_at_ms"))
+        cls._require(all(type(item) is int for item in (issued, first, last))
+                     and issued <= first < last, "dataset grant window refused")
+
+    @classmethod
+    def _snapshot(cls):
+        revoked = _SYNTHETIC_GRANT_REVOKED
+        cls._require(type(revoked) is frozenset
+                     and all(type(item) is str for item in revoked),
+                     "fixed revocation state refused")
+        return _digest(_hs_canonical_bytes({
+            "schema_version": "dskit.synthetic-dataset-revocations/v1",
+            "revoked": sorted(revoked),
+        })), revoked
+
+    @classmethod
+    def _grant(cls, raw, role, authorization, authorization_sha256, snapshot, revoked, now):
+        value = _hs_parse_canonical(raw)
+        cls._require(type(value) is dict and set(value) == _SYNTHETIC_GRANT_KEYS,
+                     "closed synthetic grant is required")
+        key_id, public_key = _SYNTHETIC_GRANT_PUBLIC_KEYS[role]
+        cls._require(value["schema_version"] == "dskit.dataset-capture-grant/v1"
+                     and value["role"] == role and value["issuer_key_id"] == key_id
+                     and value["authorization_sha256"] == authorization_sha256,
+                     "synthetic grant role or authorization refused")
+        cls._hash(value["authorization_sha256"])
+        cls._hash(value["revocation_snapshot_sha256"])
+        cls._require(value["revocation_snapshot_sha256"] == snapshot,
+                     "stale synthetic grant revocation snapshot refused")
+        cls._require(all(type(value[name]) is int for name in (
+            "issued_at_ms", "not_before_ms", "expires_at_ms"))
+                     and all(value[name] == authorization[name] for name in (
+                         "issued_at_ms", "not_before_ms", "expires_at_ms"))
+                     and value["issued_at_ms"] <= value["not_before_ms"] <= now
+                     < value["expires_at_ms"], "synthetic grant time refused")
+        cls._require(not {role, key_id, authorization["authorization_id"]} & revoked,
+                     "revoked synthetic grant refused")
+        preimage = _hs_canonical_bytes({key: item for key, item in value.items()
+                                        if key != "signature"})
+        _p4_verify_ed25519(public_key, preimage, value["signature"])
+        return value
+
+    def verify(self, authorization_bytes, g1_grant_bytes, g2_grant_bytes):
+        """Return immutable checked facts only; repeated calls recheck every rule."""
+        authorization = _hs_parse_canonical(authorization_bytes)
+        self._authorization(authorization)
+        authorization_sha256 = _digest(authorization_bytes)
+        snapshot, revoked = self._snapshot()
+        now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+        self._require(authorization["issued_at_ms"] <= authorization["not_before_ms"] <= now
+                      < authorization["expires_at_ms"]
+                      and authorization["authorization_id"] not in revoked,
+                      "dataset authorization time or revocation refused")
+        self._grant(g1_grant_bytes, "G1", authorization, authorization_sha256,
+                    snapshot, revoked, now)
+        self._grant(g2_grant_bytes, "G2", authorization, authorization_sha256,
+                    snapshot, revoked, now)
+        return MappingProxyType({
+            "authorization_sha256": authorization_sha256,
+            "g1_grant_sha256": _digest(g1_grant_bytes),
+            "g2_grant_sha256": _digest(g2_grant_bytes),
+            "checked_at_ms": now,
+            "revocation_snapshot_sha256": snapshot,
+            "authorizing": False,
+            "deployment_eligible": False,
+        })

@@ -2116,3 +2116,212 @@ def test_p4_record_read_keys_same_member_name_by_committed_stream():
         assert record.read_member_bytes(session, published, port["consumer_document_sha256"],
                                         "config.json") == f4._json_bytes({"name": "producer"})
     assert len(broker._member_events) == len(before[2]) + 2
+
+
+def _synthetic_dataset_grant_fixture():
+    """Offline signed fixture bytes for the read-only ADR-0133 verifier."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    authorization = {
+        "schema_version": "dskit.dataset-capture-authorization/v1",
+        "authorization_id": "fixture-authorization-1",
+        "source_ids": ["src:A", "src:B"],
+        "scope": {
+            "availability_start_ms": 0,
+            "availability_end_ms": 1000,
+            "source_provenance_sha256": "1" * 64,
+        },
+        "license_digests": ["2" * 64],
+        "event_schema": "dskit.raw-event/v1",
+        "media_type": "application/x-ndjson",
+        "source_roster_root_sha256": "3" * 64,
+        "source_roster_publication_receipt_sha256": "4" * 64,
+        "source_roster_policy_sha256": "5" * 64,
+        "correction_bust_metadata_sha256": "6" * 64,
+        "allow_empty_capture": True,
+        "issued_at_ms": 100,
+        "not_before_ms": 100,
+        "expires_at_ms": 900,
+    }
+    raw_authorization = f4._json_bytes(authorization)
+    authorization_sha256 = hashlib.sha256(raw_authorization).hexdigest()
+    snapshot = hashlib.sha256(f4._json_bytes({
+        "schema_version": "dskit.synthetic-dataset-revocations/v1",
+        "revoked": [],
+    })).hexdigest()
+    grants = []
+    for role in ("G1", "G2"):
+        grant = {
+            "schema_version": "dskit.dataset-capture-grant/v1",
+            "role": role,
+            "issuer_key_id": "synthetic-" + role.lower() + "/dataset-capture/v1",
+            "authorization_sha256": authorization_sha256,
+            "issued_at_ms": 100,
+            "not_before_ms": 100,
+            "expires_at_ms": 900,
+            "revocation_snapshot_sha256": snapshot,
+        }
+        preimage = f4._json_bytes(grant)
+        seed = hashlib.sha256(("dskit.synthetic-dataset-grant/" + role + "/v1").encode()).digest()
+        grant["signature"] = Ed25519PrivateKey.from_private_bytes(seed).sign(preimage).hex()
+        grants.append(f4._json_bytes(grant))
+    return raw_authorization, *grants
+
+
+def test_adr133_read_only_dual_grant_verifier_accepts_exact_signed_bytes():
+    cls = getattr(trust, "NonAuthorizingSyntheticGrantVerifier", None)
+    assert cls is not None, "ADR-0133 read-only verifier is missing"
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    result = cls().verify(authorization, g1, g2)
+    assert result["authorization_sha256"] == hashlib.sha256(authorization).hexdigest()
+    assert result["checked_at_ms"] == 500
+    assert result["deployment_eligible"] is False
+    assert result["authorizing"] is False
+    with pytest.raises(TypeError):
+        result["authorizing"] = True
+
+
+def _resign_synthetic_grant(value):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    body = {key: item for key, item in value.items() if key != "signature"}
+    role = body["role"]
+    seed = hashlib.sha256(("dskit.synthetic-dataset-grant/" + role + "/v1").encode()).digest()
+    body["signature"] = Ed25519PrivateKey.from_private_bytes(seed).sign(
+        f4._json_bytes(body)
+    ).hex()
+    return f4._json_bytes(body)
+
+
+@pytest.mark.parametrize("change", [
+    "auth-whitespace", "auth-duplicate-key", "auth-extra-key", "auth-id-space",
+    "source-id-space", "source-id-duplicate", "source-id-type",
+    "scope-bool", "license-uppercase", "window-bool", "grant-swapped",
+    "grant-role", "grant-key", "grant-extra-key", "grant-signature",
+    "grant-stale-snapshot", "grant-digest",
+])
+def test_adr133_refuses_substituted_or_noncanonical_grants(change):
+    cls = getattr(trust, "NonAuthorizingSyntheticGrantVerifier")
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    changed_authorization = False
+    if change == "auth-whitespace":
+        authorization += b" "
+        changed_authorization = True
+    elif change == "auth-duplicate-key":
+        authorization = authorization[:-1] + b',"schema_version":"dskit.dataset-capture-authorization/v1"}'
+        changed_authorization = True
+    elif change.startswith(("auth-", "source-")) or change in (
+        "scope-bool", "license-uppercase", "window-bool",
+    ):
+        value = json.loads(authorization)
+        if change == "auth-extra-key":
+            value["unexpected"] = True
+        elif change == "auth-id-space":
+            value["authorization_id"] = " bad id "
+        elif change == "source-id-space":
+            value["source_ids"] = ["bad id"]
+        elif change == "source-id-duplicate":
+            value["source_ids"] = ["src:A", "src:A"]
+        elif change == "source-id-type":
+            value["source_ids"] = ["src:A", 7]
+        elif change == "scope-bool":
+            value["scope"]["availability_start_ms"] = True
+        elif change == "license-uppercase":
+            value["license_digests"] = ["A" * 64]
+        elif change == "window-bool":
+            value["expires_at_ms"] = True
+        authorization = f4._json_bytes(value)
+        changed_authorization = True
+    elif change == "grant-swapped":
+        g1, g2 = g2, g1
+    else:
+        value = json.loads(g1)
+        if change == "grant-role":
+            value["role"] = "G2"
+        elif change == "grant-key":
+            value["issuer_key_id"] = "synthetic-g2/dataset-capture/v1"
+        elif change == "grant-extra-key":
+            value["unexpected"] = True
+        elif change == "grant-signature":
+            value["signature"] = ("0" if value["signature"][0] != "0" else "1") + value["signature"][1:]
+        elif change == "grant-stale-snapshot":
+            value["revocation_snapshot_sha256"] = "a" * 64
+        elif change == "grant-digest":
+            value["authorization_sha256"] = "b" * 64
+        g1 = f4._json_bytes(value) if change == "grant-signature" else _resign_synthetic_grant(value)
+    if changed_authorization:
+        auth_digest = hashlib.sha256(authorization).hexdigest()
+        left, right = json.loads(g1), json.loads(g2)
+        left["authorization_sha256"] = auth_digest
+        right["authorization_sha256"] = auth_digest
+        g1, g2 = _resign_synthetic_grant(left), _resign_synthetic_grant(right)
+    with pytest.raises((TypeError, ValueError)):
+        cls().verify(authorization, g1, g2)
+
+
+def test_adr133_rechecks_revocation_and_never_spends_or_mints(monkeypatch):
+    verifier = trust.NonAuthorizingSyntheticGrantVerifier()
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    first = verifier.verify(authorization, g1, g2)
+    second = verifier.verify(authorization, g1, g2)
+    assert first == second and first is not second
+    assert not any(hasattr(first, name) for name in (
+        "consume", "mint", "read_member", "publish", "authorize",
+    ))
+    assert not hasattr(verifier, "sign")
+    monkeypatch.setattr(trust, "_SYNTHETIC_GRANT_REVOKED",
+                        frozenset({"fixture-authorization-1"}))
+    with pytest.raises(ValueError):
+        verifier.verify(authorization, g1, g2)
+
+
+def test_adr133_production_facade_reexports_same_read_only_verifier():
+    from dskit.production import verifier as production_verifier
+
+    assert production_verifier.NonAuthorizingSyntheticGrantVerifier is (
+        trust.NonAuthorizingSyntheticGrantVerifier
+    )
+
+
+@pytest.mark.parametrize("window", ("at-not-before", "expired", "future"))
+def test_adr133_enforces_trusted_now_boundaries_with_valid_signatures(window):
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    value = json.loads(authorization)
+    if window == "at-not-before":
+        value["not_before_ms"] = 500
+    elif window == "expired":
+        value["expires_at_ms"] = 500
+    else:
+        value["not_before_ms"] = 501
+    authorization = f4._json_bytes(value)
+    digest = hashlib.sha256(authorization).hexdigest()
+    grants = []
+    for raw in (g1, g2):
+        grant = json.loads(raw)
+        grant["authorization_sha256"] = digest
+        for name in ("issued_at_ms", "not_before_ms", "expires_at_ms"):
+            grant[name] = value[name]
+        grants.append(_resign_synthetic_grant(grant))
+    verifier = trust.NonAuthorizingSyntheticGrantVerifier()
+    if window == "at-not-before":
+        assert verifier.verify(authorization, *grants)["checked_at_ms"] == 500
+    else:
+        with pytest.raises(ValueError):
+            verifier.verify(authorization, *grants)
+
+
+def test_adr133_refuses_current_revocation_even_with_matching_signed_snapshot(monkeypatch):
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    monkeypatch.setattr(trust, "_SYNTHETIC_GRANT_REVOKED",
+                        frozenset({"fixture-authorization-1"}))
+    snapshot = hashlib.sha256(f4._json_bytes({
+        "schema_version": "dskit.synthetic-dataset-revocations/v1",
+        "revoked": ["fixture-authorization-1"],
+    })).hexdigest()
+    grants = []
+    for raw in (g1, g2):
+        grant = json.loads(raw)
+        grant["revocation_snapshot_sha256"] = snapshot
+        grants.append(_resign_synthetic_grant(grant))
+    with pytest.raises(ValueError, match="revocation|revoked"):
+        trust.NonAuthorizingSyntheticGrantVerifier().verify(authorization, *grants)

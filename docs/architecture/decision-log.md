@@ -9196,3 +9196,327 @@ v1 single-CAPTURED chain or one-time `CONSUMED`.
 with synthetic fixtures, two fresh sequential final lenses
 (correctness/authority, then tests/integration), then integrate.
 `deployment_eligible` stays false.
+
+
+## ADR-0130 - broker-issued replay data proof (P7 data slice)
+
+**Status:** accepted (2026-09-16; owner approved "Yes I agree"). Synthetic data-proof RED is blocked by the raw-authority Phase 0 Major and proposed ADR-0132; no P7 closure is claimed.
+
+**Context.** ADR-0129 supplies committed P4 member reads and receipt digests.
+Three Phase 0 correction cycles on a whole composed-tape design left repeated
+roster/provenance substitution gaps. Evidence 0179 records the independent
+convergence checkpoint. This ADR freezes a smaller broker-owned data proof
+before a later ADR specifies manifest publication and composition. ADR-0127's
+captured-tape hierarchy and synthetic-only scope remain controlling.
+
+**Decision.**
+
+1. **Input authority.** The pipeline broker accepts only the exact committed
+   data-producer P4 record and its live LaunchSession, the frozen execution
+   document, and its exact top-level raw_event_dataset and source_roster
+   captured pair. It resolves a class-declared ReplayTapeDataCapture node
+   with one named output and a closed purpose/member contract. It refuses
+   sibling-node/output substitution, extra/aliased/nested captured ports,
+   same-run producer/consumer identity, a foreign record/session, or any
+   uncommitted or revoked input before constructing an F4 producer.
+2. **One-way roster proof.** The broker spends the source_roster member read
+   once through ADR-0129 and retains its own opaque proof. It reads only
+   the captured roster publication's exact retained F4 output_member, then
+   default-deny parses canonical SourceRosterCapture.v1 bytes with the
+   exact plan F3 schema/keys and scope. Canonical sorted unique source_ids
+   must equal
+   [entry.source_id for entry in policy.sources] in order, and each rank
+   equals its zero-based index. Recompute policy_sha256 from canonical policy
+   bytes omitting only policy_sha256. Compare the frozen document's
+   execution_backtest policy pin. The proof binds the exact roster root,
+   publication, P4 stream/port, CAPTURED receipt, consumer document and
+   P4 session. No caller-supplied digest or later reread can recreate it.
+3. **Data root contract.** The broker creates the F4 producer session only
+   after that proof. The exact F4 producer document/run/node/output/purpose
+   tuple must equal the single resolved data-producer node and output in the
+   frozen P4 document and committed record; member contract, output_member,
+   root_id, prepared/sealed/published token identities and publication
+   receipt are retained. A caller-supplied F4 session or prepublished root
+   is refused. P4 and F4 sessions are distinct; lineage is by broker-held
+   object identity plus these field equalities, never scalar equality alone.
+4. **Persistent bytes.** Each data WORM root has one mandatory index member
+   at the F4 output_member and zero or more envelope members. Index media
+   is application/json and its canonical ASCII JSON has exactly:
+   {"schema_version":"dskit.replay-tape-data-index/v1",
+    "source_rank_policy_sha256":"<lowercase-sha256>",
+    "ordered_envelope_member_paths":["<relative-path>",...]}
+   Listed paths are unique normalized F4 relative paths in sealed-member
+   order excluding output_member; there are no extra members. Every envelope
+   member is canonical application/json with the P7 admission projection:
+   schema_version=dskit.event-envelope/v2, source_id, source_rank (integer),
+   and source_rank_policy_sha256. The broker checks that projection against
+   the consumed roster: policy pin equal, source_id in policy.sources, and
+   source_rank equal to that source's derived rank. Other envelope fields
+   are retained as bytes without F2 semantic authority; the later F2 codec
+   must define and validate their complete default-deny wire shape before
+   real replay. This proof attests only that four-field projection and
+   sealed raw bytes, not validity of a complete EventEnvelope.v2. The broker
+   computes each raw-byte SHA-256 in order, plus the sealed roster/data
+   and index identities. A zero-envelope root is valid.
+   Full F2 causality, corrections, availability and total ordering remain
+   later F3 work; this proof makes no claim that those checks occurred.
+5. **Issued result.** Only after F4 seal/publish and all checks does the
+   broker return an opaque published-data proof bound to the retained P4
+   record/session, roster proof, F4 tokens, root_id, publication receipt,
+   index bytes, policy digest and ordered envelope digests. No public
+   constructor, second ledger or remint facade is added. Failure returns no
+   proof; reads already attempted stay spent. The proof is process-local;
+   Packet8 owns durable recovery.
+
+**Sequence.** Approve this data-slice contract, fresh independent Phase 0,
+RED/GREEN with synthetic fixtures, two fresh final lenses and focused
+checks, then integrate. Next design a separate manifest/composition ADR against
+the locked data proof, including the shared pipeline/production codec rule
+needed by finding 0175 MAJ-4. P7 remains open until that later slice closes.
+
+**Non-goals.** Real source/data access, full F2/F3 semantics, manifest
+publication, composed-tape minting, R1 execution, Packet8 durability, second
+planner/ledger, altered captured-tape v1 wire shape or deployment.
+`deployment_eligible=false`.
+
+
+## ADR-0131 - synthetic raw-dataset provenance gate for P7 data proof
+
+**Status:** draft blocked by convergence checkpoint 0179; not offered for
+approval. ADR-0130 RED remains blocked pending owner scope ruling.
+
+**Context.** ADR-0130 validates a captured roster and future data root, but
+P4 capture alone does not prove raw_event_dataset authority or raw-to-envelope
+derivation. F3 requires dual authority, immutable raw members, roster/scope
+provenance and a single-pass captured-event stream before data output.
+This amendment supplies a bounded nondeployment synthetic fixture lane.
+
+**Decision (amendment to ADR-0130).**
+
+1. **Closed synthetic authorization.** The broker's fixture authority
+   constructs canonical ASCII DatasetCaptureAuthorization.v1 JSON with
+   exactly: schema_version=dskit.dataset-capture-authorization/v1,
+   authorization_id (nonempty unique string), source_ids (sorted unique
+   canonical strings), scope (exact availability_start_ms,
+   availability_end_ms, source_provenance_sha256), license_digests (sorted
+   unique lowercase SHA-256), event_schema=dskit.raw-event/v1,
+   media_type=application/x-ndjson, source_roster_root_sha256,
+   source_roster_publication_receipt_sha256,
+   source_roster_policy_sha256, correction_bust_metadata_sha256,
+   allow_empty_capture (boolean), issued_at_ms, not_before_ms and
+   expires_at_ms. Scope and grant times are integer milliseconds with
+   start<=end and issued<=not_before<expires. Its authorization digest is
+   SHA-256 of those exact canonical bytes; no caller-provided digest,
+   alternate keys or normalization are accepted. The correction/bust
+   digest names canonical empty metadata for this no-correction slice.
+2. **Dual grant and publication.** Separate fixed synthetic G1
+   security-owner and G2 data-owner issuers authenticate the same exact
+   authorization bytes/digest with distinct role-bound built-in keys.
+   Their opaque, nonconstructible grants bind issuer role, authorization
+   digest, issue/not-before/expiry, current revocation snapshot and one-use
+   authorization_id. The broker's fixed trusted clock and revocation
+   authority verify both grants and require not_before<=now<expires,
+   unrevoked issuer/key/authorization and an unspent pair immediately
+   before any fixture member read or root creation. One grant, role/key
+   swap, stale/revoked grant, duplicate pair, foreign broker, or
+   caller-made JSON refuses. A broker-owned RawEventDatasetCapture fixture
+   uses the pair once to publish a WORM raw root and retains an opaque
+   process-local proof of grants, authorization, members and publication.
+   All grants and outputs have deployment_eligible=false.
+3. **Raw manifest.** The raw F4 output_member contains canonical ASCII
+   RawEventDatasetCapture.v1 JSON with exactly the plan F3 fields:
+   schema_version, dataset_capture_authorization_sha256, scope,
+   source_roster_root_sha256, source_roster_publication_receipt_sha256,
+   source_roster_policy_sha256, license_digests, event_schema, media_type,
+   ordered_member_digests and correction_bust_metadata_sha256. Its
+   ordered_member_digests name every sealed non-output member in order;
+   each is application/x-ndjson and matches its retained raw-byte digest.
+   No extra manifest keys or sealed members are accepted. Zero raw members
+   require allow_empty_capture=true.
+4. **Pre-session raw proof.** Before ADR-0130 creates any F4 data-producer
+   session, its broker requires the exact raw proof, committed P4
+   record/session and captured raw publication. It spends the captured raw
+   output_member and each listed member once through ADR-0129, then checks
+   canonical manifest and member digests, root/publication/CAPTURED receipt,
+   authorization digest, scope/provenance/source universe/license/schema/
+   media/availability and roster root/publication/policy against the fixed
+   grants, raw proof, frozen P4 descriptors and consumed roster proof.
+   Grant source_ids equal the complete sorted roster source_ids; observed
+   raw lines may use a subset. The broker parses and validates all raw
+   lines from those one-way reads before F4 session creation, retaining
+   immutable projections in a private one-use stream. Missing, extra,
+   swapped, mutated, stale or foreign evidence refuses before session
+   or data root; reads already attempted remain spent.
+5. **Single-pass synthetic derivation.** Decision 4 parses raw members
+   in sealed order as canonical NDJSON; each nonempty line is an exact
+   JSON object with schema_version=dskit.raw-event/v1, canonical source_id,
+   nonempty event_id, nonnegative integer source_sequence, integer
+   availability_ms within the authorized scope, and lowercase
+   payload_sha256. No other keys, duplicate event IDs, unknown sources,
+   empty lines or trailing partial line are accepted. The stream yields
+   validated immutable projections exactly once, with no P4 reread, path,
+   reopen, seek, reset, provider or ambient source access. Its sole
+   deterministic transform emits one canonical envelope projection per
+   raw line in the same order: schema_version=dskit.event-envelope/v2,
+   event_id, source_id, source_rank from the roster,
+   source_rank_policy_sha256, source_sequence, availability_ms and
+   payload_sha256. The broker compares every F4 envelope member's exact
+   bytes to that emitted sequence and requires equal count/order, including
+   zero raw lines -> zero envelopes. Any extra, omitted, changed or
+   reordered envelope refuses before publication/proof. This proves only
+   synthetic byte derivation, not full F1/F2 semantics.
+6. **Issued result.** ADR-0130's data proof binds this raw proof, verified
+   raw member digests and completed one-use derivation in addition to its
+   roster, F4 and envelope facts. It grants no production
+   RawEventDatasetCodec, full EventEnvelope.v2, F2 causality/order,
+   provider or replay execution authority. A later manifest/composition
+   contract cannot omit the raw-proof lineage. Packet8 owns recovery;
+   deployment_eligible=false.
+
+**Sequence.** If approved, run fresh independent Phase 0 on ADR-0130 and
+this amendment before RED. Implement the synthetic raw fixture gate first,
+then ADR-0130 data proof, with focused TDD and two final lenses.
+
+**Non-goals.** Real G1/G2 issuer integration, external provider reads,
+full raw-event semantic decoding, F2/F3 ordering, manifest/composition,
+R1 execution, deployment or a second planner/ledger.
+
+
+## ADR-0132 - independent synthetic grant and fixture preflight
+
+**Status:** accepted (2026-09-16; owner replied "Approve"), but RED is
+blocked by two fresh Phase 0 authority/provenance Majors (evidence 0179).
+ADR-0131 remains a blocked draft, not implementation authority.
+
+**Context.** Convergence checkpoint 0179 found repeated grant-mint and
+pre-effect gaps. The owner delegated the scope choice: preserve the master
+F3 requirements. This slice is a structural prerequisite; P7, Packet8 and
+deployment remain open.
+
+**Decision.**
+
+1. Two separate nondeployment G1 security-owner and G2 data-owner fixture
+   issuers sign grants outside the capture broker. Existing test-fixture
+   code holds their distinct Ed25519 private keys; runtime verification
+   maps only G1 to its pinned G1 public key and G2 to its different pinned
+   G2 public key, and has no mint/sign entry point.
+   Hostile bytes, not code controlling the interpreter, are the threat.
+2. DatasetCaptureAuthorization.v1 is exact canonical ASCII JSON with:
+   schema_version=dskit.dataset-capture-authorization/v1,
+   authorization_id, sorted unique source_ids, scope (exact
+   availability_start_ms, availability_end_ms,
+   source_provenance_sha256), sorted unique license_digests,
+   event_schema=dskit.raw-event/v1, media_type=application/x-ndjson,
+   source_roster_root_sha256, source_roster_publication_receipt_sha256,
+   source_roster_policy_sha256, correction_bust_metadata_sha256,
+   allow_empty_capture, issued_at_ms, not_before_ms, expires_at_ms.
+   Digests are lowercase SHA-256; times are integer milliseconds with
+   scope start<=end and issued<=not_before<expires. SHA-256 of exact
+   canonical bytes is the authorization digest. Each signed grant has
+   exactly schema_version, role, issuer_key_id, authorization_sha256,
+   issued_at_ms, not_before_ms, expires_at_ms,
+   revocation_snapshot_sha256 and signature. Its Ed25519 signature
+   covers canonical grant bytes without signature. Grant roles/keys
+   differ and all claims match the retained authorization.
+3. Before a raw member read or F4 effect, a fixed verifier checks both
+   signatures, trusted now within both grant windows, the current
+   revocation snapshot and unrevoked keys/issuers/authorization. It
+   resolves the exact pre-document PUBLISHED roster and retained F4
+   output_member, verifies SourceRosterCapture.v1 canonical bytes and
+   policy, then checks full ordered source universe, scope,
+   provenance, roster root/publication/policy equality.
+4. Under one broker lock, after grant and roster checks but before
+   the first candidate raw member inspection, authorization_id is
+   atomically spent across every grant pair. A failed subsequent read
+   or validation leaves it spent. Before any raw F4 session, root or
+   receipt, preflight then validates the complete member roster and
+   media. Each raw member is canonical ASCII NDJSON: every line ends
+   LF and is exactly one canonical JSON object with keys
+   schema_version=dskit.raw-event/v1, source_id (canonical member of
+   authorized source_ids), nonempty event_id, source_sequence
+   (nonnegative integer), availability_ms (integer within scope),
+   and payload_sha256 (lowercase SHA-256). Unknown/missing keys,
+   booleans as integers, duplicate event IDs, empty lines, noncanonical
+   bytes and trailing partial lines refuse. It computes exact raw-byte
+   member digests/order and total parsed event count. A zero-byte
+   member counts as zero events; allow_empty_capture=false requires
+   at least one parsed event. The no-correction fixture's
+   correction_bust_metadata_sha256 is SHA-256 of canonical empty
+   metadata bytes. Validated bytes/projections stay broker-private
+   and immutable.
+5. Only after that validation does the verifier issue opaque
+   process-local VerifiedSyntheticDatasetFixture bound to the
+   grants, authorization, roster token, member bytes/order/digests,
+   event projections and revocation state. It publishes no root.
+   Failure issues no proof; concurrent/repeated ID use refuses.
+   A later raw-publisher slice must consume the proof once and
+   recheck live expiry/revocation/bytes before F4 effects. A later
+   P4 data-broker slice independently verifies captured raw+roster
+   bytes. Both require separate ADRs and reviews.
+
+**Sequence.** Owner approval, fresh independent Phase 0, focused
+synthetic RED/GREEN in existing files, two final lenses and integration.
+
+**Non-goals.** Real G1/G2 integration, provider reads, raw publication,
+full F1/F2/F3 semantics, composed tape, P7/Packet8 closure or deployment.
+`deployment_eligible=false`.
+
+
+## ADR-0133 - read-only synthetic G1/G2 grant verification
+
+**Status:** accepted (2026-09-16; owner replied "Yes approve"). This
+authorizes only the read-only verifier; fresh Phase 0 precedes RED.
+ADR-0132 remains accepted but its effecting preflight RED is blocked.
+Convergence checkpoint 0179 requires this separate first slice.
+
+**Context.** A per-broker one-use map cannot prevent two brokers spending
+the same authorization, and plausible caller-selected raw bytes do not
+prove fixture origin. This decision verifies only signed grant facts.
+It creates no capture, publication or admission authority.
+
+**Decision.**
+
+1. A single public, read-only NonAuthorizingSyntheticGrantVerifier
+   verifies exact canonical ASCII DatasetCaptureAuthorization.v1 bytes
+   and two exact canonical grant bytes. It has fixed, distinct Ed25519
+   public keys for G1 security-owner and G2 data-owner; no runtime
+   private key, signer, key registration, verifier injection or
+   alternate algorithm. Existing test-fixture code alone signs inputs.
+2. The authorization object has exactly the ADR-0132 Decision 2 fields
+   and literals. Require exact JSON types: nonempty authorization_id,
+   sorted unique nonempty canonical source_ids, sorted unique lowercase
+   SHA-256 license_digests, exact scope keys with integer millisecond
+   bounds and lowercase provenance digest, lowercase roster/correction
+   digests, boolean allow_empty_capture, and integer issued/not-before/
+   expiry values (booleans refuse as integers). Its SHA-256 is over
+   exact canonical bytes. Each grant has exactly the ADR-0132 fields,
+   schema_version=dskit.dataset-capture-grant/v1, literal G1 or G2
+   role, fixed role-matched issuer_key_id, lowercase 128-hex signature,
+   and lowercase SHA-256 authorization/revocation digests. Signature
+   verifies over canonical grant bytes with only signature omitted.
+   Duplicates, unknowns, missing keys, noncanonical bytes, mixed
+   roles/keys or nonexact claims refuse.
+3. The verifier uses its fixed trusted clock and current revocation
+   authority; neither is caller-supplied. Require authorization and
+   both grants to have equal issue/not-before/expiry, with
+   issued<=not_before<=now<expires, current snapshot digest and
+   unrevoked G1/G2 issuer/key/authorization. A stale or revoked
+   signature refuses even if cryptographically valid. Each call
+   rechecks current time/revocation; no cached success bypass.
+4. Success returns immutable NONAUTHORIZING checked facts bound to
+   exact authorization/grant digests, now and revocation snapshot.
+   Calls may repeat. These facts have no consume, mint, member-read,
+   roster-access, F4/P4, root, receipt or downstream-admission method.
+   A later effecting authority must independently reverify current
+   grants and atomically spend authorization_id in one shared domain
+   before any named-source read; it cannot treat this result as a permit.
+   Failure returns no checked facts and causes no lifecycle effect.
+   deployment_eligible=false.
+
+**Process.** Owner approval, fresh independent Phase 0, focused
+synthetic RED/GREEN in existing files, two final lenses, then integrate.
+Later ADRs design shared one-use authority and trusted fixture-source
+binding before raw publication. P7 and Packet8 remain open.
+
+**Non-goals.** Raw fixture access or validation, one-use spending,
+F4/P4 effects, full F1/F2/F3 semantics, P7/Packet8 closure or deployment.
