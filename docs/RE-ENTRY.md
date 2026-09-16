@@ -22,6 +22,9 @@ checked facts). Focused 24 and affected 1057 tests passed; Ruff and diff check
 passed. Full suite was not run. Model attribution is recorded in evidence 0179.
 Trusted fixture acquisition, global one-use authority, raw publication, data
 proof and composition need later contracts.
+ADR-0133 reached remote main at 28c68de. Proposed ADR-0134 now covers only
+read-only signed synthetic fixture commitments; independent preapproval review
+found zero blocking findings. Owner approval is required before its Phase 0/RED.
 Packet8 remains gated on P7 closure.
 deployment_eligible=false.
 
