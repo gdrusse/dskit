@@ -328,7 +328,8 @@ dskit/production/
 ├── health.py          health state machine; probes; heartbeat (file/url/systemd, plus the
 │                      ready()/stopping() lifecycle hooks); instance lock; signals
 ├── ids.py             IdSource ABC; ReleaseIdSource; RecordedIdSource
-├── bundles.py         the seven frozen collaborator bundles
+├── bundles.py         the seven frozen collaborator bundles; ReplayTape ABC;
+│                      CapturedReplayTape (the CapturedReplayTape.v1 codec)
 ├── leg.py             LegPipeline (the eight submission steps; step (4) records a guard's hold);
 │                      the Authority family
 ├── compose.py         bundles_for(); the AuthorityTable; the one rung reader

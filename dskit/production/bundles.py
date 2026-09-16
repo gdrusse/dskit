@@ -28,12 +28,18 @@ all three of its inputs. Its knobs are stdlib-typed, so it does check
 them.
 """
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 
-from dskit.production.base import ProductionError
+from dskit.production.base import (
+    ProductionError,
+    canonical_bytes as _canonical_bytes,
+    canonical_hash as _canonical_hash,
+)
 
 __all__ = [
+    "CapturedReplayTape",
     "Data",
     "Decision",
     "Execution",
@@ -44,6 +50,257 @@ __all__ = [
     "Safety",
     "Schedule",
 ]
+
+CAPTURED_REPLAY_TAPE_SCHEMA = "dskit.captured-replay-tape/v1"
+CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA = "dskit.event-envelope/v2"
+
+_PLACEHOLDER = "0" * 64
+_HEX_CHARS = frozenset("0123456789abcdef")
+_FIELDS = (
+    "schema_version",
+    "event_envelope_schema",
+    "data_capture_root",
+    "data_captured_receipt",
+    "source_rank_policy_sha256",
+    "envelope_count",
+    "ordered_envelope_digests",
+    "ordered_envelopes_sha256",
+    "tape_digest",
+)
+_DIGEST_FIELDS = (
+    "data_capture_root",
+    "data_captured_receipt",
+    "source_rank_policy_sha256",
+)
+
+
+def _is_digest(value):
+    """Return True only for a 64 lowercase-hex digest that is not a placeholder."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and value != _PLACEHOLDER
+        and value != "self"
+        and all(char in _HEX_CHARS for char in value)
+    )
+
+
+def _check_tape(value):
+    """Accumulate every refusal for a ``CapturedReplayTape.v1`` object."""
+    problems = []
+    unknown = set(value) - set(_FIELDS)
+    missing = set(_FIELDS) - set(value)
+    for name in sorted(unknown):
+        problems.append(f"unknown captured-replay-tape field {name!r}")
+    for name in sorted(missing):
+        problems.append(f"missing captured-replay-tape field {name!r}")
+    if value.get("schema_version") != CAPTURED_REPLAY_TAPE_SCHEMA:
+        problems.append(
+            f"schema_version must be {CAPTURED_REPLAY_TAPE_SCHEMA!r}"
+        )
+    if value.get("event_envelope_schema") != CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA:
+        problems.append(
+            f"event_envelope_schema must be {CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA!r}"
+        )
+    for name in _DIGEST_FIELDS:
+        if not _is_digest(value.get(name)):
+            problems.append(f"{name} must be a 64-hex sha256 digest, not a placeholder")
+    count = value.get("envelope_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        problems.append("envelope_count must be a non-negative int")
+    envelopes = value.get("ordered_envelope_digests")
+    if not isinstance(envelopes, list):
+        problems.append("ordered_envelope_digests must be a list")
+    else:
+        for index, digest in enumerate(envelopes):
+            if not _is_digest(digest):
+                problems.append(
+                    f"ordered_envelope_digests[{index}] must be a 64-hex sha256 digest"
+                )
+        if isinstance(count, int) and not isinstance(count, bool) and count != len(envelopes):
+            problems.append("envelope_count must equal len(ordered_envelope_digests)")
+        if value.get("ordered_envelopes_sha256") != _canonical_hash(envelopes):
+            problems.append("ordered_envelopes_sha256 does not match the digest list")
+    try:
+        source = {key: item for key, item in value.items() if key != "tape_digest"}
+        if value.get("tape_digest") != _canonical_hash(source):
+            problems.append("tape_digest does not match the recomputed digest")
+    except ProductionError:
+        # A non-serializable member is already reported above; the digest
+        # cannot be recomputed over it, so there is nothing more to say here.
+        pass
+    return problems
+
+
+class CapturedReplayTape:
+    """The default-deny ``dskit.captured-replay-tape/v1`` inner-manifest codec.
+
+    The bytes a ``ReplayTapeManifestProducer`` publishes are one exact
+    nine-field object. This value pins it: the two derived digests
+    (``ordered_envelopes_sha256`` and ``tape_digest``) are recomputed from
+    canonical bytes, so the replay consumer later trusts only bytes that
+    verify — never a caller-supplied digest string. It has no public
+    constructor; ``parse`` and the private factory are the only mints.
+
+    Examples
+    --------
+    A value is parsed, never constructed::
+
+        tape = CapturedReplayTape.parse(canonical_bytes)
+        tape.tape_digest  # 64 lowercase hex characters
+    """
+
+    __slots__ = ("_value", "__weakref__")
+
+    def __new__(cls, *args, **kwargs):
+        """Refuse direct construction: parse the bytes or use the factory."""
+        raise TypeError("CapturedReplayTape is parsed, never constructed")
+
+    def __setattr__(self, name, value):
+        """Refuse mutation: a captured tape is immutable."""
+        raise AttributeError("CapturedReplayTape is frozen")
+
+    def __copy__(self):
+        """Refuse a shallow copy of the opaque value."""
+        raise TypeError("CapturedReplayTape is opaque")
+
+    def __deepcopy__(self, memo):
+        """Refuse a deep copy of the opaque value."""
+        raise TypeError("CapturedReplayTape is opaque")
+
+    def __getstate__(self):
+        """Refuse pickle state for the opaque value."""
+        raise TypeError("CapturedReplayTape is opaque")
+
+    def __reduce__(self):
+        """Refuse pickle reduction for the opaque value."""
+        raise TypeError("CapturedReplayTape is opaque")
+
+    def __reduce_ex__(self, protocol):
+        """Refuse protocol pickle reduction for the opaque value."""
+        raise TypeError("CapturedReplayTape is opaque")
+
+    @classmethod
+    def _from_value(cls, value):
+        """Build an immutable instance from an already-validated object."""
+        self = object.__new__(cls)
+        object.__setattr__(self, "_value", value)
+        return self
+
+    @classmethod
+    def parse(cls, raw):
+        """Parse canonical ``CapturedReplayTape.v1`` bytes, refusing everything else.
+
+        Parameters
+        ----------
+        raw : bytes
+            The exact canonical JSON bytes of the nine-field object.
+
+        Returns
+        -------
+        CapturedReplayTape
+            The immutable, verified value.
+
+        Raises
+        ------
+        ProductionError
+            Naming every field that is unknown, missing, mistyped, a
+            placeholder digest, or a mismatched recomputed digest, and any
+            bytes that are not the canonical form.
+        """
+        if not isinstance(raw, bytes):
+            raise ProductionError(["CapturedReplayTape.parse takes canonical bytes"])
+        try:
+            value = json.loads(raw.decode("ascii"))
+        except (UnicodeDecodeError, ValueError):
+            raise ProductionError(["CapturedReplayTape bytes are not canonical JSON"])
+        if not isinstance(value, dict):
+            raise ProductionError(["CapturedReplayTape must decode to an object"])
+        problems = _check_tape(value)
+        if not problems and _canonical_bytes(value) != raw:
+            problems = ["CapturedReplayTape bytes are not canonical"]
+        if problems:
+            raise ProductionError(problems)
+        return cls._from_value(value)
+
+    @classmethod
+    def _build(cls, data_capture_root, data_captured_receipt,
+               source_rank_policy_sha256, ordered_envelope_digests):
+        """Derive the canonical value from its five supplied inputs."""
+        if not isinstance(ordered_envelope_digests, (list, tuple)):
+            raise ProductionError(["ordered_envelope_digests must be a list"])
+        envelopes = list(ordered_envelope_digests)
+        value = {
+            "schema_version": CAPTURED_REPLAY_TAPE_SCHEMA,
+            "event_envelope_schema": CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA,
+            "data_capture_root": data_capture_root,
+            "data_captured_receipt": data_captured_receipt,
+            "source_rank_policy_sha256": source_rank_policy_sha256,
+            "envelope_count": len(envelopes),
+            "ordered_envelope_digests": envelopes,
+        }
+        value["ordered_envelopes_sha256"] = _canonical_hash(envelopes)
+        source = {key: item for key, item in value.items() if key != "tape_digest"}
+        value["tape_digest"] = _canonical_hash(source)
+        problems = _check_tape(value)
+        if problems:
+            raise ProductionError(problems)
+        return cls._from_value(value)
+
+    @property
+    def schema_version(self):
+        """The fixed ``dskit.captured-replay-tape/v1`` literal."""
+        return self._value["schema_version"]
+
+    @property
+    def event_envelope_schema(self):
+        """The fixed ``dskit.event-envelope/v2`` literal."""
+        return self._value["event_envelope_schema"]
+
+    @property
+    def data_capture_root(self):
+        """The parent data capture root digest."""
+        return self._value["data_capture_root"]
+
+    @property
+    def data_captured_receipt(self):
+        """The manifest producer's parent CAPTURED receipt digest."""
+        return self._value["data_captured_receipt"]
+
+    @property
+    def source_rank_policy_sha256(self):
+        """The pre-document source-rank policy digest."""
+        return self._value["source_rank_policy_sha256"]
+
+    @property
+    def envelope_count(self):
+        """The number of ordered envelopes."""
+        return self._value["envelope_count"]
+
+    @property
+    def ordered_envelope_digests(self):
+        """The ordered envelope digests, as an immutable tuple."""
+        return tuple(self._value["ordered_envelope_digests"])
+
+    @property
+    def ordered_envelopes_sha256(self):
+        """The recomputed digest of the ordered envelope digest array."""
+        return self._value["ordered_envelopes_sha256"]
+
+    @property
+    def tape_digest(self):
+        """The recomputed digest of the object with ``tape_digest`` omitted."""
+        return self._value["tape_digest"]
+
+    def to_obj(self):
+        """Return a plain copy of the nine-field object."""
+        value = dict(self._value)
+        value["ordered_envelope_digests"] = list(value["ordered_envelope_digests"])
+        return value
+
+    def canonical_bytes(self):
+        """Return the exact canonical JSON bytes of the value."""
+        return _canonical_bytes(self.to_obj())
 
 
 class ReplayTape(ABC):

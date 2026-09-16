@@ -1,0 +1,101 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2a",
+  "packet": "7-replay-tape-descriptors-captured-replay-tape-codec",
+  "status": "phase0-final-contract",
+  "supersedes": "0162-f5a-f3-captured-tape-phase0.json (narrowed to the codec after 0163)",
+  "base_main": "e5c7e81f97600668393549dc776ebf3b5a4b6a4a",
+  "cites": ["ADR-0127 (Decision.2 codec ownership)", "plan:531-546 (CapturedReplayTape.v1 schema)", "0163-f5a-f3-captured-tape-phase0-skeptic.json", "0164-f5a-f3-multi-consumer-capture-gate.json"],
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (owner substituted for unavailable Terra)",
+
+  "scope": "The default-deny CapturedReplayTape.v1 codec owned by dskit/production/bundles.py: exact 9-field schema, canonical bytes, and the two recomputed digests (ordered_envelopes_sha256, tape_digest). Self-contained; no capture hierarchy, no composed-tape verification, no multi-consumer capture.",
+  "non_goals": [
+    "ReplayTapeDataCapture / ReplayTapeManifestProducer / ReplayTapeManifestCapture runtime collaborators",
+    "compose_replay_tape composed-tape verification seam (slice 2b, blocked on 0164)",
+    "multi-consumer capture of one published root",
+    "deriving ordered_envelope_digests from a feed (supplied inputs to the codec)",
+    "runtime ReplayTape (start_ms/feed_results/id_allocations; that is R1)",
+    "R1-R5 replay machinery; F1/F2 envelope reorder; second planner/ledger/tape engine",
+    "real data/replay/deployment"
+  ],
+
+  "schema": {
+    "name": "CapturedReplayTape",
+    "schema_version_literal": "dskit.captured-replay-tape/v1",
+    "event_envelope_schema_literal": "dskit.event-envelope/v2",
+    "fields": [
+      {"name": "schema_version", "kind": "literal", "rule": "exact dskit.captured-replay-tape/v1"},
+      {"name": "event_envelope_schema", "kind": "literal", "rule": "exact dskit.event-envelope/v2"},
+      {"name": "data_capture_root", "kind": "digest", "rule": "lowercase 64-hex sha256; placeholder '0'*64 and 'self' refused"},
+      {"name": "data_captured_receipt", "kind": "digest", "rule": "lowercase 64-hex sha256; placeholder/self refused"},
+      {"name": "source_rank_policy_sha256", "kind": "digest", "rule": "lowercase 64-hex sha256; placeholder/self refused"},
+      {"name": "envelope_count", "kind": "int", "rule": "int >= 0, not bool"},
+      {"name": "ordered_envelope_digests", "kind": "digest-list", "rule": "list of lowercase 64-hex sha256 (placeholder/self refused), length == envelope_count"},
+      {"name": "ordered_envelopes_sha256", "kind": "computed", "rule": "canonical_hash(ordered_envelope_digests)"},
+      {"name": "tape_digest", "kind": "computed", "rule": "canonical_hash(object with tape_digest omitted)"}
+    ],
+    "canonicalization": "dskit.production.base.canonical_bytes / canonical_hash (the package's one recipe).",
+    "supplied_vs_computed": "2 literal + 5 supplied (data_capture_root, data_captured_receipt, source_rank_policy_sha256, envelope_count, ordered_envelope_digests) + 2 computed = 9 fields total."
+  },
+
+  "construction": {
+    "opaque": "No public constructor; copy/deepcopy/pickle/__reduce__/__reduce_ex__ all refuse (matches existing opaque value doctrine). No attribute mutation.",
+    "factory": "a private _build(data_capture_root, data_captured_receipt, source_rank_policy_sha256, ordered_envelope_digests) validates all inputs, computes ordered_envelopes_sha256 and tape_digest, returns an immutable CapturedReplayTape. Only this factory (or parse) mints one.",
+    "parse": "CapturedReplayTape.parse(raw) is the default-deny read side: decode canonical JSON, require exactly the 9 keys (no extra/missing), validate every field, recompute and verify both computed digests, then return the immutable value.",
+    "accessors": "read-only properties for each of the 9 fields; to_obj(); canonical_bytes()."
+  },
+
+  "parse_refusals": [
+    "non-JSON / non-canonical bytes (NaN, Infinity, non-ASCII)",
+    "unknown/extra/missing field",
+    "schema_version or event_envelope_schema not the exact literal",
+    "digest field not a str, not 64 hex, not lowercase, or placeholder '0'*64 or 'self'",
+    "envelope_count bool, negative, or non-int",
+    "ordered_envelope_digests not a list, any element invalid, or length != envelope_count",
+    "ordered_envelopes_sha256 recompute mismatch",
+    "tape_digest recompute mismatch (incl. tape_digest included in its own source)"
+  ],
+
+  "positive_grammar": "A correct 9-field dict builds and round-trips: parse(canonical_bytes(to_obj())) == value; both computed digests are exact canonical_hash results; envelope_count == len(ordered_envelope_digests).",
+
+  "negative_families": [
+    {"family": "codec-shape", "cases": ["unknown key", "extra key", "missing key", "wrong schema_version", "wrong event_envelope_schema"]},
+    {"family": "codec-count", "cases": ["envelope_count bool", "negative", "non-int", "digest list length mismatch", "digests not a list"]},
+    {"family": "codec-digest", "cases": ["non-lowercase hex", "wrong length", "placeholder '0'*64", "'self'", "non-str digest"]},
+    {"family": "codec-recompute", "cases": ["ordered_envelopes_sha256 mismatch", "tape_digest mismatch", "tape_digest computed over a source that includes tape_digest"]},
+    {"family": "codec-opacity", "cases": ["direct construction", "copy/deepcopy/pickle", "attribute mutation"]}
+  ],
+
+  "compatibility": {
+    "purity": "pipeline never imports production (unchanged; codec is production-side); bundles.py imports only dskit.production.base + stdlib.",
+    "p4_p6": "no trust.py change in this slice; P4/P6 capture machinery untouched.",
+    "replay_tape_abc": "the existing ReplayTape ABC in bundles.py is untouched; CapturedReplayTape is a distinct value type, not a ReplayTape subclass.",
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture stays green."
+  },
+
+  "forbidden_effects": [
+    "path/provider/filesystem/network access",
+    "minting authority from the codec",
+    "any capture/lifecycle transition",
+    "accepting a placeholder/self or noncanonical digest"
+  ],
+
+  "tests": {
+    "new": "tests/production/test_captured_replay_tape.py: positive build/parse/canonical round-trip; all codec-shape/count/digest/recompute/opacity negative families.",
+    "existing": ["tests/production/test_purity.py", "tests/production/test_producers.py", "tests/production/test_oop.py", "tests/production/test_capture_lifecycle.py", "tests/pipeline/test_trust.py"],
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture"
+  },
+
+  "implementation_files": [
+    "dskit/production/bundles.py (CapturedReplayTape codec)",
+    "dskit/production/__init__.py (export CapturedReplayTape)",
+    "tests/production/test_captured_replay_tape.py (new)",
+    "dskit/production/README.md + AGENTS.md (tree + extension points)"
+  ],
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0165-f5a-f3-captured-tape-codec-phase0.json",
+    "git diff --check"
+  ]
+}
