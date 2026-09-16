@@ -2471,21 +2471,41 @@ _P4_RESOLVER_LOOKUP = _FixedWormTrustedArtifactResolver._lookup
 
 
 def _p4_require_issued_authority(authority):
-    """Recheck exact broker identity and dispatch without spending authority."""
+    """Recheck exact broker identity and dispatch without spending authority.
+
+    ADR-0143 Decision point 4: the authority/ledger-identity checks below stay
+    shared (both authority instances use the identical final class); the
+    resolver-type-specific checks moved into an explicit closed if/elif/else,
+    never isinstance, on ``type(issued[0])`` -- never a shared permissive
+    dispatch helper. The legacy (``if``) arm is byte-identical to the prior
+    single-branch checks; the dynamic (``elif``) arm is new and self-contained.
+    """
     if type(authority) is not _SyntheticP4CapturedAuthorizationAuthority:
         raise TypeError("exact broker-issued P4 capability is required")
     issued = _P4_ISSUED.get(authority)
     if (
         issued is None
         or authority._p4_resolver is not issued[0]
-        or type(issued[0]) is not _FixedWormTrustedArtifactResolver
-        or issued[0]._records is not issued[1]
         or CapturedAuthorizationAuthority.authorize_capture_set is not _P4_BASE_DISPATCH
         or type(authority).authorize_capture_set is not _P4_FINAL_DISPATCH
         or type(authority)._validate_capture_request is not _P4_REQUEST_CHECK
-        or type(issued[0])._lookup is not _P4_RESOLVER_LOOKUP
         or "authorize_capture_set" in authority.__dict__
     ):
+        raise TypeError("exact broker-issued P4 capability is required")
+    resolver = issued[0]
+    if type(resolver) is _FixedWormTrustedArtifactResolver:
+        if (
+            resolver._records is not issued[1]
+            or type(resolver)._lookup is not _P4_RESOLVER_LOOKUP
+        ):
+            raise TypeError("exact broker-issued P4 capability is required")
+    elif type(resolver) is _DynamicP4TrustedArtifactResolver:
+        if (
+            type(resolver).resolve is not _P4_DYNAMIC_RESOLVER_LOOKUP
+            or issued[1] is not resolver._graph
+        ):
+            raise TypeError("exact broker-issued P4 capability is required")
+    else:
         raise TypeError("exact broker-issued P4 capability is required")
 
 
@@ -4193,32 +4213,63 @@ _P4_TERMINAL_METHODS = (
 
 
 def _p4_snapshot_integrity(resolver, snapshot):
-    """Check the construction-owned graph before any resolver or proof action."""
+    """Check the construction-owned graph before any resolver or proof action.
+
+    ADR-0143 Decision point 4: dispatches on ``type(resolver)`` through an
+    explicit closed if/elif/else, never isinstance. The legacy (``if``) arm
+    below is byte-identical to the prior single-branch checks; the dynamic
+    (``elif``) arm is new and self-contained, sharing no helper with it.
+    """
     _hs_refuse(_p4_snapshot_integrity is _P4_SNAPSHOT_INTEGRITY and
                _p4_fixed_integrity is _P4_FIXED_INTEGRITY, "P4 fixed dispatch integrity refused")
     _P4_FIXED_INTEGRITY()
-    _hs_refuse(type(resolver) is _FixedWormTrustedArtifactResolver, "P4 snapshot integrity refused")
-    pin = _P4_RESOLVERS.get(resolver)
-    _hs_refuse(pin is not None, "P4 snapshot capability is unregistered")
-    records, expected, terminal, generation = pin
-    terminal_pin = _P4_TERMINALS.get(terminal)
-    _hs_refuse(terminal_pin is not None and terminal_pin[0] is resolver
-               and terminal_pin[1] is snapshot and terminal_pin[2] is _P4_EXTERNAL_RECORDS,
-               "P4 terminal root integrity refused")
-    _hs_refuse(
-        resolver._records is records and resolver._snapshot is expected
-        and snapshot is expected and type(snapshot) is _P4ResolverSnapshot
-        and type(snapshot._generation) is int and type(generation) is int and snapshot._generation == generation == 0
-        and resolver._terminal is terminal and type(terminal) is _FixedTerminalArtifactVerifier
-        and not terminal.__dict__
-        and tuple(getattr(type(resolver), name) for name in (
-            "snapshot", "resolve", "_checked_resolve",
-        )) == _P4_RESOLVER_METHODS
-        and tuple(getattr(type(terminal), name) for name in (
-            "verify_terminal", "require_current",
-        )) == _P4_TERMINAL_METHODS,
-        "P4 snapshot integrity refused",
-    )
+    if type(resolver) is _FixedWormTrustedArtifactResolver:
+        pin = _P4_RESOLVERS.get(resolver)
+        _hs_refuse(pin is not None, "P4 snapshot capability is unregistered")
+        records, expected, terminal, generation = pin
+        terminal_pin = _P4_TERMINALS.get(terminal)
+        _hs_refuse(terminal_pin is not None and terminal_pin[0] is resolver
+                   and terminal_pin[1] is snapshot and terminal_pin[2] is _P4_EXTERNAL_RECORDS,
+                   "P4 terminal root integrity refused")
+        _hs_refuse(
+            resolver._records is records and resolver._snapshot is expected
+            and snapshot is expected and type(snapshot) is _P4ResolverSnapshot
+            and type(snapshot._generation) is int and type(generation) is int and snapshot._generation == generation == 0
+            and resolver._terminal is terminal and type(terminal) is _FixedTerminalArtifactVerifier
+            and not terminal.__dict__
+            and tuple(getattr(type(resolver), name) for name in (
+                "snapshot", "resolve", "_checked_resolve",
+            )) == _P4_RESOLVER_METHODS
+            and tuple(getattr(type(terminal), name) for name in (
+                "verify_terminal", "require_current",
+            )) == _P4_TERMINAL_METHODS,
+            "P4 snapshot integrity refused",
+        )
+    elif type(resolver) is _DynamicP4TrustedArtifactResolver:
+        _p4_dynamic_fixed_integrity()
+        pin = _P4_RESOLVERS.get(resolver)
+        _hs_refuse(pin is not None, "P4 snapshot capability is unregistered")
+        graph, terminal = pin
+        terminal_pin = _P4_TERMINALS.get(terminal)
+        _hs_refuse(terminal_pin is not None and terminal_pin[0] is resolver,
+                   "P4 terminal root integrity refused")
+        _hs_refuse(
+            resolver._graph is graph and type(graph) is NonAuthorizingDynamicRootGraph
+            and resolver._terminal is terminal
+            and type(terminal) is _DynamicP4TerminalArtifactVerifier
+            and not terminal.__dict__
+            and snapshot is not None and type(snapshot) is _DynamicRootGraphSnapshot
+            and snapshot is resolver._snapshot and snapshot._graph is graph
+            and tuple(getattr(type(resolver), name) for name in (
+                "snapshot", "resolve", "_checked_resolve",
+            )) == _P4_DYNAMIC_RESOLVER_METHODS
+            and tuple(getattr(type(terminal), name) for name in (
+                "verify_terminal", "require_current",
+            )) == _P4_DYNAMIC_TERMINAL_METHODS,
+            "P4 snapshot integrity refused",
+        )
+    else:
+        _hs_refuse(False, "P4 snapshot integrity refused")
 
 
 def _p4_basis(raw, kind, role, usage):
@@ -5280,7 +5331,13 @@ class _LifecycleAuthorizationLedger(_Opaque):
             checked_runtime = {key: value for key, value in runtime.items() if key != "transition_nonces"}
             _P4_REQUEST_CHECK(authority, captures, checked_runtime, nonces)
             _hs_refuse(not any(self._nonce_used(nonce) for nonce in nonces), "P4 nonce already committed")
-            _hs_refuse(_P4_CLOSE_ADMISSION(resolver, resolver._snapshot, admission_ref, (authority, captures, checked_runtime)) is None)
+            # Dispatch through the resolver's own close_admission (four-method
+            # contract, ADR-0143 Decision point 1): the fixed resolver forwards
+            # to the unedited _P4_CLOSE_ADMISSION exactly as before; the dynamic
+            # resolver forwards to its own separate _dynamic_p4_close_admission.
+            # _p4_close_admission/_P4_CLOSE_ADMISSION are never called directly
+            # from here, and neither branch shares the other's closure walk.
+            _hs_refuse(resolver.close_admission(resolver._snapshot, admission_ref, (authority, captures, checked_runtime)) is None)
             streams = tuple(authority._stream_for_published(item[0], "P4 publication required") for item in captures)
             raw = _P4_PREPARE(_P4_CONTRACT, resolver, admission_ref, streams, checked_runtime, nonces)
             self._fault("prepared")
@@ -5291,7 +5348,7 @@ class _LifecycleAuthorizationLedger(_Opaque):
                 self._fault("verified")
                 self._check()
                 _P4_REQUEST_CHECK(authority, captures, checked_runtime, nonces)
-                _hs_refuse(_P4_CLOSE_ADMISSION(resolver, resolver._snapshot, admission_ref, (authority, captures, checked_runtime)) is None)
+                _hs_refuse(resolver.close_admission(resolver._snapshot, admission_ref, (authority, captures, checked_runtime)) is None)
                 _hs_refuse(self._request(captures, admission_ref, runtime) == fingerprint)
                 captured_set = batch["set"]
                 cas = next(_hs_parse_canonical(raw) for ref, raw in resolver._records
@@ -9013,3 +9070,564 @@ class NonAuthorizingDynamicRootGraph:
         _hs_refuse(after == snapshot._vector,
                    "dynamic root resolve freshness changed")
         return raw
+
+
+# ---------------------------------------------------------------------------
+# ADR-0143: same-domain dynamic P4 capture authority (F5a Packet 7)
+#
+# One second, one-shot instance of the existing final
+# _SyntheticP4CapturedAuthorizationAuthority class, bound to a new resolver
+# constructed only from a retained ADR-0141/0142 issuer/graph. The legacy
+# fixed corpus, its 500-ms clock, _FixedWormTrustedArtifactResolver,
+# _FixedTerminalArtifactVerifier and _p4_close_admission's v1-only grammar
+# are unedited; every class/function below is new and self-contained.
+# ---------------------------------------------------------------------------
+
+_P4_PENDING_DYNAMIC_RESOLVER_TOKENS = set()
+
+
+class _DynamicP4TrustedArtifactResolver(_Opaque):
+    """Hold one issuer-owned dynamic root graph; never cache artifact bytes.
+
+    Unlike ``_FixedWormTrustedArtifactResolver`` this resolver has no
+    ``_records`` slot: it always re-derives through ``graph.snapshot()``/
+    ``graph.resolve()`` per call (ADR-0143 Decision point 2). It takes no
+    ``fixture_facts`` and never touches ``_P4_EXTERNAL_RECORDS``/
+    ``_P4_EXTERNAL_BY_REF``.
+    """
+
+    __slots__ = ("_graph", "_snapshot", "_terminal", "__weakref__")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("P4 dynamic resolver is final")
+
+    def __init__(self, token, graph):
+        if token not in _P4_PENDING_DYNAMIC_RESOLVER_TOKENS:
+            raise TypeError("P4 dynamic resolver requires dynamic broker construction")
+        _P4_PENDING_DYNAMIC_RESOLVER_TOKENS.remove(token)
+        if type(graph) is not NonAuthorizingDynamicRootGraph:
+            raise TypeError("exact dynamic root graph is required")
+        object.__setattr__(self, "_graph", graph)
+        object.__setattr__(self, "_snapshot", None)
+        terminal = object.__new__(_DynamicP4TerminalArtifactVerifier)
+        object.__setattr__(self, "_terminal", terminal)
+        _P4_RESOLVERS[self] = (graph, terminal)
+        _P4_TERMINALS[terminal] = (self, None, None)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("P4 dynamic resolver is frozen")
+
+    def snapshot(self):
+        """Re-derive the graph-owned token; the graph performs its own fence.
+
+        ADR-0143 Decision point 2 / Phase 0 pin F2: delegates entirely to
+        ``NonAuthorizingDynamicRootGraph.snapshot()``'s own before/after
+        vector fence; this resolver adds no second, independent fence.
+        """
+        token = self._graph.snapshot()
+        object.__setattr__(self, "_snapshot", token)
+        _P4_TERMINALS[self._terminal] = (self, token, None)
+        _p4_snapshot_integrity(self, token)
+        return token
+
+    def resolve(self, snapshot, exact_ref_bytes):
+        """Resolve exact retained bytes without granting trust or lifecycle use."""
+        return _P4_DYNAMIC_CHECKED_RESOLVE(self, snapshot, exact_ref_bytes)
+
+    def _checked_resolve(self, snapshot, exact_ref_bytes):
+        """Check issued identity before delegating to the graph's own fence.
+
+        Phase 0 pin F2: the vector fence itself lives only in
+        ``NonAuthorizingDynamicRootGraph.resolve``; this method never repeats
+        it, avoiding the TOCTOU duplication a second independent fence would
+        add.
+        """
+        _p4_snapshot_integrity(self, snapshot)
+        if type(exact_ref_bytes) is not bytes:
+            raise TypeError("exact P4 snapshot reference bytes required")
+        return self._graph.resolve(snapshot, exact_ref_bytes)
+
+    def close_admission(self, snapshot, admission_ref, live_projection):
+        """Verify the narrow root-capture-admission chain; grant no authority."""
+        return _P4_DYNAMIC_CLOSE_ADMISSION(self, snapshot, admission_ref, live_projection)
+
+
+class _DynamicP4TerminalArtifactVerifier(TerminalArtifactVerifier):
+    """Authenticate a dynamic graph artifact as a terminal parent position.
+
+    Registered only against the dynamic resolver's own snapshot/12-reference
+    corpus, never ``_P4_EXTERNAL_RECORDS`` (ADR-0143 Decision point 5). Reuses
+    exactly the already-pinned ``_P4_LOCAL_PUBLIC_KEYS``; no new key material.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("dynamic terminal capability requires dynamic broker construction")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("dynamic terminal verifier is final")
+
+    def verify_terminal(self, snapshot, parent_basis_bytes, terminal_class,
+                        terminal_ref_bytes, canonical_artifact_bytes):
+        """Authenticate one graph artifact as a signed parent position."""
+        issued = _P4_TERMINALS.get(self)
+        _hs_refuse(issued is not None, "terminal capability is unregistered")
+        resolver, expected_snapshot, _unused = issued
+        _hs_refuse(resolver._terminal is self, "terminal broker/root identity refused")
+        _p4_snapshot_integrity(resolver, snapshot)
+        _hs_refuse(snapshot is expected_snapshot, "dynamic terminal snapshot mismatch")
+        _hs_refuse(type(terminal_ref_bytes) is bytes and type(canonical_artifact_bytes) is bytes
+                   and type(parent_basis_bytes) is bytes and type(terminal_class) is str)
+        resolved = resolver._graph.resolve(snapshot, terminal_ref_bytes)
+        _hs_refuse(resolved == canonical_artifact_bytes, "dynamic terminal artifact bytes differ")
+        ref = _hs_parse_canonical(terminal_ref_bytes)
+        _hs_refuse(terminal_class == ref["kind"] + "/" + ref["role"],
+                   "dynamic terminal class refused")
+        parent_ref = _hs_parse_canonical(parent_basis_bytes)
+        _hs_refuse(type(parent_ref) is dict, "dynamic terminal parent basis refused")
+        binding = (self, resolver, snapshot, terminal_ref_bytes, canonical_artifact_bytes,
+                   parent_basis_bytes, terminal_class, 0)
+        anchor = object.__new__(VerifiedExternalArtifactAnchor)
+        object.__setattr__(anchor, "_binding", binding)
+        _P4_ANCHORS[anchor] = binding
+        return anchor
+
+    def require_current(self, snapshot, anchors):
+        """Recheck exact proof issuance and graph freshness without spending."""
+        issued = _P4_TERMINALS.get(self)
+        _hs_refuse(issued is not None, "terminal capability is unregistered")
+        resolver, _snap, _unused = issued
+        _hs_refuse(resolver._terminal is self, "terminal broker/root identity refused")
+        _p4_snapshot_integrity(resolver, snapshot)
+        _hs_refuse(type(anchors) is tuple and len({id(anchor) for anchor in anchors}) == len(anchors))
+        for anchor in anchors:
+            _hs_refuse(type(anchor) is VerifiedExternalArtifactAnchor)
+            binding = _P4_ANCHORS.get(anchor)
+            _hs_refuse(binding is not None and anchor._binding is binding)
+            _hs_refuse(binding[0] is self and binding[2] is snapshot and binding[-1] == 0)
+            resolved = resolver._graph.resolve(snapshot, binding[3])
+            _hs_refuse(resolved == binding[4], "dynamic terminal parent verification refused")
+
+
+class _DynamicP4VerificationClock(TrustedClock):
+    """Read the live shared synthetic clock; never the fixed 500-ms instant.
+
+    ADR-0143 Decision point 6: ``now_ms()`` returns ``reserve._now()``, the
+    same ``_SyntheticAuthorizationReserve`` instance reachable from
+    ``issuer._publisher._reserve``.
+    """
+
+    def __init__(self, reserve):
+        if type(reserve) is not _SyntheticAuthorizationReserve:
+            raise TypeError("exact shared reserve is required")
+        object.__setattr__(self, "_reserve", reserve)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("P4 dynamic clock is frozen")
+
+    def now_ms(self):
+        return self._reserve._now()
+
+
+class _DynamicP4VerificationRevocations(HistoricalStudyRevocations):
+    """Check the live shared revocation digest within one guarded read.
+
+    ADR-0143 Decision point 6 / Phase 0 pin: ``now_ms`` is compared for exact
+    equality to the value read inside the SAME guarded transaction as
+    ``snapshot_sha256`` -- no TOCTOU window between the two reads, unlike the
+    legacy class's hardcoded ``now_ms == 500``.
+    """
+
+    def __init__(self, reserve):
+        if type(reserve) is not _SyntheticAuthorizationReserve:
+            raise TypeError("exact shared reserve is required")
+        object.__setattr__(self, "_reserve", reserve)
+
+    def __setattr__(self, name, value):
+        raise AttributeError("P4 dynamic revocations is frozen")
+
+    def is_unrevoked(self, snapshot_sha256, key_id, key_version, now_ms):
+        reserve = self._reserve
+        connection = reserve._connection
+        reserve._check()
+        opened = False
+        try:
+            if not connection.in_transaction:
+                connection.execute("BEGIN")
+                opened = True
+            _generation, _revoked, snapshot = reserve._snapshot()
+            current_now = reserve._now()
+            if opened:
+                connection.execute("COMMIT")
+                opened = False
+        except Exception:
+            if opened and connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        return (
+            snapshot_sha256 == snapshot and current_now == now_ms
+            and type(key_id) is str and key_id in _P4_LOCAL_PUBLIC_KEYS
+            and type(key_version) is int and key_version == 1
+        )
+
+
+_P4_DYNAMIC_CHECKED_RESOLVE = _DynamicP4TrustedArtifactResolver._checked_resolve
+_P4_DYNAMIC_RESOLVER_LOOKUP = _DynamicP4TrustedArtifactResolver.resolve
+_P4_DYNAMIC_RESOLVER_METHODS = (
+    _DynamicP4TrustedArtifactResolver.snapshot,
+    _DynamicP4TrustedArtifactResolver.resolve,
+    _P4_DYNAMIC_CHECKED_RESOLVE,
+)
+_P4_DYNAMIC_TERMINAL_METHODS = (
+    _DynamicP4TerminalArtifactVerifier.verify_terminal,
+    _DynamicP4TerminalArtifactVerifier.require_current,
+)
+
+
+def _p4_dynamic_fixed_integrity():
+    """Reject in-process tampering with the dynamic branch's own dispatch pins.
+
+    Phase 0 pin F1: mirrors the legacy ``_p4_fixed_integrity`` self-check for
+    the dynamic branch; hostile interpreter code is out of the external
+    threat model (implementation-workflow.md point 4), this is defense in
+    depth only, matching the legacy function's own stated scope.
+    """
+    _hs_refuse(_dynamic_p4_close_admission is _P4_DYNAMIC_CLOSE_ADMISSION,
+               "P4 dynamic closure dispatch integrity refused")
+    _hs_refuse(_DynamicP4VerificationClock.now_ms is _P4_DYNAMIC_CLOCK_NOW_MS,
+               "P4 dynamic clock dispatch integrity refused")
+    _hs_refuse(_DynamicP4VerificationRevocations.is_unrevoked is _P4_DYNAMIC_REVOCATIONS_UNREVOKED,
+               "P4 dynamic revocations dispatch integrity refused")
+    _hs_refuse(
+        (_DynamicP4TerminalArtifactVerifier.verify_terminal,
+         _DynamicP4TerminalArtifactVerifier.require_current) == _P4_DYNAMIC_TERMINAL_METHODS,
+        "P4 dynamic terminal dispatch integrity refused",
+    )
+
+
+def _p4_dynamic_reference_bytes(ref):
+    """Validate a closed kind/role/schema/sha256 reference for this chain only.
+
+    Self-contained: shares no schema whitelist or helper with the legacy
+    ``_p4_artifact_reference_bytes``.
+    """
+    _hs_refuse(type(ref) is dict and set(ref) == {"kind", "role", "schema", "sha256"},
+               "exact P4 dynamic reference is required")
+    _hs_refuse(all(type(value) is str and value for value in ref.values()),
+               "P4 dynamic reference strings are required")
+    _require_sha256(ref["sha256"], "P4 dynamic artifact")
+    return _hs_canonical_bytes(ref)
+
+
+def _p4_dynamic_root_capture_admission(root_pis_ref, dataset_g1_ref, dataset_g2_ref,
+                                       run_id, logical_execution_id):
+    """Build the closed ``dskit.root-capture-admission/v1`` payload.
+
+    ADR-0143 Decision point 7 / evidence 0181 ``document_shapes_pinned``:
+    exactly these 7 fields plus the self digest (8 keys total).
+    """
+    payload = {
+        "schema_version": "dskit.root-capture-admission/v1",
+        "study_id": "synthetic-study",
+        "root_pis_ref": root_pis_ref,
+        "dataset_g1_ref": dataset_g1_ref,
+        "dataset_g2_ref": dataset_g2_ref,
+        "logical_execution_id": logical_execution_id,
+        "run_id": run_id,
+    }
+    digest = _digest(_hs_canonical_bytes(payload))
+    return dict(payload, root_capture_admission_sha256=digest), digest
+
+
+def _p4_dynamic_planned_entry(pis_entry, consumer_document_sha256, consumer_node,
+                              consumer_input, purpose):
+    """Build one closed pce leaf, bound 1:1 to its own PIS entry.
+
+    Evidence 0181 ``planned_entry_sha256_preimage``: refuses an alias or
+    swapped PIS entry (matrix row 7) because the preimage is recomputed from
+    the entry's OWN ``input_id``/``contract_sha256``, never trusted from a
+    caller-supplied row.
+    """
+    preimage = {
+        "root_pis_entry_input_id": pis_entry["input_id"],
+        "root_pis_contract_sha256": pis_entry["contract_sha256"],
+    }
+    return {
+        "planned_entry_sha256": _digest(_hs_canonical_bytes(preimage)),
+        "input_id": pis_entry["input_id"],
+        "published_input": pis_entry,
+        "consumer_document_sha256": consumer_document_sha256,
+        "consumer_node": consumer_node,
+        "consumer_input": consumer_input,
+        "purpose": purpose,
+    }
+
+
+def _p4_dynamic_capture_admission_set(root_capture_admission_sha256, entries):
+    """Build the closed ``dskit.capture-admission-set/v1`` (cas) payload."""
+    payload = {
+        "schema_version": "dskit.capture-admission-set/v1",
+        "study_id": "synthetic-study",
+        "subject_ref": {"kind": "action"},
+        "root_capture_admission_sha256": root_capture_admission_sha256,
+        "entries": entries,
+    }
+    digest = _digest(_hs_canonical_bytes(payload))
+    return dict(payload, capture_admission_set_sha256=digest), digest
+
+
+def _dynamic_p4_close_admission(resolver, snapshot, admission_ref, live_projection):
+    """Close one synthesized root-capture-admission -> cas -> pce chain.
+
+    ADR-0143 Decision point 7: mirrors ``_p4_close_admission``'s find/get
+    recursion shape, sized only to this resolver's own narrow chain.
+    ``_p4_close_admission``/``_P4_CLOSE_ADMISSION`` are never called or
+    edited from this path (Decision point 4, last sentence); this function
+    shares no dependency-walk helper with the legacy grammar.
+
+    Design note (GREEN-time scoping, evidence 0182): the resolver has no
+    ``_records`` table (Decision point 1/2), so ``root-capture-admission``
+    and ``cas`` are not stored artifacts resolved by reference -- they are
+    deterministically reconstructed here from the graph's own closed
+    12-reference set plus the live ``runtime``/``captures`` already gated by
+    ``commit_p4_batch``. A caller-supplied ``admission_ref`` is admitted only
+    if its digest matches this reconstruction exactly, which is what refuses
+    an aliased/swapped/foreign reference (matrix row 6).
+    """
+    _p4_snapshot_integrity(resolver, snapshot)
+    authority, captures, runtime = live_projection
+    _hs_refuse(type(authority) is _SyntheticP4CapturedAuthorizationAuthority
+               and authority._p4_resolver is resolver,
+               "P4 dynamic admission authority identity refused")
+    _p4_dynamic_reference_bytes(admission_ref)
+    _hs_refuse(
+        admission_ref["kind"] == "root-capture-admission"
+        and admission_ref["role"] == "study-lifecycle"
+        and admission_ref["schema"] == "dskit.root-capture-admission/v1",
+        "P4 dynamic admission kind/role/schema refused",
+    )
+
+    graph_refs = tuple(resolver._graph._records)
+
+    def kind_matches(kind, role=None):
+        matches = [
+            _hs_parse_canonical(ref) for ref, _raw in graph_refs
+            if _hs_parse_canonical(ref)["kind"] == kind
+            and (role is None or _hs_parse_canonical(ref)["role"] == role)
+        ]
+        _hs_refuse(len(matches) == 1, "P4 dynamic closure requires one exact referenced artifact")
+        return matches[0]
+
+    def resolved(ref):
+        raw = _P4_DYNAMIC_CHECKED_RESOLVE(resolver, snapshot, _hs_canonical_bytes(ref))
+        return _hs_parse_canonical(raw)
+
+    root_pis_ref = kind_matches("root-pis")
+    dataset_g1_ref = kind_matches("dataset-capture-grant", role="G1")
+    dataset_g2_ref = kind_matches("dataset-capture-grant", role="G2")
+
+    run_id = runtime["consumer_run_identity"]
+    logical_execution_id = run_id
+    expected_admission, expected_admission_sha256 = _p4_dynamic_root_capture_admission(
+        root_pis_ref, dataset_g1_ref, dataset_g2_ref, run_id, logical_execution_id,
+    )
+    _hs_refuse(admission_ref["sha256"] == expected_admission_sha256,
+               "P4 dynamic admission reference does not match closed graph chain")
+
+    pis = resolved(root_pis_ref)
+    entries = sorted(pis["entries"], key=lambda entry: entry["input_id"])
+    _hs_refuse(
+        len(entries) == 2
+        and {entry["input_id"] for entry in entries} == {"raw_event_dataset", "source_roster"},
+        "P4 dynamic PIS entry closure refused",
+    )
+    _hs_refuse(type(captures) is tuple and len(captures) == 2,
+               "P4 dynamic capture cardinality refused")
+
+    pce_entries = []
+    for pis_entry, (_published, _frozen, port) in zip(entries, captures):
+        pce = _p4_dynamic_planned_entry(
+            pis_entry, port["consumer_document_sha256"], port["consumer_node"],
+            port["consumer_input"], port["purpose"],
+        )
+        preimage = {"root_pis_entry_input_id": pis_entry["input_id"],
+                    "root_pis_contract_sha256": pis_entry["contract_sha256"]}
+        _hs_refuse(pce["planned_entry_sha256"] == _digest(_hs_canonical_bytes(preimage)),
+                   "P4 dynamic planned entry binding refused")
+        pce_entries.append(pce)
+
+    cas, _cas_sha256 = _p4_dynamic_capture_admission_set(expected_admission_sha256, pce_entries)
+    _hs_refuse(len(cas["entries"]) == len(captures), "P4 dynamic live capture cardinality differs")
+    for entry, (_published, frozen, port) in zip(cas["entries"], captures):
+        _hs_refuse(
+            entry["consumer_document_sha256"] == port["consumer_document_sha256"]
+            and entry["consumer_node"] == port["consumer_node"]
+            and entry["consumer_input"] == port["consumer_input"]
+            and entry["purpose"] == port["purpose"],
+            "P4 dynamic frozen descriptor projection differs",
+        )
+        _hs_refuse(_digest(_canonical_bytes(frozen.source)) == entry["consumer_document_sha256"],
+                   "P4 dynamic frozen document digest differs")
+    _p4_snapshot_integrity(resolver, snapshot)
+    return None
+
+
+_P4_DYNAMIC_CLOSE_ADMISSION = _dynamic_p4_close_admission
+_P4_DYNAMIC_CLOCK_NOW_MS = _DynamicP4VerificationClock.now_ms
+_P4_DYNAMIC_REVOCATIONS_UNREVOKED = _DynamicP4VerificationRevocations.is_unrevoked
+
+
+def _p4_dynamic_authority_quarantine(reserve, signed_id):
+    """Quarantine a committed-but-not-yet-returned dynamic-p4-authority row.
+
+    Matrix row 9 (evidence 0181): not specified by the ADR text; mirrors
+    ``_SyntheticRootPisIssuer._quarantine``'s shape for a different kind.
+    """
+    connection = reserve._connection
+    try:
+        reserve._check()
+        connection.execute("BEGIN IMMEDIATE")
+        reserve._check()
+        generation, _revoked, _snapshot = reserve._snapshot()
+        row = connection.execute(
+            "SELECT state FROM reserve_uses WHERE kind='dynamic-p4-authority' AND signed_id=?",
+            (signed_id,),
+        ).fetchone()
+        if row is not None and row[0] != "QUARANTINED":
+            connection.execute(
+                "UPDATE reserve_uses SET state='QUARANTINED' "
+                "WHERE kind='dynamic-p4-authority' AND signed_id=?",
+                (signed_id,),
+            )
+            connection.execute(
+                "INSERT INTO reserve_audit (kind,signed_id,old_state,new_state,generation) "
+                "VALUES (?,?,?,?,?)",
+                ("dynamic-p4-authority", signed_id, row[0], "QUARANTINED", generation),
+            )
+        connection.execute("COMMIT")
+    except Exception:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+
+
+def _development_dynamic_p4_broker(issuer):
+    """Construct the one-shot dynamic synthetic P4 issuer for one retained graph.
+
+    Parameters
+    ----------
+    issuer : _SyntheticRootPisIssuer
+        A successful, retained ADR-0141 issuer (``issuer._retained`` set).
+
+    Returns
+    -------
+    CapturedAuthorizationAuthority
+        A second, noncopyable synthetic capability instance with ordinary v1
+        lifecycle methods, bound to a new ``_DynamicP4TrustedArtifactResolver``.
+
+    Raises
+    ------
+    TypeError
+        ``issuer`` is not a successful retained root-PIS issuer.
+    ValueError
+        The retained root-PIS row is not yet ISSUED, or a dynamic authority
+        was already constructed for this exact retained graph (ADR-0143
+        Decision point 9, Phase 0 pins F3/matrix rows 4/5/9/11: the one-shot
+        reserve spend is ordered strictly BEFORE resolver/authority
+        construction, so a lost race refuses cleanly with no authority ever
+        built from the losing attempt).
+    """
+    _hs_refuse(type(issuer) is _SyntheticRootPisIssuer and issuer._retained is not None,
+               "retained root-PIS issuer required")
+    graph = issuer.graph()
+    publisher = issuer._publisher
+    reserve = publisher._reserve
+    connection = reserve._connection
+    root_pis_signed_id = issuer._retained[5][2]
+    references = tuple(_hs_parse_canonical(ref) for ref, _raw in graph._records)
+
+    reserve._check()
+    signed_id = None
+    committed = False
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        reserve._check()
+        generation, _revoked, snapshot = reserve._snapshot()
+        row = connection.execute(
+            "SELECT signed_id,g1_sha256,g2_sha256,intent_sha256,state "
+            "FROM reserve_uses WHERE kind='root-pis' AND signed_id=?",
+            (root_pis_signed_id,),
+        ).fetchone()
+        _hs_refuse(row is not None and row[4] == "ISSUED",
+                   "dynamic P4 authority requires an ISSUED root-PIS row")
+        source = {
+            "schema": "dskit.dynamic-p4-authority-source/v1",
+            "root_pis_signed_id": row[0],
+            "root_pis_intent_sha256": row[3],
+        }
+        signed_id = _digest(_hs_canonical_bytes(source))
+        intent_payload = {
+            "schema_version": "dskit.dynamic-p4-authority-construction-intent/v1",
+            "root_pis_signed_id": root_pis_signed_id,
+            "graph_references": list(references),
+        }
+        intent_sha256 = _digest(_hs_canonical_bytes(intent_payload))
+        connection.execute(
+            "INSERT INTO reserve_uses VALUES (?,?,?,?,?,?,?,?)",
+            ("dynamic-p4-authority", signed_id, _digest(signed_id.encode("ascii")),
+             row[1], row[2], snapshot, intent_sha256, "RESERVED"),
+        )
+        connection.execute(
+            "INSERT INTO reserve_audit (kind,signed_id,old_state,new_state,generation) "
+            "VALUES (?,?,NULL,?,?)",
+            ("dynamic-p4-authority", signed_id, "RESERVED", generation),
+        )
+        connection.execute(
+            "UPDATE reserve_uses SET state='ISSUED' "
+            "WHERE kind='dynamic-p4-authority' AND signed_id=? AND state='RESERVED'",
+            (signed_id,),
+        )
+        connection.execute(
+            "INSERT INTO reserve_audit (kind,signed_id,old_state,new_state,generation) "
+            "VALUES (?,?,?,?,?)",
+            ("dynamic-p4-authority", signed_id, "RESERVED", "ISSUED", generation),
+        )
+        connection.execute("COMMIT")
+        committed = True
+    except sqlite3.IntegrityError as exc:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise ValueError("dynamic P4 authority already constructed for this graph") from exc
+    except Exception:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        raise
+    try:
+        resolver_token = object()
+        _P4_PENDING_DYNAMIC_RESOLVER_TOKENS.add(resolver_token)
+        try:
+            resolver = _DynamicP4TrustedArtifactResolver(resolver_token, graph)
+        finally:
+            _P4_PENDING_DYNAMIC_RESOLVER_TOKENS.discard(resolver_token)
+        resolver.snapshot()
+        # ADR-0143 Decision point 3 (literal text): a second instance of the
+        # existing, UNMODIFIED _SyntheticP4CapturedAuthorizationAuthority is
+        # constructed through its existing __init__(token, resolver) and the
+        # SAME _P4_PENDING_TOKENS one-shot factory-token discipline -- that
+        # class's __init__ body hardcodes the `_P4_PENDING_TOKENS` name and
+        # is not edited, so a separate `_P4_PENDING_DYNAMIC_TOKENS` set
+        # (as evidence 0181's class_function_inventory suggested) cannot
+        # actually satisfy it; the shared legacy set is used here instead,
+        # which is what keeps the authority class byte-identical.
+        _P4_PENDING_TOKENS.add(broker_token := object())
+        try:
+            authority = _SyntheticP4CapturedAuthorizationAuthority(broker_token, resolver)
+        finally:
+            _P4_PENDING_TOKENS.discard(broker_token)
+        _P4_ISSUED[authority] = (resolver, graph)
+        return authority
+    except Exception:
+        if committed:
+            _p4_dynamic_authority_quarantine(reserve, signed_id)
+        raise

@@ -4776,7 +4776,10 @@ def _adr143_captures(authority, run_id="dynamic-consumer-run"):
     and build one live capture tuple, mirroring the legacy _graph_live shape."""
     session, published, _values = f4._publish(authority)
     authority.end_session(session)
-    frozen = authority.freeze_consumer_document("consumer", "consume", "bundle", "synthetic")
+    descriptor = authority.descriptor(published, purpose="synthetic")
+    source = f4._consumer_document(descriptor)
+    frozen = authority.freeze_consumer_document(source, consumer_node="consume",
+                                                consumer_input="bundle", purpose="synthetic")
     port = authority.derive_consumer_port(frozen)
     return (published, frozen, port), run_id
 
@@ -4915,14 +4918,16 @@ def test_adr143_matrix_row3_stale_snapshot_token_refuses(tmp_path, monkeypatch):
     publisher._reserve._advance_clock(publisher._reserve._now() + 1)
     renewed = resolver.snapshot()
     assert renewed is not stale
-    with pytest.raises(ValueError, match="snapshot state changed"):
+    with pytest.raises(ValueError, match="exact issued dynamic root snapshot required"):
         graph.resolve(stale, stale.references[0])
     assert graph.resolve(renewed, renewed.references[0])
 
 
 def test_adr143_matrix_row3_foreign_graph_token_refuses(tmp_path, monkeypatch):
-    _publisher_a, _issuer_a, _graph_a, authority = _adr143_issued_case(tmp_path, monkeypatch)
-    _publisher_b, _issuer_b, graph_b, _snapshot_b = _adr142_graph_case(tmp_path, monkeypatch)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _publisher_a, _issuer_a, _graph_a, authority = _adr143_issued_case(tmp_path / "a", monkeypatch)
+    _publisher_b, _issuer_b, graph_b, _snapshot_b = _adr142_graph_case(tmp_path / "b", monkeypatch)
     resolver = authority._p4_resolver
     own_snapshot = resolver._snapshot
     with pytest.raises(ValueError, match="exact issued dynamic root snapshot required"):
@@ -5006,7 +5011,9 @@ def test_adr143_matrix_row12_authorize_before_publish_completes_refuses(tmp_path
     prepared = authority.produce(
         session, producer=dict(_PRODUCER), root={
             "root_ref": "capture://synthetic/root", "root_id": "7" * 64, "snapshot_version": "1",
-        }, purpose="synthetic", transition_nonce="nonce-produced-row12",
+        }, purpose="synthetic", expected_members=("config.json", "artifacts/bundle.json"),
+        members=f4._members(), output_member="artifacts/bundle.json",
+        completed=True, planned=True, transition_nonce="nonce-produced-row12",
     )
     # No seal()/publish(): confirm the stream head is not PUBLISHED yet.
     assert prepared is not None
@@ -5033,10 +5040,19 @@ def test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain(tmp_
         authority, produced_nonce="a-produced", sealed_nonce="a-sealed", published_nonce="a-published",
     )
     authority.end_session(session_a)
-    session_b, published_b, _values = f4._foreign_publish(authority)
-    authority.end_session(session_b)
-    frozen_a = authority.freeze_consumer_document("consumer", "consume", "bundle", "synthetic")
-    frozen_b = authority.freeze_consumer_document("consumer", "consume", "second", "synthetic")
+    published_b, _sealed_b = f4._foreign_publish(authority)
+    descriptor_a = authority.descriptor(published_a, purpose="synthetic")
+    descriptor_b = authority.descriptor(published_b, purpose="synthetic")
+    frozen_a = authority.freeze_consumer_document(
+        f4._consumer_document(descriptor_a), consumer_node="consume",
+        consumer_input="bundle", purpose="synthetic",
+    )
+    source_b = {"name": "consumer-2", "pipeline": {"consume": {"inputs": {
+        "second": {"$captured_artifact": descriptor_b},
+    }}}}
+    frozen_b = authority.freeze_consumer_document(
+        source_b, consumer_node="consume", consumer_input="second", purpose="synthetic",
+    )
     port_a = authority.derive_consumer_port(frozen_a)
     port_b = authority.derive_consumer_port(frozen_b)
     graph_refs = [trust._hs_parse_canonical(ref) for ref, _raw in resolver._graph._records]
@@ -5046,10 +5062,12 @@ def test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain(tmp_
     root_pis = trust._hs_parse_canonical(
         trust._P4_DYNAMIC_CHECKED_RESOLVE(resolver, snapshot, trust._hs_canonical_bytes(root_pis_ref)),
     )
-    by_input = {port_a["consumer_input"]: (published_a, frozen_a, port_a),
-                port_b["consumer_input"]: (published_b, frozen_b, port_b)}
     entries = sorted(root_pis["entries"], key=lambda entry: entry["input_id"])
-    captures = tuple(by_input[entry["input_id"]] for entry in entries)
+    assert [entry["input_id"] for entry in entries] == ["raw_event_dataset", "source_roster"]
+    # close_admission pairs captures positionally against the sorted PIS
+    # entries (Decision point 7); the caller's consumer_input naming is
+    # projected into the pce leaf, not matched against entry["input_id"].
+    captures = ((published_a, frozen_a, port_a), (published_b, frozen_b, port_b))
     runtime = {"consumer_run_identity": run_id, "process_measurement_sha256": f4._SHA["consumer_process"],
                "runtime_sha256": f4._SHA["consumer_runtime"]}
     _admission, admission_sha256 = trust._p4_dynamic_root_capture_admission(
@@ -5061,19 +5079,29 @@ def test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain(tmp_
 
 
 def test_adr143_authorize_capture_set_blocked_by_prepare_contract(tmp_path, monkeypatch):
-    """Disclosed convergence finding (evidence 0182): _FixedCapturedAuthorizationContract
-    ._prepare -- shared, unedited per ADR-0143 Decision point 3/6 -- reads
-    resolver._records directly and requires admission[...] pea/ces/bvp/cas
-    fields that this resolver and this narrow root-capture-admission chain
-    do not have (Decision point 7's chain intentionally excludes pea/ces/bvp/
-    scope machinery). The full authorize_capture_set -> CAPTURED path is
-    therefore blocked for the dynamic authority until a follow-on ADR
-    resolves this contradiction; this test pins that current, disclosed
-    behavior rather than hiding it."""
+    """Disclosed convergence finding (evidence 0182): the SHARED, unedited
+    ``_p4_checked_dispatch`` -> ``_p4_reference_bytes`` gate (Decision point
+    3/6: commit_p4_batch/its signer infrastructure stay shared and unedited
+    for both authority instances) hardcodes its accepted admission kinds to
+    ``_P4_ADMISSION_SCHEMAS = {"action-execution-admission", "final-replay-
+    admission"}`` -- it has no case for ``root-capture-admission``. This
+    refuses BEFORE close_admission is ever reached, and -- deeper still --
+    ``_FixedCapturedAuthorizationContract._prepare`` (also shared/unedited)
+    reads ``resolver._records`` directly and requires
+    ``admission["plan_evaluation_authorization_sha256"]``-family fields that
+    this resolver (no ``_records`` slot, Decision point 1/2) and this narrow
+    root-capture-admission/cas/pce chain (Decision point 7 explicitly
+    excludes pea/ces/bvp/scope machinery) do not have. The full
+    authorize_capture_set -> CAPTURED path is therefore blocked for the
+    dynamic authority until a follow-on ADR resolves this contradiction
+    between Decision points 3/6 (shared, unedited batch-signing pipeline)
+    and Decision point 7 (narrow chain with no pea/ces/bvp). This test pins
+    the current, disclosed refusal rather than hiding it; it is not a
+    regression this GREEN introduces -- it is the discovered gap itself."""
     _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
     resolver = authority._p4_resolver
     assert not hasattr(resolver, "_records")
-    with pytest.raises(AttributeError):
+    with pytest.raises(ValueError, match="kind, role and schema must agree"):
         authority.authorize_capture_set(
             (), {"kind": "root-capture-admission", "role": "study-lifecycle",
                  "schema": "dskit.root-capture-admission/v1", "sha256": "a" * 64},
