@@ -9941,7 +9941,27 @@ one shared durable namespace with a completed write before first read.
    cannot prove restart identity and must quarantine after restart. Partial/mismatched/ambiguous state quarantines that
    ID; no second F4 write occurs. A raw reservation has no retry/
    reopen/re-read path after commit.
-5. A later dynamic-root/P4 ADR must prove that a published roster/raw
+5. The fixed synthetic verification baseline is 500 ms, and the same
+   pre-provisioned reserve_meta row holds trusted logical now_ms, initially
+   500. A trusted administrative writer alone may advance it to a strictly
+   greater exact integer with BEGIN IMMEDIATE, WAL/FULL/local-sync checks
+   and successful durable COMMIT; it cannot rewind or accept request
+   bytes as time. Every roster/raw effecting reserve, transition, receipt
+   admission and live roster proof reads this same row inside its
+   transaction. A fixed baseline clock can only raise the effective time
+   above that row for existing synthetic expiry fault injection; in
+   normal operation it stays 500, so the durable row is the shared time.
+   Time advance serializes before or after an effecting writer and is
+   visible to the next admission; no halfway clock change is observed.
+   Read-only ADR-0133/0134/0135 legacy verifiers and the unrelated P4
+   fixed corpus retain their original nonauthorizing 500-ms clock.
+   The roster receipt issues at baseline 500; after its durable
+   publication, trusted host setup advances the shared clock before
+   separately signed post-roster raw authorization can issue at a
+   strictly later timestamp and pass raw admission. The raw request
+   cannot advance the clock.
+
+6. A later dynamic-root/P4 ADR must prove that a published roster/raw
    root descends from the exact committed reservation and F4 tokens.
    This reserve alone grants no F4/P4 root, receipt, provider access,
    raw byte validation, EventEnvelope.v2 semantics, composed tape or
@@ -10053,3 +10073,130 @@ deployment.
 **Phase 0 / RED matrix.** Challenge exact bootstrap/source/policy/producer/root/member/intent/receipt-key derivation; canonical bytes and fixed signer/key/role/window; same signed ID with changed grants/intent, two brokers/processes, shared revocation and expiry before every admission, WAL/FULL or ambiguous COMMIT, every F4 exception and partial PUBLISHED write, sign-before-put interruption, wrong or duplicate outer receipt, process restart, and no pre-reserve F4/member/provider effect. Prove one complete positive publication and refusal at both public facades. No full suite absent a touched-code reason.
 
 **Non-goals.** Real source access, raw publication, P4 dynamic root, EventEnvelope.v2, composed tape, Packet8 or deployment. deployment_eligible=false.
+
+## ADR-0139 - one-use synthetic raw F4 publication and v1 receipt
+
+**Status:** accepted under the owner's repeated explicit P7 approval and
+autonomous-completion direction (2026-09-16); independent Phase 0 precedes
+effecting RED. This is nondeployment and does not close P7 or Packet8.
+
+**Context.** ADR-0132 now spends DatasetCaptureAuthorization.v1 once,
+validates exact signed fixture bytes, and yields only an opaque process-local
+proof. It publishes no raw root. ADR-0135 requires a later raw-event-dataset
+RootPublicationReceipt.v1 after the retained roster/v2 receipt; ADR-0136's
+shared row must remain the same signed-ID authority across both stages.
+
+**Decision.**
+
+The shared ADR-0136 logical clock is a prerequisite: roster publication
+occurs at 500, trusted host administration advances the durable time,
+then raw grants and fixture attestation issue strictly after the roster
+receipt and are checked at that later time. All effecting checks and
+the live roster proof use the shared clock. A test-only monkeypatch of
+the old fixed clock is not a chronology mechanism.
+
+1. The fixed raw publisher accepts only the ADR-0132 broker-issued
+   VerifiedSyntheticDatasetFixture from its own retained preflight, the
+   original dataset authorization/G1/G2/fixture attestation, original
+   bootstrap authorization/G1/G2 and roster v2 basis/receipt bytes. It
+   consumes that proof once before the first raw F4 admission. The proof
+   carries a broker-private one-shot used bit; the fixed publisher requires
+   the exact proof type, its original owning preflight, and the same live
+   roster publisher/reserve. It marks the proof used before attempting the
+   first shared-row transition and never clears that mark on validation,
+   lock, COMMIT, F4, signing or WORM failure. Every alias to the same
+   proof sees the used bit and refuses. A different publisher, preflight
+   or restarted process cannot consume or reconstruct it. The shared
+   row still must match the original RAW_READ_STARTED read intent before
+   any F4 effect; process-local consumption alone grants no authority.
+   It derives the exact ADR-0132 raw intent again under every SQLite writer lock;
+   the row must have kind=raw-dataset, exact signed authorization_id,
+   exact authorization/G1/G2/snapshot/read-intent digests and the expected
+   monotone state. It rechecks original signatures, fixture commitment,
+   bootstrap authority, live roster/F4 root, post-roster equality,
+   shared revocation, trusted time and signed chronology at each
+   admission. No caller path, source, root, producer, manifest, member or
+   receipt field is used as authority. Revocation after an admitted
+   transition blocks the next transition, not its one immediate in-call
+   effect. No reopened or queued F4 effect is admitted.
+2. The raw manifest is exact canonical ASCII RawEventDatasetCapture.v1
+   JSON with only schema_version=dskit.raw-event-dataset-capture/v1,
+   dataset_capture_authorization_sha256, scope,
+   source_roster_root_sha256,
+   source_roster_publication_receipt_sha256,
+   source_roster_policy_sha256, license_digests, event_schema,
+   media_type, ordered_member_digests,
+   correction_bust_metadata_sha256. Each ordered_member_digests entry
+   has exactly member_name, source_id, media_type=application/x-ndjson,
+   byte_length and sha256, in the signed ADR-0134 order. It includes
+   every signed raw member, including zero-byte members. The manifest
+   output member is fixed to raw_event_dataset.json and follows the raw
+   members in F4 expected_members. It is application/json; all raw members
+   are application/x-ndjson. No extra F4 member is allowed.
+3. The root is fixed from the exact dataset authorization SHA-256:
+   root_ref=synthetic-raw/<authorization_sha256>,
+   root_id=SHA-256 ASCII bytes
+   dskit.synthetic-raw-root-id/v1:<authorization_sha256>,
+   snapshot_version=v1. A signed fixture member named
+   raw_event_dataset.json is refused before the first F4 admission
+   because it collides with the fixed output member. The producer run identity is
+   synthetic-raw-run/<authorization_sha256>; its document digest is
+   SHA-256 of canonical
+   {schema:dskit.synthetic-raw-producer/v1,authorization_sha256,
+   producer_node:raw-event-dataset-capture,
+   producer_output:raw_event_dataset,purpose:raw-event-dataset}.
+   Node/output/purpose are those fixed literals. The complete root,
+   producer, ordered F4 members and manifest bytes are derived solely
+   from the signed inputs and retained validated proof. A successful
+   RAW_READ_STARTED row is necessary but not sufficient to publish.
+4. The one row advances, each state and audit entry atomically under
+   BEGIN IMMEDIATE/WAL/FULL, through RAW_READ_STARTED ->
+   SESSION_STARTED -> PRODUCED -> SEALED -> PUBLISHED ->
+   SESSION_ENDED -> RECEIPT_ISSUED, or terminal QUARANTINED. Admission
+   commits before each immediate F4 call. Each admission verifies exact
+   row/intents/signatures/time/revocation and the current F4 lifecycle
+   predecessor, with no retry of an uncertain effect. Before receipt
+   admission the fixed publisher reloads the authenticated retained F4
+   lifecycle stream and reads back every WORM member, comparing exact
+   bytes/order/media/digests and the root/producer identity against the
+   proof and manifest. Missing/corrupt/partial backing quarantines. A
+   crash or ambiguous COMMIT leaves the ID spent; no new raw F4 stream,
+   proof consumption, signature or receipt can issue on restart.
+5. The raw RootPublicationReceipt.v1 and its IssuanceBasis.v1 use the
+   exact ADR-0125 fields and fixed
+   data-publisher/root-publication-g1-g2 signer, no alternate signer or
+   algorithm. The basis has kind=root-publication, study_id=
+   synthetic-study, and exactly three sorted refs: one dataset-capture
+   authorization (role security-data) and role-matched G1/G2
+   dataset-capture grants. The receipt has kind=dataset-capture,
+   capture_kind=raw-event-dataset and the tagged
+   publication_authorization_ref
+   {kind:dataset-capture,dataset_capture_authorization_sha256}.
+   The basis and receipt use one trusted receipt-admission time,
+   identical current shared revocation snapshot, not_before=issued_at,
+   expires_at=dataset authorization expiry, and the fixed key ID/version.
+   Under the writer lock the signer role/key, original grants, signed
+   chronology, exact F4 backing, reserve state and WORM receipt key are
+   rechecked. RECEIPT_ISSUED/audit commits before signing. The fixed
+   signer signs one frozen basis, verifies its exact fields/signature,
+   then signs and puts one receipt at ADR-0125's exact WORM key.
+   The WORM key is exactly
+   (receipt_schema, canonical bytes of the complete tagged
+   publication_authorization_ref, producer_run_identity,
+   producer_document_sha256, producer_node, producer_output,
+   root_ref, root_id, snapshot_version). A sign/put failure is
+   terminal; no retry. A byte-identical existing
+   receipt may be read as historical evidence but cannot authorize a
+   second signing or put. The returned bytes and retained F4 token are
+   evidence only, never a P4 admission or full data proof.
+6. Focused RED covers positive multi-member publication, exact manifest
+   and signed v1 basis/receipt, one-use/re-sign/cross-process refusal,
+   revocation/expiry at each F4 and receipt boundary, partial F4 backing,
+   manifest/member mutation, unknown extra member, ambiguous COMMIT,
+   signature or WORM put failure and no second root/receipt. Two
+   independent final lenses check the reviewed candidate. P4 dynamic
+   root resolution, CAPTURED data proof, full EventEnvelope.v2 and
+   composed tape require later decisions; deployment_eligible=false.
+
+**Non-goals.** External providers, production key custody, P4 capture,
+full F1/F2/F3 event semantics, P7/Packet8 closure or deployment.

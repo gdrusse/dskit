@@ -5956,7 +5956,7 @@ def _derive_synthetic_roster_publish_intent(authorization_bytes,
 _SYNTHETIC_RESERVE_DOMAIN = "dskit.synthetic-authorization-reserve/v1"
 _SYNTHETIC_RESERVE_SCHEMA = (
     "CREATE TABLE reserve_meta (singleton INTEGER PRIMARY KEY CHECK (singleton=1), "
-    "domain TEXT NOT NULL, generation INTEGER NOT NULL)",
+    "domain TEXT NOT NULL, generation INTEGER NOT NULL, now_ms INTEGER NOT NULL)",
     "CREATE TABLE reserve_revoked (token TEXT PRIMARY KEY, generation INTEGER NOT NULL)",
     "CREATE TABLE reserve_uses (kind TEXT NOT NULL, signed_id TEXT NOT NULL, "
     "authorization_sha256 TEXT NOT NULL, g1_sha256 TEXT NOT NULL, "
@@ -6009,7 +6009,7 @@ class _SyntheticAuthorizationReserve:
             connection.execute("BEGIN IMMEDIATE")
             for statement in _SYNTHETIC_RESERVE_SCHEMA:
                 connection.execute(statement)
-            connection.execute("INSERT INTO reserve_meta VALUES (1, ?, 0)",
+            connection.execute("INSERT INTO reserve_meta VALUES (1, ?, 0, 500)",
                                (_SYNTHETIC_RESERVE_DOMAIN,))
             connection.execute("COMMIT")
         except Exception:
@@ -6041,12 +6041,13 @@ class _SyntheticAuthorizationReserve:
             _hs_refuse(schema == set(_SYNTHETIC_RESERVE_SCHEMA),
                        "fixed reserve schema required")
             rows = connection.execute(
-                "SELECT singleton,domain,generation FROM reserve_meta"
+                "SELECT singleton,domain,generation,now_ms FROM reserve_meta"
             ).fetchall()
             _hs_refuse(len(rows) == 1 and rows[0][0] == 1
                        and rows[0][1] == _SYNTHETIC_RESERVE_DOMAIN
-                       and type(rows[0][2]) is int and rows[0][2] >= 0,
-                       "fixed reserve domain required")
+                       and type(rows[0][2]) is int and rows[0][2] >= 0
+                       and type(rows[0][3]) is int and rows[0][3] >= 500,
+                       "fixed reserve domain and clock required")
         except Exception:
             connection.close()
             raise
@@ -6059,6 +6060,42 @@ class _SyntheticAuthorizationReserve:
             and os.path.isfile(self._path),
             "reserve WAL/FULL/local database required",
         )
+
+    def _now(self):
+        """Read shared monotone synthetic time within the current transaction."""
+        row = self._connection.execute(
+            "SELECT now_ms FROM reserve_meta WHERE singleton=1"
+        ).fetchone()
+        _hs_refuse(row is not None and type(row[0]) is int
+                   and row[0] >= 500, "trusted synthetic clock required")
+        return max(
+            row[0],
+            _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock),
+        )
+
+    def _advance_clock(self, now_ms):
+        """Trusted host administration advances shared logical time only."""
+        _hs_refuse(type(now_ms) is int, "exact integer clock advance required")
+        self._check()
+        connection = self._connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._check()
+            previous = connection.execute(
+                "SELECT now_ms FROM reserve_meta WHERE singleton=1"
+            ).fetchone()
+            _hs_refuse(previous is not None and type(previous[0]) is int
+                       and now_ms > previous[0],
+                       "synthetic clock must advance")
+            connection.execute(
+                "UPDATE reserve_meta SET now_ms=? WHERE singleton=1",
+                (now_ms,),
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
 
     def _snapshot(self):
         """Read shared revocation generation, set and signed digest."""
@@ -6098,7 +6135,7 @@ class _SyntheticAuthorizationReserve:
                            and exact_intent_bytes == derived
                            and _digest(derived) == intent_sha256,
                            "closed roster reserve intent refused")
-            now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+            now = self._now()
             _hs_refuse(
                 authorization["not_before_ms"] <= now
                 < authorization["expires_at_ms"]
@@ -6123,9 +6160,7 @@ class _SyntheticAuthorizationReserve:
                 ("roster-bootstrap", authorization["bootstrap_id"],
                  "RESERVED", generation),
             )
-            final_now = _FixedP4VerificationClock.now_ms(
-                _P4_VERIFICATION._clock
-            )
+            final_now = self._now()
             _hs_refuse(
                 authorization["not_before_ms"] <= final_now
                 < authorization["expires_at_ms"],
@@ -6171,7 +6206,7 @@ class _SyntheticAuthorizationReserve:
             )
             _hs_refuse(derived == intent_bytes,
                        "closed roster transition intent refused")
-            now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+            now = self._now()
             _hs_refuse(
                 authorization["not_before_ms"] <= now
                 < authorization["expires_at_ms"]
@@ -6208,9 +6243,7 @@ class _SyntheticAuthorizationReserve:
                 ("roster-bootstrap", authorization["bootstrap_id"],
                  expected_old, new_state, generation),
             )
-            final_now = _FixedP4VerificationClock.now_ms(
-                _P4_VERIFICATION._clock
-            )
+            final_now = self._now()
             _hs_refuse(
                 authorization["not_before_ms"] <= final_now
                 < authorization["expires_at_ms"],
@@ -6418,7 +6451,7 @@ class _SyntheticRosterPublisher:
             connection.execute("BEGIN IMMEDIATE")
             reserve._check()
             generation, revoked, snapshot = reserve._snapshot()
-            now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+            now = self._reserve._now()
             bootstrap_sha256 = _digest(authorization_bytes)
             _hs_refuse(
                 authorization["not_before_ms"] <= now
@@ -6498,9 +6531,7 @@ class _SyntheticRosterPublisher:
                 "issuance_basis_sha256": basis_sha256,
                 **suffix,
             }
-            final_now = _FixedP4VerificationClock.now_ms(
-                _P4_VERIFICATION._clock
-            )
+            final_now = self._reserve._now()
             _hs_refuse(
                 authorization["not_before_ms"] <= final_now
                 < authorization["expires_at_ms"],
@@ -6734,9 +6765,7 @@ class NonAuthorizingRosterRootProof:
             else:
                 connection.execute("BEGIN")
             generation, revoked, snapshot = reserve._snapshot()
-            now = _FixedP4VerificationClock.now_ms(
-                _P4_VERIFICATION._clock
-            )
+            now = reserve._now()
             _hs_refuse(
                 authorization["not_before_ms"] <= now
                 < authorization["expires_at_ms"]
@@ -6875,9 +6904,7 @@ class NonAuthorizingRosterRootProof:
         )
         reserve._check()
         final_generation, _final_revoked, final_snapshot = reserve._snapshot()
-        final_now = _FixedP4VerificationClock.now_ms(
-            _P4_VERIFICATION._clock
-        )
+        final_now = reserve._now()
         _hs_refuse(
             final_generation == generation
             and final_snapshot == snapshot
@@ -7128,7 +7155,7 @@ class _SyntheticRawPreflight:
             connection.execute("BEGIN IMMEDIATE")
             reserve._check()
             generation, revoked, snapshot = reserve._snapshot()
-            now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+            now = reserve._now()
             authorization, intent = self._derive_intent(
                 signed, roster, snapshot, revoked, now,
             )
@@ -7172,9 +7199,7 @@ class _SyntheticRawPreflight:
                 "VALUES (?,?,?,?,?)",
                 ("raw-dataset", signed_id, old_state, new_state, generation),
             )
-            final_now = _FixedP4VerificationClock.now_ms(
-                _P4_VERIFICATION._clock
-            )
+            final_now = reserve._now()
             _hs_refuse(
                 authorization["not_before_ms"] <= final_now
                 < authorization["expires_at_ms"],

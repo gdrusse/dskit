@@ -3693,16 +3693,15 @@ def test_adr137_roster_proof_refuses_shared_revocation_and_restart(
     )
 
 
-def _adr132_raw_case(tmp_path, monkeypatch, member_a=None):
+def _adr132_raw_case(tmp_path, monkeypatch, member_a=None, advance=True):
     """Offline signed raw fixture anchored to a live synthetic roster."""
     path = str(tmp_path / "synthetic-reserve.sqlite")
     trust._SyntheticAuthorizationReserve._provision(path)
     publisher = trust._SyntheticRosterPublisher(path)
     bootstrap, bg1, bg2, _ = _synthetic_roster_bootstrap_fixture()
     _roster, basis, receipt = publisher.publish(bootstrap, bg1, bg2)
-    monkeypatch.setattr(
-        trust._FixedP4VerificationClock, "now_ms", lambda _clock: 600,
-    )
+    if advance:
+        publisher._reserve._advance_clock(600)
     receipt_value = json.loads(receipt)
     if member_a is None:
         member_a = f4._json_bytes({
@@ -4001,3 +4000,46 @@ def test_adr132_raw_preflight_duplicate_id_across_members(
     assert source.read_names == (
         "fixture_A.ndjson", "fixture_B.ndjson",
     )
+
+
+def test_adr136_shared_clock_advance_is_durable_and_monotone(tmp_path):
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    first, second = cls(path), cls(path)
+    assert first._now() == second._now() == 500
+    first._advance_clock(600)
+    assert second._now() == 600
+    with pytest.raises(ValueError, match="advance"):
+        second._advance_clock(500)
+    with pytest.raises(ValueError, match="integer"):
+        second._advance_clock(True)
+    second._close()
+    third = cls(path)
+    assert third._now() == 600
+
+
+def test_adr132_raw_preflight_requires_trusted_clock_advance(
+    tmp_path, monkeypatch,
+):
+    _path, publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch, advance=False,
+    )
+    source = trust._SyntheticFixtureSource(members)
+    with pytest.raises(ValueError, match="time|chronology|window"):
+        trust._SyntheticRawPreflight(publisher, source).verify(
+            *signed, *roster,
+        )
+    assert source.read_names == ()
+    assert publisher._reserve._now() == 500
+
+
+def test_adr137_roster_proof_expires_after_shared_clock_advance(tmp_path):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    bootstrap, bg1, bg2, _ = _synthetic_roster_bootstrap_fixture()
+    _roster, basis, receipt = publisher.publish(bootstrap, bg1, bg2)
+    publisher._reserve._advance_clock(901)
+    with pytest.raises(ValueError, match="expired|revoked"):
+        publisher.proof().verify(bootstrap, bg1, bg2, basis, receipt)
