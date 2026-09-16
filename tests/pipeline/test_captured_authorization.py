@@ -4643,3 +4643,108 @@ def test_adr141_root_pis_expired_grant_cannot_issue(tmp_path, monkeypatch):
     assert publisher._reserve._connection.execute(
         "SELECT COUNT(*) FROM reserve_uses WHERE kind='root-pis'"
     ).fetchone() == (0,)
+
+
+def test_adr142_dynamic_root_graph_resolves_exact_twelve_signed_artifacts(
+    tmp_path, monkeypatch,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+    issuer = trust._SyntheticRootPisIssuer(publisher)
+    pair = issuer.issue(*signed, *roster, *output)
+    graph = issuer.graph()
+    from dskit.production import verifier as production_verifier
+    assert production_verifier.NonAuthorizingDynamicRootGraph is (
+        trust.NonAuthorizingDynamicRootGraph
+    )
+    snapshot = graph.snapshot()
+    assert len(snapshot.references) == 12
+    expected_bytes = set((*signed[:3], *roster[:3], *roster[3:],
+                          *output[1:], *pair))
+    assert {graph.resolve(snapshot, ref) for ref in snapshot.references} == (
+        expected_bytes
+    )
+    assert not hasattr(graph, "authorize_capture_set")
+    assert not hasattr(graph, "read_member_bytes")
+
+
+def _adr142_graph_case(tmp_path, monkeypatch):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+    issuer = trust._SyntheticRootPisIssuer(publisher)
+    issuer.issue(*signed, *roster, *output)
+    graph = issuer.graph()
+    return publisher, issuer, graph, graph.snapshot()
+
+
+def test_adr142_dynamic_root_graph_snapshot_and_reference_refusals(
+    tmp_path, monkeypatch,
+):
+    publisher, issuer, graph, snapshot = _adr142_graph_case(
+        tmp_path, monkeypatch,
+    )
+    before = publisher._reserve._connection.total_changes
+    ref = snapshot.references[0]
+    assert graph.resolve(snapshot, ref)
+    assert publisher._reserve._connection.total_changes == before
+    parsed = json.loads(ref)
+    parsed["sha256"] = "f" * 64
+    with pytest.raises(ValueError):
+        graph.resolve(snapshot, f4._json_bytes(parsed))
+    with pytest.raises(ValueError):
+        graph.resolve(snapshot, ref + b" ")
+    with pytest.raises(TypeError):
+        trust._DynamicRootGraphSnapshot()
+    publisher._reserve._advance_clock(602)
+    with pytest.raises(ValueError, match="snapshot state changed"):
+        graph.resolve(snapshot, ref)
+    renewed = graph.snapshot()
+    assert graph.resolve(renewed, ref)
+    assert issuer.graph() is graph
+
+
+@pytest.mark.parametrize("kind", ["roster-bootstrap", "raw-dataset", "root-pis"])
+def test_adr142_dynamic_root_graph_refuses_changed_row_or_audit(
+    tmp_path, monkeypatch, kind,
+):
+    publisher, _issuer, graph, snapshot = _adr142_graph_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._connection.execute(
+        "DELETE FROM reserve_audit WHERE kind=? AND seq=("
+        "SELECT MIN(seq) FROM reserve_audit WHERE kind=?)",
+        (kind, kind),
+    )
+    with pytest.raises(ValueError, match="snapshot state changed"):
+        graph.resolve(snapshot, snapshot.references[0])
+
+
+def test_adr142_dynamic_root_graph_second_proof_catches_worm_mutation(
+    tmp_path, monkeypatch,
+):
+    publisher, _issuer, graph, snapshot = _adr142_graph_case(
+        tmp_path, monkeypatch,
+    )
+    original = trust.NonAuthorizingSyntheticRootPisProof.verify
+    calls = 0
+
+    def mutate_after_first_proof(self, *values):
+        nonlocal calls
+        result = original(self, *values)
+        calls += 1
+        if calls == 1:
+            key = next(iter(publisher._root_pis_pairs))
+            publisher._root_pis_pairs[key] = (b"lost", b"lost")
+        return result
+
+    monkeypatch.setattr(
+        trust.NonAuthorizingSyntheticRootPisProof, "verify",
+        mutate_after_first_proof,
+    )
+    with pytest.raises(ValueError):
+        graph.resolve(snapshot, snapshot.references[0])
+    assert calls == 1

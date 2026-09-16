@@ -47,6 +47,7 @@ __all__ = [
     "NonAuthorizingRosterRootProof",
     "NonAuthorizingRawRootProof",
     "NonAuthorizingSyntheticRootPisProof",
+    "NonAuthorizingDynamicRootGraph",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
@@ -8098,7 +8099,7 @@ class NonAuthorizingRawRootProof:
 class _SyntheticRootPisIssuer:
     """One-shot, nondeployment two-root signed PIS issuer."""
 
-    __slots__ = ("_publisher", "_closed", "_retained")
+    __slots__ = ("_publisher", "_closed", "_retained", "_graph")
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("the synthetic root-PIS issuer is final")
@@ -8110,6 +8111,7 @@ class _SyntheticRootPisIssuer:
         self._publisher = publisher
         self._closed = False
         self._retained = None
+        self._graph = None
 
     @staticmethod
     def _sign(payload, self_field):
@@ -8472,6 +8474,15 @@ class _SyntheticRootPisIssuer:
         return NonAuthorizingSyntheticRootPisProof(_MAKE, self)
 
 
+    def graph(self):
+        """Return one issuer-owned read-only dynamic root graph."""
+        _hs_refuse(self._retained is not None,
+                   "successful retained root-PIS pair required")
+        if self._graph is None:
+            self._graph = NonAuthorizingDynamicRootGraph(_MAKE, self)
+        return self._graph
+
+
 class NonAuthorizingSyntheticRootPisProof:
     """Read-only verification of one retained synthetic two-root PIS."""
 
@@ -8759,3 +8770,246 @@ class NonAuthorizingSyntheticRootPisProof:
             "authorizing": False,
             "deployment_eligible": False,
         })
+
+
+class _DynamicRootGraphSnapshot:
+    """Opaque immutable point-in-time identity for a verified root graph."""
+
+    __slots__ = ("_graph", "_publisher", "_broker", "_reserve_path",
+                 "_vector", "_references")
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("dynamic root snapshot is graph-issued")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("dynamic root snapshot is final")
+
+    def __setattr__(self, name, value):
+        raise AttributeError("dynamic root snapshot is frozen")
+
+    @property
+    def references(self):
+        """Return only the closed exact canonical artifact references."""
+        return self._references
+
+
+class NonAuthorizingDynamicRootGraph:
+    """Read-only resolver of one retained signed synthetic two-root graph."""
+
+    __slots__ = ("_issuer", "_publisher", "_records", "_snapshot")
+
+    def __init_subclass__(cls, **kwargs):
+        """Forbid alternate graph implementations."""
+        raise TypeError("the synthetic dynamic root graph is final")
+
+    def __init__(self, token, issuer):
+        if token is not _MAKE or type(issuer) is not _SyntheticRootPisIssuer:
+            raise TypeError("issuer-owned dynamic root graph required")
+        _hs_refuse(issuer._retained is not None,
+                   "successful retained root-PIS issuer required")
+        self._issuer = issuer
+        self._publisher = issuer._publisher
+        self._records = self._derive_records()
+        self._snapshot = None
+
+    def _originals(self):
+        _hs_refuse(self._issuer._retained is not None,
+                   "retained root graph originals required")
+        signed, roster, output, _intent, pair, _key = (
+            self._issuer._retained
+        )
+        return signed, roster, output, pair
+
+    def _derive_records(self):
+        signed, roster, output, pair = self._originals()
+        items = (
+            ("dataset-capture-authorization", "security-data",
+             "dskit.dataset-capture-authorization/v1", signed[0], None),
+            ("dataset-capture-grant", "G1",
+             "dskit.dataset-capture-grant/v1", signed[1], None),
+            ("dataset-capture-grant", "G2",
+             "dskit.dataset-capture-grant/v1", signed[2], None),
+            ("roster-bootstrap-authorization", "security-data",
+             "dskit.roster-bootstrap-authorization/v1", roster[0], None),
+            ("roster-bootstrap-grant", "G1",
+             "dskit.roster-bootstrap-grant/v1", roster[1], None),
+            ("roster-bootstrap-grant", "G2",
+             "dskit.roster-bootstrap-grant/v1", roster[2], None),
+            ("issuance-basis", "data-publisher",
+             "dskit.issuance-basis/v2", roster[3],
+             "issuance_basis_sha256"),
+            ("root-publication", "data-publisher",
+             "dskit.root-publication-receipt/v2", roster[4],
+             "root_publication_receipt_sha256"),
+            ("issuance-basis", "data-publisher",
+             "dskit.issuance-basis/v1", output[1],
+             "issuance_basis_sha256"),
+            ("root-publication", "data-publisher",
+             "dskit.root-publication-receipt/v1", output[2],
+             "root_publication_receipt_sha256"),
+            ("issuance-basis", "data-publisher",
+             "dskit.issuance-basis/v2", pair[0],
+             "issuance_basis_sha256"),
+            ("root-pis", "data-publisher",
+             "dskit.published-input-set/v2", pair[1],
+             "published_input_set_sha256"),
+        )
+        records = []
+        for kind, role, schema, raw, self_field in items:
+            _hs_refuse(type(raw) is bytes,
+                       "exact retained graph artifact bytes required")
+            parsed = _hs_parse_canonical(raw)
+            _hs_refuse(
+                type(parsed) is dict
+                and parsed.get(
+                    "schema" if self_field else "schema_version"
+                ) == schema,
+                "dynamic root artifact schema mismatch",
+            )
+            digest = parsed[self_field] if self_field else _digest(raw)
+            _hs_refuse(type(digest) is str
+                       and re.fullmatch(r"[0-9a-f]{64}", digest)
+                       is not None, "dynamic root reference digest refused")
+            ref = _hs_canonical_bytes({
+                "kind": kind, "role": role,
+                "schema": schema, "sha256": digest,
+            })
+            records.append((ref, raw))
+        records.sort(key=lambda item: tuple(
+            _hs_parse_canonical(item[0])[field]
+            for field in ("kind", "role", "schema", "sha256")
+        ))
+        _hs_refuse(
+            len(records) == 12
+            and len({ref for ref, _raw in records}) == 12,
+            "closed twelve-artifact root graph required",
+        )
+        return tuple(records)
+
+    def _vector(self):
+        reserve = self._publisher._reserve
+        reserve._check()
+        connection = reserve._connection
+        _hs_refuse(not connection.in_transaction,
+                   "graph read needs independent transaction")
+        signed, roster, _output, _pair = self._originals()
+        ids = (
+            ("roster-bootstrap",
+             _hs_parse_canonical(roster[0])["bootstrap_id"]),
+            ("raw-dataset",
+             _hs_parse_canonical(signed[0])["authorization_id"]),
+            ("root-pis", self._issuer._retained[5][2]),
+        )
+        try:
+            connection.execute("BEGIN")
+            meta = connection.execute(
+                "SELECT domain,generation,now_ms FROM reserve_meta "
+                "WHERE singleton=1"
+            ).fetchone()
+            generation, revoked, snapshot = reserve._snapshot()
+            now = reserve._now()
+            _hs_refuse(
+                meta == (_SYNTHETIC_RESERVE_DOMAIN, generation, now),
+                "dynamic root graph domain mismatch",
+            )
+            rows = []
+            audits = []
+            for kind, signed_id in ids:
+                row = connection.execute(
+                    "SELECT kind,signed_id,authorization_sha256,g1_sha256,"
+                    "g2_sha256,snapshot_sha256,intent_sha256,state "
+                    "FROM reserve_uses WHERE kind=? AND signed_id=?",
+                    (kind, signed_id),
+                ).fetchone()
+                audit = connection.execute(
+                    "SELECT seq,kind,signed_id,old_state,new_state,generation "
+                    "FROM reserve_audit WHERE kind=? AND signed_id=? "
+                    "ORDER BY seq",
+                    (kind, signed_id),
+                ).fetchall()
+                _hs_refuse(row is not None and bool(audit),
+                           "complete dynamic root reserve backing required")
+                rows.append(row)
+                audits.append(tuple(audit))
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        return (meta, revoked, snapshot, tuple(rows), tuple(audits))
+
+    def _prove(self):
+        signed, roster, output, pair = self._originals()
+        return self._issuer.proof().verify(
+            *signed, *roster, *output, *pair,
+        )
+
+    def snapshot(self):
+        """Issue a graph-owned token only across a full proof and fence."""
+        _hs_refuse(self._issuer._graph is self,
+                   "issuer-owned dynamic root graph required")
+        before = self._vector()
+        self._prove()
+        after = self._vector()
+        _hs_refuse(before == after,
+                   "dynamic root snapshot freshness changed")
+        records = self._derive_records()
+        _hs_refuse(records == self._records,
+                   "dynamic root graph records changed")
+        token = object.__new__(_DynamicRootGraphSnapshot)
+        object.__setattr__(token, "_graph", self)
+        object.__setattr__(token, "_publisher", self._publisher)
+        object.__setattr__(token, "_broker", self._publisher._broker)
+        object.__setattr__(
+            token, "_reserve_path", self._publisher._reserve._path,
+        )
+        object.__setattr__(token, "_vector", before)
+        object.__setattr__(
+            token, "_references", tuple(ref for ref, _raw in records),
+        )
+        self._snapshot = token
+        return token
+
+    def resolve(self, snapshot, exact_ref_bytes):
+        """Return only retained signed bytes from the issued live graph."""
+        _hs_refuse(
+            self._issuer._graph is self
+            and type(snapshot) is _DynamicRootGraphSnapshot
+            and snapshot is self._snapshot
+            and snapshot._graph is self
+            and snapshot._publisher is self._publisher
+            and snapshot._broker is self._publisher._broker
+            and snapshot._reserve_path
+                == self._publisher._reserve._path
+            and snapshot._references
+                == tuple(ref for ref, _raw in self._records),
+            "exact issued dynamic root snapshot required",
+        )
+        _hs_refuse(type(exact_ref_bytes) is bytes,
+                   "exact dynamic root reference bytes required")
+        ref = _hs_parse_canonical(exact_ref_bytes)
+        _hs_refuse(
+            type(ref) is dict
+            and set(ref) == {"kind", "role", "schema", "sha256"}
+            and _hs_canonical_bytes(ref) == exact_ref_bytes,
+            "canonical dynamic root reference required",
+        )
+        before = self._vector()
+        _hs_refuse(before == snapshot._vector,
+                   "dynamic root snapshot state changed")
+        self._prove()
+        records = self._derive_records()
+        _hs_refuse(records == self._records,
+                   "dynamic root graph records changed")
+        matches = [
+            raw for candidate, raw in records
+            if candidate == exact_ref_bytes
+        ]
+        _hs_refuse(len(matches) == 1,
+                   "dynamic root reference not in closed graph")
+        raw = matches[0]
+        self._prove()
+        after = self._vector()
+        _hs_refuse(after == snapshot._vector,
+                   "dynamic root resolve freshness changed")
+        return raw
