@@ -1,0 +1,40 @@
+{
+  "schema_version": "F5aReviewExit.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2a",
+  "packet": "7-replay-tape-descriptors-captured-replay-tape-codec",
+  "candidate": "6466693 (code 0efe651 + test gap-fix 6466693)",
+  "base_main": "e5c7e81f97600668393549dc776ebf3b5a4b6a4a",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (owner substituted for unavailable Terra)",
+  "phase0": "0165 (codec-only contract, narrowed after skeptic 0163 + architecture gate 0164)",
+  "final_lenses": [
+    {"lens": "correctness-authority", "candidate": "c2d4cb9", "result": "0 Critical / 0 Major; 2 Minor (in-place _value mutation, duplicated digest rule) + 1 Nit (0165 __init__.py drift) — all corrected in 0efe651", "evidence": "lens-1 report (task ses_f58116d21ffeLNS4NR3icKKdlM)"},
+    {"lens": "tests-integration", "candidate": "0efe651", "result": "0 Critical / 2 Major (tautological tape_digest test; NaN name/body mismatch) + 4 Minor + 4 Nit — all Major/Minor corrected in 6466693", "evidence": "lens-2 report (task ses_f580b2122ffet4NQrIXZ7ipHD8)"},
+    {"lens": "tests-integration-reconfirmation", "candidate": "6466693", "result": "PASS 0 Critical / 0 Major; both prior Majors resolved; codec byte-identical to 0efe651", "evidence": "final re-confirmation (task ses_f5806200fffewUvD4mu9p3KH3I)"}
+  ],
+  "verdict": "LOCKED — two clean independent lenses, zero unresolved in-scope Critical/Major",
+  "minor_backlog": [
+    "test reaches the private _value MappingProxyType (couples test to storage shape)",
+    "__reduce__ not directly exercised (reached transitively via pickle)",
+    "'self' digest refusal not independently pinned (subsumed by the 64-hex length check)",
+    "envelope_count bool battery only tests True, not False"
+  ],
+  "scope_boundary": "Self-contained codec only. The composed-tape verification seam (slice 2b) remains blocked on the multi-consumer-capture architecture gate 0164; P7 verification half stays open.",
+  "tests_run": {
+    "new": "tests/production/test_captured_replay_tape.py (~40)",
+    "focused_passed": "530 (codec + bundles + purity/producers/oop + capture_lifecycle/captured_authorization); earlier 1601 across P6 compatibility + pipeline trust/captured/grammar/purity",
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture green",
+    "checks": "ruff clean on changed files; git diff --check clean"
+  },
+  "remaining_open": [
+    "Packet7 (verification half = slice 2b, blocked on 0164)",
+    "Packet8 (durable consume-once; sequenced after P7)",
+    "F5A-R23",
+    "whole F5a",
+    "F3 (full lane)",
+    "F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39@c489199 (preserved)"
+  ],
+  "deployment_eligible": false,
+  "recorded_at_utc": "2026-09-16T04:30:00.000000+00:00"
+}
