@@ -1,5 +1,41 @@
 # Re-entry
 
+## Current wrap: P7 slice 1 (ReplayRun identity + tape-pair grammar) closed and merged (2026-09-16)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-remainder-p7`. Main was `48ae2fb`; this slice merges on top. Protected
+source `c489199` untouched; dirty main checkout untouched. DeepSeek v4 Pro
+implementer; reviewer `opencode-go/deepseek-v4-flash` (owner substituted for the
+unavailable Terra/gpt-5.6-terra).
+
+**Scope.** Owner authorized building the F3/replay-ops prerequisite (`0145`,
+`0150`); ADR-0127 accepted then amended (`Decision.1`). Six Phase 0 skeptic rounds
+with a convergence checkpoint (`0149`) established that the tape-pair grammar
+cannot precede the ReplayRun class. This slice delivers the ReplayRun
+class-declared identity + the tape-pair grammar:
+
+- `dskit/pipeline/document.py`: `"replay"` in `ROLES`; `REPLAY_RUN_KIND="replay"`;
+  `_replay_node_errors` enforces at parse time that a `uses:"replay"` node is
+  execution-only and declares exactly `{tape_manifest, tape_data}`, each a
+  complete P5 descriptor (sweeps `pipeline` and `foreach.pipeline`).
+- `dskit/pipeline/trust.py`: `ReplayRun(Node)` role `replay`, owned kind,
+  default-deny `validate_params`, `run()` refuses (composed-tape broker is F3).
+- `dskit/pipeline/planner.py`: `role == "replay"` requires owned (stat_test
+  precedent), refusing class-ref/custom spellings on ordinary docs.
+
+**Review.** Two clean independent final lenses (`0160` correctness, then
+tests/integration) on the locked candidate; zero Critical/Major. Minor backlog
+recorded (squatter-raise pin, validate_params reachability, a few negative-case
+pin gaps). Sentinel green; focused suite 1609 passed; Ruff + `git diff --check`
+clean.
+
+**Remaining.** Packet7 verification half (resolve the descriptors to verified
+PUBLISHED/CAPTURED identities) and the F3 captured-tape hierarchy
+(`ReplayTapeDataCapture`/`ReplayTapeManifestProducer`/`ReplayTapeManifestCapture`
++ composed tape capability) remain open — the class-ref spelling inside an
+execution document is that broker's follow-on. Packet8, F5A-R23, whole-F5a and
+F5b remain open; `deployment_eligible=false`. Next unused evidence: 0162.
+
 ## Current checkpoint: F3/replay-ops prerequisite authorized; ADR-0127 proposed, awaiting approval (2026-09-15)
 
 Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
