@@ -1528,6 +1528,15 @@ def test_same_document_cannot_capture_the_same_stream_twice():
     assert len(broker._p4_ledger._committed()) == 1
 
 
+def test_stream_documents_derivation_keys_on_document_sha_not_port():
+    broker, published, graph_a, document_a, _document_b, _alternate_b = _two_consumer_setup()
+    frozen_a = broker.freeze_consumer_document(document_a, "consume", "bundle", "synthetic")
+    captures_a = ((published, frozen_a, broker.derive_consumer_port(frozen_a)),)
+    broker.authorize_capture_set(captures_a, graph_a.selected, **_runtime())
+    stream = broker._stream_for_published(published, "test")
+    assert broker._p4_ledger._p4_stream_documents(stream) == {frozen_a.document_sha256}
+
+
 @pytest.mark.parametrize("slot", ["_kind", "_run_identity", "_ended", "_plan_sha256", "_runtime", "_stream_id", "_locked"])
 def test_resolve_refuses_each_single_private_session_slot_substitution(slot):
     graph, broker, captures, runtime, before, record, session = _issue_complete()

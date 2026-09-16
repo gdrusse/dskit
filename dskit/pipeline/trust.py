@@ -4980,14 +4980,16 @@ class _LifecycleAuthorizationLedger(_Opaque):
 
     def _p4_stream_documents(self, stream):
         """Return committed consumer-document identities already captured for a stream."""
-        documents = set()
-        for entry in self._p4_entries():
-            request = _hs_parse_canonical(entry[2])
-            audit = _hs_parse_canonical(entry[3])
-            for index, committed_stream in enumerate(audit["streams"]):
-                if committed_stream == stream:
-                    documents.add(request["captures"][index][2]["consumer_document_sha256"])
-        return documents
+        with self._lock:
+            self._check()
+            documents = set()
+            for entry in self._p4_entries():
+                request = _hs_parse_canonical(entry[2])
+                audit = _hs_parse_canonical(entry[3])
+                for index, committed_stream in enumerate(audit["streams"]):
+                    if committed_stream == stream:
+                        documents.add(request["captures"][index][2]["consumer_document_sha256"])
+            return documents
 
     def _legacy_captures(self):
         with self._lock:
@@ -5220,7 +5222,7 @@ _P4_LEGACY_PREPARE_METHODS = tuple((name, getattr(_DevelopmentBroker, name)) for
 ))
 _P4_LEDGER_METHODS = tuple((name, getattr(_LifecycleAuthorizationLedger, name)) for name in (
     "_check", "_fault", "_legacy_gate", "_require_unclaimed", "_nonce_used", "_request", "resolve_p4", "commit_p4_batch",
-    "_p4_entries", "_legacy_captures", "commit_legacy_capture",
+    "_p4_entries", "_p4_stream_documents", "_legacy_captures", "commit_legacy_capture",
 ))
 
 
