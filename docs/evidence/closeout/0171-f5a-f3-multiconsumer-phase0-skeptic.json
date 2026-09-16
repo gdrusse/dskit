@@ -1,0 +1,24 @@
+{
+  "schema_version": "F5aDesignReview.v1",
+  "packet": "7-replay-tape-descriptors-multiconsumer-capture",
+  "candidate": "0170-f5a-f3-multiconsumer-capture-phase0.json",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "reviewer_id": "opencode-go/deepseek-v4-flash (fresh Phase 0 skeptic, multiconsumer capture)",
+  "verdict": "0 Critical / 1 Major (authority granularity) / 2 Minor / 1 Nit; Major resolved by tightening distinctness to consumer_document_sha256",
+  "counts": {"critical": 0, "major": 1, "minor": 2, "nit": 1},
+  "findings": [
+    {"id": "MAJ-1", "severity": "Major", "summary": "distinctness keyed on the four-field port widens 'consumer' to (document, node, input, purpose), permitting one document to mint extra consumptions of one root by declaring extra $captured_artifact ports — relaxing one-time CONSUMED (a non-goal).", "family": "identity/authority granularity", "disposition": "RESOLVED — ADR-0128 Decision.1 corrected to key distinctness on consumer_document_sha256 (per document), not the four-field port; same-document-different-node/input now refuses."},
+    {"id": "MIN-2", "severity": "Minor", "summary": "consumer_document_sha256 = digest of the full frozen source (notes/env/outputs NOT stripped), so a notes-only edit mints a 'distinct' document; pre-existing derive_consumer_port, now load-bearing.", "family": "identity-recipe divergence", "disposition": "ACCEPTED/recorded — the frozen consumer document IS the full source (F4 definition); a notes edit is a genuinely different frozen document. No change; documented."},
+    {"id": "MIN-3", "severity": "Minor", "summary": "within-batch port uniqueness is global (line 2446) while the new across-batch check is per-stream; asymmetric.", "family": "scope inconsistency", "disposition": "ACCEPTED/recorded — pre-existing, unaffected by this change; F3 uses one stream per batch."},
+    {"id": "NIT-4", "severity": "Nit", "summary": "idempotent-replay dedup keys on id(published)/id(frozen) in the fingerprint; GC/id reuse could cause a false conflict refusal (denial only). The new derivation reads values only.", "family": "object-identity instability", "disposition": "ACCEPTED/recorded — pre-existing, out of scope; new derivation immune (reads port value + stream value, not id())."}
+  ],
+  "verified_safe": [
+    "removing _require_unclaimed from _require_head weakens no other caller (all 9 callers enumerated; legacy path still gated by _legacy_gate/_require_unclaimed; v1 view/append paths retain their own check)",
+    "fingerprint-parsing derivation is sound (captures[i][2] is the validated port value, streams[i] is the stream value; indices align)",
+    "canonical-equal port attack closed (sorted keys; purpose pinned to producer)",
+    "frozen-document mutation attack closed (derive_consumer_port rechecks)",
+    "freeze TOCTOU closed (head+distinct check re-run under lock in commit_p4_batch)",
+    "P4<->legacy exclusivity holds both directions"
+  ],
+  "recorded_at_utc": "2026-09-16T05:30:00.000000+00:00"
+}

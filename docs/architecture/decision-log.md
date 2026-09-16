@@ -9072,3 +9072,75 @@ identity/hierarchy contract and matrix, then RED→GREEN with synthetic fixtures
 and real temp on-disk JSONL for any persistence proof, two fresh sequential Terra
 final lenses (correctness/authority, then tests/integration), then integrate.
 `deployment_eligible` stays false.
+
+## ADR-0128 — bounded V2 multi-consumer capture (correction to ADR-0127 Decision.2)
+
+**Status:** accepted (2026-09-16; owner approved "Approve" after choosing
+option A of gate `0164`). This authorizes the bounded multi-consumer capture
+seam only; a fresh Phase 0 skeptic precedes RED.
+
+**Context.** ADR-0127 Decision.2 lays the F3 captured-tape hierarchy as three
+consumers of one data PUBLISH root: the `ReplayTapeManifestProducer` captures the
+data root (its `data_captured_receipt`), and the distinct later `ReplayRun`
+captures the same data root again (its own replay-specific receipt, plan
+lines 554–563, 717–723). The current F4 v1 + P4 machinery forbids this: a
+published stream is keyed by `_p4_ledger._require_unclaimed` (trust.py:5046),
+which refuses any stream already in a committed P4 batch, and `_validate_capture_request`
+(trust.py:2441) reaches it through `_require_head`. So one PUBLISHED root can be
+captured by at most one consumer, and the F3 composed-tape verification cannot be
+realized without either a second engine or a bounded extension. Owner chose the
+bounded extension (option A of gate `0164`).
+
+**Decision.**
+
+1. **One CAPTURED receipt per distinct consumer document.** A single PUBLISHED
+   root may appear in more than one committed P4 `commit_p4_batch`, provided each
+   capture names a **distinct consumer document** — the frozen document identity
+   `consumer_document_sha256`. Two captures of the same root by the same document
+   refuse as a duplicate (including the same document reaching the same root
+   through a different node/input, which still names one consumer); two captures
+   by different documents are independent, each bound to its own admission,
+   nonce, record and `LaunchSession`. This is the V2 per-consumer lifecycle
+   receipt model ADR-0125 already describes, not a second engine. (Distinctness
+   is deliberately keyed on the document, not the four-field port, so a single
+   document cannot mint extra consumptions of one root by declaring extra
+   `$captured_artifact` ports — decision 3's "per consumer" boundary.)
+
+2. **Legacy v1 chain and P4/legacy exclusivity are unchanged.** The v1 linear
+   receipt chain (`PRODUCED → SEALED → PUBLISHED → CAPTURED → CONSUMED`) still
+   permits one CAPTURED per stream. A P4-captured stream still cannot enter
+   legacy `capture` (`_require_unclaimed` remains for the legacy path), and a
+   legacy-CAPTURED stream still cannot enter a P4 batch
+    (`_validate_capture_request`'s `_legacy_captures` check remains). Only the P4
+    path's blanket unclaimed refusal is relaxed to a **distinct-document**
+    refusal.
+
+3. **One-time consumption is per consumer, unchanged.** Each capture's member
+   access remains one-way and one-time through its own consumer `LaunchSession`
+   and `CapturedBindings`; the existing `_consumed_streams`/`CONSUMED` discipline
+   is untouched. Multi-capture does not make a stream multi-consumable by one
+   consumer, and does not mint a reopen/handle-sharing path.
+
+4. **Surgical seam.** Three bounded trust.py edits, no v1 receipt shape /
+   descriptor grammar / planner / `__all__` / purity change:
+   - split `_require_head` so the P4-blanket `_require_unclaimed` no longer
+     fires on the P4 capture path or the freeze path; `_require_unclaimed` is
+     retained and called explicitly on the legacy capture path (and the v1
+     view/append paths, unchanged);
+    - `_validate_capture_request` (P4 path): replace the blanket unclaimed
+      refusal with (a) v1 head-is-`PUBLISHED` and (b) a distinct-document check —
+      the incoming capture's `consumer_document_sha256` must differ from every
+      prior P4 capture committed for that stream;
+   - `_published_for_descriptor` (freeze): allow a P4-captured-but-v1-`PUBLISHED`
+     stream (drop the unclaimed refusal; the head check still blocks
+     legacy-`CAPTURED`/`CONSUMED` streams).
+
+**Non-goals.** Multi-consumer CAPTURED on the legacy v1 chain, relaxing
+one-time CONSUMED, sharing handles/sessions across consumers, any change to
+descriptor grammar or P4 batch content, and the F3 composed-tape verification
+itself (still a follow-on that consumes this seam).
+
+**Process.** After owner approval: fresh clean Phase 0 skeptic over the frozen
+matrix, then RED→GREEN with synthetic fixtures, two fresh sequential final lenses
+(correctness/authority, then tests/integration), then integrate.
+`deployment_eligible` stays false.

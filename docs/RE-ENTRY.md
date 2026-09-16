@@ -1,5 +1,34 @@
 # Re-entry
 
+## Current wrap: bounded multi-consumer capture landed (2026-09-16)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-f3-multiconsumer-capture`. Main was `29f0254`; this slice merges on
+top. Protected source `c489199` untouched; dirty main checkout untouched.
+DeepSeek v4 Pro implementer; reviewers on `deepseek-v4-pro` (the flash reviewer
+agent was configured but not hot-reloaded; owner accepted non-flash for these).
+
+**Scope.** ADR-0128 (accepted; owner chose option A of gate `0164`): a single
+PUBLISHED root may be captured by more than one distinct consumer document.
+`_require_head` no longer blanket-refuses a P4-committed stream (legacy path
+still gated by `_legacy_gate`); `_validate_capture_request` gains a
+distinct-document refusal via a read-only `_p4_stream_documents` derivation
+keyed on `consumer_document_sha256`. Legacy v1 chain and one-time CONSUMED are
+unchanged. This unblocks the P7 composed-tape verification seam (slice 2b).
+
+**Review.** Phase 0 skeptic `0171`; two final lenses + a re-confirmation — zero
+unresolved Critical/Major (one Major about doc-sha-keying behavioral pinning was
+shown unreachable and documented in `0173`). Focused 1593 passed; Ruff + `git
+diff --check` clean; sentinel green.
+
+**Remaining.** P7 composed-tape verification seam (slice 2b follow-on, now
+unblocked); Packet8; F5A-R23; whole-F5a; F3 (full lane); F5b. Next unused
+evidence: 0174. `deployment_eligible=false`.
+
+Approximate checkpoint minutes (design/impl/tests/review/corrections/integration):
+design 30, implementation 40, tests 25, review 45, corrections 25, integration 10.
+Initial unmeasured reading excluded.
+
 ## Current wrap: F3 captured-tape codec (CapturedReplayTape.v1) landed (2026-09-16)
 
 Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
