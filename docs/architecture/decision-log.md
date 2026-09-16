@@ -10463,3 +10463,223 @@ skeptic lenses, affected tests, evidence and integration.
 
 **Non-goals.** Dynamic P4 CAPTURED, stage/scope graph, full raw/event
 semantics, composed tape, Packet8, deployment or P7 closure.
+
+## ADR-0143 - same-domain dynamic P4 capture authority
+
+**Status:** proposed. Not yet reviewed or approved; no Phase 0, RED/GREEN
+or code exists for this slice. This is a design proposal only and grants
+no capture, member access or deployment eligibility.
+
+**Context.** ADR-0141 retains one signed synthetic two-root
+PublishedInputSet.v2 and its NonAuthorizingSyntheticRootPisProof. ADR-0142
+adds one issuer-owned read-only NonAuthorizingDynamicRootGraph exposing
+exactly those 12 artifacts through opaque snapshot/resolve tokens, with no
+F4 write, member-read, signature or P4 capture method. Both are explicitly
+nonauthorizing and explicitly defer P4-capable authority (ADR-0142 Decision
+point 4). The existing fixed P4 capability
+(`_SyntheticP4CapturedAuthorizationAuthority` bound to
+`_FixedWormTrustedArtifactResolver`, `_FixedTerminalArtifactVerifier`,
+`_FixedP4VerificationClock` pinned to `now_ms=500`, and
+`_FixedP4VerificationRevocations` pinned to one fixed revocation digest)
+routes every `authorize_capture_set` call through the single shared
+`_p4_checked_dispatch` -> `_p4_require_issued_authority` ->
+`_LifecycleAuthorizationLedger.commit_p4_batch` path. Both gate functions
+hard-check `type(resolver) is _FixedWormTrustedArtifactResolver` by exact
+type identity, and `commit_p4_batch`'s own admission closure
+(`_p4_close_admission`) maps `publication_receipt_schema` to a parent ref
+only for `dskit.root-publication-receipt/v1` — it has no case for the
+ADR-0141 roster entry's `/v2` schema. This is the "P4 fixed terminal
+corpus and root receipt/v1 grammar cannot admit new signed roster/raw
+roots" blocker recorded in evidence 0179's `p7_closure_architecture_audit`.
+Passing dynamic-graph bytes through the existing fixed pairing therefore
+cannot succeed without editing that pinned v1-only grammar, which this ADR
+must not do.
+
+**Decision.**
+
+1. One new final, private-token-constructed resolver class,
+   `_DynamicP4TrustedArtifactResolver`, is added beside
+   `_FixedWormTrustedArtifactResolver`. It exposes the identical four-method
+   contract (`snapshot`, `resolve`, `_checked_resolve`, `close_admission`)
+   and is constructed from exactly one successful, retained
+   `_SyntheticRootPisIssuer.graph()` (`NonAuthorizingDynamicRootGraph`) and
+   nothing else — no caller artifact map, root, path, provider, key,
+   signer or clock. It takes no `fixture_facts` and never touches
+   `_P4_EXTERNAL_RECORDS`/`_P4_EXTERNAL_BY_REF`.
+2. Every `snapshot()` and `_checked_resolve()` call on this resolver first
+   calls `graph.snapshot()` (or re-derives it if held) and performs the
+   identical before-proof/`_prove()`/after-proof vector fence that
+   `NonAuthorizingDynamicRootGraph.resolve` already performs internally,
+   then requires the resolved ref to be one of the graph's 12 closed
+   references before returning bytes. A stale, foreign or copied graph
+   token, or any vector mismatch, refuses. No graph-checked fact is cached
+   past one call as authority; each call re-derives.
+3. One new one-shot module function, `_development_dynamic_p4_broker(issuer)`,
+   mirrors `_development_p4_broker` exactly: it builds a `_DynamicP4TrustedArtifactResolver`
+   from `issuer.graph()`, then constructs a second instance of the existing,
+   unmodified, `__init_subclass__`-final `_SyntheticP4CapturedAuthorizationAuthority`
+   class through its existing `__init__(token, resolver)` and the same
+   `_P4_PENDING_TOKENS` one-shot factory-token discipline. No authority
+   subclass, no second `LifecycleAuthority`/`CapturedAuthorizationAuthority`
+   implementation and no second `_LifecycleAuthorizationLedger` class are
+   created; `_DevelopmentBroker.__init__` already mints a fresh
+   `_LifecycleAuthorizationLedger` instance per authority instance and
+   registers it in the existing `_LIFECYCLE_LEDGERS` mapping, so
+   `authorize_capture_set` and `commit_p4_batch` execute as the same
+   inherited code for both the legacy and the dynamic authority instance.
+4. `_p4_require_issued_authority` and `_p4_snapshot_integrity` are extended,
+   not replaced: each now checks the resolver's exact type against a closed
+   two-member table, `_P4_RESOLVER_CLASSES = (_FixedWormTrustedArtifactResolver,
+   _DynamicP4TrustedArtifactResolver)`, and dispatches the remaining
+   per-class invariants (resolver method identity, terminal pairing,
+   `_P4_RESOLVERS`/`_P4_TERMINALS` pin) to the branch matching that exact
+   type. The legacy branch's code and constants are byte-identical to
+   today's; the dynamic branch is new and separate. Each resolver instance
+   is registered only in its own `_P4_RESOLVERS`/`_P4_TERMINALS`/`_P4_ISSUED`
+   entries exactly as today, so a legacy authority/resolver pair can never
+   observe or resolve graph bytes and a dynamic pair can never observe or
+   resolve fixed-corpus bytes. `_p4_close_admission` and `_P4_CLOSE_ADMISSION`
+   are not edited, called by, or reachable from the dynamic branch.
+5. One new terminal verifier class, `_DynamicP4TerminalArtifactVerifier`,
+   mirrors `_FixedTerminalArtifactVerifier`'s two-method shape
+   (`verify_terminal`, `require_current`) but is registered only against
+   the dynamic resolver's own snapshot/corpus (the graph's 12-reference
+   set, never `_P4_EXTERNAL_RECORDS`). Its keyring and revocation checks
+   reuse the fixed Ed25519 public keys already pinned for the graph's own
+   eight original signed artifacts and two root-publication receipts
+   (`_P4_LOCAL_PUBLIC_KEYS`), plus the `data-publisher/published-input-set-g1-g2`
+   key already pinned by ADR-0141 for the two issuance-basis/v2 and
+   root-pis artifacts — no new key material.
+6. Clock and revocation are the SAME shared instances ADR-0136/0139/0141/0142
+   already use: `_DynamicP4VerificationClock.now_ms()` returns
+   `reserve._now()` read under the resolver's own read transaction (the
+   same `_SyntheticAuthorizationReserve` instance reachable from
+   `issuer._publisher._reserve`), and `_DynamicP4VerificationRevocations.is_unrevoked`
+   checks the live `reserve._snapshot()` revocation digest, never a literal
+   `500` or the fixed `_digest(b"p4-fixed-revocations")` constant. The
+   legacy `_FixedP4VerificationClock`/`_FixedP4VerificationRevocations`
+   classes and their `_P4_VERIFICATION` singleton are untouched and continue
+   to gate only the legacy `_FixedP4Signer`-issued captured-port/receipt/set
+   fields, which this ADR also does not change: `commit_p4_batch`'s
+   `_FixedP4Signer`/`_P4_VERIFICATION` signing infrastructure and its
+   `issued_at_ms=500, expires_at_ms=1000` decision-receipt stamps remain
+   shared, unedited nondeployment fixture metadata for both authority
+   instances (see the open question below); they are not a temporal
+   admissibility gate, which instead lives entirely in the resolver's own
+   fresh graph re-proof on every `snapshot()`/`resolve()` call inside the
+   ledger's locked `commit_p4_batch` critical section.
+7. A new, narrowly-scoped `admission_ref` chain — sized to exactly the
+   two-root PIS and never reusing or extending the fixed `scope-intent` /
+   `gate-evidence` / `scope-authorization` / `stage-admission` /
+   `action-execution-admission` machinery `_p4_close_admission` already
+   owns — is defined for this resolver only: one `dskit.root-capture-admission/v1`
+   document referencing the retained `root-pis` ref (kind=root-pis,
+   role=data-publisher, schema=dskit.published-input-set/v2) plus the two
+   external G1/G2 dataset-capture-grant refs already in the graph's 12; one
+   `dskit.capture-admission-set/v1` (`cas`) referencing it with
+   `subject_ref.kind="action"`; and exactly two `dskit.planned-capture-entry/v1`
+   (`pce`) rows, one per PIS entry (`raw_event_dataset`, `source_roster`),
+   each carrying that entry's `contract_sha256` as its
+   `planned_entry_sha256` preimage input. `_DynamicP4TrustedArtifactResolver.close_admission`
+   is implemented by one new, separately named closure-walk function,
+   `_dynamic_p4_close_admission`, that mirrors `_p4_close_admission`'s
+   `visit`/`find`/`get` recursion shape but is sized only to this
+   `root-capture-admission -> cas -> pce` chain. Unlike `_p4_close_admission`'s
+   `receipt_ref`, which maps only `dskit.root-publication-receipt/v1`, this
+   new function's own receipt mapping recognizes both
+   `dskit.root-publication-receipt/v1` (raw) and
+   `dskit.root-publication-receipt/v2` (roster), because both are members
+   of this resolver's own closed 12-reference set. `_p4_close_admission`
+   itself is not modified and continues to refuse a `/v2` receipt schema
+   exactly as today.
+8. CAPTURED admission for a document captured through this authority still
+   requires the caller to independently drive the ordinary F4
+   produce/seal/publish lifecycle (`start_producer_session` ->
+   `produce`/`seal`/`publish`) on this same dynamic authority instance
+   before calling `authorize_capture_set`, exactly as the legacy authority
+   requires today; this ADR adds no new lifecycle bypass. Run-identity
+   exclusivity (`P4 consumer run must differ from producer run`, `P4
+   execution identity conflict`, `P4 capture cannot reuse a legacy
+   execution run`) is inherited unchanged from `_validate_capture_request`
+   and `commit_p4_batch`, and additionally partitions across the two
+   authority instances only insofar as their ledgers are already separate
+   per-instance objects; no cross-instance run-identity check is added or
+   required by this slice, since the two ledgers already enforce
+   exclusivity independently within their own committed roots.
+9. Constructing the dynamic authority is one-shot per retained graph:
+   `_development_dynamic_p4_broker` spends one new `reserve_uses` row
+   before returning, `kind='dynamic-p4-authority'`, `signed_id` equal to
+   the exact same canonical `{bootstrap_id,authorization_id}` pair text
+   ADR-0141 already uses as its `root-pis` `signed_id`, reusing the
+   existing four-table WAL/FULL schema and `(kind,signed_id)` primary key
+   with no schema change. A second construction attempt for the same
+   signed pair always refuses. This does not by itself limit how many
+   CAPTURED batches the resulting authority instance may commit; that
+   remains gated by the ordinary per-stream/per-document/per-run checks in
+   `_validate_capture_request` and `commit_p4_batch`.
+
+**Closed ADR-0143 construction profile (for Phase 0 to pin or correct).**
+
+- New classes and their exact final markers: `_DynamicP4TrustedArtifactResolver`
+  (`__init_subclass__` raises, private-token `__init__` consuming a
+  dedicated `_P4_PENDING_DYNAMIC_RESOLVER_TOKENS` set, mirroring
+  `_P4_PENDING_RESOLVER_TOKENS`), `_DynamicP4TerminalArtifactVerifier`
+  (`__new__`/`__init_subclass__` both raise, exactly like
+  `_FixedTerminalArtifactVerifier`), `_DynamicP4VerificationClock`,
+  `_DynamicP4VerificationRevocations`. `_development_dynamic_p4_broker`
+  consumes a fresh `_P4_PENDING_DYNAMIC_TOKENS` set mirroring
+  `_P4_PENDING_TOKENS`, never the legacy sets.
+- `root-capture-admission` closed document keys: exactly
+  `schema_version=dskit.root-capture-admission/v1`, `study_id=synthetic-study`,
+  `root_pis_ref` (the closed ref dict), `dataset_g1_ref`, `dataset_g2_ref`,
+  `logical_execution_id`, `run_id`. `cas` and `pce` reuse the existing
+  generic `dskit.capture-admission-set/v1`/`dskit.planned-capture-entry/v1`
+  field shapes already consumed by `_FixedCapturedAuthorizationContract._prepare`
+  unchanged; only their referenced parent kind changes from
+  `action-execution-admission` to `root-capture-admission`.
+- `_dynamic_p4_close_admission(resolver, snapshot, admission_ref, live_projection)`
+  dependency table: `root-capture-admission` -> `[root_pis_ref, dataset_g1_ref,
+  dataset_g2_ref]`; `cas` -> `[find("pea"...)]` is NOT reused — this chain has
+  no `pea`/`ces`/`bvp`; `cas` depends directly on
+  `find("root-capture-admission", admission["root_capture_admission_sha256"])`
+  and each `pce["planned_entry_sha256"]` must equal
+  `_digest(_hs_canonical_bytes({"root_pis_entry_input_id": <input_id>,
+  "root_pis_contract_sha256": <that entry's contract_sha256>}))` — an exact
+  binding between each planned entry and one specific PIS entry, refusing
+  an alias or swapped entry. This full shape is a Phase 0 deliverable, not
+  frozen here; it is sized only to make the chain minimal and reviewable.
+- Reserve reuse: no change to `_SYNTHETIC_RESERVE_SCHEMA`. The new
+  `kind='dynamic-p4-authority'` row's `authorization_sha256` column holds
+  `_digest(signed_id.encode("ascii"))`, `g1_sha256`/`g2_sha256` hold the
+  same canonical `[bootstrap_G1_digest,dataset_G1_digest]`/`[...G2...]`
+  pairs ADR-0141's `root-pis` row already stores for the identical
+  `signed_id`, and `intent_sha256` hashes a closed
+  `dskit.dynamic-p4-authority-construction-intent/v1` document naming the
+  graph's 12 reference digests in the graph's own sorted order. Its only
+  transition is `RESERVED -> ISSUED` under one `BEGIN IMMEDIATE`, mirroring
+  ADR-0141's root-PIS row exactly; a failed or ambiguous commit may only
+  become `QUARANTINED` and never grants a second construction.
+- `_P4_LOCAL_PUBLIC_KEYS` gains no new key; the dynamic terminal verifier
+  reuses exactly the eight already-pinned original signer keys plus
+  `data-publisher/published-input-set-g1-g2`, all already authenticated by
+  ADR-0141/0142's own proof chain before this resolver ever exposes bytes.
+
+**Process.** Proposal only. This ADR has not had independent preapproval
+review, Phase 0, RED, GREEN, or any test run. Per `docs/skills/skeptic-review.md`,
+because this slice crosses a trust boundary (it is the first P4-capable,
+effecting authority built on the dynamic two-root graph) it requires a
+full Phase 0 skeptic pass — inventorying alias/subclass/mutation,
+expiry/revocation, identity/path substitution, partial-failure/crash/
+concurrency and every public facade — before any RED. Independent
+preapproval review, then owner ADR approval, must both complete before
+Phase 0 begins; Phase 0 must complete with zero Critical/Major before RED.
+
+**Non-goals.** Full EventEnvelope.v2 causality/ordering/provenance/
+correction semantics; composed-tape verification; reuse or extension of
+the fixed `scope-intent`/`gate-evidence`/`scope-authorization`/
+`stage-admission` historical-study apparatus for the dynamic domain;
+Packet 8 durable consume-once; deployment; any edit to the fixed P4
+corpus, its 500-ms clock, `_FixedWormTrustedArtifactResolver`,
+`_FixedTerminalArtifactVerifier`, or `_p4_close_admission`'s v1-only
+grammar, all of which must continue to refuse these dynamic v2/graph
+roots unchanged.

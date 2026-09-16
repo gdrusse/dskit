@@ -1,0 +1,20 @@
+{
+  "schema_version": "AdrProposal.v1",
+  "slice_id": "F5a / P7 slice 3 / same-domain dynamic P4 capture authority",
+  "base_main": "1decd2d812faaf2485587ce8a2421585f4f7a7c8",
+  "worktree": "/home/russell/wt/f5a-p7-remainder-20260916",
+  "branch": "codex/f5a-p7-remainder-20260916",
+  "adr": "ADR-0143 - same-domain dynamic P4 capture authority",
+  "proposal": "Adds a second, one-shot instance of the existing final _SyntheticP4CapturedAuthorizationAuthority class (unchanged, not subclassed) bound to a new _DynamicP4TrustedArtifactResolver constructed only from a retained ADR-0141 _SyntheticRootPisIssuer.graph() (ADR-0142 NonAuthorizingDynamicRootGraph). The resolver re-derives and re-proves the ADR-0141 signed two-root PIS and the ADR-0142 12-artifact graph snapshot/resolve vector on every snapshot()/resolve() call inside the existing commit_p4_batch locked critical section, using the shared reserve_meta now_ms clock and live revocation snapshot (not the fixed 500-ms clock or fixed revocation digest). The shared _p4_require_issued_authority/_p4_snapshot_integrity identity gates are extended from a single hardcoded resolver type to a closed two-member table so the legacy fixed authority/resolver pairing stays byte-identical and structurally cannot observe dynamic-graph bytes. A new, narrowly-scoped root-capture-admission/cas/pce chain, sized to exactly the two PIS entries, is proposed via a new _dynamic_p4_close_admission closure walk that is never called by and never edits the existing v1-only _p4_close_admission.",
+  "scope": "Design proposal only: new resolver/terminal-verifier/clock/revocation classes, a second same-class P4 authority instance, an extended (not replaced) identity-gate dispatch table, one new reserve_uses kind ('dynamic-p4-authority') on the unchanged 4-table WAL/FULL schema, and a new minimal admission-chain schema (dskit.root-capture-admission/v1) plus its own closure-walk function. No production code, tests, or fixtures were written or edited in this call.",
+  "non_goals": "Full EventEnvelope.v2 causality/ordering/provenance/correction semantics; composed-tape verification; reuse or extension of the fixed scope-intent/gate-evidence/scope-authorization/stage-admission historical-study apparatus for the dynamic domain; Packet 8 durable consume-once; deployment; any edit to the fixed P4 corpus, its 500-ms clock, _FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, or _p4_close_admission's v1-only grammar.",
+  "open_questions_for_reviewer": [
+    "commit_p4_batch's inherited _FixedP4Signer/_P4_VERIFICATION captured-port/receipt/set signing infrastructure and its issued_at_ms=500/expires_at_ms=1000 decision-receipt stamps are proposed as shared, unedited nondeployment fixture metadata for both the legacy and dynamic authority instances, since the real temporal gate lives in the resolver's own fresh graph re-proof. Reviewer should confirm this reading is acceptable or require a live-clock-stamped decision receipt for the dynamic path instead.",
+    "the exact root-capture-admission/cas/pce document shapes and the full _dynamic_p4_close_admission dependency table are sketched but explicitly left for Phase 0 to pin or correct, consistent with how ADR-0135/0136/0138 left comparable wiring to Phase 0.",
+    "whether a one-use spend on dynamic authority construction (proposed reserve kind='dynamic-p4-authority') is the right granularity, versus also rate-limiting or scoping individual CAPTURED batches beyond the existing per-stream/per-document/per-run checks already inherited from _validate_capture_request/commit_p4_batch."
+  ],
+  "deployment_eligible": false,
+  "tests_run": "none; design review",
+  "code_changed": "none; docs/architecture/decision-log.md and this evidence file only",
+  "gate": "Proposal only. Independent preapproval review and owner ADR approval required before Phase 0. Phase 0 (required for this trust-boundary-crossing, effecting-capability slice per docs/skills/skeptic-review.md) must complete with zero Critical/Major before RED. No RED/GREEN, no two-final-lens review, and no merge to main have occurred."
+}
