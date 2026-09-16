@@ -6685,7 +6685,7 @@ class NonAuthorizingRosterRootProof:
         return value
 
     def verify(self, authorization_bytes, g1_grant_bytes, g2_grant_bytes,
-               basis_bytes, receipt_bytes):
+               basis_bytes, receipt_bytes, _under_writer_lock=False):
         """Return immutable identity facts; never an F4/raw/P4 permit."""
         _hs_refuse(
             all(type(raw) is bytes for raw in (
@@ -6728,7 +6728,11 @@ class NonAuthorizingRosterRootProof:
         reserve._check()
         connection = reserve._connection
         try:
-            connection.execute("BEGIN")
+            if _under_writer_lock:
+                _hs_refuse(connection.in_transaction,
+                           "raw writer transaction required")
+            else:
+                connection.execute("BEGIN")
             generation, revoked, snapshot = reserve._snapshot()
             now = _FixedP4VerificationClock.now_ms(
                 _P4_VERIFICATION._clock
@@ -6780,9 +6784,10 @@ class NonAuthorizingRosterRootProof:
                 ),
                 "complete roster reservation audit required",
             )
-            connection.execute("COMMIT")
+            if not _under_writer_lock:
+                connection.execute("COMMIT")
         except Exception:
-            if connection.in_transaction:
+            if not _under_writer_lock and connection.in_transaction:
                 connection.execute("ROLLBACK")
             raise
         _hs_refuse(
@@ -6897,3 +6902,354 @@ class NonAuthorizingRosterRootProof:
             "authorizing": False,
             "deployment_eligible": False,
         })
+
+
+_SYNTHETIC_EMPTY_CORRECTION_METADATA = _hs_canonical_bytes({
+    "corrections": [],
+    "schema_version": "dskit.correction-bust-metadata/v1",
+})
+_SYNTHETIC_RAW_EVENT_KEYS = frozenset({
+    "schema_version", "source_id", "event_id", "source_sequence",
+    "availability_ms", "payload_sha256",
+})
+
+
+class _SyntheticFixtureSource:
+    """Trusted host-installed synthetic source; lookup only on admitted read."""
+
+    __slots__ = ("_members", "_read_names")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("the synthetic fixture source is final")
+
+    def __init__(self, members):
+        _hs_refuse(type(members) is dict, "host-owned fixture mapping required")
+        self._members = members
+        self._read_names = []
+
+    @property
+    def read_names(self):
+        return tuple(self._read_names)
+
+    def _read(self, member_name):
+        self._read_names.append(member_name)
+        try:
+            value = self._members[member_name]
+        except KeyError as exc:
+            raise ValueError("signed fixture member missing") from exc
+        _hs_refuse(type(value) is bytes, "fixture source must return bytes")
+        return value
+
+
+class VerifiedSyntheticDatasetFixture:
+    """Opaque one-process validated fixture facts, without publication authority."""
+
+    __slots__ = ("_owner", "_intent", "_members", "_events",
+                 "event_count", "member_names", "deployment_eligible", "_locked")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("the validated synthetic fixture is final")
+
+    def __init__(self, token, owner, intent, members, events):
+        if token is not _MAKE or type(owner) is not _SyntheticRawPreflight:
+            raise TypeError("broker-issued synthetic fixture required")
+        object.__setattr__(self, "_owner", owner)
+        object.__setattr__(self, "_intent", intent)
+        object.__setattr__(self, "_members", members)
+        object.__setattr__(self, "_events", events)
+        object.__setattr__(self, "event_count", len(events))
+        object.__setattr__(self, "member_names", tuple(name for name, _ in members))
+        object.__setattr__(self, "deployment_eligible", False)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise AttributeError("validated synthetic fixture is frozen")
+        object.__setattr__(self, name, value)
+
+
+class _SyntheticRawPreflight:
+    """Verify signed raw bytes after a durable one-use read admission."""
+
+    __slots__ = ("_publisher", "_source", "_closed")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("the synthetic raw preflight is final")
+
+    def __init__(self, publisher, source):
+        _hs_refuse(type(publisher) is _SyntheticRosterPublisher
+                   and type(source) is _SyntheticFixtureSource,
+                   "trusted roster publisher and fixture source required")
+        self._publisher = publisher
+        self._source = source
+        self._closed = False
+
+    @staticmethod
+    def _attestation(raw, authorization, authorization_sha256,
+                     snapshot, revoked, now):
+        value = _hs_parse_canonical(raw)
+        _hs_refuse(type(value) is dict
+                   and set(value) == _SYNTHETIC_FIXTURE_KEYS
+                   and value["schema_version"]
+                   == "dskit.synthetic-dataset-fixture-attestation/v1"
+                   and value["issuer_key_id"] == _SYNTHETIC_FIXTURE_KEY_ID
+                   and value["authorization_sha256"] == authorization_sha256
+                   and value["revocation_snapshot_sha256"] == snapshot,
+                   "signed fixture identity refused")
+        _hs_refuse(
+            all(type(value[name]) is int
+                and value[name] == authorization[name]
+                for name in ("issued_at_ms", "not_before_ms", "expires_at_ms"))
+            and authorization["not_before_ms"] <= now
+            < authorization["expires_at_ms"]
+            and not {
+                "G2-fixture", _SYNTHETIC_FIXTURE_KEY_ID,
+                authorization["authorization_id"],
+            } & revoked,
+            "signed fixture authority refused",
+        )
+        members = value["ordered_members"]
+        sources = authorization["source_ids"]
+        _hs_refuse(type(members) is list and len(members) == len(sources),
+                   "signed fixture source count refused")
+        names = set()
+        for index, member in enumerate(members):
+            _hs_refuse(
+                type(member) is dict
+                and set(member) == _SYNTHETIC_FIXTURE_MEMBER_KEYS
+                and type(member["member_name"]) is str
+                and _SYNTHETIC_FIXTURE_MEMBER_NAME.fullmatch(
+                    member["member_name"]) is not None
+                and member["member_name"] not in names
+                and member["source_id"] == sources[index]
+                and type(member["byte_length"]) is int
+                and member["byte_length"] >= 0,
+                "signed fixture member refused",
+            )
+            names.add(member["member_name"])
+            NonAuthorizingSyntheticGrantVerifier._hash(member["sha256"])
+        preimage = _hs_canonical_bytes({
+            key: item for key, item in value.items() if key != "signature"
+        })
+        _p4_verify_ed25519(
+            _SYNTHETIC_FIXTURE_PUBLIC_KEY, preimage, value["signature"],
+        )
+        return members
+
+    def _derive_intent(self, signed, roster, snapshot, revoked, now):
+        authorization_bytes, g1, g2, attestation_bytes = signed
+        bootstrap_bytes, bg1, bg2, basis_bytes, receipt_bytes = roster
+        authorization = _hs_parse_canonical(authorization_bytes)
+        verifier = NonAuthorizingSyntheticGrantVerifier
+        verifier._authorization(authorization)
+        auth_sha256 = _digest(authorization_bytes)
+        _hs_refuse(
+            authorization["source_ids"]
+            and authorization["not_before_ms"] <= now
+            < authorization["expires_at_ms"]
+            and authorization["authorization_id"] not in revoked,
+            "raw authorization time or revocation refused",
+        )
+        verifier._grant(g1, "G1", authorization, auth_sha256,
+                        snapshot, revoked, now)
+        verifier._grant(g2, "G2", authorization, auth_sha256,
+                        snapshot, revoked, now)
+        members = self._attestation(
+            attestation_bytes, authorization, auth_sha256,
+            snapshot, revoked, now,
+        )
+        bootstrap, policy_sha256 = (
+            NonAuthorizingRosterBootstrapVerifier._authorization(bootstrap_bytes)
+        )
+        bootstrap_sha256 = _digest(bootstrap_bytes)
+        _hs_refuse(
+            bootstrap["not_before_ms"] <= authorization["not_before_ms"]
+            and authorization["expires_at_ms"] <= bootstrap["expires_at_ms"]
+            and bootstrap["not_before_ms"] <= now < bootstrap["expires_at_ms"]
+            and bootstrap["bootstrap_id"] not in revoked,
+            "raw bootstrap window refused",
+        )
+        bverifier = NonAuthorizingRosterBootstrapVerifier
+        bverifier._grant(bg1, "G1", bootstrap, bootstrap_sha256,
+                         snapshot, revoked, now)
+        bverifier._grant(bg2, "G2", bootstrap, bootstrap_sha256,
+                         snapshot, revoked, now)
+        facts = self._publisher.proof().verify(
+            bootstrap_bytes, bg1, bg2, basis_bytes, receipt_bytes,
+            _under_writer_lock=True,
+        )
+        _hs_refuse(
+            all(authorization[name] == bootstrap[name] for name in (
+                "source_ids", "scope", "license_digests",
+                "event_schema", "media_type",
+            ))
+            and authorization["source_roster_root_sha256"]
+            == facts["roster_root_sha256"]
+            and authorization["source_roster_publication_receipt_sha256"]
+            == facts["roster_publication_receipt_sha256"]
+            and authorization["source_roster_policy_sha256"]
+            == facts["source_rank_policy_sha256"] == policy_sha256
+            and authorization["correction_bust_metadata_sha256"]
+            == _digest(_SYNTHETIC_EMPTY_CORRECTION_METADATA),
+            "post-roster raw equality refused",
+        )
+        intent = {
+            "schema_version": "dskit.synthetic-raw-read-intent/v1",
+            "authorization_id": authorization["authorization_id"],
+            "dataset_authorization_sha256": auth_sha256,
+            "dataset_g1_sha256": _digest(g1),
+            "dataset_g2_sha256": _digest(g2),
+            "fixture_attestation_sha256": _digest(attestation_bytes),
+            "ordered_members": members,
+            "bootstrap_id": bootstrap["bootstrap_id"],
+            "bootstrap_authorization_sha256": bootstrap_sha256,
+            "bootstrap_g1_sha256": _digest(bg1),
+            "bootstrap_g2_sha256": _digest(bg2),
+            "roster_basis_sha256": _digest(basis_bytes),
+            "roster_receipt_sha256": _digest(receipt_bytes),
+            "roster_root_sha256": facts["roster_root_sha256"],
+            "source_rank_policy_sha256": policy_sha256,
+        }
+        return authorization, _hs_canonical_bytes(intent)
+
+    def _transition(self, signed, roster, prior_intent=None):
+        reserve = self._publisher._reserve
+        reserve._check()
+        connection = reserve._connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            reserve._check()
+            generation, revoked, snapshot = reserve._snapshot()
+            now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+            authorization, intent = self._derive_intent(
+                signed, roster, snapshot, revoked, now,
+            )
+            signed_id = authorization["authorization_id"]
+            auth_sha = _digest(signed[0])
+            g1_sha, g2_sha = _digest(signed[1]), _digest(signed[2])
+            intent_sha = _digest(intent)
+            if prior_intent is None:
+                connection.execute(
+                    "INSERT INTO reserve_uses VALUES (?,?,?,?,?,?,?,?)",
+                    ("raw-dataset", signed_id, auth_sha, g1_sha, g2_sha,
+                     snapshot, intent_sha, "RESERVED"),
+                )
+                old_state, new_state = None, "RESERVED"
+            else:
+                _hs_refuse(intent == prior_intent,
+                           "raw read intent changed")
+                row = connection.execute(
+                    "SELECT authorization_sha256,g1_sha256,g2_sha256,"
+                    "snapshot_sha256,intent_sha256,state FROM reserve_uses "
+                    "WHERE kind=? AND signed_id=?",
+                    ("raw-dataset", signed_id),
+                ).fetchone()
+                _hs_refuse(
+                    row == (auth_sha, g1_sha, g2_sha, snapshot,
+                            intent_sha, "RESERVED"),
+                    "raw read reservation changed",
+                )
+                result = connection.execute(
+                    "UPDATE reserve_uses SET state='RAW_READ_STARTED' "
+                    "WHERE kind='raw-dataset' AND signed_id=? "
+                    "AND state='RESERVED'",
+                    (signed_id,),
+                )
+                _hs_refuse(result.rowcount == 1,
+                           "raw read admission lost state")
+                old_state, new_state = "RESERVED", "RAW_READ_STARTED"
+            connection.execute(
+                "INSERT INTO reserve_audit "
+                "(kind,signed_id,old_state,new_state,generation) "
+                "VALUES (?,?,?,?,?)",
+                ("raw-dataset", signed_id, old_state, new_state, generation),
+            )
+            final_now = _FixedP4VerificationClock.now_ms(
+                _P4_VERIFICATION._clock
+            )
+            _hs_refuse(
+                authorization["not_before_ms"] <= final_now
+                < authorization["expires_at_ms"],
+                "raw authority expired before commit",
+            )
+            connection.execute("COMMIT")
+            return authorization, intent
+        except sqlite3.IntegrityError as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise ValueError("signed raw authorization ID already spent") from exc
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+    @staticmethod
+    def _parse_member(raw, member, scope, seen):
+        _hs_refuse(len(raw) == member["byte_length"]
+                   and _digest(raw) == member["sha256"],
+                   "signed fixture bytes mismatch")
+        if not raw:
+            return ()
+        _hs_refuse(raw.endswith(b"\n"), "raw NDJSON LF required")
+        events = []
+        for line in raw[:-1].split(b"\n"):
+            _hs_refuse(bool(line), "empty raw NDJSON line refused")
+            event = _hs_parse_canonical(line)
+            _hs_refuse(
+                type(event) is dict
+                and set(event) == _SYNTHETIC_RAW_EVENT_KEYS
+                and event["schema_version"] == "dskit.raw-event/v1"
+                and event["source_id"] == member["source_id"]
+                and type(event["event_id"]) is str
+                and bool(event["event_id"])
+                and type(event["source_sequence"]) is int
+                and event["source_sequence"] >= 0
+                and type(event["availability_ms"]) is int
+                and scope["availability_start_ms"]
+                <= event["availability_ms"]
+                <= scope["availability_end_ms"],
+                "closed raw event refused",
+            )
+            NonAuthorizingSyntheticGrantVerifier._hash(
+                event["payload_sha256"],
+            )
+            _hs_refuse(event["event_id"] not in seen,
+                       "duplicate raw event ID refused")
+            seen.add(event["event_id"])
+            events.append(MappingProxyType(event))
+        return tuple(events)
+
+    def verify(self, authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+               attestation_bytes, bootstrap_bytes, bg1, bg2,
+               basis_bytes, receipt_bytes):
+        """Spend signed ID, admit read, then inspect each signed member once."""
+        _hs_refuse(not self._closed, "raw preflight terminalized")
+        signed = (authorization_bytes, g1_grant_bytes,
+                  g2_grant_bytes, attestation_bytes)
+        roster = (bootstrap_bytes, bg1, bg2, basis_bytes, receipt_bytes)
+        try:
+            authorization, intent = self._transition(signed, roster)
+            authorization, confirmed = self._transition(
+                signed, roster, prior_intent=intent,
+            )
+            _hs_refuse(confirmed == intent, "raw read intent changed")
+            members = _hs_parse_canonical(intent)["ordered_members"]
+            seen = set()
+            retained = []
+            events = []
+            for member in members:
+                name = member["member_name"]
+                raw = self._source._read(name)
+                retained.append((name, raw))
+                events.extend(self._parse_member(
+                    raw, member, authorization["scope"], seen,
+                ))
+            _hs_refuse(authorization["allow_empty_capture"] or events,
+                       "nonempty raw capture required")
+            self._closed = True
+            return VerifiedSyntheticDatasetFixture(
+                _MAKE, self, intent, tuple(retained), tuple(events),
+            )
+        except Exception:
+            self._closed = True
+            raise

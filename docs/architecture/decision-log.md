@@ -9384,9 +9384,11 @@ R1 execution, deployment or a second planner/ledger.
 
 ## ADR-0132 - independent synthetic grant and fixture preflight
 
-**Status:** accepted (2026-09-16; owner replied "Approve"), but RED is
-blocked by two fresh Phase 0 authority/provenance Majors (evidence 0179).
-ADR-0131 remains a blocked draft, not implementation authority.
+**Status:** accepted (2026-09-16; owner replied "Approve"); the 2026-09-16
+reentry Phase 0 found the earlier two authority/provenance Majors closed by
+ADR-0134/0135/0136/0137/0138. The exact raw-intent and lazy-reader contract
+below resolves its remaining design Major; fresh independent Phase 0 is
+required before effecting RED. ADR-0131 remains a blocked draft.
 
 **Context.** Convergence checkpoint 0179 found repeated grant-mint and
 pre-effect gaps. The owner delegated the scope choice: preserve the master
@@ -9425,9 +9427,9 @@ deployment remain open.
    output_member, verifies SourceRosterCapture.v1 canonical bytes and
    policy, then checks full ordered source universe, scope,
    provenance, roster root/publication/policy equality.
-4. Under one broker lock, after grant and roster checks but before
-   the first candidate raw member inspection, authorization_id is
-   atomically spent across every grant pair. A failed subsequent read
+4. Under the ADR-0136 shared durable SQLite writer transaction, after
+   grant and roster checks but before the first candidate raw member
+   inspection, authorization_id is atomically spent across every grant pair. A failed subsequent read
    or validation leaves it spent. Before any raw F4 session, root or
    receipt, preflight then validates the complete member roster and
    media. Each raw member is canonical ASCII NDJSON: every line ends
@@ -9453,6 +9455,43 @@ deployment remain open.
    recheck live expiry/revocation/bytes before F4 effects. A later
    P4 data-broker slice independently verifies captured raw+roster
    bytes. Both require separate ADRs and reviews.
+
+6. The raw reservation intent is exact canonical ASCII JSON with only
+   these closed fields: schema_version=dskit.synthetic-raw-read-intent/v1,
+   authorization_id, dataset_authorization_sha256, dataset_g1_sha256,
+   dataset_g2_sha256, fixture_attestation_sha256, ordered_members,
+   bootstrap_id, bootstrap_authorization_sha256, bootstrap_g1_sha256,
+   bootstrap_g2_sha256, roster_basis_sha256, roster_receipt_sha256,
+   roster_root_sha256, source_rank_policy_sha256. ordered_members is the
+   exact ordered list of signed ADR-0134 member commitment objects, each
+   with member_name, source_id, byte_length, sha256. The broker derives
+   every field from the original signed inputs and live retained roster;
+   no caller intent, digest, member list, path, root or receipt is
+   accepted. The canonical intent bytes and SHA-256 are rederived under
+   the ADR-0136 writer lock at both reserve and RAW_READ_STARTED and the
+   whole bytes are compared with the broker-retained intent. The shared
+   row stores its digest; no digest-only caller API can choose a preimage.
+   The roster proof's root digest is derived from the exact retained
+   receipt root_ref/root_id/snapshot_version/member_manifest_sha256.
+   Post-roster equality compares source_ids, scope/provenance, license
+   digests, schema, media and contained time window, plus the live
+   roster root, receipt and policy digests.
+7. The trusted host installs one construction-owned synthetic fixture
+   source before any request. The broker retains its handle without
+   enumerating names, looking up members, reading bytes, or computing
+   length/digest. The source offers only a broker-private read of a
+   signed member name; request bytes cannot select a source, provider,
+   path or alternate reader. The broker first commits the one-use
+   RESERVED row, then commits RAW_READ_STARTED under a fresh shared
+   authority, original-signature, live-roster and exact-intent check.
+   Only after the successful read-admission COMMIT may it call the
+   source, in signed order, once per member. It reads no extra name and
+   never retries a failed read. Every result must be exact bytes
+   matching its signed length/digest before parsing. The fixture source
+   is host-owned and nondeployment; external acquisition remains out of
+   scope. The no-correction fixture uses exact canonical empty metadata
+   bytes {"corrections":[],"schema_version":"dskit.correction-bust-metadata/v1"};
+   the signed correction_bust_metadata_sha256 must match their digest.
 
 **Sequence.** Owner approval, fresh independent Phase 0, focused
 synthetic RED/GREEN in existing files, two final lenses and integration.

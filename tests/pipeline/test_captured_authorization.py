@@ -3691,3 +3691,211 @@ def test_adr137_roster_proof_refuses_shared_revocation_and_restart(
     assert production_verifier.NonAuthorizingRosterRootProof is (
         trust.NonAuthorizingRosterRootProof
     )
+
+
+def _adr132_raw_case(tmp_path, member_a=None):
+    """Offline signed raw fixture anchored to a live synthetic roster."""
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    bootstrap, bg1, bg2, _ = _synthetic_roster_bootstrap_fixture()
+    _roster, basis, receipt = publisher.publish(bootstrap, bg1, bg2)
+    receipt_value = json.loads(receipt)
+    if member_a is None:
+        member_a = f4._json_bytes({
+            "schema_version": "dskit.raw-event/v1",
+            "source_id": "src:A", "event_id": "event-a",
+            "source_sequence": 0, "availability_ms": 500,
+            "payload_sha256": "a" * 64,
+        }) + b"\n"
+    members = {"fixture_A.ndjson": member_a, "fixture_B.ndjson": b""}
+    empty_meta = f4._json_bytes({
+        "corrections": [],
+        "schema_version": "dskit.correction-bust-metadata/v1",
+    })
+    auth = json.loads(bootstrap)
+    authorization = {
+        "schema_version": "dskit.dataset-capture-authorization/v1",
+        "authorization_id": "raw-authorization-1",
+        "source_ids": auth["source_ids"],
+        "scope": auth["scope"],
+        "license_digests": auth["license_digests"],
+        "event_schema": auth["event_schema"],
+        "media_type": auth["media_type"],
+        "source_roster_root_sha256": hashlib.sha256(f4._json_bytes({
+            key: receipt_value[key] for key in (
+                "root_ref", "root_id", "snapshot_version",
+                "member_manifest_sha256",
+            )
+        })).hexdigest(),
+        "source_roster_publication_receipt_sha256":
+            receipt_value["root_publication_receipt_sha256"],
+        "source_roster_policy_sha256": auth["source_rank_policy_sha256"],
+        "correction_bust_metadata_sha256": hashlib.sha256(empty_meta).hexdigest(),
+        "allow_empty_capture": False,
+        "issued_at_ms": 100, "not_before_ms": 100, "expires_at_ms": 900,
+    }
+    authorization_bytes = f4._json_bytes(authorization)
+    snapshot = json.loads(bg1)["revocation_snapshot_sha256"]
+    grants = []
+    for role in ("G1", "G2"):
+        grants.append(_resign_synthetic_grant({
+            "schema_version": "dskit.dataset-capture-grant/v1",
+            "role": role,
+            "issuer_key_id": "synthetic-" + role.lower() + "/dataset-capture/v1",
+            "authorization_sha256": hashlib.sha256(authorization_bytes).hexdigest(),
+            "issued_at_ms": 100, "not_before_ms": 100, "expires_at_ms": 900,
+            "revocation_snapshot_sha256": snapshot,
+        }))
+    attestation = _resign_synthetic_fixture_attestation({
+        "schema_version": "dskit.synthetic-dataset-fixture-attestation/v1",
+        "issuer_key_id": "synthetic-g2/dataset-fixture-attestation/v1",
+        "authorization_sha256": hashlib.sha256(authorization_bytes).hexdigest(),
+        "issued_at_ms": 100, "not_before_ms": 100, "expires_at_ms": 900,
+        "revocation_snapshot_sha256": snapshot,
+        "ordered_members": [
+            {
+                "member_name": name, "source_id": source_id,
+                "byte_length": len(members[name]),
+                "sha256": hashlib.sha256(members[name]).hexdigest(),
+            }
+            for name, source_id in (
+                ("fixture_A.ndjson", "src:A"),
+                ("fixture_B.ndjson", "src:B"),
+            )
+        ],
+    })
+    return (path, publisher, (bootstrap, bg1, bg2, basis, receipt),
+            (authorization_bytes, *grants, attestation), members)
+
+
+def test_adr132_raw_preflight_spends_before_signed_order_reads(tmp_path):
+    path, publisher, roster, signed, members = _adr132_raw_case(tmp_path)
+    source = trust._SyntheticFixtureSource(members)
+    preflight = trust._SyntheticRawPreflight(publisher, source)
+    proof = preflight.verify(*signed, *roster)
+    assert proof.event_count == 1
+    assert proof.member_names == ("fixture_A.ndjson", "fixture_B.ndjson")
+    assert source.read_names == proof.member_names
+    assert proof.deployment_eligible is False
+    assert not hasattr(proof, "root")
+    assert not hasattr(proof, "receipt")
+    row = publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone()
+    assert row == ("RAW_READ_STARTED",)
+    with pytest.raises(ValueError):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == proof.member_names
+
+
+def test_adr132_raw_preflight_bad_member_is_spent_without_f4(tmp_path):
+    path, publisher, roster, signed, members = _adr132_raw_case(tmp_path)
+    source = trust._SyntheticFixtureSource({
+        **members, "fixture_A.ndjson": b"wrong\n",
+    })
+    preflight = trust._SyntheticRawPreflight(publisher, source)
+    with pytest.raises(ValueError):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == ("fixture_A.ndjson",)
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RAW_READ_STARTED",)
+    assert not any("synthetic-raw/" in str(key) for key in publisher._broker._storage)
+
+
+def test_adr132_raw_preflight_rejects_bad_roster_before_raw_read(tmp_path):
+    path, publisher, roster, signed, members = _adr132_raw_case(tmp_path)
+    source = trust._SyntheticFixtureSource(members)
+    bad_signed = list(signed)
+    value = json.loads(bad_signed[0])
+    value["source_roster_root_sha256"] = "f" * 64
+    bad_signed[0] = f4._json_bytes(value)
+    preflight = trust._SyntheticRawPreflight(publisher, source)
+    with pytest.raises(ValueError):
+        preflight.verify(*bad_signed, *roster)
+    assert source.read_names == ()
+
+
+@pytest.mark.parametrize("event", [
+    {"schema_version": "dskit.raw-event/v1", "source_id": "src:A",
+     "event_id": "event-a", "source_sequence": True,
+     "availability_ms": 500, "payload_sha256": "a" * 64},
+    {"schema_version": "dskit.raw-event/v1", "source_id": "src:B",
+     "event_id": "event-a", "source_sequence": 0,
+     "availability_ms": 500, "payload_sha256": "a" * 64},
+    {"schema_version": "dskit.raw-event/v1", "source_id": "src:A",
+     "event_id": "event-a", "source_sequence": 0,
+     "availability_ms": 1001, "payload_sha256": "a" * 64},
+    {"schema_version": "dskit.raw-event/v1", "source_id": "src:A",
+     "event_id": "event-a", "source_sequence": 0,
+     "availability_ms": 500, "payload_sha256": "a" * 64, "extra": 1},
+])
+def test_adr132_raw_preflight_refuses_invalid_signed_event(tmp_path, event):
+    member = f4._json_bytes(event) + b"\n"
+    _path, publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, member_a=member,
+    )
+    source = trust._SyntheticFixtureSource(members)
+    with pytest.raises(ValueError):
+        trust._SyntheticRawPreflight(publisher, source).verify(*signed, *roster)
+    assert source.read_names == ("fixture_A.ndjson",)
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RAW_READ_STARTED",)
+
+
+@pytest.mark.parametrize("member", [
+    b"\n",
+    b'{"availability_ms":500}\n',
+    b'{"availability_ms":500}',
+    b"\xff\n",
+])
+def test_adr132_raw_preflight_refuses_noncanonical_ndjson(tmp_path, member):
+    _path, publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, member_a=member,
+    )
+    source = trust._SyntheticFixtureSource(members)
+    with pytest.raises(ValueError):
+        trust._SyntheticRawPreflight(publisher, source).verify(*signed, *roster)
+    assert source.read_names == ("fixture_A.ndjson",)
+
+
+def test_adr132_raw_preflight_second_broker_cannot_spend_same_signed_id(tmp_path):
+    path, publisher, roster, signed, members = _adr132_raw_case(tmp_path)
+    first = trust._SyntheticRawPreflight(
+        publisher, trust._SyntheticFixtureSource(members),
+    )
+    first.verify(*signed, *roster)
+    second_source = trust._SyntheticFixtureSource(members)
+    second = trust._SyntheticRawPreflight(publisher, second_source)
+    with pytest.raises(ValueError):
+        second.verify(*signed, *roster)
+    assert second_source.read_names == ()
+
+
+def test_adr132_raw_preflight_shared_revocation_blocks_read_admission(
+    tmp_path, monkeypatch,
+):
+    path, publisher, roster, signed, members = _adr132_raw_case(tmp_path)
+    source = trust._SyntheticFixtureSource(members)
+    preflight = trust._SyntheticRawPreflight(publisher, source)
+    original = trust._SyntheticRawPreflight._transition
+    calls = 0
+
+    def revoke_between(self, signed_bytes, roster_bytes, prior_intent=None):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            admin = trust._SyntheticAuthorizationReserve(path)
+            admin._revoke("G2-fixture")
+            admin._close()
+        return original(self, signed_bytes, roster_bytes, prior_intent)
+
+    monkeypatch.setattr(trust._SyntheticRawPreflight, "_transition", revoke_between)
+    with pytest.raises(ValueError):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == ()
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RESERVED",)
