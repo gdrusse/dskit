@@ -9523,8 +9523,9 @@ F4/P4 effects, full F1/F2/F3 semantics, P7/Packet8 closure or deployment.
 
 ## ADR-0134 - read-only signed synthetic fixture commitments
 
-**Status:** proposed (2026-09-16); owner approval required before RED. ADR-0133
-is merged; ADR-0132's effecting preflight remains blocked. This decision
+**Status:** accepted (2026-09-16; owner replied "I approve"). Fresh Phase 0
+cleared; this authorizes only the read-only slice. ADR-0133 is merged;
+ADR-0132's effecting preflight remains blocked. This decision
 addresses only signed synthetic data-owner commitment to exact fixture bytes;
 external acquisition/provider origin remains outside this slice.
 

@@ -292,5 +292,19 @@
     "tests_run": "none; design review only",
     "gate": "ADR proposed only. Owner approval required before fresh Phase 0 and RED.",
     "remaining": "Global shared one-use authority, full raw validation/publication, P4 data proof, complete EventEnvelope.v2/P7 and Packet8 are later gates."
+  },
+  "adr0134_owner_decision": "2026-09-16: owner said I approve to ADR-0134, and asked how P7 can close.",
+  "adr0134_phase0": {
+    "reviewer": "/root/adr134_phase0",
+    "candidate": "ADR-0134 at 376fa10 plus the concrete pins below",
+    "result": "0 Critical, 0 Major, 0 Minor, 0 Nit; RED may start",
+    "fixture_key_id": "synthetic-g2/dataset-fixture-attestation/v1",
+    "fixture_public_key_hex": "8514688e8c6ee8224c630a1a76beae880efe2404a2f1302b5f8d9d78ccfbd5a8",
+    "test_seed": "SHA-256 of ASCII dskit.synthetic-dataset-fixture-attestation/G2/v1; runtime public key only",
+    "revocation": "existing canonical dskit.synthetic-dataset-revocations/v1 snapshot over _SYNTHETIC_GRANT_REVOKED; fixture identities G2-fixture, exact key ID, authorization_id; ADR-0133 separately checks G1/G2",
+    "clock": "existing fixed trusted clock, now 500 ms in tests",
+    "matrix": "canonical bytes/duplicates/types, fixed domain/key/signature, grant recheck, auth/time/snapshot/revocation, one-per-source members, facades, alias/subclass/mutation, repeat, no effects",
+    "uncovered": "real key custody/provider origin, shared spend, raw bytes/event semantics, F4/P4 and P7/Packet8",
+    "tests_run": "none; design review"
   }
 }
