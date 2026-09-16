@@ -548,5 +548,23 @@
     "minors": "F4 lifecycle stream has only PRODUCED/SEALED/PUBLISHED while start/end/receipt live in reserve audit; outer receipt map is process-local and proof must byte-compare exact key/value. Read-only freshness can change later and grants no authority.",
     "red_matrix": "Signed original/auth/grants/basis/receipt substitutions; shared revocation/time; exact F4 WORM log/member/root; outer receipt missing/alias; full reserve row/audit sequence; restart without retained token; both public facades and no effecting writes.",
     "deployment_eligible": false
+  },
+  "adr0137_readonly_candidate": {
+    "candidate": "9f43a79ff914f7a9eb96cc36d49c6b9b2f5d13d7",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "dac1405b77d1823d2ee76848fbcd7858c8efde52",
+      "dskit/pipeline/trust.py": "6b98b680e66c9f51fba6363aff8faf1548684f7f",
+      "dskit/production/verifier.py": "e4defd4b0cf0ed03ef1b6a4f5cbc61ebd45dc0ad",
+      "tests/pipeline/test_captured_authorization.py": "8ae8ed1e5cbfbdfb7b9eb6b41f022773f07d943d",
+      "tests/pipeline/test_trust.py": "b8bac8cd2c660e960a54358196e9adfe9ebb0a8e"
+    },
+    "scope": "Read-only construction-owned proof of original dual grants, shared SQLite snapshot/audit, retained F4 WORM root, exact persisted signed roster/v2 receipt/basis. No raw/P4/CAPTURED/effecting permit.",
+    "red": "Positive proof test failed on absent publisher.proof before implementation.",
+    "green": "13 focused ADR-0137 tests and 1369 directly affected authorization/F4/production verifier tests passed; stale exact export-list expectation updated to assert three intentionally constructible read-only verifiers have no effecting methods, all other public types remain opaque. Ruff and diff check passed.",
+    "authority_lens": "/root/adr137_authority_final: 0 Critical, 0 Major, 1 Minor.",
+    "tests_lens": "/root/adr137_tests_final: 0 Critical, 0 Major, 1 Minor; reviewer reran 14 selected proof/public-surface tests.",
+    "minor": "Valid signed-field substitutions and duplicate/wrong-generation audit rows lack direct focused cases; byte substitution cases use noncanonical whitespace, while code compares full expected fields and exact audit sequence. No implementation defect found.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
   }
 }
