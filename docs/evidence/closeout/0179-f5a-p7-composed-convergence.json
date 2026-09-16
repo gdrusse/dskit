@@ -322,5 +322,29 @@
     "scope": "Read-only G2 signed fixture commitments; pipeline class re-exported by production facade; no raw bytes, spent ID or F4/P4 effect",
     "full_suite": "not run per owner testing preference",
     "deployment_eligible": false
+  },
+  "adr0134_final_review": {
+    "candidate_commit": "bfa176c83c7b80966dd987ffaaef596838bc63e3",
+    "reviewed_blobs": {
+      "dskit/pipeline/trust.py": "2bf929161f75723a04438926f3f7ddc6b6104f96",
+      "dskit/production/verifier.py": "d0d88bfe44649fb23ac5e1821d2461f6d3e8e26c",
+      "tests/pipeline/test_captured_authorization.py": "c070cea69eae45610ff8c1cc1ba484355d5e4112",
+      "docs/architecture/decision-log.md": "01076e11d25fdece2dbe80c2ba58deaf228f0348"
+    },
+    "authority_lens": {
+      "reviewer": "/root/adr134_authority_review",
+      "verdict": "0 Critical, 0 Major, 1 Minor",
+      "tested": "31 focused passed; bespoke cross-facade alias, subclass, bytes subtype, grant swap/duplicate and attestation tamper probes passed",
+      "uncovered": "external provenance, real raw bytes, shared spend, downstream F4/P4/P7"
+    },
+    "tests_integration_lens": {
+      "reviewer": "/root/adr134_tests_review",
+      "verdict": "0 Critical, 0 Major, 1 Minor, 0 Nit",
+      "tested": "31 focused and 1088 affected passed; Ruff and git diff --check passed",
+      "uncovered": "real raw/event semantics, atomic spend, F4/P4, P7/Packet8 and provider"
+    },
+    "shared_minor": "Positive signed test fixture claims byte_length=12 while hashed b'fixture-a\\n' is 10 bytes. Read-only verifier cannot inspect raw bytes; fix before raw-byte integration.",
+    "disposition": "Deferred Minor in locked read-only candidate. No effecting authority or raw-byte claim. Two fresh completed lenses found zero unresolved in-scope Critical/Major.",
+    "deployment_eligible": false
   }
 }
