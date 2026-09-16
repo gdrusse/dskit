@@ -1,0 +1,17 @@
+{
+  "schema_version": "OwnerDecision.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2b",
+  "date": "2026-09-16",
+  "owner": "forecast-capital owner / coordinator",
+  "decision_source": "explicit owner choice of option A over option B in the 0164 gate",
+  "supersedes_gate": "docs/evidence/closeout/0164-f5a-f3-multi-consumer-capture-gate.json",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (owner substituted for unavailable Terra)",
+  "decision": "bounded-v2-multi-consumer-capture",
+  "detail": "A single PUBLISHED root may hold one CAPTURED receipt per distinct consumer document/port in the P4 commit_p4_batch model, while remaining one-time CONSUMED per consumer. The legacy v1 linear chain stays single-CAPTURED-per-stream and P4/legacy capture of the same stream stay mutually exclusive.",
+  "effect": "Authorizes drafting ADR-0128 (bounded multi-consumer capture correction to ADR-0127 Decision.2), which requires its own owner approval before RED. No trust.py change is authorized until the ADR is approved.",
+  "preserved_open": ["Packet7 (slice 2b composed-tape seam)", "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b", "origin/cursor/r5-f5a-private-plan-0f39@c489199"],
+  "deployment_eligible": false,
+  "protected_source": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "recorded_at_utc": "2026-09-16T05:00:00.000000+00:00"
+}
