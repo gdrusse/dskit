@@ -1,0 +1,17 @@
+{
+  "schema_version": "OwnerDecision.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2b-composed-tape",
+  "date": "2026-09-16",
+  "owner": "forecast-capital owner / coordinator",
+  "decision_source": "explicit owner choice of option A in the 0176 gate",
+  "supersedes_gate": "docs/evidence/closeout/0176-f5a-f3-composed-tape-architecture-gate.json",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (owner-authorized; may still require restart to load)",
+  "decision": "bounded-p4-member-read-receipt-accessor",
+  "detail": "Add a bounded P4 member-read + CAPTURED-receipt accessor as a new ADR/correction to ADR-0127 Decision.2: after authorize_capture_set, the returned CapturedAuthorizationRecord exposes a one-way session-bound read of a captured publication's retained member bytes and a read-only CAPTURED receipt digest per capture.",
+  "effect": "Authorizes drafting ADR-0129 (bounded P4 member-read + receipt accessor), which requires its own owner approval before RED. No trust.py change is authorized until ADR-0129 is approved.",
+  "preserved_open": ["Packet7 (verification half)", "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b", "origin/cursor/r5-f5a-private-plan-0f39@c489199"],
+  "deployment_eligible": false,
+  "protected_source": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "recorded_at_utc": "2026-09-16T08:00:00.000000+00:00"
+}
