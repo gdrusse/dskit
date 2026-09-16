@@ -2333,12 +2333,13 @@ def _synthetic_fixture_attestation(authorization, g2):
 
     auth = json.loads(authorization)
     grant = json.loads(g2)
+    fixture_a = b"fixture-a\n"
     members = [
         {
             "member_name": "fixture_A.ndjson",
             "source_id": "src:A",
-            "byte_length": 12,
-            "sha256": hashlib.sha256(b"fixture-a\n").hexdigest(),
+            "byte_length": len(fixture_a),
+            "sha256": hashlib.sha256(fixture_a).hexdigest(),
         },
         {
             "member_name": "fixture_B.ndjson",
