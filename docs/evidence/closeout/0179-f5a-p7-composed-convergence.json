@@ -516,5 +516,29 @@
     "effecting_gate": "Current transition takes an arbitrary valid intent digest and returns no capability. Before F4 wiring it must independently rederive the complete ADR-0138 closed intent and bind retained tokens/WORM facts; this candidate is storage-only.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
+  },
+  "adr0138_roster_publisher": {
+    "initial_candidate": "fd8c0a45fdf6328f3a1f8e1e1b2bfe4ad2bc3f02",
+    "initial_lenses": [
+      "/root/adr138_publisher_authority: 0 Critical, 1 Major, 1 Minor",
+      "/root/adr138_publisher_tests: 0 Critical, 1 Major, 2 Minor"
+    ],
+    "major": "Cached F4 _streams could issue a signed v2 receipt after retained lifecycle WORM backing was deleted or corrupted; executable counterexample confirmed.",
+    "correction": "_published_facts reloads/authenticates exact retained F4 stream before post-publish and receipt admission; missing/corrupt backing quarantines. Retains live F4 publication token for ADR-0137; verifies complete signed basis/receipt against frozen preimages.",
+    "reviewed_candidate": "726a794ea3038aedbb824c28606c9fb5e22c557b",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "dac1405b77d1823d2ee76848fbcd7858c8efde52",
+      "dskit/pipeline/trust.py": "aa61296d2020c5a1614355a78cc2a07c469a377f",
+      "tests/pipeline/test_captured_authorization.py": "0cadbdbfe162eb5493921818fd1405d8d3328376"
+    },
+    "red": "Positive publisher test failed on absent class. Two F4 backing-loss regressions failed on initial candidate, then passed after correction.",
+    "green": "21 focused ADR-0138 tests passed; 1355 directly affected authorization/F4/production verifier tests passed with one pre-existing exact __all__ test deselected. Ruff and git diff --check passed.",
+    "baseline_failure": "The one exact __all__ test failure was reproduced on unchanged origin/main 9a783c2 using the same WSL interpreter and test.",
+    "authority_lens": "/root/adr138_publisher_authority_final: 0 Critical, 0 Major, 1 Minor.",
+    "tests_lens": "/root/adr138_publisher_tests_final: 0 Critical, 0 Major, 1 Minor; reviewer reran 21 focused tests.",
+    "minors": "Outer receipt backing is a process-local mutable dict with put-if-absent enforced by the publisher path; explicit per-intermediate-state restart and byte-identical preexisting receipt tests are absent. ADR-0137 must independently compare persisted receipt and live F4 token.",
+    "scope": "Fixed nondeployment synthetic roster publisher only. No raw publication/read, dynamic P4/root-PIS, CAPTURED admission, full F3 tape or Packet8.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
   }
 }
