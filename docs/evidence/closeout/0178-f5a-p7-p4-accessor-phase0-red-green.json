@@ -26,6 +26,40 @@
     "affected_result": "1241 passed in 71.02s",
     "static": "ruff check targeted files and git diff --check passed"
   },
-  "status": "Checkpoint only; no final lenses or integration yet. Full composed P7 and Packet8 remain open; deployment_eligible=false.",
-  "next": "Resolve P7 codec/authority split and parent envelope/policy comparison, then RED/GREEN and two fresh sequential final lenses on a frozen candidate."
+  "status": "ADR-0129 accessor locked for integration. Full composed P7 remains open with two Major design gaps; Packet8 and deployment remain blocked.",
+  "next": "Integrate accessor; resolve P7 codec/authority split and parent envelope/policy comparison before RED on the composed-tape seam.",
+  "candidate_commit": "ae46adb0cbd2c297965fa322c09351125d90e529",
+  "candidate_blobs": {
+    "trust.py": "9f017d2cb2a3af25c37a8d5532d1e92912caa874",
+    "test_captured_authorization.py": "8cfa65d617efc8a5c86092288fae266d869e5517",
+    "decision-log.md": "a104a0ae386f3d0276f1b1da14b80301eeb54057"
+  },
+  "final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "reviewer": "OpenCode deepseek-v4-pro (flash-reviewer CLI fell back because configured as subagent)",
+      "candidate": "ae46adb",
+      "verdict": "0 Critical, 0 Major, 2 Minor",
+      "actual_findings": [
+        "F1 Minor: read-once slot consumed before verification; transient provider failure permanently spends it. ADR single-read licenses fail-closed behavior; provider-raise path untested.",
+        "F2 Minor: _p4_reads plain dict strongly retains each read record for ledger lifetime, defeating weak-reference cleanup; resource-only."
+      ],
+      "falsification": "Foreign valid publication/session, tamper then restore, receipt double-read, path aliases all refused/held; 7 focused tests, 18 pipeline purity tests, Ruff passed.",
+      "untested": "Provider raises, cross-record same-stream/different-document, malformed digest strings, session slot tamper against accessor.",
+      "retrievable_opencode_session_id": "ses_f55f1fef7ffeEtz9W1pXQTb4OT"
+    },
+    {
+      "lens": "tests/integration",
+      "reviewer": "fresh independent Codex subagent; exact model/version not exposed to reviewer (configured OpenCode flash subagent stalled without report and was stopped)",
+      "candidate": "ae46adb",
+      "verdict": "0 Critical, 0 Major, 1 Minor",
+      "actual_findings": [
+        "Minor: new accessor tests omit two distinct consumer documents capturing the same publication through both production facades; existing test checks issuance only. In-memory probe through driver and verifier produced distinct receipts, allowed each record to read both members, and refused all cross-session/document calls."
+      ],
+      "falsification": "Focused, facade, compatibility and fault-stage checks passed (45 tests total).",
+      "untested": "Provider I/O faults, process crash/restart, mutable Python internals outside threat model.",
+      "stalled_flash_attempt_session_id": "ses_f55e99e5affe5dZaF7rUQYcJUz"
+    }
+  ],
+  "candidate_lock": "Code/test/ADR blobs above unchanged after both lenses; zero unresolved in-scope Critical/Major. Three Minors recorded; no code change after lock."
 }
