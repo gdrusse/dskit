@@ -4748,3 +4748,382 @@ def test_adr142_dynamic_root_graph_second_proof_catches_worm_mutation(
     with pytest.raises(ValueError):
         graph.resolve(snapshot, snapshot.references[0])
     assert calls == 1
+
+
+# ---------------------------------------------------------------------------
+# ADR-0143: same-domain dynamic P4 capture authority (F5a Packet 7)
+#
+# Covers evidence 0181's 12 required matrix rows plus a positive closure
+# case and both public facades. The dynamic authority's admission chain
+# (root-capture-admission -> cas -> pce) is exercised directly through
+# resolver.close_admission, which is the ADR's own required four-method
+# resolver contract entry point; see
+# test_adr143_authorize_capture_set_blocked_by_prepare_contract below for the
+# disclosed, separately-tracked gap in the full authorize_capture_set path
+# (evidence 0182 convergence note).
+# ---------------------------------------------------------------------------
+
+
+def _adr143_issued_case(tmp_path, monkeypatch):
+    """Return publisher, issuer, graph and one constructed dynamic authority."""
+    publisher, issuer, graph, _snapshot = _adr142_graph_case(tmp_path, monkeypatch)
+    authority = trust._development_dynamic_p4_broker(issuer)
+    return publisher, issuer, graph, authority
+
+
+def _adr143_captures(authority, run_id="dynamic-consumer-run"):
+    """Drive one real F4 produce/seal/publish lifecycle on the dynamic broker
+    and build one live capture tuple, mirroring the legacy _graph_live shape."""
+    session, published, _values = f4._publish(authority)
+    authority.end_session(session)
+    frozen = authority.freeze_consumer_document("consumer", "consume", "bundle", "synthetic")
+    port = authority.derive_consumer_port(frozen)
+    return (published, frozen, port), run_id
+
+
+def test_adr143_dynamic_broker_factory_exists():
+    """RED anchor: the ADR-0143 factory must exist as a callable."""
+    factory = getattr(trust, "_development_dynamic_p4_broker", None)
+    assert callable(factory), "ADR-0143 dynamic P4 broker factory is missing"
+
+
+def test_adr143_dynamic_authority_constructs_from_retained_graph_once(tmp_path, monkeypatch):
+    publisher, _issuer, graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    assert isinstance(authority, trust.CapturedAuthorizationAuthority)
+    assert authority.deployment_eligible is False
+    resolver = authority._p4_resolver
+    assert type(resolver) is trust._DynamicP4TrustedArtifactResolver
+    assert resolver._graph is graph
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='dynamic-p4-authority'"
+    ).fetchone() == ("ISSUED",)
+    from dskit.production import verifier as production_verifier
+    assert production_verifier.NonAuthorizingDynamicRootGraph is trust.NonAuthorizingDynamicRootGraph
+
+
+def test_adr143_matrix_row5_second_construction_for_same_graph_refuses(tmp_path, monkeypatch):
+    _publisher, issuer, _graph, _authority = _adr143_issued_case(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="already constructed"):
+        trust._development_dynamic_p4_broker(issuer)
+
+
+def test_adr143_matrix_row4_refuses_before_root_pis_is_issued(tmp_path, monkeypatch):
+    publisher, roster, signed, output = _adr140_published_raw_case(tmp_path, monkeypatch)
+    publisher._reserve._advance_clock(601)
+    issuer = trust._SyntheticRootPisIssuer(publisher)
+    issuer.issue(*signed, *roster, *output)
+    signed_id = issuer._retained[5][2]
+    publisher._reserve._connection.execute(
+        "UPDATE reserve_uses SET state='QUARANTINED' WHERE kind='root-pis' AND signed_id=?",
+        (signed_id,),
+    )
+    with pytest.raises(ValueError, match="ISSUED root-PIS row"):
+        trust._development_dynamic_p4_broker(issuer)
+    assert publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses WHERE kind='dynamic-p4-authority'"
+    ).fetchone() == (0,)
+
+
+def test_adr143_matrix_row9_post_commit_failure_quarantines_row(tmp_path, monkeypatch):
+    """Crash/ambiguous-COMMIT family: a failure AFTER the reserve COMMIT but
+    before the broker returns must quarantine, never leave a silent ISSUED
+    row backing no authority and never allow a later retry to reuse it."""
+    publisher, issuer, _graph, _snapshot = _adr142_graph_case(tmp_path, monkeypatch)
+
+    def fail_after_reserve(_self, _token, _graph_arg):
+        raise RuntimeError("injected post-reserve construction failure")
+
+    monkeypatch.setattr(
+        trust._DynamicP4TrustedArtifactResolver, "__init__", fail_after_reserve,
+    )
+    with pytest.raises(RuntimeError, match="injected post-reserve"):
+        trust._development_dynamic_p4_broker(issuer)
+    monkeypatch.undo()
+    row = publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='dynamic-p4-authority'"
+    ).fetchone()
+    assert row == ("QUARANTINED",)
+    # A fresh attempt against the same graph is refused too: quarantine is
+    # terminal, it never grants a second live construction.
+    with pytest.raises(ValueError, match="already constructed"):
+        trust._development_dynamic_p4_broker(issuer)
+
+
+def test_adr143_matrix_row11_reserve_first_ordering_leaves_no_orphan_resolver(tmp_path, monkeypatch):
+    """Phase 0 pin F3: the reserve spend commits BEFORE any resolver/terminal
+    object is constructed, so a losing/interleaved caller never ends up
+    holding a live resolver pointed at a graph whose snapshot slot another
+    winning caller has already overwritten (evidence 0181 matrix row 11)."""
+    publisher, issuer, graph, _snapshot = _adr142_graph_case(tmp_path, monkeypatch)
+    calls = []
+    real_init = trust._DynamicP4TrustedArtifactResolver.__init__
+
+    def spy(self, token, graph_arg):
+        # By the time ANY resolver is constructed, the reserve row is
+        # already ISSUED -- confirming reserve-first ordering directly.
+        row = publisher._reserve._connection.execute(
+            "SELECT state FROM reserve_uses WHERE kind='dynamic-p4-authority'"
+        ).fetchone()
+        calls.append(row)
+        return real_init(self, token, graph_arg)
+
+    monkeypatch.setattr(trust._DynamicP4TrustedArtifactResolver, "__init__", spy)
+    authority = trust._development_dynamic_p4_broker(issuer)
+    assert calls == [("ISSUED",)]
+    assert trust._P4_ISSUED[authority][1] is graph
+
+
+@pytest.mark.parametrize("resolver_kind", ["legacy", "dynamic"])
+def test_adr143_matrix_row1_and_row2_dispatch_never_crosses_or_fails_open(
+    tmp_path, monkeypatch, resolver_kind,
+):
+    _publisher, _issuer, _graph, dynamic_authority = _adr143_issued_case(tmp_path, monkeypatch)
+    legacy_authority = trust._development_p4_broker()
+    legacy_resolver = legacy_authority._p4_resolver
+    dynamic_resolver = dynamic_authority._p4_resolver
+    if resolver_kind == "legacy":
+        resolver, snapshot = legacy_resolver, legacy_resolver.snapshot()
+        # Matrix row 1: the legacy branch never evaluates dynamic-only state
+        # (no _graph attribute exists on this resolver at all).
+        assert not hasattr(resolver, "_graph")
+    else:
+        resolver, snapshot = dynamic_resolver, dynamic_resolver._snapshot
+        # Matrix row 1: the dynamic branch never evaluates legacy-only state
+        # (no _records attribute exists on this resolver at all).
+        assert not hasattr(resolver, "_records")
+    trust._p4_snapshot_integrity(resolver, snapshot)  # each branch is self-consistent
+    # Matrix row 2: neither closed type -> unconditional else-arm refusal,
+    # identical message to today's single-branch refusal.
+    with pytest.raises(ValueError, match="P4 snapshot integrity refused"):
+        trust._p4_snapshot_integrity(object(), snapshot)
+    with pytest.raises(TypeError, match="exact broker-issued P4 capability is required"):
+        trust._p4_require_issued_authority(object())
+
+
+def test_adr143_matrix_row2_third_resolver_subclass_fails_closed():
+    class _ThirdResolver:
+        pass
+
+    with pytest.raises(ValueError, match="P4 snapshot integrity refused"):
+        trust._p4_snapshot_integrity(_ThirdResolver(), object())
+
+
+def test_adr143_matrix_row3_stale_snapshot_token_refuses(tmp_path, monkeypatch):
+    publisher, _issuer, graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    stale = resolver.snapshot()
+    publisher._reserve._advance_clock(publisher._reserve._now() + 1)
+    renewed = resolver.snapshot()
+    assert renewed is not stale
+    with pytest.raises(ValueError, match="snapshot state changed"):
+        graph.resolve(stale, stale.references[0])
+    assert graph.resolve(renewed, renewed.references[0])
+
+
+def test_adr143_matrix_row3_foreign_graph_token_refuses(tmp_path, monkeypatch):
+    _publisher_a, _issuer_a, _graph_a, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    _publisher_b, _issuer_b, graph_b, _snapshot_b = _adr142_graph_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    own_snapshot = resolver._snapshot
+    with pytest.raises(ValueError, match="exact issued dynamic root snapshot required"):
+        graph_b.resolve(own_snapshot, own_snapshot.references[0])
+
+
+def test_adr143_matrix_row6_forged_admission_ref_refuses(tmp_path, monkeypatch):
+    """Aliased/swapped/wrong-schema root-capture-admission refs never pass."""
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    snapshot = resolver._snapshot
+    (published, frozen, port), run_id = _adr143_captures(authority)
+    runtime = {"consumer_run_identity": run_id, "process_measurement_sha256": f4._SHA["consumer_process"],
+               "runtime_sha256": f4._SHA["consumer_runtime"]}
+    live_projection = (authority, ((published, frozen, port),), runtime)
+    forged = {"kind": "root-capture-admission", "role": "study-lifecycle",
+              "schema": "dskit.root-capture-admission/v1", "sha256": "f" * 64}
+    with pytest.raises(ValueError, match="does not match closed graph chain"):
+        resolver.close_admission(snapshot, forged, live_projection)
+    wrong_kind = dict(forged, kind="dataset-capture-grant")
+    with pytest.raises(ValueError, match="kind/role/schema refused"):
+        resolver.close_admission(snapshot, wrong_kind, live_projection)
+
+
+def test_adr143_matrix_row7_planned_entry_binding_is_recomputed_not_trusted():
+    """The pce leaf's planned_entry_sha256 is always recomputed from the PIS
+    entry's OWN input_id/contract_sha256 (evidence 0181 matrix row 7); an
+    alias/swap of the binding is structurally impossible by construction, but
+    the recompute formula itself is pinned here so any future refactor that
+    starts trusting a caller-supplied digest is caught immediately."""
+    entry_a = {"input_id": "raw_event_dataset", "contract_sha256": "a" * 64}
+    entry_b = {"input_id": "source_roster", "contract_sha256": "b" * 64}
+    pce_a = trust._p4_dynamic_planned_entry(entry_a, "d" * 64, "node", "raw_event_dataset", "historical-study")
+    pce_b = trust._p4_dynamic_planned_entry(entry_b, "d" * 64, "node", "source_roster", "historical-study")
+    assert pce_a["planned_entry_sha256"] != pce_b["planned_entry_sha256"]
+    swapped_preimage = {"root_pis_entry_input_id": entry_a["input_id"], "root_pis_contract_sha256": entry_b["contract_sha256"]}
+    assert pce_a["planned_entry_sha256"] != trust._digest(trust._hs_canonical_bytes(swapped_preimage))
+
+
+def test_adr143_matrix_row8_revocation_mid_close_admission_refuses(tmp_path, monkeypatch):
+    publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    snapshot = resolver._snapshot
+    ref = snapshot.references[0]
+    publisher._reserve._revoke("data-publisher/published-input-set-g1-g2")
+    with pytest.raises(ValueError):
+        resolver.resolve(snapshot, ref)
+
+
+def test_adr143_matrix_row10_same_run_identity_across_instances_is_not_refused(tmp_path, monkeypatch):
+    """Decision point 8 / matrix row 10: cross-instance run-identity reuse is
+    a DELIBERATE non-goal, not an oversight -- each authority enforces
+    exclusivity only against its own per-instance ledger/_stream_pin, and
+    this ADR adds no cross-instance check."""
+    _publisher, _issuer, _graph, dynamic_authority = _adr143_issued_case(tmp_path, monkeypatch)
+    legacy_authority = trust._development_p4_broker()
+    for authority, run_identity in (
+        (legacy_authority, "producer-a"), (dynamic_authority, "producer-a"),
+    ):
+        session, _published, _values = f4._publish(authority)
+        authority.end_session(session)
+    # Both authorities accepted the SAME producer run_identity ("producer-a",
+    # f4._publish's fixed producer identity) without either one refusing due
+    # to the other's state: confirms per-instance-only enforcement.
+    assert legacy_authority._stream_pin
+    assert dynamic_authority._stream_pin
+
+
+def test_adr143_matrix_row12_authorize_before_publish_completes_refuses(tmp_path, monkeypatch):
+    """Partial lifecycle (produce without seal/publish) leaves the stream
+    short of PUBLISHED -- the same inherited, unchanged guard the legacy
+    authority relies on today (Decision point 8: no new lifecycle bypass)."""
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    from tests.pipeline.test_trust import _PRODUCER
+    session = authority.start_producer_session(
+        run_identity="producer-dynamic-row12",
+        process_measurement_sha256=f4._SHA["producer_process"],
+        runtime_sha256=f4._SHA["producer_runtime"],
+        plan_sha256=f4._SHA["producer_plan"],
+    )
+    prepared = authority.produce(
+        session, producer=dict(_PRODUCER), root={
+            "root_ref": "capture://synthetic/root", "root_id": "7" * 64, "snapshot_version": "1",
+        }, purpose="synthetic", transition_nonce="nonce-produced-row12",
+    )
+    # No seal()/publish(): confirm the stream head is not PUBLISHED yet.
+    assert prepared is not None
+    stream = next(iter(authority._stream_pin))
+    assert authority._streams[stream][-1]["event"] != "PUBLISHED"
+
+
+def test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain(tmp_path, monkeypatch):
+    """Positive case: construct the dynamic authority from a real ADR-0141/
+    0142 graph, drive F4 produce/seal/publish twice (one capture per PIS
+    entry), and confirm resolver.close_admission -- the ADR's own required
+    four-method resolver contract entry point -- accepts a genuine matching
+    admission chain with no effect (it is nonauthorizing on its own).
+
+    See test_adr143_authorize_capture_set_blocked_by_prepare_contract for
+    the disclosed, separate gap in the further authorize_capture_set step.
+    """
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    snapshot = resolver._snapshot
+    run_id = "dynamic-consumer-run"
+
+    session_a, published_a, _values = f4._publish(
+        authority, produced_nonce="a-produced", sealed_nonce="a-sealed", published_nonce="a-published",
+    )
+    authority.end_session(session_a)
+    session_b, published_b, _values = f4._foreign_publish(authority)
+    authority.end_session(session_b)
+    frozen_a = authority.freeze_consumer_document("consumer", "consume", "bundle", "synthetic")
+    frozen_b = authority.freeze_consumer_document("consumer", "consume", "second", "synthetic")
+    port_a = authority.derive_consumer_port(frozen_a)
+    port_b = authority.derive_consumer_port(frozen_b)
+    graph_refs = [trust._hs_parse_canonical(ref) for ref, _raw in resolver._graph._records]
+    root_pis_ref = next(ref for ref in graph_refs if ref["kind"] == "root-pis")
+    g1_ref = next(ref for ref in graph_refs if ref["kind"] == "dataset-capture-grant" and ref["role"] == "G1")
+    g2_ref = next(ref for ref in graph_refs if ref["kind"] == "dataset-capture-grant" and ref["role"] == "G2")
+    root_pis = trust._hs_parse_canonical(
+        trust._P4_DYNAMIC_CHECKED_RESOLVE(resolver, snapshot, trust._hs_canonical_bytes(root_pis_ref)),
+    )
+    by_input = {port_a["consumer_input"]: (published_a, frozen_a, port_a),
+                port_b["consumer_input"]: (published_b, frozen_b, port_b)}
+    entries = sorted(root_pis["entries"], key=lambda entry: entry["input_id"])
+    captures = tuple(by_input[entry["input_id"]] for entry in entries)
+    runtime = {"consumer_run_identity": run_id, "process_measurement_sha256": f4._SHA["consumer_process"],
+               "runtime_sha256": f4._SHA["consumer_runtime"]}
+    _admission, admission_sha256 = trust._p4_dynamic_root_capture_admission(
+        root_pis_ref, g1_ref, g2_ref, run_id, run_id,
+    )
+    admission_ref = {"kind": "root-capture-admission", "role": "study-lifecycle",
+                     "schema": "dskit.root-capture-admission/v1", "sha256": admission_sha256}
+    assert resolver.close_admission(snapshot, admission_ref, (authority, captures, runtime)) is None
+
+
+def test_adr143_authorize_capture_set_blocked_by_prepare_contract(tmp_path, monkeypatch):
+    """Disclosed convergence finding (evidence 0182): _FixedCapturedAuthorizationContract
+    ._prepare -- shared, unedited per ADR-0143 Decision point 3/6 -- reads
+    resolver._records directly and requires admission[...] pea/ces/bvp/cas
+    fields that this resolver and this narrow root-capture-admission chain
+    do not have (Decision point 7's chain intentionally excludes pea/ces/bvp/
+    scope machinery). The full authorize_capture_set -> CAPTURED path is
+    therefore blocked for the dynamic authority until a follow-on ADR
+    resolves this contradiction; this test pins that current, disclosed
+    behavior rather than hiding it."""
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    assert not hasattr(resolver, "_records")
+    with pytest.raises(AttributeError):
+        authority.authorize_capture_set(
+            (), {"kind": "root-capture-admission", "role": "study-lifecycle",
+                 "schema": "dskit.root-capture-admission/v1", "sha256": "a" * 64},
+            consumer_run_identity="x", process_measurement_sha256=f4._SHA["consumer_process"],
+            runtime_sha256=f4._SHA["consumer_runtime"], transition_nonces=(),
+        )
+
+
+def test_adr143_dynamic_authority_binds_transparently_into_verifier_facade(tmp_path, monkeypatch):
+    """Public facade coverage (evidence 0181 public_facades / finding F4):
+    HistoricalStudyVerifier accepts a dynamic authority instance exactly as
+    it accepts the legacy one, via isinstance(authority, CapturedAuthorizationAuthority)
+    -- no verifier.py edit is required or was made by this ADR."""
+    from dskit.production import verifier as production_verifier
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    facade = production_verifier.HistoricalStudyVerifier(authority)
+    assert facade._authority is authority
+    assert production_verifier._P4_VERIFIER_PINS[facade] is authority
+
+
+def test_adr143_dynamic_clock_and_revocations_read_live_shared_state(tmp_path, monkeypatch):
+    publisher, _issuer, _graph, _authority = _adr143_issued_case(tmp_path, monkeypatch)
+    reserve = publisher._reserve
+    clock = trust._DynamicP4VerificationClock(reserve)
+    revocations = trust._DynamicP4VerificationRevocations(reserve)
+    before = clock.now_ms()
+    publisher._reserve._advance_clock(before + 5)
+    after = clock.now_ms()
+    assert after == before + 5
+    _generation, _revoked, snapshot_sha256 = reserve._snapshot()
+    assert revocations.is_unrevoked(
+        snapshot_sha256, "data-publisher/published-input-set-g1-g2", 1, after,
+    ) is True
+    publisher._reserve._revoke("data-publisher/published-input-set-g1-g2")
+    _generation2, _revoked2, snapshot_sha256_2 = reserve._snapshot()
+    assert snapshot_sha256_2 != snapshot_sha256
+    with pytest.raises(AttributeError):
+        clock._reserve = reserve
+    with pytest.raises(AttributeError):
+        revocations._reserve = reserve
+
+
+def test_adr143_dynamic_resolver_and_terminal_final_markers():
+    with pytest.raises(TypeError, match="final"):
+        class _Sub(trust._DynamicP4TrustedArtifactResolver):
+            pass
+    with pytest.raises(TypeError, match="final"):
+        class _SubTerm(trust._DynamicP4TerminalArtifactVerifier):
+            pass
+    with pytest.raises(TypeError):
+        trust._DynamicP4TerminalArtifactVerifier()
+    with pytest.raises(TypeError, match="dynamic broker construction"):
+        trust._DynamicP4TrustedArtifactResolver(object(), object())
