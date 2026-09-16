@@ -2,7 +2,7 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0133 read-only synthetic G1/G2 verifier independently reviewed and merged for main integration; P7 and Packet8 remain open.",
+  "status": "ADR-0133 read-only synthetic G1/G2 verifier merged and verified on remote main 28c68de; P7 and Packet8 remain open. ADR-0134 proposed for review.",
   "proposal": "ADR-0133 accepted and implemented as a nonauthorizing prerequisite; ADR-0130/0132 effecting proposals remain blocked.",
   "cycles": [
     {
@@ -275,6 +275,76 @@
     "tree_equals_reviewed_branch": true,
     "reviewed_code_test_contract_blobs_unchanged": true,
     "merge_result": "No conflicts; git diff --check passed and worktree clean.",
-    "limit": "No real raw dataset access, F4/P4 effect, replay, Packet8 or deployment."
+    "limit": "No real raw dataset access, F4/P4 effect, replay, Packet8 or deployment.",
+    "remote_main_verified": "28c68dec912e0a47992c114ce7322d33024f4fd5"
+  },
+  "adr0134_proposal": {
+    "branch": "codex/f5a-adr134-fixture-attestation-20260916",
+    "base_main": "28c68dec912e0a47992c114ce7322d33024f4fd5",
+    "contract": "Read-only signed synthetic data-owner commitments to exact ordered fixture member digests; no raw reads, one-use spend or effects.",
+    "reviewer": "/root/adr134_preapproval",
+    "result": "0 remaining Critical/Major after correcting three Minor clarifications; one snapshot wording Nit corrected editorially.",
+    "corrections": [
+      "External acquisition/provider origin explicitly outside scope",
+      "One signed member per source does not itself prove event counts or zero-byte contents",
+      "Phase 0 must pin exact fixture public key and revocation identities and test mismatched snapshots"
+    ],
+    "tests_run": "none; design review only",
+    "gate": "ADR proposed only. Owner approval required before fresh Phase 0 and RED.",
+    "remaining": "Global shared one-use authority, full raw validation/publication, P4 data proof, complete EventEnvelope.v2/P7 and Packet8 are later gates."
+  },
+  "adr0134_owner_decision": "2026-09-16: owner said I approve to ADR-0134, and asked how P7 can close.",
+  "adr0134_phase0": {
+    "reviewer": "/root/adr134_phase0",
+    "candidate": "ADR-0134 at 376fa10 plus the concrete pins below",
+    "result": "0 Critical, 0 Major, 0 Minor, 0 Nit; RED may start",
+    "fixture_key_id": "synthetic-g2/dataset-fixture-attestation/v1",
+    "fixture_public_key_hex": "8514688e8c6ee8224c630a1a76beae880efe2404a2f1302b5f8d9d78ccfbd5a8",
+    "test_seed": "SHA-256 of ASCII dskit.synthetic-dataset-fixture-attestation/G2/v1; runtime public key only",
+    "revocation": "existing canonical dskit.synthetic-dataset-revocations/v1 snapshot over _SYNTHETIC_GRANT_REVOKED; fixture identities G2-fixture, exact key ID, authorization_id; ADR-0133 separately checks G1/G2",
+    "clock": "existing fixed trusted clock, now 500 ms in tests",
+    "matrix": "canonical bytes/duplicates/types, fixed domain/key/signature, grant recheck, auth/time/snapshot/revocation, one-per-source members, facades, alias/subclass/mutation, repeat, no effects",
+    "uncovered": "real key custody/provider origin, shared spend, raw bytes/event semantics, F4/P4 and P7/Packet8",
+    "tests_run": "none; design review"
+  },
+  "adr0134_red": {
+    "base_commit": "4b815a2",
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py::test_adr134_signed_fixture_commitments_are_read_only_and_exact",
+    "result": "Expected assertion failure: NonAuthorizingSyntheticFixtureVerifier missing; 1 failed in 0.26s",
+    "kind": "behavioral RED; no import/setup error"
+  },
+  "adr0134_green": {
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "focused": "31 passed, 952 deselected; tests/pipeline/test_captured_authorization.py -k adr134",
+    "affected": "1088 passed in 73.45s; tests/pipeline/test_captured_authorization.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py",
+    "lint": "Ruff on touched code and tests passed; git diff --check passed",
+    "scope": "Read-only G2 signed fixture commitments; pipeline class re-exported by production facade; no raw bytes, spent ID or F4/P4 effect",
+    "full_suite": "not run per owner testing preference",
+    "deployment_eligible": false
+  },
+  "adr0134_final_review": {
+    "candidate_commit": "bfa176c83c7b80966dd987ffaaef596838bc63e3",
+    "reviewed_blobs": {
+      "dskit/pipeline/trust.py": "2bf929161f75723a04438926f3f7ddc6b6104f96",
+      "dskit/production/verifier.py": "d0d88bfe44649fb23ac5e1821d2461f6d3e8e26c",
+      "tests/pipeline/test_captured_authorization.py": "c070cea69eae45610ff8c1cc1ba484355d5e4112",
+      "docs/architecture/decision-log.md": "01076e11d25fdece2dbe80c2ba58deaf228f0348"
+    },
+    "authority_lens": {
+      "reviewer": "/root/adr134_authority_review",
+      "verdict": "0 Critical, 0 Major, 1 Minor",
+      "tested": "31 focused passed; bespoke cross-facade alias, subclass, bytes subtype, grant swap/duplicate and attestation tamper probes passed",
+      "uncovered": "external provenance, real raw bytes, shared spend, downstream F4/P4/P7"
+    },
+    "tests_integration_lens": {
+      "reviewer": "/root/adr134_tests_review",
+      "verdict": "0 Critical, 0 Major, 1 Minor, 0 Nit",
+      "tested": "31 focused and 1088 affected passed; Ruff and git diff --check passed",
+      "uncovered": "real raw/event semantics, atomic spend, F4/P4, P7/Packet8 and provider"
+    },
+    "shared_minor": "Positive signed test fixture claims byte_length=12 while hashed b'fixture-a\\n' is 10 bytes. Read-only verifier cannot inspect raw bytes; fix before raw-byte integration.",
+    "disposition": "Deferred Minor in locked read-only candidate. No effecting authority or raw-byte claim. Two fresh completed lenses found zero unresolved in-scope Critical/Major.",
+    "deployment_eligible": false
   }
 }

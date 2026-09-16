@@ -9520,3 +9520,81 @@ binding before raw publication. P7 and Packet8 remain open.
 
 **Non-goals.** Raw fixture access or validation, one-use spending,
 F4/P4 effects, full F1/F2/F3 semantics, P7/Packet8 closure or deployment.
+
+## ADR-0134 - read-only signed synthetic fixture commitments
+
+**Status:** accepted (2026-09-16; owner replied "I approve"). Fresh Phase 0
+cleared; this authorizes only the read-only slice. ADR-0133 is merged;
+ADR-0132's effecting preflight remains blocked. This decision
+addresses only signed synthetic data-owner commitment to exact fixture bytes;
+external acquisition/provider origin remains outside this slice.
+
+**Context.** A caller can construct canonically plausible raw-event bytes.
+The accepted G1/G2 grants authorize scope but do not attest the exact raw
+member bytes. A later preflight cannot call those bytes a trusted fixture
+until an independent data-owner commitment binds their content and order.
+This commitment attests synthetic fixture bytes, not external acquisition.
+
+**Decision.**
+
+1. A distinct synthetic G2 fixture-attestation key, fixed by key ID and
+   Ed25519 public bytes in the pipeline verifier, signs
+   SyntheticDatasetFixtureAttestation.v1 outside the runtime. Test-fixture
+   code alone holds the private key. The attestation domain is distinct
+   from G1/G2 grants; neither grant signature can verify as an
+   attestation. No runtime signer, key registration, verifier injection,
+   provider, filesystem, network, or caller-selected trust anchor exists.
+   Hostile bytes, not hostile interpreter code, are the threat.
+2. The attestation is exact canonical ASCII JSON with closed fields:
+   schema_version=dskit.synthetic-dataset-fixture-attestation/v1,
+   issuer_key_id, authorization_sha256, issued_at_ms, not_before_ms,
+   expires_at_ms, revocation_snapshot_sha256, ordered_members, signature.
+   Each ordered_members entry has exactly member_name, source_id,
+   byte_length and sha256. Names are unique canonical ASCII
+   [A-Za-z0-9][A-Za-z0-9._-]{0,127}; source IDs use ADR-0133's grammar;
+   lengths are nonnegative exact integers and digests lowercase SHA-256.
+   The list has exactly one entry per nonempty authorized source ID in
+   the authorization's sorted order. Every authorized source, including
+   one expected to have zero events, has a signed member commitment. A
+   later raw validator alone establishes event counts and whether the
+   member bytes are empty. The Ed25519 signature covers the exact
+   canonical object with only signature omitted; signature is lowercase
+   128-hex. The attestation's authorization digest binds all signed
+   roster, scope, license, schema, media, correction and empty-policy
+   claims without a second mutable copy.
+3. A single public read-only verifier accepts exact authorization,
+   G1-grant, G2-grant and attestation bytes. It independently invokes
+   ADR-0133's fixed grant verifier on the original bytes on every call;
+   checked facts alone are never accepted as authority. It then checks
+   the attestation's exact schema/types/canonical bytes/signature,
+   distinct fixed G2 fixture key, authorization digest, equal
+   issued/not-before/expiry, trusted current time, current revocation
+   snapshot, and unrevoked fixture issuer/key/authorization. The grant
+   check's snapshot must equal the attestation and current snapshots; a
+   mismatch between those snapshots refuses. No cache can bypass
+   current expiry/revocation. Empty source_ids refuse here.
+4. Success returns immutable NONAUTHORIZING fixture commitments:
+   authorization and attestation digests, ordered names/source IDs/
+   byte lengths/member digests, checked time and revocation snapshot.
+   It returns no raw bytes, reader, member handle, publication token,
+   root, receipt, consume/spend method or downstream admission. Calls
+   may repeat. Failure has no lifecycle effect. A later effecting
+   preflight must independently reverify current signatures, read only
+   bytes matching these signed commitments, and atomically spend
+   authorization_id in a shared one-use domain before any member read.
+   It cannot treat this result as a permit.
+5. This signed synthetic commitment is not a claim of complete
+   RawEventDatasetCodec or EventEnvelope.v2 semantics. A separate ADR
+   must specify the shared one-use authority and full pre-effect
+   validation before any raw F4/P4 activity.
+
+**Sequence.** Owner approval, fresh independent Phase 0 over both public
+facades and the grant-verifier boundary. Phase 0 pins the exact fixture
+key ID/public bytes and issuer/key/authorization revocation identities;
+RED covers snapshot changes between grant and attestation checks. Then
+focused RED/GREEN in existing files, two fresh final lenses, then
+integration.
+
+**Non-goals.** Raw reads, one-use spending, roster inspection,
+F4/P4 effects, external acquisition/provider provenance or integration,
+F3/P7/Packet8 closure or deployment. deployment_eligible=false.
