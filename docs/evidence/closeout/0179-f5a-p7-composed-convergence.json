@@ -676,5 +676,23 @@
     "scope": "Fixed nondeployment one-use signed IssuanceBasis.v2 and two-root PublishedInputSet.v2 with read-only proof only. Existing fixed P4 verifier refuses roster/v2 and cannot admit this PIS. No dynamic P4/CAPTURED/full F3/composed tape/P7/Packet8 closure or deployment.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
+  },
+  "adr0142_dynamic_root_graph_candidate": {
+    "candidate": "190cb9158e20ee371e7709b621c930ce39d705f9",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "f65c3ecc1570a8c25e850ea0521f0570052e8d81",
+      "dskit/pipeline/trust.py": "b2c86bba156fcda6adc6f7acab0376ff82bd54e4",
+      "dskit/production/verifier.py": "9ee0cafacfbf6296a01a94738bcfc2613180eb85",
+      "tests/pipeline/test_captured_authorization.py": "e455ca83956b43e9a278ef1b6b37b3cd1ccad669"
+    },
+    "phase0": "/root/adr142_phase0_map: fixed P4 corpus, ledger and broker identity cannot consume new roots. /root/adr142_preapproval: 0 Critical/Major after full three-row/audit and token-vector fences. /root/adr142_phase0_final: 0 Critical/Major after second complete proof following selected-byte readback.",
+    "red": "Focused twelve-artifact graph test failed on absent issuer.graph before implementation.",
+    "green": "6 focused ADR142 tests and 1459 directly affected pipeline/production verifier tests passed; Ruff and diff check clean.",
+    "authority_lens": "/root/adr142_authority_final final recheck: 0 Critical, 0 Major.",
+    "tests_lens": "/root/adr142_tests_final final recheck: 0 Critical, 0 Major.",
+    "minors": "No direct fixed P4 rejection test; existing fixed shape/basis/terminal checks refuse roster/v2. A renewed graph snapshot invalidates the prior token even if state is equal; safe, not documented as a public stability guarantee.",
+    "scope": "Read-only issuer-owned exact twelve-artifact graph with opaque shared-state snapshots, double live ADR141 proof and full roster/raw/root-PIS row/audit fences. No dynamic P4 CAPTURED; same F4 broker/ledger authority and dynamic batch signer remain future gates. No full events/composed tape/P7/Packet8 closure or deployment.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
   }
 }
