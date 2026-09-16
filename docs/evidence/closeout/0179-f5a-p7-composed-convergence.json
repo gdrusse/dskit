@@ -2,7 +2,7 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0132 raw preflight and ADR-0136 shared chronology repair reviewed; candidate clock repair ready for main. ADR-0139 raw F4 publication design Phase 0 cleared, implementation pending. P7 and Packet8 remain open.",
+  "status": "ADR-0132 raw preflight and corrected ADR-0136 durable clock reviewed; ADR-0139 raw F4 publisher design Phase 0 cleared but implementation pending. P7 and Packet8 remain open.",
   "proposal": "Accepted ADR-0132 amended with exact broker-derived raw intent and lazy host-owned fixture reader. ADR-0131 remains blocked; full P7 closure remains gated.",
   "cycles": [
     {
@@ -600,6 +600,23 @@
     "tests_lens": "/root/adr136_clock_tests_final: 0 Critical, 0 Major; 20 focused tests passed.",
     "minor": "No separate-process clock race or clock advance at every intermediate raw/roster transition in focused tests; existing shared SQLite writer lock and checks reviewed.",
     "scope": "Durable synthetic chronology prerequisite only; ADR-0139 raw publisher not yet implemented; no P4/full F3/P7/Packet8 closure.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false,
+    "status": "superseded: initial 7c79dfa clock repair had a late Major in legacy-clock max fallback, corrected by 6e1c64b",
+    "late_major": "Legacy fixed-clock patch could satisfy raw not-before while durable now_ms stayed 500 and effective time could rewind; independent tests lens reproduced after initial push."
+  },
+  "adr0136_shared_clock_correction": {
+    "candidate": "6e1c64b732c481a6e00bceacec7ac945c45c67df",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "73a4062a6ba15774bc54ee917de7e537cd39c841",
+      "dskit/pipeline/trust.py": "8728ee303279e0ac955bae69ba9347f807d8e212",
+      "tests/pipeline/test_captured_authorization.py": "2fc7df46dcb0dc92e1b084449f21b390716ec791"
+    },
+    "fix": "Effecting _now returns only durable reserve_meta.now_ms. The unrelated fixed P4/read-only clock cannot advance synthetic effects. Existing expiry tests now advance trusted shared time between serialized admissions; signed raw issued at 501 refuses at durable 500 even when legacy clock is patched to 600.",
+    "green": "64 focused ADR132/136/137/138 and 1389 directly affected tests passed; Ruff and diff check passed.",
+    "authority_lens": "/root/adr136_clock_authority_final re-review: 0 Critical, 0 Major.",
+    "tests_lens": "/root/adr136_clock_tests_final re-review: 0 Critical, 0 Major.",
+    "minor": "Separate-process admin advance/admission race and expiry near a transaction boundary lack direct focused tests; SQLite writer serialization reviewed.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
   }
