@@ -1,0 +1,65 @@
+{
+  "schema_version": "F5aCheckpoint.v1",
+  "slice_id": "F5a / P7 slice 2b / ADR-0129 bounded P4 accessor",
+  "base_commit": "af2a27ba32e5f92aaf33e410cb56e7acdd7eed7b",
+  "owner_approval": "User replied approve to ADR-0129 on 2026-09-16; status changed to accepted before RED.",
+  "reviewer": {
+    "identity": "independent Phase 0 subagent, GPT-6 Astra",
+    "scope": "ADR-0129 accessor and composed P7 design",
+    "accessor_verdict": "0 Critical, 0 Major; ready for focused RED",
+    "retained_findings": [
+      "Bind record to exact committed ledger root and exact P4 session object; require exact stream, consumer document, publication and member.",
+      "Recheck sealed member SHA-256 and length before return; one read per record/stream/member across aliases and threads; no precommit provider open.",
+      "Full P7 retains 2 Major gaps: production codec ownership versus pipeline verification (0175 MAJ-4), and envelope/policy comparison to verified parent bytes (0175 MAJ-5). The prior producer record can be passed live in synthetic P7 to address MAJ-6; Packet8 owns durability."
+    ],
+    "untested": "Design review only; no code or tests run by reviewer."
+  },
+  "red": {
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py -k p4_record_reads_each_verified_member_once_for_its_committed_session",
+    "result": "1 failed, 925 deselected: callable(getattr(record, lifecycle_captured_receipt_sha256, None)) asserted False on unchanged implementation."
+  },
+  "green": {
+    "implementation": "Public read-only receipt digest and one-way read_member_bytes on CapturedAuthorizationRecord; committed ledger/session/stream/document/publication checks; sealed member digest and length recheck; atomic read-once under ledger lock.",
+    "focused_command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py -k p4_record_",
+    "focused_result": "7 passed, 921 deselected",
+    "affected_command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_captured_authorization.py tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture tests/pipeline/test_purity.py tests/production/test_purity.py",
+    "affected_result": "1241 passed in 71.02s",
+    "static": "ruff check targeted files and git diff --check passed"
+  },
+  "status": "ADR-0129 accessor locked for integration. Full composed P7 remains open with two Major design gaps; Packet8 and deployment remain blocked.",
+  "next": "Integrate accessor; resolve P7 codec/authority split and parent envelope/policy comparison before RED on the composed-tape seam.",
+  "candidate_commit": "ae46adb0cbd2c297965fa322c09351125d90e529",
+  "candidate_blobs": {
+    "trust.py": "9f017d2cb2a3af25c37a8d5532d1e92912caa874",
+    "test_captured_authorization.py": "8cfa65d617efc8a5c86092288fae266d869e5517",
+    "decision-log.md": "a104a0ae386f3d0276f1b1da14b80301eeb54057"
+  },
+  "final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "reviewer": "OpenCode deepseek-v4-pro (flash-reviewer CLI fell back because configured as subagent)",
+      "candidate": "ae46adb",
+      "verdict": "0 Critical, 0 Major, 2 Minor",
+      "actual_findings": [
+        "F1 Minor: read-once slot consumed before verification; transient provider failure permanently spends it. ADR single-read licenses fail-closed behavior; provider-raise path untested.",
+        "F2 Minor: _p4_reads plain dict strongly retains each read record for ledger lifetime, defeating weak-reference cleanup; resource-only."
+      ],
+      "falsification": "Foreign valid publication/session, tamper then restore, receipt double-read, path aliases all refused/held; 7 focused tests, 18 pipeline purity tests, Ruff passed.",
+      "untested": "Provider raises, cross-record same-stream/different-document, malformed digest strings, session slot tamper against accessor.",
+      "retrievable_opencode_session_id": "ses_f55f1fef7ffeEtz9W1pXQTb4OT"
+    },
+    {
+      "lens": "tests/integration",
+      "reviewer": "fresh independent Codex subagent; exact model/version not exposed to reviewer (configured OpenCode flash subagent stalled without report and was stopped)",
+      "candidate": "ae46adb",
+      "verdict": "0 Critical, 0 Major, 1 Minor",
+      "actual_findings": [
+        "Minor: new accessor tests omit two distinct consumer documents capturing the same publication through both production facades; existing test checks issuance only. In-memory probe through driver and verifier produced distinct receipts, allowed each record to read both members, and refused all cross-session/document calls."
+      ],
+      "falsification": "Focused, facade, compatibility and fault-stage checks passed (45 tests total).",
+      "untested": "Provider I/O faults, process crash/restart, mutable Python internals outside threat model.",
+      "stalled_flash_attempt_session_id": "ses_f55e99e5affe5dZaF7rUQYcJUz"
+    }
+  ],
+  "candidate_lock": "Code/test/ADR blobs above unchanged after both lenses; zero unresolved in-scope Critical/Major. Three Minors recorded; no code change after lock."
+}

@@ -1,5 +1,20 @@
 # Re-entry
 
+## Current checkpoint: ADR-0129 P4 read accessor reviewed (2026-09-16)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, task branch
+`codex/f5a-p7-composed-tape-20260916`. Owner approved ADR-0129; bounded
+P4 receipt and single-read member access is implemented at candidate
+`ae46adb`. Two independent final lenses found zero Critical/Major; three
+Minors are recorded in evidence `0178`. Focused affected checks: 1241 passed,
+Ruff and purity green. No real replay or deployment; `deployment_eligible=false`.
+
+**Next.** Integrate this accessor, then resolve the two full-P7 design gaps:
+codec ownership across the pipeline→production import boundary and comparison
+of inner digest/policy claims against verified parent envelope bytes. The
+producer record can be passed live for synthetic receipt provenance. P7,
+Packet8, F5A-R23 and whole-F5a remain open.
+
 ## Current wrap: composed-tape gate resolved to option A; ADR-0129 drafted (2026-09-16)
 
 Worktree `/home/russell/wt/f5a-remainder-20260915`. Main `e795f8e`; protected
