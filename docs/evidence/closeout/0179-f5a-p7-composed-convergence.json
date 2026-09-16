@@ -473,5 +473,19 @@
     "matrix": "Cross-process one-winner, admin revocation ordering, WAL/FULL downgrade, crash/ambiguous COMMIT, exact signed ID and audit, no pre-reserve F4/member effects.",
     "minor_limit": "Unit tests cannot prove physical power-loss durability; local durable VFS and no-restore remain trusted host invariants.",
     "deployment_eligible": false
+  },
+  "adr0136_storage_candidate": {
+    "candidate": "b00159fc61efc7f3314e57c1c5e8c385ed7aa95c",
+    "reviewed_blobs": {
+      "dskit/pipeline/trust.py": "5c118e3807f8e308e3098727828fe644e9d234dd",
+      "tests/pipeline/test_captured_authorization.py": "41bbc83fbe84cb5958ddd0662529c012d9a1cf1e"
+    },
+    "scope": "Private non-effecting SQLite roster signed-ID reserve and atomic revocation; no F4, raw, receipt or P4 authority.",
+    "checks": "8 focused and 1123 directly affected pipeline/production authorization and purity tests passed; Ruff and git diff --check passed. Full suite not run per owner preference.",
+    "authority_lens": "/root/adr136_authority_final: 0 Critical, 0 Major, 0 Minor, 0 Nit.",
+    "tests_lens": "/root/adr136_tests_final: 0 Critical, 0 Major, 1 Minor.",
+    "minor": "Same signed-ID regression test retries identical grants and intent only; changed signed grants or intent would also be rejected by current primary key but lacks a dedicated assertion. Cross-process revocation race and hostile storage paths are not exercised in this non-effecting slice.",
+    "limits": "Physical power-loss durability requires trusted local durable VFS and no restore/clone; effecting F4/raw admission and restart proof remain separate gates.",
+    "deployment_eligible": false
   }
 }

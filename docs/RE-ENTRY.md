@@ -39,7 +39,7 @@ request; fresh Phase 0 still precedes code. ADR-0137 narrows a later slice to a 
 ADR-0135 read-only bootstrap verifier is implemented at candidate 1ee0e0b:
 27 focused and 1115 affected tests passed; two final lenses found zero
 Critical/Major and one deferred read-only freshness Minor. ADR-0136
-storage Phase 0 cleared with explicit non-effecting and fixed-path gates. Raw one-use publication, dynamic
+storage Phase 0 cleared with explicit non-effecting and fixed-path gates. The private non-effecting SQLite reserve candidate b00159f passed 8 focused and 1123 affected tests and two final lenses (zero Critical/Major; one deferred test-coverage Minor). Raw one-use publication, dynamic
 P4 scope/graph and CAPTURED timing, durable F4 recovery and full F3
 semantics remain separate gates. Packet8 follows P7 closure.
 deployment_eligible=false.
