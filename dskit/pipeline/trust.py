@@ -7078,6 +7078,14 @@ class _SyntheticRawPreflight:
             bootstrap_bytes, bg1, bg2, basis_bytes, receipt_bytes,
             _under_writer_lock=True,
         )
+        roster_basis = _hs_parse_canonical(basis_bytes)
+        roster_receipt = _hs_parse_canonical(receipt_bytes)
+        _hs_refuse(
+            authorization["issued_at_ms"]
+            > max(roster_basis["issued_at_ms"],
+                  roster_receipt["issued_at_ms"]),
+            "dataset authorization must issue after roster receipt",
+        )
         _hs_refuse(
             all(authorization[name] == bootstrap[name] for name in (
                 "source_ids", "scope", "license_digests",
