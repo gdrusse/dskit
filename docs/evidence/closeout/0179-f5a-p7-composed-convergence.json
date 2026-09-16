@@ -2,7 +2,7 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0132 raw preflight and corrected ADR-0136 durable clock reviewed; ADR-0139 raw F4 publisher design Phase 0 cleared but implementation pending. P7 and Packet8 remain open.",
+  "status": "ADR-0139 synthetic raw F4 publication/v1 receipt reviewed and ready for main after corrected WORM insertion. P7 and Packet8 remain open: dynamic P4 trust, CAPTURED raw/roster proof, full event/tape semantics and durable Packet8 gate remain.",
   "proposal": "Accepted ADR-0132 amended with exact broker-derived raw intent and lazy host-owned fixture reader. ADR-0131 remains blocked; full P7 closure remains gated.",
   "cycles": [
     {
@@ -617,6 +617,27 @@
     "authority_lens": "/root/adr136_clock_authority_final re-review: 0 Critical, 0 Major.",
     "tests_lens": "/root/adr136_clock_tests_final re-review: 0 Critical, 0 Major.",
     "minor": "Separate-process admin advance/admission race and expiry near a transaction boundary lack direct focused tests; SQLite writer serialization reviewed.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
+  },
+  "adr0139_raw_publication_candidate": {
+    "candidate": "a23cda86c3c6b93fb0c082014139fdb3f640c112",
+    "candidate_lineage": [
+      "500a6b5ced970552184d2fca4d1ebdb17d343c3c",
+      "2faf4eacfe5a5431b9a316cf14492d48f04bb4e0"
+    ],
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "73a4062a6ba15774bc54ee917de7e537cd39c841",
+      "dskit/pipeline/trust.py": "0331d23544ce56e9bfa3f381197d123f5dda6935",
+      "tests/pipeline/test_captured_authorization.py": "56613c2da38f3c05672bd40bff1ac30888cd4505"
+    },
+    "phase0": "/root/adr139_phase0: initial clock/proof Majors resolved by shared durable time and one-shot proof amendments; final 0 Critical/Major. Output-name collision, exact key and fixed signer pinned.",
+    "red": "Three raw publisher cases failed on absent class. Initial final tests lens reproduced late outer receipt overwrite after sign; post-sign conflict check added. Authority re-review found check-then-write race; corrected to one dict.setdefault put-if-absent operation.",
+    "green": "Nine focused ADR-0139 cases and 1398 directly affected pipeline/F4/production verifier tests passed on 2faf4ea; latest atomic insertion candidate reran nine focused plus Ruff/diff clean.",
+    "authority_lens": "/root/adr139_authority_final final re-review of a23cda8: 0 Critical, 0 Major.",
+    "tests_lens": "/root/adr139_tests_final final re-review of a23cda8: 0 Critical, 0 Major.",
+    "minors": "Focused cases do not cover full signed v1 basis/window/ref comparison, every revocation/expiry boundary, cross-process raw publisher attempt, or all F4 partial-backing mutations; code checks reviewed. A same-byte out-of-band receipt insertion is possible under process-local store but no second honest signer for the key can pass shared one-use admission.",
+    "scope": "Fixed nondeployment one-shot raw F4 root/manifest and v1 basis/receipt only. No dynamic P4 captured input, full EventEnvelope.v2, composed tape, P7/Packet8 closure or deployment.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
   }
