@@ -1,0 +1,110 @@
+{
+  "schema_version": "RedGreenEvidence.v1",
+  "slice_id": "F5a / P7 slice 3 / same-domain dynamic P4 capture authority",
+  "packet": "7-remainder",
+  "adr": "ADR-0143 - same-domain dynamic P4 capture authority",
+  "base_commit": "076cfa5",
+  "worktree": "/home/russell/wt/f5a-p7-remainder-20260916",
+  "branch": "codex/f5a-p7-remainder-20260916",
+  "red_commit": "ff7bf5b",
+  "green_commit": "24dbd11",
+  "cites": [
+    "docs/evidence/closeout/0181-f5a-p7-adr0143-phase0-matrix.json (Phase0Matrix.v1: 12 matrix rows, document_shapes_pinned, dynamic_close_admission_dependency_table, reserve_row_pin, phase0_skeptic_review pins F1/F2/F3)",
+    "docs/evidence/closeout/0180-f5a-p7-dynamic-capture-adr-proposal.json (preapproval review/correction/recheck, owner acceptance)",
+    "ADR-0143/0142/0141 (docs/architecture/decision-log.md)",
+    "docs/skills/test-drive-development.md",
+    "docs/skills/skeptic-review.md (convergence-checkpoint rule, used below)"
+  ],
+  "author": "implementer (Claude Sonnet 5)",
+
+  "adr0143_dynamic_capture_authority_candidate": {
+    "candidate": "24dbd11",
+    "reviewed_blobs": {
+      "dskit/pipeline/trust.py": "6e0054c802d2f8eb9d2d2d899af5c5dda07518e1",
+      "tests/pipeline/test_captured_authorization.py": "7a3be563ef7c5766ce34024d92df265169b3a7f5"
+    },
+    "phase0": "docs/evidence/closeout/0181: 0 Critical/Major, 3 Minor pins (F1/F2/F3) applied during GREEN as instructed; RED_MAY_PROCEED: yes.",
+    "red": {
+      "command": "wsl.exe -e bash -lc 'cd /home/russell/wt/f5a-p7-remainder-20260916 && PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/pipeline/test_captured_authorization.py -k adr143 -v'",
+      "environment": "dskit/.venv (reused, not created), base commit 076cfa5 (dskit/pipeline/trust.py unmodified -- the GREEN implementation was stashed with `git stash push -- dskit/pipeline/trust.py` before this run and restored with `git stash pop` afterward, so RED was measured against the true unedited baseline)",
+      "result": "20 failed, 1 passed, 1110 deselected",
+      "failure_kind": "behavioral: every failure is AttributeError raised from inside the test/helper body (e.g. `trust._development_dynamic_p4_broker` / `trust._DynamicP4TrustedArtifactResolver` do not exist on the module) at an assertion/call site, not a pytest collection-time import error -- matches test-drive-development.md's RED requirement. The 1 pre-GREEN pass (test_adr143_matrix_row2_third_resolver_subclass_fails_closed) is a legitimate already-true invariant (the existing single-branch _p4_snapshot_integrity already refuses any non-_FixedWormTrustedArtifactResolver instance today); it is retained as a regression guard through the refactor, matching test-drive-development.md's 'reuse existing coverage, do not manufacture a failure' guidance.",
+      "sample_failure": "AttributeError: module 'dskit.pipeline.trust' has no attribute '_development_dynamic_p4_broker'. Did you mean: '_development_p4_broker'?"
+    },
+    "green": {
+      "focused_command": "wsl.exe -e bash -lc 'cd /home/russell/wt/f5a-p7-remainder-20260916 && PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/pipeline/test_captured_authorization.py -k adr143 -v'",
+      "focused_result": "21 passed, 1110 deselected",
+      "affected_command": "wsl.exe -e bash -lc 'cd /home/russell/wt/f5a-p7-remainder-20260916 && PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/pipeline/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py'",
+      "affected_result": "1 failed, 1481 passed (1482 collected)",
+      "affected_baseline_failure": {
+        "test": "tests/pipeline/test_trust.py::test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private",
+        "disposition": "pre-existing, unrelated to this change",
+        "proof": "reproduced identically (same AssertionError, same 'Extra items in the left set: NonAuthorizingSyntheticRootPisProof, NonAuthorizingDynamicRootGraph') on the RED commit ff7bf5b via `git stash` (isolating dskit/pipeline/trust.py back to the unmodified 076cfa5 baseline) before this GREEN candidate's trust.py edits existed; this ADR did not touch trust.__all__ or this test file at all. Root cause: ADR-0141/0142's own prior work added NonAuthorizingSyntheticRootPisProof/NonAuthorizingDynamicRootGraph to trust.__all__ without updating this test's separately-maintained _PUBLIC_TYPES set. Disclosed, not fixed or hidden, per test-drive-development.md's 'a proven baseline failure is disclosed separately; it is not silently fixed, hidden, or automatically a new feature blocker.'"
+      }
+    },
+    "ruff": "ruff check dskit/pipeline/trust.py tests/pipeline/test_captured_authorization.py -> All checks passed!",
+    "diff_check": "git diff --check -> clean (exit 0), no whitespace errors",
+    "files_changed": [
+      "dskit/pipeline/trust.py",
+      "tests/pipeline/test_captured_authorization.py"
+    ],
+    "legacy_untouched_confirmation": {
+      "diff_stat": "dskit/pipeline/trust.py | 697 insertions(+), 51 deletions(-) across the RED+GREEN commits combined (RED commit: test file only, 379 insertions; GREEN commit: 2 files, 697 insertions(+), 51 deletions(-))",
+      "hunks_in_trust_py": [
+        "@@ -2471,22 +2471,42 @@ (_p4_require_issued_authority: authorized extension per Decision point 4 -- legacy if-arm body is the prior code verbatim, wrapped; dynamic elif-arm and else-arm are new)",
+        "@@ -4193,32 +4213,63 @@ (_p4_snapshot_integrity: authorized extension per Decision point 4, same shape)",
+        "@@ -5280,7 +5331,13 @@ and @@ -5291,7 +5348,7 @@ (commit_p4_batch: 3 call sites changed from the hardcoded _P4_CLOSE_ADMISSION(...) constant to resolver.close_admission(...); see deviation note below)",
+        "@@ -9013,3 +9070,564 @@ (purely additive: every new class/function/constant appended after NonAuthorizingDynamicRootGraph, the prior end of file)"
+      ],
+      "line_ranges_not_overlapping_edited_hunks": {
+        "_FixedWormTrustedArtifactResolver": "~2306-2380 (untouched)",
+        "_FixedTerminalArtifactVerifier": "~4111-4195 (untouched)",
+        "_FixedP4VerificationClock / _FixedP4VerificationRevocations": "~4054-4074 (untouched)",
+        "_p4_close_admission": "~4277-4704 (untouched; _P4_CLOSE_ADMISSION continues to alias it unmodified)"
+      },
+      "note": "_p4_require_issued_authority and _p4_snapshot_integrity are explicitly authorized for extension by ADR-0143 Decision point 4 (not in the 'stays byte-identical' list); their legacy if-branch bodies are the prior single-branch code verbatim, only wrapped in if/elif/else. The 5 forbidden-to-edit legacy-only symbols (_FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, _FixedP4VerificationClock, _FixedP4VerificationRevocations, _p4_close_admission) have zero modified lines, confirmed by these hunks' line ranges never overlapping those classes'/function's own line ranges."
+    },
+    "scope": "Second, one-shot _SyntheticP4CapturedAuthorizationAuthority instance bound to a new _DynamicP4TrustedArtifactResolver constructed only from a retained ADR-0141/0142 _SyntheticRootPisIssuer.graph(). Extended (not replaced) _p4_require_issued_authority/_p4_snapshot_integrity dispatch. New kind='dynamic-p4-authority' one-shot reserve row, reserved+committed strictly before resolver/authority construction (pin F3). New _dynamic_p4_close_admission closure walk sized to a root-capture-admission/cas/pce chain, independent of and unreachable from the legacy _p4_close_admission. No edit to the fixed P4 corpus, its 500-ms clock, _FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, or _p4_close_admission's v1-only grammar. No production/verifier.py edit (confirmed unnecessary, matches Phase0 finding F4: HistoricalStudyVerifier dispatches via isinstance(authority, CapturedAuthorizationAuthority), transparent to a bound dynamic authority instance).",
+    "full_suite": "not run per owner preference (matches every prior P7 slice's precedent in evidence 0179, e.g. adr0141/adr0142 candidates' 'not run per owner preference'); only the directly affected files listed above were run.",
+    "deployment_eligible": false
+  },
+
+  "design_decisions_beyond_the_pinned_spec": [
+    {
+      "id": "D1",
+      "topic": "root-capture-admission/cas/pce document resolution mechanism",
+      "finding": "The ADR/Phase0 matrix left this fully open ('This full shape is a Phase 0 deliverable, not frozen here'). Decision point 1/2 and evidence 0181 pin the dynamic resolver has NO _records slot and never caches artifact bytes -- but _p4_close_admission's own visit()/find() pattern (which this function mirrors 'the shape' of) resolves EVERY artifact, including the top-level admission_ref itself, through _P4_CHECKED_RESOLVE against a resolver-held records table. A resolver with no records table structurally cannot hold caller-supplied root-capture-admission/cas/pce bytes the way the legacy fixture_facts mechanism does (and Decision point 1 explicitly forbids fixture_facts on the dynamic resolver).",
+      "decision": "_dynamic_p4_close_admission deterministically RECONSTRUCTS the expected root-capture-admission and cas documents from (a) the graph's own closed 12-reference set (root_pis_ref/dataset_g1_ref/dataset_g2_ref, each provably unique by kind/role) and (b) the live runtime/captures already gated by commit_p4_batch's own checks, rather than resolving them as independently stored artifacts. A caller-supplied admission_ref is admitted only if its digest matches this reconstruction exactly. This is what refuses an aliased/swapped/foreign admission_ref (matrix row 6) and makes a pce entry-swap (matrix row 7) structurally impossible rather than merely checked-for.",
+      "tradeoff_disclosed": "This is a stricter, narrower reading than a literal 'stored and independently resolved artifact' interpretation might suggest. It satisfies every matrix row's expected_outcome and forbidden_effect as pinned, and is directly tested (test_adr143_matrix_row6_forged_admission_ref_refuses, test_adr143_matrix_row7_planned_entry_binding_is_recomputed_not_trusted, test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain)."
+    },
+    {
+      "id": "D2",
+      "topic": "_development_dynamic_p4_broker's factory-token set for the authority instance",
+      "finding": "Evidence 0181's class_function_inventory pinned a fresh `_P4_PENDING_DYNAMIC_TOKENS` set 'mirrors _P4_PENDING_TOKENS, never the legacy set.' This does not work: _SyntheticP4CapturedAuthorizationAuthority.__init__ is explicitly required to stay the EXISTING, UNMODIFIED class (Decision point 3), and its __init__ body hardcodes the literal check `if token not in _P4_PENDING_TOKENS`. A second, separate pending-token set can never satisfy that hardcoded check without editing __init__ itself, which Decision point 3 forbids ('no second... CapturedAuthorizationAuthority implementation'). Decision point 3's own prose elsewhere says the SAME _P4_PENDING_TOKENS discipline is reused, which is consistent with the code and inconsistent with the matrix's inventory annotation.",
+      "decision": "_development_dynamic_p4_broker uses the shared, existing _P4_PENDING_TOKENS set (matching Decision point 3's literal text) for the authority construction step; only the resolver construction step uses its own new, dedicated _P4_PENDING_DYNAMIC_RESOLVER_TOKENS set (which is _DynamicP4TrustedArtifactResolver's own new __init__, fully within this ADR's authority to design).",
+      "discovered_via": "First GREEN run: TypeError('P4 authority requires a one-shot private factory token') when a separate _P4_PENDING_DYNAMIC_TOKENS set was tried, immediately diagnosing the contradiction. One correction cycle, not counted toward the 3-cycle convergence limit since it was resolved on the first retry with a clear root cause."
+    }
+  ],
+
+  "convergence_checkpoint": {
+    "trigger": "Genuine architectural contradiction discovered during GREEN, not resolvable by a 'smallest generic change' within this ADR's own stated constraints -- disclosed per docs/skills/skeptic-review.md's convergence rule instead of a fourth undisclosed patch attempt.",
+    "finding": "The full authorize_capture_set -> CAPTURED path is blocked for the dynamic authority. Two independent, compounding reasons, both in SHARED code this ADR's Decision points 3 and 6 require to stay unedited for both authority instances: (1) _p4_checked_dispatch calls the module-level _p4_reference_bytes(admission_ref) unconditionally; that function's _P4_ADMISSION_SCHEMAS whitelist hardcodes only {'action-execution-admission', 'final-replay-admission'} and has no case for 'root-capture-admission', so it refuses before resolver.close_admission is ever reached (ValueError: 'P4 admission kind, role and schema must agree'). (2) Even if (1) is set aside, _FixedCapturedAuthorizationContract._prepare (also shared/unedited per Decision point 6) reads resolver._records directly in multiple places and requires admission['plan_evaluation_authorization_sha256']/['capture_expectation_set_sha256']/['broker_verified_plan_sha256'] fields on ANY admission document routed through it -- fields the dynamic resolver's root-capture-admission/cas/pce chain (Decision point 7, which explicitly excludes pea/ces/bvp/scope machinery as a non-goal) structurally does not and must not have.",
+    "why_not_patched": "Fixing (1) would require editing the shared _p4_reference_bytes whitelist or _p4_checked_dispatch itself -- functions ADR-0143 does not name as extensible (only _p4_require_issued_authority and _p4_snapshot_integrity are named). Fixing (2) would require either (a) giving the dynamic resolver a _records-like table after all, directly contradicting evidence 0181's explicit 'no _records slot' Phase 0 pin, or (b) extending _FixedCapturedAuthorizationContract/_P4_PREPARE with resolver-type dispatch, contradicting Decision point 3's 'no second... implementation' and Decision point 6's 'remain shared, unedited' for the signing infrastructure, or (c) inventing synthetic pea/ces/bvp-shaped documents for the dynamic chain, which reintroduces exactly the legacy scope-intent/gate-evidence/scope-authorization/stage-admission apparatus this ADR's own Non-goals section forbids reusing. Every option contradicts an explicit ADR-0143 decision point or Phase 0 pin; none is a 'smallest generic change.' This is a genuine design gap in the accepted ADR text, not an implementation defect, and needs a fresh reviewed decision (a follow-on ADR), not a silent GREEN-time workaround.",
+    "what_was_delivered_instead": "Everything the ADR actually specifies as novel and independently testable was implemented and is GREEN: the resolver/terminal/clock/revocations classes, the one-shot reserve-first construction with pins F1/F2/F3, the extended dispatch functions, and _dynamic_p4_close_admission itself (the ADR's own required fourth resolver method, exercised directly via resolver.close_admission(...) in test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain, which drives a REAL F4 produce/seal/publish lifecycle twice and closes a genuine matching admission chain with zero effect, exactly as the ADR's nonauthorizing contract requires). test_adr143_authorize_capture_set_blocked_by_prepare_contract pins the disclosed refusal as a fact, not a silent gap.",
+    "recommendation": "A follow-on ADR should decide, with fresh independent review, one of: extend _p4_checked_dispatch/_p4_reference_bytes and _FixedCapturedAuthorizationContract._prepare with the SAME kind of exact-type if/elif/else dispatch this ADR already used successfully for _p4_require_issued_authority/_p4_snapshot_integrity; or give the dynamic resolver a minimal, closed, non-caller-selectable records-equivalent scoped only to its own 3-document chain plus a parallel, resolver-typed _prepare path. Both are larger and more trust-boundary-sensitive than this slice's stated scope, which is why they are deferred rather than improvised here.",
+    "cycles_before_checkpoint": "0 -- this was diagnosed and disclosed on first discovery during GREEN test construction, not after repeated failed correction attempts against the same finding family; it is reported per the convergence/disclosure principle even though the 3-cycle counter was never reached, because silently declaring the slice 'done' without a working authorize_capture_set would misrepresent the ADR's own stated Non-goals boundary (Decision point 8 explicitly still requires a genuine CAPTURED admission to be reachable through the ordinary F4 lifecycle, which this blocker prevents)."
+  },
+
+  "report": {
+    "red_commit": "ff7bf5b",
+    "green_commit": "24dbd11",
+    "evidence_file": "docs/evidence/closeout/0182-f5a-p7-adr0143-red-green.json",
+    "focused_tests": "21/21 passed (tests/pipeline/test_captured_authorization.py -k adr143)",
+    "affected_tests": "1481/1482 passed across test_captured_authorization.py, test_trust.py, tests/production/test_verifier.py, test_purity.py, tests/production/test_purity.py; 1 pre-existing baseline failure disclosed above, not fixed",
+    "ruff": "clean",
+    "diff_check": "clean",
+    "legacy_classes_untouched": "confirmed: _FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, _FixedP4VerificationClock, _FixedP4VerificationRevocations, _p4_close_admission have zero modified lines",
+    "convergence_checkpoint_hit": true,
+    "convergence_summary": "authorize_capture_set -> CAPTURED end-to-end is blocked by a genuine contradiction inside ADR-0143's own text (shared/unedited batch-signing infra vs. the narrow admission chain's field shape); resolver.close_admission itself (the ADR's own required entry point) is implemented, GREEN, and independently exercised end-to-end against a real F4 lifecycle"
+  }
+}
