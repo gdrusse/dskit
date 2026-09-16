@@ -10381,3 +10381,85 @@ and integration.
 **Non-goals.** Dynamic P4 graph or CAPTURED admission, full
 EventEnvelope.v2 semantics, composed tape, P7/Packet8 closure,
 external issuer custody or deployment.
+
+## ADR-0142 - read-only dynamic root graph anchor
+
+**Status:** accepted (2026-09-16 under the owner's standing P7 authorization;
+independent preapproval and Phase 0 found zero Critical/Major after
+amendment). This nondeployment bridge supplies
+exact artifact references for a later dynamic P4 resolver. It grants no capture.
+
+**Context.** ADR-0141 now retains one signed two-root PIS and live roster/raw
+publications. Fixed P4 accepts only its own v1 receipts, v1 bases, 500-ms
+clock and immutable terminal corpus; its resolver and capture authority
+have exact class and broker/ledger identity pins. Inserting new bytes into
+that corpus or passing roots to a second broker cannot authenticate a
+dynamic CAPTURED admission.
+
+**Decision.**
+
+1. One issuer-owned NonAuthorizingDynamicRootGraph is constructed only from
+   the successful retained ADR-0141 issuer. It takes no caller artifact
+   map, root, provider, key, signer, clock, snapshot or resolver. Its
+   snapshot and resolve operations call ADR-0141 proof on the exact
+   retained originals and signed pair; checked facts alone are never
+   authority. The graph exposes no F4 write, member-read, signature
+   or P4 capture method; its proof internally reads retained F4 backing.
+2. A graph snapshot is an opaque immutable broker-issued token binding
+   the exact issuer/publisher/F4 broker identity, shared reserve path,
+   revocation generation/digest, durable now_ms, all three exact
+   roster/raw/root-PIS reserve rows and complete append-only audits,
+   and the 12-reference set below. Snapshot creation reads that full
+   shared-state vector in a read transaction and commits, calls the
+   full ADR-0141 proof outside that transaction, then opens a fresh
+   read transaction and requires the entire vector to match. Each
+   resolve likewise reads and commits the vector, rechecks the full
+   proof with no caller transaction held, reads the one retained
+   immutable byte value, rechecks the complete ADR-0141 proof after
+   that selection, then opens a fresh read transaction and requires
+   the full vector, including all three rows and audits, to
+   match immediately before returning those bytes. Both resolve vectors
+   must also equal the supplied token's frozen vector, and the token
+   must be the exact graph-owned issued object. No nested BEGIN is
+   permitted on the shared connection. A clock advance, revocation,
+   backing loss or WORM mutation observed by either complete proof,
+   foreign publisher or copied token refuses. Process-local WORM
+   immutability after proof is a trusted-host invariant; hostile
+   interpreter code is outside this nondeployment contract. Tokens
+   contain no authorization or P4 lifecycle permit.
+3. The set has exactly 12 distinct canonical ASCII references, each
+   with only kind, role, schema and sha256. It contains six original
+   signed auth/grants at their ADR-0141 kind/role/schema with sha256 of
+   exact retained canonical bytes; the roster/v2 and raw/v1 root
+   receipts at kind=root-publication, role=data-publisher, respective
+   schema and verified self digest; their respective
+   IssuanceBasis.v2/v1 at kind=issuance-basis,
+   role=data-publisher, respective schema and verified self digest;
+   the root-PIS IssuanceBasis.v2 at kind=issuance-basis,
+   role=data-publisher, schema=dskit.issuance-basis/v2 and verified
+   self digest; and PublishedInputSet.v2 at kind=root-pis,
+   role=data-publisher, schema=dskit.published-input-set/v2 and
+   verified self digest. The six original refs are exactly the
+   auth/grant subset of the PIS basis refs; both root receipt refs
+   are its other two refs. Each root receipt names its exact retained
+   publication basis digest, and the PIS names its exact root-PIS
+   basis digest. Ref byte keys sort by (kind,role,schema,sha256);
+   any duplicate/alias, missing, extra, noncanonical or wrong-version
+   reference refuses. resolve returns the exact retained bytes only
+   for an equal ref in this closed set; it never fetches user paths.
+4. This is a separate dynamic graph seam. The fixed P4 corpus, shape,
+   terminal verifier, resolver, capture authority, batch signer and
+   500-ms clock remain byte-identical and must reject these dynamic
+   roots. A later reviewed ADR must construct a P4-capable authority
+   in the same F4 broker/ledger domain before root publication,
+   independently bind this graph and live PIS at final CAPTURED
+   admission, and use the shared trusted clock/revocation. Merely
+   resolving a signed byte sequence is not capture authority.
+
+**Process.** Independent preapproval and Phase 0 completed with zero
+Critical/Major findings after the full-vector and double-proof fence
+amendments. Proceed with focused RED/GREEN in existing files, two final
+skeptic lenses, affected tests, evidence and integration.
+
+**Non-goals.** Dynamic P4 CAPTURED, stage/scope graph, full raw/event
+semantics, composed tape, Packet8, deployment or P7 closure.
