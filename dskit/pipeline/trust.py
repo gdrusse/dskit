@@ -5867,6 +5867,90 @@ class NonAuthorizingRosterBootstrapVerifier:
 
 
 
+
+def _derive_synthetic_roster_publish_intent(authorization_bytes,
+                                            g1_grant_bytes, g2_grant_bytes):
+    """Derive fixed roster and publish-intent bytes without authority/effects."""
+    authorization, policy_sha256 = (
+        NonAuthorizingRosterBootstrapVerifier._authorization(
+            authorization_bytes,
+        )
+    )
+    _hs_parse_canonical(g1_grant_bytes)
+    _hs_parse_canonical(g2_grant_bytes)
+    bootstrap_sha256 = _digest(authorization_bytes)
+    policy = {
+        "schema_version": "dskit.source-rank-policy/v1",
+        "sources": [
+            {"source_id": source_id, "rank": rank}
+            for rank, source_id in enumerate(authorization["source_ids"])
+        ],
+        "policy_sha256": policy_sha256,
+    }
+    roster_bytes = _hs_canonical_bytes({
+        "schema_version": "dskit.source-roster-capture/v1",
+        "scope": authorization["scope"],
+        "source_ids": authorization["source_ids"],
+        "policy": policy,
+    })
+    roster_sha256 = _digest(roster_bytes)
+    root = {
+        "root_ref": "synthetic-roster/" + bootstrap_sha256,
+        "root_id": _digest(
+            ("dskit.synthetic-roster-root-id/v1:"
+             + bootstrap_sha256).encode("ascii")
+        ),
+        "snapshot_version": "v1",
+    }
+    producer_document_sha256 = _digest(_hs_canonical_bytes({
+        "schema": "dskit.synthetic-roster-producer/v1",
+        "bootstrap_sha256": bootstrap_sha256,
+        "producer_node": "source-roster-capture",
+        "producer_output": "source_roster",
+        "purpose": "source-roster",
+    }))
+    producer = {
+        "run_identity": "synthetic-roster-run/" + bootstrap_sha256,
+        "document_sha256": producer_document_sha256,
+        "node": "source-roster-capture",
+        "output": "source_roster",
+        "purpose": "source-roster",
+    }
+    receipt_key = {
+        "receipt_schema": "dskit.root-publication-receipt/v2",
+        "publication_authorization_ref": {
+            "kind": "roster-bootstrap",
+            "roster_bootstrap_authorization_sha256": bootstrap_sha256,
+        },
+        "producer_run_identity": producer["run_identity"],
+        "producer_document_sha256": producer_document_sha256,
+        "producer_node": producer["node"],
+        "producer_output": producer["output"],
+        **root,
+    }
+    intent = {
+        "schema_version": "dskit.synthetic-roster-publish-intent/v1",
+        "bootstrap_id": authorization["bootstrap_id"],
+        "bootstrap_sha256": bootstrap_sha256,
+        "g1_grant_sha256": _digest(g1_grant_bytes),
+        "g2_grant_sha256": _digest(g2_grant_bytes),
+        "roster_sha256": roster_sha256,
+        "roster_byte_length": len(roster_bytes),
+        "source_rank_policy_sha256": policy_sha256,
+        "expected_members": [{
+            "relative_path": "source_roster.json",
+            "media_type": "application/json",
+            "sha256": roster_sha256,
+            "byte_length": len(roster_bytes),
+        }],
+        "root": root,
+        "producer": producer,
+        "output_member": "source_roster.json",
+        "receipt_key": receipt_key,
+    }
+    return roster_bytes, _hs_canonical_bytes(intent)
+
+
 _SYNTHETIC_RESERVE_DOMAIN = "dskit.synthetic-authorization-reserve/v1"
 _SYNTHETIC_RESERVE_SCHEMA = (
     "CREATE TABLE reserve_meta (singleton INTEGER PRIMARY KEY CHECK (singleton=1), "
@@ -5989,7 +6073,7 @@ class _SyntheticAuthorizationReserve:
         return generation, revoked, snapshot
 
     def _reserve_roster(self, authorization_bytes, g1_grant_bytes,
-                        g2_grant_bytes, intent_sha256):
+                        g2_grant_bytes, intent_sha256, exact_intent_bytes=None):
         """Spend one signed bootstrap ID without issuing a permit."""
         NonAuthorizingSyntheticGrantVerifier._hash(intent_sha256)
         authorization, _policy = (
@@ -6004,6 +6088,14 @@ class _SyntheticAuthorizationReserve:
             connection.execute("BEGIN IMMEDIATE")
             self._check()
             generation, revoked, snapshot = self._snapshot()
+            if exact_intent_bytes is not None:
+                _roster, derived = _derive_synthetic_roster_publish_intent(
+                    authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+                )
+                _hs_refuse(type(exact_intent_bytes) is bytes
+                           and exact_intent_bytes == derived
+                           and _digest(derived) == intent_sha256,
+                           "closed roster reserve intent refused")
             now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
             _hs_refuse(
                 authorization["not_before_ms"] <= now
@@ -6048,8 +6140,10 @@ class _SyntheticAuthorizationReserve:
             raise
 
     def _admit_roster_transition(self, authorization_bytes, g1_grant_bytes,
-                                 g2_grant_bytes, intent_sha256, new_state):
+                                 g2_grant_bytes, intent_bytes, new_state):
         """Commit one exact roster lifecycle admission without invoking F4."""
+        _hs_refuse(type(intent_bytes) is bytes, "exact roster intent bytes required")
+        intent_sha256 = _digest(intent_bytes)
         sequence = ("RESERVED", "SESSION_STARTED", "PRODUCED", "SEALED",
                     "PUBLISHED", "SESSION_ENDED")
         _hs_refuse(type(new_state) is str and new_state in sequence[1:],
@@ -6070,6 +6164,11 @@ class _SyntheticAuthorizationReserve:
             connection.execute("BEGIN IMMEDIATE")
             self._check()
             generation, revoked, snapshot = self._snapshot()
+            _roster, derived = _derive_synthetic_roster_publish_intent(
+                authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+            )
+            _hs_refuse(derived == intent_bytes,
+                       "closed roster transition intent refused")
             now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
             _hs_refuse(
                 authorization["not_before_ms"] <= now
@@ -6148,3 +6247,368 @@ class _SyntheticAuthorizationReserve:
     def _close(self):
         """Close without releasing any signed ID."""
         self._connection.close()
+
+
+class _SyntheticRosterPublisher:
+    """One-process nondeployment roster publisher with a shared spent-ID store."""
+
+    __slots__ = ("_reserve", "_broker", "_outer_receipts", "_closed")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("the synthetic roster publisher is final")
+
+    def __init__(self, reserve_path):
+        self._reserve = _SyntheticAuthorizationReserve(reserve_path)
+        self._broker = _development_broker(start_ms=500)
+        self._outer_receipts = {}
+        self._closed = False
+
+    @staticmethod
+    def _sign(payload, self_field):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+
+        preimage = _hs_canonical_bytes(payload)
+        seed = bytes.fromhex(_digest(
+            b"dskit.synthetic-roster-root-publication/v1"
+        ))
+        signature = Ed25519PrivateKey.from_private_bytes(seed).sign(
+            preimage
+        ).hex()
+        _p4_verify_ed25519(
+            "03ad7440941bf1c06b1d7c326f4d37d2a3c1abd514a9c1f98aa8ed03858731cd",
+            preimage, signature,
+        )
+        return _hs_canonical_bytes({
+            **payload, self_field: _digest(preimage), "signature": signature,
+        })
+
+    def _quarantine(self, authorization, intent_sha256):
+        """Terminalize locally even if the durable quarantine write fails."""
+        self._closed = True
+        connection = self._reserve._connection
+        try:
+            self._reserve._check()
+            connection.execute("BEGIN IMMEDIATE")
+            self._reserve._check()
+            generation, _revoked, _snapshot = self._reserve._snapshot()
+            row = connection.execute(
+                "SELECT state,intent_sha256 FROM reserve_uses "
+                "WHERE kind=? AND signed_id=?",
+                ("roster-bootstrap", authorization["bootstrap_id"]),
+            ).fetchone()
+            if row is not None and row[0] != "QUARANTINED":
+                _hs_refuse(row[1] == intent_sha256, "quarantine intent mismatch")
+                connection.execute(
+                    "UPDATE reserve_uses SET state='QUARANTINED' "
+                    "WHERE kind=? AND signed_id=?",
+                    ("roster-bootstrap", authorization["bootstrap_id"]),
+                )
+                connection.execute(
+                    "INSERT INTO reserve_audit "
+                    "(kind,signed_id,old_state,new_state,generation) "
+                    "VALUES (?,?,?,?,?)",
+                    ("roster-bootstrap", authorization["bootstrap_id"],
+                     row[0], "QUARANTINED", generation),
+                )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+
+    def _advance(self, authorization_bytes, g1, g2, intent_bytes, state):
+        _roster, derived = _derive_synthetic_roster_publish_intent(
+            authorization_bytes, g1, g2,
+        )
+        _hs_refuse(derived == intent_bytes, "roster intent changed")
+        self._reserve._admit_roster_transition(
+            authorization_bytes, g1, g2, intent_bytes, state,
+        )
+
+    def _published_facts(self, published, roster_bytes, intent):
+        """Compare retained F4 WORM output and exact publication identity."""
+        audit = self._broker._receipt_audit(published)
+        _hs_refuse(
+            len(audit) == 3
+            and [row["event"] for row in audit] ==
+            ["PRODUCED", "SEALED", "PUBLISHED"],
+            "incomplete roster F4 stream",
+        )
+        final = audit[-1]
+        producer = intent["producer"]
+        root = intent["root"]
+        for key in ("root_ref", "root_id", "snapshot_version"):
+            _hs_refuse(final[key] == root[key], "roster root mismatch")
+        for key, field in (
+            ("run_identity", "producer_run_identity"),
+            ("document_sha256", "producer_document_sha256"),
+            ("node", "producer_node"), ("output", "producer_output"),
+        ):
+            _hs_refuse(final[field] == producer[key],
+                       "roster producer mismatch")
+        _hs_refuse(
+            final["member_manifest_sha256"] ==
+            audit[1]["member_manifest_sha256"],
+            "roster member manifest mismatch",
+        )
+        snapshot = self._broker._provider.describe(
+            root["root_ref"], root["snapshot_version"],
+        )
+        raw = self._broker._provider.open_member(
+            snapshot, intent["output_member"],
+        )
+        _hs_refuse(type(raw) is bytes and raw == roster_bytes,
+                   "roster WORM bytes mismatch")
+        manifest = [{
+            "relative_path": intent["output_member"],
+            "media_type": "application/json",
+            "sha256": _digest(roster_bytes),
+            "bytes": len(roster_bytes),
+        }]
+        _hs_refuse(
+            final["member_manifest_sha256"] ==
+            _digest(_hs_canonical_bytes(manifest)),
+            "roster WORM manifest mismatch",
+        )
+        return {key: final[key] for key in (
+            "root_ref", "root_id", "snapshot_version",
+            "member_manifest_sha256", "producer_run_identity",
+            "producer_document_sha256", "producer_node", "producer_output",
+        )}
+
+    def _issue_receipt(self, authorization_bytes, g1, g2, roster_bytes,
+                       intent_bytes, published):
+        """Commit receipt admission, then sign and put once in-call."""
+        authorization, _policy = (
+            NonAuthorizingRosterBootstrapVerifier._authorization(
+                authorization_bytes,
+            )
+        )
+        intent = _hs_parse_canonical(intent_bytes)
+        intent_sha256 = _digest(intent_bytes)
+        reserve = self._reserve
+        connection = reserve._connection
+        reserve._check()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            reserve._check()
+            generation, revoked, snapshot = reserve._snapshot()
+            now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+            bootstrap_sha256 = _digest(authorization_bytes)
+            _hs_refuse(
+                authorization["not_before_ms"] <= now
+                < authorization["expires_at_ms"]
+                and not {
+                    authorization["bootstrap_id"], "data-publisher",
+                    "data-publisher/root-publication-bootstrap-g1-g2",
+                } & revoked,
+                "roster receipt authority revoked or expired",
+            )
+            verifier = NonAuthorizingRosterBootstrapVerifier
+            verifier._grant(g1, "G1", authorization, bootstrap_sha256,
+                            snapshot, revoked, now)
+            verifier._grant(g2, "G2", authorization, bootstrap_sha256,
+                            snapshot, revoked, now)
+            _roster, derived = _derive_synthetic_roster_publish_intent(
+                authorization_bytes, g1, g2,
+            )
+            _hs_refuse(_roster == roster_bytes and derived == intent_bytes,
+                       "roster receipt intent changed")
+            row = connection.execute(
+                "SELECT authorization_sha256,g1_sha256,g2_sha256,"
+                "snapshot_sha256,intent_sha256,state FROM reserve_uses "
+                "WHERE kind=? AND signed_id=?",
+                ("roster-bootstrap", authorization["bootstrap_id"]),
+            ).fetchone()
+            _hs_refuse(
+                row == (bootstrap_sha256, _digest(g1), _digest(g2),
+                        snapshot, intent_sha256, "SESSION_ENDED"),
+                "roster receipt reservation mismatch",
+            )
+            facts = self._published_facts(published, roster_bytes, intent)
+            refs = [
+                {"kind": "roster-bootstrap-authorization",
+                 "role": "security-data",
+                 "schema": "dskit.roster-bootstrap-authorization/v1",
+                 "sha256": bootstrap_sha256},
+                {"kind": "roster-bootstrap-grant", "role": "G1",
+                 "schema": "dskit.roster-bootstrap-grant/v1",
+                 "sha256": _digest(g1)},
+                {"kind": "roster-bootstrap-grant", "role": "G2",
+                 "schema": "dskit.roster-bootstrap-grant/v1",
+                 "sha256": _digest(g2)},
+            ]
+            refs.sort(key=lambda ref: tuple(
+                ref[key] for key in ("kind", "role", "schema", "sha256")
+            ))
+            suffix = {
+                "issuer_role": "data-publisher",
+                "key_usage": "root-publication-bootstrap-g1-g2",
+                "signature_alg": "Ed25519",
+                "issued_at_ms": now,
+                "not_before_ms": now,
+                "expires_at_ms": authorization["expires_at_ms"],
+                "revocation_snapshot_sha256": snapshot,
+                "key": {
+                    "key_id": "data-publisher/root-publication-bootstrap-g1-g2",
+                    "key_version": 1,
+                },
+            }
+            basis_payload = {
+                "schema": "dskit.issuance-basis/v2",
+                "kind": "roster-root-publication",
+                "study_id": "synthetic-study",
+                "refs": refs,
+                "publish_intent_sha256": intent_sha256,
+                **suffix,
+            }
+            basis_sha256 = _digest(_hs_canonical_bytes(basis_payload))
+            receipt_payload = {
+                "schema": "dskit.root-publication-receipt/v2",
+                "kind": "dataset-capture",
+                "capture_kind": "source-roster",
+                "publication_authorization_ref":
+                    intent["receipt_key"]["publication_authorization_ref"],
+                **facts,
+                "issuance_basis_sha256": basis_sha256,
+                **suffix,
+            }
+            final_now = _FixedP4VerificationClock.now_ms(
+                _P4_VERIFICATION._clock
+            )
+            _hs_refuse(
+                authorization["not_before_ms"] <= final_now
+                < authorization["expires_at_ms"],
+                "roster receipt expired before commit",
+            )
+            result = connection.execute(
+                "UPDATE reserve_uses SET state='RECEIPT_ISSUED' "
+                "WHERE kind=? AND signed_id=? AND state='SESSION_ENDED'",
+                ("roster-bootstrap", authorization["bootstrap_id"]),
+            )
+            _hs_refuse(result.rowcount == 1, "roster receipt lost state")
+            connection.execute(
+                "INSERT INTO reserve_audit "
+                "(kind,signed_id,old_state,new_state,generation) "
+                "VALUES (?,?,?,?,?)",
+                ("roster-bootstrap", authorization["bootstrap_id"],
+                 "SESSION_ENDED", "RECEIPT_ISSUED", generation),
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        basis_bytes = self._sign(basis_payload, "issuance_basis_sha256")
+        _hs_refuse(
+            _hs_parse_canonical(basis_bytes)["issuance_basis_sha256"] ==
+            basis_sha256,
+            "roster issuance basis mismatch",
+        )
+        receipt_bytes = self._sign(
+            receipt_payload, "root_publication_receipt_sha256",
+        )
+        key = (
+            intent["receipt_key"]["receipt_schema"],
+            _hs_canonical_bytes(
+                intent["receipt_key"]["publication_authorization_ref"]
+            ),
+            *(
+                intent["receipt_key"][field] for field in (
+                    "producer_run_identity", "producer_document_sha256",
+                    "producer_node", "producer_output", "root_ref",
+                    "root_id", "snapshot_version",
+                )
+            ),
+        )
+        existing = self._outer_receipts.get(key)
+        _hs_refuse(existing is None or existing == receipt_bytes,
+                   "outer roster receipt WORM conflict")
+        if existing is None:
+            self._outer_receipts[key] = receipt_bytes
+        return basis_bytes, receipt_bytes
+
+    def publish(self, authorization_bytes, g1_grant_bytes, g2_grant_bytes):
+        """Publish one synthetic roster or leave its signed ID spent."""
+        _hs_refuse(not self._closed, "roster publisher terminalized")
+        roster_bytes, intent_bytes = _derive_synthetic_roster_publish_intent(
+            authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+        )
+        authorization, _policy = (
+            NonAuthorizingRosterBootstrapVerifier._authorization(
+                authorization_bytes,
+            )
+        )
+        intent = _hs_parse_canonical(intent_bytes)
+        intent_sha256 = _digest(intent_bytes)
+        self._reserve._reserve_roster(
+            authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+            intent_sha256, exact_intent_bytes=intent_bytes,
+        )
+        try:
+            self._advance(authorization_bytes, g1_grant_bytes,
+                          g2_grant_bytes, intent_bytes, "SESSION_STARTED")
+            producer = intent["producer"]
+            root = intent["root"]
+            session = self._broker.start_producer_session(
+                run_identity=producer["run_identity"],
+                process_measurement_sha256=_digest(
+                    b"dskit.synthetic-roster-process/v1"
+                ),
+                runtime_sha256=_digest(
+                    b"dskit.synthetic-roster-runtime/v1"
+                ),
+                plan_sha256=_digest(b"dskit.synthetic-roster-plan/v1"),
+            )
+            _hs_refuse(session._run_identity == producer["run_identity"],
+                       "roster F4 run identity mismatch")
+            self._advance(authorization_bytes, g1_grant_bytes,
+                          g2_grant_bytes, intent_bytes, "PRODUCED")
+            prepared = self._broker.produce(
+                session,
+                producer={key: producer[key] for key in (
+                    "run_identity", "document_sha256", "node", "output",
+                )},
+                root=root,
+                purpose=producer["purpose"],
+                expected_members=(intent["output_member"],),
+                members=[{
+                    "relative_path": intent["output_member"],
+                    "media_type": "application/json",
+                    "bytes": roster_bytes,
+                    "file_type": "regular",
+                    "link_count": 1,
+                }],
+                output_member=intent["output_member"],
+                completed=True,
+                planned=True,
+                transition_nonce="roster-" + intent["bootstrap_sha256"]
+                    + "-produced",
+            )
+            self._advance(authorization_bytes, g1_grant_bytes,
+                          g2_grant_bytes, intent_bytes, "SEALED")
+            sealed = self._broker.seal(
+                session, prepared,
+                transition_nonce="roster-" + intent["bootstrap_sha256"]
+                    + "-sealed",
+            )
+            self._advance(authorization_bytes, g1_grant_bytes,
+                          g2_grant_bytes, intent_bytes, "PUBLISHED")
+            published = self._broker.publish(
+                session, sealed,
+                transition_nonce="roster-" + intent["bootstrap_sha256"]
+                    + "-published",
+            )
+            self._published_facts(published, roster_bytes, intent)
+            self._advance(authorization_bytes, g1_grant_bytes,
+                          g2_grant_bytes, intent_bytes, "SESSION_ENDED")
+            self._broker.end_session(session)
+            basis_bytes, receipt_bytes = self._issue_receipt(
+                authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+                roster_bytes, intent_bytes, published,
+            )
+            return roster_bytes, basis_bytes, receipt_bytes
+        except Exception:
+            self._quarantine(authorization, intent_sha256)
+            raise

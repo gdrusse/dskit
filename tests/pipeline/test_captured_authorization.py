@@ -3024,12 +3024,15 @@ def test_adr136_roster_transition_audits_exact_order(tmp_path):
     cls._provision(path)
     store = cls(path)
     authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
-    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    intent_bytes = trust._derive_synthetic_roster_publish_intent(
+        authorization, g1, g2,
+    )[1]
+    intent = hashlib.sha256(intent_bytes).hexdigest()
     store._reserve_roster(authorization, g1, g2, intent)
     states = ("SESSION_STARTED", "PRODUCED", "SEALED", "PUBLISHED", "SESSION_ENDED")
     for state in states:
         assert store._admit_roster_transition(
-            authorization, g1, g2, intent, state,
+            authorization, g1, g2, intent_bytes, state,
         ) is None
     rows = store._connection.execute(
         "SELECT old_state,new_state FROM reserve_audit ORDER BY seq"
@@ -3038,7 +3041,7 @@ def test_adr136_roster_transition_audits_exact_order(tmp_path):
                             ("RESERVED",) + states, strict=True))
     with pytest.raises(ValueError):
         store._admit_roster_transition(
-            authorization, g1, g2, intent, "SESSION_STARTED",
+            authorization, g1, g2, intent_bytes, "SESSION_STARTED",
         )
 
 
@@ -3048,15 +3051,18 @@ def test_adr136_roster_transition_refuses_wrong_intent_and_revocation(tmp_path):
     cls._provision(path)
     store = cls(path)
     authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
-    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    intent_bytes = trust._derive_synthetic_roster_publish_intent(
+        authorization, g1, g2,
+    )[1]
+    intent = hashlib.sha256(intent_bytes).hexdigest()
     store._reserve_roster(authorization, g1, g2, intent)
     with pytest.raises(ValueError):
         store._admit_roster_transition(
-            authorization, g1, g2, "f" * 64, "SESSION_STARTED",
+            authorization, g1, g2, b"{}", "SESSION_STARTED",
         )
     with pytest.raises(ValueError):
         store._admit_roster_transition(
-            authorization, g1, g2, intent, "PUBLISHED",
+            authorization, g1, g2, intent_bytes, "PUBLISHED",
         )
     assert store._connection.execute(
         "SELECT state FROM reserve_uses"
@@ -3064,8 +3070,338 @@ def test_adr136_roster_transition_refuses_wrong_intent_and_revocation(tmp_path):
     store._revoke("G1")
     with pytest.raises(ValueError):
         store._admit_roster_transition(
-            authorization, g1, g2, intent, "SESSION_STARTED",
+            authorization, g1, g2, intent_bytes, "SESSION_STARTED",
         )
     assert store._connection.execute(
         "SELECT state FROM reserve_uses"
     ).fetchone()[0] == "RESERVED"
+
+
+def test_adr138_fixed_publish_intent():
+    authorization, g1, g2, policy_sha256 = _synthetic_roster_bootstrap_fixture()
+    roster_bytes, intent_bytes = trust._derive_synthetic_roster_publish_intent(
+        authorization, g1, g2,
+    )
+    roster, intent = json.loads(roster_bytes), json.loads(intent_bytes)
+    auth = json.loads(authorization)
+    assert roster["scope"] == auth["scope"]
+    assert roster["source_ids"] == auth["source_ids"]
+    assert roster["policy"]["policy_sha256"] == policy_sha256
+    assert roster_bytes == f4._json_bytes(roster)
+    assert intent_bytes == f4._json_bytes(intent)
+    assert set(intent) == {
+        "schema_version", "bootstrap_id", "bootstrap_sha256",
+        "g1_grant_sha256", "g2_grant_sha256", "roster_sha256",
+        "roster_byte_length", "source_rank_policy_sha256",
+        "expected_members", "root", "producer", "output_member",
+        "receipt_key",
+    }
+    assert intent["roster_sha256"] == hashlib.sha256(roster_bytes).hexdigest()
+    assert intent["expected_members"] == [{
+        "relative_path": "source_roster.json",
+        "media_type": "application/json",
+        "sha256": intent["roster_sha256"],
+        "byte_length": len(roster_bytes),
+    }]
+    assert intent["receipt_key"]["publication_authorization_ref"] == {
+        "kind": "roster-bootstrap",
+        "roster_bootstrap_authorization_sha256": hashlib.sha256(
+            authorization
+        ).hexdigest(),
+    }
+    assert intent["receipt_key"]["root_ref"] == intent["root"]["root_ref"]
+    with pytest.raises(ValueError):
+        trust._derive_synthetic_roster_publish_intent(
+            authorization + b" ", g1, g2,
+        )
+
+
+def test_adr138_publisher_commits_one_roster_and_v2_receipt(tmp_path):
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, policy_sha256 = _synthetic_roster_bootstrap_fixture()
+    roster_bytes, basis_bytes, receipt_bytes = publisher.publish(
+        authorization, g1, g2,
+    )
+    roster, basis, receipt = map(
+        json.loads, (roster_bytes, basis_bytes, receipt_bytes),
+    )
+    assert roster["policy"]["policy_sha256"] == policy_sha256
+    assert basis["schema"] == "dskit.issuance-basis/v2"
+    assert basis["kind"] == "roster-root-publication"
+    assert len(basis["refs"]) == 3
+    assert receipt["schema"] == "dskit.root-publication-receipt/v2"
+    assert receipt["capture_kind"] == "source-roster"
+    assert receipt["issuance_basis_sha256"] == basis["issuance_basis_sha256"]
+    assert len(publisher._outer_receipts) == 1
+    assert next(iter(publisher._outer_receipts.values())) == receipt_bytes
+    assert receipt["publication_authorization_ref"] == {
+        "kind": "roster-bootstrap",
+        "roster_bootstrap_authorization_sha256": hashlib.sha256(
+            authorization
+        ).hexdigest(),
+    }
+    assert publisher._broker._provider.open_member(
+        publisher._broker._provider.describe(
+            receipt["root_ref"], receipt["snapshot_version"],
+        ), "source_roster.json",
+    ) == roster_bytes
+    states = [
+        row[0] for row in publisher._reserve._connection.execute(
+            "SELECT new_state FROM reserve_audit ORDER BY seq"
+        )
+    ]
+    assert states == [
+        "RESERVED", "SESSION_STARTED", "PRODUCED", "SEALED",
+        "PUBLISHED", "SESSION_ENDED", "RECEIPT_ISSUED",
+    ]
+    with pytest.raises(ValueError):
+        publisher.publish(authorization, g1, g2)
+
+def test_adr138_roster_receipt_signatures_bind_basis_and_publication(tmp_path):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    _roster, basis_bytes, receipt_bytes = publisher.publish(
+        authorization, g1, g2,
+    )
+    public = Ed25519PublicKey.from_public_bytes(bytes.fromhex(
+        "03ad7440941bf1c06b1d7c326f4d37d2a3c1abd514a9c1f98aa8ed03858731cd"
+    ))
+    for raw, self_field in (
+        (basis_bytes, "issuance_basis_sha256"),
+        (receipt_bytes, "root_publication_receipt_sha256"),
+    ):
+        value = json.loads(raw)
+        preimage = f4._json_bytes({
+            key: item for key, item in value.items()
+            if key not in (self_field, "signature")
+        })
+        assert value[self_field] == hashlib.sha256(preimage).hexdigest()
+        public.verify(bytes.fromhex(value["signature"]), preimage)
+
+
+def test_adr138_partial_f4_write_quarantines_without_outer_receipt(
+    tmp_path, monkeypatch,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    original = publisher._broker._provider.write_member
+
+    def write_then_fail(*args):
+        original(*args)
+        raise OSError("partial F4 publish")
+
+    monkeypatch.setattr(publisher._broker._provider, "write_member",
+                        write_then_fail)
+    with pytest.raises(OSError, match="partial"):
+        publisher.publish(authorization, g1, g2)
+    assert publisher._closed
+    assert publisher._outer_receipts == {}
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "QUARANTINED"
+    with pytest.raises(ValueError):
+        trust._SyntheticRosterPublisher(path).publish(authorization, g1, g2)
+
+
+def test_adr138_revocation_before_receipt_refuses_after_f4(
+    tmp_path, monkeypatch,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    admin = trust._SyntheticAuthorizationReserve(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    original = publisher._broker.end_session
+
+    def revoke_after_end(session):
+        original(session)
+        admin._revoke("data-publisher")
+
+    monkeypatch.setattr(publisher._broker, "end_session", revoke_after_end)
+    with pytest.raises(ValueError, match="revoked|snapshot"):
+        publisher.publish(authorization, g1, g2)
+    assert publisher._closed
+    assert publisher._outer_receipts == {}
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "QUARANTINED"
+
+
+def test_adr138_sign_before_put_failure_cannot_retry(tmp_path, monkeypatch):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    original = type(publisher)._sign
+    calls = 0
+
+    def fail_receipt_sign(payload, self_field):
+        nonlocal calls
+        calls += 1
+        if self_field == "root_publication_receipt_sha256":
+            raise OSError("sign before put")
+        return original(payload, self_field)
+
+    monkeypatch.setattr(type(publisher), "_sign", staticmethod(
+        fail_receipt_sign
+    ))
+    with pytest.raises(OSError, match="sign before put"):
+        publisher.publish(authorization, g1, g2)
+    assert calls == 2
+    assert publisher._outer_receipts == {}
+    assert publisher._closed
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "QUARANTINED"
+    with pytest.raises(ValueError):
+        publisher.publish(authorization, g1, g2)
+
+def test_adr138_expiry_before_produce_refuses_without_produce(
+    tmp_path, monkeypatch,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    original = publisher._broker.start_producer_session
+
+    def start_then_expire(**kwargs):
+        session = original(**kwargs)
+        monkeypatch.setattr(
+            trust._FixedP4VerificationClock, "now_ms",
+            lambda _clock: 901,
+        )
+        return session
+
+    monkeypatch.setattr(publisher._broker, "start_producer_session",
+                        start_then_expire)
+    with pytest.raises(ValueError, match="time"):
+        publisher.publish(authorization, g1, g2)
+    assert publisher._broker._storage == {}
+    assert publisher._outer_receipts == {}
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "QUARANTINED"
+
+
+def test_adr138_roster_worm_mutation_refuses_before_receipt(
+    tmp_path, monkeypatch,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    original = publisher._broker.publish
+
+    def publish_then_corrupt(*args, **kwargs):
+        published = original(*args, **kwargs)
+        intent = json.loads(trust._derive_synthetic_roster_publish_intent(
+            authorization, g1, g2,
+        )[1])
+        root = intent["root"]
+        publisher._broker._storage[
+            (root["root_ref"], root["snapshot_version"],
+             intent["output_member"])
+        ] = b"{}"
+        return published
+
+    monkeypatch.setattr(publisher._broker, "publish",
+                        publish_then_corrupt)
+    with pytest.raises(ValueError, match="WORM bytes"):
+        publisher.publish(authorization, g1, g2)
+    assert publisher._outer_receipts == {}
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "QUARANTINED"
+
+
+def test_adr138_invalid_grant_refuses_before_f4_or_reservation(tmp_path):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    with pytest.raises(ValueError):
+        publisher.publish(authorization, g1 + b" ", g2)
+    assert publisher._broker._storage == {}
+    assert publisher._broker._session_events == []
+    assert publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses"
+    ).fetchone()[0] == 0
+
+@pytest.mark.parametrize("completed", [
+    "start_producer_session", "produce", "seal", "publish", "end_session",
+])
+def test_adr138_shared_revocation_blocks_next_effect(
+    tmp_path, monkeypatch, completed,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    admin = trust._SyntheticAuthorizationReserve(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    original = getattr(publisher._broker, completed)
+    calls = []
+
+    def complete_then_revoke(*args, **kwargs):
+        result = original(*args, **kwargs)
+        calls.append(completed)
+        admin._revoke("G1")
+        return result
+
+    monkeypatch.setattr(publisher._broker, completed, complete_then_revoke)
+    with pytest.raises(ValueError):
+        publisher.publish(authorization, g1, g2)
+    assert calls == [completed]
+    assert publisher._outer_receipts == {}
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "QUARANTINED"
+
+def _adr138_publish_in_process(path, authorization, g1, g2, start, results):
+    publisher = trust._SyntheticRosterPublisher(path)
+    start.wait()
+    try:
+        _roster, _basis, receipt = publisher.publish(authorization, g1, g2)
+    except ValueError:
+        results.put(("spent", len(publisher._broker._session_events)))
+    else:
+        results.put((
+            hashlib.sha256(receipt).hexdigest(),
+            len(publisher._broker._session_events),
+        ))
+
+
+def test_adr138_two_processes_publish_at_most_once(tmp_path):
+    import multiprocessing
+
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    ctx = multiprocessing.get_context("fork")
+    start, results = ctx.Event(), ctx.Queue()
+    workers = [
+        ctx.Process(
+            target=_adr138_publish_in_process,
+            args=(path, authorization, g1, g2, start, results),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    start.set()
+    for worker in workers:
+        worker.join(timeout=10)
+        assert worker.exitcode == 0
+    outcomes = [results.get(timeout=2) for _ in workers]
+    assert sum(item[0] == "spent" for item in outcomes) == 1
+    assert sum(item[0] != "spent" for item in outcomes) == 1
+    assert sorted(item[1] for item in outcomes) == [0, 1]
