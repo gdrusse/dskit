@@ -4322,3 +4322,119 @@ def test_adr139_raw_publisher_late_outer_conflict_never_overwrites(
     assert roster_publisher._reserve._connection.execute(
         "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
     ).fetchone() == ("QUARANTINED",)
+
+
+def _adr140_published_raw_case(tmp_path, monkeypatch):
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    raw_fixture = preflight.verify(*signed, *roster)
+    publisher = trust._SyntheticRawPublisher(preflight)
+    manifest, basis, receipt = publisher.publish(
+        raw_fixture, *signed, *roster,
+    )
+    return publisher, roster, signed, (manifest, basis, receipt)
+
+
+def test_adr140_raw_root_proof_matches_live_signed_publication(
+    tmp_path, monkeypatch,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    proof = publisher.proof()
+    assert isinstance(proof, trust.NonAuthorizingRawRootProof)
+    before = publisher._reserve._connection.total_changes
+    facts = proof.verify(*signed, *roster, *output)
+    receipt = json.loads(output[2])
+    assert facts["raw_publication_receipt_sha256"] == (
+        receipt["root_publication_receipt_sha256"]
+    )
+    assert facts["raw_manifest_sha256"] == hashlib.sha256(output[0]).hexdigest()
+    assert facts["event_count"] == 1
+    assert len(facts["ordered_member_digests"]) == 2
+    assert facts["authorizing"] is False
+    assert facts["deployment_eligible"] is False
+    assert publisher._reserve._connection.total_changes == before
+    with pytest.raises(TypeError):
+        trust.NonAuthorizingRawRootProof(publisher)
+    from dskit.production import verifier as production_verifier
+    assert production_verifier.NonAuthorizingRawRootProof is (
+        trust.NonAuthorizingRawRootProof
+    )
+
+
+@pytest.mark.parametrize("tamper", [
+    "manifest", "basis", "receipt", "f4-member", "f4-log",
+    "outer-missing", "audit-gap", "reserve-quarantine",
+])
+def test_adr140_raw_root_proof_refuses_substitution_or_backing_loss(
+    tmp_path, monkeypatch, tamper,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    manifest, basis, receipt = output
+    root = "synthetic-raw/" + hashlib.sha256(signed[0]).hexdigest()
+    if tamper == "manifest":
+        manifest += b" "
+    elif tamper == "basis":
+        basis += b" "
+    elif tamper == "receipt":
+        receipt += b" "
+    elif tamper == "f4-member":
+        publisher._broker._storage[(root, "v1", "fixture_A.ndjson")] = b"wrong"
+    elif tamper == "f4-log":
+        publisher._broker._receipt_store._data.clear()
+    elif tamper == "outer-missing":
+        key = next(
+            key for key in publisher._roster_publisher._outer_receipts
+            if key[0] == "dskit.root-publication-receipt/v1"
+        )
+        del publisher._roster_publisher._outer_receipts[key]
+    elif tamper == "audit-gap":
+        publisher._reserve._connection.execute(
+            "DELETE FROM reserve_audit WHERE kind='raw-dataset' "
+            "AND new_state='SEALED'"
+        )
+    else:
+        publisher._reserve._connection.execute(
+            "UPDATE reserve_uses SET state='QUARANTINED' "
+            "WHERE kind='raw-dataset'"
+        )
+    with pytest.raises((TypeError, ValueError)):
+        publisher.proof().verify(
+            *signed, *roster, manifest, basis, receipt,
+        )
+
+
+def test_adr140_raw_root_proof_rechecks_revocation_after_f4_readback(
+    tmp_path, monkeypatch,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    path = publisher._reserve._path
+    original = publisher._broker._provider.open_member
+    fired = False
+
+    def revoke_during_raw_read(snapshot, name):
+        nonlocal fired
+        raw = original(snapshot, name)
+        if snapshot["root_ref"].startswith("synthetic-raw/") and not fired:
+            fired = True
+            admin = trust._SyntheticAuthorizationReserve(path)
+            admin._revoke("G1")
+            admin._close()
+        return raw
+
+    monkeypatch.setattr(
+        publisher._broker._provider, "open_member", revoke_during_raw_read,
+    )
+    with pytest.raises(ValueError):
+        publisher.proof().verify(*signed, *roster, *output)
+    assert fired

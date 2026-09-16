@@ -45,6 +45,7 @@ __all__ = [
     "NonAuthorizingSyntheticFixtureVerifier",
     "NonAuthorizingRosterBootstrapVerifier",
     "NonAuthorizingRosterRootProof",
+    "NonAuthorizingRawRootProof",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
@@ -7812,3 +7813,273 @@ class _SyntheticRawPublisher:
         except Exception:
             self._quarantine(proof)
             raise
+
+    def proof(self):
+        """Return only a live read-only proof of retained raw publication."""
+        _hs_refuse(self._closed and self._retained is not None,
+                   "successful retained raw publication required")
+        return NonAuthorizingRawRootProof(_MAKE, self)
+
+
+class NonAuthorizingRawRootProof:
+    """Fresh read-only proof of one retained synthetic raw root and receipt."""
+
+    __slots__ = ("_publisher", "_locked")
+
+    def __init_subclass__(cls, **kwargs):
+        """Forbid subtypes that could replace the fixed proof checks."""
+        raise TypeError("the fixed raw-root proof is final")
+
+    def __init__(self, token, publisher):
+        if token is not _MAKE or type(publisher) is not _SyntheticRawPublisher:
+            raise TypeError("broker-owned raw-root proof required")
+        object.__setattr__(self, "_publisher", publisher)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        """Keep the construction-owned publisher binding frozen."""
+        if getattr(self, "_locked", False):
+            raise AttributeError("raw-root proof is frozen")
+        object.__setattr__(self, name, value)
+
+    @staticmethod
+    def _audit(connection, signed_id, generation):
+        rows = connection.execute(
+            "SELECT old_state,new_state,generation FROM reserve_audit "
+            "WHERE kind='raw-dataset' AND signed_id=? ORDER BY seq",
+            (signed_id,),
+        ).fetchall()
+        states = (
+            "RESERVED", "RAW_READ_STARTED", "SESSION_STARTED", "PRODUCED",
+            "SEALED", "PUBLISHED", "SESSION_ENDED", "RECEIPT_ISSUED",
+        )
+        _hs_refuse(
+            len(rows) == len(states)
+            and all(
+                old == (states[index - 1] if index else None)
+                and new == state
+                and type(saved_generation) is int
+                and saved_generation == generation
+                for index, ((old, new, saved_generation), state)
+                in enumerate(zip(rows, states, strict=True))
+            ),
+            "complete raw reservation audit required",
+        )
+
+    def verify(self, authorization_bytes, g1, g2, attestation,
+               bootstrap, bg1, bg2, roster_basis, roster_receipt,
+               manifest_bytes, basis_bytes, receipt_bytes):
+        """Return checked identities, never a publication or capture permit."""
+        values = (
+            authorization_bytes, g1, g2, attestation,
+            bootstrap, bg1, bg2, roster_basis, roster_receipt,
+            manifest_bytes, basis_bytes, receipt_bytes,
+        )
+        _hs_refuse(all(type(raw) is bytes for raw in values),
+                   "exact raw proof bytes required")
+        publisher = self._publisher
+        _hs_refuse(
+            type(publisher) is _SyntheticRawPublisher
+            and publisher._closed
+            and type(publisher._preflight) is _SyntheticRawPreflight
+            and publisher._preflight._publisher
+            is publisher._roster_publisher
+            and publisher._retained is not None,
+            "live retained raw publisher required",
+        )
+        proof, published, session, signed, roster, original_manifest, original_basis, original_receipt = (
+            publisher._retained
+        )
+        _hs_refuse(
+            type(proof) is VerifiedSyntheticDatasetFixture
+            and proof._used
+            and proof._owner is publisher._preflight
+            and values == (*signed, *roster, original_manifest,
+                           original_basis, original_receipt),
+            "retained raw proof originals mismatch",
+        )
+        _hs_refuse(
+            type(session) is LaunchSession and session._ended is True,
+            "retained ended raw F4 session required",
+        )
+        reserve = publisher._reserve
+        reserve._check()
+        connection = reserve._connection
+        signed_id = _hs_parse_canonical(authorization_bytes)["authorization_id"]
+        try:
+            connection.execute("BEGIN")
+            generation, revoked, snapshot = reserve._snapshot()
+            now = reserve._now()
+            authorization = publisher._check_row(
+                signed, roster, proof, "RECEIPT_ISSUED",
+                connection, snapshot, revoked, now,
+            )
+            self._audit(connection, signed_id, generation)
+            _hs_refuse(not {
+                "data-publisher", "data-publisher/root-publication-g1-g2",
+            } & revoked, "raw proof signer revoked")
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        expected_manifest = publisher._manifest(proof, authorization_bytes)
+        _hs_refuse(manifest_bytes == expected_manifest,
+                   "raw proof manifest mismatch")
+        seen = set()
+        parsed_events = []
+        ordered = _hs_parse_canonical(proof._intent)["ordered_members"]
+        for (_name, raw), member in zip(
+            proof._members, ordered, strict=True,
+        ):
+            parsed_events.extend(
+                _SyntheticRawPreflight._parse_member(
+                    raw, member, authorization["scope"], seen,
+                )
+            )
+        _hs_refuse(
+            len(parsed_events) == proof.event_count
+            and tuple(parsed_events) == proof._events,
+            "raw proof event binding mismatch",
+        )
+        root, producer = publisher._identity(authorization_bytes)
+        facts = publisher._published_facts(
+            published, proof, manifest_bytes, root, producer,
+        )
+        basis = _hs_parse_canonical(basis_bytes)
+        _hs_refuse(
+            type(basis) is dict
+            and type(basis.get("issued_at_ms")) is int
+            and authorization["issued_at_ms"] <= basis["issued_at_ms"]
+            <= now < authorization["expires_at_ms"],
+            "raw proof basis issuance refused",
+        )
+        refs = [
+            {"kind": "dataset-capture-authorization",
+             "role": "security-data",
+             "schema": "dskit.dataset-capture-authorization/v1",
+             "sha256": _digest(authorization_bytes)},
+            {"kind": "dataset-capture-grant", "role": "G1",
+             "schema": "dskit.dataset-capture-grant/v1",
+             "sha256": _digest(g1)},
+            {"kind": "dataset-capture-grant", "role": "G2",
+             "schema": "dskit.dataset-capture-grant/v1",
+             "sha256": _digest(g2)},
+        ]
+        refs.sort(key=lambda ref: tuple(
+            ref[field] for field in ("kind", "role", "schema", "sha256")
+        ))
+        suffix = {
+            "issuer_role": "data-publisher",
+            "key_usage": "root-publication-g1-g2",
+            "signature_alg": "Ed25519",
+            "issued_at_ms": basis["issued_at_ms"],
+            "not_before_ms": basis["issued_at_ms"],
+            "expires_at_ms": authorization["expires_at_ms"],
+            "revocation_snapshot_sha256": snapshot,
+            "key": {
+                "key_id": "data-publisher/root-publication-g1-g2",
+                "key_version": 1,
+            },
+        }
+        expected_basis = {
+            "schema": "dskit.issuance-basis/v1",
+            "kind": "root-publication",
+            "study_id": "synthetic-study",
+            "refs": refs,
+            **suffix,
+        }
+        basis = publisher._check_signed(
+            basis_bytes, expected_basis, "issuance_basis_sha256",
+        )
+        expected_receipt = {
+            "schema": "dskit.root-publication-receipt/v1",
+            "kind": "dataset-capture",
+            "capture_kind": "raw-event-dataset",
+            "publication_authorization_ref": {
+                "kind": "dataset-capture",
+                "dataset_capture_authorization_sha256":
+                    _digest(authorization_bytes),
+            },
+            **facts,
+            "issuance_basis_sha256": basis["issuance_basis_sha256"],
+            **suffix,
+        }
+        receipt = publisher._check_signed(
+            receipt_bytes, expected_receipt,
+            "root_publication_receipt_sha256",
+        )
+        key = (
+            receipt["schema"],
+            _hs_canonical_bytes(receipt["publication_authorization_ref"]),
+            *(receipt[field] for field in (
+                "producer_run_identity", "producer_document_sha256",
+                "producer_node", "producer_output", "root_ref",
+                "root_id", "snapshot_version",
+            )),
+        )
+        _hs_refuse(
+            publisher._roster_publisher._outer_receipts.get(key)
+            == receipt_bytes
+            and sum(
+                item == receipt_bytes
+                for item in publisher._roster_publisher._outer_receipts.values()
+            ) == 1,
+            "persisted raw receipt mismatch",
+        )
+        reserve._check()
+        try:
+            connection.execute("BEGIN")
+            final_generation, final_revoked, final_snapshot = (
+                reserve._snapshot()
+            )
+            final_now = reserve._now()
+            _hs_refuse(
+                final_generation == generation
+                and final_snapshot == snapshot
+                and final_now == now
+                and not {
+                    authorization["authorization_id"], "G1", "G2",
+                    "G2-fixture", "data-publisher",
+                    "data-publisher/root-publication-g1-g2",
+                } & final_revoked,
+                "raw proof freshness changed",
+            )
+            row = connection.execute(
+                "SELECT authorization_sha256,g1_sha256,g2_sha256,"
+                "snapshot_sha256,intent_sha256,state FROM reserve_uses "
+                "WHERE kind='raw-dataset' AND signed_id=?",
+                (signed_id,),
+            ).fetchone()
+            _hs_refuse(
+                row == (_digest(authorization_bytes), _digest(g1),
+                        _digest(g2), snapshot, _digest(proof._intent),
+                        "RECEIPT_ISSUED"),
+                "raw proof final reservation changed",
+            )
+            self._audit(connection, signed_id, final_generation)
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        raw_root_sha = _digest(_hs_canonical_bytes({
+            field: receipt[field] for field in (
+                "root_ref", "root_id", "snapshot_version",
+                "member_manifest_sha256",
+            )
+        }))
+        return MappingProxyType({
+            "raw_manifest_sha256": _digest(manifest_bytes),
+            "raw_root_sha256": raw_root_sha,
+            "raw_publication_receipt_sha256":
+                receipt["root_publication_receipt_sha256"],
+            "ordered_member_digests": tuple(
+                MappingProxyType(dict(member)) for member in
+                _hs_parse_canonical(manifest_bytes)["ordered_member_digests"]
+            ),
+            "event_count": len(parsed_events),
+            "checked_at_ms": final_now,
+            "authorizing": False,
+            "deployment_eligible": False,
+        })

@@ -10201,3 +10201,83 @@ the old fixed clock is not a chronology mechanism.
 
 **Non-goals.** External providers, production key custody, P4 capture,
 full F1/F2/F3 event semantics, P7/Packet8 closure or deployment.
+
+## ADR-0140 - read-only synthetic raw-root publication proof
+
+**Status:** accepted under the owner's repeated explicit P7 approval and
+autonomous-completion direction (2026-09-16); independent Phase 0 before RED.
+This is a nonauthorizing prerequisite for dynamic P4 trust.
+
+**Context.** ADR-0139 publishes one validated raw F4 WORM root and signed
+v1 basis/receipt but returns identity bytes, not a fresh proof that the
+original signed inputs, shared reservation and retained backing still
+agree. ADR-0137 provides the analogous read-only roster proof. Dynamic
+P4 resolution cannot infer trust from caller-supplied receipt bytes.
+
+**Decision.**
+
+1. A single fixed NonAuthorizingRawRootProof is constructed only by the
+   live _SyntheticRawPublisher after one successful publication. A
+   successful publisher is intentionally terminalized (_closed=True);
+   the factory requires its retained successful tuple, the consumed
+   original proof (_used=True), and exact preflight/publisher ownership,
+   never an open publisher flag. Its verify call takes the exact original dataset authorization/G1/G2,
+   fixture attestation, bootstrap authorization/G1/G2, roster v2 basis
+   and receipt, raw manifest, raw v1 basis and receipt bytes. The fixed
+   class is exported from pipeline.trust and production.verifier with
+   identical identity and no public constructor or effecting method.
+   It accepts
+   no caller root, path, provider, key, resolver or checked-facts token.
+   All inputs must equal the publisher's retained original bytes; a
+   restart without retained F4 token/proof cannot reconstruct it.
+2. Under one shared SQLite read snapshot, it rechecks current durable
+   time and revocation, original dataset/bootstrap G1/G2 and distinct
+   fixture signature, signed post-roster chronology and all field/root
+   equalities by rederiving the ADR-0132 raw intent. The nested
+   roster/v2 proof runs on this same held connection/transaction,
+   without a second BEGIN/COMMIT; its returned MappingProxy facts
+   supply equality values only and never authorize downstream use.
+   It rechecks the roster/v2 proof and its live F4 root, the exact raw-dataset row
+   identity and state RECEIPT_ISSUED, and the full append-only raw audit
+   sequence RESERVED, RAW_READ_STARTED, SESSION_STARTED, PRODUCED,
+   SEALED, PUBLISHED, SESSION_ENDED, RECEIPT_ISSUED with correct
+   predecessor/generation. A revoked/expired issuer, key, authorization
+   or data-publisher signer refuses. It rechecks the original one-use
+   proof's consumed state and exact member/event bindings. No checked
+   fact from ADR-0133/0134 is accepted as a permit.
+3. It requires a retained ended raw F4 producer session and authenticates
+   the complete F4 lifecycle log, deterministic root/producer, exact
+   WORM member keyset/order/media/digests and byte-identical raw
+   manifest/member bytes through the fixed provider. The manifest is
+   independently rederived from the exact retained proof and signed
+   authorization and default-deny parsed with ADR-0139's closed shape.
+   It verifies the complete exact v1 signed basis and receipt field
+   sets, sorted parent refs, role/key/use/version, self digests,
+   signatures, common issuance window and current shared revocation
+   snapshot. The raw receipt's exact tagged authorization ref and
+   root/producer/member facts must match live F4; the process-local
+   outer WORM store must contain one byte-identical value at the exact
+   ADR-0125 key and no duplicate identical receipt under an alias.
+   After these external F4/outer reads, it opens a fresh shared SQLite
+   snapshot and requires the revocation generation/digest, exact raw
+   row/audit and durable now_ms to equal the first snapshot and all
+   authorities still live. A concurrent revocation or clock advance
+   during readback refuses. This final fence precedes returning facts;
+   the facts remain nonauthorizing and may become stale immediately
+   afterward, so every later effecting consumer rechecks independently.
+4. Success returns only immutable checked identity facts: raw manifest
+   SHA-256, raw root SHA-256 of canonical
+   {root_ref,root_id,snapshot_version,member_manifest_sha256},
+   verified raw v1 receipt self digest, ordered raw member digests,
+   event_count, checked_at_ms, authorizing=false and
+   deployment_eligible=false. It has no consume, F4/P4, member-read,
+   signer, root-mint or downstream-admission method. Calls may repeat
+   but every call rechecks live state. A later dynamic P4 resolver must
+   independently hold this proof and recheck it at admission; this
+   read-only result cannot be promoted into authority.
+
+**Process.** Focused RED/GREEN in existing files after independent Phase 0;
+two final skeptic lenses, affected tests, evidence and integration.
+
+**Non-goals.** Dynamic P4 resolver, CAPTURED authorization, full raw/event
+semantics, composed tape, P7/Packet8 closure or deployment.
