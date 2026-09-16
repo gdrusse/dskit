@@ -10466,13 +10466,18 @@ semantics, composed tape, Packet8, deployment or P7 closure.
 
 ## ADR-0143 - same-domain dynamic P4 capture authority
 
-**Status:** accepted (2026-09-16 under the owner's standing P7 authorization;
-independent preapproval review and a fresh independent recheck both found
-zero Critical/Major/Minor/Nit after the signed_id-derivation and dispatch-
-safety corrections recorded in evidence 0180). Phase 0 skeptic review is
-still required before RED — this slice crosses a trust boundary. No Phase 0,
-RED/GREEN or code exists yet for this slice; acceptance authorizes design
-proceeding to Phase 0, not capture, member access or deployment eligibility.
+**Status:** accepted and GREEN, scope corrected (2026-09-16 under the
+owner's standing P7 authorization). Independent preapproval review and a
+fresh independent recheck found zero Critical/Major/Minor/Nit after
+correction (evidence 0180). A clean independent Phase 0 skeptic pass (0
+Critical/Major, 3 Minor pins) completed before RED (evidence 0181). RED
+and GREEN are complete (evidence 0182), with candidate `24dbd11` pending
+its two independent final lenses. GREEN discovered that Decision point 8's
+`authorize_capture_set` closure claim cannot be delivered within this ADR's
+own constraints; see "Scope correction discovered during GREEN" below.
+This ADR grants only the dynamic resolver and its nonauthorizing
+`close_admission` proof — not a reachable CAPTURED admission, not member
+access, not deployment eligibility.
 
 **Context.** ADR-0141 retains one signed synthetic two-root
 PublishedInputSet.v2 and its NonAuthorizingSyntheticRootPisProof. ADR-0142
@@ -10742,15 +10747,34 @@ must not do.
    existing per-stream/per-document/per-run checks already inherited from
    `_validate_capture_request`/`commit_p4_batch`.
 
-**Process.** Proposal only. This ADR has not had independent preapproval
-review, Phase 0, RED, GREEN, or any test run. Per `docs/skills/skeptic-review.md`,
-because this slice crosses a trust boundary (it is the first P4-capable,
-effecting authority built on the dynamic two-root graph) it requires a
-full Phase 0 skeptic pass — inventorying alias/subclass/mutation,
-expiry/revocation, identity/path substitution, partial-failure/crash/
-concurrency and every public facade — before any RED. Independent
-preapproval review, then owner ADR approval, must both complete before
-Phase 0 begins; Phase 0 must complete with zero Critical/Major before RED.
+**Process.** Independent preapproval review (2 Major, 1 Minor, corrected
+and rechecked clean) and owner acceptance are complete; a clean independent
+Phase 0 skeptic pass (0 Critical/Major, 3 Minor implementation pins)
+completed before RED. RED and GREEN are complete (evidence 0182).
+
+**Scope correction discovered during GREEN (evidence 0182).** Decision
+point 8's assumption that `authorize_capture_set` reaches a genuine
+CAPTURED admission for this authority is **false as accepted**: the
+shared, unedited `_p4_checked_dispatch`/`_p4_reference_bytes` admission-kind
+whitelist and `_FixedCapturedAuthorizationContract._prepare`'s
+`pea`/`ces`/`bvp`-shaped field requirements — both explicitly required by
+Decision points 3 and 6 to stay shared and unedited — structurally cannot
+admit this ADR's own narrow `root-capture-admission`/`cas`/`pce` chain
+(Decision point 7), which explicitly excludes that same pea/ces/bvp/scope
+apparatus as a non-goal. Every fix contradicts an explicit decision point
+or Phase 0 pin (evidence 0182's `convergence_checkpoint`); this is a design
+gap in this ADR's own text, not a GREEN-time implementation defect. This
+ADR's accepted, implemented, and reviewable scope is therefore narrowed to:
+the dynamic resolver/terminal/clock/revocations classes, the extended
+`_p4_require_issued_authority`/`_p4_snapshot_integrity` dispatch, the
+reserve-first one-shot authority construction, and `resolver.close_admission`
+itself (`_dynamic_p4_close_admission`) — independently exercised end-to-end
+against a real F4 produce/seal/publish lifecycle with zero effect, exactly
+as a nonauthorizing proof method. Full `authorize_capture_set` -> CAPTURED
+closure for the dynamic authority is deferred to a follow-on ADR (proposed
+next as ADR-0144) that must resolve the dispatch/admission-shape
+contradiction with its own fresh independent review; it is not closed by
+ADR-0143.
 
 **Non-goals.** Full EventEnvelope.v2 causality/ordering/provenance/
 correction semantics; composed-tape verification; reuse or extension of
@@ -10760,4 +10784,7 @@ Packet 8 durable consume-once; deployment; any edit to the fixed P4
 corpus, its 500-ms clock, `_FixedWormTrustedArtifactResolver`,
 `_FixedTerminalArtifactVerifier`, or `_p4_close_admission`'s v1-only
 grammar, all of which must continue to refuse these dynamic v2/graph
-roots unchanged.
+roots unchanged. **Added by the GREEN-time scope correction above:** a
+full, reachable `authorize_capture_set` -> CAPTURED admission for the
+dynamic authority is explicitly NOT delivered by this ADR; do not read
+Decision point 8 as claiming that path is closed.
