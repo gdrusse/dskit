@@ -409,5 +409,15 @@
     "checks": "git diff --check passed; design only, no code tests.",
     "gate": "Proposal only. Repository ADR-before-code owner approval and fresh Phase 0 required before RED. Dynamic trusted P4 resolver and durable F4 restart proof are separate prerequisites.",
     "deployment_eligible": false
+  },
+  "adr0137_preapproval": {
+    "scope": "NonAuthorizingRosterRootProof only; exact persisted roster/v2 receipt and live F4 root, no raw/P4 admission.",
+    "reviewer": "/root/adr137_preapproval",
+    "initial": "0 Critical, 4 Major: dynamic scope/time closure, one-use raw F4 publication, pre-document versus post-document graph sealing, shared revocation versus CAPTURED commit.",
+    "changed_approach": "Narrow to process-local read-only roster proof; explicitly defer all four effecting/dynamic P4 gaps to separate approved contracts.",
+    "minor_correction": "Fetch one persisted byte-identical WORM receipt at exact reserved key; sign-before-put interruption refuses.",
+    "final": "0 Critical, 0 Major, 0 Minor, 0 Nit. Design review only; git diff --check passed.",
+    "gate": "Proposed only. Owner ADR approval and fresh Phase 0 before RED; no F4/P4/raw effect, P7 or Packet8 closure.",
+    "deployment_eligible": false
   }
 }

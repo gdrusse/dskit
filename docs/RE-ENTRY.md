@@ -35,8 +35,10 @@ ADR-0136 proposes a shared durable one-use reserve with atomic revocation
 and committed admission for each F4/receipt/raw-read effect. An independent
 convergence checkpoint revised the timing contract; two joint design lenses
 then found zero Critical/Major/Minor. Both ADRs await owner approval and a
-fresh Phase 0 before code. Dynamic root resolution, durable F4 recovery and
-full F3 semantics remain separate gates. Packet8 follows P7 closure.
+fresh Phase 0 before code. ADR-0137 narrows the next slice to a read-only roster-root proof; its
+independent preapproval review is clean. Raw one-use publication, dynamic
+P4 scope/graph and CAPTURED timing, durable F4 recovery and full F3
+semantics remain separate gates. Packet8 follows P7 closure.
 deployment_eligible=false.
 
 ## Current checkpoint: ADR-0129 P4 read accessor reviewed (2026-09-16)

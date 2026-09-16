@@ -9916,3 +9916,72 @@ suite absent a touched-code reason.
 
 **Non-goals.** Real issuer/provider integration, deployment, Packet8
 study-admission implementation or P7 closure.
+
+
+## ADR-0137 - nonauthorizing trusted roster-root proof
+
+**Status:** proposed (2026-09-16); owner approval and fresh Phase 0
+required before RED. This bounded design follows the four-Major
+preapproval review of the broader dynamic-P4 proposal. It does not
+authorize P4 admission, raw publication, a CAPTURED receipt or a read.
+
+**Context.** ADR-0135 creates a new signed roster/v2 receipt that P4's
+fixed TEST corpus cannot accept. The current F4 provider is
+process-local. A pre-document root proof can be separately tested
+without claiming that a future consumer graph or raw root exists.
+
+**Decision.**
+
+1. A fixed broker-owned NonAuthorizingRosterRootProof receives only the
+   original ADR-0135 bootstrap authorization/G1/G2 grant bytes, signed
+   roster/v2 receipt and issuance basis, exact ADR-0136 reserved publish
+   intent and transition audit, and retained live F4 WORM handles. It
+   obtains the trusted clock, fixed keys and shared revocation from
+   construction-owned authorities. Caller bytes never choose a resolver,
+   expected root, signer, key, clock, policy, database path or provider.
+   The broker rechecks original canonical signed bytes against current
+   shared revocation/time; caller-made checked facts are ignored.
+2. It verifies the roster/v2 receipt's exact schema/tag, self-digest,
+   Ed25519 signer role/key use, signed roster-root-publication basis v2,
+   complete sorted bootstrap parent refs, original dual grants, reserved
+   intent and fixed WORM receipt key. It fetches that one persisted
+   receipt from the retained WORM store at the exact key and requires
+   byte identity with the supplied signed receipt; an admitted but
+   interrupted sign-before-put has no proof. It byte-compares the canonical
+   SourceRosterCapture.v1 output, complete F4 member manifest, root
+   descriptor and producer facts with the one retained PUBLISHED stream.
+   The ADR-0136 audit must show one complete reserved F4
+   SESSION_STARTED/PRODUCED/SEALED/PUBLISHED/SESSION_ENDED/
+   RECEIPT_ISSUED sequence for that exact bootstrap_id and intent,
+   without quarantine, duplicate effect or ambiguous write. Missing,
+   partial, altered or duplicated history refuses.
+3. Success returns immutable, nonauthorizing root/receipt/policy
+   identity facts with authorizing=false and
+   deployment_eligible=false. A later use must independently reverify
+   original bytes and authority; this result is never an F4/P4 permit,
+   resolver record, terminal grant or caller-constructible snapshot.
+   It is valid only for the live process-local F4 identity. After a
+   process restart, absent a separately reviewed durable F4 resolver,
+   the proof refuses rather than reconstructing from caller JSON.
+   Existing fixed P4 corpus, projections, signatures and public
+   authorization facades remain unchanged.
+
+**Follow-on gates.** A separately approved raw-publication contract
+must bind one ADR-0136 raw reservation to exactly one F4 root and
+receipt; raw read admission alone cannot do that. A later dynamic P4
+contract must bind an immutable pre-document root terminal snapshot to
+a separately sealed post-document signed graph, supply exact dynamic
+scope/owner authority and trusted signer/time/revocation domains, and
+serialize final CAPTURED commit against shared revocation. Until then
+neither roster proof nor raw proof can enter P4 admission.
+
+**Matrix.** Fresh Phase 0 and RED cover exact positive roster/v2 proof,
+signature/basis/ref/tag/key/role/time/revocation substitutions,
+bootstrap ID and intent mismatch, F4 member/order/descriptor mutation,
+partial/duplicate/ambiguous effects, restart, caller resolver/path/
+policy injection, mutation/subclass, both public read-only facades and
+no CAPTURED/F4/raw effect. No full suite absent touched-code reason.
+
+**Non-goals.** Raw root, dynamic root PIS/scope/stage/replay closure,
+real source access, EventEnvelope.v2, composed tape, Packet8 or
+deployment.
