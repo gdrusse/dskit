@@ -10528,18 +10528,40 @@ must not do.
    `authorize_capture_set` and `commit_p4_batch` execute as the same
    inherited code for both the legacy and the dynamic authority instance.
 4. `_p4_require_issued_authority` and `_p4_snapshot_integrity` are extended,
-   not replaced: each now checks the resolver's exact type against a closed
-   two-member table, `_P4_RESOLVER_CLASSES = (_FixedWormTrustedArtifactResolver,
-   _DynamicP4TrustedArtifactResolver)`, and dispatches the remaining
-   per-class invariants (resolver method identity, terminal pairing,
-   `_P4_RESOLVERS`/`_P4_TERMINALS` pin) to the branch matching that exact
-   type. The legacy branch's code and constants are byte-identical to
-   today's; the dynamic branch is new and separate. Each resolver instance
-   is registered only in its own `_P4_RESOLVERS`/`_P4_TERMINALS`/`_P4_ISSUED`
-   entries exactly as today, so a legacy authority/resolver pair can never
-   observe or resolve graph bytes and a dynamic pair can never observe or
-   resolve fixed-corpus bytes. `_p4_close_admission` and `_P4_CLOSE_ADMISSION`
-   are not edited, called by, or reachable from the dynamic branch.
+   not replaced: each now dispatches on the resolver's exact type through an
+   explicit, closed `if`/`elif`/`else` — never an `isinstance` check, never a
+   shared branch-selection helper that could default permissively — with an
+   unconditional refusal in the `else` arm for any resolver matching neither
+   member. Concretely, in `_p4_require_issued_authority` (reading
+   `issued = _P4_ISSUED.get(authority)`, `resolver = issued[0]`):
+   `if type(resolver) is _FixedWormTrustedArtifactResolver: <today's existing
+   exact checks, verbatim, unedited> elif type(resolver) is
+   _DynamicP4TrustedArtifactResolver: <new, self-contained dynamic checks,
+   sharing no helper with the legacy branch> else: raise TypeError("exact
+   broker-issued P4 capability is required")` — the identical `TypeError`
+   and message the function already raises today for any non-matching
+   authority/resolver. In `_p4_snapshot_integrity`: `if type(resolver) is
+   _FixedWormTrustedArtifactResolver: <today's existing exact checks,
+   verbatim, unedited, via the existing `_hs_refuse(..., "P4 snapshot
+   integrity refused")` calls> elif type(resolver) is
+   _DynamicP4TrustedArtifactResolver: <new, self-contained dynamic checks,
+   their own `_hs_refuse` calls, sharing no helper with the legacy branch>
+   else: _hs_refuse(False, "P4 snapshot integrity refused")` — again the
+   identical `ValueError` and message the function already raises today for
+   a non-matching resolver. `_P4_RESOLVER_CLASSES = (_FixedWormTrustedArtifactResolver,
+   _DynamicP4TrustedArtifactResolver)` exists only as the closed set these
+   two `elif` arms are checked against; it is never consulted as a
+   permissive "is it a member of this tuple" test in place of the explicit
+   per-type branches, and neither function may gain a third branch, a
+   default/catch-all case, or a shared dispatch helper without a new
+   reviewed ADR. The legacy branch's code and constants are byte-identical
+   to today's; the dynamic branch is new, separate, and self-contained.
+   Each resolver instance is registered only in its own
+   `_P4_RESOLVERS`/`_P4_TERMINALS`/`_P4_ISSUED` entries exactly as today, so
+   a legacy authority/resolver pair can never observe or resolve graph
+   bytes and a dynamic pair can never observe or resolve fixed-corpus
+   bytes. `_p4_close_admission` and `_P4_CLOSE_ADMISSION` are not edited,
+   called by, or reachable from the dynamic branch.
 5. One new terminal verifier class, `_DynamicP4TerminalArtifactVerifier`,
    mirrors `_FixedTerminalArtifactVerifier`'s two-method shape
    (`verify_terminal`, `require_current`) but is registered only against
@@ -10564,7 +10586,7 @@ must not do.
    `_FixedP4Signer`/`_P4_VERIFICATION` signing infrastructure and its
    `issued_at_ms=500, expires_at_ms=1000` decision-receipt stamps remain
    shared, unedited nondeployment fixture metadata for both authority
-   instances (see the open question below); they are not a temporal
+   instances (see "Open questions (for Phase 0)" below); they are not a temporal
    admissibility gate, which instead lives entirely in the resolver's own
    fresh graph re-proof on every `snapshot()`/`resolve()` call inside the
    ledger's locked `commit_p4_batch` critical section.
@@ -10608,14 +10630,39 @@ must not do.
    exclusivity independently within their own committed roots.
 9. Constructing the dynamic authority is one-shot per retained graph:
    `_development_dynamic_p4_broker` spends one new `reserve_uses` row
-   before returning, `kind='dynamic-p4-authority'`, `signed_id` equal to
-   the exact same canonical `{bootstrap_id,authorization_id}` pair text
-   ADR-0141 already uses as its `root-pis` `signed_id`, reusing the
-   existing four-table WAL/FULL schema and `(kind,signed_id)` primary key
-   with no schema change. A second construction attempt for the same
-   signed pair always refuses. This does not by itself limit how many
-   CAPTURED batches the resulting authority instance may commit; that
-   remains gated by the ordinary per-stream/per-document/per-run checks in
+   before returning, `kind='dynamic-p4-authority'`, reusing the existing
+   four-table WAL/FULL schema and `(kind,signed_id)` primary key with no
+   schema change. This row's `signed_id` is **not** the original
+   `{bootstrap_id,authorization_id}` pair text ADR-0141's `root-pis` row
+   uses — it is a distinct value derived from that already-retained
+   `root-pis` row's own stored identity, so the dynamic-p4-authority
+   construction is downstream of, not parallel to, the root-PIS one-use
+   gate: `signed_id = _digest(_hs_canonical_bytes({"schema":
+   "dskit.dynamic-p4-authority-source/v1", "root_pis_signed_id":
+   <the retained root-pis row's own `signed_id` text, read back from that
+   already-ISSUED row>, "root_pis_intent_sha256": <that same row's own
+   `intent_sha256` hex, read back from that row>})).hex()`. Because both
+   preimage fields are read from the `root-pis` row's own storage rather
+   than recomputed from the original signed bootstrap/authorization pair,
+   this `signed_id` cannot exist, and the dynamic-p4-authority row cannot
+   be reserved or issued, until a `root-pis` row for that pair has already
+   reached `ISSUED`; a `dynamic-p4-authority` reservation attempt made
+   against a `root-pis` row that is not `ISSUED` (missing, `RESERVED`, or
+   `QUARANTINED`) has no valid preimage to construct and refuses. A second
+   construction attempt for the same derived `signed_id` always refuses,
+   exactly as any other `(kind,signed_id)` collision does today. This
+   closes the double-spend ambiguity a reviewer could otherwise read into
+   decision point 9: the original signed `{bootstrap_id,authorization_id}`
+   pair funds exactly one thing directly — one `root-pis` issuance, spent
+   exactly once, unchanged from ADR-0141 — and the `dynamic-p4-authority`
+   row is a *second, independently one-shot* construction gated on that
+   issuance's own prior existence and identity, not a second draw against
+   the original signed pair itself; nothing downstream ever treats "the
+   original signed pair is spent" as a single global fact shared across
+   both kinds, because the dynamic row's key no longer reads that pair at
+   all. This does not by itself limit how many CAPTURED batches the
+   resulting authority instance may commit; that remains gated by the
+   ordinary per-stream/per-document/per-run checks in
    `_validate_capture_request` and `commit_p4_batch`.
 
 **Closed ADR-0143 construction profile (for Phase 0 to pin or correct).**
@@ -10649,20 +10696,47 @@ must not do.
   an alias or swapped entry. This full shape is a Phase 0 deliverable, not
   frozen here; it is sized only to make the chain minimal and reviewable.
 - Reserve reuse: no change to `_SYNTHETIC_RESERVE_SCHEMA`. The new
-  `kind='dynamic-p4-authority'` row's `authorization_sha256` column holds
-  `_digest(signed_id.encode("ascii"))`, `g1_sha256`/`g2_sha256` hold the
-  same canonical `[bootstrap_G1_digest,dataset_G1_digest]`/`[...G2...]`
-  pairs ADR-0141's `root-pis` row already stores for the identical
-  `signed_id`, and `intent_sha256` hashes a closed
+  `kind='dynamic-p4-authority'` row's `signed_id` is the derived value
+  specified in Decision point 9 above (a digest over the retained
+  `root-pis` row's own `signed_id` text and `intent_sha256`, never the
+  original `{bootstrap_id,authorization_id}` pair text directly), so its
+  `(kind,signed_id)` primary key can never collide with ADR-0141's
+  `root-pis` row (`kind='root-pis'`) even though both ultimately trace to
+  the same original signed pair. The row's `authorization_sha256` column
+  holds `_digest(signed_id.encode("ascii"))` over that derived value
+  (parallel in shape to how every other reserve kind's `authorization_sha256`
+  is computed, but over this kind's own distinct `signed_id`), `g1_sha256`/
+  `g2_sha256` hold the same canonical `[bootstrap_G1_digest,dataset_G1_digest]`/
+  `[...G2...]` pairs ADR-0141's `root-pis` row already stores (copied read-only
+  data, not a shared spend key), and `intent_sha256` hashes a closed
   `dskit.dynamic-p4-authority-construction-intent/v1` document naming the
   graph's 12 reference digests in the graph's own sorted order. Its only
   transition is `RESERVED -> ISSUED` under one `BEGIN IMMEDIATE`, mirroring
-  ADR-0141's root-PIS row exactly; a failed or ambiguous commit may only
-  become `QUARANTINED` and never grants a second construction.
+  ADR-0141's root-PIS row's transition shape (not its key); a failed or
+  ambiguous commit may only become `QUARANTINED` and never grants a second
+  construction. A `dynamic-p4-authority` reservation is refused inside that
+  same `BEGIN IMMEDIATE` if the corresponding `root-pis` row is not already
+  `ISSUED`, per Decision point 9.
 - `_P4_LOCAL_PUBLIC_KEYS` gains no new key; the dynamic terminal verifier
   reuses exactly the eight already-pinned original signer keys plus
   `data-publisher/published-input-set-g1-g2`, all already authenticated by
   ADR-0141/0142's own proof chain before this resolver ever exposes bytes.
+
+**Open questions (for Phase 0).**
+
+1. Whether sharing the fixed-signer `issued_at_ms=500`/`expires_at_ms=1000`
+   decision-receipt stamps between the legacy authority instance and this
+   dynamic authority instance (Decision point 6) is acceptable
+   nondeployment fixture metadata, given the real temporal admissibility
+   gate lives entirely in the resolver's own fresh graph re-proof, or
+   whether the dynamic path needs its own live-clock-stamped decision
+   receipt instead.
+2. Whether one-use gating at authority-construction granularity (Decision
+   point 9: one `reserve_uses` spend per retained graph, derived from the
+   retained `root-pis` row's own identity) is the right level, versus also
+   rate-limiting or scoping individual CAPTURED batches beyond the
+   existing per-stream/per-document/per-run checks already inherited from
+   `_validate_capture_request`/`commit_p4_batch`.
 
 **Process.** Proposal only. This ADR has not had independent preapproval
 review, Phase 0, RED, GREEN, or any test run. Per `docs/skills/skeptic-review.md`,
