@@ -1,0 +1,39 @@
+{
+  "schema_version": "F5aReviewExit.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice1",
+  "packet": "7-replay-tape-descriptors-slice1",
+  "candidate": "24a5794 (code 46895c1 + 5783bb6 + test fix 24a5794)",
+  "base_main": "48ae2fb37a6f176fd52f8c983eaf9f1b37ddfad1",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (owner substituted for unavailable Terra)",
+  "phase0": "0157 (final contract) + 0158 (foreach correction); 6 independent Phase 0 rounds with a convergence checkpoint (0149) established the scope",
+  "final_lenses": [
+    {"lens": "correctness-authority", "reviewer": "opencode-go/deepseek-v4-flash", "result": "0 Critical / 0 Major; 2 Minor recorded (M2 squatter-raise unpinned test, validate_params reachability)", "evidence": "0160"},
+    {"lens": "tests-integration", "reviewer": "opencode-go/deepseek-v4-flash", "result": "0 Critical / 0 Major after false-pin fix (24a5794); pin proven genuine by neutering the planner check", "evidence": "lens-2 re-review"}
+  ],
+  "verdict": "LOCKED — two clean independent final lenses, zero unresolved in-scope Critical/Major",
+  "minor_backlog": [
+    "M2 squatter-raise (trust.register) has no dedicated pin test",
+    "ReplayRun.validate_params default-deny is unreachable for execution docs (inert; pre-existing general property)",
+    "uses-resembling-'replay' and both-ports-wrong-name negative cases untested",
+    "nested/non-execution refusals are emitted by pre-existing P5 grammar, not the new branch (combined enforcement is sound)"
+  ],
+  "scope_boundary": "class-ref spelling of ReplayRun inside an execution_backtest document is the F3 broker's follow-on (documented, not hidden).",
+  "tests_run": {
+    "new": "tests/pipeline/test_replay_tape_descriptors.py (15)",
+    "focused": "tests/pipeline/test_serving_effect.py + test_foreach.py + test_toolkit_conformance.py (338); tests/pipeline/test_trust.py (246); tests/pipeline/test_captured_artifact_grammar.py + test_captured_authorization.py + test_document.py + test_planner.py + test_purity.py (1379); P6 compatibility + production oop/producers/purity (1640)",
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture green",
+    "checks": "ruff clean on changed files; git diff --check clean"
+  },
+  "remaining_open": [
+    "Packet7 verification half (resolve to verified PUBLISHED/CAPTURED identities) + full closure",
+    "Packet8 (durable consume-once; sequenced after P7)",
+    "F5A-R23",
+    "whole F5a",
+    "F3 (captured-tape hierarchy ReplayTapeDataCapture/ManifestProducer/ManifestCapture + composed tape capability)",
+    "F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39@c489199 (preserved)"
+  ],
+  "deployment_eligible": false,
+  "recorded_at_utc": "2026-09-16T03:00:00.000000+00:00"
+}
