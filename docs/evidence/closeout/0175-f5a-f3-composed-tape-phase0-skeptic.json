@@ -1,0 +1,23 @@
+{
+  "schema_version": "F5aDesignReview.v1",
+  "packet": "7-replay-tape-descriptors-composed-tape-verification",
+  "candidate": "0174-f5a-f3-composed-tape-phase0.json",
+  "reviewer_model": "opencode-go/deepseek-v4-pro (flash reviewer not yet loaded in-session)",
+  "reviewer_id": "opencode-go/deepseek-v4-pro (fresh Phase 0 skeptic, composed-tape)",
+  "verdict": "2 Critical / 4 Major / 2 Minor / 2 Nit; NOT implementable on current seams",
+  "counts": {"critical": 2, "major": 4, "minor": 2, "nit": 2},
+  "findings": [
+    {"id": "CRIT-1", "severity": "Critical", "summary": "Run-identity exclusivity (trust.py commit_legacy_capture 'legacy capture cannot reuse a P4 execution run' vs commit_p4_batch 'P4 capture cannot reuse a legacy execution run') forbids the mixed v1+P4 capture the composed-tape seam needs: pure v1 cannot re-capture the already-P4-captured data root, pure P4 exposes no member bytes.", "family": "architecture/capture-model"},
+    {"id": "CRIT-2", "severity": "Critical", "summary": "P4 commit_p4_batch exposes no member-read seam (CapturedAuthorizationRecord is empty/opaque; LaunchSession kind is captured-authorization-v2, refused by open_capture/captured_bindings), so the manifest producer cannot derive and the ReplayRun cannot verify ordered_envelope_digests against data members; the 'digests are supplied' non-goal is a scope dodge.", "family": "capture-model/scope-dodge"},
+    {"id": "MAJ-3", "severity": "Major", "summary": "No exposed CAPTURED receipt digest on either path: v1 _receipt_digests is private; P4 lifecycle_captured_receipt_sha256 is buried in the private ledger audit and the returned record is empty. An accessor must be public (__all__) and keyed by (stream, consumer_document_sha256).", "family": "receipt/authority-exposure"},
+    {"id": "MAJ-4", "severity": "Major", "summary": "Location incoherent: the collaborators/verification are broker-issued and the broker is private/unreachable from production; the mint+verify must be pipeline-side (trust.py), contradicting the matrix's proposed dskit/production/replay_tape.py.", "family": "purity/location"},
+    {"id": "MAJ-5", "severity": "Major", "summary": "Supplied-digests boundary does not close P7's data half: codec _build recomputes only internal digests; nothing binds ordered_envelope_digests/source_rank_policy_sha256 to data members.", "family": "codec-boundary/scope-dodge"},
+    {"id": "MAJ-6", "severity": "Major", "summary": "Cross-authority/provenance gap: the retained manifest-producer receipt is not a compose_replay_tape parameter and is not recoverable from the ReplayRun's process (record is process-bound WeakKeyDictionary).", "family": "authority/process"},
+    {"id": "MIN-7", "severity": "Minor", "summary": "codec does not self-refuse data_capture_root == data_captured_receipt or self-recorded manifest root (only placeholder/self literal).", "family": "codec/hierarchy"},
+    {"id": "MIN-8", "severity": "Minor", "summary": "raw legacy ReplayTape admission has no named enforcement seam (bundles.ReplayTape is an open ABC).", "family": "capability/admission"},
+    {"id": "NIT-9", "severity": "Nit", "summary": "source_rank_policy_sha256 provenance/retention unspecified (no seam holds the pre-document roster policy pin).", "family": "policy/provenance"},
+    {"id": "NIT-10", "severity": "Nit", "summary": "verification step (5) 'retained replay receipt' is circular/undefined.", "family": "receipt/contract"}
+  ],
+  "disposition": "Blocked on a genuine architecture gate (recorded 0176). The composed-tape verification requires member-read (v1-only) AND multi-consumer capture (P4-only), which trust.py's run-identity exclusivity + opaque P4 record forbid together. Requires an owner/ADR decision before RED.",
+  "recorded_at_utc": "2026-09-16T07:30:00.000000+00:00"
+}
