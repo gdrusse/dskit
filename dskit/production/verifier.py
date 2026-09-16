@@ -57,6 +57,7 @@ from dskit.pipeline.trust import (
     NonAuthorizingSyntheticGrantVerifier,
     NonAuthorizingSyntheticFixtureVerifier,
     NonAuthorizingRosterBootstrapVerifier,
+    NonAuthorizingRosterRootProof,
 )
 from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
@@ -85,6 +86,7 @@ __all__ = [
     "NonAuthorizingSyntheticGrantVerifier",
     "NonAuthorizingSyntheticFixtureVerifier",
     "NonAuthorizingRosterBootstrapVerifier",
+    "NonAuthorizingRosterRootProof",
     "SubmissionVerifier",
 ]
 

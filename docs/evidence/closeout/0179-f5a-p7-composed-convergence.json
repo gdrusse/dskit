@@ -540,5 +540,13 @@
     "scope": "Fixed nondeployment synthetic roster publisher only. No raw publication/read, dynamic P4/root-PIS, CAPTURED admission, full F3 tape or Packet8.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
+  },
+  "adr0137_fresh_phase0": {
+    "reviewer": "/root/adr137_phase0",
+    "result": "0 Critical, 0 Major; two Minor design/coverage clarifications.",
+    "seam": "Construction-owned proof from live _SyntheticRosterPublisher retained F4 token, original bytes, exact outer receipt entry and ADR-0136 shared SQLite audit/snapshot.",
+    "minors": "F4 lifecycle stream has only PRODUCED/SEALED/PUBLISHED while start/end/receipt live in reserve audit; outer receipt map is process-local and proof must byte-compare exact key/value. Read-only freshness can change later and grants no authority.",
+    "red_matrix": "Signed original/auth/grants/basis/receipt substitutions; shared revocation/time; exact F4 WORM log/member/root; outer receipt missing/alias; full reserve row/audit sequence; restart without retained token; both public facades and no effecting writes.",
+    "deployment_eligible": false
   }
 }

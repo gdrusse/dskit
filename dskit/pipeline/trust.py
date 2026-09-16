@@ -44,6 +44,7 @@ __all__ = [
     "NonAuthorizingSyntheticGrantVerifier",
     "NonAuthorizingSyntheticFixtureVerifier",
     "NonAuthorizingRosterBootstrapVerifier",
+    "NonAuthorizingRosterRootProof",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
@@ -762,6 +763,7 @@ class _ReceiptSubject:
         object.__setattr__(self, "_locked", True)
 
     def __setattr__(self, name, value):
+        """Keep the construction-owned publisher binding frozen."""
         if getattr(self, "_locked", False):
             raise AttributeError("receipt subject is frozen")
         object.__setattr__(self, name, value)
@@ -6640,9 +6642,258 @@ class _SyntheticRosterPublisher:
             self._retained[authorization["bootstrap_id"]] = (
                 published, roster_bytes, basis_bytes, receipt_bytes,
                 authorization_bytes, g1_grant_bytes, g2_grant_bytes,
-                intent_bytes,
+                intent_bytes, session,
             )
             return roster_bytes, basis_bytes, receipt_bytes
         except Exception:
             self._quarantine(authorization, intent_sha256)
             raise
+
+    def proof(self):
+        """Return a fixed read-only proof bound to this live publisher."""
+        _hs_refuse(not self._closed, "roster publisher terminalized")
+        return NonAuthorizingRosterRootProof(_MAKE, self)
+
+
+class NonAuthorizingRosterRootProof:
+    """Read-only exact roster/v2 root evidence from one live synthetic broker."""
+
+    __slots__ = ("_publisher", "_locked")
+
+    def __init_subclass__(cls, **kwargs):
+        """Forbid a subclass from replacing the fixed proof checks."""
+        raise TypeError("the fixed roster-root proof is final")
+
+    def __init__(self, token, publisher):
+        if token is not _MAKE or type(publisher) is not _SyntheticRosterPublisher:
+            raise TypeError("broker-owned roster-root proof required")
+        object.__setattr__(self, "_publisher", publisher)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        """Keep the construction-owned publisher binding frozen."""
+        if getattr(self, "_locked", False):
+            raise AttributeError("roster-root proof is frozen")
+        object.__setattr__(self, name, value)
+
+    @staticmethod
+    def _signed_payload(raw, expected, self_field):
+        value = _hs_parse_canonical(raw)
+        _SyntheticRosterPublisher._check_signed_output(
+            raw, expected, self_field,
+        )
+        return value
+
+    def verify(self, authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+               basis_bytes, receipt_bytes):
+        """Return immutable identity facts; never an F4/raw/P4 permit."""
+        _hs_refuse(
+            all(type(raw) is bytes for raw in (
+                authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+                basis_bytes, receipt_bytes,
+            )),
+            "exact signed roster proof bytes required",
+        )
+        publisher = self._publisher
+        _hs_refuse(type(publisher) is _SyntheticRosterPublisher
+                   and not publisher._closed,
+                   "live roster publisher required")
+        authorization, policy_sha256 = (
+            NonAuthorizingRosterBootstrapVerifier._authorization(
+                authorization_bytes,
+            )
+        )
+        retained = publisher._retained.get(authorization["bootstrap_id"])
+        _hs_refuse(type(retained) is tuple and len(retained) == 9,
+                   "live retained roster publication required")
+        (published, roster_bytes, original_basis, original_receipt,
+         original_auth, original_g1, original_g2, intent_bytes,
+         session) = retained
+        _hs_refuse(
+            (authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+             basis_bytes, receipt_bytes) ==
+            (original_auth, original_g1, original_g2,
+             original_basis, original_receipt),
+            "retained roster proof bytes mismatch",
+        )
+        _roster, derived_intent = _derive_synthetic_roster_publish_intent(
+            authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+        )
+        _hs_refuse(_roster == roster_bytes and derived_intent == intent_bytes,
+                   "roster proof intent mismatch")
+        intent = _hs_parse_canonical(intent_bytes)
+        bootstrap_sha256 = _digest(authorization_bytes)
+        intent_sha256 = _digest(intent_bytes)
+        reserve = publisher._reserve
+        reserve._check()
+        connection = reserve._connection
+        try:
+            connection.execute("BEGIN")
+            generation, revoked, snapshot = reserve._snapshot()
+            now = _FixedP4VerificationClock.now_ms(
+                _P4_VERIFICATION._clock
+            )
+            _hs_refuse(
+                authorization["not_before_ms"] <= now
+                < authorization["expires_at_ms"]
+                and not {
+                    authorization["bootstrap_id"], "data-publisher",
+                    "data-publisher/root-publication-bootstrap-g1-g2",
+                } & revoked,
+                "roster proof authority revoked or expired",
+            )
+            verifier = NonAuthorizingRosterBootstrapVerifier
+            verifier._grant(g1_grant_bytes, "G1", authorization,
+                            bootstrap_sha256, snapshot, revoked, now)
+            verifier._grant(g2_grant_bytes, "G2", authorization,
+                            bootstrap_sha256, snapshot, revoked, now)
+            row = connection.execute(
+                "SELECT authorization_sha256,g1_sha256,g2_sha256,"
+                "snapshot_sha256,intent_sha256,state FROM reserve_uses "
+                "WHERE kind=? AND signed_id=?",
+                ("roster-bootstrap", authorization["bootstrap_id"]),
+            ).fetchone()
+            _hs_refuse(
+                row == (bootstrap_sha256, _digest(g1_grant_bytes),
+                        _digest(g2_grant_bytes), snapshot,
+                        intent_sha256, "RECEIPT_ISSUED"),
+                "roster proof reserve mismatch",
+            )
+            audit = connection.execute(
+                "SELECT old_state,new_state,generation FROM reserve_audit "
+                "WHERE kind=? AND signed_id=? ORDER BY seq",
+                ("roster-bootstrap", authorization["bootstrap_id"]),
+            ).fetchall()
+            states = (
+                "RESERVED", "SESSION_STARTED", "PRODUCED", "SEALED",
+                "PUBLISHED", "SESSION_ENDED", "RECEIPT_ISSUED",
+            )
+            _hs_refuse(
+                len(audit) == len(states)
+                and all(
+                    old == (states[index - 1] if index else None)
+                    and new == state
+                    and type(saved_generation) is int
+                    and saved_generation == generation
+                    for index, ((old, new, saved_generation), state)
+                    in enumerate(zip(audit, states, strict=True))
+                ),
+                "complete roster reservation audit required",
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        _hs_refuse(
+            type(session) is LaunchSession
+            and session._run_identity == intent["producer"]["run_identity"]
+            and session._ended is True,
+            "retained ended F4 producer session required",
+        )
+        facts = publisher._published_facts(
+            published, roster_bytes, intent,
+        )
+        refs = [
+            {"kind": "roster-bootstrap-authorization",
+             "role": "security-data",
+             "schema": "dskit.roster-bootstrap-authorization/v1",
+             "sha256": bootstrap_sha256},
+            {"kind": "roster-bootstrap-grant", "role": "G1",
+             "schema": "dskit.roster-bootstrap-grant/v1",
+             "sha256": _digest(g1_grant_bytes)},
+            {"kind": "roster-bootstrap-grant", "role": "G2",
+             "schema": "dskit.roster-bootstrap-grant/v1",
+             "sha256": _digest(g2_grant_bytes)},
+        ]
+        refs.sort(key=lambda ref: tuple(
+            ref[key] for key in ("kind", "role", "schema", "sha256")
+        ))
+        basis = _hs_parse_canonical(basis_bytes)
+        _hs_refuse(type(basis) is dict
+                   and type(basis.get("issued_at_ms")) is int
+                   and authorization["not_before_ms"] <= basis["issued_at_ms"]
+                   <= now, "roster proof basis time refused")
+        suffix = {
+            "issuer_role": "data-publisher",
+            "key_usage": "root-publication-bootstrap-g1-g2",
+            "signature_alg": "Ed25519",
+            "issued_at_ms": basis["issued_at_ms"],
+            "not_before_ms": basis["issued_at_ms"],
+            "expires_at_ms": authorization["expires_at_ms"],
+            "revocation_snapshot_sha256": snapshot,
+            "key": {
+                "key_id": "data-publisher/root-publication-bootstrap-g1-g2",
+                "key_version": 1,
+            },
+        }
+        expected_basis = {
+            "schema": "dskit.issuance-basis/v2",
+            "kind": "roster-root-publication",
+            "study_id": "synthetic-study",
+            "refs": refs,
+            "publish_intent_sha256": intent_sha256,
+            **suffix,
+        }
+        basis = self._signed_payload(
+            basis_bytes, expected_basis, "issuance_basis_sha256",
+        )
+        expected_receipt = {
+            "schema": "dskit.root-publication-receipt/v2",
+            "kind": "dataset-capture",
+            "capture_kind": "source-roster",
+            "publication_authorization_ref":
+                intent["receipt_key"]["publication_authorization_ref"],
+            **facts,
+            "issuance_basis_sha256": basis["issuance_basis_sha256"],
+            **suffix,
+        }
+        receipt = self._signed_payload(
+            receipt_bytes, expected_receipt,
+            "root_publication_receipt_sha256",
+        )
+        key_fields = intent["receipt_key"]
+        key = (
+            key_fields["receipt_schema"],
+            _hs_canonical_bytes(key_fields["publication_authorization_ref"]),
+            *(key_fields[field] for field in (
+                "producer_run_identity", "producer_document_sha256",
+                "producer_node", "producer_output", "root_ref",
+                "root_id", "snapshot_version",
+            )),
+        )
+        _hs_refuse(
+            publisher._outer_receipts.get(key) == receipt_bytes
+            and sum(value == receipt_bytes
+                    for value in publisher._outer_receipts.values()) == 1,
+            "persisted roster receipt mismatch",
+        )
+        reserve._check()
+        final_generation, _final_revoked, final_snapshot = reserve._snapshot()
+        final_now = _FixedP4VerificationClock.now_ms(
+            _P4_VERIFICATION._clock
+        )
+        _hs_refuse(
+            final_generation == generation
+            and final_snapshot == snapshot
+            and authorization["not_before_ms"] <= final_now
+            < authorization["expires_at_ms"],
+            "roster proof freshness changed",
+        )
+        root_sha256 = _digest(_hs_canonical_bytes({
+            key: receipt[key] for key in (
+                "root_ref", "root_id", "snapshot_version",
+                "member_manifest_sha256",
+            )
+        }))
+        return MappingProxyType({
+            "bootstrap_sha256": bootstrap_sha256,
+            "roster_root_sha256": root_sha256,
+            "roster_publication_receipt_sha256":
+                receipt["root_publication_receipt_sha256"],
+            "source_rank_policy_sha256": policy_sha256,
+            "publish_intent_sha256": intent_sha256,
+            "checked_at_ms": final_now,
+            "authorizing": False,
+            "deployment_eligible": False,
+        })

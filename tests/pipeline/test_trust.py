@@ -46,6 +46,10 @@ _PUBLIC_TYPES = {
     "LaunchSession",
     "LifecycleAuthority",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
+    "NonAuthorizingSyntheticGrantVerifier",
+    "NonAuthorizingSyntheticFixtureVerifier",
+    "NonAuthorizingRosterBootstrapVerifier",
+    "NonAuthorizingRosterRootProof",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
@@ -326,9 +330,20 @@ def test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private():
         "publish",
         "seal",
     }
-    for name in _PUBLIC_TYPES:
+    readonly_constructible = {
+        "NonAuthorizingSyntheticGrantVerifier",
+        "NonAuthorizingSyntheticFixtureVerifier",
+        "NonAuthorizingRosterBootstrapVerifier",
+    }
+    for name in _PUBLIC_TYPES - readonly_constructible:
         with pytest.raises(TypeError):
             getattr(trust, name)()
+    for name in readonly_constructible:
+        verifier = getattr(trust, name)()
+        assert callable(verifier.verify)
+        assert not any(hasattr(verifier, effect) for effect in (
+            "publish", "reserve", "open_member",
+        ))
 
 
 def test_exact_worm_chain_binds_receipts_and_uses_a_new_consumer_session():

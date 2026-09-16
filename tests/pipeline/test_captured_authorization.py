@@ -3570,3 +3570,124 @@ def test_adr138_ambiguous_commit_never_allows_next_effect(
     )
     if ambiguous_state == "PRODUCED":
         assert publisher._broker._storage == {}
+
+def test_adr137_read_only_roster_root_proof_matches_live_publication(tmp_path):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, policy_sha256 = _synthetic_roster_bootstrap_fixture()
+    roster_bytes, basis_bytes, receipt_bytes = publisher.publish(
+        authorization, g1, g2,
+    )
+    proof = publisher.proof()
+    assert isinstance(proof, trust.NonAuthorizingRosterRootProof)
+    before = publisher._reserve._connection.total_changes
+    facts = proof.verify(
+        authorization, g1, g2, basis_bytes, receipt_bytes,
+    )
+    receipt = json.loads(receipt_bytes)
+    assert facts["roster_root_sha256"] == hashlib.sha256(f4._json_bytes({
+        key: receipt[key] for key in (
+            "root_ref", "root_id", "snapshot_version",
+            "member_manifest_sha256",
+        )
+    })).hexdigest()
+    assert facts["roster_publication_receipt_sha256"] == (
+        receipt["root_publication_receipt_sha256"]
+    )
+    assert facts["source_rank_policy_sha256"] == policy_sha256
+    assert facts["authorizing"] is False
+    assert facts["deployment_eligible"] is False
+    assert publisher._reserve._connection.total_changes == before
+    assert roster_bytes == publisher._retained["bootstrap-1"][1]
+    with pytest.raises(TypeError):
+        trust.NonAuthorizingRosterRootProof(publisher)
+
+@pytest.mark.parametrize("changed", ["authorization", "G1", "G2", "basis", "receipt"])
+def test_adr137_roster_proof_refuses_substituted_original_bytes(
+    tmp_path, changed,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    _roster, basis, receipt = publisher.publish(authorization, g1, g2)
+    values = {
+        "authorization": authorization, "G1": g1, "G2": g2,
+        "basis": basis, "receipt": receipt,
+    }
+    values[changed] += b" "
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises((TypeError, ValueError)):
+        publisher.proof().verify(
+            values["authorization"], values["G1"], values["G2"],
+            values["basis"], values["receipt"],
+        )
+    assert publisher._reserve._connection.total_changes == before
+
+
+@pytest.mark.parametrize("tamper", [
+    "f4-log", "f4-member", "outer-missing", "outer-alias",
+    "audit-gap", "reserve-quarantine",
+])
+def test_adr137_roster_proof_refuses_lost_or_mutated_retained_evidence(
+    tmp_path, tamper,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    _roster, basis, receipt = publisher.publish(authorization, g1, g2)
+    if tamper == "f4-log":
+        publisher._broker._receipt_store._data.clear()
+    elif tamper == "f4-member":
+        key = next(iter(publisher._broker._storage))
+        publisher._broker._storage[key] = b"{}"
+    elif tamper == "outer-missing":
+        publisher._outer_receipts.clear()
+    elif tamper == "outer-alias":
+        publisher._outer_receipts[("alias",)] = receipt
+    elif tamper == "audit-gap":
+        publisher._reserve._connection.execute(
+            "DELETE FROM reserve_audit WHERE new_state='SEALED'"
+        )
+    else:
+        publisher._reserve._connection.execute(
+            "UPDATE reserve_uses SET state='QUARANTINED'"
+        )
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises((TypeError, ValueError)):
+        publisher.proof().verify(authorization, g1, g2, basis, receipt)
+    assert publisher._reserve._connection.total_changes == before
+
+
+def test_adr137_roster_proof_refuses_shared_revocation_and_restart(
+    tmp_path, monkeypatch,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    _roster, basis, receipt = publisher.publish(authorization, g1, g2)
+    after_restart = trust._SyntheticRosterPublisher(path)
+    with pytest.raises(ValueError, match="retained"):
+        after_restart.proof().verify(
+            authorization, g1, g2, basis, receipt,
+        )
+    admin = trust._SyntheticAuthorizationReserve(path)
+    admin._revoke("G1")
+    with pytest.raises(ValueError):
+        publisher.proof().verify(
+            authorization, g1, g2, basis, receipt,
+        )
+    monkeypatch.setattr(
+        trust._FixedP4VerificationClock, "now_ms", lambda _clock: 901,
+    )
+    with pytest.raises(ValueError):
+        publisher.proof().verify(
+            authorization, g1, g2, basis, receipt,
+        )
+    from dskit.production import verifier as production_verifier
+    assert production_verifier.NonAuthorizingRosterRootProof is (
+        trust.NonAuthorizingRosterRootProof
+    )
