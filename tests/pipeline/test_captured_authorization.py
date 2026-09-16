@@ -3015,3 +3015,57 @@ def test_adr136_crash_before_commit_does_not_spend_id(tmp_path):
     authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
     intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
     assert cls(path)._reserve_roster(authorization, g1, g2, intent) is None
+
+
+
+def test_adr136_roster_transition_audits_exact_order(tmp_path):
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    store = cls(path)
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    store._reserve_roster(authorization, g1, g2, intent)
+    states = ("SESSION_STARTED", "PRODUCED", "SEALED", "PUBLISHED", "SESSION_ENDED")
+    for state in states:
+        assert store._admit_roster_transition(
+            authorization, g1, g2, intent, state,
+        ) is None
+    rows = store._connection.execute(
+        "SELECT old_state,new_state FROM reserve_audit ORDER BY seq"
+    ).fetchall()
+    assert rows == list(zip((None, "RESERVED") + states[:-1],
+                            ("RESERVED",) + states, strict=True))
+    with pytest.raises(ValueError):
+        store._admit_roster_transition(
+            authorization, g1, g2, intent, "SESSION_STARTED",
+        )
+
+
+def test_adr136_roster_transition_refuses_wrong_intent_and_revocation(tmp_path):
+    cls = trust._SyntheticAuthorizationReserve
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    cls._provision(path)
+    store = cls(path)
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    intent = hashlib.sha256(b"fixed-roster-publish-intent").hexdigest()
+    store._reserve_roster(authorization, g1, g2, intent)
+    with pytest.raises(ValueError):
+        store._admit_roster_transition(
+            authorization, g1, g2, "f" * 64, "SESSION_STARTED",
+        )
+    with pytest.raises(ValueError):
+        store._admit_roster_transition(
+            authorization, g1, g2, intent, "PUBLISHED",
+        )
+    assert store._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "RESERVED"
+    store._revoke("G1")
+    with pytest.raises(ValueError):
+        store._admit_roster_transition(
+            authorization, g1, g2, intent, "SESSION_STARTED",
+        )
+    assert store._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "RESERVED"

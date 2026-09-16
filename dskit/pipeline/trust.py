@@ -6047,6 +6047,80 @@ class _SyntheticAuthorizationReserve:
                 connection.execute("ROLLBACK")
             raise
 
+    def _admit_roster_transition(self, authorization_bytes, g1_grant_bytes,
+                                 g2_grant_bytes, intent_sha256, new_state):
+        """Commit one exact roster lifecycle admission without invoking F4."""
+        sequence = ("RESERVED", "SESSION_STARTED", "PRODUCED", "SEALED",
+                    "PUBLISHED", "SESSION_ENDED")
+        _hs_refuse(type(new_state) is str and new_state in sequence[1:],
+                   "unknown roster transition")
+        NonAuthorizingSyntheticGrantVerifier._hash(intent_sha256)
+        authorization, _policy = (
+            NonAuthorizingRosterBootstrapVerifier._authorization(
+                authorization_bytes,
+            )
+        )
+        bootstrap_sha256 = _digest(authorization_bytes)
+        g1_sha256 = _digest(g1_grant_bytes)
+        g2_sha256 = _digest(g2_grant_bytes)
+        expected_old = sequence[sequence.index(new_state) - 1]
+        self._check()
+        connection = self._connection
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._check()
+            generation, revoked, snapshot = self._snapshot()
+            now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+            _hs_refuse(
+                authorization["not_before_ms"] <= now
+                < authorization["expires_at_ms"]
+                and authorization["bootstrap_id"] not in revoked,
+                "roster transition time or revocation refused",
+            )
+            verifier = NonAuthorizingRosterBootstrapVerifier
+            verifier._grant(g1_grant_bytes, "G1", authorization,
+                            bootstrap_sha256, snapshot, revoked, now)
+            verifier._grant(g2_grant_bytes, "G2", authorization,
+                            bootstrap_sha256, snapshot, revoked, now)
+            row = connection.execute(
+                "SELECT authorization_sha256,g1_sha256,g2_sha256,"
+                "snapshot_sha256,intent_sha256,state FROM reserve_uses "
+                "WHERE kind=? AND signed_id=?",
+                ("roster-bootstrap", authorization["bootstrap_id"]),
+            ).fetchone()
+            _hs_refuse(
+                row == (bootstrap_sha256, g1_sha256, g2_sha256,
+                        snapshot, intent_sha256, expected_old),
+                "roster transition identity or state refused",
+            )
+            result = connection.execute(
+                "UPDATE reserve_uses SET state=? WHERE kind=? AND signed_id=? "
+                "AND state=?",
+                (new_state, "roster-bootstrap", authorization["bootstrap_id"],
+                 expected_old),
+            )
+            _hs_refuse(result.rowcount == 1, "roster transition lost state")
+            connection.execute(
+                "INSERT INTO reserve_audit "
+                "(kind,signed_id,old_state,new_state,generation) "
+                "VALUES (?,?,?,?,?)",
+                ("roster-bootstrap", authorization["bootstrap_id"],
+                 expected_old, new_state, generation),
+            )
+            final_now = _FixedP4VerificationClock.now_ms(
+                _P4_VERIFICATION._clock
+            )
+            _hs_refuse(
+                authorization["not_before_ms"] <= final_now
+                < authorization["expires_at_ms"],
+                "roster transition time expired before commit",
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
     def _revoke(self, token):
         """Atomically append one trusted revocation and generation."""
         _hs_refuse(type(token) is str

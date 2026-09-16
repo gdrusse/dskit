@@ -487,5 +487,16 @@
     "minor": "Same signed-ID regression test retries identical grants and intent only; changed signed grants or intent would also be rejected by current primary key but lacks a dedicated assertion. Cross-process revocation race and hostile storage paths are not exercised in this non-effecting slice.",
     "limits": "Physical power-loss durability requires trusted local durable VFS and no restore/clone; effecting F4/raw admission and restart proof remain separate gates.",
     "deployment_eligible": false
+  },
+  "adr0138_roster_phase0": {
+    "contract": "ADR-0138 fixed nondeployment roster publisher; material clarification to ADR-0135 roster WORM readback",
+    "owner_authority": "Standing repeated approval and explicit autonomous-completion direction for P7.",
+    "reviewer": "/root/roster_publish_phase0",
+    "initial": "Five Major: wrong basis ref cardinality, impossible signing chronology, missing root derivation, missing basis study ID, ambiguous roster WORM read rule. One Minor: duplicate outer receipt semantics.",
+    "corrections": "Exactly three basis refs; fixed study_id and producer/root preimages; internal roster WORM readback only; unsigned basis frozen under writer lock; commit before signature; exact put-if-absent semantics.",
+    "recheck": "Two Major: open publish-intent schema and pre-admission time capture. One Minor: quarantine if SQLite fails.",
+    "final_corrections": "Closed canonical intent and receipt key, independent recomputation; trusted admission instant under writer lock and final time check; local terminalization with fail-closed restart.",
+    "final": "0 Critical, 0 Major, 0 Minor; design-only Phase 0, no effecting code yet.",
+    "deployment_eligible": false
   }
 }
