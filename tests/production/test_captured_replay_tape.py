@@ -93,13 +93,27 @@ def test_build_computes_the_two_derived_digests():
     )
 
 
-def test_tape_digest_omits_only_itself():
+@pytest.mark.parametrize("bad", ["0" * 64, "self", "A" * 64, "a" * 63, 123, None])
+def test_build_refuses_bad_digest(bad):
+    with pytest.raises(ProductionError):
+        CapturedReplayTape._build(bad, _RECEIPT, _POLICY, _digests(1))
+
+
+def test_build_refuses_non_list_envelopes():
+    with pytest.raises(ProductionError):
+        CapturedReplayTape._build(_D, _RECEIPT, _POLICY, "not-a-list")
+
+
+def test_build_refuses_placeholder_envelope():
+    with pytest.raises(ProductionError):
+        CapturedReplayTape._build(_D, _RECEIPT, _POLICY, ["0" * 64])
+
+
+def test_tape_digest_over_source_that_includes_itself_refuses():
     value = _valid_dict()
-    source = {k: v for k, v in value.items() if k != "tape_digest"}
-    assert value["tape_digest"] == canonical_hash(source)
-    assert source["ordered_envelopes_sha256"] == canonical_hash(
-        value["ordered_envelope_digests"]
-    )
+    value["tape_digest"] = canonical_hash(dict(value))
+    with pytest.raises(ProductionError, match="tape_digest"):
+        CapturedReplayTape.parse(_canonical(value))
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +205,15 @@ def test_non_list_envelope_digests_refuses():
         CapturedReplayTape.parse(_canonical(value))
 
 
+@pytest.mark.parametrize("bad", ["A" * 64, "a" * 63, "g" * 64, 123])
+def test_bad_envelope_digest_element_refuses(bad):
+    value = _valid_dict()
+    value["ordered_envelope_digests"] = [bad]
+    value["envelope_count"] = 1
+    with pytest.raises(ProductionError):
+        CapturedReplayTape.parse(_canonical(value))
+
+
 # ---------------------------------------------------------------------------
 # recomputation
 # ---------------------------------------------------------------------------
@@ -252,9 +275,21 @@ def test_to_obj_returns_isolated_copies():
 # ---------------------------------------------------------------------------
 
 
-def test_parse_rejects_non_json_and_nan():
+def test_parse_rejects_non_json_bytes():
     with pytest.raises(ProductionError):
         CapturedReplayTape.parse(b"not json")
+
+
+def test_parse_rejects_nan_in_an_object():
+    raw = b'{"schema_version":"dskit.captured-replay-tape/v1","envelope_count":NaN}'
+    with pytest.raises(ProductionError):
+        CapturedReplayTape.parse(raw)
+
+
+@pytest.mark.parametrize("raw", ["{}", {"a": 1}])
+def test_parse_refuses_non_bytes(raw):
+    with pytest.raises(ProductionError):
+        CapturedReplayTape.parse(raw)
 
 
 def test_value_is_immutable_and_not_copyable_or_serializable():
