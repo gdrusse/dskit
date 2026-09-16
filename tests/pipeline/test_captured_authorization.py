@@ -4029,3 +4029,254 @@ def test_adr137_roster_proof_expires_after_shared_clock_advance(tmp_path):
     publisher._reserve._advance_clock(901)
     with pytest.raises(ValueError, match="expired|revoked"):
         publisher.proof().verify(bootstrap, bg1, bg2, basis, receipt)
+
+
+def test_adr139_raw_publisher_issues_one_exact_f4_root_and_v1_receipt(
+    tmp_path, monkeypatch,
+):
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    publisher = trust._SyntheticRawPublisher(preflight)
+    manifest, basis, receipt = publisher.publish(proof, *signed, *roster)
+    parsed = json.loads(manifest)
+    assert parsed["schema_version"] == "dskit.raw-event-dataset-capture/v1"
+    assert [m["member_name"] for m in parsed["ordered_member_digests"]] == [
+        "fixture_A.ndjson", "fixture_B.ndjson",
+    ]
+    assert parsed["dataset_capture_authorization_sha256"] == (
+        hashlib.sha256(signed[0]).hexdigest()
+    )
+    basis_value, receipt_value = json.loads(basis), json.loads(receipt)
+    assert basis_value["kind"] == "root-publication"
+    assert receipt_value["schema"] == "dskit.root-publication-receipt/v1"
+    assert receipt_value["capture_kind"] == "raw-event-dataset"
+    assert receipt_value["publication_authorization_ref"] == {
+        "kind": "dataset-capture",
+        "dataset_capture_authorization_sha256":
+            hashlib.sha256(signed[0]).hexdigest(),
+    }
+    root_ref = "synthetic-raw/" + hashlib.sha256(signed[0]).hexdigest()
+    keys = {key[2] for key in roster_publisher._broker._storage
+            if key[0] == root_ref}
+    assert keys == {
+        "fixture_A.ndjson", "fixture_B.ndjson",
+        "raw_event_dataset.json",
+    }
+    assert roster_publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RECEIPT_ISSUED",)
+
+
+def test_adr139_raw_publisher_proof_alias_cannot_republish(
+    tmp_path, monkeypatch,
+):
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    first = trust._SyntheticRawPublisher(preflight)
+    first.publish(proof, *signed, *roster)
+    second = trust._SyntheticRawPublisher(preflight)
+    with pytest.raises(ValueError):
+        second.publish(proof, *signed, *roster)
+    assert roster_publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_audit WHERE kind='raw-dataset' "
+        "AND new_state='RECEIPT_ISSUED'"
+    ).fetchone() == (1,)
+
+
+def test_adr139_raw_publisher_rejects_signed_output_name_collision(
+    tmp_path, monkeypatch,
+):
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    raw = members.pop("fixture_A.ndjson")
+    members["raw_event_dataset.json"] = raw
+    attestation = json.loads(signed[3])
+    attestation["ordered_members"][0]["member_name"] = (
+        "raw_event_dataset.json"
+    )
+    signed = (*signed[:3], _resign_synthetic_fixture_attestation(attestation))
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    before = len(roster_publisher._broker._storage)
+    with pytest.raises(ValueError, match="output|collision"):
+        trust._SyntheticRawPublisher(preflight).publish(
+            proof, *signed, *roster,
+        )
+    assert len(roster_publisher._broker._storage) == before
+
+
+def test_adr139_raw_publisher_revocation_before_produce_quarantines(
+    tmp_path, monkeypatch,
+):
+    path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    publisher = trust._SyntheticRawPublisher(preflight)
+    original = roster_publisher._broker.start_producer_session
+
+    def start_then_revoke(**kwargs):
+        session = original(**kwargs)
+        admin = trust._SyntheticAuthorizationReserve(path)
+        admin._revoke("G2-fixture")
+        admin._close()
+        return session
+
+    monkeypatch.setattr(
+        roster_publisher._broker, "start_producer_session",
+        start_then_revoke,
+    )
+    before = len(roster_publisher._broker._storage)
+    with pytest.raises(ValueError):
+        publisher.publish(proof, *signed, *roster)
+    assert len(roster_publisher._broker._storage) == before
+    assert publisher._closed and proof._used
+    assert roster_publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("QUARANTINED",)
+
+
+def test_adr139_raw_publisher_extra_worm_backing_blocks_receipt(
+    tmp_path, monkeypatch,
+):
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    publisher = trust._SyntheticRawPublisher(preflight)
+    original = roster_publisher._broker.end_session
+    root_ref = "synthetic-raw/" + hashlib.sha256(signed[0]).hexdigest()
+
+    def end_then_add_extra(session):
+        result = original(session)
+        roster_publisher._broker._storage[
+            (root_ref, "v1", "extra.ndjson")
+        ] = b""
+        return result
+
+    monkeypatch.setattr(
+        roster_publisher._broker, "end_session", end_then_add_extra,
+    )
+    with pytest.raises(ValueError, match="member set"):
+        publisher.publish(proof, *signed, *roster)
+    assert publisher._closed
+    assert not any(
+        json.loads(raw).get("schema")
+        == "dskit.root-publication-receipt/v1"
+        for raw in roster_publisher._outer_receipts.values()
+    )
+    assert roster_publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("QUARANTINED",)
+
+
+def test_adr139_raw_publisher_sign_failure_has_no_retry(
+    tmp_path, monkeypatch,
+):
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    publisher = trust._SyntheticRawPublisher(preflight)
+    original = trust._SyntheticRawPublisher._sign
+    calls = 0
+
+    def fail_receipt_sign(payload, self_field):
+        nonlocal calls
+        calls += 1
+        if self_field == "root_publication_receipt_sha256":
+            raise OSError("raw sign before put")
+        return original(payload, self_field)
+
+    monkeypatch.setattr(
+        trust._SyntheticRawPublisher, "_sign",
+        staticmethod(fail_receipt_sign),
+    )
+    with pytest.raises(OSError, match="raw sign before put"):
+        publisher.publish(proof, *signed, *roster)
+    assert calls == 2
+    assert publisher._closed and proof._used
+    assert roster_publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("QUARANTINED",)
+    with pytest.raises(ValueError):
+        trust._SyntheticRawPublisher(preflight).publish(
+            proof, *signed, *roster,
+        )
+
+
+@pytest.mark.parametrize("ambiguous_state", ["PRODUCED", "RECEIPT_ISSUED"])
+def test_adr139_raw_publisher_ambiguous_commit_never_retries(
+    tmp_path, monkeypatch, ambiguous_state,
+):
+    import sqlite3
+
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    publisher = trust._SyntheticRawPublisher(preflight)
+    real = roster_publisher._reserve._connection
+
+    class AmbiguousOnce:
+        fired = False
+
+        @property
+        def in_transaction(self):
+            return real.in_transaction
+
+        def execute(self, sql, *args):
+            result = real.execute(sql, *args)
+            if sql == "COMMIT" and not self.fired:
+                row = real.execute(
+                    "SELECT state FROM reserve_uses "
+                    "WHERE kind='raw-dataset'"
+                ).fetchone()
+                if row == (ambiguous_state,):
+                    self.fired = True
+                    raise sqlite3.OperationalError("ambiguous raw commit")
+            return result
+
+    wrapper = AmbiguousOnce()
+    roster_publisher._reserve._connection = wrapper
+    with pytest.raises(sqlite3.OperationalError, match="ambiguous raw"):
+        publisher.publish(proof, *signed, *roster)
+    assert wrapper.fired
+    assert publisher._closed and proof._used
+    assert real.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("QUARANTINED",)
+    assert not any(
+        json.loads(raw).get("schema")
+        == "dskit.root-publication-receipt/v1"
+        for raw in roster_publisher._outer_receipts.values()
+    )
+    with pytest.raises(ValueError):
+        trust._SyntheticRawPublisher(preflight).publish(
+            proof, *signed, *roster,
+        )
