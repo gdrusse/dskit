@@ -9602,8 +9602,8 @@ F3/P7/Packet8 closure or deployment. deployment_eligible=false.
 
 ## ADR-0135 - pre-roster bootstrap chronology for P7
 
-**Status:** proposed (2026-09-16); material amendment to ADR-0125 root
-publication and the F3 plan, requiring owner approval before effecting RED.
+**Status:** accepted (2026-09-16; owner directed autonomous completion after the explicit ADR approval request); material amendment to ADR-0125 root
+publication and the F3 plan; fresh Phase 0 precedes effecting RED.
 ADR-0133/0134 remain read-only and nonauthorizing.
 
 **Context.** DatasetCaptureAuthorization.v1 names the future source-roster
@@ -9746,8 +9746,8 @@ No synthetic fixture or same-process object identity resolves this cycle.
    codecs, raw publication/data proof, and manifest/composed tape
    before P7 can close.
 
-**Sequence.** Independent preapproval design review, owner approval,
-fresh Phase 0 on exact receipt/basis grammar, fixed G1/G2 key IDs,
+**Sequence.** Independent preapproval design review, recorded owner
+continuation, fresh Phase 0 on exact receipt/basis grammar, fixed G1/G2 key IDs,
 root-digest projection and shared-reserve handoff. Challenge expiry/
 revocation at F4 and receipt issue, bootstrap ID alias/re-sign, every
 crash point, partial WORM writes, producer-metadata substitution,
@@ -9763,8 +9763,7 @@ deployment_eligible=false.
 
 ## ADR-0136 - shared durable synthetic authorization reserve
 
-**Status:** proposed (2026-09-16); owner approval and fresh Phase 0
-required before RED. This is the one-use prerequisite for ADR-0135 roster
+**Status:** accepted (2026-09-16; owner directed autonomous completion after the explicit ADR approval request); fresh Phase 0 required before RED. This is the one-use prerequisite for ADR-0135 roster
 publication and ADR-0132 raw preflight. It does not authorize either read
 or publication.
 
@@ -9920,8 +9919,7 @@ study-admission implementation or P7 closure.
 
 ## ADR-0137 - nonauthorizing trusted roster-root proof
 
-**Status:** proposed (2026-09-16); owner approval and fresh Phase 0
-required before RED. This bounded design follows the four-Major
+**Status:** accepted (2026-09-16; owner directed autonomous completion after the explicit ADR approval request); fresh Phase 0 required before RED. This bounded design follows the four-Major
 preapproval review of the broader dynamic-P4 proposal. It does not
 authorize P4 admission, raw publication, a CAPTURED receipt or a read.
 

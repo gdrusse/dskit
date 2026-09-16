@@ -430,5 +430,11 @@
     "checks": "31 focused ADR-0134 tests passed in candidate and integration worktrees; Ruff and git diff --check passed; full suite not run per owner preference.",
     "scope": "Test fixture consistency only; raw-byte access, shared spend and P7 remain open.",
     "deployment_eligible": false
+  },
+  "adr0135_to_0137_owner_direction": {
+    "owner_message": "Please work to finish",
+    "context": "After explicit request to approve ADR-0135 through ADR-0137 and explanation of their remaining gates, owner directed autonomous completion.",
+    "interpretation": "Approval to proceed under the reviewed bounded ADRs; fresh Phase 0, tests, two final lenses and all downstream contracts remain required.",
+    "deployment_eligible": false
   }
 }

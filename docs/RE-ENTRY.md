@@ -34,9 +34,9 @@ ADR-0135 proposes a dual-signed pre-roster bootstrap and versioned receipt.
 ADR-0136 proposes a shared durable one-use reserve with atomic revocation
 and committed admission for each F4/receipt/raw-read effect. An independent
 convergence checkpoint revised the timing contract; two joint design lenses
-then found zero Critical/Major/Minor. Both ADRs await owner approval and a
-fresh Phase 0 before code. ADR-0137 narrows the next slice to a read-only roster-root proof; its
-independent preapproval review is clean. Raw one-use publication, dynamic
+then found zero Critical/Major/Minor. Owner directed autonomous completion after the explicit ADR approval
+request; fresh Phase 0 still precedes code. ADR-0137 narrows the next slice to a read-only roster-root proof; its
+independent preapproval review is clean and owner continuation is recorded. Raw one-use publication, dynamic
 P4 scope/graph and CAPTURED timing, durable F4 recovery and full F3
 semantics remain separate gates. Packet8 follows P7 closure.
 deployment_eligible=false.
