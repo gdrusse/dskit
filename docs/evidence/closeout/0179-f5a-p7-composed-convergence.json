@@ -445,5 +445,33 @@
     "recheck": "0 Critical, 0 Major, 0 Minor; one deferred wording Nit on canonical revoked-string validation.",
     "tests": "No code tests in Phase 0; focused RED/GREEN is next.",
     "deployment_eligible": false
+  },
+  "adr0135_readonly_candidate": {
+    "candidate": "1ee0e0be3b34d0d5806e15761ceb4527e1c9c274",
+    "reviewed_blobs": {
+      "dskit/pipeline/trust.py": "8645f0c0185ad110ae3fafb6eef42d6ee1523ccc",
+      "dskit/production/verifier.py": "acfdb14c81d80224d12e9615013a84df7fd16df4",
+      "tests/pipeline/test_captured_authorization.py": "70313c049303a8398355908bd7474e29b3aa5200",
+      "docs/architecture/decision-log.md": "89a3c173e0d0f0a1d08b2dc9d8d76f2693425446"
+    },
+    "red": "One focused positive test failed on missing NonAuthorizingRosterBootstrapVerifier before implementation.",
+    "green": "27 focused ADR-0135 tests passed; 1115 directly affected pipeline/production authorization and purity tests passed in 73.07s; Ruff and diff check passed.",
+    "authority_lens": "/root/adr135_authority_final: 0 Critical, 0 Major, 0 Minor, 0 Nit.",
+    "tests_lens": "/root/adr135_tests_final: 0 Critical, 0 Major, 1 Minor, 0 Nit.",
+    "minor": "If trusted time or revocation changes during Ed25519 checks, read-only facts may describe the earlier state. Facts carry no authority; future F4/raw/P4 entry must reverify original bytes and current shared state at committed admission.",
+    "full_suite": "not run per owner testing preference",
+    "scope": "Read-only dual-signed bootstrap authorization and derived rank policy; no F4/reserve/receipt/raw/P4 effect.",
+    "deployment_eligible": false
+  },
+  "adr0136_storage_phase0": {
+    "reviewer": "/root/adr136_phase0",
+    "result": "0 proven Critical/Major in accepted ADR; first internal storage slice is non-effecting.",
+    "major_implementation_gates": [
+      "No public generic reserve(kind,id,...) or caller-made facts as authority; eventual effecting entry verifies original signatures/snapshot/time under BEGIN IMMEDIATE.",
+      "Open only a trusted preprovisioned fixed path in mode=rw; sqlite3.connect default creation or request-selected URI/path can split the namespace."
+    ],
+    "matrix": "Cross-process one-winner, admin revocation ordering, WAL/FULL downgrade, crash/ambiguous COMMIT, exact signed ID and audit, no pre-reserve F4/member effects.",
+    "minor_limit": "Unit tests cannot prove physical power-loss durability; local durable VFS and no-restore remain trusted host invariants.",
+    "deployment_eligible": false
   }
 }
