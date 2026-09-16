@@ -1,0 +1,15 @@
+{
+  "schema_version": "F5aFinalLens.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice1",
+  "lens": "correctness-authority",
+  "candidate": "46895c1",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "verdict": "1 Major + 2 Minor; corrected in 5783bb6",
+  "findings": [
+    {"id": "M1", "severity": "Major", "invariant": "each tape port is a complete P5 descriptor", "fix": "_replay_node_errors now requires each of tape_manifest/tape_data to be a complete $captured_artifact descriptor, refusing wired/non-descriptor values (commit 5783bb6)."},
+    {"id": "M2", "severity": "Minor", "invariant": "owned-kind one legal spelling", "fix": "register() now verifies a pre-existing 'replay' entry is (ReplayRun, owned=True) and raises on a foreign squatter (commit 5783bb6)."},
+    {"id": "M3", "severity": "Minor", "invariant": "pair order insignificant", "fix": "pair check is now set-based, order-insensitive (commit 5783bb6)."}
+  ],
+  "clean_checks": ["P4 fixtures green", "byte/hash tests green", "pipeline never imports production", "no document<->trust cycle", "3565 passed in tests/pipeline during review"],
+  "recorded_at_utc": "2026-09-16T02:30:00.000000+00:00"
+}
