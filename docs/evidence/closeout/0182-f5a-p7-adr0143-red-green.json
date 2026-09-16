@@ -106,5 +106,46 @@
     "legacy_classes_untouched": "confirmed: _FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, _FixedP4VerificationClock, _FixedP4VerificationRevocations, _p4_close_admission have zero modified lines",
     "convergence_checkpoint_hit": true,
     "convergence_summary": "authorize_capture_set -> CAPTURED end-to-end is blocked by a genuine contradiction inside ADR-0143's own text (shared/unedited batch-signing infra vs. the narrow admission chain's field shape); resolver.close_admission itself (the ADR's own required entry point) is implemented, GREEN, and independently exercised end-to-end against a real F4 lifecycle"
+  },
+
+  "scope_correction_commit": "d4122b1 (docs-only; narrows accepted ADR-0143 scope to match what GREEN actually delivered, defers authorize_capture_set closure to follow-on ADR-0144)",
+
+  "final_review": {
+    "candidate": "24dbd11 (code) + d4122b1 (scope-correction docs, current HEAD)",
+    "reviewed_blobs": {
+      "dskit/pipeline/trust.py": "6e0054c802d2f8eb9d2d2d899af5c5dda07518e1",
+      "tests/pipeline/test_captured_authorization.py": "7a3be563ef7c5766ce34024d92df265169b3a7f5"
+    },
+    "authority_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (authority/correctness lens)",
+      "verdict": "0 Critical, 0 Major, 0 Minor, 0 Nit",
+      "verified": [
+        "5 legacy-only symbols have zero modified lines (hunk line ranges checked against symbol line ranges)",
+        "extended dispatch is closed if/elif/else, no permissive default, legacy if-arm verbatim",
+        "D1 reconstruction genuinely prevents forged/aliased admission_ref and pce entry-swap (rows 6/7)",
+        "D2 shared _P4_PENDING_TOKENS reuse for authority construction is correct and does not cross-contaminate with the dynamic resolver's own dedicated token set",
+        "pin F3 reserve-first ordering confirmed in code; post-commit construction failure lands in QUARANTINED, a terminal state, not a retryable inconsistency",
+        "authorize_capture_set blocker is real (traced _p4_checked_dispatch -> _p4_reference_bytes -> _P4_ADMISSION_SCHEMAS whitelist), not merely untested",
+        "candidate is faithful to the corrected, narrowed ADR-0143 scope in both code and evidence"
+      ],
+      "gate": "CLEAN"
+    },
+    "tests_integration_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (tests/integration lens)",
+      "verdict": "0 Critical, 0 Major, 0 Minor, 0 Nit",
+      "verified": [
+        "all 12 Phase-0-matrix rows have direct, non-trivial test coverage (row-by-row mapping table produced)",
+        "independently re-ran focused (21 passed) and affected (1481 passed, 1 pre-existing unrelated baseline failure) suites, matching implementer's report",
+        "ruff and git diff --check independently re-run, clean",
+        "row 9 (crash/quarantine) and row 11 (concurrency race) use legitimate single-process fault-injection/ordering-spy simulations, not vacuous stubs",
+        "positive end-to-end test drives a real F4 produce/seal/publish lifecycle twice and a real resolver.close_admission call, not mocked",
+        "test isolation clean: per-test tmp_path SQLite files, WeakKeyDictionary registries auto-cleanup, no cross-test leakage found"
+      ],
+      "gate": "CLEAN"
+    },
+    "affected_check_independently_reproduced": "1481 passed, 1 pre-existing failure (test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private, traced to ADR-0141/0142's trust.__all__ additions vs the test's separately-maintained _PUBLIC_TYPES set) across tests/pipeline/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py",
+    "gate": "Two fresh independent completed lenses, zero unresolved in-scope Critical/Major/Minor/Nit on the corrected/narrowed candidate. Ready to lock and integrate.",
+    "next": "Merge to main; propose follow-on ADR-0144 to resolve the authorize_capture_set/_p4_reference_bytes/_FixedCapturedAuthorizationContract._prepare dispatch contradiction disclosed above, closing the reachable-CAPTURED-admission gap for the dynamic authority.",
+    "deployment_eligible": false
   }
 }
