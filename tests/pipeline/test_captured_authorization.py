@@ -4438,3 +4438,208 @@ def test_adr140_raw_root_proof_rechecks_revocation_after_f4_readback(
     with pytest.raises(ValueError):
         publisher.proof().verify(*signed, *roster, *output)
     assert fired
+
+
+def test_adr141_root_pis_issues_exact_live_two_root_pair_once(tmp_path, monkeypatch):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+    issuer = trust._SyntheticRootPisIssuer(publisher)
+    basis_bytes, pis_bytes = issuer.issue(*signed, *roster, *output)
+    basis, pis = json.loads(basis_bytes), json.loads(pis_bytes)
+    assert basis["schema"] == "dskit.issuance-basis/v2"
+    assert basis["kind"] == "root-pis"
+    assert len(basis["refs"]) == 8
+    assert pis["schema"] == "dskit.published-input-set/v2"
+    assert pis["phase"] == "root-g1-g2"
+    assert [entry["input_id"] for entry in pis["entries"]] == [
+        "raw_event_dataset", "source_roster",
+    ]
+    assert basis["issued_at_ms"] == pis["issued_at_ms"] == 601
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='root-pis'"
+    ).fetchone() == ("ISSUED",)
+    with pytest.raises(ValueError):
+        trust._SyntheticRootPisIssuer(publisher).issue(
+            *signed, *roster, *output,
+        )
+
+
+def test_adr141_root_pis_read_only_proof_rechecks_pair_and_shared_state(
+    tmp_path, monkeypatch,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+    issuer = trust._SyntheticRootPisIssuer(publisher)
+    pair = issuer.issue(*signed, *roster, *output)
+    proof = issuer.proof()
+    from dskit.production import verifier as production_verifier
+    assert production_verifier.NonAuthorizingSyntheticRootPisProof is (
+        trust.NonAuthorizingSyntheticRootPisProof
+    )
+    facts = proof.verify(*signed, *roster, *output, *pair)
+    assert facts["published_input_set_sha256"] == json.loads(pair[1])[
+        "published_input_set_sha256"
+    ]
+    assert facts["authorizing"] is False
+    assert facts["deployment_eligible"] is False
+    with pytest.raises(ValueError):
+        proof.verify(*signed, *roster, *output, pair[0], pair[1] + b" ")
+    publisher._reserve._advance_clock(602)
+    assert proof.verify(*signed, *roster, *output, *pair)["checked_at_ms"] == 602
+    publisher._reserve._revoke("data-publisher/published-input-set-g1-g2")
+    with pytest.raises(ValueError):
+        proof.verify(*signed, *roster, *output, *pair)
+
+
+def test_adr141_root_pis_requires_post_raw_shared_time(tmp_path, monkeypatch):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    with pytest.raises(ValueError, match="follow raw receipt clock"):
+        trust._SyntheticRootPisIssuer(publisher).issue(
+            *signed, *roster, *output,
+        )
+    assert publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses WHERE kind='root-pis'"
+    ).fetchone() == (0,)
+
+
+def test_adr141_root_pis_signer_revocation_refuses_without_spend(
+    tmp_path, monkeypatch,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+    publisher._reserve._revoke("data-publisher/published-input-set-g1-g2")
+    with pytest.raises(ValueError):
+        trust._SyntheticRootPisIssuer(publisher).issue(
+            *signed, *roster, *output,
+        )
+    assert publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses WHERE kind='root-pis'"
+    ).fetchone() == (0,)
+
+
+def test_adr141_root_pis_sign_failure_quarantines_spent_pair(
+    tmp_path, monkeypatch,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+
+    def fail_sign(_payload, _field):
+        raise ValueError("injected signer failure")
+
+    monkeypatch.setattr(
+        trust._SyntheticRootPisIssuer, "_sign", staticmethod(fail_sign),
+    )
+    with pytest.raises(ValueError, match="injected signer failure"):
+        trust._SyntheticRootPisIssuer(publisher).issue(
+            *signed, *roster, *output,
+        )
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='root-pis'"
+    ).fetchone() == ("QUARANTINED",)
+    assert publisher._root_pis_pairs == {}
+
+
+def test_adr141_root_pis_worm_conflict_quarantines_spent_pair(
+    tmp_path, monkeypatch,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+    signed_id = f4._json_bytes({
+        "bootstrap_id": json.loads(roster[0])["bootstrap_id"],
+        "authorization_id": json.loads(signed[0])["authorization_id"],
+    }).decode("ascii")
+    key = ("synthetic-study", "root-g1-g2", signed_id)
+    publisher._root_pis_pairs[key] = (b"wrong basis", b"wrong PIS")
+    with pytest.raises(ValueError, match="WORM conflict"):
+        trust._SyntheticRootPisIssuer(publisher).issue(
+            *signed, *roster, *output,
+        )
+    assert publisher._root_pis_pairs[key] == (b"wrong basis", b"wrong PIS")
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='root-pis'"
+    ).fetchone() == ("QUARANTINED",)
+
+
+def test_adr141_root_pis_proof_fences_clock_change_during_readback(
+    tmp_path, monkeypatch,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+    issuer = trust._SyntheticRootPisIssuer(publisher)
+    pair = issuer.issue(*signed, *roster, *output)
+    original = publisher._broker._provider.open_member
+    fired = False
+
+    def advance_during_read(snapshot, name):
+        nonlocal fired
+        raw = original(snapshot, name)
+        if not fired:
+            fired = True
+            admin = trust._SyntheticAuthorizationReserve(
+                publisher._reserve._path,
+            )
+            admin._advance_clock(602)
+            admin._close()
+        return raw
+
+    monkeypatch.setattr(
+        publisher._broker._provider, "open_member", advance_during_read,
+    )
+    with pytest.raises(ValueError, match="freshness changed"):
+        issuer.proof().verify(*signed, *roster, *output, *pair)
+    assert fired
+
+
+@pytest.mark.parametrize("tamper", ["audit", "row", "worm"])
+def test_adr141_root_pis_proof_refuses_backing_tamper(
+    tmp_path, monkeypatch, tamper,
+):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(601)
+    issuer = trust._SyntheticRootPisIssuer(publisher)
+    pair = issuer.issue(*signed, *roster, *output)
+    if tamper == "audit":
+        publisher._reserve._connection.execute(
+            "DELETE FROM reserve_audit WHERE kind='root-pis' "
+            "AND new_state='RESERVED'"
+        )
+    elif tamper == "row":
+        publisher._reserve._connection.execute(
+            "UPDATE reserve_uses SET state='QUARANTINED' "
+            "WHERE kind='root-pis'"
+        )
+    else:
+        key = next(iter(publisher._root_pis_pairs))
+        publisher._root_pis_pairs[key] = (b"wrong", b"wrong")
+    with pytest.raises(ValueError):
+        issuer.proof().verify(*signed, *roster, *output, *pair)
+
+
+def test_adr141_root_pis_expired_grant_cannot_issue(tmp_path, monkeypatch):
+    publisher, roster, signed, output = _adr140_published_raw_case(
+        tmp_path, monkeypatch,
+    )
+    publisher._reserve._advance_clock(900)
+    with pytest.raises(ValueError):
+        trust._SyntheticRootPisIssuer(publisher).issue(
+            *signed, *roster, *output,
+        )
+    assert publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses WHERE kind='root-pis'"
+    ).fetchone() == (0,)

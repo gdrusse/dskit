@@ -46,6 +46,7 @@ __all__ = [
     "NonAuthorizingRosterBootstrapVerifier",
     "NonAuthorizingRosterRootProof",
     "NonAuthorizingRawRootProof",
+    "NonAuthorizingSyntheticRootPisProof",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
@@ -7291,7 +7292,7 @@ class _SyntheticRawPublisher:
     """One-shot synthetic raw F4 publisher from a validated fixture proof."""
 
     __slots__ = ("_preflight", "_roster_publisher", "_reserve", "_broker",
-                 "_closed", "_retained")
+                 "_closed", "_retained", "_root_pis_pairs")
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("the synthetic raw publisher is final")
@@ -7307,6 +7308,7 @@ class _SyntheticRawPublisher:
         self._broker = preflight._publisher._broker
         self._closed = False
         self._retained = None
+        self._root_pis_pairs = {}
 
     @staticmethod
     def _manifest(proof, authorization_bytes):
@@ -7868,7 +7870,8 @@ class NonAuthorizingRawRootProof:
 
     def verify(self, authorization_bytes, g1, g2, attestation,
                bootstrap, bg1, bg2, roster_basis, roster_receipt,
-               manifest_bytes, basis_bytes, receipt_bytes):
+               manifest_bytes, basis_bytes, receipt_bytes,
+               _under_writer_lock=False):
         """Return checked identities, never a publication or capture permit."""
         values = (
             authorization_bytes, g1, g2, attestation,
@@ -7907,7 +7910,11 @@ class NonAuthorizingRawRootProof:
         connection = reserve._connection
         signed_id = _hs_parse_canonical(authorization_bytes)["authorization_id"]
         try:
-            connection.execute("BEGIN")
+            if _under_writer_lock:
+                _hs_refuse(connection.in_transaction,
+                           "raw writer transaction required")
+            else:
+                connection.execute("BEGIN")
             generation, revoked, snapshot = reserve._snapshot()
             now = reserve._now()
             authorization = publisher._check_row(
@@ -7918,9 +7925,10 @@ class NonAuthorizingRawRootProof:
             _hs_refuse(not {
                 "data-publisher", "data-publisher/root-publication-g1-g2",
             } & revoked, "raw proof signer revoked")
-            connection.execute("COMMIT")
+            if not _under_writer_lock:
+                connection.execute("COMMIT")
         except Exception:
-            if connection.in_transaction:
+            if not _under_writer_lock and connection.in_transaction:
                 connection.execute("ROLLBACK")
             raise
         expected_manifest = publisher._manifest(proof, authorization_bytes)
@@ -8029,7 +8037,8 @@ class NonAuthorizingRawRootProof:
         )
         reserve._check()
         try:
-            connection.execute("BEGIN")
+            if not _under_writer_lock:
+                connection.execute("BEGIN")
             final_generation, final_revoked, final_snapshot = (
                 reserve._snapshot()
             )
@@ -8058,9 +8067,10 @@ class NonAuthorizingRawRootProof:
                 "raw proof final reservation changed",
             )
             self._audit(connection, signed_id, final_generation)
-            connection.execute("COMMIT")
+            if not _under_writer_lock:
+                connection.execute("COMMIT")
         except Exception:
-            if connection.in_transaction:
+            if not _under_writer_lock and connection.in_transaction:
                 connection.execute("ROLLBACK")
             raise
         raw_root_sha = _digest(_hs_canonical_bytes({
@@ -8079,6 +8089,672 @@ class NonAuthorizingRawRootProof:
                 _hs_parse_canonical(manifest_bytes)["ordered_member_digests"]
             ),
             "event_count": len(parsed_events),
+            "checked_at_ms": final_now,
+            "authorizing": False,
+            "deployment_eligible": False,
+        })
+
+
+class _SyntheticRootPisIssuer:
+    """One-shot, nondeployment two-root signed PIS issuer."""
+
+    __slots__ = ("_publisher", "_closed", "_retained")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("the synthetic root-PIS issuer is final")
+
+    def __init__(self, publisher):
+        _hs_refuse(type(publisher) is _SyntheticRawPublisher
+                   and publisher._closed and publisher._retained is not None,
+                   "retained raw publisher required")
+        self._publisher = publisher
+        self._closed = False
+        self._retained = None
+
+    @staticmethod
+    def _sign(payload, self_field):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+
+        key_id = "data-publisher/published-input-set-g1-g2"
+        preimage = _hs_canonical_bytes(payload)
+        seed = bytes.fromhex(_digest(
+            ("p4-fixed-test-key/" + key_id).encode("ascii")
+        ))
+        signature = Ed25519PrivateKey.from_private_bytes(seed).sign(
+            preimage
+        ).hex()
+        _p4_verify_ed25519(
+            _P4_LOCAL_PUBLIC_KEYS[key_id], preimage, signature,
+        )
+        return _hs_canonical_bytes({
+            **payload, self_field: _digest(preimage),
+            "signature": signature,
+        })
+
+    @staticmethod
+    def _check_signed(raw, payload, self_field):
+        value = _hs_parse_canonical(raw)
+        _hs_refuse(
+            type(value) is dict
+            and set(value) == set(payload) | {self_field, "signature"}
+            and {key: item for key, item in value.items()
+                 if key not in (self_field, "signature")} == payload
+            and value[self_field] == _digest(_hs_canonical_bytes(payload)),
+            "root-PIS signer changed committed fields",
+        )
+        _p4_verify_ed25519(
+            _P4_LOCAL_PUBLIC_KEYS[
+                "data-publisher/published-input-set-g1-g2"
+            ], _hs_canonical_bytes(payload), value["signature"],
+        )
+        return value
+
+    @staticmethod
+    def _entry(receipt, input_id, kind, output_member, output_schema,
+               event_schema, media_type, policy_sha):
+        contract = {
+            "schema_version": "dskit.synthetic-root-input-contract/v1",
+            "input_id": input_id,
+            "capture_kind": kind,
+            "output_member": output_member,
+            "output_schema": output_schema,
+            "output_media_type": "application/json",
+            "authorized_event_schema": event_schema,
+            "authorized_raw_media_type": media_type,
+            "source_rank_policy_sha256": policy_sha,
+        }
+        return {
+            "input_id": input_id,
+            "kind": kind,
+            **{key: receipt[key] for key in (
+                "root_ref", "root_id", "snapshot_version",
+                "member_manifest_sha256", "producer_run_identity",
+                "producer_document_sha256", "producer_node",
+                "producer_output",
+            )},
+            "publication_receipt_schema": receipt["schema"],
+            "publication_receipt_sha256":
+                receipt["root_publication_receipt_sha256"],
+            "contract_sha256": _digest(_hs_canonical_bytes(contract)),
+        }
+
+    @staticmethod
+    def _refs(signed, roster, raw_receipt, roster_receipt):
+        specs = (
+            ("dataset-capture-authorization", "security-data",
+             "dskit.dataset-capture-authorization/v1", _digest(signed[0])),
+            ("dataset-capture-grant", "G1",
+             "dskit.dataset-capture-grant/v1", _digest(signed[1])),
+            ("dataset-capture-grant", "G2",
+             "dskit.dataset-capture-grant/v1", _digest(signed[2])),
+            ("roster-bootstrap-authorization", "security-data",
+             "dskit.roster-bootstrap-authorization/v1", _digest(roster[0])),
+            ("roster-bootstrap-grant", "G1",
+             "dskit.roster-bootstrap-grant/v1", _digest(roster[1])),
+            ("roster-bootstrap-grant", "G2",
+             "dskit.roster-bootstrap-grant/v1", _digest(roster[2])),
+            ("root-publication", "data-publisher",
+             "dskit.root-publication-receipt/v1",
+             raw_receipt["root_publication_receipt_sha256"]),
+            ("root-publication", "data-publisher",
+             "dskit.root-publication-receipt/v2",
+             roster_receipt["root_publication_receipt_sha256"]),
+        )
+        refs = [
+            dict(zip(("kind", "role", "schema", "sha256"), spec, strict=True))
+            for spec in specs
+        ]
+        refs.sort(key=lambda ref: tuple(
+            ref[key] for key in ("kind", "role", "schema", "sha256")
+        ))
+        _hs_refuse(len(refs) == 8 and len({
+            tuple(ref.values()) for ref in refs
+        }) == 8, "closed root-PIS refs required")
+        return refs
+
+    def _quarantine(self, signed_id, intent_sha):
+        reserve = self._publisher._reserve
+        connection = reserve._connection
+        try:
+            reserve._check()
+            connection.execute("BEGIN IMMEDIATE")
+            reserve._check()
+            generation, _revoked, _snapshot = reserve._snapshot()
+            row = connection.execute(
+                "SELECT state,intent_sha256 FROM reserve_uses "
+                "WHERE kind='root-pis' AND signed_id=?",
+                (signed_id,),
+            ).fetchone()
+            if row is not None and row[0] != "QUARANTINED":
+                _hs_refuse(row[1] == intent_sha,
+                           "root-PIS quarantine intent mismatch")
+                connection.execute(
+                    "UPDATE reserve_uses SET state='QUARANTINED' "
+                    "WHERE kind='root-pis' AND signed_id=?",
+                    (signed_id,),
+                )
+                connection.execute(
+                    "INSERT INTO reserve_audit "
+                    "(kind,signed_id,old_state,new_state,generation) "
+                    "VALUES (?,?,?,?,?)",
+                    ("root-pis", signed_id, row[0], "QUARANTINED",
+                     generation),
+                )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+
+    def issue(self, authorization_bytes, g1, g2, attestation,
+              bootstrap, bg1, bg2, roster_basis, roster_receipt,
+              manifest_bytes, raw_basis, raw_receipt):
+        _hs_refuse(not self._closed, "root-PIS issuer already used")
+        self._closed = True
+        signed = (authorization_bytes, g1, g2, attestation)
+        roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
+        output = (manifest_bytes, raw_basis, raw_receipt)
+        _hs_refuse(all(type(value) is bytes for value in
+                       (*signed, *roster, *output)),
+                   "exact retained root-PIS originals required")
+        publisher = self._publisher
+        reserve = publisher._reserve
+        connection = reserve._connection
+        bootstrap_id = _hs_parse_canonical(bootstrap)["bootstrap_id"]
+        authorization_id = _hs_parse_canonical(
+            authorization_bytes
+        )["authorization_id"]
+        signed_id = _hs_canonical_bytes({
+            "bootstrap_id": bootstrap_id,
+            "authorization_id": authorization_id,
+        }).decode("ascii")
+        intent_sha = None
+        committed = False
+        try:
+            reserve._check()
+            connection.execute("BEGIN IMMEDIATE")
+            reserve._check()
+            generation, revoked, snapshot = reserve._snapshot()
+            now = reserve._now()
+            roster_facts = publisher._roster_publisher.proof().verify(
+                *roster, _under_writer_lock=True,
+            )
+            raw_facts = publisher.proof().verify(
+                *signed, *roster, *output, _under_writer_lock=True,
+            )
+            _hs_refuse(
+                not {"data-publisher",
+                     "data-publisher/published-input-set-g1-g2"} & revoked,
+                "root-PIS signer revoked",
+            )
+            roster_value = _hs_parse_canonical(roster_receipt)
+            raw_value = _hs_parse_canonical(raw_receipt)
+            _hs_refuse(
+                roster_facts["roster_publication_receipt_sha256"]
+                == roster_value["root_publication_receipt_sha256"]
+                and raw_facts["raw_publication_receipt_sha256"]
+                == raw_value["root_publication_receipt_sha256"],
+                "root-PIS receipt proof mismatch",
+            )
+            _hs_refuse(
+                now > raw_value["issued_at_ms"],
+                "root-PIS must follow raw receipt clock",
+            )
+            bootstrap_value = _hs_parse_canonical(bootstrap)
+            authorization_value = _hs_parse_canonical(
+                authorization_bytes
+            )
+            expires = min(
+                _hs_parse_canonical(value)["expires_at_ms"]
+                for value in (
+                    bootstrap, bg1, bg2, authorization_bytes, g1, g2,
+                    roster_receipt, raw_receipt,
+                )
+            )
+            _hs_refuse(now < expires, "root-PIS authority expired")
+            event_schema = bootstrap_value["event_schema"]
+            media_type = bootstrap_value["media_type"]
+            policy_sha = roster_facts["source_rank_policy_sha256"]
+            _hs_refuse(
+                authorization_value["event_schema"] == event_schema
+                and authorization_value["media_type"] == media_type
+                and authorization_value["source_roster_policy_sha256"]
+                == policy_sha,
+                "root-PIS source contract mismatch",
+            )
+            entries = [
+                self._entry(
+                    raw_value, "raw_event_dataset", "raw-event-dataset",
+                    "raw_event_dataset.json",
+                    "dskit.raw-event-dataset-capture/v1",
+                    event_schema, media_type, policy_sha,
+                ),
+                self._entry(
+                    roster_value, "source_roster", "source-roster",
+                    "source_roster.json",
+                    "dskit.source-roster-capture/v1",
+                    event_schema, media_type, policy_sha,
+                ),
+            ]
+            refs = self._refs(signed, roster, raw_value, roster_value)
+            suffix = {
+                "issuer_role": "data-publisher",
+                "key_usage": "published-input-set-g1-g2",
+                "signature_alg": "Ed25519",
+                "issued_at_ms": now,
+                "not_before_ms": now,
+                "expires_at_ms": expires,
+                "revocation_snapshot_sha256": snapshot,
+                "key": {
+                    "key_id": "data-publisher/published-input-set-g1-g2",
+                    "key_version": 1,
+                },
+            }
+            basis_payload = {
+                "schema": "dskit.issuance-basis/v2",
+                "kind": "root-pis",
+                "study_id": "synthetic-study",
+                "refs": refs,
+                **suffix,
+            }
+            basis_sha = _digest(_hs_canonical_bytes(basis_payload))
+            pis_payload = {
+                "schema": "dskit.published-input-set/v2",
+                "study_id": "synthetic-study",
+                "phase": "root-g1-g2",
+                "purpose": "historical-study",
+                "entries": entries,
+                "issuance_basis_sha256": basis_sha,
+                **suffix,
+            }
+            intent = {
+                "schema_version":
+                    "dskit.synthetic-root-pis-issue-intent/v1",
+                "bootstrap_id": bootstrap_id,
+                "authorization_id": authorization_id,
+                "bootstrap_authorization_sha256": _digest(bootstrap),
+                "bootstrap_g1_sha256": _digest(bg1),
+                "bootstrap_g2_sha256": _digest(bg2),
+                "dataset_authorization_sha256":
+                    _digest(authorization_bytes),
+                "dataset_g1_sha256": _digest(g1),
+                "dataset_g2_sha256": _digest(g2),
+                "fixture_attestation_sha256": _digest(attestation),
+                "roster_receipt_sha256":
+                    roster_value["root_publication_receipt_sha256"],
+                "raw_receipt_sha256":
+                    raw_value["root_publication_receipt_sha256"],
+                "refs": refs,
+                "entries": entries,
+                "basis_unsigned_sha256": basis_sha,
+                "pis_unsigned_sha256":
+                    _digest(_hs_canonical_bytes(pis_payload)),
+                "signer_key_id": suffix["key"]["key_id"],
+                "signer_key_version": 1,
+                "revocation_snapshot_sha256": snapshot,
+                "issued_at_ms": now,
+                "not_before_ms": now,
+                "expires_at_ms": expires,
+            }
+            intent_sha = _digest(_hs_canonical_bytes(intent))
+            _hs_refuse(
+                reserve._now() == now and reserve._snapshot()
+                == (generation, revoked, snapshot),
+                "root-PIS shared state changed before commit",
+            )
+            connection.execute(
+                "INSERT INTO reserve_uses VALUES (?,?,?,?,?,?,?,?)",
+                ("root-pis", signed_id,
+                 _digest(signed_id.encode("ascii")),
+                 _digest(_hs_canonical_bytes([_digest(bg1), _digest(g1)])),
+                 _digest(_hs_canonical_bytes([_digest(bg2), _digest(g2)])),
+                 snapshot, intent_sha, "RESERVED"),
+            )
+            connection.execute(
+                "INSERT INTO reserve_audit "
+                "(kind,signed_id,old_state,new_state,generation) "
+                "VALUES (?,?,NULL,?,?)",
+                ("root-pis", signed_id, "RESERVED", generation),
+            )
+            connection.execute(
+                "UPDATE reserve_uses SET state='ISSUED' "
+                "WHERE kind='root-pis' AND signed_id=? AND state='RESERVED'",
+                (signed_id,),
+            )
+            connection.execute(
+                "INSERT INTO reserve_audit "
+                "(kind,signed_id,old_state,new_state,generation) "
+                "VALUES (?,?,?,?,?)",
+                ("root-pis", signed_id, "RESERVED", "ISSUED",
+                 generation),
+            )
+            connection.execute("COMMIT")
+            committed = True
+        except sqlite3.IntegrityError as exc:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise ValueError("signed root-PIS pair already spent") from exc
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        try:
+            basis_bytes = self._sign(
+                basis_payload, "issuance_basis_sha256",
+            )
+            self._check_signed(
+                basis_bytes, basis_payload, "issuance_basis_sha256",
+            )
+            pis_bytes = self._sign(
+                pis_payload, "published_input_set_sha256",
+            )
+            self._check_signed(
+                pis_bytes, pis_payload, "published_input_set_sha256",
+            )
+            key = ("synthetic-study", "root-g1-g2", signed_id)
+            pair = (basis_bytes, pis_bytes)
+            stored = publisher._root_pis_pairs.setdefault(key, pair)
+            _hs_refuse(stored == pair, "root-PIS WORM conflict")
+            self._retained = (signed, roster, output, intent, pair, key)
+            return pair
+        except Exception:
+            if committed:
+                self._quarantine(signed_id, intent_sha)
+            raise
+
+
+    def proof(self):
+        """Return a fresh nonauthorizing proof for the retained signed pair."""
+        _hs_refuse(self._retained is not None,
+                   "successful retained root-PIS pair required")
+        return NonAuthorizingSyntheticRootPisProof(_MAKE, self)
+
+
+class NonAuthorizingSyntheticRootPisProof:
+    """Read-only verification of one retained synthetic two-root PIS."""
+
+    __slots__ = ("_issuer", "_locked")
+
+    def __init_subclass__(cls, **kwargs):
+        """Forbid proof subtypes that could replace the fixed checks."""
+        raise TypeError("the fixed root-PIS proof is final")
+
+    def __init__(self, token, issuer):
+        if token is not _MAKE or type(issuer) is not _SyntheticRootPisIssuer:
+            raise TypeError("issuer-owned root-PIS proof required")
+        object.__setattr__(self, "_issuer", issuer)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        """Keep the issuer binding frozen."""
+        if getattr(self, "_locked", False):
+            raise AttributeError("root-PIS proof is frozen")
+        object.__setattr__(self, name, value)
+
+    @staticmethod
+    def _audit(connection, signed_id, generation):
+        audit = connection.execute(
+            "SELECT old_state,new_state,generation FROM reserve_audit "
+            "WHERE kind='root-pis' AND signed_id=? ORDER BY seq",
+            (signed_id,),
+        ).fetchall()
+        _hs_refuse(
+            audit == [
+                (None, "RESERVED", generation),
+                ("RESERVED", "ISSUED", generation),
+            ],
+            "complete root-PIS issuance audit required",
+        )
+        return audit
+
+    def verify(self, authorization_bytes, g1, g2, attestation,
+               bootstrap, bg1, bg2, roster_basis, roster_receipt,
+               manifest_bytes, raw_basis, raw_receipt,
+               basis_bytes, pis_bytes):
+        """Return immutable checked identities, never P4 admission."""
+        values = (
+            authorization_bytes, g1, g2, attestation,
+            bootstrap, bg1, bg2, roster_basis, roster_receipt,
+            manifest_bytes, raw_basis, raw_receipt,
+        )
+        issuer = self._issuer
+        _hs_refuse(
+            issuer._retained is not None
+            and all(type(value) is bytes for value in
+                    (*values, basis_bytes, pis_bytes)),
+            "retained exact root-PIS proof bytes required",
+        )
+        signed, roster, output, intent, pair, key = issuer._retained
+        _hs_refuse(
+            values == (*signed, *roster, *output)
+            and pair == (basis_bytes, pis_bytes),
+            "root-PIS originals mismatch",
+        )
+        publisher = issuer._publisher
+        reserve = publisher._reserve
+        connection = reserve._connection
+        signed_id = key[2]
+        reserve._check()
+        try:
+            connection.execute("BEGIN")
+            generation, revoked, snapshot = reserve._snapshot()
+            now = reserve._now()
+            roster_facts = publisher._roster_publisher.proof().verify(
+                *roster, _under_writer_lock=True,
+            )
+            raw_facts = publisher.proof().verify(
+                *signed, *roster, *output, _under_writer_lock=True,
+            )
+            _hs_refuse(
+                now >= intent["issued_at_ms"]
+                and now < intent["expires_at_ms"]
+                and snapshot == intent["revocation_snapshot_sha256"]
+                and not {
+                    "data-publisher",
+                    "data-publisher/published-input-set-g1-g2",
+                } & revoked,
+                "root-PIS proof authority stale",
+            )
+            roster_value = _hs_parse_canonical(roster_receipt)
+            raw_value = _hs_parse_canonical(raw_receipt)
+            _hs_refuse(
+                roster_facts["roster_publication_receipt_sha256"]
+                == roster_value["root_publication_receipt_sha256"]
+                and raw_facts["raw_publication_receipt_sha256"]
+                == raw_value["root_publication_receipt_sha256"],
+                "root-PIS original receipts changed",
+            )
+            bootstrap_value = _hs_parse_canonical(bootstrap)
+            authorization_value = _hs_parse_canonical(
+                authorization_bytes
+            )
+            _hs_refuse(
+                signed_id == _hs_canonical_bytes({
+                    "bootstrap_id": bootstrap_value["bootstrap_id"],
+                    "authorization_id":
+                        authorization_value["authorization_id"],
+                }).decode("ascii"),
+                "root-PIS signed pair identity changed",
+            )
+            policy_sha = roster_facts["source_rank_policy_sha256"]
+            _hs_refuse(
+                authorization_value["source_roster_policy_sha256"]
+                == policy_sha
+                and authorization_value["event_schema"]
+                == bootstrap_value["event_schema"]
+                and authorization_value["media_type"]
+                == bootstrap_value["media_type"],
+                "root-PIS source contract changed",
+            )
+            entries = [
+                issuer._entry(
+                    raw_value, "raw_event_dataset", "raw-event-dataset",
+                    "raw_event_dataset.json",
+                    "dskit.raw-event-dataset-capture/v1",
+                    bootstrap_value["event_schema"],
+                    bootstrap_value["media_type"], policy_sha,
+                ),
+                issuer._entry(
+                    roster_value, "source_roster", "source-roster",
+                    "source_roster.json",
+                    "dskit.source-roster-capture/v1",
+                    bootstrap_value["event_schema"],
+                    bootstrap_value["media_type"], policy_sha,
+                ),
+            ]
+            refs = issuer._refs(signed, roster, raw_value, roster_value)
+            expires = min(
+                _hs_parse_canonical(value)["expires_at_ms"]
+                for value in (
+                    bootstrap, bg1, bg2, authorization_bytes, g1, g2,
+                    roster_receipt, raw_receipt,
+                )
+            )
+            suffix = {
+                "issuer_role": "data-publisher",
+                "key_usage": "published-input-set-g1-g2",
+                "signature_alg": "Ed25519",
+                "issued_at_ms": intent["issued_at_ms"],
+                "not_before_ms": intent["issued_at_ms"],
+                "expires_at_ms": expires,
+                "revocation_snapshot_sha256": snapshot,
+                "key": {
+                    "key_id": "data-publisher/published-input-set-g1-g2",
+                    "key_version": 1,
+                },
+            }
+            basis_payload = {
+                "schema": "dskit.issuance-basis/v2",
+                "kind": "root-pis",
+                "study_id": "synthetic-study",
+                "refs": refs,
+                **suffix,
+            }
+            basis_sha = _digest(_hs_canonical_bytes(basis_payload))
+            pis_payload = {
+                "schema": "dskit.published-input-set/v2",
+                "study_id": "synthetic-study",
+                "phase": "root-g1-g2",
+                "purpose": "historical-study",
+                "entries": entries,
+                "issuance_basis_sha256": basis_sha,
+                **suffix,
+            }
+            expected_intent = {
+                "schema_version":
+                    "dskit.synthetic-root-pis-issue-intent/v1",
+                "bootstrap_id": bootstrap_value["bootstrap_id"],
+                "authorization_id":
+                    authorization_value["authorization_id"],
+                "bootstrap_authorization_sha256": _digest(bootstrap),
+                "bootstrap_g1_sha256": _digest(bg1),
+                "bootstrap_g2_sha256": _digest(bg2),
+                "dataset_authorization_sha256":
+                    _digest(authorization_bytes),
+                "dataset_g1_sha256": _digest(g1),
+                "dataset_g2_sha256": _digest(g2),
+                "fixture_attestation_sha256": _digest(attestation),
+                "roster_receipt_sha256":
+                    roster_value["root_publication_receipt_sha256"],
+                "raw_receipt_sha256":
+                    raw_value["root_publication_receipt_sha256"],
+                "refs": refs,
+                "entries": entries,
+                "basis_unsigned_sha256": basis_sha,
+                "pis_unsigned_sha256":
+                    _digest(_hs_canonical_bytes(pis_payload)),
+                "signer_key_id": suffix["key"]["key_id"],
+                "signer_key_version": 1,
+                "revocation_snapshot_sha256": snapshot,
+                "issued_at_ms": intent["issued_at_ms"],
+                "not_before_ms": intent["issued_at_ms"],
+                "expires_at_ms": expires,
+            }
+            _hs_refuse(
+                expected_intent == intent
+                and intent["issued_at_ms"] > raw_value["issued_at_ms"],
+                "root-PIS issue intent changed",
+            )
+            expected_row = (
+                _digest(signed_id.encode("ascii")),
+                _digest(_hs_canonical_bytes([
+                    _digest(bg1), _digest(g1),
+                ])),
+                _digest(_hs_canonical_bytes([
+                    _digest(bg2), _digest(g2),
+                ])),
+                snapshot, _digest(_hs_canonical_bytes(intent)), "ISSUED",
+            )
+            query = (
+                "SELECT authorization_sha256,g1_sha256,g2_sha256,"
+                "snapshot_sha256,intent_sha256,state FROM reserve_uses "
+                "WHERE kind='root-pis' AND signed_id=?"
+            )
+            row = connection.execute(query, (signed_id,)).fetchone()
+            _hs_refuse(row == expected_row,
+                       "root-PIS one-use row changed")
+            audit = self._audit(connection, signed_id, generation)
+            issuer._check_signed(
+                basis_bytes, basis_payload, "issuance_basis_sha256",
+            )
+            pis = issuer._check_signed(
+                pis_bytes, pis_payload, "published_input_set_sha256",
+            )
+            _hs_refuse(
+                key == ("synthetic-study", "root-g1-g2", signed_id)
+                and publisher._root_pis_pairs.get(key) == pair
+                and sum(
+                    value == pair
+                    for value in publisher._root_pis_pairs.values()
+                ) == 1,
+                "root-PIS WORM pair changed",
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        reserve._check()
+        try:
+            connection.execute("BEGIN")
+            final_generation, final_revoked, final_snapshot = (
+                reserve._snapshot()
+            )
+            final_now = reserve._now()
+            _hs_refuse(
+                final_generation == generation
+                and final_snapshot == snapshot
+                and final_now == now
+                and not {
+                    "data-publisher",
+                    "data-publisher/published-input-set-g1-g2",
+                } & final_revoked,
+                "root-PIS proof freshness changed",
+            )
+            _hs_refuse(
+                connection.execute(query, (signed_id,)).fetchone()
+                == expected_row,
+                "root-PIS final row changed",
+            )
+            _hs_refuse(
+                self._audit(connection, signed_id, final_generation)
+                == audit,
+                "root-PIS final audit changed",
+            )
+            connection.execute("COMMIT")
+        except Exception:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
+        return MappingProxyType({
+            "published_input_set_sha256":
+                pis["published_input_set_sha256"],
+            "issuance_basis_sha256":
+                _hs_parse_canonical(basis_bytes)["issuance_basis_sha256"],
+            "raw_root_sha256": raw_facts["raw_root_sha256"],
+            "roster_root_sha256": roster_facts["roster_root_sha256"],
             "checked_at_ms": final_now,
             "authorizing": False,
             "deployment_eligible": False,
