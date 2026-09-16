@@ -4280,3 +4280,45 @@ def test_adr139_raw_publisher_ambiguous_commit_never_retries(
         trust._SyntheticRawPublisher(preflight).publish(
             proof, *signed, *roster,
         )
+
+
+def test_adr139_raw_publisher_late_outer_conflict_never_overwrites(
+    tmp_path, monkeypatch,
+):
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    publisher = trust._SyntheticRawPublisher(preflight)
+    original = trust._SyntheticRawPublisher._sign
+    conflict_key = None
+
+    def insert_conflict_during_sign(payload, self_field):
+        nonlocal conflict_key
+        if self_field == "root_publication_receipt_sha256":
+            conflict_key = (
+                payload["schema"],
+                f4._json_bytes(payload["publication_authorization_ref"]),
+                *(payload[field] for field in (
+                    "producer_run_identity", "producer_document_sha256",
+                    "producer_node", "producer_output", "root_ref",
+                    "root_id", "snapshot_version",
+                )),
+            )
+            roster_publisher._outer_receipts[conflict_key] = b"conflict"
+        return original(payload, self_field)
+
+    monkeypatch.setattr(
+        trust._SyntheticRawPublisher, "_sign",
+        staticmethod(insert_conflict_during_sign),
+    )
+    with pytest.raises(ValueError, match="WORM conflict"):
+        publisher.publish(proof, *signed, *roster)
+    assert roster_publisher._outer_receipts[conflict_key] == b"conflict"
+    assert publisher._closed and proof._used
+    assert roster_publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("QUARANTINED",)

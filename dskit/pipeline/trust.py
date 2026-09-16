@@ -7681,7 +7681,11 @@ class _SyntheticRawPublisher:
             receipt_bytes, receipt_payload,
             "root_publication_receipt_sha256",
         )
-        self._roster_publisher._outer_receipts[key] = receipt_bytes
+        existing = self._roster_publisher._outer_receipts.get(key)
+        _hs_refuse(existing is None or existing == receipt_bytes,
+                   "raw outer receipt WORM conflict")
+        if existing is None:
+            self._roster_publisher._outer_receipts[key] = receipt_bytes
         return basis_bytes, receipt_bytes
 
     def _quarantine(self, proof):
