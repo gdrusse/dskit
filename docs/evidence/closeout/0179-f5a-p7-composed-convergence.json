@@ -2,7 +2,7 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0133 read-only synthetic G1/G2 verifier reviewed and ready for bounded integration; P7 and Packet8 remain open.",
+  "status": "ADR-0133 read-only synthetic G1/G2 verifier independently reviewed and merged for main integration; P7 and Packet8 remain open.",
   "proposal": "ADR-0133 accepted and implemented as a nonauthorizing prerequisite; ADR-0130/0132 effecting proposals remain blocked.",
   "cycles": [
     {
@@ -265,5 +265,16 @@
     "affected_check": "1057 passed in 73.14s: tests/pipeline/test_captured_authorization.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py; Ruff touched files and git diff --check passed.",
     "gate": "Two fresh independent complete lenses on the same frozen candidate, zero unresolved in-scope Critical/Major; one disclosed Minor deferred. Development-only integration eligible; deployment_eligible=false.",
     "next": "Merge reviewed read-only slice; design trusted fixture acquisition and global one-use authority in later ADR/Phase 0. Preserve full raw F3/P7 and Packet8 gates."
+  },
+  "adr0133_integration": {
+    "merge_commit": "6cb6d62f894e1426c0bc80be75cb9139cc9431d1",
+    "parents": [
+      "83716348c9ede3cedfb3c354241c541d2e7902b2",
+      "110c8ebd330ffe5d8ae9932b2234d6451edf024b"
+    ],
+    "tree_equals_reviewed_branch": true,
+    "reviewed_code_test_contract_blobs_unchanged": true,
+    "merge_result": "No conflicts; git diff --check passed and worktree clean.",
+    "limit": "No real raw dataset access, F4/P4 effect, replay, Packet8 or deployment."
   }
 }
