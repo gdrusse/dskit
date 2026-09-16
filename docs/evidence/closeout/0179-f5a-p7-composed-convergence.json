@@ -419,5 +419,16 @@
     "final": "0 Critical, 0 Major, 0 Minor, 0 Nit. Design review only; git diff --check passed.",
     "gate": "Proposed only. Owner ADR approval and fresh Phase 0 before RED; no F4/P4/raw effect, P7 or Packet8 closure.",
     "deployment_eligible": false
+  },
+  "adr0134_fixture_length_correction": {
+    "reviewed_candidate": "a67ed9ced97f55388d34341e3f29920e4dcc3b73",
+    "integrated_candidate": "0eb44757e6455b4e40afa9db6cad30e005f51e1a",
+    "reviewed_and_integrated_test_blob": "d88b256e154c13f06ad2a1617d99920258297206",
+    "change": "Synthetic fixture A signed byte_length now derives from the same b'fixture-a\\n' bytes as its SHA-256 (10 bytes); fixture B stays 0 bytes.",
+    "authority_lens": "/root/fixture_length_authority: 0 Critical, 0 Major, 0 Minor, 0 Nit; no product authority change",
+    "tests_lens": "/root/fixture_length_tests: 0 Critical, 0 Major, 0 Minor, 0 Nit",
+    "checks": "31 focused ADR-0134 tests passed in candidate and integration worktrees; Ruff and git diff --check passed; full suite not run per owner preference.",
+    "scope": "Test fixture consistency only; raw-byte access, shared spend and P7 remain open.",
+    "deployment_eligible": false
   }
 }
