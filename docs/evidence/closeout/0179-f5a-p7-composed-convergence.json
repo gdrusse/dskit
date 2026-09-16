@@ -659,5 +659,22 @@
     "scope": "Read-only nonauthorizing exact raw root/manifest/v1 receipt proof with retained F4 and shared-state checks. No dynamic P4/CAPTURED/full events/composed tape/P7/Packet8/deployment.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
+  },
+  "adr0141_two_root_pis_candidate": {
+    "candidate": "16451dd817dfc0e08f84cf5eaca5c142774e763e",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "580d3e50fcd1b44eebb5ea3147f557ea92893d53",
+      "dskit/pipeline/trust.py": "8cc9612e0b7de2c88b9d24a17290bb52c433d960",
+      "dskit/production/verifier.py": "e2152bbe2f2935cbc19bac5148a7fd648d2eef8c",
+      "tests/pipeline/test_captured_authorization.py": "1eb914aa0d7d129830b7dd512f89b24e3f16975c"
+    },
+    "phase0": "/root/adr141_preapproval: six initial Majors resolved by closed contracts, refs, signer, chronology, one-use domain and atomic WORM pair; final 0 Critical/Major. /root/adr141_phase0: held-transaction raw proof seam pinned; final 0 Critical/Major.",
+    "red": "Issuer and read-only proof focused tests failed on absent class/method before implementation.",
+    "green": "11 focused ADR141 cases and 1453 directly affected pipeline/production verifier tests passed; Ruff and diff check clean.",
+    "authority_lens": "/root/adr141_authority_final: 0 Critical, 0 Major.",
+    "tests_lens": "/root/adr141_tests_final: 0 Critical, 0 Major; later dynamic P4 must accept roster/v2 and shared time after 600.",
+    "scope": "Fixed nondeployment one-use signed IssuanceBasis.v2 and two-root PublishedInputSet.v2 with read-only proof only. Existing fixed P4 verifier refuses roster/v2 and cannot admit this PIS. No dynamic P4/CAPTURED/full F3/composed tape/P7/Packet8 closure or deployment.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
   }
 }
