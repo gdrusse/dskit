@@ -25,8 +25,8 @@ proof and composition need later contracts.
 ADR-0133 reached remote main at 28c68de. Proposed ADR-0134 now covers only
 read-only signed synthetic fixture commitments; independent preapproval review
 found zero blocking findings. Owner approved ADR-0134; fresh Phase 0 and two final lenses cleared with
-zero Critical/Major. Focused 31 and affected 1088 tests passed. One Minor test
-fixture byte-length mismatch is deferred until raw-byte integration.
+zero Critical/Major. Focused 31 and affected 1088 tests passed. The one Minor test fixture byte-length mismatch was corrected on main
+at cc7e0bc (31 focused tests, two clean review lenses).
 The reviewed slice merged at e512247; code/test/contract blobs are unchanged.
 Independent whole-P7 audit found a roster authorization/receipt cycle, fixed
 P4 root corpus, missing shared durable spend and incomplete raw/envelope wire.
