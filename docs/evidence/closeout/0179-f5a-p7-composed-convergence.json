@@ -2,8 +2,8 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "Independent convergence checkpoint completed; repeated provenance/equality families require changed approach before RED.",
-  "proposal": "ADR-0130 in docs/architecture/decision-log.md, revised data-proof-only proposal; owner approval pending",
+  "status": "ADR-0133 read-only synthetic G1/G2 verifier reviewed and ready for bounded integration; P7 and Packet8 remain open.",
+  "proposal": "ADR-0133 accepted and implemented as a nonauthorizing prerequisite; ADR-0130/0132 effecting proposals remain blocked.",
   "cycles": [
     {
       "round": 1,
@@ -235,5 +235,35 @@
     "source": "local Codex session turn_context for task 01a0aa03-9a37-7f70-8a3d-d39a444a97a6; all seven available turn contexts agree",
     "prior_misattribution": "Pushed commits ae46adb, 892a595 and merge 8371634 name GPT-6 Astra; that label does not match this task's recorded model.",
     "disposition": "Do not rewrite pushed history; retain this correction in evidence. New checkpoint/candidate commits use GPT-5.6 Sol author and trailer."
+  },
+  "adr0133_final_review": {
+    "candidate_commit": "2ffd07ee27088b811b1d01628f935f0437fe3115",
+    "reviewed_blobs": {
+      "dskit/pipeline/trust.py": "7ebdfa0d7bc6d04208e50418ecb6d2af4af9f8cf",
+      "dskit/production/verifier.py": "dcb13603a44825189a54a179811073577ef965ad",
+      "tests/pipeline/test_captured_authorization.py": "701b4fbda4c057c43af9928d56e586baca2aa331",
+      "docs/architecture/decision-log.md": "3426ce906d1adb81a2f38eae68a2dd07a2ad87d4"
+    },
+    "contract": "Accepted ADR-0133; Phase 0 pins in this record; read-only nonauthorizing G1/G2 verification.",
+    "dependency_base": "origin/main 83716348c9ede3cedfb3c354241c541d2e7902b2",
+    "authority_lens": {
+      "reviewer": "/root/adr133_authority_review",
+      "verdict": "0 Critical, 0 Major, 1 Minor",
+      "tested": "24 focused tests passed; manual role, alias, subclass and both-facade probes passed",
+      "finding": "Signed canonical authorization with source_ids=[] returns checked facts, despite ADR-0133 Decision 2 saying nonempty source_ids.",
+      "consequence": "Immutable result is explicitly nonauthorizing and cannot admit raw access or effects.",
+      "disposition": "Deferred Minor in locked candidate; any future effecting broker must reject empty source sets under its separately reviewed contract."
+    },
+    "tests_integration_lens": {
+      "reviewer": "/root/adr133_tests_review",
+      "verdict": "0 Critical, 0 Major, 1 Minor, 0 Nit",
+      "tested": "24 focused and 105 production-verifier plus pipeline/production purity tests passed; Ruff and git diff --check passed",
+      "finding": "Independently reproduced signed source_ids=[] acceptance; no additional material defect.",
+      "coverage_limit": "G1/G2 issuer/key revocation and malformed G2 lack direct tests; implementation checks appear symmetric.",
+      "facades": "Production facade re-exports the pipeline class by identity, with no second implementation."
+    },
+    "affected_check": "1057 passed in 73.14s: tests/pipeline/test_captured_authorization.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py; Ruff touched files and git diff --check passed.",
+    "gate": "Two fresh independent complete lenses on the same frozen candidate, zero unresolved in-scope Critical/Major; one disclosed Minor deferred. Development-only integration eligible; deployment_eligible=false.",
+    "next": "Merge reviewed read-only slice; design trusted fixture acquisition and global one-use authority in later ADR/Phase 0. Preserve full raw F3/P7 and Packet8 gates."
   }
 }

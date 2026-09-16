@@ -1,6 +1,6 @@
 # Re-entry
 
-## Current checkpoint: ADR-0130 approved; RED blocked (2026-09-16)
+## Current checkpoint: ADR-0133 reviewed read-only grant verifier (2026-09-16)
 
 ADR-0129 accessor merged to main at 8371634; remote main verified. P7
 composition remains open. Three failed whole-composition Phase 0 cycles and an
@@ -16,9 +16,11 @@ found two authority/provenance Majors; RED is blocked. An independent
 convergence checkpoint 0179 split the first slice again. Proposed ADR-0133
 covers read-only G1/G2 grant verification. Owner approved it; fresh
 Phase 0 cleared (0 Critical/Major), and RED/GREEN plus affected tests are
-complete (1057 passed). Review-candidate commit and two final lenses are
-pending exact model attribution. Trusted fixture acquisition, one-use
-authority, raw publication, data
+complete (1057 passed). Candidate 2ffd07e has two fresh final lenses: each found zero Critical/Major
+and one shared Minor (signed empty source_ids is accepted into nonauthorizing
+checked facts). Focused 24 and affected 1057 tests passed; Ruff and diff check
+passed. Full suite was not run. Model attribution is recorded in evidence 0179.
+Trusted fixture acquisition, global one-use authority, raw publication, data
 proof and composition need later contracts.
 Packet8 remains gated on P7 closure.
 deployment_eligible=false.
