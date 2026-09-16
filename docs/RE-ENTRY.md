@@ -1,5 +1,31 @@
 # Re-entry
 
+## Current checkpoint: P7 two-root bridge landed (2026-09-16)
+
+Remote main verified at 269807a. ADR-0141 issued one signed two-root
+PublishedInputSet.v2 after live roster/v2 and raw/v1 publications, with a
+durable one-use root-PIS row and nonauthorizing read-only proof (64c461c).
+ADR-0142 added the issuer-owned read-only 12-artifact dynamic root graph
+with opaque snapshots, double live proof and full three-domain SQLite
+row/audit fence (269807a). Both slices passed independent authority and
+test/integration lenses with zero Critical/Major; 1453 and 1459 directly
+affected tests passed, respectively. Full suite was not run per owner
+preference. Evidence is in 0179. The primary /home/russell/dskit checkout
+and protected source c489199 remain untouched.
+
+P7 is open. The fixed P4 verifier and terminal corpus remain at 500 ms
+and accept only v1 root receipts; its capture authority owns a separate
+broker/ledger from the published roots. Dynamic CAPTURED needs an authority
+in the original F4 broker domain, live v2/v1 graph closure, shared time
+and revocation, and a dynamic signed capture batch. Full EventEnvelope.v2
+causality/ordering and composed tape still follow. Packet8 remains after
+P7. All work is nondeployment; deployment_eligible=false.
+
+**Next:** design and implement the same-domain dynamic P4 capture authority
+without changing the fixed test corpus, then close full event and composed
+tape verification. Preserve the existing isolated worktree and standing
+owner approval.
+
 ## Current checkpoint: P7 bootstrap chronology proposed (2026-09-16)
 
 ADR-0129 accessor merged to main at 8371634; remote main verified. P7
