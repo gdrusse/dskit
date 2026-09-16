@@ -1,0 +1,336 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / P7 slice 3 / same-domain dynamic P4 capture authority",
+  "packet": "7-remainder",
+  "adr": "ADR-0143 - same-domain dynamic P4 capture authority",
+  "adr_status": "accepted (docs/architecture/decision-log.md; preapproval+owner acceptance recorded in 0180.adr0143_preapproval_review / 0180.owner_decision)",
+  "base_main": "1decd2d812faaf2485587ce8a2421585f4f7a7c8",
+  "worktree": "/home/russell/wt/f5a-p7-remainder-20260916",
+  "branch": "codex/f5a-p7-remainder-20260916",
+  "candidate_commit": "eefaa20",
+  "cites": [
+    "evidence 0180 (proposal, preapproval review, correction, recheck, owner acceptance)",
+    "ADR-0143 (decision-log.md line ~10467)",
+    "ADR-0141 (decision-log.md line ~10286)",
+    "ADR-0142 (decision-log.md line ~10385)",
+    "docs/skills/skeptic-review.md #Phase 0",
+    "docs/skills/implementation-workflow.md point 4"
+  ],
+  "authored_by": "implementer (Claude Sonnet 5), design inspection only, no code/tests changed",
+  "code_read": [
+    "dskit/pipeline/trust.py:2267-2540 (_P4_PENDING_TOKENS/_P4_PENDING_RESOLVER_TOKENS, _FixedWormTrustedArtifactResolver, _SyntheticP4CapturedAuthorizationAuthority, _p4_require_issued_authority, _p4_checked_dispatch, _development_p4_broker)",
+    "dskit/pipeline/trust.py:3837-4730 (_P4_LOCAL_PUBLIC_KEYS, _FixedP4VerificationRevocations, _FixedP4VerificationClock, _FixedTerminalArtifactVerifier, _p4_snapshot_integrity, _p4_close_admission, _p4_fixed_integrity, _P4_SNAPSHOT_INTEGRITY/_P4_FIXED_INTEGRITY)",
+    "dskit/pipeline/trust.py:4999-5352 (_LifecycleAuthorizationLedger, commit_p4_batch, _check, dispatch pins)",
+    "dskit/pipeline/trust.py:5960-6113 (_SYNTHETIC_RESERVE_SCHEMA, _SyntheticAuthorizationReserve._now/_snapshot/_advance_clock)",
+    "dskit/pipeline/trust.py:8219-8484 (_SyntheticRootPisIssuer._quarantine/issue/proof/graph, root-pis RESERVED->ISSUED transaction shape)",
+    "dskit/pipeline/trust.py:8486-8796 (NonAuthorizingSyntheticRootPisProof)",
+    "dskit/pipeline/trust.py:8796-9015 (NonAuthorizingDynamicRootGraph: _derive_records, _vector, _prove, snapshot, resolve)"
+  ],
+
+  "actors": [
+    {
+      "actor": "trusted host / process owner",
+      "authority": "administers the shared SQLite reserve file (_SyntheticAuthorizationReserve._provision, _advance_clock), controls interpreter/process boundary and file permissions",
+      "modeled_as": "non-adversarial; not part of the external threat model"
+    },
+    {
+      "actor": "legacy P4 authority instance",
+      "identity": "one _SyntheticP4CapturedAuthorizationAuthority built by _development_p4_broker(), bound to _FixedWormTrustedArtifactResolver + _FixedTerminalArtifactVerifier + _FixedP4VerificationClock(now_ms pinned 500) + _FixedP4VerificationRevocations(pinned digest _digest(b\"p4-fixed-revocations\")), own _LifecycleAuthorizationLedger (own RLock, own _root tuple)",
+      "authority": "unchanged by this ADR; must remain byte-identical and must refuse dynamic-graph bytes"
+    },
+    {
+      "actor": "dynamic P4 authority instance (new)",
+      "identity": "second instance of the SAME final _SyntheticP4CapturedAuthorizationAuthority class (unsubclassed, Decision point 3), built by new _development_dynamic_p4_broker(issuer), bound to new _DynamicP4TrustedArtifactResolver + _DynamicP4TerminalArtifactVerifier + _DynamicP4VerificationClock + _DynamicP4VerificationRevocations, own separate _LifecycleAuthorizationLedger instance",
+      "authority": "same authorize_capture_set/commit_p4_batch code path as legacy, gated by the extended _p4_require_issued_authority/_p4_snapshot_integrity dispatch; construction is one-shot per retained root-pis row (Decision point 9)"
+    },
+    {
+      "actor": "retained ADR-0141 issuer/graph",
+      "identity": "the one successful _SyntheticRootPisIssuer instance (._retained set) and its memoized NonAuthorizingDynamicRootGraph (issuer._graph, created lazily once and cached on the issuer by graph())",
+      "authority": "sole constructor input to _DynamicP4TrustedArtifactResolver; exposes no P4/effecting method itself (ADR-0142 Decision point 1)"
+    },
+    {
+      "actor": "shared _SyntheticAuthorizationReserve",
+      "identity": "one SQLite WAL/FULL file (reserve_meta/reserve_uses/reserve_revoked/reserve_audit), unmodified schema, reused unmodified across ADR-0136/0139/0141/0142/0143",
+      "authority": "single source of now_ms and revocation snapshot for the dynamic clock/revocations classes AND the reservation target for the new kind='dynamic-p4-authority' row"
+    },
+    {
+      "actor": "hostile caller / untrusted input boundary",
+      "scope": "arguments to public methods only: fixture_facts (legacy only), captures/admission_ref/runtime kwargs to authorize_capture_set, any externally held reference to a previously returned snapshot/anchor/graph-token object",
+      "explicitly_out_of_scope": "direct mutation of module globals, monkeypatching classes/methods, reassignment of _P4_* dispatch pins, reflection-based tampering with _records/__slots__ state — these require interpreter code-execution privilege, which implementation-workflow.md point 4 states is NOT an external security boundary ('Mutable Python internals are not an external security boundary'). The _p4_fixed_integrity/_p4_snapshot_integrity self-checks that defend against exactly this remain in place as defense-in-depth/regression detectors, not as the modeled external boundary, matching how ADR-0141/0142 scoped WORM/process-local trust."
+    }
+  ],
+
+  "authority_boundary_statement": "Per docs/skills/implementation-workflow.md point 4 and consistent with ADR-0141 Decision point 5 ('nonauthorizing... Process-local WORM immutability after proof is a trusted-host invariant; hostile interpreter code is outside this nondeployment contract') and ADR-0142 Decision point 2 ('Process-local WORM immutability after proof is a trusted-host invariant'): this matrix treats hostile DATA (fixture_facts, captures, admission_ref, runtime, stale/foreign token objects reachable through the public API) as adversarial, and treats the trusted host's SQLite reserve file and Python process/interpreter as non-adversarial. A narrowed threat model beyond this would need owner approval; this matrix does not narrow anything ADR-0141/0142/0143 already scoped.",
+
+  "class_function_inventory": [
+    {
+      "name": "_DynamicP4TrustedArtifactResolver(_Opaque)",
+      "final_marker": "__init_subclass__ raises TypeError (Phase 0 pin exact message: 'P4 dynamic resolver is final', mirroring _FixedWormTrustedArtifactResolver's absence of a subclass guard being covered instead by _p4_snapshot_integrity's exact-type check — Phase 0 must add __init_subclass__ since the dynamic branch's dispatch elif uses `type(resolver) is _DynamicP4TrustedArtifactResolver`, identical exact-type risk profile)",
+      "construction": "private-token __init__(token, graph) consuming new _P4_PENDING_DYNAMIC_RESOLVER_TOKENS set (mirrors _P4_PENDING_RESOLVER_TOKENS); takes exactly one successful NonAuthorizingDynamicRootGraph and nothing else (Decision point 1)",
+      "slots_pin": "__slots__ = ('_graph', '_snapshot', '_terminal', '__weakref__') — Phase 0 pin: NO '_records' slot (unlike the legacy resolver); this resolver never caches artifact bytes, it always re-derives through graph.snapshot()/graph.resolve() per call (Decision point 2)",
+      "frozen": "__setattr__ raises AttributeError, mirroring _FixedWormTrustedArtifactResolver",
+      "methods": "snapshot(), resolve(snapshot, exact_ref_bytes), _checked_resolve(snapshot, exact_ref_bytes), close_admission(snapshot, admission_ref, live_projection) — identical four-method contract, no _lookup method (Decision point 1)"
+    },
+    {
+      "name": "_DynamicP4TerminalArtifactVerifier(TerminalArtifactVerifier)",
+      "final_marker": "__new__ raises TypeError, __init_subclass__ raises TypeError, __slots__ = () — exact mirror of _FixedTerminalArtifactVerifier (Decision point 5)",
+      "methods": "verify_terminal(...), require_current(...) registered only against the dynamic resolver's own snapshot/12-ref corpus, never _P4_EXTERNAL_RECORDS; keyring reuses _P4_LOCAL_PUBLIC_KEYS (no new key material)"
+    },
+    {
+      "name": "_DynamicP4VerificationClock(TrustedClock)",
+      "pin": "now_ms() returns reserve._now() read under the resolver's own held read transaction (Decision point 6). Phase 0 must pin construction shape: __init__(reserve) storing a frozen reference (object.__setattr__), and must pin that now_ms() is only ever called from inside a transaction the resolver already opened — mirroring NonAuthorizingDynamicRootGraph._vector's own `_hs_refuse(not connection.in_transaction, ...)` guard (trust.py:8893), inverted: now_ms() called OUTSIDE a held transaction must refuse, not silently open its own."
+    },
+    {
+      "name": "_DynamicP4VerificationRevocations(HistoricalStudyRevocations)",
+      "pin": "is_unrevoked(snapshot_sha256, key_id, key_version, now_ms) checks the live reserve._snapshot() digest (never the fixed literal or _digest(b\"p4-fixed-revocations\")); key_id checked against the same _P4_LOCAL_PUBLIC_KEYS set the dynamic terminal verifier uses. Phase 0 must pin: now_ms is compared for exact equality to the value read inside the SAME guarded transaction as snapshot_sha256 (no TOCTOU window between reading now_ms and reading the revocation digest) — unlike the legacy class's hardcoded now_ms==500, this one has a live value that can change between two separate unguarded reads."
+    },
+    {
+      "name": "_development_dynamic_p4_broker(issuer)",
+      "pin": "consumes fresh _P4_PENDING_DYNAMIC_TOKENS set (mirrors _P4_PENDING_TOKENS, never the legacy set); constructs _DynamicP4TrustedArtifactResolver from issuer.graph(), then a second instance of the unmodified _SyntheticP4CapturedAuthorizationAuthority via its existing __init__(token, resolver) (Decision point 3); spends one reserve_uses(kind='dynamic-p4-authority') row before returning (Decision point 9).",
+      "ordering_not_frozen_by_adr_phase0_must_pin": "the ADR text does not state whether the reserve_uses spend happens BEFORE or AFTER constructing the resolver/terminal/clock/revocations objects. This matrix recommends and Phase 0 must pin: RESERVE FIRST. Concretely: (1) read the root-pis row for the pair, assert state=ISSUED, derive signed_id per Decision point 9; (2) BEGIN IMMEDIATE, recheck ISSUED, INSERT the RESERVED row + audit, UPDATE to ISSUED + audit, COMMIT (mirrors _SyntheticRootPisIssuer.issue's own RESERVED->ISSUED-in-one-transaction shape at trust.py:8409-8435); (3) only then construct the resolver/terminal/clock/revocations/authority objects; (4) any failure between the reserve COMMIT and a successful return quarantines the row (new helper mirroring _SyntheticRootPisIssuer._quarantine at trust.py:8219, not specified by the ADR text and must be authored in Phase 0). Reserve-after would let two racing callers each build a full resolver+terminal+authority object before either one's reserve spend collides — see matrix row 11."
+    },
+    {
+      "name": "_p4_require_issued_authority(authority)",
+      "current_shape_pin": "today (trust.py:2473-2489) is ONE `if (...)` block with 8 OR-ed clauses all raising the same TypeError. Two of those clauses are resolver-type-specific and CANNOT simply gain an elif: `type(issued[0]) is not _FixedWormTrustedArtifactResolver` and `type(issued[0])._lookup is not _P4_RESOLVER_LOOKUP` (the dynamic resolver has no _lookup method at all, per Decision point 1's four-method contract). Phase 0 must pin the exact split: authority/ledger-identity clauses (`issued is None`, `authority._p4_resolver is not issued[0]`, `CapturedAuthorizationAuthority.authorize_capture_set is not _P4_BASE_DISPATCH`, `type(authority).authorize_capture_set is not _P4_FINAL_DISPATCH`, `type(authority)._validate_capture_request is not _P4_REQUEST_CHECK`, `\"authorize_capture_set\" in authority.__dict__`) stay as shared pre-checks before the if/elif/else (both authority instances use the identical final class); the two resolver-type-specific clauses move one-for-one into their matching branch, and the dynamic elif branch pins an analogous but distinct method-identity check in place of `_lookup` — e.g. `type(issued[0]).resolve is _P4_DYNAMIC_RESOLVER_LOOKUP` (exact name TBD, Phase 0 deliverable)."
+    },
+    {
+      "name": "_p4_snapshot_integrity(resolver, snapshot)",
+      "current_shape_pin": "today (trust.py:4195-4221) unconditionally calls _p4_fixed_integrity() FIRST (line 4199), before the resolver-type check. _p4_fixed_integrity pins ONLY legacy-fixed globals (legacy _p4_close_admission identity, the legacy _P4_VERIFICATION keyring/clock/revocations pin, the shared _P4_SHAPES/_P4_ARTIFACT_SPECS digest). Decision point 4's quoted if/elif/else text for this function does not mention this call. Phase 0 must pin whether: (a) _p4_fixed_integrity() keeps running unconditionally for both branches (harmless but asymmetric — it defends legacy dispatch identity but nothing analogous defends the dynamic branch's own new pins), or (b) a new _p4_dynamic_fixed_integrity() is added and called from the elif branch, pinning `_dynamic_p4_close_admission is <its own module-level pin>`, `type(clock).now_ms is <pinned>`, `type(revocations).is_unrevoked is <pinned>`, and `(verify_terminal, require_current)` identity for _DynamicP4TerminalArtifactVerifier (mirroring _P4_TERMINAL_METHODS). See open finding F1 below — this matrix recommends (b)."
+    },
+    {
+      "name": "_dynamic_p4_close_admission(resolver, snapshot, admission_ref, live_projection)",
+      "pin": "new closure-walk function mirroring _p4_close_admission's visit/find/get recursion shape (Decision point 7), sized only to root-capture-admission -> cas -> pce; bound at module scope as e.g. _P4_DYNAMIC_CLOSE_ADMISSION = _dynamic_p4_close_admission (exact name is a Phase 0 deliverable) and referenced only from _DynamicP4TrustedArtifactResolver.close_admission; _p4_close_admission/_P4_CLOSE_ADMISSION are never modified, called, or reachable from this path (Decision point 4 last sentence)."
+    }
+  ],
+
+  "public_facades": [
+    "dskit/pipeline/trust.py: _development_dynamic_p4_broker (new module-level constructor, the only way to obtain a dynamic authority instance)",
+    "dskit/pipeline/trust.py: CapturedAuthorizationAuthority.authorize_capture_set (inherited, unchanged, dispatched via _p4_checked_dispatch/_p4_require_issued_authority for both authority instances)",
+    "dskit/pipeline/trust.py: _LifecycleAuthorizationLedger.commit_p4_batch (inherited, unchanged, shared code path for both ledgers)",
+    "dskit/pipeline/trust.py: _DevelopmentBroker.start_producer_session/produce/seal/publish (inherited lifecycle, unchanged, exercised per-instance since each authority has its own _sessions/_stream_pin state)",
+    "dskit/pipeline/trust.py: _p4_require_issued_authority, _p4_snapshot_integrity (extended shared gate functions, both authority instances route through them)",
+    "dskit/production/verifier.py: HistoricalStudyVerifier.authorize_capture_set (line 857) IS a facade this ADR touches transitively. Grep-verified (F4, resolved): it does NOT import or re-export _development_p4_broker, _SyntheticP4CapturedAuthorizationAuthority, or any resolver class by name; instead it holds a generic self._authority pinned at construction (_P4_VERIFIER_PINS) and dispatches through `isinstance(authority, CapturedAuthorizationAuthority)` (line 902) plus a fixed-dispatch-identity pin (line 904), never an exact-type check against the legacy or dynamic authority class. Whichever authority instance (legacy or dynamic) a caller binds into a HistoricalStudyVerifier, this facade forwards to it transparently, so its safety here depends ENTIRELY on _p4_require_issued_authority/_p4_snapshot_integrity's own dispatch correctness deeper in the call (matrix rows 1-2), not on anything in verifier.py itself. No edit to verifier.py is implied by this ADR; it is listed as a facade because it is a second public entry point that reaches the same gated authorize_capture_set path."
+  ],
+
+  "document_shapes_pinned": {
+    "note": "ADR text left these fully open ('This full shape is a Phase 0 deliverable, not frozen here'). Pinned here for RED to consume directly.",
+    "root-capture-admission/v1": {
+      "schema_version": "dskit.root-capture-admission/v1",
+      "fields": ["schema_version", "study_id (literal 'synthetic-study')", "root_pis_ref (closed ref dict: kind=root-pis,role=data-publisher,schema=dskit.published-input-set/v2,sha256)", "dataset_g1_ref (closed ref dict: kind=dataset-capture-grant,role=G1,schema=dskit.dataset-capture-grant/v1,sha256)", "dataset_g2_ref (closed ref dict: kind=dataset-capture-grant,role=G2,schema=dskit.dataset-capture-grant/v1,sha256)", "logical_execution_id (S)", "run_id (S)"],
+      "self_field": "root_capture_admission_sha256 (Phase 0 pin: not listed in the ADR's field bullet but required by the dependency table's cas->find(\"root-capture-admission\", admission[\"root_capture_admission_sha256\"]) lookup — must be added to the closed field set as the 7th field)",
+      "closure_rule": "exactly these 7 keys, no extra/missing field; the three refs must each be members of the graph's own 12-reference set (never external, never aliased across ref kinds)"
+    },
+    "capture-admission-set/v1 (cas)": {
+      "reuse": "existing generic dskit.capture-admission-set/v1 field shape, unchanged (Decision point 7)",
+      "only_change": "subject_ref.kind fixed to 'action'; its parent lookup is find(\"root-capture-admission\", admission[\"root_capture_admission_sha256\"]) instead of the legacy pea/ces/bvp chain — dependency table entry below"
+    },
+    "planned-capture-entry/v1 (pce)": {
+      "reuse": "existing generic dskit.planned-capture-entry/v1 field shape, unchanged (Decision point 7)",
+      "cardinality": "exactly 2 rows, one per PIS entry (raw_event_dataset, source_roster)",
+      "planned_entry_sha256_preimage": "_digest(_hs_canonical_bytes({\"root_pis_entry_input_id\": <input_id>, \"root_pis_contract_sha256\": <that entry's contract_sha256>})) — exact binding pinned in the ADR's own construction profile, restated here verbatim for RED"
+    }
+  },
+
+  "dynamic_close_admission_dependency_table": {
+    "note": "restates and completes ADR's own 'Closed ADR-0143 construction profile' dependency bullet, pinning root-capture-admission's own self_field gap above",
+    "root-capture-admission": ["root_pis_ref", "dataset_g1_ref", "dataset_g2_ref"],
+    "cas": ["find(\"root-capture-admission\", admission[\"root_capture_admission_sha256\"])"],
+    "pce": ["no further dependency walk; each pce row is a leaf whose planned_entry_sha256 is checked directly against the bound PIS entry, per the preimage rule above — refusing an alias or swapped entry (matrix row 6)"],
+    "explicitly_not_reused": "no pea/ces/bvp/gate-evidence/scope-authorization/stage-admission traversal exists in this chain; _dynamic_p4_close_admission must refuse (not silently skip) any ref of those kinds if one is ever passed in admission_ref or found reachable"
+  },
+
+  "reserve_row_pin": {
+    "kind": "dynamic-p4-authority",
+    "signed_id": "_digest(_hs_canonical_bytes({\"schema\": \"dskit.dynamic-p4-authority-source/v1\", \"root_pis_signed_id\": <retained ISSUED root-pis row's own signed_id text>, \"root_pis_intent_sha256\": <that row's own intent_sha256 hex>})).hex() — Decision point 9, verbatim",
+    "authorization_sha256": "_digest(signed_id.encode(\"ascii\")) over the derived value above",
+    "g1_sha256/g2_sha256": "copied read-only from the root-pis row's own stored [bootstrap_G1_digest,dataset_G1_digest]/[...G2...] pairs, not a shared spend key",
+    "intent_sha256": "hash of a closed dskit.dynamic-p4-authority-construction-intent/v1 document naming the graph's 12 reference digests in the graph's own sorted order",
+    "transition": "RESERVED -> ISSUED under one BEGIN IMMEDIATE, mirroring the root-pis row's transition shape (trust.py:8409-8435), never its key; refused inside the same transaction if the corresponding root-pis row is not already ISSUED",
+    "collision_behavior": "sqlite3.IntegrityError on (kind,signed_id) PRIMARY KEY collision -> caught and re-raised as ValueError(\"...already spent\")-style message, mirroring _SyntheticRootPisIssuer.issue's except sqlite3.IntegrityError handling (trust.py:8437-8440); Phase 0 must pin the exact dynamic-authority error message text"
+  },
+
+  "matrix": [
+    {
+      "id": 1,
+      "family": "cross-branch leakage",
+      "entry_points": ["_p4_require_issued_authority", "_p4_snapshot_integrity"],
+      "cases": [
+        "legacy resolver instance passed where dynamic checks are being exercised (call _p4_snapshot_integrity's dynamic-only assertions against a _FixedWormTrustedArtifactResolver instance)",
+        "dynamic resolver instance passed where legacy-only checks are exercised (e.g. attempt to read `_records` off a _DynamicP4TrustedArtifactResolver, which has no such slot)"
+      ],
+      "expected_outcome": "each branch's checks are self-contained and only ever evaluated after `type(resolver) is <that branch's exact class>` has already matched; the other branch's code is never reached for that instance",
+      "forbidden_effect": "a legacy authority/resolver pair observing or resolving dynamic-graph bytes, or a dynamic pair observing/resolving fixed-corpus bytes (ADR Decision point 4, last two sentences)"
+    },
+    {
+      "id": 2,
+      "family": "resolver matching neither closed type",
+      "entry_points": ["_p4_require_issued_authority", "_p4_snapshot_integrity"],
+      "cases": [
+        "a bare object() or unrelated class assigned as authority._p4_resolver",
+        "an instance of a THIRD resolver subclass someone adds later without touching this ADR",
+        "a resolver that is an instance of BOTH _FixedWormTrustedArtifactResolver and _DynamicP4TrustedArtifactResolver via multiple inheritance (defeats `is`-identity only if the dispatch used isinstance; must not happen with exact `type(...) is ...`)"
+      ],
+      "expected_outcome": "else arm executes unconditionally: TypeError(\"exact broker-issued P4 capability is required\") from _p4_require_issued_authority; ValueError via _hs_refuse(False, \"P4 snapshot integrity refused\") from _p4_snapshot_integrity — identical text to today's single-branch refusal",
+      "forbidden_effect": "silent fail-open, a default/permissive branch, or a shared helper that treats an unrecognized type as either known type (Decision point 4)"
+    },
+    {
+      "id": 3,
+      "family": "stale/foreign/copied graph token",
+      "entry_points": ["_DynamicP4TrustedArtifactResolver.snapshot/resolve/_checked_resolve", "NonAuthorizingDynamicRootGraph.resolve (delegated)"],
+      "cases": [
+        "a snapshot token from a PRIOR graph.snapshot() call, held past a later graph.snapshot() call on the SAME graph instance (graph._snapshot is a single mutable slot overwritten on each call, trust.py:8970) — resolve() requires `snapshot is self._snapshot` and refuses the stale one",
+        "a token copied/pickled and replayed against the same graph instance",
+        "a token from a DIFFERENT issuer's graph instance (foreign publisher) passed to this resolver — refused by resolve()'s `snapshot._graph is self` / `snapshot._publisher is self._publisher` identity checks (trust.py:8975-8987)",
+        "a token whose frozen `_vector` no longer equals a fresh `_vector()` read (revocation, clock advance, or reserve-row change since issuance) — refused by the freshness re-check"
+      ],
+      "expected_outcome": "resolve/close_admission refuse with the existing 'exact issued dynamic root snapshot required' / 'dynamic root snapshot state changed' messages; no bytes returned",
+      "forbidden_effect": "returning bytes for a stale, foreign, or copied token; treating vector equality-by-value as sufficient without also checking object identity (`is`) of graph/publisher/broker"
+    },
+    {
+      "id": 4,
+      "family": "dynamic-p4-authority reserve row constructed before root-pis reaches ISSUED",
+      "entry_points": ["_development_dynamic_p4_broker (new reserve-spend step, Decision point 9)"],
+      "cases": [
+        "attempt to derive/reserve the dynamic-p4-authority signed_id while the root-pis row for that pair is still RESERVED (not yet ISSUED)",
+        "attempt against a root-pis row that is QUARANTINED",
+        "attempt against a signed_id pair with NO root-pis row at all (never reserved)",
+        "race: root-pis issuance and dynamic-p4-authority reservation attempted concurrently by two callers, one still mid-transaction"
+      ],
+      "expected_outcome": "refused inside the dynamic-p4-authority row's own BEGIN IMMEDIATE (per Decision point 9's closing sentence); no RESERVED row is ever inserted for a signed_id whose preimage read a non-ISSUED root-pis row",
+      "forbidden_effect": "a dynamic-p4-authority row reaching ISSUED (or even RESERVED) while its preimage root-pis row is not ISSUED at the moment of that same transaction's read"
+    },
+    {
+      "id": 5,
+      "family": "second construction attempt for the same derived signed_id",
+      "entry_points": ["_development_dynamic_p4_broker"],
+      "cases": [
+        "call _development_dynamic_p4_broker(issuer) twice with the SAME issuer after the first call already reached ISSUED",
+        "call it with a DIFFERENT _SyntheticRootPisIssuer instance that happens to be a fresh issuance of the exact same underlying signed bootstrap/dataset authorization pair (would only be possible if ADR-0141's own one-use root-pis WORM/reserve key did not already prevent a second root-pis row for that pair — cross-check against ADR-0141, not re-litigated here)"
+      ],
+      "expected_outcome": "second INSERT collides on the reserve_uses (kind,signed_id) PRIMARY KEY -> sqlite3.IntegrityError -> caught and re-raised, mirroring _SyntheticRootPisIssuer.issue (trust.py:8437-8440); no second dynamic authority instance is ever registered in _P4_ISSUED for a colliding signed_id",
+      "forbidden_effect": "two live dynamic authority instances sharing one derived signed_id; a second reserve row silently overwriting or upserting instead of refusing"
+    },
+    {
+      "id": 6,
+      "family": "aliased/swapped/duplicate root-capture-admission refs",
+      "entry_points": ["_dynamic_p4_close_admission"],
+      "cases": [
+        "root_pis_ref and dataset_g1_ref swapped (kind mismatch, e.g. a G1 grant ref supplied where root_pis_ref is expected)",
+        "dataset_g1_ref and dataset_g2_ref swapped (role confusion, G1 bytes supplied as G2)",
+        "root_pis_ref pointing at a byte-identical-looking but wrong-schema artifact (e.g. issuance-basis/v2 instead of published-input-set/v2)",
+        "duplicate ref (same ref used for two of the three fields)"
+      ],
+      "expected_outcome": "find(kind, digest) requires exactly one match of the EXACT kind; a swapped/wrong-kind ref fails the kind-specific lookup (_hs_refuse('P4 closure requires one exact referenced artifact')) before any dependency walk completes",
+      "forbidden_effect": "accepting a structurally-valid-looking ref of the wrong kind/role because only sha256 was checked, or because two closed refs happened to collide in a projection"
+    },
+    {
+      "id": 7,
+      "family": "pce entry bound to the wrong PIS entry",
+      "entry_points": ["_dynamic_p4_close_admission (pce leaf check)"],
+      "cases": [
+        "pce for input_id=raw_event_dataset carrying a planned_entry_sha256 whose preimage names source_roster's contract_sha256 (entry swap)",
+        "pce carrying a contract_sha256 that matches neither PIS entry (foreign/invented digest)",
+        "two pce rows both bound to the same PIS entry (missing the second entry, duplicate binding)"
+      ],
+      "expected_outcome": "planned_entry_sha256 must equal _digest(_hs_canonical_bytes({\"root_pis_entry_input_id\": <input_id>, \"root_pis_contract_sha256\": <that SAME entry's own contract_sha256>})) recomputed from the resolver's own held PIS entries, not trusted from the pce row; any mismatch refuses",
+      "forbidden_effect": "accepting a pce row whose input_id/contract_sha256 pairing does not match one specific PIS entry 1:1; accepting fewer or more than exactly 2 pce rows"
+    },
+    {
+      "id": 8,
+      "family": "revocation or clock advance observed mid-admission",
+      "entry_points": ["_DynamicP4TrustedArtifactResolver.snapshot/resolve", "_DynamicP4VerificationClock.now_ms", "_DynamicP4VerificationRevocations.is_unrevoked", "NonAuthorizingDynamicRootGraph._vector/_prove (delegated)"],
+      "cases": [
+        "revocation token added to reserve_revoked between graph.snapshot() and a later graph.resolve() call using that token",
+        "trusted-host _advance_clock() call lands between the before-vector read and the after-vector read inside a single snapshot()/resolve() call",
+        "revocation/clock change lands between commit_p4_batch's first _P4_SNAPSHOT_INTEGRITY check (trust.py:5271) and its second one inside the try block (trust.py:5292), i.e. across the ledger's own two-phase re-check"
+      ],
+      "expected_outcome": "the graph's own before/after _vector() fence refuses on any mismatch ('dynamic root snapshot freshness changed' / 'dynamic root resolve freshness changed'); commit_p4_batch's own re-checks (_check(), _P4_REQUEST_CHECK, _P4_CLOSE_ADMISSION re-call) catch a change that slips past a single resolver call",
+      "forbidden_effect": "a CAPTURED batch committing with any artifact bytes or admission closure proven against a since-changed revocation/clock state"
+    },
+    {
+      "id": 9,
+      "family": "crash/ambiguous COMMIT during the one-shot dynamic-p4-authority reserve transition",
+      "entry_points": ["_development_dynamic_p4_broker's reserve-spend step"],
+      "cases": [
+        "process crash after the INSERT ... RESERVED statement but before the UPDATE ... ISSUED statement, both inside the SAME BEGIN IMMEDIATE (per the pinned reserve_row_pin.transition shape, both statements are in one transaction — so this case can only leave either NO row (ROLLBACK/crash before COMMIT) or a fully ISSUED row (crash after COMMIT); it cannot leave a bare RESERVED row from THIS transaction alone)",
+        "ambiguous COMMIT result (connection.execute('COMMIT') raises or the process dies while the OS/driver has not confirmed) followed by a retry of the SAME construction call",
+        "quarantine path: reserve COMMIT succeeds but a LATER step in the broker (constructing the resolver/terminal objects, or whatever follows) raises — per the reserve-first ordering pinned above, this cannot leave the ROW itself broken, but the AUTHORITY was never fully constructed/returned"
+      ],
+      "expected_outcome": "on retry, a fresh SELECT sees the row already ISSUED (if the crashed transaction actually committed) or absent (if it rolled back); either way the retry's own INSERT either collides (IntegrityError, row already ISSUED) or proceeds cleanly (row absent) — never a partial/ambiguous RESERVED-only state left visible from a fully-local single-transaction insert+update. A failure AFTER a successful reserve COMMIT but before the broker returns successfully must be handled by an explicit quarantine call (not specified by ADR text — Phase 0 deliverable, see class_function_inventory._development_dynamic_p4_broker)",
+      "forbidden_effect": "a second successful construction attempt after an ambiguous/crashed first attempt that DID commit; a resolver/authority object returned to a caller when the underlying reserve row never reached ISSUED"
+    },
+    {
+      "id": 10,
+      "family": "run-identity reuse across the legacy and dynamic authority instances",
+      "entry_points": ["_validate_capture_request (per-instance)", "commit_p4_batch (per-ledger)"],
+      "cases": [
+        "the SAME consumer_run_identity string used to capture through the legacy authority AND the dynamic authority",
+        "a run_identity that is the PRODUCER run on the legacy authority's stream, submitted as the CONSUMER run on the dynamic authority (cross-instance producer/consumer confusion)",
+        "a run_identity already used in a legacy CAPTURED_V1 entry on one ledger, replayed as a P4 consumer run on the OTHER ledger"
+      ],
+      "expected_outcome": "per Decision point 8: run-identity exclusivity is inherited unchanged from _validate_capture_request/commit_p4_batch and is enforced PER-INSTANCE (each authority has its own _stream_pin/_sessions; each ledger has its own _root/_p4_entries()); the ADR adds NO cross-instance run-identity check and does not claim one — reusing the same run_identity string across the two independent authority instances is NOT refused by anything this ADR adds, and is explicitly out of scope per Decision point 8 ('no cross-instance run-identity check is added or required by this slice')",
+      "forbidden_effect": "NONE claimed by this ADR for the cross-instance case — this row exists to make explicit, for the independent skeptic, that cross-instance run-identity reuse is a DELIBERATE non-goal, not an oversight; if the skeptic disagrees this needs a fresh reviewed decision, not a silent Phase-0 fix"
+    },
+    {
+      "id": 11,
+      "family": "concurrent construction attempts (two threads/processes racing the same BEGIN IMMEDIATE)",
+      "entry_points": ["_development_dynamic_p4_broker", "_SyntheticAuthorizationReserve (SQLite cross-process WAL)"],
+      "cases": [
+        "two processes call _development_dynamic_p4_broker(issuer) for the SAME issuer at the same instant; both read the root-pis row as ISSUED, both attempt BEGIN IMMEDIATE",
+        "IF the reserve spend happens AFTER resolver/terminal construction (the ordering explicitly NOT frozen by the ADR, flagged above): two full _DynamicP4TrustedArtifactResolver instances get built from the SAME memoized graph object (issuer.graph() is idempotent/memoized, trust.py:8481-8483) before either reserve spend resolves; only one call's INSERT wins, the other's IntegrityError refuses — but by then TWO live resolver objects exist pointing at ONE graph instance whose `_snapshot` is a single mutable slot (trust.py:8970,8978) overwritten by whichever resolver calls graph.snapshot() LAST",
+        "two THREADS in one process holding references to both resolver objects; thread A calls resolverA.snapshot() (sets graph._snapshot = tokenA), thread B calls resolverB.snapshot() (overwrites graph._snapshot = tokenB), thread A then calls resolverA.resolve(tokenA, ref) — graph.resolve requires `snapshot is self._snapshot`, so tokenA now fails with 'exact issued dynamic root snapshot required' even though tokenA was validly issued by the SAME graph a moment earlier"
+      ],
+      "expected_outcome": "the SQLite (kind,signed_id) PRIMARY KEY collision guarantees only ONE dynamic-p4-authority ISSUED row ever exists, so only one call to _development_dynamic_p4_broker can complete successfully long-term; but a reserve-AFTER-construction ordering can transiently produce two live resolver objects racing one shared graph token slot, producing a spurious refusal (denial, not an authority breach) for the losing/interleaved caller",
+      "forbidden_effect": "any successful CAPTURED admission proceeding on bytes resolved against a token that failed the `snapshot is self._snapshot` identity check; TWO dynamic-p4-authority rows reaching ISSUED. Phase 0 must pin reserve-FIRST ordering (per class_function_inventory._development_dynamic_p4_broker) specifically to avoid ever constructing two live resolver objects against one graph in the first place — this is the strongest argument for that ordering choice, not just tidiness."
+    },
+    {
+      "id": 12,
+      "family": "partial/mid-lifecycle failure then authorize_capture_set attempted anyway",
+      "entry_points": ["_DevelopmentBroker.start_producer_session/produce/seal/publish (per-instance)", "_validate_capture_request", "commit_p4_batch"],
+      "cases": [
+        "start_producer_session succeeds on the dynamic authority instance; produce raises (e.g. bad descriptor); caller calls authorize_capture_set anyway",
+        "start_producer_session and produce succeed; seal fails; caller calls authorize_capture_set anyway",
+        "start_producer_session, produce, seal succeed; publish fails (stream never reaches PUBLISHED head); caller calls authorize_capture_set anyway",
+        "the SAME sequence attempted on the legacy authority instance for comparison (must behave identically to today, since this ADR changes nothing about this path per Decision point 8)"
+      ],
+      "expected_outcome": "_validate_capture_request's `self._require_head(stream, \"PUBLISHED\")` check (inherited unchanged) refuses because the stream's head is not PUBLISHED; per Decision point 8 this ADR 'adds no new lifecycle bypass' — both authority instances behave identically here since each simply reuses the same inherited _DevelopmentBroker/_validate_capture_request code against its OWN per-instance _streams/_stream_pin state",
+      "forbidden_effect": "authorize_capture_set succeeding, on either authority instance, for a stream whose producer lifecycle (produce/seal/publish) did not fully complete"
+    }
+  ],
+
+  "open_findings_for_independent_skeptic": [
+    {
+      "id": "F1",
+      "summary": "_p4_fixed_integrity() (legacy-only dispatch-integrity self-check) runs unconditionally inside _p4_snapshot_integrity before the type dispatch; no analogous self-check is specified for the new dynamic branch's own pins (_dynamic_p4_close_admission identity, dynamic clock/revocations method identity, dynamic terminal verifier method identity). This is an asymmetry between the two branches' resistance to in-process tampering, even though both are out-of-scope for the EXTERNAL threat model per implementation-workflow.md point 4. This matrix recommends adding an analogous _p4_dynamic_fixed_integrity() called from the new elif branch; the independent skeptic should confirm this is required (or explicitly accept the asymmetry) rather than the implementer silently deciding it."
+    },
+    {
+      "id": "F2",
+      "summary": "The ADR's Decision point 2 says the resolver performs 'the identical before-proof/_prove()/after-proof vector fence that NonAuthorizingDynamicRootGraph.resolve already performs internally' on every snapshot()/_checked_resolve() call. Since graph.snapshot()/graph.resolve() ALREADY perform this exact fence internally (trust.py:8947-9015), it is ambiguous whether the resolver is meant to (a) simply delegate to graph.snapshot()/resolve() and rely entirely on their existing fence (no new code, 'identical' just describes the inherited behavior), or (b) additionally perform its OWN separate before/after vector read as defense-in-depth on top of the graph's. Phase 0 must pin which; (a) is simpler and avoids the two-live-resolver race surfaced in matrix row 11 being made worse by extra unguarded reads, but (b) is what a literal reading of 'performs the identical... fence' suggests. This matrix recommends (a)."
+    },
+    {
+      "id": "F3",
+      "summary": "Reserve-spend ordering inside _development_dynamic_p4_broker (before vs. after resolver/terminal construction) is not frozen by the ADR text. This matrix's matrix rows 9 and 11 both depend on pinning RESERVE-FIRST; the independent skeptic should treat this as a required Phase 0 pin, not a stylistic choice, given the concrete two-live-resolver race in row 11."
+    },
+    {
+      "id": "F4",
+      "summary": "RESOLVED by grep (dskit/production/verifier.py:664-1029): no P4 authority/resolver/broker symbol is re-exported by name; HistoricalStudyVerifier.authorize_capture_set (line 857) and HistoricalStudyCaptureDriver.authorize_capture_set (line 977) are generic isinstance(authority, CapturedAuthorizationAuthority)/pinned-dispatch facades that will transparently accept a bound dynamic authority instance exactly as they accept the legacy one today. See the updated public_facades entry. No verifier.py edit is implied by ADR-0143; independent skeptic should confirm this reading and, if a test binds a dynamic authority into a HistoricalStudyVerifier, add that as an explicit RED case exercising this facade end-to-end."
+    },
+    {
+      "id": "F5",
+      "summary": "root-capture-admission/v1's own self-digest field name (root_capture_admission_sha256) is used by the dependency table (cas -> find(\"root-capture-admission\", admission[\"root_capture_admission_sha256\"])) but is not listed among the ADR's stated closed field keys. This matrix adds it as the 7th field under document_shapes_pinned; the independent skeptic should confirm no other field is similarly implied-but-unlisted."
+    }
+  ],
+
+  "non_goals": [
+    "Full EventEnvelope.v2 causality/ordering/provenance/correction semantics",
+    "composed-tape verification",
+    "reuse or extension of the fixed scope-intent/gate-evidence/scope-authorization/stage-admission historical-study apparatus for the dynamic domain",
+    "Packet 8 durable consume-once",
+    "deployment",
+    "any edit to the fixed P4 corpus, its 500-ms clock, _FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, or _p4_close_admission's v1-only grammar, all of which must continue to refuse these dynamic v2/graph roots unchanged"
+  ],
+
+  "deployment_eligible": false,
+  "tests_run": "none; design inspection",
+  "gate": "Phase 0 matrix authored by implementer; requires independent Phase 0 skeptic review before RED."
+}
