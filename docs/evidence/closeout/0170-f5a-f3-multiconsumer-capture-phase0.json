@@ -1,0 +1,79 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2b-multiconsumer",
+  "packet": "7-replay-tape-descriptors-multiconsumer-capture",
+  "status": "phase0-contract-draft",
+  "supersedes": "0164 (gate, resolved by 0168 + ADR-0128)",
+  "base_main": "29f02542f8ce94171d47e2112693ec9b0b51de84",
+  "cites": ["ADR-0128 (accepted)", "ADR-0127 Decision.2", "0168 owner decision", "0164 gate"],
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash (owner substituted for unavailable Terra)",
+
+  "scope": "Bounded V2 multi-consumer capture in dskit/pipeline/trust.py: a single PUBLISHED root may be captured by more than one distinct consumer document (distinct consumer port), each producing one CAPTURED receipt, while the legacy v1 linear chain and one-time CONSUMED are unchanged.",
+  "non_goals": [
+    "multi-CAPTURED on the legacy v1 chain",
+    "relaxing one-time CONSUMED or sharing handles/sessions across consumers",
+    "the F3 composed-tape verification itself (follow-on slice that consumes this seam)",
+    "descriptor grammar, planner, __all__, purity changes",
+    "a second capture/ledger/tape engine"
+  ],
+
+  "seam": {
+    "edit_1": "remove the P4-blanket `_require_unclaimed` call from `_require_head` (trust.py:1821); `_require_unclaimed` stays and still governs the legacy capture path (via `_legacy_gate` at 5054 and the v1 view/append paths at 432/2140).",
+    "edit_2": "`_validate_capture_request` (trust.py:2441): after the existing legacy-capture refusal (2438) and `_recover`, require (a) v1 head is PUBLISHED and (b) the incoming capture's consumer_document_sha256 differs from every prior P4 capture committed for that stream.",
+    "edit_3": "`_published_for_descriptor` (trust.py:2117) freeze path now permits a P4-captured-but-v1-PUBLISHED stream (head check alone still blocks legacy-CAPTURED/CONSUMED streams).",
+    "distinct_key": "consumer_document_sha256 (the frozen document identity), NOT the four-field port. Same document reaching the same root through any node/input/purpose still names one consumer and refuses. Prior (stream, consumer_document_sha256) pairs are derived read-only from committed P4 entries (fingerprint entry[2] -> captures[i][2] port dict -> its consumer_document_sha256; audit entry[3] -> streams[i] == stream)."
+  },
+
+  "invariants": [
+    "one CAPTURED receipt per distinct consumer document per PUBLISHED root",
+    "same (stream, consumer_document_sha256) captured twice -> duplicate refusal, including same-document-different-node/input",
+    "legacy v1 chain remains single-CAPTURED per stream",
+    "P4<->legacy capture of the same stream remain mutually exclusive",
+    "one-time CONSUMED per consumer session unchanged",
+    "distinct-document check runs under the ledger lock (atomic, no TOCTOU)"
+  ],
+
+  "negative_families": [
+    {"family": "duplicate-document", "cases": ["same stream + same consumer_document_sha256 across two batches", "same document reaching the same root via a different consumer_node/consumer_input", "same document sha but different run/nonce"]},
+    {"family": "legacy-exclusivity", "cases": ["P4 capture of a legacy-CAPTURED stream", "legacy capture of a P4-captured stream", "v1 receipt append behind a P4 stream"]},
+    {"family": "v1-chain", "cases": ["second legacy CAPTURED on one stream", "freeze against a legacy-CAPTURED/CONSUMED stream"]},
+    {"family": "within-request", "cases": ["duplicate stream within one batch", "duplicate port within one batch"]},
+    {"family": "race", "cases": ["same port raced concurrently -> one winner", "same admission replayed -> idempotent same record"]}
+  ],
+
+  "compatibility": {
+    "must_stay_green": [
+      "test_p4_and_legacy_are_mutually_exclusive_for_the_same_live_publication",
+      "test_p4_concurrent_same_admission_never_remints_or_mixes_requests",
+      "test_two_valid_admissions_with_different_keys_racing_one_live_identity_have_one_winner",
+      "test_legacy_receipt_writer_cannot_append_a_capture_behind_a_committed_p4_stream",
+      "tests/pipeline/test_trust.py (F4 v1 lifecycle) unchanged"
+    ],
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture",
+    "purity": "pipeline never imports production (unchanged)"
+  },
+
+  "forbidden_effects": [
+    "no new mutable state outside the immutable _root/ledger",
+    "no v1 receipt shape / descriptor / planner / __all__ / purity change",
+    "no relaxation of CONSUMED",
+    "no path/provider/filesystem/network access"
+  ],
+
+  "tests": {
+    "new": "tests/pipeline/test_captured_authorization.py (or new test_multiconsumer_capture.py): two distinct consumer documents capture the same publication -> both succeed with independent records/sessions; same-port second capture refuses; freeze against a P4-captured publication succeeds; all negative families.",
+    "existing": "tests/pipeline/test_captured_authorization.py, tests/pipeline/test_trust.py, tests/pipeline/test_replay_tape_descriptors.py",
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture"
+  },
+
+  "implementation_files": [
+    "dskit/pipeline/trust.py (3 seam edits + a read-only _p4_stream_ports derivation)",
+    "tests/pipeline/test_captured_authorization.py (new multi-capture tests + fixture extension)"
+  ],
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0170-f5a-f3-multiconsumer-capture-phase0.json",
+    "git diff --check"
+  ]
+}

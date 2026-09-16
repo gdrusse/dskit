@@ -9093,22 +9093,27 @@ bounded extension (option A of gate `0164`).
 
 **Decision.**
 
-1. **One CAPTURED receipt per distinct consumer port.** A single PUBLISHED root
-   may appear in more than one committed P4 `commit_p4_batch`, provided each
-   capture carries a **distinct consumer port** — the exact port dict
-   `{consumer_document_sha256, consumer_node, consumer_input, purpose}`. Two
-   captures of the same root with the same port refuse as a duplicate; two with
-   different ports are independent, each bound to its own admission, nonce,
-   record and `LaunchSession`. This is the V2 per-port lifecycle-receipt model
-   ADR-0125 already describes, not a second engine.
+1. **One CAPTURED receipt per distinct consumer document.** A single PUBLISHED
+   root may appear in more than one committed P4 `commit_p4_batch`, provided each
+   capture names a **distinct consumer document** — the frozen document identity
+   `consumer_document_sha256`. Two captures of the same root by the same document
+   refuse as a duplicate (including the same document reaching the same root
+   through a different node/input, which still names one consumer); two captures
+   by different documents are independent, each bound to its own admission,
+   nonce, record and `LaunchSession`. This is the V2 per-consumer lifecycle
+   receipt model ADR-0125 already describes, not a second engine. (Distinctness
+   is deliberately keyed on the document, not the four-field port, so a single
+   document cannot mint extra consumptions of one root by declaring extra
+   `$captured_artifact` ports — decision 3's "per consumer" boundary.)
 
 2. **Legacy v1 chain and P4/legacy exclusivity are unchanged.** The v1 linear
    receipt chain (`PRODUCED → SEALED → PUBLISHED → CAPTURED → CONSUMED`) still
    permits one CAPTURED per stream. A P4-captured stream still cannot enter
    legacy `capture` (`_require_unclaimed` remains for the legacy path), and a
    legacy-CAPTURED stream still cannot enter a P4 batch
-   (`_validate_capture_request`'s `_legacy_captures` check remains). Only the P4
-   path's blanket unclaimed refusal is relaxed to a **distinct-port** refusal.
+    (`_validate_capture_request`'s `_legacy_captures` check remains). Only the P4
+    path's blanket unclaimed refusal is relaxed to a **distinct-document**
+    refusal.
 
 3. **One-time consumption is per consumer, unchanged.** Each capture's member
    access remains one-way and one-time through its own consumer `LaunchSession`
@@ -9122,10 +9127,10 @@ bounded extension (option A of gate `0164`).
      fires on the P4 capture path or the freeze path; `_require_unclaimed` is
      retained and called explicitly on the legacy capture path (and the v1
      view/append paths, unchanged);
-   - `_validate_capture_request` (P4 path): replace the blanket unclaimed
-     refusal with (a) v1 head-is-`PUBLISHED` and (b) a distinct-port check —
-     the incoming port's canonical bytes must differ from every prior P4 port
-     committed for that stream;
+    - `_validate_capture_request` (P4 path): replace the blanket unclaimed
+      refusal with (a) v1 head-is-`PUBLISHED` and (b) a distinct-document check —
+      the incoming capture's `consumer_document_sha256` must differ from every
+      prior P4 capture committed for that stream;
    - `_published_for_descriptor` (freeze): allow a P4-captured-but-v1-`PUBLISHED`
      stream (drop the unclaimed refusal; the head check still blocks
      legacy-`CAPTURED`/`CONSUMED` streams).
