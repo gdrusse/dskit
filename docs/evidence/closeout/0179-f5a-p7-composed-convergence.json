@@ -313,5 +313,14 @@
     "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py::test_adr134_signed_fixture_commitments_are_read_only_and_exact",
     "result": "Expected assertion failure: NonAuthorizingSyntheticFixtureVerifier missing; 1 failed in 0.26s",
     "kind": "behavioral RED; no import/setup error"
+  },
+  "adr0134_green": {
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "focused": "31 passed, 952 deselected; tests/pipeline/test_captured_authorization.py -k adr134",
+    "affected": "1088 passed in 73.45s; tests/pipeline/test_captured_authorization.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py",
+    "lint": "Ruff on touched code and tests passed; git diff --check passed",
+    "scope": "Read-only G2 signed fixture commitments; pipeline class re-exported by production facade; no raw bytes, spent ID or F4/P4 effect",
+    "full_suite": "not run per owner testing preference",
+    "deployment_eligible": false
   }
 }

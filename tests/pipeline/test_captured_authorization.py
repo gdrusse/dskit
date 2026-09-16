@@ -2387,3 +2387,198 @@ def test_adr134_signed_fixture_commitments_are_read_only_and_exact():
     assert not any(hasattr(result, name) for name in (
         "read_member", "consume", "publish", "mint", "authorize",
     ))
+
+
+def _resign_synthetic_fixture_attestation(value, seed_role="fixture"):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    body = {key: item for key, item in value.items() if key != "signature"}
+    seed = hashlib.sha256(
+        b"dskit.synthetic-dataset-fixture-attestation/G2/v1"
+        if seed_role == "fixture" else
+        b"dskit.synthetic-dataset-grant/G2/v1"
+    ).digest()
+    body["signature"] = Ed25519PrivateKey.from_private_bytes(seed).sign(
+        f4._json_bytes(body)
+    ).hex()
+    return f4._json_bytes(body)
+
+
+@pytest.mark.parametrize("change", [
+    "whitespace", "duplicate-key", "extra-key", "missing-key", "wrong-schema",
+    "wrong-key", "wrong-signer", "bad-signature", "wrong-auth",
+    "time-bool", "time-mismatch", "stale-snapshot", "members-type",
+    "missing-member", "extra-member", "swapped-member", "wrong-source",
+    "duplicate-name", "bad-name", "length-bool", "length-negative",
+    "digest-uppercase", "member-extra-key",
+])
+def test_adr134_refuses_invalid_signed_fixture_commitments(change):
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    attestation = _synthetic_fixture_attestation(authorization, g2)
+    value = json.loads(attestation)
+    if change == "whitespace":
+        attestation += b" "
+    elif change == "duplicate-key":
+        attestation = attestation[:-1] + (
+            b',"schema_version":"dskit.synthetic-dataset-fixture-attestation/v1"}'
+        )
+    else:
+        if change == "extra-key":
+            value["unexpected"] = 1
+        elif change == "missing-key":
+            value.pop("issuer_key_id")
+        elif change == "wrong-schema":
+            value["schema_version"] = "dskit.dataset-capture-grant/v1"
+        elif change == "wrong-key":
+            value["issuer_key_id"] = "synthetic-g2/dataset-capture/v1"
+        elif change == "bad-signature":
+            value["signature"] = (
+                ("0" if value["signature"][0] != "0" else "1")
+                + value["signature"][1:]
+            )
+        elif change == "wrong-auth":
+            value["authorization_sha256"] = "a" * 64
+        elif change == "time-bool":
+            value["expires_at_ms"] = True
+        elif change == "time-mismatch":
+            value["not_before_ms"] = 101
+        elif change == "stale-snapshot":
+            value["revocation_snapshot_sha256"] = "b" * 64
+        elif change == "members-type":
+            value["ordered_members"] = {}
+        elif change == "missing-member":
+            value["ordered_members"].pop()
+        elif change == "extra-member":
+            value["ordered_members"].append(dict(value["ordered_members"][0]))
+        elif change == "swapped-member":
+            value["ordered_members"].reverse()
+        elif change == "wrong-source":
+            value["ordered_members"][0]["source_id"] = "src:evil"
+        elif change == "duplicate-name":
+            value["ordered_members"][1]["member_name"] = "fixture_A.ndjson"
+        elif change == "bad-name":
+            value["ordered_members"][0]["member_name"] = "../fixture_A.ndjson"
+        elif change == "length-bool":
+            value["ordered_members"][0]["byte_length"] = True
+        elif change == "length-negative":
+            value["ordered_members"][0]["byte_length"] = -1
+        elif change == "digest-uppercase":
+            value["ordered_members"][0]["sha256"] = "A" * 64
+        elif change == "member-extra-key":
+            value["ordered_members"][0]["unexpected"] = 1
+        attestation = (
+            f4._json_bytes(value) if change == "bad-signature" else
+            _resign_synthetic_fixture_attestation(
+                value, "grant" if change == "wrong-signer" else "fixture"
+            )
+        )
+    with pytest.raises((TypeError, ValueError)):
+        trust.NonAuthorizingSyntheticFixtureVerifier().verify(
+            authorization, g1, g2, attestation,
+        )
+
+
+def test_adr134_refuses_empty_signed_source_set_and_rechecks_grants():
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    attestation = _synthetic_fixture_attestation(authorization, g2)
+    value = json.loads(authorization)
+    value["source_ids"] = []
+    authorization = f4._json_bytes(value)
+    digest = hashlib.sha256(authorization).hexdigest()
+    g1_value, g2_value = json.loads(g1), json.loads(g2)
+    g1_value["authorization_sha256"] = digest
+    g2_value["authorization_sha256"] = digest
+    g1, g2 = _resign_synthetic_grant(g1_value), _resign_synthetic_grant(g2_value)
+    attestation_value = json.loads(attestation)
+    attestation_value["authorization_sha256"] = digest
+    attestation_value["ordered_members"] = []
+    attestation = _resign_synthetic_fixture_attestation(attestation_value)
+    with pytest.raises(ValueError, match="nonempty"):
+        trust.NonAuthorizingSyntheticFixtureVerifier().verify(
+            authorization, g1, g2, attestation,
+        )
+    valid = _synthetic_dataset_grant_fixture()
+    with pytest.raises((TypeError, ValueError)):
+        trust.NonAuthorizingSyntheticFixtureVerifier().verify(
+            valid[0], valid[1], g2, _synthetic_fixture_attestation(*valid[::2]),
+        )
+
+
+@pytest.mark.parametrize("revoked_identity", [
+    "G2-fixture", "synthetic-g2/dataset-fixture-attestation/v1",
+    "fixture-authorization-1",
+])
+def test_adr134_refuses_current_fixture_revocation_with_signed_snapshot(
+        revoked_identity, monkeypatch):
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    monkeypatch.setattr(trust, "_SYNTHETIC_GRANT_REVOKED",
+                        frozenset({revoked_identity}))
+    snapshot = hashlib.sha256(f4._json_bytes({
+        "schema_version": "dskit.synthetic-dataset-revocations/v1",
+        "revoked": [revoked_identity],
+    })).hexdigest()
+    grants = []
+    for raw in (g1, g2):
+        value = json.loads(raw)
+        value["revocation_snapshot_sha256"] = snapshot
+        grants.append(_resign_synthetic_grant(value))
+    attestation = json.loads(_synthetic_fixture_attestation(
+        authorization, grants[1],
+    ))
+    attestation["revocation_snapshot_sha256"] = snapshot
+    signed_attestation = _resign_synthetic_fixture_attestation(attestation)
+    with pytest.raises(ValueError, match="revocation|revoked"):
+        trust.NonAuthorizingSyntheticFixtureVerifier().verify(
+            authorization, *grants, signed_attestation,
+        )
+
+
+def test_adr134_refuses_snapshot_change_between_grant_and_fixture(monkeypatch):
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    attestation = _synthetic_fixture_attestation(authorization, g2)
+    original = trust.NonAuthorizingSyntheticGrantVerifier.verify
+
+    def transition(self, *raw):
+        facts = original(self, *raw)
+        monkeypatch.setattr(trust, "_SYNTHETIC_GRANT_REVOKED",
+                            frozenset({"other-authorization"}))
+        return facts
+
+    monkeypatch.setattr(trust.NonAuthorizingSyntheticGrantVerifier,
+                        "verify", transition)
+    with pytest.raises(ValueError, match="revocation"):
+        trust.NonAuthorizingSyntheticFixtureVerifier().verify(
+            authorization, g1, g2, attestation,
+        )
+
+
+def test_adr134_production_facade_and_repeat_read_only_result():
+    from dskit.production import verifier as production_verifier
+
+    assert production_verifier.NonAuthorizingSyntheticFixtureVerifier is (
+        trust.NonAuthorizingSyntheticFixtureVerifier
+    )
+    verifier = production_verifier.NonAuthorizingSyntheticFixtureVerifier()
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    attestation = _synthetic_fixture_attestation(authorization, g2)
+    left = verifier.verify(authorization, g1, g2, attestation)
+    right = verifier.verify(authorization, g1, g2, attestation)
+    assert left == right and left is not right
+    assert not hasattr(verifier, "sign")
+    with pytest.raises(TypeError):
+        class ForgedFixtureVerifier(trust.NonAuthorizingSyntheticFixtureVerifier):
+            pass
+
+
+def test_adr134_rechecks_expiry_after_grant_verification(monkeypatch):
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    attestation = _synthetic_fixture_attestation(authorization, g2)
+    instants = iter((500, 900))
+    monkeypatch.setattr(
+        trust._FixedP4VerificationClock, "now_ms",
+        staticmethod(lambda _clock: next(instants)),
+    )
+    with pytest.raises(ValueError, match="time"):
+        trust.NonAuthorizingSyntheticFixtureVerifier().verify(
+            authorization, g1, g2, attestation,
+        )

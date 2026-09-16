@@ -41,6 +41,7 @@ __all__ = [
     "LifecycleAuthority",
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
     "NonAuthorizingSyntheticGrantVerifier",
+    "NonAuthorizingSyntheticFixtureVerifier",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
@@ -5554,6 +5555,111 @@ class NonAuthorizingSyntheticGrantVerifier:
             "authorization_sha256": authorization_sha256,
             "g1_grant_sha256": _digest(g1_grant_bytes),
             "g2_grant_sha256": _digest(g2_grant_bytes),
+            "checked_at_ms": now,
+            "revocation_snapshot_sha256": snapshot,
+            "authorizing": False,
+            "deployment_eligible": False,
+        })
+
+
+_SYNTHETIC_FIXTURE_KEY_ID = "synthetic-g2/dataset-fixture-attestation/v1"
+_SYNTHETIC_FIXTURE_PUBLIC_KEY = (
+    "8514688e8c6ee8224c630a1a76beae880efe2404a2f1302b5f8d9d78ccfbd5a8"
+)
+_SYNTHETIC_FIXTURE_KEYS = frozenset({
+    "schema_version", "issuer_key_id", "authorization_sha256",
+    "issued_at_ms", "not_before_ms", "expires_at_ms",
+    "revocation_snapshot_sha256", "ordered_members", "signature",
+})
+_SYNTHETIC_FIXTURE_MEMBER_KEYS = frozenset({
+    "member_name", "source_id", "byte_length", "sha256",
+})
+_SYNTHETIC_FIXTURE_MEMBER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+
+class NonAuthorizingSyntheticFixtureVerifier:
+    """Check signed synthetic member commitments without granting a read."""
+
+    __slots__ = ()
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse a subtype that could impersonate the fixed verifier."""
+        raise TypeError("the fixed synthetic fixture verifier is final")
+
+    def verify(self, authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+               attestation_bytes):
+        """Return immutable commitments after fresh fixed-grant verification."""
+        grant_facts = NonAuthorizingSyntheticGrantVerifier().verify(
+            authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+        )
+        authorization = _hs_parse_canonical(authorization_bytes)
+        source_ids = authorization["source_ids"]
+        _hs_refuse(bool(source_ids), "nonempty signed source ids required")
+        attestation = _hs_parse_canonical(attestation_bytes)
+        _hs_refuse(type(attestation) is dict
+                   and set(attestation) == _SYNTHETIC_FIXTURE_KEYS,
+                   "closed synthetic fixture attestation required")
+        _hs_refuse(
+            attestation["schema_version"]
+            == "dskit.synthetic-dataset-fixture-attestation/v1"
+            and attestation["issuer_key_id"] == _SYNTHETIC_FIXTURE_KEY_ID
+            and attestation["authorization_sha256"]
+            == grant_facts["authorization_sha256"],
+            "synthetic fixture identity refused",
+        )
+        for name in ("authorization_sha256", "revocation_snapshot_sha256"):
+            NonAuthorizingSyntheticGrantVerifier._hash(attestation[name])
+        window = ("issued_at_ms", "not_before_ms", "expires_at_ms")
+        _hs_refuse(
+            all(type(attestation[name]) is int
+                and attestation[name] == authorization[name] for name in window),
+            "synthetic fixture time claims refused",
+        )
+        members = attestation["ordered_members"]
+        _hs_refuse(type(members) is list and len(members) == len(source_ids),
+                   "synthetic fixture source membership refused")
+        seen_names = set()
+        for index, member in enumerate(members):
+            _hs_refuse(type(member) is dict
+                       and set(member) == _SYNTHETIC_FIXTURE_MEMBER_KEYS,
+                       "closed synthetic fixture member required")
+            name = member["member_name"]
+            _hs_refuse(
+                type(name) is str
+                and _SYNTHETIC_FIXTURE_MEMBER_NAME.fullmatch(name) is not None
+                and name not in seen_names
+                and member["source_id"] == source_ids[index]
+                and type(member["byte_length"]) is int
+                and member["byte_length"] >= 0,
+                "synthetic fixture member identity or length refused",
+            )
+            seen_names.add(name)
+            NonAuthorizingSyntheticGrantVerifier._hash(member["sha256"])
+        snapshot, revoked = NonAuthorizingSyntheticGrantVerifier._snapshot()
+        now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+        _hs_refuse(
+            attestation["revocation_snapshot_sha256"]
+            == grant_facts["revocation_snapshot_sha256"] == snapshot
+            and authorization["not_before_ms"] <= now
+            < authorization["expires_at_ms"]
+            and not {
+                "G2-fixture", _SYNTHETIC_FIXTURE_KEY_ID,
+                authorization["authorization_id"],
+            } & revoked,
+            "synthetic fixture time or revocation refused",
+        )
+        preimage = _hs_canonical_bytes({
+            key: value for key, value in attestation.items()
+            if key != "signature"
+        })
+        _p4_verify_ed25519(
+            _SYNTHETIC_FIXTURE_PUBLIC_KEY, preimage, attestation["signature"],
+        )
+        return MappingProxyType({
+            "authorization_sha256": grant_facts["authorization_sha256"],
+            "attestation_sha256": _digest(attestation_bytes),
+            "ordered_members": tuple(MappingProxyType(dict(member))
+                                     for member in members),
             "checked_at_ms": now,
             "revocation_snapshot_sha256": snapshot,
             "authorizing": False,
