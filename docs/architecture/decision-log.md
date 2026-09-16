@@ -9623,22 +9623,33 @@ No synthetic fixture or same-process object identity resolves this cycle.
    source_provenance_sha256), sorted unique license_digests,
    event_schema=dskit.raw-event/v1, media_type=application/x-ndjson,
    source_rank_policy_sha256, issued_at_ms, not_before_ms,
-   expires_at_ms. The policy digest is computed from the canonical
-   SourceRankPolicy.v1 derived solely from those source IDs with ranks
-   0..n-1; no caller policy or observed event set supplies it. The
+   expires_at_ms. The policy digest is SHA-256 of exact canonical ASCII JSON
+   {schema_version:dskit.source-rank-policy/v1,sources:[{source_id,rank}]}
+   derived solely from the sorted source IDs with ranks 0..n-1.
+   SourceRankPolicy.v1 adds policy_sha256 equal to that digest; the digest
+   omits only policy_sha256. No caller policy or observed event set
+   supplies it. The
    bootstrap contains no root ID, roster receipt or future datum.
    Each bootstrap grant has exactly schema_version=
    dskit.roster-bootstrap-grant/v1, role (literal G1 or G2),
    issuer_key_id, bootstrap_sha256, issued_at_ms, not_before_ms,
-   expires_at_ms, revocation_snapshot_sha256 and signature. The fixed
-   role-to-key map has distinct G1/G2 Ed25519 public keys; each lowercase
+   expires_at_ms, revocation_snapshot_sha256 and signature. The fixed role-to-key map is G1=(synthetic-g1/roster-bootstrap/v1,
+   5b6c3f069aded6254b5dd6852b22143f9b3157f47506f007a9d702850eb7ce92)
+   and G2=(synthetic-g2/roster-bootstrap/v1,
+   84abc9abfe69736a62e7d90239fbbd4faecbbc6119e7f1915c92c9f619618665).
+   Each lowercase
    128-hex signature covers exact canonical grant bytes with only
    signature omitted. All digests are lowercase SHA-256; IDs use
    ADR-0133's canonical grammar, times are exact integer milliseconds
    (booleans refuse), and grant times equal the bootstrap with
-   issued<=not_before<=trusted_now<expires. Unknown, missing or
-   duplicate keys, role/key swaps, noncanonical bytes, stale snapshots,
-   revoked issuers/keys/bootstrap IDs or an alternate algorithm refuse.
+   issued<=not_before<=trusted_now<expires. The signed revocation snapshot is SHA-256 of exact canonical ASCII JSON
+   {schema_version:dskit.synthetic-dataset-revocations/v1,
+   revoked:sorted-unique-canonical-string-list}, identical to ADR-0133's
+   existing snapshot rule. The administrative generation is separate
+   metadata and is not hashed into this signed snapshot. Unknown,
+   missing or duplicate keys, role/key swaps, noncanonical bytes, stale
+   snapshots, revoked issuers/keys/bootstrap IDs or an alternate
+   algorithm refuse.
    No runtime signer or key injection exists; test-fixture code alone
    signs. Hostile bytes, not code controlling the interpreter, are the
    threat.
@@ -9824,9 +9835,11 @@ one shared durable namespace with a completed write before first read.
    commit atomically under the same SQLite writer lock. Revocation takes
    effect only at a successful durable COMMIT;
    each broker reserve/transition admission is serialized before or
-   after it, never against a half-updated snapshot. The current
-   snapshot is derived from that shared set, not process-local
-   _SYNTHETIC_GRANT_REVOKED.
+   after it, never against a half-updated snapshot. The current snapshot hashes the exact ADR-0135/ADR-0133 canonical
+   revocation bytes from that shared set, excluding the generation, so
+   equal sets have equal signed snapshot digests in read-only and SQLite
+   paths. Effecting checks derive it from the shared set, never the
+   process-local _SYNTHETIC_GRANT_REVOKED.
 3. A fixed broker validates original canonical G1/G2 bytes, exact
    authority role/key and trusted current time, then opens one SQLite
    BEGIN IMMEDIATE transaction. Under that writer lock it reads the

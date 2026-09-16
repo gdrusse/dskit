@@ -436,5 +436,14 @@
     "context": "After explicit request to approve ADR-0135 through ADR-0137 and explanation of their remaining gates, owner directed autonomous completion.",
     "interpretation": "Approval to proceed under the reviewed bounded ADRs; fresh Phase 0, tests, two final lenses and all downstream contracts remain required.",
     "deployment_eligible": false
+  },
+  "adr0135_readonly_phase0": {
+    "slice": "Nonauthorizing roster bootstrap authorization/G1/G2 verifier; no F4, reserve, receipt signing, raw read or P4 admission.",
+    "reviewer": "/root/adr135_phase0",
+    "initial_major": "Revocation snapshot wire was not pinned to equal bytes across read-only and future SQLite paths.",
+    "correction": "Pinned G1/G2 IDs and public bytes, exact SourceRankPolicy self-digest preimage, and ADR-0133 canonical revocation snapshot bytes with admin generation excluded.",
+    "recheck": "0 Critical, 0 Major, 0 Minor; one deferred wording Nit on canonical revoked-string validation.",
+    "tests": "No code tests in Phase 0; focused RED/GREEN is next.",
+    "deployment_eligible": false
   }
 }
