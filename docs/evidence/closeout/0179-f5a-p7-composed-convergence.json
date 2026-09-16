@@ -2,7 +2,7 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0139 synthetic raw F4 publication/v1 receipt reviewed and ready for main after corrected WORM insertion. P7 and Packet8 remain open: dynamic P4 trust, CAPTURED raw/roster proof, full event/tape semantics and durable Packet8 gate remain.",
+  "status": "ADR-0140 read-only raw root proof reviewed and ready for main. P7 and Packet8 remain open: dynamic P4 root/graph trust, CAPTURED raw/roster data proof, full event/tape semantics and Packet8 durability.",
   "proposal": "Accepted ADR-0132 amended with exact broker-derived raw intent and lazy host-owned fixture reader. ADR-0131 remains blocked; full P7 closure remains gated.",
   "cycles": [
     {
@@ -638,6 +638,25 @@
     "tests_lens": "/root/adr139_tests_final final re-review of a23cda8: 0 Critical, 0 Major.",
     "minors": "Focused cases do not cover full signed v1 basis/window/ref comparison, every revocation/expiry boundary, cross-process raw publisher attempt, or all F4 partial-backing mutations; code checks reviewed. A same-byte out-of-band receipt insertion is possible under process-local store but no second honest signer for the key can pass shared one-use admission.",
     "scope": "Fixed nondeployment one-shot raw F4 root/manifest and v1 basis/receipt only. No dynamic P4 captured input, full EventEnvelope.v2, composed tape, P7/Packet8 closure or deployment.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
+  },
+  "adr0140_raw_root_proof_candidate": {
+    "candidate": "6c9ed0c6bf1783ebd36dbf1c30a520c48f4a9b57",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "694279c321ab0ce5a516aa307b4d88e0e949b00f",
+      "dskit/pipeline/trust.py": "de1a3eb76fc166ac037719b9af685148dfe0f5b2",
+      "dskit/production/verifier.py": "2dcf8cbca58101c984cf54b5b944d162d2c3642a",
+      "tests/pipeline/test_captured_authorization.py": "75fc48f8a30b4f6e3942b1357cfe1819a5d26d2b",
+      "tests/pipeline/test_trust.py": "95f1d118b928375503e5e3ab436dea12cb7c0378"
+    },
+    "phase0": "/root/adr140_phase0: original read-snapshot freshness Major closed by a second shared-state fence after external F4/outer WORM reads; final 0 Critical, 0 Major.",
+    "red": "Ten focused cases failed on absent publisher.proof before implementation.",
+    "green": "10 focused ADR-0140 cases and 1408 directly affected pipeline/F4/production verifier tests passed; Ruff and diff check passed.",
+    "authority_lens": "/root/adr140_authority_final: 0 Critical, 0 Major.",
+    "tests_lens": "/root/adr140_tests_final: 0 Critical, 0 Major; 10 focused passed.",
+    "minors": "Valid re-signed basis/receipt field substitutions, duplicate/reordered audit rows, clock advance during raw readback and roster mutation during nested readback lack direct focused tests; code checks reviewed.",
+    "scope": "Read-only nonauthorizing exact raw root/manifest/v1 receipt proof with retained F4 and shared-state checks. No dynamic P4/CAPTURED/full events/composed tape/P7/Packet8/deployment.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
   }
