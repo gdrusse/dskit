@@ -2,7 +2,7 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0132 effecting synthetic raw preflight reviewed and ready for main; P7 and Packet8 remain open. Roster publication/proof and shared one-use reserve are on main. Next: raw F4 publication/receipt, dynamic P4 trust, complete event/tape semantics.",
+  "status": "ADR-0132 raw preflight and ADR-0136 shared chronology repair reviewed; candidate clock repair ready for main. ADR-0139 raw F4 publication design Phase 0 cleared, implementation pending. P7 and Packet8 remain open.",
   "proposal": "Accepted ADR-0132 amended with exact broker-derived raw intent and lazy host-owned fixture reader. ADR-0131 remains blocked; full P7 closure remains gated.",
   "cycles": [
     {
@@ -582,6 +582,24 @@
     "tests_lens": "/root/adr132_tests_final re-review of 3ee353b: 0 Critical, 0 Major; 17 focused passed.",
     "minors": "Raw-specific cross-process race, committed-state observation at first read, exact signed length/digest mismatch, additional revocation/expiry/ambiguous-COMMIT cases lack direct focused tests; fixed shared store and fail-closed code paths reviewed.",
     "scope": "One-use nondeployment synthetic raw fixture preflight only. No raw F4 publication/root/receipt, dynamic P4 capture, full EventEnvelope.v2, composed tape, P7 or Packet8 closure.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
+  },
+  "adr0136_shared_clock_repair": {
+    "candidate": "7c79dfa46dc0906e7d35272bb7b736e4f064bfa4",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "b0a58ded727e63ad1e7815096d90202aff3bb52e",
+      "dskit/pipeline/trust.py": "b83e6a3d1483b06bb49853583848b0ab0b92a561",
+      "tests/pipeline/test_captured_authorization.py": "5d67b650bcce9e471921f34217d33cf87391f562"
+    },
+    "finding": "ADR-0139 independent Phase 0 discovered static 500-ms effecting clock made strict post-roster raw issuance impossible without test monkeypatch.",
+    "repair": "Preprovisioned shared reserve_meta now_ms starts at 500; trusted admin can only advance it durably under BEGIN IMMEDIATE/WAL/FULL. Roster/raw effecting checks and ADR-0137 live proof read it inside their transaction; old P4/read-only corpus stays fixed. Normal effective time is shared now_ms; fixed baseline can only raise it in existing expiry fault injection.",
+    "green": "20 focused raw/clock cases and 1389 directly affected pipeline/F4/production verifier tests passed; Ruff and diff check passed.",
+    "phase0": "/root/adr139_phase0: 0 Critical, 0 Major after clock and one-shot proof amendments; Minor receipt-key and name-collision clarifications applied before RED.",
+    "authority_lens": "/root/adr136_clock_authority_final: 0 Critical, 0 Major.",
+    "tests_lens": "/root/adr136_clock_tests_final: 0 Critical, 0 Major; 20 focused tests passed.",
+    "minor": "No separate-process clock race or clock advance at every intermediate raw/roster transition in focused tests; existing shared SQLite writer lock and checks reviewed.",
+    "scope": "Durable synthetic chronology prerequisite only; ADR-0139 raw publisher not yet implemented; no P4/full F3/P7/Packet8 closure.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
   }
