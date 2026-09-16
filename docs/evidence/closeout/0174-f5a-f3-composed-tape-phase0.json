@@ -1,0 +1,77 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2b-composed-tape",
+  "packet": "7-replay-tape-descriptors-composed-tape-verification",
+  "status": "phase0-contract-draft",
+  "base_main": "0943b8d3cd27fd0d85563bd1f5388854b092763a",
+  "cites": ["ADR-0127 Decision.2 (accepted)", "ADR-0128 (multi-consumer capture, landed)", "plan:516-568 (F3 hierarchy)", "0145 authorization", "0173 (multiconsumer review exit)"],
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-pro (flash reviewer not yet loaded in-session)",
+
+  "scope": "The F3 composed-tape verification seam and its three capture collaborators: ReplayTapeDataCapture, ReplayTapeManifestProducer, ReplayTapeManifestCapture, and the opaque ComposedReplayTape issued only after verifying the outer manifest bytes, the inner prior manifest-producer data receipt, and the separate replay-data receipt. This is what makes the P7 tape_manifest/tape_data descriptors resolve to verified PUBLISHED/CAPTURED identities and closes P7's verification half.",
+  "non_goals": [
+    "the runnable R1 ReplayRun broker (start_ms/feed_results/id_allocations runtime tape)",
+    "R1-R5 replay transaction machinery",
+    "F1/F2 EventEnvelope causal reordering; the full F3 feed/roster data-capture lane",
+    "deriving ordered_envelope_digests from a real feed (digests are supplied; the codec already verifies internal consistency)",
+    "a second planner/ledger/tape engine",
+    "real data/replay/deployment"
+  ],
+
+  "open_questions_to_skeptic": [
+    "Q1: which capture model exposes the member bytes the composed-tape seam reads? The v1 open_capture -> VerifiedCapture path reads PUBLISHED members but forbids a second capture of the data root; the P4 commit_p4_batch path (ADR-0128) allows multi-consumer capture but returns only an opaque CapturedAuthorizationRecord with no member-read seam. A coherent seam must name where the manifest inner bytes and the two receipt digests come from.",
+    "Q2: what minimal read-only trust.py accessor is needed for the CAPTURED receipt digest, and is it nonauthorizing?",
+    "Q3: where do the three collaborators live given the purity rule (pipeline never imports production) and bundles.py's base+vocab-only import pin?"
+  ],
+
+  "proposed_design": {
+    "location": "new module dskit/production/replay_tape.py (production-side; imports dskit.pipeline.trust public names and the bundles.CapturedReplayTape codec). bundles.py keeps only the codec.",
+    "collaborators": [
+      {"ReplayTapeDataCapture": "opaque collaborator binding the parent data PUBLISH root (its VerifiedCapture/descriptor) whose root is PUBLISHED."},
+      {"ReplayTapeManifestProducer": "opaque collaborator for the distinct later consumer that consumes the data capture, derives the inner CapturedReplayTape.v1 bytes (codec _build), and PUBLISHES them in its own manifest root."},
+      {"ReplayTapeManifestCapture": "opaque collaborator binding the manifest producer's PUBLISH root (the outer manifest identity)."},
+      {"ComposedReplayTape": "opaque capability issued only after verification; the only object that may become a runtime ReplayTape; no public constructor/copy/pickle."}
+    ],
+    "verification": "compose_replay_tape(manifest_capture, data_capture, replay_data_receipt) verifies: (1) the manifest inner CapturedReplayTape.v1 bytes parse and recompute; (2) inner data_capture_root equals the data PUBLISH identity; (3) inner data_captured_receipt equals the retained manifest-producer CAPTURED receipt for that data root; (4) inner source_rank_policy_sha256 equals the consumed roster policy pin; (5) the separate replay-data CAPTURED receipt equals the retained replay receipt for the data port. Only then issues ComposedReplayTape.",
+    "receipt_accessor": "a read-only, nonauthorizing accessor on the trust authority exposing the retained CAPTURED receipt digest for a captured publication, refusing unless CAPTURED."
+  },
+
+  "negative_families": [
+    {"family": "codec", "cases": ["unknown/extra/missing inner member", "canonical-byte/digest mismatch", "reordered digest list", "placeholder/self digest"]},
+    {"family": "hierarchy", "cases": ["missing data capture", "missing manifest capture", "swapped manifest/data", "same-root/self-receipt (data_captured_receipt == manifest root)", "manifest root recorded in its own inner bytes"]},
+    {"family": "receipt", "cases": ["data_captured_receipt != retained manifest-producer receipt", "data_capture_root != data PUBLISH identity", "replay-data receipt against the wrong port", "parent mutation/reorder"]},
+    {"family": "policy", "cases": ["source_rank_policy_sha256 mismatch", "policy derived from a resulting tape"]},
+    {"family": "capability", "cases": ["composed tape before verification", "remint/reuse/copy/pickle of composed tape", "raw legacy ReplayTape admission", "same run/session consumption"]}
+  ],
+
+  "compatibility": {
+    "purity": "pipeline never imports production; the new module is production-side; the receipt accessor in trust.py is stdlib-only and nonauthorizing.",
+    "p4_p6": "no change to the codec, the descriptor grammar, or the P4/P6 capture semantics; the multi-consumer capture (ADR-0128) is unchanged.",
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture stays green."
+  },
+
+  "forbidden_effects": [
+    "member/path/provider/filesystem/network access before verification",
+    "a second ledger/tape/planner engine",
+    "minting authority from the codec or collaborators",
+    "any capture/lifecycle transition from a read-only verification"
+  ],
+
+  "tests": {
+    "new": "tests/production/test_composed_replay_tape.py: positive data-publish -> manifest-producer capture -> manifest publish -> compose -> composed tape; codec/hierarchy/receipt/policy/capability negative families; synthetic F4/P4 fixtures only.",
+    "existing": ["tests/production/test_captured_replay_tape.py", "tests/production/test_capture_lifecycle.py", "tests/production/test_captured_authorization.py", "tests/pipeline/test_captured_authorization.py", "tests/pipeline/test_trust.py", "tests/production/test_purity.py"],
+    "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture"
+  },
+
+  "implementation_files": [
+    "dskit/production/replay_tape.py (new: collaborators + composed tape + verification)",
+    "dskit/pipeline/trust.py (one read-only nonauthorizing CAPTURED receipt-digest accessor)",
+    "tests/production/test_composed_replay_tape.py (new)",
+    "dskit/production/README.md + AGENTS.md (tree + extension points)"
+  ],
+
+  "checks": [
+    "/home/russell/dskit/.venv/bin/python -m json.tool docs/evidence/closeout/0174-f5a-f3-composed-tape-phase0.json",
+    "git diff --check"
+  ]
+}

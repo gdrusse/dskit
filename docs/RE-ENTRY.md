@@ -1,5 +1,42 @@
 # Re-entry
 
+## Current checkpoint: composed-tape verification blocked on architecture gate (2026-09-16)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-f3-composed-tape` (unmerged docs). Main `0943b8d`; protected source
+`c489199` untouched; dirty main checkout untouched. DeepSeek v4 Pro implementer.
+
+**Result.** P7 slice 2b (the composed-tape verification seam) hit a genuine
+architecture gate at Phase 0. The skeptic (`0175`) proved the seam is
+unimplementable on current seams: the ReplayRun must both read the outer
+manifest's member bytes (v1 `open_capture`→`VerifiedCapture`, single-CAPTURED)
+and be the second consumer of the data root (P4 `commit_p4_batch`, multi-consumer
+per ADR-0128 but with an empty `CapturedAuthorizationRecord` and no member-read or
+receipt-digest seam). Run-identity exclusivity (trust.py:5005 vs 5169-5170)
+forbids mixing the two in one run.
+
+**Owner decision needed (`0176`).** (A) add a bounded P4 member-read +
+CAPTURED-receipt accessor (expose `VerifiedCapture`-like handles + receipt
+digests from `commit_p4_batch`) as a new ADR/correction to ADR-0127 Decision.2
+— recommended, faithful to the plan's "consumer session obtains a
+VerifiedCapture"; (B) relax run-identity exclusivity to allow mixed v1+P4
+(security-relevant); or (C) re-scope to digest-only verification (weakens the
+data-half check; needs explicit approval).
+
+**Landed this session.** Multi-consumer capture (ADR-0128, merged `0943b8d`):
+one PUBLISHED root may be captured by more than one distinct consumer document,
+keyed on `consumer_document_sha256`. Codec (`CapturedReplayTape.v1`) merged
+earlier. Both remain available for the composed-tape seam once the gate is
+resolved.
+
+**Remaining.** Packet7 (verification half blocked on `0176`), Packet8, F5A-R23,
+whole-F5a, F3 (full lane), F5b. `deployment_eligible=false`. Next unused
+evidence: 0177.
+
+Approximate checkpoint minutes (design/impl/tests/review/corrections/integration):
+design 40, implementation 0, tests 0, review 25, corrections 0, integration 5.
+Initial unmeasured reading excluded.
+
 ## Current wrap: bounded multi-consumer capture landed (2026-09-16)
 
 Worktree `/home/russell/wt/f5a-remainder-20260915`, branch

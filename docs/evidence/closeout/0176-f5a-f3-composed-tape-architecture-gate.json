@@ -1,0 +1,26 @@
+{
+  "schema_version": "OwnerGate.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2b-composed-tape",
+  "date": "2026-09-16",
+  "packet": "7-replay-tape-descriptors-composed-tape-verification",
+  "gate_kind": "architecture",
+  "status": "blocked",
+  "discovered_by": "Phase 0 skeptic (0175, CRIT-1/CRIT-2)",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-pro",
+
+  "problem": "The composed-tape verification seam (ADR-0127 Decision.2) requires the ReplayRun to read the outer manifest's member bytes AND be the second consumer of the data root. The two capture models cannot be combined: (1) run-identity exclusivity (trust.py: legacy capture refuses a run already in a P4 entry, and vice versa) forbids a mixed v1+P4 run; (2) the v1 open_capture->VerifiedCapture path reads members but permits only one CAPTURED per stream; (3) the P4 commit_p4_batch path permits multi-consumer capture (ADR-0128) but returns only an empty CapturedAuthorizationRecord with no member-read or receipt-digest seam.",
+
+  "evidence": "trust.py:5005 (legacy capture cannot reuse a P4 execution run), trust.py:5169-5170 (P4 capture cannot reuse a legacy execution run), CapturedAuthorizationRecord empty __slots__ (4755), LaunchSession kind captured-authorization-v2 refused by open_capture/captured_bindings. Plan:516-568 (manifest producer derives + ReplayRun verifies ordered_envelope_digests against data members).",
+
+  "decision_needed": "How should a consumer both read a captured root's member bytes and be one of several consumers of the same root? Options: (A) add a bounded P4 member-read + CAPTURED-receipt accessor (expose VerifiedCapture-like handles and receipt digests from commit_p4_batch) as a new ADR/correction to ADR-0127 Decision.2; (B) relax run-identity exclusivity so one run may mix v1 and P4 captures (security-relevant); (C) re-scope the composed-tape seam to digest-only verification without member re-read (weakens the plan's data-half verification; needs explicit owner approval of the scope reduction).",
+
+  "recommendation": "A (bounded P4 member-read + receipt accessor), faithful to the plan's own 'that consumer session obtains a VerifiedCapture'; it is a significant trust.py contract change and needs its own ADR + fresh Phase 0 before RED.",
+
+  "blocked_deliverable": "compose_replay_tape and the three capture collaborators (ReplayTapeDataCapture / ReplayTapeManifestProducer / ReplayTapeManifestCapture) + ComposedReplayTape. The CapturedReplayTape.v1 codec (merged) and the multi-consumer capture (ADR-0128, merged) are unaffected and remain available.",
+
+  "preserved_open": ["Packet7 (verification half blocked here)", "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b", "origin/cursor/r5-f5a-private-plan-0f39@c489199"],
+  "deployment_eligible": false,
+  "protected_source": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "recorded_at_utc": "2026-09-16T07:30:00.000000+00:00"
+}
