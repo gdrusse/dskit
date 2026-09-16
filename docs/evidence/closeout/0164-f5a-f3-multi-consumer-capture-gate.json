@@ -1,0 +1,24 @@
+{
+  "schema_version": "OwnerGate.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2b",
+  "date": "2026-09-16",
+  "packet": "7-replay-tape-descriptors-verification-half (composed-tape seam)",
+  "gate_kind": "architecture",
+  "status": "blocked",
+  "discovered_by": "Phase 0 skeptic (0163, CRIT-1)",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+
+  "problem": "The F3 captured-tape hierarchy (ADR-0127 Decision.2) requires the parent data PUBLISH root to be CAPTURED by TWO distinct consumer documents: once by ReplayTapeManifestProducer (its inner data_captured_receipt) and once by ReplayRun (its separate replay-data CAPTURED receipt). The current F4 v1 WORM lifecycle (trust.py) and the P4 commit_p4_batch model both enforce exactly one CAPTURED per published stream: _require_head -> _p4_ledger._require_unclaimed refuses any stream already in a committed P4 batch, and _validate_capture_request cross-refuses legacy and P4 capture of the same stream.",
+
+  "evidence": "trust.py:1820-1824 (_require_head -> _require_unclaimed), 2437-2441 (_validate_capture_request legacy/P4 cross-refusal), 5046-5049 (_require_unclaimed). Plan lines 527-530 (manifest-producer CAPTURED receipt) and 554-563 + 717-723 (ReplayRun replay-specific CAPTURED receipt on the same data entry).",
+
+  "decision_needed": "How should a single PUBLISHED root be captured by multiple distinct consumer documents? Options: (A) authorize a bounded V2 multi-consumer capture extension to the P4/commit_p4_batch model (a published root may hold one CAPTURED receipt per distinct consumer port/document, while remaining one-time CONSUMED), as a separately-reviewed ADR/correction to ADR-0127 Decision.2; or (B) re-scope the composed-tape verification so the ReplayRun data entry reuses the manifest-producer's existing CAPTURED receipt rather than minting a second one (a design correction to the plan's two-receipt reading).",
+
+  "blocked_deliverable": "compose_replay_tape (the 5-step composed-tape verification seam) and the three capture collaborators as runtime multi-consumer bindings. The CapturedReplayTape.v1 codec (slice 2a) is NOT blocked and proceeds independently.",
+
+  "preserved_open": ["Packet7 (verification half remains open; codec slice 2a contributes)", "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b", "origin/cursor/r5-f5a-private-plan-0f39@c489199"],
+  "deployment_eligible": false,
+  "protected_source": "origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868",
+  "recorded_at_utc": "2026-09-16T04:00:00.000000+00:00"
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": "F5aRedGreenImplementation.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2a",
+  "packet": "7-replay-tape-descriptors-captured-replay-tape-codec",
+  "base_main": "e5c7e81f97600668393549dc776ebf3b5a4b6a4a",
+  "phase0_contract": "0165-f5a-f3-captured-tape-codec-phase0.json (after 0163 skeptic + 0164 gate)",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "red": {
+    "test_file": "tests/production/test_captured_replay_tape.py",
+    "observed": "ImportError: cannot import name 'CapturedReplayTape' from 'dskit.production.bundles' (the whole codec was missing)."
+  },
+  "green": {
+    "changes": [
+      "dskit/production/bundles.py: CapturedReplayTape default-deny v1 codec (9-field schema, canonical_bytes/canonical_hash recompute of ordered_envelopes_sha256 and tape_digest, placeholder/self refusal, bool-count refusal, opaque no-constructor copy/pickle refusals) + CAPTURED_REPLAY_TAPE_SCHEMA/_ENVELOPE_SCHEMA + __all__",
+      "tests/production/test_captured_replay_tape.py: 34 tests (positive build/parse/round-trip, shape/count/digest/recompute/opacity negative families)",
+      "tests/production/test_bundles.py: public-surface pin extended to include CapturedReplayTape (ADR-0127 assigns the codec to bundles.py)"
+    ],
+    "tests": {
+      "new": "34 in tests/production/test_captured_replay_tape.py",
+      "focused_passed": "371 (purity/producers/oop/capture_lifecycle/captured_authorization); 1601 (P6 compatibility + pipeline trust/captured/grammar/purity + production captured_authorization/adr0125_preflight + sentinel)",
+      "sentinel": "tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture green",
+      "checks": "ruff clean on changed files; git diff --check clean"
+    }
+  },
+  "scope_boundary_recorded": "The codec is a self-contained value; it does NOT close P7's verification half. The composed-tape verification seam (slice 2b) is blocked on the multi-consumer-capture architecture gate 0164.",
+  "preserved_open": ["Packet7 (verification half via slice 2b)", "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b", "origin/cursor/r5-f5a-private-plan-0f39@c489199"],
+  "deployment_eligible": false,
+  "recorded_at_utc": "2026-09-16T04:15:00.000000+00:00"
+}

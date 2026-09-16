@@ -1,0 +1,23 @@
+{
+  "schema_version": "F5aDesignReview.v1",
+  "packet": "7-replay-tape-descriptors-verification-half",
+  "candidate": "0162-f5a-f3-captured-tape-phase0.json",
+  "reviewer_model": "opencode-go/deepseek-v4-flash",
+  "reviewer_id": "opencode-go/deepseek-v4-flash (fresh Phase 0 skeptic, slice 2)",
+  "verdict": "one Critical (architecture) + four Major; codec subset is separable and implementable",
+  "counts": {"critical": 1, "major": 4, "minor": 3, "nit": 2},
+  "findings": [
+    {"id": "CRIT-1", "severity": "Critical", "summary": "Two-consumer capture is unimplementable on current machinery: trust.py enforces exactly one CAPTURED per published stream (_require_head -> _p4_ledger._require_unclaimed; _validate_capture_request legacy/P4 cross-refusal). The F3 hierarchy requires the data root to be CAPTURED twice (manifest-producer data_captured_receipt AND ReplayRun replay-data receipt).", "family": "hierarchy"},
+    {"id": "MAJ-2", "severity": "Major", "summary": "ordered_envelope_digests/envelope_count are never bound to the data capture's actual members; 'digests are supplied inputs' is a scope dodge that leaves the tape DATA unverified, so the composed tape can replay arbitrary envelopes.", "family": "hierarchy/receipt"},
+    {"id": "MAJ-3", "severity": "Major", "summary": "data_capture_root digest semantics undefined: trust.py has no single root sha256 (it has root_ref/root_id/snapshot_version/document_sha256/node/output/purpose + member_manifest_sha256); the contract permits binding members only, not root provenance.", "family": "receipt"},
+    {"id": "MAJ-4", "severity": "Major", "summary": "The composed-tape seam's binding to opaque F4 handles is asserted, not pinned; an implementation could accept caller-supplied equal-looking digest strings instead of broker-resolved VerifiedCapture/CAPTURED-receipt handles.", "family": "capability"},
+    {"id": "MAJ-5", "severity": "Major", "summary": "source_rank_policy_sha256 step-4 is a 'synthetic fixture pin', never required to equal the data capture's consumed source_roster_policy_sha256 nor the frozen execution-block pin.", "family": "policy"},
+    {"id": "MIN-6", "severity": "Minor", "summary": "codec accepts the all-zeros placeholder digest ('0'*64) and 'self'; trust.py's _require_sha256 refuses both.", "family": "codec-digest"},
+    {"id": "MIN-7", "severity": "Minor", "summary": "ComposedReplayTape opacity is test-asserted, not pinned as a no-public-constructor/_Opaque invariant.", "family": "capability"},
+    {"id": "MIN-8", "severity": "Minor", "summary": "replay consumer run identity is refused only against the data producer run, not the manifest-producer consumer run.", "family": "capability/same-run"},
+    {"id": "NIT-9", "severity": "Nit", "summary": "field-count muddle: 'seven inputs' vs 'eight/fixed fields' vs 'exact 9-field'.", "family": "codec-shape"},
+    {"id": "NIT-10", "severity": "Nit", "summary": "envelope_count accepts JSON boolean true (isinstance(True,int) is True).", "family": "codec-shape"}
+  ],
+  "disposition": "CRIT-1 and MAJ-2..MAJ-8 concern the composed-tape verification seam, which requires multi-consumer capture (one published root captured by two distinct consumer documents) that the current F4 v1 + P4 machinery does not support. Re-scope to slice 2a = the CapturedReplayTape.v1 codec only (self-contained, implementable), fixing MIN-6/NIT-9/NIT-10; the composed-tape verification becomes slice 2b, gated on the multi-consumer-capture architecture decision (0164).",
+  "recorded_at_utc": "2026-09-16T04:00:00.000000+00:00"
+}
