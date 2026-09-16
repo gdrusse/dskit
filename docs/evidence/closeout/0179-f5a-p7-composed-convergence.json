@@ -2,8 +2,8 @@
   "schema_version": "ConvergenceCheckpoint.v1",
   "slice_id": "F5a / P7 slice 2b / composed-tape design",
   "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
-  "status": "ADR-0133/0134 merged on main; P7 remains open. ADR-0135/0136 chronology and shared reserve proposals jointly pre-reviewed with zero Critical/Major/Minor; owner ADR approval and effecting prerequisites remain.",
-  "proposal": "ADR-0133 accepted and implemented as a nonauthorizing prerequisite; ADR-0130/0132 effecting proposals remain blocked.",
+  "status": "ADR-0132 effecting synthetic raw preflight reviewed and ready for main; P7 and Packet8 remain open. Roster publication/proof and shared one-use reserve are on main. Next: raw F4 publication/receipt, dynamic P4 trust, complete event/tape semantics.",
+  "proposal": "Accepted ADR-0132 amended with exact broker-derived raw intent and lazy host-owned fixture reader. ADR-0131 remains blocked; full P7 closure remains gated.",
   "cycles": [
     {
       "round": 1,
@@ -564,6 +564,24 @@
     "authority_lens": "/root/adr137_authority_final: 0 Critical, 0 Major, 1 Minor.",
     "tests_lens": "/root/adr137_tests_final: 0 Critical, 0 Major, 1 Minor; reviewer reran 14 selected proof/public-surface tests.",
     "minor": "Valid signed-field substitutions and duplicate/wrong-generation audit rows lack direct focused cases; byte substitution cases use noncanonical whitespace, while code compares full expected fields and exact audit sequence. No implementation defect found.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
+  },
+  "adr0132_raw_preflight_candidate": {
+    "candidate": "3ee353bd2cc5c7a8074d503313bc933b06538b25",
+    "candidate_parent": "6e895bf90b0820bbcb23b1534f4705312bb466b3",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "faa88fa16be6400f77615113a6c85e248a4ea7f2",
+      "dskit/pipeline/trust.py": "6f6a68c966bae98de4f91c53d8c20c8fe8bd5465",
+      "tests/pipeline/test_captured_authorization.py": "01dd0d5edd4ed77461c612e881bc759166b16fce"
+    },
+    "phase0": "Original fixture provenance and one-use Majors closed by ADR-0134/0136; raw intent/lazy reader Major closed by ADR-0132 amendment. Independent reentry Phase 0: 0 Critical, 0 Major; canonical metadata byte-order Minor corrected before RED.",
+    "red": "Three focused cases failed on absent source/preflight. Initial final tests lens found one Major: raw signed issue time predated roster receipt; corrected candidate strictly requires signed issue time after verified roster basis and receipt, with backdated signed regression.",
+    "green": "17 focused ADR-0132 cases and 1386 directly affected pipeline/F4/production verifier tests passed. Ruff and git diff --check passed.",
+    "authority_lens": "/root/adr132_authority_final re-review of 3ee353b: 0 Critical, 0 Major.",
+    "tests_lens": "/root/adr132_tests_final re-review of 3ee353b: 0 Critical, 0 Major; 17 focused passed.",
+    "minors": "Raw-specific cross-process race, committed-state observation at first read, exact signed length/digest mismatch, additional revocation/expiry/ambiguous-COMMIT cases lack direct focused tests; fixed shared store and fail-closed code paths reviewed.",
+    "scope": "One-use nondeployment synthetic raw fixture preflight only. No raw F4 publication/root/receipt, dynamic P4 capture, full EventEnvelope.v2, composed tape, P7 or Packet8 closure.",
     "full_suite": "not run per owner preference",
     "deployment_eligible": false
   }
