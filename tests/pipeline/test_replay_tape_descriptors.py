@@ -177,20 +177,17 @@ def test_replay_run_refuses_without_the_broker():
 def test_custom_replay_role_class_ref_refuses_as_non_owned():
     doc = _document(
         {
-            "source": {"uses": "synthetic-frame"},
             "rp": {
-                "uses": "test_replay_tape_descriptors:_CustomReplayNode",
-                "inputs": {
-                    "tape_manifest": "$source.out",
-                    "tape_data": "$source.out",
-                },
-            },
+                "uses": "tests.pipeline.test_replay_tape_descriptors:_CustomReplayNode",
+                "inputs": {},
+            }
         },
         execution=False,
     )
     parsed = PipelineDocument.from_obj(doc)
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as exc:
         plan(parsed)
+    assert any("role 'replay' is toolkit-owned" in e for e in exc.value.errors)
 
 
 def test_replay_node_wired_input_refuses():
