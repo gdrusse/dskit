@@ -6252,7 +6252,7 @@ class _SyntheticAuthorizationReserve:
 class _SyntheticRosterPublisher:
     """One-process nondeployment roster publisher with a shared spent-ID store."""
 
-    __slots__ = ("_reserve", "_broker", "_outer_receipts", "_closed")
+    __slots__ = ("_reserve", "_broker", "_outer_receipts", "_retained", "_closed")
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("the synthetic roster publisher is final")
@@ -6261,6 +6261,7 @@ class _SyntheticRosterPublisher:
         self._reserve = _SyntheticAuthorizationReserve(reserve_path)
         self._broker = _development_broker(start_ms=500)
         self._outer_receipts = {}
+        self._retained = {}
         self._closed = False
 
     @staticmethod
@@ -6283,6 +6284,25 @@ class _SyntheticRosterPublisher:
         return _hs_canonical_bytes({
             **payload, self_field: _digest(preimage), "signature": signature,
         })
+
+    @staticmethod
+    def _check_signed_output(raw, payload, self_field):
+        """Compare every signed field with the frozen committed preimage."""
+        value = _hs_parse_canonical(raw)
+        _hs_refuse(
+            type(value) is dict
+            and set(value) == set(payload) | {self_field, "signature"}
+            and {key: item for key, item in value.items()
+                 if key not in (self_field, "signature")} == payload,
+            "synthetic roster signer changed committed fields",
+        )
+        preimage = _hs_canonical_bytes(payload)
+        _hs_refuse(value[self_field] == _digest(preimage),
+                   "synthetic roster signer self digest mismatch")
+        _p4_verify_ed25519(
+            "03ad7440941bf1c06b1d7c326f4d37d2a3c1abd514a9c1f98aa8ed03858731cd",
+            preimage, value["signature"],
+        )
 
     def _quarantine(self, authorization, intent_sha256):
         """Terminalize locally even if the durable quarantine write fails."""
@@ -6328,6 +6348,8 @@ class _SyntheticRosterPublisher:
 
     def _published_facts(self, published, roster_bytes, intent):
         """Compare retained F4 WORM output and exact publication identity."""
+        stream = self._broker._diagnostic_stream_for_published(published)
+        self._broker._reload_stream(stream)
         audit = self._broker._receipt_audit(published)
         _hs_refuse(
             len(audit) == 3
@@ -6501,6 +6523,9 @@ class _SyntheticRosterPublisher:
                 connection.execute("ROLLBACK")
             raise
         basis_bytes = self._sign(basis_payload, "issuance_basis_sha256")
+        self._check_signed_output(
+            basis_bytes, basis_payload, "issuance_basis_sha256",
+        )
         _hs_refuse(
             _hs_parse_canonical(basis_bytes)["issuance_basis_sha256"] ==
             basis_sha256,
@@ -6508,6 +6533,10 @@ class _SyntheticRosterPublisher:
         )
         receipt_bytes = self._sign(
             receipt_payload, "root_publication_receipt_sha256",
+        )
+        self._check_signed_output(
+            receipt_bytes, receipt_payload,
+            "root_publication_receipt_sha256",
         )
         key = (
             intent["receipt_key"]["receipt_schema"],
@@ -6607,6 +6636,11 @@ class _SyntheticRosterPublisher:
             basis_bytes, receipt_bytes = self._issue_receipt(
                 authorization_bytes, g1_grant_bytes, g2_grant_bytes,
                 roster_bytes, intent_bytes, published,
+            )
+            self._retained[authorization["bootstrap_id"]] = (
+                published, roster_bytes, basis_bytes, receipt_bytes,
+                authorization_bytes, g1_grant_bytes, g2_grant_bytes,
+                intent_bytes,
             )
             return roster_bytes, basis_bytes, receipt_bytes
         except Exception:

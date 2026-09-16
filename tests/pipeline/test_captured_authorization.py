@@ -3137,6 +3137,9 @@ def test_adr138_publisher_commits_one_roster_and_v2_receipt(tmp_path):
     assert receipt["issuance_basis_sha256"] == basis["issuance_basis_sha256"]
     assert len(publisher._outer_receipts) == 1
     assert next(iter(publisher._outer_receipts.values())) == receipt_bytes
+    assert publisher._retained["bootstrap-1"][2:4] == (
+        basis_bytes, receipt_bytes,
+    )
     assert receipt["publication_authorization_ref"] == {
         "kind": "roster-bootstrap",
         "roster_bootstrap_authorization_sha256": hashlib.sha256(
@@ -3405,3 +3408,165 @@ def test_adr138_two_processes_publish_at_most_once(tmp_path):
     assert sum(item[0] == "spent" for item in outcomes) == 1
     assert sum(item[0] != "spent" for item in outcomes) == 1
     assert sorted(item[1] for item in outcomes) == [0, 1]
+
+@pytest.mark.parametrize("tamper", ["delete", "corrupt"])
+def test_adr138_f4_lifecycle_backing_loss_blocks_outer_receipt(
+    tmp_path, monkeypatch, tamper,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    original = publisher._broker.publish
+
+    def publish_then_tamper(*args, **kwargs):
+        published = original(*args, **kwargs)
+        data = publisher._broker._receipt_store._data
+        stream = next(iter(data))
+        if tamper == "delete":
+            del data[stream]
+        else:
+            rows = list(data[stream])
+            rows[-1] = b"{}"
+            data[stream] = tuple(rows)
+        return published
+
+    monkeypatch.setattr(publisher._broker, "publish",
+                        publish_then_tamper)
+    with pytest.raises(ValueError):
+        publisher.publish(authorization, g1, g2)
+    assert publisher._outer_receipts == {}
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "QUARANTINED"
+
+def test_adr138_outer_receipt_conflict_refuses_after_one_admission(
+    tmp_path, monkeypatch,
+):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    intent = json.loads(trust._derive_synthetic_roster_publish_intent(
+        authorization, g1, g2,
+    )[1])
+    receipt_key = intent["receipt_key"]
+    key = (
+        receipt_key["receipt_schema"],
+        f4._json_bytes(receipt_key["publication_authorization_ref"]),
+        *(receipt_key[field] for field in (
+            "producer_run_identity", "producer_document_sha256",
+            "producer_node", "producer_output", "root_ref",
+            "root_id", "snapshot_version",
+        )),
+    )
+    original = publisher._broker.end_session
+
+    def foreign_receipt_before_sign(session):
+        original(session)
+        publisher._outer_receipts[key] = b"foreign-receipt"
+
+    monkeypatch.setattr(publisher._broker, "end_session",
+                        foreign_receipt_before_sign)
+    with pytest.raises(ValueError, match="WORM conflict"):
+        publisher.publish(authorization, g1, g2)
+    assert publisher._outer_receipts[key] == b"foreign-receipt"
+    assert publisher._closed
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses"
+    ).fetchone()[0] == "QUARANTINED"
+
+def test_adr138_receipt_and_basis_have_closed_exact_parent_fields(tmp_path):
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    _roster, basis_bytes, receipt_bytes = publisher.publish(
+        authorization, g1, g2,
+    )
+    basis, receipt = json.loads(basis_bytes), json.loads(receipt_bytes)
+    suffix = {
+        "issuer_role", "key_usage", "signature_alg", "issued_at_ms",
+        "not_before_ms", "expires_at_ms", "revocation_snapshot_sha256",
+        "key", "signature",
+    }
+    assert set(basis) == suffix | {
+        "schema", "kind", "study_id", "refs", "publish_intent_sha256",
+        "issuance_basis_sha256",
+    }
+    assert set(receipt) == suffix | {
+        "schema", "kind", "capture_kind",
+        "publication_authorization_ref", "root_ref", "root_id",
+        "snapshot_version", "member_manifest_sha256",
+        "producer_run_identity", "producer_document_sha256",
+        "producer_node", "producer_output", "issuance_basis_sha256",
+        "root_publication_receipt_sha256",
+    }
+    assert basis["refs"] == sorted([
+        {"kind": "roster-bootstrap-authorization", "role": "security-data",
+         "schema": "dskit.roster-bootstrap-authorization/v1",
+         "sha256": hashlib.sha256(authorization).hexdigest()},
+        {"kind": "roster-bootstrap-grant", "role": "G1",
+         "schema": "dskit.roster-bootstrap-grant/v1",
+         "sha256": hashlib.sha256(g1).hexdigest()},
+        {"kind": "roster-bootstrap-grant", "role": "G2",
+         "schema": "dskit.roster-bootstrap-grant/v1",
+         "sha256": hashlib.sha256(g2).hexdigest()},
+    ], key=lambda ref: tuple(ref[key] for key in (
+        "kind", "role", "schema", "sha256",
+    )))
+    assert basis["study_id"] == "synthetic-study"
+    assert basis["publish_intent_sha256"] == hashlib.sha256(
+        trust._derive_synthetic_roster_publish_intent(
+            authorization, g1, g2,
+        )[1]
+    ).hexdigest()
+    assert basis["issued_at_ms"] == basis["not_before_ms"] == 500
+    assert receipt["key"] == basis["key"] == {
+        "key_id": "data-publisher/root-publication-bootstrap-g1-g2",
+        "key_version": 1,
+    }
+    assert receipt["issued_at_ms"] == receipt["not_before_ms"] == 500
+
+@pytest.mark.parametrize("ambiguous_state", ["PRODUCED", "RECEIPT_ISSUED"])
+def test_adr138_ambiguous_commit_never_allows_next_effect(
+    tmp_path, ambiguous_state,
+):
+    import sqlite3
+
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    publisher = trust._SyntheticRosterPublisher(path)
+    authorization, g1, g2, _ = _synthetic_roster_bootstrap_fixture()
+    real = publisher._reserve._connection
+
+    class AmbiguousOnce:
+        fired = False
+
+        @property
+        def in_transaction(self):
+            return real.in_transaction
+
+        def execute(self, sql, *args):
+            result = real.execute(sql, *args)
+            if sql == "COMMIT" and not self.fired:
+                state = real.execute(
+                    "SELECT state FROM reserve_uses"
+                ).fetchone()[0]
+                if state == ambiguous_state:
+                    self.fired = True
+                    raise sqlite3.OperationalError("ambiguous commit")
+            return result
+
+    wrapper = AmbiguousOnce()
+    publisher._reserve._connection = wrapper
+    with pytest.raises(sqlite3.OperationalError, match="ambiguous"):
+        publisher.publish(authorization, g1, g2)
+    assert wrapper.fired
+    assert publisher._closed
+    assert publisher._outer_receipts == {}
+    assert real.execute("SELECT state FROM reserve_uses").fetchone()[0] == (
+        "QUARANTINED"
+    )
+    if ambiguous_state == "PRODUCED":
+        assert publisher._broker._storage == {}
