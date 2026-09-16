@@ -9845,8 +9845,9 @@ one shared durable namespace with a completed write before first read.
    before issuing a permit; OFF/MEMORY/NORMAL/rollback modes and a VFS
    without durable sync refuse. The store is on a local WSL filesystem,
    not a network mount. The reservation table has one row per (kind, signed_id). Kind is
-   exactly roster-bootstrap or raw-dataset; signed_id is the exact
-   grammar-checked RosterBootstrapAuthorization.v1 bootstrap_id or
+   roster-bootstrap or raw-dataset here, extended solely by ADR-0141 to
+   root-pis using the same fixed schema. For the original two kinds,
+   signed_id is the exact grammar-checked RosterBootstrapAuthorization.v1 bootstrap_id or
    DatasetCaptureAuthorization.v1 authorization_id, respectively.
    No digest, caller alias or generated ID substitutes for signed_id.
    The row binds exact canonical authorization SHA-256, G1/G2 grant
@@ -10281,3 +10282,102 @@ two final skeptic lenses, affected tests, evidence and integration.
 
 **Non-goals.** Dynamic P4 resolver, CAPTURED authorization, full raw/event
 semantics, composed tape, P7/Packet8 closure or deployment.
+
+## ADR-0141 - synthetic two-root PIS v2 issuance and read-only closure
+
+**Status:** accepted (2026-09-16 under the owner's standing P7 authorization;
+independent preapproval and Phase 0 found zero Critical/Major after amendment). This is a structural,
+nondeployment prerequisite to a dynamic P4 graph and does not authorize
+capture or close P7/Packet8.
+
+**Context.** ADR-0137 and ADR-0140 now prove a retained roster/v2 root and
+a later raw/v1 root separately. ADR-0135 requires one root-g1-g2
+PublishedInputSet.v2 with exactly those two entries, a signed
+IssuanceBasis.v2 whose refs cover both authorization families and both
+receipts, and no frozen P4 corpus substitution. The existing P4 resolver,
+clock and terminal corpus are fixed at an unrelated 500-ms test identity;
+their artifacts cannot honestly close roots issued at shared time 600.
+
+**Decision.**
+
+1. A fixed synthetic root-PIS issuer is constructed only from the same
+   live roster/raw publishers and ADR-0137/0140 proof objects. It takes
+   the exact original bootstrap authorization/G1/G2, roster v2 basis/
+   receipt, dataset authorization/G1/G2/fixture attestation, raw
+   manifest and v1 basis/receipt. It accepts no caller root,
+   publication fact, policy pin, signer, time, revocation state,
+   resolver, graph or prebuilt PIS entry. It re-verifies both original
+   read-only proofs and shared reserve state at issuance; no
+   MappingProxy checked fact is treated as authority.
+2. The issuer derives exactly two PublishedInputEntry.v2 values from the
+   live F4 root and verified signed receipt facts, not caller bytes.
+   The source-roster entry has input_id=source_roster, kind=source-roster,
+   publication_receipt_schema=dskit.root-publication-receipt/v2.
+   The raw entry has input_id=raw_event_dataset, kind=raw-event-dataset,
+   publication_receipt_schema=dskit.root-publication-receipt/v1.
+   Each entry's root_ref/root_id/snapshot_version/member_manifest_sha256
+   and producer fields equal the retained F4 receipt, its
+   publication_receipt_sha256 equals the verified outer self digest,
+   and contract_sha256 is SHA-256 of a fixed canonical root contract
+   derived from the source schema/media/manifest kind and authorized
+   source-rank policy, not a caller-supplied digest. Entries are sorted
+   by input_id; no extra, alias or swapped root exists.
+3. The root-PIS IssuanceBasis.v2 has the ADR-0125 signed suffix,
+   schema=dskit.issuance-basis/v2, kind=root-pis,
+   study_id=synthetic-study, and exactly eight sorted refs: bootstrap
+   authorization, its G1/G2 grants, roster v2 receipt, dataset
+   authorization, its G1/G2 grants, raw v1 receipt. Each ref has only
+   kind/role/schema/sha256 with role and schema fixed by source; no
+   fixture attestation ref substitutes for a grant. There is no
+   publish_intent_sha256 in root-PIS basis. The
+   PublishedInputSet.v2 has phase=root-g1-g2, purpose=historical-study,
+   exactly the two derived entries, the verified basis digest, and
+   the same fixed data-publisher/published-input-set-g1-g2 signer
+   identity, key version, current shared revocation snapshot and
+   issuance window. It issues strictly after the raw v1 receipt and
+   no later than either authorization expiry. The exact basis and PIS
+   self digests hash canonical bytes omitting only their self digest
+   and signature; signatures cover those same bytes.
+4. One shared BEGIN IMMEDIATE admission rechecks original G1/G2 and
+   fixture signatures, roster/raw reserve rows/audits, live F4 roots,
+   exact signed v2/v1 basis and receipts, current shared time/
+   revocation and data-publisher signer. It freezes the two entries,
+   basis and PIS unsigned preimages. A durable one-use root-PIS
+   issuance row keyed by the exact ordered pair of signed bootstrap
+   and dataset authorization IDs commits before signing; the row
+   binds all original digests, receipt digests, entries and signer
+   snapshot/time. Only one immediate in-call basis/PIS signing is
+   admitted. Failure, crash or ambiguous COMMIT cannot sign again
+   or choose new bytes. A successful pair and its exact signed
+   basis/PIS are retained in a WORM put-if-absent store keyed by
+   (study_id,phase,canonical pair of signed IDs); conflicting bytes
+   refuse. Read-only recovery may return only one byte-identical
+   retained pair; restart without durable F4/receipt backing refuses.
+5. A separate NonAuthorizingSyntheticRootPisProof checks those exact
+   retained originals, both live F4/receipt proofs, shared one-use
+   row/audit, signatures, two-entry closure, and WORM basis/PIS bytes
+   at each call, with a fresh shared-state fence after external
+   readback. It returns immutable identity facts with
+   authorizing=false and deployment_eligible=false; it has no P4,
+   member-read or CAPTURED method. Later dynamic P4 admission must
+   independently validate and bind this exact PIS and its producer
+   roots in a separate reviewed ADR. The legacy fixed P4 corpus,
+   500-ms clock and existing v1 graph remain unchanged.
+
+**Closed ADR-0141 construction profile (resolves preapproval Majors).**
+
+- Canonical means exact sorted-key, compact ASCII JSON bytes; hashes are lowercase SHA-256 of those bytes. The two contract_sha256 preimages are closed objects with exactly schema_version=dskit.synthetic-root-input-contract/v1, input_id, capture_kind, output_member, output_schema, output_media_type, authorized_event_schema, authorized_raw_media_type, and source_rank_policy_sha256. For the roster, use source_roster, source-roster, source_roster.json, dskit.source-roster-capture/v1, and application/json; for raw use raw_event_dataset, raw-event-dataset, raw_event_dataset.json, dskit.raw-event-dataset-capture/v1, and application/json. Both use dskit.raw-event/v1, application/x-ndjson, and the policy SHA-256 rederived from the verified original bootstrap/roster proof. No field can be inferred from caller input. Entry order is lexicographic raw_event_dataset, then source_roster; both have exactly the PublishedInputEntry keys of ADR-0125, including the now admitted roster/v2 receipt schema in this synthetic verifier. Legacy fixed P4 shape and corpus are untouched and must refuse this dynamic pair.
+- The eight IssuanceBasis.v2.refs have only kind/role/schema/sha256: (roster-bootstrap-authorization,security-data,dskit.roster-bootstrap-authorization/v1), (roster-bootstrap-grant,G1,dskit.roster-bootstrap-grant/v1), (roster-bootstrap-grant,G2,dskit.roster-bootstrap-grant/v1), (root-publication,data-publisher,dskit.root-publication-receipt/v2), (dataset-capture-authorization,security-data,dskit.dataset-capture-authorization/v1), (dataset-capture-grant,G1,dskit.dataset-capture-grant/v1), (dataset-capture-grant,G2,dskit.dataset-capture-grant/v1), (root-publication,data-publisher,dskit.root-publication-receipt/v1). Auth/grant digests hash exact retained original bytes; receipt refs use the verified outer receipt self digests. Sort by (kind,role,schema,sha256); refuse duplicates and any ninth ref.
+- The only signer is data-publisher/published-input-set-g1-g2, key_version 1, Ed25519, key usage published-input-set-g1-g2, public key 1e7d223f558e8866ef35747e04b497b50033f5f6c41bf5429001d55bbed6a46b; its nondeployment fixture seed is SHA256(ASCII("p4-fixed-test-key/" + key_id)). The signer and issuer/key revocation tokens must be absent from the live shared snapshot. PIS issued_at_ms=not_before_ms=now_ms read inside the writer lock; the trusted host must advance the shared logical clock strictly past raw/v1 receipt issuance first. expires_at_ms is the minimum of all six auth/grant and both receipt expiries, strictly greater than now. Basis and PIS use the same window and snapshot. No caller time or fixed 500-ms P4 state enters this admission.
+- Reuse ADR-0136's unchanged four-table WAL/FULL schema and domain. This ADR extends its previously closed kind namespace with only root-pis; the (kind,signed_id) primary key prevents aliasing with roster/raw uses. signed_id is exact canonical ASCII JSON text of {bootstrap_id,authorization_id} from the two original signed authorizations. In its existing columns, authorization_sha256 hashes those signed-ID pair bytes, g1_sha256 hashes canonical ASCII JSON [bootstrap_G1_digest,dataset_G1_digest], g2_sha256 likewise hashes the G2 digest pair, snapshot_sha256 is the current shared digest, and intent_sha256 hashes the closed root-PIS issue intent below. Its only successful state/audit sequence is RESERVED -> ISSUED; any failure after reservation may only become terminal QUARANTINED. In that single BEGIN IMMEDIATE transaction, insert RESERVED and its audit, advance to ISSUED and append its audit against the same frozen intent, then COMMIT both transitions before either signature or WORM put; an ambiguous COMMIT grants no signing permission. A second issue for the same signed IDs, including newly signed grants, always refuses. A failed or ambiguous commit cannot be assumed successful and may never trigger signing.
+- The closed issue intent has exactly schema_version=dskit.synthetic-root-pis-issue-intent/v1, bootstrap_id, authorization_id, bootstrap_authorization_sha256, bootstrap_g1_sha256, bootstrap_g2_sha256, dataset_authorization_sha256, dataset_g1_sha256, dataset_g2_sha256, fixture_attestation_sha256, roster_receipt_sha256, raw_receipt_sha256, refs, entries, basis_unsigned_sha256, pis_unsigned_sha256, signer_key_id, signer_key_version, revocation_snapshot_sha256, issued_at_ms, not_before_ms, and expires_at_ms. basis_unsigned_sha256 and pis_unsigned_sha256 hash each exact unsigned signing preimage; the latter includes the derived basis self digest. Everything is derived under the same writer lock. Proof verification uses the same held connection/transaction for nested roster/raw row checks and opens no nested BEGIN. The raw proof must gain an internal, publisher-owned held-writer-lock verifier path equivalent to the roster proof _under_writer_lock path; the public read-only proof still opens its own snapshots and must never be invoked under an existing transaction. This internal path checks the complete original raw proof, F4 bytes, basis, receipt, row and audit against the writer snapshot; the outer PIS issuance rechecks the shared snapshot and authority after those external reads before COMMIT.
+- The process-local WORM key is the exact tuple ("synthetic-study","root-g1-g2",signed_id). One value is a closed two-member tuple of exact signed basis bytes and signed PIS bytes; dict.setdefault is the only put-if-absent operation. The issuer signs each frozen preimage once after successful durable issuance commit, then attempts one atomic pair put and compares the dict.setdefault returned pair byte-for-byte with the newly signed pair before retaining it. A partial pair never exists. Signing/put failure terminalizes the issuance; no retry, second signature, second put, or alternate key is allowed. Read-only proof checks retained bytes, exact row identity and full audit sequence. After all external F4 and WORM reads it opens a fresh SQLite snapshot and requires exact equality of generation, revocation digest, durable now_ms, row and audit from the first snapshot, with original authorities still live. Any mismatch refuses. Returned facts remain nonauthorizing.
+
+**Process.** Independent preapproval and Phase 0 completed with zero
+Critical/Major findings after the held-transaction proof seam was pinned.
+Proceed with focused RED/GREEN, two final lenses, affected tests, evidence
+and integration.
+
+**Non-goals.** Dynamic P4 graph or CAPTURED admission, full
+EventEnvelope.v2 semantics, composed tape, P7/Packet8 closure,
+external issuer custody or deployment.
