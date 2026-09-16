@@ -1,6 +1,67 @@
 # Re-entry
 
-## Current checkpoint: P7 two-root bridge landed (2026-09-16)
+## Current checkpoint: P7 dynamic capture resolver landed, authorize_capture_set gap found (2026-09-16)
+
+Remote main verified at c267c25. Worktree `/home/russell/wt/f5a-p7-remainder-20260916`,
+branch `codex/f5a-p7-remainder-20260916` (fast-forward pushed directly to
+main; no divergence). Claude Sonnet 5 implementer; Claude Haiku 4.5
+independent reviewers throughout (preapproval, recheck, Phase 0, two final
+lenses — 7 independent review rounds total for this slice).
+
+**ADR-0143 accepted and GREEN, scope corrected.** A second, one-shot instance
+of the existing `_SyntheticP4CapturedAuthorizationAuthority` class is bound
+to a new `_DynamicP4TrustedArtifactResolver`, constructed only from a
+retained ADR-0141/0142 graph and re-proving it on every call. The shared
+`_p4_require_issued_authority`/`_p4_snapshot_integrity` identity gates are
+extended to an explicit closed if/elif/else dispatch (unconditional refusal
+for any third resolver type); the fixed legacy P4 corpus, its 500-ms clock,
+and `_p4_close_admission`'s v1-only grammar are byte-identical and unedited
+(confirmed by non-overlapping diff hunks). The new one-shot
+`dynamic-p4-authority` reserve row is keyed off the already-ISSUED root-PIS
+row's own identity (not the original signed pair), closing a double-spend
+ambiguity an independent preapproval reviewer found in the first draft.
+`resolver.close_admission` (`_dynamic_p4_close_admission`) is implemented
+and independently verified end-to-end against a real F4 produce/seal/publish
+lifecycle, returning a genuine nonauthorizing proof with zero effect.
+
+**Genuine architecture gap found during GREEN, disclosed not hidden.** Full
+`authorize_capture_set` -> CAPTURED admission is structurally blocked: the
+shared, unedited `_p4_checked_dispatch`/`_p4_reference_bytes` admission-kind
+whitelist (`{"action-execution-admission","final-replay-admission"}`, no
+case for `root-capture-admission`) and `_FixedCapturedAuthorizationContract
+._prepare`'s `pea`/`ces`/`bvp`-shaped field requirements cannot admit this
+ADR's own narrow `root-capture-admission`/`cas`/`pce` chain — every fix
+contradicts an explicit ADR-0143 decision point (Decision 3 "no second
+implementation", Decision 6 "remain shared, unedited", or the ADR's own
+non-goal against reusing the legacy scope-intent apparatus). This is a
+design gap in ADR-0143's own accepted text, discovered on first GREEN
+attempt (no failed correction cycles), not an implementation defect. The
+ADR was corrected in place to narrow its claimed scope before review;
+`test_adr143_authorize_capture_set_blocked_by_prepare_contract` pins the
+disclosed refusal as a fact.
+
+Two fresh independent final lenses (authority/correctness, then
+tests/integration) both found 0 Critical/Major/Minor/Nit on the corrected
+candidate. 21 focused and 1481 directly affected tests passed (1
+pre-existing, unrelated baseline failure from ADR-0141/0142's own prior
+work, reproduced and disclosed, not fixed). Ruff and `git diff --check`
+clean. Full suite not run per owner preference. Evidence: 0180 (ADR
+proposal/preapproval/recheck/owner acceptance), 0181 (Phase 0 matrix +
+independent skeptic review), 0182 (RED/GREEN, convergence checkpoint, two
+final lenses). The primary `/home/russell/dskit` checkout and protected
+source `c489199` remain untouched.
+
+**Next:** propose follow-on ADR-0144 to resolve the
+`_p4_reference_bytes`/`_FixedCapturedAuthorizationContract._prepare`
+dispatch contradiction and close a reachable `authorize_capture_set` ->
+CAPTURED admission for the dynamic authority (the same closed
+if/elif/else-dispatch pattern ADR-0143 used successfully for
+`_p4_require_issued_authority`/`_p4_snapshot_integrity` is the leading
+candidate). Then full EventEnvelope.v2 causality/ordering, composed-tape
+verification, and Packet 8 durable consume-once remain, in that order.
+P7 and Packet8 are open; `deployment_eligible=false`.
+
+## Prior checkpoint: P7 two-root bridge landed (2026-09-16)
 
 Remote main verified at db9a522. ADR-0141 issued one signed two-root
 PublishedInputSet.v2 after live roster/v2 and raw/v1 publications, with a
