@@ -4749,10 +4749,66 @@ class CapturedAuthorizationRecord(_Opaque):
             consumer_run_identity=run_id, process_measurement_sha256=measurement,
             runtime_sha256=runtime, transition_nonces=nonces)
 
-    The record has no bytes, mapping, member, lookup or reconstruction API.
+    The record exposes only the committed receipt digest and a one-way,
+    session-bound read of each retained member.
     """
 
     __slots__ = ("__weakref__",)
+
+    def lifecycle_captured_receipt_sha256(self, stream, consumer_document_sha256):
+        """Return the committed receipt digest for one exact capture entry.
+
+        Parameters
+        ----------
+        stream : str
+            Committed publication stream identity.
+        consumer_document_sha256 : str
+            Frozen consumer document identity.
+
+        Returns
+        -------
+        str
+            The retained CAPTURED receipt SHA-256 digest.
+
+        Raises
+        ------
+        ValueError
+            If this record or capture entry is not committed.
+        """
+        ledger = _P4_RECORDS.get(self)
+        if ledger is None:
+            raise ValueError("P4 committed record required")
+        return ledger.p4_receipt_digest(self, stream, consumer_document_sha256)
+
+    def read_member_bytes(self, session, published, consumer_document_sha256, relative_path):
+        """Read one verified member once under this record and session.
+
+        Parameters
+        ----------
+        session : LaunchSession
+            The exact P4 session returned with this record.
+        published : _Published
+            The exact publication captured by this record.
+        consumer_document_sha256 : str
+            Frozen consumer document identity.
+        relative_path : str
+            Relative member name in the sealed manifest.
+
+        Returns
+        -------
+        bytes
+            Verified retained member bytes.
+
+        Raises
+        ------
+        ValueError
+            If identity, integrity or single-read discipline fails.
+        """
+        ledger = _P4_RECORDS.get(self)
+        if ledger is None:
+            raise ValueError("P4 committed record required")
+        return ledger.read_p4_member(self, session, published,
+                                     consumer_document_sha256, relative_path)
 
     def __new__(cls, *args, **kwargs):
         """Refuse construction from public or reconstructed data."""
@@ -4939,6 +4995,7 @@ class _LifecycleAuthorizationLedger(_Opaque):
         self._lock = RLock()
         self._root = ()
         self._reserving = ()
+        self._p4_reads = {}
         self._test_fault = None
         self._pin = (authority, self._lock, self._root)
         _P4_LEDGER_PINS[self] = self._pin
@@ -5106,6 +5163,73 @@ class _LifecycleAuthorizationLedger(_Opaque):
             value["streams"], value["nonces"] = tuple(value["streams"]), tuple(value["nonces"])
             return value
 
+    def _p4_record_capture(self, record, stream, consumer_document_sha256):
+        """Resolve one capture solely from the exact committed record."""
+        _hs_refuse(type(record) is CapturedAuthorizationRecord and _P4_RECORDS.get(record) is self,
+                   "P4 committed record required")
+        matches = [entry for entry in self._p4_entries() if entry[4] is record]
+        _hs_refuse(len(matches) == 1, "P4 committed record required")
+        entry = matches[0]
+        _hs_refuse(_p4_session_pin(entry[5]) == entry[6], "P4 session integrity refused")
+        seal = hmac.new(self._authority._map_key,
+                        b"P4 LaunchSession\x00" + _hs_canonical_bytes(dict(entry[5]._runtime)),
+                        hashlib.sha256).hexdigest()
+        _hs_refuse(hmac.compare_digest(entry[7], seal), "P4 session seal refused")
+        request = _hs_parse_canonical(entry[2])
+        audit = _hs_parse_canonical(entry[3])
+        _hs_refuse(audit["batch_sha256"] == _digest(_hs_canonical_bytes(
+            {key: value for key, value in audit.items() if key != "batch_sha256"})),
+            "P4 committed batch integrity refused")
+        _hs_refuse(len(request["captures"]) == len(audit["streams"]) == len(audit["receipts"]),
+                   "P4 committed capture cardinality refused")
+        indexes = [index for index, item in enumerate(request["captures"])
+                   if audit["streams"][index] == stream
+                   and item[2]["consumer_document_sha256"] == consumer_document_sha256]
+        _hs_refuse(len(indexes) == 1, "P4 exact stream/document capture required")
+        return entry, request, audit, indexes[0]
+
+    def p4_receipt_digest(self, record, stream, consumer_document_sha256):
+        """Return read-only committed receipt evidence for an exact capture."""
+        with self._lock:
+            self._check()
+            _entry, _request, audit, index = self._p4_record_capture(
+                record, stream, consumer_document_sha256)
+            receipt = _hs_parse_canonical(_hs_canonical_bytes(audit["receipts"][index]))
+            _hs_refuse(receipt["stream_id"] == stream, "P4 receipt stream mismatch")
+            return receipt["lifecycle_captured_receipt_sha256"]
+
+    def read_p4_member(self, record, session, published, consumer_document_sha256, relative_path):
+        """Read one exact retained member under the committed P4 session."""
+        with self._lock:
+            self._check()
+            _hs_refuse(type(published) is _Published and type(relative_path) is str
+                       and relative_path, "P4 published member required")
+            stream, descriptor = self._authority._publication_snapshot(
+                published, "P4 published member required")
+            entry, request, _audit, index = self._p4_record_capture(
+                record, stream, consumer_document_sha256)
+            _hs_refuse(session is entry[5] and type(session) is LaunchSession
+                       and not session._ended and request["captures"][index][0] == id(published)
+                       and request["captures"][index][3] == dict(descriptor),
+                       "P4 record/session/publication mismatch")
+            sealed = self._authority._sealed_for(published)
+            _hs_refuse(sealed._member_manifest_sha256 == self._authority._sealed_member_manifest(stream)
+                       and self._authority._manifest_digest(sealed._digests) == sealed._member_manifest_sha256,
+                       "P4 sealed member manifest mismatch")
+            declared = [item for item in sealed._digests if item["relative_path"] == relative_path]
+            _hs_refuse(len(declared) == 1, "P4 sealed member required")
+            reads = self._p4_reads.setdefault(record, set())
+            key = (stream, relative_path)
+            _hs_refuse(key not in reads, "P4 member bytes already consumed")
+            reads.add(key)
+            snapshot = self._authority._provider.describe(descriptor["root_ref"],
+                                                          descriptor["snapshot_version"])
+            raw = self._authority._provider.open_member(snapshot, relative_path)
+            _hs_refuse(type(raw) is bytes and len(raw) == declared[0]["bytes"]
+                       and _digest(raw) == declared[0]["sha256"],
+                       "P4 retained member digest mismatch")
+            return bytes(raw)
+
     def resolve_p4(self, execution_key, admission_ref):
         """Resolve one exact committed identity; never prepare, consume or remint."""
         with self._lock:
@@ -5223,6 +5347,7 @@ _P4_LEGACY_PREPARE_METHODS = tuple((name, getattr(_DevelopmentBroker, name)) for
 _P4_LEDGER_METHODS = tuple((name, getattr(_LifecycleAuthorizationLedger, name)) for name in (
     "_check", "_fault", "_legacy_gate", "_require_unclaimed", "_nonce_used", "_request", "resolve_p4", "commit_p4_batch",
     "_p4_entries", "_p4_stream_documents", "_legacy_captures", "commit_legacy_capture",
+    "_p4_record_capture", "p4_receipt_digest", "read_p4_member",
 ))
 
 

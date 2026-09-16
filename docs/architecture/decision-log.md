@@ -9147,8 +9147,9 @@ matrix, then RED→GREEN with synthetic fixtures, two fresh sequential final len
 
 ## ADR-0129 — bounded P4 member-read and CAPTURED-receipt accessor (correction to ADR-0127 Decision.2)
 
-**Status:** proposed — awaiting owner approval (owner chose option A of gate
-`0176`; the ADR itself still needs approval before RED).
+**Status:** accepted (2026-09-16; owner approved "approve" after choosing
+option A of gate `0176`). Synthetic TDD is authorized after fresh Phase 0;
+`deployment_eligible` remains false.
 
 **Context.** ADR-0127 Decision.2's composed-tape verification requires a
 consumer, after a P4 `authorize_capture_set`, to (a) read a captured root's

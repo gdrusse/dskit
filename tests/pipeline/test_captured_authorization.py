@@ -2033,3 +2033,86 @@ def test_p6_p4_mid_operation_descriptor_poke_refuses_before_effects(monkeypatch)
     assert observed
     assert not broker._p4_ledger._committed()
     _assert_graph_no_effect(broker, captures, before)
+
+
+def test_p4_record_reads_each_verified_member_once_for_its_committed_session():
+    graph, broker, captures, runtime, before, record, session = _issue_complete()
+    published, frozen, port = captures[0]
+    stream = broker._stream_for_published(published, "test")
+    document_sha = port["consumer_document_sha256"]
+    audit = broker._p4_ledger._audit(record)
+    receipt = json.loads(audit["receipts"][0])
+    assert callable(getattr(record, "lifecycle_captured_receipt_sha256", None))
+    assert record.lifecycle_captured_receipt_sha256(stream, document_sha) == receipt["lifecycle_captured_receipt_sha256"]
+    assert tuple(broker._member_events) == before[2]
+    assert callable(getattr(record, "read_member_bytes", None))
+    expected = f4._json_bytes({"rows": [{"id": "one", "value": 7}]})
+    assert record.read_member_bytes(session, published, document_sha, "artifacts/bundle.json") == expected
+    with pytest.raises((TypeError, ValueError)):
+        record.read_member_bytes(session, published, document_sha, "artifacts/bundle.json")
+    assert len(broker._member_events) == len(before[2]) + 1
+    assert record.read_member_bytes(session, published, document_sha, "config.json") == f4._json_bytes({"name": "producer"})
+    assert broker.authorize_capture_set(captures, graph.selected, **runtime) == (record, session)
+
+
+def test_p4_record_read_refuses_foreign_session_document_stream_and_member_before_open():
+    _graph, broker, captures, _runtime, before, record, session = _issue_complete()
+    published, _frozen, port = captures[0]
+    stream = broker._stream_for_published(published, "test")
+    document_sha = port["consumer_document_sha256"]
+    foreign = object.__new__(trust.CapturedAuthorizationRecord)
+    cases = (
+        lambda: foreign.lifecycle_captured_receipt_sha256(stream, document_sha),
+        lambda: record.lifecycle_captured_receipt_sha256(stream, "f" * 64),
+        lambda: record.lifecycle_captured_receipt_sha256("foreign-stream", document_sha),
+        lambda: record.read_member_bytes(object(), published, document_sha, "config.json"),
+        lambda: record.read_member_bytes(session, published, "f" * 64, "config.json"),
+        lambda: record.read_member_bytes(session, published, document_sha, "missing.json"),
+    )
+    for read in cases:
+        with pytest.raises((TypeError, ValueError)):
+            read()
+    assert tuple(broker._member_events) == before[2]
+    assert record.read_member_bytes(session, published, document_sha, "config.json") == f4._json_bytes({"name": "producer"})
+
+
+def test_p4_record_rechecks_retained_member_digest_before_returning_bytes():
+    _graph, broker, captures, _runtime, before, record, session = _issue_complete()
+    published, _frozen, port = captures[0]
+    descriptor = broker.descriptor(published, purpose="synthetic")
+    key = (descriptor["root_ref"], descriptor["snapshot_version"], "config.json")
+    broker._provider._storage[key] = b"{}"
+    with pytest.raises((TypeError, ValueError)):
+        record.read_member_bytes(session, published, port["consumer_document_sha256"], "config.json")
+    assert len(broker._member_events) == len(before[2]) + 1
+    with pytest.raises((TypeError, ValueError)):
+        record.read_member_bytes(session, published, port["consumer_document_sha256"], "config.json")
+    assert len(broker._member_events) == len(before[2]) + 1
+
+
+def test_p4_record_member_read_is_atomic_across_threads_and_aliases():
+    from concurrent.futures import ThreadPoolExecutor
+
+    _graph, broker, captures, _runtime, before, record, session = _issue_complete()
+    published, _frozen, port = captures[0]
+    document_sha = port["consumer_document_sha256"]
+
+    def read():
+        try:
+            return record.read_member_bytes(session, published, document_sha, "config.json")
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: read(), range(2)))
+    assert results.count(f4._json_bytes({"name": "producer"})) == 1
+    assert results.count(None) == 1
+    assert len(broker._member_events) == len(before[2]) + 1
+
+
+def test_p4_record_read_keys_same_member_name_by_committed_stream():
+    _graph, broker, captures, _runtime, before, record, session = _issue_complete(count=2)
+    for published, _frozen, port in captures:
+        assert record.read_member_bytes(session, published, port["consumer_document_sha256"],
+                                        "config.json") == f4._json_bytes({"name": "producer"})
+    assert len(broker._member_events) == len(before[2]) + 2
