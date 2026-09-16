@@ -217,6 +217,36 @@ def test_noncanonical_bytes_refuse():
         CapturedReplayTape.parse(noncanonical)
 
 
+def test_non_sorted_key_order_refuses():
+    value = _valid_dict()
+    reordered = json.dumps(value, sort_keys=False, separators=(",", ":")).encode("ascii")
+    with pytest.raises(ProductionError):
+        CapturedReplayTape.parse(reordered)
+
+
+def test_non_ascii_bytes_refuse():
+    with pytest.raises(ProductionError):
+        CapturedReplayTape.parse(b'{"schema_version": "\xc3\xa9"}')
+
+
+def test_tape_value_cannot_be_mutated_in_place():
+    tape = CapturedReplayTape.parse(_canonical(_valid_dict()))
+    with pytest.raises(TypeError):
+        tape._value["tape_digest"] = "f" * 64
+    with pytest.raises(TypeError):
+        tape._value["ordered_envelope_digests"] = ()
+
+
+def test_to_obj_returns_isolated_copies():
+    tape = CapturedReplayTape.parse(_canonical(_valid_dict()))
+    obj = tape.to_obj()
+    obj["tape_digest"] = "f" * 64
+    obj["ordered_envelope_digests"].append("e" * 64)
+    assert tape.tape_digest != "f" * 64
+    assert tape.envelope_count == 2
+    assert len(tape.ordered_envelope_digests) == 2
+
+
 # ---------------------------------------------------------------------------
 # opacity
 # ---------------------------------------------------------------------------

@@ -88,9 +88,9 @@
   },
 
   "implementation_files": [
-    "dskit/production/bundles.py (CapturedReplayTape codec)",
-    "dskit/production/__init__.py (export CapturedReplayTape)",
+    "dskit/production/bundles.py (CapturedReplayTape codec; __all__ owns the name per the package's 'each seam module owns its own __all__' convention — no __init__.py re-export)",
     "tests/production/test_captured_replay_tape.py (new)",
+    "tests/production/test_bundles.py (public-surface pin extended)",
     "dskit/production/README.md + AGENTS.md (tree + extension points)"
   ],
 

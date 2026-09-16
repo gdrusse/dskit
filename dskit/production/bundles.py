@@ -31,11 +31,13 @@ them.
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
+from types import MappingProxyType
 
 from dskit.production.base import (
     ProductionError,
     canonical_bytes as _canonical_bytes,
     canonical_hash as _canonical_hash,
+    check_digest,
 )
 
 __all__ = [
@@ -55,7 +57,6 @@ CAPTURED_REPLAY_TAPE_SCHEMA = "dskit.captured-replay-tape/v1"
 CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA = "dskit.event-envelope/v2"
 
 _PLACEHOLDER = "0" * 64
-_HEX_CHARS = frozenset("0123456789abcdef")
 _FIELDS = (
     "schema_version",
     "event_envelope_schema",
@@ -75,14 +76,12 @@ _DIGEST_FIELDS = (
 
 
 def _is_digest(value):
-    """Return True only for a 64 lowercase-hex digest that is not a placeholder."""
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and value != _PLACEHOLDER
-        and value != "self"
-        and all(char in _HEX_CHARS for char in value)
-    )
+    """Return True only for a non-placeholder 64-hex digest (via base.check_digest)."""
+    if not isinstance(value, str) or value == _PLACEHOLDER or value == "self":
+        return False
+    problems = []
+    check_digest(problems, "digest", value)
+    return not problems
 
 
 def _check_tape(value):
@@ -183,8 +182,11 @@ class CapturedReplayTape:
     @classmethod
     def _from_value(cls, value):
         """Build an immutable instance from an already-validated object."""
+        frozen = MappingProxyType(
+            dict(value, ordered_envelope_digests=tuple(value["ordered_envelope_digests"]))
+        )
         self = object.__new__(cls)
-        object.__setattr__(self, "_value", value)
+        object.__setattr__(self, "_value", frozen)
         return self
 
     @classmethod
