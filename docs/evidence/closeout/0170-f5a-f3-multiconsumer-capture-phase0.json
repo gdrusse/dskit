@@ -21,7 +21,7 @@
   "seam": {
     "edit_1": "remove the P4-blanket `_require_unclaimed` call from `_require_head` (trust.py:1821); `_require_unclaimed` stays and still governs the legacy capture path (via `_legacy_gate` at 5054 and the v1 view/append paths at 432/2140).",
     "edit_2": "`_validate_capture_request` (trust.py:2441): after the existing legacy-capture refusal (2438) and `_recover`, require (a) v1 head is PUBLISHED and (b) the incoming capture's consumer_document_sha256 differs from every prior P4 capture committed for that stream.",
-    "edit_3": "`_published_for_descriptor` (trust.py:2117) freeze path now permits a P4-captured-but-v1-PUBLISHED stream (head check alone still blocks legacy-CAPTURED/CONSUMED streams).",
+    "edit_3": "`_published_for_descriptor` (trust.py:2117) freeze path now permits a P4-captured-but-v1-PUBLISHED stream. Delivered entirely through edit_1 (removing `_require_unclaimed` from `_require_head`); no separate `_published_for_descriptor` hunk is needed.",
     "distinct_key": "consumer_document_sha256 (the frozen document identity), NOT the four-field port. Same document reaching the same root through any node/input/purpose still names one consumer and refuses. Prior (stream, consumer_document_sha256) pairs are derived read-only from committed P4 entries (fingerprint entry[2] -> captures[i][2] port dict -> its consumer_document_sha256; audit entry[3] -> streams[i] == stream)."
   },
 

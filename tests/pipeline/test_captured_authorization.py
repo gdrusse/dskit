@@ -339,7 +339,11 @@ class _SignedGraph:
 
 
 def _complete_signed_graph(*, replay=False, count=1, nonroot=False, document_name="consumer"):
-    """Construct exact action and replay closure including every signed ancestor."""
+    """Construct exact action and replay closure including every signed ancestor.
+
+    ``document_name`` names the consumer document so two closures over the same
+    publication can carry distinct ``consumer_document_sha256`` identities.
+    """
     from tests.production import test_adr0125_preflight as p3
 
     graph = _SignedGraph()
@@ -1473,7 +1477,10 @@ def _merge_facts(*graphs):
     seen = {}
     for graph in graphs:
         for item in graph.facts["artifacts"]:
-            seen[f4._json_bytes(item["ref"])] = item
+            ref_bytes = f4._json_bytes(item["ref"])
+            previous = seen.get(ref_bytes)
+            assert previous is None or previous == item, "fixture WORM identity conflict"
+            seen[ref_bytes] = item
     return {"artifacts": list(seen.values())}
 
 
@@ -1510,6 +1517,7 @@ def test_second_distinct_document_captures_the_same_publication():
 
     assert record_a is not record_b
     assert session_a is not session_b
+    assert session_a._plan_sha256 != session_b._plan_sha256
     assert len(broker._p4_ledger._committed()) == 2
 
 
@@ -1528,13 +1536,16 @@ def test_same_document_cannot_capture_the_same_stream_twice():
     assert len(broker._p4_ledger._committed()) == 1
 
 
-def test_stream_documents_derivation_keys_on_document_sha_not_port():
+def test_stream_documents_derivation_returns_the_document_sha():
     broker, published, graph_a, document_a, _document_b, _alternate_b = _two_consumer_setup()
     frozen_a = broker.freeze_consumer_document(document_a, "consume", "bundle", "synthetic")
     captures_a = ((published, frozen_a, broker.derive_consumer_port(frozen_a)),)
     broker.authorize_capture_set(captures_a, graph_a.selected, **_runtime())
     stream = broker._stream_for_published(published, "test")
-    assert broker._p4_ledger._p4_stream_documents(stream) == {frozen_a.document_sha256}
+    documents = broker._p4_ledger._p4_stream_documents(stream)
+    assert documents == {frozen_a.document_sha256}
+    for value in documents:
+        assert len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 @pytest.mark.parametrize("slot", ["_kind", "_run_identity", "_ended", "_plan_sha256", "_runtime", "_stream_id", "_locked"])

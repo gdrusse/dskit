@@ -1,0 +1,32 @@
+{
+  "schema_version": "F5aReviewExit.v1",
+  "slice_id": "F5a / F3-replay-ops-prerequisite / P7-slice2b-multiconsumer",
+  "packet": "7-replay-tape-descriptors-multiconsumer-capture",
+  "candidate": "e2f43b5 (code) + test/doc corrections",
+  "base_main": "29f02542f8ce94171d47e2112693ec9b0b51de84",
+  "implementer_model": "DeepSeek v4 Pro",
+  "reviewer_model": "opencode-go/deepseek-v4-flash requested but unavailable in-session (subagent ran on opencode-go/deepseek-v4-pro; flash agent configured for next session)",
+  "phase0": "0170 + skeptic 0171",
+  "final_lenses": [
+    {"lens": "correctness-authority", "result": "0 Critical / 0 Major; 3 Minor + 1 Nit", "evidence": "task ses_f57d5cf51ffed1PB81IVeevw90"},
+    {"lens": "tests-integration", "result": "0 Critical / 1 Major (doc-sha keying not behaviorally pinned) + 2 Minor + 3 Nit", "evidence": "task ses_f57c6d2bcffenYBcNRV6sSxQNT"}
+  ],
+  "major_disposition": "The doc-sha-vs-port keying distinction is unreachable through the P4 admission machinery: a single admission's CAS always carries the document's full input set, so capturing 'input 1' and 'input 2' of one document separately requires two admissions, whose CAS are identical (idempotent), and capturing both inputs of one document against one root in a single batch is refused by the within-request duplicate check (trust.py:2445). The doc-sha keying is implemented (trust.py:2441 reads port['consumer_document_sha256']) and pinned by (a) test_stream_documents_derivation_returns_the_document_sha (derivation returns the 64-hex document sha, not a port), (b) test_same_document_cannot_capture_the_same_stream_twice (same document/port refused with match='already captured'), and (c) test_second_distinct_document_captures_the_same_publication (distinct documents succeed and carry distinct consumer_document_sha256). Residual gap (same-document-different-node/input behavioral pin) is documented as unreachable, not hidden.",
+  "minor_backlog": [
+    "same-document-different-node/input behavioral pin unreachable (documented above; derivation pin is the available coverage)",
+    "test_second_distinct_document... now asserts distinct consumer_document_sha256 across records (session._plan_sha256)"
+  ],
+  "tests_run": {
+    "new": "3 (distinct-document positive, same-document refusal, derivation doc-sha pin)",
+    "focused_passed": "1593 (captured_authorization + trust + purity + replay_tape_descriptors + production capture_lifecycle/captured_authorization/adr0125_preflight); sentinel green",
+    "checks": "ruff clean; git diff --check clean"
+  },
+  "verdict": "LOCKED — zero unresolved in-scope Critical/Major (the single Major is an unreachable scenario, documented and pinned via derivation + negative + positive coverage)",
+  "remaining_open": [
+    "Packet7 (composed-tape verification seam = slice 2b follow-on, now unblocked)",
+    "Packet8", "F5A-R23", "whole F5a", "F3 (full lane)", "F5b",
+    "origin/cursor/r5-f5a-private-plan-0f39@c489199 (preserved)"
+  ],
+  "deployment_eligible": false,
+  "recorded_at_utc": "2026-09-16T06:45:00.000000+00:00"
+}
