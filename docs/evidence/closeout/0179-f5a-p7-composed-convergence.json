@@ -1,0 +1,239 @@
+{
+  "schema_version": "ConvergenceCheckpoint.v1",
+  "slice_id": "F5a / P7 slice 2b / composed-tape design",
+  "base_main": "83716348c9ede3cedfb3c354241c541d2e7902b2",
+  "status": "Independent convergence checkpoint completed; repeated provenance/equality families require changed approach before RED.",
+  "proposal": "ADR-0130 in docs/architecture/decision-log.md, revised data-proof-only proposal; owner approval pending",
+  "cycles": [
+    {
+      "round": 1,
+      "source": "independent Phase 0 reviewer",
+      "majors": [
+        "every sealed member as envelope excludes zero events because F4 requires output_member",
+        "roster bytes cannot be read without data-producer P4 record/session",
+        "outer producer A can name producer B prior receipt"
+      ],
+      "why_failed": "No data index or complete producer authority chain."
+    },
+    {
+      "round": 2,
+      "source": "fresh independent Phase 0 reviewer",
+      "majors": [
+        "source_roster one-way read cannot be repeated at compose",
+        "P4 captured session and F4 producer session are independent; scalar producer identity can be copied",
+        "persistent index wire shape undefined"
+      ],
+      "why_failed": "Live records alone did not prove first-read handoff or exact F4 production lineage."
+    },
+    {
+      "round": 3,
+      "source": "fresh independent Phase 0 reviewer",
+      "majors": [
+        "source_ids and policy.sources can disagree while both lists and policy digest appear valid",
+        "broker-issued F4 token lineage still permits foreign producer metadata unless exact P4/F4 value equality is required"
+      ],
+      "why_failed": "Proof object identity was added without an exhaustive equality matrix for nested roster and producer fields."
+    }
+  ],
+  "actor_inventory": [
+    "data producer: frozen execution document, P4 record/session capturing exactly raw_event_dataset and source_roster, broker-owned roster first-read proof, broker-created F4 producer session, prepared/sealed/published data tokens",
+    "manifest producer: frozen document, P4 record/session capturing data publication, broker-created F4 producer session, prepared/sealed/published manifest tokens",
+    "replay consumer: frozen replay document, P4 record/session capturing exact tape_manifest and tape_data pair, separate CAPTURED receipts",
+    "SourceRosterCapture publication, data root/index/envelope members, outer manifest root/inner codec bytes"
+  ],
+  "entry_inventory": [
+    "CapturedAuthorizationRecord.lifecycle_captured_receipt_sha256 and read_member_bytes",
+    "ReplayTapeDataCapture broker mint/produce/publish and first-read policy proof",
+    "ReplayTapeManifestProducer broker mint/consume/produce/publish and ReplayTapeManifestCapture",
+    "compose_replay_tape public admission, raw ReplayTape refusal, and opaque ComposedReplayTape",
+    "CapturedReplayTape public parser/builder facade and shared pipeline validator",
+    "F4 produce/seal/publish and P4 authorize_capture_set/committed ledger lookup"
+  ],
+  "required_equalities": [
+    "source_ids == [entry.source_id for entry in policy.sources] in exact order; source IDs unique; rank == index; policy_sha256 hashes canonical policy with self field omitted",
+    "roster proof source publication/stream/port/receipt/document/session == committed data-producer P4 capture; proof is minted on first read and cannot be reconstructed",
+    "data F4 producer session is created by broker-owned collaborator after committed P4; its run/plan/process/runtime identity and producer metadata document/run/node/output/purpose equal values derived from frozen P4 document and record, not caller values; exact prepared/sealed/published tokens are retained",
+    "manifest F4 producer session and metadata obey the same equality to manifest-producer P4; outer publication is the exact collaborator token, not merely a root with matching fields",
+    "manifest-producer parent CAPTURED receipt equals inner data_captured_receipt; parent root ID and policy/index/envelope hashes equal inner; replay P4 CAPTURED receipts separately equal its exact two ports",
+    "index has fixed v1 schema/media/keys, zero-or-more listed envelope paths equal sealed manifest order excluding output member; every envelope raw byte digest equals ordered inner digest"
+  ],
+  "changed_approach": "ADR-0130 now proposes only broker-owned roster and published-data proof, with exact class-declared producer identity and source/rank binding. Manifest publication and composition require a later ADR and separate approval. Fresh Phase 0 and RED follow ADR-0130 owner approval.",
+  "non_goals": "No real data/replay, F2/F3 semantic derivation, Packet8 durability, R1 runtime, deployment or unrelated branch cleanup.",
+  "deployment_eligible": false,
+  "independent_checkpoint": {
+    "reviewer": "/root/p7_convergence, independent of ADR author",
+    "result": "Revise approach; same-design localized exception refused",
+    "majors": [
+      "policy digest alone permits unknown source_id or wrong derived rank in envelope",
+      "frozen document/run scalar equalities permit sibling producer node or output substitution"
+    ],
+    "required_correction": "First review and test broker roster plus published-data proof as a separate slice. Freeze exact resolved producer node/output/purpose/members and source membership/rank. Design manifest publication and composition only against that proof.",
+    "tests_run": "none; design checkpoint",
+    "model": "not exposed to reviewer"
+  },
+  "gate": "ADR-0133 GREEN and affected checks pass; checkpoint/candidate commits now use verified GPT-5.6 Sol. Two fresh final lenses remain. ADR-0132, P7 and Packet8 open.",
+  "preapproval_check": {
+    "reviewer": "/root/p7_convergence",
+    "result": "Separate data-proof slice reviewable after two clarifications",
+    "majors_found": [
+      "roster read path could select another sealed member in same captured root",
+      "EventEnvelope.v2 claim exceeded four-field projection with no complete F2 schema/parser"
+    ],
+    "disposition": "ADR-0130 now selects exact retained F4 output_member and explicitly limits the proof to four-field projection plus sealed bytes; complete EventEnvelope.v2 validity remains F2.",
+    "tests_run": "none; design review",
+    "owner_approval": "pending"
+  },
+  "owner_decision": "2026-09-16: owner replied Yes I agree to ADR-0130 data-proof proposal.",
+  "phase0_after_approval": {
+    "reviewer": "/root/p7_data_phase0",
+    "result": "0 Critical, 1 Major, 0 Minor; RED blocked",
+    "major": "ADR-0130 can issue a data proof from a validly P4-captured arbitrary raw dataset and matching roster/envelope projection without checking raw-dataset authorization, member completeness, scope/source/license/schema/media/provenance or its policy chain before F4 producer session.",
+    "basis": "master F3 plan lines 703-715; synthetic equivalent dual authority lines 435-436",
+    "tests_run": "none; design inspection",
+    "disposition": "Independent scope adjudication in progress; no code or RED."
+  },
+  "independent_phase0_adjudication": {
+    "reviewer": "/root/p7_raw_scope_adjudication",
+    "result": "Sustain MAJ-1",
+    "reason": "P7 cannot close under current plan with raw provenance deferred; synthetic dual authority and raw manifest/member/roster/scope chain must precede F4 data producer session.",
+    "tests_run": "none; design inspection",
+    "correction": "Proposed ADR-0131 adds broker-issued nondeployment dual-grant raw fixture and captured raw provenance proof; owner approval and fresh Phase 0 required."
+  },
+  "adr0131_preapproval_review": {
+    "reviewer": "/root/p7_raw_scope_adjudication",
+    "result": "Original arbitrary-raw admission addressed, but one further Major in first draft",
+    "major": "Dual-authorized empty raw fixture could produce one matching envelope because no raw-to-output derivation check existed.",
+    "correction": "ADR-0131 now proposes a single-pass canonical synthetic raw-event projection and byte-for-byte output comparison; independent recheck pending.",
+    "tests_run": "none; design inspection"
+  },
+  "adr0131_cleancheck": {
+    "reviewer": "/root/p7_adr131_cleancheck",
+    "result": "Not reviewable; 0 Critical, 4 Major, plus atomic-spend defect",
+    "majors": [
+      "capture broker can mint both supposedly independent grants",
+      "raw members may publish before source/scope validation",
+      "expiry/revocation may lapse before data-producer F4 session without recheck",
+      "zero-byte NDJSON member can bypass allow_empty_capture=false"
+    ],
+    "additional": "one-use must spend authorization_id atomically across distinct grant pairs, not only pair identity",
+    "tests_run": "none; design inspection",
+    "disposition": "Stopped same-design edits; independent convergence checkpoint in progress."
+  },
+  "adr0131_convergence": {
+    "reviewer": "/root/p7_raw_convergence",
+    "result": "Repeated authority/pre-effect findings require changed approach; no same-design localized exception",
+    "changed_approach": "Split into independently reviewable fixed pre-issued G1/G2 grant verifier and preflight; raw fixture publication only after full byte/roster/scope validation; post-document P4-bound raw+roster one-way data broker and deterministic output proof.",
+    "actors": [
+      "separate G1 and G2 issuers mint only, outside capture broker",
+      "fixed verifier holds distinct public keys, trusted clock and revocations",
+      "raw fixture capture authority consumes authorization ID atomically and publishes WORM only after validation",
+      "P4 authority captures exact raw+roster pair",
+      "data broker rechecks grants, P4 captures and one-way raw/roster bytes before data F4 session",
+      "restricted one-use event stream derives output; later manifest/replay remain separate"
+    ],
+    "prior_fix_gap": "Earlier drafts fixed roster equality, sibling producer substitution, raw digest and projection count but did not separate grant mint authority or validate full raw bytes before raw F4 effects.",
+    "scope_conflict": "A synthetic projection is only a structural prerequisite. Current master F3 requires full default-deny RawEventDatasetCodec, F3-ordered full EventEnvelope.v2 semantics before claiming P7/F3 closure. Memo schedules synthetic P7 then Packet8. Owner scope decision required.",
+    "tests_run": "none; independent design checkpoint"
+  },
+  "owner_delegated_scope_decision": "2026-09-16: owner said Use your best judgement. Chosen: preserve controlling full F3/P7 closure requirements; stage a synthetic structural prerequisite only, keep P7 and Packet8 open. No reduced semantic claim or deployment.",
+  "changed_approach_proposal": "ADR-0132 proposed: independent fixed G1/G2 pre-signed synthetic grant verification plus complete fixture/roster preflight before any raw F4 effects; raw publication and P4 data proof become later separately reviewed slices.",
+  "adr0132_preapproval_review": {
+    "reviewer": "/root/adr132_preapproval",
+    "result": "0 Critical, 2 Major in first proposed draft",
+    "majors": [
+      "raw-event projection was named without exact keys/types",
+      "authorization_id was spent after raw member inspection, permitting repeated attempts"
+    ],
+    "correction": "ADR-0132 now freezes exact canonical line keys/types, spends authorization_id atomically before first raw member inspection, and keeps failed attempts spent; recheck pending.",
+    "minor": "explicit G1/G2 pinned key mapping and canonical empty correction metadata digest clarified",
+    "tests_run": "none; design review",
+    "recheck": {
+      "reviewer": "/root/adr132_preapproval",
+      "result": "0 Critical, 0 remaining proven Major; owner-reviewable",
+      "corrections_verified": [
+        "exact six-key canonical raw-event projection and type rules",
+        "authorization_id atomically spent before first raw-member inspection, failures remain spent",
+        "G1/G2 pinned key mapping"
+      ],
+      "minor": "name the exact canonical empty correction metadata bytes or owning constant in later implementation",
+      "tests_run": "none; design review"
+    }
+  },
+  "adr0132_owner_decision": "2026-09-16: owner replied Approve to proposed ADR-0132.",
+  "adr0132_phase0": {
+    "reviewer": "/root/adr132_phase0",
+    "result": "0 Critical, 2 Major, 2 Minor; RED blocked",
+    "majors": [
+      "per-broker spent-ID map and lock allow same signed authorization to issue proofs in two broker instances",
+      "candidate raw bytes have no trusted fixed fixture source/expected digest, allowing substituted in-scope data to receive VerifiedSyntheticDatasetFixture"
+    ],
+    "minors": [
+      "canonical empty correction metadata bytes unspecified",
+      "authorization/grant scalar types and signature encoding incomplete"
+    ],
+    "tests_run": "none; design inspection",
+    "disposition": "Repeated authority/provenance family; independent convergence checkpoint in progress. No RED."
+  },
+  "adr0132_convergence": {
+    "reviewer": "/root/adr132_convergence",
+    "result": "Repeated authority/provenance families require a new slice, not same-design patching",
+    "changed_approach": "ADR-0133 proposes read-only canonical G1/G2 signature/time/revocation verification with immutable nonauthorizing result. No raw bytes, fixture proof, one-use spending, broker issuance, F4/P4 effects or downstream admission.",
+    "prior_fix_gap": "Per-instance lock did not cover two brokers; canonical raw shape and roster checks still permitted caller-selected plausible bytes without trusted fixture origin.",
+    "tests_run": "none; independent design checkpoint"
+  },
+  "adr0133_preapproval_review": {
+    "reviewer": "/root/adr133_preapproval",
+    "result": "0 proven Critical/Major; owner-reviewable as read-only nonauthorizing slice",
+    "minors": [
+      "define canonical source_id grammar in Phase 0",
+      "pin exact fixed key IDs and revocation identities in Phase 0; test no runtime signing key leak"
+    ],
+    "tests_run": "none; design inspection",
+    "owner_approval": "pending"
+  },
+  "adr0133_owner_decision": "2026-09-16: owner replied Yes approve to ADR-0133.",
+  "adr0133_phase0": {
+    "reviewer": "/root/adr133_phase0",
+    "result": "0 Critical, 0 Major, 2 Minor; RED may proceed",
+    "minors": [
+      "canonical source_id grammar not frozen in ADR",
+      "fixed G1/G2 key IDs and revocation snapshot/transition identity to pin in tests"
+    ],
+    "implementation_pins": {
+      "source_id": "ASCII [A-Za-z0-9][A-Za-z0-9._:/-]{0,127}, case-sensitive, sorted unique",
+      "g1_key_id": "synthetic-g1/dataset-capture/v1",
+      "g2_key_id": "synthetic-g2/dataset-capture/v1",
+      "revocation_snapshot": "SHA-256 of canonical {schema_version:dskit.synthetic-dataset-revocations/v1,revoked:[]} initially; re-evaluated per call",
+      "checked_now_ms": 500
+    },
+    "tests_run": "none; design review",
+    "uncovered": "new implementation behavior, future effecting authority and restart durability"
+  },
+  "adr0133_red": {
+    "base_commit": "83716348c9ede3cedfb3c354241c541d2e7902b2",
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py::test_adr133_read_only_dual_grant_verifier_accepts_exact_signed_bytes",
+    "result": "Expected assertion failure: NonAuthorizingSyntheticGrantVerifier is missing; 1 failed in 0.27s",
+    "kind": "behavioral RED, no import/setup error"
+  },
+  "adr0133_additional_red": {
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_captured_authorization.py -k adr133",
+    "result": "19 passed, 1 failed, 928 deselected; production verifier facade lacks the same public class",
+    "disposition": "Expected equivalent-entry RED; add production re-export without a second implementation."
+  },
+  "adr0133_green": {
+    "interpreter": "/home/russell/dskit/.venv/bin/python",
+    "focused_tests": "24 passed, 928 deselected; tests/pipeline/test_captured_authorization.py -k adr133",
+    "affected_tests": "1057 passed in 73.75s; tests/pipeline/test_captured_authorization.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py",
+    "lint": "ruff check dskit/pipeline/trust.py dskit/production/verifier.py tests/pipeline/test_captured_authorization.py: all checks passed",
+    "diff_check": "git diff --check passed",
+    "scope": "read-only signed G1/G2 verifier; production facade re-exports same class; no raw access, one-use spending or F4 effects",
+    "deployment_eligible": false
+  },
+  "model_attribution_audit": {
+    "verified_current_session_model": "gpt-5.6-sol, displayed as GPT-5.6 Sol",
+    "source": "local Codex session turn_context for task 01a0aa03-9a37-7f70-8a3d-d39a444a97a6; all seven available turn contexts agree",
+    "prior_misattribution": "Pushed commits ae46adb, 892a595 and merge 8371634 name GPT-6 Astra; that label does not match this task's recorded model.",
+    "disposition": "Do not rewrite pushed history; retain this correction in evidence. New checkpoint/candidate commits use GPT-5.6 Sol author and trailer."
+  }
+}
