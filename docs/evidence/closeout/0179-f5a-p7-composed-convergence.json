@@ -498,5 +498,23 @@
     "final_corrections": "Closed canonical intent and receipt key, independent recomputation; trusted admission instant under writer lock and final time check; local terminalization with fail-closed restart.",
     "final": "0 Critical, 0 Major, 0 Minor; design-only Phase 0, no effecting code yet.",
     "deployment_eligible": false
+  },
+  "adr0138_transition_candidate": {
+    "candidate": "31cefa87a39eb23ad2f79f0c1798e955c46abf84",
+    "reviewed_blobs": {
+      "docs/architecture/decision-log.md": "dac1405b77d1823d2ee76848fbcd7858c8efde52",
+      "dskit/pipeline/trust.py": "83afb42ce9edf8732c1d8d8c9888e60dddddbd0a",
+      "tests/pipeline/test_captured_authorization.py": "80fdb501646fd37ab83cab0afb1418aa49dfa2b2"
+    },
+    "scope": "ADR-0138 accepted design plus private non-effecting ADR-0136 state/audit sequencing; no F4 effect, receipt, raw read, P4 or Packet8 capability.",
+    "red": "Two focused tests failed on absent _admit_roster_transition before implementation.",
+    "green": "Two transition tests and all 10 ADR-0136 focused tests passed; Ruff and git diff --check passed.",
+    "affected": "1334 passed, 1 failed in test_trust exact __all__ list. Identical failure reproduced on unchanged origin/main 9a783c2 in isolated WSL worktree, same interpreter and test; not introduced by candidate.",
+    "authority_lens": "/root/adr138_transition_authority: 0 Critical, 0 Major, 1 Minor coverage gap.",
+    "tests_lens": "/root/adr138_transition_tests: 0 Critical, 0 Major, 1 Minor coverage gap.",
+    "minor": "Transition-specific expiry/ambiguous COMMIT/changed-grant and cross-process race cases are not directly asserted; analogous reserve cases pass.",
+    "effecting_gate": "Current transition takes an arbitrary valid intent digest and returns no capability. Before F4 wiring it must independently rederive the complete ADR-0138 closed intent and bind retained tokens/WORM facts; this candidate is storage-only.",
+    "full_suite": "not run per owner preference",
+    "deployment_eligible": false
   }
 }
