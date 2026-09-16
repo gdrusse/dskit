@@ -1,5 +1,38 @@
 # Re-entry
 
+## Current wrap: F3 captured-tape codec (CapturedReplayTape.v1) landed (2026-09-16)
+
+Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
+`codex/f5a-f3-captured-tape-codec`. Main was `e5c7e81`; this slice merges on
+top. Protected source `c489199` untouched; dirty main checkout untouched.
+DeepSeek v4 Pro implementer; reviewer `opencode-go/deepseek-v4-flash`.
+
+**Scope.** The P7 verification half's first deliverable (ADR-0127 Decision.2):
+the default-deny `CapturedReplayTape.v1` codec in `dskit/production/bundles.py` —
+an exact nine-field inner-manifest value with recomputed `ordered_envelopes_sha256`
+and `tape_digest`, placeholder/self digest refusal, and opaque no-constructor
+semantics. A Phase 0 skeptic (`0163`) proved the composed-tape verification seam
+requires multi-consumer capture (one PUBLISHED root CAPTURED by two distinct
+consumer documents), which the current F4 v1 + P4 machinery forbids
+(`_require_unclaimed`); recorded as architecture gate `0164`. This slice ships
+only the self-contained codec (`0165` contract, `0166` RED/GREEN).
+
+**Review.** Two clean independent lenses (correctness/authority, then
+tests/integration + final re-confirmation) on the locked candidate `6466693`;
+zero unresolved Critical/Major. Minor backlog recorded (test reaches the private
+`_value` proxy, `__reduce__` exercised only transitively, `self`-digest refusal
+not independently pinned, `envelope_count` bool battery tests only `True`).
+Sentinel green; focused 530 passed; Ruff + `git diff --check` clean.
+
+**Remaining.** P7 verification half (the composed-tape seam, slice 2b) is
+blocked on the multi-consumer-capture decision `0164`; Packet8, F5A-R23,
+whole-F5a, F3 (full lane), F5b remain open; `deployment_eligible=false`. Next
+unused evidence: 0168.
+
+Approximate checkpoint minutes (design/impl/tests/review/corrections/integration):
+design 22, implementation 18, tests 8, review 26, corrections 16, integration 8.
+Initial unmeasured reading excluded.
+
 ## Current wrap: P7 slice 1 (ReplayRun identity + tape-pair grammar) closed and merged (2026-09-16)
 
 Worktree `/home/russell/wt/f5a-remainder-20260915`, branch
