@@ -42,6 +42,7 @@ __all__ = [
     "NonAuthorizingAdr0125StructuralSignaturePreflight",
     "NonAuthorizingSyntheticGrantVerifier",
     "NonAuthorizingSyntheticFixtureVerifier",
+    "NonAuthorizingRosterBootstrapVerifier",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
@@ -5660,6 +5661,203 @@ class NonAuthorizingSyntheticFixtureVerifier:
             "attestation_sha256": _digest(attestation_bytes),
             "ordered_members": tuple(MappingProxyType(dict(member))
                                      for member in members),
+            "checked_at_ms": now,
+            "revocation_snapshot_sha256": snapshot,
+            "authorizing": False,
+            "deployment_eligible": False,
+        })
+
+
+
+_SYNTHETIC_ROSTER_BOOTSTRAP_KEYS = MappingProxyType({
+    "G1": (
+        "synthetic-g1/roster-bootstrap/v1",
+        "5b6c3f069aded6254b5dd6852b22143f9b3157f47506f007a9d702850eb7ce92",
+    ),
+    "G2": (
+        "synthetic-g2/roster-bootstrap/v1",
+        "84abc9abfe69736a62e7d90239fbbd4faecbbc6119e7f1915c92c9f619618665",
+    ),
+})
+_SYNTHETIC_ROSTER_BOOTSTRAP_AUTH_KEYS = frozenset({
+    "schema_version", "bootstrap_id", "source_ids", "scope",
+    "license_digests", "event_schema", "media_type",
+    "source_rank_policy_sha256", "issued_at_ms", "not_before_ms",
+    "expires_at_ms",
+})
+_SYNTHETIC_ROSTER_BOOTSTRAP_GRANT_KEYS = frozenset({
+    "schema_version", "role", "issuer_key_id", "bootstrap_sha256",
+    "issued_at_ms", "not_before_ms", "expires_at_ms",
+    "revocation_snapshot_sha256", "signature",
+})
+
+
+class NonAuthorizingRosterBootstrapVerifier:
+    """Verify signed pre-roster G1/G2 authority without granting a lifecycle use.
+
+    Examples
+    --------
+    Construct the fixed read-only verifier before passing signed fixture bytes::
+
+        verifier = NonAuthorizingRosterBootstrapVerifier()
+        # -> verifier verifies bytes; it never publishes a root
+    """
+
+    __slots__ = ()
+
+    def __init_subclass__(cls, **kwargs):
+        """Prevent a subtype from impersonating the fixed verifier."""
+        raise TypeError("the fixed roster bootstrap verifier is final")
+
+    @staticmethod
+    def _authorization(raw):
+        """Parse and validate one closed bootstrap authorization."""
+        value = _hs_parse_canonical(raw)
+        _hs_refuse(type(value) is dict
+                   and set(value) == _SYNTHETIC_ROSTER_BOOTSTRAP_AUTH_KEYS,
+                   "closed roster bootstrap authorization required")
+        _hs_refuse(
+            value["schema_version"] == "dskit.roster-bootstrap-authorization/v1",
+            "roster bootstrap authorization version refused",
+        )
+        name = value["bootstrap_id"]
+        _hs_refuse(type(name) is str
+                   and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(name) is not None,
+                   "bootstrap id refused")
+        sources = value["source_ids"]
+        _hs_refuse(type(sources) is list and bool(sources)
+                   and all(type(item) is str
+                           and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(item)
+                           is not None for item in sources)
+                   and sources == sorted(set(sources)),
+                   "canonical nonempty source ids required")
+        scope = value["scope"]
+        _hs_refuse(type(scope) is dict and set(scope) == {
+            "availability_start_ms", "availability_end_ms",
+            "source_provenance_sha256",
+        }, "closed roster bootstrap scope required")
+        start, end = scope["availability_start_ms"], scope["availability_end_ms"]
+        _hs_refuse(type(start) is int and type(end) is int and start <= end,
+                   "roster bootstrap availability refused")
+        NonAuthorizingSyntheticGrantVerifier._hash(
+            scope["source_provenance_sha256"],
+        )
+        licenses = value["license_digests"]
+        _hs_refuse(type(licenses) is list
+                   and all(type(item) is str for item in licenses)
+                   and licenses == sorted(set(licenses)),
+                   "canonical license digests required")
+        for digest in licenses:
+            NonAuthorizingSyntheticGrantVerifier._hash(digest)
+        _hs_refuse(value["event_schema"] == "dskit.raw-event/v1"
+                   and value["media_type"] == "application/x-ndjson",
+                   "roster bootstrap schema or media refused")
+        policy = {
+            "schema_version": "dskit.source-rank-policy/v1",
+            "sources": [
+                {"source_id": source_id, "rank": rank}
+                for rank, source_id in enumerate(sources)
+            ],
+        }
+        policy_sha256 = _digest(_hs_canonical_bytes(policy))
+        NonAuthorizingSyntheticGrantVerifier._hash(
+            value["source_rank_policy_sha256"],
+        )
+        _hs_refuse(value["source_rank_policy_sha256"] == policy_sha256,
+                   "derived source rank policy refused")
+        window = tuple(value[field] for field in (
+            "issued_at_ms", "not_before_ms", "expires_at_ms"
+        ))
+        _hs_refuse(all(type(item) is int for item in window)
+                   and window[0] <= window[1] < window[2],
+                   "roster bootstrap validity window refused")
+        return value, policy_sha256
+
+    @staticmethod
+    def _grant(raw, role, authorization, bootstrap_sha256, snapshot,
+               revoked, now):
+        """Verify one fixed role/key signature and live grant."""
+        value = _hs_parse_canonical(raw)
+        _hs_refuse(type(value) is dict
+                   and set(value) == _SYNTHETIC_ROSTER_BOOTSTRAP_GRANT_KEYS,
+                   "closed roster bootstrap grant required")
+        key_id, public_key = _SYNTHETIC_ROSTER_BOOTSTRAP_KEYS[role]
+        _hs_refuse(
+            value["schema_version"] == "dskit.roster-bootstrap-grant/v1"
+            and value["role"] == role
+            and value["issuer_key_id"] == key_id
+            and value["bootstrap_sha256"] == bootstrap_sha256,
+            "roster bootstrap grant role or identity refused",
+        )
+        NonAuthorizingSyntheticGrantVerifier._hash(value["bootstrap_sha256"])
+        NonAuthorizingSyntheticGrantVerifier._hash(
+            value["revocation_snapshot_sha256"],
+        )
+        _hs_refuse(value["revocation_snapshot_sha256"] == snapshot,
+                   "stale roster bootstrap revocation snapshot refused")
+        fields = ("issued_at_ms", "not_before_ms", "expires_at_ms")
+        _hs_refuse(
+            all(type(value[field]) is int
+                and value[field] == authorization[field]
+                for field in fields)
+            and value["issued_at_ms"] <= value["not_before_ms"] <= now
+            < value["expires_at_ms"],
+            "roster bootstrap grant time refused",
+        )
+        _hs_refuse(
+            not {role, key_id, authorization["bootstrap_id"]} & revoked,
+            "revoked roster bootstrap grant refused",
+        )
+        preimage = _hs_canonical_bytes({
+            key: item for key, item in value.items() if key != "signature"
+        })
+        _p4_verify_ed25519(public_key, preimage, value["signature"])
+
+    def verify(self, authorization_bytes, g1_grant_bytes, g2_grant_bytes):
+        """Return immutable checked facts after fresh signatures and policy.
+
+        Parameters
+        ----------
+        authorization_bytes : bytes
+            Exact canonical RosterBootstrapAuthorization.v1 bytes.
+        g1_grant_bytes : bytes
+            Exact signed security-owner grant bytes.
+        g2_grant_bytes : bytes
+            Exact signed data-owner grant bytes.
+
+        Returns
+        -------
+        MappingProxyType
+            Nonauthorizing digests, derived policy identity and check time.
+
+        Raises
+        ------
+        TypeError
+            Any input is not an exact bytes object.
+        ValueError
+            Canonical syntax, authority, policy or live-state check fails.
+        """
+        authorization, policy_sha256 = self._authorization(
+            authorization_bytes,
+        )
+        bootstrap_sha256 = _digest(authorization_bytes)
+        snapshot, revoked = NonAuthorizingSyntheticGrantVerifier._snapshot()
+        now = _FixedP4VerificationClock.now_ms(_P4_VERIFICATION._clock)
+        _hs_refuse(
+            authorization["not_before_ms"] <= now
+            < authorization["expires_at_ms"]
+            and authorization["bootstrap_id"] not in revoked,
+            "roster bootstrap time or revocation refused",
+        )
+        self._grant(g1_grant_bytes, "G1", authorization, bootstrap_sha256,
+                    snapshot, revoked, now)
+        self._grant(g2_grant_bytes, "G2", authorization, bootstrap_sha256,
+                    snapshot, revoked, now)
+        return MappingProxyType({
+            "bootstrap_sha256": bootstrap_sha256,
+            "g1_grant_sha256": _digest(g1_grant_bytes),
+            "g2_grant_sha256": _digest(g2_grant_bytes),
+            "source_rank_policy_sha256": policy_sha256,
             "checked_at_ms": now,
             "revocation_snapshot_sha256": snapshot,
             "authorizing": False,

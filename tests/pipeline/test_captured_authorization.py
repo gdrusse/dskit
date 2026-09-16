@@ -2583,3 +2583,226 @@ def test_adr134_rechecks_expiry_after_grant_verification(monkeypatch):
         trust.NonAuthorizingSyntheticFixtureVerifier().verify(
             authorization, g1, g2, attestation,
         )
+
+
+
+def _synthetic_roster_bootstrap_fixture():
+    """Offline dual-signed pre-roster authorization with a derived rank policy."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    source_ids = ["src:A", "src:B"]
+    policy = {
+        "schema_version": "dskit.source-rank-policy/v1",
+        "sources": [
+            {"source_id": source_id, "rank": rank}
+            for rank, source_id in enumerate(source_ids)
+        ],
+    }
+    policy_sha256 = hashlib.sha256(f4._json_bytes(policy)).hexdigest()
+    authorization = {
+        "schema_version": "dskit.roster-bootstrap-authorization/v1",
+        "bootstrap_id": "bootstrap-1",
+        "source_ids": source_ids,
+        "scope": {
+            "availability_start_ms": 0,
+            "availability_end_ms": 1000,
+            "source_provenance_sha256": "1" * 64,
+        },
+        "license_digests": ["2" * 64],
+        "event_schema": "dskit.raw-event/v1",
+        "media_type": "application/x-ndjson",
+        "source_rank_policy_sha256": policy_sha256,
+        "issued_at_ms": 100,
+        "not_before_ms": 100,
+        "expires_at_ms": 900,
+    }
+    raw_authorization = f4._json_bytes(authorization)
+    auth_digest = hashlib.sha256(raw_authorization).hexdigest()
+    snapshot = hashlib.sha256(f4._json_bytes({
+        "schema_version": "dskit.synthetic-dataset-revocations/v1",
+        "revoked": [],
+    })).hexdigest()
+    grants = []
+    for role in ("G1", "G2"):
+        grant = {
+            "schema_version": "dskit.roster-bootstrap-grant/v1",
+            "role": role,
+            "issuer_key_id": (
+                "synthetic-" + role.lower() + "/roster-bootstrap/v1"
+            ),
+            "bootstrap_sha256": auth_digest,
+            "issued_at_ms": 100,
+            "not_before_ms": 100,
+            "expires_at_ms": 900,
+            "revocation_snapshot_sha256": snapshot,
+        }
+        seed = hashlib.sha256(
+            ("dskit.synthetic-roster-bootstrap-grant/" + role + "/v1").encode()
+        ).digest()
+        grant["signature"] = Ed25519PrivateKey.from_private_bytes(seed).sign(
+            f4._json_bytes(grant)
+        ).hex()
+        grants.append(f4._json_bytes(grant))
+    return raw_authorization, *grants, policy_sha256
+
+
+def test_adr135_read_only_bootstrap_verifier_accepts_exact_signed_bytes():
+    cls = getattr(trust, "NonAuthorizingRosterBootstrapVerifier", None)
+    assert cls is not None, "ADR-0135 read-only bootstrap verifier is missing"
+    authorization, g1, g2, policy_sha256 = _synthetic_roster_bootstrap_fixture()
+    result = cls().verify(authorization, g1, g2)
+    assert result["bootstrap_sha256"] == hashlib.sha256(authorization).hexdigest()
+    assert result["source_rank_policy_sha256"] == policy_sha256
+    assert result["g1_grant_sha256"] == hashlib.sha256(g1).hexdigest()
+    assert result["g2_grant_sha256"] == hashlib.sha256(g2).hexdigest()
+    assert result["checked_at_ms"] == 500
+    assert result["authorizing"] is False
+    assert result["deployment_eligible"] is False
+    with pytest.raises(TypeError):
+        result["authorizing"] = True
+    from dskit.production import verifier as production_verifier
+    assert production_verifier.NonAuthorizingRosterBootstrapVerifier is cls
+
+
+
+def _resign_roster_bootstrap_grant(value):
+    """Sign test-only roster grant bytes with the fixed role fixture key."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    grant = {key: item for key, item in value.items() if key != "signature"}
+    role = grant["role"]
+    seed = hashlib.sha256(
+        ("dskit.synthetic-roster-bootstrap-grant/" + role + "/v1").encode()
+    ).digest()
+    grant["signature"] = Ed25519PrivateKey.from_private_bytes(seed).sign(
+        f4._json_bytes(grant)
+    ).hex()
+    return f4._json_bytes(grant)
+
+
+@pytest.mark.parametrize("change", [
+    "source-empty", "source-duplicate", "source-unsorted", "source-type",
+    "policy-digest", "scope-bool", "scope-provenance", "license-uppercase",
+    "window-bool", "not-before", "expired", "extra-key",
+])
+def test_adr135_bootstrap_refuses_authorization_mutations(change):
+    raw_auth, raw_g1, raw_g2, _policy = _synthetic_roster_bootstrap_fixture()
+    auth = json.loads(raw_auth)
+    if change == "source-empty":
+        auth["source_ids"] = []
+    elif change == "source-duplicate":
+        auth["source_ids"].append("src:B")
+    elif change == "source-unsorted":
+        auth["source_ids"].reverse()
+    elif change == "source-type":
+        auth["source_ids"][0] = 1
+    elif change == "policy-digest":
+        auth["source_rank_policy_sha256"] = "0" * 64
+    elif change == "scope-bool":
+        auth["scope"]["availability_end_ms"] = True
+    elif change == "scope-provenance":
+        auth["scope"]["source_provenance_sha256"] = "Z" * 64
+    elif change == "license-uppercase":
+        auth["license_digests"] = ["A" * 64]
+    elif change == "window-bool":
+        auth["expires_at_ms"] = True
+    elif change == "not-before":
+        auth["not_before_ms"] = 501
+    elif change == "expired":
+        auth["expires_at_ms"] = 500
+    else:
+        auth["extra"] = "forbidden"
+    changed_auth = f4._json_bytes(auth)
+    digest = hashlib.sha256(changed_auth).hexdigest()
+    grants = []
+    for raw in (raw_g1, raw_g2):
+        grant = json.loads(raw)
+        grant["bootstrap_sha256"] = digest
+        for field in ("issued_at_ms", "not_before_ms", "expires_at_ms"):
+            grant[field] = auth[field]
+        grants.append(_resign_roster_bootstrap_grant(grant))
+    with pytest.raises(ValueError):
+        trust.NonAuthorizingRosterBootstrapVerifier().verify(
+            changed_auth, *grants,
+        )
+
+
+@pytest.mark.parametrize("change", [
+    "swap", "wrong-role", "wrong-key", "wrong-digest", "wrong-signature",
+    "stale-snapshot", "extra-key", "noncanonical",
+])
+def test_adr135_bootstrap_refuses_grant_mutations(change):
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    if change == "swap":
+        grants = (g2, g1)
+    elif change == "noncanonical":
+        grants = (g1.replace(b":", b": ", 1), g2)
+    else:
+        grant = json.loads(g1)
+        if change == "wrong-role":
+            grant["role"] = "G2"
+        elif change == "wrong-key":
+            grant["issuer_key_id"] = "synthetic-g2/roster-bootstrap/v1"
+        elif change == "wrong-digest":
+            grant["bootstrap_sha256"] = "0" * 64
+        elif change == "wrong-signature":
+            grant["signature"] = "0" * 128
+        elif change == "stale-snapshot":
+            grant["revocation_snapshot_sha256"] = "0" * 64
+        else:
+            grant["extra"] = "forbidden"
+        changed_g1 = (f4._json_bytes(grant) if change == "wrong-signature"
+                      else _resign_roster_bootstrap_grant(grant))
+        grants = (changed_g1, g2)
+    with pytest.raises(ValueError):
+        trust.NonAuthorizingRosterBootstrapVerifier().verify(
+            authorization, *grants,
+        )
+
+
+@pytest.mark.parametrize("revoked", [
+    "G1", "G2", "synthetic-g1/roster-bootstrap/v1",
+    "synthetic-g2/roster-bootstrap/v1", "bootstrap-1",
+])
+def test_adr135_bootstrap_refuses_current_revocation(monkeypatch, revoked):
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    current = frozenset({revoked})
+    snapshot = hashlib.sha256(f4._json_bytes({
+        "schema_version": "dskit.synthetic-dataset-revocations/v1",
+        "revoked": sorted(current),
+    })).hexdigest()
+    grants = []
+    for raw in (g1, g2):
+        grant = json.loads(raw)
+        grant["revocation_snapshot_sha256"] = snapshot
+        grants.append(_resign_roster_bootstrap_grant(grant))
+    monkeypatch.setattr(trust, "_SYNTHETIC_GRANT_REVOKED", current)
+    with pytest.raises(ValueError):
+        trust.NonAuthorizingRosterBootstrapVerifier().verify(
+            authorization, *grants,
+        )
+
+
+def test_adr135_bootstrap_refuses_noncanonical_bytes_and_subtypes():
+    authorization, g1, g2, _policy = _synthetic_roster_bootstrap_fixture()
+    verifier = trust.NonAuthorizingRosterBootstrapVerifier()
+    with pytest.raises(ValueError):
+        verifier.verify(authorization.replace(b":", b": ", 1), g1, g2)
+    with pytest.raises(ValueError):
+        verifier.verify(
+            authorization[:-1] + b',"bootstrap_id":"bootstrap-1"}', g1, g2,
+        )
+
+    class BytesChild(bytes):
+        pass
+
+    with pytest.raises(TypeError):
+        verifier.verify(BytesChild(authorization), g1, g2)
+    with pytest.raises(TypeError):
+        verifier.verify(authorization, BytesChild(g1), g2)
+    with pytest.raises(TypeError):
+        class UnsafeVerifier(trust.NonAuthorizingRosterBootstrapVerifier):
+            pass
+    assert not hasattr(verifier, "publish")
+    assert not hasattr(verifier, "reserve")
+    assert not hasattr(verifier, "sign")
