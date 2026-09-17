@@ -564,6 +564,20 @@ def alert_body(fingerprint="feed-stale", status="firing"):
     }
 
 
+def admission_use_body(sha256=None, binding=None):
+    """One `dskit.admission-use/v1` body (ADR-0147 Decision point 5)."""
+    return {
+        "schema": "dskit.admission-use/v1",
+        "admission_ref": {
+            "kind": "action-execution-admission",
+            "role": "study-lifecycle",
+            "schema": "dskit.action-execution-admission/v1",
+            "sha256": sha256 or DIGEST_EVIDENCE,
+        },
+        "binding_sha256": binding or DIGEST_PLAN,
+    }
+
+
 def full_sequence():
     """Every §6 record kind, in an order the fold accepts.
 
@@ -633,6 +647,7 @@ def full_sequence():
                       "delta_digest": DIGEST_EVIDENCE,
                       "before_recon_id": "recon-17",
                       "after_recon_id": "recon-18"}),
+        ("admission_use", admission_use_body()),
     ]
 
 

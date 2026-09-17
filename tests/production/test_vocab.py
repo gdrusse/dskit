@@ -44,6 +44,7 @@ CLOSED_SET_NAMES = (
     "SEVERITIES",
     "SEVERITY_LEVELS",
     "HEALTH_STATES",
+    "LEDGER_HEALTH_STATES",
     "BREAKER_STATES",
     "LOOP_STATES",
     "TICK_STATUSES",
@@ -587,6 +588,22 @@ def test_leg_latency_buckets_are_the_three_spans_not_the_step_names():
     assert set(vocab.LEG_LATENCY_BUCKETS) < set(vocab.LEG_STEPS)
 
 
+def test_ledger_health_states_are_the_five_a_chain_ledger_open_can_be_in():
+    """ADR-0147 added the ledger's own health vocabulary. `uncertain` is the
+    load-bearing member: a one-way, in-process quarantine entered by any
+    exception past the point a write touched storage, from which only
+    `close()` is accepted -- so a `reserve_once` that may or may not have
+    committed can never be retried into a second spend."""
+    assert set(vocab.LEDGER_HEALTH_STATES) == {
+        "opening",
+        "healthy",
+        "uncertain",
+        "closed",
+        "readonly",
+    }
+    assert vocab.LEDGER_HEALTH_STATES[0] == "opening"
+
+
 def test_loop_states_carry_the_lifecycle_plus_halted_and_faulted():
     """§5.13: `init → locked → leased → reconciling → ready → {waiting ⇄
     ticking} → stopping → stopped`, plus persisted `halted` and
@@ -607,13 +624,15 @@ def test_loop_states_carry_the_lifecycle_plus_halted_and_faulted():
     assert vocab.LOOP_STATES[0] == "init"
 
 
-def test_record_kinds_are_the_twenty_eight_ledger_kinds_of_the_record_table():
+def test_record_kinds_are_the_twenty_nine_ledger_kinds_of_the_record_table():
     """§6's table names twenty-five; ruling R6 added `cancel_outcome`, so
     that a halting `trip` can be barriered BEFORE the cancel I/O and what
     the cancel came to is still recorded. Phase 2 (§5.11.2) adds `silence`
     and `alert_ack`: alert state rides in the fold, in whatever ledger the
     document declared, never in an alert database beside it that could
-    disagree with the chain after a crash."""
+    disagree with the chain after a crash. ADR-0147 adds `admission_use`,
+    the durable consume-once spend evidence for one capture admission --
+    in the chain for the same reason, so a restart cannot un-spend it."""
     assert set(vocab.RECORD_KINDS) == {
         "process",
         "tick_start",
@@ -643,6 +662,7 @@ def test_record_kinds_are_the_twenty_eight_ledger_kinds_of_the_record_table():
         "snapshot",
         "silence",
         "alert_ack",
+        "admission_use",
     }
 
 

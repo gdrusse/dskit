@@ -3030,6 +3030,27 @@ def _economic(view, clock):
     }
 
 
+def _a_crash_cash_flow(amount, at_ms, flow_kind, external, source):
+    """One complete `cash_flow` body for the crash-replay scenario.
+
+    The fold requires the whole bitemporal shape -- `effective_at_ms`,
+    `known_at_ms`, `source`, `evidence`, `flow_kind` and `external` -- not
+    just currency and amount. Each flow is known at the instant it became
+    effective, because nothing here is a late-arriving correction.
+    """
+    return {
+        "currency": "USD",
+        "amount": amount,
+        "effective_at_ms": at_ms,
+        "known_at_ms": at_ms,
+        "supersedes": None,
+        "flow_kind": flow_kind,
+        "external": external,
+        "source": source,
+        "evidence": {},
+    }
+
+
 def _crash_restart_scenario():
     """One order opened and filled, reduced, then closed flat — one
     record of every kind item 6 names as a boundary. The tick is closed
@@ -3044,7 +3065,8 @@ def _crash_restart_scenario():
     close = _a_sized_proposal("cand-close", instrument, "sell", Decimal(3))
     return (
         ("tick_start", "ts-1", {"tick_id": "tick-1", "tick_at_ms": t0}),
-        ("cash_flow", "cf-deposit", {"currency": "USD", "amount": "100000"}),
+        ("cash_flow", "cf-deposit",
+         _a_crash_cash_flow("100000", t0, "deposit", True, "operator")),
         ("decision", "dec-1", {"tick_id": "tick-1", "legs": []}),
         ("tick", "tick-1-term", {"tick_id": "tick-1"}),
         ("intent", "intent-buy", _an_intent(buy_ref, buy, t0).to_obj()),
@@ -3054,7 +3076,8 @@ def _crash_restart_scenario():
         ("order_event", "oe-buy-filled",
          {"client_ref": buy_ref, "venue_ref": "v-buy", "status": "filled", "recv_at_ms": t0 + 1_000}),
         ("outcome", "out-1", {"tick_id": "tick-1"}),
-        ("cash_flow", "cf-buy-cost", {"currency": "USD", "amount": "-50"}),
+        ("cash_flow", "cf-buy-cost",
+         _a_crash_cash_flow("-50", t0 + 1_000, "adjustment", False, "venue")),
         ("intent", "intent-reduce", _an_intent(reduce_ref, reduce, t0 + 2_000).to_obj()),
         ("order_event", "oe-reduce-open",
          {"client_ref": reduce_ref, "venue_ref": "v-reduce", "status": "open", "recv_at_ms": t0 + 2_000}),
@@ -3062,7 +3085,8 @@ def _crash_restart_scenario():
          _a_fill("fill-reduce", reduce_ref, "sell", Decimal(2), Decimal(11), t0 + 3_000).to_obj()),
         ("order_event", "oe-reduce-filled",
          {"client_ref": reduce_ref, "venue_ref": "v-reduce", "status": "filled", "recv_at_ms": t0 + 3_000}),
-        ("cash_flow", "cf-reduce-proceeds", {"currency": "USD", "amount": "22"}),
+        ("cash_flow", "cf-reduce-proceeds",
+         _a_crash_cash_flow("22", t0 + 3_000, "adjustment", False, "venue")),
         ("intent", "intent-close", _an_intent(close_ref, close, t0 + 4_000).to_obj()),
         ("order_event", "oe-close-open",
          {"client_ref": close_ref, "venue_ref": "v-close", "status": "open", "recv_at_ms": t0 + 4_000}),
@@ -3070,7 +3094,8 @@ def _crash_restart_scenario():
          _a_fill("fill-close", close_ref, "sell", Decimal(3), Decimal(12), t0 + 5_000).to_obj()),
         ("order_event", "oe-close-filled",
          {"client_ref": close_ref, "venue_ref": "v-close", "status": "filled", "recv_at_ms": t0 + 5_000}),
-        ("cash_flow", "cf-close-proceeds", {"currency": "USD", "amount": "36"}),
+        ("cash_flow", "cf-close-proceeds",
+         _a_crash_cash_flow("36", t0 + 5_000, "adjustment", False, "venue")),
         ("snapshot", "snap-empty", {}),
         ("_real_snapshot", "snap-real", None),
     )
