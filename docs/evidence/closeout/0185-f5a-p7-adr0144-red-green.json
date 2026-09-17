@@ -99,5 +99,51 @@
     ]
   },
   "convergence_checkpoint_hit": false,
-  "notes": "No architecture contradiction was hit that could not be resolved within ADR-0144's own stated constraints. The one genuine surprise (resolver.snapshot() non-idempotency for the dynamic resolver, see design_decisions_beyond_the_pinned_spec above) was resolved by reading resolver._snapshot instead, which is fully consistent with -- not a deviation from -- the ADR's own single-derivation/no-redundant-graph-read design intent, and required no new ADR."
+  "notes": "No architecture contradiction was hit that could not be resolved within ADR-0144's own stated constraints. The one genuine surprise (resolver.snapshot() non-idempotency for the dynamic resolver, see design_decisions_beyond_the_pinned_spec above) was resolved by reading resolver._snapshot instead, which is fully consistent with -- not a deviation from -- the ADR's own single-derivation/no-redundant-graph-read design intent, and required no new ADR.",
+
+  "final_review": {
+    "candidate": "432c8a2 (code) + 4a009ae (evidence, current HEAD)",
+    "authority_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (authority/correctness lens)",
+      "verdict": "0 Critical, 0 Major, 0 Minor, 0 Nit",
+      "verified": [
+        "6 forbidden-to-edit legacy symbols byte-identical",
+        "_p4_reference_bytes dispatch closed at all 3 call sites, no permissive default",
+        "single-derivation reconstruction data flow traced end-to-end into signing input",
+        "snapshot-identity fix (cached resolver._snapshot) confirmed correct and inside the lock",
+        "latent-bug fix correctly applied for both resolver types",
+        "purpose-uniqueness check confirmed",
+        "pins F2 (explicit reconstruction type-check) and F6 (frozen-object idiom) confirmed applied in code",
+        "independently re-ran 28 focused tests, 1383+ affected tests"
+      ],
+      "gate": "CLEAN"
+    },
+    "tests_integration_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (tests/integration lens)",
+      "verdict_as_reported": "2 Critical, 0 Major, 2 Minor, 1 Nit",
+      "critical_1_disputed": "revocation/clock-advance window between single derivation and batch signing -- re-raised the exact question Phase 0's f1_resolution (evidence 0184) had already closed with line-level code evidence (commit_p4_batch holds one continuous lock from derivation through final commit, no I/O in between); reviewer did not independently re-verify against current code line numbers.",
+      "critical_2_disputed": "claimed no crash/partial-failure fault-injection test exists for the dynamic path.",
+      "minors_undisputed": [
+        "F2's explicit reconstruction type-check has no DIRECT test passing a wrong-typed value (defer or add in a later slice)",
+        "matrix row 12 (concurrent authorize_capture_set calls on the same dynamic authority) has no explicit concurrency test (defer or add in a later slice)"
+      ],
+      "nit_undisputed": "ADR-0143 precedent cross-reference note, editorial only",
+      "independently_reran": "28 focused tests passed; 1488 passed / 1 pre-existing disclosed baseline failure across the full affected set; ruff and git diff --check clean; confirmed test_adr144_signed_batch_matches_close_admission_reconstruction_exactly compares actual digest bytes, not a vacuous both-calls-succeeded check"
+    },
+    "adjudication": {
+      "trigger": "two Critical findings from the tests/integration lens directly contradicted the tests/integration lens's own factual premises and the already-closed Phase 0 f1_resolution; skeptic-review.md requires a fresh independent adjudicator for a disputed finding rather than orchestrator fiat",
+      "adjudicator": "independent, fresh-context adjudicator, not the author or either final-lens reviewer",
+      "finding_1_result": "DISMISSED, not a defect. Independently re-verified lock continuity against the actual candidate code with exact line citations (lock acquired, held unbroken through all three close_admission checkpoints, signing, and final commit, released only in the finally block after return); no I/O or lock release in that window. The disputed finding was a re-assertion of the original unreviewed matrix draft's language, not a fresh code-level rebuttal of Phase 0's resolution.",
+      "finding_2_result": "DISMISSED, factually incorrect premise. Located the existing parametrized fault-injection test (test_p4_failure_is_empty_or_resolves_the_one_complete_committed_identity, 9 fault points including 'prepared'/'verified') in the candidate commit itself, already covering the dynamic path via the shared commit_p4_batch structure; the claimed gap does not exist.",
+      "adjudicated_gate": "CLEAN for both disputed items"
+    },
+    "affected_check_independently_reproduced": "1488 passed, 1 pre-existing failure (test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private, same disclosed ADR-0141/0142 baseline defect as evidence 0182) across tests/pipeline/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py",
+    "combined_result": "0 Critical, 0 Major, 2 Minor (deferred coverage gaps: F2 direct type-check test, row-12 concurrency test), 1 Nit (editorial)",
+    "gate": "Two fresh independent completed lenses plus a fresh independent adjudication of two disputed findings, zero unresolved in-scope Critical/Major on the candidate. Ready to lock and integrate.",
+    "deferred_backlog": [
+      "add a direct test for _DynamicCapturedAuthorizationContract._prepare's reconstruction type-check (pin F2) passing a wrong-typed value",
+      "add a concurrency test for two authorize_capture_set calls on the same dynamic authority instance for different documents (matrix row 12)"
+    ],
+    "deployment_eligible": false
+  }
 }
