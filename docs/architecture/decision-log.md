@@ -11550,17 +11550,19 @@ proposal.
 
 ## ADR-0146 - bounded synthetic composed-tape verification (P7 closure gate)
 
-**Status:** proposed. Independent preapproval review found 1 Critical, 2
-Major, 1 Minor, 2 Nit. Corrected below: the Critical (RE-ENTRY's stated gate
+**Status:** accepted. Independent preapproval review found 1 Critical, 2
+Major, 1 Minor, 2 Nit, all corrected: the Critical (RE-ENTRY's stated gate
 names a callable capability, not merely a passing test) is closed by
 Decision point 7, a real production function `compose_replay_tape` in
 `production/bundles.py`; the two Majors are closed by Decision point 8 (an
 explicit dynamic-authority RED requirement) and the "Scope decision: one-hop
 vs three-hop composition" subsection below; the Minor (fixture-builder
-duplication risk) is closed as a consequence of Decision point 7, since the
-test now calls one production function instead of reimplementing envelope
-construction. Full review record and corrections in evidence 0189. A fresh
-independent reviewer has not yet examined this corrected draft.
+duplication risk) is closed as a consequence of Decision point 7. A fresh
+independent recheck found 0 Critical/Major, 1 new Minor (a synthetic-use
+docstring guard on `compose_replay_tape`), closed inline. Full review record
+in evidence 0189. Phase 0 skeptic review is required next, before any RED --
+this is P7's final closure gate and its first genuinely new production
+capability in `production/bundles.py`.
 
 **Context.** RE-ENTRY's current "Next" line, unchanged since ADR-0144 closed
 the dynamic `authorize_capture_set` -> CAPTURED path and ADR-0145 closed the
@@ -11847,6 +11849,10 @@ open (Non-goals).
    calls for. The Decision point 9 test calls this function; it does not
    orchestrate these steps inline itself, closing the Minor duplication-risk
    finding at the same time (envelope construction has exactly one owner).
+   **Implementation pin (recheck Minor):** its docstring must carry a
+   one-line warning -- "Bounded synthetic/test use only; not for real
+   replay operations" -- so a future caller cannot mistake a clean,
+   reusable, callable signature for a deployment-eligible capability.
 
    **Signature:**
    ```python

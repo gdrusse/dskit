@@ -46,9 +46,19 @@
         "tests_run": "none; design review",
         "disposition": "1 Critical + 2 Major + 1 Minor corrected by design changes (not textual-only); 1 Nit corrected, 1 Nit left open by the reviewer's own optional disposition. Per docs/skills/skeptic-review.md's severity-proportionate process, a Critical/Major correction round requires a fresh independent recheck before owner approval -- see recheck below.",
         "recheck": {
-            "status": "NOT YET PERFORMED",
-            "note": "A fresh independent reviewer has not yet examined this corrected draft. The corrections above (new Decision points 7/8, the Scope decision subsection, the Decision point 3 implementation pin, and the Non-goals update) are this session's own redesign in response to round 1's findings; they have not been independently re-verified. This mirrors evidence 0180/0183/0186's correction-round pattern: no ADR in this lineage has been marked READY_FOR_OWNER_APPROVAL without either a completed recheck (for a Critical/Major round, as in evidence 0183) or a documented severity-proportionate exemption (as in evidence 0186's single-Minor case, which does not apply here given this round's Critical + 2 Major severity)."
+            "reviewer": "independent, fresh-context adversarial skeptic (preapproval recheck round)",
+            "result": "0 Critical, 0 Major, 1 new Minor, 0 Nit. READY_FOR_OWNER_APPROVAL: yes.",
+            "corrections_verified": [
+                "compose_replay_tape's signature and 10-step body are field-level precise (roster resolution, source_rank_policy_sha256, per-member envelope assembly via _check_event_envelope, internally-derived data_capture_root, receipt via record.lifecycle_captured_receipt_sha256, build/canonical_bytes/parse round-trip, verify_causal_order call) -- a Phase 0 implementer has no load-bearing ambiguity",
+                "Decision point 8's dynamic-authority RED requirement confirmed explicit and non-defaulting",
+                "the 'Scope decision: one-hop vs three-hop composition' subsection confirmed present and unambiguous",
+                "duplication risk confirmed resolved: envelope construction has exactly one owner (compose_replay_tape), the test calls it rather than re-deriving",
+                "confirmed no forbidden-symbol reach and no dskit.pipeline.trust import from bundles.py -- layering boundary preserved"
+            ],
+            "new_minor": "compose_replay_tape is a genuinely callable, reusable, clean-signature production function; without an explicit docstring warning, a future caller unaware of this ADR's nondeployment scope could mistake it for a real replay capability. Recommends a one-line docstring warning.",
+            "tests_run": "none; design review"
         }
     },
-    "gate": "Proposal only. Round-1 preapproval review complete and corrected in this evidence entry; no recheck, no owner approval, no Phase 0, no RED/GREEN, and no merge have occurred."
+    "owner_decision": "2026-09-16: orchestrating session (Claude Sonnet 5), acting under the user's explicit standing authorization to draft, critique and approve ADRs autonomously for this task, approves ADR-0146 following a clean independent preapproval review, a corrected redesign closing 1 Critical + 2 Major + 1 Minor, and a clean independent recheck (0 Critical/Major, 1 new Minor closed inline as a docstring-warning implementation pin in decision-log.md Decision point 7). ADR-0146 status changed to accepted. Phase 0 skeptic review is required next, per docs/skills/skeptic-review.md, before any RED -- this is P7's final closure gate.",
+    "gate": "Preapproval review, correction, and recheck complete (0 Critical/Major after correction; 1 Minor closed inline). Owner approval recorded above. Phase 0 skeptic review required next, before any RED/GREEN. No Phase 0, no RED/GREEN, and no merge have occurred."
 }
