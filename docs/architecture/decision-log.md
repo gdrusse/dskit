@@ -13285,11 +13285,23 @@ exist. This closes the gap forward; it does not re-open those results.
 *(Number taken at commit time. 0149, 0151, 0152, 0155 and 0156 are held by
 unmerged branches; this skips them rather than adding a collision.)*
 
-**Status:** PROPOSED (v2), awaiting owner approval. NOT implemented. v1 was
-BLOCKED by independent skeptic review (0 Critical, 1 Major): its `signed_id`
-formula bound ONE parent, faithfully copying a precedent whose authority kind
-genuinely has one, while two of F3's three hops have TWO. v2 corrects that in
-Decision below and records it as a resolved gap rather than a discovered one.
+**Status:** PROPOSED (v3), awaiting owner approval. NOT implemented.
+
+- **v1 BLOCKED** (0C/1M): the `signed_id` formula bound ONE parent, copying a
+  precedent whose authority kind genuinely has one, while two of F3's three
+  hops have TWO. v2 fixed it; independent re-review confirmed it closed.
+- **v1 also carried a second, separate false claim**, corrected in v2 and
+  called out here because a status block that narrates one correction and
+  hides another is the same overclaiming this lane keeps failing on: v1 said
+  its race test settled Gap 1. It does not.
+- **v2 BLOCKED** (0C/1M): the liveness gate was asserted, not shown
+  constructible. The repo has NO process-kill precedent -- the one adjacent
+  "crash" test (`tests/production/test_main.py:1300`) constructs post-crash
+  state directly rather than killing anything -- while the race gate cites a
+  verified working transplant. One gate proven, one gate hand-waved, presented
+  as equals. v3 replaces the hand-wave with a technique that exists, and
+  discloses what that technique cannot reach as Gap 6.
+
 Deliberately
 NOT a fourth patch to ADR-0148, which stays **STOPPED / DO NOT IMPLEMENT**.
 This is a different mechanism reached by inventory, not another revision of
@@ -13337,11 +13349,33 @@ precedent's SHAPE but not to its arity. `kind = "derivation-root"`.
     signed_id = _digest(_hs_canonical_bytes({
         "schema": "dskit.derivation-root-intent/v1",
         "hop": <the hop's own canonical name>,
-        "parents": [{"signed_id": ..., "intent_sha256": ...}, ...],
+        "parents": [{"port": ..., "signed_id": ..., "intent_sha256": ...}, ...],
     }))
 
-`parents` carries EVERY upstream row the hop declares, in canonical sorted
-order, and the hop name is bound alongside them.
+`parents` carries EVERY upstream row the hop declares, sorted canonically by
+`port`, and the hop name is bound alongside them.
+
+**`port` is not decoration.** Hop 1's two parents are different reserve kinds
+(`raw-dataset`, `roster-bootstrap`) and cannot be confused. Hop 3's two are
+BOTH `derivation-root` rows -- hop 1's and hop 2's, filling
+`_REPLAY_TAPE_INPUTS = ("tape_manifest", "tape_data")` (`document.py:766`) --
+so a bare `{signed_id, intent_sha256}` pair list hashes a role-swapped
+construction identically to the correct one. Downstream shape checks would
+refuse such a swap before it ever reached `ISSUED`, but an identity that
+relies on a check it does not name is not intent-pure on its own terms, and
+intent purity is the whole point of this formula. Binding the declared port
+makes it pure without depending on anything downstream.
+
+**This kind's own `intent_sha256`** is `_digest(_hs_canonical_bytes({
+"schema_version": "dskit.derivation-root-intent/v1", "hop": <name>,
+"parents": <the same list>}))` -- the same closed content as `signed_id`, and
+NOTHING ELSE. The precedent is asymmetric here (`trust.py:9955-9960` folds
+`graph_references`, drawn from an in-memory graph rather than any parent row,
+into `intent_sha256` but not into `signed_id`), and Hop 2 and Hop 3 both READ
+a prior hop's `intent_sha256` as part of their own parent binding. An
+implementer importing the precedent's asymmetry by reflex would make a
+parent's identity depend on state no parent row carries. Stated explicitly so
+that cannot happen.
 
 **This is the correction v1 got wrong, and it is load-bearing.** The
 `dynamic-p4-authority` precedent hashes a single parent because that kind has
@@ -13388,6 +13422,20 @@ change. Nothing moves out of `trust.py`.
 4. **Generation and revocation do not reach it.** `reserve_meta.generation` and
    `reserve_revoked` do not clear `reserve_uses`, so an `ISSUED` row survives a
    generation bump and a rotated domain can never re-derive that intent.
+5. **Torn writes mid-publish are NOT covered by the liveness gate.** The
+   in-process gate above stops cleanly between two steps. A real crash can
+   land INSIDE the multi-step publish and leave a partially written receipt --
+   which is why the race gate insisted on real OS processes rather than
+   in-process simulation. Closing this needs a process-kill technique the
+   repo does not have, and inventing one is its own piece of work. Disclosed,
+   not covered, and not claimed.
+6. **The existing quarantine precedent is wider than this ADR's invariant.**
+   `trust.py:9882` quarantines on `row[0] != "QUARANTINED"`, with no check
+   that the prior state was `RESERVED` -- so it can downgrade an already
+   `ISSUED` row. This ADR's own text says a failed or ambiguous commit reaches
+   `QUARANTINED` and never a second construction. The new kind's quarantine
+   analog must check the prior state explicitly rather than copying that
+   shape. Existing-code observation, recorded so it is not inherited.
 
 **Scope, stated so it cannot be overread.** The reserve hangs off
 `publisher._reserve` (`trust.py:6508`, `:7520`), and ADR-0148 itself claimed
@@ -13407,11 +13455,24 @@ what failed three times.
    two real OS processes against this same reserve, synchronized on an
    `Event`, asserting exactly one winner -- for a different kind. It must also
    cover the two-parent case above, or it will not exercise the correction.
-2. **The liveness test, which is a DIFFERENT test.** v1 claimed the race test
-   settled Gap 1. It does not: Gap 1 is a lone winner dying between the
-   `RESERVED -> ISSUED` commit and the real PUBLISH, and two-racers-yield-one
-   never exercises that. It needs its own kill injection. Until it exists,
-   Gap 1 stays exactly as open as its own text concedes.
+2. **The liveness test, which is a DIFFERENT test, built with a technique
+   this repo actually has.** v1 claimed the race test settled Gap 1. It does
+   not: Gap 1 is a lone winner dying between the `RESERVED -> ISSUED` commit
+   and the real PUBLISH, and two-racers-yield-one never exercises that.
+
+   v2 said "it needs its own kill injection" and stopped there. That was a
+   hand-wave: `grep -rn "SIGKILL|os\.kill|\.terminate\(\)"` over the test
+   tree returns no real process termination anywhere, and
+   `tests/production/test_main.py:1300` -- the nearest thing to a crash test
+   -- constructs the post-crash state directly instead.
+
+   So the gate is specified as what CAN be built: the reserve transaction is
+   already separated from construction (`trust.py:9938-9985` commits
+   `RESERVED -> ISSUED` and returns before the resolver is built), so the test
+   calls the reserve step, stops before construction, reopens the reserve, and
+   asserts the row is stuck `ISSUED` with no published root and no path to
+   either retry or quarantine. That is a real, in-process demonstration of
+   Gap 1, using only machinery that exists.
 
 Both must be RED first, with recorded answers, or this ADR does not proceed to
 code. Gap 1's answer specifically decides whether an `attempt` dimension is
