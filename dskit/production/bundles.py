@@ -28,6 +28,7 @@ all three of its inputs. Its knobs are stdlib-typed, so it does check
 them.
 """
 
+import hashlib
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
@@ -303,6 +304,331 @@ class CapturedReplayTape:
     def canonical_bytes(self):
         """Return the exact canonical JSON bytes of the value."""
         return _canonical_bytes(self.to_obj())
+
+
+# ---------------------------------------------------------------------------
+# ADR-0145 -- bounded synthetic `dskit.event-envelope/v2` causal-order
+# verification (P7 EventEnvelope gate).
+#
+# This is a DIFFERENT "envelope" than `dskit/pipeline/trust.py`'s existing
+# G1/G2-grant preflight envelope concept (`_hs_validate_envelope`,
+# `_HS_ENVELOPES`, `_verify_one_signed`'s `envelope` parameter -- a signed
+# issuer_role/key_usage/not_before_ms object). The two share only the
+# English word; they have no shared fields, no shared code path, and this
+# module never imports `trust.py`.
+#
+# The 15 keys below are ADR-0130 Decision point 4's four-field per-envelope
+# projection (`schema_version`, `source_id`, `source_rank`,
+# `source_rank_policy_sha256`) UNION ADR-0132's six-field `dskit.raw-event/v1`
+# shape (`schema_version`, `source_id`, `event_id`, `source_sequence`,
+# `availability_ms`, `payload_sha256`) -- an 8-field union after the 2-field
+# overlap -- PLUS 7 new fields (`exchange_ms`, `receive_ms`,
+# `source_provenance_tag`, `source_timezone_tag`, `correction_position`,
+# `corrects_event_id`, `prior_envelope_sha256`). ADR-0130's own four-field
+# projection has no prior implementation anywhere in this codebase (only its
+# schema-name constant, above, existed before this ADR): the parser below is
+# that projection's first implementation, not an extension of working code.
+# ---------------------------------------------------------------------------
+
+_EVENT_ENVELOPE_FIELDS = (
+    "schema_version",
+    "source_id",
+    "event_id",
+    "source_sequence",
+    "payload_sha256",
+    "availability_ms",
+    "exchange_ms",
+    "receive_ms",
+    "source_provenance_tag",
+    "source_timezone_tag",
+    "source_rank",
+    "source_rank_policy_sha256",
+    "correction_position",
+    "corrects_event_id",
+    "prior_envelope_sha256",
+)
+
+
+def _check_event_envelope(value):
+    """Accumulate every refusal for one closed ``dskit.event-envelope/v2`` object.
+
+    Mirrors ``_check_tape``'s unknown/missing accumulation style (ADR-0145
+    Decision point 1). ``source_id``/``event_id``/``source_sequence``/
+    ``payload_sha256``/``availability_ms``/``source_rank``/
+    ``source_rank_policy_sha256`` are carried verbatim from ADR-0130/0132;
+    ``exchange_ms``/``receive_ms``/``source_provenance_tag``/
+    ``source_timezone_tag``/``correction_position``/``corrects_event_id``/
+    ``prior_envelope_sha256`` are new to this ADR.
+    """
+    if not isinstance(value, dict):
+        return ["event-envelope/v2 must decode to an object"]
+    problems = []
+    unknown = set(value) - set(_EVENT_ENVELOPE_FIELDS)
+    missing = set(_EVENT_ENVELOPE_FIELDS) - set(value)
+    for name in sorted(unknown):
+        problems.append(f"unknown event-envelope field {name!r}")
+    for name in sorted(missing):
+        problems.append(f"missing event-envelope field {name!r}")
+    if value.get("schema_version") != CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA:
+        problems.append(
+            f"schema_version must be {CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA!r}"
+        )
+    source_id = value.get("source_id")
+    if not isinstance(source_id, str) or not source_id:
+        problems.append("source_id must be a nonempty str")
+    event_id = value.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        problems.append("event_id must be a nonempty str")
+    source_sequence = value.get("source_sequence")
+    if (
+        isinstance(source_sequence, bool)
+        or not isinstance(source_sequence, int)
+        or source_sequence < 0
+    ):
+        problems.append("source_sequence must be a non-negative int")
+    check_digest(problems, "payload_sha256", value.get("payload_sha256"))
+    availability_ms = value.get("availability_ms")
+    if isinstance(availability_ms, bool) or not isinstance(availability_ms, int):
+        problems.append("availability_ms must be an int")
+    exchange_ms = value.get("exchange_ms")
+    if (
+        isinstance(exchange_ms, bool)
+        or not isinstance(exchange_ms, int)
+        or exchange_ms < 0
+    ):
+        problems.append("exchange_ms must be a non-negative int")
+    receive_ms = value.get("receive_ms")
+    if (
+        isinstance(receive_ms, bool)
+        or not isinstance(receive_ms, int)
+        or receive_ms < 0
+    ):
+        problems.append("receive_ms must be a non-negative int")
+    if (
+        isinstance(exchange_ms, int) and not isinstance(exchange_ms, bool)
+        and isinstance(receive_ms, int) and not isinstance(receive_ms, bool)
+        and receive_ms < exchange_ms
+    ):
+        problems.append("receive_ms must be >= exchange_ms")
+    provenance = value.get("source_provenance_tag")
+    if not isinstance(provenance, str) or not provenance:
+        problems.append("source_provenance_tag must be a nonempty str")
+    timezone_tag = value.get("source_timezone_tag")
+    if not isinstance(timezone_tag, str) or not timezone_tag:
+        problems.append("source_timezone_tag must be a nonempty str")
+    source_rank = value.get("source_rank")
+    if (
+        isinstance(source_rank, bool)
+        or not isinstance(source_rank, int)
+        or source_rank < 0
+    ):
+        problems.append("source_rank must be a non-negative int")
+    check_digest(problems, "source_rank_policy_sha256", value.get("source_rank_policy_sha256"))
+    correction_position = value.get("correction_position")
+    position_ok = (
+        isinstance(correction_position, int)
+        and not isinstance(correction_position, bool)
+        and correction_position >= 0
+    )
+    if not position_ok:
+        problems.append("correction_position must be a non-negative int")
+    corrects_event_id = value.get("corrects_event_id")
+    prior_envelope_sha256 = value.get("prior_envelope_sha256")
+    if position_ok and correction_position == 0:
+        if corrects_event_id is not None:
+            problems.append("corrects_event_id must be null when correction_position == 0")
+        if prior_envelope_sha256 is not None:
+            problems.append("prior_envelope_sha256 must be null when correction_position == 0")
+    elif position_ok:
+        if not isinstance(corrects_event_id, str) or not corrects_event_id:
+            problems.append(
+                "corrects_event_id must be a nonempty str when correction_position > 0"
+            )
+        if prior_envelope_sha256 is None:
+            problems.append(
+                "prior_envelope_sha256 must be a sha256 digest when correction_position > 0"
+            )
+        else:
+            check_digest(problems, "prior_envelope_sha256", prior_envelope_sha256)
+    else:
+        if corrects_event_id is not None and not isinstance(corrects_event_id, str):
+            problems.append("corrects_event_id must be a str or null")
+        if prior_envelope_sha256 is not None:
+            check_digest(problems, "prior_envelope_sha256", prior_envelope_sha256)
+    return problems
+
+
+def parse_event_envelope(raw):
+    """Parse one closed ``dskit.event-envelope/v2`` object, refusing everything else.
+
+    Not shipped as a caller-facing minting API beyond fixture/test
+    construction (ADR-0145 Decision point 4): production callers reach this
+    shape only through :func:`verify_causal_order`'s per-position parse
+    step.
+
+    Parameters
+    ----------
+    raw : bytes
+        JSON bytes of one candidate envelope object.
+
+    Returns
+    -------
+    dict
+        The parsed, fully validated 15-field object.
+
+    Raises
+    ------
+    ProductionError
+        Naming every field that is unknown, missing or mistyped.
+    """
+    if not isinstance(raw, bytes):
+        raise ProductionError(["event-envelope/v2 parse takes bytes"])
+    try:
+        value = json.loads(raw.decode("ascii"))
+    except (UnicodeDecodeError, ValueError):
+        raise ProductionError(["event-envelope/v2 bytes are not JSON"])
+    problems = _check_event_envelope(value)
+    if problems:
+        raise ProductionError(problems)
+    return value
+
+
+def _event_envelope_order_key(envelope):
+    """Return the ADR-0145 Decision point 2 order key, verbatim.
+
+    Availability, derived source rank, source sequence, correction
+    position, payload digest, event ID -- exactly this 6-tuple, this
+    order, no more terms. ``exchange_ms``/``receive_ms`` are deliberately
+    absent: deriving order from them is real F1/F2 semantics this ADR does
+    not claim (Decision point 1).
+    """
+    return (
+        envelope["availability_ms"],
+        envelope["source_rank"],
+        envelope["source_sequence"],
+        envelope["correction_position"],
+        envelope["payload_sha256"],
+        envelope["event_id"],
+    )
+
+
+def verify_causal_order(tape, ordered_envelope_bytes):
+    """Verify a resolved envelope-bytes sequence is causally ordered for ``tape``.
+
+    Pure and read-only (ADR-0145 Decision point 3): performs no F4, P4,
+    broker, signer or ledger operation and mutates neither argument.
+    Resolving ``ordered_envelope_bytes`` from a capture/session/broker is
+    composed-tape's job, deliberately out of scope here (Decision point 6).
+
+    Parameters
+    ----------
+    tape : CapturedReplayTape
+        An already-parsed ``dskit.captured-replay-tape/v1`` value.
+    ordered_envelope_bytes : list or tuple of bytes
+        The caller-supplied, already-resolved raw envelope member bytes,
+        one per tape position, in tape order.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ProductionError
+        Naming every violation found: a length mismatch against
+        ``tape.envelope_count``; a per-position digest mismatch or a
+        malformed envelope shape (position included); a
+        ``source_rank_policy_sha256`` that disagrees with the tape's own
+        field; a duplicate ``event_id`` anywhere on the tape; a correction
+        chain that forward-references, gaps, or never bottoms out at
+        ``correction_position == 0``; or a decreasing order key between two
+        adjacent positions.
+    """
+    if not isinstance(ordered_envelope_bytes, (list, tuple)):
+        raise ProductionError(["ordered_envelope_bytes must be a list or tuple of bytes"])
+    ordered_envelope_bytes = list(ordered_envelope_bytes)
+    if len(ordered_envelope_bytes) != tape.envelope_count:
+        raise ProductionError([
+            f"ordered_envelope_bytes has {len(ordered_envelope_bytes)} entries, "
+            f"tape.envelope_count is {tape.envelope_count}"
+        ])
+
+    digests = tape.ordered_envelope_digests
+    problems = []
+    envelopes = [None] * len(ordered_envelope_bytes)
+    for index, raw in enumerate(ordered_envelope_bytes):
+        if not isinstance(raw, bytes) or hashlib.sha256(raw).hexdigest() != digests[index]:
+            problems.append(
+                f"envelope[{index}] bytes do not match "
+                f"tape.ordered_envelope_digests[{index}]"
+            )
+            continue
+        try:
+            value = json.loads(raw.decode("ascii"))
+        except (UnicodeDecodeError, ValueError):
+            problems.append(f"envelope[{index}] bytes are not JSON")
+            continue
+        field_problems = _check_event_envelope(value)
+        if field_problems:
+            problems.extend(f"envelope[{index}]: {item}" for item in field_problems)
+            continue
+        envelopes[index] = value
+    if problems:
+        raise ProductionError(problems)
+
+    problems = []
+    policy = tape.source_rank_policy_sha256
+    for index, envelope in enumerate(envelopes):
+        if envelope["source_rank_policy_sha256"] != policy:
+            problems.append(
+                f"envelope[{index}]: source_rank_policy_sha256 does not match "
+                "tape.source_rank_policy_sha256"
+            )
+
+    first_index = {}
+    for index, envelope in enumerate(envelopes):
+        event_id = envelope["event_id"]
+        if event_id in first_index:
+            problems.append(
+                f"envelope[{index}]: duplicate event_id {event_id!r}, "
+                f"first seen at position {first_index[event_id]}"
+            )
+        else:
+            first_index[event_id] = index
+
+    for index, envelope in enumerate(envelopes):
+        position = envelope["correction_position"]
+        if position == 0:
+            continue
+        parent_index = first_index.get(envelope["corrects_event_id"])
+        if parent_index is None or parent_index >= index:
+            problems.append(
+                f"envelope[{index}]: corrects_event_id does not name an envelope "
+                "at a strictly lower tape position"
+            )
+            continue
+        parent = envelopes[parent_index]
+        if parent["correction_position"] != position - 1:
+            problems.append(
+                f"envelope[{index}]: corrects an envelope whose correction_position "
+                "is not exactly one less"
+            )
+        if envelope["prior_envelope_sha256"] != digests[parent_index]:
+            problems.append(
+                f"envelope[{index}]: prior_envelope_sha256 does not match the "
+                f"corrected envelope's digest at position {parent_index}"
+            )
+
+    for index in range(len(envelopes) - 1):
+        if _event_envelope_order_key(envelopes[index]) > _event_envelope_order_key(
+            envelopes[index + 1]
+        ):
+            problems.append(
+                f"envelope[{index}] and envelope[{index + 1}] are out of causal order"
+            )
+
+    if problems:
+        raise ProductionError(problems)
 
 
 class ReplayTape(ABC):
