@@ -1,6 +1,79 @@
 # Re-entry
 
-## Current checkpoint: P7 closed at bounded synthetic scope (2026-09-17)
+## Current checkpoint: whole F5a closed -- Packet 8 / F5A-R23 done (2026-09-17)
+
+Remote main verified at 937770d. ADR-0147 replaces
+`HistoricalStudyVerifier.capture`'s publicly-reachable `_spend` constructor
+kwdefault (a mutable, walkable function-object attribute, not a real
+authority boundary) with a durable, `ChainLedger`/`JsonlLedger`-backed
+consume-once gate. A new `HistoricalStudyVerifier.durable(authority, root,
+*, clock)` factory is the only construction path that binds a real,
+owner-configured durable ledger; no other constructor path can attach one
+after the fact. A new read-only `inspect_capture_admission` accessor
+validates an `admission_ref` and returns its canonical bytes with no grant
+and no write. The idempotency key is `"admission_use:v1:" +
+canonical_hash({kind, schema, sha256})`, deliberately excluding
+process/run/nonce identity so a fresh nonce cannot re-spend. `ChainLedger`
+gained `reserve_once`, a `_transition_lock` for in-process thread
+exclusion, and 5 health states (opening/healthy/uncertain/closed/readonly)
+that quarantine the writer on any partial-persistence failure; cross-
+process exclusion reuses the ledger's own pre-existing, already-held-for-
+the-writer's-whole-lifetime `fcntl.flock`, cited and independently
+verified against the actual code rather than assumed. `reserve_once`
+durably commits before the delegate `authority.capture(...)` call ever
+runs, and nothing ever unspends afterward. `authorize_capture_set` (the
+separate P4 batch route from ADR-0143/0144) and every ADR-0143 forbidden-
+legacy symbol are confirmed completely untouched.
+
+Two fresh independent final lenses found 0 Critical/Major/Minor each,
+including deep scrutiny of a narrowed pre-existing test (confirmed
+legitimate: the original check was over-broad, not a real invariant the
+new lifecycle-state vocabulary violates) and two disclosed convergence
+checkpoints (both independently re-verified against the actual code, not
+taken on the implementer's word). A genuine, non-mocked, subprocess-based
+second-process contention test, write-then-raise durability, and three
+distinct fault-injection crash-recovery tests were each independently
+deep-dived and confirmed load-bearing, not decorative. 246 focused and
+1764 affected tests passed (1 pre-existing, disclosed, unrelated
+ADR-0141/0142 baseline failure, unchanged). Ruff and `git diff --check`
+clean. Full suite not run per owner preference. Evidence: 0192 (ADR
+proposal/preapproval/correction/recheck/owner approval, building on the
+prior same-session Packet 8 design chain 0098-0144), 0193 (Phase 0 matrix,
+including a Major found and closed -- a missing `__all__` export, the same
+gap class ADR-0145 needed a correction round for), 0194 (RED/GREEN, two
+disclosed and resolved convergence checkpoints, two final lenses). The
+primary `/home/russell/dskit` checkout and protected source `c489199`
+remain untouched.
+
+**F5A-R23 is closed, at the development boundary only** (state no longer
+publicly reachable via a walkable function-object attribute; durable
+across in-process restart on the same machine/filesystem). This explicitly
+does **not** claim the OS-owned external-broker deployment boundary --
+cross-process exclusion depends on a POSIX `flock`-release-on-crash
+assumption that is documented but not itself proven by code, and is
+disclosed as such. `deployment_eligible=false` throughout.
+
+**Whole F5a is closed.** Packets 5 and 6 were merged in earlier sessions
+(`ddcae6f`/`48ae2fb` and prior); Packet 7 closed this session at its
+bounded synthetic scope (ADR-0143-0146); Packet 8 / F5A-R23 closes here
+(ADR-0147). This satisfies `docs/skills/implementation-workflow.md`'s own
+stated bar for this claim: Packets 5-8 and F5A-R23 truthfully closed, each
+with two clean independent final lenses. This closure is explicit about
+what it is **not**: not the real master F3 lane (a separate, forecast-
+capital-owned package, untouched, still gated on whole-F5a being closed --
+which it now is, so F3 may now start per its own stated dependency, though
+starting it is a new, separate task, not part of this closure); not F5b
+(captured consumer injection, also separately gated on F3/F5a and
+untouched); not real data, replay, backtest, paper, or live activity at
+any point in this whole lineage; `deployment_eligible` is `false`
+throughout every ADR in it (0127-0147).
+
+**Next:** none within this task's scope. F5a (Packets 2-8, F5A-R23) is
+closed. F3 (full lane) and F5b remain, separately owned and out of this
+session's scope, each needing its own fresh ADR-before-code proposal and
+review cycle if and when that work is picked up.
+
+## Prior checkpoint: P7 closed at bounded synthetic scope (2026-09-17)
 
 Remote main verified at 8ac3c54. ADR-0146 adds `compose_replay_tape` to
 `dskit/production/bundles.py`: given a real committed P4 capture
