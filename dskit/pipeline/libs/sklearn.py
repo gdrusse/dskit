@@ -173,6 +173,18 @@ declared none is refused with the library's own words quoted, because
 sklearn's ``fit`` signature cannot be asked (``SelectKBest.fit`` spells
 ``y=None`` exactly as ``VarianceThreshold.fit`` does).
 
+**Segmentation is the family's other member here** (``sklearn-segment``,
+ADR-0148), and it is the one place this pack CLOSES a catalog instead of
+opening a doorway. The reason is the state: it persists EXTRACTED centers
+and labels as JSON rather than a pickled estimator, and only ``KMeans``,
+``MiniBatchKMeans`` and ``Birch`` are known to expose them. Everything
+else follows from that — assignment is a nearest-center rule this module
+owns (ties to the lowest center index), proven against each member's own
+``predict``; ``segment_model_id`` is the canonical digest of the state
+that assigned a row, on the row AND as a port; and no cluster score is
+reported, so nothing here hands a search an objective to rank
+segmentations by.
+
 The cut is fitted on the declared split and nothing else — the family's
 rule, inherited, not restated — and the surviving list is an artifact, so
 serving projects the identical columns. The model BELOW reads it as

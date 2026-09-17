@@ -33,6 +33,19 @@ the environment in the child: the DOCUMENT names everything.
   wired here should build exactly that environment — the binding is
   declared, not mechanical, because episodes are the env's to
   generate, not records the toolkit can partition.
+* ``sb3-eval-episodes`` (:class:`Sb3EvalEpisodes`, role ``score``,
+  ADR-0148) — the same restore, the same environment seam, but the
+  episode loop is written HERE rather than delegated, so the ordered
+  per-step record survives: one ``JsonArtifact`` carrying the resolved
+  environment, the verified model provenance, every episode's trace and
+  why it ended, beside seven flat numeric metrics. ``sb3-eval`` answers
+  what a SEARCH wants (two scalars); this answers what an AUDIT wants.
+  Its ``split`` narrows to ``"val"``/``"test"`` — the one deliberate
+  difference from its sibling — because a durable record of held-out
+  performance drawn from ``train``, or from ``cal``'s inner calibration
+  band, would misrepresent itself the moment anyone read it back.
+  ``n_episodes * max_episode_steps`` is capped at plan time: the trace is
+  held whole before it is written.
 
 Determinism is BEST-EFFORT and recorded, never promised: the seed is
 handed to the algorithm and the environment reset, but bitwise
