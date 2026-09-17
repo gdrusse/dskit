@@ -12,5 +12,20 @@
     "deployment_eligible": false,
     "tests_run": "none; design review",
     "code_changed": "none; docs/architecture/decision-log.md and this evidence file only",
-    "gate": "Proposal only. Independent preapproval review and owner ADR approval required before Phase 0. No RED/GREEN, no final-lens review, and no merge to main have occurred."
+    "adr0145_preapproval_review": {
+        "reviewer": "independent, fresh-context adversarial skeptic (preapproval round 1)",
+        "result": "0 Critical, 0 Major, 1 Minor, 0 Nit",
+        "minor": "the ADR fills the previously-reserved dskit.event-envelope/v2 schema name with synthetic-fixture-scoped content for the first time; without an explicit statement, a future real-F3-lane implementer could mistake this ADR's schema content as pre-approved/inherited for real use rather than requiring its own independent validation against the master plan.",
+        "verified_no_change_needed": [
+            "claim (b) the 7 new fields and the 6-field ordering key match the master plan's F3 section verbatim",
+            "claim (c) verify_causal_order's described checks (digest recomputation, default-deny parse, policy fence, event_id uniqueness, correction-chain validation, order-key assertion) are sound and would catch the tested counterexamples",
+            "claim (d) no new broker/writer/effecting operation; purely read-only",
+            "claim (e) the exchange_ms/receive_ms open question is an adequate, legitimately deferred Phase 0 decision, not an exploitable gap",
+            "claim (f) no duplication/conflict with the already-merged CapturedReplayTape.v1 codec's existing digest-only validation"
+        ],
+        "correction": "ADR-0145's Non-goals section gained an explicit 'Schema-name reuse is not F3 approval' clause: this ADR's dskit.event-envelope/v2 content is synthetic-fixture-scoped, and any real F3 lane ADR must independently validate/extend/replace it against master plan lines 426-620 before real use; reuse of the schema name here does not authorize or pre-validate the real F3 contract.",
+        "tests_run": "none; design review",
+        "disposition": "Minor closed inline (textual clarification only, no design change); no recheck round required for a single Minor per skeptic-review.md's severity-proportionate process. READY_FOR_OWNER_APPROVAL: yes."
+    },
+    "gate": "Proposal only. Independent preapproval review complete (0 Critical/Major, 1 Minor closed). Owner ADR approval required before Phase 0. No RED/GREEN, no final-lens review, and no merge to main have occurred."
 }

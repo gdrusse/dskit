@@ -11316,15 +11316,19 @@ touch `_validate_capture_request`).
 
 ## ADR-0145 - bounded synthetic EventEnvelope.v2 causal-order verification (P7 EventEnvelope gate)
 
-**Status:** proposed. Design-only; drafted from direct reading of
+**Status:** accepted. Design-only; drafted from direct reading of
 `docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md` lines
 426-620 (master F3), `dskit/production/bundles.py`'s merged
 `CapturedReplayTape.v1` codec, `dskit/pipeline/trust.py`'s merged
 `_SYNTHETIC_RAW_EVENT_KEYS` raw-event/v1 shape (ADR-0132) and ADR-0130
 Decision point 4's four-field envelope projection, and
 `dskit/production/feed.py`/`dskit/production/clock.py`
-(`ReplayClock`/`ManualTime`/`_IsoStamps`/`_MsStamps`). No Phase 0, no
-RED/GREEN, no code or test file has been touched by this proposal.
+(`ReplayClock`/`ManualTime`/`_IsoStamps`/`_MsStamps`). Independent
+preapproval review found 0 Critical/Major, 1 Minor, closed inline (a
+schema-name-reuse clarification, see Non-goals). Full review record in
+evidence 0186. Phase 0 skeptic review is required next, before any RED. No
+Phase 0, no RED/GREEN, no code or test file has been touched by this
+proposal.
 
 **Context.** RE-ENTRY's current "Next" line, after ADR-0144 closed the
 dynamic `authorize_capture_set` -> CAPTURED path, is: "Full EventEnvelope.v2
@@ -11527,7 +11531,13 @@ symbols, ADR-0144's new dynamic-dispatch code, or any signer/reserve/ledger
 code -- none of that is touched, referenced, or depended on by this ADR. A
 second tape or event-sourcing engine -- this extends `production/bundles.py`
 's existing codec/verification seam only. Deployment; real replay, backtest,
-paper or live operation.
+paper or live operation. **Schema-name reuse is not F3 approval:** this ADR
+fills the previously-reserved `dskit.event-envelope/v2` string with a
+synthetic-fixture-scoped content definition; the real F3 lane's own future
+ADR must independently validate and may extend or replace this schema's
+content against master plan lines 426-620 before any real use. Reusing the
+schema name here does not authorize, approve, or pre-validate the real F3
+lane's own envelope contract.
 
 **Process.** Design proposal only. Requires independent preapproval review
 and owner ADR approval, then Phase 0 skeptic review, then focused RED/GREEN
