@@ -1,4 +1,4 @@
-"""Dependence-aware calibration of realized-outcome uncertainty (ADR-0152)."""
+"""Dependence-aware calibration of realized-outcome uncertainty (ADR-0155)."""
 
 from __future__ import annotations
 
@@ -717,7 +717,7 @@ class TestCanonicalDigestParity:
     def test_the_digest_recipe_matches_the_drivers(self):
         # pipeline has no PUBLIC general-purpose object hasher, so this
         # module restates the pinned canonical-JSON recipe. The two
-        # copies are pinned to agree here (ADR-0152 non-goals).
+        # copies are pinned to agree here (ADR-0155 non-goals).
         from dskit.pipeline.outcome_interval import _canonical_digest
 
         payload = {"b": [1, 2, 3], "a": "x", "c": {"z": 1.5, "y": None}}
@@ -725,7 +725,7 @@ class TestCanonicalDigestParity:
 
 
 # ---------------------------------------------------------------------------
-# the empirical decision criterion (ADR-0152 Decision 5)
+# the empirical decision criterion (ADR-0155 Decision 5)
 # ---------------------------------------------------------------------------
 
 

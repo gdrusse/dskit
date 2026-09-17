@@ -13017,7 +13017,7 @@ Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
 from this Linux container. If that draft carries findings beyond the five stated
 in the task, they are not addressed here.
 
-## ADR-0152 - dependence-aware calibration of REALIZED-outcome uncertainty (predictive intervals + joint scenario sets)
+## ADR-0155 - dependence-aware calibration of REALIZED-outcome uncertainty (predictive intervals + joint scenario sets)
 
 **Status:** accepted (pre-approved by the owner with Path row A18042, locked
 2026-09-17). Written before code, per CLAUDE.md's "ADR before code".

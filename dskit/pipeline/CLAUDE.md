@@ -89,7 +89,7 @@ on it without breaking its rulings.
   Not a `stat_test` `method`. A panel is the caller's to collapse or
   test per unit. `clark_west_series` can feed `cluster_bootstrap_t`
   when the independence unit is a cluster.
-- **Realized-outcome uncertainty** — `outcome_interval.py` (ADR-0152) is a
+- **Realized-outcome uncertainty** — `outcome_interval.py` (ADR-0155) is a
   plain value API, not a node kind. `BlockResiduals` REFUSES to exist
   without explicit block labels: the dependence statement is an argument
   and never a default, because the only available default is the
@@ -570,7 +570,7 @@ dskit/pipeline/
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
 ├── outcome_interval.py block-conformal predictive intervals + joint scenario sets
-│                      over dependent residual vectors (ADR-0152)
+│                      over dependent residual vectors (ADR-0155)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING

@@ -670,7 +670,7 @@ class OutcomeCalibrator(ABC):
         for final in ("calibrate", "scenarios"):
             if final in vars(cls):
                 raise TypeError(
-                    f"{cls.__name__} overrides {final}, which is final (ADR-0152): the "
+                    f"{cls.__name__} overrides {final}, which is final (ADR-0155): the "
                     "calibration steps are the seam, their order and their screens are "
                     "not — override a hook instead"
                 )
