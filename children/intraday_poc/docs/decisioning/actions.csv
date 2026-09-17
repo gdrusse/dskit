@@ -3,3 +3,4 @@ A0001,acquire,alpaca backfill,2026-08-01T00:00:00+00:00,configs/source-backfill.
 A0002,execute,run-train,2026-08-01T00:00:00+00:00,configs/run-train.json,pipeline_runs/,pipeline_runs/,retrospective; artifacts may be incomplete
 A0003,execute,run-backtest,2026-08-01T00:00:00+00:00,configs/run-backtest.json,pipeline_runs/,pipeline_runs/,retrospective; artifacts may be incomplete
 A0004,production,paper loop,2026-08-01T00:00:00+00:00,intraday_poc/live.py + Alpaca paper API,paper orders,run-dir artifacts,retrospective; artifacts may be incomplete
+A0005,execute,intraday_poc-backtest walk-forward,2026-09-17T12:20:33+00:00,intraday_poc-backtest,/home/russell/wt/f5a-closeout-hygiene-20260917/children/intraday_poc/pipeline_runs/intraday_poc-backtest-walkforward-2026-08-25-2ba4c25b,/home/russell/wt/f5a-closeout-hygiene-20260917/children/intraday_poc/pipeline_runs/intraday_poc-backtest-walkforward-2026-08-25-2ba4c25b,state=ran folds=3 hash=2ba4c25b asof=2026-08-25
