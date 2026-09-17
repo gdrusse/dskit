@@ -5626,7 +5626,14 @@ def _adr146_dynamic_case(tmp_path, monkeypatch, members, *, run_id="adr146-dynam
     descriptor_a = authority.descriptor(published_a, purpose="synthetic")
     descriptor_b = authority.descriptor(published_b, purpose="synthetic")
     document = {
-        "name": "adr146-consumer",
+        # The "name" carries run_id so two _adr146_dynamic_case calls in
+        # the same test produce genuinely DIFFERENT consumer documents
+        # (hence different consumer_document_sha256 values) -- every other
+        # field the frozen document embeds (the descriptors) is a fixed
+        # f4._PRODUCER/_ROOT constant, identical across any two calls with
+        # the same member paths, so without this the two captures'
+        # documents would collide byte-for-byte.
+        "name": f"adr146-consumer-{run_id}",
         "pipeline": {"consume": {"inputs": {
             "bundle": {"$captured_artifact": descriptor_a},
             "second": {"$captured_artifact": descriptor_b},
@@ -5782,13 +5789,25 @@ def test_compose_replay_tape_refuses_wrong_consumer_document_sha256(tmp_path, mo
     merely 'any document that captured this stream' (matrix row 10)."""
     from dskit.production import bundles
 
-    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    members_a = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    # Capture B's own member CONTENT must differ from A's -- consumer
+    # document identity (document_sha256) is derived from the frozen
+    # document's own bytes, which embed each publication's descriptor
+    # (itself keyed in part by the captured root's own member-manifest
+    # digest); identical member content would make A's and B's
+    # consumer_document_sha256 collide, which would silently defeat this
+    # refusal case instead of exercising it.
+    members_b = _adr146_members(_DEFAULT_ROSTER_SOURCES, [
+        _DEFAULT_RAW_EVENTS[0],
+        ("events/e1.json", dict(source_id="beta", event_id="evt-1", source_sequence=0,
+                                 availability_ms=2_000, payload_sha256="3" * 64)),
+    ])
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
     _authority_a, record_a, session_a, published_a, _port_a = _adr146_dynamic_case(
-        tmp_path / "a", monkeypatch, members, run_id="adr146-docsha-a")
+        tmp_path / "a", monkeypatch, members_a, run_id="adr146-docsha-a")
     _authority_b, _record_b, _session_b, _published_b, port_b = _adr146_dynamic_case(
-        tmp_path / "b", monkeypatch, members, run_id="adr146-docsha-b")
+        tmp_path / "b", monkeypatch, members_b, run_id="adr146-docsha-b")
 
     with pytest.raises(bundles.ProductionError):
         bundles.compose_replay_tape(

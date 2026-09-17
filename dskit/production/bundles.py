@@ -52,6 +52,7 @@ __all__ = [
     "ReplayTape",
     "Safety",
     "Schedule",
+    "compose_replay_tape",
     "verify_causal_order",
 ]
 
@@ -630,6 +631,324 @@ def verify_causal_order(tape, ordered_envelope_bytes):
 
     if problems:
         raise ProductionError(problems)
+
+
+# ---------------------------------------------------------------------------
+# ADR-0146 -- bounded synthetic composed-tape verification (P7 closure
+# gate). `compose_replay_tape` resolves envelope bytes from an
+# already-committed capture/session/publication and composes them into a
+# `verify_causal_order`-verified `CapturedReplayTape`, end-to-end. It
+# imports no symbol from `dskit.pipeline.trust` (Decision point 10): it
+# reaches `record`/`session`/`published` only through the public methods/
+# attributes ADR-0129 already exposes (`record.read_member_bytes`,
+# `record.lifecycle_captured_receipt_sha256`, `published.sealed.digests`,
+# `published.sealed.prepared.stream_id`), duck-typed on whatever the
+# caller hands it.
+# ---------------------------------------------------------------------------
+
+_COMPOSED_TAPE_ROSTER_SCHEMA = "dskit.composed-tape-roster-fixture/v1"
+# ^ Test-only/placeholder fixture shape (ADR-0146 Decision point 3): NOT a
+# real `SourceRosterCapture.v1` and not a claim toward ADR-0130's
+# undelivered broker.
+_RAW_EVENT_V1_SCHEMA = "dskit.raw-event/v1"
+_RAW_EVENT_V1_FIELDS = (
+    "schema_version",
+    "source_id",
+    "event_id",
+    "source_sequence",
+    "availability_ms",
+    "payload_sha256",
+)
+_RAW_EVENT_MEMBERS_ENTRY_FIELDS = (
+    "relative_path",
+    "exchange_ms",
+    "receive_ms",
+    "source_provenance_tag",
+    "source_timezone_tag",
+    "correction_position",
+    "corrects_event_id",
+    "prior_envelope_sha256",
+)
+
+
+def _check_composed_tape_roster_fixture(value):
+    """Accumulate every refusal for one ``dskit.composed-tape-roster-fixture/v1`` object.
+
+    ``sources`` must be a list of ``{source_id, rank}`` objects with unique
+    ``source_id`` values and ``rank`` equal to the item's own list
+    position exactly (0..len(sources)-1, in order) -- already rank-sorted,
+    no gap, no duplicate, no out-of-position value (ADR-0146 Decision
+    point 3/7 step 3).
+    """
+    if not isinstance(value, dict):
+        return ["composed-tape-roster-fixture must decode to an object"]
+    problems = []
+    known = {"schema_version", "sources"}
+    unknown = set(value) - known
+    missing = known - set(value)
+    for name in sorted(unknown):
+        problems.append(f"unknown composed-tape-roster-fixture field {name!r}")
+    for name in sorted(missing):
+        problems.append(f"missing composed-tape-roster-fixture field {name!r}")
+    if value.get("schema_version") != _COMPOSED_TAPE_ROSTER_SCHEMA:
+        problems.append(f"schema_version must be {_COMPOSED_TAPE_ROSTER_SCHEMA!r}")
+    sources = value.get("sources")
+    if not isinstance(sources, list):
+        problems.append("sources must be a list")
+        return problems
+    if not sources:
+        problems.append("sources must be a nonempty list")
+        return problems
+    seen_ids = set()
+    source_known = {"source_id", "rank"}
+    for index, item in enumerate(sources):
+        if not isinstance(item, dict):
+            problems.append(f"sources[{index}] must be an object")
+            continue
+        item_unknown = set(item) - source_known
+        item_missing = source_known - set(item)
+        for name in sorted(item_unknown):
+            problems.append(f"unknown sources[{index}] field {name!r}")
+        for name in sorted(item_missing):
+            problems.append(f"missing sources[{index}] field {name!r}")
+        source_id = item.get("source_id")
+        if not isinstance(source_id, str) or not source_id:
+            problems.append(f"sources[{index}].source_id must be a nonempty str")
+        elif source_id in seen_ids:
+            problems.append(f"sources[{index}].source_id {source_id!r} is a duplicate")
+        else:
+            seen_ids.add(source_id)
+        rank = item.get("rank")
+        rank_ok = isinstance(rank, int) and not isinstance(rank, bool) and rank >= 0
+        if not rank_ok:
+            problems.append(f"sources[{index}].rank must be a non-negative int")
+        elif rank != index:
+            problems.append(
+                f"sources[{index}].rank must equal its list position {index}, got {rank}"
+            )
+    return problems
+
+
+def _check_raw_event_member(value):
+    """Accumulate every refusal for one closed ``dskit.raw-event/v1`` six-key object.
+
+    A bounded, ADR-0146-owned restatement of ``trust.py``'s
+    ``_SYNTHETIC_RAW_EVENT_KEYS`` shape (ADR-0132) -- reimplemented, not
+    imported, because ``production/bundles.py`` must not import
+    ``dskit.pipeline.trust`` (Decision point 10's own layering boundary).
+    """
+    if not isinstance(value, dict):
+        return ["raw-event/v1 must decode to an object"]
+    problems = []
+    unknown = set(value) - set(_RAW_EVENT_V1_FIELDS)
+    missing = set(_RAW_EVENT_V1_FIELDS) - set(value)
+    for name in sorted(unknown):
+        problems.append(f"unknown raw-event field {name!r}")
+    for name in sorted(missing):
+        problems.append(f"missing raw-event field {name!r}")
+    if value.get("schema_version") != _RAW_EVENT_V1_SCHEMA:
+        problems.append(f"schema_version must be {_RAW_EVENT_V1_SCHEMA!r}")
+    source_id = value.get("source_id")
+    if not isinstance(source_id, str) or not source_id:
+        problems.append("source_id must be a nonempty str")
+    event_id = value.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        problems.append("event_id must be a nonempty str")
+    source_sequence = value.get("source_sequence")
+    if (
+        isinstance(source_sequence, bool)
+        or not isinstance(source_sequence, int)
+        or source_sequence < 0
+    ):
+        problems.append("source_sequence must be a non-negative int")
+    availability_ms = value.get("availability_ms")
+    if isinstance(availability_ms, bool) or not isinstance(availability_ms, int):
+        problems.append("availability_ms must be an int")
+    check_digest(problems, "payload_sha256", value.get("payload_sha256"))
+    return problems
+
+
+def compose_replay_tape(
+    record, session, published, consumer_document_sha256,
+    roster_relative_path, raw_event_members,
+):
+    """Resolve one committed P4 capture into a verified ``CapturedReplayTape``.
+
+    Bounded synthetic/test use only; not for real replay operations.
+
+    Reads a ``dskit.composed-tape-roster-fixture/v1`` roster member and an
+    ordered sequence of ``dskit.raw-event/v1`` members from the exact
+    ``record``/``session``/``published``/``consumer_document_sha256``
+    capture a caller already holds (ADR-0146 Decision point 7), projects
+    each raw event plus its caller-supplied metadata into a closed
+    ``dskit.event-envelope/v2`` object, then builds, round-trips and
+    verifies the resulting tape via the unedited ``CapturedReplayTape``
+    codec and :func:`verify_causal_order`. ``record``/``session``/
+    ``published`` are the exact values one ``authorize_capture_set`` call
+    already returned (ADR-0129's own shapes); this function calls only
+    their existing public methods/attributes and imports no symbol from
+    ``dskit.pipeline.trust``, so it works identically for a fixed or a
+    dynamic authority's capture without inspecting which one issued it.
+
+    Parameters
+    ----------
+    record : CapturedAuthorizationRecord
+        The exact record one ``authorize_capture_set`` call returned.
+    session : LaunchSession
+        The exact session returned alongside ``record``.
+    published : _Published
+        The exact publication token the caller captured from the same F4
+        lifecycle that fed ``authorize_capture_set``'s ``captures`` tuple.
+    consumer_document_sha256 : str
+        The frozen consumer document's own digest.
+    roster_relative_path : str
+        The ``source_roster.json`` member's relative path in the sealed
+        manifest.
+    raw_event_members : list or tuple
+        An ordered sequence (never a one-shot iterator), one item per
+        envelope, in the exact intended final tape order -- position ``i``
+        becomes tape position ``i``; no sorting is performed here. Each
+        item is a mapping with exactly eight keys: ``relative_path`` (str),
+        ``exchange_ms``/``receive_ms`` (non-negative int),
+        ``source_provenance_tag``/``source_timezone_tag`` (nonempty str),
+        ``correction_position`` (non-negative int), ``corrects_event_id``
+        (str or None), ``prior_envelope_sha256`` (sha256 digest or None).
+
+    Returns
+    -------
+    CapturedReplayTape
+        The verified, reparsed tape.
+
+    Raises
+    ------
+    ProductionError
+        Naming every problem found: an unauthorized or mismatched
+        record/session/published/consumer_document_sha256 combination
+        (the underlying accessor's own ``ValueError`` wrapped for a single
+        consistent exception type across this function's whole contract);
+        a malformed roster or raw-event member; a raw-event member whose
+        source_id is not in the roster; a malformed or unrecognized
+        ``raw_event_members`` entry; or any ``verify_causal_order``
+        violation, propagated unchanged.
+    """
+    if not isinstance(raw_event_members, (list, tuple)):
+        raise ProductionError(["raw_event_members must be a list or tuple"])
+
+    try:
+        stream = published.sealed.prepared.stream_id
+    except AttributeError as exc:
+        raise ProductionError([f"published token is malformed: {exc}"]) from exc
+
+    try:
+        roster_bytes = record.read_member_bytes(
+            session, published, consumer_document_sha256, roster_relative_path
+        )
+    except ValueError as exc:
+        raise ProductionError([str(exc)]) from exc
+
+    try:
+        roster_value = json.loads(roster_bytes.decode("ascii"))
+    except (UnicodeDecodeError, ValueError):
+        raise ProductionError(["composed-tape-roster-fixture bytes are not JSON"])
+    roster_problems = _check_composed_tape_roster_fixture(roster_value)
+    if roster_problems:
+        raise ProductionError(roster_problems)
+
+    source_rank_policy_sha256 = hashlib.sha256(roster_bytes).hexdigest()
+    source_rank_by_id = {
+        item["source_id"]: item["rank"] for item in roster_value["sources"]
+    }
+
+    problems = []
+    ordered_envelope_bytes = []
+    ordered_envelope_digests = []
+    for position, entry in enumerate(raw_event_members):
+        if not isinstance(entry, dict):
+            problems.append(f"raw_event_members[{position}] must be an object")
+            continue
+        entry_unknown = set(entry) - set(_RAW_EVENT_MEMBERS_ENTRY_FIELDS)
+        entry_missing = set(_RAW_EVENT_MEMBERS_ENTRY_FIELDS) - set(entry)
+        for name in sorted(entry_unknown):
+            problems.append(f"raw_event_members[{position}]: unknown field {name!r}")
+        for name in sorted(entry_missing):
+            problems.append(f"raw_event_members[{position}]: missing field {name!r}")
+        if entry_unknown or entry_missing:
+            continue
+        relative_path = entry["relative_path"]
+        try:
+            raw_bytes = record.read_member_bytes(
+                session, published, consumer_document_sha256, relative_path
+            )
+        except ValueError as exc:
+            problems.append(f"raw_event_members[{position}]: {exc}")
+            continue
+        try:
+            raw_value = json.loads(raw_bytes.decode("ascii"))
+        except (UnicodeDecodeError, ValueError):
+            problems.append(f"raw_event_members[{position}]: raw-event bytes are not JSON")
+            continue
+        raw_problems = _check_raw_event_member(raw_value)
+        if raw_problems:
+            problems.extend(f"raw_event_members[{position}]: {item}" for item in raw_problems)
+            continue
+        source_id = raw_value["source_id"]
+        if source_id not in source_rank_by_id:
+            problems.append(
+                f"raw_event_members[{position}]: source_id {source_id!r} is not in the roster"
+            )
+            continue
+        envelope = {
+            "schema_version": CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA,
+            "source_id": source_id,
+            "event_id": raw_value["event_id"],
+            "source_sequence": raw_value["source_sequence"],
+            "payload_sha256": raw_value["payload_sha256"],
+            "availability_ms": raw_value["availability_ms"],
+            "source_rank": source_rank_by_id[source_id],
+            "source_rank_policy_sha256": source_rank_policy_sha256,
+            "exchange_ms": entry["exchange_ms"],
+            "receive_ms": entry["receive_ms"],
+            "source_provenance_tag": entry["source_provenance_tag"],
+            "source_timezone_tag": entry["source_timezone_tag"],
+            "correction_position": entry["correction_position"],
+            "corrects_event_id": entry["corrects_event_id"],
+            "prior_envelope_sha256": entry["prior_envelope_sha256"],
+        }
+        envelope_problems = _check_event_envelope(envelope)
+        if envelope_problems:
+            problems.extend(
+                f"raw_event_members[{position}]: {item}" for item in envelope_problems
+            )
+            continue
+        envelope_bytes = _canonical_bytes(envelope)
+        ordered_envelope_bytes.append(envelope_bytes)
+        ordered_envelope_digests.append(hashlib.sha256(envelope_bytes).hexdigest())
+    if problems:
+        raise ProductionError(problems)
+
+    # Computed fresh, here, from the live `published` token that already
+    # survived the binding checks inside every `read_member_bytes` call
+    # above -- never accepted as an argument (Decision point 7 step 7;
+    # Phase 0 matrix row 6's tamper-resistance requirement). Matches
+    # `trust.py`'s own `_manifest_digest` formula (`_digest(_canonical_bytes(
+    # [dict(item) for item in digests]))`) without reading the private
+    # `_member_manifest_sha256` attribute.
+    data_capture_root = _canonical_hash([dict(item) for item in published.sealed.digests])
+
+    try:
+        data_captured_receipt = record.lifecycle_captured_receipt_sha256(
+            stream, consumer_document_sha256
+        )
+    except ValueError as exc:
+        raise ProductionError([str(exc)]) from exc
+
+    tape = CapturedReplayTape._build(
+        data_capture_root, data_captured_receipt,
+        source_rank_policy_sha256, ordered_envelope_digests,
+    )
+    reparsed = CapturedReplayTape.parse(tape.canonical_bytes())
+    verify_causal_order(reparsed, ordered_envelope_bytes)
+    return reparsed
 
 
 class ReplayTape(ABC):
