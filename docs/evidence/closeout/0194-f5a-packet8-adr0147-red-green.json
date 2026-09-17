@@ -1,0 +1,107 @@
+{
+  "schema_version": "RedGreenEvidence.v1",
+  "slice_id": "F5a / Packet 8 / durable ChainLedger-backed consume-once admission gate (closes F5A-R23)",
+  "packet": "8-durable-consume-once-authority",
+  "adr": "ADR-0147 - durable ChainLedger-backed consume-once admission gate (Packet 8, closes F5A-R23)",
+  "base_commit": "8cf41c6",
+  "worktree": "/home/russell/wt/f5a-p7-remainder-20260916",
+  "branch": "codex/f5a-p7-remainder-20260916",
+  "red_commit": "8d9d317",
+  "green_commit": "3531461",
+  "cites": [
+    "evidence 0193 (Phase 0 matrix; 13 rows plus the phase0_skeptic_review block's implementation/test requirements this RED/GREEN applies)",
+    "evidence 0192 (ADR-0147 proposal, preapproval review, correction, recheck, owner acceptance trail)",
+    "evidence 0191 (ADR-0146 RED/GREEN; documents test_pipeline/test_trust.py::test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private as an already-known pre-existing, unrelated baseline failure -- reconfirmed here, still present, still unrelated)",
+    "ADR-0147 (decision-log.md lines 12079-12634; Decision points 1-12; Process; Non-goals)",
+    "ADR-0143 (decision-log.md ~10850-10875; the exact five forbidden-legacy symbols: _FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, _FixedP4VerificationClock, _FixedP4VerificationRevocations, _p4_close_admission)",
+    "docs/skills/test-drive-development.md"
+  ],
+  "authored_by": "implementer (Claude Sonnet 5)",
+  "red": {
+    "commit": "8d9d317",
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/production/test_ledger.py tests/production/test_adr0147_durable_admission.py tests/production/test_capture_lifecycle.py -q",
+    "interpreter": "/home/russell/dskit/.venv/bin/python (python3.12), venv reused from /home/russell/dskit/.venv",
+    "base_for_red": "8cf41c6 (unmodified production code -- dskit/pipeline/trust.py, dskit/production/{ledger,state,verifier,vocab}.py all stashed back to this commit's content for the RED run); RED commit 8d9d317 adds only test changes: a new tests/production/test_adr0147_durable_admission.py (verifier-layer contract, Phase 0 matrix rows 1/2/5/6/8/9/10/11/12 plus the canonicalization-equivalence regression from skeptic finding ii), new reserve_once/_transition_lock/health-state/second-process/torn-tail coverage appended to tests/production/test_ledger.py (rows 3/4/7/13), and a corrected _PLAN plus one renamed test in tests/production/test_capture_lifecycle.py (Decision point 2)",
+    "result": "34 failed, 210 passed",
+    "failure_kind": "genuine behavioral absence in every case -- AttributeError: 'HistoricalStudyVerifier' has no attribute 'durable'; AttributeError: '_SyntheticP4CapturedAuthorizationAuthority' object has no attribute 'inspect_capture_admission'; AttributeError: type object 'CapturedAuthorizationAuthority' has no attribute 'inspect_capture_admission'; ChainLedger has no reserve_once (AttributeError at the same call sites); vocab.LEDGER_HEALTH_STATES does not exist (AttributeError). None is an import/setup/construction mistake in the tests themselves -- the 210 other, unrelated tests in the same three files still pass unchanged.",
+    "note_on_incidental_passes": "one row-8-family assertion in the new file (test_authority_only_verifier_permanently_refuses_capture_even_fully_bound) and the renamed test_capture_lifecycle.py test coincidentally already pass on the unmodified base, because the OLD _REQUIRED_PLAN still names a required sixth 'admission' artifact my test's 5-key _PLAN never binds, so the OLD capture() already refuses (for the old reason) before ever reaching the new ledger-gated reason. This is disclosed per test-drive-development.md's 'do not manufacture a failure' guidance: the row is still genuinely proven RED by durable()/inspect_capture_admission's own dedicated tests in the same file, which do fail for the intended reason."
+  },
+  "green": {
+    "commit": "3531461",
+    "focused_command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/production/test_ledger.py tests/production/test_adr0147_durable_admission.py tests/production/test_capture_lifecycle.py -q",
+    "focused_result": "246 passed",
+    "affected_command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/production/test_ledger.py tests/production/test_verifier.py tests/pipeline/test_captured_authorization.py tests/pipeline/test_trust.py tests/pipeline/test_purity.py tests/production/test_purity.py tests/production/test_adr0147_durable_admission.py tests/production/test_capture_lifecycle.py -q",
+    "affected_result": "1 failed, 1764 passed",
+    "affected_failure_disposition": "the 1 failure is tests/pipeline/test_trust.py::test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private (extra items 'NonAuthorizingSyntheticRootPisProof', 'NonAuthorizingDynamicRootGraph' in trust.__all__ not in the test's own _PUBLIC_TYPES set) -- reproduced identically on the unmodified base commit 8cf41c6 (git stash; re-run in isolation: 1 failed, same assertion, same extra-items diff), and already documented as a pre-existing, unrelated baseline failure in evidence 0191 (ADR-0146's own closeout). Not touched, not fixed, not hidden by this change.",
+    "ruff": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m ruff check dskit/pipeline/trust.py dskit/production/ledger.py dskit/production/state.py dskit/production/verifier.py dskit/production/vocab.py tests/production/test_ledger.py tests/production/test_adr0147_durable_admission.py tests/production/test_capture_lifecycle.py tests/pipeline/test_captured_authorization.py -> 'All checks passed!'",
+    "diff_check": "git diff --check -> no output (clean) after RED and after GREEN"
+  },
+  "convergence_checkpoints": [
+    {
+      "checkpoint": "commit_legacy_capture (the ordinary v1 delegate HistoricalStudyVerifier.capture calls per Decision point 8(d)) and inspect_capture_admission's reused _validate_capture_request both read the SAME broker._p4_ledger._legacy_captures()/_nonces state -- a LITERAL repeat capture() call reusing the identical (published, frozen, port) a first, successful capture already consumed refuses at inspect_capture_admission's own F4-stream-liveness/nonce-freshness check, BEFORE ever reaching reserve_once's own (False, seq) 'consumed admission is spent' path. This is real, not a construction mistake: after the FIRST successful capture(), the stream is durably CAPTURED at the F4 level (a pre-existing, unrelated one-way transition this ADR does not touch), and _validate_capture_request (reused, per Decision point 3b, unchanged) refuses ANY further request referencing that same stream -- independent of admission_ref, nonce freshness, or the ledger's own state.",
+      "resolution": "not an architecture contradiction requiring a design change: the SAFETY property Decision point 8/11 actually demands (no second admission_use record; authority.capture never invoked a second time for the same admission) holds in EITHER case -- verified directly in the RED/GREEN tests. Row 2's/row 6's 'literal same-stream repeat' tests now assert the real, observable safety invariants (bind pytest.raises(ValueError) generically, plus 'no second record / audit unchanged') with a comment explaining which check fires and why. A SEPARATE, deterministic test (test_ledger_already_spent_refusal_is_isolated_from_f4_stream_state, plus test_a_fresh_unused_nonce_still_collides_on_the_same_admission_key for row 10) isolates reserve_once's own exact 'CAPTURED refuses after consumed admission is spent' message by pre-seeding the SAME reservation a concurrent thread or a crashed prior attempt would leave (i.e. BEFORE authority.capture ever touches the F4 stream), proving that path is genuinely reachable and correct on its own terms. Disclosed here in full per the convergence-checkpoint pattern rather than silently rewording the matrix's own expected_outcome text."
+    },
+    {
+      "checkpoint": "JsonlLedger._open()'s existing recovery walk (unchanged by this ADR) rebuilds only self._seq/_head/_index/snapshot-cadence from disk; it never calls self._state.apply(envelope) during recovery -- SeriesState.apply is only ever invoked, going forward, by future _commit calls. Decision point 10's 'replays the entire verified chain from genesis... via JsonlLedger._open's own existing recovery walk... followed by one state.apply(envelope) call per record' therefore cannot be satisfied by ChainLedger.__init__ alone; it is HistoricalStudyVerifier.durable(...)'s own responsibility, layered on top of the generic ChainLedger open.",
+      "resolution": "not a contradiction -- ChainLedger stays a generic base (Non-goals: 'no change to JsonlLedger's five store hooks'); durable()'s own body performs the explicit replay (for envelope in ledger.scan(): state.apply(envelope)) immediately after construction and refuses (ProductionError, closing the ledger) if the replayed SeriesState's own head disagrees with the ledger's independently verified head, exactly as Decision point 10 specifies. Documented in verifier.py's own comment at the call site."
+    }
+  ],
+  "baseline_pre_existing_failure": {
+    "test": "tests/pipeline/test_trust.py::test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private",
+    "reproduces_on_base_commit": true,
+    "verification": "git stash (all 5 production-code files reverted to 8cf41c6's content); PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/pipeline/test_trust.py::test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private -q -> 1 failed, identical AssertionError (extra items NonAuthorizingSyntheticRootPisProof, NonAuthorizingDynamicRootGraph); git stash pop restored the GREEN implementation before proceeding",
+    "prior_documentation": "evidence 0191 (ADR-0146 RED/GREEN) already names this exact test/failure as pre-existing and unrelated",
+    "disposition": "left untouched; not in scope for ADR-0147, not fixed, not silenced"
+  },
+  "files_changed": [
+    "dskit/pipeline/trust.py",
+    "dskit/production/ledger.py",
+    "dskit/production/state.py",
+    "dskit/production/verifier.py",
+    "dskit/production/vocab.py",
+    "tests/pipeline/test_captured_authorization.py",
+    "tests/production/test_adr0147_durable_admission.py",
+    "tests/production/test_ledger.py",
+    "tests/production/test_capture_lifecycle.py"
+  ],
+  "reviewed_blobs": {
+    "dskit/pipeline/trust.py": "d0892076a70390f1ff4efb255f84cccc3a86794a",
+    "dskit/production/ledger.py": "8a50ced2e2f76e022fe7d1d21197c33c52a9d4e2",
+    "dskit/production/state.py": "b0852d16b5ed593f961bea9ae5d913fc52c21a6a",
+    "dskit/production/verifier.py": "45712d456b1ece9df07aeaadf6974ef3ada4b438",
+    "dskit/production/vocab.py": "8e742b42191f7df5f2e169cd8a789c5b4da84711",
+    "tests/pipeline/test_captured_authorization.py": "207d48129d645c8fab232ebcfdd185b40ab9e67c",
+    "tests/production/test_adr0147_durable_admission.py": "0732cfa6cda9e67dc0a5d29cfc66e60f5b5d4143",
+    "tests/production/test_ledger.py": "a1c6c9f62c232a9fac2565787ff1f6a777b30a04",
+    "tests/production/test_capture_lifecycle.py": "7e7f951d33b90922af057e72cb5c3aaf239c5824"
+  },
+  "forbidden_symbol_isolation": {
+    "adr0143_forbidden_legacy_symbols_untouched": "confirmed by direct diff inspection (git diff 8cf41c6 -- dskit/ | grep for each name): _FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, _FixedP4VerificationClock, _FixedP4VerificationRevocations, _p4_close_admission all appear ZERO times in the production-code diff -- not one line of any of their own definitions changed",
+    "adr0146_compose_replay_tape_untouched": "confirmed by the same diff sweep -- zero occurrences",
+    "authorize_capture_set_commit_p4_batch_untouched": "trust.py's diff (dskit/pipeline/trust.py) is a single, purely additive hunk: the new inspect_capture_admission method inserted immediately after authorize_capture_set's existing body, touching zero existing lines; authorize_capture_set, CapturedAuthorizationAuthority.authorize_capture_set, _p4_checked_dispatch and _LifecycleAuthorizationLedger.commit_p4_batch are byte-for-byte unchanged (confirmed both by the diff itself and by test_authorize_capture_set_call_chain_never_references_the_durable_gate's own AST/source-text sweep for reserve_once/admission_use/_transition_lock/LEDGER_HEALTH_STATES, which finds none)",
+    "two_adjacent_test_corrections_disclosed": "tests/pipeline/test_captured_authorization.py's two facade-parametrized lock-contention tests (test_legacy_capture_waits_for_the_same_lock_then_observes_p4_commit, test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect) needed correction for their 'verifier'/'driver' parametrizations only -- Decision point 2 means an authority-only verifier/driver can no longer reach broker._p4_ledger's lock at all (it refuses mechanically, earlier); the 'direct' parametrization (broker.capture() called directly, wholly unaffected by this ADR) is unchanged and still exercises the original lock-contention proof"
+  },
+  "implementation_pins_applied": {
+    "ledger_health_states_all_export": "vocab.py.__all__ gains LEDGER_HEALTH_STATES (Phase 0 Major, corrected in the ADR text itself per evidence 0193's critical_correction_applied; re-verified present in the implementation)",
+    "posix_flock_assumption_comment": "one-line-plus docstring comment added at ChainLedger._acquire_lock stating the POSIX flock-release-on-crash assumption is a target-platform assumption, not proven by code (Phase 0 skeptic finding iv); pinned by a dedicated test (test_the_posix_flock_release_on_crash_assumption_is_documented_at_acquire_lock) asserting the words 'posix' and 'assumption' both appear in the method's own source",
+    "canonicalization_equivalence_regression": "test_canonical_bytes_and_hs_canonical_bytes_agree_on_admission_ref_shape (Phase 0 skeptic finding ii) plus test_inspect_capture_admission_returns_p4_reference_bytes_own_computation_not_a_recomputation, confirming inspect_capture_admission returns _p4_reference_bytes's own computed bytes rather than a second, possibly-divergent _canonical_bytes/_hs_canonical_bytes call",
+    "genuine_second_process_test": "test_a_second_process_reserve_once_refuses_fast_for_the_whole_first_lifetime and test_a_second_process_after_the_first_closes_sees_the_same_reserved_history in tests/production/test_ledger.py use real subprocess.run (via the file's existing _child() helper) against a genuinely separate OS process, not a same-process simulation; both pass"
+  },
+  "matrix_row_coverage": {
+    "1_first_ever_capture_durably_reserves": "tests/production/test_adr0147_durable_admission.py::test_first_ever_capture_durably_reserves",
+    "2_immediate_repeat_refuses_without_reinvoking_capture": "test_immediate_repeat_same_verifier_refuses_without_reinvoking_capture, test_a_second_durable_verifier_reopened_against_the_same_root_refuses_the_repeat, test_ledger_already_spent_refusal_is_isolated_from_f4_stream_state (see convergence_checkpoints for why the exact refusal reason is asserted the way it is)",
+    "3_same_process_multithread_concurrency": "tests/production/test_ledger.py::test_reserve_once_concurrent_same_id_exactly_one_thread_creates[2,8] (threading.Barrier-coordinated, no sleeps)",
+    "4_second_process_contention": "tests/production/test_ledger.py::test_a_second_process_reserve_once_refuses_fast_for_the_whole_first_lifetime, test_a_second_process_after_the_first_closes_sees_the_same_reserved_history (genuine subprocess.run via _child())",
+    "5_write_then_raise": "test_write_then_raise_reservation_survives_and_is_never_unspent",
+    "6_process_restart_after_clean_commit": "test_process_restart_after_clean_commit_refuses_repeat_without_reinvoking_capture; ledger-level close+reopen replay also covered generically by tests/production/test_ledger.py's reserve_once tests",
+    "7_process_restart_after_crash_uncertain_quarantine": "tests/production/test_ledger.py::test_reserve_once_barrier_failure_quarantines_uncertain_and_replay_recovers, test_state_apply_failure_quarantines_uncertain_and_replay_recovers_cleanly, test_sync_failure_during_barrier_quarantines_uncertain, test_pure_conflict_before_any_storage_touch_leaves_the_ledger_healthy",
+    "8_no_construction_path_bypasses_durable": "test_authority_only_verifier_permanently_refuses_capture_even_fully_bound, test_durable_refuses_a_non_p4_authority, test_durable_refuses_on_a_subclass, test_no_public_attribute_or_method_attaches_a_ledger_post_construction; tests/production/test_capture_lifecycle.py::test_authority_only_bound_verifier_still_permanently_refuses_capture",
+    "9_two_distinct_admission_refs_never_collide": "test_two_distinct_admission_refs_both_succeed_independently",
+    "10_idempotency_key_excludes_process_run_nonce": "test_idempotency_key_is_exactly_kind_schema_sha256_and_excludes_nonce_identity, test_a_fresh_unused_nonce_still_collides_on_the_same_admission_key",
+    "11_authorize_capture_set_unreached": "test_authorize_capture_set_still_behaves_identically_beside_a_durable_capture, test_authorize_capture_set_call_chain_never_references_the_durable_gate",
+    "12_inspect_capture_admission_read_only": "test_inspect_capture_admission_is_idempotent_and_side_effect_free, test_inspect_capture_admission_call_graph_touches_no_write_side_method",
+    "13_torn_final_line_never_poisons": "tests/production/test_ledger.py::test_a_torn_final_admission_use_line_is_discarded_never_treated_as_spent, test_a_torn_admission_use_line_inside_a_sealed_segment_still_refuses, test_the_posix_flock_release_on_crash_assumption_is_documented_at_acquire_lock"
+  },
+  "deployment_eligible": false,
+  "stop_condition_at_red_green_time": "no unresolved architecture contradiction; two genuine, narrow interactions between this ADR's design and pre-existing F4/vocab.py rules were found (see convergence_checkpoints and forbidden_symbol_isolation.two_adjacent_test_corrections_disclosed) and resolved within ADR-0147's own text, disclosed in full rather than papered over. Per the packet instructions, this session stops here: no final-lens review, no merge, no wrap of main. Branch codex/f5a-p7-remainder-20260916 pushed to origin at the end of this session."
+}
