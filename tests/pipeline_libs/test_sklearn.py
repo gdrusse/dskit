@@ -23,18 +23,27 @@ from dskit.pipeline.base import ConfigError
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.document import PipelineDocument, load_document
 from dskit.pipeline.driver import run_document
-from dskit.pipeline.fitted import SIDECAR_NAME, FeatureSelector
+from dskit.pipeline.fitted import (
+    SIDECAR_NAME,
+    ApplyTransform,
+    FeatureSelector,
+    FittedTransform,
+    TransformCarrier,
+)
 from dskit.pipeline.libs.sklearn import (
     NODE_KINDS,
+    SEGMENT_SCHEMA,
     ColumnSubsetEstimator,
     SklearnFit,
     SklearnPredict,
+    SklearnSegment,
     SklearnSelect,
     SklearnSignal,
     register,
 )
 from dskit.pipeline.node import NodeContext, NodeKindRegistry
 from dskit.pipeline.planner import plan
+from dskit.pipeline.split_policy import SPLIT_NAMES
 
 ASOF = "2026-01-01"
 
@@ -1293,6 +1302,274 @@ class TestSelectionDemo:
             )
             assert pinned.state == "ran", (threshold, pinned.error)
             assert pinned.outputs["select"]["features"] == expect
+
+
+# ---------------------------------------------------------------------------
+# SklearnSegment (ADR-0148) — the validation surface and the row rule
+# ---------------------------------------------------------------------------
+
+#: Removes a key from :func:`_segment_params` rather than setting it, so a
+#: "declared but wrong" case and an "absent" case are both expressible.
+_DROP = object()
+
+#: The canonical segment params every case below varies one knob of.
+SEGMENT_PARAMS = {
+    "fit_split": "train",
+    "features": ["f0", "f1"],
+    "algorithm": "kmeans",
+    "algorithm_params": {"n_clusters": 2, "n_init": 1},
+    "seed": 17,
+}
+
+#: One projectable row, carrying both declared features and neither
+#: reserved output key.
+SEGMENT_ROW = {"f0": 0.0, "f1": 1.0}
+
+
+def _segment_params(**overrides):
+    """The canonical params with ``overrides``; a ``_DROP`` value removes its key."""
+    merged = {**SEGMENT_PARAMS, **overrides}
+    return {k: v for k, v in merged.items() if v is not _DROP}
+
+
+class ReachTheValidators(SklearnSegment):
+    """A concrete stand-in whose only purpose is to be constructible.
+
+    ``SklearnSegment`` is abstract until its own ``fit`` and
+    ``apply_state`` exist, and an abstract class cannot be instantiated at
+    all — so the INHERITED validators, which are instance methods, would
+    be unreachable from a test. Both hooks raise: nothing in this section
+    may execute, and a test that accidentally did would say so rather than
+    pass quietly.
+    """
+
+    def fit(self, rows, params):
+        raise AssertionError("the validation slice never fits")
+
+    def apply_state(self, state, rows, params):
+        raise AssertionError("the validation slice never projects")
+
+
+def _segment(key="regime", **overrides):
+    return ReachTheValidators(key, _segment_params(**overrides))
+
+
+def test_the_segment_is_a_member_of_the_fitted_family():
+    assert SklearnSegment.role == "fitted_transform"
+    assert SklearnSegment.outputs == (
+        "transform", "rows", "metrics", "segment_model_id",
+    )
+    assert issubclass(SklearnSegment, FittedTransform)
+    assert SklearnSegment._PARAMS == FittedTransform._PARAMS + (
+        "algorithm", "algorithm_params", "features", "seed",
+    )
+
+
+def test_the_train_split_this_node_narrows_to_is_a_real_split_name():
+    """The literal is named once in the pack; this pins it to the vocabulary."""
+    from dskit.pipeline.libs.sklearn import _TRAIN_SPLIT
+
+    assert _TRAIN_SPLIT in SPLIT_NAMES
+
+
+def test_segment_params_canonical_set_validates_clean():
+    assert SklearnSegment.validate_params(_segment_params()) == []
+
+
+def test_segment_refuses_an_unknown_param():
+    problems = SklearnSegment.validate_params(_segment_params(n_clusters=3))
+    assert any("n_clusters" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans", "birch"])
+def test_segment_accepts_every_member_of_the_closed_catalog(algorithm):
+    assert SklearnSegment.validate_params(_segment_params(
+        algorithm=algorithm, algorithm_params={"n_clusters": 2}, seed=_DROP,
+    )) == []
+
+
+@pytest.mark.parametrize(
+    "algorithm",
+    [_DROP, None, "KMeans", "dbscan", "sklearn.cluster.KMeans", 3],
+)
+def test_segment_refuses_anything_outside_the_closed_catalog(algorithm):
+    """An arbitrary class path is deliberately excluded — this node extracts
+    centers, which only the three catalog members are known to expose."""
+    problems = SklearnSegment.validate_params(
+        _segment_params(algorithm=algorithm, seed=_DROP)
+    )
+    assert any("algorithm" in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "features",
+    [_DROP, None, [], ["f0", "f0"], ["f0", 3], ["f0", ""], "f0", ("f0", "f1")],
+)
+def test_segment_features_must_be_a_distinct_non_empty_key_list(features):
+    problems = SklearnSegment.validate_params(_segment_params(features=features))
+    assert any("features" in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "algorithm_params", [None, [], "n_clusters=2", {3: 1}, {"": 1}]
+)
+def test_segment_algorithm_params_must_be_a_non_empty_string_keyed_dict(
+    algorithm_params,
+):
+    problems = SklearnSegment.validate_params(
+        _segment_params(algorithm_params=algorithm_params)
+    )
+    assert any("algorithm_params" in p for p in problems), problems
+
+
+# -- the ONE source of randomness, per algorithm (four atomic cases) ---------
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans"])
+@pytest.mark.parametrize("seed", [_DROP, 17], ids=["no-seed", "with-seed"])
+def test_a_seeded_algorithm_refuses_algorithm_params_random_state(algorithm, seed):
+    """Refused with OR without a ``seed``: one knob, one spelling either way."""
+    problems = SklearnSegment.validate_params(_segment_params(
+        algorithm=algorithm,
+        algorithm_params={"n_clusters": 2, "random_state": 3},
+        seed=seed,
+    ))
+    assert any("random_state" in p for p in problems), problems
+
+
+def test_birch_refuses_a_seed_with_no_random_state_in_sight():
+    """Birch consumes no random state; a recorded seed would be false provenance."""
+    problems = SklearnSegment.validate_params(_segment_params(
+        algorithm="birch", algorithm_params={"n_clusters": 2}, seed=17,
+    ))
+    assert any("seed" in p and "birch" in p for p in problems), problems
+
+
+def test_birch_refuses_algorithm_params_random_state_with_no_seed_in_sight():
+    problems = SklearnSegment.validate_params(_segment_params(
+        algorithm="birch", algorithm_params={"random_state": 3}, seed=_DROP,
+    ))
+    assert any("random_state" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans"])
+def test_a_seeded_algorithm_accepts_a_seed_when_no_random_state_is_declared(
+    algorithm,
+):
+    assert SklearnSegment.validate_params(_segment_params(
+        algorithm=algorithm, algorithm_params={"n_clusters": 2}, seed=17,
+    )) == []
+
+
+@pytest.mark.parametrize("seed", [True, 1.5, -1, 2 ** 32, "7", None])
+def test_segment_seed_must_be_an_exact_int_inside_the_32_bit_range(seed):
+    problems = SklearnSegment.validate_params(_segment_params(seed=seed))
+    assert any("seed" in p for p in problems), problems
+
+
+# -- the two literal-"train" gates (§3.1) -----------------------------------
+
+
+@pytest.mark.parametrize("split", ["val", "cal", "test"])
+def test_a_non_train_fit_split_still_passes_the_mode_blind_param_gate(split):
+    """``validate_params`` is the family's own classmethod — mode-blind, so
+    it cannot narrow ``fit_split`` and this slice does not make it try."""
+    assert SklearnSegment.validate_params(_segment_params(fit_split=split)) == []
+
+
+@pytest.mark.parametrize("split", ["val", "cal", "test"])
+def test_the_train_gate_refuses_the_fit_split_the_param_gate_allowed(split):
+    problems = _segment(fit_split=split).validate_train_inputs(
+        {"rows": [dict(SEGMENT_ROW)]}
+    )
+    assert any("fit_split" in p and "train" in p for p in problems), problems
+
+
+def test_the_train_gate_accepts_the_train_split():
+    assert _segment().validate_train_inputs({"rows": [dict(SEGMENT_ROW)]}) == []
+
+
+@pytest.mark.parametrize("knob", ["seed", "algorithm_params"])
+def test_load_mode_refuses_the_fitting_knobs_that_describe_no_restored_state(knob):
+    """``seed`` and ``algorithm_params`` describe FITTING, not the extracted
+    predictor — a load that accepted them would imply it could recreate a
+    native model from them."""
+    node = ReachTheValidators(
+        "regime",
+        _segment_params(**{
+            "seed": _DROP, "algorithm_params": _DROP, knob: SEGMENT_PARAMS[knob],
+        }),
+        mode="load",
+        artifact="runs/x/fitted.json",
+    )
+    problems = node.validate_load_inputs({"rows": [dict(SEGMENT_ROW)]})
+    assert any(knob in p for p in problems), problems
+
+
+def test_load_mode_accepts_a_document_carrying_only_what_describes_the_state():
+    node = ReachTheValidators(
+        "regime",
+        _segment_params(seed=_DROP, algorithm_params=_DROP),
+        mode="load",
+        artifact="runs/x/fitted.json",
+    )
+    assert node.validate_load_inputs({"rows": [dict(SEGMENT_ROW)]}) == []
+
+
+# -- row_problems: one owner, two doorways, six atomic refusals -------------
+
+#: ``(id, rows, fragment)`` — each row breaks exactly ONE rule, because a
+#: compound fixture proves at most one of its branches.
+_UNPROJECTABLE_ROWS = [
+    ("non-mapping-row", [SimpleNamespace(f0=0.0, f1=1.0)], "mapping"),
+    ("absent-feature", [{"f0": 0.0}], "'f1'"),
+    ("non-finite-feature", [{"f0": 0.0, "f1": float("nan")}], "'f1'"),
+    ("bool-feature", [{"f0": 0.0, "f1": True}], "'f1'"),
+    ("segment-already-present", [{**SEGMENT_ROW, "segment": 0}], "'segment'"),
+    (
+        "segment_model_id-already-present",
+        [{**SEGMENT_ROW, "segment_model_id": "deadbeef"}],
+        "'segment_model_id'",
+    ),
+]
+_UNPROJECTABLE_IDS = [case[0] for case in _UNPROJECTABLE_ROWS]
+
+
+@pytest.mark.parametrize(
+    "_id,rows,fragment", _UNPROJECTABLE_ROWS, ids=_UNPROJECTABLE_IDS
+)
+def test_the_fitted_doorway_refuses_each_unprojectable_row(_id, rows, fragment):
+    problems = _segment().validate_common_inputs({"rows": rows})
+    assert any(fragment in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "_id,rows,fragment", _UNPROJECTABLE_ROWS, ids=_UNPROJECTABLE_IDS
+)
+def test_the_carrier_doorway_refuses_each_unprojectable_row(_id, rows, fragment):
+    """The SECOND stream reaches the same rule through ``ApplyTransform`` —
+    otherwise the sibling half of the family projects unvalidated rows."""
+    carrier = TransformCarrier(_segment(), {"schema": SEGMENT_SCHEMA})
+    problems = ApplyTransform("apply", {}).validate_inputs(
+        {"transform": carrier, "rows": rows}
+    )
+    assert any(fragment in p for p in problems), problems
+
+
+def test_both_doorways_accept_a_projectable_stream():
+    rows = [dict(SEGMENT_ROW), {"f0": 1.0, "f1": 0.0, "kept": "untouched"}]
+    node = _segment()
+    assert node.validate_common_inputs({"rows": rows}) == []
+    carrier = TransformCarrier(node, {"schema": SEGMENT_SCHEMA})
+    assert ApplyTransform("apply", {}).validate_inputs(
+        {"transform": carrier, "rows": rows}
+    ) == []
+
+
+def test_the_fitted_doorway_still_refuses_a_stream_that_is_not_a_list():
+    problems = _segment().validate_common_inputs({"rows": iter([SEGMENT_ROW])})
+    assert any("rows must be a list" in p for p in problems), problems
+
 
 
 # ---------------------------------------------------------------------------

@@ -194,20 +194,23 @@ import re
 import sys
 from collections.abc import Mapping
 
-from dskit.pipeline.fitted import FeatureSelector
+from dskit.pipeline.fitted import FeatureSelector, FittedTransform
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     TrainableNode,
     atomic_write,
     reject_unknown_params,
 )
+from dskit.pipeline.records import number_ok
 
 __all__ = [
     "ColumnSubsetEstimator",
     "EstimatorBundle",
     "NODE_KINDS",
+    "SEGMENT_SCHEMA",
     "SklearnFit",
     "SklearnPredict",
+    "SklearnSegment",
     "SklearnSelect",
     "SklearnSignal",
     "load_bundle",
@@ -238,6 +241,45 @@ _SELECTOR_METHODS = ("fit", "get_support")
 
 #: The example a missing/malformed ``selector`` path is refused against.
 _SELECTOR_EXAMPLE = "sklearn.feature_selection.SelectKBest"
+
+#: The tag a segment state carries, and the only one a load accepts. The
+#: ``_ARTIFACT_FORMAT`` precedent: an identity a reader can refuse by name
+#: beats a shape it has to guess at.
+SEGMENT_SCHEMA = "dskit.sklearn-segment/v1"
+
+#: The closed catalog :class:`SklearnSegment` fits. An arbitrary import
+#: path is deliberately excluded: this node EXTRACTS centers and labels
+#: into JSON, and only these three are known to expose them.
+_SEGMENT_ALGORITHMS = ("birch", "kmeans", "minibatch_kmeans")
+
+#: Catalog member -> ``sklearn.cluster`` class name.
+_SEGMENT_CLASSES = {
+    "birch": "Birch",
+    "kmeans": "KMeans",
+    "minibatch_kmeans": "MiniBatchKMeans",
+}
+
+#: Which members consume a ``random_state``. ``birch`` does not, so a
+#: ``seed`` declared beside it would be provenance nothing consumed.
+_SEEDED_SEGMENT_ALGORITHMS = ("kmeans", "minibatch_kmeans")
+
+#: The fitted attributes each member's extracted state is read from:
+#: ``(centers, labels)``. KMeans-family labels are positional and derived,
+#: Birch's are a separate attribute whose values repeat by design.
+_SEGMENT_ATTRIBUTES = {
+    "birch": ("subcluster_centers_", "subcluster_labels_"),
+    "kmeans": ("cluster_centers_", None),
+    "minibatch_kmeans": ("cluster_centers_", None),
+}
+
+#: The two row keys :class:`SklearnSegment` writes. A row already carrying
+#: one is refused rather than overwritten — the input is evidence.
+_SEGMENT_OUTPUT_KEYS = ("segment", "segment_model_id")
+
+#: The ONE split a segmentation may be learned from. Named once here and
+#: pinned to the vocabulary by ``test_sklearn.py``; both gates ask
+#: :func:`_non_train_fit_split_problem`, never their own copy of it.
+_TRAIN_SPLIT = "train"
 
 #: The selector constructor arguments that CANNOT be spelled in a JSON
 #: kwargs block — one is an estimator OBJECT, the other a FUNCTION — so
@@ -370,21 +412,50 @@ def _seed_problems(value):
 
 
 def _kwargs_problems(name, value):
-    """Shape only: a dict with string keys. What is INSIDE is the
+    """Shape only: a dict with NON-EMPTY string keys. What is INSIDE is the
     constructor's contract — a typo'd nested key ([[I-227]]) surfaces as
     the constructor's own refusal at fit time, wrapped by name.
 
     One rule for every kwargs block this pack forwards to a library
-    constructor (``estimator_params``, ``selector_params``): the shape
-    question is identical, and a second copy would be the place the two
-    drifted.
+    constructor (``estimator_params``, ``selector_params``,
+    ``algorithm_params``): the shape question is identical, and a second
+    copy would be the place they drifted.
+
+    The empty key is refused HERE rather than left to the constructor
+    because ``cls(**{"": 1})`` is not a kwarg any Python callable can
+    accept — it is a plan-time shape error wearing a run-time costume,
+    and this pack refuses shape at plan.
     """
-    if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
+    if not isinstance(value, dict) or any(
+        not isinstance(k, str) or not k for k in value
+    ):
         return [
             f"{name} must be a dict of constructor kwargs with "
-            f"string keys, got {value!r}"
+            f"non-empty string keys, got {value!r}"
         ]
     return []
+
+
+def _non_train_fit_split_problem(split):
+    """The literal-``"train"`` rule, or ``None`` — asked at BOTH gates.
+
+    A segmentation fitted on val, cal or test leaks exactly the way the
+    fitted family exists to prevent, and the family's own
+    ``validate_params`` cannot refuse it: that classmethod is mode-blind,
+    so it must keep accepting every ``SPLIT_NAMES`` value (a load-mode
+    document lawfully restates the split its artifact saw). The narrowing
+    therefore lives downstream, where mode IS known, at the two places
+    that can reach a fit — and it is ONE function so the two cannot drift
+    into disagreeing about what "train" means.
+    """
+    if split == _TRAIN_SPLIT:
+        return None
+    return (
+        f"fit_split is {split!r}, but a segmentation may only be LEARNED "
+        f"from {_TRAIN_SPLIT!r} — every other split is held out, and a "
+        "segment fitted on one of them would carry held-out structure "
+        "into the rows a model is scored on"
+    )
 
 
 def _predict_method_problems(value):
@@ -2170,6 +2241,281 @@ class SklearnSelect(FeatureSelector):
                 f"target ({exc}) — if this selector supervises on one, declare "
                 "the 'label' knob naming the row key that holds it"
             ) from exc
+
+
+class SklearnSegment(FittedTransform):
+    """Assign every row a SEGMENT learned from the train split alone.
+
+    A member of the fitted-transform family (ADR-0040/0148): the base owns
+    the whole envelope — fitting on the declared split and nothing else,
+    the persisted JSON sidecar, the load-mode restore that never refits,
+    and the row-independence screen — and this class supplies ``fit`` and
+    ``apply_state``.
+
+    The catalog is CLOSED (``kmeans``, ``minibatch_kmeans``, ``birch``),
+    unlike this pack's estimator and selector doorways, which take any
+    import path. The reason is the state: this node persists EXTRACTED
+    centers and labels as JSON rather than a pickled model, and only
+    these three are known to expose them. A native model is never
+    written, so a serving run restores a plain JSON object and no
+    deserialiser takes a path.
+
+    ``segment`` names the assigned center's label and ``segment_model_id``
+    the sha256 of the canonical state that assigned it — on every row AND
+    as a port, so a downstream row can be traced to the exact segmentation
+    that produced it. No cluster-quality score is reported: choosing
+    between segmentations on an internal score is model selection, and
+    this node deliberately supplies no objective for one.
+
+    Parameters
+    ----------
+    params : dict
+        ``algorithm`` (required, one of ``"kmeans"``,
+        ``"minibatch_kmeans"``, ``"birch"``), ``algorithm_params`` (dict
+        of that class's constructor kwargs, default ``{}``), ``features``
+        (required, the row keys the distance reads, in center order),
+        ``seed`` (int in ``[0, 2**32)``, default 0, threaded as
+        ``random_state``; refused beside ``birch``, which consumes none),
+        plus the family's ``fit_split`` / ``order_field`` /
+        ``purity_check``.
+
+    Examples
+    --------
+    Learn three regimes from the train split and label every row::
+
+        node = SklearnSegment("regime", {
+            "fit_split": "train",
+            "features": ["feature_a", "feature_b"],
+            "algorithm": "kmeans",
+            "algorithm_params": {"n_clusters": 3, "n_init": 1},
+            "seed": 17,
+        })
+        out = node.run(ctx, {"rows": rows})
+        # -> out["rows"][0]["segment"] == 2
+        # -> out["segment_model_id"] == "9f86d0…"
+    """
+
+    #: ADR-0091 phase 2b: audited and licensed, and stated HERE rather
+    #: than inherited — a subclass that ever overrode the load path would
+    #: keep the base's licence silently. This class overrides only
+    #: fit-path members, so its restore is ``FittedTransform.run_load`` ->
+    #: ``_sidecar`` -> ``Node.read_artifact``: the state is centers and
+    #: labels in JSON, never a pickled model, so no deserialiser takes a
+    #: path and the library is named on the FIT path alone.
+    serving_load_audited = True
+
+    outputs = FittedTransform.outputs + ("segment_model_id",)
+
+    _PARAMS = FittedTransform._PARAMS + (
+        "algorithm",
+        "algorithm_params",
+        "features",
+        "seed",
+    )
+
+    # -- the knobs ---------------------------------------------------------
+
+    def features(self):
+        """The declared feature keys, in the order centers are stored (list)."""
+        declared = self.params.get("features")
+        return list(declared) if isinstance(declared, (list, tuple)) else []
+
+    def algorithm(self):
+        """The catalog member this node fits (str)."""
+        return self.params.get("algorithm")
+
+    # -- validation --------------------------------------------------------
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The family's problems, plus one per broken knob of this
+            class's own: a missing or off-catalog ``algorithm``, a
+            ``features`` list that is not distinct and non-empty, a
+            malformed ``algorithm_params`` block, and any spelling of
+            randomness the selected algorithm cannot honour.
+
+        Notes
+        -----
+        ``fit_split`` is NOT narrowed here. This is the family's own
+        mode-blind classmethod, which cannot see whether the node will
+        fit or restore; the literal-``"train"`` gates live in
+        :meth:`validate_train_inputs` and :meth:`fit`.
+        """
+        problems = super().validate_params(params)
+        if "features" not in params:
+            problems.append(
+                "features is required — the row keys the distance reads, in "
+                "the order the centers store them"
+            )
+        else:
+            problems += _feature_list_problems("features", params["features"])
+        problems += cls._algorithm_problems(params)
+        return problems
+
+    @classmethod
+    def _algorithm_problems(cls, params):
+        """The closed catalog, its kwargs block, and one source of randomness."""
+        problems = []
+        algorithm = params.get("algorithm")
+        if algorithm not in _SEGMENT_ALGORITHMS:
+            problems.append(
+                f"algorithm is required and must be one of "
+                f"{list(_SEGMENT_ALGORITHMS)} — this node extracts centers "
+                "into JSON, so the catalog is closed rather than an "
+                f"arbitrary import path, got {algorithm!r}"
+            )
+        kwargs = params.get("algorithm_params", {})
+        problems += _kwargs_problems("algorithm_params", kwargs)
+        problems += cls._randomness_problems(params, algorithm, kwargs)
+        return problems
+
+    @classmethod
+    def _randomness_problems(cls, params, algorithm, kwargs):
+        """One source of randomness, and only where the algorithm has one."""
+        problems = []
+        seeded = algorithm in _SEEDED_SEGMENT_ALGORITHMS
+        if isinstance(kwargs, dict) and "random_state" in kwargs:
+            problems.append(
+                "algorithm_params.random_state is set — declare params.seed "
+                "instead, the one knob this node threads into the estimator "
+                "and records"
+                if seeded else
+                f"algorithm_params.random_state is set, but {algorithm!r} "
+                "consumes no random state — the kwarg would be refused by "
+                "the constructor, and recording it would be provenance for "
+                "something that never happened"
+            )
+        if "seed" not in params:
+            return problems
+        if seeded or algorithm not in _SEGMENT_ALGORITHMS:
+            problems += _seed_problems(params["seed"])
+        else:
+            problems.append(
+                f"seed is set, but {algorithm!r} has no random_state "
+                "contract — a seed it cannot consume would be false "
+                "provenance; drop the knob"
+            )
+        return problems
+
+    def validate_train_inputs(self, inputs):
+        """Problems a FIT reads, empty when none — the FIRST literal-``"train"`` gate.
+
+        Parameters
+        ----------
+        inputs : dict
+            The materialized inputs; unused — this gate asks about the
+            declared split, which the stream cannot answer for.
+
+        Returns
+        -------
+        list of str
+            One problem when ``fit_split`` is anything but ``"train"``.
+        """
+        problem = _non_train_fit_split_problem(self.fit_split())
+        return [problem] if problem else []
+
+    def validate_load_inputs(self, inputs):
+        """Problems a RESTORE reads, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            The materialized inputs; unused.
+
+        Returns
+        -------
+        list of str
+            One problem per FITTING knob the document declared.
+            ``seed`` and ``algorithm_params`` describe how a state was
+            learned, never what the extracted predictor IS — a load that
+            accepted them would imply it could rebuild the native model
+            they configured, which this class never persisted.
+        """
+        return [
+            f"{knob} describes FITTING, not the restored state — a loaded "
+            "segmentation is centers and labels, and nothing in it can be "
+            f"rebuilt from {knob}; drop the knob under mode='load'"
+            for knob in ("algorithm_params", "seed")
+            if knob in self.params
+        ]
+
+    def row_problems(self, rows):
+        """Ways ``rows`` cannot be segmented; empty when every one can.
+
+        This class's per-row admission is bespoke — it inherits none —
+        and it is the SOLE owner of the rule, reached both by this node's
+        own stream and by the second stream an
+        :class:`~dskit.pipeline.fitted.ApplyTransform` carrier projects.
+
+        Parameters
+        ----------
+        rows : list
+            The stream, already known to be a list.
+
+        Returns
+        -------
+        list of str
+            One problem per row that is not a mapping, per declared
+            feature that is absent or not a finite real number (a
+            ``bool`` is not one — ``True`` would otherwise enter the
+            distance as ``1``), and per row already carrying one of the
+            two keys this node writes.
+        """
+        features = self.features()
+        if _feature_list_problems("features", features):
+            # validate_params already named the broken knob; repeating it
+            # once per row would bury the message that matters.
+            features = ()
+        problems = []
+        for i, row in enumerate(rows):
+            if not isinstance(row, Mapping):
+                problems.append(
+                    f"rows[{i}] is a {type(row).__name__} — a segment reads "
+                    "features by key and writes two keys of its own, so "
+                    "every row must be a mapping"
+                )
+                continue
+            problems += self._row_feature_problems(i, row, features)
+            problems += self._reserved_key_problems(i, row)
+        return problems
+
+    def _reserved_key_problems(self, index, row):
+        """The two keys this node writes, refused rather than overwritten."""
+        return [
+            f"rows[{index}] already carries {name!r}, which this node "
+            "writes — a segmentation never overwrites the evidence it was "
+            "handed; rename the incoming field upstream"
+            for name in _SEGMENT_OUTPUT_KEYS
+            if name in row
+        ]
+
+    def _row_feature_problems(self, index, row, features):
+        """The declared features of one row: present, and real numbers."""
+        problems = []
+        for name in features:
+            if name not in row:
+                problems.append(
+                    f"rows[{index}] carries no {name!r} — EVERY row is "
+                    "assigned, so every row must carry every declared "
+                    "feature (cut or repair the stream upstream)"
+                )
+            elif not number_ok(row[name]):
+                problems.append(
+                    f"rows[{index}] field {name!r} is {row[name]!r}, not a "
+                    "finite real number — the assignment is arithmetic on "
+                    "the declared features, and a bool is not a number here"
+                )
+        return problems
 
 
 # ---------------------------------------------------------------------------
