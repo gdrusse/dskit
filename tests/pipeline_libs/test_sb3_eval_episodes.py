@@ -403,7 +403,7 @@ TRAINED = {
 }
 
 
-def artifact(tmp_path, **overrides):
+def artifact(tmp_path, sub="fixture", **overrides):
     """A real on-disk ``model.zip`` + verified sidecar — no SB3 involved.
 
     ``_read_sidecar`` checks existence, JSON shape, the required keys, the
@@ -415,7 +415,7 @@ def artifact(tmp_path, **overrides):
     Its trained values are deliberately DIFFERENT from what
     :data:`PARAMS` declares — see :data:`TRAINED`.
     """
-    directory = tmp_path / "fixture"
+    directory = tmp_path / sub
     directory.mkdir(parents=True, exist_ok=True)
     zip_path = directory / "model.zip"
     zip_path.write_bytes(b"opaque bytes; this file is never opened as a model")
@@ -1283,3 +1283,69 @@ def test_both_flags_true_on_a_later_step_still_counts_once(tmp_path, lab):
     assert outputs["metrics"]["terminated_episodes"] == 1
     assert outputs["metrics"]["truncated_episodes"] == 0
     assert outputs["metrics"]["max_episode_steps_episodes"] == 0
+
+
+# -- one pinned artifact, everywhere ---------------------------------------
+
+
+def test_a_declared_pin_and_a_wired_port_resolve_to_ONE_artifact(
+    tmp_path, lab
+):
+    """Both pin sources present AND disagreeing — the case no other
+    fixture creates, and the one where an incoherence is invisible.
+
+    ``pinned_artifact``'s documented order is node-level pin, then the
+    declared param, then the wired port. A ``score`` role has no
+    node-level pin at all (``Node.node_level_pin`` answers ``None``, and
+    only ``TrainableNode`` overrides it), so the declared param wins
+    here — and, note, a declared/wired DISAGREEMENT is resolved silently
+    rather than refused, for every pinning kind in this pack. That is
+    tier-1's behaviour and not this ADR's to change; what this test pins
+    is the consequence that matters for the evidence.
+
+    Which source wins matters less than that ONE file wins EVERYWHERE:
+    the sidecar that was hash-verified, the model that was restored, and
+    the ``artifact_path`` and ``state_hash`` the durable record attests
+    must all name the same file. Verifying one artifact and running
+    another would attest a model that never ran.
+    """
+    declared, declared_sidecar = artifact(
+        tmp_path, sub="declared", env="my_child.envs:EnvA",
+    )
+    wired, wired_sidecar = artifact(
+        tmp_path, sub="wired", env="my_child.envs:EnvB",
+    )
+    assert declared != wired
+    assert declared_sidecar["state_hash"] != wired_sidecar["state_hash"]
+
+    node = Sb3EvalEpisodes("eval", params(
+        n_episodes=1, artifact=declared, env=_DROP, env_params=_DROP,
+    ))
+    outputs = node.run(ctx(tmp_path), {"artifact_path": wired})
+    environment = record(outputs)["environment"]
+
+    # The record names the file the run actually used …
+    assert environment["artifact_path"] == declared
+    assert environment["state_hash"] == declared_sidecar["state_hash"]
+    # … the model was restored from that same file, not the other one …
+    assert [call[0] for call in lab.loads] == [declared]
+    # … and the environment defaulted from THAT artifact's sidecar, which
+    # is how we know the verified sidecar was that file's too.
+    assert lab.envs[0].ref == "my_child.envs:EnvA"
+
+
+@pytest.mark.parametrize("split", ["val", "test"])
+def test_the_record_states_the_split_it_actually_measured(tmp_path, split):
+    """Asserted at BOTH lawful values, not only at the fixture's.
+
+    With only ``"val"`` ever reaching a run, a hardcoded ``"val"`` in the
+    provenance block reads correctly and a ``test``-split evaluation is
+    labelled ``val`` in durable, hash-pinned audit evidence — the exact
+    misrepresentation the val/test narrowing exists to prevent. The log
+    line reads the param independently, so a regression in the record
+    alone leaves no other symptom.
+    """
+    reference, _sidecar = artifact(tmp_path)
+    node = Sb3EvalEpisodes("eval", params(n_episodes=1, split=split))
+    outputs = node.run(ctx(tmp_path), {"artifact_path": reference})
+    assert record(outputs)["environment"]["split"] == split

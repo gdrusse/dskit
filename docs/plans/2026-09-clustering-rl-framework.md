@@ -1201,3 +1201,63 @@ definition, not to patch another instance.
 
 Scope, contract, authority and the trust boundary are unchanged by this
 checkpoint. No production code moved in rounds 2 or 3: both were test-only.
+
+### 11.1 The inventory was falsified (review round 4)
+
+Round 4's brief was to falsify §11 rather than to re-review the patches,
+and it did, twice. Recorded here rather than quietly amended above,
+because a checkpoint that edits away its own wrong claim teaches nothing.
+
+**§11 was WRONG about `artifact_path`.** It certified that the declared
+param and the wired port "CANNOT differ; `pinned_artifact` refuses a
+contradiction between them". They can. `Node.pinned_artifact`
+(`node.py:898-908`) refuses only a contradiction between the NODE-LEVEL pin
+and the declared param, then resolves declared-vs-wired by taking the first
+non-empty. And `Node.node_level_pin()` answers `None` unconditionally — only
+`TrainableNode` overrides it — so for a `score`-role kind that refusal branch
+is dead code. A document may lawfully declare `params["artifact"]` AND wire
+`$train.artifact_path` at two different files, and nothing says a word.
+
+The error was mine and it was a reading, not a typo: I asserted a refusal
+without checking that the branch containing it was reachable for this
+class. Three mutants survived on it — swapping the two sources, loading the
+MODEL from the wired port while verifying the sidecar on the declared one,
+and the reverse. The last two are the sharp ones: the hash-verified sidecar
+and the executed model would be different files, so the `state_hash` in the
+durable record would attest an artifact that never ran.
+
+Pinned now by one run-level case with both sources present and disagreeing,
+asserting that ONE file wins EVERYWHERE — the verified sidecar, the restored
+model, and the recorded `artifact_path`/`state_hash`.
+
+**Disclosed, NOT fixed here:** that a declared/wired DISAGREEMENT is
+resolved silently rather than refused is tier-1 behaviour shared by every
+pinning kind in this pack (`sb3-eval`, `sb3-policy`) and beyond, and it is
+untested for all of them. Refusing it would be a change to a shared service
+with its own blast radius, which ADR-0148 does not cover. It needs its own
+ADR; this branch only stops ITS kind from being incoherent about which file
+it used.
+
+**§11's DEFINITION was too narrow.** It asked "does this value have more
+than one candidate SOURCE", and so filed `split` under "single-sourced" —
+true, and beside the point. `_provenance`'s `split` was asserted at exactly
+one value (`"val"`, the fixture's), so a hardcoded `"val"` passes: a
+`test`-split evaluation would be labelled `val` in durable, hash-pinned
+evidence. That is the same shape as `deterministic`, which §11 DID fix,
+one question away.
+
+The widened definition, which the rest of the inventory now answers: **a
+value is unpinned when the fixtures exercise it at exactly one value AND
+that value equals something the code could plausibly have hardcoded,
+defaulted to, or read from the wrong place.** Swept under it: `split` (now
+asserted at both `"val"` and `"test"`), `seed` (17 and the omitted 0),
+`deterministic` (True and False), `n_episodes` (1, 2, 3 and the omitted 5),
+`algo`/`policy` (the artifact's, differing from this pack's defaults),
+`env`/`env_params` (declared, differing from the artifact's), both schema
+tags (literals), `n_segments` (a many-to-one Birch state), and the episode
+outcome (multi-step episodes).
+
+**What this round did NOT overturn.** §11's other two "cannot differ"
+claims — `features` and `algorithm` between document and restored state —
+were traced through every path to `apply_state` by an independent reviewer
+and confirmed SOUND.
