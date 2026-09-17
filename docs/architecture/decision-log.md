@@ -13220,8 +13220,29 @@ closing the gap does not reopen them.
 
 *(Number taken at commit time; see ADR-0150's note on the skipped numbers.)*
 
-**Status:** PROPOSED, awaiting owner approval. Owner ruled it IN SCOPE with
-"ADR now, build now" (2026-09-17). Not implemented.
+**Status:** APPROVED by the owner and IMPLEMENTED 2026-09-17, all five
+Decision points as written. `tests/onboarding` + `tests/pipeline_libs` are
+**2173 passed / 0 failed** (112 skipped); the two suites the work touched are
+`tests/onboarding/test_observations.py` **77 passed** (65 before) and
+`tests/pipeline_libs/test_observations.py` **67 passed / 8 skipped** (62
+before) -- 17 new cases, 16 of them RED before the code existed. Every new
+guard was probed by disabling it: the function's refusal, the node's refusal,
+the intake gate itself, its placement ABOVE `admit`, the `_PARAMS` entry, the
+docstring entry, and the pass-through into the scan each `1 failed` disabled
+and `1 passed` restored. Decision 5's identity claim is verified both ways: a
+document that omits the knob AND one that declares it `null` both hash
+`6689bdef...f353`, the hash the same document had on the parent commit, and
+only a real declared bound moves it (`381220f0...601b`).
+
+Two details the Decision points left open, settled in the loud direction. The
+keyword is APPENDED to `scan_stream`'s signature rather than inserted beside
+`since_ms`, so no positional caller moves; the docstring documents it in
+signature order. And the bound is evaluated BEFORE `admit`, which moved the
+`acquired_at` resolution above that gate -- a record `admit` drops now has its
+stamp parsed, so a corrupt `acquired_at` on such a row refuses where it
+previously passed unseen. That widens an existing refusal rather than
+narrowing one, and it is what lets `admit` keep the promise that it never
+judges a row which does not exist at the vintage being read.
 
 **Context.** `onboarding.observations.scan_stream` deduplicates by "for one
 key, the row with the LATEST `acquired_at` INSTANT wins"

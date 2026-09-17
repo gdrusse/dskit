@@ -43,6 +43,16 @@ def _write(root, acq, rows, codec="none", stream="bars"):
     return path
 
 
+def _instant_ms(stamp):
+    """Exact epoch ms of an ISO stamp, by timedelta arithmetic — never
+    the reader's own ``_epoch_ms`` (an expectation sourced from its
+    subject asserts nothing)."""
+    at = datetime.fromisoformat(stamp)
+    return (at - datetime(1970, 1, 1, tzinfo=timezone.utc)) // timedelta(
+        milliseconds=1
+    )
+
+
 def _scan(root, **over):
     kwargs = dict(source="alpaca", stream="bars",
                   key_fields=("symbol", "ts"), ts_field="ts")
@@ -778,6 +788,195 @@ class TestIntakeBounds:
         assert peak_bounded < peak_whole / 3, (
             f"bounded peak {peak_bounded} vs whole-store {peak_whole}"
         )
+
+
+class TestAcquisitionVintage:
+    """ADR-0154: an INCLUSIVE upper bound on ``acquired_at``, so a run
+    simulating 2015 is served the values 2015 could see."""
+
+    #: One key, pulled in 2015 and REVISED in 2026 — the gap ADR-0154
+    #: closes, in two rows.
+    TS = "2015-06-01T14:30:00+00:00"
+    FIRST = "2015-06-01T20:00:00+00:00"
+    REVISED = "2026-01-06T00:00:00+00:00"
+
+    def _revised(self, tmp_path, name="store"):
+        """A 2015 bar, superseded by a 2026 corrective acquisition."""
+        root = str(tmp_path / name)
+        _write(root, "acq-0001",
+               [_row("AAPL", self.TS, 100.0, acquired=self.FIRST)])
+        _write(root, "acq-0002",
+               [_row("AAPL", self.TS, 555.0, acquired=self.REVISED)])
+        return root
+
+    def test_a_later_revision_is_invisible_at_an_earlier_acquisition_vintage(
+        self, tmp_path
+    ):
+        # The defect, as a test: unbounded, a run simulating 2015 is
+        # served the number 2026 knows — one that did not exist at
+        # decision time. Bounded, the winner per key is the latest value
+        # AS OF THAT VINTAGE.
+        root = self._revised(tmp_path)
+        assert [r["close"] for r in _scan(root)] == [555.0]
+        at_2015 = _scan(root, as_of_acquisition_ms=_instant_ms(self.FIRST))
+        assert [r["close"] for r in at_2015] == [100.0]
+        # ...and visible again at a vintage that reaches the revision.
+        later = _scan(root, as_of_acquisition_ms=_instant_ms(self.REVISED))
+        assert [r["close"] for r in later] == [555.0]
+
+    def test_the_vintage_bound_is_inclusive_to_the_millisecond(self, tmp_path):
+        # Both sides of the boundary, or "INCLUSIVE" is a word no test
+        # holds: the revision's own instant admits it, one ms below does
+        # not.
+        root = self._revised(tmp_path)
+        edge = _instant_ms(self.REVISED)
+        assert [r["close"] for r in
+                _scan(root, as_of_acquisition_ms=edge)] == [555.0]
+        assert [r["close"] for r in
+                _scan(root, as_of_acquisition_ms=edge - 1)] == [100.0]
+
+    def test_an_absent_acquired_at_always_passes_the_bound(self, tmp_path):
+        # A truly ABSENT acquired_at reads as the earliest possible
+        # instant, so no vintage can exclude it. Stated, not left to be
+        # discovered.
+        root = str(tmp_path)
+        bare = _row("AAPL", self.TS, 100.0)
+        del bare["acquired_at"]
+        _write(root, "acq-0001", [bare])
+        _write(root, "acq-0002",
+               [_row("MSFT", self.TS, 200.0, acquired=self.REVISED)])
+        records = _scan(root, as_of_acquisition_ms=0)
+        assert [(r["symbol"], r["close"]) for r in records] == [("AAPL", 100.0)]
+
+    def test_a_vintage_below_every_record_reads_empty(self, tmp_path):
+        # Truthfully empty, never a refusal: nothing had been acquired
+        # yet at that instant, and that is an answer.
+        root = self._revised(tmp_path)
+        assert _scan(root,
+                     as_of_acquisition_ms=_instant_ms(self.FIRST) - 1) == []
+
+    def test_the_vintage_composes_with_since_ms(self, tmp_path):
+        # Two bounds on two different clocks: since_ms cuts EVENT time,
+        # the vintage cuts ACQUISITION time. Neither stands in for the
+        # other, and the pair is their intersection.
+        root = str(tmp_path)
+        early, late = self.TS, "2015-06-01T14:31:00+00:00"
+        _write(root, "acq-0001", [
+            _row("AAPL", early, 100.0, acquired=self.FIRST),
+            _row("AAPL", late, 101.0, acquired=self.FIRST),
+        ])
+        _write(root, "acq-0002", [
+            _row("AAPL", early, 500.0, acquired=self.REVISED),
+            _row("AAPL", late, 501.0, acquired=self.REVISED),
+        ])
+        vintage = _instant_ms(self.FIRST)
+        assert [r["close"] for r in
+                _scan(root, as_of_acquisition_ms=vintage)] == [100.0, 101.0]
+        assert [r["close"] for r in
+                _scan(root, since_ms=_instant_ms(late))] == [501.0]
+        both = _scan(root, since_ms=_instant_ms(late),
+                     as_of_acquisition_ms=vintage)
+        assert [r["close"] for r in both] == [101.0]
+
+    def test_the_vintage_composes_with_keep_values(self, tmp_path):
+        # A cohort read at a vintage is both bounds, never the wider of
+        # them: one symbol, at its pre-revision value.
+        root = str(tmp_path)
+        for symbol, first, revised in (("AAPL", 100.0, 500.0),
+                                       ("MSFT", 200.0, 600.0)):
+            _write(root, f"acq-0001-{symbol.lower()}",
+                   [_row(symbol, self.TS, first, acquired=self.FIRST)])
+            _write(root, f"acq-0002-{symbol.lower()}",
+                   [_row(symbol, self.TS, revised, acquired=self.REVISED)])
+        records = _scan(root, keep_values={"symbol": ("MSFT",)},
+                        as_of_acquisition_ms=_instant_ms(self.FIRST))
+        assert [(r["symbol"], r["close"]) for r in records] == [("MSFT", 200.0)]
+
+    def test_one_vintage_always_yields_one_snapshot(self, tmp_path):
+        # Determinism: the snapshot is a function of the bytes and the
+        # vintage, never of scan order. The second arrangement writes the
+        # REVISION into the earlier-sorting acquisition dir, so a bound
+        # adjudicated after the fact against a running max would answer
+        # differently.
+        digests = []
+        for i, (first_dir, second_dir) in enumerate((("acq-0001", "acq-0002"),
+                                                     ("acq-0002", "acq-0001"))):
+            root = str(tmp_path / f"case-{i}")
+            _write(root, first_dir,
+                   [_row("AAPL", self.TS, 100.0, acquired=self.FIRST)])
+            _write(root, second_dir,
+                   [_row("AAPL", self.TS, 555.0, acquired=self.REVISED)])
+            digests += [
+                stream_digest(
+                    _scan(root, as_of_acquisition_ms=_instant_ms(self.FIRST))
+                )
+                for _ in range(3)
+            ]
+        assert len(set(digests)) == 1
+        assert digests[0] != stream_digest(_scan(str(tmp_path / "case-0")))
+
+    def test_a_tie_the_vintage_no_longer_supersedes_refuses(self, tmp_path):
+        # The loud-direction tie rule is UNCHANGED — just evaluated
+        # within the vintage. A differing tie a later acquisition
+        # supersedes is history at the later vintage and a live,
+        # winner-less tie at the earlier one, which is the correct
+        # answer at each.
+        root = str(tmp_path)
+        _write(root, "acq-0001",
+               [_row("AAPL", self.TS, 100.0, acquired=self.FIRST)])
+        _write(root, "acq-0002",
+               [_row("AAPL", self.TS, 100.5, acquired=self.FIRST)])
+        _write(root, "acq-0003",
+               [_row("AAPL", self.TS, 555.0, acquired=self.REVISED)])
+        assert [r["close"] for r in _scan(root)] == [555.0]
+        with pytest.raises(AssetError, match="no bitemporal winner"):
+            _scan(root, as_of_acquisition_ms=_instant_ms(self.FIRST))
+
+    def test_an_identical_tie_still_dedups_within_the_vintage(self, tmp_path):
+        # The other half of that rule: an at-least-once re-pull is a
+        # duplicate at every vintage, and kept quiet at each.
+        root = str(tmp_path)
+        for acq in ("acq-0001", "acq-0002"):
+            _write(root, acq,
+                   [_row("AAPL", self.TS, 100.0, acquired=self.FIRST)])
+        records = _scan(root, as_of_acquisition_ms=_instant_ms(self.FIRST))
+        assert [r["close"] for r in records] == [100.0]
+
+    def test_a_record_above_the_vintage_never_reaches_admit(self, tmp_path):
+        # The bound is an INTAKE bound beside since_ms, not a filter on
+        # the way out: a record the vintage excludes is never deduped,
+        # never kept, never sorted — and never handed to a caller's
+        # predicate, which would otherwise be asked to judge a row that
+        # does not exist at that vintage.
+        root = self._revised(tmp_path)
+        seen = []
+        _scan(root, as_of_acquisition_ms=_instant_ms(self.FIRST),
+              admit=lambda data, stamp: seen.append(data["close"]) or True)
+        assert seen == [100.0]
+
+    def test_the_vintage_bound_needs_no_ts_field(self, tmp_path):
+        # Unlike since_ms, it bounds ENVELOPE metadata: nothing is
+        # derived from the data, so it stands alone.
+        root = self._revised(tmp_path)
+        records = _scan(root, ts_field=None,
+                        as_of_acquisition_ms=_instant_ms(self.FIRST))
+        assert [r["close"] for r in records] == [100.0]
+        assert "asof_ms" not in records[0]
+
+    def test_a_non_integer_or_negative_bound_refuses(self, tmp_path):
+        # Default-deny, in its own words: a bound that is not an instant
+        # — or is pre-epoch, which no acquisition can be — is a mistake,
+        # never a read that quietly returns nothing.
+        root = self._revised(tmp_path)
+        for bad in (1.5, 1.0, "5", True, -1, []):
+            with pytest.raises(
+                AssetError,
+                match="as_of_acquisition_ms must be None or an int >= 0",
+            ):
+                _scan(root, as_of_acquisition_ms=bad)
+        # 0 IS a vintage, not an absence: the store as it stood at the
+        # epoch, which is empty.
+        assert _scan(root, as_of_acquisition_ms=0) == []
 
 
 def test_stream_dir_is_where_scan_stream_reads(tmp_path):

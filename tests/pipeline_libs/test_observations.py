@@ -24,6 +24,7 @@ from dskit.onboarding.codec import resolve_stream_file
 from dskit.onboarding.observations import stream_dir
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
+from dskit.pipeline.document import PipelineDocument
 from dskit.pipeline.libs.observations import (
     DEFAULT_TS_OUT,
     DEFAULT_TS_UNIT,
@@ -129,6 +130,15 @@ def _members(root):
     return found
 
 
+def _acquired_ms(root):
+    """The instant acquire stamped the fixture's one acquisition with,
+    read back off the committed envelope — the vintage tests bound the
+    stamp the writer actually wrote, never a guess at it."""
+    with open(_members(root)[0], encoding="utf-8") as fh:
+        stamp = json.loads(fh.readline())["acquired_at"]
+    return (datetime.fromisoformat(stamp) - _EPOCH) // timedelta(milliseconds=1)
+
+
 def _rewrite_first_value(path, delta=1.5):
     """Bump one row's ``value`` IN PLACE — same keys, same count, same mtime."""
     stat = os.stat(path)
@@ -202,6 +212,62 @@ class TestParams:
             problems = ObservationRows.validate_params(_params("/ob", since_ms=bad))
             assert any("since_ms" in p for p in problems), (bad, problems)
         assert ObservationRows.validate_params(_params("/ob", since_ms=0)) == []
+
+    def test_as_of_acquisition_ms_is_a_declared_knob(self):
+        """ADR-0154's sentinel. The read vintage is JSON-expressible
+        (unlike ``keep_values``/``admit``), so it is DECLARED — in
+        ``_PARAMS``, in the class docstring, and validated — never a
+        Python-only argument a document cannot reach."""
+        assert "as_of_acquisition_ms" in ObservationRows._PARAMS
+        assert "as_of_acquisition_ms" in ObservationRows.__doc__
+        assert ObservationRows.validate_params(
+            _params("/ob", as_of_acquisition_ms=_ms("2026-01-03"))
+        ) == []
+        # ...and, unlike since_ms, it bounds ENVELOPE metadata, so it
+        # needs no ts_field to compare against.
+        assert ObservationRows.validate_params(
+            _params("/ob", ts_field=..., as_of_acquisition_ms=_ms("2026-01-03"))
+        ) == []
+
+    def test_as_of_acquisition_ms_refuses_a_non_integer_or_negative_bound(self):
+        for bad in (-1, True, 1.5, "5"):
+            problems = ObservationRows.validate_params(
+                _params("/ob", as_of_acquisition_ms=bad)
+            )
+            assert any("as_of_acquisition_ms" in p for p in problems), (bad, problems)
+        assert ObservationRows.validate_params(
+            _params("/ob", as_of_acquisition_ms=0)
+        ) == []
+
+    def test_declaring_the_vintage_moves_no_existing_documents_identity(self):
+        """ADR-0154: the knob is optional and emitted only when present,
+        so adding it cannot move the identity of a document written
+        before it existed — and moving one orphans every run directory
+        and stored artifact keyed to it.
+
+        The literal is that document's hash taken on the PARENT commit,
+        before the knob was declared; reading it from today's code would
+        assert nothing.
+        """
+        vintage_free = {
+            "name": "vintage-hash-pin",
+            "pipeline": {
+                "bars": {
+                    "uses": "observations",
+                    "params": {
+                        "root": "./ob", "source": SOURCE, "stream": STREAM,
+                        "key_fields": ["sym", "date"], "ts_field": "date",
+                    },
+                }
+            },
+        }
+        before = "6689bdef5fd520f5316a83150ad653b11e315a441298024df9e0f4e09fd7f353"
+        assert PipelineDocument.from_obj(vintage_free).hash == before
+        # ...and a document that DOES declare it is a different run:
+        # the knob is graded whenever it is present.
+        declared = json.loads(json.dumps(vintage_free))
+        declared["pipeline"]["bars"]["params"]["as_of_acquisition_ms"] = 1
+        assert PipelineDocument.from_obj(declared).hash != before
 
     @pytest.mark.parametrize("bad", [None, "", 5, []])
     def test_ts_field_and_ts_out_must_be_names(self, bad):
@@ -324,6 +390,27 @@ class TestScan:
         ]
         assert node.fingerprint()["rows"] == 2
         assert node.data_edge() == _ms("2026-01-03")
+
+    @pytest.mark.parametrize("unit", TS_UNITS)
+    def test_the_vintage_bound_reaches_the_scan_under_both_units(
+        self, acquired, tmp_path, unit
+    ):
+        # ADR-0154 through the node. The bound is on the ENVELOPE, so —
+        # unlike since_ms — it is not a function of ts_unit: the ``ms``
+        # path hands the seam ts_field=None and stamps afterwards, and
+        # must carry the vintage anyway.
+        field = "date" if unit == "iso" else "ts"
+        at_ms = _acquired_ms(acquired)
+
+        def _rows(bound):
+            node = ObservationRows("obs", _params(
+                acquired.root, key_fields=["sym", field], ts_field=field,
+                ts_unit=unit, as_of_acquisition_ms=bound,
+            ))
+            return node.run(_ctx(tmp_path), {})["records"]
+
+        assert len(_rows(at_ms)) == len(ROWS)      # INCLUSIVE at the instant
+        assert _rows(at_ms - 1) == []              # one ms earlier: nothing
 
     def test_ts_out_names_the_stamp_field(self, acquired, tmp_path):
         node = ObservationRows("obs", _params(acquired.root, ts_out="t_ms"))
