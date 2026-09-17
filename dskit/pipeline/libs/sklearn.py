@@ -767,13 +767,13 @@ def _library_version(path):
 
 
 def _canonical_digest(value):
-    """Lowercase sha256 of a value's canonical JSON — this pack's ONE recipe.
+    """Lowercase sha256 of a value's canonical JSON.
 
     Sorted keys, compact separators, NaN and Infinity refused (they are not
     JSON, and a digest some writers can produce and others cannot is not an
-    identity), UTF-8 encoded. A reduction's ``reduction_model_id`` is this
-    question about its state; the same question for a different payload
-    would ask this function, not a second copy that drifts.
+    identity), UTF-8 encoded. A reduction's ``reduction_model_id`` asks this
+    of its state; the bundle's prediction checksum asks the same question of
+    a different payload and reuses the recipe.
     """
     canon = json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False

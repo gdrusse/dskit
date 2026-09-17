@@ -3328,7 +3328,7 @@ def test_reduce_apply_width_tracks_the_state():
     out2 = _node2.apply_state(state2, rows, _node2.params)
     out3 = _node3.apply_state(state3, rows, _node3.params)
     assert "component_1" in out2[0] and "component_2" not in out2[0]
-    assert "component_2" in out3[0]
+    assert "component_2" in out3[0] and "component_3" not in out3[0]
 
 
 def test_reduce_apply_writes_the_model_id_on_rows_and_as_a_port():
@@ -3377,3 +3377,32 @@ def test_reduce_run_fits_and_projects_end_to_end(tmp_path):
     )
     assert all("strong" not in r for r in out["rows"])
     assert out["reduction_model_id"] == node.reduction_model_id(out["transform"].state)
+
+
+def test_reduce_apply_projects_a_two_feature_state():
+    node, state = _fit_reduction("pca", 1, features=["strong", "other"])
+    rows = rows_selectable(n=8)
+    out = node.apply_state(state, rows, node.params)
+    assert "component_0" in out[0] and "component_1" not in out[0]
+    assert "strong" not in out[0] and "other" not in out[0]
+    assert "flat" in out[0]  # a non-feature column rides along
+
+
+def test_reduce_apply_refuses_a_bool_feature_for_a_direct_caller():
+    node, state = _fit_reduction("pca", 2)
+    rows = [{"strong": True, "other": 2.0, "flat": 0.0}]
+    with pytest.raises(ValueError, match="not a finite real number"):
+        node.apply_state(state, rows, node.params)
+
+
+def test_reduce_state_metrics_reports_the_state_width():
+    _node2, state2 = _fit_reduction("pca", 2)
+    _node3, state3 = _fit_reduction("pca", 3)
+    assert _node2.state_metrics(state2) == {"n_components": 2}
+    assert _node3.state_metrics(state3) == {"n_components": 3}
+
+
+def test_reduce_model_id_refuses_a_non_finite_state():
+    node, state = _fit_reduction("pca", 2)
+    with pytest.raises(ValueError):
+        node.reduction_model_id({"x": float("nan")})
