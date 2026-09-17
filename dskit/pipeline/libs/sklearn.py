@@ -209,6 +209,7 @@ __all__ = [
     "NODE_KINDS",
     "SklearnFit",
     "SklearnPredict",
+    "SklearnReduction",
     "SklearnSelect",
     "SklearnSignal",
     "load_bundle",
@@ -301,6 +302,11 @@ DEFAULT_REDUCTION_SEED = 0
 #: the writer and the collision refusal agree on what the columns are
 #: called; a knob to rename it is out of ADR-0149's scope.
 _COMPONENT_PREFIX = "component"
+
+#: The field naming the projection's identity on every output row, and the
+#: port :meth:`SklearnReduction.state_outputs` publishes. One name, so the
+#: writer and the collision refusal agree (``segment_model_id``'s rule).
+_MODEL_ID_FIELD = "reduction_model_id"
 
 #: The constructor knobs this node already owns, spelled a second way
 #: inside ``algorithm_params``, mapped to the reason each is refused. Two
@@ -758,6 +764,21 @@ def _library_version(path):
     module = sys.modules.get(path.split(".", 1)[0])
     version = getattr(module, "__version__", None)
     return version if isinstance(version, str) else None
+
+
+def _canonical_digest(value):
+    """Lowercase sha256 of a value's canonical JSON — this pack's ONE recipe.
+
+    Sorted keys, compact separators, NaN and Infinity refused (they are not
+    JSON, and a digest some writers can produce and others cannot is not an
+    identity), UTF-8 encoded. A reduction's ``reduction_model_id`` is this
+    question about its state; the same question for a different payload
+    would ask this function, not a second copy that drifts.
+    """
+    canon = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
 def _content_hash(path, sidecar):
@@ -2407,7 +2428,7 @@ class SklearnReduction(FittedTransform):
         # -> out["reduction_model_id"] == "9f86d0…"
     """
 
-    outputs = FittedTransform.outputs + ("reduction_model_id",)
+    outputs = FittedTransform.outputs + (_MODEL_ID_FIELD,)
 
     _PARAMS = FittedTransform._PARAMS + (
         "algorithm",
@@ -2672,6 +2693,12 @@ class SklearnReduction(FittedTransform):
                     "node writes — a reduction never overwrites the "
                     "evidence it was handed; rename the field upstream"
                 )
+        if _MODEL_ID_FIELD in row:
+            yield ("output-key-present", _MODEL_ID_FIELD), (
+                f"rows[{index}] already carries {_MODEL_ID_FIELD!r}, which "
+                "this node writes — a reduction never overwrites the "
+                "evidence it was handed; rename the field upstream"
+            )
 
     # -- the fitted state --------------------------------------------------
 
@@ -2802,6 +2829,139 @@ class SklearnReduction(FittedTransform):
             )
         return value
 
+    # -- the projection and its identity ----------------------------------
+
+    def apply_state(self, state, rows, params):
+        """Project every row through the stored components.
+
+        Pure and ROW-INDEPENDENT by construction: a row's answer is a
+        matrix multiply of its own coordinates against the stored
+        components (minus the stored mean for ``pca``), and nothing about
+        the other rows enters it. That is what makes a served row's
+        projection the same whether it arrives alone or in a batch — the
+        family's classic leak, structurally absent rather than merely
+        screened for.
+
+        Parameters
+        ----------
+        state : dict
+            What :meth:`fit` learned, or what load mode restored. The
+            coordinates are read in the STATE's feature order, never the
+            document's: the components are axes in that space, and
+            :meth:`state_problems` has already refused a document that
+            restates it differently.
+        rows : list
+            EVERY row of the input stream, whatever split it came from.
+        params : dict
+            ``self.params``; unused — everything the projection needs is
+            in the state.
+
+        Returns
+        -------
+        list of dict
+            A NEW row per input row, in order, carrying every field it
+            arrived with EXCEPT the declared features, plus exactly
+            ``component_<i>`` for ``i`` in ``0..k-1`` (``k`` the state's
+            width) and :data:`_MODEL_ID_FIELD`. Input rows are never
+            mutated.
+
+        Raises
+        ------
+        ValueError
+            When a row cannot supply a declared feature as a finite real
+            number — which :meth:`row_problems` refuses at both doorways,
+            so reaching it here means a caller went around them.
+        """
+        components = state["components"]
+        features = state["features"]
+        mean = state.get("mean")
+        model_id = self.reduction_model_id(state)
+        out = []
+        for index, row in enumerate(rows):
+            point = self._point(row, features, index)
+            if mean is not None:
+                point = [p - m for p, m in zip(point, mean)]
+            projected = dict(row)
+            for name in features:
+                projected.pop(name, None)
+            for j, component in enumerate(components):
+                projected[f"{_COMPONENT_PREFIX}_{j}"] = math.fsum(
+                    c * v for c, v in zip(component, point)
+                )
+            projected[_MODEL_ID_FIELD] = model_id
+            out.append(projected)
+        return out
+
+    def _point(self, row, features, index):
+        """One row's coordinates in the STATE's feature order, or a refusal."""
+        point = []
+        for name in features:
+            value = row.get(name) if isinstance(row, Mapping) else None
+            number = _reduction_number(value)
+            if number is None:
+                raise ValueError(
+                    f"{self.key}: rows[{index}] cannot be projected — "
+                    f"{name!r} is {value!r}, not a finite real number. "
+                    "row_problems refuses this at both doorways, so a "
+                    "stream reaching here unvalidated came past them"
+                )
+            point.append(number)
+        return point
+
+    def reduction_model_id(self, state):
+        """This projection's identity: the canonical digest of ``state``.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state, as :meth:`fit` returned it or a load
+            restored it.
+
+        Returns
+        -------
+        str
+            Lowercase sha256 of the state's canonical JSON. RECOMPUTED
+            every time, never read from a field the artifact carries — an
+            id a file could state is an id a file could lie about.
+        """
+        return _canonical_digest(state)
+
+    def state_metrics(self, state):
+        """Report how wide the projection is.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``{"n_components": ...}``. No variance/reconstruction score
+            appears: an internal quality number reported beside the run is
+            one a search would rank reductions by, and this node
+            deliberately supplies no such objective.
+        """
+        return {"n_components": len(state["components"])}
+
+    def state_outputs(self, state):
+        """The model id as a PORT as well as a row field.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``{_MODEL_ID_FIELD: <hash>}``. A downstream node that must
+            record WHICH projection transformed its rows needs the value
+            itself, and metrics cannot carry it — they are numbers a
+            report summarizes.
+        """
+        return {_MODEL_ID_FIELD: self.reduction_model_id(state)}
+
     # -- what a RESTORE is held to ----------------------------------------
 
     def state_problems(self, state):
@@ -2896,6 +3056,7 @@ NODE_KINDS = (
     ("sklearn-fit", SklearnFit),
     ("sklearn-predict", SklearnPredict),
     ("sklearn-select", SklearnSelect),
+    ("sklearn-reduce", SklearnReduction),
 )
 
 

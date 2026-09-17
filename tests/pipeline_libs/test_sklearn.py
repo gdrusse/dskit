@@ -92,11 +92,16 @@ def test_node_kinds_table_and_roles():
         "sklearn-fit": SklearnFit,
         "sklearn-predict": SklearnPredict,
         "sklearn-select": SklearnSelect,
+        "sklearn-reduce": SklearnReduction,
     }
     assert SklearnFit.role == "train"
     assert SklearnFit.outputs == ("signal", "artifact_path", "metrics")
     assert SklearnPredict.role == "signal"
     assert SklearnPredict.outputs == ("signal",)
+    assert SklearnReduction.role == "fitted_transform"
+    assert SklearnReduction.outputs == (
+        "transform", "rows", "metrics", "reduction_model_id",
+    )
 
 
 def test_register_is_explicit_and_idempotent():
@@ -1304,6 +1309,7 @@ EXPECTED_ROLES = {
     "sklearn-fit": "train",
     "sklearn-predict": "signal",
     "sklearn-select": "fitted_transform",
+    "sklearn-reduce": "fitted_transform",
 }
 
 
@@ -1320,6 +1326,14 @@ def _selected(tmp_path):
     return ctx, out["transform"], os.path.join(node.artifact_dir(ctx), SIDECAR_NAME)
 
 
+def _reduced(tmp_path):
+    """A REAL fitted reduction: its ctx, its carrier and its sidecar path."""
+    ctx = _split_ctx(tmp_path, "reducefixture")
+    node = SklearnReduction("fixture_reduce", dict(REDUCE_PARAMS))
+    out = node.run(ctx, {"rows": rows_selectable(n=12)})
+    return ctx, out["transform"], os.path.join(node.artifact_dir(ctx), SIDECAR_NAME)
+
+
 def probes(tmp_path):
     """One populated probe per kind. The fixture artifact is a REAL fit
     (``y = x``); the probes' wired rows carry the OPPOSITE relationship
@@ -1327,6 +1341,7 @@ def probes(tmp_path):
     silent refit on the prediction itself, not just on paperwork."""
     pytest.importorskip("sklearn")
     select_ctx, carrier, select_sidecar = _selected(tmp_path)
+    reduce_ctx, reduce_carrier, reduce_sidecar = _reduced(tmp_path)
     fitted = SklearnFit("fixture_fit", dict(FIT_PARAMS)).run(
         _ctx(tmp_path, "fixture"), {"rows": rows_linear()}
     )
@@ -1380,6 +1395,21 @@ def probes(tmp_path):
             verify_loaded=lambda out: (
                 out["metrics"]["n_fit_rows"] == 0
                 and out["transform"].state == carrier.state
+            ),
+        ),
+        # ``fit_split`` is NOT listed as required for the same reason as
+        # ``sklearn-select``: the planner refuses it, not validate_params.
+        "sklearn-reduce": NodeProbe(
+            params=dict(REDUCE_PARAMS),
+            required=("algorithm", "features", "n_components"),
+            inputs={"rows": rows_selectable(n=12)},
+            stream_ports=("rows",),
+            runnable=True,
+            ctx=reduce_ctx,
+            load_artifact=reduce_sidecar,
+            verify_loaded=lambda out: (
+                out["metrics"]["n_fit_rows"] == 0
+                and out["transform"].state == reduce_carrier.state
             ),
         ),
     }
@@ -2680,20 +2710,8 @@ REDUCE_PARAMS = {
 }
 
 
-class _RaiseReduction(SklearnReduction):
-    """A test-only concrete SklearnReduction whose remaining hook refuses.
-
-    The class under test is abstract until ``apply_state`` lands (slice 3);
-    ``fit`` and the validators are reached directly through this stub, which
-    supplies only the one hook ``fit`` does not need.
-    """
-
-    def apply_state(self, state, rows, params):
-        raise NotImplementedError
-
-
 def _reduction_node(**overrides):
-    return _RaiseReduction("reduce", {**REDUCE_PARAMS, **overrides})
+    return SklearnReduction("reduce", {**REDUCE_PARAMS, **overrides})
 
 
 def test_reduce_params_canonical_set_validates_clean():
@@ -2924,7 +2942,7 @@ def _fit_reduction(algorithm="pca", n_components=2, *, rows=None, **overrides):
         "seed": 17,
     }
     params.update(overrides)
-    node = _RaiseReduction("reduce", params)
+    node = SklearnReduction("reduce", params)
     rows = rows_selectable(n=8) if rows is None else rows
     return node, node.fit(rows, node.params)
 
@@ -2972,7 +2990,7 @@ def test_reduce_fit_svd_extracts_the_library_components():
 
 
 def test_reduce_fit_rechecks_the_row_rule_for_a_direct_caller():
-    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    node = SklearnReduction("reduce", dict(REDUCE_PARAMS))
     rows = [dict(row) for row in rows_selectable(n=8)]
     rows[3]["strong"] = True  # bool: the shared matrix reader would count it as 1
     with pytest.raises(ValueError, match="not a finite real number"):
@@ -2995,7 +3013,7 @@ def test_reduce_fit_threads_seed_and_n_components_into_the_constructor(monkeypat
     import dskit.pipeline.libs.sklearn as _sklearn
 
     monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
-    node = _RaiseReduction("reduce", {**REDUCE_PARAMS, "n_components": 3})
+    node = SklearnReduction("reduce", {**REDUCE_PARAMS, "n_components": 3})
     node.fit(rows_selectable(n=8), node.params)
     assert captured["random_state"] == 17
     assert captured["n_components"] == 3  # the DECLARED width, not a hardcoded 2
@@ -3017,20 +3035,20 @@ def test_reduce_fit_threads_the_default_seed_when_omitted(monkeypatch):
 
     monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
     params = {k: v for k, v in REDUCE_PARAMS.items() if k != "seed"}
-    node = _RaiseReduction("reduce", params)
+    node = SklearnReduction("reduce", params)
     node.fit(rows_selectable(n=8), node.params)
     assert captured["random_state"] == 0  # DEFAULT_REDUCTION_SEED, not any fixed value
 
 
 def test_reduce_fit_wraps_a_fit_refusal_with_the_node_and_algorithm():
-    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    node = SklearnReduction("reduce", dict(REDUCE_PARAMS))
     rows = rows_selectable(n=1)  # PCA refuses: n_components > n_samples
     with pytest.raises(ValueError, match="refused to fit"):
         node.fit(rows, node.params)
 
 
 def test_reduce_fit_refuses_a_silently_clamped_component_count():
-    node = _RaiseReduction("reduce", {**REDUCE_PARAMS, "algorithm": "svd"})
+    node = SklearnReduction("reduce", {**REDUCE_PARAMS, "algorithm": "svd"})
     rows = rows_selectable(n=1)  # TruncatedSVD silently clamps 2 down to 1
     with pytest.raises(ValueError, match="n_components"):
         node.fit(rows, node.params)
@@ -3043,14 +3061,14 @@ def test_reduce_state_problems_accepts_the_state_it_fit():
 
 def test_reduce_state_problems_refuses_a_misdescribed_algorithm():
     node, state = _fit_reduction("pca", 2)
-    other = _RaiseReduction("reduce", {**REDUCE_PARAMS, "algorithm": "svd"})
+    other = SklearnReduction("reduce", {**REDUCE_PARAMS, "algorithm": "svd"})
     problems = other.state_problems(state)
     assert any("algorithm" in p for p in problems)
 
 
 def test_reduce_state_problems_refuses_a_misdescribed_feature_order():
     node, state = _fit_reduction("pca", 2)
-    other = _RaiseReduction(
+    other = SklearnReduction(
         "reduce", {**REDUCE_PARAMS, "features": ["flat", "other", "strong"]}
     )
     problems = other.state_problems(state)
@@ -3059,14 +3077,14 @@ def test_reduce_state_problems_refuses_a_misdescribed_feature_order():
 
 def test_reduce_state_problems_refuses_a_misdescribed_width():
     node, state = _fit_reduction("pca", 2)
-    other = _RaiseReduction("reduce", {**REDUCE_PARAMS, "n_components": 3})
+    other = SklearnReduction("reduce", {**REDUCE_PARAMS, "n_components": 3})
     problems = other.state_problems(state)
     assert any("n_components" in p for p in problems)
 
 
 def test_reduce_state_problems_refuses_a_state_wider_than_declared():
     _node3, state3 = _fit_reduction("pca", 3)
-    other = _RaiseReduction("reduce", {**REDUCE_PARAMS, "n_components": 2})
+    other = SklearnReduction("reduce", {**REDUCE_PARAMS, "n_components": 2})
     problems = other.state_problems(state3)
     assert any("n_components" in p for p in problems)
 
@@ -3124,7 +3142,7 @@ def test_reduce_fit_refuses_a_non_finite_mean_from_the_estimator(monkeypatch):
     import dskit.pipeline.libs.sklearn as _sklearn
 
     monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
-    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    node = SklearnReduction("reduce", dict(REDUCE_PARAMS))
     with pytest.raises(ValueError, match="cannot store"):
         node.fit(rows_selectable(n=8), node.params)
 
@@ -3172,7 +3190,7 @@ def test_reduce_fit_refuses_more_components_than_declared(monkeypatch):
     import dskit.pipeline.libs.sklearn as _sklearn
 
     monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
-    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    node = SklearnReduction("reduce", dict(REDUCE_PARAMS))
     with pytest.raises(ValueError, match="n_components"):
         node.fit(rows_selectable(n=8), node.params)
 
@@ -3194,7 +3212,7 @@ def test_reduce_fit_threads_algorithm_params_into_the_constructor(monkeypatch):
     import dskit.pipeline.libs.sklearn as _sklearn
 
     monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
-    node = _RaiseReduction(
+    node = SklearnReduction(
         "reduce", {**REDUCE_PARAMS, "algorithm_params": {"n_iter": 7}}
     )
     node.fit(rows_selectable(n=8), node.params)
@@ -3202,7 +3220,7 @@ def test_reduce_fit_threads_algorithm_params_into_the_constructor(monkeypatch):
 
 
 def test_reduce_fit_rechecks_the_collision_rule_at_the_declared_width():
-    node = _RaiseReduction("reduce", {**REDUCE_PARAMS, "n_components": 3})
+    node = SklearnReduction("reduce", {**REDUCE_PARAMS, "n_components": 3})
     rows = [dict(r) for r in rows_selectable(n=8)]
     rows[0]["component_2"] = 9.0
     with pytest.raises(ValueError, match="component_2"):
@@ -3240,24 +3258,122 @@ def test_reduce_state_problems_refuses_an_over_long_mean():
 
 
 def test_reduce_fit_rechecks_the_shadowed_knobs_for_a_direct_caller():
-    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    node = SklearnReduction("reduce", dict(REDUCE_PARAMS))
     node.params["algorithm_params"] = {"whiten": True}
     with pytest.raises(ValueError, match="whiten"):
         node.fit(rows_selectable(n=8), node.params)
 
 
 def test_reduce_load_inputs_refuse_the_fitting_knobs():
-    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))  # has seed=17
+    node = SklearnReduction("reduce", dict(REDUCE_PARAMS))  # has seed=17
     problems = node.validate_load_inputs({})
     assert any("seed" in p for p in problems)
 
-    node = _RaiseReduction(
+    node = SklearnReduction(
         "reduce", {**REDUCE_PARAMS, "algorithm_params": {"n_iter": 7}}
     )
     problems = node.validate_load_inputs({})
     assert any("algorithm_params" in p for p in problems)
 
-    node = _RaiseReduction(
+    node = SklearnReduction(
         "reduce", {k: v for k, v in REDUCE_PARAMS.items() if k != "seed"}
     )
     assert node.validate_load_inputs({}) == []
+
+
+# ---------------------------------------------------------------------------
+# SklearnReduction (ADR-0149) — slice 3: the projection, the model id, run
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_apply_pca_matches_the_library_transform():
+    node, state = _fit_reduction("pca", 2)
+    rows = rows_selectable(n=8)
+    out = node.apply_state(state, rows, node.params)
+    import sklearn.decomposition
+
+    matrix = _reduce_matrix(rows)
+    est = sklearn.decomposition.PCA(n_components=2, random_state=17).fit(matrix)
+    got = [[r["component_0"], r["component_1"]] for r in out]
+    assert np.allclose(got, est.transform(matrix))
+
+
+def test_reduce_apply_svd_matches_the_library_transform():
+    node, state = _fit_reduction("svd", 2)
+    rows = rows_selectable(n=8)
+    out = node.apply_state(state, rows, node.params)
+    import sklearn.decomposition
+
+    matrix = _reduce_matrix(rows)
+    est = sklearn.decomposition.TruncatedSVD(n_components=2, random_state=17)
+    est.fit(matrix)
+    got = [[r["component_0"], r["component_1"]] for r in out]
+    assert np.allclose(got, est.transform(matrix))
+
+
+def test_reduce_apply_drops_features_and_keeps_the_rest_without_mutating():
+    node, state = _fit_reduction("pca", 2)
+    rows = rows_selectable(n=8)
+    out = node.apply_state(state, rows, node.params)
+    for r in out:
+        assert "strong" not in r and "other" not in r and "flat" not in r
+        assert {"y", "asof_ms", "contract", "echo"} <= set(r)
+    assert rows[0]["strong"] == 0.0  # input never mutated
+
+
+def test_reduce_apply_width_tracks_the_state():
+    _node2, state2 = _fit_reduction("pca", 2)
+    _node3, state3 = _fit_reduction("pca", 3)
+    rows = rows_selectable(n=8)
+    out2 = _node2.apply_state(state2, rows, _node2.params)
+    out3 = _node3.apply_state(state3, rows, _node3.params)
+    assert "component_1" in out2[0] and "component_2" not in out2[0]
+    assert "component_2" in out3[0]
+
+
+def test_reduce_apply_writes_the_model_id_on_rows_and_as_a_port():
+    node, state = _fit_reduction("pca", 2)
+    rows = rows_selectable(n=8)
+    out = node.apply_state(state, rows, node.params)
+    mid = node.reduction_model_id(state)
+    assert all(r["reduction_model_id"] == mid for r in out)
+    assert node.state_outputs(state) == {"reduction_model_id": mid}
+
+
+def test_reduce_model_id_is_the_canonical_digest_of_the_state():
+    node, state = _fit_reduction("pca", 2)
+    expected = hashlib.sha256(
+        json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        .encode("utf-8")
+    ).hexdigest()
+    assert node.reduction_model_id(state) == expected
+    assert node.reduction_model_id(dict(state)) == expected  # stable, recomputed
+
+
+def test_reduce_model_id_distinguishes_states_and_is_never_copied():
+    node, state = _fit_reduction("pca", 2)
+    _, other = _fit_reduction("svd", 2)
+    assert node.reduction_model_id(state) != node.reduction_model_id(other)
+    # A forged id field is HASHED (it changes the digest), never read back:
+    tampered = {**state, "reduction_model_id": "forged"}
+    assert node.reduction_model_id(tampered) != node.reduction_model_id(state)
+
+
+def test_reduce_row_problems_refuses_the_model_id_field():
+    node = _reduction_node()
+    rows = [{"strong": 1.0, "other": 2.0, "flat": 0.0, "reduction_model_id": "x"}]
+    problems = node.row_problems(rows)
+    assert any("reduction_model_id" in p for p in problems)
+
+
+def test_reduce_run_fits_and_projects_end_to_end(tmp_path):
+    pytest.importorskip("sklearn")
+    ctx = _split_ctx(tmp_path, "reduce_run")
+    node = SklearnReduction("reduce", dict(REDUCE_PARAMS))
+    out = node.run(ctx, {"rows": rows_selectable(n=12)})
+    assert out["metrics"] == {"n_rows": 12, "n_fit_rows": 12, "n_components": 2}
+    assert all(
+        "component_0" in r and "component_1" in r for r in out["rows"]
+    )
+    assert all("strong" not in r for r in out["rows"])
+    assert out["reduction_model_id"] == node.reduction_model_id(out["transform"].state)
