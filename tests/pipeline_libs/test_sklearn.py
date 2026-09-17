@@ -2760,6 +2760,9 @@ def test_reduce_params_seed_shape_and_range():
     assert SklearnReduction.validate_params(
         {**REDUCE_PARAMS, "seed": 0}
     ) == []
+    assert SklearnReduction.validate_params(
+        {**REDUCE_PARAMS, "seed": 2**32 - 1}
+    ) == []
 
 
 def test_reduce_params_shadowed_knobs_are_refused():
@@ -3087,6 +3090,8 @@ def test_reduce_state_problems_refuses_a_broken_state_shape():
         {**state, "components": 42},  # scalar — a named problem, never a TypeError
         {**state, "components": None},
         {**state, "components": True},
+        # Same key COUNT, wrong key set: "components" swapped for "extra".
+        {**{k: v for k, v in state.items() if k != "components"}, "extra": 1},
     ]
     for broken in cases:
         problems = node.state_problems(broken)
