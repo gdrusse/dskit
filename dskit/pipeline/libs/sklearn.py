@@ -325,6 +325,110 @@ _REDUCTION_SHADOWED_KNOBS = {
               "a plain matrix multiply",
 }
 
+
+def _reduction_number(value):
+    """A component/mean coordinate as a finite ``float``, or ``None``.
+
+    The envelope's own number rule (:func:`~dskit.pipeline.records.number_ok`,
+    which excludes ``bool``) plus the conversion the JSON state stores.
+    ``numpy.float64`` passes because it IS a ``float`` subclass; a narrower
+    scalar coming back would mean the estimator invented a precision this
+    node never gave it, and refusing by name beats storing a value the JSON
+    state cannot round-trip.
+    """
+    return float(value) if number_ok(value) else None
+
+
+def _reduction_rows(value):
+    """``value`` as a list of lists (numpy rows included), or ``None``.
+
+    A string is iterable but is not a list of points, so both the outer
+    and the inner shape must be a sequence rather than merely iterable.
+    """
+    if isinstance(value, (str, bytes, Mapping)):
+        return None
+    try:
+        rows = list(value)
+    except TypeError:
+        return None
+    out = []
+    for row in rows:
+        if isinstance(row, (str, bytes, Mapping)):
+            return None
+        try:
+            out.append(list(row))
+        except TypeError:
+            return None
+    return out
+
+
+def _reduction_flat(value):
+    """``value`` as a flat list of scalars (a numpy 1-D row), or ``None``."""
+    if isinstance(value, (str, bytes, Mapping)):
+        return None
+    try:
+        return list(value)
+    except TypeError:
+        return None
+
+
+def _reduction_geometry_problems(components, mean, width, n_components):
+    """Ways a ``(components, mean)`` pair is not a usable reduction.
+
+    ONE rule asked TWICE: of what a fit just extracted from an estimator,
+    and of what a load restored from JSON. A second copy is exactly where a
+    state this version writes and the next refuses would come from.
+
+    Parameters
+    ----------
+    components : list of list, or None
+        The component points, already normalized by :func:`_reduction_rows`;
+        ``None`` means the value was not a list of points at all.
+    mean : list, or None
+        The centering vector (present for ``pca``, absent for ``svd``), as
+        normalized by :func:`_reduction_flat`.
+    width : int
+        The number of declared features every component and the mean span.
+    n_components : int
+        The declared projected width the components must equal.
+
+    Returns
+    -------
+    list of str
+        One problem per broken invariant; empty when the pair is usable.
+    """
+    if components is None:
+        return ["components is not a list of points"]
+    problems = []
+    if len(components) != n_components:
+        problems.append(
+            f"components has {len(components)} row(s), n_components is "
+            f"{n_components} — sklearn clamps a too-large n_components to "
+            "the sample count, and a silent clamp would emit fewer columns "
+            "than the document declared"
+        )
+    for i, row in enumerate(components):
+        if len(row) != width:
+            problems.append(
+                f"components[{i}] has {len(row)} value(s), not the {width} "
+                "declared feature(s)"
+            )
+        for j, value in enumerate(row):
+            if _reduction_number(value) is None:
+                problems.append(
+                    f"components[{i}][{j}] is {value!r}, not a finite number"
+                )
+    if mean is not None:
+        if len(mean) != width:
+            problems.append(
+                f"mean has {len(mean)} value(s), not the {width} declared "
+                "feature(s)"
+            )
+        for j, value in enumerate(mean):
+            if _reduction_number(value) is None:
+                problems.append(f"mean[{j}] is {value!r}, not a finite number")
+    return problems
+
 # ---------------------------------------------------------------------------
 # The multi-head bundle artifact (ADR-0114 Phase 2) — one joblib file
 # holding a NAMED MAPPING of fitted estimators, plus one JSON manifest.
@@ -2319,9 +2423,15 @@ class SklearnReduction(FittedTransform):
         """The declared projected width, or ``None`` when undeclared (int)."""
         return self.params.get("n_components")
 
-    def _component_names(self):
-        """The projected column names for the declared width, or ``[]``."""
-        width = self.n_components()
+    def _component_names(self, width=None):
+        """The projected column names for ``width`` (default the declared one).
+
+        The width is a parameter, not read from ``self.params``: the fit
+        path hands the width it is about to fit, so the collision rule and
+        the matrix can never disagree about which names are produced.
+        """
+        if width is None:
+            width = self.n_components()
         if isinstance(width, bool) or not isinstance(width, int) or width < 1:
             return []
         return [f"{_COMPONENT_PREFIX}_{i}" for i in range(width)]
@@ -2485,10 +2595,15 @@ class SklearnReduction(FittedTransform):
         features = self.features()
         if _feature_list_problems("features", features):
             features = ()
-        component_names = self._component_names()
+        return self._unusable_rows(rows, features, self._component_names())
+
+    def _unusable_rows(self, rows, features, component_names):
+        """The row rule over whichever feature list is about to be read."""
         first = {}
         for index, row in enumerate(rows):
-            for key, message in self._broken_rules(index, row, features, component_names):
+            for key, message in self._broken_rules(
+                index, row, features, component_names
+            ):
                 first.setdefault(key, message)
         return list(first.values())
 
@@ -2522,6 +2637,205 @@ class SklearnReduction(FittedTransform):
                     "node writes — a reduction never overwrites the "
                     "evidence it was handed; rename the field upstream"
                 )
+
+    # -- the fitted state --------------------------------------------------
+
+    def fit(self, rows, params):
+        """Learn the projection from the fit split's rows.
+
+        Parameters
+        ----------
+        rows : list
+            The rows of the declared ``fit_split``, and nothing else — the
+            base cut them, which is the whole leakage guarantee.
+        params : dict
+            ``self.params``, passed through by the base.
+
+        Returns
+        -------
+        dict
+            ``schema``, ``algorithm``, ``features``, ``components``, and —
+            for ``pca`` only — ``mean``. Exactly those, all JSON-safe. No
+            native estimator is persisted.
+
+        Raises
+        ------
+        ValueError
+            When a row breaks this class's own :meth:`row_problems` rule
+            (the same repetition a direct caller could otherwise go around),
+            when the catalog member rejects ``algorithm_params`` or refuses
+            the fit, or when the fitted estimator exposes no usable
+            components — including a component count sklearn silently
+            clamped below the declared ``n_components``. Nothing is written.
+        """
+        features = list(params["features"])
+        unusable = self._unusable_rows(
+            rows, features, self._component_names(params["n_components"])
+        )
+        if unusable:
+            raise ValueError(
+                f"{self.key}: {'; '.join(unusable)}. That is this class's "
+                "own row rule, asked here for the same reason the fit is "
+                "reached directly: a caller bypassing validate_inputs would "
+                "otherwise learn a state from rows the projection then "
+                "refuses — and the pack's shared matrix reader counts a bool "
+                "as 0/1, which this class does not"
+            )
+        algorithm = params["algorithm"]
+        matrix = _design_matrix(rows, features, self.key)
+        estimator = self._fitted_estimator(algorithm, params, matrix)
+        components, mean = self._extracted(
+            estimator, algorithm, len(features), params["n_components"]
+        )
+        state = {
+            "schema": REDUCTION_SCHEMA,
+            "algorithm": algorithm,
+            "features": features,
+            "components": components,
+        }
+        if mean is not None:
+            state["mean"] = mean
+        return state
+
+    def _fitted_estimator(self, algorithm, params, matrix):
+        """The catalog member, constructed and fitted — refusals name both."""
+        path = _REDUCTION_PATHS[algorithm]
+        named = f"algorithm {algorithm!r} ({path})"
+        kwargs = dict(params.get("algorithm_params") or {})
+        kwargs["n_components"] = params["n_components"]
+        kwargs["random_state"] = params.get("seed", DEFAULT_REDUCTION_SEED)
+        estimator = _construct(
+            _import_object(path, self.key, subject="reduction"),
+            kwargs,
+            named,
+            self.key,
+            "algorithm_params",
+        )
+        try:
+            estimator.fit(matrix)
+        except Exception as exc:  # noqa: BLE001 - a refusal must name the node
+            raise ValueError(
+                f"{self.key}: {named} refused to fit {len(matrix)} row(s) of "
+                f"{len(matrix[0]) if matrix else 0} feature(s): {exc}"
+            ) from exc
+        return estimator
+
+    def _extracted(self, estimator, algorithm, width, n_components):
+        """The fitted estimator's components and mean, as JSON state."""
+        components_attr, mean_attr = _REDUCTION_ATTRIBUTES[algorithm]
+        components = _reduction_rows(
+            self._fitted_attribute(estimator, components_attr, algorithm)
+        )
+        mean = None
+        if mean_attr is not None:
+            mean = _reduction_flat(
+                self._fitted_attribute(estimator, mean_attr, algorithm)
+            )
+        problems = _reduction_geometry_problems(
+            components, mean, width, n_components
+        )
+        if problems:
+            raise ValueError(
+                f"{self.key}: {algorithm!r} fitted a reduction this node "
+                f"cannot store — {'; '.join(problems)}. Nothing was written"
+            )
+        return (
+            [[float(value) for value in row] for row in components],
+            None if mean is None else [float(value) for value in mean],
+        )
+
+    def _fitted_attribute(self, estimator, name, algorithm):
+        """One fitted attribute, or a refusal naming the node and the member."""
+        value = getattr(estimator, name, None)
+        if value is None:
+            raise ValueError(
+                f"{self.key}: {algorithm!r} exposes no {name!r} after fit — "
+                "this node stores EXTRACTED components (and, for pca, a mean) "
+                "rather than a pickled model, so a member without them cannot "
+                "be stored. Nothing was written"
+            )
+        return value
+
+    # -- what a RESTORE is held to ----------------------------------------
+
+    def state_problems(self, state):
+        """Ways a restored state is broken or misdescribed; empty when neither.
+
+        Parameters
+        ----------
+        state : dict
+            The restored state, as :meth:`fit` returned it.
+
+        Returns
+        -------
+        list of str
+            The stored shape's own problems first — it is read verbatim, so
+            it is checked completely — then one problem per knob this
+            document declares that the state contradicts: ``algorithm``,
+            ``features``, and the projected width ``n_components``.
+        """
+        problems = self._state_shape_problems(state)
+        if problems:
+            return problems
+        if state["algorithm"] != self.algorithm():
+            problems.append(
+                f"the restored state was fitted with algorithm "
+                f"{state['algorithm']!r}, this document declares "
+                f"{self.algorithm()!r}"
+            )
+        if state["features"] != self.features():
+            problems.append(
+                f"the restored state reads features {state['features']}, "
+                f"this document declares {self.features()} — the components "
+                "are axes in the STATE's feature order, so a restated list "
+                "in any other order would project the wrong columns"
+            )
+        if len(state["components"]) != self.n_components():
+            problems.append(
+                f"the restored state has {len(state['components'])} "
+                f"component(s), this document declares n_components="
+                f"{self.n_components()} — the output width is the state's "
+                "answer, and a document may restate it, never misdescribe it"
+            )
+        return problems
+
+    def _state_shape_problems(self, state):
+        """The stored state, checked completely — a load reads it verbatim."""
+        if not isinstance(state, dict):
+            return ["the restored state is not a mapping"]
+        algorithm = state.get("algorithm")
+        expected = {"schema", "algorithm", "features", "components"}
+        if algorithm == "pca":
+            expected.add("mean")
+        if set(state) != expected:
+            return [
+                f"the restored state carries keys {sorted(state)}, not "
+                f"exactly {sorted(expected)}"
+            ]
+        problems = []
+        if state["schema"] != REDUCTION_SCHEMA:
+            problems.append(
+                f"the restored state declares schema {state['schema']!r}, "
+                f"not {REDUCTION_SCHEMA!r}"
+            )
+        if algorithm not in _REDUCTION_ALGORITHMS:
+            problems.append(
+                f"the restored state names algorithm {algorithm!r}, outside "
+                f"this node's catalog {list(_REDUCTION_ALGORITHMS)}"
+            )
+        problems += _feature_list_problems("features", state["features"])
+        if problems:
+            return problems
+        width = len(state["features"])
+        n_components = len(state["components"])
+        mean = state.get("mean")
+        problems += _reduction_geometry_problems(
+            _reduction_rows(state["components"]),
+            _reduction_flat(mean) if mean is not None else None,
+            width,
+            n_components,
+        )
+        return problems
 
 
 # ---------------------------------------------------------------------------
