@@ -13016,3 +13016,183 @@ The prior uncommitted ADR-0148 draft and its five-Major verdict live in a
 Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
 from this Linux container. If that draft carries findings beyond the five stated
 in the task, they are not addressed here.
+
+## ADR-0149 - dimensionality reduction as a closed-catalog `FittedTransform` member
+
+**Status:** PROPOSED -- awaiting owner approval before any code or test is
+written. Nothing below is implemented.
+
+**Numbering note (recorded to prevent a third collision).** `origin/main`'s
+highest ADR is 0148 (the F3 replay lane above). PR #15 is open and unmerged; it
+adds a *different* `## ADR-0148` (segmentation) on its branch, which collides
+with the F3 one already on main. This ADR therefore takes **0149** -- the next
+free number, used by no open branch or PR (verified against every `refs/pull/*`
+and remote branch head).
+
+**Context.** dskit has feature SELECTION (`sklearn-select`, `torch-importance`,
+ADR-0042): it keeps a subset of existing columns. It has no dimensionality
+REDUCTION: nothing projects rows onto new axes. Verified by tree search
+(`pca`, `TruncatedSVD`, `decomposition`, `SVD`, `manifold`, `umap`,
+`autoencoder`, `latent`). The only hits are unrelated -- long-method
+"decomposition", the Murphy decomposition, a `torch_ts` "decomposition linear"
+architecture name, and a child's supervised
+`sklearn.cross_decomposition.PLSRegression` chosen through the generic
+`sklearn-fit` estimator doorway (a child document picking a supervised
+estimator, not a reduction capability).
+
+The fitted-transform family (ADR-0040) is the right seam: it already owns the
+split selection, the JSON sidecar, the restore, the purity screen and the
+metrics. This ADR adds ONE member to that family in `dskit/pipeline/libs/sklearn.py`,
+tier 2. It branches from `origin/main`, so it adds **no tier-1 hook** -- it
+reads ADR-0148's `SklearnSegment` as a *pattern* (closed catalog, extracted
+JSON state, projection computed here, recomputed identity hash), not as a base.
+
+### Decision
+
+**Decision point 1 -- the catalog is closed: `pca` and `svd`, nothing else.**
+
+The catalog is closed for the same reason SklearnSegment's is: the state is
+EXTRACTED to JSON, not a pickled model, and only members that expose the
+extraction belong.
+
+- `pca` (`sklearn.decomposition.PCA`): exposes `components_`
+  (`n_components` x `n_features`) and `mean_` (`n_features`). Its projection
+  is `(X - mean_) @ components_.T` -- a matrix multiply this module owns.
+- `svd` (`sklearn.decomposition.TruncatedSVD`): exposes `components_` and no
+  mean (it never centres). Its projection is `X @ components_.T`.
+
+- UMAP is OUT: it has no components to extract; the fitted neighbour graph IS
+  the state, and this module does not persist native models. Inclusion would
+  change the state format from JSON to a pickled model, a different seam.
+- t-SNE is OUT, and not merely "not in the catalog": it has NO `transform()`
+  at all, so it cannot project unseen rows. It is not a fitted transform in
+  this family's fit-then-apply sense, so it belongs out of scope, not in a
+  closed catalog.
+- KernelPCA, IncrementalPCA, FactorAnalysis, NMF and the manifold learners are
+  OUT by the same extraction argument (state beyond `components_`/`mean_`, or a
+  projection that is not a plain matrix multiply); named in Non-goals.
+
+The catalog resolves through the pack's existing `_import_object` doorway to
+exactly those two dotted paths -- never an arbitrary document-supplied path.
+
+**Decision point 2 -- the projection is computed HERE, and must match the library's `transform`.**
+
+`apply_state` computes the projection from the stored arrays: for `pca`,
+`(X - mean_) @ components_.T`; for `svd`, `X @ components_.T`. This mirrors
+SklearnSegment computing nearest-centre distance here rather than calling
+`predict`. The consequence, stated as a contract: for every catalog member,
+`apply_state`'s answer must equal the fitted estimator's own `transform(X)` on
+fixtures -- proven per member in tests, not asserted. A serving run restores
+JSON and never rebuilds the estimator, so the only transform that exists is
+this module's own; if it disagreed with the library, the served rows would be
+quietly wrong and nothing would compare them.
+
+One constructor knob changes the transform and is REFUSED by name rather than
+forwarded: `whiten` (PCA). Whitened PCA projects with
+`components_.T / sqrt(explained_variance_)`, which needs `singular_values_` in
+the state -- a second stored array and a second formula. Every other
+constructor knob (`svd_solver`, `tol`, `iterated_power`, `n_iter`, `algorithm`,
+`n_oversamples`, `power_iteration_normalizer`) forwards unchanged through
+`algorithm_params`, because none of them changes the projection formula.
+
+**Decision point 3 -- the JSON state and its schema tag.**
+
+Tag: `"dskit.sklearn-reduction/v1"`. State keys:
+
+- `pca`: exactly `{schema, algorithm, features, components, mean}`.
+- `svd`: exactly `{schema, algorithm, features, components}` -- no `mean`,
+  because TruncatedSVD never centres; the omission is the record of that fact.
+
+`components` is `n_components` x `len(features)`, every entry a finite JSON
+number; `mean` (when present) has width `len(features)`. `state_problems`
+validates the state completely on load -- schema tag, algorithm in-catalog,
+feature-list shape, component width, and per-algorithm presence/absence of
+`mean` -- then compares the document's `algorithm`, `features` and
+`n_components` against it, because those are the knobs that DESCRIBE the state
+(a document may restate what a state is, never misdescribe it). `n_components`
+is NOT stored in the state: it is `len(components)`, and the comparison reads
+that. Storing it would be the same fact in two places with nothing pinning
+their agreement.
+
+**Decision point 4 -- output contract.**
+
+- The declared `features` columns are DROPPED from every output row; the
+  projected axes replace them.
+- New columns: `component_<i>` for `i` in `0..n_components-1`, in component
+  order. The prefix `component` is one module-level constant; a knob to rename
+  it is out of scope.
+- Every non-feature column (the label, the decision instant, the cluster
+  identity, anything else the row carried) rides along unchanged.
+- Input rows are never mutated; a NEW row is emitted per input row.
+- A row that already carries a produced name (`component_<i>`, from the
+  DECLARED `n_components` -- known at validate time in both modes) is refused
+  in `row_problems`, never overwritten: input evidence is not overwritten.
+
+`n_components` is a top-level REQUIRED param (int `>= 1`, non-bool), not a key
+inside `algorithm_params`, for three reasons: it names the OUTPUT width, so the
+document and the rows it feeds can reason about it; `row_problems` needs it at
+validate time (before any fit) to refuse a colliding `component_<i>`; and
+ADR-0044 makes a member's own top-level knob searchable, so owner flow 2 can
+tune it. It is threaded into the constructor as `n_components`, and spelling it
+again inside `algorithm_params` refuses (one source). `n_components <=
+len(features)` is a plan-time check, and the fit refuses when the estimator
+produces fewer than `n_components` components -- sklearn clamps to
+`min(n_components, n_features, n_samples)`, and a silent clamp would emit
+fewer columns than every document declared.
+
+Ports/outputs: `transform`, `rows`, `metrics`, plus `reduction_model_id` -- the
+identity hash, emitted BOTH as a field on every output row and as a port via
+`state_outputs`, so a downstream row can be traced to the exact projection that
+produced it (the SklearnSegment `segment_model_id` precedent). It is the
+lowercase sha256 of the state's canonical JSON (sorted keys, compact
+separators, `allow_nan=False`), RECOMPUTED from the restored state on every
+projection -- never copied from an artifact field, because an id a file states
+is an id a file could lie about.
+
+Numeric-only metrics: `n_rows` (the family's), `n_fit_rows` (the family's), and
+`n_components` (this member's `state_metrics`). Nothing else.
+
+**Decision point 5 -- no variance / reconstruction score is reported.**
+
+PCA and TruncatedSVD both expose `explained_variance_ratio_`, and it is
+DELIBERATELY not reported. The reason is SklearnSegment's, restated: an
+internal quality number reported beside a run is one a search would rank
+reduction candidates by, which is model selection this node must not perform --
+choosing `n_components` by maximising explained variance is the caller's
+decision, not an objective this node supplies. Reporting it would also make
+`pca` and `svd` asymmetric (they answer different variance definitions). A
+caller that wants the number can fit through the generic `sklearn-fit` doorway;
+this member supplies no such objective.
+
+**Decision point 6 -- no `sidecar_problems` override; the Standardize posture.**
+
+The load path needs no sidecar-level hook. Every refusal fact this member owns
+lives either in the STATE (`state_problems` compares `algorithm`, `features`
+and `n_components`) or in the document's own params (`validate_load_inputs`
+refuses the fitting-only knobs `algorithm_params` and `seed`). The base's
+`_sidecar` already compares `fit_split` when the document declared one, and --
+unlike a segmentation "regime" -- a reduction is a data transformation that the
+family's existing unsupervised member (Standardize) lets a document fit on any
+declared split; the leakage protection is the DECLARED `fit_split` and the
+plan/run refusal to fit on anything else, not a train-only narrowing. Adding
+`sidecar_problems` would be a tier-1 change this ADR does not need and does not
+make (it is ADR-0148's, unmerged).
+
+**Decision point 7 -- out of scope, named.**
+
+UMAP, t-SNE, KernelPCA, IncrementalPCA, FactorAnalysis, NMF, all manifold
+learners; `n_components` as a float fraction or `"mle"` (the output width must
+be a declared int, not a fit-time answer); PCA `whiten`; a configurable
+component-name prefix; supervised reduction (LDA/PLS -- the child's PLS use
+stays on the generic `sklearn-fit` doorway); any variance/quality ranking;
+production serving authority (`serving_load_audited` is NOT claimed -- a
+serving licence is its own ADR with its own audit, the SklearnSegment
+precedent). `deployment_eligible=false` throughout.
+
+**Parameters.** The class's `_PARAMS` is `FittedTransform._PARAMS +
+("algorithm", "algorithm_params", "features", "n_components", "seed")`.
+`seed` (int in `[0, 2**32)`, default 0) is threaded as `random_state`; both
+catalog members accept it, so there is no "seed refused beside X" case. Kind
+`sklearn-reduce`, class `SklearnReduction`, added to the pack's explicit
+`NODE_KINDS`/`register()`. `fit_split`, `order_field` and `purity_check` keep
+their accepted meanings and validators unchanged.
