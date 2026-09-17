@@ -2690,6 +2690,130 @@ class SklearnSegment(FittedTransform):
             "center_labels": labels,
         }
 
+    def apply_state(self, state, rows, params):
+        """Assign every row the label of its nearest center.
+
+        Pure and ROW-INDEPENDENT by construction: a row's answer is the
+        squared Euclidean distance from its own coordinates to each
+        stored center, and nothing about the other rows enters it. That
+        is what makes a served row's segment the same whether it arrives
+        alone or in a batch — the family's classic leak, structurally
+        absent rather than merely screened for.
+
+        Parameters
+        ----------
+        state : dict
+            What :meth:`fit` learned, or what load mode restored. The
+            coordinates are read in the STATE's feature order, never the
+            document's: the centers are points in that space, and
+            :meth:`state_problems` has already refused a document that
+            restates it differently.
+        rows : list
+            EVERY row of the input stream, whatever split it came from.
+        params : dict
+            ``self.params``; unused — everything the assignment needs is
+            in the state.
+
+        Returns
+        -------
+        list of dict
+            A NEW row per input row, in order, carrying every field it
+            arrived with plus exactly ``segment`` (the assigned center's
+            label) and ``segment_model_id``. Input rows are never
+            mutated.
+
+        Raises
+        ------
+        ValueError
+            When a row cannot supply a declared feature as a finite real
+            number — which :meth:`row_problems` refuses at both doorways,
+            so reaching it here means a caller went around them.
+        """
+        centers, labels = state["centers"], state["center_labels"]
+        features = state["features"]
+        model_id = self.segment_model_id(state)
+        return [
+            {
+                **row,
+                "segment": labels[
+                    self._nearest(centers, self._point(row, features, index))
+                ],
+                "segment_model_id": model_id,
+            }
+            for index, row in enumerate(rows)
+        ]
+
+    def _nearest(self, centers, point):
+        """The closest center's INDEX; a tie goes to the lowest index.
+
+        Deciding a tie by index rather than by whichever center happened
+        to be compared first is what keeps the same row in the same
+        segment on a different machine: ``<`` is strict, so an equal
+        distance never displaces the earlier center.
+        """
+        best, best_distance = 0, None
+        for index, center in enumerate(centers):
+            distance = math.fsum(
+                (a - b) ** 2 for a, b in zip(point, center)
+            )
+            if best_distance is None or distance < best_distance:
+                best, best_distance = index, distance
+        return best
+
+    def _point(self, row, features, index):
+        """One row's coordinates in the STATE's feature order, or a refusal."""
+        point = []
+        for name in features:
+            value = row.get(name) if isinstance(row, Mapping) else None
+            number = _segment_number(value)
+            if number is None:
+                raise ValueError(
+                    f"{self.key}: rows[{index}] cannot be assigned — "
+                    f"{name!r} is {value!r}, not a finite real number. "
+                    "row_problems refuses this at both doorways, so a "
+                    "stream reaching here unvalidated came past them"
+                )
+            point.append(number)
+        return point
+
+    def state_metrics(self, state):
+        """Numeric metrics describing a fitted segmentation.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``n_segments`` — how many DISTINCT labels the state can
+            assign, which is fewer than the center count whenever a
+            member maps many sub-centers onto one label. No cluster score
+            appears here: an internal quality number reported beside the
+            run is one a search would rank segmentations by, and this
+            node deliberately supplies no such objective.
+        """
+        return {"n_segments": len(set(state["center_labels"]))}
+
+    def state_outputs(self, state):
+        """The model id as a PORT as well as a row field.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``segment_model_id``. A downstream node that must record
+            WHICH segmentation labelled its rows needs the value itself,
+            and metrics cannot carry it — they are numbers a report
+            summarizes.
+        """
+        return {"segment_model_id": self.segment_model_id(state)}
+
     def segment_model_id(self, state):
         """This segmentation's identity: the canonical digest of ``state``.
 
@@ -2902,6 +3026,7 @@ NODE_KINDS = (
     ("sklearn-fit", SklearnFit),
     ("sklearn-predict", SklearnPredict),
     ("sklearn-select", SklearnSelect),
+    ("sklearn-segment", SklearnSegment),
 )
 
 

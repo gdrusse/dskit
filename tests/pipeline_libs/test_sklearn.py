@@ -34,6 +34,7 @@ from dskit.pipeline.libs.sklearn import (
     NODE_KINDS,
     SEGMENT_SCHEMA,
     ColumnSubsetEstimator,
+    _SEGMENT_PATHS,
     SklearnFit,
     SklearnPredict,
     SklearnSegment,
@@ -100,6 +101,7 @@ def test_node_kinds_table_and_roles():
         "sklearn-fit": SklearnFit,
         "sklearn-predict": SklearnPredict,
         "sklearn-select": SklearnSelect,
+        "sklearn-segment": SklearnSegment,
     }
     assert SklearnFit.role == "train"
     assert SklearnFit.outputs == ("signal", "artifact_path", "metrics")
@@ -1962,6 +1964,230 @@ def test_a_corrupt_state_reaches_the_refusal_through_the_sidecar_too(tmp_path):
         node._sidecar(ctx, path)
 
 
+# ---------------------------------------------------------------------------
+# SklearnSegment — assignment: the concrete class, and what it emits
+# ---------------------------------------------------------------------------
+
+#: Two tight clouds with an exact midpoint at (4.5, 4.5), so a tie is
+#: constructible rather than hoped for.
+SEGMENT_STREAM = [
+    {"f0": 0.0, "f1": 0.0, "keep": "a"},
+    {"f0": 0.2, "f1": 0.2, "keep": "b"},
+    {"f0": 9.0, "f1": 9.0, "keep": "c"},
+    {"f0": 8.8, "f1": 8.8, "keep": "d"},
+]
+
+
+def _segment_node(key="regime", **overrides):
+    return SklearnSegment(key, _segment_params(**overrides))
+
+
+def _fitted_segment(tmp_path, *, name="segmentfit", **overrides):
+    """A real fit through ``run``: its node, ctx, outputs and sidecar path."""
+    pytest.importorskip("sklearn")
+    ctx = _split_ctx(tmp_path, name)
+    node = _segment_node(**overrides)
+    out = node.run(ctx, {"rows": SEGMENT_TRAIN_ROWS + SEGMENT_VAL_ROWS})
+    return node, ctx, out, os.path.join(node.artifact_dir(ctx), SIDECAR_NAME)
+
+
+def _clouds(day, *, offset=0.0):
+    """Four rows on one split day: two near the origin, two near (9, 9)."""
+    return [
+        {"asof_ms": day * DAY + i, "contract": f"C-{day}-{i}",
+         "f0": base + offset, "f1": base + offset, "keep": f"{day}-{i}"}
+        for i, base in enumerate((0.0, 0.2, 9.0, 8.8))
+    ]
+
+
+SEGMENT_TRAIN_ROWS = _clouds(1)
+SEGMENT_VAL_ROWS = _clouds(15)
+
+
+def test_the_segment_is_concrete_only_now_that_it_can_project():
+    """Both hooks are its own, so it no longer needs a stand-in."""
+    assert SklearnSegment.fit is not FittedTransform.fit
+    assert SklearnSegment.apply_state is not FittedTransform.apply_state
+    assert _segment_node().params["algorithm"] == "kmeans"
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans", "birch"])
+def test_assignment_agrees_with_the_library_it_extracted_from(algorithm):
+    """The whole bet of storing centers instead of a pickled model: the
+    nearest-center rule must answer what the estimator's own ``predict``
+    answers, for every catalog member."""
+    sklearn_cluster = pytest.importorskip("sklearn.cluster")
+
+    node = _segment_node(algorithm=algorithm, algorithm_params={"n_clusters": 2},
+                         seed=_DROP if algorithm == "birch" else 17)
+    state = node.fit(SEGMENT_STREAM, node.params)
+
+    kwargs = {"n_clusters": 2}
+    if algorithm != "birch":
+        kwargs["random_state"] = 17
+    reference = getattr(
+        sklearn_cluster, _SEGMENT_PATHS[algorithm].rpartition(".")[2]
+    )(**kwargs).fit([[row["f0"], row["f1"]] for row in SEGMENT_STREAM])
+
+    matrix = [[row["f0"], row["f1"]] for row in SEGMENT_STREAM]
+    assert [row["segment"] for row in node.apply_state(state, SEGMENT_STREAM,
+                                                       node.params)] == [
+        int(label) for label in reference.predict(matrix)
+    ]
+
+
+def test_an_exact_tie_goes_to_the_lowest_center_index():
+    """Ties are decided by INDEX, not by whichever center was compared
+    first — a rule that varied with dict or array order would assign the
+    same row differently on a different machine."""
+    node = _segment_node()
+    state = {
+        "schema": SEGMENT_SCHEMA,
+        "algorithm": "kmeans",
+        "features": ["f0", "f1"],
+        "centers": [[0.0, 0.0], [10.0, 10.0]],
+        "center_labels": [7, 3],
+    }
+    midpoint = [{"f0": 5.0, "f1": 5.0}]
+    assert node.apply_state(state, midpoint, node.params)[0]["segment"] == 7
+
+
+def test_a_projected_row_keeps_every_field_and_gains_exactly_two():
+    node = _segment_node()
+    state = {
+        "schema": SEGMENT_SCHEMA,
+        "algorithm": "kmeans",
+        "features": ["f0", "f1"],
+        "centers": [[0.0, 0.0], [9.0, 9.0]],
+        "center_labels": [0, 1],
+    }
+    out = node.apply_state(state, SEGMENT_STREAM, node.params)
+
+    assert len(out) == len(SEGMENT_STREAM)
+    for before, after in zip(SEGMENT_STREAM, out):
+        assert set(after) == set(before) | {"segment", "segment_model_id"}
+        assert all(after[k] == v for k, v in before.items())
+        assert after["segment_model_id"] == node.segment_model_id(state)
+    assert [row["segment"] for row in out] == [0, 0, 1, 1]
+    # The input rows are never mutated — a new row is emitted per row in.
+    assert all("segment" not in row for row in SEGMENT_STREAM)
+
+
+def test_the_run_emits_every_row_and_the_model_id_as_a_port(tmp_path):
+    node, _ctx, out, _sidecar = _fitted_segment(tmp_path)
+    state = out["transform"].state
+
+    assert len(out["rows"]) == len(SEGMENT_TRAIN_ROWS) + len(SEGMENT_VAL_ROWS)
+    assert out["segment_model_id"] == node.segment_model_id(state)
+    assert all(
+        row["segment_model_id"] == out["segment_model_id"] for row in out["rows"]
+    )
+    assert out["metrics"] == {
+        "n_rows": len(SEGMENT_TRAIN_ROWS) + len(SEGMENT_VAL_ROWS),
+        "n_fit_rows": len(SEGMENT_TRAIN_ROWS),
+        "n_segments": len(set(state["center_labels"])),
+    }
+    assert all(isinstance(v, (int, float)) for v in out["metrics"].values())
+
+
+def test_the_fit_saw_the_train_split_alone(tmp_path):
+    """The family's leakage rule, read off the count rather than assumed."""
+    _node, _ctx, out, _sidecar = _fitted_segment(tmp_path)
+    assert out["metrics"]["n_fit_rows"] == len(SEGMENT_TRAIN_ROWS)
+
+
+def test_a_load_restores_the_identical_state_and_never_refits(tmp_path):
+    node, ctx, trained, sidecar = _fitted_segment(tmp_path)
+    served = SklearnSegment(
+        "regime",
+        _segment_params(fit_split=_DROP, seed=_DROP, algorithm_params=_DROP),
+        mode="load",
+        artifact=sidecar,
+    )
+    bare = NodeContext(name="t", asof=ASOF, run_dir=ctx.run_dir)
+    out = served.run(bare, {"rows": SEGMENT_VAL_ROWS})
+
+    assert out["transform"].state == trained["transform"].state
+    assert out["segment_model_id"] == trained["segment_model_id"]
+    assert out["metrics"]["n_fit_rows"] == 0
+    assert [row["segment"] for row in out["rows"]] == [
+        row["segment"] for row in trained["rows"][len(SEGMENT_TRAIN_ROWS):]
+    ]
+
+
+def test_the_purity_screen_passes_because_assignment_reads_one_row(tmp_path):
+    """``apply_state`` is row-wise by construction; the base's screen is
+    what proves it, and it runs on every fit above."""
+    _node, _ctx, out, _sidecar = _fitted_segment(tmp_path)
+    assert out["rows"]
+
+
+# -- the seed is real, not decorative --------------------------------------
+
+#: Rows placed so more than one locally-optimal partition is reachable
+#: from different random starts — ``center_labels`` alone is positional by
+#: definition and proves nothing, so the fixture must make ``centers``
+#: themselves move with the initialization.
+SEED_ROWS = [
+    {"f0": x, "f1": y}
+    for x, y in (
+        (0.0, 0.0), (0.4, 0.1), (0.1, 0.5), (1.0, 1.1), (1.2, 0.9),
+        (2.0, 2.2), (2.3, 1.9), (2.1, 2.5), (3.0, 3.1), (3.4, 2.8),
+        (4.0, 4.2), (4.3, 3.9), (5.0, 5.1), (5.2, 4.8), (6.0, 6.2),
+        (6.3, 5.9), (7.0, 7.1), (7.2, 6.8), (8.0, 8.2), (8.3, 7.9),
+    )
+]
+
+#: Per algorithm, the two seeds verified (in RED) to reach DIFFERENT local
+#: optima on ``SEED_ROWS``, and the cluster count that makes them do it. A
+#: fixture sized for one member can converge regardless of seed for the
+#: other, so neither is assumed.
+_SEED_CASES = {
+    "kmeans": ({"n_clusters": 5, "n_init": 1}, 0, 3),
+    "minibatch_kmeans": ({"n_clusters": 5, "n_init": 1, "batch_size": 4}, 0, 3),
+}
+
+
+@pytest.mark.parametrize("algorithm", sorted(_SEED_CASES))
+def test_the_same_seed_reproduces_the_same_centers(algorithm):
+    pytest.importorskip("sklearn")
+    kwargs, seed, _other = _SEED_CASES[algorithm]
+    node = _segment_node(algorithm=algorithm, algorithm_params=kwargs, seed=seed)
+    first = node.fit(SEED_ROWS, node.params)
+    second = node.fit(SEED_ROWS, node.params)
+
+    assert first["centers"] == second["centers"]
+    assert node.segment_model_id(first) == node.segment_model_id(second)
+
+
+@pytest.mark.parametrize("algorithm", sorted(_SEED_CASES))
+def test_a_different_seed_reaches_different_centers(algorithm):
+    """The half that proves the knob is THREADED rather than dropped:
+    same-seed reproducibility alone cannot tell a real seed from a fit
+    that is deterministic whatever the seed says."""
+    pytest.importorskip("sklearn")
+    kwargs, seed, other = _SEED_CASES[algorithm]
+    one = _segment_node(algorithm=algorithm, algorithm_params=kwargs, seed=seed)
+    two = _segment_node(algorithm=algorithm, algorithm_params=kwargs, seed=other)
+
+    assert one.fit(SEED_ROWS, one.params)["centers"] != two.fit(
+        SEED_ROWS, two.params
+    )["centers"]
+
+
+# -- registration, now that the class is concrete --------------------------
+
+
+def test_the_segment_is_exported_and_registered():
+    import dskit.pipeline.libs.sklearn as pack
+
+    assert "SklearnSegment" in pack.__all__
+    assert "SEGMENT_SCHEMA" in pack.__all__
+    registry = NodeKindRegistry()
+    register(registry)
+    register(registry)  # idempotent: a present name is skipped, never shadowed
+    cls, owned = registry.get("sklearn-segment")
+    assert cls is SklearnSegment and owned is False
 
 
 # ---------------------------------------------------------------------------
@@ -1972,6 +2198,7 @@ EXPECTED_ROLES = {
     "sklearn-fit": "train",
     "sklearn-predict": "signal",
     "sklearn-select": "fitted_transform",
+    "sklearn-segment": "fitted_transform",
 }
 
 
@@ -1988,6 +2215,29 @@ def _selected(tmp_path):
     return ctx, out["transform"], os.path.join(node.artifact_dir(ctx), SIDECAR_NAME)
 
 
+def _segmented(tmp_path):
+    """A REAL fitted segmentation: its ctx, sidecar, model id and the
+    projection it gives a DISTINCT probe stream.
+
+    The probe's rows are not the fixture's rows, and its expected output
+    is what the FIXTURE's centers make of them — so a node that quietly
+    refitted on the probe stream (two clouds at different places) could
+    not answer the same labels or the same model id.
+    """
+    ctx = _split_ctx(tmp_path, "segmentfixture")
+    node = SklearnSegment("fixture_segment", dict(SEGMENT_PARAMS))
+    out = node.run(ctx, {"rows": SEGMENT_TRAIN_ROWS + SEGMENT_VAL_ROWS})
+    state = out["transform"].state
+    stream = _clouds(15, offset=0.05)
+    return (
+        ctx,
+        os.path.join(node.artifact_dir(ctx), SIDECAR_NAME),
+        out["segment_model_id"],
+        stream,
+        node.apply_state(state, stream, node.params),
+    )
+
+
 def probes(tmp_path):
     """One populated probe per kind. The fixture artifact is a REAL fit
     (``y = x``); the probes' wired rows carry the OPPOSITE relationship
@@ -1995,6 +2245,13 @@ def probes(tmp_path):
     silent refit on the prediction itself, not just on paperwork."""
     pytest.importorskip("sklearn")
     select_ctx, carrier, select_sidecar = _selected(tmp_path)
+    (
+        segment_ctx,
+        segment_sidecar,
+        segment_model_id,
+        segment_stream,
+        segment_expected,
+    ) = _segmented(tmp_path)
     fitted = SklearnFit("fixture_fit", dict(FIT_PARAMS)).run(
         _ctx(tmp_path, "fixture"), {"rows": rows_linear()}
     )
@@ -2048,6 +2305,22 @@ def probes(tmp_path):
             verify_loaded=lambda out: (
                 out["metrics"]["n_fit_rows"] == 0
                 and out["transform"].state == carrier.state
+            ),
+        ),
+        # ``fit_split`` is NOT required here either, for the same reason:
+        # only the planner can see whether the document carves the split.
+        "sklearn-segment": NodeProbe(
+            params=dict(SEGMENT_PARAMS),
+            required=("algorithm", "features"),
+            inputs={"rows": SEGMENT_TRAIN_ROWS + SEGMENT_VAL_ROWS},
+            stream_ports=("rows",),
+            runnable=True,
+            ctx=segment_ctx,
+            load_artifact=segment_sidecar,
+            verify_loaded=lambda out: (
+                out["metrics"]["n_fit_rows"] == 0
+                and out["segment_model_id"] == segment_model_id
+                and out["transform"].apply(segment_stream) == segment_expected
             ),
         ),
     }
