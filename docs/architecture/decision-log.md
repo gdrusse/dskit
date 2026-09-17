@@ -12075,3 +12075,487 @@ five ADR-0143 forbidden-legacy symbols, or ADR-0144's dynamic-dispatch code
 on for a code change by this ADR; nor is `dskit.pipeline.trust` imported by
 `production/bundles.py` (Decision point 10). `deployment_eligible=false`
 throughout.
+
+## ADR-0147 - durable ChainLedger-backed consume-once admission gate (Packet 8, closes F5A-R23)
+
+**Status:** proposed.
+
+**Context.** RE-ENTRY's current "Next" line, unchanged since P7 closed at
+its bounded synthetic scope (ADR-0143/0144/0145/0146), names Packet 8 --
+"durable consume-once (closes F5A-R23)" -- as whole-F5a's last remaining
+gate. F5A-R23-ctor-intern-unspend is not new: it is the single unresolved
+Major the owner stopped consume-once on after review 23, predating this
+whole P2-P7 lineage (`docs/memos/2026-09-14-review-progress-and-
+consolidation.md`), tracked from `docs/review-evidence/F5a/0033-phase0-
+design-verdict.v1.json` onward and preserved open through every one of
+Packets 2-7's own evidence files (`docs/evidence/closeout/0034` through
+`0191`, all list it verbatim in `preserved_open`). The exact vulnerability,
+unchanged in the code read for this proposal: `HistoricalStudyVerifier
+.capture` (`dskit/production/verifier.py:834`) reads
+`type(self).__init__.__kwdefaults__["_spend"][:2]` -- the live/spent id
+sets `_make_spend_pair()` (verifier.py:668) built as the constructor's
+default for the private `_spend` keyword. A constructor kwdefault is a
+public, mutable attribute of the function object
+(`HistoricalStudyVerifier.__init__.__kwdefaults__`); any caller with a
+reference to the class can walk it, mutate `spent`/`live` directly, or read
+and clone the shared pair into a second bound instance, defeating the
+one-use `_SpendCell` doorway the constructor mints. This is a single
+public-surface Major (an ordinary Python identity container standing in for
+a security boundary), not the ADR-0126-deferred coordinated multi-private-
+mutation threat model, and it is out of scope for every Packet 2-7 ADR by
+their own repeated, explicit non-goals.
+
+Two owner decisions already bound this packet's design and remain in force.
+`docs/evidence/closeout/0100-f5a-p8-owner-decision.json` (2026-09-15)
+approved reusing `dskit/production/ledger.py`'s existing `ChainLedger`/
+`JsonlLedger` seam (fsync'd, hash-chained, append-only, idempotent-by-id) as
+the sole durable authority, replacing the `_spend` kwdefault tuple with a
+ledger-backed check "under a single transition lock, keyed by an admission-
+derived idempotency key," and fixed the honest label this ADR reuses
+verbatim: closing F5A-R23 "at the development/synthetic boundary (state no
+longer publicly reachable and durable across process restart within the
+process boundary); does NOT claim the OS-owned external broker deployment
+durability." `docs/evidence/closeout/0144-f5a-p8-owner-decisions.json`
+(2026-09-15) then resolved the three gates a same-session design attempt
+(`0138`-`0142`) surfaced: **sequencing** ("keep-original-ordering" -- P8
+begins only after Packets 5-7 close, now satisfied by P7's 2026-09-17
+closure per RE-ENTRY's current checkpoint); **migration**
+("approve-migration" -- the successful authority-only-plus-six-placeholder-
+dicts `capture()` contract must be replaced; "no successful non-durable
+fallback remains; leaving one would keep R23 open for the old capture
+route"); and **issuer/namespace** ("existing-issued-authority-plus-owner-
+ServeRoot" -- the verified admission identity comes from the existing issued
+`CapturedAuthorizationAuthority`, the durable namespace from owner-
+configured stable `ServeRoot`/genesis, "never a caller-passed ledger... A
+public constructor accepting an arbitrary JsonlLedger would let a caller
+replay the same admission against a fresh empty ledger; pins, opaque
+wrappers, or another public factory accepting arbitrary ledgers merely
+relocate that bypass and remain rejected").
+
+That same-session attempt is prior, substantial, directly on-point design
+work this ADR builds on rather than re-deriving: `0138` (first design +
+matrix), `0139` (review: 4 Major -- owner-gate P8-D1-M1 sequencing/migration,
+P8-D1-M2 unspecified verified-identity accessor, P8-D1-M3 underspecified
+reserve/recovery, P8-D1-M4 bare-ledger-injection replay bypass), `0140`
+(corrections: rejects bare ledger injection, proposes `inspect_capture
+_admission` as a read-only accessor on the existing issued authority, a new
+`ChainLedger.reserve_once` atomic API and five health states), `0141`
+(handoff review: 4 Major still open -- M1/M4 owner gates, M2 needs an exact
+runtime/nonce signature, a new M5 -- state recovery after a partial
+`state.apply` must discard and fully replay, not trust `_open`'s ledger-only
+recovery), `0142` (final clarifications: freezes the nonce signature and the
+full-replay recovery contract). `0144` then closed M1 and M4 at the owner
+level; M2's identity contract and M3/m1/m2's reserve/recovery corrections
+from `0140`/`0142` were never re-reviewed against a final matrix and no RED
+was ever authorized or attempted -- nothing in `dskit/production/verifier.py`,
+`dskit/production/ledger.py`, `dskit/production/vocab.py`,
+`dskit/production/state.py` or `dskit/pipeline/trust.py` implements any of
+it today (`grep` for `inspect_capture_admission`, `admission_use`,
+`reserve_once` across the tree returns nothing). This ADR is the successor
+proposal: it adopts `0138`/`0140`/`0142`'s design where the record read for
+this proposal confirms it is still sound, corrects the two places it is not
+(below), and is the first document to state the whole contract as a single
+approved-shape decision, ready for its own fresh Phase 0.
+
+**Two corrections to the inherited `0138`/`0140` design, found reading the
+current code directly for this proposal:**
+
+1. `ChainLedger` has **no in-process thread lock today** -- `grep -n
+   "Lock\|threading" dskit/production/ledger.py` finds only the
+   cross-process `serve.lock` `fcntl.flock` calls and the `health
+   .InstanceLock` type name. `0140`'s "single ChainLedger-owned RLock covers
+   reserve_once, append, append_many, barrier, snapshot and close" therefore
+   describes a lock this ADR must **add**, not an existing one to extend --
+   stated explicitly as new surface in Decision point 6 below, since a
+   design that assumes it already exists would under-scope its own RED.
+2. `admission_ref`'s validated shape, read directly from
+   `_p4_reference_bytes` (trust.py:2275-2306), is exactly `{"kind", "role",
+   "schema", "sha256"}`, all `str`, `role` fixed to `"study-lifecycle"`,
+   `kind`/`schema` a pinned 1:1 pair (`_P4_ADMISSION_SCHEMAS`), `sha256` a
+   validated lowercase hex digest -- confirming `0140`'s "four-field
+   IssuanceBasisRef.v1 shape" description precisely, not merely by name.
+
+**Purity boundary, confirmed by direct import inspection.**
+`dskit/pipeline/trust.py`'s only imports are stdlib plus
+`dskit.pipeline.node` (trust.py:13-28); it imports nothing from
+`dskit.production`, and `tests/pipeline/test_purity.py` asserts this
+(`private_cross_package_uses(..., "dskit.production")`). The durable ledger,
+its lock and its record vocabulary therefore live entirely production-side
+(`dskit/production/ledger.py`, `vocab.py`, `state.py`, `verifier.py`); the
+one new read-only accessor this ADR adds to `trust.py` (Decision point 3)
+returns only immutable canonical bytes and imports no new symbol, so it adds
+no production dependency to the pipeline package and the boundary is
+unchanged.
+
+**Decision.**
+
+1. **Scope: `HistoricalStudyVerifier.capture`'s admission-spend state only.**
+   This ADR replaces `_spend`/`_make_spend_pair`/`_SpendCell`/`_DOOR_LOCK`
+   (verifier.py:663-719, 740-855) with a ledger-backed durable gate. It does
+   not touch `bind()`'s five plan artifacts `scope_intent`/`ces`/`pea`/
+   `bvp`/`cas` (ADR-0125's private-plan-precedes-capture concern, unchanged,
+   still checked before any reservation) or `authorize_capture_set`
+   (verifier.py:857-912, `trust.py`'s `commit_p4_batch`/`_p4_close
+   _admission` route) -- that route already has its own ledger-backed,
+   atomic, admission-consuming closure (ADR-0143/0144) and is untouched by
+   this ADR, confirmed by direct inspection: it never reads `_spend` or
+   `_admission_spent`.
+
+2. **The `"admission"` bind() artifact is retired; a verified `admission
+   _ref` replaces it.** `_REQUIRED_PLAN` narrows from six to five names
+   (`scope_intent`, `ces`, `pea`, `bvp`, `cas`); `bind()` refuses the name
+   `"admission"` as unknown. In its place, only a **durable, capture-capable**
+   verifier (Decision point 4) may call `capture()` at all -- an
+   authority-only verifier built the current way (`HistoricalStudyVerifier
+   (authority)`) retains `bind`/plan-artifact checks and every other
+   existing behavior but permanently refuses `capture()` with the same
+   `ValueError` `bind()` already raises for an unbound artifact, because it
+   holds no ledger binding. This is the `0144` "no successful non-durable
+   fallback" requirement, made mechanical: there are two verifier shapes
+   after this ADR, not two `capture()` code paths inside one shape.
+
+3. **Verified admission identity: a new read-only accessor on the existing
+   issued P4 authority, not a new authority.** `CapturedAuthorizationAuthority`
+   (trust.py:313) gains one new concrete method,
+   `inspect_capture_admission(self, captures, admission_ref, *,
+   consumer_run_identity, process_measurement_sha256, runtime_sha256,
+   transition_nonces)`, dispatched through the same closed `type(resolver)`
+   if/elif/else pattern `_p4_reference_bytes`/`_p4_require_issued_authority`
+   already use (ADR-0143 Decision point 1's precedent, extended, not
+   duplicated). It:
+   a. Requires an issued, non-revoked authority via the existing
+      `_p4_require_issued_authority`, and a live resolver/snapshot via the
+      existing `_p4_snapshot_integrity`.
+   b. Validates `admission_ref` via the existing `_p4_reference_bytes`
+      (closing over the corrected four-field shape above) and the request
+      triple/nonces via the existing `_P4_REQUEST_CHECK`
+      (`_SyntheticP4CapturedAuthorizationAuthority._validate_capture_request`),
+      exactly as `_p4_checked_dispatch` already does for
+      `authorize_capture_set` -- reused, not reimplemented.
+   c. Resolves the exact selected admission through the existing
+      `_P4_CLOSE_ADMISSION`/`_p4_close_admission` (or the dynamic
+      resolver's `_dynamic_p4_close_admission`) closure walk, exactly as
+      `commit_p4_batch` already does, and returns the immutable canonical
+      bytes of the verified `admission_ref` alone (`_canonical_bytes
+      (admission_ref)` after the above checks pass) plus nothing else --
+      no session, no plan projection, no transferable token. Every other
+      value `commit_p4_batch` derives (the six-position closure, the batch
+      projection) stays private to that route.
+   d. Performs **no write, no session, no ledger effect**. Calling it twice
+      with the same arguments is idempotent and side-effect-free; it grants
+      nothing by itself -- Decision point 5's ledger reservation is the
+      only thing that spends.
+   e. Is called twice by the production caller (Decision point 7): once
+      before the ledger reservation (to obtain the bytes the idempotency
+      key and the reservation body are derived from) and once more,
+      immediately after a successful reservation and immediately before
+      `authority.capture(...)` is invoked, re-checking the SAME
+      `admission_ref` is still issued/unrevoked at that later instant. A
+      refusal on the second call leaves the reservation durably spent (no
+      unspend, no rollback -- Decision point 8) but the delegate call does
+      not happen.
+   This is metadata validation on an already-issued, already-reviewed
+   authority (ADR-0143/0144), not a new grant-issuing authority, and adds no
+   new production import to `trust.py`.
+
+4. **Idempotency key.** `"admission_use:v1:" + canonical_hash({"kind":
+   admission_ref["kind"], "schema": admission_ref["schema"], "sha256":
+   admission_ref["sha256"]})`, computed production-side from the bytes
+   Decision point 3 returned (never from caller-supplied JSON directly).
+   `role` is omitted from the key: every value `_p4_reference_bytes`
+   accepts today fixes `role == "study-lifecycle"`, and `kind`/`schema` are
+   already a pinned 1:1 pair, so `role` carries no additional distinguishing
+   information in the key -- it is still present in the reserved record's
+   `body.admission_ref` (Decision point 5) and therefore still covered by
+   the ledger's existing same-id/different-payload conflict refusal
+   (Decision point 6). No process id, run id, object id, clock reading or
+   nonce enters the key: Decision point 3's `transition_nonces` and
+   `consumer_run_identity` are per-call metadata-freshness checks on the
+   *authority*, not spend-right components -- including them in the key
+   would let a caller mint a fresh nonce and re-spend the same admission,
+   exactly the bypass `0140`'s key design was written to prevent. The
+   namespace the key lives in is the ledger's own series (Decision point
+   6), never a caller-selectable field, so two admissions with the same
+   `(kind, schema, sha256)` in two different owner-configured series are
+   deliberately independent, and the same admission presented twice in the
+   same series collides on this same key regardless of which process,
+   thread, or verifier instance presents it.
+
+5. **Body and record.** `admission_use` becomes the record `kind` (Decision
+   point 6); the record `id` is the Decision point 4 key; the `body` is
+   `{"schema": "dskit.admission-use/v1", "admission_ref": {<the exact
+   validated four-field dict>}, "binding_sha256": <sha256>}`. `binding_sha256`
+   is `canonical_hash` over `{consumer_document_sha256, bound_plan:
+   {scope_intent, ces, pea, bvp, cas}}` -- the exact five `bind()`-retained
+   plan artifacts (Decision point 2) plus the frozen consumer document's own
+   digest -- computed by `HistoricalStudyVerifier.capture` from its own
+   `self._bound` and its `frozen` argument, never accepted from a caller as
+   a precomputed digest. This is audit/conflict context, not a second key
+   component: presenting the SAME `admission_ref` against a DIFFERENT bound
+   plan produces the same record `id` with a different `body` digest, which
+   the ledger's existing `_commit` idempotency check (ledger.py:1074-1112:
+   same `id`, different `payload_digest` -> `ProductionError`) already
+   refuses without any new comparison logic -- this is `0140`'s "conflict/
+   refusal, no second permission" matrix row, achieved by reusing the
+   store's existing per-id conflict detection rather than adding one.
+   Validation of this body (`dskit.admission-use/v1`'s three keys, the
+   nested four-field `admission_ref` shape, a non-placeholder
+   `binding_sha256`) is one function, `_check_admission_use_body`, owned by
+   `dskit/production/state.py` beside its other closed-shape checks and
+   called from both the fold (Decision point 6) and
+   `HistoricalStudyVerifier.capture` before ever calling `reserve_once` --
+   one validator, two callers, per AGENTS.md's "a function is never
+   repeated across modules" rule, not two copies.
+
+6. **`admission_use` joins `RECORD_KINDS` and the fold table, and
+   `ChainLedger` gains `reserve_once` plus its own transition lock.**
+   `dskit/production/vocab.py`'s `RECORD_KINDS` tuple (currently 28 members,
+   vocab.py:254-282) gains `"admission_use"` (distinct from the existing
+   `"authority_use"`, which folds a *reduction right* and must not be
+   overloaded -- `0138`'s own inventory note, confirmed: `state.py`'s
+   `_FOLDS["authority_use"]` is `_fold_authority_use`, an unrelated
+   handler). `dskit/production/state.py`'s `_FOLDS` dict gains
+   `"admission_use": ("_fold_admission_use", False)` -- non-economic, like
+   most of the table -- satisfying the existing `set(_FOLDS) ==
+   set(RECORD_KINDS)` invariant check (state.py:897-898) the module already
+   raises `ProductionError` over if it drifts. `_fold_admission_use` calls
+   `_check_admission_use_body` (Decision point 5) and otherwise advances no
+   economic state -- an `admission_use` record is audit/spend evidence, not
+   a position or cash effect. `ChainLedger` gains a new instance attribute,
+   `self._transition_lock = RLock()` (constructed in `__init__`, beside the
+   existing `_lock_fd`/flock acquisition -- a new in-process lock, not a
+   replacement for the cross-process `serve.lock`; Correction 1 above), and
+   a new method:
+   ```python
+   def reserve_once(self, record):
+       """Atomically reserve one admission_use id; True only on first grant."""
+   ```
+   returning the exact pair `(created: bool, seq: int)`: `(True, new_seq)`
+   only when this call's `_prepare`/`_commit` actually appended a new
+   record and its mandatory barrier (below) succeeded; `(False, prior_seq)`
+   when `_commit`'s existing idempotency path found the same `id` with the
+   same `payload_digest` already present; any conflicting payload, or any
+   non-`HEALTHY` ledger state (Decision point 7), raises `ProductionError`
+   exactly as `append` already does. `reserve_once`'s body is `_prepare` +
+   `_commit` (both reused unchanged) + an unconditional `self.barrier()`
+   only on the newly-created branch, all under `self._transition_lock`.
+   `append`, `append_many`, `barrier`, `snapshot` and `close` each take the
+   same `self._transition_lock` for their existing bodies -- the minimal
+   generic change (AGENTS.md: "the smallest generic change that satisfies
+   the accepted contract"), not a parallel lock scoped to `reserve_once`
+   alone, so no caller can interleave an ordinary `append`/`snapshot` with
+   a `reserve_once` on the same ledger and observe a torn intermediate
+   state. This closes `0140`'s reserve/lock corrections (P8-D1-M3, m1, m2)
+   and the matrix's "thread concurrency" row: two threads presenting the
+   SAME `admission_use` id against one shared `ChainLedger` serialize on
+   `_transition_lock`; exactly one observes `created=True`.
+
+7. **Health states.** A new closed vocabulary,
+   `LEDGER_HEALTH_STATES = ("opening", "healthy", "uncertain", "closed",
+   "readonly")` in `vocab.py`, pinned in `ledger.py` the way `CACHE_STATES`
+   already is (`pin_members(..., exact=True)`). `ChainLedger` tracks
+   `self._health` across its lifecycle: `"opening"` during `_open()` (no
+   writes, no reservations); `"healthy"` once `_open()` returns cleanly
+   (the only state `append`/`append_many`/`reserve_once`/`snapshot` accept,
+   subject also to the existing `_readonly`/`_closed` refusals);
+   `"uncertain"` entered by `_commit`, `reserve_once`'s barrier, `_sync`,
+   `state.apply` (via `_commit`), or an automatic-snapshot barrier raising
+   past the point storage was touched -- every subsequent mutating call
+   refuses with `ProductionError` naming the quarantine, and only `close()`
+   is accepted; `"closed"` after `close()`, even when `_shutdown()` itself
+   raised (the existing `close()` sets `self._closed = True` in a `finally`
+   -- `self._health = "closed"` joins it the same way); `"readonly"` for a
+   `ChainLedger.reading(...)` open (unchanged: no flock, no repair, every
+   mutating call already refuses via `_open_check`). A ledger that enters
+   `"uncertain"` never returns to `"healthy"` in the same process; the owner
+   must `close()` and reopen a fresh instance against the same on-disk
+   namespace, which re-runs Decision point 8's full-replay recovery.
+
+8. **Capture order -- validate, reserve, delegate, never unspend.**
+   `HistoricalStudyVerifier.capture` (durable shape only, Decision point 2)
+   runs, under its existing `self._capture_lock`:
+   a. The unchanged five-artifact `bind()` check (`_REQUIRED_PLAN`,
+      Decision point 2).
+   b. Decision point 3's `inspect_capture_admission` (first call), over the
+      bound `admission_ref` and the caller-supplied runtime/nonce triple.
+   c. Compute the Decision point 4 key and Decision point 5 body/
+      `binding_sha256`; call `self._ledger.reserve_once({"kind":
+      "admission_use", "id": key, "body": body})` under `_transition_lock`
+      (Decision point 6).
+   d. **Only when `reserve_once` returned `(True, seq)`** -- this call
+      genuinely created the reservation in this invocation -- does it call
+      Decision point 3's `inspect_capture_admission` a second time (the
+      post-reservation recheck) and then `self._authority.capture(published,
+      frozen, port, **kwargs)` exactly once. `(False, seq)` means an
+      admission_use record already exists for this exact key: `capture`
+      raises the same `ValueError("CAPTURED refuses after consumed
+      admission is spent")` message the retired `_spend` path already used,
+      preserving the existing refusal contract callers observe today.
+   e. After step (c) returns `(True, seq)`, **no code path unspends,
+      deletes, retries, or re-reserves** that id, in this call or any later
+      one -- matching `0140`'s "write-then-raise" contract: if step (d)'s
+      `authority.capture(...)` raises or the process crashes between (c)
+      and (d), the admission is durably spent and the capture attempt is
+      not retried automatically (Decision point 10, "unknown outcome").
+      This is the exact `0140` capture-order contract, carried over
+      unchanged because no finding in `0139`/`0141` was raised against it.
+
+9. **Provisioning: no bootstrap issuer class; a narrow factory that never
+   accepts a caller-built ledger.** Per `0144`'s "existing-issued-authority-
+   plus-owner-ServeRoot" decision and its explicit rejection of "a public
+   constructor accepting an arbitrary JsonlLedger," the only way to obtain a
+   capture-capable (durable) verifier is a new classmethod,
+   `HistoricalStudyVerifier.durable(authority, root, *, clock)`, where
+   `root` is a directory path (`ServeRoot`'s own `root` parameter) supplied
+   only by trusted production composition code (a test harness playing that
+   role, or a future `compose.py` site -- never derived from `admission_ref`,
+   request data, or any other caller/request-controlled value). `durable`
+   constructs its OWN `ServeRoot(root, _ADMISSION_SPEND_SERIES_ID)` and its
+   own `JsonlLedger(serve_root, process_id, release_hash, clock=clock,
+   snapshot_every=..., state=SeriesState(...))` internally -- it never
+   accepts a pre-built `Ledger`/`ChainLedger` instance as a parameter, so
+   there is no public factory surface a caller could satisfy with a freshly
+   constructed, empty ledger pointed at a throwaway directory and still have
+   it accepted as THIS admission's history (closing `0139`'s P8-D1-M4).
+   `_ADMISSION_SPEND_SERIES_ID` is one new private module-level string
+   constant in `verifier.py`, fixed across every durable verifier in a given
+   deployment/test configuration, so every durable verifier sharing one
+   `root` opens the identical on-disk chain and its identical
+   `admission_use` history. The honest boundary this still leaves, stated
+   plainly rather than implied: `root` is owner-configured filesystem
+   location, and an attacker with write access to that filesystem (or to
+   the process's own configuration) can always point a fresh `durable(...)`
+   call at an empty directory -- exactly the `deployment_eligible=false`,
+   "development/synthetic... within the process boundary, not an OS-owned
+   external broker" limit `0100` already names, not a gap this ADR
+   introduces. No new class is added for this (satisfying `0144`'s "no new
+   dedicated bootstrap issuer class"); `durable` is one classmethod plus
+   the existing `ServeRoot`/`JsonlLedger` constructors, composed.
+
+10. **Recovery: full replay, never a trusted partial fold.** Addressing
+    `0141`'s P8-D1-M5 and `0142`'s clarification directly: after any
+    `"uncertain"`-triggering failure (Decision point 7) -- specifically one
+    where `state.apply` may have partially mutated the attached
+    `SeriesState` before raising -- reopening the SAME `root`/series never
+    trusts that possibly-partial `SeriesState` or the latest `snapshot`
+    record as a resume point. `durable`'s reopen path constructs a FRESH
+    `SeriesState`, then replays the entire verified chain from genesis via
+    `JsonlLedger._open`'s own existing recovery walk (head/index/torn-tail,
+    unchanged) followed by one `state.apply(envelope)` call per record in
+    chain order, including every `admission_use` record -- snapshot records
+    are read and validated as ordinary chain entries but never substituted
+    for this full replay. Only once the freshly replayed `SeriesState`'s own
+    derived head matches the ledger's independently verified `(seq, hash)`
+    head does the ledger become `"healthy"`; any mismatch or mid-replay
+    validation failure refuses reopen (`ProductionError`) and leaves the
+    on-disk bytes untouched -- no truncation beyond `JsonlLedger._open`'s
+    existing torn-final-line rule, no repair by omission. A complete,
+    barriered `admission_use` record survives this replay exactly once,
+    so an admission reserved before a crash reads back as spent after
+    recovery whether or not `authority.capture` ever ran (Decision point
+    11's exact wording).
+
+11. **Named proofs -- what makes each required scenario provably safe, not
+    merely asserted.**
+    - **Concurrent calls** (same process, shared `ChainLedger`): serialized
+      by the new `_transition_lock` (Decision point 6); exactly one thread's
+      `reserve_once` observes `(True, seq)` for a given key, proven by the
+      lock, not by timing.
+    - **Write-then-raise**: Decision point 8(e) -- reservation durability is
+      established by `reserve_once`'s own mandatory `barrier()` before it
+      returns `(True, seq)` to `capture`; nothing after that point can
+      unspend regardless of what `authority.capture` does.
+    - **Clone/replay** (a caller reusing the same `admission_ref`/plan
+      through a second `HistoricalStudyVerifier` instance, or via the
+      retired `__kwdefaults__` vector directly): the durable shape holds no
+      `_spend`-equivalent kwdefault at all (Decision point 2), and any
+      second instance sharing the SAME `root`/series and presenting the
+      SAME key collides on the ledger's own id index (Decision point 6),
+      not on Python object identity -- the exact property `0139`'s P8-D1-M4
+      finding demanded and `0138`'s Python-identity design lacked.
+    - **Process restart**: Decision point 10's full replay re-derives the
+      exact same `admission_use` history from durable bytes; a fresh
+      process opening the same `root` observes the same spent/unspent state
+      the crashed process left.
+    - **Second-process contention**: unchanged, reused `serve.lock`
+      (`fcntl.flock`, exclusive, non-blocking) -- a second process
+      attempting `durable(...)` against the same `root` while the first
+      holds the writer lock refuses at `JsonlLedger.__init__` before it can
+      reserve anything (`ledger.py:967-978`, unchanged).
+    - **Partial persistence** (short write, sync failure, mid-`state.apply`
+      exception, snapshot-barrier failure): every one of these transitions
+      the ledger to `"uncertain"` (Decision point 7) before `reserve_once`
+      can return `(True, seq)`; `capture` never reaches `authority.capture`
+      for that call, and Decision point 10's replay on reopen proves the
+      true persisted state rather than trusting the interrupted write.
+    - **Recovery**: Decision point 10, exact mechanism above.
+    - **Exact consume-once outcome**: the conjunction of Decision points
+      4-6 (one id per admission, `_transition_lock`-serialized reservation,
+      existing conflict-on-mismatch idempotency) and Decision point 8(d)
+      (only the `(True, seq)` caller ever delegates) -- at most one durable
+      reservation and at most one delegated `authority.capture` attempt per
+      verified admission per series, matching `0138`'s guarantee statement
+      exactly, now grounded in a lock and a store that actually exist.
+
+12. **Honest scope boundary, restated as the exact `0100` text.** This ADR
+    closes F5A-R23 "at the development/synthetic boundary (state no longer
+    publicly reachable and durable across process restart within the
+    process boundary); does NOT claim the OS-owned external broker
+    deployment durability." `deployment_eligible` remains `false` on every
+    verifier this ADR touches, unconditionally -- Decision point 9's
+    `durable(...)` factory does not set it to anything else, and no code
+    path in this ADR reads or branches on it. Whole-F5a closure, F3, F5b
+    and real activity of any kind remain separately gated and are not
+    claimed or advanced by this ADR.
+
+**Process.** Design proposal only; no code or test file is touched by this
+turn. Per `docs/skills/skeptic-review.md`'s Phase 0 trigger list, this
+design crosses an identity/persistent-state contract (the whole point of
+Packet 8) and coordinates a public entry point (`HistoricalStudyVerifier
+.capture`) with an irreversible effect (a durable, unspendable-again ledger
+record) -- **Phase 0 skeptic review is required next, before any RED**,
+against a frozen matrix covering at minimum: every row `0140`'s matrix
+already lists (identity/binding/distinct/input-authority/single-surface-
+substitution/thread-concurrency/second-process/write-then-raise/partial-
+persistence/crash-stages/store-corruption/read-only/compatibility), plus
+this ADR's two corrections (the new `_transition_lock`'s exact scope; the
+corrected four-field `admission_ref` shape) and Decision point 9's
+provisioning boundary. Only a clean Phase 0 verdict (zero unresolved
+Critical/Major) authorizes RED; RED then proceeds with
+`docs/skills/test-drive-development.md`'s discipline, sweeping the whole
+existing `HistoricalStudyVerifier`/`HistoricalStudyCaptureDriver` test
+family in `tests/production/test_verifier.py` and `tests/production/
+test_capture_lifecycle.py` (both currently written against the retired
+authority-only-plus-six-dicts contract and expected to need correction, per
+`0138`'s own compatibility note), plus new focused tests in
+`tests/production/test_ledger.py` for `reserve_once`/`_transition_lock`/
+health-state transitions, following `docs/skills/skeptic-review.md`'s
+two-fresh-independent-lens candidate round before any merge.
+
+**Non-goals.** Editing or weakening `authorize_capture_set`,
+`commit_p4_batch`, `_p4_close_admission`, `_dynamic_p4_close_admission`, or
+any ADR-0143/0144 dynamic-dispatch code -- that route's own ledger-backed
+closure is untouched and unreferenced beyond the shared `_p4_reference
+_bytes`/`_P4_REQUEST_CHECK`/`_P4_CLOSE_ADMISSION` helpers Decision point 3
+reuses read-only. A second writer, planner, ledger or tape engine -- exactly
+one `ChainLedger` per series, reused, never duplicated. Claiming OS-owned
+external-broker deployment durability, multi-machine replication, or any
+guarantee beyond the same-filesystem process-restart boundary Decision
+point 12 states. Real data, replay, HPO/refit, backtest, paper/live
+activity or deployment of any kind. Whole-F5a closure or unblocking F3/F5b
+-- this ADR closes F5A-R23 only, and only after its own Phase 0/RED/GREEN/
+two-final-lens cycle completes; whole-F5a additionally needs the integration
+gate every prior Packet closure has named. Wiring `HistoricalStudyVerifier
+.durable(...)` into `compose.py`'s live serving bundle -- Decision point 9's
+factory exists for a trusted composition caller (test harness or future
+work) to use; this ADR does not itself add a call site in `compose.py`, and
+`HistoricalStudyVerifier` remains, as today, constructed nowhere in
+production code outside `verifier.py` and its own tests. Any change to
+`bind()`'s five retained plan artifacts, their `_plan_artifact_bound`
+validation, or ADR-0125's private-plan-precedes-capture ordering. Any
+change to `JsonlLedger`'s five store hooks (`_open`/`_store`/`_sync`/
+`_walk`/`_shutdown`), rotation, durability grading, or `libs/sqlite.py`'s
+parallel store -- `reserve_once`/`_transition_lock` are added once on the
+shared `ChainLedger` base and inherited, not reimplemented per store; a
+store-conformance test for `libs/sqlite.py` is left to Phase 0 to scope, not
+assumed clean by this ADR. `deployment_eligible=false` throughout.
