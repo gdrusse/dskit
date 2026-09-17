@@ -377,5 +377,21 @@
 
   "deployment_eligible": false,
   "tests_run": "none; design inspection",
-  "gate": "Phase 0 matrix authored by implementer; requires independent Phase 0 skeptic review before RED."
+  "phase0_skeptic_review": {
+    "reviewer": "independent, fresh-context adversarial skeptic (Phase 0 round)",
+    "result": "0 Critical, 0 Major, 3 Minor (F2, F3, F5), 1 Nit (F6), F4 non-issue",
+    "f1_resolution": "non-issue. commit_p4_batch acquires its lock at entry (trust.py:5318) and holds it continuously through the single reconstruction-derivation, all three close_admission checkpoints (5340, 5351, 5386), _P4_PREPARE/_P4_VERIFY_BATCH's pure in-memory Ed25519 signing (no I/O), and the final root commit (5395); the lock only releases in the finally block after return. No revocation/clock mutation can occur inside that window. The single-derivation design is structurally at least as fresh as the prior multi-derivation approach, not less.",
+    "f2_f6_resolutions": {
+      "F2": "Minor - _DynamicCapturedAuthorizationContract._prepare should explicitly type/shape-check its reconstruction parameter as defense-in-depth; apply during GREEN",
+      "F3": "Minor, acceptable - close_admission is stateless/side-effect-free for both resolver types; an out-of-lock direct call is safe on its own, ADR text should note this explicitly if the design is ever extended",
+      "F4": "non-issue - grep-confirmed no P4 authority/resolver/contract symbol exported from dskit/production/verifier.py",
+      "F5": "Minor - pin the exact extraction boundary of the reconstruction helper (graph_refs read through the per-entry live-projection loop's last check) in the construction profile",
+      "F6": "Nit - use the codebase's existing frozen-object idiom (slots+lock) for _DynamicP4AdmissionReconstruction rather than namedtuple/dataclass, for consistency"
+    },
+    "matrix_rows_spot_checked": "rows 1-6, 8-12 verified correct against actual code; all three close_admission call sites confirmed inside the one lock; _p4_snapshot_integrity confirmed identity-only (no _records read)",
+    "authority_boundary_check": "confirmed consistent with ADR-0141/0142/0143 threat-model scoping",
+    "disposition": "RED_MAY_PROCEED: yes. Implementer must apply F2/F3/F5/F6 as implementation pins during GREEN; none block RED.",
+    "tests_run": "none; design inspection"
+  },
+  "gate": "Phase 0 clean (0 Critical/Major; 3 Minor + 1 Nit pins for GREEN). RED may proceed."
 }
