@@ -3406,3 +3406,52 @@ def test_reduce_model_id_refuses_a_non_finite_state():
     node, state = _fit_reduction("pca", 2)
     with pytest.raises(ValueError):
         node.reduction_model_id({"x": float("nan")})
+
+
+def test_reduce_apply_reads_the_state_not_the_document():
+    """The state is the projection's source of truth, never the document.
+
+    A node whose document declares DIFFERENT features and width still
+    projects by the STATE's geometry — a hardcoded or document-reading
+    projection (features or emit width) fails here. ``flat=None`` makes
+    the third column VARY, so dropping it (reading the document's two
+    features) is numerically distinguishable from reading the state's
+    three.
+    """
+    rows = rows_selectable(n=8, flat=None)
+    node3, state3 = _fit_reduction("pca", 2, rows=rows)
+    node_wrong = SklearnReduction(
+        "reduce",
+        {**REDUCE_PARAMS, "features": ["strong", "other"], "n_components": 1},
+    )
+    out = node_wrong.apply_state(state3, rows, node_wrong.params)
+    assert "component_0" in out[0] and "component_1" in out[0]
+    assert "component_2" not in out[0]
+    import sklearn.decomposition
+
+    matrix = _reduce_matrix(rows)  # the STATE's 3 features
+    est = sklearn.decomposition.PCA(n_components=2, random_state=17).fit(matrix)
+    got = [[r["component_0"], r["component_1"]] for r in out]
+    assert np.allclose(got, est.transform(matrix))
+
+
+def test_reduce_apply_refuses_a_missing_feature_for_a_direct_caller():
+    node, state = _fit_reduction("pca", 2)
+    rows = [{"strong": 1.0, "other": 2.0}]  # missing "flat"
+    with pytest.raises(ValueError, match="flat"):
+        node.apply_state(state, rows, node.params)
+
+
+def test_reduce_apply_refuses_a_non_mapping_row_for_a_direct_caller():
+    node, state = _fit_reduction("pca", 2)
+    rows = [SimpleNamespace(strong=1.0, other=2.0, flat=0.0)]
+    with pytest.raises(ValueError, match="not a finite real number"):
+        node.apply_state(state, rows, node.params)
+
+
+def test_reduce_apply_names_the_failing_row_index():
+    node, state = _fit_reduction("pca", 2)
+    rows = rows_selectable(n=8)
+    rows[5]["other"] = "bad"
+    with pytest.raises(ValueError, match=r"rows\[5\]"):
+        node.apply_state(state, rows, node.params)
