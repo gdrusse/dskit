@@ -108,5 +108,39 @@
       "git diff --check": "clean, no output"
     },
     "supersedes": "The original new_public_surface and design_decisions_within_adr_discretion entries above, which treated __all__-omission for both functions as within-ADR discretion, are corrected by this block: verify_causal_order is now exported; parse_event_envelope is now private (_parse_event_envelope) rather than merely unexported."
+  },
+
+  "final_review": {
+    "candidate": "418308d (a8db4c1 GREEN + 6c6daea __all__ correction, current HEAD)",
+    "authority_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (authority/correctness lens, re-review after __all__ correction)",
+      "verdict": "0 Critical, 0 Major, 0 Minor, 1 Nit",
+      "verified": [
+        "__all__ now correct: verify_causal_order exported, _parse_event_envelope private",
+        "dskit/pipeline/trust.py and the existing CapturedReplayTape.v1 codec confirmed still untouched",
+        "correction-chain validation (forward-ref, gap, bottom-out) re-verified sound",
+        "179 tests independently re-run, all passed; ruff and git diff --check clean"
+      ],
+      "nit": "_parse_event_envelope has zero callers anywhere (verify_causal_order inlines its own equivalent parse step rather than delegating); reviewer judged this a legitimate private fixture-construction utility per its own docstring and ADR Decision point 4, not a defect -- deferred, not blocking.",
+      "gate": "CLEAN"
+    },
+    "tests_integration_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (tests/integration lens)",
+      "verdict": "0 Critical, 0 Major, 0 Minor, 0 Nit",
+      "verified": [
+        "all 14 Phase-0-matrix rows have direct, non-trivial test coverage (full row-by-row mapping produced)",
+        "correction-chain tests confirmed positional (not coincidental-event_id) resolution",
+        "exchange_ms/receive_ms structural-inertness confirmed by a test that reverses their values relative to the true order and shows the real order key still wins",
+        "multiple-simultaneous-defect reporting confirmed (misspelled-key test asserts both problems named together, matching the 'naming every violation found' docstring contract)",
+        "noncanonical-JSON-bytes test confirmed to construct semantically-identical, byte-different JSON and refuse via digest mismatch specifically",
+        "length-mismatch (envelope_count vs bytes length) coverage confirmed present",
+        "test isolation clean, no shared mutable fixtures",
+        "independently re-ran 63 focused + 179 total affected, all passed; ruff and git diff --check clean"
+      ],
+      "gate": "CLEAN"
+    },
+    "combined_result": "0 Critical, 0 Major, 0 Minor, 1 Nit (deferred: unused private _parse_event_envelope fixture helper)",
+    "gate": "Two fresh independent completed lenses, zero unresolved in-scope Critical/Major. Ready to lock and integrate.",
+    "deployment_eligible": false
   }
 }
