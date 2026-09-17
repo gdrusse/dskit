@@ -2976,9 +2976,59 @@ def test_reduce_fit_rechecks_the_row_rule_for_a_direct_caller():
         node.fit(rows, node.params)
 
 
-def test_reduce_fit_refuses_a_clamped_component_count():
+def test_reduce_fit_threads_seed_and_n_components_into_the_constructor(monkeypatch):
+    captured = {}
+
+    class Fake:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def fit(self, matrix):
+            captured["matrix_rows"] = len(matrix)
+            self.components_ = [[0.0, 0.0, 0.0] for _ in range(captured["n_components"])]
+            self.mean_ = [0.0, 0.0, 0.0]
+            return self
+
+    import dskit.pipeline.libs.sklearn as _sklearn
+
+    monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
     node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
-    rows = rows_selectable(n=1)  # one sample -> sklearn clamps 2 down to 1
+    node.fit(rows_selectable(n=8), node.params)
+    assert captured["random_state"] == 17
+    assert captured["n_components"] == 2
+
+
+def test_reduce_fit_threads_the_default_seed_when_omitted(monkeypatch):
+    captured = {}
+
+    class Fake:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def fit(self, matrix):
+            self.components_ = [[0.0, 0.0, 0.0] for _ in range(captured["n_components"])]
+            self.mean_ = [0.0, 0.0, 0.0]
+            return self
+
+    import dskit.pipeline.libs.sklearn as _sklearn
+
+    monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
+    params = {k: v for k, v in REDUCE_PARAMS.items() if k != "seed"}
+    node = _RaiseReduction("reduce", params)
+    node.fit(rows_selectable(n=8), node.params)
+    assert captured["random_state"] == 0  # DEFAULT_REDUCTION_SEED, not any fixed value
+
+
+def test_reduce_fit_wraps_a_fit_refusal_with_the_node_and_algorithm():
+    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    rows = rows_selectable(n=1)  # PCA refuses: n_components > n_samples
+    with pytest.raises(ValueError, match="refused to fit"):
+        node.fit(rows, node.params)
+
+
+def test_reduce_fit_refuses_a_silently_clamped_component_count():
+    node = _RaiseReduction("reduce", {**REDUCE_PARAMS, "algorithm": "svd"})
+    rows = rows_selectable(n=1)  # TruncatedSVD silently clamps 2 down to 1
     with pytest.raises(ValueError, match="n_components"):
         node.fit(rows, node.params)
 
@@ -3017,12 +3067,21 @@ def test_reduce_state_problems_refuses_a_broken_state_shape():
         {**state, "schema": "dskit.sklearn-reduction/v2"},
         {k: v for k, v in state.items() if k != "mean"},  # pca missing mean
         {**state, "extra": 1},
-        {**state, "components": [[0.0, 1.0]]},  # wrong component width
+        {**state, "components": [[0.0, 1.0]]},  # wrong count AND width
+        {**state, "components": [[0.0, 1.0], [0.0, 1.0]]},  # right count, wrong width
         {**state, "components": [[0.0, 1.0, float("nan")], [0.0, 1.0, 2.0]]},
     ]
     for broken in cases:
         problems = node.state_problems(broken)
         assert problems, broken
+
+
+def test_reduce_state_problems_refuses_a_malformed_mean():
+    node, state = _fit_reduction("pca", 2)
+    for bad in (None, True, 0, 1.5, "abc", [0.0, 0.0]):
+        broken = {**state, "mean": bad}
+        problems = node.state_problems(broken)
+        assert problems, bad
 
 
 def test_reduce_state_problems_refuses_a_mean_on_svd():

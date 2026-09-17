@@ -372,7 +372,7 @@ def _reduction_flat(value):
         return None
 
 
-def _reduction_geometry_problems(components, mean, width, n_components):
+def _reduction_geometry_problems(components, mean, width, n_components, *, mean_expected):
     """Ways a ``(components, mean)`` pair is not a usable reduction.
 
     ONE rule asked TWICE: of what a fit just extracted from an estimator,
@@ -384,13 +384,16 @@ def _reduction_geometry_problems(components, mean, width, n_components):
     components : list of list, or None
         The component points, already normalized by :func:`_reduction_rows`;
         ``None`` means the value was not a list of points at all.
-    mean : list, or None
-        The centering vector (present for ``pca``, absent for ``svd``), as
-        normalized by :func:`_reduction_flat`.
+    mean : object
+        The centering vector RAW. Ignored when ``mean_expected`` is false.
     width : int
         The number of declared features every component and the mean span.
     n_components : int
         The declared projected width the components must equal.
+    mean_expected : bool
+        Whether a mean is required (``pca``) — when true, ``mean`` must
+        flatten to a width-length list of finite numbers, and a ``None`` or
+        scalar is refused rather than conflated with an absent one.
 
     Returns
     -------
@@ -418,15 +421,21 @@ def _reduction_geometry_problems(components, mean, width, n_components):
                 problems.append(
                     f"components[{i}][{j}] is {value!r}, not a finite number"
                 )
-    if mean is not None:
-        if len(mean) != width:
-            problems.append(
-                f"mean has {len(mean)} value(s), not the {width} declared "
-                "feature(s)"
-            )
-        for j, value in enumerate(mean):
-            if _reduction_number(value) is None:
-                problems.append(f"mean[{j}] is {value!r}, not a finite number")
+    if mean_expected:
+        mean_flat = _reduction_flat(mean)
+        if mean_flat is None:
+            problems.append(f"mean is {mean!r}, not a list of numbers")
+        else:
+            if len(mean_flat) != width:
+                problems.append(
+                    f"mean has {len(mean_flat)} value(s), not the {width} "
+                    "declared feature(s)"
+                )
+            for j, value in enumerate(mean_flat):
+                if _reduction_number(value) is None:
+                    problems.append(
+                        f"mean[{j}] is {value!r}, not a finite number"
+                    )
     return problems
 
 # ---------------------------------------------------------------------------
@@ -2728,11 +2737,13 @@ class SklearnReduction(FittedTransform):
         )
         mean = None
         if mean_attr is not None:
-            mean = _reduction_flat(
-                self._fitted_attribute(estimator, mean_attr, algorithm)
-            )
+            mean = self._fitted_attribute(estimator, mean_attr, algorithm)
         problems = _reduction_geometry_problems(
-            components, mean, width, n_components
+            components,
+            mean,
+            width,
+            n_components,
+            mean_expected=mean_attr is not None,
         )
         if problems:
             raise ValueError(
@@ -2741,7 +2752,7 @@ class SklearnReduction(FittedTransform):
             )
         return (
             [[float(value) for value in row] for row in components],
-            None if mean is None else [float(value) for value in mean],
+            None if mean is None else [float(value) for value in _reduction_flat(mean)],
         )
 
     def _fitted_attribute(self, estimator, name, algorithm):
@@ -2828,12 +2839,12 @@ class SklearnReduction(FittedTransform):
             return problems
         width = len(state["features"])
         n_components = len(state["components"])
-        mean = state.get("mean")
         problems += _reduction_geometry_problems(
             _reduction_rows(state["components"]),
-            _reduction_flat(mean) if mean is not None else None,
+            state.get("mean"),
             width,
             n_components,
+            mean_expected=algorithm == "pca",
         )
         return problems
 
