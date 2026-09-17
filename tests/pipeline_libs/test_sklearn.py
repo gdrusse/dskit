@@ -29,6 +29,7 @@ from dskit.pipeline.libs.sklearn import (
     ColumnSubsetEstimator,
     SklearnFit,
     SklearnPredict,
+    SklearnReduction,
     SklearnSelect,
     SklearnSignal,
     register,
@@ -2664,3 +2665,153 @@ def test_bundle_load_refuses_a_bundle_that_declares_the_wrong_format(tmp_path):
     _rewrite_manifest(path, {"format": "sklearn-joblib-v1"})
     with pytest.raises(ValueError, match="format"):
         load_bundle(path)
+
+
+# ---------------------------------------------------------------------------
+# SklearnReduction (ADR-0149) — dimensionality reduction
+# ---------------------------------------------------------------------------
+
+REDUCE_PARAMS = {
+    "fit_split": "train",
+    "features": ["strong", "other", "flat"],
+    "algorithm": "pca",
+    "n_components": 2,
+    "seed": 17,
+}
+
+
+class _RaiseReduction(SklearnReduction):
+    """A test-only concrete SklearnReduction whose hooks refuse.
+
+    The class under test is abstract until ``apply_state`` lands (slice 3),
+    so the validators are reached through this stub.
+    """
+
+    def fit(self, rows, params):
+        raise NotImplementedError
+
+    def apply_state(self, state, rows, params):
+        raise NotImplementedError
+
+
+def _reduction_node(**overrides):
+    return _RaiseReduction("reduce", {**REDUCE_PARAMS, **overrides})
+
+
+def test_reduce_params_canonical_set_validates_clean():
+    assert SklearnReduction.validate_params(dict(REDUCE_PARAMS)) == []
+
+
+def test_reduce_params_algorithm_is_required_and_closed():
+    problems = SklearnReduction.validate_params(
+        {"fit_split": "train", "features": ["x"], "n_components": 1}
+    )
+    assert any("algorithm" in p for p in problems)
+    for good in ("pca", "svd"):
+        assert SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "algorithm": good}
+        ) == []
+    for bad in ("umap", "tsne", "kernel_pca", ""):
+        problems = SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "algorithm": bad}
+        )
+        assert any("algorithm" in p for p in problems), bad
+
+
+def test_reduce_params_features_required_and_distinct():
+    problems = SklearnReduction.validate_params(
+        {"fit_split": "train", "algorithm": "pca", "n_components": 1}
+    )
+    assert any("features" in p for p in problems)
+    for bad in ([], ["x", "x"], [""], ["x", 7]):
+        problems = SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "features": bad}
+        )
+        assert any("features" in p for p in problems), bad
+
+
+def test_reduce_params_n_components_required_shape_and_bound():
+    problems = SklearnReduction.validate_params(
+        {"fit_split": "train", "algorithm": "pca", "features": ["x"]}
+    )
+    assert any("n_components" in p for p in problems)
+    for bad in (True, 0, -1, 1.5, "2", 4):
+        problems = SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "n_components": bad}
+        )
+        assert any("n_components" in p for p in problems), bad
+    assert SklearnReduction.validate_params(
+        {**REDUCE_PARAMS, "n_components": 3}
+    ) == []
+
+
+def test_reduce_params_algorithm_params_shape_and_empty_key():
+    for bad in ([], "x", 7, {"": 1}):
+        problems = SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "algorithm_params": bad}
+        )
+        assert any("algorithm_params" in p for p in problems), bad
+
+
+def test_reduce_params_seed_shape_and_range():
+    for bad in ("x", True, -1, 2**32, 1.5):
+        problems = SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "seed": bad}
+        )
+        assert any("seed" in p for p in problems), bad
+    assert SklearnReduction.validate_params(
+        {**REDUCE_PARAMS, "seed": 0}
+    ) == []
+
+
+def test_reduce_params_shadowed_knobs_are_refused():
+    for shadowed in ("n_components", "random_state", "whiten"):
+        problems = SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "algorithm_params": {shadowed: 2}}
+        )
+        assert any(shadowed in p for p in problems), shadowed
+
+
+def test_reduce_params_unknown_keys_refused_by_name():
+    problems = SklearnReduction.validate_params({**REDUCE_PARAMS, "k": 3})
+    assert any("k" in p for p in problems)
+
+
+def test_reduce_row_problems_clean_rows_pass():
+    rows = [
+        {"asof_ms": i, "strong": 1.0, "other": 2.0, "flat": 0.0, "y": i}
+        for i in range(3)
+    ]
+    assert _reduction_node().row_problems(rows) == []
+
+
+def test_reduce_row_problems_refuses_a_non_mapping_row():
+    rows = [
+        {"strong": 1.0, "other": 2.0, "flat": 0.0},
+        SimpleNamespace(strong=1.0, other=2.0, flat=0.0),
+    ]
+    problems = _reduction_node().row_problems(rows)
+    assert any("mapping" in p for p in problems)
+
+
+def test_reduce_row_problems_refuses_a_missing_feature():
+    rows = [{"strong": 1.0, "other": 2.0}]
+    problems = _reduction_node().row_problems(rows)
+    assert any("flat" in p for p in problems)
+
+
+def test_reduce_row_problems_refuses_a_non_number_feature():
+    for bad in ("1.0", True, None):
+        rows = [{"strong": 1.0, "other": 2.0, "flat": bad}]
+        problems = _reduction_node().row_problems(rows)
+        assert any("flat" in p for p in problems), bad
+
+
+def test_reduce_row_problems_refuses_a_colliding_component_column():
+    node = _reduction_node(n_components=2)
+    for colliding in ("component_0", "component_1"):
+        rows = [{"strong": 1.0, "other": 2.0, "flat": 0.0, colliding: 9}]
+        problems = node.row_problems(rows)
+        assert any(colliding in p for p in problems), colliding
+    rows = [{"strong": 1.0, "other": 2.0, "flat": 0.0, "component_2": 9}]
+    assert node.row_problems(rows) == []

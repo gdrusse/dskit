@@ -194,13 +194,14 @@ import re
 import sys
 from collections.abc import Mapping
 
-from dskit.pipeline.fitted import FeatureSelector
+from dskit.pipeline.fitted import FeatureSelector, FittedTransform
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     TrainableNode,
     atomic_write,
     reject_unknown_params,
 )
+from dskit.pipeline.records import number_ok
 
 __all__ = [
     "ColumnSubsetEstimator",
@@ -260,6 +261,54 @@ _SEED_MAX = 2**32
 #: EVERYTHING else — estimator, estimator_params, features, label,
 #: predict_method, seed, n_rows, format — is hash material (S2-A).
 _UNHASHED_SIDECAR_FIELDS = ("sha256", "library_version")
+
+# ---------------------------------------------------------------------------
+# Dimensionality reduction (ADR-0149) — the closed-catalog state constants
+# ---------------------------------------------------------------------------
+
+#: The tag a reduction state carries, and the only one a load accepts. The
+#: ``_ARTIFACT_FORMAT`` precedent: an identity a reader can refuse by name
+#: beats a shape it has to guess at.
+REDUCTION_SCHEMA = "dskit.sklearn-reduction/v1"
+
+#: The closed catalog :class:`SklearnReduction` fits. An arbitrary import
+#: path is deliberately excluded: this node EXTRACTS ``components_`` (and,
+#: for pca, ``mean_``) into JSON, and only these two expose that extraction
+#: behind a projection that is a plain matrix multiply.
+_REDUCTION_ALGORITHMS = ("pca", "svd")
+
+#: Catalog member -> the dotted path it resolves through, the same
+#: doorway :class:`SklearnFit` opens for an estimator.
+_REDUCTION_PATHS = {
+    "pca": "sklearn.decomposition.PCA",
+    "svd": "sklearn.decomposition.TruncatedSVD",
+}
+
+#: The fitted attributes each member's extracted state is read from:
+#: ``(components, mean)``. TruncatedSVD never centres, so its mean is
+#: ``None`` and the state omits the key — the omission IS the record.
+_REDUCTION_ATTRIBUTES = {
+    "pca": ("components_", "mean_"),
+    "svd": ("components_", None),
+}
+
+#: The seed a fit runs under when the document declares none. Named once:
+#: a literal in both the validator and the fit path is how a run comes to
+#: be seeded by a number nothing recorded.
+DEFAULT_REDUCTION_SEED = 0
+
+#: The prefix of the projected columns an output row gains. One name, so
+#: the writer and the collision refusal agree on what the columns are
+#: called; a knob to rename it is out of ADR-0149's scope.
+_COMPONENT_PREFIX = "component"
+
+#: The constructor knobs this node already owns, spelled a second way
+#: inside ``algorithm_params``. Two spellings of one argument would
+#: disagree, and a search space addressing the node's knob would tune the
+#: loser. ``whiten`` is refused for a different reason: it changes PCA's
+#: projection to need ``singular_values_`` in the state, which this node
+#: does not store.
+_REDUCTION_SHADOWED_KNOBS = ("n_components", "random_state", "whiten")
 
 # ---------------------------------------------------------------------------
 # The multi-head bundle artifact (ADR-0114 Phase 2) — one joblib file
@@ -2170,6 +2219,258 @@ class SklearnSelect(FeatureSelector):
                 f"target ({exc}) — if this selector supervises on one, declare "
                 "the 'label' knob naming the row key that holds it"
             ) from exc
+
+
+class SklearnReduction(FittedTransform):
+    """Project rows onto learned axes — PCA or TruncatedSVD (ADR-0149).
+
+    A member of the fitted-transform family (ADR-0040): the base owns the
+    whole envelope — fitting on the declared split and nothing else, the
+    persisted JSON sidecar, the load-mode restore that never refits, and
+    the row-independence screen — and this class supplies ``fit`` and
+    ``apply_state``.
+
+    The catalog is CLOSED (``pca``, ``svd``), unlike this pack's estimator
+    and selector doorways, which take any import path. The reason is the
+    state: this node persists EXTRACTED ``components_`` (and, for ``pca``,
+    ``mean_``) as JSON rather than a pickled model, and only these two
+    expose that extraction behind a projection that is a plain matrix
+    multiply this module owns. A native model is never written, so a
+    serving run restores a plain JSON object and no deserialiser takes a
+    path.
+
+    The projection is computed HERE from the stored arrays — for ``pca``,
+    ``(X - mean_) @ components_.T``; for ``svd``, ``X @ components_.T`` —
+    and must equal the fitted estimator's own ``transform`` on fixtures,
+    proven per catalog member. The declared ``features`` columns are
+    DROPPED from every output row and replaced by ``component_<i>`` for
+    ``i`` in ``0..n_components-1``; every non-feature column rides along.
+    ``reduction_model_id`` (the sha256 of the canonical state, recomputed
+    never copied) labels every row and is also a port, so a downstream row
+    can be traced to the exact projection that produced it. No
+    variance/reconstruction score is reported: an internal quality number
+    is one a search would rank reductions by, which is model selection this
+    node deliberately supplies no objective for.
+
+    Parameters
+    ----------
+    params : dict
+        ``algorithm`` (required, one of ``"pca"``, ``"svd"``),
+        ``features`` (required, the row keys the matrix reads, in column
+        order), ``n_components`` (required, a non-bool int ``>= 1`` and
+        ``<= len(features)`` — the projected width), ``algorithm_params``
+        (dict of the class's constructor kwargs, default ``{}``; ``seed``
+        is threaded as ``random_state`` for either member), plus the
+        family's ``fit_split`` / ``order_field`` / ``purity_check``.
+
+    Examples
+    --------
+    Project two features onto two principal axes::
+
+        node = SklearnReduction("reduce", {
+            "fit_split": "train",
+            "features": ["feature_a", "feature_b"],
+            "algorithm": "pca",
+            "n_components": 2,
+            "seed": 17,
+        })
+        out = node.run(ctx, {"rows": rows})
+        # -> out["rows"][0]["component_0"] == ...
+        # -> out["reduction_model_id"] == "9f86d0…"
+    """
+
+    outputs = FittedTransform.outputs + ("reduction_model_id",)
+
+    _PARAMS = FittedTransform._PARAMS + (
+        "algorithm",
+        "algorithm_params",
+        "features",
+        "n_components",
+        "seed",
+    )
+
+    # -- the knobs ---------------------------------------------------------
+
+    def features(self):
+        """The declared feature keys, in the order components store them (list)."""
+        declared = self.params.get("features")
+        return list(declared) if isinstance(declared, (list, tuple)) else []
+
+    def algorithm(self):
+        """The catalog member this node fits (str)."""
+        return self.params.get("algorithm")
+
+    def n_components(self):
+        """The declared projected width, or ``None`` when undeclared (int)."""
+        return self.params.get("n_components")
+
+    def _component_names(self):
+        """The projected column names for the declared width, or ``[]``."""
+        width = self.n_components()
+        if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+            return []
+        return [f"{_COMPONENT_PREFIX}_{i}" for i in range(width)]
+
+    # -- validation --------------------------------------------------------
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The family's problems, plus one per broken knob of this
+            class's own: a missing or off-catalog ``algorithm``, a
+            ``features`` list that is not distinct and non-empty, a
+            missing or malformed ``n_components``, a malformed
+            ``algorithm_params`` block, a malformed ``seed``, and any
+            second spelling of a knob this node already owns.
+        """
+        problems = super().validate_params(params)
+        if "features" not in params:
+            problems.append(
+                "features is required — the row keys the matrix reads, in "
+                "the order the components store them"
+            )
+        else:
+            problems += _feature_list_problems("features", params["features"])
+        problems += cls._algorithm_problems(params)
+        return problems
+
+    @classmethod
+    def _algorithm_problems(cls, params):
+        """The closed catalog, its kwargs block, and the shadowed knobs."""
+        problems = []
+        algorithm = params.get("algorithm")
+        if algorithm not in _REDUCTION_ALGORITHMS:
+            problems.append(
+                f"algorithm is required and must be one of "
+                f"{list(_REDUCTION_ALGORITHMS)} — this node extracts "
+                "components into JSON, so the catalog is closed rather than "
+                f"an arbitrary import path, got {algorithm!r}"
+            )
+        kwargs = params.get("algorithm_params", {})
+        problems += _kwargs_problems("algorithm_params", kwargs)
+        if isinstance(kwargs, dict) and any(
+            isinstance(key, str) and not key for key in kwargs
+        ):
+            problems.append(
+                "algorithm_params carries an empty key — no callable takes "
+                "one as a keyword argument, so it is a plan-time shape error "
+                "wearing a run-time costume"
+            )
+        problems += cls._n_components_problems(params)
+        problems += cls._shadowed_knob_problems(kwargs)
+        if "seed" in params:
+            problems += _seed_problems(params["seed"])
+        return problems
+
+    @classmethod
+    def _n_components_problems(cls, params):
+        """``n_components`` is a non-bool int ``>= 1`` and ``<= len(features)``."""
+        if "n_components" not in params:
+            return [
+                "n_components is required — the number of projected columns "
+                "the output emits"
+            ]
+        value = params["n_components"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return [
+                f"n_components must be a non-bool int >= 1, got {value!r}"
+            ]
+        features = params.get("features")
+        if isinstance(features, (list, tuple)) and value > len(features):
+            return [
+                f"n_components={value} exceeds the {len(features)} declared "
+                "feature(s) — a projection cannot emit more axes than its "
+                "source columns"
+            ]
+        return []
+
+    @classmethod
+    def _shadowed_knob_problems(cls, kwargs):
+        """Refuse a second spelling of a knob this node already owns."""
+        if not isinstance(kwargs, dict):
+            return []
+        return [
+            f"algorithm_params.{name} is set — {reason}"
+            for name, reason in (
+                ("n_components", "declare params.n_components instead, the one knob this node threads and records"),
+                ("random_state", "declare params.seed instead, the one knob this node threads as random_state"),
+                ("whiten", "whitened PCA projects with components_.T scaled by the singular values, which this node does not store — it computes a plain matrix multiply"),
+            )
+            if name in kwargs
+        ]
+
+    def row_problems(self, rows):
+        """Ways ``rows`` cannot be projected; empty when every one can.
+
+        This class's per-row admission is bespoke — it inherits none — and
+        it is the SOLE owner of the rule, reached from the fitting node's
+        own stream, the second stream an
+        :class:`~dskit.pipeline.fitted.ApplyTransform` carrier projects, and
+        :meth:`fit` itself. Bounded by the RULES, not the stream: each
+        distinct rule is reported once, naming the first row that broke it.
+
+        Parameters
+        ----------
+        rows : list
+            The stream, already known to be a list.
+
+        Returns
+        -------
+        list of str
+            One problem per BROKEN RULE: a row that is not a mapping, a
+            declared feature that is absent, a declared feature that is
+            not a finite real number (a ``bool`` is not one), and a
+            projected column name the row already carries.
+        """
+        features = self.features()
+        if _feature_list_problems("features", features):
+            features = ()
+        component_names = self._component_names()
+        first = {}
+        for index, row in enumerate(rows):
+            for key, message in self._broken_rules(index, row, features, component_names):
+                first.setdefault(key, message)
+        return list(first.values())
+
+    def _broken_rules(self, index, row, features, component_names):
+        """``(rule key, message)`` for every rule ONE row breaks."""
+        if not isinstance(row, Mapping):
+            yield ("not-a-mapping",), (
+                f"rows[{index}] is a {type(row).__name__} — a reduction "
+                "reads features by key and writes component columns of its "
+                "own, so every row must be a mapping"
+            )
+            return
+        for name in features:
+            if name not in row:
+                yield ("feature-absent", name), (
+                    f"rows[{index}] carries no {name!r} — EVERY row is "
+                    "projected, so every row must carry every declared "
+                    "feature (cut or repair the stream upstream)"
+                )
+            elif not number_ok(row[name]):
+                yield ("feature-not-a-number", name), (
+                    f"rows[{index}] field {name!r} is {row[name]!r}, not a "
+                    "finite real number — the projection is a matrix "
+                    "multiply over the declared features, and a bool is not "
+                    "a number here"
+                )
+        for name in component_names:
+            if name in row:
+                yield ("output-key-present", name), (
+                    f"rows[{index}] already carries {name!r}, which this "
+                    "node writes — a reduction never overwrites the "
+                    "evidence it was handed; rename the field upstream"
+                )
 
 
 # ---------------------------------------------------------------------------
