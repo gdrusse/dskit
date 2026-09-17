@@ -87,5 +87,26 @@
   },
   "deployment_eligible": false,
   "stop_condition": "No final-lens review, no merge to main, no wrap performed. Branch codex/f5a-p7-remainder-20260916 pushed to origin at HEAD (a8db4c1) after this evidence file's commit, per instruction.",
-  "convergence_checkpoint_hit": false
+  "convergence_checkpoint_hit": false,
+  "post_green_correction": {
+    "trigger": "Independent final-lens reviewer found a Major violation: GREEN commit a8db4c1 added two new module-level, non-underscore functions to dskit/production/bundles.py (verify_causal_order, parse_event_envelope) without listing either in __all__, violating AGENTS.md's \"Encapsulate at the boundary\" convention (__all__ plus the _ prefix IS the public API contract here; 62 of 69 modules declare it and no underscore name leaks into one).",
+    "decision": {
+      "verify_causal_order": "made genuinely PUBLIC (added to __all__) -- it is the ADR's actual deliverable capability, the function a future composed-tape-verification ADR (the next P7 gate, per RE-ENTRY) will call.",
+      "parse_event_envelope": "renamed to _parse_event_envelope (private) -- confirmed by repo-wide grep that nothing outside bundles.py imports it by name, no test references it by name, and verify_causal_order itself does not call it (it inlines its own json.loads + _check_event_envelope parse step); it has no standalone caller and stays private per this repo's convention."
+    },
+    "fix_commit": "6c6daea",
+    "files_touched": [
+      "dskit/production/bundles.py",
+      "tests/production/test_bundles.py"
+    ],
+    "test_changes": "tests/production/test_bundles.py::test_the_public_surface_is_the_seven_bundles_the_invocation_and_the_tape_seam (exact-set __all__ equality assertion) updated to include \"verify_causal_order\" in the expected set and renamed to test_the_public_surface_is_the_seven_bundles_the_invocation_the_tape_seam_and_the_causal_order_verifier. This is a purity/API-surface test correction per the reviewer's own suggested fix path, not a weakening of a security test.",
+    "rerun_results": {
+      "tests/production/test_event_envelope_causal_order.py": "63 passed (unchanged)",
+      "tests/production/test_bundles.py": "80 passed",
+      "tests/pipeline/test_purity.py + tests/production/test_purity.py": "36 passed, including test_every_module_declares_all and test_no_underscore_name_is_exported",
+      "ruff": "ruff check dskit/production/bundles.py tests/production/test_bundles.py -> All checks passed!",
+      "git diff --check": "clean, no output"
+    },
+    "supersedes": "The original new_public_surface and design_decisions_within_adr_discretion entries above, which treated __all__-omission for both functions as within-ADR discretion, are corrected by this block: verify_causal_order is now exported; parse_event_envelope is now private (_parse_event_envelope) rather than merely unexported."
+  }
 }
