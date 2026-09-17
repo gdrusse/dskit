@@ -3427,6 +3427,10 @@ def test_reduce_apply_reads_the_state_not_the_document():
     out = node_wrong.apply_state(state3, rows, node_wrong.params)
     assert "component_0" in out[0] and "component_1" in out[0]
     assert "component_2" not in out[0]
+    # The DROP set is the state's features too: "flat" is a state feature
+    # the document omits, yet it must be dropped, never left in the row.
+    assert "flat" not in out[0]
+    assert "y" in out[0]  # a non-feature column rides along
     import sklearn.decomposition
 
     matrix = _reduce_matrix(rows)  # the STATE's 3 features
