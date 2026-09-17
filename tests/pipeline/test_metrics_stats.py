@@ -28,6 +28,7 @@ from dskit.pipeline.stats import (
     no_correction,
     no_information_test,
     register_correction,
+    student_t_sf,
     weighted_benjamini_hochberg,
 )
 
@@ -584,3 +585,79 @@ class TestMaxInformativeHorizon:
             max_informative_horizon([{"horizon": 5, "p_value": 0.1}], alpha=0.0)
         with pytest.raises(ValueError, match="horizon"):
             max_informative_horizon([{"p_value": 0.1}])
+
+
+# ---------------------------------------------------------------------------
+# The Student tail: newly PUBLIC, so its preconditions and its most basic
+# symmetry both need a test aimed straight at them (ADR-0151 review, M2/M5).
+# ---------------------------------------------------------------------------
+
+
+def _cauchy_sf(t):
+    """P(T > t) for df = 1, in closed form — an INDEPENDENT computation."""
+    return 0.5 - math.atan(t) / math.pi
+
+
+def _df2_sf(t):
+    """P(T > t) for df = 2, in closed form — an INDEPENDENT computation."""
+    return 0.5 * (1.0 - t / math.sqrt(2.0 + t * t))
+
+
+def _df4_sf(t):
+    """P(T > t) for df = 4, in closed form — an INDEPENDENT computation."""
+    x = t / math.sqrt(4.0 + t * t)
+    return 0.5 * (1.0 - 1.5 * x + 0.5 * x**3)
+
+
+class TestStudentTailSymmetry:
+    """The property a sign bug deletes without failing anything else.
+
+    ``_student_t_critical`` bisects upward from ``high = 1.0``, so it never
+    probes ``t < 0``, and ``across_fold_t`` reports a one-sided tail from a
+    statistic whose sign it does not vary. Dropping the ``if t > 0`` branch
+    therefore used to pass the whole suite. These assertions do not go
+    through either caller.
+    """
+
+    @pytest.mark.parametrize("t", [0.25, 0.5, 1.0, 2.0, 3.5, 7.0, 40.0])
+    @pytest.mark.parametrize("df", [1, 2, 3, 8, 30, 250, 10000])
+    def test_the_tail_is_symmetric_about_zero(self, t, df):
+        assert student_t_sf(-t, df) == pytest.approx(1.0 - student_t_sf(t, df), abs=1e-12)
+
+    @pytest.mark.parametrize("df", [1, 2, 3, 8, 30, 250, 10000])
+    def test_zero_splits_the_mass_evenly(self, df):
+        assert student_t_sf(0.0, df) == pytest.approx(0.5, abs=1e-12)
+
+    @pytest.mark.parametrize("t", [-6.0, -2.0, -0.5, 0.0, 0.5, 2.0, 6.0])
+    @pytest.mark.parametrize("df, closed_form", [(1, _cauchy_sf), (2, _df2_sf), (4, _df4_sf)])
+    def test_both_tails_match_an_independent_closed_form(self, t, df, closed_form):
+        # Restated from the distribution's own algebra rather than read back
+        # from the implementation — an assertion sourced from its subject
+        # asserts nothing. The NEGATIVE points are the ones that matter: a
+        # dropped sign correction returns the upper tail for both signs.
+        assert student_t_sf(t, df) == pytest.approx(closed_form(t), abs=1e-10)
+
+    @pytest.mark.parametrize("df", [1, 2, 8, 100])
+    def test_the_tail_decreases_over_the_whole_line(self, df):
+        grid = [-8.0, -3.0, -1.0, -0.25, 0.0, 0.25, 1.0, 3.0, 8.0]
+        tails = [student_t_sf(t, df) for t in grid]
+        assert tails == sorted(tails, reverse=True)
+        assert all(0.0 <= p <= 1.0 for p in tails)
+
+
+class TestStudentTailEnforcesItsPreconditions:
+    @pytest.mark.parametrize("bad", [0, 0.0, -1, -5, -0.5, float("nan"), float("inf"), None, "8"])
+    def test_a_df_outside_the_documented_domain_refuses(self, bad):
+        # Each of these used to be silently wrong or a bare ZeroDivisionError:
+        # df=0 returned 0.0, df=-5 returned 0.5, df=-1 raised from inside the
+        # arithmetic. A silently wrong probability is worse than a crash.
+        with pytest.raises(ValueError, match="finite df > 0"):
+            student_t_sf(1.0, bad)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), None, "1.0"])
+    def test_a_non_finite_t_refuses(self, bad):
+        with pytest.raises(ValueError, match="finite t"):
+            student_t_sf(bad, 8)
+
+    def test_an_ordinary_call_still_works(self):
+        assert student_t_sf(0.0, 8) == pytest.approx(0.5)

@@ -809,12 +809,23 @@ def student_t_sf(t, df):
     t : float
         The evaluation point, any finite number.
     df : float
-        Degrees of freedom, > 0.
+        Degrees of freedom, a finite number > 0.
 
     Returns
     -------
     float
-        ``P(T > t)`` in ``[0, 1]``, decreasing in ``t``.
+        ``P(T > t)`` in ``[0, 1]``, decreasing in ``t``, and symmetric
+        about zero: ``student_t_sf(-t, df) == 1 - student_t_sf(t, df)``.
+
+    Raises
+    ------
+    ValueError
+        On a ``df`` that is not a finite number > 0, or a non-finite
+        ``t``. A PUBLIC name enforces its preconditions rather than
+        assuming them, and a silently wrong probability is worse than a
+        crash: ``df = 0`` used to return ``0.0``, ``df = -5`` used to
+        return ``0.5``, and ``df = -1`` used to escape as a bare,
+        undocumented ``ZeroDivisionError``.
 
     Examples
     --------
@@ -823,6 +834,10 @@ def student_t_sf(t, df):
         student_t_sf(0.0, 8)
         # -> 0.5
     """
+    if not number_ok(df) or df <= 0.0:
+        raise ValueError(f"student_t_sf needs a finite df > 0, got {df!r}")
+    if not number_ok(t):
+        raise ValueError(f"student_t_sf needs a finite t, got {t!r}")
     tail = 0.5 * _betai(df / 2.0, 0.5, df / (df + t * t))
     return tail if t > 0.0 else 1.0 - tail
 

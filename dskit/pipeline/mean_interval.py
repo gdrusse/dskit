@@ -5,10 +5,11 @@ How wide is the honest interval once the rows stop being independent?
 A caller has one stream of per-observation scores — out-of-fold errors, a
 loss gap, a per-row realized effect — and needs three numbers about its
 MEAN: a point estimate, a standard error that survives the dependence
-between the observations, and a two-sided interval at a stated
-confidence. A robust-optimization counterpart consumes the interval as a
-per-component adverse deviation; that consumer is the reason the interval
-must never be too narrow (ADR-0151).
+between the observations, and a two-sided interval at a stated LEVEL. A
+robust-optimization counterpart consumes the interval as a per-component
+adverse deviation; that consumer is the reason the interval must never be
+too narrow, and the reason a level this module cannot deliver is named
+something other than a confidence level (ADR-0151).
 
 **The dependence is an argument, never a default.** Overlapping labels are
 the ordinary case: a score computed over the next ``h`` steps shares
@@ -22,16 +23,73 @@ of the two spellings the caller actually has:
 
 * ``units`` — a per-observation independence-unit label. This is
   :mod:`~dskit.pipeline.attempts`'s doctrine in argument form: the
-  exchangeable unit is a WHOLE session, because a session moves every
+  exchangeable unit is a WHOLE BLOCK, because a block moves every
   overlapping label with it. Resampling those units is a whole-unit block
   bootstrap.
 * ``overlap_steps`` — how many observation steps a label reaches over,
   the idiom ``stats.newey_west_mean``'s ``lags`` already uses.
 
-A caller with both gets both screened: a stated overlap that REACHES PAST
-a unit boundary means the units are not independent units, and
-:class:`ClusterBootstrapInterval` refuses rather than resampling them as
-though they were.
+A caller with both gets both screened: a stated overlap that cannot even
+FIT inside the shortest unit means the units are certainly not
+independent units, and :class:`ClusterBootstrapInterval` refuses rather
+than resampling them as though they were. That screen is necessary and
+NOT sufficient — see :meth:`ClusterBootstrapInterval.independent_units`,
+and the measured table below for what passing it is worth.
+
+**The two spellings are NOT equally good, and this module says which by
+name.** ``units`` is the PRIMARY contract: over genuine independence
+units :class:`ClusterBootstrapInterval` was MEASURED to deliver its
+nominal level, and it returns a :class:`ConfidenceInterval`. The
+``overlap_steps`` spelling was measured NOT to deliver it, so
+:class:`NeweyWestInterval` returns a :class:`WidenedInterval` — a value
+whose ``level`` is a widening knob and not a coverage guarantee, the same
+move ``false_signal.pi_widened`` makes for the same reason. Every member
+DECLARES which of the two its answer is, through
+:attr:`~MeanIntervalEstimator.result_class`, and there is no default:
+the calibrated claim is the one no member should inherit by accident.
+
+**The measurement, not an argument.** Monte Carlo against a known true
+mean, 1,000–2,500 trials per cell, nominal ``level`` 0.95. The harness
+ships as ``tests/pipeline/test_mean_interval.py``'s ``slow``-marked
+coverage test, so what follows stays pinned by evidence rather than
+prose:
+
+===================================================  =========  ===========
+sample                                               units      measured
+===================================================  =========  ===========
+whole independent units, each label contained        8/15/      94.6–96.3%
+inside its unit — ``ClusterBootstrapInterval``       25/50
+on ``units``
+10-step rolling mean, ``overlap_steps=9``, units     8/15/      86.9–91.1%
+carved at the overlap length — EITHER member         25/50
+AR(1) φ=0.8, ``overlap_steps`` from                  53         ~81%
+``stats.dm_lags`` — either member
+AR(1) φ=0.8, ``overlap_steps=30`` (generous)         10         ~93%
+===================================================  =========  ===========
+
+**Why the ``overlap_steps`` path falls short, and why no constant chosen
+here repairs it.** Two things break together and only one of them is this
+module's. First, ``stats.newey_west_mean``'s Bartlett kernel weights the
+autocovariance at lag ``k`` by ``1 - k / (lags + 1)``, so truncating at
+exactly the stated overlap DOWNWEIGHTS every autocovariance that overlap
+creates: for an ``h``-step rolling mean at ``lags = h - 1`` the estimated
+long-run variance is 0.67 of the true one and the standard error 0.82 of
+the true one — and that attenuation does not shrink with more data (0.72
+measured at ``n = 80``, 0.80 at ``n = 500``), which is why the shortfall
+above is FLAT from 8 units to 50. Second,
+:meth:`NeweyWestInterval.independent_units` is
+``n // (overlap_steps + 1)``, the count of adjacent non-overlapping
+BLOCKS — but the last row of a block still shares raw ground with the
+first ``overlap_steps`` rows of the next, so that count is an upper bound
+on independence and never a certificate of it. A degrees-of-freedom
+discount cannot repair a systematically attenuated standard error, and
+the attenuation factor depends on the autocovariance SHAPE (0.82 for a
+rolling mean, something else for an AR(1)), so no constant this module
+could pick would deliver the nominal level for the next caller's process.
+The honest repairs — a different kernel or bandwidth inside
+``stats.newey_west_mean``, or fixed-``b`` critical values in place of
+Student-t — are new arithmetic in a module this one deliberately does not
+re-derive. So the level is not claimed. ADR-0151 records the decision.
 
 **The arithmetic is not re-derived here.** ``stats.cluster_bootstrap_t``
 owns the studentized cluster bootstrap-t and ``stats.newey_west_mean``
@@ -47,13 +105,14 @@ consumer that reads an absent bound as "no adjustment needed" sizes as if
 there were no uncertainty at all. That is a deliberate divergence from
 ``stats.cluster_bootstrap_t``, whose ``None`` bounds are right for
 descriptive evidence printed beside a p-value and wrong for a number a
-capital constraint eats.
+robust constraint eats.
 
 **The family is a class, not a switch.** :class:`MeanIntervalEstimator`
-owns ``interval`` as a template method a member never overrides; a member
-supplies three hooks. Adding a geometric-block (stationary) bootstrap, a
-BCa interval or a different HAC kernel is a subclass, not an ``if method
-==`` inside one body.
+owns ``interval`` as a template method a member never overrides —
+enforced by ``__init_subclass__``, not by a docstring asking nicely. A
+member supplies four hooks. Adding a geometric-block (stationary)
+bootstrap, a BCa interval or a different HAC kernel is a subclass, not an
+``if method ==`` inside one body.
 
 Deterministic: the bootstrap member seeds through ``stats``'s pinned
 ``sha256(seed:label)`` recipe, so identical inputs give identical floats
@@ -61,7 +120,14 @@ whatever the iteration order.
 
 Nothing here is a node kind, and nothing here is wired into a document.
 
-Import cost: stdlib only.
+**Import cost.** Stdlib plus three siblings in this package:
+``records.number_ok`` and ``records.cluster_ok`` (the finiteness and
+cluster-id rules) and ``node.class_ref``, the one owner of the
+``module:QualName`` spelling recorded in ``method``. ``node`` drags
+``base`` and ``document`` in with it, so importing this module is NOT
+free; that is the price of not carrying a second copy of the
+class-spelling rule, which CLAUDE.md's "a function is never repeated
+across modules" forbids. No third-party dependency.
 """
 
 from __future__ import annotations
@@ -74,26 +140,30 @@ from dskit.pipeline.records import cluster_ok, number_ok
 from dskit.pipeline.stats import cluster_bootstrap_t, newey_west_mean, student_t_sf
 
 __all__ = [
-    "DEFAULT_CONFIDENCE",
+    "DEFAULT_LEVEL",
     "DEFAULT_REPLICATES",
     "DEFAULT_SEED",
-    "ESTIMATORS",
+    "MEAN_INTERVAL_ESTIMATORS",
     "MIN_INDEPENDENT_UNITS",
     "ClusterBootstrapInterval",
+    "ConfidenceInterval",
     "MeanEvidence",
     "MeanIntervalEstimator",
     "MeanIntervalResult",
     "NeweyWestInterval",
-    "estimator",
-    "register_estimator",
+    "WidenedInterval",
+    "mean_interval_estimator",
+    "register_mean_interval_estimator",
 ]
 
-#: The two-sided confidence an interval is taken at when the caller does
-#: not say. Confidence is a POLICY a project pins prospectively, so it
-#: has one name and appears as a literal nowhere. The dependence
-#: structure, by contrast, has no default at all — see the module
-#: docstring for why the two are treated differently.
-DEFAULT_CONFIDENCE = 0.95
+#: The two-sided level an interval is taken at when the caller does not
+#: say. The level is a POLICY a project pins prospectively, so it has one
+#: name and appears as a literal nowhere. Whether that level is DELIVERED
+#: as coverage is not this constant's business — it is the member's, and
+#: the member declares it by returning a :class:`ConfidenceInterval` or a
+#: :class:`WidenedInterval`. The dependence structure, by contrast, has
+#: no default at all — see the module docstring for why.
+DEFAULT_LEVEL = 0.95
 
 #: Bootstrap replicates when the caller does not say. High enough that
 #: the 2.5%% and 97.5%% pivot quantiles are not decided by a handful of
@@ -140,16 +210,16 @@ def _check_count(value, name, minimum):
         raise ValueError(f"{name} must be an int >= {minimum}, got {value!r}")
 
 
-def _student_t_critical(confidence, df):
-    """Invert the Student tail for the two-sided ``confidence`` critical value."""
-    target = 0.5 * (1.0 - confidence)
+def _student_t_critical(level, df):
+    """Invert the Student tail for the two-sided ``level`` critical value."""
+    target = 0.5 * (1.0 - level)
     high = 1.0
     while student_t_sf(high, df) > target:
         high *= 2.0
         if high > _QUANTILE_CEILING:
             raise ValueError(
-                f"confidence {confidence!r} needs a Student-t critical value above "
-                f"{_QUANTILE_CEILING:g} at df={df} — ask for less confidence or "
+                f"level {level!r} needs a Student-t critical value above "
+                f"{_QUANTILE_CEILING:g} at df={df} — ask for a lower level or "
                 "bring more independent units"
             )
     low = 0.0
@@ -178,8 +248,8 @@ class MeanEvidence:
         The per-observation scores whose MEAN is the estimand, in TIME
         order, at least two, every one finite.
     units : sequence of str or None
-        One independence-unit label per observation — a session, an
-        event, a block. Held to
+        One independence-unit label per observation — a block, an event,
+        a batch. Held to
         :func:`~dskit.pipeline.records.cluster_ok` (a non-empty string),
         the repo's one cluster-id rule, so a label this package would
         refuse elsewhere cannot silently become a unit of its own here.
@@ -199,7 +269,7 @@ class MeanEvidence:
 
     Examples
     --------
-    Twelve sessions of five scored rows, resampled by session::
+    Twelve blocks of five scored rows, resampled by block::
 
         ev = MeanEvidence([0.1] * 60, units=[f"d{i // 5}" for i in range(60)])
         ev.n
@@ -336,6 +406,13 @@ class MeanEvidence:
 class MeanIntervalResult:
     """A mean, its dependence-aware standard error, and the two bounds.
 
+    **This base says nothing about what ``level`` MEANS.** It is the
+    shared geometry and the shared invariants; the claim is carried by
+    the two subclasses, and :meth:`MeanIntervalEstimator.interval` will
+    not hand back the bare base — a member must name
+    :class:`ConfidenceInterval` or :class:`WidenedInterval` (or its own
+    subclass of one of them) and thereby SAY which it is.
+
     The consumer contract lives HERE rather than in the caller: an
     instance cannot exist whose bounds fail to bracket its own mean, or
     which carries a non-finite number, so the guarantee a robust
@@ -355,8 +432,10 @@ class MeanIntervalResult:
         positive.
     low, high : float
         The two-sided bounds, finite, with ``low <= mean <= high``.
-    confidence : float
-        The two-sided confidence the bounds were taken at, in ``(0, 1)``.
+    level : float
+        The two-sided level the bounds were TAKEN at, in ``(0, 1)``.
+        Whether it is DELIVERED as coverage is the subclass's claim, not
+        this field's.
     independent_units : int
         How many effectively independent units the estimator read, at
         least two.
@@ -368,7 +447,7 @@ class MeanIntervalResult:
     ------
     ValueError
         On a non-finite or non-numeric field, a non-positive standard
-        error, bounds that do not bracket the mean, a confidence outside
+        error, bounds that do not bracket the mean, a level outside
         ``(0, 1)``, fewer than two units, or an empty method.
 
     Examples
@@ -384,7 +463,7 @@ class MeanIntervalResult:
     standard_error: float
     low: float
     high: float
-    confidence: float
+    level: float
     independent_units: int
     method: str
 
@@ -405,8 +484,8 @@ class MeanIntervalResult:
                 f"bounds [{self.low!r}, {self.high!r}] do not bracket the mean "
                 f"{self.mean!r}"
             )
-        _check_open_unit(self.confidence, "confidence")
-        object.__setattr__(self, "confidence", float(self.confidence))
+        _check_open_unit(self.level, "level")
+        object.__setattr__(self, "level", float(self.level))
         _check_count(self.independent_units, "independent_units", 2)
         if not isinstance(self.method, str) or not self.method:
             raise ValueError(f"method must be a non-empty string, got {self.method!r}")
@@ -445,34 +524,132 @@ class MeanIntervalResult:
         return self.high - self.low
 
 
+@dataclass(frozen=True)
+class ConfidenceInterval(MeanIntervalResult):
+    """The bounds whose ``level`` IS a confidence level, and was measured.
+
+    A member returns this only when its own contract was shown to deliver
+    the nominal level — not when the arithmetic merely looks right.
+    :class:`ClusterBootstrapInterval` returns it, and the module
+    docstring's table is the measurement: 94.6–96.3% at a nominal 0.95,
+    at 8 through 50 units, over GENUINE independence units.
+
+    That last clause is the whole condition, and this module cannot check
+    it. "Genuine" means every observation's label is realized inside its
+    own unit, so the units are exchangeable whole. Chopping one
+    overlapping series into contiguous blocks the length of its own
+    overlap does NOT produce such units — adjacent blocks still share raw
+    ground across the cut — and that configuration measured 86.9–91.1%,
+    not 95%. Stating the units is therefore an ASSERTION the caller makes
+    and this module records; it is not one it verifies.
+
+    Parameters
+    ----------
+    Inherited unchanged from :class:`MeanIntervalResult`.
+
+    Examples
+    --------
+    What the block bootstrap hands back::
+
+        out = ClusterBootstrapInterval().interval(MeanEvidence(rows, units=blocks))
+        type(out) is ConfidenceInterval
+        # -> True
+    """
+
+
+@dataclass(frozen=True)
+class WidenedInterval(MeanIntervalResult):
+    """The bounds whose ``level`` is a WIDENING knob, not a coverage claim.
+
+    Raising ``level`` widens these bounds and lowering it narrows them,
+    monotonically — that much is true and is tested. What is NOT true, and
+    is not claimed, is that the bounds contain the true mean with
+    probability ``level``. :class:`NeweyWestInterval` returns this because
+    it was measured at 86.9–91.1% against a nominal 0.95 on a correctly
+    stated overlap, and near 81% on an AR(1) at the overlap the repo's own
+    ``stats.dm_lags`` rule suggests. The module docstring says why, and
+    why no constant chosen here would repair it.
+
+    Read it as a sensitivity reading — "how far does the mean move when
+    the stated dependence is priced" — and do not build a chance
+    constraint on it. The naming follows ``false_signal.pi_widened``,
+    which made the same retreat for the same reason.
+
+    Parameters
+    ----------
+    Inherited unchanged from :class:`MeanIntervalResult`.
+
+    Examples
+    --------
+    What the HAC member hands back::
+
+        out = NeweyWestInterval().interval(MeanEvidence(rows, overlap_steps=11))
+        isinstance(out, ConfidenceInterval)
+        # -> False
+    """
+
+
 class MeanIntervalEstimator(ABC):
     """The doorway: one dependent sample in, one bracketed mean out.
 
-    ``interval`` is a TEMPLATE method and is never overridden — it owns
-    the confidence screen, the minimum-unit refusal, the degenerate-
-    standard-error refusal and the result invariants. A member supplies
-    three hooks, one job each: how many independent units this evidence
-    holds, the point estimate and its standard error, and the bounds.
+    ``interval`` is a TEMPLATE method and is never overridden — enforced
+    by ``__init_subclass__``, not by a docstring asking nicely. It owns
+    the level screen, the minimum-unit refusal, the degenerate-standard-
+    error refusal and the result invariants. A member supplies four
+    hooks, one job each: what its answer CLAIMS, how many independent
+    units this evidence holds, the point estimate and its standard error,
+    and the bounds.
 
     A member that reads only one of the two dependence spellings refuses
     the other BY NAME through :meth:`independent_units`, rather than
     quietly reading whichever field happens to be set.
 
+    :attr:`result_class` is abstract on purpose and has NO default. A new
+    member must state whether its ``level`` is a measured confidence
+    level (:class:`ConfidenceInterval`) or only a widening knob
+    (:class:`WidenedInterval`); inheriting the calibrated claim by
+    silence is exactly the overclaim this module exists to prevent.
+
     Examples
     --------
-    A member states its floor and supplies three hooks::
+    A member states its claim, its floor, and supplies the hooks::
 
         class FixedWidth(MeanIntervalEstimator):
+            result_class = WidenedInterval
             def independent_units(self, evidence):
                 return evidence.n
             def mean_and_se(self, evidence):
                 total = sum(evidence.values)
                 return total / evidence.n, 1.0
-            def bounds(self, evidence, mean, se, confidence):
+            def bounds(self, evidence, mean, se, level):
                 return mean - se, mean + se
 
         FixedWidth().interval(MeanEvidence([1.0] * 40, overlap_steps=0))
     """
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse a subclass that replaces the template; every HOOK stays overridable."""
+        super().__init_subclass__(**kwargs)
+        if "interval" in vars(cls):
+            raise TypeError(
+                f"{cls.__name__} overrides interval, which is final (ADR-0151): the "
+                "screens, the minimum-unit floor and the result invariants are the "
+                "seam, their order is not — override a hook instead"
+            )
+
+    @property
+    @abstractmethod
+    def result_class(self):
+        """Name the result type this member's answer has EARNED.
+
+        Returns
+        -------
+        type
+            A STRICT subclass of :class:`MeanIntervalResult` —
+            :class:`ConfidenceInterval` when the member was measured to
+            deliver its nominal level, :class:`WidenedInterval` when it
+            was not. The bare base is refused: every member says which.
+        """
 
     @property
     def minimum_units(self):
@@ -523,7 +700,7 @@ class MeanIntervalEstimator(ABC):
         """
 
     @abstractmethod
-    def bounds(self, evidence, mean, se, confidence):
+    def bounds(self, evidence, mean, se, level):
         """Place the two-sided bounds around an already-estimated mean.
 
         Parameters
@@ -534,8 +711,8 @@ class MeanIntervalEstimator(ABC):
             What :meth:`mean_and_se` returned.
         se : float
             The standard error :meth:`mean_and_se` returned, positive.
-        confidence : float
-            The two-sided confidence, in ``(0, 1)``.
+        level : float
+            The two-sided level, in ``(0, 1)``.
 
         Returns
         -------
@@ -549,41 +726,48 @@ class MeanIntervalEstimator(ABC):
             RAISES rather than returning a missing or narrower bound.
         """
 
-    def interval(self, evidence, *, confidence=DEFAULT_CONFIDENCE):
-        """Estimate the mean and bracket it at ``confidence``.
+    def interval(self, evidence, *, level=DEFAULT_LEVEL):
+        """Estimate the mean and bracket it at ``level``.
 
         The template: it screens the arguments, refuses a sample with too
         few independent units or no usable spread, asks the member's
-        three hooks, and assembles a :class:`MeanIntervalResult` (whose
-        own construction refuses bounds that do not bracket the mean).
+        hooks, and assembles the member's declared
+        :class:`MeanIntervalResult` subclass (whose own construction
+        refuses bounds that do not bracket the mean).
 
         Parameters
         ----------
         evidence : MeanEvidence
             The sample and its dependence statement. A plain list is
             refused: the dependence has to have been stated.
-        confidence : float
-            Two-sided confidence in ``(0, 1)``; defaults to
-            :data:`DEFAULT_CONFIDENCE`.
+        level : float
+            Two-sided level in ``(0, 1)``; defaults to
+            :data:`DEFAULT_LEVEL`. Whether the member DELIVERS it as
+            coverage is said by the type that comes back.
 
         Returns
         -------
         MeanIntervalResult
-            The point estimate, standard error, bounds and provenance.
+            The member's :attr:`result_class` — a
+            :class:`ConfidenceInterval` or a :class:`WidenedInterval` —
+            carrying the point estimate, standard error, bounds and
+            provenance.
 
         Raises
         ------
         ValueError
-            On a non-:class:`MeanEvidence` argument, a confidence outside
+            On a non-:class:`MeanEvidence` argument, a level outside
             ``(0, 1)``, fewer independent units than
             :attr:`minimum_units`, a non-finite or non-positive standard
-            error, or a hook that could not claim a bound.
+            error, a hook that could not claim a bound, or a member whose
+            :attr:`result_class` is not a strict
+            :class:`MeanIntervalResult` subclass.
 
         Examples
         --------
-        Twenty sessions of overlapping rows, at 99%% confidence::
+        Twenty blocks of overlapping rows, at a 99%% level::
 
-            out = ClusterBootstrapInterval().interval(ev, confidence=0.99)
+            out = ClusterBootstrapInterval().interval(ev, level=0.99)
             out.low <= out.mean <= out.high
             # -> True
         """
@@ -592,7 +776,19 @@ class MeanIntervalEstimator(ABC):
                 "evidence must be a MeanEvidence — the dependence structure is "
                 f"never defaulted, got {type(evidence).__name__}"
             )
-        _check_open_unit(confidence, "confidence")
+        _check_open_unit(level, "level")
+        claimed = self.result_class
+        if (
+            not isinstance(claimed, type)
+            or not issubclass(claimed, MeanIntervalResult)
+            or claimed is MeanIntervalResult
+        ):
+            raise ValueError(
+                f"{class_ref(type(self))} must name a strict MeanIntervalResult "
+                f"subclass as its result_class — ConfidenceInterval when the member "
+                f"was measured to deliver its nominal level, WidenedInterval when it "
+                f"was not — got {claimed!r}"
+            )
 
         units = self.independent_units(evidence)
         _check_count(units, "independent_units", 0)
@@ -618,13 +814,13 @@ class MeanIntervalEstimator(ABC):
                 "one would read as certainty"
             )
 
-        low, high = self.bounds(evidence, mean, se, confidence)
-        return MeanIntervalResult(
+        low, high = self.bounds(evidence, mean, se, level)
+        return claimed(
             mean=mean,
             standard_error=se,
             low=low,
             high=high,
-            confidence=confidence,
+            level=level,
             independent_units=units,
             method=class_ref(type(self)),
         )
@@ -638,10 +834,21 @@ class ClusterBootstrapInterval(MeanIntervalEstimator):
     studentized recentered cluster bootstrap-t and its pinned
     ``sha256(seed:label)`` draw stream. Nothing is resampled here.
 
-    This is the whole-session block bootstrap in generic clothes: with
-    ``units`` naming trading sessions it resamples exactly the
-    exchangeable unit :mod:`~dskit.pipeline.attempts` defines, because a
-    unit moves every label that overlaps inside it.
+    This is the whole-block bootstrap in generic clothes: with ``units``
+    naming genuinely exchangeable blocks it resamples exactly the unit
+    :mod:`~dskit.pipeline.attempts` defines, because a unit moves every
+    label that overlaps inside it.
+
+    **This is the module's calibrated member, and the claim was
+    measured.** Over genuine independence units it returns a
+    :class:`ConfidenceInterval`: 94.6–96.3% at a nominal 0.95, at 8
+    through 50 units, in the module docstring's Monte Carlo. The
+    condition is the caller's to meet and this class cannot check it —
+    units carved out of one overlapping series at the overlap's own
+    length are not independence units, and that configuration measured
+    86.9–91.1%. :meth:`independent_units` screens the coarsest version of
+    that error (an overlap that cannot even fit inside a unit) and no
+    more; it is a screen, never a certificate.
 
     Parameters
     ----------
@@ -664,11 +871,15 @@ class ClusterBootstrapInterval(MeanIntervalEstimator):
 
     Examples
     --------
-    Twenty sessions, five thousand replicates, tagged per name::
+    Twenty blocks, five thousand replicates, tagged per component::
 
-        est = ClusterBootstrapInterval(replicates=5000, seed=7, label="AAPL")
-        est.interval(MeanEvidence(rows, units=sessions))
+        est = ClusterBootstrapInterval(replicates=5000, seed=7, label="c1")
+        est.interval(MeanEvidence(rows, units=blocks))
     """
+
+    #: Measured to deliver its nominal level over genuine independence
+    #: units — see the class docstring for the numbers and the condition.
+    result_class = ConfidenceInterval
 
     def __init__(self, *, replicates=DEFAULT_REPLICATES, seed=DEFAULT_SEED, label=""):
         """Pin the replicate count and the draw stream; refuse a bad knob."""
@@ -699,9 +910,20 @@ class ClusterBootstrapInterval(MeanIntervalEstimator):
         ValueError
             When no ``units`` are stated, or when a stated
             ``overlap_steps`` reaches at or past the shortest unit's
-            contiguous run — a label that lands in the next unit means
-            the units are not independent units, and resampling them as
-            though they were is how a too-narrow interval is produced.
+            contiguous run — an overlap that cannot even fit inside a
+            unit means the units are certainly not independent units, and
+            resampling them as though they were is how a too-narrow
+            interval is produced.
+
+        Notes
+        -----
+        The overlap screen is NECESSARY and not sufficient. An overlap
+        that fits inside the shortest run still reaches out of the LAST
+        rows of every unit and into the next one unless the units are
+        separated in time — which is what a caller asserts by naming them
+        units, and is not something this method can see. Contiguous
+        blocks carved from one overlapping series pass this screen and
+        measured 86.9–91.1% against a nominal 0.95.
         """
         if evidence.units is None:
             raise ValueError(
@@ -744,7 +966,7 @@ class ClusterBootstrapInterval(MeanIntervalEstimator):
         out = cluster_bootstrap_t(evidence.grouped(), 1, self.seed, label=self.label)
         return out["mean"], out["se"]
 
-    def bounds(self, evidence, mean, se, confidence):
+    def bounds(self, evidence, mean, se, level):
         """Take the bootstrap-t pivot bounds from the full replicate stream.
 
         Parameters
@@ -756,8 +978,8 @@ class ClusterBootstrapInterval(MeanIntervalEstimator):
         se : float
             The standard error, unused — the delegate recomputes it from
             the same observed units.
-        confidence : float
-            Two-sided confidence in ``(0, 1)``.
+        level : float
+            Two-sided level in ``(0, 1)``.
 
         Returns
         -------
@@ -776,7 +998,7 @@ class ClusterBootstrapInterval(MeanIntervalEstimator):
             self.replicates,
             self.seed,
             label=self.label,
-            alpha=1.0 - confidence,
+            alpha=1.0 - level,
         )
         if out["mean"] != mean:
             raise ValueError(
@@ -785,8 +1007,8 @@ class ClusterBootstrapInterval(MeanIntervalEstimator):
             )
         if out["ci_low"] is None or out["ci_high"] is None:
             raise ValueError(
-                f"the bootstrap-t pivot tail is degenerate at confidence "
-                f"{confidence!r} on {out['n_clusters']} units, so no bound is "
+                f"the bootstrap-t pivot tail is degenerate at level "
+                f"{level!r} on {out['n_clusters']} units, so no bound is "
                 "claimable — raise the replicate count or bring more units"
             )
         return out["ci_low"], out["ci_high"]
@@ -799,13 +1021,26 @@ class NeweyWestInterval(MeanIntervalEstimator):
     :func:`~dskit.pipeline.stats.newey_west_mean` with ``lags`` taken
     from the evidence's ``overlap_steps`` — the repo's existing
     overlap-in-observation-steps idiom. What is added here is the
-    interval that function never returned.
+    bracket that function never returned.
+
+    **This member does NOT deliver its nominal level, and says so by
+    returning a** :class:`WidenedInterval`. Measured against a known true
+    mean: 86.9–91.1% at a nominal 0.95 on a correctly stated 10-step
+    rolling mean, flat from 8 independent units to 50; about 81% on an
+    AR(1) at φ=0.8 with the overlap ``stats.dm_lags`` suggests; about 93%
+    only when handed an overlap three times the truth. The module
+    docstring holds the diagnosis — a Bartlett kernel truncated at the
+    stated overlap attenuates the standard error to ~0.82 of the truth
+    and does not stop doing so with more data — and explains why no
+    constant this class could apply would repair it for the next
+    caller's process. Raising ``level`` widens these bounds; it does not
+    buy coverage.
 
     The critical value is Student-t on ``independent_units - 1`` degrees
     of freedom, NOT ``n - 1``. Overlapping observations are not each a
     degree of freedom, and pairing a HAC standard error with the raw row
-    count is the classic way to get an interval that is too narrow in
-    exactly the small samples where it matters.
+    count is an even narrower answer. That choice is a mitigation, not a
+    fix: the measurement above is what it buys.
 
     Examples
     --------
@@ -815,12 +1050,25 @@ class NeweyWestInterval(MeanIntervalEstimator):
         est.interval(MeanEvidence(rows, overlap_steps=11))
     """
 
+    #: Measured NOT to deliver its nominal level — see the class
+    #: docstring. ``level`` here widens; it does not cover.
+    result_class = WidenedInterval
+
     def independent_units(self, evidence):
         """Count the non-overlapping blocks the stated overlap leaves.
 
-        ``n // (overlap_steps + 1)`` — observations one overlap-length
-        apart no longer share ground, so that many of them are the
-        effective independent sample.
+        ``n // (overlap_steps + 1)`` — two observations one overlap-length
+        apart no longer share ground, so that many of them is the
+        effective sample size this member takes its degrees of freedom
+        from.
+
+        It is an UPPER BOUND on independence and not a certificate. The
+        blocks it counts are adjacent, and the last row of one still
+        shares raw ground with the first ``overlap_steps`` rows of the
+        next; only the block REPRESENTATIVES are mutually independent.
+        Together with the Bartlett attenuation described on the class,
+        this is why the member returns a :class:`WidenedInterval` rather
+        than a :class:`ConfidenceInterval`.
 
         Parameters
         ----------
@@ -861,7 +1109,7 @@ class NeweyWestInterval(MeanIntervalEstimator):
         out = newey_west_mean(list(evidence.values), lags=evidence.overlap_steps)
         return out["mean"], out["se"]
 
-    def bounds(self, evidence, mean, se, confidence):
+    def bounds(self, evidence, mean, se, level):
         """Bracket the mean with a Student-t critical value.
 
         Parameters
@@ -872,8 +1120,8 @@ class NeweyWestInterval(MeanIntervalEstimator):
             The HAC point estimate.
         se : float
             Its HAC standard error, positive.
-        confidence : float
-            Two-sided confidence in ``(0, 1)``.
+        level : float
+            Two-sided level in ``(0, 1)``.
 
         Returns
         -------
@@ -884,21 +1132,27 @@ class NeweyWestInterval(MeanIntervalEstimator):
         Raises
         ------
         ValueError
-            When the confidence is too extreme to bracket at this many
-            degrees of freedom.
+            When the level is too extreme to bracket at this many degrees
+            of freedom.
         """
         df = self.independent_units(evidence) - 1
-        critical = _student_t_critical(confidence, df)
+        critical = _student_t_critical(level, df)
         return mean - critical * se, mean + critical * se
 
 
-#: The estimator registry, mirroring ``stats.CORRECTIONS``:
+#: The registry, mirroring ``stats.CORRECTIONS``:
 #: ``name -> {"cls", "doc"}``. It holds CLASSES, because the family is an
-#: object with hooks rather than a function.
-ESTIMATORS: dict = {}
+#: object with hooks rather than a function. The subject is spelled out
+#: in all three names because a bare ``estimator`` already means the
+#: OPPOSITE thing next door — ``libs/sklearn.py`` uses it ~135 times for
+#: the dotted path to an ML model — and every other registry here names
+#: its subject (``register_node_kind``, ``register_correction``,
+#: ``register_metric``, ``register_split_policy``). The sibling
+#: ``false_signal.py`` was renamed the same way.
+MEAN_INTERVAL_ESTIMATORS: dict = {}
 
 
-def register_estimator(name, cls, *, doc=""):
+def register_mean_interval_estimator(name, cls, *, doc=""):
     """Register a mean-interval estimator under ``name``.
 
     Parameters
@@ -920,21 +1174,26 @@ def register_estimator(name, cls, *, doc=""):
     --------
     A project brings its own interval family::
 
-        register_estimator("my-bca", MyBcaInterval, doc="BCa over units.")
+        register_mean_interval_estimator(
+            "my-bca", MyBcaInterval, doc="BCa over units."
+        )
     """
     if not isinstance(name, str) or not name:
-        raise ValueError(f"estimator name must be a non-empty string, got {name!r}")
+        raise ValueError(
+            f"mean-interval estimator name must be a non-empty string, got {name!r}"
+        )
     if not isinstance(cls, type) or not issubclass(cls, MeanIntervalEstimator):
         raise ValueError(
-            f"estimator {name!r} must be a MeanIntervalEstimator subclass, got {cls!r}"
+            f"mean-interval estimator {name!r} must be a MeanIntervalEstimator "
+            f"subclass, got {cls!r}"
         )
-    if name in ESTIMATORS:
-        raise ValueError(f"estimator {name!r} is already registered")
-    ESTIMATORS[name] = {"cls": cls, "doc": doc}
+    if name in MEAN_INTERVAL_ESTIMATORS:
+        raise ValueError(f"mean-interval estimator {name!r} is already registered")
+    MEAN_INTERVAL_ESTIMATORS[name] = {"cls": cls, "doc": doc}
 
 
-def estimator(name):
-    """Look up a registered estimator entry, loudly.
+def mean_interval_estimator(name):
+    """Look up a registered mean-interval estimator entry, loudly.
 
     Parameters
     ----------
@@ -956,24 +1215,27 @@ def estimator(name):
     --------
     Resolve the shipped block bootstrap::
 
-        estimator("cluster-bootstrap-t")["cls"]
+        mean_interval_estimator("cluster-bootstrap-t")["cls"]
         # -> ClusterBootstrapInterval
     """
     try:
-        return ESTIMATORS[name]
+        return MEAN_INTERVAL_ESTIMATORS[name]
     except KeyError:
         raise ValueError(
-            f"unknown estimator {name!r} — known: {sorted(ESTIMATORS)}"
+            f"unknown mean-interval estimator {name!r} — known: "
+            f"{sorted(MEAN_INTERVAL_ESTIMATORS)}"
         ) from None
 
 
-register_estimator(
+register_mean_interval_estimator(
     "cluster-bootstrap-t",
     ClusterBootstrapInterval,
-    doc="Whole-unit block bootstrap-t; the units are the resampling unit.",
+    doc="Whole-unit block bootstrap-t; the units are the resampling unit. "
+    "Measured to deliver its nominal level over genuine independence units.",
 )
-register_estimator(
+register_mean_interval_estimator(
     "newey-west",
     NeweyWestInterval,
-    doc="HAC standard error at the stated overlap, bracketed by Student t.",
+    doc="HAC standard error at the stated overlap, bracketed by Student t. "
+    "Widening only — measured NOT to deliver its nominal level.",
 )
