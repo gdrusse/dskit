@@ -103,16 +103,20 @@ def members(cls, **overrides):
 # ---------------------------------------------------------------------------
 
 
-def test_the_public_surface_is_the_seven_bundles_the_invocation_and_the_tape_seam():
+def test_the_public_surface_is_the_seven_bundles_the_invocation_the_tape_seam_and_the_causal_order_verifier():
     """`ReplayTape` joined them in phase 2 for the reason the bundles are
     here at all: `report.py` builds a tape and `compose.py` consumes one, so
     a declaration in either would make §10's build order cyclic (§5.13.3).
     `CapturedReplayTape` (ADR-0127) is the F3 inner-manifest codec the plan
-    assigns to `bundles.py`; it is a value, not a collaborator."""
+    assigns to `bundles.py`; it is a value, not a collaborator.
+    `verify_causal_order` (ADR-0145) is the deliverable capability a future
+    composed-tape-verification ADR calls; `_parse_event_envelope` stays
+    private -- nothing outside this module calls it by name."""
     assert set(bundles_module.__all__) == {cls.__name__ for cls in BUNDLES} | {
         "Invocation",
         "ReplayTape",
         "CapturedReplayTape",
+        "verify_causal_order",
     }
 
 

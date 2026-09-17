@@ -52,6 +52,7 @@ __all__ = [
     "ReplayTape",
     "Safety",
     "Schedule",
+    "verify_causal_order",
 ]
 
 CAPTURED_REPLAY_TAPE_SCHEMA = "dskit.captured-replay-tape/v1"
@@ -458,7 +459,7 @@ def _check_event_envelope(value):
     return problems
 
 
-def parse_event_envelope(raw):
+def _parse_event_envelope(raw):
     """Parse one closed ``dskit.event-envelope/v2`` object, refusing everything else.
 
     Not shipped as a caller-facing minting API beyond fixture/test
