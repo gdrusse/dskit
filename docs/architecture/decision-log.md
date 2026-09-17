@@ -13285,7 +13285,12 @@ exist. This closes the gap forward; it does not re-open those results.
 *(Number taken at commit time. 0149, 0151, 0152, 0155 and 0156 are held by
 unmerged branches; this skips them rather than adding a collision.)*
 
-**Status:** PROPOSED, awaiting owner approval. NOT implemented, and deliberately
+**Status:** PROPOSED (v2), awaiting owner approval. NOT implemented. v1 was
+BLOCKED by independent skeptic review (0 Critical, 1 Major): its `signed_id`
+formula bound ONE parent, faithfully copying a precedent whose authority kind
+genuinely has one, while two of F3's three hops have TWO. v2 corrects that in
+Decision below and records it as a resolved gap rather than a discovered one.
+Deliberately
 NOT a fourth patch to ADR-0148, which stays **STOPPED / DO NOT IMPLEMENT**.
 This is a different mechanism reached by inventory, not another revision of
 that contract.
@@ -13314,8 +13319,10 @@ Four authority kinds already spend through it -- `roster-bootstrap`,
 
 **And the move already has a written spec AND a working implementation.**
 ADR-0143 Decision point 9 (`decision-log.md:10707-10729`) specifies exactly how
-a NEW authority kind joins that reserve, and `trust.py:9936-9985` implements it
-point for point: a `signed_id` DERIVED by digest from the parent row's own
+a NEW authority kind joins that reserve, and `trust.py:9936-9985` implements its
+substance (the QUARANTINE helper at `trust.py:9866` sits outside that cited
+range and mirrors a sibling kind's shape rather than DP9's own prose, so
+"point for point" is the intent, not the letter): a `signed_id` DERIVED by digest from the parent row's own
 `signed_id` and `intent_sha256` -- never the original signed text -- so
 `(kind, signed_id)` can never collide with the parent row even though both
 trace to the same signed pair; the parent row required to be `ISSUED` inside
@@ -13325,8 +13332,31 @@ failed or ambiguous commit only ever reaching `QUARANTINED`, never a second
 construction.
 
 **Decision.** F3's derivation hop becomes one new reserve kind, built to that
-precedent. `kind = "derivation-root"`. `signed_id = _digest(_hs_canonical_bytes(
-{schema, parent_signed_id, parent_intent_sha256}))`.
+precedent's SHAPE but not to its arity. `kind = "derivation-root"`.
+
+    signed_id = _digest(_hs_canonical_bytes({
+        "schema": "dskit.derivation-root-intent/v1",
+        "hop": <the hop's own canonical name>,
+        "parents": [{"signed_id": ..., "intent_sha256": ...}, ...],
+    }))
+
+`parents` carries EVERY upstream row the hop declares, in canonical sorted
+order, and the hop name is bound alongside them.
+
+**This is the correction v1 got wrong, and it is load-bearing.** The
+`dynamic-p4-authority` precedent hashes a single parent because that kind has
+exactly one (`root-pis`). F3 does not: ADR-0148's own retained hop text has
+Hop 1 (`ReplayTapeDataCapture`) declaring `raw_event_dataset` AND
+`source_roster` (`decision-log.md:12962`), and Hop 3 (`ReplayRun`) freezing
+descriptors resolving to BOTH published roots (`:12980`); only Hop 2 is
+single-parent (`:12972`). A single-parent digest would make two derivation
+intents differing ONLY in the unbound parent alias to one `(kind, signed_id)`
+-- so a legitimate derivation would permanently lose the unique-INSERT race to
+an unrelated intent, with no recovery path. That is strictly worse than any
+gap named below, and it is the same "identity not intent-pure" family that
+sank v1 of ADR-0148 (`:12657-12658`). Every parent row must also be `ISSUED`,
+checked inside the same `BEGIN IMMEDIATE` as the INSERT -- the precedent's
+one-parent check, applied to all of them.
 
 The `(kind, signed_id)` primary key IS the fencing the racing ascending scan
 lacked. Two concurrent derivations over one intent attempt the identical
@@ -13365,10 +13395,31 @@ durability only at development-broker scope. This ADR claims that same scope
 and no more. **It is not production race closure for F3**, and no evidence from
 it may be cited as such.
 
-**The next deliverable is a test, not code.** The convergence checkpoint's own
+**The next deliverable is TWO tests, not code.** The convergence checkpoint's
 lesson was "specify it against an executable test, not in prose" -- prose
 specification of a stateful concurrent protocol against a 10k-line lifecycle is
-what failed three times. So the first deliverable is a RED test that two
-concurrent derivations over one intent yield exactly one PUBLISHED root, run
-against the real reserve. Gap 1 is settled by that test, with a recorded
-answer, or this ADR does not proceed to code.
+what failed three times.
+
+1. **The race test.** Two concurrent derivations over one intent yield exactly
+   one PUBLISHED root, against the real reserve. This is a TRANSPLANT, not an
+   invention: `tests/pipeline/test_captured_authorization.py:3010-3033`
+   (`test_adr136_roster_signed_id_has_one_cross_process_winner`) already races
+   two real OS processes against this same reserve, synchronized on an
+   `Event`, asserting exactly one winner -- for a different kind. It must also
+   cover the two-parent case above, or it will not exercise the correction.
+2. **The liveness test, which is a DIFFERENT test.** v1 claimed the race test
+   settled Gap 1. It does not: Gap 1 is a lone winner dying between the
+   `RESERVED -> ISSUED` commit and the real PUBLISH, and two-racers-yield-one
+   never exercises that. It needs its own kill injection. Until it exists,
+   Gap 1 stays exactly as open as its own text concedes.
+
+Both must be RED first, with recorded answers, or this ADR does not proceed to
+code. Gap 1's answer specifically decides whether an `attempt` dimension is
+acceptable -- and `attempt` reintroduces v3's ambiguity, so that answer is the
+real gate on this work.
+
+**Still outstanding (Minor, recorded, not blocking):** every ADR-0148 round had
+a Phase 0 contract matrix under `docs/review-evidence/F3/` (0195/0197/0199);
+ADR-0157 has none. A matrix is the artifact that forces an explicit row per hop
+cardinality -- which is exactly where v1's Major hid. Worth writing before the
+tests.
