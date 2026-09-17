@@ -2992,10 +2992,10 @@ def test_reduce_fit_threads_seed_and_n_components_into_the_constructor(monkeypat
     import dskit.pipeline.libs.sklearn as _sklearn
 
     monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
-    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    node = _RaiseReduction("reduce", {**REDUCE_PARAMS, "n_components": 3})
     node.fit(rows_selectable(n=8), node.params)
     assert captured["random_state"] == 17
-    assert captured["n_components"] == 2
+    assert captured["n_components"] == 3  # the DECLARED width, not a hardcoded 2
 
 
 def test_reduce_fit_threads_the_default_seed_when_omitted(monkeypatch):
@@ -3070,6 +3070,9 @@ def test_reduce_state_problems_refuses_a_broken_state_shape():
         {**state, "components": [[0.0, 1.0]]},  # wrong count AND width
         {**state, "components": [[0.0, 1.0], [0.0, 1.0]]},  # right count, wrong width
         {**state, "components": [[0.0, 1.0, float("nan")], [0.0, 1.0, 2.0]]},
+        {**state, "components": 42},  # scalar — a named problem, never a TypeError
+        {**state, "components": None},
+        {**state, "components": True},
     ]
     for broken in cases:
         problems = node.state_problems(broken)
