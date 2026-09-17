@@ -1806,8 +1806,16 @@ def test_there_is_no_second_list_of_ledger_kinds():
     """§5.8.2: "There is deliberately **no** `LEDGER_KIND_NAMES` tuple in
     `vocab.py` … a ledger is selected by a top-level `uses`, like every
     other family, so the registry is the whole vocabulary and a second list
-    would be the duplication §5.0 forbids"."""
-    assert not [name for name in dir(vocab) if "LEDGER" in name]
+    would be the duplication §5.0 forbids". ADR-0147 adds
+    `LEDGER_HEALTH_STATES` -- a ledger INSTANCE's own lifecycle (mirroring
+    the existing `CACHE_STATES` precedent), never a second enumeration of
+    which ledger STORES/kinds exist -- so the guard here is narrowed to
+    what the rule actually names: no vocab.py member may duplicate
+    `LEDGER_KINDS`'s own registered store names."""
+    suspicious = [
+        name for name in dir(vocab) if "LEDGER" in name and name != "LEDGER_HEALTH_STATES"
+    ]
+    assert not suspicious
 
 
 def test_the_shared_chain_base_is_abstract_and_both_ledgers_extend_it():

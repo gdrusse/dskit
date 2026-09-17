@@ -62,6 +62,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
+from threading import RLock
 
 from dskit.onboarding.base import durable_write_json, fsync_dir
 from dskit.pipeline.node import check_int_param
@@ -85,6 +86,7 @@ from dskit.production.release import RELEASES_DIRNAME
 from dskit.production.vocab import (
     CACHE_STATES,
     FSYNC_MODES,
+    LEDGER_HEALTH_STATES,
     RECORD_KINDS,
     ROTATE_BY,
 )
@@ -154,6 +156,15 @@ _SNAPSHOT_KIND = "snapshot"
 #: The two answers a cache validation can give.
 _CURRENT, _STALE = "current", "stale"
 pin_members("ledger.py's cache states", (_CURRENT, _STALE), CACHE_STATES, exact=True)
+
+#: ADR-0147: a `ChainLedger`'s own health axis (see vocab.py). Pinned here
+#: exactly as `CACHE_STATES` is, immediately above.
+_OPENING, _HEALTHY, _UNCERTAIN, _CLOSED, _READONLY = pin_members(
+    "ledger.py's health states",
+    ("opening", "healthy", "uncertain", "closed", "readonly"),
+    LEDGER_HEALTH_STATES,
+    exact=True,
+)
 
 _MS_PER_DAY = 86_400_000
 _SEGMENT_NAME = "ledger.{index:04d}.jsonl"
@@ -946,6 +957,11 @@ class ChainLedger(Ledger):
         self._since_snapshot = 0
         self._closed = False
         self._readonly = bool(readonly)
+        # ADR-0147 Decision point 6: one new in-process RLock, never a
+        # replacement for the cross-process serve.lock below. Reentrant
+        # because reserve_once() calls barrier() while already holding it.
+        self._transition_lock = RLock()
+        self._health = _OPENING
         self._lock_fd = (
             None if lock is not None or self._readonly else self._acquire_lock()
         )
@@ -954,6 +970,7 @@ class ChainLedger(Ledger):
         except BaseException:
             self._release_lock()
             raise
+        self._health = _READONLY if self._readonly else _HEALTHY
 
     # -- placement ----------------------------------------------------------
 
@@ -965,7 +982,15 @@ class ChainLedger(Ledger):
     # -- open / close -------------------------------------------------------
 
     def _acquire_lock(self):
-        """Take ``serve.lock`` exclusively; another holder refuses at once."""
+        """Take ``serve.lock`` exclusively; another holder refuses at once.
+
+        ADR-0147 implementation pin: cross-process/crash recovery here
+        relies on standard POSIX flock-release-on-process-exit semantics (a
+        crashed writer's fd is released by the kernel when its file
+        descriptors are torn down) — true on the target Linux/POSIX
+        platforms, but an assumption about the OS, not something this
+        module's code proves.
+        """
         path = self._root.lock_path
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
@@ -988,13 +1013,20 @@ class ChainLedger(Ledger):
             os.close(fd)
 
     def _open_check(self):
-        """Refuse any write after ``close()``, and every write on a reading open."""
+        """Refuse any write after ``close()``, on a reading open, or while quarantined."""
         if self._readonly:
             raise ProductionError(
                 ["this ledger was opened for reading and never appends"]
             )
         if self._closed:
             raise ProductionError(["the ledger is closed"])
+        if self._health == _UNCERTAIN:
+            raise ProductionError(
+                [
+                    "the ledger is quarantined uncertain after a partial write; "
+                    "close() and reopen the same root to recover by full replay"
+                ]
+            )
 
     @classmethod
     def reading(cls, serve_root, *, clock):
@@ -1039,13 +1071,15 @@ class ChainLedger(Ledger):
             Idempotent; a second call does nothing. A lock handed in at
             open stays with its owner, and reads keep working.
         """
-        if self._closed:
-            return
-        try:
-            self._shutdown()
-        finally:
-            self._closed = True
-            self._release_lock()
+        with self._transition_lock:
+            if self._closed:
+                return
+            try:
+                self._shutdown()
+            finally:
+                self._closed = True
+                self._health = _CLOSED
+                self._release_lock()
 
     # -- the write path -----------------------------------------------------
 
@@ -1101,14 +1135,32 @@ class ChainLedger(Ledger):
         )
         envelope["hash"] = record_hash(self._head, envelope)
         line = canonical_bytes(envelope)
+        # A store hook that raises before landing anything (e.g. a short
+        # write -- JsonlLedger's own _store already truncates back to the
+        # last known-good size) leaves the in-memory head/index exactly as
+        # they were: a self-contained, already-recovered failure, not a
+        # partial-persistence hazard (see
+        # test_a_short_write_is_truncated_back_so_the_segment_holds_whole_
+        # lines's own documented contract -- the next append must still
+        # succeed, in this same process, without a quarantine/reopen).
         self._store(envelope, line, at_ms)
-        if self._durability.due():
-            self._sync()
-        self._seq, self._head = seq, envelope["hash"]
-        self._index[record["id"]] = (digest, seq)
-        self._note_kind(record["kind"], seq)
-        if self._state is not None:
-            self._state.apply(json.loads(line))
+        # ADR-0147 Decision point 7: any exception from HERE on means bytes
+        # already landed while the in-memory head/index/fold were not (yet)
+        # advanced to match -- the ledger can no longer trust its own
+        # in-memory state, so it quarantines to "uncertain" rather than
+        # risk a caller trusting a torn or half-applied write. Only a fresh
+        # open's full-chain replay (Decision point 10) may resolve it.
+        try:
+            if self._durability.due():
+                self._sync()
+            self._seq, self._head = seq, envelope["hash"]
+            self._index[record["id"]] = (digest, seq)
+            self._note_kind(record["kind"], seq)
+            if self._state is not None:
+                self._state.apply(json.loads(line))
+        except BaseException:
+            self._health = _UNCERTAIN
+            raise
         return seq
 
     def _note_kind(self, record_kind, seq):
@@ -1126,10 +1178,11 @@ class ChainLedger(Ledger):
 
     def append(self, record):
         """Append one record (see :meth:`Ledger.append`); one write, one fold."""
-        caller, digest = self._prepare(record, "record")
-        seq = self._commit(caller, digest)
-        self._auto_snapshot()
-        return seq
+        with self._transition_lock:
+            caller, digest = self._prepare(record, "record")
+            seq = self._commit(caller, digest)
+            self._auto_snapshot()
+            return seq
 
     def append_many(self, records):
         """Append records in order (see :meth:`Ledger.append_many`).
@@ -1137,40 +1190,89 @@ class ChainLedger(Ledger):
         Every record is validated before the first is written, so a
         malformed third record leaves the first two unwritten.
         """
-        problems, prepared = [], []
-        for position, record in enumerate(records):
-            try:
-                prepared.append(self._prepare(record, f"records[{position}]"))
-            except ProductionError as exc:
-                problems.extend(exc.problems)
-        if problems:
-            raise ProductionError(problems)
-        seqs = []
-        for caller, digest in prepared:
-            seqs.append(self._commit(caller, digest))
-            self._auto_snapshot()
-        return tuple(seqs)
+        with self._transition_lock:
+            problems, prepared = [], []
+            for position, record in enumerate(records):
+                try:
+                    prepared.append(self._prepare(record, f"records[{position}]"))
+                except ProductionError as exc:
+                    problems.extend(exc.problems)
+            if problems:
+                raise ProductionError(problems)
+            seqs = []
+            for caller, digest in prepared:
+                seqs.append(self._commit(caller, digest))
+                self._auto_snapshot()
+            return tuple(seqs)
 
     def barrier(self):
         """Make the head durable whatever the grade (see :meth:`Ledger.barrier`)."""
-        self._open_check()
-        self._sync()
-        self._durability.reset()
+        with self._transition_lock:
+            self._open_check()
+            try:
+                self._sync()
+                self._durability.reset()
+            except BaseException:
+                self._health = _UNCERTAIN
+                raise
 
     def snapshot(self, payload):
         """Append a ``snapshot`` of ``payload`` at the head (see :meth:`Ledger.snapshot`)."""
-        at_seq = self._seq
-        record = {
-            "kind": _SNAPSHOT_KIND,
-            "id": f"snapshot-{at_seq}",
-            "body": {
-                "at_seq": at_seq,
-                "state_digest": canonical_hash(payload),
-                "state": payload,
-            },
-        }
-        caller, digest = self._prepare(record, "snapshot")
-        return self._commit(caller, digest)
+        with self._transition_lock:
+            at_seq = self._seq
+            record = {
+                "kind": _SNAPSHOT_KIND,
+                "id": f"snapshot-{at_seq}",
+                "body": {
+                    "at_seq": at_seq,
+                    "state_digest": canonical_hash(payload),
+                    "state": payload,
+                },
+            }
+            caller, digest = self._prepare(record, "snapshot")
+            return self._commit(caller, digest)
+
+    def reserve_once(self, record):
+        """Atomically reserve one caller ``id``; ``True`` only on first grant.
+
+        ADR-0147 Decision point 6. The body is :meth:`_prepare` + one
+        :meth:`_commit` (both reused unchanged) plus an unconditional
+        :meth:`barrier` on the newly-created branch only, all inside one
+        hold of :attr:`_transition_lock`: two threads presenting the SAME
+        id against one shared ledger serialize here, and exactly one
+        observes ``created=True``. Cross-process exclusion needs no lock of
+        its own: :meth:`_acquire_lock`'s ``serve.lock`` flock is held for
+        this writer's entire lifetime (``__init__`` through :meth:`close`),
+        so a second process cannot even construct a writer on the same
+        series while this one is open, let alone race this method.
+
+        Parameters
+        ----------
+        record : dict
+            Exactly ``{"kind", "id", "body"}``, as :meth:`append` takes it.
+
+        Returns
+        -------
+        tuple
+            ``(created, seq)`` — ``(True, new_seq)`` only when THIS call's
+            ``_prepare``/``_commit`` genuinely appended a new record and its
+            mandatory barrier succeeded; ``(False, prior_seq)`` when the
+            same ``id`` with the same payload already existed.
+
+        Raises
+        ------
+        ProductionError
+            As :meth:`append`: a malformed record, a conflicting payload
+            under the same ``id``, or a non-``"healthy"`` ledger state.
+        """
+        caller, digest = self._prepare(record, "record")
+        with self._transition_lock:
+            existed = caller["id"] in self._index
+            seq = self._commit(caller, digest)
+            if existed:
+                return False, seq
+            self.barrier()
+            return True, seq
 
     # -- the read path ------------------------------------------------------
 

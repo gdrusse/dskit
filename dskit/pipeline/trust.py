@@ -379,6 +379,84 @@ class CapturedAuthorizationAuthority(LifecycleAuthority):
             transition_nonces=transition_nonces,
         )
 
+    def inspect_capture_admission(
+        self, captures, admission_ref, *, consumer_run_identity,
+        process_measurement_sha256, runtime_sha256, transition_nonces,
+    ):
+        """Read-only verification of one already-issued ``admission_ref`` (ADR-0147).
+
+        Requires an issued, non-revoked authority and a live resolver
+        snapshot (the existing ``_p4_require_issued_authority``); validates
+        ``admission_ref`` and the request/nonce triple through the SAME
+        checked machinery ``authorize_capture_set`` already uses
+        (``_p4_reference_bytes``, ``_P4_REQUEST_CHECK``); resolves the exact
+        selected admission through the existing
+        ``_P4_CLOSE_ADMISSION``/``_dynamic_p4_close_admission`` closure walk
+        (via ``_p4_close_admission_once``, dispatched on the resolver type
+        exactly as ``commit_p4_batch`` already does); and returns ONLY the
+        immutable canonical bytes ``_p4_reference_bytes`` itself already
+        computed for the validated ``admission_ref`` — never a second,
+        possibly-divergent recomputation, and never a session, plan
+        projection or transferable token.
+
+        Performs no write, no session and no ledger effect: every step
+        above is an existing read-only check or closure-verification
+        reused from ``authorize_capture_set``'s own preflight, never the
+        commit path (``_LifecycleAuthorizationLedger.commit_p4_batch``) that
+        actually spends. Calling this twice with identical arguments
+        returns byte-identical bytes and changes no observable state, which
+        is what lets ``HistoricalStudyVerifier.capture`` call it once before
+        reserving durably and once more immediately after, as a recheck,
+        with no effect of its own either time.
+
+        Parameters
+        ----------
+        captures : tuple
+            Exact ordered published/frozen/derived-port tuples, as
+            ``authorize_capture_set`` takes them.
+        admission_ref : dict
+            Exact action or replay admission reference.
+        consumer_run_identity : str
+            Consumer run distinct from the producer runs.
+        process_measurement_sha256 : str
+            Exact consumer process measurement digest.
+        runtime_sha256 : str
+            Exact consumer runtime digest.
+        transition_nonces : tuple
+            One distinct unused nonce per capture — a metadata-freshness
+            check on THIS call only; no process/run/nonce identity of any
+            kind enters the durable spend-right this feeds (ADR-0147
+            Decision point 4).
+
+        Returns
+        -------
+        bytes
+            The verified ``admission_ref``'s immutable canonical bytes.
+
+        Raises
+        ------
+        TypeError
+            The receiver is not an exact broker-issued capability, or an
+            input has a forbidden type.
+        ValueError
+            Request identity or complete artifact closure preconditions
+            fail.
+        """
+        _p4_require_issued_authority(self)
+        resolver = self._p4_resolver
+        snapshot = resolver.snapshot()
+        admission_bytes = _p4_reference_bytes(admission_ref, resolver)
+        runtime = {
+            "consumer_run_identity": consumer_run_identity,
+            "process_measurement_sha256": process_measurement_sha256,
+            "runtime_sha256": runtime_sha256,
+        }
+        _P4_REQUEST_CHECK(self, captures, runtime, transition_nonces)
+        _p4_close_admission_once(
+            resolver, snapshot, admission_ref, (self, captures, runtime), [None],
+        )
+        return admission_bytes
+
 
 class LaunchSession(_Opaque):
     """Process-bound launch capability. Not constructible from data.

@@ -44,6 +44,8 @@ the ``SubmittingExecutor`` contract (§5.7).
 """
 
 import dataclasses
+import json
+import uuid
 from threading import Lock
 from types import MappingProxyType
 from weakref import WeakKeyDictionary
@@ -62,15 +64,16 @@ from dskit.pipeline.trust import (
     NonAuthorizingSyntheticRootPisProof,
     NonAuthorizingDynamicRootGraph,
 )
-from dskit.production.base import ProductionError, canonical_hash, pin_members
+from dskit.production.base import GENESIS_HASH, ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
 from dskit.production.executor import empty_ack
 from dskit.production.guards import max_verdict
+from dskit.production.ledger import JsonlLedger, ServeRoot
 from dskit.production.records import ActPermit, EntryBatch, Intent, PolicyRequest, SafetyEpoch
 from dskit.production.redact import get_logger
 from dskit.production.release import parse_iso_duration, verify_release
-from dskit.production.state import TickState
+from dskit.production.state import SeriesState, TickState, _check_admission_use_body
 from dskit.production.vocab import (
     AUTHORITY_ROLES,
     LEG_ORIGINS,
@@ -659,54 +662,23 @@ class SubmissionVerifier:
         if not decision.allowed:
             raise _Refused(decision.reason)
 
-_REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas", "admission")
-_DOOR_LOCK = Lock()
+#: ADR-0147 Decision point 2: narrowed from six to five — the retired
+#: ``"admission"`` plan artifact is replaced by a verified ``admission_ref``
+#: the durable ledger gate checks instead; ``bind()`` now refuses the name
+#: ``"admission"`` as unknown, mechanically, by its absence here.
+_REQUIRED_PLAN = ("scope_intent", "ces", "pea", "bvp", "cas")
 _P4_VERIFIER_PINS = WeakKeyDictionary()
 _P4_DRIVER_PINS = WeakKeyDictionary()
 
+#: ADR-0147 Decision point 9: fixed across every durable verifier in a given
+#: deployment/test configuration, so every durable verifier sharing one
+#: ``root`` opens the identical on-disk chain and admission_use history.
+_ADMISSION_SPEND_SERIES_ID = "admission-spend-v1"
 
-def _make_spend_pair():
-    """Shared live/spent id sets plus pins; not instance state."""
-    return (set(), set(), {})
-
-
-class _SpendCell:
-    """Identity token for one-use admission; extra mints stay spent."""
-
-    __slots__ = ()
-
-    def __new__(cls, *args, **kwargs):
-        """Refuse construction except through the doorway mint."""
-        raise TypeError("opaque capture handle")
-
-    def __setattr__(self, name, value):
-        """Refuse attribute writes on the spend cell."""
-        raise TypeError("opaque capture handle")
-
-    def __copy__(self):
-        """Refuse shallow copies of the capture facade."""
-        """Refuse a shallow copy of the spend cell."""
-        raise TypeError("opaque capture handle")
-
-    def __deepcopy__(self, memo):
-        """Refuse deep copies of the capture facade."""
-        """Refuse a deep copy of the spend cell."""
-        raise TypeError("opaque capture handle")
-
-    def __getstate__(self):
-        """Refuse serializing the capture facade."""
-        """Refuse pickle state of the spend cell."""
-        raise TypeError("opaque capture handle")
-
-    def __reduce__(self):
-        """Refuse pickle reduction of the capture facade."""
-        """Refuse pickle reduction of the spend cell."""
-        raise TypeError("opaque capture handle")
-
-    def __reduce_ex__(self, protocol):
-        """Refuse protocol pickle reduction of the facade."""
-        """Refuse pickle protocol reduction of the spend cell."""
-        raise TypeError("opaque capture handle")
+#: Stamped on every envelope this series writes; carries no meaning beyond
+#: "the admission-spend ledger", so a fixed placeholder (matching this
+#: package's own zero-hash convention) is honest rather than invented.
+_ADMISSION_SPEND_RELEASE_HASH = GENESIS_HASH
 
 
 def _plan_artifact_bound(value, name=None):
@@ -737,18 +709,12 @@ class HistoricalStudyVerifier:
         refused  # True
     """
 
-    def __init__(self, authority, *, _spend=_make_spend_pair()):
+    def __init__(self, authority):
         if not isinstance(authority, LifecycleAuthority):
             raise TypeError("lifecycle authority is required")
         self._authority = authority
         self._bound_authority = authority
         self._bound = {}
-        live, _spent, pins = _spend
-        cell = object.__new__(_SpendCell)
-        cid = id(cell)
-        live.add(cid)
-        pins[cid] = cell
-        self._admission_spent = cell
         self._capture_lock = Lock()
         self.deployment_eligible = False
         if type(self) is HistoricalStudyVerifier:
@@ -786,8 +752,10 @@ class HistoricalStudyVerifier:
         ----------
         artifacts : dict
             Any subset of ``scope_intent``, ``ces``, ``pea``, ``bvp``,
-            ``cas``, ``admission``. Each value must be a ``dict``;
-            ``admission`` must have ``consumed`` equal to ``True``.
+            ``cas``. Each value must be a truthy ``dict``. ADR-0147
+            Decision point 2 retired the sixth ``"admission"`` artifact;
+            a verified ``admission_ref`` passed to :meth:`capture` replaces
+            it, so ``"admission"`` now refuses here as an unknown name.
 
         Raises
         ------
@@ -805,8 +773,28 @@ class HistoricalStudyVerifier:
             pending[name] = value
         self._bound.update(pending)
 
-    def capture(self, published, frozen, port, **kwargs):
-        """Refuse CAPTURED when any required plan artifact is unbound.
+    def capture(self, published, frozen, port, *, admission_ref=None, transition_nonces=(), **kwargs):
+        """Refuse CAPTURED unless the ledger durably reserves this admission once.
+
+        ADR-0147: replaces the retired in-process ``_spend`` kwdefault
+        doorway with a durable, ChainLedger-backed consume-once gate. Only
+        a verifier built by :meth:`durable` holds a ledger at all; a plain
+        ``HistoricalStudyVerifier(authority)`` instance permanently refuses
+        here, mechanically, because it has none — no combination of
+        :meth:`bind` calls changes that (Decision point 2).
+
+        Order, under the existing ``self._capture_lock`` (Decision point 8):
+        the unchanged five-artifact :meth:`bind` check; ``authority``'s
+        ``inspect_capture_admission`` (first call, validating
+        ``admission_ref`` and deriving the idempotency key/body from ITS
+        returned bytes, never from the raw argument); ``self._ledger
+        .reserve_once`` under the ledger's own transition lock; only when
+        that genuinely created the reservation THIS call, a second
+        ``inspect_capture_admission`` recheck and then ``authority.capture``
+        exactly once. Once ``reserve_once`` returns ``(True, seq)``, no
+        code path here ever unspends, retries or re-reserves that id, in
+        this call or any later one — including when ``authority.capture``
+        itself raises.
 
         Parameters
         ----------
@@ -815,10 +803,21 @@ class HistoricalStudyVerifier:
         frozen : object
             The frozen consumer document.
         port : mapping
-            The derived consumer captured port.
+            The derived consumer captured port; ``port["consumer_document_
+            sha256"]`` feeds the reserved record's ``binding_sha256``.
+        admission_ref : dict or None
+            The verified action/replay ``IssuanceBasisRef.v1`` this capture
+            spends. Required on a durable verifier; unused (and may be
+            omitted) on an authority-only verifier, which refuses before
+            ever reading it.
+        transition_nonces : tuple
+            One distinct unused nonce per capture, checked by
+            ``inspect_capture_admission`` only — metadata freshness on that
+            call, never a component of the durable spend-right itself.
         kwargs : dict
-            Forwarded to ``authority.capture`` only after every required
-            plan artifact is bound.
+            Forwarded to ``authority.capture`` and to
+            ``inspect_capture_admission``'s ``consumer_run_identity``/
+            ``process_measurement_sha256``/``runtime_sha256`` triple.
 
         Returns
         -------
@@ -828,31 +827,138 @@ class HistoricalStudyVerifier:
         Raises
         ------
         ValueError
-            When ScopeIntent, CES, PEA, BVP, CAS, or consumed admission
-            is not bound, or when that admission is already spent.
+            When the verifier holds no ledger, when ScopeIntent, CES, PEA,
+            BVP, or CAS is not bound, or when that admission is already
+            spent.
         """
-        live, spent = type(self).__init__.__kwdefaults__["_spend"][:2]
+        ledger = getattr(self, "_ledger", None)
         with self._capture_lock:
-            with _DOOR_LOCK:
-                cell = getattr(self, "_admission_spent", None)
-                cid = id(cell)
-                if cell is None or cid in spent or cid not in live:
-                    raise ValueError(
-                        "CAPTURED refuses after consumed admission is spent"
-                    )
-                missing = [
-                    name
-                    for name in _REQUIRED_PLAN
-                    if not _plan_artifact_bound(self._bound.get(name), name)
-                ]
-                if missing:
-                    raise ValueError(
-                        "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, "
-                        "CAS, and consumed admission are bound"
-                    )
-                live.discard(cid)
-                spent.add(cid)
-        return self._authority.capture(published, frozen, port, **kwargs)
+            missing = [
+                name
+                for name in _REQUIRED_PLAN
+                if not _plan_artifact_bound(self._bound.get(name), name)
+            ]
+            if ledger is None or missing:
+                raise ValueError(
+                    "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, and CAS are bound"
+                )
+            captures = ((published, frozen, port),)
+            runtime_kwargs = {
+                "consumer_run_identity": kwargs["consumer_run_identity"],
+                "process_measurement_sha256": kwargs["process_measurement_sha256"],
+                "runtime_sha256": kwargs["runtime_sha256"],
+            }
+            admission_bytes = self._authority.inspect_capture_admission(
+                captures, admission_ref, transition_nonces=transition_nonces, **runtime_kwargs
+            )
+            # Decision point 4: the key is derived from the bytes
+            # inspect_capture_admission itself returned, never from the raw
+            # caller argument directly.
+            validated_ref = json.loads(admission_bytes)
+            key = "admission_use:v1:" + canonical_hash({
+                "kind": validated_ref["kind"],
+                "schema": validated_ref["schema"],
+                "sha256": validated_ref["sha256"],
+            })
+            binding_sha256 = canonical_hash({
+                "consumer_document_sha256": port["consumer_document_sha256"],
+                "bound_plan": {name: self._bound[name] for name in _REQUIRED_PLAN},
+            })
+            body = {
+                "schema": "dskit.admission-use/v1",
+                "admission_ref": validated_ref,
+                "binding_sha256": binding_sha256,
+            }
+            _check_admission_use_body(body)
+            created, _seq = ledger.reserve_once({"kind": "admission_use", "id": key, "body": body})
+            if not created:
+                raise ValueError("CAPTURED refuses after consumed admission is spent")
+            # Post-reservation recheck (Decision point 3e): a refusal here
+            # leaves the reservation durably spent -- no unspend -- but the
+            # delegate call below does not happen.
+            self._authority.inspect_capture_admission(
+                captures, admission_ref, transition_nonces=transition_nonces, **runtime_kwargs
+            )
+            return self._authority.capture(published, frozen, port, **kwargs)
+
+    @classmethod
+    def durable(cls, authority, root, *, clock):
+        """Construct the only capture-capable (durable) verifier shape (ADR-0147 D9).
+
+        Constructs its OWN :class:`~dskit.production.ledger.ServeRoot` and
+        :class:`~dskit.production.ledger.JsonlLedger` internally; never
+        accepts a pre-built ``Ledger``/``ChainLedger`` instance, so there is
+        no public factory surface a caller could satisfy with a freshly
+        constructed, empty ledger pointed at a throwaway directory and have
+        it accepted as this admission's history. ``root`` is trusted
+        production composition input (a test harness, or a future
+        ``compose.py`` site) — never derived from ``admission_ref``,
+        request data, or any other caller/request-controlled value.
+
+        Parameters
+        ----------
+        authority : CapturedAuthorizationAuthority
+            The broker-issued P4 capability :meth:`capture` will verify
+            each admission against and, on success, delegate to.
+        root : str
+            The owner-configured directory the admission-spend series
+            lives under. Every durable verifier sharing one ``root`` opens
+            the identical on-disk chain and ``admission_use`` history.
+        clock : Clock
+            Injected; stamps every reserved record.
+
+        Returns
+        -------
+        HistoricalStudyVerifier
+            A verifier whose :meth:`capture` is ledger-backed and
+            consume-once, reopening (Decision point 10's full replay) any
+            ``admission_use`` history already durable under ``root``.
+
+        Raises
+        ------
+        TypeError
+            ``authority`` is not a ``CapturedAuthorizationAuthority``.
+        ProductionError
+            Another writer already holds this ``root``'s ``serve.lock``, or
+            the on-disk chain fails to reopen cleanly.
+        """
+        if cls is not HistoricalStudyVerifier:
+            raise TypeError("durable() constructs the base HistoricalStudyVerifier only")
+        if not isinstance(authority, CapturedAuthorizationAuthority):
+            raise TypeError("a broker-issued P4 authority capability is required")
+        serve_root = ServeRoot(root, _ADMISSION_SPEND_SERIES_ID)
+        state = SeriesState(_ADMISSION_SPEND_SERIES_ID)
+        ledger = JsonlLedger(
+            serve_root,
+            f"durable-verifier-{uuid.uuid4()}",
+            _ADMISSION_SPEND_RELEASE_HASH,
+            clock=clock,
+            state=state,
+        )
+        # ADR-0147 Decision point 10: never trust a possibly-partial
+        # in-memory fold (JsonlLedger._open's own recovery walk rebuilds
+        # only the head/index/snapshot cadence, not the attached state) or
+        # the latest snapshot record as a resume point -- replay the WHOLE
+        # verified chain from genesis into this fresh SeriesState, one
+        # state.apply(envelope) per record in chain order, and refuse
+        # construction outright if the replayed fold's own derived head
+        # ever disagrees with the ledger's independently verified head.
+        try:
+            for envelope in ledger.scan():
+                state.apply(envelope)
+            if state.head() != ledger.head():
+                raise ProductionError(
+                    [
+                        f"admission-spend replay head {state.head()} disagrees with "
+                        f"the ledger's own head {ledger.head()}"
+                    ]
+                )
+        except BaseException:
+            ledger.close()
+            raise
+        self = cls(authority)
+        self._ledger = ledger
+        return self
 
     def authorize_capture_set(
         self, captures, admission_ref, *, consumer_run_identity,

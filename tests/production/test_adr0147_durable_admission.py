@@ -19,7 +19,6 @@ from dskit.pipeline import trust
 from dskit.production import verifier as verifier_module
 from dskit.production.base import canonical_hash
 from tests.pipeline import test_captured_authorization as p4
-from tests.pipeline import test_trust as f4
 
 #: ADR-0147 Decision point 2: the five retained ADR-0125 plan artifacts.
 _PLAN = {
@@ -44,15 +43,19 @@ class _Clock:
         return self._ms / 1000.0
 
 
-def _p4_fixture(*, count=1, replay=False):
+def _p4_fixture(*, count=1, replay=False, document_name="consumer"):
     """Build a genuine fixed-resolver P4 authority with a real, unspent admission_ref.
 
     Reuses `test_captured_authorization.py`'s own signed-closure builders
     (`_complete_signed_graph` + `_graph_live`) up to, but never past, the
     point they call `authorize_capture_set` -- so `graph.selected` comes
-    back genuinely unspent.
+    back genuinely unspent. These builders are deterministic, so a genuinely
+    DIFFERENT `document_name` is required to get a genuinely distinct
+    `admission_ref` from a second call.
     """
-    graph, document = p4._complete_signed_graph(replay=replay, count=count)
+    graph, document = p4._complete_signed_graph(
+        replay=replay, count=count, document_name=document_name
+    )
     broker, captures, runtime, _before = p4._graph_live(graph, document, count)
     return broker, captures, graph.selected, runtime
 
@@ -113,12 +116,22 @@ def test_first_ever_capture_durably_reserves(tmp_path):
 
 
 def test_immediate_repeat_same_verifier_refuses_without_reinvoking_capture(tmp_path):
+    """A literal repeat reuses the SAME (published, frozen, port) stream the
+    first, successful capture already consumed at the F4 level (via the
+    ordinary v1 `authority.capture` delegate, unrelated to this ADR) --
+    inspect_capture_admission's reused `_validate_capture_request` refuses
+    THAT first, before the ledger's own `reserve_once` is ever reached
+    (`test_ledger_already_spent_refusal_is_isolated_from_f4_stream_state`
+    below isolates the ledger's own "consumed admission is spent" message
+    from this F4-level interaction). Either way the invariant that matters
+    holds: no second admission_use record, and authority.capture is never
+    invoked a second time."""
     broker, captures, admission_ref, runtime = _p4_fixture()
     verifier = _durable(broker, tmp_path / "root")
     try:
         _capture(verifier, captures, admission_ref, runtime)
         before = broker._receipt_audit(captures[0][0])
-        with pytest.raises(ValueError, match="consumed admission is spent"):
+        with pytest.raises(ValueError):
             _capture(verifier, captures, admission_ref, runtime, bind=False)
         assert broker._receipt_audit(captures[0][0]) == before
         assert len(list(verifier._ledger.scan(kind="admission_use"))) == 1
@@ -127,6 +140,12 @@ def test_immediate_repeat_same_verifier_refuses_without_reinvoking_capture(tmp_p
 
 
 def test_a_second_durable_verifier_reopened_against_the_same_root_refuses_the_repeat(tmp_path):
+    """Same F4-stream caveat as the test above: a literal repeat via a
+    freshly reopened verifier reuses the SAME already-captured stream, so
+    the refusal may come from inspect_capture_admission's own F4-liveness
+    check rather than reserve_once -- the invariant under test (no second
+    admission_use record; authority.capture never reinvoked) holds either
+    way."""
     broker, captures, admission_ref, runtime = _p4_fixture()
     root = tmp_path / "root"
     first = _durable(broker, root)
@@ -135,11 +154,63 @@ def test_a_second_durable_verifier_reopened_against_the_same_root_refuses_the_re
 
     second = _durable(broker, root)
     try:
-        with pytest.raises(ValueError, match="consumed admission is spent"):
+        before = broker._receipt_audit(captures[0][0])
+        with pytest.raises(ValueError):
             _capture(second, captures, admission_ref, runtime)
+        assert broker._receipt_audit(captures[0][0]) == before
         assert len(list(second._ledger.scan(kind="admission_use"))) == 1
     finally:
         second._ledger.close()
+
+
+def test_ledger_already_spent_refusal_is_isolated_from_f4_stream_state(tmp_path):
+    """A second capture attempt for an admission a CONCURRENT thread or a
+    crashed prior attempt already reserved (but whose `authority.capture`
+    delegate never ran, so the F4 stream is still merely PUBLISHED) must
+    be refused by `reserve_once`'s own `(False, seq)` -- the exact
+    `ValueError("CAPTURED refuses after consumed admission is spent")`
+    Decision point 8(d) names -- and must never reach `authority.capture`
+    at all. Pre-seeding the SAME reservation `capture()` itself would
+    derive isolates this from the F4-level stream check the two tests
+    above also legitimately hit."""
+    broker, captures, admission_ref, runtime = _p4_fixture()
+    verifier = _durable(broker, tmp_path / "root")
+    try:
+        verifier.bind(**_PLAN)
+        published, frozen, port = captures[0]
+        binding_sha256 = canonical_hash(
+            {
+                "consumer_document_sha256": port["consumer_document_sha256"],
+                "bound_plan": dict(_PLAN),
+            }
+        )
+        body = {
+            "schema": "dskit.admission-use/v1",
+            "admission_ref": dict(admission_ref),
+            "binding_sha256": binding_sha256,
+        }
+        created, _seq = verifier._ledger.reserve_once(
+            {"kind": "admission_use", "id": _admission_use_key(admission_ref), "body": body}
+        )
+        assert created is True
+
+        before = broker._receipt_audit(published)
+        with pytest.raises(ValueError, match="consumed admission is spent"):
+            verifier.capture(
+                published,
+                frozen,
+                port,
+                admission_ref=admission_ref,
+                transition_nonces=runtime["transition_nonces"],
+                consumer_run_identity=runtime["consumer_run_identity"],
+                process_measurement_sha256=runtime["process_measurement_sha256"],
+                runtime_sha256=runtime["runtime_sha256"],
+                transition_nonce=runtime["transition_nonces"][0],
+            )
+        assert broker._receipt_audit(published) == before
+        assert len(list(verifier._ledger.scan(kind="admission_use"))) == 1
+    finally:
+        verifier._ledger.close()
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +256,13 @@ def test_write_then_raise_reservation_survives_and_is_never_unspent(tmp_path, mo
 
 
 def test_process_restart_after_clean_commit_refuses_repeat_without_reinvoking_capture(tmp_path):
+    """As with row 2's own repeat tests: the reopened verifier's repeat
+    reuses the SAME stream the first process's capture already consumed at
+    the F4 level, so the refusal may legitimately come from
+    inspect_capture_admission's own liveness check rather than
+    reserve_once -- what matters, and what this proves, is that process B
+    replays the durable admission_use history and never re-invokes
+    authority.capture for it."""
     broker, captures, admission_ref, runtime = _p4_fixture()
     root = tmp_path / "root"
     verifier = _durable(broker, root)
@@ -193,10 +271,14 @@ def test_process_restart_after_clean_commit_refuses_repeat_without_reinvoking_ca
 
     reopened = _durable(broker, root)
     try:
+        assert [e["id"] for e in reopened._ledger.scan(kind="admission_use")] == [
+            _admission_use_key(admission_ref)
+        ]
         before = broker._receipt_audit(captures[0][0])
-        with pytest.raises(ValueError, match="consumed admission is spent"):
+        with pytest.raises(ValueError):
             _capture(reopened, captures, admission_ref, runtime)
         assert broker._receipt_audit(captures[0][0]) == before
+        assert len(list(reopened._ledger.scan(kind="admission_use"))) == 1
     finally:
         reopened._ledger.close()
 
@@ -226,7 +308,7 @@ def test_authority_only_verifier_permanently_refuses_capture_even_fully_bound(tm
 
 
 def test_durable_refuses_a_non_p4_authority(tmp_path):
-    plain_broker = f4._development_broker()
+    plain_broker = trust._development_broker()
     with pytest.raises(TypeError, match="P4 authority"):
         verifier_module.HistoricalStudyVerifier.durable(
             plain_broker, str(tmp_path / "root"), clock=_Clock()
@@ -263,7 +345,7 @@ def test_two_distinct_admission_refs_both_succeed_independently(tmp_path):
     try:
         _capture(verifier1, captures1, admission_ref1, runtime1)
 
-        broker2, captures2, admission_ref2, runtime2 = _p4_fixture()
+        broker2, captures2, admission_ref2, runtime2 = _p4_fixture(document_name="consumer-2")
         assert admission_ref2["sha256"] != admission_ref1["sha256"]
         # ADR-0147 Decision point 9: every durable verifier sharing one root
         # opens the identical chain -- a second verifier over a SECOND
@@ -297,11 +379,39 @@ def test_idempotency_key_is_exactly_kind_schema_sha256_and_excludes_nonce_identi
         _capture(verifier, captures, admission_ref, runtime)
         [env] = list(verifier._ledger.scan(kind="admission_use"))
         assert env["id"] == _admission_use_key(admission_ref)
+    finally:
+        verifier._ledger.close()
 
-        # A fresh, genuinely UNUSED nonce over the SAME admission_ref still
-        # collides on the SAME key -- transition_nonces is a per-call
-        # authority freshness check only, never a spend-right component.
+
+def test_a_fresh_unused_nonce_still_collides_on_the_same_admission_key(tmp_path):
+    """Decision point 4: transition_nonces is a per-call authority
+    freshness check only, never a spend-right component -- a genuinely
+    FRESH, never-before-used nonce over the SAME admission_ref must still
+    collide on the SAME key. Pre-seeding the reservation (rather than
+    reusing the SAME stream a real prior capture already consumed at the
+    F4 level, as the row 2/6 tests above do) isolates this specific claim
+    from that unrelated interaction."""
+    broker, captures, admission_ref, runtime = _p4_fixture()
+    verifier = _durable(broker, tmp_path / "root")
+    try:
+        verifier.bind(**_PLAN)
         published, frozen, port = captures[0]
+        binding_sha256 = canonical_hash(
+            {
+                "consumer_document_sha256": port["consumer_document_sha256"],
+                "bound_plan": dict(_PLAN),
+            }
+        )
+        body = {
+            "schema": "dskit.admission-use/v1",
+            "admission_ref": dict(admission_ref),
+            "binding_sha256": binding_sha256,
+        }
+        created, _seq = verifier._ledger.reserve_once(
+            {"kind": "admission_use", "id": _admission_use_key(admission_ref), "body": body}
+        )
+        assert created is True
+
         with pytest.raises(ValueError, match="consumed admission is spent"):
             verifier.capture(
                 published,
@@ -315,6 +425,7 @@ def test_idempotency_key_is_exactly_kind_schema_sha256_and_excludes_nonce_identi
                 transition_nonce="a-completely-fresh-unused-nonce",
             )
         assert len(list(verifier._ledger.scan(kind="admission_use"))) == 1
+        assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
     finally:
         verifier._ledger.close()
 

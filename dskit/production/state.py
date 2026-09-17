@@ -84,6 +84,7 @@ from dskit.production.base import (
     _check_str,
     _check_unknown,
     canonical_hash,
+    check_digest,
 )
 from dskit.production.records import (
     AlertAck,
@@ -858,6 +859,63 @@ class PositionBook:
         return book
 
 
+#: ADR-0147 Decision point 5: the ``dskit.admission-use/v1`` body's exactly
+#: three keys.
+_ADMISSION_USE_KEYS = ("schema", "admission_ref", "binding_sha256")
+
+#: The four-field ``admission_ref`` shape ``trust.py``'s ``_p4_reference_bytes``
+#: already validates semantically; this is a cheap STRUCTURAL check only
+#: (this module never imports ``dskit.pipeline.trust`` — the semantic P4
+#: check already ran, production-side, in ``inspect_capture_admission``
+#: before ``HistoricalStudyVerifier.capture`` ever built this body).
+_ADMISSION_REF_KEYS = frozenset({"kind", "role", "schema", "sha256"})
+
+
+def _check_admission_use_body(body):
+    """Validate one ``dskit.admission-use/v1`` body; raise on any shape problem.
+
+    ADR-0147 Decision point 5: one validator, called from BOTH
+    :meth:`SeriesState._fold_admission_use` and
+    ``HistoricalStudyVerifier.capture`` (before ever calling
+    ``ChainLedger.reserve_once``) — never duplicated across modules.
+
+    Parameters
+    ----------
+    body : dict
+        The record's ``body``: exactly ``schema``, ``admission_ref`` (the
+        four-field ``{kind, role, schema, sha256}`` dict) and a
+        non-placeholder ``binding_sha256``.
+
+    Raises
+    ------
+    ProductionError
+        On any missing, extra, or malformed key.
+    """
+    problems = []
+    if type(body) is not dict or set(body) != set(_ADMISSION_USE_KEYS):
+        problems.append(
+            f"admission_use.body must contain exactly {list(_ADMISSION_USE_KEYS)}, got {body!r}"
+        )
+        raise ProductionError(problems)
+    if body["schema"] != "dskit.admission-use/v1":
+        problems.append(
+            f"admission_use.body.schema must be 'dskit.admission-use/v1', got {body['schema']!r}"
+        )
+    ref = body["admission_ref"]
+    if type(ref) is not dict or set(ref) != _ADMISSION_REF_KEYS:
+        problems.append(
+            f"admission_use.body.admission_ref must contain exactly {sorted(_ADMISSION_REF_KEYS)}, "
+            f"got {ref!r}"
+        )
+    elif any(type(item) is not str for item in ref.values()):
+        problems.append("admission_use.body.admission_ref values must be exact strings")
+    check_digest(problems, "admission_use.body.binding_sha256", body.get("binding_sha256"))
+    if body.get("binding_sha256") == GENESIS_HASH:
+        problems.append("admission_use.body.binding_sha256 must not be a placeholder digest")
+    if problems:
+        raise ProductionError(problems)
+
+
 # ---------------------------------------------------------------------------
 # SeriesState — the fold (§5.8.1, §6, D14)
 # ---------------------------------------------------------------------------
@@ -876,6 +934,7 @@ _FOLDS = {
     "control_approval": ("_fold_nothing", False),
     "authority": ("_fold_authority", False),
     "authority_use": ("_fold_authority_use", False),
+    "admission_use": ("_fold_admission_use", False),
     "order_event": ("_fold_order_event", True),
     "fill": ("_fold_fill", True),
     "cash_flow": ("_fold_cash_flow", True),
@@ -1441,6 +1500,18 @@ class SeriesState:
                 ]
             )
         self._reduction = current.reserve(body["reduction_intent_digest"])
+
+    def _fold_admission_use(self, body, envelope):
+        """Validate one ADR-0147 admission spend; advances no economic state.
+
+        An ``admission_use`` record is durable audit/spend evidence for
+        ``HistoricalStudyVerifier.capture``'s ledger-backed consume-once
+        gate — distinct from ``authority_use`` above, which reserves a
+        reduction right. The ledger's own id/payload-digest conflict check
+        (``ChainLedger._commit``) is what actually refuses a second spend
+        of the same admission; this fold only confirms the body shape.
+        """
+        _check_admission_use_body(body)
 
     def _restored_holds(self, holds):
         """Rebuild the hold map from a snapshot's list, through the same kind hooks."""

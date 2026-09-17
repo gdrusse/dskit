@@ -67,6 +67,7 @@ __all__ = [
     "GUARD_STATE_KINDS",
     "HEALTH_STATES",
     "JITTER_MODES",
+    "LEDGER_HEALTH_STATES",
     "LEG_LATENCY_BUCKETS",
     "LEG_ORIGINS",
     "LEG_STEPS",
@@ -247,10 +248,13 @@ CIRCUIT_STATES = ("closed", "open", "half_open", "forced_open", "metrics_only")
 
 #: §6's twenty-five record kinds in table order, plus ``cancel_outcome``
 #: (ruling R6: a halting ``trip`` is barriered BEFORE the cancel I/O, so
-#: what the cancel came to is a record of its own) and phase 2's ``silence``
+#: what the cancel came to is a record of its own), phase 2's ``silence``
 #: and ``alert_ack`` (§5.11.2: alert state rides in the fold, in whatever
 #: ledger the document declared, never in an alert database beside it that
-#: could disagree with the chain after a crash) — twenty-eight.
+#: could disagree with the chain after a crash), and ADR-0147's
+#: ``admission_use`` (F5a Packet 8: durable consume-once spend evidence for
+#: a P4 ``admission_ref``, distinct from ``authority_use``, which reserves a
+#: reduction right and is unrelated) — twenty-nine.
 RECORD_KINDS = (
     "process",
     "tick_start",
@@ -263,6 +267,7 @@ RECORD_KINDS = (
     "control_approval",
     "authority",
     "authority_use",
+    "admission_use",
     "order_event",
     "fill",
     "cash_flow",
@@ -413,6 +418,18 @@ ALERT_STATUSES = ("firing", "resolved")
 
 #: What a checkpoint or cache is, validated against the ledger fold.
 CACHE_STATES = ("current", "stale")
+
+#: ADR-0147: a `ChainLedger`'s own lifecycle, distinct from `HEALTH_STATES`
+#: (the process axis above). `"opening"` during `_open()` (no writes, no
+#: reservations); `"healthy"` once `_open()` returns cleanly; `"uncertain"`
+#: is a one-way, in-process quarantine entered by any exception past the
+#: point a write touched storage (`_commit`, `reserve_once`'s barrier,
+#: `_sync`, `state.apply`, an auto-snapshot barrier) — only `close()` is
+#: accepted from it, and a fresh open re-replays the whole chain; `"closed"`
+#: after `close()`, even when `_shutdown()` itself raised; `"readonly"` for
+#: a `ChainLedger.reading(...)` open (no flock, no repair, every write
+#: already refuses).
+LEDGER_HEALTH_STATES = ("opening", "healthy", "uncertain", "closed", "readonly")
 
 # ---------------------------------------------------------------------------
 # Execution and accounting (§5.7, §5.7.1, §5.9)
