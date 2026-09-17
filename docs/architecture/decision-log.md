@@ -13285,7 +13285,7 @@ exist. This closes the gap forward; it does not re-open those results.
 *(Number taken at commit time. 0149, 0151, 0152, 0155 and 0156 are held by
 unmerged branches; this skips them rather than adding a collision.)*
 
-**Status:** PROPOSED (v3), awaiting owner approval. NOT implemented.
+**Status:** PROPOSED (v4), awaiting owner approval. NOT implemented.
 
 - **v1 BLOCKED** (0C/1M): the `signed_id` formula bound ONE parent, copying a
   precedent whose authority kind genuinely has one, while two of F3's three
@@ -13295,12 +13295,18 @@ unmerged branches; this skips them rather than adding a collision.)*
   hides another is the same overclaiming this lane keeps failing on: v1 said
   its race test settled Gap 1. It does not.
 - **v2 BLOCKED** (0C/1M): the liveness gate was asserted, not shown
-  constructible. The repo has NO process-kill precedent -- the one adjacent
-  "crash" test (`tests/production/test_main.py:1300`) constructs post-crash
-  state directly rather than killing anything -- while the race gate cites a
-  verified working transplant. One gate proven, one gate hand-waved, presented
-  as equals. v3 replaces the hand-wave with a technique that exists, and
-  discloses what that technique cannot reach as Gap 6.
+  constructible -- one gate proven, one hand-waved, presented as equals.
+- **v3 BLOCKED** (0C/1M), and the finding was embarrassing. v3 justified an
+  in-process substitute by asserting "the repo has NO process-kill
+  precedent". **That was false.** It rested on a grep for
+  `SIGKILL|os.kill|.terminate()` that omitted `os._exit`, which is what this
+  repo actually uses. `tests/pipeline/test_captured_authorization.py:3080`
+  (`_adr136_crash_with_uncommitted_insert`) forks a real OS process against
+  THIS EXACT reserve class, runs `BEGIN IMMEDIATE` + `INSERT INTO
+  reserve_uses`, and calls `os._exit(17)` -- roughly seventy lines below the
+  race test v3 quoted verbatim. `tests/production/test_ledger.py:1685`/`:1723`
+  and `tests/production_libs/test_sqlite.py:429` are three more. v4 adopts the
+  real transplant and retracts the claim.
 
 Deliberately
 NOT a fourth patch to ADR-0148, which stays **STOPPED / DO NOT IMPLEMENT**.
@@ -13422,14 +13428,30 @@ change. Nothing moves out of `trust.py`.
 4. **Generation and revocation do not reach it.** `reserve_meta.generation` and
    `reserve_revoked` do not clear `reserve_uses`, so an `ISSUED` row survives a
    generation bump and a rotated domain can never re-derive that intent.
-5. **Torn writes mid-publish are NOT covered by the liveness gate.** The
-   in-process gate above stops cleanly between two steps. A real crash can
-   land INSIDE the multi-step publish and leave a partially written receipt --
-   which is why the race gate insisted on real OS processes rather than
-   in-process simulation. Closing this needs a process-kill technique the
-   repo does not have, and inventing one is its own piece of work. Disclosed,
-   not covered, and not claimed.
-6. **The existing quarantine precedent is wider than this ADR's invariant.**
+5. **Torn writes mid-publish are not covered by the two gates above, but the
+   technique for them EXISTS too.** A real crash can land INSIDE the
+   multi-step publish and leave a partially written receipt; the Gap 1 gate
+   crashes at a clean boundary and will not produce that. v3 claimed closing
+   this "needs a process-kill technique the repo does not have" -- also false,
+   from the same bad grep. `tests/production/test_ledger.py:1674-1699`
+   monkeypatches `os.replace`/`os.rename`/`pathlib.Path.replace`/`.rename` to
+   `os._exit(9)` in a real `subprocess`, interrupting a multi-step write
+   mid-flight, and asserts the previous checkpoint is still readable. That is
+   structurally the torn-write test this gap needs. It is NOT specified here
+   because the publish path's own steps are F3's to define and do not exist
+   yet -- so this is deferred for a named reason, with its technique already
+   identified, rather than deferred because nothing could be built.
+6. **The "hop" term is a fixed per-type literal, and that is deliberate.**
+   `hop` is the hop type's own canonical name (`"ReplayRun"` and so on), not a
+   document- or graph-scoped value. F3 is a fixed singleton three-hop lane, so
+   each hop type occurs exactly once and the literal cannot collide. Hop 1's
+   `policy_sha256` is parent-derived, not free (`decision-log.md:12846-12848`:
+   "`source_rank_policy_sha256` from the verified pre-document roster
+   policy"), so it is already bound transitively through the roster parent's
+   own `intent_sha256`. Recorded because this ADR calls that exact category of
+   unstated assumption dangerous when it criticises the precedent, and the
+   same standard has to apply to its own terms.
+7. **The existing quarantine precedent is wider than this ADR's invariant.**
    `trust.py:9882` quarantines on `row[0] != "QUARANTINED"`, with no check
    that the prior state was `RESERVED` -- so it can downgrade an already
    `ISSUED` row. This ADR's own text says a failed or ambiguous commit reaches
@@ -13455,24 +13477,34 @@ what failed three times.
    two real OS processes against this same reserve, synchronized on an
    `Event`, asserting exactly one winner -- for a different kind. It must also
    cover the two-parent case above, or it will not exercise the correction.
-2. **The liveness test, which is a DIFFERENT test, built with a technique
-   this repo actually has.** v1 claimed the race test settled Gap 1. It does
-   not: Gap 1 is a lone winner dying between the `RESERVED -> ISSUED` commit
-   and the real PUBLISH, and two-racers-yield-one never exercises that.
+2. **The liveness test, which is a DIFFERENT test, and is ALSO a transplant.**
+   v1 claimed the race test settled Gap 1. It does not: Gap 1 is a lone winner
+   dying between the `RESERVED -> ISSUED` commit and the real PUBLISH, and
+   two-racers-yield-one never exercises that.
 
-   v2 said "it needs its own kill injection" and stopped there. That was a
-   hand-wave: `grep -rn "SIGKILL|os\.kill|\.terminate\(\)"` over the test
-   tree returns no real process termination anywhere, and
-   `tests/production/test_main.py:1300` -- the nearest thing to a crash test
-   -- constructs the post-crash state directly instead.
+   The transplant is `_adr136_crash_with_uncommitted_insert`
+   (`tests/pipeline/test_captured_authorization.py:3080-3092`) and its driver
+   `test_adr136_crash_before_commit_does_not_spend_id` (`:3094`). That helper
+   already opens this same `_SyntheticAuthorizationReserve`, runs `BEGIN
+   IMMEDIATE` and an `INSERT INTO reserve_uses`, and calls `os._exit(17)` in a
+   real forked `multiprocessing` child; the parent asserts the exit code, then
+   reopens the reserve and checks what survived.
 
-   So the gate is specified as what CAN be built: the reserve transaction is
-   already separated from construction (`trust.py:9938-9985` commits
-   `RESERVED -> ISSUED` and returns before the resolver is built), so the test
-   calls the reserve step, stops before construction, reopens the reserve, and
-   asserts the row is stuck `ISSUED` with no published root and no path to
-   either retry or quarantine. That is a real, in-process demonstration of
-   Gap 1, using only machinery that exists.
+   Gap 1's test moves that `os._exit` from BEFORE the insert to AFTER a full
+   `RESERVED -> ISSUED` commit -- mirroring `trust.py:9938-9985`, where the
+   transaction completes at `:9981-9982` and no construction code runs before
+   `:9991` -- then reopens from the parent and asserts the row is stuck
+   `ISSUED` with no published root and no path to retry or quarantine. A real
+   OS-level crash at the real boundary, not a simulation.
+
+   **v3 proposed an in-process substitute instead, and that was wrong twice
+   over.** It rested on the false "no precedent" claim retracted above, and
+   the substitute is itself unsound: `_development_dynamic_p4_broker`
+   (`trust.py:9900-10018`) is ONE function with two sequential `try` blocks
+   and no standalone reserve-step callable, so a plain exception injected into
+   the second block is caught by that block's own `except Exception:`
+   (`:9987-10018`) and QUARANTINED -- which would disprove Gap 1 rather than
+   demonstrate it. The fork transplant sidesteps this entirely.
 
 Both must be RED first, with recorded answers, or this ADR does not proceed to
 code. Gap 1's answer specifically decides whether an `attempt` dimension is
