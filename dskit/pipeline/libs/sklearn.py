@@ -252,12 +252,18 @@ SEGMENT_SCHEMA = "dskit.sklearn-segment/v1"
 #: into JSON, and only these three are known to expose them.
 _SEGMENT_ALGORITHMS = ("birch", "kmeans", "minibatch_kmeans")
 
-#: Catalog member -> ``sklearn.cluster`` class name.
-_SEGMENT_CLASSES = {
-    "birch": "Birch",
-    "kmeans": "KMeans",
-    "minibatch_kmeans": "MiniBatchKMeans",
+#: Catalog member -> the dotted path it resolves through, the same
+#: doorway :class:`SklearnFit` opens for an estimator.
+_SEGMENT_PATHS = {
+    "birch": "sklearn.cluster.Birch",
+    "kmeans": "sklearn.cluster.KMeans",
+    "minibatch_kmeans": "sklearn.cluster.MiniBatchKMeans",
 }
+
+#: The seed a seeded member fits under when the document declares none.
+#: Named once: a literal in both the validator and the fit path is how a
+#: run comes to be seeded by a number nothing recorded.
+DEFAULT_SEGMENT_SEED = 0
 
 #: Which members consume a ``random_state``. ``birch`` does not, so a
 #: ``seed`` declared beside it would be provenance nothing consumed.
@@ -275,6 +281,11 @@ _SEGMENT_ATTRIBUTES = {
 #: The two row keys :class:`SklearnSegment` writes. A row already carrying
 #: one is refused rather than overwritten — the input is evidence.
 _SEGMENT_OUTPUT_KEYS = ("segment", "segment_model_id")
+
+#: Exactly what a segment state carries — no more, no fewer. A load reads
+#: it verbatim, so an unrecognised key is a state this version cannot
+#: honour rather than one it may ignore.
+_SEGMENT_STATE_KEYS = ("algorithm", "center_labels", "centers", "features", "schema")
 
 #: The ONE split a segmentation may be learned from. Named once here and
 #: pinned to the vocabulary by ``test_sklearn.py``; both gates ask
@@ -434,6 +445,124 @@ def _kwargs_problems(name, value):
             f"non-empty string keys, got {value!r}"
         ]
     return []
+
+
+def _segment_number(value):
+    """A center coordinate as a finite ``float``, or ``None``.
+
+    The envelope's own number rule (:func:`~dskit.pipeline.records.number_ok`,
+    which excludes ``bool``) plus the conversion the JSON state stores.
+    numpy scalars arrive as ``float`` subclasses, so nothing special is
+    needed for what sklearn hands back.
+    """
+    return float(value) if number_ok(value) else None
+
+
+def _segment_label(value):
+    """A center label as an exact non-negative ``int``, or ``None``.
+
+    THREE independent conditions, and an ``or``-combined implementation
+    could half-satisfy any of them: exact integrality (``0.5`` names no
+    center), ``bool``-exclusion (``True`` is an ``int`` in Python and
+    would otherwise pass as the label ``1`` — ``records.number_ok``'s own
+    documented hazard), and non-negativity. ``__index__`` is what lets a
+    numpy integer — which sklearn's ``subcluster_labels_`` is made of —
+    answer as the exact int it is, while a float never does.
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        exact = value.__index__()
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return exact if exact >= 0 else None
+
+
+def _segment_rows(value):
+    """``value`` as a list of lists (numpy rows included), or ``None``.
+
+    A string is iterable but is not a list of points, so both the outer
+    and the inner shape must be a sequence rather than merely iterable.
+    """
+    if isinstance(value, (str, bytes, Mapping)):
+        return None
+    try:
+        rows = list(value)
+    except TypeError:
+        return None
+    out = []
+    for row in rows:
+        if isinstance(row, (str, bytes, Mapping)):
+            return None
+        try:
+            out.append(list(row))
+        except TypeError:
+            return None
+    return out
+
+
+def _segment_geometry_problems(centers, labels, width):
+    """Ways a ``(centers, center_labels)`` pair is not a usable segmentation.
+
+    ONE rule asked TWICE: of what a fit just extracted from an estimator,
+    and of what a load restored from JSON. A second copy is exactly where
+    a state this version writes and the next refuses would come from.
+
+    Parameters
+    ----------
+    centers : list of list, or None
+        The center points, already normalized by :func:`_segment_rows`;
+        ``None`` means the value was not a list of points at all.
+    labels : list, or None
+        One label per center; ``None`` means the value was not a list.
+    width : int
+        How many coordinates a center must carry — the declared feature
+        count.
+
+    Returns
+    -------
+    list of str
+        One problem per broken invariant; empty when every row can be
+        assigned from these centers.
+    """
+    problems = []
+    if not centers:
+        problems.append(
+            f"centers must be a non-empty list of points — there are no "
+            f"centers to assign from, got {centers!r}"
+        )
+    else:
+        for i, center in enumerate(centers):
+            if len(center) != width:
+                problems.append(
+                    f"centers[{i}] has width {len(center)}, not the {width} "
+                    "the declared features need — every center is a point in "
+                    "the SAME space"
+                )
+                continue
+            problems += [
+                f"centers[{i}][{j}] is {value!r}, not a finite real number"
+                for j, value in enumerate(center)
+                if _segment_number(value) is None
+            ]
+    if not labels:
+        problems.append(
+            f"center_labels must be a non-empty list, one per center, got "
+            f"{labels!r}"
+        )
+        return problems
+    problems += [
+        f"center_labels[{i}] is {label!r}, not an exact non-negative "
+        "integer (a bool is not one)"
+        for i, label in enumerate(labels)
+        if _segment_label(label) is None
+    ]
+    if centers and len(labels) != len(centers):
+        problems.append(
+            f"center_labels carries {len(labels)} entr(ies) for "
+            f"{len(centers)} center(s) — exactly one label per center"
+        )
+    return problems
 
 
 def _non_train_fit_split_problem(split):
@@ -984,16 +1113,29 @@ def _bundle_predictions(heads, estimators, predict_fixture):
     return predictions
 
 
+def _canonical_digest(value):
+    """Lowercase sha256 of a value's canonical JSON — this pack's ONE recipe.
+
+    Sorted keys, compact separators, NaN and Infinity refused (they are
+    not JSON, and a digest some writers can produce and others cannot is
+    not an identity), UTF-8 encoded. The multi-head bundle's prediction
+    checksum and a segmentation's ``segment_model_id`` are the same
+    question about different payloads, so they ask one function rather
+    than keeping two copies that drift the day either loosens.
+    """
+    canon = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
 def _bundle_predict_checksum(predictions):
     """sha256 of the canonical JSON of a ``{head: [prediction, ...]}`` map —
     the DETERMINISTIC prediction checksum the plan names: replaying the
     same fixture through the same (or a restored) mapping always yields
     the same digest, so a load can PROVE it reproduced write-time beliefs,
     not merely that the bytes on disk are unchanged."""
-    canon = json.dumps(
-        predictions, sort_keys=True, separators=(",", ":"), allow_nan=False
-    )
-    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+    return _canonical_digest(predictions)
 
 
 def _dump_bundle_joblib(path, mapping):
@@ -2295,14 +2437,15 @@ class SklearnSegment(FittedTransform):
         # -> out["segment_model_id"] == "9f86d0…"
     """
 
-    #: ADR-0091 phase 2b: audited and licensed, and stated HERE rather
-    #: than inherited — a subclass that ever overrode the load path would
-    #: keep the base's licence silently. This class overrides only
-    #: fit-path members, so its restore is ``FittedTransform.run_load`` ->
-    #: ``_sidecar`` -> ``Node.read_artifact``: the state is centers and
-    #: labels in JSON, never a pickled model, so no deserialiser takes a
-    #: path and the library is named on the FIT path alone.
-    serving_load_audited = True
+    # NOT ``serving_load_audited`` (ADR-0091 phase 2b), deliberately. This
+    # class's restore has the same JSON-only shape its ``sklearn-select``
+    # sibling was licensed for — ``FittedTransform.run_load`` -> ``_sidecar``
+    # -> ``Node.read_artifact``, with no deserialiser taking a path — so it
+    # would very likely pass the same audit. But ADR-0148 adds no production
+    # authority, and licensing a kind to serve a release is authority.
+    # `serving_effect` therefore answers ``forbidden`` here, and widening
+    # that is its own ADR with its own audit, not a line inherited from a
+    # sibling that happens to look alike.
 
     outputs = FittedTransform.outputs + ("segment_model_id",)
 
@@ -2497,6 +2640,236 @@ class SklearnSegment(FittedTransform):
             "handed; rename the incoming field upstream"
             for name in _SEGMENT_OUTPUT_KEYS
             if name in row
+        ]
+
+    # -- the fitted state --------------------------------------------------
+
+    def fit(self, rows, params):
+        """Learn the segmentation from the train split's rows.
+
+        Parameters
+        ----------
+        rows : list
+            The rows of the declared ``fit_split``, and nothing else —
+            the base cut them, which is the whole leakage guarantee.
+        params : dict
+            ``self.params``, passed through by the base.
+
+        Returns
+        -------
+        dict
+            ``schema``, ``algorithm``, ``features``, ``centers`` and
+            ``center_labels`` — exactly those, all JSON-safe. No native
+            estimator is persisted, and no fitting knob is recorded: a
+            restored state is a predictor, not a recipe for rebuilding
+            one.
+
+        Raises
+        ------
+        ValueError
+            When ``fit_split`` is anything but ``"train"`` (the SECOND of
+            the two gates — a caller reaching here directly never passed
+            the first), when a row cannot supply every declared feature,
+            when the catalog member rejects ``algorithm_params`` or
+            refuses the fit, or when the fitted estimator exposes no
+            usable centers and labels. Nothing is written in any case.
+        """
+        problem = _non_train_fit_split_problem(params.get("fit_split"))
+        if problem:
+            raise ValueError(f"{self.key}: {problem}")
+        algorithm = params["algorithm"]
+        features = list(params["features"])
+        matrix = _design_matrix(rows, features, self.key)
+        estimator = self._fitted_estimator(algorithm, params, matrix)
+        centers, labels = self._extracted(estimator, algorithm, len(features))
+        return {
+            "schema": SEGMENT_SCHEMA,
+            "algorithm": algorithm,
+            "features": features,
+            "centers": centers,
+            "center_labels": labels,
+        }
+
+    def segment_model_id(self, state):
+        """This segmentation's identity: the canonical digest of ``state``.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state, as :meth:`fit` returned it or a load
+            restored it.
+
+        Returns
+        -------
+        str
+            Lowercase sha256 of the state's canonical JSON. RECOMPUTED
+            every time, never read from a field the artifact carries — an
+            id a file could state is an id a file could lie about.
+        """
+        return _canonical_digest(state)
+
+    def _fitted_estimator(self, algorithm, params, matrix):
+        """The catalog member, constructed and fitted — refusals name both."""
+        path = _SEGMENT_PATHS[algorithm]
+        named = f"algorithm {algorithm!r} ({path})"
+        kwargs = dict(params.get("algorithm_params") or {})
+        if algorithm in _SEEDED_SEGMENT_ALGORITHMS:
+            kwargs["random_state"] = params.get("seed", DEFAULT_SEGMENT_SEED)
+        estimator = _construct(
+            _import_object(path, self.key, subject="segmentation"),
+            kwargs,
+            named,
+            self.key,
+            "algorithm_params",
+        )
+        try:
+            estimator.fit(matrix)
+        except Exception as exc:  # noqa: BLE001 - a refusal must name the node
+            raise ValueError(
+                f"{self.key}: {named} refused to fit {len(matrix)} row(s) of "
+                f"{len(matrix[0])} feature(s): {exc}"
+            ) from exc
+        return estimator
+
+    def _extracted(self, estimator, algorithm, width):
+        """The fitted estimator's centers and labels, as JSON state."""
+        centers_attr, labels_attr = _SEGMENT_ATTRIBUTES[algorithm]
+        centers = _segment_rows(
+            self._fitted_attribute(estimator, centers_attr, algorithm)
+        )
+        labels = self._center_labels(estimator, algorithm, labels_attr, centers)
+        problems = _segment_geometry_problems(centers, labels, width)
+        if problems:
+            raise ValueError(
+                f"{self.key}: {algorithm!r} fitted a segmentation this node "
+                f"cannot store — {'; '.join(problems)}. Nothing was written"
+            )
+        return (
+            [[float(value) for value in center] for center in centers],
+            [_segment_label(label) for label in labels],
+        )
+
+    def _center_labels(self, estimator, algorithm, labels_attr, centers):
+        """The label per center: positional for KMeans, read for Birch.
+
+        The KMeans family's labels ARE the center positions by
+        definition, so deriving them proves nothing and reading a
+        second attribute would invent a source. Birch's sub-centers map
+        MANY-to-one onto global labels, so its list is read.
+        """
+        if labels_attr is None:
+            return list(range(len(centers))) if centers else None
+        raw = self._fitted_attribute(estimator, labels_attr, algorithm)
+        if isinstance(raw, (str, bytes, Mapping)):
+            return None
+        try:
+            return list(raw)
+        except TypeError:
+            return None
+
+    def _fitted_attribute(self, estimator, name, algorithm):
+        """One fitted attribute, or a refusal naming the node and the member."""
+        value = getattr(estimator, name, None)
+        if value is None:
+            raise ValueError(
+                f"{self.key}: {algorithm!r} exposes no {name!r} after fit — "
+                "this node stores EXTRACTED centers and labels rather than a "
+                "pickled model, so a member without them cannot be stored. "
+                "Nothing was written"
+            )
+        return value
+
+    # -- what a RESTORE is held to ----------------------------------------
+
+    def state_problems(self, state):
+        """Ways a restored state is broken or misdescribed; empty when neither.
+
+        Parameters
+        ----------
+        state : dict
+            The restored state, as :meth:`fit` returned it.
+
+        Returns
+        -------
+        list of str
+            The stored schema's own problems first — it is read verbatim,
+            so it is checked completely — then one problem per knob this
+            document declares that the state contradicts. ``seed`` and
+            ``algorithm_params`` are NOT compared: they describe fitting,
+            not the extracted predictor, and :meth:`validate_load_inputs`
+            has already refused them.
+        """
+        problems = self._state_shape_problems(state)
+        if problems:
+            return problems
+        if state["algorithm"] != self.algorithm():
+            problems.append(
+                f"the restored state was fitted with algorithm "
+                f"{state['algorithm']!r}, this document declares "
+                f"{self.algorithm()!r}"
+            )
+        if state["features"] != self.features():
+            problems.append(
+                f"the restored state reads features {state['features']}, "
+                f"this document declares {self.features()} — the centers are "
+                "points in the STATE's feature order, so a restated list in "
+                "any other order would measure distance on the wrong axes"
+            )
+        return problems
+
+    def _state_shape_problems(self, state):
+        """The stored schema, checked completely — a load reads it verbatim."""
+        if set(state) != set(_SEGMENT_STATE_KEYS):
+            return [
+                f"the restored state carries keys {sorted(state)}, not "
+                f"exactly {sorted(_SEGMENT_STATE_KEYS)}"
+            ]
+        problems = []
+        if state["schema"] != SEGMENT_SCHEMA:
+            problems.append(
+                f"the restored state declares schema {state['schema']!r}, "
+                f"not {SEGMENT_SCHEMA!r}"
+            )
+        if state["algorithm"] not in _SEGMENT_ALGORITHMS:
+            problems.append(
+                f"the restored state names algorithm {state['algorithm']!r}, "
+                f"outside this node's catalog {list(_SEGMENT_ALGORITHMS)}"
+            )
+        problems += _feature_list_problems("features", state["features"])
+        if problems:
+            return problems
+        labels = state["center_labels"]
+        return _segment_geometry_problems(
+            _segment_rows(state["centers"]),
+            labels if isinstance(labels, list) else None,
+            len(state["features"]),
+        )
+
+    def sidecar_problems(self, payload):
+        """Ways the restored ARTIFACT is unfit here; empty when it is not.
+
+        Parameters
+        ----------
+        payload : dict
+            The sidecar as it was written.
+
+        Returns
+        -------
+        list of str
+            One problem when the artifact records a fit on anything but
+            ``"train"``. ADR-0040 lets a load omit ``fit_split``
+            entirely, and the base compares it only when the document
+            declared one — so without this hook an omitted declaration is
+            all it takes to restore a segmentation fitted on held-out
+            rows.
+        """
+        problem = _non_train_fit_split_problem(payload.get("fit_split"))
+        if problem is None:
+            return []
+        return [
+            f"the restored artifact records that {problem}. A load may omit "
+            "fit_split, so the artifact's own record is the only thing that "
+            "can catch this"
         ]
 
     def _row_feature_problems(self, index, row, features):

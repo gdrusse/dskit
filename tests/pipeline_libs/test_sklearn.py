@@ -41,7 +41,7 @@ from dskit.pipeline.libs.sklearn import (
     SklearnSignal,
     register,
 )
-from dskit.pipeline.node import NodeContext, NodeKindRegistry
+from dskit.pipeline.node import NodeContext, NodeKindRegistry, class_ref
 from dskit.pipeline.planner import plan
 from dskit.pipeline.split_policy import SPLIT_NAMES
 
@@ -1569,6 +1569,398 @@ def test_both_doorways_accept_a_projectable_stream():
 def test_the_fitted_doorway_still_refuses_a_stream_that_is_not_a_list():
     problems = _segment().validate_common_inputs({"rows": iter([SEGMENT_ROW])})
     assert any("rows must be a list" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------------------
+# SklearnSegment — the extracted state: fit, its schema, and the sidecar
+# ---------------------------------------------------------------------------
+
+
+class ApplyWouldRaise(SklearnSegment):
+    """A stand-in for the state slice, with the REAL ``fit`` inherited.
+
+    Deliberately NOT :class:`ReachTheValidators`: that one overrides
+    ``fit`` as a raiser, so calling ``fit`` on it would dispatch to the
+    raiser and never reach ``SklearnSegment.fit`` — the method this
+    section exists to exercise. Only ``apply_state`` is supplied here,
+    and it raises: nothing in this section may project.
+    """
+
+    def apply_state(self, state, rows, params):
+        raise AssertionError("the state slice never projects")
+
+
+#: Two well-separated clouds in the declared feature order.
+SEGMENT_FIT_ROWS = [
+    {"f0": 0.0, "f1": 0.0},
+    {"f0": 0.1, "f1": 0.1},
+    {"f0": 9.0, "f1": 9.0},
+    {"f0": 9.1, "f1": 9.1},
+]
+
+
+def _state_node(key="regime", **overrides):
+    return ApplyWouldRaise(key, _segment_params(**overrides))
+
+
+def _canonical(state):
+    return json.dumps(state, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _stub_cluster(monkeypatch, algorithm, **attributes):
+    """Patch a catalog member's sklearn class with a stub whose FITTED
+    attributes are exactly ``attributes`` — the only way to reach ``fit``'s
+    own degenerate-output refusals, which a healthy estimator never trips.
+
+    A name left out of ``attributes`` is simply never set, which is how the
+    missing-fitted-attribute cases are built.
+    """
+    import importlib
+
+    from dskit.pipeline.libs.sklearn import _SEGMENT_PATHS
+
+    module_name, _, class_name = _SEGMENT_PATHS[algorithm].rpartition(".")
+    module = importlib.import_module(module_name)
+
+    class Stub:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def fit(self, matrix):
+            for name, value in attributes.items():
+                setattr(self, name, value)
+            return self
+
+    monkeypatch.setattr(module, class_name, Stub)
+    return Stub
+
+
+def test_the_state_slice_stand_in_really_inherits_the_class_under_test():
+    """Guards the checkpoint's own defect: a stand-in that overrode ``fit``
+    would exercise the override, never ``SklearnSegment.fit``."""
+    assert ApplyWouldRaise.fit is SklearnSegment.fit
+    assert ReachTheValidators.fit is not SklearnSegment.fit
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans", "birch"])
+def test_fit_returns_exactly_the_declared_json_state(algorithm):
+    pytest.importorskip("sklearn")
+    node = _state_node(algorithm=algorithm, algorithm_params={"n_clusters": 2},
+                       seed=17 if algorithm != "birch" else _DROP)
+    state = node.fit(SEGMENT_FIT_ROWS, node.params)
+
+    assert set(state) == {
+        "schema", "algorithm", "features", "centers", "center_labels",
+    }
+    assert state["schema"] == SEGMENT_SCHEMA
+    assert state["algorithm"] == algorithm
+    assert state["features"] == ["f0", "f1"]
+    assert state["centers"] and all(
+        len(center) == 2 and all(isinstance(v, float) for v in center)
+        for center in state["centers"]
+    )
+    assert len(state["center_labels"]) == len(state["centers"])
+    assert all(
+        isinstance(label, int) and not isinstance(label, bool) and label >= 0
+        for label in state["center_labels"]
+    )
+    # JSON-able with no NaN, because the base persists it verbatim.
+    assert json.loads(_canonical(state)) == state
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans"])
+def test_the_kmeans_family_labels_centers_positionally(algorithm):
+    pytest.importorskip("sklearn")
+    node = _state_node(algorithm=algorithm, algorithm_params={"n_clusters": 2})
+    state = node.fit(SEGMENT_FIT_ROWS, node.params)
+    assert state["center_labels"] == list(range(len(state["centers"])))
+
+
+def test_birch_carries_its_own_subcluster_labels_which_may_repeat():
+    """Birch's sub-centers map MANY-to-one onto global labels, so the label
+    list is read from the estimator, never derived from a position."""
+    pytest.importorskip("sklearn")
+    node = _state_node(algorithm="birch", seed=_DROP,
+                       algorithm_params={"n_clusters": 2, "threshold": 0.05})
+    state = node.fit(SEGMENT_FIT_ROWS, node.params)
+    assert len(state["centers"]) >= len(set(state["center_labels"]))
+
+
+def test_the_model_id_is_the_canonical_digest_of_the_state_itself():
+    pytest.importorskip("sklearn")
+    node = _state_node()
+    state = node.fit(SEGMENT_FIT_ROWS, node.params)
+    expected = hashlib.sha256(_canonical(state).encode("utf-8")).hexdigest()
+    assert node.segment_model_id(state) == expected
+    assert re.fullmatch(r"[0-9a-f]{64}", node.segment_model_id(state))
+
+
+def test_the_model_id_moves_when_any_part_of_the_state_moves():
+    node = _state_node()
+    base = {
+        "schema": SEGMENT_SCHEMA,
+        "algorithm": "kmeans",
+        "features": ["f0", "f1"],
+        "centers": [[0.0, 0.0], [9.0, 9.0]],
+        "center_labels": [0, 1],
+    }
+    moved = {**base, "centers": [[0.0, 0.0], [9.0, 9.5]]}
+    assert node.segment_model_id(base) != node.segment_model_id(moved)
+
+
+@pytest.mark.parametrize("split", ["val", "cal", "test", None])
+def test_fit_repeats_the_train_gate_for_a_caller_that_skipped_the_first(split):
+    """The SECOND gate (§3.1). ``validate_train_inputs`` refuses first, but a
+    caller reaching ``fit`` directly never passed through it."""
+    node = _state_node()
+    params = {**node.params, "fit_split": split}
+    with pytest.raises(ValueError, match="fit_split"):
+        node.fit(SEGMENT_FIT_ROWS, params)
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans", "birch"])
+def test_a_constructor_refusal_names_the_node_key_and_the_algorithm(
+    monkeypatch, algorithm
+):
+    import importlib
+
+    from dskit.pipeline.libs.sklearn import _SEGMENT_PATHS
+
+    module_name, _, class_name = _SEGMENT_PATHS[algorithm].rpartition(".")
+
+    class Rejects:
+        def __init__(self, **kwargs):
+            raise TypeError("unexpected keyword argument 'nope'")
+
+    monkeypatch.setattr(
+        importlib.import_module(module_name), class_name, Rejects
+    )
+    node = _state_node(algorithm=algorithm, algorithm_params={"nope": 1},
+                       seed=_DROP)
+    with pytest.raises(ValueError, match=rf"regime:.*{algorithm}"):
+        node.fit(SEGMENT_FIT_ROWS, node.params)
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "birch"])
+def test_a_fit_refusal_from_the_library_names_the_node_key_and_algorithm(
+    monkeypatch, algorithm
+):
+    """An unwrapped sklearn ``fit`` error names neither the node nor the
+    algorithm — the one refusal in this class that would identify nothing."""
+    import importlib
+
+    from dskit.pipeline.libs.sklearn import _SEGMENT_PATHS
+
+    module_name, _, class_name = _SEGMENT_PATHS[algorithm].rpartition(".")
+
+    class Explodes:
+        def __init__(self, **kwargs):
+            pass
+
+        def fit(self, matrix):
+            raise ValueError("n_samples=4 should be >= n_clusters=99")
+
+    monkeypatch.setattr(
+        importlib.import_module(module_name), class_name, Explodes
+    )
+    node = _state_node(algorithm=algorithm, algorithm_params={},
+                       seed=_DROP if algorithm == "birch" else 17)
+    with pytest.raises(ValueError, match=rf"regime:.*{algorithm}"):
+        node.fit(SEGMENT_FIT_ROWS, node.params)
+
+
+# -- degenerate fitted output: one atomic fixture per branch ----------------
+
+_KM = "cluster_centers_"
+_BC, _BL = "subcluster_centers_", "subcluster_labels_"
+
+#: ``(id, algorithm, fitted attributes, refusal fragment)``. Each stub
+#: breaks exactly ONE invariant: an ``or``-combined implementation could
+#: half-satisfy any of these and still pass a compound fixture.
+_DEGENERATE_FITS = [
+    ("empty-center-set", "kmeans", {_KM: []}, "no centers"),
+    ("wrong-center-width", "kmeans", {_KM: [[0.0]]}, "width"),
+    ("non-finite-center", "kmeans", {_KM: [[0.0, float("inf")]]}, "finite"),
+    ("centers-attribute-missing", "kmeans", {}, _KM),
+    ("labels-attribute-missing", "birch", {_BC: [[0.0, 1.0]]}, _BL),
+    ("non-int-label", "birch", {_BC: [[0.0, 1.0]], _BL: [0.5]}, "center_labels"),
+    ("bool-label", "birch", {_BC: [[0.0, 1.0]], _BL: [True]}, "center_labels"),
+    ("negative-label", "birch", {_BC: [[0.0, 1.0]], _BL: [-1]}, "center_labels"),
+    (
+        "label-count-mismatch",
+        "birch",
+        {_BC: [[0.0, 1.0], [1.0, 0.0]], _BL: [0]},
+        "center_labels",
+    ),
+]
+_DEGENERATE_IDS = [case[0] for case in _DEGENERATE_FITS]
+
+
+@pytest.mark.parametrize(
+    "_id,algorithm,attributes,fragment", _DEGENERATE_FITS, ids=_DEGENERATE_IDS
+)
+def test_a_degenerate_fitted_estimator_refuses_before_state_is_written(
+    monkeypatch, _id, algorithm, attributes, fragment
+):
+    _stub_cluster(monkeypatch, algorithm, **attributes)
+    node = _state_node(algorithm=algorithm, algorithm_params={},
+                       seed=_DROP if algorithm == "birch" else 17)
+    with pytest.raises(ValueError, match=re.escape(fragment)):
+        node.fit(SEGMENT_FIT_ROWS, node.params)
+
+
+def test_a_healthy_stub_proves_the_degenerate_fixtures_isolate_one_branch(
+    monkeypatch,
+):
+    """The control: the same stub shape, with nothing broken, fits clean —
+    so every refusal above is its own broken invariant, not the stub."""
+    _stub_cluster(monkeypatch, "kmeans", **{_KM: [[0.0, 0.0], [9.0, 9.0]]})
+    node = _state_node(algorithm="kmeans", algorithm_params={})
+    state = node.fit(SEGMENT_FIT_ROWS, node.params)
+    assert state["centers"] == [[0.0, 0.0], [9.0, 9.0]]
+    assert state["center_labels"] == [0, 1]
+
+
+# -- the sidecar: what a RESTORE is held to --------------------------------
+
+
+def _sidecar_ctx(tmp_path, name="segmentrun"):
+    return NodeContext(name="t", asof=ASOF, run_dir=str(tmp_path / name))
+
+
+def _persist(ctx, node, state, *, fit_split="train", node_class=None):
+    """Write the sidecar exactly as ``run_train`` does, and answer its path."""
+    return node.write_artifact(ctx, SIDECAR_NAME, {
+        "node_class": node_class or class_ref(type(node)),
+        "fit_split": fit_split,
+        "n_fit_rows": len(SEGMENT_FIT_ROWS),
+        "state": state,
+    })
+
+
+def _fitted_state(node=None):
+    pytest.importorskip("sklearn")
+    node = node or _state_node()
+    return node.fit(SEGMENT_FIT_ROWS, node.params)
+
+
+def test_a_state_written_and_read_back_survives_the_round_trip(tmp_path):
+    ctx = _sidecar_ctx(tmp_path)
+    node = _state_node()
+    state = _fitted_state(node)
+    payload = node._sidecar(ctx, _persist(ctx, node, state))
+    assert payload["state"] == state
+
+
+def test_the_segment_writes_no_native_model_beside_its_json_state(tmp_path):
+    """The whole reason the catalog is closed: a segmentation persists
+    centers and labels, so a serving run restores JSON and no pickle."""
+    ctx = _sidecar_ctx(tmp_path)
+    node = _state_node()
+    path = _persist(ctx, node, _fitted_state(node))
+    assert os.listdir(os.path.dirname(path)) == [SIDECAR_NAME]
+
+
+@pytest.mark.parametrize("split", ["val", "cal", "test", None])
+def test_a_restored_artifact_fitted_off_train_refuses_even_when_undeclared(
+    tmp_path, split
+):
+    """ADR-0040 lets a load omit ``fit_split``, so the base's own
+    restate-never-misdescribe check sees nothing to compare. The new
+    ``sidecar_problems`` hook is the only place this is caught."""
+    ctx = _sidecar_ctx(tmp_path)
+    fitting = _state_node()
+    state = _fitted_state(fitting)
+    path = _persist(ctx, fitting, state, fit_split=split)
+
+    loading = ApplyWouldRaise(
+        "regime",
+        _segment_params(fit_split=_DROP, seed=_DROP, algorithm_params=_DROP),
+        mode="load",
+        artifact=path,
+    )
+    with pytest.raises(ValueError, match="fit_split"):
+        loading._sidecar(ctx, path)
+
+
+def test_a_restored_artifact_fitted_on_train_is_accepted_with_no_declaration(
+    tmp_path
+):
+    ctx = _sidecar_ctx(tmp_path)
+    fitting = _state_node()
+    state = _fitted_state(fitting)
+    path = _persist(ctx, fitting, state)
+
+    loading = ApplyWouldRaise(
+        "regime",
+        _segment_params(fit_split=_DROP, seed=_DROP, algorithm_params=_DROP),
+        mode="load",
+        artifact=path,
+    )
+    assert loading._sidecar(ctx, path)["state"] == state
+
+
+#: ``(id, state mutation, refusal fragment)`` — every way a stored state can
+#: contradict its own schema, one fixture each.
+_CORRUPT_STATES = [
+    ("wrong-schema-tag", {"schema": "dskit.sklearn-segment/v2"}, "schema"),
+    ("missing-key", {"centers": None}, "centers"),
+    ("extra-key", {"inertia": 1.0}, "inertia"),
+    ("off-catalog-algorithm", {"algorithm": "dbscan"}, "algorithm"),
+    ("empty-center-set", {"centers": []}, "centers"),
+    ("ragged-centers", {"centers": [[0.0, 0.0], [1.0]]}, "centers"),
+    ("non-numeric-center", {"centers": [[0.0, "x"]]}, "centers"),
+    ("label-count-mismatch", {"center_labels": [0]}, "center_labels"),
+    ("negative-label", {"center_labels": [-1, 0]}, "center_labels"),
+    ("bool-label", {"center_labels": [True, False]}, "center_labels"),
+    ("features-not-a-key-list", {"features": ["f0", ""]}, "features"),
+]
+_CORRUPT_IDS = [case[0] for case in _CORRUPT_STATES]
+
+_SOUND_STATE = {
+    "schema": SEGMENT_SCHEMA,
+    "algorithm": "kmeans",
+    "features": ["f0", "f1"],
+    "centers": [[0.0, 0.0], [9.0, 9.0]],
+    "center_labels": [0, 1],
+}
+
+
+def test_the_sound_state_fixture_really_is_sound():
+    """The control for the corruption table below."""
+    assert _state_node().state_problems(dict(_SOUND_STATE)) == []
+
+
+@pytest.mark.parametrize(
+    "_id,mutation,fragment", _CORRUPT_STATES, ids=_CORRUPT_IDS
+)
+def test_a_corrupt_stored_state_is_refused_by_name(_id, mutation, fragment):
+    state = {**_SOUND_STATE, **mutation}
+    state = {k: v for k, v in state.items() if v is not None}
+    problems = _state_node().state_problems(state)
+    assert any(fragment in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "knob,value",
+    [("algorithm", "birch"), ("features", ["f1", "f0"]), ("features", ["f0"])],
+)
+def test_a_document_that_misdescribes_the_restored_state_refuses(knob, value):
+    """A document may restate what a state is, never misdescribe it — the
+    same rule ``node_class`` and ``fit_split`` already carry."""
+    node = _state_node(**{knob: value, "seed": _DROP, "algorithm_params": {}})
+    problems = node.state_problems(dict(_SOUND_STATE))
+    assert any(knob in p for p in problems), problems
+
+
+def test_a_corrupt_state_reaches_the_refusal_through_the_sidecar_too(tmp_path):
+    """``state_problems`` is asked by ``_sidecar``, not only by tests."""
+    ctx = _sidecar_ctx(tmp_path)
+    node = _state_node()
+    path = _persist(ctx, node, {**_SOUND_STATE, "center_labels": [0]})
+    with pytest.raises(ValueError, match="center_labels"):
+        node._sidecar(ctx, path)
+
 
 
 

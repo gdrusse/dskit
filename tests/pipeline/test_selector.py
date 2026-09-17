@@ -437,6 +437,26 @@ class TestTheArtifactIsTheColumns:
         with pytest.raises(ValueError, match="candidates"):
             serving.run(split_ctx, {"rows": VAL_ROWS})
 
+    def test_the_new_sidecar_hook_leaves_this_seam_exactly_as_it_was(
+        self, split_ctx
+    ):
+        """``FittedTransform.sidecar_problems`` (ADR-0148) is asked on every
+        restore, including this one. The selector seam declares no override,
+        so the hook must be the base's own no-op and a real load through
+        these fixtures must stay clean — a shared tier-1 call site that
+        changed ANY member's load behavior would be the regression.
+        """
+        assert FeatureSelector.sidecar_problems is FittedTransform.sidecar_problems
+        assert TopMeans.sidecar_problems is FittedTransform.sidecar_problems
+
+        fitted = _node()
+        fitted.run(split_ctx, {"rows": TRAIN_ROWS + VAL_ROWS})
+        sidecar = os.path.join(fitted.artifact_dir(split_ctx), SIDECAR_NAME)
+
+        serving = _node(mode="load", artifact=sidecar, fit_split=None, n=None)
+        assert serving.sidecar_problems({"fit_split": "val", "state": {}}) == []
+        assert serving.run(split_ctx, {"rows": VAL_ROWS})["features"] == ["a", "b"]
+
 
 class TestTheWiredSeam:
     """A rule that needs more than rows asks for a wired port BY NAME."""
