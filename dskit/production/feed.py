@@ -619,8 +619,18 @@ class _IsoStamps:
 
     @staticmethod
     def scan_args(recipe, ts_out, since_ms):
-        """Build the scan keywords: derive ``ts_out`` from ``ts_field``, drop rows before ``since_ms``."""
-        return {"ts_field": recipe.get("ts_field"), "ts_out": ts_out, "since_ms": since_ms}
+        """Build the scan keywords: derive ``ts_out``, bound ``since_ms`` AND the read vintage."""
+        return {
+            "ts_field": recipe.get("ts_field"),
+            "ts_out": ts_out,
+            "since_ms": since_ms,
+            # NOT conditioned on the unit, matching the entry's own scan
+            # (ADR-0154 review, MAJOR-2): the vintage bounds ACQUISITION
+            # metadata, which is unit-independent. `.get` answers None
+            # when the entry never declared it, which `scan_stream`
+            # already treats as unbounded.
+            "as_of_acquisition_ms": recipe.get("as_of_acquisition_ms"),
+        }
 
     @staticmethod
     def stamp(record, recipe, ts_out):
@@ -633,8 +643,8 @@ class _MsStamps:
 
     @staticmethod
     def scan_args(recipe, ts_out, since_ms):
-        """Build the scan keywords: nothing derived."""
-        return {}
+        """Build the scan keywords: nothing derived but the read vintage."""
+        return {"as_of_acquisition_ms": recipe.get("as_of_acquisition_ms")}
 
     @staticmethod
     def stamp(record, recipe, ts_out):

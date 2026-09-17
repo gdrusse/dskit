@@ -789,6 +789,23 @@ class TestIntakeBounds:
             f"bounded peak {peak_bounded} vs whole-store {peak_whole}"
         )
 
+    def test_a_corrupt_acquired_at_refuses_even_when_admit_would_drop_the_row(
+        self, tmp_path
+    ):
+        """Minor (ADR-0154 review). The general, non-vintage consequence
+        of moving ``acquired_at`` resolution above the ``admit`` gate: a
+        row ``admit`` would have dropped for its own reason no longer
+        passes unseen. With NO vintage bound declared at all, its
+        ``acquired_at`` is still resolved FIRST, so a corrupt one now
+        refuses instead of being silently skipped.
+        """
+        root = str(tmp_path)
+        bad = _row("AAPL", "2026-01-06T00:00:00+00:00", 100.0,
+                   acquired="not-a-timestamp")
+        _write(root, "acq-0001", [bad])
+        with pytest.raises(AssetError, match="acquired_at"):
+            _scan(root, admit=lambda data, stamp: False)
+
 
 class TestAcquisitionVintage:
     """ADR-0154: an INCLUSIVE upper bound on ``acquired_at``, so a run

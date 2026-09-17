@@ -13229,10 +13229,18 @@ before) -- 17 new cases, 16 of them RED before the code existed. Every new
 guard was probed by disabling it: the function's refusal, the node's refusal,
 the intake gate itself, its placement ABOVE `admit`, the `_PARAMS` entry, the
 docstring entry, and the pass-through into the scan each `1 failed` disabled
-and `1 passed` restored. Decision 5's identity claim is verified both ways: a
-document that omits the knob AND one that declares it `null` both hash
-`6689bdef...f353`, the hash the same document had on the parent commit, and
-only a real declared bound moves it (`381220f0...601b`).
+and `1 passed` restored. Decision 5's identity claim as first written here was FALSE, and was
+corrected 2026-09-17 by an independent review of `a458e03`, reproduced
+before being corrected: omitting the knob hashes `6689bdef...f353`, the
+hash the same document had on the parent commit; DECLARING it moves the
+hash for any value, including `null` (`ae3c15d8...3879`) or a real bound
+(`381220f0...601b`) -- omitted and `null` are two different digests,
+never one, because `"as_of_acquisition_ms":null` is present in the
+canonical JSON when declared and absent when omitted, so a declared
+`null` is graded like any other param value. This still orphans no
+pre-existing document, because no document could have declared this key
+before the ADR. All three digests are now pinned as literals in
+`test_declaring_the_vintage_moves_no_existing_documents_identity`.
 
 Two details the Decision points left open, settled in the loud direction. The
 keyword is APPENDED to `scan_stream`'s signature rather than inserted beside
@@ -13300,3 +13308,29 @@ test_as_of_acquisition_ms_is_a_declared_knob`.
 **Consequence stated, not worked around.** Every model already trained or
 evaluated through `scan_stream` saw revised values at instants they did not
 exist. This closes the gap forward; it does not re-open those results.
+
+**2026-09-17 correction (independent review of `a458e03`).** Two MAJOR
+findings, both fixed on `claude/adr0154-vintage`. (1) The false identity
+claim above, corrected in place. (2) The serving path silently ignored
+the declared vintage: `ObservationRows.serving_contract`'s `digest_recipe`
+never carried `as_of_acquisition_ms`, so `EntrySourceFeed._latest_by_key`'s
+own freshness re-scan -- built from `digest_recipe` alone, per
+`_IsoStamps.scan_args`/`_MsStamps.scan_args` -- could report a
+vintage-bound feed `live` on the strength of a record acquired after its
+own declared bound. Served row CONTENT was never affected: `snapshot_entry`
+reads `entry_outputs`, i.e. `ObservationRows.run()`, which already threads
+the knob. Fixed by emitting `as_of_acquisition_ms` in `digest_recipe` ONLY
+WHEN DECLARED -- mirroring Decision 5, so no existing release's identity
+moves: `digest_recipe` is embedded in `FeedSpec.to_obj()`, embedded in
+`ReleaseManifest.to_obj()`, whose `canonical_hash` IS the release
+identity -- and reading it back in both stamp readers' `scan_args`.
+Pinned by
+`TestFreshnessLadder::test_a_vintage_bound_feed_cannot_see_a_record_acquired_after_the_bound`.
+Also pinned, the one Minor: the general (non-vintage) consequence of
+moving `acquired_at` resolution above `admit` -- a row `admit` would have
+dropped for its own reason now refuses instead of passing unseen -- by
+`TestIntakeBounds::test_a_corrupt_acquired_at_refuses_even_when_admit_would_drop_the_row`.
+Real counts: `tests/onboarding` + `tests/pipeline_libs` are
+**2174 passed / 0 failed** (112 skipped, one more pass than the
+2173 above -- the one new Minor pin); `tests/production/test_feed.py`
+is **127 passed** (one more than before -- the one new MAJOR-2 pin).

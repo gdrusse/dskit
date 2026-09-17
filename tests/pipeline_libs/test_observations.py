@@ -245,9 +245,15 @@ class TestParams:
         before it existed — and moving one orphans every run directory
         and stored artifact keyed to it.
 
-        The literal is that document's hash taken on the PARENT commit,
-        before the knob was declared; reading it from today's code would
-        assert nothing.
+        All three literals were reproduced independently against this
+        commit before being pinned here (never read from the code under
+        test, which would assert nothing). OMITTING the knob and
+        DECLARING it ``null`` are NOT the same digest: a declared
+        ``null`` still puts ``"as_of_acquisition_ms":null`` into the
+        canonical JSON, which an omitted knob never does, so a declared
+        ``null`` is a graded change like any other param value — it
+        simply orphans no pre-existing document, because no document
+        could have declared this key before the ADR.
         """
         vintage_free = {
             "name": "vintage-hash-pin",
@@ -261,13 +267,22 @@ class TestParams:
                 }
             },
         }
-        before = "6689bdef5fd520f5316a83150ad653b11e315a441298024df9e0f4e09fd7f353"
-        assert PipelineDocument.from_obj(vintage_free).hash == before
-        # ...and a document that DOES declare it is a different run:
-        # the knob is graded whenever it is present.
-        declared = json.loads(json.dumps(vintage_free))
-        declared["pipeline"]["bars"]["params"]["as_of_acquisition_ms"] = 1
-        assert PipelineDocument.from_obj(declared).hash != before
+        omitted = "6689bdef5fd520f5316a83150ad653b11e315a441298024df9e0f4e09fd7f353"
+        assert PipelineDocument.from_obj(vintage_free).hash == omitted
+
+        declared_1 = json.loads(json.dumps(vintage_free))
+        declared_1["pipeline"]["bars"]["params"]["as_of_acquisition_ms"] = 1
+        value_1 = "381220f0b6c35d348fd183a4da332b9cd1413d01bb05f0ee81d8facee321601b"
+        assert PipelineDocument.from_obj(declared_1).hash == value_1
+
+        # A declared `null` is a THIRD, distinct digest — never the
+        # `omitted` one above, which is the false claim this test exists
+        # to refuse forever.
+        declared_null = json.loads(json.dumps(vintage_free))
+        declared_null["pipeline"]["bars"]["params"]["as_of_acquisition_ms"] = None
+        value_null = "ae3c15d8499c3610eacb089ec07f154af054c05f20b3a1d97290225735963879"
+        assert PipelineDocument.from_obj(declared_null).hash == value_null
+        assert value_null != omitted
 
     @pytest.mark.parametrize("bad", [None, "", 5, []])
     def test_ts_field_and_ts_out_must_be_names(self, bad):

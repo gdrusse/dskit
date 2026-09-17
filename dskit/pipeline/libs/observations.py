@@ -230,7 +230,10 @@ class ObservationRows(Node):
         projection (``key_fields`` with ``ts_field`` projected out — the
         dedupe key may contain time, and an entity may not), the
         event-time field rows carry (``ts_out``) and the digest recipe
-        (``key_fields``/``ts_field``/``ts_unit``, verbatim). No universe:
+        (``key_fields``/``ts_field``/``ts_unit``, verbatim, plus
+        ``as_of_acquisition_ms`` when declared, so a served feed's own
+        freshness re-scan can honour it too — ADR-0154 review, MAJOR-2).
+        No universe:
         the serve document owns that, and a classmethod could only have
         guessed it from the dedupe key.
 
@@ -280,16 +283,29 @@ class ObservationRows(Node):
                 "instant — projecting the time field out leaves no entity key, "
                 "and a served snapshot must identify entities across ticks"
             )
+        digest_recipe = {
+            "kind": DIGEST_RECIPE_KIND,
+            "key_fields": key_fields,
+            "ts_field": ts_field,
+            "ts_unit": params.get("ts_unit", DEFAULT_TS_UNIT),
+        }
+        vintage = params.get("as_of_acquisition_ms")
+        if vintage is not None:
+            # Emitted ONLY WHEN DECLARED, mirroring Decision 5's own rule
+            # for the knob itself (params emitted only when present):
+            # `digest_recipe` is embedded in `FeedSpec.to_obj()`, embedded
+            # in `ReleaseManifest.to_obj()`, whose `canonical_hash` IS the
+            # release identity, so an always-present key here would move
+            # every existing release's identity exactly as an
+            # always-present `null` moves a document's (ADR-0154 review,
+            # MAJOR-2). Absent, `EntrySourceFeed._latest_by_key`'s own
+            # re-scan stays unbounded, as it always has been.
+            digest_recipe["as_of_acquisition_ms"] = vintage
         return ServingContract(
             source_binding={"kind": SOURCE_BINDING_KIND, **binding},
             entity_key_fields=entity,
             event_time_field=params.get("ts_out", DEFAULT_TS_OUT),
-            digest_recipe={
-                "kind": DIGEST_RECIPE_KIND,
-                "key_fields": key_fields,
-                "ts_field": ts_field,
-                "ts_unit": params.get("ts_unit", DEFAULT_TS_UNIT),
-            },
+            digest_recipe=digest_recipe,
         )
 
     # -- the vocabulary hooks a subclass fixes -----------------------------
