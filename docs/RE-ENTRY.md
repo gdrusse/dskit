@@ -1,6 +1,61 @@
 # Re-entry
 
-## Current checkpoint: F3 design stopped at convergence; wire guards pinned (2026-09-17)
+## Current checkpoint: ADR-0149 dimensionality reduction shipped (2026-09-17)
+
+**Shipped.** ADR-0149 (owner-approved) adds dimensionality reduction to the
+fitted-transform family (ADR-0040) as `SklearnReduction` (kind
+`sklearn-reduce`) in `dskit/pipeline/libs/sklearn.py`, tier 2. The catalog is
+CLOSED — `pca` (`sklearn.decomposition.PCA`) and `svd`
+(`sklearn.decomposition.TruncatedSVD`) only — because the state is EXTRACTED to
+JSON (`components_` and, for pca, `mean_`), never a pickled model; UMAP (needs
+the fitted graph) and t-SNE (no `transform()` at all) are out of scope, named in
+the ADR. The projection is computed HERE (`(X - mean_) @ components_.T` for pca,
+`X @ components_.T` for svd) and proven equal to the library's `transform` on
+fixtures per member. State tag `dskit.sklearn-reduction/v1`; `reduction_model_id`
+is the canonical sha256 of the state (recomputed, never copied), emitted as a
+row field and a port. `n_components` is a top-level required int (the output
+width); declared features are dropped, non-feature columns ride along. No
+variance/reconstruction score is reported (`explained_variance_ratio_` would be
+a search objective this node must not supply). No `sidecar_problems` hook (the
+Standardize posture — any declared `fit_split`; `validate_load_inputs` refuses
+the fitting knobs `algorithm_params`/`seed`). `serving_load_audited` stays
+False: no serving authority added.
+
+**Review.** Four strict TDD slices, each closed by two independent skeptic lenses
+(DeepSeek V4 Pro — correctness/authority; DeepSeek V4 Flash — mutation testing)
+with zero unresolved Critical/Major. Two convergence checkpoints are recorded in
+the ADR, both falsified then completed: (1) the `range(width)` `component_<i>`
+name-derivation family, and (2) the canonical-shape pin family — every value
+derived from `len(features)`/`n_components`/`width` exercised at TWO shapes (the
+3-feature/2-component document AND a 2-feature/1-component one), every `!=`
+geometry check proven in BOTH directions, and `apply_state` proven to read the
+STATE (never the document) with a varying third column so a drop of it is
+distinguishable.
+
+**Baseline discipline.** `tests/pipeline` + `tests/pipeline_libs` on the branch:
+5324 passed / 137 skipped / **0 failed**; on `e989dff` (origin/main): 5242 passed
+/ 137 skipped / **0 failed** — the 82 new tests are the only difference, so ZERO
+new failures (diffed, not eyeballed). `ruff` and `git diff --check` clean. Full
+`tests/` (production/assets/onboarding/children) NOT re-run; my changes touch
+only `dskit/pipeline/libs/sklearn.py` + its tests, which nothing else imports.
+
+**ADR numbering.** origin/main's highest ADR is 0148 (the F3 replay lane, above).
+PR #15 is still open and unmerged and carries a DIFFERENT `## ADR-0148`
+(segmentation) that collides with main's — a pre-existing collision PR #15 owns.
+This work therefore took 0149 (verified free across all PR/branch heads).
+
+**Not covered / not claimed.** The `math.fsum` dot product vs numpy divergence
+under extreme cancellation (a recorded Minor, bit-identical on all fixtures); a
+serving licence (`serving_load_audited`) for this kind — its own ADR; the
+pre-existing, unrelated failures documented in prior checkpoints (production
+captured-authorization, the root-permission refusal test) — untouched.
+`deployment_eligible=false` throughout.
+
+**Next.** Nothing within ADR-0149's scope — the member is complete and reviewed.
+A follow-on, if wanted, is a serving-licence audit for `sklearn-reduce`, or a
+third catalog member that exposes `components_`/`mean_` the same way.
+
+## Prior checkpoint: F3 design stopped at convergence; wire guards pinned (2026-09-17)
 
 **F3/F5b design did NOT land, and must not be implemented as written.**
 ADR-0148 was written, reviewed and stopped three times (v1: 2C/6M evidence
