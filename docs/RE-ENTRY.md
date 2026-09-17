@@ -25,10 +25,13 @@ runs, and nothing ever unspends afterward. `authorize_capture_set` (the
 separate P4 batch route from ADR-0143/0144) and every ADR-0143 forbidden-
 legacy symbol are confirmed completely untouched.
 
-Two fresh independent final lenses found 0 Critical/Major/Minor each,
-including deep scrutiny of a narrowed pre-existing test (confirmed
-legitimate: the original check was over-broad, not a real invariant the
-new lifecycle-state vocabulary violates) and two disclosed convergence
+Two fresh independent final lenses found 0 Critical/Major each. The
+integration lens heading counted one Minor, but its full report named no
+Minor finding and ended GATE: CLEAN. This count mismatch is retained as
+an accepted process Minor, with no code defect asserted (evidence 0194).
+Reviews included deep scrutiny of a narrowed pre-existing test
+(confirmed legitimate: the original check was over-broad, not a real
+invariant the new lifecycle-state vocabulary violates) and two disclosed convergence
 checkpoints (both independently re-verified against the actual code, not
 taken on the implementer's word). A genuine, non-mocked, subprocess-based
 second-process contention test, write-then-raise durability, and three

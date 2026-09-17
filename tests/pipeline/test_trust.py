@@ -51,6 +51,8 @@ _PUBLIC_TYPES = {
     "NonAuthorizingRosterBootstrapVerifier",
     "NonAuthorizingRosterRootProof",
     "NonAuthorizingRawRootProof",
+    "NonAuthorizingSyntheticRootPisProof",
+    "NonAuthorizingDynamicRootGraph",
     "ReleaseKeyring",
     "ReplayRun",
     "TerminalArtifactVerifier",
