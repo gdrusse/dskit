@@ -48,6 +48,7 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -1898,3 +1899,383 @@ def test_the_placement_hook_is_the_one_owner_both_the_verb_and_the_open_ask():
     problems = []
     JsonlLedger.check_placement(problems, {"by": "day"})
     assert problems == []
+
+
+# ---------------------------------------------------------------------------
+# ADR-0147 — durable ChainLedger-backed consume-once admission gate
+#
+# `HistoricalStudyVerifier.capture`'s own admission-shaped tests live in
+# `tests/production/test_adr0147_durable_admission.py`; this section pins
+# `reserve_once`/`_transition_lock`/health-state transitions at the
+# `ChainLedger` seam directly, per the ADR's own Process section, using a
+# plain `admission_use` record — nothing here depends on the P4 machinery
+# `reserve_once` is agnostic to.
+# ---------------------------------------------------------------------------
+
+def _adm(rid="adm-1", **body):
+    return {"kind": "admission_use", "id": rid, "body": dict(body)}
+
+
+class _BreakingState:
+    """A `SeriesState` stand-in whose `apply` raises on a chosen record id."""
+
+    def __init__(self, fail_id):
+        self.fail_id = fail_id
+        self.applied = []
+
+    def apply(self, record):
+        if record["id"] == self.fail_id:
+            raise RuntimeError("simulated state.apply failure")
+        self.applied.append(record)
+
+    def to_snapshot_obj(self):
+        return {"folded": len(self.applied)}
+
+
+def test_ledger_health_states_vocabulary_is_exactly_five_and_exported():
+    assert vocab.LEDGER_HEALTH_STATES == ("opening", "healthy", "uncertain", "closed", "readonly")
+    assert "LEDGER_HEALTH_STATES" in vocab.__all__
+
+
+def test_a_freshly_opened_ledger_is_healthy(serve, open_ledger):
+    led = open_ledger(serve)
+    assert led._health == "healthy"
+
+
+def test_a_readonly_open_reports_readonly_health(serve, open_ledger):
+    open_ledger(serve).close()
+    reader = JsonlLedger.reading(serve, clock=FakeClock())
+    assert reader._health == "readonly"
+
+
+def test_a_closed_ledger_reports_closed_health(serve, open_ledger):
+    led = open_ledger(serve)
+    led.close()
+    assert led._health == "closed"
+
+
+# -- row 1/2/9: reserve_once's own basic contract ---------------------------
+
+
+def test_reserve_once_first_ever_call_durably_reserves(serve, open_ledger):
+    led = open_ledger(serve)
+    created, seq = led.reserve_once(_adm())
+    assert (created, seq) == (True, 1)
+    envs = list(led.scan(kind="admission_use"))
+    assert len(envs) == 1 and envs[0]["id"] == "adm-1"
+
+
+def test_reserve_once_immediate_repeat_refuses_a_second_grant(serve, open_ledger):
+    led = open_ledger(serve)
+    led.reserve_once(_adm())
+    created, seq = led.reserve_once(_adm())
+    assert (created, seq) == (False, 1)
+    assert len(list(led.scan(kind="admission_use"))) == 1
+
+
+def test_reserve_once_same_id_different_payload_conflicts(serve, open_ledger):
+    led = open_ledger(serve)
+    led.reserve_once(_adm(field="a"))
+    with pytest.raises(ProductionError) as exc:
+        led.reserve_once(_adm(field="b"))
+    assert "adm-1" in str(exc.value)
+
+
+def test_reserve_once_two_distinct_ids_never_collide(serve, open_ledger):
+    led = open_ledger(serve)
+    first = led.reserve_once(_adm(rid="adm-1"))
+    second = led.reserve_once(_adm(rid="adm-2"))
+    assert first == (True, 1)
+    assert second == (True, 2)
+
+
+def test_reserve_once_refuses_after_close(serve, open_ledger):
+    led = open_ledger(serve)
+    led.close()
+    with pytest.raises(ProductionError) as exc:
+        led.reserve_once(_adm())
+    assert "closed" in str(exc.value)
+
+
+def test_reserve_once_refuses_on_a_readonly_ledger(serve, open_ledger):
+    open_ledger(serve).close()
+    reader = JsonlLedger.reading(serve, clock=FakeClock())
+    with pytest.raises(ProductionError) as exc:
+        reader.reserve_once(_adm())
+    assert "reading" in str(exc.value)
+
+
+# -- row 3: same-process multi-thread concurrency, proven by the lock -------
+
+
+@pytest.mark.parametrize("n", [2, 8])
+def test_reserve_once_concurrent_same_id_exactly_one_thread_creates(serve, open_ledger, n):
+    led = open_ledger(serve)
+    barrier = threading.Barrier(n)
+    results = [None] * n
+    errors = []
+
+    def worker(index):
+        try:
+            barrier.wait(timeout=5)
+            results[index] = led.reserve_once(_adm())
+        except Exception as exc:  # pragma: no cover - surfaced via `errors`
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not errors, errors
+    assert all(r is not None for r in results)
+    created_flags = [r[0] for r in results]
+    assert created_flags.count(True) == 1
+    assert created_flags.count(False) == n - 1
+    assert {r[1] for r in results} == {1}
+    assert len(list(led.scan(kind="admission_use"))) == 1
+
+
+# -- row 4: a genuine SECOND OS PROCESS, not a same-process simulation ------
+
+
+def _child_lock_probe(serve):
+    """Child code: try to open a writer on `serve`'s root; exit 7 if refused."""
+    return (
+        "from dskit.production.ledger import JsonlLedger, ServeRoot\n"
+        "from dskit.production.base import ProductionError\n"
+        "import sys\n"
+        "class C:\n"
+        "    def now_ms(self):\n"
+        "        return 1\n"
+        "    def monotonic(self):\n"
+        "        return 1.0\n"
+        f"sr = ServeRoot({os.path.dirname(serve.series_path)!r}, {SERIES!r})\n"
+        "try:\n"
+        f"    JsonlLedger(sr, 'proc-child', {RELEASE!r}, clock=C())\n"
+        "except ProductionError:\n"
+        "    sys.exit(7)\n"
+        "sys.exit(0)\n"
+    )
+
+
+def _child_reserve_probe(serve, rid):
+    """Child code: open a writer and reserve_once(rid); print `created,seq`."""
+    return (
+        "from dskit.production.ledger import JsonlLedger, ServeRoot\n"
+        "import sys\n"
+        "class C:\n"
+        "    def now_ms(self):\n"
+        "        return 2\n"
+        "    def monotonic(self):\n"
+        "        return 2.0\n"
+        f"sr = ServeRoot({os.path.dirname(serve.series_path)!r}, {SERIES!r})\n"
+        f"led = JsonlLedger(sr, 'proc-child', {RELEASE!r}, clock=C())\n"
+        f"created, seq = led.reserve_once({{'kind': 'admission_use', 'id': {rid!r}, 'body': {{}}}})\n"
+        "print(f'{created},{seq}')\n"
+        "led.close()\n"
+    )
+
+
+def test_a_second_process_reserve_once_refuses_fast_for_the_whole_first_lifetime(
+    serve, open_ledger
+):
+    """ADR-0147 Decision point 6/11, row 4. A second OS process attempting to
+    open a writer on the SAME root while the first is open refuses AT
+    `_acquire_lock`, before `_open()` or any `reserve_once` call is
+    reachable — and keeps refusing for as long as the first stays open, not
+    only at one instant. Requires genuine subprocess coordination (event
+    ordering via process lifetime, no wall-clock sleeps): a same-process
+    simulation would not exercise `fcntl.flock`'s per-open-file-description
+    semantics at all."""
+    first = open_ledger(serve)
+    first.reserve_once(_adm(rid="adm-first"))
+
+    probe = _child_lock_probe(serve)
+    assert _child(probe).returncode == 7
+    # Poll again: the refusal holds for the writer's WHOLE lifetime, not a
+    # single race-prone instant.
+    assert _child(probe).returncode == 7
+
+    first.close()
+
+    proc = _child(probe)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_a_second_process_after_the_first_closes_sees_the_same_reserved_history(
+    serve, open_ledger
+):
+    """Row 6's mechanism, proven with a genuine second process: once the
+    first writer closes, a second process opening the SAME root replays the
+    full chain and observes the SAME admission_use history — a repeat of
+    the first process's id refuses re-grant; a fresh id still succeeds."""
+    first = open_ledger(serve)
+    first.reserve_once(_adm(rid="adm-shared"))
+    first.close()
+
+    repeat = _child(_child_reserve_probe(serve, "adm-shared"))
+    assert repeat.returncode == 0, repeat.stderr
+    assert repeat.stdout.strip() == "False,1"
+
+    fresh = _child(_child_reserve_probe(serve, "adm-new"))
+    assert fresh.returncode == 0, fresh.stderr
+    assert fresh.stdout.strip() == "True,2"
+
+
+# -- row 7: crash mid-write -> "uncertain" quarantine -> full replay --------
+
+
+def test_reserve_once_barrier_failure_quarantines_uncertain_and_replay_recovers(
+    serve, open_ledger
+):
+    """Fault inside `reserve_once`'s OWN explicit `barrier()` call
+    specifically (not `_commit`'s own due-sync): the first `_sync` (inside
+    `_commit`, fsync="every") succeeds and lands the bytes; the SECOND
+    `_sync` (`reserve_once`'s mandatory post-commit `barrier()`) is the one
+    that fails, exercising `barrier()`'s own try/except quarantine path."""
+    led = open_ledger(serve)
+    real_sync = led._sync
+    calls = {"n": 0}
+
+    def flaky_sync():
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash before the barrier completes")
+        return real_sync()
+
+    led._sync = flaky_sync
+    with pytest.raises(RuntimeError):
+        led.reserve_once(_adm(rid="adm-crash-a"))
+    assert led._health == "uncertain"
+
+    # Quarantined: every further mutating call refuses naming it, only
+    # close() is accepted.
+    del led.__dict__["_sync"]
+    with pytest.raises(ProductionError) as exc:
+        led.append(_rec(rid="t-after-crash"))
+    assert "uncertain" in str(exc.value)
+    led.close()
+
+    reopened = open_ledger(serve)
+    assert reopened._health == "healthy"
+    # _store/_sync already landed the bytes (the FIRST, successful sync)
+    # before the injected raise, so the reservation the caller never got
+    # confirmation of is durably present after replay — the write-then-raise
+    # contract holds even when the raise happens inside the ledger itself.
+    created, seq = reopened.reserve_once(_adm(rid="adm-crash-a"))
+    assert (created, seq) == (False, 1)
+
+
+def test_state_apply_failure_quarantines_uncertain_and_replay_recovers_cleanly(serve):
+    breaking = _BreakingState(fail_id="adm-crash-b")
+    led = JsonlLedger(serve, PROCESS, RELEASE, clock=FakeClock(), state=breaking)
+    try:
+        with pytest.raises(RuntimeError):
+            led.reserve_once(_adm(rid="adm-crash-b"))
+        assert led._health == "uncertain"
+        with pytest.raises(ProductionError) as exc:
+            led.reserve_once(_adm(rid="adm-other"))
+        assert "uncertain" in str(exc.value)
+    finally:
+        led.close()
+
+    # A fresh open with a WELL-BEHAVED fold, manually replayed exactly as
+    # `HistoricalStudyVerifier.durable`'s own Decision point 10 recovery
+    # does (`JsonlLedger._open`'s own recovery walk rebuilds the head/index
+    # but never re-folds into `state`), now replays the whole chain
+    # cleanly: the record that was durably stored (state.apply's raise came
+    # AFTER `_store`/`_index`, per the ledger's own commit ordering) reads
+    # back as genuinely reserved, and the fold that raised is not trusted a
+    # second time.
+    recovered = RecordingState()
+    reopened = JsonlLedger(serve, PROCESS, RELEASE, clock=FakeClock(), state=recovered)
+    try:
+        assert reopened._health == "healthy"
+        for envelope in reopened.scan():
+            recovered.apply(envelope)
+        assert [e["id"] for e in reopened.scan(kind="admission_use")] == ["adm-crash-b"]
+        created, seq = reopened.reserve_once(_adm(rid="adm-crash-b"))
+        assert (created, seq) == (False, 1)
+    finally:
+        reopened.close()
+
+
+def test_sync_failure_during_barrier_quarantines_uncertain(serve, open_ledger, monkeypatch):
+    led = open_ledger(serve)
+
+    def raising_fsync(fd):
+        raise OSError("simulated sync failure")
+
+    monkeypatch.setattr(os, "fsync", raising_fsync)
+    with pytest.raises(OSError):
+        led.reserve_once(_adm(rid="adm-sync-fail"))
+    assert led._health == "uncertain"
+    monkeypatch.undo()
+    with pytest.raises(ProductionError) as exc:
+        led.append(_rec(rid="t-after-sync-fail"))
+    assert "uncertain" in str(exc.value)
+
+
+def test_pure_conflict_before_any_storage_touch_leaves_the_ledger_healthy(serve, open_ledger):
+    """A digest conflict is caught by `_commit`'s own index lookup BEFORE
+    `_store` is ever called — this is validation, not a partial-persistence
+    hazard, so the ledger stays healthy and keeps working."""
+    led = open_ledger(serve)
+    led.reserve_once(_adm(field="a"))
+    with pytest.raises(ProductionError):
+        led.reserve_once(_adm(field="b"))
+    assert led._health == "healthy"
+    assert led.reserve_once(_adm(rid="adm-2")) == (True, 2)
+
+
+# -- row 13: torn/truncated final admission_use line never poisons ---------
+
+
+def test_a_torn_final_admission_use_line_is_discarded_never_treated_as_spent(
+    serve, open_ledger
+):
+    led = open_ledger(serve)
+    led.reserve_once(_adm(rid="adm-1"))
+    led.close()
+    before = _envelopes(serve)[-1]
+    path = _segment_paths(serve)[-1]
+    with open(path, "ab") as fh:
+        fh.write(b'{"kind":"admission_use","id":"adm-crashed","bo')
+
+    reopened = open_ledger(serve)
+    assert reopened.head() == (1, before["hash"])
+    # The crashed reservation attempt never happened as far as the chain is
+    # concerned: the SAME id may legitimately be reserved now.
+    created, seq = reopened.reserve_once(_adm(rid="adm-crashed"))
+    assert (created, seq) == (True, 2)
+    assert reopened.verify() is None
+
+
+def test_a_torn_admission_use_line_inside_a_sealed_segment_still_refuses(serve, open_ledger):
+    """Row 13's second case: interior damage is never truncatable, even for
+    this new record kind — only the FINAL incomplete line is a crash-cut
+    write; anything earlier is chain damage."""
+    led = open_ledger(serve, rotate={"by": "size", "max_bytes": 256})
+    for i in range(1, 4):
+        led.reserve_once(_adm(rid=f"adm-{i}", filler="x" * 200))
+    led.close()
+    paths = _segment_paths(serve)
+    assert len(paths) >= 2
+    with open(paths[0], "r+b") as fh:
+        fh.truncate(os.path.getsize(paths[0]) - 1)
+    with pytest.raises(ProductionError) as exc:
+        open_ledger(serve)
+    assert "sealed" in str(exc.value)
+
+
+def test_the_posix_flock_release_on_crash_assumption_is_documented_at_acquire_lock():
+    """Phase 0 skeptic finding iv / matrix row 13: the cross-process proof
+    depends on the OS releasing a crashed writer's flock on process exit —
+    true on the target platform, not proven by this module's own code. This
+    pins that the comment survives as an explicit, textual implementation
+    pin rather than silently relying on it."""
+    source = inspect.getsource(ledger_module.ChainLedger._acquire_lock)
+    assert "posix" in source.lower()
+    assert "assumption" in source.lower()

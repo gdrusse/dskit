@@ -9,13 +9,15 @@ from dskit.production import verifier as verifier_module
 from tests.pipeline import test_trust as f4
 
 
+# ADR-0147 Decision point 2: the sixth "admission" artifact is retired --
+# bind() now refuses it as an unknown name; a verified admission_ref
+# replaces it, checked by the ledger-backed gate in `capture()` instead.
 _PLAN = {
     "scope_intent": {"schema": "scope-intent"},
     "ces": {"schema": "ces"},
     "pea": {"schema": "pea"},
     "bvp": {"schema": "bvp"},
     "cas": {"schema": "cas"},
-    "admission": {"schema": "admission", "consumed": True},
 }
 
 
@@ -115,16 +117,21 @@ def test_driver_uses_class_method_not_rebound_instance_capture():
     assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
 
 
-def test_driver_delegates_bound_verifier_capture():
+def test_authority_only_bound_verifier_still_permanently_refuses_capture():
+    """ADR-0147 Decision point 2: an authority-only verifier (built via the
+    plain constructor, never `.durable(...)`) holds no ledger at all, so it
+    refuses `capture()` even with every ADR-0125 plan artifact bound --
+    mechanically, not merely because the retired `_spend` doorway was
+    unlucky. This replaces the pre-ADR-0147 expectation that a bound
+    authority-only verifier could reach CAPTURED."""
     broker, published, frozen, port = _setup()
     verifier = verifier_module.HistoricalStudyVerifier(broker)
     verifier.bind(**_PLAN)
     driver = verifier_module.HistoricalStudyCaptureDriver(verifier)
 
-    captured, session = _capture(driver, published, frozen, port)
-    assert captured is not None
-    assert session is not None
-    assert broker._receipt_audit(published)[-1]["event"] == "CAPTURED"
+    with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS"):
+        _capture(driver, published, frozen, port)
+    assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
 
 
 def test_unbound_driver_refuses_without_broker_fallback_then_f4_broker_still_works():
