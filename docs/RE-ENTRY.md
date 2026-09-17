@@ -1,6 +1,73 @@
 # Re-entry
 
-## Current checkpoint: P7 synthetic EventEnvelope.v2 causal order verified (2026-09-16)
+## Current checkpoint: P7 closed at bounded synthetic scope (2026-09-17)
+
+Remote main verified at 8ac3c54. ADR-0146 adds `compose_replay_tape` to
+`dskit/production/bundles.py`: given a real committed P4 capture
+(`record`, `session`, `published`), it resolves roster and raw-event
+member bytes via the ADR-0129 accessor, projects them into full
+`event-envelope/v2` objects reusing ADR-0145's `_check_event_envelope`
+unchanged, computes a tamper-resistant `data_capture_root` from the
+capture's own public member-manifest digests (`published.sealed.digests`,
+matching `trust.py`'s internal `_manifest_digest` formula on public
+attributes only -- an earlier draft's descriptor-based formula was found
+non-tamper-resistant by Phase 0 review, corrected, and independently,
+empirically reverified), builds a `CapturedReplayTape.v1`, round-trips it
+through a genuine build/canonicalize/reparse cycle, and calls
+`verify_causal_order` on the result. This is P7's last stated gate.
+`dskit/pipeline/trust.py` is completely untouched; `compose_replay_tape`
+imports no symbol from it and is machine-tested not to.
+
+The mandatory positive proof (ADR-0146 Decision point 8) runs the full
+chain through the DYNAMIC P4 authority (ADR-0143/0144) end-to-end,
+non-mocked. The fixed/legacy authority cannot carry an equivalent positive
+case -- its `_P4_APPROVED_ROOT_PROJECTIONS` allowlist only pre-approves two
+fixture digests -- which the ADR's own Decision point 8 explicitly
+anticipated and permitted as an asymmetry, not an under-delivery; both
+final review lenses independently confirmed this reading against the code.
+
+Two fresh independent final lenses found 0 Critical/Major/Minor (one lens)
+and 0 Critical/Major/Minor plus 1 process-only Nit (the other). 29 focused
+and 1661 affected tests passed (1 pre-existing, disclosed, unrelated
+ADR-0141/0142 baseline failure, unchanged). Ruff and `git diff --check`
+clean. Full suite not run per owner preference. Evidence: 0189 (ADR
+proposal/preapproval/correction/recheck/owner approval), 0190 (Phase 0
+matrix, including a Critical found and corrected in the tamper-resistance
+formula, independently reverified), 0191 (RED/GREEN, disclosed scope
+asymmetry, two final lenses). The primary `/home/russell/dskit` checkout
+and protected source `c489199` remain untouched.
+
+**P7 is closed, at its stated bounded, synthetic, nondeployment scope.**
+All four of its remaining gates from the 2026-09-16 "two-root bridge"
+checkpoint are now built and reviewed: the same-domain dynamic P4 capture
+authority (ADR-0143), its full `authorize_capture_set` closure (ADR-0144),
+synthetic EventEnvelope.v2 causal-order verification (ADR-0145), and
+bounded composed-tape verification (ADR-0146). This closure is explicit
+about what it is NOT: not the real master F3 lane (a separate,
+forecast-capital-owned package that must not start while whole F5a is
+open, per `docs/plans/closeout-2026-09-14/02-shared-foundations.md`); not
+a multi-hop three-consumer composition (ADR-0146's own disclosed one-hop
+scope narrowing from ADR-0127's original three-hop design); not real
+data, replay, backtest, paper, or live activity; `deployment_eligible`
+is `false` throughout the whole lineage. Do not read this as closing
+whole-F5a -- Packet 8 remains.
+
+**Next:** Packet 8, durable consume-once (closes F5A-R23). Per the owner's
+2026-09-16 decision (evidence 0100), reuse `dskit/production/ledger.py`'s
+existing `ChainLedger`/`JsonlLedger` seam as the authoritative durable
+store, keyed by an admission-derived idempotency key, replacing the
+publicly-reachable `_spend` kwdefault tuple in
+`dskit/production/verifier.py`'s `HistoricalStudyVerifier.capture`. Note
+the purity boundary: `dskit/pipeline/trust.py` cannot import
+`dskit.production` -- the durable spend state lives production-side. Must
+prove concurrent calls, write-then-raise, clone/replay, process restart,
+second-process contention, partial persistence, recovery, exact
+consume-once. Honest label: closes F5A-R23 at the development boundary
+(state no longer publicly reachable, durable across restart in-process);
+does not claim the OS-owned external-broker deployment boundary.
+`deployment_eligible=false`.
+
+## Prior checkpoint: P7 synthetic EventEnvelope.v2 causal order verified (2026-09-16)
 
 Remote main verified at 08bb7be. ADR-0145 adds a bounded, synthetic,
 nondeployment causal-order verification for the `dskit.event-envelope/v2`
