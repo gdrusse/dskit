@@ -321,7 +321,7 @@ documented seam (`TIER2_SEAM`, `tier2_plan`, `tier2_verdict`), not a
 thing this runs.
 
 **`false_signal.py`** turns that same evidence shape into one number per
-signal (ADR-0151): `SignalEvidence(statistic, [nulls])` — exactly
+signal (ADR-0152): `SignalEvidence(statistic, [nulls])` — exactly
 `tier2_verdict`'s pair — becomes `pi_hat`, the probability that this signal's
 apparent edge is nothing, through a Storey null share over a Grenander
 density. The family is a `FalseSignalEstimator` subclass supplying three hooks
@@ -706,7 +706,7 @@ dskit/pipeline/
 │                      registry (bh / bonferroni / none / weighted-bh) +
 │                      register_correction; no-information vs mean
 │                      (Clark–West HAC + sequential h*, ADR-0057)
-├── false_signal.py    per-signal false-signal probability (ADR-0151):
+├── false_signal.py    per-signal false-signal probability (ADR-0152):
 │                      SignalEvidence + FalseSignalEstimator ->
 │                      pi_hat and a widened pi_widened (NOT a bound);
 │                      GrenanderLocalFdr +

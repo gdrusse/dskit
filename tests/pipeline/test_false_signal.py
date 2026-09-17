@@ -1,4 +1,4 @@
-"""The generic per-signal false-signal probability estimator (ADR-0151)."""
+"""The generic per-signal false-signal probability estimator (ADR-0152)."""
 
 import math
 import random

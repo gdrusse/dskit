@@ -13019,7 +13019,7 @@ in the task, they are not addressed here.
 
 ---
 
-## ADR-0151 - `false_signal.py`: a generic per-signal false-signal number (`pi_hat`, `pi_widened`)
+## ADR-0152 - `false_signal.py`: a generic per-signal false-signal number (`pi_hat`, `pi_widened`)
 
 **Status:** accepted (owner pre-approved 2026-09-17). Evidence: the owner's
 pre-approval of the estimator is recorded in the 2026-09-17 task that

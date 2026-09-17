@@ -6,7 +6,7 @@ A family of signals was searched, scored out of fold, and audited against
 a scramble null. Every downstream consumer that sizes exposure needs one
 number per signal — the posterior probability that its edge is FALSE —
 and usually wants it twice: a point estimate and something more cautious
-(ADR-0151, over ADR-0088).
+(ADR-0152, over ADR-0088).
 
 **Read this before using the second number.** ``pi_widened`` is NOT a
 confidence bound, and this module does not claim one. It is the same

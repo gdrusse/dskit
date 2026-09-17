@@ -84,7 +84,7 @@ on it without breaking its rulings.
   The STATISTIC itself (`METHODS`: plain | studentized) is a closed
   tuple by owned-kind doctrine — never registrable.
 - **False-signal probability** — `register_false_signal_estimator`
-  (`false_signal.py`, ADR-0151); `grenander-local-fdr` ships. The
+  (`false_signal.py`, ADR-0152); `grenander-local-fdr` ships. The
   registry holds CLASSES, not functions: a family is a
   `FalseSignalEstimator` subclass supplying `fit` /
   `null_proportion` / `density`, and `estimate` is a TEMPLATE
@@ -591,7 +591,7 @@ dskit/pipeline/
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction
 │                      registry; no-information vs mean (Clark–West, h*)
 ├── false_signal.py    pi_hat + a widened pi_widened per signal, from
-│                      out-of-fold evidence and a scramble null (ADR-0151);
+│                      out-of-fold evidence and a scramble null (ADR-0152);
 │                      pi_widened is a widened point estimate, not a bound
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
