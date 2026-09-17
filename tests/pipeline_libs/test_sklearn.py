@@ -2784,16 +2784,33 @@ def test_reduce_catalog_is_exactly_pca_and_svd_and_the_three_tables_agree():
     from dskit.pipeline.libs import sklearn as _sklearn
 
     assert tuple(_sklearn._REDUCTION_ALGORITHMS) == ("pca", "svd")
-    assert set(_sklearn._REDUCTION_PATHS) == set(_sklearn._REDUCTION_ALGORITHMS)
-    assert set(_sklearn._REDUCTION_ATTRIBUTES) == set(_sklearn._REDUCTION_ALGORITHMS)
+    assert _sklearn._REDUCTION_PATHS == {
+        "pca": "sklearn.decomposition.PCA",
+        "svd": "sklearn.decomposition.TruncatedSVD",
+    }
+    assert _sklearn._REDUCTION_ATTRIBUTES == {
+        "pca": ("components_", "mean_"),
+        "svd": ("components_", None),
+    }
+    assert _sklearn.REDUCTION_SCHEMA == "dskit.sklearn-reduction/v1"
+    assert _sklearn.DEFAULT_REDUCTION_SEED == 0
 
 
 def test_reduce_params_refuse_a_feature_that_is_a_produced_column_name():
-    problems = SklearnReduction.validate_params(
-        {**REDUCE_PARAMS, "features": ["component_0", "other", "flat"]}
-    )
-    assert any("component_0" in p for p in problems)
+    for colliding in ("component_0", "component_1"):
+        problems = SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "features": [colliding, "other", "flat"]}
+        )
+        assert any(colliding in p for p in problems), colliding
     assert SklearnReduction.validate_params(dict(REDUCE_PARAMS)) == []
+
+
+def test_reduce_params_a_malformed_feature_is_refused_not_a_crash():
+    for malformed in (["nested"], [{"a": 1}], [7]):
+        problems = SklearnReduction.validate_params(
+            {**REDUCE_PARAMS, "features": ["strong", malformed, "flat"]}
+        )
+        assert any("features" in p for p in problems), malformed
 
 
 def test_reduce_params_unknown_keys_refused_by_name():

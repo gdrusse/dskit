@@ -2401,9 +2401,13 @@ class SklearnReduction(FittedTransform):
         """
         features = params.get("features")
         width = params.get("n_components")
-        if not isinstance(features, (list, tuple)) or isinstance(width, bool) or (
-            not isinstance(width, int)
-        ) or width < 1:
+        if (
+            not isinstance(features, (list, tuple))
+            or not all(isinstance(name, str) for name in features)
+            or isinstance(width, bool)
+            or not isinstance(width, int)
+            or width < 1
+        ):
             return []
         produced = {f"{_COMPONENT_PREFIX}_{i}" for i in range(width)}
         overlap = sorted(set(features) & produced)
