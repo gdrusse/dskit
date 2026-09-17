@@ -5075,7 +5075,25 @@ def test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain(tmp_
     )
     admission_ref = {"kind": "root-capture-admission", "role": "study-lifecycle",
                      "schema": "dskit.root-capture-admission/v1", "sha256": admission_sha256}
-    assert resolver.close_admission(snapshot, admission_ref, (authority, captures, runtime)) is None
+    # ADR-0144 Decision point 6 (disclosed divergence from the fixed
+    # resolver's None-on-success convention): the dynamic resolver's
+    # close_admission now returns the frozen _DynamicP4AdmissionReconstruction
+    # on success instead of None. Assert the correct frozen type/shape and
+    # that it genuinely reflects THIS captured chain -- not merely "is not
+    # None" -- so this still pins a real captured-chain acceptance, not just
+    # a changed return type.
+    result = resolver.close_admission(snapshot, admission_ref, (authority, captures, runtime))
+    assert type(result) is trust._DynamicP4AdmissionReconstruction
+    assert result.root_pis_ref == root_pis_ref
+    assert result.dataset_g1_ref == g1_ref and result.dataset_g2_ref == g2_ref
+    assert result.expected_admission_sha256 == admission_sha256
+    assert result.expected_admission == _admission
+    assert result.pis == root_pis
+    assert len(result.pce_entries) == len(captures) == len(result.cas["entries"])
+    assert result.cas["capture_admission_set_sha256"] == result.cas_sha256
+    assert {entry["consumer_document_sha256"] for entry in result.cas["entries"]} == {
+        port_a["consumer_document_sha256"], port_b["consumer_document_sha256"],
+    }
 
 
 def test_adr143_authorize_capture_set_blocked_by_prepare_contract(tmp_path, monkeypatch):
@@ -5155,3 +5173,286 @@ def test_adr143_dynamic_resolver_and_terminal_final_markers():
         trust._DynamicP4TerminalArtifactVerifier()
     with pytest.raises(TypeError, match="dynamic broker construction"):
         trust._DynamicP4TrustedArtifactResolver(object(), object())
+
+
+# ---------------------------------------------------------------------------
+# ADR-0144: dynamic authorize_capture_set closure to a genuine CAPTURED
+# admission (F5a Packet 7). Closes the convergence-checkpoint gap ADR-0143's
+# GREEN disclosed (evidence 0182; see
+# test_adr143_authorize_capture_set_blocked_by_prepare_contract above), which
+# pinned the refusal this ADR now resolves.
+# ---------------------------------------------------------------------------
+
+
+def _adr144_foreign_publish_with_purpose(authority, purpose):
+    """Drive one real produce/seal/publish lifecycle with a caller-chosen
+    purpose (f4._foreign_publish hardcodes purpose='synthetic' with no
+    override, so this mirrors its body with purpose parameterized -- needed
+    to build two live captures whose baked publish-time purpose genuinely
+    differs, since descriptor()/freeze_consumer_document() both hard-require
+    the passed purpose to equal the publication's own baked purpose)."""
+    session = authority.start_producer_session(
+        run_identity="producer-adr144-purpose",
+        process_measurement_sha256=f4._SHA["producer_process"],
+        runtime_sha256=f4._SHA["producer_runtime"],
+        plan_sha256=f4._SHA["producer_plan"],
+    )
+    producer = dict(f4._PRODUCER)
+    producer["run_identity"] = "producer-adr144-purpose"
+    prepared = authority.produce(
+        session, producer=producer,
+        root={"root_ref": "capture://synthetic/root-adr144-purpose",
+              "root_id": "9" * 64, "snapshot_version": "1"},
+        purpose=purpose, expected_members=("config.json", "artifacts/bundle.json"),
+        members=f4._members({"rows": [{"id": "ADR144-PURPOSE"}]}),
+        output_member="artifacts/bundle.json", completed=True, planned=True,
+        transition_nonce="nonce-produced-adr144-purpose",
+    )
+    sealed = authority.seal(session, prepared, transition_nonce="nonce-sealed-adr144-purpose")
+    published = authority.publish(session, sealed, transition_nonce="nonce-published-adr144-purpose")
+    authority.end_session(session)
+    return published
+
+
+def _adr144_document_and_captures(authority, *, run_id="dynamic-consumer-run",
+                                   purpose_a="synthetic", purpose_b="synthetic"):
+    """Build two live captures that share ONE frozen consumer document (so
+    _validate_capture_request's shared, unedited 'one frozen consumer
+    document' gate is satisfied) but reference two DISTINCT published
+    streams keyed by consumer_input (so the dynamic reconstruction's
+    two-PIS-entry cardinality requirement is also satisfied) -- mirroring
+    _graph_live's own reuse-one-document/two-consumer_input construction for
+    the legacy grammar (trust.py-adjacent test helper above, count=2)."""
+    session_a, published_a, _values = f4._publish(
+        authority, produced_nonce="adr144-a-produced", sealed_nonce="adr144-a-sealed",
+        published_nonce="adr144-a-published",
+    )
+    authority.end_session(session_a)
+    if purpose_b == "synthetic":
+        published_b, _sealed_b = f4._foreign_publish(authority)
+    else:
+        published_b = _adr144_foreign_publish_with_purpose(authority, purpose_b)
+    descriptor_a = authority.descriptor(published_a, purpose=purpose_a)
+    descriptor_b = authority.descriptor(published_b, purpose=purpose_b)
+    document = {
+        "name": "adr144-consumer",
+        "pipeline": {"consume": {"inputs": {
+            "bundle": {"$captured_artifact": descriptor_a},
+            "second": {"$captured_artifact": descriptor_b},
+        }}},
+    }
+    frozen_a = authority.freeze_consumer_document(
+        document, consumer_node="consume", consumer_input="bundle", purpose=purpose_a,
+    )
+    frozen_b = authority.freeze_consumer_document(
+        document, consumer_node="consume", consumer_input="second", purpose=purpose_b,
+    )
+    port_a = authority.derive_consumer_port(frozen_a)
+    port_b = authority.derive_consumer_port(frozen_b)
+    captures = ((published_a, frozen_a, port_a), (published_b, frozen_b, port_b))
+    runtime = {"consumer_run_identity": run_id, "process_measurement_sha256": f4._SHA["consumer_process"],
+               "runtime_sha256": f4._SHA["consumer_runtime"]}
+    return captures, runtime
+
+
+def _adr144_admission_ref(resolver, run_id):
+    """Build the exact matching root-capture-admission ref for one graph."""
+    graph_refs = [trust._hs_parse_canonical(ref) for ref, _raw in resolver._graph._records]
+    root_pis_ref = next(ref for ref in graph_refs if ref["kind"] == "root-pis")
+    g1_ref = next(ref for ref in graph_refs if ref["kind"] == "dataset-capture-grant" and ref["role"] == "G1")
+    g2_ref = next(ref for ref in graph_refs if ref["kind"] == "dataset-capture-grant" and ref["role"] == "G2")
+    _admission, admission_sha256 = trust._p4_dynamic_root_capture_admission(
+        root_pis_ref, g1_ref, g2_ref, run_id, run_id,
+    )
+    return {"kind": "root-capture-admission", "role": "study-lifecycle",
+            "schema": "dskit.root-capture-admission/v1", "sha256": admission_sha256}
+
+
+def test_adr144_dynamic_authorize_capture_set_reaches_genuine_captured_admission(tmp_path, monkeypatch):
+    """Positive end-to-end case (RED task item 1): a full authorize_capture_set
+    call on the dynamic authority reaches a genuine CAPTURED admission,
+    verified the SAME way _issue_complete (above) verifies the legacy path's
+    CAPTURED admission: exact (record, session) tuple shape, exact record/
+    session types, resolve_p4 round-trip, and idempotent re-issuance."""
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    run_id = "dynamic-consumer-run"
+    captures, runtime = _adr144_document_and_captures(authority, run_id=run_id)
+    admission_ref = _adr144_admission_ref(resolver, run_id)
+    nonces = ("adr144-p4-0", "adr144-p4-1")
+    try:
+        result = authority.authorize_capture_set(
+            captures, admission_ref, transition_nonces=nonces, **runtime,
+        )
+    except (TypeError, ValueError) as exc:
+        pytest.fail(f"dynamic authorize_capture_set did not reach CAPTURED: {exc}")
+    assert type(result) is tuple and len(result) == 2
+    record, session = result
+    assert type(record) is trust.CapturedAuthorizationRecord
+    assert type(session) is trust.LaunchSession
+    assert session._kind == "captured-authorization-v2"
+    audit = authority._p4_ledger._audit(record)
+    assert audit["admission_ref"] == admission_ref and audit["consumed"] is True
+    assert audit["nonces"] == list(nonces)
+    assert authority._p4_ledger.resolve_p4(audit["execution_key"], admission_ref) == (record, session)
+    # Idempotent re-issuance: the same request returns the same committed pair.
+    assert authority.authorize_capture_set(
+        captures, admission_ref, transition_nonces=nonces, **runtime,
+    ) == (record, session)
+
+
+def test_adr144_legacy_authorize_capture_set_unaffected():
+    """Regression (RED task item 2): the fixed/legacy authority's own
+    authorize_capture_set -> CAPTURED path is unaffected by commit_p4_batch's
+    five ADR-0144 edits. Reuses the exact same public doorway and assertion
+    shape _issue_complete already applies to every legacy positive test."""
+    graph, broker, _captures, _runtime, _before, record, session = _issue_complete()
+    audit = broker._p4_ledger._audit(record)
+    assert audit["admission_ref"] == graph.selected and audit["consumed"] is True
+    assert broker._p4_ledger.resolve_p4(audit["execution_key"], graph.selected) == (record, session)
+
+
+def test_adr144_fixed_resolver_pre_commit_recheck_uses_close_admission_not_legacy_walk(monkeypatch):
+    """Latent-bug fix, verified for the FIXED resolver specifically (RED task
+    item 3): evidence 0183's ground truth disclosed that commit_p4_batch's
+    LATE pre-commit re-check called _P4_CLOSE_ADMISSION (the legacy-only
+    closure walk) directly instead of resolver.close_admission, unlike the
+    same method's two earlier checkpoints. Spy on
+    _FixedWormTrustedArtifactResolver.close_admission itself and confirm it
+    is invoked at ALL THREE checkpoints (not just the first two) for one
+    successful legacy commit."""
+    calls = []
+    real_close_admission = trust._FixedWormTrustedArtifactResolver.close_admission
+
+    def spy(self, snapshot, admission_ref, live_projection):
+        calls.append(1)
+        return real_close_admission(self, snapshot, admission_ref, live_projection)
+
+    monkeypatch.setattr(trust._FixedWormTrustedArtifactResolver, "close_admission", spy)
+    _issue_complete()
+    assert len(calls) == 3
+
+
+def test_adr144_forged_admission_ref_refused_through_full_authorize_capture_set(tmp_path, monkeypatch):
+    """A forged/substituted cas or pce cannot be smuggled into a dynamic-
+    authority CAPTURED admission (RED task item 4): matches ADR-0143's D1
+    reconstruction-based defense (matrix row 6), now exercised through the
+    FULL authorize_capture_set path rather than resolver.close_admission
+    directly."""
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    captures, runtime = _adr144_document_and_captures(authority)
+    forged = {"kind": "root-capture-admission", "role": "study-lifecycle",
+              "schema": "dskit.root-capture-admission/v1", "sha256": "f" * 64}
+    with pytest.raises(ValueError, match="does not match closed graph chain"):
+        authority.authorize_capture_set(
+            captures, forged, transition_nonces=("adr144-forged-0", "adr144-forged-1"), **runtime,
+        )
+    wrong_kind = dict(forged, kind="dataset-capture-grant")
+    with pytest.raises(ValueError, match="kind/role/schema refused"):
+        authority.authorize_capture_set(
+            captures, wrong_kind, transition_nonces=("adr144-forged-2", "adr144-forged-3"), **runtime,
+        )
+
+
+def test_adr144_signed_batch_matches_close_admission_reconstruction_exactly(tmp_path, monkeypatch):
+    """The signed batch's bytes are provably identical to what close_admission
+    independently verified (RED task item 5, the core safety property),
+    asserted DIRECTLY: spy on both the dynamic resolver's close_admission and
+    _DynamicCapturedAuthorizationContract._prepare, confirm close_admission's
+    graph-reading reconstruction path executes EXACTLY ONCE for the whole
+    commit, that every _prepare call reads that SAME frozen instance, and
+    that the actually-committed batch's capture_admission_set_sha256 equals
+    that one instance's own cas digest byte-for-byte."""
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    run_id = "dynamic-consumer-run"
+    captures, runtime = _adr144_document_and_captures(authority, run_id=run_id)
+    admission_ref = _adr144_admission_ref(resolver, run_id)
+
+    seen_close = []
+    real_close = trust._DynamicP4TrustedArtifactResolver.close_admission
+
+    def spy_close(self, snapshot, admission_ref_arg, live_projection):
+        result = real_close(self, snapshot, admission_ref_arg, live_projection)
+        seen_close.append(result)
+        return result
+
+    seen_prepare = []
+    real_prepare = trust._DynamicCapturedAuthorizationContract._prepare
+
+    def spy_prepare(self, resolver_arg, admission_ref_arg, streams, runtime_arg, nonces, captures_arg, reconstruction):
+        seen_prepare.append(reconstruction)
+        return real_prepare(self, resolver_arg, admission_ref_arg, streams, runtime_arg, nonces, captures_arg, reconstruction)
+
+    monkeypatch.setattr(trust._DynamicP4TrustedArtifactResolver, "close_admission", spy_close)
+    monkeypatch.setattr(trust._DynamicCapturedAuthorizationContract, "_prepare", spy_prepare)
+    nonces = ("adr144-match-0", "adr144-match-1")
+    record, session = authority.authorize_capture_set(
+        captures, admission_ref, transition_nonces=nonces, **runtime,
+    )
+    # commit_p4_batch invokes the admission-closure checkpoint three times,
+    # but the graph-reading reconstruction must execute at MOST ONCE
+    # (Decision point 6): close_admission is only spied at the resolver
+    # level, so a genuinely-once-derived design shows exactly one call here
+    # too, since only the FIRST checkpoint reaches resolver.close_admission
+    # at all -- the second/third are handled by the cheap cell-populated
+    # re-check inside _p4_close_admission_once and never call this method.
+    assert len(seen_close) == 1
+    reconstruction = seen_close[0]
+    assert reconstruction is not None
+    assert seen_prepare and all(value is reconstruction for value in seen_prepare)
+    audit = authority._p4_ledger._audit(record)
+    captured_set = json.loads(audit["set"])
+    assert captured_set["capture_admission_set_sha256"] == reconstruction.cas["capture_admission_set_sha256"]
+    assert captured_set["capture_admission_set_sha256"] == reconstruction.cas_sha256
+
+
+def test_adr144_purpose_uniqueness_enforced_across_dynamic_captures(tmp_path, monkeypatch):
+    """Purpose-uniqueness enforcement (RED task item 6, ADR Decision point
+    8): a batch whose captures do not share one purpose is refused, mirroring
+    _validate_capture_request's existing consumer-document-uniqueness
+    pattern."""
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    captures, runtime = _adr144_document_and_captures(
+        authority, purpose_a="synthetic", purpose_b="adr144-other-purpose",
+    )
+    resolver = authority._p4_resolver
+    admission_ref = _adr144_admission_ref(resolver, runtime["consumer_run_identity"])
+    with pytest.raises(ValueError, match="one purpose"):
+        authority.authorize_capture_set(
+            captures, admission_ref, transition_nonces=("adr144-purpose-0", "adr144-purpose-1"), **runtime,
+        )
+
+
+def test_adr144_both_public_facades_reach_captured_for_the_dynamic_authority(tmp_path, monkeypatch):
+    """Both public facades (RED task item 7): HistoricalStudyVerifier.
+    authorize_capture_set and HistoricalStudyCaptureDriver.authorize_capture_set
+    both now reach a real CAPTURED admission for a dynamic authority
+    instance, exactly as matrix row public_facades disclosed -- neither
+    facade is edited by this ADR."""
+    from dskit.production import verifier as production_verifier
+
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    run_id = "dynamic-consumer-run"
+    captures, runtime = _adr144_document_and_captures(authority, run_id=run_id)
+    admission_ref = _adr144_admission_ref(resolver, run_id)
+    facade = production_verifier.HistoricalStudyVerifier(authority)
+    record, session = facade.authorize_capture_set(
+        captures, admission_ref, transition_nonces=("adr144-facade-0", "adr144-facade-1"), **runtime,
+    )
+    assert type(record) is trust.CapturedAuthorizationRecord
+    assert type(session) is trust.LaunchSession
+
+    (tmp_path / "driver").mkdir()
+    _publisher2, _issuer2, _graph2, authority2 = _adr143_issued_case(tmp_path / "driver", monkeypatch)
+    resolver2 = authority2._p4_resolver
+    captures2, runtime2 = _adr144_document_and_captures(authority2, run_id=run_id)
+    admission_ref2 = _adr144_admission_ref(resolver2, run_id)
+    facade2 = production_verifier.HistoricalStudyVerifier(authority2)
+    driver = production_verifier.HistoricalStudyCaptureDriver(facade2)
+    record2, session2 = driver.authorize_capture_set(
+        captures2, admission_ref2, transition_nonces=("adr144-driver-0", "adr144-driver-1"), **runtime2,
+    )
+    assert type(record2) is trust.CapturedAuthorizationRecord
+    assert type(session2) is trust.LaunchSession
