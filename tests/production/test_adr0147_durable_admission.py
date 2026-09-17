@@ -293,7 +293,7 @@ def test_authority_only_verifier_permanently_refuses_capture_even_fully_bound(tm
     verifier = verifier_module.HistoricalStudyVerifier(broker)
     verifier.bind(**_PLAN)
     published, frozen, port = captures[0]
-    with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS"):
+    with pytest.raises(ValueError, match="no durable ledger"):
         verifier.capture(
             published,
             frozen,

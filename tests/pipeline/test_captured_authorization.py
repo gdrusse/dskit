@@ -1283,7 +1283,7 @@ def test_legacy_capture_waits_for_the_same_lock_then_observes_p4_commit(facade):
         # broker._p4_ledger's lock at all -- there is no lock contention
         # left to observe through these two facades, only the immediate,
         # unconditional refusal itself.
-        with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS"):
+        with pytest.raises(ValueError, match="no durable ledger"):
             doorway.capture(published, frozen, port, **{key: val for key, val in runtime.items() if key != "transition_nonces"},
                             transition_nonce="legacy-loser")
         _assert_graph_no_effect(broker, captures, before)
@@ -1787,7 +1787,7 @@ def test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect(fac
         # two facades any more, only the immediate, unconditional refusal;
         # a concurrent authorize_capture_set is therefore never contended
         # against and succeeds on its own.
-        with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS"):
+        with pytest.raises(ValueError, match="no durable ledger"):
             doorway.capture(*captures[0], **{key: val for key, val in runtime.items() if key != "transition_nonces"},
                             transition_nonce="legacy-lock-winner")
         record, session = broker.authorize_capture_set(captures, graph.selected, **runtime)

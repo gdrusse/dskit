@@ -128,6 +128,8 @@ __all__ = [
     "SeriesState",
     "StateView",
     "TickState",
+    "check_admission_use_body",
+    "replay_into_fold",
 ]
 
 #: How many decision legs the fold keeps in ``StateView.decision_history``
@@ -871,7 +873,7 @@ _ADMISSION_USE_KEYS = ("schema", "admission_ref", "binding_sha256")
 _ADMISSION_REF_KEYS = frozenset({"kind", "role", "schema", "sha256"})
 
 
-def _check_admission_use_body(body):
+def check_admission_use_body(body):
     """Validate one ``dskit.admission-use/v1`` body; raise on any shape problem.
 
     ADR-0147 Decision point 5: one validator, called from BOTH
@@ -1511,7 +1513,7 @@ class SeriesState:
         (``ChainLedger._commit``) is what actually refuses a second spend
         of the same admission; this fold only confirms the body shape.
         """
-        _check_admission_use_body(body)
+        check_admission_use_body(body)
 
     def _restored_holds(self, holds):
         """Rebuild the hold map from a snapshot's list, through the same kind hooks."""
@@ -2051,6 +2053,55 @@ class RecoveryReport:
     queried_refs: tuple
 
 
+def replay_into_fold(ledger, state):
+    """Fold every envelope a chain holds past the fold's own head.
+
+    The single owner of "catch this fold up to this chain". :class:`Recovery`
+    calls it AFTER restoring a snapshot, so it resumes; a caller holding a
+    FRESH :class:`SeriesState` calls it with head ``0``, so the same call
+    replays the whole verified chain from genesis. The scan lives here
+    because this module is the ledger's only fold, which the two AST tests
+    in ``tests/production/test_state.py`` pin -- a second module opening its
+    own scan is the boundary those tests exist to refuse.
+
+    Parameters
+    ----------
+    ledger : Ledger
+        Provides ``scan(since_seq=...)`` and ``head()``.
+    state : SeriesState
+        The fold to advance; each envelope goes through ``apply``.
+
+    Returns
+    -------
+    int
+        How many envelopes were folded.
+
+    Raises
+    ------
+    ProductionError
+        When the fold's cached head does not belong to this chain, or when
+        any envelope the chain holds refuses.
+
+    Examples
+    --------
+    Replay a whole series into a fresh fold::
+
+        state = SeriesState(serve.series_id)
+        ledger = ledger_class(document)(serve, "proc-1", release_hash,
+                                        clock=clock, state=state)
+        replay_into_fold(ledger, state)
+        # -> 7
+    """
+    from dskit.production.ledger import validate_cache_head
+
+    validate_cache_head(*state.head(), ledger)
+    replayed = 0
+    for envelope in ledger.scan(since_seq=state.head()[0]):
+        state.apply(envelope)
+        replayed += 1
+    return replayed
+
+
 class Recovery:
     """Replay the fold and close what a crash left open — before the scheduler exists (§5.8.1).
 
@@ -2167,15 +2218,14 @@ class Recovery:
         """Restore a fresh fold from the last snapshot, then fold everything after the head."""
         from dskit.production.ledger import validate_cache_head
 
+        # Checked here against the PRE-restore head, and again inside
+        # `replay_into_fold` against whatever the restore left -- two
+        # different heads, so this is not one check written twice.
         validate_cache_head(*self._state.head(), self._ledger)
         snapshot = self._ledger.latest_snapshot()
         if snapshot is not None and self._state.head()[0] == 0:
             self._state.restore(snapshot)
-        replayed = 0
-        for envelope in self._ledger.scan(since_seq=self._state.head()[0]):
-            self._state.apply(envelope)
-            replayed += 1
-        return replayed
+        return replay_into_fold(self._ledger, self._state)
 
     def _close_ticks(self, now):
         """Terminalise every open or undecided tick; return the ids closed and the refs to derive."""
