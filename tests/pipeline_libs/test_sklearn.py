@@ -3237,3 +3237,27 @@ def test_reduce_state_problems_refuses_an_over_long_mean():
     node, state = _fit_reduction("pca", 2)
     broken = {**state, "mean": [0.0, 0.0, 0.0, 0.0]}
     assert node.state_problems(broken)
+
+
+def test_reduce_fit_rechecks_the_shadowed_knobs_for_a_direct_caller():
+    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    node.params["algorithm_params"] = {"whiten": True}
+    with pytest.raises(ValueError, match="whiten"):
+        node.fit(rows_selectable(n=8), node.params)
+
+
+def test_reduce_load_inputs_refuse_the_fitting_knobs():
+    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))  # has seed=17
+    problems = node.validate_load_inputs({})
+    assert any("seed" in p for p in problems)
+
+    node = _RaiseReduction(
+        "reduce", {**REDUCE_PARAMS, "algorithm_params": {"n_iter": 7}}
+    )
+    problems = node.validate_load_inputs({})
+    assert any("algorithm_params" in p for p in problems)
+
+    node = _RaiseReduction(
+        "reduce", {k: v for k, v in REDUCE_PARAMS.items() if k != "seed"}
+    )
+    assert node.validate_load_inputs({}) == []

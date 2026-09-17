@@ -2578,6 +2578,32 @@ class SklearnReduction(FittedTransform):
             if name in kwargs
         ]
 
+    def validate_load_inputs(self, inputs):
+        """Problems a RESTORE reads, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            The materialized inputs; unused.
+
+        Returns
+        -------
+        list of str
+            One problem per FITTING knob the document declared.
+            ``seed`` and ``algorithm_params`` describe how a state was
+            learned, never what the extracted projection IS — a load that
+            accepted them would imply it could rebuild the native model
+            they configured, which this node never persisted.
+        """
+        return [
+            f"{knob} describes FITTING, not the restored state — a loaded "
+            "projection is components (and, for pca, a mean), and nothing "
+            f"in it can be rebuilt from {knob}; drop the knob under "
+            "mode='load'"
+            for knob in ("algorithm_params", "seed")
+            if knob in self.params
+        ]
+
     def row_problems(self, rows):
         """Ways ``rows`` cannot be projected; empty when every one can.
 
@@ -2711,6 +2737,15 @@ class SklearnReduction(FittedTransform):
         path = _REDUCTION_PATHS[algorithm]
         named = f"algorithm {algorithm!r} ({path})"
         kwargs = dict(params.get("algorithm_params") or {})
+        shadowed = self._shadowed_knob_problems(kwargs)
+        if shadowed:
+            raise ValueError(
+                f"{self.key}: {'; '.join(shadowed)} — the direct-caller "
+                "re-check, like the row rule: a caller bypassing "
+                "validate_params would otherwise fit a projection "
+                "``apply_state`` then computes wrongly (whiten changes the "
+                "transform beyond the stored components)"
+            )
         kwargs["n_components"] = params["n_components"]
         kwargs["random_state"] = params.get("seed", DEFAULT_REDUCTION_SEED)
         estimator = _construct(
