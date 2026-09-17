@@ -1,0 +1,114 @@
+{
+  "schema_version": "RedGreenEvidence.v1",
+  "slice_id": "F5a / P7 Packet 7 / bounded synthetic composed-tape verification (P7 closure gate)",
+  "packet": "7-remainder",
+  "adr": "ADR-0146 - bounded synthetic composed-tape verification (P7 closure gate)",
+  "base_commit": "baafc91",
+  "worktree": "/home/russell/wt/f5a-p7-remainder-20260916",
+  "branch": "codex/f5a-p7-remainder-20260916",
+  "red_commit": "10f3ce7",
+  "green_commit": "447a423",
+  "cites": [
+    "docs/evidence/closeout/0190-f5a-p7-adr0146-phase0-matrix.json (Phase0Matrix.v1: the corrected 13-row matrix this RED/GREEN implements, the corrected data_capture_root derivation, the 3 phase0_skeptic_review implementation pins)",
+    "docs/evidence/closeout/0189-f5a-p7-composed-tape-adr-proposal.json (proposal/preapproval review/owner acceptance trail)",
+    "docs/evidence/closeout/0188-f5a-p7-adr0145-red-green.json (RED/GREEN evidence style precedent; ADR-0145's own pre-existing-failure disclosure precedent)",
+    "ADR-0146 (docs/architecture/decision-log.md line 11551; Decision points 1-10; Scope decision subsection; Non-goals)",
+    "docs/skills/test-drive-development.md"
+  ],
+  "authored_by": "implementer (Claude Sonnet 5)",
+  "red": {
+    "commit": "10f3ce7",
+    "command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/pipeline/test_captured_authorization.py -k compose_replay_tape -q",
+    "interpreter": "/home/russell/dskit/.venv/bin/python (python3.12)",
+    "base_for_red": "baafc91 (unmodified production code; RED commit adds only tests -- 29 new/updated tests in tests/pipeline/test_captured_authorization.py, one __all__-membership assertion updated in tests/production/test_bundles.py, one new dedicated regression test in tests/production/test_purity.py)",
+    "result": "29 failed, 1138 deselected",
+    "output": "every one of the 29 tests failed with AttributeError: module 'dskit.production.bundles' has no attribute 'compose_replay_tape' (or, for the two structural tests that reference it directly -- docstring warning, no-second-lifecycle-call AST check -- the same AttributeError at the point of first use), confirming compose_replay_tape genuinely does not exist on the unmodified base",
+    "failure_kind": "missing-symbol (genuine behavioral absence, matching this repo's own ADR-0144/0145 RED precedent), not a test-construction or environment mistake",
+    "other_red_assertions": {
+      "tests/production/test_bundles.py::test_the_public_surface_is_the_seven_bundles_the_invocation_the_tape_seam_and_the_causal_order_verifier": "FAILED as expected -- AssertionError, 'compose_replay_tape' present in the test's expected set but absent from the unmodified bundles.__all__",
+      "tests/production/test_purity.py::test_bundles_module_never_imports_pipeline_trust": "PASSED already at RED -- this is a structural regression GUARD (matrix row 12 / phase0_skeptic_review's import-enforcement Minor), not a behavior compose_replay_tape's own existence changes; bundles.py already imports no dskit.pipeline.trust symbol before this ADR, so there is nothing for this test to newly catch pre-GREEN. It is included in the RED commit so the guard is already in place before GREEN adds the function, and it continues to pass unchanged at GREEN, confirming compose_replay_tape's own implementation never adds the forbidden import."
+    }
+  },
+  "green": {
+    "commit": "447a423",
+    "focused_command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/pipeline/test_captured_authorization.py -k compose_replay_tape tests/production/test_bundles.py tests/production/test_purity.py -q",
+    "focused_result": "29 + 99 = 128 passed (29 ADR-0146 compose_replay_tape tests; 99 = full tests/production/test_bundles.py + tests/production/test_purity.py suites, run in full rather than filtered)",
+    "affected_command": "PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest tests/production/test_event_envelope_causal_order.py tests/production/test_bundles.py tests/pipeline/test_captured_authorization.py tests/pipeline/test_trust.py tests/production/test_verifier.py tests/pipeline/test_purity.py tests/production/test_purity.py -q",
+    "affected_result": "1 failed, 1661 passed",
+    "affected_failure_disposition": "the 1 failure is tests/pipeline/test_trust.py::test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private -- PRE-EXISTING and UNRELATED, see baseline_pre_existing_failure below; not fixed, not hidden",
+    "ruff": "clean (`ruff check dskit/production/bundles.py tests/pipeline/test_captured_authorization.py tests/production/test_bundles.py tests/production/test_purity.py` -> 'All checks passed!')",
+    "diff_check": "clean (`git diff --check` -> no output, both after RED and after GREEN)"
+  },
+  "baseline_pre_existing_failure": {
+    "found": true,
+    "test": "tests/pipeline/test_trust.py::test_public_surface_is_abstract_or_opaque_and_prepared_capture_is_private",
+    "symptom": "AssertionError: set(trust.__all__) != _PUBLIC_TYPES (test_trust.py's own hardcoded expected-types list) -- extra items in trust.__all__ not in the hardcoded set: 'NonAuthorizingDynamicRootGraph', 'NonAuthorizingSyntheticRootPisProof'",
+    "confirmed_pre_existing": "neither dskit/pipeline/trust.py nor tests/pipeline/test_trust.py is touched by this change -- `git diff --stat HEAD~2 -- dskit/pipeline/trust.py tests/pipeline/test_trust.py` is empty across both the RED and GREEN commits. The last commit to touch either file is 432c8a2 ('feat: ADR-0144 GREEN - dynamic authorize_capture_set closure'), which predates this branch's own base (baafc91) by three ADR-0146 docs-only commits. This is a stale test-suite assertion (test_trust.py's _PUBLIC_TYPES list not updated when ADR-0143's NonAuthorizingDynamicRootGraph / NonAuthorizingSyntheticRootPisProof were added to trust.__all__), not something this ADR's own work introduced, changed, or is in scope to fix.",
+    "action_taken": "none -- disclosed here per instruction, not silently fixed and not hidden. This failure is unrelated to compose_replay_tape and does not affect any of the 29 ADR-0146 tests or the two structural regression tests, all of which pass."
+  },
+  "files_changed": [
+    "dskit/production/bundles.py",
+    "tests/pipeline/test_captured_authorization.py",
+    "tests/production/test_bundles.py",
+    "tests/production/test_purity.py"
+  ],
+  "reviewed_blobs": {
+    "dskit/production/bundles.py": "84da26d5323f6a636373b8475308c9910a62acf3",
+    "tests/pipeline/test_captured_authorization.py": "e857de368d4f99e0022edb0d333432b274814435",
+    "tests/production/test_bundles.py": "11f3aca589a01aba2d5a88a3ed4e70ac819186a7",
+    "tests/production/test_purity.py": "ac815d60f01fbb72e3b58c85810941149f005c48"
+  },
+  "trust_py_untouched": {
+    "confirmed": true,
+    "evidence": "`git diff --stat baafc91..447a423 -- dskit/pipeline/trust.py` is empty; `git diff --name-only 10f3ce7..447a423` (RED..GREEN) lists exactly dskit/production/bundles.py and tests/pipeline/test_captured_authorization.py -- trust.py is not among them. compose_replay_tape imports no dskit.pipeline.trust symbol (confirmed both by direct code read and by the new dedicated test_bundles_module_never_imports_pipeline_trust regression test, which passes)."
+  },
+  "diff_shape": {
+    "dskit/production/bundles.py": "+321/-2: __all__ gains exactly one entry ('compose_replay_tape', inserted after 'Schedule' and before 'verify_causal_order', per evidence 0190's public_facades recommendation); one new block inserted between verify_causal_order's closing `raise ProductionError(problems)` and `class ReplayTape(ABC):`, containing two new small private helpers (_check_composed_tape_roster_fixture, _check_raw_event_member) and the one new function compose_replay_tape. Zero lines inside CapturedReplayTape, _check_tape, _check_event_envelope, or verify_causal_order are touched.",
+    "tests/pipeline/test_captured_authorization.py": "RED commit: +811 lines appended at end of file (29 new tests + shared fixture helpers), zero existing test bodies changed. GREEN commit: +23/-4 on top of RED, fixing two test-construction bugs discovered while reaching GREEN (see green.commit_message for detail) -- both in the new ADR-0146 section only; no pre-existing test in this file is touched.",
+    "tests/production/test_bundles.py": "+2/-1: the existing __all__ exact-set-equality assertion (test_the_public_surface_is_the_seven_bundles_...) gains 'compose_replay_tape' in its expected set, plus one comment-line clarification; no other test in this file is touched.",
+    "tests/production/test_purity.py": "+18/-0: one new test function (test_bundles_module_never_imports_pipeline_trust), inserted after the existing package-wide import-rule test; no existing test is touched."
+  },
+  "public_facades": {
+    "dskit.production.bundles.compose_replay_tape(record, session, published, consumer_document_sha256, roster_relative_path, raw_event_members)": "new, public, in __all__ -- the ADR's entire new production surface, matching ADR-0146's own text ('compose_replay_tape is exported alongside verify_causal_order, added to __all__')",
+    "dskit.production.bundles._check_composed_tape_roster_fixture / _check_raw_event_member": "new, PRIVATE, not in __all__ -- confirmed by the already-passing tests/production/test_purity.py::test_no_underscore_name_is_exported",
+    "dskit.production.bundles.CapturedReplayTape / _check_tape / _check_event_envelope / verify_causal_order": "unedited; compose_replay_tape composes them exactly as they exist today"
+  },
+  "implementation_pins_applied": {
+    "exception_wrapping": "record.read_member_bytes and record.lifecycle_captured_receipt_sha256's own ValueError (steps 2, 6a, 8) is caught and re-raised as ProductionError([str(exc)]) -- a single consistent exception type across compose_replay_tape's whole contract, per phase0_skeptic_review's Minor",
+    "trust_py_import_regression_test": "tests/production/test_purity.py::test_bundles_module_never_imports_pipeline_trust, a dedicated AST-based check (reusing tests.pipeline.test_purity._imports) restricted to dskit/production/bundles.py specifically, stricter than the package-wide rule that only PERMITS (does not require) this -- per phase0_skeptic_review's Minor",
+    "default_deny_raw_event_members_entry_keys": "each raw_event_members[i] dict is checked for both unknown and missing keys against the exact 8-key set (relative_path + the 7 ADR-0145-scoped metadata fields); an unrecognized ninth key accumulates a refusal rather than being silently ignored -- per phase0_skeptic_review's Nit, exercised by test_compose_replay_tape_refuses_unrecognized_raw_event_members_entry_key",
+    "docstring_warning": "compose_replay_tape's docstring's second line is the exact literal 'Bounded synthetic/test use only; not for real replay operations.' -- per the recheck Minor, exercised by test_compose_replay_tape_docstring_carries_the_bounded_synthetic_warning"
+  },
+  "data_capture_root_formula": {
+    "implemented": "data_capture_root = _canonical_hash([dict(item) for item in published.sealed.digests])",
+    "matches": "the CORRECTED formula from evidence 0190 (matches trust.py's own _manifest_digest(digests) = _digest(_canonical_bytes([dict(item) for item in digests])) byte-for-byte), NOT the original (wrong) published.descriptor-based draft",
+    "not_a_parameter": "confirmed by test_compose_replay_tape_signature_has_no_data_capture_root_parameter (inspect.signature has exactly the 6 ADR-named parameters, no 7th)",
+    "content_sensitivity": "confirmed by test_compose_replay_tape_data_capture_root_changes_when_captured_content_differs -- two genuinely different captures (differing raw-event payload_sha256) produce different data_capture_root values"
+  },
+  "matrix_row_coverage": {
+    "1": "test_compose_replay_tape_fixed_authority_accessor_reachable_default_content_refused -- see convergence_checkpoint below: implemented as a fixed-authority accessor-reachability/regression case (real read_member_bytes call against real committed FIXED-authority content, correctly refused by compose_replay_tape's own roster shape-check), not a full custom-fixture positive success",
+    "2": "test_compose_replay_tape_dynamic_authority_positive_full_chain -- Decision point 8's mandatory capstone, genuinely passes (not skipped/xfailed), plus the row-1-style second-call single-read-discipline check folded in here since row 1 could not carry it",
+    "3": "test_compose_replay_tape_refuses_session_from_a_different_capture",
+    "4": "test_compose_replay_tape_refuses_malformed_roster_fixture[wrong_schema_version|empty_sources|duplicate_source_id|rank_not_list_index|rank_gap|unknown_source_field] (6 parametrized cases)",
+    "5": "test_compose_replay_tape_refuses_malformed_raw_event_member[wrong_schema_version|empty_source_id|negative_source_sequence|malformed_payload_sha256|unknown_key] (5 parametrized cases) + test_compose_replay_tape_refuses_raw_event_orphaned_from_the_roster",
+    "6": "test_compose_replay_tape_signature_has_no_data_capture_root_parameter, test_compose_replay_tape_data_capture_root_changes_when_captured_content_differs, test_compose_replay_tape_refuses_a_duck_typed_published_object",
+    "7": "test_compose_replay_tape_round_trip_is_genuine_not_a_shortcut (spy on CapturedReplayTape._build/.parse and verify_causal_order confirms the reparsed object, not the pre-round-trip _build result, is what verify_causal_order receives and what compose_replay_tape returns)",
+    "8": "test_compose_replay_tape_refuses_decreasing_causal_order, test_compose_replay_tape_refuses_duplicate_event_id, test_compose_replay_tape_refuses_correction_chain_forward_reference, test_compose_replay_tape_refuses_malformed_new_envelope_field, test_compose_replay_tape_refuses_unrecognized_raw_event_members_entry_key; evidence 0187 rows 1/9 (digest substitution, noncanonical bytes) documented as structurally unreachable in a code comment (not silently dropped); row 12 (mutation/aliasing) documented as partially reachable (reordering raw_event_members is a legitimate caller choice, not an attack); row 14 (regression) confirmed by tests/production/test_event_envelope_causal_order.py's unmodified 63 tests passing in the affected run",
+    "9": "test_compose_replay_tape_accepts_empty_raw_event_members_vacuously",
+    "10": "test_compose_replay_tape_refuses_published_from_a_different_capture, test_compose_replay_tape_refuses_wrong_consumer_document_sha256",
+    "11": "test_compose_replay_tape_docstring_carries_the_bounded_synthetic_warning, test_compose_replay_tape_body_performs_no_second_f4_lifecycle_call (AST check: no produce/seal/publish/freeze_consumer_document/derive_consumer_port/authorize_capture_set call anywhere in the function body)",
+    "12": "tests/production/test_purity.py::test_bundles_module_never_imports_pipeline_trust",
+    "13": "tests/production/test_bundles.py::test_the_public_surface_is_the_seven_bundles_the_invocation_the_tape_seam_and_the_causal_order_verifier (updated to require exactly one new entry, compose_replay_tape, with every pre-existing entry unchanged)"
+  },
+  "convergence_checkpoint": {
+    "hit": true,
+    "severity": "disclosed, non-blocking -- does not contradict ADR-0146's own text and does not prevent honest closure",
+    "finding": "A full POSITIVE composed-tape fixture (a custom source_roster.json + raw-event members) cannot be carried through the FIXED/legacy authority's own action-execution-admission chain (_complete_signed_graph/_graph_live, the construction tests/pipeline/test_captured_authorization.py's existing ADR-0129 tests use).",
+    "root_cause": "_p4_close_admission's _p4_terminal_parent_projection (trust.py) re-signs the captured root's own member_manifest_sha256 into the 'root-publication-receipt' evidence it verifies, then checks the resulting projection digest against trust.py's HARDCODED, two-entry _P4_APPROVED_ROOT_PROJECTIONS allowlist (trust.py:3861). Confirmed empirically: driving a custom member set (even with the admission graph's own signing pass using the SAME custom content) through _complete_signed_graph/_graph_live raises ValueError('fixed external root policy projection refused') at commit_p4_batch -> close_admission time, because the resulting projection digest is not one of the two pre-baked digests that already-existing default fixtures (f4._publish's and f4._foreign_publish's own unmodified content) produce.",
+    "why_not_fixable_within_scope": "The only fix would be adding a third entry to trust.py's _P4_APPROVED_ROOT_PROJECTIONS tuple (or otherwise editing trust.py's admission-verification code) -- forbidden outright by ADR-0146 Decision point 10 ('No trust.py edit, and no trust.py import... No correction to _validate_capture_request, commit_legacy_capture, or commit_p4_batch is proposed or required' -- Decision point 1). This is the fixed corpus's own intentional design (a genuinely FIXED, pre-approved external policy grant, as opposed to the dynamic authority's fresh per-test graph via ADR-0141/0142/0143) -- not a test-construction mistake discovered late; it was found, diagnosed, and worked around within this same RED cycle before any GREEN code was written.",
+    "why_not_a_blocker": "ADR-0146 Decision point 8's own text explicitly anticipates and permits exactly this asymmetry: 'A fixed-authority case may additionally exist (e.g., as a second comparison case or a regression guard) but does not substitute for the dynamic-authority case this point requires.' The ADR's own MANDATORY positive proof is the dynamic-authority case (row 2), which is fully achieved and genuinely passes. Every other matrix row needing custom fixture content is driven through the dynamic authority instead of the fixed one (compose_replay_tape's own validation/round-trip/causal-order logic is independent of which authority supplied record/session/published -- this is itself part of what row 2 verifies, per ADR Context point 1's 'resolver-type-agnostic by construction' claim). Row 1 is implemented instead as a fixed-authority accessor-reachability/regression case: a real read_member_bytes call against real committed FIXED-authority content (the default, unmodified fixture), correctly refused by compose_replay_tape's own roster shape-check rather than silently accepted -- a genuine behavioral exercise of the fixed path, matching Decision point 8's own 'regression guard' framing.",
+    "disclosed_in": ["RED commit message (10f3ce7)", "GREEN commit message (447a423)", "this evidence file", "the affected tests' own docstrings"]
+  },
+  "deployment_eligible": false,
+  "stop_condition": "No final-lens review performed (explicitly out of scope per task instruction). No merge to main, no wrap. Branch codex/f5a-p7-remainder-20260916 to be pushed to origin at HEAD after this evidence file's commit, per instruction."
+}
