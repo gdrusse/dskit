@@ -12637,3 +12637,72 @@ parallel store -- `reserve_once`/`_transition_lock` are added once on the
 shared `ChainLedger` base and inherited, not reimplemented per store; a
 store-conformance test for `libs/sqlite.py` is left to Phase 0 to scope, not
 assumed clean by this ADR. `deployment_eligible=false` throughout.
+
+## ADR-0148 — Segmentation and auditable SB3 episode evaluation
+
+**Status:** accepted 2026-09-17 under owner-granted ADR authority (session
+`claude/dskit-rl-clustering-zy2dge`). Supersedes the 2026-09-13 proposal
+numbered ADR-0122 on the disjoint `codex/cluster-rl-framework-plan-20260913`
+branch; that number was already taken here by the attested ten-head release
+ADR, so the entry is renumbered rather than reused. The exact contract is
+`docs/plans/2026-09-clustering-rl-framework.md`, whose §8 records a
+seventeen-cycle skeptic loop and whose §10 dispositions the owner gates.
+
+**Context.** `FittedTransform` already owns train-split selection, all-row
+application, JSON sidecar/load compatibility, and row-independence screening.
+The sklearn pack has supervised fit/predict/select; the SB3 pack already has
+Gymnasium `Env` subclass checking, declared environment construction,
+zip-plus-hashed-sidecar save/load, policy restore, evaluation, and close
+discipline. An earlier proposal attempted to add binary fitted state, sealed
+data, artifact envelopes, source authority, a Gym contract registry, a
+publication protocol, and parallel `sb3-*-v2` lifecycles. Repeated security
+reviews showed that trusted-local protocol expanding instead of reusing
+accepted seams.
+
+**Decision.** The architecture-reset checkpoint discards those proposed
+elements. No `ArtifactEnvelope`, `BinaryFittedTransform`, `SealedDataset`,
+`seal-dataset`, Gym source registry, publication protocol, or replacement SB3
+train/policy lifecycle is implemented. Existing formats and legacy kinds are
+unchanged. Add only two generic tier-2 extensions plus one tier-1 hook:
+
+1. `SklearnSegment(FittedTransform)` in the existing sklearn pack, registered
+   as `sklearn-segment`. It fits one of `KMeans`, `MiniBatchKMeans`, or `Birch`
+   only on inherited `fit_split: "train"`, persists extracted JSON-safe centers
+   and labels through the existing fitted sidecar, assigns every row by a
+   deterministic nearest-center rule (squared Euclidean, lowest center index
+   wins a tie), and emits `segment` plus a canonical-state `segment_model_id`.
+   Its `row_problems` is the sole per-row admission owner: mapping shape,
+   finite non-bool declared feature values, and absence of those two reserved
+   output keys. Both the direct fitted doorway and a carried `ApplyTransform`
+   second stream invoke that rule before execution. It never persists a native
+   clustering model, and reports no cluster score — quality is not promoted.
+
+2. `Sb3EvalEpisodes(_Sb3Base)` in the existing SB3 pack, registered as
+   `sb3-eval-episodes`. It reuses the legacy sidecar/load/environment services,
+   makes no artifact-format change, and adds a bounded manual Gymnasium episode
+   loop whose ordered evidence is the existing `JsonArtifact` persistence seam,
+   with defined flat numeric aggregates. Its `split` narrows to `"val"`/`"test"`
+   — persisted per-episode evidence of held-out performance is not a scalar a
+   search may read from any split. Existing `sb3-train`, `sb3-policy`, and
+   `sb3-eval` are behaviorally and artifact unchanged.
+
+3. `FittedTransform.sidecar_problems(payload)` — a tier-1 default hook
+   returning `[]`, called unconditionally in `_sidecar`. It is the seam by
+   which a member refuses a RESTORED artifact on facts the base does not own;
+   `SklearnSegment` overrides it to require a recorded `fit_split: "train"`, so
+   an omitted `fit_split` under ADR-0040 cannot restore a val/test-fitted
+   segment. Every existing member keeps the no-op default.
+
+Add the bounded optional extra `rl = ["gymnasium>=1.3,<1.4",
+"stable-baselines3>=2.9,<2.10"]` and include both in `all`. Imports stay lazy.
+
+**Consequences.** General mechanism stays in `dskit/pipeline/libs`; the
+accepted `FittedTransform` lifecycle stays tier 1. A child owns environment,
+reward, transition, orders/fills, segment meaning, and economic realism in a
+future child ADR; JSON configuration does not certify those semantics.
+Artifacts and packages remain trusted-local inputs — existing hashes detect
+corruption or drift but do not authenticate a publisher or make pickle safe.
+No production authority is added and no `deployment_eligible` claim is made.
+`learn`, HPO, final refit, market replay, backtest, paper trading and lockbox
+access remain unauthorized and untouched; the SB3 episode suite constructs no
+SB3 or Gymnasium object at all.
