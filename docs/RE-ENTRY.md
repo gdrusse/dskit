@@ -8,7 +8,9 @@ ADR-0148 was written, reviewed and stopped three times (v1: 2C/6M evidence
 Major in 0200). Three consecutive stopped candidates trip
 `docs/skills/skeptic-review.md`'s convergence checkpoint, which forbids a
 fourth patch to the same contract. The checkpoint is recorded at evidence
-0202 and its owner-approved ruling was to narrow the work. ADR-0148 v3 stays
+0202. The owner was given three options and ruled to narrow and land; that ruling, and the
+fact that the author's own hop-0 recommendation was then falsified by inventory, are
+recorded in 0202's `owner_ruling` and `outcome_after_ruling` blocks. ADR-0148 v3 stays
 in the decision log marked **STOPPED / DO NOT IMPLEMENT** with its 8 open
 Critical/Major findings named in its own status block -- an unlanded contract
 retained for the next slice, not a design to code against.
@@ -54,6 +56,10 @@ only becomes live once a v2 wire exists.
 (`No module named '_cffi_backend'`), which was silently failing large parts
 of the trust suites. Fixed with `pip install cffi`; `tests/pipeline/
 test_captured_authorization.py` + `test_trust.py` now run **1420 passed**.
+A broader `tests/pipeline` run gives 3703 passed / 30 skipped / 1 failed:
+`test_an_unlistable_nodes_dir_is_named_not_fatal` chmods a dir to 0 and expects a
+permission refusal, but this container runs as root, which bypasses permission bits.
+That is an environment artifact of running as root, not a repo defect.
 
 **Disclosed pre-existing failures, reproduced on the unchanged base with the
 same command and environment, NOT fixed here:** 4 in

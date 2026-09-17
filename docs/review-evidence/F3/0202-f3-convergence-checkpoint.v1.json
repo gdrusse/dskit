@@ -1,55 +1,87 @@
 {
-  "schema_version": "ConvergenceCheckpoint.v1", "slice_id": "F3",
-  "base_commit": "3b73361",
-  "trigger": {
-    "rule": "docs/skills/skeptic-review.md, Convergence checkpoint: 'After three consecutive failed cycles, no fourth patch until an independent checkpoint. Repeated families, widening scope, or a broken authority boundary trigger it earlier.'",
-    "cycles": [
-      {"candidate": "ADR-0148 v1", "verdict": "2 Critical, 6 Major", "evidence": "0196"},
-      {"candidate": "ADR-0148 v2", "verdict": "1 Critical, 4 Major", "evidence": "0198"},
-      {"candidate": "ADR-0148 v3", "verdict": "1 Critical, 5 Major (+2 author-found)", "evidence": "0201, 0200"}
-    ],
-    "count": 3,
-    "also_triggered_earlier_by": "repeated family -- see below. The rule states repeated classes cannot use the 'genuinely distinct localized findings' resumption exception."
-  },
-  "repeated_family": {
-    "name": "each round's REPLACEMENT mechanism carries its own hole in the same invariant",
-    "trace": [
-      "v1 C1: durability asserted via a ChainLedger that is not in trust.py and cannot be imported there.",
-      "v2 C-1: the replacement (receipt_store injection) was real, but its crash taxonomy described behavior _reload_stream/_prepare_receipt do not produce.",
-      "v3 C-1: the replacement (attempt-indexed ascending scan) is honest about the lifecycle, but the scan is read-then-act and races, so F3-I01 breaks again."
-    ],
-    "diagnosis": "Every cycle the same invariant (at most one PUBLISHED root per derivation intent, and its durability story) was re-specified with a new mechanism, and each new mechanism was defective in a way the previous one was not. The defect is not in any single mechanism: it is that DP1 is being specified in prose, ahead of any executable test, against a 10k-line lifecycle whose real behavior only shows up when read line-by-line. Three rounds of prose have not converged and there is no evidence a fourth would.",
-    "secondary_family": "overclaimed exhaustiveness -- v1 named 1 of 8 literal sites; v3 claimed 'the nine sites' and missed a whole class of cross-object equality check (A-2). Same shape, twice."
-  },
-  "which_earlier_fixes_failed_to_cover_the_family": [
-    "v2's fix addressed the MECHANISM (import vs inject) but not the fact that the claimed behavior was never checked against the code path that implements it.",
-    "v3's fix addressed the TAXONOMY (honest about non-resumability) but introduced an orchestration protocol with no concurrency analysis at all -- F3-I01's input_families never listed a concurrent/zombie-worker case across any of the three matrices.",
-    "Neither fix changed the method: prose-first specification of a stateful, concurrent protocol, reviewed by reading."
+ "schema_version": "ConvergenceCheckpoint.v1",
+ "slice_id": "F3",
+ "base_commit": "3b73361",
+ "trigger": {
+  "rule": "docs/skills/skeptic-review.md, Convergence checkpoint: 'After three consecutive failed cycles, no fourth patch until an independent checkpoint. Repeated families, widening scope, or a broken authority boundary trigger it earlier.'",
+  "cycles": [
+   {
+    "candidate": "ADR-0148 v1",
+    "verdict": "2 Critical, 6 Major",
+    "evidence": "0196"
+   },
+   {
+    "candidate": "ADR-0148 v2",
+    "verdict": "1 Critical, 4 Major",
+    "evidence": "0198"
+   },
+   {
+    "candidate": "ADR-0148 v3",
+    "verdict": "1 Critical, 5 Major (+2 author-found)",
+    "evidence": "0201, 0200"
+   }
   ],
-  "changed_approach": {
-    "decision": "STOP specifying the whole three-hop lane in one contract. Cut to the smallest separately testable slice that closes a real, manifest-named gate, and defer every mechanism that has failed review to its own later ADR.",
-    "rationale": "skeptic-review.md's checkpoint explicitly offers 'smaller separately testable slice' as a concrete changed approach. The slice below needs NO new primitive: no new-root issuance, no derivation hop, no execution entry, no wire versioning, no CapturedPortSet, no child adapter. It is therefore not exposed to any of the 8 open findings, all of which live in DP1/DP4/DP5/DP6/DP7.",
-    "proposed_slice": {
-      "name": "F3 hop 0, chronology A only -- the roster G1/G2 authority gate",
-      "manifest_node": "tests/production/test_feed.py::test_roster_rejects_g2_without_g1 (the master manifest's own named F3 sentinel, line 1095; verified ABSENT from the tree by grep this session)",
-      "contract": "A G2-only roster bootstrap refuses before event-envelope, tape-member, or capture access. Ranks derive from the complete authorized source universe including authorized zero-event sources. Roster is PUBLISHED, never CAPTURED, before any consumer document exists.",
-      "reuses_existing": ["NonAuthorizingRosterBootstrapVerifier (trust.py:5913)", "_synthetic_roster_bootstrap_fixture (tests/pipeline/test_captured_authorization.py:2619)", "f4._publish/_freeze/_captured_flow", "cryptography 41.0.7, pytest 9.1.1 confirmed available"],
-      "adds_no_new_primitive": true,
-      "open_findings_it_is_exposed_to": "none of the 8"
-    },
-    "deferred_to_their_own_adrs": [
-      "DP1 CapturedDerivationHop (new-root issuance, durability, retry/concurrency) -- carries C-1, M-1, M-2, M-4, M-5",
-      "DP4 versioned wire -- carries A-1, A-2",
-      "DP5 CapturedPortSet -- design verified sound (two-port P4 precedent confirmed at tests/pipeline/test_captured_authorization.py:5271-5285 and :969) but depends on nothing in this slice",
-      "DP6 hop-1 writer -- carries M-3",
-      "DP7 F5b CapturedForecastInput -- depends on DP5"
-    ],
-    "why_this_will_converge_where_the_others_did_not": "The slice's behavior is decidable by one focused executable test against machinery that already exists and already passes, rather than by prose about a stateful concurrent protocol. Review has something to run, not only something to read. The deferred mechanisms each get a contract sized to one reviewable idea."
+  "count": 3,
+  "also_triggered_earlier_by": "repeated family -- see below. The rule states repeated classes cannot use the 'genuinely distinct localized findings' resumption exception."
+ },
+ "repeated_family": {
+  "name": "each round's REPLACEMENT mechanism carries its own hole in the same invariant",
+  "trace": [
+   "v1 C1: durability asserted via a ChainLedger that is not in trust.py and cannot be imported there.",
+   "v2 C-1: the replacement (receipt_store injection) was real, but its crash taxonomy described behavior _reload_stream/_prepare_receipt do not produce.",
+   "v3 C-1: the replacement (attempt-indexed ascending scan) is honest about the lifecycle, but the scan is read-then-act and races, so F3-I01 breaks again."
+  ],
+  "diagnosis": "Every cycle the same invariant (at most one PUBLISHED root per derivation intent, and its durability story) was re-specified with a new mechanism, and each new mechanism was defective in a way the previous one was not. The defect is not in any single mechanism: it is that DP1 is being specified in prose, ahead of any executable test, against a 10k-line lifecycle whose real behavior only shows up when read line-by-line. Three rounds of prose have not converged and there is no evidence a fourth would.",
+  "secondary_family": "overclaimed exhaustiveness -- v1 named 1 of 8 literal sites; v3 claimed 'the nine sites' and missed a whole class of cross-object equality check (A-2). Same shape, twice."
+ },
+ "which_earlier_fixes_failed_to_cover_the_family": [
+  "v2's fix addressed the MECHANISM (import vs inject) but not the fact that the claimed behavior was never checked against the code path that implements it.",
+  "v3's fix addressed the TAXONOMY (honest about non-resumability) but introduced an orchestration protocol with no concurrency analysis at all -- F3-I01's input_families never listed a concurrent/zombie-worker case across any of the three matrices.",
+  "Neither fix changed the method: prose-first specification of a stateful, concurrent protocol, reviewed by reading."
+ ],
+ "changed_approach": {
+  "decision": "STOP specifying the whole three-hop lane in one contract. Cut to the smallest separately testable slice that closes a real, manifest-named gate, and defer every mechanism that has failed review to its own later ADR.",
+  "rationale": "skeptic-review.md's checkpoint explicitly offers 'smaller separately testable slice' as a concrete changed approach. The slice below needs NO new primitive: no new-root issuance, no derivation hop, no execution entry, no wire versioning, no CapturedPortSet, no child adapter. It is therefore not exposed to any of the 8 open findings, all of which live in DP1/DP4/DP5/DP6/DP7.",
+  "proposed_slice": {
+   "name": "F3 hop 0, chronology A only -- the roster G1/G2 authority gate",
+   "manifest_node": "tests/production/test_feed.py::test_roster_rejects_g2_without_g1 (the master manifest's own named F3 sentinel, line 1095; verified ABSENT from the tree by grep this session)",
+   "contract": "A G2-only roster bootstrap refuses before event-envelope, tape-member, or capture access. Ranks derive from the complete authorized source universe including authorized zero-event sources. Roster is PUBLISHED, never CAPTURED, before any consumer document exists.",
+   "reuses_existing": [
+    "NonAuthorizingRosterBootstrapVerifier (trust.py:5913)",
+    "_synthetic_roster_bootstrap_fixture (tests/pipeline/test_captured_authorization.py:2619)",
+    "f4._publish/_freeze/_captured_flow",
+    "cryptography 41.0.7, pytest 9.1.1 confirmed available"
+   ],
+   "adds_no_new_primitive": true,
+   "open_findings_it_is_exposed_to": "none of the 8"
   },
-  "preserved": {
-    "no_work_discarded": "ADR-0148 v3's text, all three matrices (0195/0197/0199) and all three verdicts (0196/0198/0201) plus the author findings (0200) are retained in full. The deferred decision points are not deleted; they are unlanded contracts with their open findings recorded against them.",
-    "no_blocker_waived": true, "no_threat_model_reduced": true, "no_history_rewritten": true
-  },
-  "status": "AWAITING OWNER RULING on the scope cut. The checkpoint forbids a fourth patch to the same whole-lane contract; it does not by itself authorize the narrowed slice, which changes what this task delivers and is therefore the owner's call.",
-  "red_authorization": false, "deployment_eligible": false
+  "deferred_to_their_own_adrs": [
+   "DP1 CapturedDerivationHop (new-root issuance, durability, retry/concurrency) -- carries C-1, M-1, M-2, M-4, M-5",
+   "DP4 versioned wire -- carries A-1, A-2",
+   "DP5 CapturedPortSet -- design verified sound (two-port P4 precedent confirmed at tests/pipeline/test_captured_authorization.py:5271-5285 and :969) but depends on nothing in this slice",
+   "DP6 hop-1 writer -- carries M-3",
+   "DP7 F5b CapturedForecastInput -- depends on DP5"
+  ],
+  "why_this_will_converge_where_the_others_did_not": "The slice's behavior is decidable by one focused executable test against machinery that already exists and already passes, rather than by prose about a stateful concurrent protocol. Review has something to run, not only something to read. The deferred mechanisms each get a contract sized to one reviewable idea."
+ },
+ "preserved": {
+  "no_work_discarded": "ADR-0148 v3's text, all three matrices (0195/0197/0199) and all three verdicts (0196/0198/0201) plus the author findings (0200) are retained in full. The deferred decision points are not deleted; they are unlanded contracts with their open findings recorded against them.",
+  "no_blocker_waived": true,
+  "no_threat_model_reduced": true,
+  "no_history_rewritten": true
+ },
+ "status": "OWNER RULING RECEIVED. The owner was presented with three options (narrow to hop 0; run an independent checkpoint agent first; override the checkpoint and patch v4) and chose to narrow and land. Recorded here because this file was written BEFORE the ruling and previously read 'AWAITING OWNER RULING'; the earlier wording is superseded, not deleted.",
+ "red_authorization": false,
+ "deployment_eligible": false,
+ "owner_ruling": {
+  "decision": "narrow the work and land the bounded slice",
+  "options_presented": [
+   "cut to hop 0 and land it (recommended)",
+   "independent checkpoint agent first",
+   "override the checkpoint and patch v4"
+  ],
+  "authorized": "the owner additionally authorized the author to complete the inventory and decide the final slice content",
+  "what_the_ruling_did_NOT_authorize": "implementing ADR-0148's stopped decision points, any real-data activity, or any deployment claim"
+ },
+ "outcome_after_ruling": "Inventory then showed the hop-0 gate is ALREADY implemented and covered (test_adr135_bootstrap_refuses_grant_mutations[swap|wrong-role|wrong-key]; verify() structurally requires both grants), so no honest RED existed there and none was manufactured. The slice delivered instead was negative coverage for two authority guards that had zero, chosen by the author under that authorization. This correction is recorded because the author's first recommendation (hop 0 closes a real gate) was wrong on inventory."
 }
