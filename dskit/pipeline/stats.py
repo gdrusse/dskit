@@ -65,6 +65,7 @@ __all__ = [
     "no_information_test",
     "register_correction",
     "skill_vs_mean",
+    "student_t_sf",
     "weighted_benjamini_hochberg",
 ]
 
@@ -794,8 +795,34 @@ def _betai(a, b, x):
     return 1.0 - front * _betacf(b, a, 1.0 - x) / b
 
 
-def _student_sf(t, df):
-    """Upper tail ``P(T > t)`` for Student's t on ``df`` degrees."""
+def student_t_sf(t, df):
+    """Compute the upper tail ``P(T > t)`` of a Student t distribution.
+
+    The one owner of the Student tail in this package. It is public
+    because the inversion a confidence interval needs lives in the module
+    that needs it (:mod:`~dskit.pipeline.mean_interval` bisects on this),
+    and a second copy of the continued fraction underneath would be the
+    duplication this repo forbids rather than a convenience.
+
+    Parameters
+    ----------
+    t : float
+        The evaluation point, any finite number.
+    df : float
+        Degrees of freedom, > 0.
+
+    Returns
+    -------
+    float
+        ``P(T > t)`` in ``[0, 1]``, decreasing in ``t``.
+
+    Examples
+    --------
+    The distribution is symmetric about zero::
+
+        student_t_sf(0.0, 8)
+        # -> 0.5
+    """
     tail = 0.5 * _betai(df / 2.0, 0.5, df / (df + t * t))
     return tail if t > 0.0 else 1.0 - tail
 
@@ -916,7 +943,7 @@ def across_fold_t(values):
         "mean": mean,
         "se": se,
         "t": t,
-        "p_value": _student_sf(t, n - 1),
+        "p_value": student_t_sf(t, n - 1),
         "df": n - 1,
     }
 

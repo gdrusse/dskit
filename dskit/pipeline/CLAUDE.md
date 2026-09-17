@@ -89,6 +89,27 @@ on it without breaking its rulings.
   Not a `stat_test` `method`. A panel is the caller's to collapse or
   test per unit. `clark_west_series` can feed `cluster_bootstrap_t`
   when the independence unit is a cluster.
+- **Mean intervals under dependence** — `mean_interval.py`. The doorway
+  is `MeanIntervalEstimator`; `interval` is a TEMPLATE method a member
+  never overrides, and a member supplies `independent_units` /
+  `mean_and_se` / `bounds`. `ClusterBootstrapInterval` and
+  `NeweyWestInterval` ship; `register_estimator` mirrors
+  `register_correction` but holds CLASSES. Two rules bite. The
+  DEPENDENCE IS NEVER DEFAULTED: `MeanEvidence` refuses to construct
+  without `units` (per-observation independence-unit labels, held to
+  `records.cluster_ok`) or `overlap_steps` (the `newey_west_mean`
+  `lags` idiom), because the only available default — independence — is
+  the answer that is too narrow, which is the whole defect the module
+  exists to stop. And it is FAIL-CLOSED: an unclaimable bound RAISES,
+  where `stats.cluster_bootstrap_t` returns `None`. That divergence is
+  deliberate — a `None` beside a p-value is descriptive, a `None`
+  reaching a capital constraint reads as "no uncertainty". The
+  arithmetic is NOT re-derived here: every replicate is
+  `stats.cluster_bootstrap_t`'s and every long-run variance is
+  `stats.newey_west_mean`'s. The one thing added is the HAC interval
+  that never existed, and its Student-t critical value takes df from the
+  INDEPENDENT-UNIT count, never `n - 1`. `stats.student_t_sf` was made
+  public for that inversion and remains the only Student tail.
 - **Split policies** — `register_split_policy` (`split_policy.py`);
   `record` / `event-open` / `event-close` ship. An event policy needs a
   data node implementing `event_bounds()`, and the driver refuses when
@@ -568,6 +589,8 @@ dskit/pipeline/
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction
 │                      registry; no-information vs mean (Clark–West, h*)
+├── mean_interval.py   MeanEvidence + MeanIntervalEstimator: mean, dependence-
+│                      aware SE, two-sided interval; dependence never defaulted
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets

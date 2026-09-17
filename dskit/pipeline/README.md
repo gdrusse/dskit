@@ -685,6 +685,9 @@ dskit/pipeline/
 │                      registry (bh / bonferroni / none / weighted-bh) +
 │                      register_correction; no-information vs mean
 │                      (Clark–West HAC + sequential h*, ADR-0057)
+├── mean_interval.py   MeanEvidence + the MeanIntervalEstimator family: a mean,
+│                      a dependence-aware SE and a two-sided interval; the
+│                      dependence statement is required, never defaulted
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

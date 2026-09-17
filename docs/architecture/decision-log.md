@@ -13016,3 +13016,146 @@ The prior uncommitted ADR-0148 draft and its five-Major verdict live in a
 Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
 from this Linux container. If that draft carries findings beyond the five stated
 in the task, they are not addressed here.
+
+---
+
+## ADR-0151 — Mean-effect intervals under temporal dependence
+
+**Status:** accepted (2026-09-17; owner pre-approved 2026-09-17, path row A18041).
+
+**ADR-id allocation.** Scanned every ref and every working tree reachable from
+this clone before allocating: `git for-each-ref refs/heads refs/remotes` plus
+`git grep '^## ADR-0[0-9]{3}'` over `docs/architecture/decision-log.md`, plus a
+direct grep of each `~/wt/*` working copy. Highest seen anywhere: **0149**,
+which is ALREADY DOUBLE-ALLOCATED (`codex/pi-estimator-20260917` and
+`codex/dim-reduction-adr149-20260917` both took it from the same base). 0150 is
+free but is the obvious landing spot for that collision's renumber, so this ADR
+takes 0151 and deliberately leaves 0150 vacant. Base for this lane:
+`origin/main` at `e989dff`. The decision log has no merge driver and no
+uniqueness test; until it has one, `max + 1` from a single base is not a safe
+allocation rule.
+
+**Context.** A robust uncertainty set (`U_mu`, the Bertsimas–Sim budgeted
+counterpart sketched in the intraday_equities research notes) needs, per
+component, a point mean and an adverse deviation around it. The evidence is
+out-of-fold per-row scores whose labels OVERLAP in time, so the naive
+`s/sqrt(n)` interval is too narrow by exactly the factor that matters. dskit had
+the arithmetic for both standard answers and no doorway that makes a caller
+STATE the dependence before it gets a number.
+
+Gamma (the Bertsimas–Sim budget) is tuned by rolling validation and is
+explicitly NOT identified by anything here. This ADR produces per-component
+deviations only.
+
+**Inventory (what already existed).**
+
+* `stats.cluster_bootstrap_t` — studentized recentered cluster bootstrap-t;
+  already returns `mean`, `se`, `ci_low`, `ci_high`. With clusters = trading
+  sessions this IS the whole-session block bootstrap the research note ratified.
+* `stats.newey_west_mean` — the HAC mean/SE owner. Returns **no interval**.
+* `stats.dm_lags`, `across_fold_t`, `clark_west_series`, `_student_sf`/`_betai`.
+* `attempts.py` — the scramble doctrine: the exchangeable unit is a whole
+  SESSION, because a session moves every overlapping label with it.
+* Searched and **absent**: any block/stationary bootstrap by that name, any
+  effective-sample-size helper, any inverse CDF or critical-value inverter, any
+  second `ci_low`/`ci_high` producer. `cluster_bootstrap_t` is the only interval
+  in `dskit`.
+
+**Three proven gaps** (probed on `e989dff`, not assumed):
+
+1. `cluster_bootstrap_t({"a": [1.0, nan], "b": [2.0, 3.0]}, 50, 7)` returns
+   `mean=nan, ci_low=nan, ci_high=nan` — a non-finite score propagates silently.
+2. `newey_west_mean` defaults `lags=0`. A caller who says nothing gets the
+   independence assumption for free — the exact silent too-narrow answer this
+   row exists to prevent — and gets no bounds at all even when they do say.
+3. Neither refuses on too-few independent units. `cluster_bootstrap_t` runs on
+   two clusters and reports a `mean`/`se`/`p_value` from them.
+
+**Decision.** A thin tier-1 core module, `dskit/pipeline/mean_interval.py`, that
+owns the CONTRACT and delegates the ARITHMETIC to the two functions above.
+Nothing resamples or kernel-weights here; no estimator is re-derived.
+
+* `MeanEvidence` — frozen value: time-ordered `values`, plus the dependence
+  statement in whichever spelling the caller has (`units` = per-observation
+  independence-unit label, and/or `overlap_steps` = label overlap in observation
+  steps). **Construction refuses when BOTH are absent.** The dependence is never
+  defaulted; it has no default to fall back to.
+* `MeanIntervalEstimator(ABC)` — the doorway. `interval(evidence, confidence=)`
+  is a TEMPLATE method a member never overrides: it owns the screens, the
+  minimum-units refusal, the result invariants and determinism. Two
+  `@abstractmethod` hooks, one job each — `mean_and_se(evidence)` and
+  `bounds(evidence, mean, se, confidence)` — plus a `minimum_units` hook,
+  because "fewer units than the method can support" is the METHOD's fact.
+* `MeanIntervalResult` — frozen; cannot exist with `low > mean` or
+  `mean > high`, or with a non-finite field. Exposes `deviation_below` /
+  `deviation_above` (pure geometry). Naming one of them "adverse" needs the
+  consumer's sign convention, which dskit does not have.
+* Two members: `ClusterBootstrapInterval` (delegates to `cluster_bootstrap_t`;
+  units are the resampling unit) and `NeweyWestInterval` (delegates to
+  `newey_west_mean`; `lags = overlap_steps`, Student-t critical value on
+  `independent_units - 1` degrees of freedom, where independent units are the
+  non-overlapping-block count `n // (overlap_steps + 1)`).
+* `ESTIMATORS` / `register_estimator` / `estimator` — the registry idiom
+  `stats.register_correction` set and `false_signal.py` reused. The registry
+  holds CLASSES, because the family is an object with hooks.
+* `ClusterBootstrapInterval` additionally refuses when a stated `overlap_steps`
+  would SPAN a unit boundary (overlap >= the shortest unit's contiguous run).
+  That is `attempts.py`'s session doctrine enforced rather than assumed: units
+  whose labels reach into the next unit are not independent units.
+
+**Fail-closed, not fail-quiet.** A bound the method cannot claim RAISES; it is
+never `None`, never NaN, never a silently narrower number. This deliberately
+diverges from `cluster_bootstrap_t`, which returns `None` bounds on a degenerate
+pivot tail. That is correct for descriptive per-instrument evidence beside a
+p-value and wrong for a number a capital constraint consumes: a consumer that
+reads `None` as "no adjustment" sizes as if there were no uncertainty.
+
+**One edit outside the new module.** `stats._student_sf` is promoted to public
+`stats.student_t_sf`. The Student tail stays owned by `stats.py`; the new module
+bisects on it for the quantile. Copying the continued fraction into a second
+module is the defect CLAUDE.md's "a function is never repeated across modules"
+names, and `false_signal.clopper_pearson_upper` bisecting on a public `stats`
+tail is the precedent being followed.
+
+**Tier: 1 (core), `dskit/pipeline/`.** The code is a pure rule over numbers with
+zero required dependencies and no library to wrap, and a project that has never
+heard of returns, portfolios or trading sessions can use it on any overlapping
+mean. It is not a node kind: like `false_signal.py` and `kinds_search.py`'s
+values it is a plain API a node or a child may call, and wiring it into a
+document is separate, unauthorized work.
+
+**New module rather than more functions in `stats.py`**, because what this IS is
+an estimator FAMILY with a doorway, a required contract and a registry — the
+same shape `false_signal.py` was given today — whereas `stats.py` holds pure
+statistical rules and the correction registry. `stats.py` is already 1,293 lines
+and owns three distinct estimands.
+
+**Rejected.**
+
+* *Extend `cluster_bootstrap_t` in place.* It backs the OWNED `stat_test` kind
+  and `benchmarks.py` reads its `ci_high`. Tightening its screens or changing a
+  `None` bound to a raise would move an owned verdict path for a reason that has
+  nothing to do with multiplicity testing.
+* *A loose `mean_interval(...)` function.* Owner ruling 2026-09-04 prefers
+  objects; and the two interval families differ in real behavior, which is a
+  subclass, not an `if method ==` in one body.
+* *A true stationary bootstrap (Politis–Romano geometric blocks).* The research
+  note names it beside the block bootstrap. Not built: the whole-session block
+  case is what the evidence actually has (sessions are natural, non-overlapping
+  blocks) and `cluster_bootstrap_t` already delivers it exactly. A geometric-
+  block member is a later subclass behind this same doorway and needs no
+  redesign — which is the point of making the doorway a class.
+* *Defaulting `overlap_steps` from `dm_lags`.* `dm_lags` is a sensible automatic
+  rule, and wiring it as a DEFAULT would reintroduce exactly the silent
+  dependence assumption this row exists to remove. A caller may pass
+  `dm_lags(...)` in; nothing here will pass it for them.
+* *Simultaneous / joint coverage across components.* Marginal intervals are not
+  a joint region, and the research note says so. Each call describes ONE
+  component. Nothing here claims family-wise coverage, and `U_mu`'s geometry
+  remains the consumer's decision.
+
+**Consequences.** Not wired to any node, document or child; `nodes_capital.py`
+is untouched. Not validated on real data — every test is synthetic, and the
+research note's acceptance criterion (empirical coverage and width on a later,
+untouched calibration segment) is NOT met by this ADR and is named follow-on
+work. Gamma remains untouched and unidentified.
