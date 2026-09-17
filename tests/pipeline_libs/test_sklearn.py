@@ -2765,11 +2765,35 @@ def test_reduce_params_seed_shape_and_range():
 
 
 def test_reduce_params_shadowed_knobs_are_refused():
-    for shadowed in ("n_components", "random_state", "whiten"):
+    for shadowed in ("n_components", "random_state", "seed", "whiten"):
         problems = SklearnReduction.validate_params(
             {**REDUCE_PARAMS, "algorithm_params": {shadowed: 2}}
         )
         assert any(shadowed in p for p in problems), shadowed
+
+
+def test_reduce_shadowed_knob_catalog_is_exactly_the_four():
+    from dskit.pipeline.libs import sklearn as _sklearn
+
+    assert set(_sklearn._REDUCTION_SHADOWED_KNOBS) == {
+        "n_components", "random_state", "seed", "whiten",
+    }
+
+
+def test_reduce_catalog_is_exactly_pca_and_svd_and_the_three_tables_agree():
+    from dskit.pipeline.libs import sklearn as _sklearn
+
+    assert tuple(_sklearn._REDUCTION_ALGORITHMS) == ("pca", "svd")
+    assert set(_sklearn._REDUCTION_PATHS) == set(_sklearn._REDUCTION_ALGORITHMS)
+    assert set(_sklearn._REDUCTION_ATTRIBUTES) == set(_sklearn._REDUCTION_ALGORITHMS)
+
+
+def test_reduce_params_refuse_a_feature_that_is_a_produced_column_name():
+    problems = SklearnReduction.validate_params(
+        {**REDUCE_PARAMS, "features": ["component_0", "other", "flat"]}
+    )
+    assert any("component_0" in p for p in problems)
+    assert SklearnReduction.validate_params(dict(REDUCE_PARAMS)) == []
 
 
 def test_reduce_params_unknown_keys_refused_by_name():
@@ -2815,3 +2839,40 @@ def test_reduce_row_problems_refuses_a_colliding_component_column():
         assert any(colliding in p for p in problems), colliding
     rows = [{"strong": 1.0, "other": 2.0, "flat": 0.0, "component_2": 9}]
     assert node.row_problems(rows) == []
+
+
+def test_reduce_row_problems_collision_tracks_the_declared_width():
+    """The produced-name set is DERIVED from n_components, not hardcoded.
+
+    At width 3 the third column collides and a fourth does not — a
+    hardcoded width-2 implementation (which the whole suite otherwise
+    tolerates) fails here.
+    """
+    node = _reduction_node(n_components=3)
+    rows = [{"strong": 1.0, "other": 2.0, "flat": 0.0, "component_2": 9}]
+    problems = node.row_problems(rows)
+    assert any("component_2" in p for p in problems)
+    rows = [{"strong": 1.0, "other": 2.0, "flat": 0.0, "component_3": 9}]
+    assert node.row_problems(rows) == []
+
+
+def test_reduce_row_problems_reports_each_distinct_rule_once():
+    """Two rows breaking the SAME rule answer one problem, naming the first."""
+    node = _reduction_node()
+    rows = [
+        {"strong": 1.0, "other": 2.0},  # missing flat
+        {"strong": 1.0, "other": 2.0},  # missing flat again
+    ]
+    problems = node.row_problems(rows)
+    assert len(problems) == 1
+    assert any("flat" in p and "rows[0]" in p for p in problems)
+
+
+def test_reduce_row_problems_reports_each_missing_feature_separately():
+    """One row missing TWO features answers one problem per feature."""
+    node = _reduction_node()
+    rows = [{"strong": 1.0}]  # missing other AND flat
+    problems = node.row_problems(rows)
+    assert len(problems) == 2
+    assert any("other" in p for p in problems)
+    assert any("flat" in p for p in problems)

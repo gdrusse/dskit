@@ -303,12 +303,27 @@ DEFAULT_REDUCTION_SEED = 0
 _COMPONENT_PREFIX = "component"
 
 #: The constructor knobs this node already owns, spelled a second way
-#: inside ``algorithm_params``. Two spellings of one argument would
-#: disagree, and a search space addressing the node's knob would tune the
-#: loser. ``whiten`` is refused for a different reason: it changes PCA's
-#: projection to need ``singular_values_`` in the state, which this node
-#: does not store.
-_REDUCTION_SHADOWED_KNOBS = ("n_components", "random_state", "whiten")
+#: inside ``algorithm_params``, mapped to the reason each is refused. Two
+#: spellings of one argument would disagree, and a search space addressing
+#: the node's knob would tune the loser — so ``n_components`` refuses a
+#: second spelling of the top-level knob, and ``random_state``/``seed``
+#: both refuse a second spelling of the node's ``seed`` (which threads as
+#: ``random_state``). ``whiten`` is refused for a different reason: it
+#: changes PCA's projection to need ``singular_values_`` in the state,
+#: which this node does not store. The validator reads THIS table — one
+#: owner, so a name added here is refused the same day, and a name dropped
+#: here stops being refused.
+_REDUCTION_SHADOWED_KNOBS = {
+    "n_components": "declare params.n_components instead, the one knob this "
+                    "node threads and records",
+    "random_state": "declare params.seed instead, the one knob this node "
+                    "threads as random_state",
+    "seed": "declare params.seed instead, the one knob this node threads as "
+            "random_state",
+    "whiten": "whitened PCA projects with components_.T scaled by the "
+              "singular values, which this node does not store — it computes "
+              "a plain matrix multiply",
+}
 
 # ---------------------------------------------------------------------------
 # The multi-head bundle artifact (ADR-0114 Phase 2) — one joblib file
@@ -2367,9 +2382,38 @@ class SklearnReduction(FittedTransform):
             )
         problems += cls._n_components_problems(params)
         problems += cls._shadowed_knob_problems(kwargs)
+        problems += cls._feature_component_overlap_problems(params)
         if "seed" in params:
             problems += _seed_problems(params["seed"])
         return problems
+
+    @classmethod
+    def _feature_component_overlap_problems(cls, params):
+        """Refuse a declared feature that is also a produced column name.
+
+        A projection DROPS the declared features and ADDS ``component_<i>``
+        for ``i`` in ``0..n_components-1``; a feature that IS one of those
+        names is both dropped and written, so no run can ever succeed and
+        the row rule's remedy ("rename the field upstream") is the wrong
+        one. All three facts — the features, the width, and the prefix —
+        are known at plan time, so the refusal happens where the document
+        is read, not where it executes.
+        """
+        features = params.get("features")
+        width = params.get("n_components")
+        if not isinstance(features, (list, tuple)) or isinstance(width, bool) or (
+            not isinstance(width, int)
+        ) or width < 1:
+            return []
+        produced = {f"{_COMPONENT_PREFIX}_{i}" for i in range(width)}
+        overlap = sorted(set(features) & produced)
+        if not overlap:
+            return []
+        return [
+            f"features declares {overlap}, which this node writes as a "
+            "projected column name — a projected column cannot also be a "
+            "source feature; rename the feature upstream"
+        ]
 
     @classmethod
     def _n_components_problems(cls, params):
@@ -2395,16 +2439,19 @@ class SklearnReduction(FittedTransform):
 
     @classmethod
     def _shadowed_knob_problems(cls, kwargs):
-        """Refuse a second spelling of a knob this node already owns."""
+        """Refuse a second spelling of a knob this node already owns.
+
+        Reads :data:`_REDUCTION_SHADOWED_KNOBS` — the one owner of which
+        constructor args are already claimed by the node's own knobs — so
+        a name added there is refused the same day, and a name dropped
+        there stops being refused. An inline second copy is exactly the
+        drift the module docstring's duplication rule exists to prevent.
+        """
         if not isinstance(kwargs, dict):
             return []
         return [
             f"algorithm_params.{name} is set — {reason}"
-            for name, reason in (
-                ("n_components", "declare params.n_components instead, the one knob this node threads and records"),
-                ("random_state", "declare params.seed instead, the one knob this node threads as random_state"),
-                ("whiten", "whitened PCA projects with components_.T scaled by the singular values, which this node does not store — it computes a plain matrix multiply"),
-            )
+            for name, reason in _REDUCTION_SHADOWED_KNOBS.items()
             if name in kwargs
         ]
 
