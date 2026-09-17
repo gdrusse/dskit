@@ -1,0 +1,345 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / P7 Packet 7 / bounded synthetic EventEnvelope.v2 causal-order verification",
+  "packet": "7-remainder",
+  "adr": "ADR-0145 - bounded synthetic EventEnvelope.v2 causal-order verification (P7 EventEnvelope gate)",
+  "adr_status": "accepted (docs/architecture/decision-log.md line 11317; preapproval review recorded in evidence 0186.adr0145_preapproval_review -- 0 Critical, 0 Major, 1 Minor closed inline; owner ADR approval recorded by commit f9ceb74)",
+  "base_main": "1b15a145457f7a8b6b3c6a127f6d2ed930269cba",
+  "worktree": "/home/russell/wt/f5a-p7-remainder-20260916",
+  "branch": "codex/f5a-p7-remainder-20260916",
+  "candidate_commit": "f9ceb74 (docs: accept ADR-0145 after clean preapproval review -- design-only; no production code exists yet for this ADR)",
+  "cites": [
+    "evidence 0186 (proposal, preapproval review, owner acceptance trail)",
+    "evidence 0184 (ADR-0144 Phase0 matrix -- style/format precedent)",
+    "evidence 0181 (ADR-0143 Phase0 matrix -- style/format precedent, document_shapes_pinned precedent)",
+    "evidence 0179 (p7_closure_architecture_audit blocker 4 -- the gap this ADR closes)",
+    "ADR-0145 (decision-log.md line 11317; Decision line 11404; Non-goals line 11519; Process line 11542)",
+    "ADR-0130 (decision-log.md line 9201, Decision point 4 line ~9256 -- four-field per-envelope projection, 'A zero-envelope root is valid')",
+    "ADR-0132 (decision-log.md line 9385, Decision point 4 -- six-key raw-event/v1 parser)",
+    "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md lines 426-620 (master F3 -- 'do not start while whole F5a is open')",
+    "docs/skills/skeptic-review.md #Phase 0",
+    "docs/skills/implementation-workflow.md"
+  ],
+  "authored_by": "implementer (Claude Sonnet 5), design inspection only, no code/tests changed",
+  "code_read": [
+    "dskit/production/bundles.py:1-666 (full file) -- CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA constant (line 57) is the ONLY event-envelope/v2 code today; _check_tape/_is_digest/CapturedReplayTape.parse/_build (lines 60-306) are the unedited nine-field tape codec this ADR consumes bytes from and adds no member to; no verify_causal_order, no per-envelope parser, no envelope class exists anywhere in this file yet",
+    "dskit/pipeline/trust.py:7072-7076 (_SYNTHETIC_RAW_EVENT_KEYS -- exact six keys: schema_version, source_id, event_id, source_sequence, availability_ms, payload_sha256, confirmed matching ADR-0132 Decision point 4 verbatim)",
+    "dskit/pipeline/trust.py:7355-7385 (_SyntheticRawPreflight._parse_member -- the raw-event/v1 default-deny parser: exact key-set check, event_id/source_sequence/availability_ms type+range checks, payload_sha256 hashed via NonAuthorizingSyntheticGrantVerifier._hash, duplicate event_id fenced against a `seen` set)",
+    "dskit/pipeline/trust.py:7386-7414 (verify() -- confirms `seen = set()` is created ONCE before the `for member in members` loop and threaded into every _parse_member call, so raw-event dedup is already enforced ACROSS ALL members of one raw-dataset capture, not merely within one member -- see open_findings #2)",
+    "dskit/pipeline/trust.py:3079-3082 (_hs_validate_envelope/_HS_ENVELOPES) and :3743-3750 (_verify_one_signed's `envelope` parameter) -- confirmed UNRELATED: this is the G1/G2 signed-grant preflight machinery's own overloaded use of the word 'envelope', touching no event data; see open_findings #3 (naming collision, not a code collision)",
+    "dskit/pipeline/document.py:755-759, 862-889 (_EVENT_ENVELOPE_SCHEMA constant and PipelineDocument.execution_backtest.__post_init__'s event_envelope_schema literal check) -- a THIRD place the 'dskit.event-envelope/v2' string is pinned (document declares which envelope schema it uses; this ADR does not touch this file, consistent with Decision point 5)",
+    "dskit/production/clock.py:40-115 (ManualTime -- _instant() refuses bool/float, epoch-ms int only; .set() explicitly allows moving the wall instant EARLIER -- confirms the codebase's time model has no built-in monotonicity guarantee, so verify_causal_order's own order-key check is the only thing enforcing order, not clock semantics; see matrix row 11)",
+    "dskit/production/clock.py:401 (ReplayClock class header -- confirmed present, not called by anything this ADR proposes)",
+    "dskit/production/feed.py:605-647 (_IsoStamps/_MsStamps/_STAMPS/ts_unit vocabulary -- confirms the 'derive an epoch-ms instant from a raw source stamp at intake' vocabulary the ADR cites as reused conceptually; neither class is called by verify_causal_order)",
+    "docs/architecture/decision-log.md:9201-9283 (ADR-0130 full text, esp. Decision point 4's index format and four-field envelope projection, and 'A zero-envelope root is valid')",
+    "docs/architecture/decision-log.md:9385-9504 (ADR-0132 full text, esp. Decision points 2, 4, 6)",
+    "docs/architecture/decision-log.md:11317-11548 (ADR-0145 full text)",
+    "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:426-620 (master F3 section -- envelope binding clause and order clause, verified verbatim against ADR-0145 Decision points 1-2)",
+    "docs/evidence/closeout/0186-f5a-p7-eventenvelope-adr-proposal.json (full file -- proposal text, preapproval review, open_question_for_reviewer)"
+  ],
+
+  "actors": [
+    {
+      "actor": "the new closed dskit.event-envelope/v2 parser (proposed, not yet built)",
+      "identity": "would live in dskit/production/bundles.py beside _check_tape; no such code exists in the candidate commit -- this Phase 0 matrix reviews a DESIGN, not a diff",
+      "authority": "default-deny parse of one caller-supplied JSON object; read-only, no F4/broker/signer/ledger access, per ADR Decision point 3"
+    },
+    {
+      "actor": "verify_causal_order(tape, ordered_envelope_bytes) (proposed, not yet built)",
+      "identity": "one new pure module-level function in production/bundles.py, per ADR Decision point 3",
+      "authority": "pure function of its two arguments; mutates nothing; performs no I/O, no F4/P4/broker/signer/ledger/reserve operation; the caller is solely responsible for resolving `ordered_envelope_bytes` (out of scope, Decision point 6)"
+    },
+    {
+      "actor": "CapturedReplayTape (existing, unedited)",
+      "identity": "dskit/production/bundles.py:134-306, the merged dskit.captured-replay-tape/v1 codec -- __slots__=('_value','__weakref__'), no public constructor, parse()/'_build classmethods only",
+      "authority": "already validates ordered_envelope_digests as a list of syntactically-shaped 64-hex digests and recomputes ordered_envelopes_sha256/tape_digest; NEVER opens, parses or content-verifies the envelope bytes those digests name, and NEVER checks causal order -- 'present', not 'correct' (ADR Context point 3). This ADR proposes zero edits to this class; verify_causal_order takes an already-parsed instance as its first argument and reads only its public properties (envelope_count, ordered_envelope_digests, source_rank_policy_sha256)"
+    },
+    {
+      "actor": "the caller of verify_causal_order (composed-tape / a test fixture)",
+      "identity": "out of scope for this ADR (Decision point 6); modeled here only as the source of the two untrusted arguments",
+      "authority": "supplies `tape` (must already be a CapturedReplayTape.parse() result -- verify_causal_order is not itself a bytes-in entry point) and `ordered_envelope_bytes` (a caller-supplied sequence of raw bytes, fully untrusted, no assumption that it was honestly derived from any real raw-event-dataset capture)"
+    },
+    {
+      "actor": "ADR-0132's already-merged raw-event/v1 parser (_SyntheticRawPreflight._parse_member, trust.py:7355-7385)",
+      "identity": "unedited by this ADR; upstream of, and structurally distinct from, the event-envelope/v2 shape -- produces raw events, not envelopes",
+      "authority": "already fences event_id uniqueness ACROSS ALL members of one raw-dataset capture (see code_read; contradicts the ADR's own 'only fences duplicates within one raw member' framing -- open_findings #2). Not itself reachable from, called by, or a dependency of verify_causal_order; cited here only because the ADR's Context section cites it as prior art"
+    },
+    {
+      "actor": "ADR-0130's four-field per-envelope projection (schema_version, source_id, source_rank, source_rank_policy_sha256)",
+      "identity": "SPECIFIED IN ADR-0130 DECISION POINT 4 BUT NOT YET IMPLEMENTED ANYWHERE IN THE CANDIDATE COMMIT -- grep-confirmed (code_read) that only the CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA string constant exists; no index-member parser, no four-field checker, exists in trust.py or bundles.py today. ADR-0130's own Status line states its RED is blocked pending ADR-0132's raw-authority Major and remains unimplemented.",
+      "authority": "not an active code dependency of this ADR; ADR-0145's 'strict superset' relationship to it is a SPECIFICATION-level relationship (both describe field lists), not a code-reuse relationship to any existing parser function -- see open_findings #4"
+    },
+    {
+      "actor": "trusted host / process owner",
+      "authority": "administers the process; non-adversarial, not part of the external threat model (unchanged from evidence 0181/0184)"
+    },
+    {
+      "actor": "hostile caller / untrusted input boundary",
+      "scope": "both arguments to verify_causal_order: a `tape` object (though its own internal digest/shape invariants were already checked once by CapturedReplayTape.parse -- a caller cannot hand verify_causal_order an unparsed dict), and `ordered_envelope_bytes` (each element is raw untrusted bytes with zero prior validation -- this is the entire attack surface this matrix targets)",
+      "explicitly_out_of_scope": "reflection/monkeypatching a parsed CapturedReplayTape's frozen MappingProxyType state, or constructing a fake object that merely duck-types the four properties verify_causal_order reads -- per implementation-workflow.md, mutable Python internals are not an external security boundary; RED should exercise this via genuine CapturedReplayTape.parse() results only"
+    }
+  ],
+
+  "authority_boundary_statement": "Untrusted data is exactly the two arguments to verify_causal_order (a parsed-but-otherwise-opaque tape, and a caller-supplied byte sequence claiming to be that tape's envelopes in order); the Python process/interpreter and the already-verified CapturedReplayTape codec's own digest invariants are not further re-litigated here. verify_causal_order crosses no F4/P4/broker/signer/reserve/ledger boundary and adds no new one -- it is a pure verification function over already-resolved bytes, consistent with ADR-0130/0141-0144's disjoint 'may this document CAPTURE this root' vs. 'are these envelope bytes in causal order' framing (ADR Context point 5). This ADR neither widens nor narrows any trust boundary ADR-0130/0132/0141-0144 already scoped.",
+
+  "class_function_inventory": [
+    {
+      "name": "dskit.event-envelope/v2 default-deny parser (name/shape TBD at Phase 0 -- ADR text specifies content, not a class name)",
+      "pin": "exactly the 15 keys in document_shapes_pinned.event-envelope-v2 below, all required, unknown or missing keys refuse (mirrors _check_tape's unknown/missing accumulation style, ADR Decision point 1). No self-digest field inside the object -- the envelope's own canonical-bytes sha256 is computed externally by the caller and lives only in the tape's ordered_envelope_digests, never as a field inside the envelope itself."
+    },
+    {
+      "name": "verify_causal_order(tape, ordered_envelope_bytes)",
+      "pin": "ADR Decision point 3's seven checks, in the order the ADR states them: (1) len(ordered_envelope_bytes) == tape.envelope_count; (2) per-position sha256(ordered_envelope_bytes[i]) == tape.ordered_envelope_digests[i]; (3) default-deny parse each per the 15-key shape, position included in any error message; (4) every envelope's source_rank_policy_sha256 == tape.source_rank_policy_sha256; (5) event_id uniqueness across the WHOLE tape; (6) every correction_position>0 envelope's corrects_event_id/prior_envelope_sha256 name an envelope at a strictly lower tape position with matching event_id/digest and correction_position exactly one less (no forward ref, no gap, no non-bottoming chain); (7) order_key(envelope[i]) <= order_key(envelope[i+1]) for every consecutive pair, non-decreasing. Every violation accumulated and raised together as one ProductionError, in _check_tape's existing 'collect every problem, raise once' style (ADR Decision point 3, final paragraph)."
+    },
+    {
+      "name": "order_key(envelope)",
+      "pin": "(availability_ms, source_rank, source_sequence, correction_position, payload_sha256, event_id) -- exactly this 6-tuple, this order, no additional or reordered terms (ADR Decision point 2, matches master plan line ~499 verbatim: 'Order is availability, derived source rank, source sequence, correction position, payload digest, event ID')."
+    },
+    {
+      "name": "CapturedReplayTape (bundles.py:134-306)",
+      "pin": "UNEDITED. verify_causal_order reads only tape.envelope_count, tape.ordered_envelope_digests, tape.source_rank_policy_sha256 -- all three already-existing public properties; no new property, no new classmethod, no change to _check_tape/_FIELDS/_DIGEST_FIELDS/parse/_build. Phase 0 should confirm RED adds zero lines to this class."
+    }
+  ],
+
+  "public_facades": [
+    "dskit/production/bundles.py: verify_causal_order(tape, ordered_envelope_bytes) -- new module-level function, the ADR's entire public surface addition beyond the parser itself",
+    "dskit/production/bundles.py: the new event-envelope/v2 parser -- reachable directly (for fixture/test construction, ADR Decision point 4) and indirectly via verify_causal_order's per-position parse step",
+    "dskit/production/bundles.py: __all__ (lines 43-54) -- currently lists CapturedReplayTape but not verify_causal_order or any envelope class; Phase 0 must pin whether the new function/parser is added to __all__ (the ADR text does not say) -- recommend NOT exporting the parser (mirrors CapturedReplayTape's own 'parsed, never constructed' pattern) but DOES recommend exporting verify_causal_order itself, since Decision point 6 explicitly anticipates a later composed-tape caller in a different module needing to import it",
+    "dskit/production/bundles.py: CapturedReplayTape.parse (unedited, existing) -- remains the only entry point that turns raw tape bytes into the `tape` argument verify_causal_order requires; verify_causal_order must not itself accept raw tape bytes as an alternate entry (Decision point 3 explicitly types the first argument as 'an already-parsed CapturedReplayTape')",
+    "dskit/pipeline/document.py: PipelineDocument.execution_backtest.event_envelope_schema literal check (line 884-889) -- unedited, unrelated entry point that only checks the document declares the RIGHT schema NAME; it never inspects envelope content and is not composed with verify_causal_order in this ADR"
+  ],
+
+  "document_shapes_pinned": {
+    "note": "ADR Decision point 1 (decision-log.md line ~11404) already specifies this shape completely; pinned here field-by-field for RED to consume directly and to settle the exact count independently of any prose summary. VERIFIED FIELD COUNT: 15, not the round numbers ('ten', 'four+six') used in ADR-0145's own Context/Decision prose and evidence 0186's proposal text -- see open_findings #1.",
+    "event-envelope-v2": {
+      "schema_version": "literal 'dskit.event-envelope/v2'",
+      "source_id": "str; must be a member of the consumed roster's policy.sources (ADR-0130 point 4, unchanged)",
+      "event_id": "str, nonempty; carried verbatim from the raw-event/v1 member (ADR-0132)",
+      "source_sequence": "nonnegative int; carried verbatim (ADR-0132)",
+      "payload_sha256": "lowercase sha256; carried verbatim (ADR-0132)",
+      "availability_ms": "int, scope-bounded; carried verbatim -- the plan's 'derived availability instant'; no new derivation (ADR-0132)",
+      "exchange_ms": "nonnegative int; synthetic fixture-declared instant, NEW. receive_ms >= exchange_ms >= 0 is checked; no relationship to availability_ms is claimed or checked (resolved open question, see matrix row 11)",
+      "receive_ms": "nonnegative int; synthetic fixture-declared instant, NEW",
+      "source_provenance_tag": "str, nonempty; opaque fixture-declared label, NEW -- not a chain-of-custody proof",
+      "source_timezone_tag": "str, nonempty; opaque fixture-declared label e.g. 'UTC', NEW -- no tz conversion performed anywhere; retained as metadata only, never interpreted",
+      "source_rank": "nonnegative int; carried verbatim from ADR-0130",
+      "source_rank_policy_sha256": "sha256; carried verbatim from ADR-0130, PLUS a new requirement (Decision point 3) that it equal the enclosing tape's own source_rank_policy_sha256, not merely be internally well-formed",
+      "correction_position": "nonnegative int; 0 for an original event, NEW",
+      "corrects_event_id": "str or null; null iff correction_position==0, NEW",
+      "prior_envelope_sha256": "sha256 or null; null iff correction_position==0, NEW -- the plan's 'chain position/prior digest'"
+    },
+    "field_count_derivation": "ADR-0130's 4 (schema_version, source_id, source_rank, source_rank_policy_sha256) UNION ADR-0132's 6 (schema_version, source_id, event_id, source_sequence, availability_ms, payload_sha256) = 8 UNIQUE fields (2-field overlap: schema_version, source_id counted in both sets, not 10 as evidence 0186's proposal prose states) + 7 NEW fields (exchange_ms, receive_ms, source_provenance_tag, source_timezone_tag, correction_position, corrects_event_id, prior_envelope_sha256) = 15 TOTAL. Independently recounted directly from ADR Decision point 1's own field-by-field prose (not from any summary) and cross-checked against trust.py:7072-7076's actual _SYNTHETIC_RAW_EVENT_KEYS and ADR-0130 Decision point 4's actual four-field text -- both counts confirmed by direct code/ADR-text read, not assumed.",
+    "order_key": "(availability_ms, source_rank, source_sequence, correction_position, payload_sha256, event_id) -- 6-tuple, exactly this order"
+  },
+
+  "matrix": [
+    {
+      "id": 1,
+      "family": "digest substitution -- tape's ordered_envelope_digests do not match the actual envelope bytes supplied",
+      "entry_points": ["verify_causal_order, per-position digest check (Decision point 3, bullet 2)"],
+      "cases": [
+        "ordered_envelope_bytes[i] is well-formed, causally-ordered, closure-valid envelope bytes for SOME envelope, but sha256(ordered_envelope_bytes[i]) != tape.ordered_envelope_digests[i] (a different, equally-valid envelope substituted at that position)",
+        "ordered_envelope_bytes[i] is garbage bytes (not even valid JSON) whose sha256 happens not to matter because the digest check runs before parsing"
+      ],
+      "expected_outcome": "refused before any per-envelope parse or ordering check runs for that position -- 'present AND these exact bytes' (ADR Context point 3's stated closure of the existing codec's gap)",
+      "forbidden_effect": "any envelope whose bytes do not sha256-match its claimed tape-position digest being parsed, order-checked, or contributing to a PASS result"
+    },
+    {
+      "id": 2,
+      "family": "syntactically valid, digest-matching, individually well-formed tape that is semantically out of causal order",
+      "entry_points": ["verify_causal_order, order_key non-decreasing check (Decision point 3, final bullet)"],
+      "cases": [
+        "two adjacent envelopes where availability_ms decreases (all other order_key components held order-consistent)",
+        "availability_ms tied, source_rank decreases",
+        "availability_ms and source_rank tied, source_sequence decreases",
+        "all of availability_ms/source_rank/source_sequence tied (a correction on the same original event), correction_position decreases",
+        "every tuple component but event_id tied -- structurally impossible in a valid tape per the ADR's own reasoning (event_id uniqueness makes ties impossible), so this sub-case is UNREACHABLE and should be documented as such rather than tested for a specific outcome (see open_findings #2 for the underlying uniqueness guarantee)"
+      ],
+      "expected_outcome": "refused; each specific decreasing component should ideally be nameable in the error (Phase 0 recommends, not required by ADR text: state which pair of positions and which order_key component regressed)",
+      "forbidden_effect": "a PASS result for any tape where order_key(envelope[i]) > order_key(envelope[i+1]) for any i"
+    },
+    {
+      "id": 3,
+      "family": "correction chain forward reference -- corrects_event_id points to a LATER envelope",
+      "entry_points": ["verify_causal_order, correction-chain check (Decision point 3, bullet 6)"],
+      "cases": [
+        "envelope at tape position i has correction_position>0 and corrects_event_id equal to the event_id of envelope at position j > i (a later position)",
+        "corrects_event_id names an event_id that exists in the tape at a later position AND an unrelated nonexistent id also collides by coincidence -- confirm the check resolves by tape POSITION, not merely by searching for a matching event_id anywhere"
+      ],
+      "expected_outcome": "refused -- 'a strictly lower tape position' is required verbatim (ADR Decision point 3)",
+      "forbidden_effect": "a PASS result for any correction whose named prior event is not strictly earlier in tape order"
+    },
+    {
+      "id": 4,
+      "family": "correction chain gap -- correction_position skips a value",
+      "entry_points": ["verify_causal_order, correction-chain check (Decision point 3, bullet 6: 'correction_position is exactly one less')"],
+      "cases": [
+        "a chain 0 -> 1 -> 3 (position 2 never appears for that event_id lineage)",
+        "a chain 0 -> 2 (the first correction jumps straight to 2)",
+        "two DIFFERENT original events (different event_id lineages) whose correction_position sequences interleave in tape order but are each individually contiguous -- must NOT be flagged as a gap; confirms the gap check is scoped per correction lineage (via corrects_event_id chase), not per raw tape-position correction_position sequence"
+      ],
+      "expected_outcome": "refused for the genuine gap cases; the interleaved-but-individually-contiguous case must PASS -- Phase 0 flags this as a case RED must get right, since a naive 'correction_position values seen so far must be exactly 0..n contiguous per event_id' implementation could accidentally conflate two independent lineages if implemented as a single global counter instead of following each corrects_event_id chain",
+      "forbidden_effect": "a PASS result for a genuine within-lineage gap; a spurious refusal for two independent, individually-contiguous correction lineages"
+    },
+    {
+      "id": 5,
+      "family": "correction chain that never bottoms out at correction_position == 0",
+      "entry_points": ["verify_causal_order, correction-chain check (Decision point 3, bullet 6)"],
+      "cases": [
+        "a chain whose corrects_event_id/prior_envelope_sha256 links terminate at an envelope with correction_position==1 whose own corrects_event_id points to a NONEXISTENT event_id (dangling root)",
+        "a two-element mutual cycle: envelope A (correction_position=1) corrects B, and B (correction_position=1) corrects A -- both nonzero, neither ever reaching 0",
+        "a chain of length >2 that cycles back on itself several links up (A corrects B corrects C corrects A)"
+      ],
+      "expected_outcome": "refused in every case -- the walk must terminate at exactly one envelope with correction_position==0 and corrects_event_id/prior_envelope_sha256==null for that lineage",
+      "forbidden_effect": "a PASS result for any correction lineage that does not terminate at a correction_position==0 original; an infinite loop or unbounded recursion in the implementation when walking a cyclic chain (must refuse deterministically, not hang)"
+    },
+    {
+      "id": 6,
+      "family": "duplicate event_id across different tape members",
+      "entry_points": ["verify_causal_order, event_id uniqueness check (Decision point 3, bullet 5)"],
+      "cases": [
+        "two ORIGINAL envelopes (both correction_position==0) sharing the same event_id at different tape positions",
+        "an original and one of its own corrections sharing event_id (should never happen if corrects_event_id is used correctly, but the envelope shape does not itself forbid event_id equality between corrector and corrected -- confirm the uniqueness check catches this even though it is a different failure mode than a 'genuine' duplicate)",
+        "two envelopes with the same event_id where all other fields differ entirely (different payload_sha256, different availability_ms) -- confirms the check is on event_id alone, not a compound key"
+      ],
+      "expected_outcome": "refused -- 'across the WHOLE tape', explicitly extending ADR-0132's raw-event/v1 per-capture check (which, per open_findings #2, already covers this at the raw-event stage for an honestly-produced pipeline) to the untrusted envelope-bytes boundary verify_causal_order actually sits at",
+      "forbidden_effect": "a PASS result for any tape with a repeated event_id at two or more positions"
+    },
+    {
+      "id": 7,
+      "family": "source_rank_policy_sha256 mismatch between an envelope and its tape",
+      "entry_points": ["verify_causal_order, policy fence check (Decision point 3, bullet 4)"],
+      "cases": [
+        "one envelope's source_rank_policy_sha256 is a well-formed 64-hex digest but differs from tape.source_rank_policy_sha256",
+        "the envelope's source_rank_policy_sha256 is internally well-formed and would pass an ADR-0130-style per-member-only check, isolating that this new tape-fencing requirement is NOT redundant with ADR-0130 point 4 (which 'cannot see the tape, only one member', per ADR-0145 Context point 5's explicit framing)"
+      ],
+      "expected_outcome": "refused for every envelope whose value != tape.source_rank_policy_sha256, independent of internal well-formedness",
+      "forbidden_effect": "a PASS result for a tape containing even one envelope whose source_rank_policy_sha256 differs from the tape's own field"
+    },
+    {
+      "id": 8,
+      "family": "malformed or missing new field -- each of the 7 new fields, individually",
+      "entry_points": ["the event-envelope/v2 default-deny parser (Decision point 1)"],
+      "cases": [
+        "exchange_ms missing; present but negative; present but a float/bool/string",
+        "receive_ms missing; present but negative; present but < exchange_ms (violates the checked receive_ms>=exchange_ms>=0 invariant)",
+        "source_provenance_tag missing; present but empty string; present but non-string",
+        "source_timezone_tag missing; present but empty string; present but non-string",
+        "correction_position missing; present but negative; present but a float/bool",
+        "corrects_event_id missing; present but non-null when correction_position==0; present but null when correction_position>0; present but the wrong type (int instead of str/null)",
+        "prior_envelope_sha256 missing; same null/non-null-vs-correction_position mismatches as corrects_event_id; present but not a valid sha256 shape"
+      ],
+      "expected_outcome": "refused, per-field, at the default-deny parse step, before the per-position/order-key checks are reached for that envelope; position included in the message (Decision point 3: 'position included in the message')",
+      "forbidden_effect": "any of the 7 malformed sub-cases above silently coerced, defaulted, or ignored rather than refused; a missing-field case being conflated with a wrong-type case in a way that loses the position/field attribution"
+    },
+    {
+      "id": 9,
+      "family": "noncanonical JSON bytes for an envelope, semantically equivalent but not byte-identical",
+      "entry_points": ["verify_causal_order, per-position digest check (Decision point 3, bullet 2) -- interacts with, but is logically prior to, the parser"],
+      "cases": [
+        "ordered_envelope_bytes[i] is the envelope's fields in a DIFFERENT key order than canonical, with identical values",
+        "ordered_envelope_bytes[i] has extra whitespace (e.g. ': ' instead of ':', or a trailing newline) versus the canonical ASCII form",
+        "ordered_envelope_bytes[i] encodes an integer field with a leading '+' or as '1.0' instead of '1' -- semantically the same number, different bytes"
+      ],
+      "expected_outcome": "refused, but via the DIGEST check (row 1's mechanism), not via a separate canonical-bytes re-encode-and-compare step inside the parser -- because tape.ordered_envelope_digests[i] was computed over the ORIGINAL canonical bytes at tape-construction time, any noncanonical variant (even if it round-trips through json.loads to an equal dict) will have a different sha256 and fail the digest check before the parser ever sees it. Phase 0 should confirm this reasoning holds and that RED does not ALSO need a redundant canonical-bytes check inside the parser itself (CapturedReplayTape.parse does this for the tape object itself via _canonical_bytes(value) != raw, per bundles.py:222-223, but the ADR text does not repeat that instruction for per-envelope bytes -- an open question worth the independent skeptic's attention, since relying solely on the digest check means a caller who supplies bytes NOT claimed by any digest at all, i.e. bytes for a position beyond tape.envelope_count, is caught by row 1's length/digest checks, but a caller who supplies canonical bytes for the WRONG envelope at the right sha256 is definitionally impossible under SHA-256 collision resistance)",
+      "forbidden_effect": "a PASS result for envelope bytes that are semantically equivalent to, but not byte-identical with, whatever bytes were originally hashed into the tape's digest list -- must be unreachable given SHA-256 preimage resistance, but Phase 0 records the reasoning explicitly rather than leaving it implicit"
+    },
+    {
+      "id": 10,
+      "family": "empty tape (zero envelopes)",
+      "entry_points": ["verify_causal_order, length check (Decision point 3, bullet 1) and every subsequent per-envelope/per-pair check"],
+      "cases": [
+        "tape.envelope_count==0, tape.ordered_envelope_digests==(), ordered_envelope_bytes==() supplied -- confirm this is a LEGITIMATE, non-refused case",
+        "tape.envelope_count==0 but ordered_envelope_bytes is nonempty (caller supplies bytes the tape does not claim) -- must refuse via the length check",
+        "tape.envelope_count>0 but ordered_envelope_bytes is empty -- must refuse via the length check (the inverse of the above)"
+      ],
+      "expected_outcome": "a genuinely empty tape (both sides zero-length) PASSES vacuously -- ADR-0130 Decision point 4 states explicitly 'A zero-envelope root is valid', and every per-envelope/per-pair check (parse, policy fence, uniqueness, correction chain, order-key) is vacuously true over an empty sequence, so this is a legitimate edge case, not a refusal, consistent with the already-merged CapturedReplayTape codec's own _check_tape (bundles.py:107-109) which already accepts envelope_count==0 as a valid non-negative int with an empty ordered_envelope_digests list. tape.envelope_count IS cross-checked here -- it is exactly what the length check (bullet 1) compares len(ordered_envelope_bytes) against",
+      "forbidden_effect": "an empty tape being refused outright (would contradict ADR-0130's own stated non-goal-adjacent ruling); OR a length mismatch between an empty tape and nonempty bytes (or vice versa) being silently accepted"
+    },
+    {
+      "id": 11,
+      "family": "exchange_ms/receive_ms boundary cases exploiting the ADR's own resolved open question",
+      "entry_points": ["verify_causal_order -- specifically, confirming NO check reads exchange_ms/receive_ms for ordering purposes"],
+      "cases": [
+        "an envelope where exchange_ms and receive_ms are constructed to suggest an intuitively 'earlier' real-world event (e.g. exchange_ms=0, receive_ms=1) while availability_ms is set HIGHER than a sibling envelope whose exchange_ms/receive_ms suggest a 'later' real event (e.g. exchange_ms=1_000_000, receive_ms=1_000_001) but whose availability_ms is LOWER -- constructed specifically so that a reader who (wrongly) assumed exchange/receive drove ordering would misjudge which envelope is 'earlier'",
+        "receive_ms == exchange_ms (boundary-equal, still satisfies receive_ms>=exchange_ms>=0)",
+        "exchange_ms==0, receive_ms==0 (both at the lower boundary)",
+        "receive_ms < exchange_ms (violates the one checked relationship) -- covered again here for boundary completeness alongside row 8's per-field coverage"
+      ],
+      "expected_outcome": "the order_key tuple contains availability_ms/source_rank/source_sequence/correction_position/payload_sha256/event_id and NOTHING derived from exchange_ms/receive_ms (Decision point 2) -- so the constructed 'misleading' case in the first bullet is refused or accepted based SOLELY on the two envelopes' order_key values, never on their exchange_ms/receive_ms content; the design's own stated position (ADR Decision point 1: 'no relationship to availability_ms is claimed or checked -- deriving availability_ms from exchange_ms/receive_ms is real F1/F2 semantics and a non-goal') is confirmed to hold precisely because order_key never reads those two fields at all, not because of any separate defensive check against them",
+      "forbidden_effect": "any code path where exchange_ms or receive_ms influences the order_key comparison, the causal-order verdict, or which envelope 'wins' a tie -- this would silently reintroduce exactly the real F1/F2 semantics ADR-0145 explicitly declines to build",
+      "note_for_independent_skeptic": "this row restates evidence 0186's own open_question_for_reviewer, which the preapproval reviewer closed as 'adequate, legitimately deferred, not an exploitable gap' (0186.verified_no_change_needed claim (e)). This matrix's own reasoning (order_key structurally cannot read those two fields) is a stronger, code-shape-level argument than 'the reviewer said so' and should be independently reconfirmed once the parser/order_key are actually built"
+    },
+    {
+      "id": 12,
+      "family": "mutation/aliasing of the whole envelope list relative to what the tape's digest list expects",
+      "entry_points": ["verify_causal_order, length check (bullet 1) and per-position digest check (bullet 2), applied to the WHOLE-LIST shape rather than one element"],
+      "cases": [
+        "ordered_envelope_bytes has one EXTRA entry appended beyond tape.envelope_count (all leading entries individually valid and digest-matching)",
+        "ordered_envelope_bytes is MISSING a trailing entry versus tape.envelope_count",
+        "ordered_envelope_bytes is the correct set of byte-strings but REORDERED relative to tape.ordered_envelope_digests (e.g. positions i and j swapped) -- each individual bytes value digest-matches SOME position in the tape's digest list, just not the position it now occupies",
+        "ordered_envelope_bytes DUPLICATES one valid entry at two positions while omitting another tape-claimed digest entirely (same total length as tape.envelope_count, so the length check alone does not catch it)",
+        "the same Python list object passed twice / aliased with itself, or a generator/iterator instead of a concrete sequence, exhausted after the length check reads len() once -- Phase 0 should pin that ordered_envelope_bytes is required to be a concrete sequence (list/tuple), not a one-shot iterator, since `len()` plus repeated positional indexing both assume this"
+      ],
+      "expected_outcome": "the extra/missing cases are caught by the length check (bullet 1) before any per-position check runs. The reordered/duplicated-with-omission cases are NOT caught by the length check (lengths match) -- they must be caught by the per-position digest check (bullet 2), since a byte string that digest-matches the WRONG position (position i's bytes now sitting at position j, where tape.ordered_envelope_digests[j] != sha256(that byte string)) fails that position's digest comparison even though the same bytes would have passed at their original position",
+      "forbidden_effect": "a PASS result for any list whose per-position alignment against tape.ordered_envelope_digests does not hold exactly, even when the SET of digests present is identical to the tape's claimed set; silent iterator exhaustion producing a false 'too short' refusal that masks the real defect (an aliasing/iterator bug in the caller, not in the design) -- Phase 0 recommends RED include one iterator-vs-sequence case even though the ADR text does not explicitly discuss this, since it is implied by 'sequence' in Decision point 3's own phrasing ('the caller-supplied sequence of already-resolved raw envelope member bytes in tape order')"
+    },
+    {
+      "id": 13,
+      "family": "default-deny closure -- unknown/extra keys on an otherwise-complete envelope",
+      "entry_points": ["the event-envelope/v2 default-deny parser (Decision point 1: 'Exactly these keys, all required, extra or missing keys refuse')"],
+      "cases": [
+        "an envelope with all 15 required keys present and individually valid, PLUS one extra unknown key (e.g. a stray 'notes' field)",
+        "an envelope using a near-miss key name for one of the 15 (e.g. 'receiveMs' instead of 'receive_ms', or 'correction_pos' instead of 'correction_position') -- both the misspelled key AND the resulting 'missing' canonical key must be reported"
+      ],
+      "expected_outcome": "refused, mirroring _check_tape's own unknown/missing accumulation style (ADR Decision point 1 says so explicitly) -- both problems (unknown key present, canonical key missing) should be accumulated together in one ProductionError, not just the first one found",
+      "forbidden_effect": "an envelope with an extra/misnamed key being silently accepted because all 15 CANONICAL keys happen to also be satisfiable, or because the parser only checks for presence of required keys without also checking for absence of anything else"
+    },
+    {
+      "id": 14,
+      "family": "regression -- CapturedReplayTape.parse and _check_tape remain byte-identical",
+      "entry_points": ["dskit/production/bundles.py: CapturedReplayTape.parse, _check_tape, CapturedReplayTape._build (all pre-existing, unedited)"],
+      "cases": [
+        "every existing CapturedReplayTape.parse RED case (malformed nine-field tape object, wrong digest, placeholder digest, noncanonical tape bytes, envelope_count/list-length mismatch) continues to refuse identically after this ADR's code lands beside it in the same module",
+        "a tape parsed successfully via CapturedReplayTape.parse BEFORE this ADR's code exists, and the same bytes parsed AFTER -- byte-identical resulting object, confirmed via to_obj()/canonical_bytes()"
+      ],
+      "expected_outcome": "zero behavioral change to the existing nine-field tape codec; this ADR is additive-only within bundles.py (ADR Decision point 5: 'No file outside production/bundles.py ... needs to change')",
+      "forbidden_effect": "any change, even incidental, to _FIELDS, _DIGEST_FIELDS, _check_tape's problem list, or CapturedReplayTape's public property set"
+    }
+  ],
+
+  "open_findings_for_independent_skeptic": [
+    {
+      "finding": "field-count imprecision in ADR-0145's own supporting prose (not in its operative Decision point 1 text)",
+      "detail": "ADR-0145's Context section and evidence 0186's proposal text both describe the envelope as ADR-0130's four fields plus ADR-0132's six fields plus seven new fields, without ever stating the 2-field overlap (schema_version, source_id appear in BOTH the four-field and six-field sets). Evidence 0186 literally says 'beyond those ten' (4+6, uncorrected for overlap). The task brief that commissioned this matrix independently used 'the 11-field envelope shape' -- also wrong. The ACTUAL, VERIFIED field count, read directly from ADR Decision point 1's own field-by-field prose and cross-checked against the real _SYNTHETIC_RAW_EVENT_KEYS/ADR-0130-point-4 text, is 15 (8 unique carried-over + 7 new). Decision point 1's own field list is internally correct at 15 keys; only the SURROUNDING summary arithmetic in Context/evidence-0186 is imprecise. Recommend: Minor -- fix the 'those ten' phrase in a future editorial pass; does not block RED since Decision point 1 (the operative spec) is already correct and this matrix's document_shapes_pinned section gives RED the verified 15-key list directly."
+    },
+    {
+      "finding": "ADR's characterization of ADR-0132's raw-event/v1 parser's duplicate-fencing scope does not match the actual code",
+      "detail": "ADR-0145 Decision point 3 justifies its own event_id-uniqueness check by stating 'ADR-0132's raw-event/v1 parser only fences duplicates within one raw member.' Direct code read (trust.py:7386-7414) shows `seen = set()` is created ONCE per verify() call and threaded through EVERY _parse_member call in the `for member in members` loop -- i.e. duplicates are already fenced across ALL members of one raw-dataset capture today, not just within one member. This does not create a safety gap: verify_causal_order is right to re-check tape-wide uniqueness anyway, since its inputs (ordered_envelope_bytes) are untrusted caller-supplied bytes regardless of what any upstream honest pipeline would produce, and a raw-event dataset capture and a tape's envelope list are not proven to be the same object graph. Recommend: Minor/precision-only -- the new check is still necessary and correctly scoped; only the ADR's stated JUSTIFICATION for why it is needed slightly overstates the gap in existing code. No design change required."
+    },
+    {
+      "finding": "the word 'envelope' is already overloaded in this codebase for an unrelated concept",
+      "detail": "dskit/pipeline/trust.py already defines _hs_validate_envelope/_HS_ENVELOPES/_HS_SIGNED_SUFFIX (line 3079) and _verify_one_signed's `envelope` parameter (line 3743) -- a completely different, already-merged 'envelope' concept: a signed G1/G2 grant/preflight object with issuer_role/key_usage/not_before_ms/issued_at_ms fields, sharing zero fields and zero code paths with dskit.event-envelope/v2. Since this ADR's new code lives in production/bundles.py (not trust.py), there is no actual code collision or import conflict. This is purely a documentation/grep-ability trap: a future reader searching the codebase for 'envelope' will find two unrelated schemas. ADR-0145's own Context point 4 already models this kind of careful disambiguation for ReplayClock/ReplayFeed vs. the F3/P7 tape; recommend the same explicit disambiguating docstring for the new event-envelope/v2 parser, naming trust.py's unrelated signed-grant envelopes by name so a future grep does not conflate them. Nit, not Minor -- no functional risk."
+    },
+    {
+      "finding": "ADR-0130's own four-field per-envelope projection (the thing ADR-0145 calls a 'strict superset' of) has no implementation anywhere in the candidate commit",
+      "detail": "Grepped the whole dskit/ tree (excluding .pyc) for the literal event-envelope/v2 schema string and for any code constructing/validating a {schema_version, source_id, source_rank, source_rank_policy_sha256} object: found only the CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA constant (bundles.py:57, used solely as the required value of the TAPE's own event_envelope_schema field) and the unrelated document.py:759 declaration-check constant. ADR-0130's own Status line confirms its Decision point 4 (the index-member format and four-field projection check) is still-accepted-but-unbuilt design, blocked behind ADR-0132's own Phase 0/RED sequencing. Practical implication for RED: ADR-0145's new parser will be the FIRST code anywhere in this codebase to actually construct and validate an object declaring dskit.event-envelope/v2 -- the 'strict superset' relationship in the ADR text is a SPECIFICATION-level relationship between two field lists (one of which, ADR-0130's, exists only in ADR prose today), not a code-reuse relationship to any existing parser function. This is not a defect in ADR-0145 -- Decision point 5 is explicit that this ADR reuses only production/base's canonical-bytes/canonical-hash/check_digest helpers -- but Phase 0 should make sure the independent skeptic does not assume a nonexistent four-field parser is being 'extended' in the literal code sense."
+    }
+  ],
+
+  "non_goals": [
+    "Full master F3 EventEnvelope.v2 semantics: real F1/F2 causal derivation, real exchange/receive feed acquisition, real provenance chain-of-custody, real correction/bust ingestion against live data",
+    "The full SourceRosterCapture.v1/RawEventDatasetCapture.v1/DatasetCaptureAuthorization.v1 broker -- forecast-capital-owned, separate-lane work this ADR does not start",
+    "The real roster/raw-dataset capture broker beyond the already-built synthetic ADR-0130/0132/0141/0142/0143/0144 machinery -- reused here, not rebuilt or extended",
+    "Composed-tape verification itself (Decision point 6) -- the next separate gate per RE-ENTRY's own stated ordering; verify_causal_order consumes already-resolved bytes and resolves nothing itself",
+    "Packet 8 durable consume-once",
+    "Any edit to trust.py's dynamic P4 authority, the five ADR-0143 forbidden-legacy symbols, ADR-0144's new dynamic-dispatch code, or any signer/reserve/ledger code -- none of that is touched, referenced, or depended on by this ADR",
+    "A second tape or event-sourcing engine -- this extends production/bundles.py's existing codec/verification seam only",
+    "Deployment; real replay, backtest, paper or live operation",
+    "Schema-name reuse is not F3 approval: this ADR fills the previously-reserved dskit.event-envelope/v2 string with a synthetic-fixture-scoped content definition; the real F3 lane's own future ADR must independently validate and may extend or replace this schema's content against master plan lines 426-620 before any real use. Reusing the schema name here does not authorize, approve, or pre-validate the real F3 lane's own envelope contract"
+  ],
+
+  "deployment_eligible": false,
+  "tests_run": "none; design inspection",
+  "gate": "Phase 0 matrix authored by implementer; requires independent Phase 0 skeptic review before RED."
+}
