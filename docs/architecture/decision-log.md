@@ -13196,3 +13196,37 @@ catalog members accept it, so there is no "seed refused beside X" case. Kind
 `sklearn-reduce`, class `SklearnReduction`, added to the pack's explicit
 `NODE_KINDS`/`register()`. `fit_split`, `order_field` and `purity_check` keep
 their accepted meanings and validators unchanged.
+
+### Convergence checkpoint (slice 1, after review round 2)
+
+**Triggered by a REPEATED FAMILY across two rounds**, not by a cycle count.
+
+The family: *a set of `component_<i>` names derived from `range(width)` is
+pinned at exactly one index or one width, so a hardcoded or truncated
+derivation survives the suite.* Round 1 found it in `_component_names`
+(`row_problems` collision tested only at `component_0` at width 2); the
+round-1 correction pinned `_component_names` at width 3 but INTRODUCED a
+second derivation site — `_feature_component_overlap_problems` — carrying the
+same unpinned shape, which round 2 then found (tested only at `component_0`).
+
+Why the earlier fix did not cover it: it patched the instance, not the family.
+The family is "every place that DERIVES the produced-name set from
+`range(width)` must be pinned at a non-zero index AND at a beyond-width
+non-collision", and the correction added a new instance without applying the
+rule it had just learned.
+
+The changed approach — an inventory, not another point patch. Every site that
+derives `component_<i>` names (present and future) must carry a test that
+exercises (a) a non-zero index `component_<k>` for `k >= 1` COLLIDES, and (b) a
+beyond-width name `component_<width>` does NOT collide. Inventory so far:
+
+1. `_component_names` (row rule) — pinned at width 2 AND width 3 (component_2
+   collides, component_3 does not).
+2. `_feature_component_overlap_problems` (plan check) — pinned at component_0
+   AND component_1 (a `range(1)` mutant now fails).
+
+The next derivation site is `apply_state`'s projection (slice 3), which writes
+`component_0..k-1` from the STATE's width — it must satisfy the same
+(a)/(b) rule on its FIRST red-green cycle, not be retrofitted after a reviewer
+finds it. A round-3 Major in this family means the inventory missed a site,
+which is a checkable claim rather than another point fix.
