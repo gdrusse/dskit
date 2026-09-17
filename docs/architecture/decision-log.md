@@ -13035,11 +13035,21 @@ only scenario recentering.
 
 Inventory first. A search over `dskit/`, every child and every ref found **no
 uncertainty-set, robust-counterpart or deviation-budget machinery anywhere**.
-The only `budget` hits are an unrelated retry budget
-(`dskit/production/resilience.py`), a knapsack resource cap
-(`libs.pyomo.BudgetedSelect`) and a multiple-testing alpha budget
-(`stats.py`); `planner._accepts_split`'s "a generic budgeted selection" means
-that knapsack. So this is new capability, not a rebuild.
+**"Only three `budget` hits" undercounted the search surface -- reworded.**
+`budget` is a common word: retry and lease budgets in `dskit/production/`,
+`budget_seconds` in onboarding, HPO trial budgets, `conformance.py`'s
+capital-role spend ceiling, and a per-child dollar-budget vocabulary put the
+real count near 80 hits, not three. Three were named because they were the
+only ones shaped anything like this module's subject -- an unrelated retry
+budget (`dskit/production/resilience.py`), a knapsack resource cap
+(`libs.pyomo.BudgetedSelect`, what `planner._accepts_split`'s "a generic
+budgeted selection" means) and a multiple-testing alpha budget (`stats.py`) --
+but naming only those three read as a narrower search than the one actually
+run. The substantive claim stands past the recount: none of the ~80 hits,
+that handful included, is a Bertsimas-Sim budget, a robust counterpart, or
+anything this module reduces to -- each is a differently-shaped ceiling (time,
+retries, dollars, an estimation knapsack, a testing-error allowance) sharing a
+word and no machinery. So this is new capability, not a rebuild.
 
 **Decision.** One tier-1 module, `dskit/pipeline/uncertainty_set.py`: an
 abstract `BudgetedUncertaintySet` doorway plus three concrete members. The
@@ -13105,6 +13115,28 @@ empirical scenario set carries no budget parameter and no robust counterpart,
 so it cannot express "at most this many components deviate adversely at once".
 The overlap is therefore real but partial -- `U_r` reduces to `ScenarioSet` for
 its scenario half and does not for its budgeted half.
+
+**The overlap reaches the value TYPE, not only the concept -- disclosed.**
+`RealizationSet` (`uncertainty_set.py:452-599`) independently rebuilds
+`ScenarioSet`, not just its idea: `__post_init__`
+(`uncertainty_set.py:512-550`, vs `outcome_interval.py:586-620` at `git show
+58ba1a8`) runs the same six screens in the same order, both expose an
+identical `weighted_draws`, and `WEIGHTS_SUM_TOLERANCE = 1e-9`
+(`uncertainty_set.py:173`) is independently redefined verbatim at
+`outcome_interval.py:152`. Importing `ScenarioSet` is rejected above for the
+same reason it is rejected here -- an unmerged, moving branch -- so the
+duplication stands on purpose, not as an oversight; the risk is that tuning
+either copy's tolerance or degeneracy rule leaves the other one silently
+disagreeing. Mitigated, not solved: `TestSiblingAgreement`
+(`tests/pipeline/test_uncertainty_set.py`) scans every `.py` file under
+`dskit/` for a `WEIGHTS_SUM_TOLERANCE` assignment and fails if more than one
+distinct value turns up, so a future divergence -- from this module, from
+`outcome_interval.py` once it merges, or from anywhere else -- is refused
+loudly instead of drifting silently; today it costs nothing, because the scan
+finds exactly one definition. **Named follow-up:** when `outcome_interval.py`
+merges, consolidate `RealizationSet` and `ScenarioSet` into one value type (or
+have one import the other's validation) instead of carrying two
+hand-synchronized copies indefinitely.
 
 **The weights are a convention, not a measure -- disclosed.** A budgeted set is
 a SET; it carries no probability measure. `realizations()` emits uniform

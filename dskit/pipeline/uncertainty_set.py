@@ -57,8 +57,8 @@ from, and the two are pinned to agree.
 consumer that takes weighted scenarios rather than a robust counterpart. It is
 weaker, and the weakness is stated rather than hidden: **a set is not a
 distribution.** A budgeted set carries no probability measure at all, so the
-weights it emits are a UNIFORM CONVENTION over the points emitted, recorded as
-such in the returned value's own provenance. A consumer reading them as
+weights it emits are a UNIFORM CONVENTION over the points emitted, declared as
+such by the returned value's own ``weighting_kind``. A consumer reading them as
 estimated probabilities is computing a uniform average over budget-feasible
 corners -- a robustness diagnostic in the sampled-constraint sense, never a
 calibrated expectation. The emitted points are likewise a deterministic,
@@ -66,6 +66,18 @@ seeded SAMPLE of the set's corners plus every single-component corner, not an
 exhaustive enumeration, so the maximizer for an arbitrary decision vector need
 not be among them. When the exact answer is wanted, ask
 :meth:`~BudgetedUncertaintySet.worst_case`.
+
+**That disclosure is a PRECONDITION, not a footnote.** The pair a scenario
+optimizer takes -- a weight vector and one array per component -- is the same
+numbers whether its weights are estimated probabilities or a convention, and
+the consumer builds an expected utility and a tail-risk cap out of them either
+way. A tuple cannot carry which it received, so
+:meth:`RealizationSet.weighted_draws` does not produce that pair until the
+caller NAMES the weighting it is taking (:data:`WEIGHTING_KINDS`), and refuses
+when the name is not what the set actually carries. The acknowledgement then
+lives in the calling code, at the boundary where the number is acted on. That
+stops the limitation being lost SILENTLY; it cannot stop a caller who types the
+word and ignores it.
 
 **Fail-closed, and loudly.** A non-finite value, an empty family, a deviation
 that would leave the set unbounded, a budget outside its range, mismatched
@@ -77,7 +89,11 @@ exists to prevent, so it is never emitted quietly.
 
 **The family is a class, not a switch.** :class:`BudgetedUncertaintySet` owns
 four template methods a member can never replace -- enforced by
-``__init_subclass__``, not by a docstring asking nicely. A member supplies three
+``__init_subclass__``, not by a docstring asking nicely. That reaches every
+subclass whose definition reaches the hook, which is every ordinary member; a
+class that overrides ``__init_subclass__`` itself and never calls ``super()``
+escapes it, as it does for every user of the idiom, and the hook's own
+docstring says so rather than implying tamper-immunity. A member supplies three
 hooks, all abstract, so an incomplete member refuses at construction rather than
 failing mid-run.
 
@@ -103,6 +119,7 @@ __all__ = [
     "COEFFICIENT_DOMAINS",
     "MAX_REALIZATIONS",
     "UNCERTAINTY_SETS",
+    "WEIGHTING_KINDS",
     "WEIGHTS_SUM_TOLERANCE",
     "WORST_CASE_SENSES",
     "BudgetedMeanSet",
@@ -136,6 +153,18 @@ COEFFICIENT_DOMAINS = ("nonnegative", "real")
 #: tier-1 module cannot import a tier-2 pack, so the suite pins the two by
 #: importing the pack itself and comparing.
 MAX_REALIZATIONS = 256
+
+#: What a weight vector IS, which nothing downstream can read off the numbers.
+#: A ``"convention"`` weighting is a stated averaging rule over points that
+#: carry no probability measure -- a budgeted set's corners; a ``"measure"``
+#: weighting is an estimated distribution. Both are non-negative vectors
+#: summing to one, so a consumer cannot tell them apart and an optimizer will
+#: happily report a tail-risk number computed from either. The DECLARATION is
+#: what carries the difference across a boundary, which is why
+#: :meth:`RealizationSet.weighted_draws` makes the caller state it. Closed by
+#: owned-kind doctrine: a third kind would be a third claim about evidence, not
+#: a registration.
+WEIGHTING_KINDS = ("convention", "measure")
 
 #: How far emitted weights may miss summing to exactly one. Strictly TIGHTER
 #: than the tolerance the consuming optimizer enforces, so a set this module
@@ -173,6 +202,15 @@ def _check_count(value, label, minimum=None):
 def _frozen_floats(mapping):
     """Return a read-only float copy of ``mapping``, safe from later edits."""
     return MappingProxyType({str(k): float(v) for k, v in mapping.items()})
+
+
+def _frozen_tree(value):
+    """Return a read-only copy of nested mappings and sequences; other types as given."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(k): _frozen_tree(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(_frozen_tree(v) for v in value)
+    return value
 
 
 def _adverse_directions(sense, coefficient_domain):
@@ -418,10 +456,12 @@ class RealizationSet:
     the property a consumer taking joint scenarios depends on and the reason
     these are not drawn per component.
 
-    **The weights are a convention, not a measure.** A budgeted set carries no
-    probability distribution; these are uniform over the points emitted and
-    ``provenance`` says so. Read them as estimated probabilities and the result
-    is a uniform average over budget-feasible corners, not an expectation.
+    **The weights are a convention, not a measure.** What a budgeted set emits
+    is uniform over the points emitted, and ``weighting_kind`` declares it.
+    Read those weights as estimated probabilities and the result is a uniform
+    average over budget-feasible corners, not an expectation -- so
+    :meth:`weighted_draws` will not hand out the solver-shaped pair until the
+    caller names the weighting it is taking.
 
     Parameters
     ----------
@@ -432,16 +472,26 @@ class RealizationSet:
         ``name -> sequence of float``, each exactly as long as ``weights``,
         every value finite, and not all equal -- a component with no spread is
         a point estimate wearing a set's clothes, refused rather than emitted.
+    weighting_kind : str
+        What these weights ARE, a member of :data:`WEIGHTING_KINDS`. It defaults
+        to ``"convention"`` because that is the WEAKER claim: silence can demote
+        an estimated measure to a convention, which loses only precision, but it
+        can never promote a convention into a measure, which would invent
+        evidence. A caller holding estimated weights says ``"measure"``.
     provenance : mapping
         The set, budget, sense, seed, requested and emitted counts, and the
-        weighting convention.
+        weighting convention. Frozen through every nested mapping, list, tuple
+        and set; a value of any other type is stored as it was handed over, so
+        a caller putting a mutable object of its own in here keeps a handle to
+        it.
 
     Raises
     ------
     ValueError
         On an empty family, weights that are negative, non-finite or miss
         summing to one, a draw array whose length does not match the weights, a
-        non-finite draw, or a component with no spread.
+        non-finite draw, a component with no spread, or a ``weighting_kind``
+        outside :data:`WEIGHTING_KINDS`.
 
     Examples
     --------
@@ -450,16 +500,21 @@ class RealizationSet:
         s = RealizationSet(
             weights=(0.5, 0.5), draws={"a": (0.9, 1.1)}, provenance={}
         )
-        s.weighted_draws()[0]
+        s.weighted_draws(reading_weights_as="convention")[0]
         # -> [0.5, 0.5]
     """
 
     weights: tuple
     draws: dict
+    weighting_kind: str = "convention"
     provenance: dict = field(default_factory=dict)
 
     def __post_init__(self):
         """Refuse a set a consumer could not safely optimize against."""
+        if self.weighting_kind not in WEIGHTING_KINDS:
+            raise ValueError(
+                f"weighting_kind must be one of {WEIGHTING_KINDS}, got {self.weighting_kind!r}"
+            )
         weights = tuple(float(w) for w in self.weights)
         if not weights:
             raise ValueError("weights must be a non-empty sequence")
@@ -492,10 +547,26 @@ class RealizationSet:
                 )
         object.__setattr__(self, "weights", weights)
         object.__setattr__(self, "draws", MappingProxyType(draws))
-        object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
+        object.__setattr__(self, "provenance", _frozen_tree(dict(self.provenance)))
 
-    def weighted_draws(self):
+    def weighted_draws(self, reading_weights_as):
         """Return the ``(weights, arrays)`` pairing a scenario consumer takes.
+
+        The pair cannot carry what its weights ARE: a vector drawn from an
+        estimated distribution and one that is a stated averaging rule are the
+        same numbers, and the consumer builds an expectation and a tail-risk
+        cap out of either. So the caller states which it is taking, here, and a
+        mismatch refuses -- the disclosure ends up in the calling code, at the
+        boundary where a wrong reading is acted on, instead of in a field the
+        returned tuple drops.
+
+        Parameters
+        ----------
+        reading_weights_as : str
+            The weighting the caller is taking these weights to be, a member of
+            :data:`WEIGHTING_KINDS`, which must be this set's own
+            ``weighting_kind``. There is no default: the whole point is that
+            the caller says it.
 
         Returns
         -------
@@ -503,7 +574,28 @@ class RealizationSet:
             ``(weights, draws)`` where ``weights`` is a list of floats summing
             to one and ``draws`` is ``{name: list of float}``, every list as
             long as ``weights``.
+
+        Raises
+        ------
+        ValueError
+            When ``reading_weights_as`` is outside :data:`WEIGHTING_KINDS`, or
+            names a weighting this set does not carry.
         """
+        if reading_weights_as not in WEIGHTING_KINDS:
+            raise ValueError(
+                f"reading_weights_as must be one of {WEIGHTING_KINDS}, got "
+                f"{reading_weights_as!r}"
+            )
+        if reading_weights_as != self.weighting_kind:
+            raise ValueError(
+                f"these weights are a {self.weighting_kind!r} weighting, not a "
+                f"{reading_weights_as!r} one. A convention weighting is a stated averaging "
+                "rule over points that carry no probability measure: an average under it is "
+                "NOT an expectation and a tail measured under it is not a tail probability. "
+                "The two are the same numbers, so nothing downstream can tell them apart — "
+                "name the one you actually hold, and ask worst_case()/counterpart() when the "
+                "exact answer over the whole set is what is wanted"
+            )
         return list(self.weights), {name: list(values) for name, values in self.draws.items()}
 
 
@@ -511,10 +603,12 @@ class BudgetedUncertaintySet(ABC):
     """The family: nominal values, adverse deviations, and a budget over them.
 
     ``worst_case``, ``protection``, ``counterpart`` and ``realizations`` are
-    TEMPLATE methods. A subclass can never replace one -- ``__init_subclass__``
+    TEMPLATE methods. A member can never replace one -- ``__init_subclass__``
     raises at class definition, so the guarantee is enforced rather than
-    requested. A member supplies three hooks, all abstract, so an incomplete
-    member refuses at construction instead of failing mid-run:
+    requested, for every subclass whose definition reaches the hook; see
+    :meth:`__init_subclass__` for the one shape that does not reach it. A
+    member supplies three hooks, all abstract, so an incomplete member refuses
+    at construction instead of failing mid-run:
 
     * :meth:`worst_case_sense` -- which extreme of the linear form is adverse.
     * :meth:`component_bounds` -- the feasible interval a realization may not
@@ -565,7 +659,17 @@ class BudgetedUncertaintySet(ABC):
     """
 
     def __init_subclass__(cls, **kwargs):
-        """Refuse a subclass that replaces a template; every HOOK stays overridable."""
+        """Refuse a subclass that replaces a template; every HOOK stays overridable.
+
+        Scoped honestly: this runs for every subclass whose definition REACHES
+        it. An intermediate class that defines its own ``__init_subclass__``
+        and does not call ``super()`` stops it running for anything built below
+        that intermediate, which can then replace a template. That is inherent
+        to the hook rather than particular to this module -- every user of the
+        idiom in this repo shares it -- and the guarantee claimed here is
+        against an ordinary member getting the arithmetic wrong, never against
+        a subclass built to defeat the check.
+        """
         super().__init_subclass__(**kwargs)
         for final in ("worst_case", "protection", "counterpart", "realizations"):
             if final in vars(cls):
@@ -889,8 +993,11 @@ class BudgetedUncertaintySet(ABC):
         geometry offers fewer points than asked for, the whole of it is emitted
         and ``provenance`` records both counts.
 
-        **The weights are uniform by convention, not by estimation.** See the
-        module docstring.
+        **The weights are uniform by convention, not by estimation.** The
+        returned value declares that as its ``weighting_kind``, and
+        :meth:`RealizationSet.weighted_draws` will not produce the
+        solver-shaped pair for a caller who does not name it. See the module
+        docstring.
 
         Parameters
         ----------
@@ -952,6 +1059,9 @@ class BudgetedUncertaintySet(ABC):
                 name: tuple(row[index] for row in rows)
                 for index, name in enumerate(self._names)
             },
+            # A budgeted set has no measure to estimate one from, so this is the
+            # only value this template can ever pass — pinned by the suite.
+            weighting_kind="convention",
             provenance={
                 "set": class_ref(type(self)),
                 "budget": self._budget,
@@ -979,9 +1089,17 @@ class BudgetedUncertaintySet(ABC):
         float tolerance in it is exactly the duplication that diverges: a
         budget of ``2.0`` arriving as ``1.9999999999999998`` must buy two whole
         components everywhere or nowhere.
+
+        The leftover comes back UNCLAMPED, so it is a hair below zero whenever
+        the tolerance rounded the whole part up. Every reader gates on its sign
+        before reading its magnitude, which made the old ``max(0.0, ...)``
+        unreachable; keeping it would have silently absorbed a future reader
+        that stopped gating, the way the unreachable row-slice in
+        :meth:`realizations` would have. The suite pins the behaviour instead,
+        at exact float equality against the same budget stated exactly.
         """
         full = int(math.floor(self._budget + _BUDGET_EPS))
-        return full, max(0.0, self._budget - full)
+        return full, self._budget - full
 
     def _checked_bounds(self):
         """Read the member's component bounds, refusing an unusable interval."""
@@ -1260,8 +1378,9 @@ class BudgetedOutcomeSet(BudgetedUncertaintySet):
     Its :meth:`~BudgetedUncertaintySet.realizations` output is the weighted
     joint form a scenario-consuming optimizer takes directly: shared weights and
     one array per component, point ``k`` meaning the same simultaneous state in
-    every array. Read the module docstring on what those weights are and are
-    not before using them as probabilities.
+    every array. Taking that pair means naming the weighting it carries, which
+    is a CONVENTION and never an estimated measure; read the module docstring
+    on the difference before using those weights as probabilities.
 
     Parameters
     ----------
@@ -1284,7 +1403,9 @@ class BudgetedOutcomeSet(BudgetedUncertaintySet):
             deviation_above={"a": 0.02, "b": 0.01},
             budget=1.0,
         )
-        weights, draws = u.realizations(5, seed=0).weighted_draws()
+        weights, draws = u.realizations(5, seed=0).weighted_draws(
+            reading_weights_as="convention"
+        )
         len(weights)
         # -> 5
     """

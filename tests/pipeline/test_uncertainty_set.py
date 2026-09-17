@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import itertools
 import math
+import pathlib
+import re
 
 import pytest
 
@@ -11,6 +13,7 @@ from dskit.pipeline.uncertainty_set import (
     COEFFICIENT_DOMAINS,
     MAX_REALIZATIONS,
     UNCERTAINTY_SETS,
+    WEIGHTING_KINDS,
     WEIGHTS_SUM_TOLERANCE,
     WORST_CASE_SENSES,
     BudgetedMeanSet,
@@ -42,6 +45,18 @@ def two_sided(names, mean=0.0, width=1.0, budget=1.0, cls=BudgetedMeanSet):
         deviation_above={n: width for n in names},
         budget=budget,
     )
+
+
+def as_convention(realization_set):
+    """Take the consumer pair, NAMING the convention weighting these sets carry.
+
+    ``weighted_draws`` refuses to produce the solver-shaped pair until the
+    caller says what it is taking the weights to be, so every call site in this
+    suite says it. The word is spelled out in full at the two places that
+    matter -- the consumer screen and the end-to-end solve -- rather than
+    borrowed from here.
+    """
+    return realization_set.weighted_draws(reading_weights_as="convention")
 
 
 def brute_force_extreme(uset, coefficients):
@@ -247,6 +262,19 @@ class TestProbabilityMemberNarrowing:
                 budget=1.0,
             )
 
+    def test_a_probability_sitting_on_its_bound_may_still_move_inward(self):
+        # 0.0 is INSIDE the unit interval, and a probability there with room to
+        # rise is a set rather than a refusal: the screen is "outside the
+        # bounds", never "at the edge of them".
+        u = BudgetedProbabilitySet(
+            nominal={"a": 0.0, "b": 0.5},
+            deviation_below={"a": 0.0, "b": 0.0},
+            deviation_above={"a": 0.1, "b": 0.1},
+            budget=1.0,
+        )
+        assert u.nominal["a"] == 0.0
+        assert u.worst_case({"a": 1.0, "b": 1.0}).value == 0.6
+
     def test_the_domain_clamp_narrows_the_effective_deviation(self):
         u = BudgetedProbabilitySet(
             nominal={"a": 0.95},
@@ -294,7 +322,7 @@ class TestProbabilityMemberNarrowing:
             deviation_above={"a": 0.05, "b": 0.3},
             budget=1.5,
         )
-        _weights, draws = u.realizations(12, seed=3).weighted_draws()
+        _weights, draws = as_convention(u.realizations(12, seed=3))
         for name, values in draws.items():
             for value in values:
                 assert 0.0 <= value <= 1.0, (name, value)
@@ -492,6 +520,30 @@ class TestProtection:
         assert dual == pytest.approx(u.protection(coefficients))
 
 
+class TestBudgetFloorTolerance:
+    # `_BUDGET_EPS` exists so a budget of 3.0 that arrived as 2.9999999999999996
+    # from the caller's own arithmetic buys three whole components EVERYWHERE OR
+    # NOWHERE. Both halves are pinned at exact float equality against the same
+    # budget stated exactly, which is also what makes the unclamped negative
+    # leftover safe: a reader that started spending its magnitude would move
+    # these values in the last ulps and fail here.
+
+    def test_a_budget_a_hair_under_an_integer_still_buys_the_whole_component(self):
+        coefficients = {"a": 1.0, "b": 1.0, "c": 1.0}
+        exact = two_sided(["a", "b", "c"], width=1.0, budget=3.0)
+        hair = two_sided(["a", "b", "c"], width=1.0, budget=math.nextafter(3.0, 0.0))
+        assert hair.budget < exact.budget
+        assert hair.protection(coefficients) == exact.protection(coefficients)
+        assert hair.worst_case(coefficients).realization == (
+            exact.worst_case(coefficients).realization
+        )
+
+    def test_a_budget_a_hair_under_an_integer_emits_the_same_corners(self):
+        exact = two_sided(["a", "b"], mean=1.0, width=0.02, budget=2.0)
+        hair = two_sided(["a", "b"], mean=1.0, width=0.02, budget=math.nextafter(2.0, 0.0))
+        assert hair.realizations(9, seed=0).draws == exact.realizations(9, seed=0).draws
+
+
 class TestCounterpart:
     def test_it_carries_everything_a_solver_needs(self):
         u = BudgetedProbabilitySet(
@@ -563,7 +615,7 @@ class TestRealizations:
         u = two_sided(["a", "b"], mean=1.0, width=0.1, budget=1.0, cls=BudgetedOutcomeSet)
         out = u.realizations(5, seed=0)
         assert isinstance(out, RealizationSet)
-        weights, draws = out.weighted_draws()
+        weights, draws = as_convention(out)
         assert isinstance(weights, list)
         assert isinstance(draws, dict)
         assert set(draws) == {"a", "b"}
@@ -572,7 +624,7 @@ class TestRealizations:
             assert len(values) == len(weights)
 
     def test_the_weights_are_a_probability_vector(self):
-        weights, _ = two_sided(["a", "b", "c"], budget=1.0).realizations(9, seed=1).weighted_draws()
+        weights, _ = as_convention(two_sided(["a", "b", "c"], budget=1.0).realizations(9, seed=1))
         assert all(math.isfinite(w) and w >= 0.0 for w in weights)
         assert abs(math.fsum(weights) - 1.0) <= WEIGHTS_SUM_TOLERANCE
 
@@ -589,27 +641,27 @@ class TestRealizations:
         assert out.provenance["budget"] == 1.0
 
     def test_every_component_varies(self):
-        _weights, draws = (
-            two_sided(["a", "b", "c"], budget=1.0).realizations(7, seed=2).weighted_draws()
+        _weights, draws = as_convention(
+            two_sided(["a", "b", "c"], budget=1.0).realizations(7, seed=2)
         )
         for name, values in draws.items():
             assert len(set(values)) >= 2, f"{name} is degenerate: {values}"
 
     def test_the_nominal_point_is_always_present(self):
         u = two_sided(["a", "b"], mean=4.0, width=0.5, budget=1.0)
-        _weights, draws = u.realizations(5, seed=0).weighted_draws()
+        _weights, draws = as_convention(u.realizations(5, seed=0))
         assert any(draws["a"][i] == 4.0 and draws["b"][i] == 4.0 for i in range(len(draws["a"])))
 
     def test_the_same_seed_gives_the_same_set(self):
         u = two_sided(["a", "b", "c"], budget=2.0)
-        first = u.realizations(20, seed=11).weighted_draws()
-        second = u.realizations(20, seed=11).weighted_draws()
+        first = as_convention(u.realizations(20, seed=11))
+        second = as_convention(u.realizations(20, seed=11))
         assert first == second
 
     def test_a_different_seed_gives_a_different_set(self):
         u = two_sided(["a", "b", "c", "d"], budget=3.0)
-        first = u.realizations(24, seed=11).weighted_draws()
-        second = u.realizations(24, seed=12).weighted_draws()
+        first = as_convention(u.realizations(24, seed=11))
+        second = as_convention(u.realizations(24, seed=12))
         assert first != second
 
     def test_two_members_with_one_seed_do_not_draw_alike(self):
@@ -619,8 +671,8 @@ class TestRealizations:
             "deviation_above": {"a": 0.1, "b": 0.2, "c": 0.3, "d": 0.4},
             "budget": 3.0,
         }
-        mean_draws = BudgetedMeanSet(**common).realizations(24, seed=5).weighted_draws()
-        outcome_draws = BudgetedOutcomeSet(**common).realizations(24, seed=5).weighted_draws()
+        mean_draws = as_convention(BudgetedMeanSet(**common).realizations(24, seed=5))
+        outcome_draws = as_convention(BudgetedOutcomeSet(**common).realizations(24, seed=5))
         assert mean_draws != outcome_draws
 
     def test_every_realization_lies_inside_the_set(self):
@@ -630,7 +682,7 @@ class TestRealizations:
             deviation_above={"a": 0.2, "b": 0.7, "c": 0.4},
             budget=1.6,
         )
-        _weights, draws = u.realizations(30, seed=7).weighted_draws()
+        _weights, draws = as_convention(u.realizations(30, seed=7))
         for index in range(len(draws["a"])):
             spent = 0.0
             for name in u.names:
@@ -650,7 +702,7 @@ class TestRealizations:
             deviation_above={"a": 0.2, "b": 0.4},
             budget=0.5,
         )
-        _weights, draws = u.realizations(5, seed=0).weighted_draws()
+        _weights, draws = as_convention(u.realizations(5, seed=0))
         assert max(abs(v - 1.0) for v in draws["a"]) == pytest.approx(0.1)
         assert max(abs(v - 1.0) for v in draws["b"]) == pytest.approx(0.2)
 
@@ -662,10 +714,59 @@ class TestRealizations:
         rows = list(zip(*[out.draws[n] for n in u.names]))
         assert len(set(rows)) == len(rows)
 
+    def test_a_full_box_budget_still_emits_its_saturating_corners(self):
+        # A budget equal to the component count IS the whole box, and the
+        # corner where every component moves at once is a point of it.
+        # Refusing to emit the saturating tail there would emit a set strictly
+        # smaller than the one the counterpart describes.
+        u = two_sided(["a", "b"], mean=1.0, width=0.1, budget=2.0)
+        out = u.realizations(9, seed=0)
+        rows = list(zip(*[out.draws[n] for n in u.names]))
+        assert len(rows) == 9
+        assert len([r for r in rows if r[0] != 1.0 and r[1] != 1.0]) == 4
+
+    def test_a_corner_set_that_fits_exactly_is_enumerated_not_sampled(self):
+        # Room for exactly as many corners as the geometry has: the whole of it
+        # is emitted, so the seed cannot matter. Sampling at this boundary
+        # would make an exhaustive answer depend on a seed.
+        u = two_sided(["a", "b"], budget=1.5)
+        first = u.realizations(13, seed=0)
+        second = u.realizations(13, seed=99)
+        assert len(first.weights) == 13
+        assert first.draws == second.draws
+
+    def test_a_sampled_request_the_geometry_can_fill_is_filled(self):
+        # More corners exist than there is room for, so the tail is SAMPLED.
+        # The sampler must still fill every slot it was handed: a short draw
+        # reweights the whole set without saying so, since the weight is 1/n.
+        u = two_sided(["a", "b", "c", "d", "e"], budget=1.5)
+        out = u.realizations(40, seed=3)
+        assert out.provenance["emitted"] == 40
+        rows = list(zip(*[out.draws[n] for n in u.names]))
+        assert len(set(rows)) == 40
+
+    def test_the_fractional_component_is_never_one_already_spent(self):
+        # The enumeration walks (components spent in full) x (one more, spent
+        # fractionally). That "one more" must come from the components NOT
+        # already at full deviation, or the corner duplicates one already
+        # emitted and the walk overruns the room it was handed.
+        u = two_sided(["a", "b", "c"], budget=1.5)
+        out = u.realizations(31, seed=0)
+        rows = list(zip(*[out.draws[n] for n in u.names]))
+        assert len(rows) == 31
+        assert len(set(rows)) == 31
+
     def test_too_few_realizations_refuses_naming_the_floor(self):
         u = two_sided(["a", "b", "c"], budget=1.0)
         with pytest.raises(ValueError, match="7"):
             u.realizations(4, seed=0)
+
+    def test_one_realization_below_the_floor_still_refuses(self):
+        # The boundary itself: one below the floor leaves a component unable to
+        # vary, which is the whole reason the floor exists.
+        u = two_sided(["a", "b", "c"], budget=1.0)
+        with pytest.raises(ValueError, match="must be >= 7"):
+            u.realizations(6, seed=0)
 
     def test_a_one_sided_member_needs_a_smaller_floor(self):
         u = BudgetedProbabilitySet(
@@ -715,6 +816,13 @@ class TestRealizations:
                 provenance={},
             )
 
+    def test_a_realization_set_accepts_weights_a_hair_off_one(self):
+        # The tolerance is the contract, not exactness: a weight vector
+        # accumulated from 1/n must not be refused for representation noise.
+        s = RealizationSet(weights=(0.5, 0.5 - 1e-10), draws={"a": (0.9, 1.1)})
+        assert math.fsum(s.weights) != 1.0
+        assert abs(math.fsum(s.weights) - 1.0) <= WEIGHTS_SUM_TOLERANCE
+
     def test_a_realization_set_refuses_a_component_with_no_spread(self):
         with pytest.raises(ValueError, match="'a'"):
             RealizationSet(
@@ -722,6 +830,12 @@ class TestRealizations:
                 draws={"a": (1.0, 1.0), "b": (1.0, 2.0)},
                 provenance={},
             )
+
+    def test_a_realization_set_refuses_a_draw_longer_than_its_weights(self):
+        # Both directions of ragged, not just the short one: a long array would
+        # hand the consumer arrays of two different lengths.
+        with pytest.raises(ValueError, match="expected 2"):
+            RealizationSet(weights=(0.5, 0.5), draws={"a": (0.9, 1.1, 1.3)})
 
     def test_a_realization_set_refuses_a_ragged_draw(self):
         with pytest.raises(ValueError, match="one value per weight"):
@@ -733,6 +847,34 @@ class TestRealizations:
             out.draws["a"] = (0.0, 0.0)
         with pytest.raises(TypeError):
             out.provenance["seed"] = 99
+
+    def test_a_realization_sets_provenance_is_frozen_all_the_way_down(self):
+        s = RealizationSet(
+            weights=(0.5, 0.5), draws={"a": (0.9, 1.1)}, provenance={"tag": ["x", "y"]}
+        )
+        assert s.provenance["tag"] == ("x", "y")
+        with pytest.raises(AttributeError):
+            s.provenance["tag"].append("z")
+
+    def test_a_realization_sets_nested_provenance_mapping_is_frozen_too(self):
+        s = RealizationSet(
+            weights=(0.5, 0.5), draws={"a": (0.9, 1.1)}, provenance={"inner": {"k": 1}}
+        )
+        assert s.provenance["inner"]["k"] == 1
+        with pytest.raises(TypeError):
+            s.provenance["inner"]["k"] = 2
+
+    def test_a_realization_sets_provenance_set_is_frozen_into_a_tuple(self):
+        # `_frozen_tree` widens past dict/list to every mutable container a
+        # caller might hand in; a set is the one whose OWN method (`.add`)
+        # would otherwise survive completely unfrozen, not merely unordered.
+        s = RealizationSet(
+            weights=(0.5, 0.5), draws={"a": (0.9, 1.1)}, provenance={"tag": {"x", "y"}}
+        )
+        assert isinstance(s.provenance["tag"], tuple)
+        assert set(s.provenance["tag"]) == {"x", "y"}
+        with pytest.raises(AttributeError):
+            s.provenance["tag"].add("z")
 
     def test_a_realization_set_refuses_an_empty_family(self):
         with pytest.raises(ValueError, match="at least one component"):
@@ -749,6 +891,85 @@ class TestRealizations:
             RealizationSet(
                 weights=(-0.5, 1.5), draws={"a": (1.0, 2.0)}, provenance={}
             )
+
+
+class TestTheWeightingSurvivesTheConsumerBoundary:
+    # The pair `weighted_draws` returns is exactly what
+    # `libs.pyomo.ScenarioUtilitySolve.payoffs` must hand back, and the solver
+    # computes an expected utility AND a Rockafellar-Uryasev CVaR cap from the
+    # weights. The numbers of a convention weighting and of an estimated one are
+    # indistinguishable, so the pair cannot carry the difference: the caller
+    # states it, and a mismatch refuses.
+
+    def test_the_pair_cannot_be_taken_without_naming_the_weighting(self):
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        with pytest.raises(TypeError):
+            out.weighted_draws()
+
+    def test_the_kind_is_a_field_of_the_value_not_only_a_provenance_entry(self):
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        assert out.weighting_kind == "convention"
+
+    @pytest.mark.parametrize("cls", [BudgetedMeanSet, BudgetedOutcomeSet])
+    def test_no_member_can_emit_anything_but_a_convention(self, cls):
+        out = two_sided(["a", "b"], mean=1.0, width=0.1, budget=1.0, cls=cls).realizations(
+            5, seed=0
+        )
+        assert out.weighting_kind == "convention"
+
+    def test_the_one_sided_member_emits_a_convention_too(self):
+        u = BudgetedProbabilitySet(
+            nominal={"a": 0.2, "b": 0.3},
+            deviation_below={"a": 0.0, "b": 0.0},
+            deviation_above={"a": 0.1, "b": 0.05},
+            budget=1.0,
+        )
+        assert u.realizations(3, seed=0).weighting_kind == "convention"
+
+    def test_taking_convention_weights_as_a_measure_refuses(self):
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        with pytest.raises(ValueError, match="convention"):
+            out.weighted_draws(reading_weights_as="measure")
+
+    def test_the_refusal_names_what_the_reader_would_have_computed(self):
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        with pytest.raises(ValueError, match="NOT an expectation"):
+            out.weighted_draws(reading_weights_as="measure")
+
+    @pytest.mark.parametrize("reading", ["uniform", "probability", "", None, 1])
+    def test_a_reading_outside_the_vocabulary_refuses(self, reading):
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        with pytest.raises(ValueError, match="reading_weights_as"):
+            out.weighted_draws(reading_weights_as=reading)
+
+    def test_naming_the_weighting_the_set_carries_yields_the_consumer_pair(self):
+        out = two_sided(["a", "b"], mean=1.0, width=0.1, budget=1.0).realizations(5, seed=0)
+        weights, draws = out.weighted_draws(reading_weights_as="convention")
+        assert isinstance(weights, list)
+        assert set(draws) == {"a", "b"}
+        assert all(len(v) == len(weights) for v in draws.values())
+
+    def test_an_undeclared_weighting_is_the_weaker_claim(self):
+        s = RealizationSet(weights=(0.5, 0.5), draws={"a": (0.9, 1.1)})
+        assert s.weighting_kind == "convention"
+        with pytest.raises(ValueError, match="convention"):
+            s.weighted_draws(reading_weights_as="measure")
+
+    def test_a_caller_with_an_estimated_measure_can_declare_one(self):
+        s = RealizationSet(
+            weights=(0.5, 0.5), draws={"a": (0.9, 1.1)}, weighting_kind="measure"
+        )
+        assert s.weighted_draws(reading_weights_as="measure")[0] == [0.5, 0.5]
+        with pytest.raises(ValueError, match="measure"):
+            s.weighted_draws(reading_weights_as="convention")
+
+    @pytest.mark.parametrize("kind", ["uniform", "Convention", "", None])
+    def test_a_weighting_kind_outside_the_vocabulary_refuses_at_construction(self, kind):
+        with pytest.raises(ValueError, match="weighting_kind"):
+            RealizationSet(weights=(0.5, 0.5), draws={"a": (0.9, 1.1)}, weighting_kind=kind)
+
+    def test_the_vocabulary_is_a_closed_pair(self):
+        assert WEIGHTING_KINDS == ("convention", "measure")
 
 
 class TestValueGuards:
@@ -859,6 +1080,19 @@ class TestTooWideToEmit:
         u = two_sided(names, budget=1.0)
         assert len(u.realizations(1 + 2 * width, seed=0).weights) == 1 + 2 * width
 
+    def test_a_family_whose_floor_is_exactly_the_ceiling_still_emits(self):
+        # One adverse direction, so the floor is 1 + n. At n = 255 the floor IS
+        # the ceiling: the boundary is inclusive, and a guard that refused here
+        # would refuse the widest set the consumer can actually take.
+        names = [f"c{i:03d}" for i in range(MAX_REALIZATIONS - 1)]
+        u = BudgetedProbabilitySet(
+            nominal={n: 0.2 for n in names},
+            deviation_below={n: 0.0 for n in names},
+            deviation_above={n: 0.1 for n in names},
+            budget=1.0,
+        )
+        assert len(u.realizations(MAX_REALIZATIONS, seed=0).weights) == MAX_REALIZATIONS
+
 
 class TestTemplateEnforcement:
     @pytest.mark.parametrize(
@@ -928,6 +1162,19 @@ class TestTemplateEnforcement:
                 budget=1.0,
             )
 
+    def test_equal_component_bounds_refuse_as_an_empty_interval(self):
+        # low == high is the boundary: it leaves no interval at all, so it must
+        # refuse HERE, naming the bounds, rather than a component later
+        # reporting that it has no room to deviate.
+        cls = type("PointBounds", (BudgetedMeanSet,), {"component_bounds": lambda self: (1.0, 1.0)})
+        with pytest.raises(ValueError, match="must be < high"):
+            cls(
+                nominal={"a": 1.0},
+                deviation_below={"a": 0.1},
+                deviation_above={"a": 0.1},
+                budget=1.0,
+            )
+
     def test_inverted_component_bounds_refuse(self):
         cls = type("BadBounds", (BudgetedMeanSet,), {"component_bounds": lambda self: (1.0, 0.0)})
         with pytest.raises(ValueError, match="component_bounds"):
@@ -937,6 +1184,25 @@ class TestTemplateEnforcement:
                 deviation_above={"a": 0.1},
                 budget=1.0,
             )
+
+
+class TestTheHooksHonestScope:
+    def test_an_intermediate_that_skips_super_escapes_the_template_guard(self):
+        # Recorded, not fixed: a class that overrides __init_subclass__ and
+        # never calls super() prevents the guard from running for anything
+        # below it. That is inherent to the hook and shared by every user of
+        # the idiom in this repo, so the docstring scopes the claim instead of
+        # implying tamper-immunity. This test pins claim and behaviour together.
+        class Intermediate(BudgetedMeanSet):
+            def __init_subclass__(cls, **kwargs):
+                return None
+
+        escaped = type("Escaped", (Intermediate,), {"worst_case": lambda self, c: None})
+        assert "worst_case" in vars(escaped)
+
+    def test_the_hook_documents_the_shape_that_escapes_it(self):
+        doc = BudgetedUncertaintySet.__init_subclass__.__doc__
+        assert "super()" in doc
 
 
 class TestTheThreeMembers:
@@ -1011,7 +1277,7 @@ class TestConsumerAgreement:
         # The consumer's screen, restated by hand from
         # ScenarioUtilitySolve.build_model.
         u = two_sided(["a", "b"], mean=1.0, width=0.02, budget=1.0, cls=BudgetedOutcomeSet)
-        weights, r = u.realizations(5, seed=0).weighted_draws()
+        weights, r = u.realizations(5, seed=0).weighted_draws(reading_weights_as="convention")
         assert len(weights) > 0
         assert all(math.isfinite(w) and w >= 0.0 for w in weights)
         assert abs(math.fsum(weights) - 1.0) <= CONSUMER_WEIGHT_TOLERANCE
@@ -1019,6 +1285,32 @@ class TestConsumerAgreement:
         for name, values in r.items():
             assert len(values) == len(weights), name
             assert all(math.isfinite(v) for v in values), name
+
+
+class TestSiblingAgreement:
+    # `RealizationSet` is a near-twin of `outcome_interval.ScenarioSet` on an
+    # unmerged sibling branch: same six screens in the same order, the same
+    # `weighted_draws`, and the SAME constant redefined verbatim. Importing the
+    # sibling would bind this branch to a moving one, so the agreement is pinned
+    # by scanning the shipped source instead: it costs nothing today (one
+    # definition) and turns into a real refusal the moment a second definition
+    # lands, whatever module it lands in.
+
+    def test_one_weights_sum_tolerance_is_defined_across_the_toolkit(self):
+        import dskit.pipeline.uncertainty_set as module
+
+        root = pathlib.Path(module.__file__).resolve().parent.parent
+        pattern = re.compile(r"^WEIGHTS_SUM_TOLERANCE\s*=\s*(.+?)\s*(?:#.*)?$", re.MULTILINE)
+        found = []
+        for path in sorted(root.rglob("*.py")):
+            for value in pattern.findall(path.read_text(encoding="utf-8")):
+                found.append((str(path.relative_to(root)), float(value)))
+        assert found, "the scan found no WEIGHTS_SUM_TOLERANCE at all — it has stopped pinning"
+        assert len({value for _path, value in found}) == 1, (
+            "WEIGHTS_SUM_TOLERANCE is defined more than once and the copies disagree: "
+            f"{found} — give the rule one owner, or make the copies agree"
+        )
+        assert found[0][1] == WEIGHTS_SUM_TOLERANCE, found
 
 
 class TestEndToEndAgainstTheRealConsumer:
@@ -1053,7 +1345,7 @@ class TestEndToEndAgainstTheRealConsumer:
                 return ["a", "b"], rows, account
 
             def payoffs(self, inputs):
-                return uset.realizations(5, seed=0).weighted_draws()
+                return uset.realizations(5, seed=0).weighted_draws(reading_weights_as="convention")
 
             def domain_constraints(self, model, inputs, params):
                 return None
