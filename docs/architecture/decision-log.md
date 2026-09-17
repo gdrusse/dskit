@@ -13222,8 +13222,11 @@ beyond-width name `component_<width>` does NOT collide. Inventory so far:
 
 1. `_component_names` (row rule) — pinned at width 2 AND width 3 (component_2
    collides, component_3 does not).
-2. `_feature_component_overlap_problems` (plan check) — pinned at component_0
-   AND component_1 (a `range(1)` mutant now fails).
+2. `_feature_component_overlap_problems` (plan check) — pinned at component_0,
+   component_1 AND component_2 (width 3) colliding, and component_2 (width 2) /
+   component_3 (width 3) NOT colliding — both the (a) non-zero-index and (b)
+   beyond-width halves of the rule. Round 3 falsified the first draft of this
+   bullet (it had only the (a) half), so the (b) half is now applied too.
 
 The next derivation site is `apply_state`'s projection (slice 3), which writes
 `component_0..k-1` from the STATE's width — it must satisfy the same

@@ -2803,6 +2803,19 @@ def test_reduce_params_refuse_a_feature_that_is_a_produced_column_name():
         )
         assert any(colliding in p for p in problems), colliding
     assert SklearnReduction.validate_params(dict(REDUCE_PARAMS)) == []
+    # (b) a beyond-width name does NOT collide, and the width is derived,
+    # not hardcoded — an off-by-one or a fixed-width mutant fails here.
+    assert SklearnReduction.validate_params(
+        {**REDUCE_PARAMS, "features": ["component_2", "other", "flat"]}
+    ) == []
+    assert SklearnReduction.validate_params(
+        {**REDUCE_PARAMS, "n_components": 3,
+         "features": ["component_2", "other", "flat"]}
+    ) != []
+    assert SklearnReduction.validate_params(
+        {**REDUCE_PARAMS, "n_components": 3,
+         "features": ["component_3", "other", "flat"]}
+    ) == []
 
 
 def test_reduce_params_a_malformed_feature_is_refused_not_a_crash():
