@@ -1,0 +1,381 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / P7 slice 4 / dynamic authorize_capture_set closure to a genuine CAPTURED admission",
+  "packet": "7-remainder",
+  "adr": "ADR-0144 - dynamic authorize_capture_set closure to a genuine CAPTURED admission",
+  "adr_status": "accepted (docs/architecture/decision-log.md; preapproval review/correction/recheck and owner acceptance recorded in 0183.adr0144_preapproval_review / 0183.owner_decision)",
+  "base_main": "9d97f5cdafeb4c8604ee9716a296af9a7af80bdd",
+  "worktree": "/home/russell/wt/f5a-p7-remainder-20260916",
+  "branch": "codex/f5a-p7-remainder-20260916",
+  "candidate_commit": "f6945f1 (docs: accept ADR-0144 after owner approval -- design-only; no production code exists yet for this ADR)",
+  "cites": [
+    "evidence 0183 (proposal, ground_truth_findings_beyond_evidence_0182, preapproval review/correction/recheck, owner acceptance)",
+    "evidence 0181 (ADR-0143's own Phase0 matrix -- style/format precedent, and source of dskit/production/verifier.py's F4 finding this matrix reconfirms unchanged)",
+    "evidence 0182 (ADR-0143 RED/GREEN, convergence_checkpoint block -- the exact blocker ADR-0144 closes)",
+    "ADR-0144 (decision-log.md line ~10792)",
+    "ADR-0143 (decision-log.md line ~10467)",
+    "ADR-0142 (decision-log.md line ~10385)",
+    "ADR-0141 (decision-log.md line ~10286)",
+    "docs/skills/skeptic-review.md #Phase 0",
+    "docs/skills/implementation-workflow.md point 4"
+  ],
+  "authored_by": "implementer (Claude Sonnet 5), design inspection only, no code/tests changed",
+  "code_read": [
+    "dskit/pipeline/trust.py:30-58 (module __all__ -- confirms no P4 authority/resolver/contract symbol, fixed or dynamic, is ever exported)",
+    "dskit/pipeline/trust.py:2263-2281 (_P4_ADMISSION_SCHEMAS, _p4_reference_bytes current single-arg body -- the function point 1 extends)",
+    "dskit/pipeline/trust.py:2340-2374 (_FixedWormTrustedArtifactResolver._lookup/snapshot/resolve/_checked_resolve/close_admission -- confirms close_admission delegates to _P4_CLOSE_ADMISSION already, and _checked_resolve delegates to _P4_RESOLVER_LOOKUP)",
+    "dskit/pipeline/trust.py:2400-2469 (_SyntheticP4CapturedAuthorizationAuthority.authorize_capture_set/_validate_capture_request -- confirms port already carries 'purpose' via derive_consumer_port, and the existing len(documents)!=1 uniqueness pattern point 8 mirrors)",
+    "dskit/pipeline/trust.py:2470-2560 (_p4_require_issued_authority closed if/elif/else, _p4_checked_dispatch -- confirms _p4_reference_bytes(admission_ref) is called single-argument today, before resolver.close_admission is ever reached)",
+    "dskit/pipeline/trust.py:4215-4271 (_p4_snapshot_integrity full body, both branches -- confirms the dynamic elif branch reads only identity/class pins and never resolver._graph._records, supporting the 'cheap, records-free fence' Decision point 6 relies on for checkpoints 2/3)",
+    "dskit/pipeline/trust.py:4887-5047 (_P4_BATCH_USES, _FixedP4Signer._sign, _PreparedP4Batch, _FixedCapturedAuthorizationContract._prepare/_verify/_verify_bytes full body, _P4_PREPARE/_P4_VERIFY_BATCH/_P4_VERIFY_BYTES pins -- the exact shared signing infrastructure both contracts route through, and the exact resolver._records/_P4_CHECKED_RESOLVE reads point 5 must not replicate for the dynamic branch)",
+    "dskit/pipeline/trust.py:5050-5081 (_LifecycleAuthorizationLedger.__init__/_check -- the ledger's own RLock/_root/_pin identity fence, relevant to row 12's concurrency question)",
+    "dskit/pipeline/trust.py:5293-5420 (resolve_p4 full body, commit_p4_batch full body -- all five point-4 edit lines located exactly: 5305 resolve_p4's _p4_reference_bytes call, 5324 commit_p4_batch's _p4_reference_bytes call, 5340/5351 the two already-correct resolver.close_admission calls, 5342 _P4_PREPARE, 5347 _P4_VERIFY_BATCH, 5354 the resolver._records cas read, 5388 the latent-bug direct _P4_CLOSE_ADMISSION call)",
+    "dskit/pipeline/trust.py:9089-9152 (_DynamicP4TrustedArtifactResolver full class -- confirms no _records slot, confirms close_admission's current signature/dispatch is unchanged by this ADR)",
+    "dskit/pipeline/trust.py:9309-9480 (_p4_dynamic_reference_bytes, _p4_dynamic_root_capture_admission, _p4_dynamic_planned_entry, _p4_dynamic_capture_admission_set, _dynamic_p4_close_admission full current body -- the exact inline sequence point 6 requires extracting verbatim into _dynamic_p4_reconstruct_admission_chain, confirmed to currently 'return None' on success, matching the fixed convention this ADR deliberately diverges from)",
+    "dskit/production/verifier.py:857-1029 (HistoricalStudyVerifier.authorize_capture_set / HistoricalStudyCaptureDriver.authorize_capture_set / _HS_P4_AUTHORITY_DISPATCH -- reconfirms evidence 0181's F4: isinstance(authority, CapturedAuthorizationAuthority) plus pinned-dispatch-identity checks, no exact-type check, no P4 authority/resolver/contract symbol imported by name)",
+    "tests/pipeline/test_captured_authorization.py:5024-5106 (test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain, test_adr143_authorize_capture_set_blocked_by_prepare_contract -- the two existing tests this ADR's RED must update/flip, per evidence 0183's recheck Nit)"
+  ],
+
+  "actors": [
+    {
+      "actor": "trusted host / process owner",
+      "authority": "administers the shared SQLite reserve file, controls interpreter/process boundary and file permissions",
+      "modeled_as": "non-adversarial; not part of the external threat model (unchanged from evidence 0181)"
+    },
+    {
+      "actor": "legacy P4 authority instance",
+      "identity": "unchanged: _SyntheticP4CapturedAuthorizationAuthority bound to _FixedWormTrustedArtifactResolver/_FixedTerminalArtifactVerifier/_FixedP4VerificationClock/_FixedP4VerificationRevocations, own _LifecycleAuthorizationLedger",
+      "authority": "must remain byte-identical through this ADR's five commit_p4_batch edit points (point 4) and the new resolver-parameter on _p4_reference_bytes (point 1); this is the primary subject of matrix row 1 (regression, not mere assertion)"
+    },
+    {
+      "actor": "dynamic P4 authority instance",
+      "identity": "same second _SyntheticP4CapturedAuthorizationAuthority instance ADR-0143 already constructs (_development_dynamic_p4_broker), bound to the same _DynamicP4TrustedArtifactResolver/_DynamicP4TerminalArtifactVerifier/_DynamicP4VerificationClock/_DynamicP4VerificationRevocations; this ADR adds no new authority/resolver/broker class",
+      "authority": "for the first time, this instance's authorize_capture_set can reach a genuine CAPTURED admission -- this ADR's entire purpose"
+    },
+    {
+      "actor": "_DynamicCapturedAuthorizationContract (new sibling class)",
+      "identity": "new class beside _FixedCapturedAuthorizationContract, singleton _P4_DYNAMIC_CONTRACT, stateless/no-token construction mirroring it exactly (ADR Decision point 5); never subclasses or edits _FixedCapturedAuthorizationContract",
+      "authority": "the ONLY code path that assembles/signs a dynamic-chain captured-port/captured-receipt/captured-set batch; routes through the SAME _FixedP4Signer/_P4_SIGN/_P4_SIGNER/_P4_BATCH_USES/_PreparedP4Batch/_P4_PREPARED objects the fixed contract already uses -- no new signer, no new key material, no new signed-schema names (confirmed: _FixedP4Signer._sign at trust.py:4897 hardcodes the single 'security-broker' key/seed scheme; the dynamic contract cannot and does not construct a second _FixedP4Signer)"
+    },
+    {
+      "actor": "_FixedCapturedAuthorizationContract (unedited sibling)",
+      "identity": "the existing class, byte-identical, zero modified lines -- its own _prepare/_verify/_verify_bytes (trust.py:4926-5044) keep reading resolver._records and calling _P4_CHECKED_RESOLVE/pinned-unbound-method exactly as today",
+      "authority": "continues to be the ONLY contract the legacy authority instance's commit_p4_batch call ever routes through (dispatch on type(resolver), point 4's _P4_PREPARE/_P4_VERIFY_BATCH call-site edits)"
+    },
+    {
+      "actor": "dynamic_reconstruction_cell (single-derivation mechanism, new)",
+      "identity": "a plain local Python list, [None], allocated fresh on the stack of every commit_p4_batch call, never stored on self/the ledger/the resolver/any module-level or WeakKeyDictionary state; not itself a class or object with independent identity",
+      "authority": "the ONLY channel through which the one real graph-backed reconstruction (at the first admission-closure checkpoint) reaches every later consumer (checkpoints 2/3, _DynamicCapturedAuthorizationContract._prepare/_verify/_verify_bytes, commit_p4_batch's own cas local) inside that SAME commit_p4_batch call; this is precisely the mechanism rows 3, 5, and 12 exist to stress"
+    },
+    {
+      "actor": "_p4_reference_bytes (shared, now dispatch-extended)",
+      "identity": "same module-level function, all three call sites (_p4_checked_dispatch trust.py:2520, resolve_p4 trust.py:5305, commit_p4_batch trust.py:5324) gain a second positional argument (the in-scope resolver) and the function itself gains a closed if/elif/else on type(resolver)",
+      "authority": "first gate any admission_ref passes through for BOTH authority instances; its legacy if-arm must be the prior single-branch body verbatim (point 1)"
+    },
+    {
+      "actor": "shared _FixedP4Signer / _P4_BATCH_USES / _PreparedP4Batch signing infrastructure",
+      "identity": "unedited, zero modified lines; one singleton _P4_SIGNER, one _P4_BATCH_USES mapping of exactly four schema/self-field/usage triples",
+      "authority": "reused by BOTH _FixedCapturedAuthorizationContract and the new _DynamicCapturedAuthorizationContract; row 5 exists to prove this sharing cannot let one contract's bytes leak into or be substituted for the other's"
+    },
+    {
+      "actor": "retained ADR-0141 issuer/graph",
+      "identity": "unchanged from evidence 0181: the one successful _SyntheticRootPisIssuer instance and its memoized NonAuthorizingDynamicRootGraph",
+      "authority": "sole source of the 12-reference closed set _dynamic_p4_reconstruct_admission_chain reads from; not itself touched by this ADR"
+    },
+    {
+      "actor": "shared _SyntheticAuthorizationReserve",
+      "identity": "unchanged from evidence 0181",
+      "authority": "source of now_ms/revocation state consumed inside the graph's own resolve()/_prove() fence, itself only invoked from the FIRST admission-closure checkpoint under this ADR's single-derivation design -- see row 7's finding"
+    },
+    {
+      "actor": "hostile caller / untrusted input boundary",
+      "scope": "arguments to public methods only: captures/admission_ref/runtime kwargs to authorize_capture_set; a caller independently holding a reference to authority._p4_resolver and calling resolver.close_admission(...) directly (row 6); concurrent callers of authorize_capture_set against the SAME dynamic authority instance for different consumer documents (row 12)",
+      "explicitly_out_of_scope": "direct mutation of module globals, monkeypatching, reflection-based tampering with _records/__slots__/dynamic_reconstruction_cell's stack-local binding -- unchanged from evidence 0181, per implementation-workflow.md point 4 ('Mutable Python internals are not an external security boundary')"
+    }
+  ],
+
+  "authority_boundary_statement": "Unchanged from evidence 0181 and consistent with ADR-0141/0142/0143: hostile DATA (captures, admission_ref, runtime, a directly-held resolver reference) is adversarial; the trusted host's SQLite reserve file and the Python process/interpreter are not. This ADR narrows nothing already scoped and widens nothing beyond the trust boundary ADR-0143's own Phase 0 already crossed for the dynamic authority (ADR-0144's Process section states this explicitly: 'this crosses the same trust boundary ADR-0143's Phase 0 already scoped for the dynamic authority, now reaching an actually-effecting authorize_capture_set -> CAPTURED admission for the first time').",
+
+  "class_function_inventory": [
+    {
+      "name": "_p4_reference_bytes(value, resolver)",
+      "pin": "gains a required second positional parameter (Decision point 1). Closed if/elif/else on type(resolver): legacy if-arm is today's exact body (trust.py:2273-2284) verbatim and unedited; dynamic elif-arm calls the existing _p4_dynamic_reference_bytes(value) for shape/sha256, then requires value['role']=='study-lifecycle' and value['kind'] in _P4_DYNAMIC_ADMISSION_SCHEMAS and value['schema']==_P4_DYNAMIC_ADMISSION_SCHEMAS[value['kind']], raising the identical ValueError('P4 admission kind, role and schema must agree') text the legacy arm raises, then returns _hs_canonical_bytes(value); else-arm raises TypeError('exact broker-issued P4 capability is required'), the identical text _p4_require_issued_authority's own else-arm already raises (Decision point 1 explicitly reuses this text for the same class of failure).",
+      "call_sites_confirmed": "exactly three, all located by direct read: _p4_checked_dispatch (trust.py:2520, today single-arg, must pass authority._p4_resolver), resolve_p4 (trust.py:5305, today single-arg, must pass self-scoped resolver = self._authority._p4_resolver -- note: resolve_p4 does not currently bind a local `resolver` name before this call; Phase 0 must pin that resolve_p4 reads self._authority._p4_resolver directly at the call site or binds it first), commit_p4_batch (trust.py:5324, must pass its own already-bound local `resolver` = self._authority._p4_resolver, bound at trust.py:5320)."
+    },
+    {
+      "name": "_P4_DYNAMIC_ADMISSION_SCHEMAS",
+      "pin": "MappingProxyType({'root-capture-admission': 'dskit.root-capture-admission/v1'}), module-level, consulted only inside _p4_reference_bytes's new elif arm; never consulted by, or merged with, _P4_ADMISSION_SCHEMAS (which the legacy arm continues to use exclusively)."
+    },
+    {
+      "name": "_DynamicCapturedAuthorizationContract(_Opaque)",
+      "pin": "no __slots__ beyond _Opaque's own, no token-guarded __init__ (mirrors _FixedCapturedAuthorizationContract's own construction exactly -- confirmed at trust.py:4924, the fixed class has no explicit __init__ either). One module-level singleton _P4_DYNAMIC_CONTRACT = _DynamicCapturedAuthorizationContract(). Module pins: _P4_DYNAMIC_PREPARE = _DynamicCapturedAuthorizationContract._prepare, _P4_DYNAMIC_VERIFY_BATCH = _DynamicCapturedAuthorizationContract._verify, _P4_DYNAMIC_VERIFY_BYTES = _DynamicCapturedAuthorizationContract._verify_bytes, mirroring _P4_PREPARE/_P4_VERIFY_BATCH/_P4_VERIFY_BYTES (trust.py:5045-5047)."
+    },
+    {
+      "name": "_DynamicCapturedAuthorizationContract._prepare(self, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction)",
+      "pin": "two additional positional parameters versus _FixedCapturedAuthorizationContract._prepare's six (captures, reconstruction) -- a deliberate, disclosed divergence (Decision point 5), not signature parity. Never calls _P4_CHECKED_RESOLVE, never calls resolver.snapshot() for its own admission read, never touches resolver._records or resolver._graph._records (that resolver has none of the former and this method must not read the latter): it is a pure reader of reconstruction's already-frozen root_pis_ref/dataset_g1_ref/dataset_g2_ref/pis/entries/expected_admission/pce_entries/cas fields. Builds common/identity/captured-port/captured-receipt/captured-set exactly as the fixed _prepare does (same signed('captured-port'/'captured-receipt'/'captured-set', ...) shape, same _P4_SIGN/_P4_BATCH_USES/_P4_SIGNER calls), with the three-field substitution table below and NO replay/evidence branch at all (subject_ref.kind is fixed to 'action' by ADR-0143 Decision point 7, so the 'if replay:' branch present in the fixed contract's own _prepare, trust.py:4979-4995, is omitted entirely -- not merely None-guarded -- for the dynamic contract).",
+      "phase0_must_pin": "_prepare must explicitly refuse (not merely AttributeError-crash) if `reconstruction` is not exactly type _DynamicP4AdmissionReconstruction -- see row 3, this is the concrete defense against a caller or future refactor invoking _prepare with reconstruction still None or of the wrong shape."
+    },
+    {
+      "name": "_DynamicCapturedAuthorizationContract._verify(self, prepared, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction)",
+      "pin": "mirrors _FixedCapturedAuthorizationContract._verify's exact re-derive-and-compare shape (trust.py:5001-5008): _hs_refuse on type(prepared) is _PreparedP4Batch, _P4_PREPARED registry lookup, binding-tuple equality including `prepared._binding == (resolver, resolver.snapshot(), ...)` -- Phase 0 must pin that this binding tuple ALSO includes `captures`/`reconstruction` identity (or their canonical bytes) so a _verify call cannot be satisfied by a _PreparedP4Batch built against a DIFFERENT reconstruction/captures pair than the one supplied here; the fixed contract's binding tuple has no such extra fields because it has no captures/reconstruction parameters at all, so this is new ground the fixed contract's shape cannot simply be copied for. Then delegates to _P4_DYNAMIC_VERIFY_BYTES exactly as the fixed contract delegates to _P4_VERIFY_BYTES."
+    },
+    {
+      "name": "_DynamicCapturedAuthorizationContract._verify_bytes(self, raw, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction)",
+      "pin": "mirrors the fixed contract's _verify_bytes (trust.py:5010-5023) exactly in shape: reparse raw, _hs_refuse on the {'ports','receipts','set','replay','bases'} key set, `expected = _P4_DYNAMIC_PREPARE(self, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction)` -- re-calling _prepare with the SAME reconstruction instance, never re-deriving from the graph -- then `_hs_refuse(raw == expected._raw, ...)`, then the same per-kind signature-verification loop over _P4_BATCH_USES reusing the shared _p4_verify_local_signed helper unedited. The 'replay-capture-evidence' entry in the loop is always None for the dynamic contract (no replay branch exists); Phase 0 must pin that the loop's `if value is None: continue` (trust.py:5031-5032 pattern) already handles this without a dynamic-specific code path, so this needs zero new branching in the loop itself."
+    },
+    {
+      "name": "_dynamic_p4_reconstruct_admission_chain(resolver, snapshot, admission_ref, run_id, logical_execution_id, captures)",
+      "pin": "new pure helper, extracted VERBATIM (Decision point 6: 'zero behavior change -- same checks, same order, same exception messages') from _dynamic_p4_close_admission's current inline body (trust.py:9414-9467). Phase 0 pins the EXACT extraction boundary against the current code read on this branch: the extracted portion begins at `graph_refs = tuple(resolver._graph._records)` (trust.py:9414) and ends at (and includes) the per-entry live-projection for-loop's last _hs_refuse call (trust.py:9463-9467, the frozen.source digest check) -- it does NOT include the trailing `_p4_snapshot_integrity(resolver, snapshot)` re-check at the very end of _dynamic_p4_close_admission's current body (trust.py:9468) nor the leading `_p4_snapshot_integrity`/authority-identity/`_p4_dynamic_reference_bytes`/kind-role-schema checks at the top (trust.py:9407-9413), which all stay in _dynamic_p4_close_admission itself, wrapping the call to this helper. Returns the frozen _DynamicP4AdmissionReconstruction object (construction profile below) instead of building cas/entries as loose locals.",
+      "call_sites": "exactly one in the whole design: from inside _dynamic_p4_close_admission, itself invoked at most once per commit_p4_batch call via the new _p4_close_admission_once dispatcher (Decision point 6's correction). _DynamicCapturedAuthorizationContract._prepare/_verify/_verify_bytes and commit_p4_batch's own cas local never call this helper; they all read the one frozen result instead."
+    },
+    {
+      "name": "_DynamicP4TrustedArtifactResolver.close_admission (signature unchanged, return-value contract changed)",
+      "pin": "signature stays `(self, snapshot, admission_ref, live_projection)`, unchanged from ADR-0143 -- this ADR does not touch the four-method resolver contract's shape. Return-value contract diverges, dynamic-resolver-only, disclosed (Decision point 6): returns the _DynamicP4AdmissionReconstruction object on success instead of None. _FixedWormTrustedArtifactResolver.close_admission (trust.py:2374-2376), _p4_close_admission, and _P4_CLOSE_ADMISSION keep their exact current signature, body and None-on-success return, byte-identical and unedited -- confirmed by direct read, zero modified lines expected in any of these three."
+    },
+    {
+      "name": "_p4_close_admission_once(resolver, snapshot, admission_ref, live_projection, cell)",
+      "pin": "new closed local dispatcher, replacing all three of commit_p4_batch's individual admission-closure call sites (trust.py:5340, 5351, 5388 -- the last one being the fix for Context point 4's latent bug, since it currently calls _P4_CLOSE_ADMISSION directly instead of resolver.close_admission). Exact behavior per resolver type and call ordinal: `if type(resolver) is _FixedWormTrustedArtifactResolver: _hs_refuse(resolver.close_admission(snapshot, admission_ref, live_projection) is None)` -- byte-identical legacy behavior at ALL THREE call sites, including the former line-5388 call site, which is the concrete fix for the latent bug (row 2). `elif type(resolver) is _DynamicP4TrustedArtifactResolver:` -- if `cell[0] is None` (1st call): calls `resolver.close_admission(snapshot, admission_ref, live_projection)`, refuses if result is None, stores the returned _DynamicP4AdmissionReconstruction into `cell[0]`. If `cell[0]` is already populated (2nd/3rd calls): performs ONLY `_p4_snapshot_integrity(resolver, snapshot)` (confirmed records-free by direct read of trust.py:4215-4260) plus `_hs_refuse(admission_ref['sha256'] == cell[0].expected_admission_sha256)` against the already-frozen value -- no graph read. `else: raise TypeError('exact broker-issued P4 capability is required')` -- same text _p4_reference_bytes's own else-arm raises (point 1).",
+      "phase0_open": "the exact return value of _p4_close_admission_once itself is not pinned by the ADR text (it is called for its side effect / refusal only at all three sites today). Phase 0 recommends it return nothing meaningful (None) and require callers to read cell[0] directly when they need the reconstruction, to avoid a fourth accidental read path; the independent skeptic should confirm this is what gets implemented."
+    },
+    {
+      "name": "dynamic_reconstruction_cell = [None]",
+      "pin": "one per-call local, created once near the top of commit_p4_batch, before its first admission-closure checkpoint (i.e. before the current line 5340 position) -- 'harmless and never read on the legacy path' per Decision point 4. Passed by reference (the same list object) to all three _p4_close_admission_once calls within one commit_p4_batch invocation; never assigned to self/the ledger/any module state -- see row 12."
+    },
+    {
+      "name": "commit_p4_batch's cas local (edited)",
+      "pin": "`cas = dynamic_reconstruction_cell[0].cas if type(resolver) is _DynamicP4TrustedArtifactResolver else <today's exact trust.py:5354-5355 line, verbatim>` -- the dynamic branch reads the SAME frozen cas the first checkpoint already captured; it is not a second call to the reconstruction helper and not a second read of resolver._records/resolver._graph._records (the dynamic resolver has neither)."
+    },
+    {
+      "name": "commit_p4_batch's raw/_P4_PREPARE call (edited)",
+      "pin": "`raw = _P4_PREPARE(_P4_CONTRACT, resolver, admission_ref, streams, checked_runtime, nonces) if type(resolver) is _FixedWormTrustedArtifactResolver else _P4_DYNAMIC_PREPARE(_P4_DYNAMIC_CONTRACT, resolver, admission_ref, streams, checked_runtime, nonces, captures, dynamic_reconstruction_cell[0])` -- legacy arm verbatim (today's trust.py:5342 line unchanged); dynamic arm threads `captures` (already a local in commit_p4_batch, bound from the method's own `captures` parameter) and `dynamic_reconstruction_cell[0]` (already populated by the first checkpoint, which structurally precedes this line -- see row 3) with no new lookup or re-derivation."
+    },
+    {
+      "name": "commit_p4_batch's batch/_P4_VERIFY_BATCH call (edited)",
+      "pin": "same closed dispatch shape as the _P4_PREPARE edit above, dynamic arm calling `_P4_DYNAMIC_VERIFY_BATCH(_P4_DYNAMIC_CONTRACT, raw, resolver, admission_ref, streams, checked_runtime, nonces, captures, dynamic_reconstruction_cell[0])`, same frozen cell[0] threaded through again, never re-derived."
+    },
+    {
+      "name": "_p4_dynamic_capture_admission_set(root_capture_admission_sha256, entries, consumer_document_sha256, purpose)",
+      "pin": "gains two required parameters versus today's two-parameter signature (trust.py:9367). New payload keys `consumer_document_sha256`/`purpose` added at the top level alongside the existing schema_version/study_id/subject_ref/root_capture_admission_sha256/entries. `_dynamic_p4_reconstruct_admission_chain` (the caller, after extraction) sources both from `captures[0][2]['consumer_document_sha256']`/`captures[0][2]['purpose']` (captures[i] is the existing `(published, frozen, port)` 3-tuple; port already carries both fields via `_DevelopmentBroker.derive_consumer_port`, confirmed at trust.py:1309-1313) and adds a new uniqueness assertion across `captures[*][2]['purpose']` mirroring _validate_capture_request's existing `len(documents) != 1` pattern (trust.py:2451-2452), raising a ValueError with its own distinct message text (exact wording not pinned by the ADR text -- Phase 0 deliverable, proposed here: 'P4 captures must share one purpose')."
+    },
+    {
+      "name": "_DynamicP4AdmissionReconstruction (new frozen value object)",
+      "pin": "Phase 0 must choose the construction pattern; this matrix recommends the codebase's own existing hand-rolled idiom (matching _Frozen/_Published at trust.py:872-906: __slots__ tuple of the exact field names, `__init__(self, **kwargs)` setting each via object.__setattr__ under a `_locked` guard, `__setattr__` raising AttributeError once locked) over introducing collections.namedtuple or @dataclass, since neither appears anywhere else in this file (confirmed by grep: zero matches for 'namedtuple'/'dataclass' in dskit/pipeline/trust.py) and the ADR text explicitly leaves the choice open ('namedtuple or frozen dataclass, Phase 0's choice'). Exact field set, in the order the current inline code computes them (Closed ADR-0144 construction profile, restated verbatim): root_pis_ref, dataset_g1_ref, dataset_g2_ref, pis, entries, expected_admission, expected_admission_sha256, pce_entries, cas, cas_sha256 -- 10 fields, no extra, no missing. `_p4_close_admission_once` reads only `.expected_admission_sha256`, `.cas`; `_DynamicCapturedAuthorizationContract._prepare` reads `.root_pis_ref`/`.dataset_g1_ref`/`.dataset_g2_ref`/`.pis`/`.entries`/`.expected_admission`/`.pce_entries`/`.cas` directly per Decision point 5 -- Phase 0 should confirm `.cas_sha256` and `.entries`/`.pis` in full are genuinely needed by a consumer, or are carried only for completeness/future use; this matrix does not treat an unused field as a defect, only as worth the independent skeptic's attention (a completely unread field would be a Nit-level simplification opportunity, not a safety gap)."
+    }
+  ],
+
+  "public_facades": [
+    "dskit/pipeline/trust.py: CapturedAuthorizationAuthority.authorize_capture_set (inherited, unchanged in signature; for the dynamic authority instance this is the first ADR under which a call can succeed and return a real (record, session) pair instead of always refusing)",
+    "dskit/pipeline/trust.py: _LifecycleAuthorizationLedger.commit_p4_batch (edited at exactly five points, per class_function_inventory above; every other line byte-identical and unedited, including the entire decision/session/record assembly tail after the cas/raw/batch construction -- point 4's own claim, confirmed consistent with the current code read: nothing after trust.py:5355 in the method differs structurally between resolver types today, and this ADR does not change that)",
+    "dskit/pipeline/trust.py: _LifecycleAuthorizationLedger.resolve_p4 (unedited except threading its already-local resolver through the point-1 _p4_reference_bytes call; row 10 covers its downstream correctness for a dynamic-authority-produced admission)",
+    "dskit/pipeline/trust.py: _p4_reference_bytes (module-level, now resolver-dispatched; reachable from both _p4_checked_dispatch and, indirectly, any caller reasoning about admission_ref validity)",
+    "dskit/production/verifier.py: HistoricalStudyVerifier.authorize_capture_set (line 857) / HistoricalStudyCaptureDriver.authorize_capture_set (line 977) -- RECONFIRMED by direct grep on this branch (not re-derived from evidence 0181's prior finding alone): neither method, nor any other symbol in verifier.py, imports or re-exports _DynamicCapturedAuthorizationContract, _dynamic_p4_reconstruct_admission_chain, _p4_close_admission_once, _DynamicP4AdmissionReconstruction, or any P4 authority/resolver/contract class by name. Dispatch remains `isinstance(authority, CapturedAuthorizationAuthority)` (line 902) plus the fixed-dispatch-identity pin `CapturedAuthorizationAuthority.authorize_capture_set is not _HS_P4_AUTHORITY_DISPATCH` (line 904) -- never an exact-type check against either authority instance's class (both instances share the identical _SyntheticP4CapturedAuthorizationAuthority class, so this was never a distinguishing check to begin with). No verifier.py edit is implied or required by this ADR; row 11 restates this as an explicit matrix row rather than leaving it as a prose aside, matching ADR-0143's own Phase0 finding F4's treatment.",
+    "dskit/pipeline/trust.py: module __all__ (trust.py:30-58) -- confirmed by direct read to contain zero P4 authority/resolver/contract symbols today, fixed OR dynamic; this ADR adds none (_DynamicCapturedAuthorizationContract, _dynamic_p4_reconstruct_admission_chain, _p4_close_admission_once, _DynamicP4AdmissionReconstruction, _P4_DYNAMIC_ADMISSION_SCHEMAS all stay private/unexported, matching the existing pattern for _FixedCapturedAuthorizationContract/_p4_close_admission/_P4_ADMISSION_SCHEMAS). Phase 0 must pin that no new name is added to __all__ by this ADR; the independent skeptic should treat any diff touching __all__ as out of scope."
+  ],
+
+  "reconstruction_field_substitution_table": {
+    "note": "restates ADR Decision point 7 / Closed construction profile verbatim, for RED to consume directly; already pinned in the ADR text, not reinterpreted here",
+    "plan_evaluation_authorization_sha256": "root_pis_ref['sha256']",
+    "capture_expectation_set_sha256": "dataset_g1_ref['sha256']",
+    "broker_verified_plan_sha256": "dataset_g2_ref['sha256']",
+    "capture_admission_set_sha256": "cas['capture_admission_set_sha256']",
+    "execution_authority_ref": "{'kind': 'action', 'action_execution_admission_sha256': admission_ref['sha256']} -- literal existing legacy shape, deliberate field-name reuse, see row 10",
+    "subject_ref": "{'kind': 'action'} (already fixed by ADR-0143 Decision point 7)"
+  },
+
+  "matrix": [
+    {
+      "id": 1,
+      "family": "legacy/fixed authority path regression under the five commit_p4_batch edits",
+      "entry_points": ["_p4_reference_bytes (point 1)", "_LifecycleAuthorizationLedger.commit_p4_batch (point 4, all five edit points)", "_LifecycleAuthorizationLedger.resolve_p4 (point 1 call-site edit)"],
+      "cases": [
+        "a full legacy authorize_capture_set -> CAPTURED cycle (fixture_facts-based resolver, action-execution-admission or final-replay-admission kind) run end-to-end against the edited commit_p4_batch, asserting byte-identical decision/record/session output to a pre-ADR-0144 run on the same inputs",
+        "legacy admission_ref passed to the edited _p4_reference_bytes(value, resolver) with resolver bound to the legacy _FixedWormTrustedArtifactResolver instance -- must take the if-arm, never fall through to the elif or else arm",
+        "legacy resolver's close_admission at ALL THREE checkpoint positions (including the former-latent-bug line 5388 position) routed through the new _p4_close_admission_once dispatcher -- must produce the identical _hs_refuse(...is None) behavior at each of the three call sites, with no behavioral difference introduced by the dispatcher wrapper itself",
+        "a replay-kind legacy admission (subject_ref.kind=='replay') exercising _FixedCapturedAuthorizationContract's own replay/evidence branch (trust.py:4979-4995), confirming this branch is untouched by the new dynamic contract's sibling-class addition"
+      ],
+      "expected_outcome": "every legacy-path assertion the ADR-0143 GREEN suite already exercises for the fixed resolver continues to pass unchanged; the five edit points are confirmed to be pure call-site/dispatch-wrapper additions with zero legacy behavioral delta, not merely 'should be fine' -- this row requires the regression run itself as evidence, per the task's explicit 'regression coverage, not just should be fine' instruction",
+      "forbidden_effect": "any legacy-path CAPTURED admission whose decision/record/session/audit bytes differ from the pre-ADR-0144 baseline for identical inputs; any legacy-path call reaching the dynamic elif/else arm of _p4_reference_bytes or _p4_close_admission_once"
+    },
+    {
+      "id": 2,
+      "family": "latent-bug fix (line 5388) byte-identical for the FIXED resolver specifically",
+      "entry_points": ["_p4_close_admission_once's legacy if-arm at the former line-5388 call site"],
+      "cases": [
+        "a legacy commit_p4_batch call that reaches the pre-commit re-check (the position of today's trust.py:5388-5389 direct _P4_CLOSE_ADMISSION(...) call) with a resolver/snapshot/admission_ref/live_projection tuple identical to what the two earlier (already-correct) checkpoints at trust.py:5340/5351 already verified",
+        "confirm _FixedWormTrustedArtifactResolver.close_admission(snapshot, admission_ref, live_projection) (trust.py:2374-2376) returns `_P4_CLOSE_ADMISSION(self, snapshot, admission_ref, live_projection)` -- i.e. for the FIXED resolver, `resolver.close_admission(...)` IS `_P4_CLOSE_ADMISSION(resolver, ...)` by direct delegation, so routing this third checkpoint through resolver.close_admission(...) instead of the legacy constant produces the exact same call with the exact same arguments and the exact same return value"
+      ],
+      "expected_outcome": "the fix changes NOTHING observable for the fixed resolver: `resolver.close_admission(snapshot, admission_ref, live_projection)` and `_P4_CLOSE_ADMISSION(resolver, snapshot, admission_ref, live_projection)` are proven byte-identical calls (confirmed already by evidence 0183's preapproval-review verified_no_change_needed claim (a), reconfirmed here by direct code read of the delegation at trust.py:2375-2376) -- this row exists so RED authors a positive assertion of that identity (e.g. monkeypatching both call forms to confirm identical call/arg/return capture) rather than relying on the claim alone",
+      "forbidden_effect": "any divergence in the arguments passed, the exception raised, or the return value between the old direct-constant call and the new resolver.close_admission(...) call, for the fixed resolver specifically"
+    },
+    {
+      "id": 3,
+      "family": "authorize_capture_set on the dynamic authority before any successful close_admission derivation this batch",
+      "entry_points": ["_DynamicCapturedAuthorizationContract._prepare (via _P4_DYNAMIC_PREPARE)", "commit_p4_batch's ordering of its five edit points"],
+      "cases": [
+        "structural case: within one commit_p4_batch call, is there ANY code path where _P4_DYNAMIC_PREPARE (and therefore _prepare) can be reached before the first _p4_close_admission_once checkpoint has populated dynamic_reconstruction_cell[0]? Per Decision point 4's stated edit order (the _p4_reference_bytes call, then the cell creation before the first admission-closure checkpoint, then the three admission-closure checkpoints threaded through _p4_close_admission_once, then the cas branch, then the _P4_PREPARE call, then the _P4_VERIFY_BATCH call) and the current code's own line ordering (5340 checkpoint precedes 5342 _P4_PREPARE precedes 5347 _P4_VERIFY_BATCH precedes 5351 checkpoint), the first checkpoint always executes before _P4_DYNAMIC_PREPARE is ever called within a single call to commit_p4_batch -- there is no early-return, exception-swallowing, or reordering in the current method body between these two points that could skip the first checkpoint while still reaching the prepare call",
+        "defensive case: a future refactor (or a bug introduced during this ADR's own GREEN) reorders these lines, or a code path calls _DynamicCapturedAuthorizationContract._prepare directly (bypassing commit_p4_batch entirely, e.g. from a test or from a hypothetical future caller) with `reconstruction=None` or a wrong-typed object"
+      ],
+      "expected_outcome": "for the structural case: dynamic_reconstruction_cell[0] is always non-None by the time _P4_DYNAMIC_PREPARE executes, by construction of the fixed edit-point ordering -- this is provable from the single-threaded, single-locked-section control flow, not merely assumed. For the defensive case: _prepare must _hs_refuse(type(reconstruction) is _DynamicP4AdmissionReconstruction, ...) (or equivalent explicit type/None check) as its own first line, so a None or wrong-typed reconstruction fails with a clear, attributable refusal rather than an unguarded AttributeError several lines into field access (e.g. `reconstruction.root_pis_ref` on None)",
+      "forbidden_effect": "an unguarded AttributeError/TypeError deep inside _prepare's field-substitution logic when reconstruction is None or malformed, instead of one clear refusal at the top of the method; ANY successful signed batch whose reconstruction was not the product of a real close_admission_once first-checkpoint derivation in the SAME commit_p4_batch call"
+    },
+    {
+      "id": 4,
+      "family": "forged or substituted cas/pce inside the batch that does not match the frozen reconstruction",
+      "entry_points": ["_dynamic_p4_reconstruct_admission_chain (the sole derivation point)", "commit_p4_batch's cas local (point 4's cas-branch edit)", "_DynamicCapturedAuthorizationContract._prepare"],
+      "cases": [
+        "a caller-supplied admission_ref whose sha256 does not equal the graph-derived expected_admission_sha256 -- refused inside _dynamic_p4_reconstruct_admission_chain's (extracted, unchanged) `_hs_refuse(admission_ref['sha256'] == expected_admission_sha256, ...)` check, confirmed present in the current inline code at trust.py:~9436-9437, before pis/pce/cas are even computed",
+        "captures whose port['consumer_document_sha256']/consumer_node/consumer_input/purpose differ from what the reconstructed cas['entries'] expects -- refused by the existing per-entry `_hs_refuse(entry['consumer_document_sha256'] == port['consumer_document_sha256'] and ...)` check (trust.py:~9457-9462), unchanged by this ADR, now living inside the extracted helper",
+        "attempted substitution: since NEITHER cas nor pce is ever accepted as caller-supplied bytes anywhere in this design (the dynamic resolver has no _records table to hold a caller-supplied artifact, and _dynamic_p4_reconstruct_admission_chain always DERIVES cas/pce from the graph's own 12-reference set plus live captures, never reads them from an external source), there is no code path through which a 'substituted' cas/pce could even be represented as an input -- the only attacker-controlled bytes reaching this chain at all are admission_ref (checked against expected_admission_sha256) and captures (checked per-entry against the derived cas)",
+        "a caller attempting to pass a reconstruction-shaped object directly to authorize_capture_set (there is no such parameter -- authorize_capture_set's signature is unchanged, captures/admission_ref/runtime only) -- confirms there is no public surface at all for injecting a forged reconstruction"
+      ],
+      "expected_outcome": "a forged/substituted cas or pce is not merely detected after construction -- it is structurally impossible to construct, because cas/pce are always derived server-side from resolver._graph's closed 12-reference set and the batch's own already-gated captures, never resolved from caller-supplied bytes (this restates and reconfirms design decision D1 from evidence 0182, now against ADR-0144's specific extraction/threading of that same logic through dynamic_reconstruction_cell)",
+      "forbidden_effect": "any code path where cas or pce content is read from admission_ref, from a caller-supplied dict, or from anything other than resolver._graph's own resolved artifacts and the batch's own captures tuple"
+    },
+    {
+      "id": 5,
+      "family": "dynamic contract's signed bytes provably matching what close_admission independently verified (core safety property)",
+      "entry_points": ["_DynamicCapturedAuthorizationContract._prepare/_verify/_verify_bytes", "_dynamic_p4_reconstruct_admission_chain's single call site"],
+      "cases": [
+        "positive: a full dynamic authorize_capture_set call, asserting that every digest signed into the batch's ports/receipts/captured-set (plan_evaluation_authorization_sha256/capture_expectation_set_sha256/broker_verified_plan_sha256/capture_admission_set_sha256/execution_authority_ref, per the substitution table) equals the corresponding field read from the SAME _DynamicP4AdmissionReconstruction instance the first close_admission_once checkpoint produced -- not merely 'equal in value' but traceable to the identical object reference threaded through _P4_DYNAMIC_PREPARE's `reconstruction` parameter",
+        "adversarial: instrument (monkeypatch, for the test only) resolver._graph.resolve or the graph's underlying WORM/reserve state to return DIFFERENT bytes on a hypothetical second graph read, then confirm that no such second read occurs anywhere between the first checkpoint and the final signed batch -- i.e. prove by absence, not just by output equality, since evidence 0183's preapproval Major was specifically about UNPROVEN absence of a second read, not about any single test's output happening to match"
+      ],
+      "expected_outcome": "the signed bytes are a pure deterministic function of the one frozen _DynamicP4AdmissionReconstruction instance; `_P4_DYNAMIC_VERIFY_BYTES`'s internal `expected = _P4_DYNAMIC_PREPARE(...)` re-call (for the byte-comparison) passes that SAME reconstruction instance again (Decision point 5's own text: 're-derives nothing from the graph and only re-runs the pure common/identity/signing assembly against already-frozen values') -- both the original prepare and the verify-time re-prepare must be proven to read from the identical object, not merely produce equal bytes by coincidence of a still-unchanged graph",
+      "forbidden_effect": "ANY code path in _prepare, _verify, or _verify_bytes that calls _dynamic_p4_reconstruct_admission_chain, resolver.resolve(), resolver._graph.resolve(), or resolver.snapshot() a second time for the purpose of re-deriving cas/pis/entries content (resolver.snapshot()/resolver.resolve() calls made for OTHER purposes, e.g. the binding-tuple freshness check in _verify, are not themselves forbidden -- only a second derivation of the SIGNED CONTENT is)"
+    },
+    {
+      "id": 6,
+      "family": "caller invokes resolver.close_admission(...) directly, outside commit_p4_batch's lock, then separately calls authorize_capture_set",
+      "entry_points": ["_DynamicP4TrustedArtifactResolver.close_admission (public method, part of the four-method resolver contract)", "a later, separate authorize_capture_set call on the same authority instance"],
+      "cases": [
+        "a caller holding `authority._p4_resolver` (or any reference to the resolver, e.g. returned incidentally from test fixtures) calls `resolver.close_admission(resolver.snapshot(), admission_ref, (authority, captures, runtime))` directly, entirely outside any commit_p4_batch call and therefore outside the ledger's RLock",
+        "the SAME caller then separately calls `authority.authorize_capture_set(captures, admission_ref, ...)` for the SAME captures/admission_ref, expecting (incorrectly) that the earlier direct call might have pre-populated or short-circuited something"
+      ],
+      "expected_outcome": "the direct call succeeds or fails exactly as a nonauthorizing proof always has (ADR-0143's own characterization of close_admission: 'grants no capture', 'with zero effect'), returning a FRESH _DynamicP4AdmissionReconstruction object under this ADR -- but this returned object is never stored anywhere (not on resolver, not on authority, not in any module/WeakKeyDictionary keyed by admission_ref) because `_dynamic_p4_reconstruct_admission_chain`'s only write target is the caller's own local variable; the LATER authorize_capture_set call allocates its OWN fresh `dynamic_reconstruction_cell = [None]` inside its OWN commit_p4_batch invocation and performs its OWN independent first-checkpoint derivation, completely unaffected by the earlier direct call. The design holds: close_admission remains a pure, stateless, side-effect-free proof function under this ADR exactly as it was before (Decision point 6 changes only ITS RETURN TYPE on success, not its lack of persisted side effects), so an out-of-lock direct call cannot pre-seed, corrupt, or bypass a later locked commit_p4_batch's own single-derivation guarantee",
+      "forbidden_effect": "any implementation detail (e.g. a memoization cache added to the resolver, or a module-level WeakKeyDictionary keyed by (resolver, admission_ref)) that would let a direct out-of-lock close_admission call influence what a LATER, separate commit_p4_batch call signs -- this would reopen a TOCTOU-shaped gap between two different callers' views of 'the' derivation, which the whole single-derivation redesign exists to eliminate WITHIN one call and must not be allowed to reappear ACROSS calls",
+      "note_for_independent_skeptic": "this exact interaction (direct close_admission call vs. a later separate authorize_capture_set call) is not discussed anywhere in ADR-0144's Decision text. This matrix's answer -- 'safe, because close_admission is stateless and the cell is call-local' -- follows from the ADR's OTHER stated properties, but was not itself an explicit design target. The independent skeptic should confirm this reasoning rather than accept it as ADR-endorsed; if a future implementation ever memoizes the reconstruction onto the resolver 'as an optimization,' this row's forbidden_effect would be silently violated"
+    },
+    {
+      "id": 7,
+      "family": "revocation/clock advance observed between the single derivation and the final signed batch",
+      "entry_points": ["_p4_close_admission_once's 2nd/3rd-call cheap-fence branch", "_DynamicP4VerificationRevocations.is_unrevoked / _DynamicP4VerificationClock.now_ms (only reachable from the graph's own resolve()/_prove() fence, itself only invoked from the FIRST checkpoint)"],
+      "cases": [
+        "a revocation lands in reserve_revoked, or the trusted-host advances the shared clock, strictly AFTER the first close_admission_once checkpoint's real graph-backed derivation completes but BEFORE the batch is actually signed (_P4_DYNAMIC_PREPARE) and committed",
+        "the same timing, but the revocation/clock change lands between _P4_DYNAMIC_PREPARE (signing) and the final commit (after the 2nd and 3rd 'cheap fence' checkpoints have already passed)"
+      ],
+      "expected_outcome_and_finding": "UNDER THIS ADR'S SINGLE-DERIVATION DESIGN, NEITHER CASE IS CAUGHT. This is a genuine, demonstrable narrowing versus the pre-ADR-0144 conceptual model (ADR-0143's own Phase0 matrix row 8 expected outcome: 'commit_p4_batch's own re-checks (_check(), _P4_REQUEST_CHECK, _P4_CLOSE_ADMISSION re-call) catch a change that slips past a single resolver call' -- that reasoning assumed EACH of the (up to four) close_admission-family calls independently re-proved the graph, including live revocation/clock state via the graph's internal _prove() fence inside resolver.resolve()/_checked_resolve(). Under ADR-0144 Decision point 6, only the FIRST of the three commit_p4_batch checkpoints performs a real resolver._graph.resolve() call (the only place _prove()'s revocation/clock fence executes); the 2nd and 3rd checkpoints perform ONLY `_p4_snapshot_integrity` (confirmed by direct code read, trust.py:4215-4260, to check identity/class pins only, never revocation or clock) plus a comparison against the already-frozen `expected_admission_sha256`. Traced against the current line ordering (checkpoint-1 at 5340's position -> _P4_DYNAMIC_PREPARE at 5342's position, i.e. SIGNING -> _P4_DYNAMIC_VERIFY_BATCH at 5347's position -> checkpoint-2 at 5351's position -> ... -> checkpoint-3 at 5388's position -> commit): the actual cryptographic signing of the batch (_P4_DYNAMIC_PREPARE) happens IMMEDIATELY after the one real graph proof and BEFORE either 'cheap fence' checkpoint runs, so a revocation added after that one real proof is never re-checked by anything before the batch is signed, verified, and committed.",
+      "forbidden_effect": "(as newly scoped by this ADR, disclosed here rather than silently accepted) a CAPTURED batch committing with admission closure proven against a since-revoked key or a since-advanced clock state that the graph's OWN proof mechanism would have refused, had it been asked again after the revocation/clock change",
+      "note_for_independent_skeptic": "this is the most significant open question this matrix surfaces and is NOT addressed by ADR-0144's Decision or Non-goals text -- ADR-0143's Decision point 9 (which ADR-0144 explicitly reaffirms, point 9 of ADR-0144's own Decision list: 'the temporal admissibility gate for the dynamic authority is, and remains, the resolver's own fresh graph re-proof... inside commit_p4_batch's locked critical section') was written when that re-proof happened up to three/four times per batch; ADR-0144 deliberately and necessarily reduces that to exactly once (to fix the preapproval Major about derivation divergence), but neither ADR-0144's text nor evidence 0183 re-examines whether ADR-0143 Decision point 9's temporal-freshness claim still holds at reduced re-proof count. This matrix takes no position on whether this is an acceptable trade-off (the revocation/clock-advance window here is a single in-process critical section, likely sub-millisecond in practice, and the trusted host is non-adversarial per the authority_boundary_statement) -- but per skeptic-review.md's instruction to 'demonstrate the concrete incorrect implementation the contract permits and its impact,' this row does exactly that, and the independent skeptic must decide whether it is Minor (theoretical, trusted-host-only window) or Major (a stated safety property -- 'resolver's own fresh graph re-proof' -- no longer holding as strongly as ADR-0143 Decision point 9 claims) and whether it needs an owner-approved disclosure in the ADR text itself rather than only in this matrix"
+    },
+    {
+      "id": 8,
+      "family": "crash / partial failure between deriving the reconstruction and signing the batch",
+      "entry_points": ["commit_p4_batch's fault-injection points (_fault('preflight')/'prepared'/'reserved'/'verified'/'intern-before'/'intern-after'/'commit-before'/'commit-after'/'return', all already present in the current method)", "dynamic_reconstruction_cell's lifetime"],
+      "cases": [
+        "process crash (or injected fault) immediately after the first close_admission_once checkpoint populates dynamic_reconstruction_cell[0] but before _P4_DYNAMIC_PREPARE runs",
+        "crash between _P4_DYNAMIC_PREPARE (signing) and _P4_DYNAMIC_VERIFY_BATCH",
+        "crash between the final `_hs_refuse(self._request(...) == fingerprint)` and the atomic `self._root, self._pin = root, pin` assignment (the existing 'intern-before'/'intern-after'/'commit-before' fault points already probe exactly this window for the legacy path; this ADR adds no new state at this stage beyond threading the same `cas`/`captured_set` values through, per the point-4 cas-branch edit)"
+      ],
+      "expected_outcome": "`dynamic_reconstruction_cell` is a plain stack-local Python list, never written to any durable store (no reserve row, no WORM put, nothing in _P4_RECORDS/_P4_LEDGER_PINS until the existing 'intern-before' fault point, which is unchanged by this ADR). A crash at ANY point before the final atomic `self._root, self._pin = root, pin` assignment leaves NOTHING durable: the ledger's own `_root` tuple (the sole source of truth for `_p4_entries()`/`resolve_p4`) is unchanged, `_P4_RECORDS[record] = self` may have executed (per the existing 'intern-before'/'intern-after' fault points) but per the method's own comment ('Pre-interning is not authority: every lookup additionally requires membership in the committed immutable ledger root') this is already-established, ADR-0143-era behavior this ADR's five edits do not touch. A retry (fresh authorize_capture_set call with the same or different captures/admission_ref) allocates a brand-new dynamic_reconstruction_cell and re-derives cleanly, exactly as row 6/12 already establish for independent calls",
+      "forbidden_effect": "any observable partial CAPTURED state (a record resolvable via resolve_p4, or an entry in _p4_entries()) after a crash before the final root-swap; a retry after a crash reusing a STALE dynamic_reconstruction_cell from the crashed attempt (impossible by construction, since the cell is a local variable whose lifetime ends with the crashed stack frame, but stated explicitly as the forbidden effect this design must continue to structurally prevent)"
+    },
+    {
+      "id": 9,
+      "family": "purpose-uniqueness check's enforcement point and duplicate-purpose behavior",
+      "entry_points": ["_dynamic_p4_reconstruct_admission_chain (new uniqueness assertion, inside the single-call-site helper per Decision point 8's correction)", "_p4_dynamic_capture_admission_set (new consumer_document_sha256/purpose parameters)"],
+      "cases": [
+        "a batch whose captures all share one purpose value -- must succeed and produce cas['purpose'] equal to that shared value",
+        "a batch whose captures include two different purpose values across the (exactly two, per existing cardinality check) capture entries -- must refuse BEFORE cas is constructed, with a ValueError distinct from _validate_capture_request's existing 'P4 captures must belong to one frozen consumer document' message (same family, different field, own wording)",
+        "confirm the check runs EXACTLY ONCE per commit_p4_batch call: since _dynamic_p4_reconstruct_admission_chain now has exactly one call site (inside _dynamic_p4_close_admission, itself invoked at most once via _p4_close_admission_once's cell[0]-is-None branch), a duplicate-purpose batch is refused at the FIRST checkpoint and never reaches a second evaluation of the same check -- this closes the preapproval Nit (evidence 0183: the check 'would have run twice redundantly' under the original two-call-site design) as a direct, structural consequence of the Major's own fix, not a separate patch"
+      ],
+      "expected_outcome": "commit_p4_batch's shared, unbranched decision-assembly line `decision.update(consumer_document_sha256=cas['consumer_document_sha256'], purpose=cas['purpose'], ...)` (today's trust.py:5372, unedited) runs identically for both resolver types once the cas branch (point 4) supplies a cas dict with both keys present either way -- for the legacy resolver, cas already has these keys (pre-existing behavior, confirmed by direct code read at the resolved cas via resolver._records); for the dynamic resolver, the new top-level fields on _p4_dynamic_capture_admission_set's payload supply them",
+      "forbidden_effect": "a CAPTURED admission committing with cas['purpose'] set to only ONE of two differing capture purposes (silently picking captures[0]'s value while ignoring a mismatched captures[1]) instead of refusing; the uniqueness check re-running a second time and potentially observing a DIFFERENT graph/captures state than the first (impossible under the single-call-site design, but stated as the forbidden effect the single-call-site design exists to prevent)"
+    },
+    {
+      "id": 10,
+      "family": "resolve_p4's downstream lookup of execution_authority_ref for a dynamic-authority-produced CAPTURED admission",
+      "entry_points": ["_LifecycleAuthorizationLedger.resolve_p4"],
+      "cases": [
+        "after a successful dynamic authorize_capture_set, call resolve_p4(execution_key, admission_ref) with execution_key[1] = _hs_canonical_bytes({'kind': 'action', 'action_execution_admission_sha256': <the root-capture-admission's own sha256>}) -- the EXACT shape _DynamicCapturedAuthorizationContract._prepare's identity['execution_authority_ref'] constructs per the substitution table -- and confirm it resolves the correct (record, session) pair",
+        "confirm resolve_p4's own hard checks (`authority_ref.get('kind') in ('action','replay')`, `digest_field='action_execution_admission_sha256'` for kind='action', `set(authority_ref) == {'kind', digest_field}`) accept this shape WITHOUT any code change, exactly as ADR Decision point 3 claims -- since the dynamic chain deliberately reuses the literal existing 'action'/'action_execution_admission_sha256' shape rather than inventing a new kind",
+        "confirm resolve_p4's `admission_bytes = _p4_reference_bytes(admission_ref)` call (point 1, trust.py:5305) succeeds for a root-capture-admission-kind admission_ref ONLY once resolve_p4 is updated to pass its own resolver (self._authority._p4_resolver) as the second argument -- a caller invoking resolve_p4 against the DYNAMIC ledger for a root-capture-admission ref, before this edit, would incorrectly hit the legacy _P4_ADMISSION_SCHEMAS whitelist and refuse even though the admission was validly captured",
+        "negative: a caller who reads the same execution_authority_ref shape and, misreading the field name, attempts to treat action_execution_admission_sha256 as if it named an action-execution-admission document (e.g. tries to resolve it through the LEGACY _p4_close_admission's action-execution-admission grammar) -- must fail, since no such document exists; this is the field-name-reuse invariant's own boundary case"
+      ],
+      "expected_outcome": "resolve_p4 requires NO logic change beyond the point-1 call-site edit (confirmed correct by direct trace: the stored `key[1]` in commit_p4_batch is `_hs_canonical_bytes(captured_set['execution_authority_ref'])`, and `captured_set['execution_authority_ref']` is exactly what _DynamicCapturedAuthorizationContract._prepare's identity dict constructs per the substitution table -- a caller reconstructing the same authority_ref dict and canonicalizing it produces byte-identical bytes, so the `entry[0] == execution_key and entry[1] == admission_bytes` match in resolve_p4's loop succeeds for a dynamic-authority-produced entry exactly as it does for a legacy one)",
+      "forbidden_effect": "resolve_p4 refusing a valid dynamic-authority execution_key/admission_ref pair; resolve_p4 (or any future code) branching on WHICH admission kind produced a given action_execution_admission_sha256 value, which would violate the field-name-reuse invariant Decision point 7 makes binding on all future dynamic-domain work"
+    },
+    {
+      "id": 11,
+      "family": "every public facade -- dskit/production/verifier.py transparency",
+      "entry_points": ["dskit/production/verifier.py: HistoricalStudyVerifier.authorize_capture_set", "dskit/production/verifier.py: HistoricalStudyCaptureDriver.authorize_capture_set"],
+      "cases": [
+        "bind the dynamic authority instance into a HistoricalStudyVerifier (as evidence 0181's F4 recommended as a RED case for ADR-0143 and which, per that finding, has not yet been exercised) and call authorize_capture_set through the verifier facade for a root-capture-admission -- confirm it reaches the SAME _p4_checked_dispatch/commit_p4_batch path as a direct authority.authorize_capture_set(...) call, with identical outcome",
+        "confirm, by direct grep on this branch (not by re-citing evidence 0181 alone), that verifier.py imports/references none of this ADR's new symbols (_DynamicCapturedAuthorizationContract, _dynamic_p4_reconstruct_admission_chain, _p4_close_admission_once, _DynamicP4AdmissionReconstruction, _P4_DYNAMIC_ADMISSION_SCHEMAS) -- reconfirmed clean in code_read above",
+        "confirm HistoricalStudyCaptureDriver.authorize_capture_set's own dispatch-identity pins (`type(verifier).authorize_capture_set is not _HS_P4_VERIFIER_DISPATCH`, line 1015) are unaffected -- they pin verifier.py's OWN method identities, not anything this ADR touches in trust.py"
+      ],
+      "expected_outcome": "both verifier.py facades remain transparent to whichever authority instance (legacy or dynamic) is bound at HistoricalStudyVerifier construction time; this ADR requires and implies NO edit to dskit/production/verifier.py",
+      "forbidden_effect": "any verifier.py behavior that differs between routing through the direct authority.authorize_capture_set(...) call versus the verifier/driver facade, for the dynamic authority specifically, now that a genuine CAPTURED admission is reachable through it for the first time"
+    },
+    {
+      "id": 12,
+      "family": "concurrent authorize_capture_set calls on the SAME dynamic authority instance for different documents",
+      "entry_points": ["_LifecycleAuthorizationLedger.commit_p4_batch's `with self._lock:` (RLock)", "dynamic_reconstruction_cell's per-call scope"],
+      "cases": [
+        "two threads call `authority.authorize_capture_set(...)` on the SAME dynamic authority instance, for two DIFFERENT consumer documents (different admission_ref/captures pairs, since _validate_capture_request's existing len(documents)!=1 check already forces one document per batch)",
+        "confirm commit_p4_batch's ENTIRE body -- including all three _p4_close_admission_once checkpoints, the _P4_DYNAMIC_PREPARE/_P4_DYNAMIC_VERIFY_BATCH calls, and the final root-swap -- executes inside the SAME `with self._lock:` block that already wraps the whole method today (trust.py:5318-5319), confirming the SECOND thread's call blocks on `self._lock.acquire()` until the FIRST thread's call fully returns (including its `finally: self._reserving = ()`)",
+        "confirm there is exactly ONE call site for commit_p4_batch in the entire module (grep-confirmed: trust.py:2522 via _P4_COMMIT alias only) -- i.e. no internal recursive/reentrant call into commit_p4_batch from within itself that could interleave two dynamic_reconstruction_cell instances under the SAME RLock (RLock reentrancy is moot here since nothing re-enters)",
+        "confirm `dynamic_reconstruction_cell = [None]` is a fresh Python list object allocated on EACH call's own stack frame (a new local variable binding per invocation, not a closure over shared state, not an attribute of self/the ledger/the authority/the resolver) -- so even hypothetically, without the RLock, two concurrent calls' cells could not alias each other; the isolation is doubly guaranteed, by lock serialization AND by variable scope"
+      ],
+      "expected_outcome": "the per-call-local dynamic_reconstruction_cell design correctly isolates concurrent authorize_capture_set calls on the same dynamic authority instance for TWO INDEPENDENT, COMPOUNDING reasons: (1) the ledger's own RLock, unchanged and unedited by this ADR, already serializes every commit_p4_batch call end-to-end -- no two calls' locked sections ever interleave; (2) even setting the lock aside, the cell is a stack-local variable with no shared storage location, so two concurrent invocations (were they somehow interleaved) could not read or write each other's cell. commit_p4_batch is NOT reentrant in any path this ADR touches or that exists in the current code (confirmed by exhaustive grep for all call sites of the method name)",
+      "forbidden_effect": "any implementation that stores dynamic_reconstruction_cell (or the _DynamicP4AdmissionReconstruction it comes to hold) on self/the ledger/the authority/the resolver rather than as a pure call-stack local -- this would be the ONE change that could reintroduce cross-call contamination despite the RLock, since a stored-and-reused cell could leak a PRIOR call's reconstruction into a later, different call's signing step"
+    }
+  ],
+
+  "open_findings_for_independent_skeptic": [
+    {
+      "id": "F1",
+      "severity_candidate": "Major or Minor (independent skeptic to decide; not resolved by the implementer per skeptic-review.md's 'the author cannot lower severity or narrow scope to escape a gate')",
+      "summary": "Matrix row 7: ADR-0144's single-derivation redesign (the correct fix for the preapproval Major about reconstruction-divergence) necessarily reduces the number of live graph-backed revocation/clock re-proofs inside one commit_p4_batch call from up to three/four (under the ORIGINAL, rejected multi-call design) to exactly one. ADR-0143 Decision point 9 (reaffirmed unmodified by ADR-0144 point 9) states the temporal admissibility gate for the dynamic authority IS 'the resolver's own fresh graph re-proof... inside commit_p4_batch's locked critical section' -- but under the now-accepted single-derivation design, that re-proof happens only ONCE, before signing, not repeated across the section. A revocation or clock advance landing after that one proof but before the batch is signed/committed is not caught by anything in this design (the 2nd/3rd checkpoints are confirmed, by direct code read, to perform only identity-pin checks, never a live revocation/clock recheck). Neither ADR-0144's Decision text nor evidence 0183's ground_truth_findings/preapproval review discusses this specific consequence of moving to single-derivation. This matrix takes no position on acceptability (the window is a single in-process critical section against a non-adversarial trusted host, per the standing authority_boundary_statement) but flags it as a genuine, concrete, demonstrable narrowing of a previously-stated safety property that the ADR text does not re-examine."
+    },
+    {
+      "id": "F2",
+      "severity_candidate": "Minor",
+      "summary": "Matrix row 3 / class_function_inventory: _DynamicCapturedAuthorizationContract._prepare's exact defense against being called with `reconstruction=None` or a wrong-typed reconstruction is not specified by the ADR text (which only pins the happy-path ordering). This matrix recommends an explicit _hs_refuse(type(reconstruction) is _DynamicP4AdmissionReconstruction, ...) as _prepare's first line; the independent skeptic should confirm this is required for GREEN or accept the ADR's implicit reliance on commit_p4_batch's own fixed call ordering as sufficient (given commit_p4_batch is the only real caller today)."
+    },
+    {
+      "id": "F3",
+      "severity_candidate": "Minor",
+      "summary": "Matrix row 6: a caller holding a direct reference to authority._p4_resolver and invoking resolver.close_admission(...) outside commit_p4_batch's lock, then later making a separate authorize_capture_set call, is not discussed anywhere in ADR-0144's Decision text. This matrix's analysis (design holds, because close_admission remains stateless/side-effect-free under this ADR) follows from other stated properties but was not itself a stated design target. The independent skeptic should confirm this reasoning explicitly rather than let it pass by omission, and should flag any future change that would memoize the reconstruction onto the resolver as reopening this row."
+    },
+    {
+      "id": "F4",
+      "severity_candidate": "non-issue (RESOLVED by direct grep, mirroring ADR-0143's own Phase0 F4 disposition)",
+      "summary": "dskit/production/verifier.py: reconfirmed on this branch that no P4 authority/resolver/contract symbol -- fixed or dynamic, old or new (including every symbol this ADR introduces) -- is imported or re-exported by name. HistoricalStudyVerifier/HistoricalStudyCaptureDriver dispatch via isinstance(authority, CapturedAuthorizationAuthority) plus pinned-dispatch-identity checks only. No verifier.py edit is implied or required by ADR-0144. See matrix row 11 and the public_facades entry for the full grep-based confirmation."
+    },
+    {
+      "id": "F5",
+      "severity_candidate": "Minor",
+      "summary": "The ADR's Closed construction profile leaves the exact extraction boundary of _dynamic_p4_reconstruct_admission_chain implicit ('extracted from _dynamic_p4_close_admission's existing body... with zero behavior change'). This matrix pins the exact boundary against the CURRENT code (class_function_inventory entry for _dynamic_p4_reconstruct_admission_chain): the helper begins at `graph_refs = tuple(resolver._graph._records)` and ends at the per-entry live-projection loop's last check, leaving the leading authority-identity/_p4_dynamic_reference_bytes/kind-role-schema checks and the trailing _p4_snapshot_integrity re-check inside _dynamic_p4_close_admission itself. The independent skeptic should confirm this exact split (rather than, e.g., a split that also extracts the trailing snapshot-integrity re-check, which would then run once instead of the twice it runs today at the start and end of _dynamic_p4_close_admission's current body)."
+    },
+    {
+      "id": "F6",
+      "severity_candidate": "Nit",
+      "summary": "_DynamicP4AdmissionReconstruction's exact construction idiom (namedtuple vs. frozen dataclass vs. the codebase's own hand-rolled _Frozen/_Published __slots__-plus-lock pattern) is left open by the ADR text. This matrix recommends the codebase's existing idiom for consistency (zero namedtuple/dataclass usage found anywhere else in trust.py); the independent skeptic should confirm or override this stylistic recommendation, and should independently check whether all 10 pinned fields (root_pis_ref, dataset_g1_ref, dataset_g2_ref, pis, entries, expected_admission, expected_admission_sha256, pce_entries, cas, cas_sha256) are genuinely read by some consumer, or whether one or two exist only for completeness and could be dropped as a later simplification (not a Phase 0 blocker either way)."
+    }
+  ],
+
+  "non_goals": [
+    "Full EventEnvelope.v2 causality/ordering/provenance/correction semantics",
+    "composed-tape verification",
+    "Packet 8 durable consume-once",
+    "deployment",
+    "any edit to the fixed P4 corpus, its 500-ms clock, _FixedWormTrustedArtifactResolver, _FixedTerminalArtifactVerifier, or _p4_close_admission's v1-only grammar, all of which remain byte-identical and must continue to refuse dynamic v2/graph roots unchanged",
+    "reuse or extension of the fixed scope-intent/gate-evidence/scope-authorization/stage-admission historical-study apparatus for the dynamic domain (ADR-0143's non-goal, preserved -- this ADR reuses three existing field names required by the shared signed schema, never the pea/ces/bvp artifacts or their resolution mechanism)",
+    "any new reserve kind, signer, or key material",
+    "a second _LifecycleAuthorizationLedger class or a subclass of _SyntheticP4CapturedAuthorizationAuthority",
+    "cross-instance run-identity checks between the legacy and dynamic authorities (ADR-0143 Decision point 8 and matrix row 10's deliberate non-goal, unchanged, since this ADR does not touch _validate_capture_request)"
+  ],
+
+  "deployment_eligible": false,
+  "tests_run": "none; design inspection",
+  "gate": "Phase 0 matrix authored by implementer; requires independent Phase 0 skeptic review before RED."
+}
