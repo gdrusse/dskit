@@ -13219,8 +13219,9 @@ is handled, each at half of `1 - widening_level` (a Bonferroni split):
   does not claim exact finite-sample coverage of the two-groups `pi0`.
 
 **Disclosed limits of the p-scale and of Grenander.** These are properties of
-the technique, not defects to be patched, and each is pinned by a test so it
-cannot change silently:
+the technique, not defects to be patched. Each is disclosed here and in the
+module docstring, and all but one are pinned by a test so they cannot change
+silently:
 
 - **Resolution floor.** `permutation_pvalue` cannot return below `1 / (1 + B)`,
   so a statistic of `1e-12` and one of `1e12` that both beat every draw get the
@@ -13240,9 +13241,12 @@ cannot change silently:
   share of readings already pinned at 1.0 rises as `m` falls, and at `m = 1` the
   fit degenerates entirely.
 - **Step function.** `pi_widened / pi_hat` is a step function with unbounded
-  jumps at order statistics (ratio 250 in one `m = 40` family, 1.7 in another);
-  the magnitude is set by p-value spacing, not by any error budget. Another
-  reason not to read it as a confidence statement.
+  jumps at order statistics (the review measured a ratio of 250 in one `m = 40`
+  family and 1.7 in another); the magnitude is set by p-value spacing, not by
+  any error budget. Another reason not to read it as a confidence statement.
+  This is the one limit NOT pinned by a test: the hand-computed-majorant and
+  left-continuity tests pin the step STRUCTURE, but no test measures the jump
+  magnitude, because it is a property of whatever family is passed in.
 - **`density` is a READ, not a normalized density.** Past the largest fitted
   p-value it extends the FINAL slope rather than dropping to the majorant's zero,
   which keeps the ratio defined and positive but lets the implied mass over
