@@ -110,5 +110,42 @@
     "disclosed_in": ["RED commit message (10f3ce7)", "GREEN commit message (447a423)", "this evidence file", "the affected tests' own docstrings"]
   },
   "deployment_eligible": false,
-  "stop_condition": "No final-lens review performed (explicitly out of scope per task instruction). No merge to main, no wrap. Branch codex/f5a-p7-remainder-20260916 to be pushed to origin at HEAD after this evidence file's commit, per instruction."
+
+  "final_review": {
+    "candidate": "447a423 (GREEN) + f062c9f (evidence, at review time)",
+    "authority_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (authority/correctness lens)",
+      "verdict": "0 Critical, 0 Major, 0 Minor, 0 Nit",
+      "verified": [
+        "dskit/pipeline/trust.py confirmed untouched (last edit 432c8a2, predates this branch's base)",
+        "corrected data_capture_root formula (published.sealed.digests-based) confirmed in the actual GREEN code, not the earlier wrong descriptor-based draft",
+        "_P4_APPROVED_ROOT_PROJECTIONS 2-entry allowlist confirmed real (trust.py:3861-3865); ADR-0146 Decision point 8 confirmed to explicitly anticipate and permit the fixed/dynamic asymmetry, not an undisclosed under-delivery",
+        "dynamic-authority positive case (Decision point 8's mandatory capstone) confirmed genuine, non-mocked, end-to-end",
+        "no dskit.pipeline.trust import confirmed via actual import statements plus the dedicated regression test",
+        "all 4 Phase-0 implementation pins confirmed applied in the actual code (exception wrapping, no-trust-import regression test, default-deny raw_event_members keys, docstring warning verbatim)",
+        "independently re-ran 29 focused + 1661 affected tests, 1 pre-existing unrelated baseline failure"
+      ],
+      "gate": "CLEAN"
+    },
+    "tests_integration_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (tests/integration lens)",
+      "verdict": "0 Critical, 0 Major, 0 Minor, 1 Nit",
+      "verified": [
+        "all 13 Phase-0-matrix rows have direct, non-trivial test coverage (full row-by-row mapping produced)",
+        "row 6 (tamper-resistance) confirmed content-sensitive via two genuinely different captures producing different data_capture_root values, not merely a structural caller-can't-pass-it check",
+        "row 7 (round-trip genuineness) confirmed load-bearing via monkeypatch spies proving verify_causal_order receives the REPARSED object, not the pre-round-trip built object",
+        "row 2 (dynamic-authority positive case) independently confirmed genuine and non-mocked",
+        "the disclosed convergence-checkpoint's _P4_APPROVED_ROOT_PROJECTIONS claim independently reproduced and confirmed accurate",
+        "independently re-ran 29 focused + 1661 affected tests, matching counts",
+        "ruff and git diff --check independently re-run, clean"
+      ],
+      "nit": "the disclosed convergence checkpoint (fixed-authority limitation) could have been surfaced in the RED commit message's own limitations section rather than only in the GREEN evidence JSON -- a process/documentation style note, not a code defect.",
+      "gate": "CLEAN"
+    },
+    "combined_result": "0 Critical, 0 Major, 0 Minor, 1 Nit (process/documentation style, deferred)",
+    "gate": "Two fresh independent completed lenses, zero unresolved in-scope Critical/Major. P7's final closure gate is locked and ready to integrate.",
+    "deployment_eligible": false
+  },
+
+  "stop_condition_at_red_green_time": "No final-lens review performed at GREEN time (explicitly out of scope per that task's instruction). Final review now complete above; ready for integration and P7 wrap."
 }
