@@ -3115,3 +3115,106 @@ def test_reduce_state_problems_refuses_a_mean_on_svd():
     assert svd_node.state_problems(svd_state) == []
     broken = {**svd_state, "mean": [0.0, 0.0, 0.0]}
     assert svd_node.state_problems(broken)
+
+
+# ---------------------------------------------------------------------------
+# SklearnReduction (ADR-0149) — slice 2 batch correction: a second shape and
+# both directions of every width read, per convergence checkpoint 2
+# ---------------------------------------------------------------------------
+
+REDUCE_PARAMS_2F = {
+    "fit_split": "train",
+    "features": ["strong", "other"],
+    "algorithm": "pca",
+    "n_components": 1,
+    "seed": 17,
+}
+
+
+def test_reduce_fit_and_state_accept_a_two_feature_shape():
+    node, state = _fit_reduction("pca", 1, features=["strong", "other"])
+    assert state["features"] == ["strong", "other"]
+    assert len(state["components"]) == 1
+    assert all(len(row) == 2 for row in state["components"])
+    assert len(state["mean"]) == 2
+    assert node.state_problems(state) == []
+
+
+def test_reduce_fit_refuses_more_components_than_declared(monkeypatch):
+    class Fake:
+        def __init__(self, **kwargs):
+            self.n_components = kwargs["n_components"]
+
+        def fit(self, matrix):
+            self.components_ = [[0.0, 0.0, 0.0] for _ in range(3)]  # one too many
+            self.mean_ = [0.0, 0.0, 0.0]
+            return self
+
+    import dskit.pipeline.libs.sklearn as _sklearn
+
+    monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
+    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    with pytest.raises(ValueError, match="n_components"):
+        node.fit(rows_selectable(n=8), node.params)
+
+
+def test_reduce_fit_threads_algorithm_params_into_the_constructor(monkeypatch):
+    captured = {}
+
+    class Fake:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def fit(self, matrix):
+            self.components_ = [
+                [0.0, 0.0, 0.0] for _ in range(captured["n_components"])
+            ]
+            self.mean_ = [0.0, 0.0, 0.0]
+            return self
+
+    import dskit.pipeline.libs.sklearn as _sklearn
+
+    monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
+    node = _RaiseReduction(
+        "reduce", {**REDUCE_PARAMS, "algorithm_params": {"n_iter": 7}}
+    )
+    node.fit(rows_selectable(n=8), node.params)
+    assert captured["n_iter"] == 7
+
+
+def test_reduce_fit_rechecks_the_collision_rule_at_the_declared_width():
+    node = _RaiseReduction("reduce", {**REDUCE_PARAMS, "n_components": 3})
+    rows = [dict(r) for r in rows_selectable(n=8)]
+    rows[0]["component_2"] = 9.0
+    with pytest.raises(ValueError, match="component_2"):
+        node.fit(rows, node.params)
+
+
+def test_reduce_params_n_components_bound_uses_the_declared_feature_count():
+    problems = SklearnReduction.validate_params(
+        {**REDUCE_PARAMS_2F, "n_components": 3}
+    )
+    assert any("exceeds the 2" in p for p in problems)
+
+
+def test_reduce_params_one_component_is_legal():
+    assert SklearnReduction.validate_params(dict(REDUCE_PARAMS_2F)) == []
+
+
+def test_reduce_row_problems_collision_at_width_one():
+    node = _reduction_node(n_components=1)
+    rows = [{"strong": 1.0, "other": 2.0, "flat": 0.0, "component_0": 9}]
+    problems = node.row_problems(rows)
+    assert any("component_0" in p for p in problems)
+
+
+def test_reduce_state_problems_refuses_an_over_long_component_row():
+    node, state = _fit_reduction("pca", 2)
+    broken = {**state, "components": [[0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0]]}
+    assert node.state_problems(broken)
+
+
+def test_reduce_state_problems_refuses_an_over_long_mean():
+    node, state = _fit_reduction("pca", 2)
+    broken = {**state, "mean": [0.0, 0.0, 0.0, 0.0]}
+    assert node.state_problems(broken)

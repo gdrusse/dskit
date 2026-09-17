@@ -13233,3 +13233,28 @@ The next derivation site is `apply_state`'s projection (slice 3), which writes
 (a)/(b) rule on its FIRST red-green cycle, not be retrofitted after a reviewer
 finds it. A round-3 Major in this family means the inventory missed a site,
 which is a checkable claim rather than another point fix.
+
+### Convergence checkpoint 2 (slice 2, after review round 3) — the canonical-shape pin
+
+**Same family, wider form.** The slice-1 checkpoint pinned the `component_<i>`
+name derivation. Slice 2's final mutation sweep found the family again, this
+time as: *every value that should read `len(features)` / `n_components` /
+`width` is exercised only at the fixture's canonical shape — 3 features,
+`n_components=2` — so a hardcoded `3` or `2` survives the suite.* Eight Major
+survivors (hardcoding `width=3`, `len(features)=3`, the `!=` geometry checks
+turned one-directional, `algorithm_params` dropped, the validator bound
+`> 3`, tuple features left un-coerced) plus three Minor.
+
+Why the slice-1 fix did not cover it: slice 1 enumerated *name-derivation*
+sites; slice 2 introduced *shape-derivation* sites (`len(features)`,
+`n_components`, `width`) whose fixture happens to equal the natural hardcode.
+The one-fixture-shape oracle is the root cause, not any single site.
+
+The changed approach — a SECOND fixture shape, and a direction battery. No more
+single-value pins. The reduction tests now run against TWO shapes — the
+canonical 3-feature/2-component document AND a 2-feature/1-component one — so
+every `len(features)`/`n_components`/`width` read is exercised at two distinct
+values, and every `!=` geometry check is proven BOTH directions (fewer AND
+more). The next slice (`apply_state`, slice 3) inherits the two-shape rule and
+must also project a 2-feature state, so its width reads are pinned at both
+shapes from its first cycle.
