@@ -167,6 +167,27 @@ def test_the_package_imports_only_the_toolkit_and_stdlib_at_any_depth():
     assert not offenders, f"dskit/production reached outside its rule: {offenders}"
 
 
+def test_bundles_module_never_imports_pipeline_trust():
+    """ADR-0146 Decision point 10: `compose_replay_tape` reaches
+    `CapturedAuthorizationRecord`/`LaunchSession`/`_Published` only through
+    values the caller already holds and their own public methods/
+    attributes, never through an import of `dskit.pipeline.trust` from
+    `production/bundles.py`, at any depth. Stricter than the package-wide
+    rule above, which PERMITS but does not REQUIRE this (`dskit.pipeline`
+    is an allowed prefix for the whole package) -- a dedicated regression
+    test for this ADR's own stricter commitment (evidence 0190
+    open_findings_for_independent_skeptic: 'no automated test currently
+    enforces ADR-0146 Decision point 10's...commitment specifically for
+    bundles.py')."""
+    path = PACKAGE_DIR / "bundles.py"
+    offenders = [
+        module
+        for module, _top in _imports(path, PACKAGE)
+        if module == "dskit.pipeline.trust" or module.startswith("dskit.pipeline.trust.")
+    ]
+    assert not offenders, offenders
+
+
 def test_the_journal_is_reachable_only_from_inside_a_function():
     """ADR-0056: a module-level `dskit.journal` would make the action
     ledger a load-time dependency of the serve loop."""

@@ -5477,3 +5477,787 @@ def test_adr144_both_public_facades_reach_captured_for_the_dynamic_authority(tmp
     )
     assert type(record2) is trust.CapturedAuthorizationRecord
     assert type(session2) is trust.LaunchSession
+
+
+# ---------------------------------------------------------------------------
+# ADR-0146 -- bounded synthetic composed-tape verification (P7 closure gate).
+#
+# Reuses this file's own ADR-0143/0144 fixture helpers directly
+# (_adr143_issued_case, _adr144_admission_ref, f4._publish/_foreign_publish)
+# per Decision point 9(a): "reusing its private _adr143_issued_case/
+# _adr144_document_and_captures/_adr144_admission_ref/f4._publish helpers
+# directly and importing dskit.production.bundles locally for the
+# compose_replay_tape/verify_causal_order calls". compose_replay_tape
+# itself lives in dskit/production/bundles.py; nothing here reimplements
+# its steps 1-10.
+#
+# CONVERGENCE CHECKPOINT (Phase 0 discovery, disclosed in evidence 0191):
+# a full POSITIVE composed-tape fixture (a custom source_roster.json +
+# raw-event members) cannot be carried through the FIXED/legacy authority's
+# own action-execution-admission chain (_complete_signed_graph/_graph_live)
+# -- _p4_close_admission's _p4_terminal_parent_projection re-signs the
+# captured root's member_manifest_sha256 into the verified
+# root-publication-receipt and checks the resulting projection digest
+# against the HARDCODED, two-entry _P4_APPROVED_ROOT_PROJECTIONS allowlist
+# (trust.py:3861) -- confirmed empirically: any member content other than
+# the two pre-baked default fixtures f4._publish/_foreign_publish already
+# use refuses with "fixed external root policy projection refused". This
+# is the fixed corpus's own intentional design (a genuinely FIXED,
+# pre-approved external policy grant, unlike the dynamic authority's
+# per-test graph), not a test-construction bug, and fixing it would require
+# editing dskit/pipeline/trust.py's hardcoded allowlist -- forbidden by
+# Decision point 10. ADR-0146 Decision point 8's own text anticipates and
+# permits exactly this asymmetry ("A fixed-authority case may additionally
+# exist... but does not substitute for the dynamic-authority case"), so
+# every test below that needs CUSTOM composed-tape fixture content is
+# driven through the DYNAMIC authority instead (_adr146_dynamic_case) --
+# compose_replay_tape's own validation logic (roster/raw-event shape
+# checks, causal-order checks, round-trip genuineness, docstring, import
+# purity) is independent of which authority supplied record/session/
+# published (ADR-0146 Context point 1's own "resolver-type-agnostic by
+# construction" claim, which row 2 below independently verifies). Row 1
+# instead exercises what IS achievable through the fixed authority: real
+# accessor reachability against the fixed corpus's own default content.
+# ---------------------------------------------------------------------------
+
+_ADR146_ROSTER_SCHEMA = "dskit.composed-tape-roster-fixture/v1"
+_ADR146_RAW_EVENT_SCHEMA = "dskit.raw-event/v1"
+
+#: The default straight-line, two-source, two-event fixture (Decision
+#: point 5's minimal positive fixture: correction_position=0,
+#: corrects_event_id=None, prior_envelope_sha256=None throughout).
+_DEFAULT_ROSTER_SOURCES = [("alpha", 0), ("beta", 1)]
+_DEFAULT_RAW_EVENTS = [
+    ("events/e0.json", dict(source_id="alpha", event_id="evt-0", source_sequence=0,
+                             availability_ms=1_000, payload_sha256="1" * 64)),
+    ("events/e1.json", dict(source_id="beta", event_id="evt-1", source_sequence=0,
+                             availability_ms=2_000, payload_sha256="2" * 64)),
+]
+
+
+def _adr146_entry(relative_path, **overrides):
+    """One ``raw_event_members`` entry: the caller-supplied, ADR-0145-scoped
+    per-envelope metadata (Decision point 7's signature)."""
+    entry = {
+        "relative_path": relative_path,
+        "exchange_ms": 100,
+        "receive_ms": 200,
+        "source_provenance_tag": "fixture",
+        "source_timezone_tag": "UTC",
+        "correction_position": 0,
+        "corrects_event_id": None,
+        "prior_envelope_sha256": None,
+    }
+    entry.update(overrides)
+    return entry
+
+
+_DEFAULT_RAW_EVENT_MEMBERS = [
+    _adr146_entry("events/e0.json"),
+    _adr146_entry("events/e1.json", exchange_ms=150, receive_ms=250),
+]
+
+
+def _adr146_member(relative_path, raw_bytes):
+    """One F4 ``members`` entry (``broker.produce``'s own member shape)."""
+    return {
+        "relative_path": relative_path,
+        "media_type": "application/json",
+        "bytes": bytearray(raw_bytes),
+        "file_type": "regular",
+        "link_count": 1,
+    }
+
+
+def _adr146_roster_bytes(sources, *, schema_version=_ADR146_ROSTER_SCHEMA):
+    """Canonical bytes of one ``dskit.composed-tape-roster-fixture/v1`` object."""
+    value = {
+        "schema_version": schema_version,
+        "sources": [{"source_id": source_id, "rank": rank} for source_id, rank in sources],
+    }
+    return f4._json_bytes(value)
+
+
+def _adr146_raw_event_bytes(*, schema_version=_ADR146_RAW_EVENT_SCHEMA, **fields):
+    """Canonical bytes of one ``dskit.raw-event/v1`` object."""
+    value = {"schema_version": schema_version, **fields}
+    return f4._json_bytes(value)
+
+
+def _adr146_members(roster_sources, raw_events, *, roster_relative_path="source_roster.json"):
+    """Build one F4 member list: a dummy output member (``f4._publish``'s own
+    ``_produce`` hardcodes ``output_member='artifacts/bundle.json'``
+    regardless of the caller's ``members=`` override, so it must be present
+    among them), the ADR-0146 roster fixture, and one raw-event/v1 member
+    per entry (Decision point 3's fixture root member layout)."""
+    members = [
+        _adr146_member("artifacts/bundle.json", f4._json_bytes({"rows": []})),
+        _adr146_member(roster_relative_path, _adr146_roster_bytes(roster_sources)),
+    ]
+    for relative_path, fields in raw_events:
+        members.append(_adr146_member(relative_path, _adr146_raw_event_bytes(**fields)))
+    return members
+
+
+def _adr146_dynamic_case(tmp_path, monkeypatch, members, *, run_id="adr146-dynamic-run"):
+    """Drive one real F4 produce/seal/publish/authorize_capture_set lifecycle
+    on the DYNAMIC authority (ADR-0143/0144), mirroring
+    _adr144_document_and_captures's own two-stream cardinality construction,
+    but with an ADR-0146 roster+raw-event fixture on stream A. Stream B is
+    the ordinary f4._foreign_publish fixture -- only stream A is ever read
+    by compose_replay_tape in these tests. Unlike the fixed authority (see
+    this section's own convergence-checkpoint note above), the dynamic
+    authority's admission is verified through
+    _DynamicP4TrustedArtifactResolver's own narrow root-capture-admission
+    closure (ADR-0143/0144), which is NOT gated by any hardcoded member-
+    content allowlist, so custom fixture content is directly usable via
+    f4._publish's own members=/expected_members= override -- no
+    monkeypatch of f4._publish is needed here."""
+    _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
+    resolver = authority._p4_resolver
+    expected = tuple(member["relative_path"] for member in members)
+    session_a, published_a, _values = f4._publish(
+        authority, members=members, expected_members=expected,
+        produced_nonce="adr146-a-produced", sealed_nonce="adr146-a-sealed",
+        published_nonce="adr146-a-published",
+    )
+    authority.end_session(session_a)
+    published_b, _sealed_b = f4._foreign_publish(authority)
+    descriptor_a = authority.descriptor(published_a, purpose="synthetic")
+    descriptor_b = authority.descriptor(published_b, purpose="synthetic")
+    document = {
+        "name": "adr146-consumer",
+        "pipeline": {"consume": {"inputs": {
+            "bundle": {"$captured_artifact": descriptor_a},
+            "second": {"$captured_artifact": descriptor_b},
+        }}},
+    }
+    frozen_a = authority.freeze_consumer_document(
+        document, consumer_node="consume", consumer_input="bundle", purpose="synthetic")
+    frozen_b = authority.freeze_consumer_document(
+        document, consumer_node="consume", consumer_input="second", purpose="synthetic")
+    port_a = authority.derive_consumer_port(frozen_a)
+    port_b = authority.derive_consumer_port(frozen_b)
+    captures = ((published_a, frozen_a, port_a), (published_b, frozen_b, port_b))
+    runtime = {
+        "consumer_run_identity": run_id,
+        "process_measurement_sha256": f4._SHA["consumer_process"],
+        "runtime_sha256": f4._SHA["consumer_runtime"],
+    }
+    admission_ref = _adr144_admission_ref(resolver, run_id)
+    nonces = (f"{run_id}-p4-0", f"{run_id}-p4-1")
+    record, session = authority.authorize_capture_set(
+        captures, admission_ref, transition_nonces=nonces, **runtime)
+    return authority, record, session, published_a, port_a
+
+
+# ---------------------------------------------------------------------------
+# task item (1) -- FIXED-authority comparison/regression case
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replay_tape_fixed_authority_accessor_reachable_default_content_refused():
+    """RED task item (1) -- FIXED-authority comparison/regression case
+    (ADR-0146 Decision point 8: "A fixed-authority case may additionally
+    exist... but does not substitute for the dynamic-authority case").
+
+    See this section's own convergence-checkpoint note above: a full
+    POSITIVE case through the fixed authority (a custom ADR-0146 roster+
+    raw-event fixture) is architecturally infeasible without editing
+    trust.py's hardcoded _P4_APPROVED_ROOT_PROJECTIONS allowlist. What IS
+    exercised here: the SAME compose_replay_tape accessor calls
+    (read_member_bytes) reach real committed FIXED-authority content
+    (_issue_complete's own default fixture, unmodified), and
+    compose_replay_tape's own roster shape-check correctly refuses that
+    content -- it is not roster-shaped -- rather than silently accepting
+    it (matrix row 1, as a regression guard per Decision point 8's own
+    suggested framing)."""
+    from dskit.production import bundles
+
+    _graph, _broker, captures, _runtime, _before, record, session = _issue_complete()
+    published, _frozen, port = captures[0]
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "config.json", [],
+        )
+
+
+# ---------------------------------------------------------------------------
+# task item (2) -- positive case through the DYNAMIC authority (Decision
+# point 8's mandatory capstone -- must not be skipped, weakened, or
+# collapsed into row 1)
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replay_tape_dynamic_authority_positive_full_chain(tmp_path, monkeypatch):
+    """RED task item (2) -- Decision point 8's MANDATORY capstone case: one
+    real F4 produce/seal/publish/authorize_capture_set lifecycle on the
+    DYNAMIC authority (ADR-0143/0144), a valid roster (>=2 sources) and a
+    straight-line raw_event_members list (>=2 entries, correction_position=0
+    throughout, Decision point 5's minimal positive fixture) -- ADR-0146's
+    own stated positive proof case (Decision point 2 names the dynamic
+    authority specifically), matrix row 2."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    authority, record, session, published, port = _adr146_dynamic_case(tmp_path, monkeypatch, members)
+    consumer_document_sha256 = port["consumer_document_sha256"]
+
+    tape = bundles.compose_replay_tape(
+        record, session, published, consumer_document_sha256,
+        "source_roster.json", _DEFAULT_RAW_EVENT_MEMBERS,
+    )
+
+    assert isinstance(tape, bundles.CapturedReplayTape)
+    assert tape.envelope_count == len(_DEFAULT_RAW_EVENT_MEMBERS)
+    for digest in (tape.data_capture_root, tape.data_captured_receipt, tape.source_rank_policy_sha256):
+        assert isinstance(digest, str) and len(digest) == 64 and digest != "0" * 64
+    assert authority.deployment_eligible is False
+
+    # A second call with the SAME arguments must refuse at the accessor's
+    # own single-read discipline -- compose_replay_tape does not itself
+    # cache or bypass it (mirrors matrix row 1's own forbidden_effect,
+    # exercised here since row 1's own fixture cannot carry a full success
+    # -- see this section's convergence-checkpoint note).
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, consumer_document_sha256,
+            "source_roster.json", _DEFAULT_RAW_EVENT_MEMBERS,
+        )
+
+
+# ---------------------------------------------------------------------------
+# task item (3) -- forged/mismatched record/session/published triple, and
+# task item (10) -- cross-capture substitution
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replay_tape_refuses_session_from_a_different_capture(tmp_path, monkeypatch):
+    """RED task item (3): a genuine LaunchSession from a DIFFERENT capture
+    than record refuses at the FIRST accessor call (matrix row 3)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _authority_a, record_a, _session_a, published_a, port_a = _adr146_dynamic_case(
+        tmp_path / "a", monkeypatch, members, run_id="adr146-session-a")
+    _authority_b, _record_b, session_b, _published_b, _port_b = _adr146_dynamic_case(
+        tmp_path / "b", monkeypatch, members, run_id="adr146-session-b")
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record_a, session_b, published_a, port_a["consumer_document_sha256"],
+            "source_roster.json", [],
+        )
+
+
+def test_compose_replay_tape_refuses_published_from_a_different_capture(tmp_path, monkeypatch):
+    """RED task item (10): record/session genuinely belong to capture A;
+    published genuinely belongs to a DIFFERENT capture B -- refused before
+    any roster content is read (matrix row 10)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _authority_a, record_a, session_a, _published_a, port_a = _adr146_dynamic_case(
+        tmp_path / "a", monkeypatch, members, run_id="adr146-published-a")
+    _authority_b, _record_b, _session_b, published_b, _port_b = _adr146_dynamic_case(
+        tmp_path / "b", monkeypatch, members, run_id="adr146-published-b")
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record_a, session_a, published_b, port_a["consumer_document_sha256"],
+            "source_roster.json", [],
+        )
+
+
+def test_compose_replay_tape_refuses_wrong_consumer_document_sha256(tmp_path, monkeypatch):
+    """RED task item (10): a syntactically valid sha256-shaped digest that
+    simply does not match the frozen document actually used at capture
+    time -- the check is keyed on the EXACT consumer_document_sha256, not
+    merely 'any document that captured this stream' (matrix row 10)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _authority_a, record_a, session_a, published_a, _port_a = _adr146_dynamic_case(
+        tmp_path / "a", monkeypatch, members, run_id="adr146-docsha-a")
+    _authority_b, _record_b, _session_b, _published_b, port_b = _adr146_dynamic_case(
+        tmp_path / "b", monkeypatch, members, run_id="adr146-docsha-b")
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record_a, session_a, published_a, port_b["consumer_document_sha256"],
+            "source_roster.json", [],
+        )
+
+
+# ---------------------------------------------------------------------------
+# task item (4) -- roster fixture validation failure
+# ---------------------------------------------------------------------------
+
+_ADR146_BAD_ROSTERS = {
+    "wrong_schema_version": {
+        "schema_version": "dskit.composed-tape-roster-fixture/v2",
+        "sources": [{"source_id": "alpha", "rank": 0}],
+    },
+    "empty_sources": {
+        "schema_version": _ADR146_ROSTER_SCHEMA,
+        "sources": [],
+    },
+    "duplicate_source_id": {
+        "schema_version": _ADR146_ROSTER_SCHEMA,
+        "sources": [{"source_id": "alpha", "rank": 0}, {"source_id": "alpha", "rank": 1}],
+    },
+    "rank_not_list_index": {
+        "schema_version": _ADR146_ROSTER_SCHEMA,
+        "sources": [{"source_id": "alpha", "rank": 1}, {"source_id": "beta", "rank": 0}],
+    },
+    "rank_gap": {
+        "schema_version": _ADR146_ROSTER_SCHEMA,
+        "sources": [{"source_id": "alpha", "rank": 0}, {"source_id": "beta", "rank": 2}],
+    },
+    "unknown_source_field": {
+        "schema_version": _ADR146_ROSTER_SCHEMA,
+        "sources": [{"source_id": "alpha", "rank": 0, "extra": "nope"}],
+    },
+}
+
+
+@pytest.mark.parametrize("case", sorted(_ADR146_BAD_ROSTERS))
+def test_compose_replay_tape_refuses_malformed_roster_fixture(tmp_path, monkeypatch, case):
+    """RED task item (4): every _check_composed_tape_roster_fixture refusal
+    family (matrix row 4) raises BEFORE any raw-event member is read."""
+    from dskit.production import bundles
+
+    roster_bytes = f4._json_bytes(_ADR146_BAD_ROSTERS[case])
+    members = [
+        _adr146_member("artifacts/bundle.json", f4._json_bytes({"rows": []})),
+        _adr146_member("source_roster.json", roster_bytes),
+    ] + [_adr146_member(path, _adr146_raw_event_bytes(**fields)) for path, fields in _DEFAULT_RAW_EVENTS]
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id=f"adr146-roster-{case}")
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "source_roster.json", _DEFAULT_RAW_EVENT_MEMBERS,
+        )
+
+
+# ---------------------------------------------------------------------------
+# task item (5) -- raw-event member validation failure
+# ---------------------------------------------------------------------------
+
+_ADR146_BAD_RAW_EVENTS = {
+    "wrong_schema_version": {
+        "schema_version": "dskit.raw-event/v2", "source_id": "alpha", "event_id": "evt-0",
+        "source_sequence": 0, "availability_ms": 1_000, "payload_sha256": "1" * 64,
+    },
+    "empty_source_id": {
+        "schema_version": _ADR146_RAW_EVENT_SCHEMA, "source_id": "", "event_id": "evt-0",
+        "source_sequence": 0, "availability_ms": 1_000, "payload_sha256": "1" * 64,
+    },
+    "negative_source_sequence": {
+        "schema_version": _ADR146_RAW_EVENT_SCHEMA, "source_id": "alpha", "event_id": "evt-0",
+        "source_sequence": -1, "availability_ms": 1_000, "payload_sha256": "1" * 64,
+    },
+    "malformed_payload_sha256": {
+        "schema_version": _ADR146_RAW_EVENT_SCHEMA, "source_id": "alpha", "event_id": "evt-0",
+        "source_sequence": 0, "availability_ms": 1_000, "payload_sha256": "not-a-digest",
+    },
+    "unknown_key": {
+        "schema_version": _ADR146_RAW_EVENT_SCHEMA, "source_id": "alpha", "event_id": "evt-0",
+        "source_sequence": 0, "availability_ms": 1_000, "payload_sha256": "1" * 64, "extra": "nope",
+    },
+}
+
+
+@pytest.mark.parametrize("case", sorted(_ADR146_BAD_RAW_EVENTS))
+def test_compose_replay_tape_refuses_malformed_raw_event_member(tmp_path, monkeypatch, case):
+    """RED task item (5): every _check_raw_event_member refusal family
+    (matrix row 5) raises BEFORE the envelope is ever assembled."""
+    from dskit.production import bundles
+
+    bad_bytes = f4._json_bytes(_ADR146_BAD_RAW_EVENTS[case])
+    members = [
+        _adr146_member("artifacts/bundle.json", f4._json_bytes({"rows": []})),
+        _adr146_member("source_roster.json", _adr146_roster_bytes([("alpha", 0)])),
+        _adr146_member("events/bad.json", bad_bytes),
+    ]
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id=f"adr146-rawevent-{case}")
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "source_roster.json", [_adr146_entry("events/bad.json")],
+        )
+
+
+def test_compose_replay_tape_refuses_raw_event_orphaned_from_the_roster(tmp_path, monkeypatch):
+    """RED task item (5)'s own distinct sub-case: an individually well-formed
+    raw-event member whose source_id is not in the resolved roster
+    accumulates into the raised ProductionError rather than a bare
+    KeyError (matrix row 5)."""
+    from dskit.production import bundles
+
+    orphan_bytes = _adr146_raw_event_bytes(
+        source_id="ghost", event_id="evt-ghost", source_sequence=0,
+        availability_ms=1_000, payload_sha256="9" * 64,
+    )
+    members = [
+        _adr146_member("artifacts/bundle.json", f4._json_bytes({"rows": []})),
+        _adr146_member("source_roster.json", _adr146_roster_bytes([("alpha", 0)])),
+        _adr146_member("events/ghost.json", orphan_bytes),
+    ]
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-orphan")
+
+    with pytest.raises(bundles.ProductionError) as excinfo:
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "source_roster.json", [_adr146_entry("events/ghost.json")],
+        )
+    assert any("ghost" in problem for problem in excinfo.value.problems)
+
+
+# ---------------------------------------------------------------------------
+# task item (6) -- data_capture_root tamper-resistance
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replay_tape_signature_has_no_data_capture_root_parameter():
+    """RED task item (6): a caller cannot inject data_capture_root -- it is
+    not a parameter at all (matrix row 6)."""
+    import inspect
+
+    from dskit.production import bundles
+
+    parameters = inspect.signature(bundles.compose_replay_tape).parameters
+    assert "data_capture_root" not in parameters
+    assert list(parameters) == [
+        "record", "session", "published", "consumer_document_sha256",
+        "roster_relative_path", "raw_event_members",
+    ]
+
+
+def test_compose_replay_tape_data_capture_root_changes_when_captured_content_differs(tmp_path, monkeypatch):
+    """RED task item (6): data_capture_root is computed fresh, inside the
+    function, from the live published token's own sealed.digests -- two
+    captures whose member CONTENT differs produce DIFFERENT roots (the
+    corrected formula's real tamper-sensitivity: evidence 0190's
+    targeted_recheck_of_critical_correction empirically confirmed mutating
+    one member's sha256 changes this hash)."""
+    from dskit.production import bundles
+
+    members_a = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    members_b = _adr146_members(_DEFAULT_ROSTER_SOURCES, [
+        _DEFAULT_RAW_EVENTS[0],
+        ("events/e1.json", dict(source_id="beta", event_id="evt-1", source_sequence=0,
+                                 availability_ms=2_000, payload_sha256="3" * 64)),  # differs
+    ])
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    _authority_a, record_a, session_a, published_a, port_a = _adr146_dynamic_case(
+        tmp_path / "a", monkeypatch, members_a, run_id="adr146-root-a")
+    _authority_b, record_b, session_b, published_b, port_b = _adr146_dynamic_case(
+        tmp_path / "b", monkeypatch, members_b, run_id="adr146-root-b")
+
+    tape_a = bundles.compose_replay_tape(
+        record_a, session_a, published_a, port_a["consumer_document_sha256"],
+        "source_roster.json", _DEFAULT_RAW_EVENT_MEMBERS,
+    )
+    tape_b = bundles.compose_replay_tape(
+        record_b, session_b, published_b, port_b["consumer_document_sha256"],
+        "source_roster.json", _DEFAULT_RAW_EVENT_MEMBERS,
+    )
+    assert tape_a.data_capture_root != tape_b.data_capture_root
+
+
+def test_compose_replay_tape_refuses_a_duck_typed_published_object(tmp_path, monkeypatch):
+    """RED task item (6): a caller cannot achieve a chosen data_capture_root
+    by constructing a published-shaped duck-type object -- there is no
+    public _Published constructor reachable from outside trust.py, so a
+    plain stand-in refuses instead (matrix row 6)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    _authority, record, session, _published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-ducktype")
+    fake_published = type("FakePublished", (), {"sealed": None, "descriptor": {}})()
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, fake_published, port["consumer_document_sha256"],
+            "source_roster.json", [],
+        )
+
+
+# ---------------------------------------------------------------------------
+# task item (7) -- the build/canonical_bytes/parse round trip genuinely
+# catches a construction bug, not a decorative passthrough
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replay_tape_round_trip_is_genuine_not_a_shortcut(tmp_path, monkeypatch):
+    """RED task item (7): a spy on CapturedReplayTape._build/.parse and
+    verify_causal_order confirms compose_replay_tape's step 10 argument is
+    literally the REPARSED object, not the pre-round-trip _build result
+    (matrix row 7)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-roundtrip")
+
+    build_calls = []
+    parse_calls = []
+    vco_calls = []
+    original_build = bundles.CapturedReplayTape._build.__func__
+    original_parse = bundles.CapturedReplayTape.parse.__func__
+    original_vco = bundles.verify_causal_order
+
+    def build_spy(cls, *args, **kwargs):
+        result = original_build(cls, *args, **kwargs)
+        build_calls.append(result)
+        return result
+
+    def parse_spy(cls, raw):
+        result = original_parse(cls, raw)
+        parse_calls.append((raw, result))
+        return result
+
+    def vco_spy(tape, ordered_envelope_bytes):
+        vco_calls.append(tape)
+        return original_vco(tape, ordered_envelope_bytes)
+
+    monkeypatch.setattr(bundles.CapturedReplayTape, "_build", classmethod(build_spy))
+    monkeypatch.setattr(bundles.CapturedReplayTape, "parse", classmethod(parse_spy))
+    monkeypatch.setattr(bundles, "verify_causal_order", vco_spy)
+
+    result = bundles.compose_replay_tape(
+        record, session, published, port["consumer_document_sha256"],
+        "source_roster.json", _DEFAULT_RAW_EVENT_MEMBERS,
+    )
+
+    assert len(build_calls) == 1 and len(parse_calls) == 1 and len(vco_calls) == 1
+    built = build_calls[0]
+    parsed_raw, parsed = parse_calls[0]
+    assert parsed_raw == built.canonical_bytes()
+    assert vco_calls[0] is parsed
+    assert vco_calls[0] is not built
+    assert result is parsed
+
+
+# ---------------------------------------------------------------------------
+# task item (8) -- verify_causal_order genuinely called on the reparsed
+# tape, and ADR-0145's own matrix rows transitively still holding when
+# reached through compose_replay_tape's raw_event_members surface
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replay_tape_refuses_decreasing_causal_order(tmp_path, monkeypatch):
+    """RED task item (8): evidence 0187's out-of-causal-order family,
+    reachable through raw_event_members -- a caller controls availability_ms
+    per entry via the ordered raw-event members, so a decreasing order key
+    is reachable one hop upstream of verify_causal_order's own direct
+    surface (matrix row 8)."""
+    from dskit.production import bundles
+
+    raw_events = [
+        ("events/e0.json", dict(source_id="alpha", event_id="evt-0", source_sequence=0,
+                                 availability_ms=2_000, payload_sha256="1" * 64)),
+        ("events/e1.json", dict(source_id="beta", event_id="evt-1", source_sequence=0,
+                                 availability_ms=1_000, payload_sha256="2" * 64)),  # decreasing
+    ]
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, raw_events)
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-order")
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "source_roster.json", _DEFAULT_RAW_EVENT_MEMBERS,
+        )
+
+
+def test_compose_replay_tape_refuses_duplicate_event_id(tmp_path, monkeypatch):
+    """RED task item (8): evidence 0187's duplicate event_id family,
+    reachable through raw_event_members (matrix row 8)."""
+    from dskit.production import bundles
+
+    raw_events = [
+        ("events/e0.json", dict(source_id="alpha", event_id="evt-dup", source_sequence=0,
+                                 availability_ms=1_000, payload_sha256="1" * 64)),
+        ("events/e1.json", dict(source_id="beta", event_id="evt-dup", source_sequence=0,
+                                 availability_ms=2_000, payload_sha256="2" * 64)),
+    ]
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, raw_events)
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-dup")
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "source_roster.json", _DEFAULT_RAW_EVENT_MEMBERS,
+        )
+
+
+def test_compose_replay_tape_refuses_correction_chain_forward_reference(tmp_path, monkeypatch):
+    """RED task item (8): evidence 0187's correction-chain forward-reference
+    family, reachable through raw_event_members's caller-supplied
+    correction_position/corrects_event_id/prior_envelope_sha256 fields
+    (matrix row 8)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-forwardref")
+    entries = [
+        _adr146_entry("events/e0.json", correction_position=1, corrects_event_id="evt-1",
+                       prior_envelope_sha256="a" * 64),
+        _adr146_entry("events/e1.json"),
+    ]
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "source_roster.json", entries,
+        )
+
+
+def test_compose_replay_tape_refuses_malformed_new_envelope_field(tmp_path, monkeypatch):
+    """RED task item (8): evidence 0187's malformed-new-field family --
+    reachable via a raw_event_members entry that passes
+    _check_raw_event_member's own checks (which do not cover
+    exchange_ms/receive_ms) but fails _check_event_envelope at step 6e
+    (matrix row 8)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-badfield")
+    entries = [
+        _adr146_entry("events/e0.json", exchange_ms=500, receive_ms=100),  # receive < exchange
+        _adr146_entry("events/e1.json"),
+    ]
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "source_roster.json", entries,
+        )
+
+
+def test_compose_replay_tape_refuses_unrecognized_raw_event_members_entry_key(tmp_path, monkeypatch):
+    """RED task item (8) / evidence 0190 open_findings 'unrecognized_ninth_key':
+    an extra ninth key in a raw_event_members entry dict is default-deny
+    refused, matching this ADR lineage's other shape checks (matrix row 8,
+    phase0_skeptic_review's Nit pin)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-ninthkey")
+    entries = [
+        _adr146_entry("events/e0.json", unexpected_field="nope"),
+        _adr146_entry("events/e1.json"),
+    ]
+
+    with pytest.raises(bundles.ProductionError):
+        bundles.compose_replay_tape(
+            record, session, published, port["consumer_document_sha256"],
+            "source_roster.json", entries,
+        )
+
+
+# evidence 0190 matrix row 8: evidence 0187 rows 1 and 9 (digest
+# substitution; noncanonical bytes) are STRUCTURALLY UNREACHABLE through
+# compose_replay_tape's own construction path -- envelope_bytes is always
+# `_canonical_bytes(envelope)` and its digest is always
+# `sha256(envelope_bytes)`, computed from the SAME envelope object in the
+# SAME loop iteration (step 6f); they cannot diverge by construction, and
+# there is no caller-supplied raw envelope-bytes surface. Evidence 0187 row
+# 12 (mutation/aliasing of the whole list) is only PARTIALLY reachable for
+# the same reason: a caller MAY reorder raw_event_members itself (a
+# legitimate choice per Decision point 7 -- "no sorting is performed by
+# this function"), but cannot independently reorder/duplicate/omit
+# ordered_envelope_bytes against ordered_envelope_digests, since
+# compose_replay_tape builds both in lockstep from the same loop. This is
+# recorded here, not silently dropped, per matrix row 8's own instruction.
+# Evidence 0187 row 14 (regression -- CapturedReplayTape.parse/_check_tape/
+# _check_event_envelope unedited) is confirmed by running
+# tests/production/test_event_envelope_causal_order.py unmodified
+# alongside this file at GREEN (evidence 0191).
+
+
+# ---------------------------------------------------------------------------
+# task item (9) -- empty raw_event_members list
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replay_tape_accepts_empty_raw_event_members_vacuously(tmp_path, monkeypatch):
+    """RED task item (9): an empty raw_event_members list passes vacuously,
+    consistent with ADR-0130 Decision point 4 / evidence 0187's identical
+    ruling for verify_causal_order directly (matrix row 9)."""
+    from dskit.production import bundles
+
+    members = _adr146_members(_DEFAULT_ROSTER_SOURCES, _DEFAULT_RAW_EVENTS)
+    _authority, record, session, published, port = _adr146_dynamic_case(
+        tmp_path, monkeypatch, members, run_id="adr146-empty")
+
+    tape = bundles.compose_replay_tape(
+        record, session, published, port["consumer_document_sha256"],
+        "source_roster.json", [],
+    )
+    assert tape.envelope_count == 0
+    assert tape.ordered_envelope_digests == ()
+
+
+# ---------------------------------------------------------------------------
+# task item (11) -- the one-hop scope boundary itself
+# ---------------------------------------------------------------------------
+
+
+def test_compose_replay_tape_docstring_carries_the_bounded_synthetic_warning():
+    """RED task item (11): the recheck Minor's exact one-line docstring
+    warning, verbatim (matrix row 11)."""
+    from dskit.production import bundles
+
+    assert bundles.compose_replay_tape.__doc__ is not None
+    assert (
+        "Bounded synthetic/test use only; not for real replay operations."
+        in bundles.compose_replay_tape.__doc__
+    )
+
+
+def test_compose_replay_tape_body_performs_no_second_f4_lifecycle_call():
+    """RED task item (11): an AST-level check that compose_replay_tape's own
+    body contains no call to produce/seal/publish/freeze_consumer_document/
+    derive_consumer_port/authorize_capture_set -- it only reads from an
+    ALREADY-captured record/session/published triple via read_member_bytes/
+    lifecycle_captured_receipt_sha256 (matrix row 11)."""
+    import ast
+    import inspect
+
+    from dskit.production import bundles
+
+    source = inspect.getsource(bundles.compose_replay_tape)
+    tree = ast.parse(source)
+    forbidden = {
+        "produce", "seal", "publish", "freeze_consumer_document",
+        "derive_consumer_port", "authorize_capture_set",
+    }
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    offenders = called & forbidden
+    assert not offenders, offenders
