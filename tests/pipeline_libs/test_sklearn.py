@@ -3459,3 +3459,64 @@ def test_reduce_apply_names_the_failing_row_index():
     rows[5]["other"] = "bad"
     with pytest.raises(ValueError, match=r"rows\[5\]"):
         node.apply_state(state, rows, node.params)
+
+
+# ---------------------------------------------------------------------------
+# SklearnReduction (ADR-0149) — slice 4: a real document, planned and run
+# ---------------------------------------------------------------------------
+
+REDUCE_FLOW = {
+    "name": "reduce-then-run",
+    "pipeline": {
+        "dataset": {
+            "uses": "dskit.pipeline.synthetic_nodes:SynthEvents",
+            "params": {"n_events": 104, "n_instruments": 2, "seed": 4},
+        },
+        "reduce": {
+            "uses": "dskit.pipeline.libs.sklearn:SklearnReduction",
+            "inputs": {"rows": "$dataset.events"},
+            "params": {
+                "fit_split": "train",
+                "features": ["p_true", "mid"],
+                "algorithm": "pca",
+                "n_components": 1,
+                "seed": 17,
+            },
+        },
+    },
+    "splits": {
+        "kind": "time",
+        "train_end_ms": 92620800000,
+        "val_end_ms": 93916800000,
+        "test_end_ms": 95299200000,
+    },
+}
+
+
+def test_reduce_plans_via_the_real_planner(tmp_path):
+    pytest.importorskip("sklearn")
+    obj = json.loads(json.dumps(REDUCE_FLOW))
+    obj["outputs"] = {"run_root": str(tmp_path)}
+    the_plan = plan(PipelineDocument.from_obj(obj))
+    assert the_plan.role_of("reduce") == "fitted_transform"
+
+
+def test_reduce_runs_through_a_document(tmp_path):
+    pytest.importorskip("sklearn")
+    obj = json.loads(json.dumps(REDUCE_FLOW))
+    obj["outputs"] = {"run_root": str(tmp_path)}
+    result = run_document(PipelineDocument.from_obj(obj), asof=ASOF)
+
+    assert result.state == "ran" and result.exit_code == 0
+    out = result.outputs["reduce"]
+    assert out["metrics"]["n_components"] == 1
+    # The fit saw ONLY the train split; every row is still projected.
+    assert 0 < out["metrics"]["n_fit_rows"] < out["metrics"]["n_rows"]
+    assert all("component_0" in row for row in out["rows"])
+    assert all("p_true" not in row and "mid" not in row for row in out["rows"])
+    assert all("contract" in row for row in out["rows"])
+    assert len(out["reduction_model_id"]) == 64
+    assert all(
+        row["reduction_model_id"] == out["reduction_model_id"]
+        for row in out["rows"]
+    )
