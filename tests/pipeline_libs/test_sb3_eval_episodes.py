@@ -387,6 +387,22 @@ def lab(monkeypatch):
 STUB_ENV_REF = "tests.pipeline_libs.test_sb3_eval_episodes:StubEnv"
 
 
+#: What the ARTIFACT was trained with. Every value here differs from the
+#: matching one in :data:`PARAMS`, and that is the point: this node has two
+#: candidate sources for `env`, `env_params`, `algo` and `policy` — what the
+#: document declares and what the sidecar recorded — and a fixture whose two
+#: sources COINCIDE cannot tell them apart. With them equal, an
+#: implementation that always read the sidecar would measure a held-out
+#: policy on the environment it was TRAINED on, label the record with that
+#: same environment, and pass every test in this file.
+TRAINED = {
+    "algo": "DQN",
+    "policy": "CnnPolicy",
+    "env": "my_child.envs:TrainingEnv",
+    "env_params": {"steps": 3, "mode": "train"},
+}
+
+
 def artifact(tmp_path, **overrides):
     """A real on-disk ``model.zip`` + verified sidecar — no SB3 involved.
 
@@ -395,6 +411,9 @@ def artifact(tmp_path, **overrides):
     Every one of those is answerable without the library, which is why
     this file can exercise the whole verified restore path with neither
     library installed.
+
+    Its trained values are deliberately DIFFERENT from what
+    :data:`PARAMS` declares — see :data:`TRAINED`.
     """
     directory = tmp_path / "fixture"
     directory.mkdir(parents=True, exist_ok=True)
@@ -402,10 +421,7 @@ def artifact(tmp_path, **overrides):
     zip_path.write_bytes(b"opaque bytes; this file is never opened as a model")
     sidecar = {
         "format": ARTIFACT_FORMAT,
-        "algo": "PPO",
-        "policy": "MlpPolicy",
-        "env": STUB_ENV_REF,
-        "env_params": {"steps": 3},
+        **TRAINED,
         "seed": 7,
         **overrides,
     }
@@ -452,23 +468,28 @@ def test_every_environment_is_closed_exactly_once(tmp_path, lab):
     assert [env.closed for env in lab.envs] == [1, 1, 1]
 
 
-def test_the_environment_is_built_from_the_declared_ref_and_params(
+def test_a_declared_environment_beats_the_one_the_model_trained_on(
     tmp_path, lab
 ):
+    """The whole point of an eval: measuring on a DIFFERENT environment.
+
+    Both values must differ from the artifact's, or this asserts nothing
+    — an implementation that always read the sidecar would roll a
+    held-out policy on its TRAINING environment and pass.
+    """
     evaluate(tmp_path, n_episodes=1, env=STUB_ENV_REF, env_params={"steps": 9})
-    assert lab.envs[0].ref == STUB_ENV_REF
-    assert lab.envs[0].env_params == {"steps": 9}
+    assert lab.envs[0].ref == STUB_ENV_REF != TRAINED["env"]
+    assert lab.envs[0].env_params == {"steps": 9} != TRAINED["env_params"]
 
 
 def test_an_omitted_environment_defaults_to_the_one_the_model_trained_on(
     tmp_path, lab
 ):
-    """The lawful difference between this and ``sb3-eval``'s sidecar
-    cross-check: ``env``/``env_params`` are exempt, so they may DEFAULT
-    from the artifact or be deliberately replaced."""
+    """The other half of the same seam: ``env``/``env_params`` are exempt
+    from the sidecar cross-check, so they may be replaced OR default."""
     evaluate(tmp_path, n_episodes=1, env=_DROP, env_params=_DROP)
-    assert lab.envs[0].ref == STUB_ENV_REF
-    assert lab.envs[0].env_params == {"steps": 3}
+    assert lab.envs[0].ref == TRAINED["env"]
+    assert lab.envs[0].env_params == TRAINED["env_params"]
 
 
 def test_the_action_is_unpacked_from_the_models_two_item_predict(
@@ -630,21 +651,37 @@ def test_the_episodes_port_is_a_json_artifact_with_exactly_four_keys(tmp_path):
 def test_the_environment_block_carries_exactly_the_nine_provenance_facts(
     tmp_path
 ):
+    """All nine, each read from a source that DIFFERS from every other
+    candidate the code could have read instead.
+
+    That is what makes this an audit record rather than paperwork.
+    ``env``/``env_params`` are the DECLARED ones and differ from the
+    artifact's; ``algo``/``policy`` are the ARTIFACT's and differ from
+    this pack's own defaults; ``deterministic`` is ``False`` and so
+    differs from its default. With any of those coinciding, a line that
+    reported the wrong source would still read correctly here.
+    """
     reference, sidecar = artifact(tmp_path)
-    node = Sb3EvalEpisodes("eval", params(n_episodes=2, seed=17))
+    node = Sb3EvalEpisodes(
+        "eval", params(n_episodes=2, seed=17, deterministic=False),
+    )
     outputs = node.run(ctx(tmp_path), {"artifact_path": reference})
 
     assert record(outputs)["environment"] == {
-        "env": STUB_ENV_REF,
-        "env_params": {"steps": 3},
+        "env": STUB_ENV_REF,                    # declared, not TRAINED["env"]
+        "env_params": {"steps": 3},             # declared, not the trained pair
         "artifact_path": reference,
         "state_hash": sidecar["state_hash"],
-        "algo": "PPO",
-        "policy": "MlpPolicy",
+        "algo": "DQN",                          # the artifact's, not "PPO"
+        "policy": "CnnPolicy",                  # the artifact's, not "MlpPolicy"
         "split": "val",
-        "deterministic": True,
+        "deterministic": False,                 # declared, not the True default
         "seed": 17,
     }
+    # Each of those five really is the contested one.
+    assert STUB_ENV_REF != TRAINED["env"]
+    assert PARAMS["env_params"] != TRAINED["env_params"]
+    assert TRAINED["algo"] != "PPO" and TRAINED["policy"] != "MlpPolicy"
 
 
 def test_the_metrics_mirror_the_summary_and_are_flat_numbers(tmp_path):
@@ -913,10 +950,10 @@ def test_a_declared_artifact_param_is_a_lawful_pin(tmp_path, lab):
 def test_a_model_identity_that_contradicts_the_artifact_refuses(
     tmp_path, knob
 ):
+    contradiction = {"algo": "SAC", "policy": "MlpPolicy"}[knob]
+    assert contradiction != TRAINED[knob], "the fixture must disagree"
     reference, _sidecar = artifact(tmp_path)
-    node = Sb3EvalEpisodes("eval", params(n_episodes=1, **{knob: "SAC"
-                                                           if knob == "algo"
-                                                           else "CnnPolicy"}))
+    node = Sb3EvalEpisodes("eval", params(n_episodes=1, **{knob: contradiction}))
     with pytest.raises(ValueError, match=knob):
         node.run(ctx(tmp_path), {"artifact_path": reference})
 
