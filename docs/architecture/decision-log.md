@@ -12350,6 +12350,62 @@ unchanged.
    SAME `admission_use` id against one shared `ChainLedger` serialize on
    `_transition_lock`; exactly one observes `created=True`.
 
+   **Cross-process atomicity of `reserve_once`'s read-check-append
+   sequence, proven by direct code citation.** An independent preapproval
+   review of this draft found the cross-process claim below asserted
+   without citation; this paragraph closes that Major with the exact
+   lines. `_acquire_lock` (`ledger.py:967-978`) takes `serve.lock` via
+   `fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)` (line 972) --
+   exclusive and non-blocking. This lock is **not** scoped to `_commit`
+   or to any single operation: it is taken once, in `__init__`, before
+   `_open()` ever runs (`ledger.py:949-956`: `self._lock_fd = (None if
+   lock is not None or self._readonly else self._acquire_lock())`,
+   inside a `try/except BaseException` that releases it and re-raises if
+   `_open()` fails), and released exactly once, in `close()`'s
+   `_release_lock()` (`ledger.py:980-988`, called from `close()` at
+   `ledger.py:1033-1048`). No code path between `__init__` and `close()`
+   calls `fcntl.flock(..., LOCK_UN)` or reacquires it -- the lock is held
+   continuously for the ENTIRE lifetime of a writing `ChainLedger`/
+   `JsonlLedger` instance, not merely around each write. `reserve_once`'s
+   read-check-append sequence therefore executes wholly inside one
+   unbroken hold of `_lock_fd`: `_prepare` (`ledger.py:1052-1072`)
+   validates and hashes only, reading no ledger state; `_commit`
+   (`ledger.py:1074-1112`) reads the prior state at line 1077 (`prior =
+   self._index.get(record["id"])`) and, when absent, appends at lines
+   1104-1108 (`self._store(...)`; `self._sync()` when due;
+   `self._index[record["id"]] = (digest, seq)`); `reserve_once` then
+   calls `self.barrier()` only on that newly-created branch. There is no
+   release/reacquire boundary anywhere between the read at line 1077 and
+   the append at lines 1104-1108 for `_lock_fd` to be dropped across, so
+   no other process's write can land in that window even in principle.
+   `self._index` is safe to read as an in-memory cache rather than a
+   fresh disk read per call precisely because of this hold: it is
+   populated once by `_open`'s full segment walk (`ledger.py:1308-1330`)
+   and kept current by every successful `_commit` (line 1108), and it
+   could only go stale if a second process appended to the same on-disk
+   segments concurrently -- which the continuous, exclusive hold of
+   `_lock_fd` for this instance's whole lifetime forecloses. Because
+   `_acquire_lock`'s flock is exclusive and non-blocking, at most one
+   process can hold an open writing ledger on a given series at any
+   instant; a second process's constructor fails immediately at
+   `_acquire_lock` (`ledger.py:973-977`) before `_open()` or any
+   `reserve_once` call is reachable -- and the identical mechanism
+   applies when a caller supplies an externally-held lock instead
+   (`health.InstanceLock.acquire`, `health.py:1351-1372`, the same
+   `fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)` call on the same
+   `serve.lock` path; `_check_held_lock`, `ledger.py:805-812`, refuses
+   any lock that is not a held instance of that same mechanism on this
+   series' own path). So two separate processes can never be
+   concurrently inside `reserve_once`'s read-check-append sequence for
+   the same series: the second process cannot even construct/open its
+   writer until the first calls `close()`, which is strictly after every
+   `reserve_once` call that first process made has already completed and
+   returned. This rules out the cross-process check-then-act race by
+   construction -- an exclusion on who may even open a writer, not a
+   critical section a second writer waits to enter -- rather than by
+   timing or by an assumption that a lock scoped to `_commit` alone
+   would not have proven.
+
 7. **Health states.** A new closed vocabulary,
    `LEDGER_HEALTH_STATES = ("opening", "healthy", "uncertain", "closed",
    "readonly")` in `vocab.py`, pinned in `ledger.py` the way `CACHE_STATES`
@@ -12481,7 +12537,17 @@ unchanged.
       (`fcntl.flock`, exclusive, non-blocking) -- a second process
       attempting `durable(...)` against the same `root` while the first
       holds the writer lock refuses at `JsonlLedger.__init__` before it can
-      reserve anything (`ledger.py:967-978`, unchanged).
+      reserve anything (`ledger.py:967-978`, unchanged). This is not merely
+      "refuses before it can reserve anything at the first instant" --
+      `_lock_fd` is held continuously for the whole lifetime of the first
+      process's `ChainLedger` (taken in `__init__` before `_open()`,
+      `ledger.py:949-956`; released only in `close()`,
+      `ledger.py:980-988`/`1033-1048`), so the second process's every
+      subsequent retry of `durable(...)` keeps refusing at `_acquire_lock`
+      for as long as the first process's ledger stays open, not just at
+      one race-prone instant -- see Decision point 6's cross-process proof
+      for the exact line-level accounting of why this forecloses any
+      check-then-act window inside `reserve_once`.
     - **Partial persistence** (short write, sync failure, mid-`state.apply`
       exception, snapshot-barrier failure): every one of these transitions
       the ledger to `"uncertain"` (Decision point 7) before `reserve_once`
