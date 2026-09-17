@@ -11313,3 +11313,226 @@ second `_LifecycleAuthorizationLedger` class or a subclass of
 checks between the legacy and dynamic authorities (ADR-0143 Decision point 8
 and matrix row 10's deliberate non-goal, unchanged, since this ADR does not
 touch `_validate_capture_request`).
+
+## ADR-0145 - bounded synthetic EventEnvelope.v2 causal-order verification (P7 EventEnvelope gate)
+
+**Status:** proposed. Design-only; drafted from direct reading of
+`docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md` lines
+426-620 (master F3), `dskit/production/bundles.py`'s merged
+`CapturedReplayTape.v1` codec, `dskit/pipeline/trust.py`'s merged
+`_SYNTHETIC_RAW_EVENT_KEYS` raw-event/v1 shape (ADR-0132) and ADR-0130
+Decision point 4's four-field envelope projection, and
+`dskit/production/feed.py`/`dskit/production/clock.py`
+(`ReplayClock`/`ManualTime`/`_IsoStamps`/`_MsStamps`). No Phase 0, no
+RED/GREEN, no code or test file has been touched by this proposal.
+
+**Context.** RE-ENTRY's current "Next" line, after ADR-0144 closed the
+dynamic `authorize_capture_set` -> CAPTURED path, is: "Full EventEnvelope.v2
+causality/ordering/provenance/correction semantics, then composed-tape
+verification, then Packet 8... in that order." Evidence 0179's
+`p7_closure_architecture_audit` names this exact gap as blocker 4: "Six-field
+raw-event/v1 and four-field envelope projection cannot derive full master F3
+EventEnvelope.v2 causality, provenance, correction and total order." This ADR
+closes that blocker at P7's own bounded, synthetic scope -- not master F3.
+
+The master F3 section (`2026-09-12` plan, lines 426-620) is explicitly a
+separate, forecast-capital-owned lane: "Do not start while whole F5a is
+open." It specifies the full `SourceRosterCapture.v1`/
+`RawEventDatasetCapture.v1`/`DatasetCaptureAuthorization.v1` broker, real
+source acquisition, and the full envelope semantics: "Envelopes bind
+source/event IDs, source sequence, source, exchange, receive, and derived
+availability instants, timezone/tzdata, provenance, schema/media/payload
+digest, the derived rank plus `source_rank_policy_sha256`, and
+`corrects_event_id`/chain position/prior digest. Order is availability,
+derived source rank, source sequence, correction position, payload digest,
+event ID." None of that broker or real-data machinery is built here; this
+ADR is not that lane and does not claim to close it.
+
+What already exists, all synthetic/nondeployment, and is reused rather than
+rebuilt:
+
+1. ADR-0132's canonical six-key `dskit.raw-event/v1` object
+   (`_SYNTHETIC_RAW_EVENT_KEYS`, `trust.py:7072`): `schema_version`,
+   `source_id`, `event_id`, `source_sequence`, `availability_ms`,
+   `payload_sha256`. `source_sequence`, `event_id`, `payload_sha256` and the
+   already-derived, scope-bounded `availability_ms` are carried through
+   unchanged by this ADR -- precisely counted, they are NOT new fields this
+   ADR adds, though naming them among "what's missing" is an easy
+   imprecision to make when paraphrasing the master plan's field list; this
+   ADR corrects that by tracing each field to its exact existing owner
+   before adding anything.
+2. ADR-0130 Decision point 4's per-envelope-member "P7 admission
+   projection", already tagged with the literal schema string
+   `dskit.event-envelope/v2` (`CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA`,
+   `bundles.py:57`): `schema_version`, `source_id`, `source_rank`,
+   `source_rank_policy_sha256`. ADR-0130 explicitly disclaims the rest:
+   "Other envelope fields are retained as bytes without F2 semantic
+   authority; the later F2 codec must define and validate their complete
+   default-deny wire shape before real replay."
+3. `production/bundles.py`'s merged `CapturedReplayTape.v1` codec: its
+   `_check_tape` validates `ordered_envelope_digests` as a list of
+   syntactically-shaped 64-hex sha256 strings and recomputes
+   `ordered_envelopes_sha256`/`tape_digest` over that list, but never opens,
+   parses, or content-verifies the envelope bytes those digests name, and
+   never checks they are in causal order -- "present", not "correct".
+4. `dskit/production/clock.py`'s `ReplayClock`/`ManualTime` and
+   `dskit/production/feed.py`'s `_IsoStamps`/`_MsStamps` (`ts_unit: iso|ms`,
+   `ts_field`) already give this codebase one canonical time
+   representation (integer epoch ms) and one existing vocabulary for "an
+   instant derived from a raw source stamp at intake". `availability_ms` in
+   the raw-event/v1 shape already IS that derived instant in exactly this
+   sense (ADR-0132 Decision point 4: "integer within scope"). This ADR
+   reuses that representation and that vocabulary; it does not invent a
+   second time system, a timezone-conversion routine, or a new derivation
+   class. `ReplayClock`/`ReplayFeed` themselves are not called by this
+   ADR's verification function -- no replay execution happens here, and the
+   production `ReplayFeed`/`FeedResult` tape (the intraday market-feed
+   replay machinery, D20) is a distinct concept from the F3/P7 captured-tape
+   hierarchy; citing it is reuse of its *time model*, not a claim that the
+   two tapes are the same thing.
+5. ADR-0141/0142/0143/0144's two-root synthetic bridge and dynamic P4
+   authority. That machinery answers "may this document CAPTURE this root",
+   not "are these envelope bytes in causal order" -- a disjoint question
+   this ADR does not touch. This ADR adds no dependency on, and makes no
+   edit to, any of `trust.py`'s P4 code, including the five ADR-0143
+   forbidden-legacy symbols and ADR-0144's new dynamic-dispatch code.
+
+**Decision.**
+
+1. **Closed synthetic `dskit.event-envelope/v2` shape.** The literal schema
+   string `dskit.event-envelope/v2` is unchanged (already reserved by
+   ADR-0130/`bundles.py`); this ADR defines what a value declaring it must
+   now contain, as a strict, default-deny superset of ADR-0130's four
+   fields and ADR-0132's six raw-event fields. Exactly these keys, all
+   required, extra or missing keys refuse (mirrors `_check_tape`'s
+   unknown/missing accumulation style):
+   `schema_version` (literal `dskit.event-envelope/v2`), `source_id` (str;
+   must be a member of the consumed roster's `policy.sources`, per
+   ADR-0130 point 4, unchanged), `event_id` (str, nonempty; carried
+   verbatim from the raw-event/v1 member), `source_sequence` (nonnegative
+   int; carried verbatim), `payload_sha256` (lowercase sha256; carried
+   verbatim), `availability_ms` (int, scope-bounded; carried verbatim --
+   this is the plan's "derived availability instant"; no new derivation),
+   `exchange_ms` (nonnegative int; a synthetic fixture-declared instant,
+   new), `receive_ms` (nonnegative int; a synthetic fixture-declared
+   instant, new; `receive_ms >= exchange_ms >= 0` is checked, but no
+   relationship to `availability_ms` is claimed or checked -- deriving
+   `availability_ms` from `exchange_ms`/`receive_ms` is real F1/F2 semantics
+   and a non-goal), `source_provenance_tag` (str, nonempty; an opaque
+   fixture-declared label, new -- not a chain-of-custody proof), `source_
+   timezone_tag` (str, nonempty; an opaque fixture-declared label such as
+   `"UTC"`, new -- no tz conversion is performed anywhere in this ADR;
+   `availability_ms`/`exchange_ms`/`receive_ms` are always canonical epoch
+   ms already, consistent with `feed.py`'s own `ts_unit` model, so this tag
+   is retained as metadata only and never interpreted), `source_rank`
+   (nonnegative int; carried verbatim from ADR-0130), `source_rank_policy_
+   sha256` (sha256; carried verbatim from ADR-0130, and, closing a gap
+   ADR-0130 left open, additionally required by Decision point 3 below to
+   equal the enclosing tape's own `source_rank_policy_sha256`, not merely be
+   internally well-formed), `correction_position` (nonnegative int; `0` for
+   an original event, new), `corrects_event_id` (str or `null`; `null` iff
+   `correction_position == 0`, new), `prior_envelope_sha256` (sha256 or
+   `null`; `null` iff `correction_position == 0`, new -- this is the plan's
+   "chain position/prior digest").
+   No self-digest field lives inside this object; consistent with ADR-0130
+   point 4 ("computes each raw-byte SHA-256 in order"), the digest that
+   belongs in a tape's `ordered_envelope_digests` is the sha256 of the
+   envelope's own canonical ASCII JSON bytes, computed externally by the
+   caller exactly as today, never a field inside the object itself.
+2. **Ordering key, matching the master plan's clause verbatim.** `order_key
+   (envelope) = (availability_ms, source_rank, source_sequence, correction_
+   position, payload_sha256, event_id)` -- "availability, derived source
+   rank, source sequence, correction position, payload digest, event ID",
+   in that order, no additional or reordered terms.
+3. **One new pure, read-only verification function in `production/
+   bundles.py`,** `verify_causal_order(tape, ordered_envelope_bytes)`,
+   beside the existing `_check_tape`/`CapturedReplayTape` codec (the module
+   the master plan already assigns "the default-deny v1 parser/canonical
+   bytes and its private verification seam" -- this ADR is that seam's
+   first extension to the envelope content itself, not a new module or a
+   second seam). Given an already-parsed `CapturedReplayTape` and the
+   caller-supplied sequence of already-resolved raw envelope member bytes
+   in tape order (resolving those bytes from a capture/session/broker is
+   composed-tape's job -- explicitly out of scope here, per Decision point
+   6), it:
+   - requires `len(ordered_envelope_bytes) == tape.envelope_count`;
+   - for each position `i`, requires `sha256(ordered_envelope_bytes[i]) ==
+     tape.ordered_envelope_digests[i]` (closes "present" to "present AND
+     these exact bytes");
+   - default-deny parses each as the Decision point 1 shape (unknown/
+     missing/mistyped fields refuse per-envelope, position included in the
+     message);
+   - requires every envelope's `source_rank_policy_sha256 == tape.source_
+     rank_policy_sha256` (extends ADR-0130's per-envelope-only check to
+     also fence against the tape's own field -- ADR-0130 alone cannot see
+     the tape, only one member);
+   - requires `event_id` uniqueness across the WHOLE tape (ADR-0132's raw-
+     event/v1 parser only fences duplicates within one raw member; nothing
+     today fences duplicates across members once they are projected into
+     envelopes and merged onto one tape -- a cross-tape duplicate would
+     silently defeat total order);
+   - requires every `correction_position > 0` envelope's `corrects_event_id`
+     and `prior_envelope_sha256` to name an envelope at a strictly lower
+     tape position whose `event_id`/computed digest match exactly, and
+     whose `correction_position` is exactly one less -- refusing a forward
+     reference, a broken chain, a skipped position, or a chain that does
+     not bottom out at `correction_position == 0`;
+   - requires `order_key(envelope[i]) <= order_key(envelope[i + 1])` for
+     every consecutive pair (non-decreasing, matching the plan's literal
+     clause; because `event_id` is unique tape-wide by the point above, no
+     two order keys can tie, so this is a strict total order in practice,
+     but the check itself asserts only what the plan states).
+   Every violation is accumulated and raised together as one
+   `ProductionError`, in `_check_tape`'s existing "collect every problem,
+   raise once" style. `verify_causal_order` performs no F4, P4, broker,
+   signer, ledger, or reserve operation, and mutates nothing; it is a pure
+   function of its two arguments, callable equally from a test fixture or a
+   later composed-tape caller.
+4. **Nondeployment, fixture-only construction.** A synthetic envelope
+   *builder* (test-fixture code, not shipped runtime API beyond the
+   Decision point 1 parser and Decision point 3 verifier) constructs closed
+   `dskit.event-envelope/v2` objects and their chains for RED/GREEN fixtures
+   only; it performs no real exchange/receive feed read, no real provenance
+   chain-of-custody capture, and no real correction/bust ingestion against
+   live data. `deployment_eligible=false` throughout.
+5. **No new capture broker, authority, signer, reserve row, or ledger.**
+   This ADR adds exactly one closed schema and two pure functions (parse,
+   verify) to `production/bundles.py`, reusing only `_canonical_bytes`/
+   `_canonical_hash`/`check_digest` from `production/base` -- the same,
+   only, import `CapturedReplayTape` itself already uses (per `bundles.py`'s
+   own module docstring: importing a second production module here would
+   reintroduce the build-order cycle the module exists to avoid). No file
+   outside `production/bundles.py` (and its test file) needs to change to
+   deliver this ADR.
+6. **Composed-tape verification remains the next, separate gate.**
+   `verify_causal_order` consumes already-resolved bytes; it does not
+   resolve them from a `CapturedAuthorizationRecord`, a P4 session, or any
+   broker, and does not construct a runtime `ReplayTape`/composed-tape
+   capability. Wiring this verifier into the actual resolve-and-compose
+   path (`compose_replay_tape`, per evidence 0179's `entry_inventory`) is
+   RE-ENTRY's next-named gate, deliberately deferred, not delivered here.
+
+**Non-goals.** Full master F3 `EventEnvelope.v2` semantics: real F1/F2
+causal derivation, real exchange/receive feed acquisition, real provenance
+chain-of-custody, real correction/bust ingestion against live data, and the
+full `SourceRosterCapture.v1`/`RawEventDatasetCapture.v1`/
+`DatasetCaptureAuthorization.v1` broker -- all forecast-capital-owned,
+separate-lane work this ADR does not start. The real roster/raw-dataset
+capture broker beyond the already-built synthetic ADR-0130/0132/0141/0142/
+0143/0144 machinery -- reused here, not rebuilt or extended. Composed-tape
+verification itself (Decision point 6) -- the next separate gate per
+RE-ENTRY's own stated ordering. Packet 8 durable consume-once. Any edit to
+`trust.py`'s dynamic P4 authority, the five ADR-0143 forbidden-legacy
+symbols, ADR-0144's new dynamic-dispatch code, or any signer/reserve/ledger
+code -- none of that is touched, referenced, or depended on by this ADR. A
+second tape or event-sourcing engine -- this extends `production/bundles.py`
+'s existing codec/verification seam only. Deployment; real replay, backtest,
+paper or live operation.
+
+**Process.** Design proposal only. Requires independent preapproval review
+and owner ADR approval, then Phase 0 skeptic review, then focused RED/GREEN
+with synthetic fixtures, two independent final lenses (correctness/
+authority, then tests/integration), affected tests, and evidence, per
+`docs/skills/implementation-workflow.md` and `docs/skills/skeptic-review.md`.
+No RED/GREEN, no merge, no code or test file has been touched by this
+proposal.
