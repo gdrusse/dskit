@@ -1,6 +1,42 @@
 # Re-entry
 
-## Current checkpoint: P7 dynamic capture resolver landed, authorize_capture_set gap found (2026-09-16)
+## Current checkpoint: P7 dynamic authorize_capture_set closed (2026-09-16)
+
+Remote main verified at 71e05a3. ADR-0144 closes the gap ADR-0143 disclosed:
+`authorize_capture_set` now reaches a genuine CAPTURED admission for the
+dynamic P4 authority. `commit_p4_batch` derives the admission-chain
+reconstruction exactly once per call inside its one continuously-held lock
+(a Phase 0 skeptic and an independent adjudicator both separately verified,
+with line citations, that no revocation/clock-advance window exists between
+derivation and signing); a new `_DynamicCapturedAuthorizationContract`
+sibling class signs it through the unedited, shared `_FixedP4Signer`
+infrastructure. A latent bug in ADR-0143's own merged code (a pre-commit
+recheck calling the legacy closure walk directly instead of
+`resolver.close_admission`) was found and fixed for both resolver types.
+The 6 forbidden-to-edit legacy-only symbols remain byte-identical.
+
+Two fresh independent final lenses reviewed the candidate; the
+authority/correctness lens found 0 Critical/Major/Minor/Nit, the
+tests/integration lens raised 2 Critical findings that a fresh independent
+adjudicator then dismissed on the merits (one re-asserted a question Phase 0
+had already closed with code evidence without re-verifying it; the other's
+claimed missing test already existed in the candidate). 2 Minor coverage
+gaps (a direct type-check test, a concurrency test) are deferred, not
+blocking. 28 focused and 1488 affected tests passed (1 pre-existing,
+disclosed, unrelated ADR-0141/0142 baseline failure). Ruff and
+`git diff --check` clean. Full suite not run per owner preference. Evidence:
+0183 (ADR proposal/preapproval/recheck/owner approval), 0184 (Phase 0
+matrix + skeptic review), 0185 (RED/GREEN, two final lenses, adjudication).
+The primary `/home/russell/dskit` checkout and protected source `c489199`
+remain untouched.
+
+**Next:** Full EventEnvelope.v2 causality/ordering/provenance/correction
+semantics, then composed-tape verification, then Packet 8 durable
+consume-once (F5A-R23), in that order. P7 remains open until EventEnvelope.v2
+and composed-tape are closed; Packet8 is ordered after P7.
+`deployment_eligible=false`.
+
+## Prior checkpoint: P7 dynamic capture resolver landed, authorize_capture_set gap found (2026-09-16)
 
 Remote main verified at c267c25. Worktree `/home/russell/wt/f5a-p7-remainder-20260916`,
 branch `codex/f5a-p7-remainder-20260916` (fast-forward pushed directly to
