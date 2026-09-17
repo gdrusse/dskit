@@ -3078,10 +3078,33 @@ def test_reduce_state_problems_refuses_a_broken_state_shape():
 
 def test_reduce_state_problems_refuses_a_malformed_mean():
     node, state = _fit_reduction("pca", 2)
-    for bad in (None, True, 0, 1.5, "abc", [0.0, 0.0]):
+    for bad in (
+        None, True, 0, 1.5, "abc", [0.0, 0.0],
+        [0.0, 0.0, float("nan")], [0.0, 0.0, float("inf")],
+    ):
         broken = {**state, "mean": bad}
         problems = node.state_problems(broken)
         assert problems, bad
+
+
+def test_reduce_fit_refuses_a_non_finite_mean_from_the_estimator(monkeypatch):
+    class Fake:
+        def __init__(self, **kwargs):
+            self.n_components = kwargs["n_components"]
+
+        def fit(self, matrix):
+            self.components_ = [
+                [0.0, 0.0, 0.0] for _ in range(self.n_components)
+            ]
+            self.mean_ = [0.0, float("nan"), 0.0]
+            return self
+
+    import dskit.pipeline.libs.sklearn as _sklearn
+
+    monkeypatch.setattr(_sklearn, "_import_object", lambda path, where, subject: Fake)
+    node = _RaiseReduction("reduce", dict(REDUCE_PARAMS))
+    with pytest.raises(ValueError, match="cannot store"):
+        node.fit(rows_selectable(n=8), node.params)
 
 
 def test_reduce_state_problems_refuses_a_mean_on_svd():

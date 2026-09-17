@@ -2838,9 +2838,10 @@ class SklearnReduction(FittedTransform):
         if problems:
             return problems
         width = len(state["features"])
-        n_components = len(state["components"])
+        components_rows = _reduction_rows(state["components"])
+        n_components = len(state["components"]) if components_rows is not None else 0
         problems += _reduction_geometry_problems(
-            _reduction_rows(state["components"]),
+            components_rows,
             state.get("mean"),
             width,
             n_components,
