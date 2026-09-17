@@ -13016,3 +13016,266 @@ The prior uncommitted ADR-0148 draft and its five-Major verdict live in a
 Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
 from this Linux container. If that draft carries findings beyond the five stated
 in the task, they are not addressed here.
+
+## ADR-0150 - the durable admission ledger's fold and composition seams
+
+*(Number taken at commit time. 0149, 0151 and 0152 are already held by unmerged branches
+(`codex/dim-reduction-adr149`, `codex/mean-alpha-intervals`, `codex/pi-estimator`), so
+this skips them rather than adding a third collision to the 0126 one already latent
+in the tree. 0124 remains a genuine gap and is NOT back-filled -- numbers are taken
+in commit order, never reserved or reclaimed.)*
+
+**Status:** APPROVED by the owner 2026-09-17 and IMPLEMENTED, with Decision
+point 3 changed during implementation -- see the note under it. `tests/
+production` is **6470 passed / 0 failed**, and `tests/pipeline/
+test_captured_authorization.py` + `test_trust.py` are **1420 passed**. Both AST
+tests were probed by reintroducing the two violations behind a never-taken
+branch: `2 failed` with them, `2 passed` restored.
+
+**Context.** ADR-0147 landed the durable consume-once admission gate
+(`3531461`). `HistoricalStudyVerifier.durable()` (`verifier.py:924-958`)
+constructs `ServeRoot`, `SeriesState` and `JsonlLedger` by name, then replays
+the whole chain into that fold with `ledger.scan()`. Three of the package's
+own AST invariant tests refuse this, and all three are correct:
+
+- `test_state.py::test_only_the_fold_and_its_named_readers_scan_the_ledger`
+  names `verifier.py:947`. `SCAN_READERS` is `{state, ledger, reconcile,
+  __main__, outcomes, report}`, and `state.py`'s module docstring declares
+  "Nothing else folds the ledger ... two AST tests pin that no other module
+  scans the ledger or assigns a folded attribute."
+- `test_oop.py::test_no_registry_family_member_is_instantiated_by_name` names
+  `verifier.py:931`. `compose.py` is the only MODULE-level exemption
+  (`COMPOSER`, `test_oop.py:344`); the scan has three in total -- the test is
+  named `test_the_scan_exempts_only_the_composer_a_copy_constructor_and_the_
+  battery` (`test_oop.py:371`), the third being `executor.py`'s
+  `executor_conformance_suite`, exempted by (module, function) at `:345`.
+- `test_oop.py::test_the_shared_checker_vocabulary_is_the_only_private_name_
+  the_package_passes_around` names `verifier.py:76`, which imports `state.py`'s
+  private `_check_admission_use_body`.
+
+These are not stale fixtures. They are three readings of one fact: ADR-0147
+placed the admission-spend series' **composition**, its **fold replay** and its
+**record validation** inside `verifier.py`, which owns none of the three.
+
+**The capability already existed; nothing needs inventing.**
+`state.py`'s `Recovery._replay()` (`state.py:2166-2178`) is the sanctioned
+replay-into-fold: `validate_cache_head`, an optional snapshot restore, then
+`scan(since_seq=...)` -> `state.apply` per envelope, returning the replayed
+count. `compose.py` is the sanctioned by-name constructor. Both seams exist
+and are already exempt.
+
+`durable()` (`verifier.py:946-957`) is NOT a degraded copy of `_replay()` --
+stating it as one would be wrong. It is a DIFFERENT POLICY: it adds a
+head-disagreement refusal `Recovery` does not have, and it deliberately
+refuses the snapshot resume (ADR-0147 D10, commented at `:940-946`), where
+`Recovery` deliberately uses one. What it lacks is `validate_cache_head`, and
+on a fresh `SeriesState` (`head_seq=0`) that call returns `"stale"` rather
+than raising -- so restoring it is a consistency win, NOT a live bug fix, and
+this ADR does not claim otherwise. The reason to move the replay is the
+boundary, not a defect in what `durable()` computes.
+
+**Decision.**
+
+1. **Neither `SCAN_READERS` nor `COMPOSER` is extended.** An allowlist entry
+   would record that the boundary was crossed, not that it was designed, and
+   would leave `state.py`'s docstring claim false while the test that pins it
+   still passed. The access pattern is routed through the sanctioned owners
+   instead.
+
+2. `state.py` gains one public seam, `replay_from_genesis(ledger, state)`:
+   `Recovery._replay()`'s replay half, generalised. It validates the cache
+   head, folds every envelope in chain order from genesis, and refuses when
+   the replayed fold's own head disagrees with the ledger's independently
+   verified head (ADR-0147 Decision point 10's requirement, unchanged).
+   `Recovery._replay()` is re-expressed in terms of it; the snapshot-restore
+   step stays Recovery's, because only the serve series has snapshots to
+   resume from and ADR-0147 D10 deliberately refuses to resume from one. The
+   scan stays in the fold's own module, which is already in `SCAN_READERS`.
+
+3. ~~`compose.py` gains one factory, `admission_spend_ledger(root, *,
+   clock)`.~~ **SUPERSEDED DURING IMPLEMENTATION. `compose.py` is not
+   touched at all.**
+
+   The proposal was to relocate the by-name construction into the exempt
+   module. Implementation found the better answer: `ledger.py` already
+   publishes the §4.3 store family as a registry (`LEDGER_KINDS`,
+   `ledger.py:1533`), which is what `compose.bundles_for` itself resolves
+   through (`ledger_class(document)`). `durable()` now resolves
+   `LEDGER_KINDS.resolve(_ADMISSION_SPEND_LEDGER_KIND)` instead of naming
+   `JsonlLedger`, so the violation **disappears** rather than relocating to
+   a module allowed to commit it. `verifier.py` already imported from
+   `ledger.py` and `ledger.py` imports neither `compose` nor `verifier`, so
+   the `compose -> verifier` cycle the review found (`compose.py:123` ->
+   `verifier.py:285`) never arises and no function-local import is needed.
+
+   The kind is PINNED as `_ADMISSION_SPEND_LEDGER_KIND = "jsonl"`, NOT
+   aliased to `ledger.DEFAULT_LEDGER_KIND`: moving the package default must
+   not silently change this gate's durability. Per the repo rule that a value
+   appearing twice is pinned by a test or a runtime refusal, `durable()`
+   refuses at construction if what it resolves cannot `reserve_once` -- the
+   consume-once primitive the whole gate rests on.
+
+   **ADR-0147's security property is preserved exactly.** `durable()` still
+   takes `root` -- trusted composition input -- and still never accepts a
+   pre-built `Ledger`/`ChainLedger`. The "freshly constructed, empty ledger
+   pointed at a throwaway directory" attack its docstring names remains
+   impossible: a caller supplies a directory, never an instance. The factory
+   is reachable only with a `root`, so it widens no caller surface.
+
+4. `_check_admission_use_body` becomes public: `check_admission_use_body`, in
+   `state.py`'s `__all__`. In this package `__all__` plus the `_` prefix IS the
+   API contract (AGENTS.md), so a validator two modules legitimately share is
+   public by contract and should say so. Adding it to `SHARED_CHECKERS`
+   instead is REJECTED: that tuple means "the checkers `base.py` re-exports
+   from `dskit.assets.base` so three packages share one vocabulary", and this
+   validator is not one of them; widening the name would make the exemption
+   mean two different things.
+
+**Consequences.**
+
+- `verifier.py:931` and `:947` disappear. All three tests pass with their
+  allowlists untouched, which is the point.
+- `durable()` gains the `validate_cache_head` call it currently skips (via
+  `replay_into_fold`), plus the new resolve-time `reserve_once` refusal.
+- `Recovery._replay()` keeps its own pre-restore `validate_cache_head`, since
+  that check runs against the head BEFORE a snapshot restore and
+  `replay_into_fold`'s runs against the head after -- two different heads,
+  not one check written twice.
+- No change to `reserve_once`, to the `(kind, signed_id)` fencing, to
+  `LEDGER_HEALTH_STATES`, or to any on-disk format. No record kind is added or
+  removed. The identity hash of no config moves.
+- Two new public names in `state.py` (`replay_into_fold`,
+  `check_admission_use_body`) and none anywhere else; no file is added, so no
+  README or `AGENTS.md` directory tree changes.
+
+**Explicitly NOT in scope.** The four `tests/production/
+test_captured_authorization.py` failures were a separate question, since
+resolved under the owner's 2026-09-17 ruling, and the two tests are NOT alike:
+
+- `test_issued_p4_facades_reach_only_the_same_held_admission_lookup` builds
+  its broker from `p4._factory()()`, which IS a
+  `CapturedAuthorizationAuthority` with `inspect_capture_admission`. Its
+  positive half was recoverable and HAS been recovered, on a `.durable(...)`
+  verifier via `test_adr0147_durable_admission._p4_fixture`.
+- `test_v1_p4_refusal_has_no_effect_and_does_not_burn_legacy_admission` uses
+  `legacy._setup()`'s `_DevelopmentBroker`, which is neither, so it has no
+  capture-capable broker to migrate to. It is narrowed to the no-effect half
+  it can still prove, and says so in place. **The unburned-admission half is
+  now unproven** and stays that way unless the F4-only capture path returns.
+
+## ADR-0153 - effective-dated universe composition (survivorship)
+
+*(Number taken at commit time; see ADR-0150's note on the skipped numbers.)*
+
+**Status:** PROPOSED, awaiting owner approval. Owner ruled it IN SCOPE with
+"ADR now, build now" (2026-09-17). Not implemented.
+
+**Context.** `serving.required_universe` accepts a path to a JSON key list or
+an inline list of key strings (`document.py:374`, `_Universe`), and
+`__main__.py:232` resolves it once per run: `list(_read_json(declared))` or
+`list(declared)`. `feed.py:479-485` then requires every tick to cover that set
+**exactly** (the rule is stated at `feed.py:183`). There is no as-of dimension anywhere in the shape, so one
+composition serves the whole run.
+
+A walk-forward over N years therefore prices every historical tick against
+today's membership: a name that delisted in year 2 is absent from year 1's
+folds, and a name that listed in year 4 is demanded from year 1's folds.
+That is textbook survivorship bias, and it is invisible to the 24-slice plan:
+**no slice checks universe composition at all.** A grep over `docs/plans/` for
+`survivorship|required_universe` returns nothing, so a survivorship-biased run
+passes every one of them.
+
+**Decision.**
+
+1. `required_universe` gains a THIRD accepted form beside the two it has: a
+   list of membership intervals, `{key, from_ms, to_ms}`, where a null
+   `to_ms` means "still a member". The two existing forms are unchanged and
+   mean "a member for the whole run", so **no existing document changes
+   identity and no existing run is orphaned**. Only a document that adopts
+   the interval form changes its own hash, which is correct -- it computes
+   something different.
+2. `_universe(document)` becomes `_universe(document, at_ms)` and resolves
+   membership at the tick's own instant. Under either legacy form the answer
+   is instant-independent, so existing behavior is preserved exactly.
+3. `FeedSpec`'s exact-coverage check compares the tick against the RESOLVED
+   set, never the declared one.
+4. The interval form is default-deny like every other config surface:
+   overlapping intervals for one key, `to_ms <= from_ms`, a duplicate key
+   with no interval, or an unknown field all refuse at validation.
+
+**RED families.** A key demanded before its `from_ms`; a key demanded after
+its `to_ms`; overlapping intervals for one key; a non-integer or inverted
+bound; and the survivorship case itself -- a tick whose coverage matches the
+flat list but NOT the set resolved at its own instant.
+
+**Sentinel:** NEW `tests/production/test_feed.py::
+test_a_tick_before_a_listing_refuses_the_unlisted_key`.
+
+**Consequence stated, not worked around.** This does not retro-correct any
+backtest already run against a flat universe. Those results carry the bias;
+closing the gap does not reopen them.
+
+
+## ADR-0154 - as-of-acquisition reads (read vintage)
+
+*(Number taken at commit time; see ADR-0150's note on the skipped numbers.)*
+
+**Status:** PROPOSED, awaiting owner approval. Owner ruled it IN SCOPE with
+"ADR now, build now" (2026-09-17). Not implemented.
+
+**Context.** `onboarding.observations.scan_stream` deduplicates by "for one
+key, the row with the LATEST `acquired_at` INSTANT wins"
+(`observations.py:238-249`). Its `since_ms` bound is on `ts_out` -- EVENT
+time -- applied at intake (`observations.py:455`), not on acquisition time.
+Its `admit(data, stamp)` escape hatch receives the record's `data` payload
+and its event stamp (`observations.py:458`); `acquired_at` is envelope
+metadata and never reaches it, **so a caller cannot implement a vintage
+bound at this seam even by hand.**
+
+The result: a 2015 bar revised in 2026 is served with its 2026 value to a
+run simulating 2015. The model sees a number that did not exist at decision
+time.
+
+**The discipline already exists one package over.** `production/outcomes.py`
+is D21's bitemporal join -- "what happened to a leg, as far as anyone knew
+at time T" -- and `accounting.py:485` (`effective_bodies`) returns "the
+bitemporal bodies known by `at_ms`". Nothing needs inventing; the vintage discipline simply stops at the
+onboarding boundary and must be carried across it.
+
+**Decision.**
+
+1. `scan_stream` gains one optional keyword, `as_of_acquisition_ms`: an
+   INCLUSIVE upper bound on a record's `acquired_at`, applied AT INTAKE
+   beside `since_ms` and on the same grounds (a record above it is never
+   deduped, never kept, never sorted). The winner per key becomes the latest
+   value AS OF THAT VINTAGE rather than the latest value outright.
+2. The bound applies BEFORE dedup adjudication, so the existing loud-direction
+   tie rule is unchanged -- identical data dedups, differing data refuses --
+   just evaluated within the vintage. A tie a later acquisition supersedes is
+   history at the later vintage and a live tie at the earlier one, which is
+   the correct answer at each.
+3. An ABSENT `acquired_at` currently reads as the earliest possible instant;
+   under a vintage bound it therefore always passes. That is stated
+   explicitly rather than left to be discovered.
+4. `admit` gains nothing. This is a rule the function CAN spell, so it is a
+   first-class parameter, per AGENTS.md's own test for where a rule belongs.
+5. `dskit/pipeline/libs/observations.py`'s `ObservationRows` exposes it:
+   `as_of_acquisition_ms` joins `_PARAMS` (line 116) and the class docstring.
+   It is JSON-expressible, unlike `keep_values`/`admit`, so it belongs there.
+   Being optional, it is emitted only when present -- **no existing document's
+   identity hash moves.**
+
+**RED families.** A revised record invisible at its pre-revision vintage and
+visible after; an absent `acquired_at` under a bound; a bound below every
+record; interaction with `since_ms` and `keep_values`; determinism (one
+vintage always yields one snapshot); and the default-deny refusal for a
+non-integer or negative bound, in both the function and the node.
+
+**Sentinels:** NEW `tests/onboarding/test_observations.py::
+test_a_later_revision_is_invisible_at_an_earlier_acquisition_vintage` and
+NEW `tests/pipeline_libs/test_observations.py::
+test_as_of_acquisition_ms_is_a_declared_knob`.
+
+**Consequence stated, not worked around.** Every model already trained or
+evaluated through `scan_stream` saw revised values at instants they did not
+exist. This closes the gap forward; it does not re-open those results.

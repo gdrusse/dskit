@@ -68,6 +68,17 @@ same command and environment, NOT fixed here:** 4 in
 `test_issued_p4_facades_reach_only_the_same_held_admission_lookup`, each
 [verifier] and [driver]).
 
+**CORRECTION (2026-09-17, verified by re-running the unchanged base).** That
+count is wrong, and the error is this file's, not the reader's. `pytest
+tests/production` at `e989dff` gives **11** failures, not 4. The other seven --
+`test_loop.py` x1, `test_oop.py` x2, `test_state.py` x2, `test_vocab.py` x2 --
+are ADR-0147's own fallout and were never disclosed anywhere. They landed with
+"whole F5a is closed" because the adjacent invariant suites were not re-run.
+Three of the seven are the package's AST purity tests correctly refusing the
+durable admission ledger's boundary crossing; they are a design question, not
+a fixture problem. **Treat any "N pre-existing failures" line in this file as
+unverified until you have re-run the base yourself.**
+
 **Not done, and not claimed:** no real data, replay, backtest, POC, paper or
 live activity; no WSL2 (this was a Linux container, so the referenced Windows
 worktree and its ADR-0148 draft were unreachable and the real-data POC could
