@@ -2956,8 +2956,9 @@ seam as an operator's proof.
   `self`, so the dataflow between phases is part of the contract:
   `gate(tick_at_ms) -> GateResult` · `verify_release() -> None` (refuses) ·
   `fetch(tick_at_ms) -> FeedResult` · `read_entry(tick_at_ms) -> EntryBatch` ·
-  `coverage(batch) -> tuple[FeedAge]` (refuses on any gap, and returns the
-  per-key ages — `clock.now_ms()` minus each `EntryBatch.watermarks_by_key`
+  `coverage(batch, at_ms) -> tuple[FeedAge]` (refuses on any gap against
+  the universe resolved AT `at_ms` rather than the declared one --
+  ADR-0153 -- and returns the per-key ages — `clock.now_ms()` minus each `EntryBatch.watermarks_by_key`
   entry — because `feed_age_ms` is a registered measure and nothing else
   computes them) · `evaluate(batch) -> (head_outputs, head_digest)` — the digest
   is returned, not reconstructed, because `head_outputs` never leaves the tick

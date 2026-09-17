@@ -369,6 +369,11 @@ SAFETY_EPOCH = records.SafetyEpoch(
     lease_scope=SCOPE,
     fencing_token=17,
 )
+#: ADR-0153: one key's membership window, listed and since delisted.
+LISTED_MS = 1_700_000_000_000
+DELISTED_MS = 1_800_000_000_000
+LISTING = records.UniverseInterval(key="INS2", from_ms=LISTED_MS, to_ms=DELISTED_MS)
+
 #: Every §5.4 value object, with a valid instance. The generic tests below
 #: walk this table, so a record added without a sample is a record whose
 #: freezing, round trip and default-deny nobody checked.
@@ -554,6 +559,10 @@ SAMPLES = {
         divergences=(),
         first_divergence_seq=None,
         clean=True,
+    ),
+    "UniverseInterval": LISTING,
+    "UniverseMembership": records.UniverseMembership(
+        intervals=(records.UniverseInterval(key="INS1", from_ms=0, to_ms=None), LISTING),
     ),
 }
 
@@ -1632,3 +1641,60 @@ def test_an_ack_round_trips_and_is_default_deny():
     assert records.AlertAck.from_obj(ack.to_obj()) == ack
     with pytest.raises(ProductionError):
         records.AlertAck.from_obj({**ack.to_obj(), "until": 1})
+
+
+# ---------------------------------------------------------------------------
+# `UniverseMembership` — ADR-0153's one resolver
+# ---------------------------------------------------------------------------
+
+
+def test_a_window_is_half_open():
+    """So a delisting and the next listing can meet at one instant without
+    claiming it twice."""
+    assert LISTING.holds(LISTED_MS - 1) is False
+    assert LISTING.holds(LISTED_MS) is True
+    assert LISTING.holds(DELISTED_MS - 1) is True
+    assert LISTING.holds(DELISTED_MS) is False
+
+
+def test_an_open_ended_window_holds_every_instant_from_its_start():
+    window = records.UniverseInterval(key="INS1", from_ms=LISTED_MS, to_ms=None)
+    assert window.holds(LISTED_MS - 1) is False
+    assert window.holds(10 * DELISTED_MS) is True
+
+
+def test_a_flat_key_list_becomes_whole_run_membership():
+    """The legacy meaning, made structural: one all-time window per key,
+    so no branch has to remember that a flat list ignores the instant."""
+    membership = records.UniverseMembership.declared(["INS2", "INS1"])
+    assert membership.whole_run_only
+    assert membership.keys == ("INS1", "INS2")
+    for at_ms in (0, LISTED_MS, DELISTED_MS, None):
+        assert membership.members_at(at_ms) == ("INS1", "INS2")
+
+
+def test_membership_resolves_each_instant_against_its_own_windows():
+    membership = records.UniverseMembership.declared([
+        {"key": "INS1", "from_ms": 0, "to_ms": None},
+        LISTING.to_obj(),
+    ])
+    assert not membership.whole_run_only
+    assert membership.keys == ("INS1", "INS2")
+    assert membership.members_at(LISTED_MS - 1) == ("INS1",)
+    assert membership.members_at(LISTED_MS) == ("INS1", "INS2")
+    assert membership.members_at(DELISTED_MS) == ("INS1",)
+
+
+def test_an_effective_dated_membership_refuses_to_answer_without_an_instant():
+    membership = records.UniverseMembership.declared([LISTING.to_obj()])
+    with pytest.raises(ProductionError) as caught:
+        membership.members_at(None)
+    assert "needs the instant" in "; ".join(caught.value.problems)
+
+
+@pytest.mark.parametrize("at_ms", [-1, "0", 1.5, True], ids=["negative", "str", "float", "bool"])
+def test_a_membership_refuses_an_instant_that_is_not_epoch_ms(at_ms):
+    membership = records.UniverseMembership.declared([LISTING.to_obj()])
+    with pytest.raises(ProductionError) as caught:
+        membership.members_at(at_ms)
+    assert "epoch-ms instant" in "; ".join(caught.value.problems)

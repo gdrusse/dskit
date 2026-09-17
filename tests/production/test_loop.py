@@ -105,7 +105,7 @@ PHASE_SIGNATURES = {
     "verify_release": (),
     "fetch": ("tick_at_ms",),
     "read_entry": ("tick_at_ms",),
-    "coverage": ("batch",),
+    "coverage": ("batch", "at_ms"),
     "evaluate": ("batch",),
     "candidates": ("head_outputs",),
     "quotes": ("head_outputs",),

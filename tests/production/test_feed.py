@@ -58,8 +58,13 @@ from dskit.production.feed import (
     snapshot_entry,
 )
 from dskit.production.resilience import MAX_BACKOFF_S
-from dskit.production.records import EntryBatch, FeedResult, InputWatermark
-from dskit.production.release import FEED_SPEC_KEYS
+from dskit.production.records import (
+    EntryBatch,
+    FeedResult,
+    InputWatermark,
+    UniverseMembership,
+)
+from dskit.production.release import FEED_SPEC_KEYS, FEED_SPEC_OPTIONAL_KEYS
 from dskit.production.vocab import FEED_STATUSES, LINK_STATES, PULL_MODES
 from tests.production.conftest import (
     DAY_MS,
@@ -185,8 +190,11 @@ class TestFeedSeam:
 
 class TestFeedSpec:
     def test_it_binds_the_eight_fields_in_section_5_2_order(self, serving_contract):
+        """The eight §5.2 fields in plan order, then ADR-0153's optional
+        as-of binding.  The tuple is exact in BOTH directions: a field
+        added without its key, or a key without its field, fails here."""
         names = tuple(f.name for f in dataclasses.fields(FeedSpec))
-        assert names == FEED_SPEC_KEYS
+        assert names == FEED_SPEC_KEYS + FEED_SPEC_OPTIONAL_KEYS
 
     def test_from_contract_copies_the_contract_verbatim(self, serving_contract):
         spec = spec_for(serving_contract)
@@ -1326,3 +1334,163 @@ class TestTheSupervisedWorker:
         feed.close()
         feed.close()
         assert feed.transport.closed == 1
+
+
+# --------------------------------------------------------------------------
+# ADR-0153 — the universe has an as-of dimension
+#
+# A walk-forward over N years must not price year 1 against today's
+# membership.  The tick's own instant resolves the universe, so a name
+# that had not listed yet is neither demanded from nor accepted in an
+# earlier tick's coverage.  The flat list keeps meaning "a member for the
+# whole run", which is why every test above still passes unchanged.
+# --------------------------------------------------------------------------
+
+#: INS1 is a member for the whole run; INS2 lists, then delists.
+LISTED_MS = 1_700_000_000_000
+DELISTED_MS = 1_800_000_000_000
+DATED_UNIVERSE = (
+    {"key": UNIVERSE[0], "from_ms": 0, "to_ms": None},
+    {"key": UNIVERSE[1], "from_ms": LISTED_MS, "to_ms": DELISTED_MS},
+)
+
+#: A flat spec with no tmp path in it, and the digest of its manifest
+#: rendering taken from the tree BEFORE ADR-0153 added an optional field.
+FLAT_SPEC_OBJ = {
+    "source_binding": {"root": "/tmp/r", "source": "src"},
+    "entity_key_fields": ["instrument"],
+    "event_time_field": "ts_ms",
+    "digest_recipe": {"kind": "stream-digest"},
+    "required_keys": ["INS1", "INS2"],
+    "required_keys_digest": canonical_hash(["INS1", "INS2"]),
+    "source_config_hash": "a" * 64,
+    "source_config_version": "1",
+}
+FLAT_FEED_SPEC_DIGEST = "db4237ece4cf1b758cb13b3269575247140b3867da66ed1c866ce5b6586f6053"
+
+
+def dated_spec(contract, windows=DATED_UNIVERSE, source_config_hash="a" * 64):
+    """A `FeedSpec` whose universe carries ADR-0153's as-of dimension."""
+    membership = UniverseMembership.declared([dict(window) for window in windows])
+    return FeedSpec.from_contract(contract, membership, source_config_hash, VERSION)
+
+
+def test_a_tick_before_a_listing_refuses_the_unlisted_key(
+    serving_contract, training_run
+):
+    """THE sentinel (ADR-0153).
+
+    Kept at module level, no class qualifier, so its nodeid matches the
+    ADR text exactly. The rows in this entry cover the flat list exactly,
+    which is precisely why the old check passed them, but at an instant
+    before INS2 listed, INS2 is not a member, so its row falls outside
+    the universe this tick requires. Accepting it is survivorship bias:
+    year 1 priced against the composition of today.
+    """
+    spec = dated_spec(serving_contract)
+    outputs = entry_outputs_of(training_run)
+    with pytest.raises(ProductionError) as caught:
+        snapshot_entry(serving_contract, spec, outputs, "s" * 64, at_ms=LISTED_MS - 1)
+    problems = "; ".join(caught.value.problems)
+    assert "outside the required universe" in problems
+    assert UNIVERSE[1] in problems
+
+
+class TestDatedUniverse:
+    def test_a_tick_after_a_delisting_refuses_the_delisted_key(
+        self, serving_contract, training_run
+    ):
+        spec = dated_spec(serving_contract)
+        outputs = entry_outputs_of(training_run)
+        with pytest.raises(ProductionError) as caught:
+            snapshot_entry(serving_contract, spec, outputs, "s" * 64, at_ms=DELISTED_MS)
+        assert "outside the required universe" in "; ".join(caught.value.problems)
+
+    def test_a_tick_inside_every_window_covers_the_whole_universe(
+        self, serving_contract, training_run
+    ):
+        spec = dated_spec(serving_contract)
+        batch = snapshot_entry(
+            serving_contract, spec, entry_outputs_of(training_run), "s" * 64, at_ms=LISTED_MS
+        )
+        assert set(batch.watermarks_by_key) == set(UNIVERSE)
+
+    def test_a_tick_before_a_listing_demands_only_what_was_listed_then(
+        self, serving_contract, training_run
+    ):
+        """The other half of the same rule: the earlier tick is complete
+        WITHOUT the unlisted key, where the flat universe would have
+        refused it for a missing row."""
+        outputs = entry_outputs_of(training_run)
+        outputs["records"] = [r for r in outputs["records"] if r["instrument"] != UNIVERSE[1]]
+        spec = dated_spec(serving_contract)
+        batch = snapshot_entry(serving_contract, spec, outputs, "s" * 64, at_ms=LISTED_MS - 1)
+        assert set(batch.watermarks_by_key) == {UNIVERSE[0]}
+
+    def test_a_tick_before_any_listing_refuses_with_nothing_to_decide_over(
+        self, serving_contract, training_run
+    ):
+        """`members_at` can legitimately resolve to nothing before either
+        key has listed; deciding a tick over an empty universe is refused
+        rather than silently producing an empty batch."""
+        windows = (
+            {"key": UNIVERSE[0], "from_ms": LISTED_MS, "to_ms": None},
+            {"key": UNIVERSE[1], "from_ms": LISTED_MS, "to_ms": DELISTED_MS},
+        )
+        spec = dated_spec(serving_contract, windows=windows)
+        outputs = entry_outputs_of(training_run)
+        with pytest.raises(ProductionError) as caught:
+            snapshot_entry(serving_contract, spec, outputs, "s" * 64, at_ms=0)
+        assert "no key had listed yet" in "; ".join(caught.value.problems)
+
+    def test_a_flat_universe_resolves_the_same_at_every_instant(
+        self, serving_contract, training_run
+    ):
+        """Decision 2: under either legacy form the answer is
+        instant-independent, so existing behaviour is preserved exactly."""
+        spec = spec_for(serving_contract)
+        plain = snapshot_entry(
+            serving_contract, spec, entry_outputs_of(training_run), "s" * 64
+        )
+        for at_ms in (0, LISTED_MS - 1, LISTED_MS, DELISTED_MS, 2 * DELISTED_MS):
+            assert snapshot_entry(
+                serving_contract, spec, entry_outputs_of(training_run), "s" * 64, at_ms=at_ms
+            ) == plain
+
+    def test_a_dated_universe_refuses_a_tick_with_no_instant(
+        self, serving_contract, training_run
+    ):
+        """An effective-dated universe cannot answer "the whole run": a
+        caller that forgot the instant is refused, never defaulted."""
+        spec = dated_spec(serving_contract)
+        with pytest.raises(ProductionError) as caught:
+            snapshot_entry(serving_contract, spec, entry_outputs_of(training_run), "s" * 64)
+        assert "needs the instant" in "; ".join(caught.value.problems)
+
+    def test_the_spec_keeps_every_key_that_is_ever_a_member(self, serving_contract):
+        """`required_keys` stays the WHOLE universe — the arming allowlist
+        narrows against it — and only the per-tick demand moves."""
+        spec = dated_spec(serving_contract)
+        assert spec.required_keys == tuple(sorted(UNIVERSE))
+        assert spec.required_keys_digest == canonical_hash(sorted(UNIVERSE))
+
+    def test_a_dated_spec_round_trips_through_the_manifest(self, serving_contract):
+        spec = dated_spec(serving_contract)
+        obj = spec.to_obj()
+        assert "required_membership" in obj
+        assert FeedSpec.from_obj(obj) == spec
+        assert FeedSpec.from_obj(obj).members_at(LISTED_MS - 1) == (UNIVERSE[0],)
+
+    def test_a_flat_spec_renders_exactly_the_eight_manifest_fields(self, serving_contract):
+        obj = spec_for(serving_contract).to_obj()
+        assert tuple(obj) == FEED_SPEC_KEYS
+        assert "required_membership" not in obj
+
+    def test_a_flat_specs_manifest_bytes_are_what_they_were_before_adr_0153(self):
+        """The load-bearing half: a release under a legacy universe must
+        render exactly what it rendered before ADR-0153, or every run
+        already served under it is orphaned.  The digest is a literal
+        taken from the tree BEFORE the field existed, over a spec with no
+        tmp path in it, so it is reproducible."""
+        spec = FeedSpec.from_obj(copy.deepcopy(FLAT_SPEC_OBJ))
+        assert canonical_hash(spec.to_obj()) == FLAT_FEED_SPEC_DIGEST

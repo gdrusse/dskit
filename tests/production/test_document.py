@@ -1557,3 +1557,135 @@ def test_an_unknown_readiness_knob_still_refuses():
     """Default-deny reaches the new keys too: a typo is an error, never a
     knob that silently does nothing."""
     assert "scored_enough" in refusal(with_readiness(scored_enough=True))
+
+
+# --------------------------------------------------------------------------
+# ADR-0153 — effective-dated universe composition (survivorship)
+# --------------------------------------------------------------------------
+
+
+def document_with_universe(universe):
+    """The minimal document with ``serving.required_universe`` replaced."""
+    obj = minimal_document()
+    obj["serving"]["required_universe"] = copy.deepcopy(universe)
+    return ServeDocument.from_obj(obj)
+
+
+#: A document's identity under each LEGACY universe form, as literals
+#: captured from the tree BEFORE the effective-dated form was written.
+#: ADR-0153's decision 1 turns on these NOT moving: a hash that moved
+#: would orphan every run already served and every artifact keyed to it,
+#: so the digests are pinned here rather than recomputed from the shape
+#: under test — an assertion sourced from its subject asserts nothing.
+LEGACY_UNIVERSE_IDENTITY = (
+    ("configs/universe-serve.json",
+     "fe32c5f3a90d670f425fb10602521acfdbdb4f2f466890a637b45ed94efa0bfa"),
+    (["INS2", "INS1"],
+     "18822c002659738b7f24bd829d53d8c349afc1bf5362fc3a9365122ae2d38bfd"),
+)
+
+#: INS1 is a member for the whole run; INS2 lists, then delists.
+LISTED_MS = 1_700_000_000_000
+DELISTED_MS = 1_800_000_000_000
+DATED_UNIVERSE = [
+    {"key": "INS1", "from_ms": 0, "to_ms": None},
+    {"key": "INS2", "from_ms": LISTED_MS, "to_ms": DELISTED_MS},
+]
+
+
+@pytest.mark.parametrize(
+    "universe,digest", LEGACY_UNIVERSE_IDENTITY, ids=["path", "inline-list"]
+)
+def test_a_legacy_universe_keeps_the_identity_it_had_before_adr_0153(universe, digest):
+    """Decision 1: the two older forms are unchanged and mean "a member for
+    the whole run", so no existing document changes identity."""
+    assert document_with_universe(universe).doc_hash == digest
+
+
+def test_the_effective_dated_form_is_accepted_and_resolves_at_an_instant():
+    view = document_with_universe(DATED_UNIVERSE).serving.required_universe
+    assert view.keys == ("INS1", "INS2")
+    assert view.members_at(LISTED_MS - 1) == ("INS1",)
+    assert view.members_at(LISTED_MS) == ("INS1", "INS2")
+    assert view.members_at(DELISTED_MS - 1) == ("INS1", "INS2")
+    assert view.members_at(DELISTED_MS) == ("INS1",)
+
+
+def test_a_legacy_universe_resolves_the_same_at_every_instant():
+    """Decision 2: under either legacy form the answer is
+    instant-independent — structurally, because a flat key list becomes
+    one all-time window per key, not because a branch remembers to."""
+    view = document_with_universe(["INS2", "INS1"]).serving.required_universe
+    assert view.keys == ("INS1", "INS2")
+    assert view.whole_run_only
+    for at_ms in (0, LISTED_MS - 1, LISTED_MS, DELISTED_MS, 2 * DELISTED_MS, None):
+        assert view.members_at(at_ms) == ("INS1", "INS2")
+
+
+def test_adopting_the_effective_dated_form_moves_the_documents_identity():
+    """Decision 1's other half: a document that adopts the new form DOES
+    change its own hash, which is correct — it computes something else."""
+    dated = document_with_universe(DATED_UNIVERSE).doc_hash
+    flat = document_with_universe(["INS1", "INS2"]).doc_hash
+    assert dated != flat
+
+
+def test_a_key_may_relist_when_its_windows_do_not_overlap():
+    """Two windows for one key are a listing and a relisting, not a typo:
+    the rule is overlap, never repetition."""
+    view = document_with_universe([
+        {"key": "INS1", "from_ms": 0, "to_ms": 100},
+        {"key": "INS1", "from_ms": 200, "to_ms": None},
+    ]).serving.required_universe
+    assert view.members_at(50) == ("INS1",)
+    assert view.members_at(150) == ()
+    assert view.members_at(200) == ("INS1",)
+
+
+#: Each row is `(universe, the phrase its OWN refusal must carry, id)`.
+#: The phrases are whole clauses, never a field name: a field name also
+#: appears in the offending value's `repr`, so `"to_ms" in problems` would
+#: pass under a refusal that never looked at the bounds at all — a test
+#: that asserts nothing.  Every phrase below is probed by disabling the
+#: one guard it names.
+MALFORMED_MEMBERSHIPS = (
+    ([{"key": "INS1", "from_ms": 0, "to_ms": 300},
+      {"key": "INS1", "from_ms": 200, "to_ms": None}],
+     "overlapping windows", "overlap"),
+    ([{"key": "INS1", "from_ms": 300, "to_ms": 300}],
+     "to_ms must be after from_ms", "equal-bounds"),
+    ([{"key": "INS1", "from_ms": 300, "to_ms": 200}],
+     "to_ms must be after from_ms", "inverted-bounds"),
+    ([{"key": "INS1", "from_ms": "0", "to_ms": None}],
+     "expected an int", "non-int-bound"),
+    ([{"key": "INS1", "from_ms": -1, "to_ms": None}],
+     "must be an epoch-ms instant", "negative-bound"),
+    ([{"key": "INS1", "from_ms": 0, "to_ms": None, "why": "typo"}],
+     "unknown key(s)", "unknown-field"),
+    ([{"key": "INS1", "from_ms": 0}],
+     "missing key(s)", "missing-field"),
+    ([{"key": "INS1", "from_ms": 0, "to_ms": None}, "INS2"],
+     "mixes key strings with membership windows", "mixed-forms"),
+    ([], "must name at least one key", "empty"),
+)
+
+
+@pytest.mark.parametrize(
+    "universe,reason",
+    [(row[0], row[1]) for row in MALFORMED_MEMBERSHIPS],
+    ids=[row[2] for row in MALFORMED_MEMBERSHIPS],
+)
+def test_a_malformed_membership_refuses_at_validation(universe, reason):
+    """Decision 4: the interval form is default-deny like every other
+    config surface, and each refusal names its OWN reason."""
+    with pytest.raises(ProductionError) as caught:
+        document_with_universe(universe)
+    assert reason in "; ".join(caught.value.problems)
+
+
+def test_a_duplicate_key_in_the_flat_form_refuses():
+    """Decision 4's "a duplicate key with no interval": with no window to
+    tell the two apart, the repeat is a typo."""
+    with pytest.raises(ProductionError) as caught:
+        document_with_universe(["INS1", "INS1"])
+    assert "duplicate" in "; ".join(caught.value.problems)

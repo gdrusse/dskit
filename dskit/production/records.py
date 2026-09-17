@@ -135,6 +135,8 @@ __all__ = [
     "SimulatedPermit",
     "TickResult",
     "TickStart",
+    "UniverseInterval",
+    "UniverseMembership",
     "ValuePoint",
     "Verdict",
     "alert_labels",
@@ -1199,6 +1201,257 @@ class AccountState(_Record):
 # ---------------------------------------------------------------------------
 # Feed, provenance, tick (§5.2, §5.13, §6)
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UniverseInterval(_Record):
+    """One key's membership window, half-open ``[from_ms, to_ms)`` (ADR-0153).
+
+    Half-open so a delisting and the next listing can meet at one instant
+    without overlapping, and so ``to_ms`` reads as "the first instant it
+    is no longer a member".
+
+    Parameters
+    ----------
+    key : str
+        The entity key this window is about; non-empty.
+    from_ms : int
+        The instant the key becomes a member, epoch ms, ``>= 0``.
+    to_ms : int or None
+        The instant it stops being one, exclusive and after ``from_ms``;
+        None means it is a member still.
+
+    Examples
+    --------
+    A name that listed on 2023-11-14 and has not delisted::
+
+        window = UniverseInterval(key="INS1", from_ms=1_700_000_000_000, to_ms=None)
+        window.holds(1_757_030_399_000)  # True
+    """
+
+    key: str
+    from_ms: int
+    to_ms: int | None
+
+    def _check(self, problems):
+        """Refuse a blank key, a negative start, and a window that ends at or before it."""
+        if not self.key:
+            problems.append("UniverseInterval.key must be a non-empty string")
+        if self.from_ms < 0:
+            problems.append(
+                f"UniverseInterval.from_ms must be an epoch-ms instant >= 0, got {self.from_ms!r}"
+            )
+        if self.to_ms is not None and self.to_ms <= self.from_ms:
+            problems.append(
+                f"UniverseInterval({self.key!r}): to_ms must be after from_ms, "
+                f"got from_ms={self.from_ms!r} to_ms={self.to_ms!r}"
+            )
+
+    def holds(self, at_ms):
+        """Say whether this window contains one instant.
+
+        Parameters
+        ----------
+        at_ms : int
+            An epoch-millisecond instant.
+
+        Returns
+        -------
+        bool
+            True when ``from_ms <= at_ms`` and ``at_ms < to_ms``, with an
+            open-ended window holding every instant from its start.
+        """
+        return self.from_ms <= at_ms and (self.to_ms is None or at_ms < self.to_ms)
+
+
+@dataclass(frozen=True)
+class UniverseMembership(_Record):
+    """WHICH keys are members WHEN — the universe with its as-of dimension (ADR-0153).
+
+    The ONE owner of the resolution rule, so nothing downstream re-derives
+    it. A flat key list is not a second shape here: it becomes one
+    all-time window per key, which is why "a member for the whole run"
+    resolves the same at every instant *structurally* rather than by a
+    branch someone can forget.
+
+    Parameters
+    ----------
+    intervals : tuple of UniverseInterval
+        At least one. Several windows may name one key — a listing and a
+        relisting — as long as no two of them overlap.
+
+    Examples
+    --------
+    One name throughout, one that listed later and has since delisted::
+
+        membership = UniverseMembership(intervals=(
+            UniverseInterval(key="INS1", from_ms=0, to_ms=None),
+            UniverseInterval(key="INS2", from_ms=1_700_000_000_000, to_ms=1_800_000_000_000),
+        ))
+        membership.members_at(1_699_999_999_999)  # ('INS1',)
+    """
+
+    intervals: tuple[UniverseInterval, ...]
+
+    def _check(self, problems):
+        """Refuse an empty universe, then every pair of windows that claim one key at once."""
+        if not self.intervals:
+            problems.append(
+                "UniverseMembership must name at least one key — an empty universe serves nothing"
+            )
+        problems.extend(self._overlaps())
+
+    def _overlaps(self):
+        """Every message for a key whose windows claim one instant twice."""
+        found = []
+        for key, windows in self._by_key().items():
+            ordered = sorted(windows, key=lambda window: window.from_ms)
+            for earlier, later in zip(ordered, ordered[1:]):
+                if earlier.to_ms is None or later.from_ms < earlier.to_ms:
+                    found.append(
+                        f"UniverseMembership: {key!r} has overlapping windows "
+                        f"{earlier.to_obj()} and {later.to_obj()}"
+                    )
+        return found
+
+    def _by_key(self):
+        """Group this membership's windows under the key each one is about."""
+        grouped = {}
+        for window in self.intervals:
+            grouped.setdefault(window.key, []).append(window)
+        return grouped
+
+    @classmethod
+    def declared(cls, value):
+        """Read a declared universe — a flat key list or membership windows — as one membership.
+
+        Parameters
+        ----------
+        value : list
+            Either key strings (the legacy form, "a member for the whole
+            run") or ``{key, from_ms, to_ms}`` objects. Never a mixture:
+            one of the two spellings is a typo, and default-deny does not
+            guess which.
+
+        Returns
+        -------
+        UniverseMembership
+
+        Raises
+        ------
+        ProductionError
+            A non-list, a mixture of the two forms, a duplicate key with
+            no window to tell the repeats apart, a malformed window, or
+            an empty universe — every problem listed.
+        """
+        if not isinstance(value, list):
+            raise ProductionError([
+                f"a universe must be a list of key strings or of {{key, from_ms, to_ms}} "
+                f"membership windows, got {value!r}"
+            ])
+        if value and all(isinstance(item, dict) for item in value):
+            return cls(intervals=cls._windows(value))
+        if all(isinstance(item, str) for item in value):
+            return cls.whole_run(value)
+        if any(isinstance(item, dict) for item in value):
+            raise ProductionError([
+                f"a universe mixes key strings with membership windows: {value!r}"
+            ])
+        raise ProductionError([
+            f"a universe must be a list of key strings or of {{key, from_ms, to_ms}} "
+            f"membership windows, got {value!r}"
+        ])
+
+    @staticmethod
+    def _windows(value):
+        """Build every declared window, accumulating each one's problems under its index."""
+        problems, windows = [], []
+        for index, item in enumerate(value):
+            try:
+                windows.append(UniverseInterval.from_obj(item))
+            except ProductionError as exc:
+                problems.extend(f"required_universe[{index}]: {p}" for p in exc.problems)
+        if problems:
+            raise ProductionError(problems)
+        return tuple(windows)
+
+    @classmethod
+    def whole_run(cls, keys):
+        """Read a flat key list as membership for the whole run — the legacy meaning.
+
+        Parameters
+        ----------
+        keys : sequence of str
+            The keys, each a member from the first instant to the last.
+
+        Returns
+        -------
+        UniverseMembership
+            One all-time window per key, so the answer is the same at
+            every instant.
+
+        Raises
+        ------
+        ProductionError
+            A duplicate key, a blank or non-string key, or no key at all.
+        """
+        keys = list(keys)
+        duplicates = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicates:
+            raise ProductionError([
+                f"a universe with no intervals carries duplicate key(s) {duplicates} — "
+                f"with no window to tell the repeats apart the second one is a typo"
+            ])
+        return cls(intervals=tuple(
+            UniverseInterval(key=key, from_ms=0, to_ms=None) for key in keys
+        ))
+
+    @property
+    def keys(self):
+        """Every key that is EVER a member, sorted and unique."""
+        return tuple(sorted({window.key for window in self.intervals}))
+
+    @property
+    def whole_run_only(self):
+        """Say whether every window is all-time — the legacy forms' exact meaning."""
+        return all(
+            window.from_ms == 0 and window.to_ms is None for window in self.intervals
+        )
+
+    def members_at(self, at_ms):
+        """Return the keys this universe requires AT one instant.
+
+        Parameters
+        ----------
+        at_ms : int or None
+            The instant to resolve at, epoch ms. None asks for "the whole
+            run", which only a membership that IS whole-run can answer.
+
+        Returns
+        -------
+        tuple of str
+            The member keys at ``at_ms``, sorted; possibly empty when
+            nothing was listed yet.
+
+        Raises
+        ------
+        ProductionError
+            An effective-dated membership asked with no instant, or an
+            instant that is not an epoch-millisecond int.
+        """
+        if at_ms is None:
+            if not self.whole_run_only:
+                raise ProductionError([
+                    "an effective-dated universe needs the instant it is resolved at, got None"
+                ])
+            return self.keys
+        if isinstance(at_ms, bool) or not isinstance(at_ms, int) or at_ms < 0:
+            raise ProductionError([
+                f"a universe resolves at an epoch-ms instant >= 0, got {at_ms!r}"
+            ])
+        return tuple(sorted({
+            window.key for window in self.intervals if window.holds(at_ms)
+        }))
 
 
 @dataclass(frozen=True)

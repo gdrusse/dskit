@@ -1083,7 +1083,10 @@ class Decider:
         if spec is not None:
             try:
                 bound = FeedSpec.from_contract(
-                    contract, spec.required_keys, spec.source_config_hash, spec.source_config_version
+                    contract,
+                    spec.required_membership,
+                    spec.source_config_hash,
+                    spec.source_config_version,
                 )
             except ProductionError as exc:
                 problems.extend(exc.problems)
@@ -1121,7 +1124,9 @@ class Decider:
         goes through the driver's existing-param-only rule inside a
         runner whose ``needed`` is the entry alone, so nothing else can
         run; the entry's outputs are then described by
-        :func:`~dskit.production.feed.snapshot_entry`.
+        :func:`~dskit.production.feed.snapshot_entry`, which resolves the
+        universe at THIS tick's instant (ADR-0153) rather than taking the
+        release's declared set.
 
         Parameters
         ----------
@@ -1151,7 +1156,11 @@ class Decider:
         except (ConfigError, ValueError) as exc:
             raise ProductionError([f"entry read: {exc}"]) from exc
         return snapshot_entry(
-            self._contract, self._spec, outputs[self._entry], self._release.source_config["hash"]
+            self._contract,
+            self._spec,
+            outputs[self._entry],
+            self._release.source_config["hash"],
+            at_ms=tick_at_ms,
         )
 
     def evaluate(self, batch):
