@@ -12078,7 +12078,14 @@ throughout.
 
 ## ADR-0147 - durable ChainLedger-backed consume-once admission gate (Packet 8, closes F5A-R23)
 
-**Status:** proposed.
+**Status:** accepted. Independent preapproval review found 1 Major (cross-
+process reserve_once atomicity asserted without proof), 2 Minor, 2 Nit; the
+Major was closed with exact code citations for JsonlLedger's existing
+exclusive-lock lifetime (Decision point 6), and a fresh independent recheck
+found 0 Critical/Major/Minor, confirming the correction against the actual
+code. Full review record in evidence 0192. Phase 0 skeptic review is
+required next, before any RED -- this crosses a persistent-state/identity
+contract.
 
 **Context.** RE-ENTRY's current "Next" line, unchanged since P7 closed at
 its bounded synthetic scope (ADR-0143/0144/0145/0146), names Packet 8 --
