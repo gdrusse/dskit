@@ -1,6 +1,160 @@
 # Re-entry
 
-## Current checkpoint: whole F5a closed -- Packet 8 / F5A-R23 done (2026-09-17)
+## Current checkpoint: ADR-0148 clustering/RL extensions landed on a branch (2026-09-17)
+
+Branch `claude/dskit-rl-clustering-zy2dge`, based on `origin/main` at
+`3b73361`, candidate `3ca3d72`. This is the clustering/RL lane the closeout
+index calls "separate, with its own approvals" — not F3, not F5b, and it
+touches `dskit/production` nowhere.
+
+**Provenance.** The contract existed only on
+`origin/codex/cluster-rl-framework-plan-20260913`, a branch with NO merge
+base with `main`: a 1110-line plan carrying its own 17-cycle skeptic loop
+(§8), never implemented. It is ported here as
+`docs/plans/2026-09-clustering-rl-framework.md`. Its ADR was numbered
+**0122, which `main` had already given to the attested ten-head release**,
+so it is renumbered **ADR-0148** rather than reused — ids are cited from
+prose, and moving one silently breaks references no test covers. §10 is new
+and dispositions the plan's own §9 owner gates: ADR/plan approval and the
+bounded dependency install are MET; the exact-model gate is met by the same
+Claude substitution the 2026-09-13/14 authorizations already granted; the
+child-ADR and per-config identity gates are NOT met and are NOT reached by
+this change.
+
+**What shipped.** Three things, in five TDD slices.
+
+`SklearnSegment` (`sklearn-segment`, tier 2) is a `FittedTransform` whose
+catalog is deliberately CLOSED — `kmeans`/`minibatch_kmeans`/`birch` —
+because it persists EXTRACTED centers and labels as JSON rather than a
+pickled model, and only those three are known to expose them. It fits on
+`"train"` alone behind THREE sites asking ONE rule function
+(`validate_train_inputs`, `fit()`, `sidecar_problems`), assigns every row by
+nearest centre with ties to the lowest centre INDEX, and emits `segment`
+plus a canonical-state `segment_model_id` on every row and as a port. It
+reports NO cluster score: an internal quality number is what a search would
+rank segmentations by, and this node supplies no such objective.
+
+`Sb3EvalEpisodes` (`sb3-eval-episodes`, tier 2) rolls bounded episodes
+itself instead of delegating to `evaluate_policy`, and keeps the ordered
+per-step record as a `JsonArtifact` beside seven flat metrics. `sb3-eval`
+answers what a SEARCH wants; this answers what an AUDIT wants. Its `split`
+narrows to `"val"`/`"test"` — a new restriction, not a restatement, pinned
+by a test that `sb3-eval` still accepts all four.
+
+`FittedTransform.sidecar_problems(payload)` (tier 1) is the seam that made
+the first of those possible: the base compares `fit_split` only when the
+DOCUMENT declared one, and ADR-0040 lets a load omit it, so a member whose
+state is meaningful from one split had nowhere to say so. Default `[]`,
+asked unconditionally; every pre-existing member keeps the default, pinned
+in `test_fitted.py` and `test_selector.py` on their own existing fixtures.
+
+Also: the bounded `rl` extra; `gymnasium`/`stable_baselines3` added to
+`DEFAULT_BLOCKED_IMPORTS`, so the purity gate now tests the sb3 pack with
+them genuinely unavailable rather than importable.
+
+**Review — two rounds, four fresh independent clean-context lenses.**
+
+Round 1 on `fceb32a`: both CLEAN. Between them, an AST diff proving zero
+existing classes changed, 26 mutations (22 caught), `segment_model_id`
+stable across three processes with differing `PYTHONHASHSEED`, and
+`_canonical_digest` byte-identical to the recipe it replaced on nine
+payload shapes. Their Minors were corrected in `f43b6fe`.
+
+Round 2 on `f43b6fe`, at the owner's narrowed Critical/Major bar: the
+correctness/authority lens CLEAN (a 10,724-case differential proving no row
+that used to be refused now passes; a 15-path close matrix including
+`KeyboardInterrupt`/`GeneratorExit`; a 12-cell load-leakage matrix;
+whole-suite failure-id sets byte-identical to base at 1176 ids each). The
+tests/determinism lens returned **FAIL with two Majors**, both test defects
+hiding material wrongness, each proven by a mutant it ran and whose
+consequence it measured:
+
+1. the per-episode outcome is read from `trace[-1]` and nothing pinned that
+   position — every `reason` fixture ended on step 1, where `trace[0]` IS
+   `trace[-1]`, so mutating it left the suite green while every multi-step
+   episode's outcome and all three "exclusive" counts came out wrong in the
+   durable artifact;
+2. `DEFAULT_SEGMENT_SEED`'s VALUE was unpinned — the round-1 test asserted
+   only that two omitting fits agree with each other, true of any fixed
+   default, so moving the constant changed `segment_model_id` for an
+   omitting document at the SAME config hash.
+
+Both are fixed test-only in `3ca3d72` and mutation-verified RED in both
+directions. `git diff f43b6fe..HEAD -- dskit/ pyproject.toml` is EMPTY, so
+the correctness lens's CLEAN verdict stands on unmoved production code.
+
+Three defects this session introduced were caught by review rather than by
+itself: a `_kwargs_problems` tightening reachable from `load_bundle`, where
+`head_params` is HASH MATERIAL (a bundle written before the change became
+unloadable with no repair path — a reviewer built one on `main` and
+demonstrated the strand and the repair); a `fit()`/`apply_state()`
+disagreement about bools; and the second Major above, inside a fix written
+for the first round.
+
+**Verified against the base, not merely asserted.** `tests/pipeline` +
+`tests/pipeline_libs` on `origin/main` and on this branch give
+BYTE-IDENTICAL failing-test sets (59 = 59, `diff` empty), all missing
+optional dependencies (optuna, pyomo/highspy, mlflow); passing went
+3600 -> 3868. `tests/production` is 34 failed / 6434 passed on BOTH. Ruff
+and `git diff --check` clean.
+
+**Real execution, not only unit tests.** A `sklearn-segment` document runs
+end to end through the planner and `run_document` — fitted on 12 of 48
+train rows, all 48 labelled, one model id, JSON sidecar and no joblib — and
+an `sb3-eval-episodes` document plans in a SUBPROCESS with `gymnasium`,
+`stable_baselines3` and `torch` blocked. Both are now tests.
+
+**What this is NOT.** No SB3 training: `learn` is never called and the
+episode suite constructs no SB3 or Gymnasium object at all. No HPO, final
+refit, market replay, backtest, paper or live activity, no lockbox. No
+production authority: `SklearnSegment` deliberately does NOT carry
+`serving_load_audited`, so `serving_effect` answers `forbidden` — verified
+at runtime under full release evidence, for the class and for a child
+subclass, against a discriminating probe (`SklearnSelect` answers
+`release_read` under the identical evidence). Its restore has the same
+JSON-only shape `sklearn-select` was licensed for and would likely pass the
+same audit, but licensing a kind to serve a release is authority ADR-0148
+does not claim; widening it is its own ADR with its own audit. No child
+environment, reward, transition, order or fill semantics exist here.
+
+**RESOLVED — the intermittent test failures.** Round 1 reported 1-4
+failures in three early runs of the new sklearn tests, a different subset
+each time, including a leakage-gate test, then could not reproduce them.
+BOTH round-2 lenses reproduced the phenomenon under concurrent pytest in
+ONE working tree, and one demonstrated the mechanism on the real pack
+module: CPython validates a cached `.pyc` by (source mtime in whole
+SECONDS, source size), so a same-second rewrite at unchanged byte length
+silently executes the PREVIOUS bytecode — source and running code disagree.
+That is exactly the signature: a different random subset failing per run
+during rapid edit/run cycles, unreproducible once editing stops, clean
+under `PYTHONDONTWRITEBYTECODE`. **A hazard in a mutation-testing harness
+over a shared `__pycache__`, not a defect in this change.** Anyone doing
+mutation work in this repo should run `python -B` with
+`PYTHONDONTWRITEBYTECODE=1` and clear `__pycache__` between mutants.
+
+**Accepted Minors, not fixed** (per "defer nits after the lock"):
+`_json_safe_problem` is domain-neutral stdlib living in the tier-2 sb3 pack
+— correct by CLAUDE.md's own rule as written, since the SECOND copy is the
+bug and no tier-1 owner exists; the next pack that needs it graduates it
+rather than copying it. `Sb3Eval` keeps bare `0`/`True` for
+seed/deterministic, because the contract requires it behaviourally
+untouched. `DEFAULT_SEGMENT_SEED` is public and absent from `__all__`,
+matching the module's own `DEFAULT_POLICY`/`DEFAULT_EPISODES` precedent.
+
+**Untested limits, disclosed.** `test_sb3.py`'s PPO round-trip and
+`TestSb3Conformance` were deliberately not run by any reviewer — §9 forbids
+real SB3 training. No real Gymnasium `Env` or SB3 model is constructed
+anywhere in the new suite, by design, so `_build_env`'s `issubclass` gate is
+unexercised for the new kind. Walk-forward and `foreach` carrying a
+`sklearn-segment` node were reasoned and driven by one lens but not by both.
+Cross-host reproducibility of `centers` is explicitly a non-promise.
+
+**Next.** The branch is pushed and a pull request is open; it is NOT merged
+to `main`. The child-side work ADR-0148 explicitly does not do — an
+environment, a reward, a transition, orders and fills, and what a segment
+MEANS — needs its own child ADR before any of it exists. F3 (full lane) and
+F5b remain separately owned and untouched by this branch.
+## Prior checkpoint: whole F5a closed -- Packet 8 / F5A-R23 done (2026-09-17)
 
 Remote main verified at 937770d. ADR-0147 replaces
 `HistoricalStudyVerifier.capture`'s publicly-reachable `_spend` constructor
