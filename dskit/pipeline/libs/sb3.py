@@ -79,6 +79,48 @@ _SIDECAR_KEYS = ("algo", "env", "env_params", "format", "policy", "seed", "state
 DEFAULT_POLICY = "MlpPolicy"
 DEFAULT_EPISODES = 5
 
+#: The schema tag a persisted episode record carries.
+EPISODE_SCHEMA = "dskit.sb3-eval-episodes/v1"
+
+#: The splits :class:`Sb3EvalEpisodes` accepts — a deliberate NARROWING of
+#: :data:`~dskit.pipeline.split_policy.SPLIT_NAMES`, not a restatement of
+#: it. ``episodes`` is durable, persisted per-episode evidence of HELD-OUT
+#: performance; the same record drawn from ``train``, or from ``cal``'s
+#: inner calibration band (ADR-0034), would misrepresent itself as
+#: out-of-sample the moment anyone read it back.
+EPISODE_SPLITS = ("val", "test")
+
+#: How many episodes one node may roll, and how long each may run.
+_MAX_EPISODES = 10_000
+_MAX_EPISODE_STEPS = 1_000_000
+
+#: The ceiling on ``n_episodes * max_episode_steps`` — how many step
+#: records the trace can allocate. Checked at PLAN, where the document
+#: can still be refused: both knobs are plain literal ints with no
+#: ``$``-reference support, so discovering this at execute would be
+#: discovering it after the expensive part.
+_MAX_TRACE_STEPS = 1_000_000
+
+#: The largest value a seed (and the last episode's ``seed + i``) may take.
+_MAX_SEED = 2 ** 32 - 1
+
+DEFAULT_DETERMINISTIC = True
+DEFAULT_SEED = 0
+
+
+def _bounded_int_problem(problems, name, value, *, low, high):
+    """Hold ``name`` to an exact int in ``[low, high]``, bool excluded.
+
+    ``_check_int`` (tier-1's ``check_int_param``) owns the "is this an
+    int knob" question and the bool exclusion; only the ceiling is this
+    pack's to add, and it is added ONLY when the floor already passed, so
+    one broken value never reports twice.
+    """
+    before = len(problems)
+    _check_int(problems, name, value, ge=low)
+    if len(problems) == before and value > high:
+        problems.append(f"{name} must be at most {high}, got {value!r}")
+
 
 def _params_dict_problem(problems, name, value):
     if value is not None and (
@@ -601,6 +643,209 @@ class Sb3Eval(_Sb3Base):
                 "n_episodes": n_episodes,
             }
         }
+
+
+class Sb3EvalEpisodes(_Sb3Base):
+    """Per-episode evaluation of a pinned policy (role ``score``, kind
+    ``sb3-eval-episodes``).
+
+    The sibling of :class:`Sb3Eval`, and a deliberate one: that kind asks
+    stable-baselines3's own ``evaluate_policy`` for two scalars, which is
+    what a SEARCH wants. This kind rolls the episodes itself and keeps the
+    ordered per-step record, which is what an AUDIT wants — a reader can
+    ask what the policy actually did, on which seed, for how many steps,
+    and why each episode ended, instead of taking a mean on faith.
+
+    It introduces no new persistence seam and no new artifact format: the
+    record rides the existing :class:`~dskit.pipeline.node.JsonArtifact`
+    port, and the pinned model still arrives through the pack's own
+    ``model.zip`` plus hashed sidecar. Every service it uses —
+    ``_read_sidecar``, ``pinned_artifact``, ``_load_model``,
+    ``_build_env`` — is the one the legacy kinds already use, unchanged.
+
+    ``split`` accepts only ``"val"`` or ``"test"``. That is a NARROWING of
+    what :class:`Sb3Eval` accepts, made on purpose: a durable record of
+    held-out performance drawn from ``train`` or from the ``cal``
+    calibration band would misrepresent itself the moment anyone read it
+    back as evidence.
+
+    Parameters
+    ----------
+    params : dict
+        ``split`` (required, ``"val"`` or ``"test"``),
+        ``max_episode_steps`` (required, the per-episode step cap),
+        ``n_episodes`` (default 5), ``seed`` (default 0; episode ``i``
+        resets on ``seed + i``), ``deterministic`` (default ``True``),
+        plus the artifact knobs ``artifact`` / ``algo`` / ``policy`` and
+        the environment knobs ``env`` / ``env_params``, which default to
+        the sidecar's trained values when omitted.
+
+    Examples
+    --------
+    Roll three bounded episodes of a trained policy on the val
+    environment and keep the record::
+
+        node = Sb3EvalEpisodes("eval", {
+            "split": "val",
+            "env": "my_child.envs:ReplayEnv",
+            "env_params": {"scenario": "validation"},
+            "n_episodes": 3,
+            "max_episode_steps": 500,
+            "seed": 17,
+        })
+        out = node.run(ctx, {"artifact_path": trained["artifact_path"]})
+        # -> out["metrics"]["mean_return"] == 1.25
+        # -> out["episodes"].value["episodes"][0]["reason"] == "terminated"
+    """
+
+    role = "score"
+    outputs = ("metrics", "episodes")
+
+    _PARAMS = (
+        "algo",
+        "artifact",
+        "deterministic",
+        "env",
+        "env_params",
+        "max_episode_steps",
+        "n_episodes",
+        "policy",
+        "seed",
+        "split",
+    )
+    #: The evaluator's narrow cross-check, exactly as :class:`Sb3Eval`
+    #: has it: measuring on a DIFFERENT environment is the point, so only
+    #: the model's own identity must match the artifact.
+    _SIDECAR_CHECK = ("algo", "policy")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob, plus the two CROSS-param bounds
+            this kind owns: the trace-allocation ceiling
+            (``n_episodes * max_episode_steps``) and the requirement that
+            the LAST episode's ``seed + n_episodes - 1`` still be a seed.
+            Both live here rather than in ``run`` because neither knob
+            accepts a ``$``-reference, so both are answerable at plan.
+        """
+        problems = []
+        _reject_unknown(problems, params, cls._PARAMS)
+        if params.get("split") not in EPISODE_SPLITS:
+            problems.append(
+                f"split must declare which HELD-OUT split this evidence "
+                f"measures ({'/'.join(repr(s) for s in EPISODE_SPLITS)}) — "
+                "a persisted per-episode record is not a scalar a search "
+                f"may read from any split, got {params.get('split')!r}"
+            )
+        problems += cls._artifact_knob_problems(params)
+        problems += cls._episode_knob_problems(params)
+        return problems
+
+    @classmethod
+    def _artifact_knob_problems(cls, params):
+        """The pin, the model's identity, and the environment to measure on."""
+        problems = []
+        _algo_problem(problems, params.get("algo"), required=False)
+        policy = params.get("policy")
+        if policy is not None and (not isinstance(policy, str) or not policy):
+            problems.append(f"policy must be a non-empty string, got {policy!r}")
+        artifact = params.get("artifact")
+        if artifact is not None and (not isinstance(artifact, str) or not artifact):
+            problems.append(
+                f"artifact must be a non-empty string path, got {artifact!r}"
+            )
+        _env_problem(problems, params.get("env"), required=False)
+        _params_dict_problem(problems, "env_params", params.get("env_params"))
+        return problems
+
+    @classmethod
+    def _episode_knob_problems(cls, params):
+        """How many episodes, how long, under which seeds — and the bounds."""
+        problems = []
+        episodes = params.get("n_episodes", DEFAULT_EPISODES)
+        steps = params.get("max_episode_steps")
+        seed = params.get("seed", DEFAULT_SEED)
+        counts = []
+        _bounded_int_problem(
+            counts, "n_episodes", episodes, low=1, high=_MAX_EPISODES
+        )
+        if steps is None:
+            counts.append(
+                "max_episode_steps is required — an episode that never "
+                "terminates would roll forever, and the cap is also what "
+                "bounds the trace this node persists"
+            )
+        else:
+            _bounded_int_problem(
+                counts, "max_episode_steps", steps,
+                low=1, high=_MAX_EPISODE_STEPS,
+            )
+        _bounded_int_problem(counts, "seed", seed, low=0, high=_MAX_SEED)
+        problems += counts
+        deterministic = params.get("deterministic", DEFAULT_DETERMINISTIC)
+        if not isinstance(deterministic, bool):
+            problems.append(
+                f"deterministic must be a bool, got {deterministic!r}"
+            )
+        # The cross-bounds are arithmetic on the three counts, so they are
+        # asked only once each of them is a number — and asked whatever
+        # ELSE the document got wrong, so an unrelated broken knob never
+        # hides a document that would blow the trace ceiling.
+        if counts:
+            return problems
+        return problems + cls._cross_knob_problems(
+            int(episodes), int(steps), int(seed)
+        )
+
+    @classmethod
+    def _cross_knob_problems(cls, episodes, steps, seed):
+        """The two bounds no single knob can break on its own."""
+        problems = []
+        if episodes * steps > _MAX_TRACE_STEPS:
+            problems.append(
+                f"n_episodes * max_episode_steps is {episodes * steps}, above "
+                f"the {_MAX_TRACE_STEPS} step records this node will allocate "
+                "— the trace is kept in memory and then persisted whole, so "
+                "the ceiling is refused at plan rather than discovered at "
+                "execute"
+            )
+        if seed + episodes - 1 > _MAX_SEED:
+            problems.append(
+                f"seed {seed} with {episodes} episode(s) would reset the last "
+                f"one on {seed + episodes - 1}, above {_MAX_SEED} — episode i "
+                "resets on seed + i, so every one of them must still be a "
+                "seed the environment can be given"
+            )
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Problems with ``inputs``, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            The optional ``artifact_path`` pin, and nothing else — the
+            environment is DECLARED here, never wired.
+
+        Returns
+        -------
+        list of str
+            One problem when the port is wired to something unusable. An
+            UNWIRED port is lawful: the reference may come from
+            ``params['artifact']`` instead.
+        """
+        return self.pin_port_problems(
+            inputs, "artifact_path", hint="wire it from an sb3-train node"
+        )
 
 
 #: The pack's registerable kinds — concrete classes only.
