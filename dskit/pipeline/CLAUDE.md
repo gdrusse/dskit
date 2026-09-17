@@ -83,20 +83,28 @@ on it without breaking its rulings.
   `planner.py`; the stage-list grammar refuses weighted corrections).
   The STATISTIC itself (`METHODS`: plain | studentized) is a closed
   tuple by owned-kind doctrine — never registrable.
-- **False-signal probability** — `register_estimator`
-  (`false_signal.py`, ADR-0149); `grenander-local-fdr` ships. The
+- **False-signal probability** — `register_false_signal_estimator`
+  (`false_signal.py`, ADR-0151); `grenander-local-fdr` ships. The
   registry holds CLASSES, not functions: a family is a
   `FalseSignalEstimator` subclass supplying `fit` /
-  `null_proportion` / `density`, and `estimate` is a TEMPLATE the
-  member never overrides. `density` MUST be non-increasing in `p` —
-  that is what makes `pi_upper` a bound rather than a second point
-  estimate, so the template SCREENS every evaluated point and
-  refuses a member that rises. `independent_units` is required and
-  never defaulted: signals fitted on overlapping time are not
-  independent, and a bound at the signal count is anti-conservative.
-  The consumer contract (`pi_hat <= pi_upper`, both in `[0, 1]`)
-  lives on `FalseSignalEstimate.__post_init__`, so a violating pair
-  cannot exist. Nothing is wired: no node kind reads it yet.
+  `null_proportion` / `density`, and `estimate` is a TEMPLATE
+  `__init_subclass__` REFUSES to let a member override — not a
+  documented convention, a class-definition-time error. `density`
+  MUST be non-increasing in `p`, so the template SCREENS every
+  evaluated point and refuses a member that rises.
+  `independent_units` is required and never defaulted: signals
+  fitted on overlapping time are not independent, and a limit at the
+  signal count is anti-conservative. `min_family` refuses a family
+  too small to be a family. The consumer contract
+  (`pi_hat <= pi_widened`, both in `[0, 1]`, all three maps
+  read-only) lives on `FalseSignalEstimate.__post_init__` and its
+  refusal names the ESTIMATOR, not the field.
+  **`pi_widened` is NOT a confidence bound** — measured coverage of
+  the true local fdr is 0.53–0.82 against a 0.95 nominal, because
+  both widened inputs price only binomial error and the Grenander
+  density's error is unpriced and dominates. Read the module
+  docstring's table before feeding it to anything that calls itself
+  a chance constraint. Nothing is wired: no node kind reads it yet.
 - **No-information / h*** — `no_information_test` /
   `max_informative_horizon` (`stats.py`, ADR-0057). One time-ordered
   `(y, ŷ)` series vs a mean; Newey–West `lags` is overlap in **steps**.
@@ -582,8 +590,9 @@ dskit/pipeline/
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction
 │                      registry; no-information vs mean (Clark–West, h*)
-├── false_signal.py    pi_hat + conservative pi_upper per signal, from
-│                      out-of-fold evidence and a scramble null (ADR-0149)
+├── false_signal.py    pi_hat + a widened pi_widened per signal, from
+│                      out-of-fold evidence and a scramble null (ADR-0151);
+│                      pi_widened is a widened point estimate, not a bound
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets

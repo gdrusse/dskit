@@ -795,12 +795,21 @@ def regularized_incomplete_beta(a, b, x):
     b : float
         Second shape, > 0.
     x : float
-        Evaluation point; clamped to the closed unit interval.
+        Evaluation point, finite; clamped to the closed unit interval.
 
     Returns
     -------
     float
         ``I_x(a, b)``, the Beta(a, b) CDF at ``x``.
+
+    Raises
+    ------
+    ValueError
+        On a shape that is not a finite number > 0, or a non-finite
+        ``x``. A PUBLIC name enforces its preconditions rather than
+        assuming them: ``a = 0.0`` used to escape as a bare ``math
+        domain error`` from ``lgamma``, and ``x = nan`` used to return
+        ``nan`` in silence.
 
     Examples
     --------
@@ -808,6 +817,14 @@ def regularized_incomplete_beta(a, b, x):
 
         regularized_incomplete_beta(1.0, 1.0, 0.25)  # 0.25
     """
+    for name, shape in (("a", a), ("b", b)):
+        if not number_ok(shape) or shape <= 0.0:
+            raise ValueError(
+                f"regularized_incomplete_beta needs a finite {name} > 0, "
+                f"got {shape!r}"
+            )
+    if not number_ok(x):
+        raise ValueError(f"regularized_incomplete_beta needs a finite x, got {x!r}")
     if x <= 0.0:
         return 0.0
     if x >= 1.0:
