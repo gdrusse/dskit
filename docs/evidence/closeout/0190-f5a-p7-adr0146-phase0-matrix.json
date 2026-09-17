@@ -1,0 +1,385 @@
+{
+  "schema_version": "Phase0Matrix.v1",
+  "slice_id": "F5a / P7 Packet 7 / bounded synthetic composed-tape verification (P7 closure gate)",
+  "packet": "7-remainder",
+  "adr": "ADR-0146 - bounded synthetic composed-tape verification (P7 closure gate)",
+  "adr_status": "accepted (docs/architecture/decision-log.md line 11551; preapproval review + correction + clean recheck recorded in evidence 0189.adr0146_preapproval_review -- 1 Critical/2 Major/1 Minor corrected by design changes, 1 Nit closed inline, recheck 0 Critical/0 Major/1 new Minor closed inline as a docstring-warning pin; owner ADR approval recorded by commit 0bf60ed)",
+  "base_main": "0bf60ed",
+  "worktree": "/home/russell/wt/f5a-p7-remainder-20260916",
+  "branch": "codex/f5a-p7-remainder-20260916",
+  "candidate_commit": "0bf60ed (docs: accept ADR-0146 after clean recheck; close docstring-guard Minor -- design-only; no production code for compose_replay_tape exists yet)",
+  "cites": [
+    "evidence 0189 (ADR-0146 proposal, preapproval review, correction, recheck, owner acceptance trail)",
+    "evidence 0187 (ADR-0145 Phase0 matrix -- style/format precedent, this file's own direct predecessor in the same module)",
+    "evidence 0188 (ADR-0145 RED/GREEN -- confirms verify_causal_order/_check_event_envelope/CapturedReplayTape are real, merged, unedited code today, not still-proposed)",
+    "evidence 0184 (ADR-0144 Phase0 matrix -- style/format precedent)",
+    "evidence 0181 (ADR-0143 Phase0 matrix -- style/format precedent)",
+    "evidence 0178 (ADR-0129 accessor RED/GREEN -- single-read discipline, fail-closed provider-raise gap noted as untested Minor, binding checks)",
+    "evidence 0174/0175/0176 (original three-hop composed-tape design, three failed Phase 0 cycles, the architecture gate this ADR resolves)",
+    "evidence 0177 (owner decision adopting the bounded P4 accessor option)",
+    "evidence 0179 (composed convergence checkpoint cited by ADR-0146's Scope decision subsection)",
+    "ADR-0146 (decision-log.md lines 11551-12077; Decision points 1-10; Scope decision subsection; Non-goals)",
+    "ADR-0129 (decision-log.md; trust.py:4824-4898 CapturedAuthorizationRecord)",
+    "ADR-0143/0144 (dynamic P4 authority; trust.py:9822 _development_dynamic_p4_broker, :9166 _DynamicP4TrustedArtifactResolver, :9640 _DynamicCapturedAuthorizationContract)",
+    "ADR-0132 (decision-log.md; trust.py raw-event/v1 six-key shape, _SYNTHETIC_RAW_EVENT_KEYS)",
+    "docs/skills/skeptic-review.md #Phase 0",
+    "docs/skills/implementation-workflow.md",
+    "AGENTS.md (line ~62, __all__ plus underscore-prefix IS the API contract) and dskit/production/AGENTS.md (line ~36, same rule restated for this package)"
+  ],
+  "authored_by": "implementer (Claude Sonnet 5), design inspection only, no code/tests changed",
+  "code_read": [
+    "dskit/production/bundles.py:1-666 (full file) -- confirms __all__ (lines 44-55) currently exports CapturedReplayTape and verify_causal_order but not compose_replay_tape (does not exist yet); confirms _check_tape/CapturedReplayTape/_check_event_envelope/_parse_event_envelope/_event_envelope_order_key/verify_causal_order are ADR-0145's real, merged, UNEDITED code (contra evidence 0187 which reviewed them as still-proposed); confirms the module docstring's layering claim ('the only production module imported here is base') is prose, not machine-checked",
+    "dskit/pipeline/trust.py:4824-4898 (CapturedAuthorizationRecord.lifecycle_captured_receipt_sha256/.read_member_bytes -- both PUBLIC, non-underscore methods; the only two methods this record exposes besides inherited _Opaque behavior)",
+    "dskit/pipeline/trust.py:5305-5343 (_LifecycleAuthorizationLedger.p4_receipt_digest/.read_p4_member -- the private implementation behind the accessor: p4_receipt_digest binds to the exact (record, stream, consumer_document_sha256) triple via _p4_record_capture and rechecks receipt['stream_id']==stream; read_p4_member additionally binds session IS entry[5] and request['captures'][index][3]==dict(descriptor) -- i.e. the EXACT committed descriptor object, not merely an equal-looking one -- rechecks the sealed member manifest digest, enforces single-read via a (stream, relative_path) key in a per-record set, and rechecks the returned bytes' own sha256/length against the sealed declaration before returning",
+    "dskit/pipeline/trust.py:872-887 (_Published.__slots__ = (sealed, descriptor, _sealed, _locked) -- 'sealed' and 'descriptor' are PUBLIC (non-underscore) attributes; '_sealed'/'_locked' are private. descriptor is a plain dict {root_ref, snapshot_version, document_sha256, node, output, purpose} built once at publish() time (trust.py:1199-1206) and never mutated (frozen via __setattr__ refusal)",
+    "dskit/pipeline/trust.py:844 (_Sealed class -- sealed._member_manifest_sha256 is a PRIVATE, underscore-prefixed attribute; compose_replay_tape reading it would reach across the pipeline/production layering boundary's own underscore-prefix API contract, not merely 'import trust.py')",
+    "dskit/pipeline/trust.py:9822-9900 (_development_dynamic_p4_broker -- one-shot dynamic authority construction from a retained ADR-0141 root-PIS issuer; ordinary v1 lifecycle methods on the returned CapturedAuthorizationAuthority, including authorize_capture_set)",
+    "dskit/pipeline/trust.py:9166 (_DynamicP4TrustedArtifactResolver), :9640 (_DynamicCapturedAuthorizationContract), :2423 (CapturedAuthorizationAuthority.authorize_capture_set) -- confirms the dynamic authority returns the identical (record, session) tuple shape ADR-0144's own test already exercises",
+    "tests/pipeline/test_captured_authorization.py:4767-4793 (_adr143_issued_case), :5221-5260 (_adr144_document_and_captures), :5262-5273 (_adr144_admission_ref), :5281-5320 (test_adr144_dynamic_authorize_capture_set_reaches_genuine_captured_admission) -- the exact fixture helpers Decision point 9(a) names for reuse; confirms f4 = tests.pipeline.test_trust (line 17), f4._publish/_foreign_publish/_consumer_document/_SHA are the underlying single-stream produce/seal/publish helpers",
+    "tests/production/test_purity.py (full file) -- confirms ALLOWED_PREFIXES for dskit.production includes 'dskit.pipeline' at ANY depth (not function-depth-only like dskit.journal); this package-wide gate does NOT structurally forbid bundles.py from importing dskit.pipeline.trust, so ADR-0146 Decision point 10's 'no trust.py import' commitment is enforced only by this ADR's own text and code review, not by any existing automated test -- see open_findings",
+    "AGENTS.md:62-63, dskit/production/AGENTS.md:36-37 (__all__ plus underscore prefix IS the API contract; no underscore name exported, no module reaches another module's private name) -- test_purity.py's test_no_underscore_name_is_exported and test_no_private_name_is_imported_from_another_package are the machine-checked half of this rule and DO cover compose_replay_tape once it exists (an underscore-prefixed helper landing in __all__, or bundles.py reaching sealed._member_manifest_sha256, would both already be caught by these two existing tests without any new test being written)"
+  ],
+  "actors": [
+    {
+      "actor": "compose_replay_tape(record, session, published, consumer_document_sha256, roster_relative_path, raw_event_members) (proposed, not yet built)",
+      "identity": "one new pure module-level function in dskit/production/bundles.py, per ADR Decision point 7; the ADR text states it 'is exported alongside verify_causal_order (added to __all__)' -- see public_facades pin below",
+      "authority": "reads only PUBLIC attributes/methods of record/session/published (record.read_member_bytes, record.lifecycle_captured_receipt_sha256, published.sealed.prepared.stream_id, published.descriptor); performs no F4/P4/broker/signer/ledger call of its own beyond those two accessor methods; imports no symbol from dskit.pipeline.trust; raises ProductionError on any violation and never catches/rewraps verify_causal_order's own raise (Decision point 10 last bullet)"
+    },
+    {
+      "actor": "the FIXED P4 authority path (existing, unedited)",
+      "identity": "the ordinary CapturedAuthorizationAuthority driven by f4._publish / authorize_capture_set against the fixed synthetic corpus (ADR-0136/0138/0139 lineage), the same construction most ADR-0129 tests already use",
+      "authority": "produces a real (record, session) pair via a genuine authorize_capture_set call; compose_replay_tape must work through this path (a comparison/regression case per Decision point 8's own text: 'A fixed-authority case may additionally exist... but does not substitute for the dynamic-authority case')"
+    },
+    {
+      "actor": "the DYNAMIC P4 authority path (existing, unedited; ADR-0146's own positive proof case)",
+      "identity": "trust._development_dynamic_p4_broker(issuer) over a real NonAuthorizingDynamicRootGraph (ADR-0143), driven exactly as _adr143_issued_case/_adr144_document_and_captures/_adr144_admission_ref already do (ADR-0144)",
+      "authority": "Decision point 8 makes this MANDATORY, not optional: 'Phase 0's RED matrix must include at least one case that drives the full chain -- authorize_capture_set -> record/session -> compose_replay_tape -> verify_causal_order -- end-to-end through the dynamic authority... and it must not be allowed to quietly default to covering only the easier fixed-authority path'"
+    },
+    {
+      "actor": "CapturedAuthorizationRecord.read_member_bytes / .lifecycle_captured_receipt_sha256 (ADR-0129, existing, unedited)",
+      "identity": "trust.py:4824-4898, public methods on the opaque broker-issued record; backed by _LifecycleAuthorizationLedger.read_p4_member/.p4_receipt_digest (trust.py:5305-5343), which do the actual binding/single-read/digest-recheck work",
+      "authority": "resolver-type-agnostic by construction (operates only on committed entry/audit tuples in the ledger, never on resolver internals) -- this is the claim ADR-0146 Decision point 8 requires a REAL test to exercise against the dynamic authority specifically, not merely re-assert by inspection"
+    },
+    {
+      "actor": "CapturedReplayTape._build / .canonical_bytes() / .parse() and verify_causal_order (ADR-0145, existing, unedited, ALREADY MERGED as real code -- contra evidence 0187 which reviewed them as still-proposed)",
+      "identity": "dskit/production/bundles.py:136-306 (codec), :516-... (verify_causal_order); Decision point 6/9 of ADR-0146 requires compose_replay_tape to call these EXACT functions, unedited, in this EXACT order: _build -> canonical_bytes -> parse -> verify_causal_order(reparsed, ordered_envelope_bytes)",
+      "authority": "unchanged from evidence 0187's own characterization now that they are real: _build/parse/canonical_bytes are a genuine default-deny round trip; verify_causal_order is pure, read-only, and performs its own per-position digest/shape/policy/uniqueness/correction-chain/order-key checks over whatever ordered_envelope_bytes it is handed -- it has no way to know those bytes came from a genuine capture rather than a hand-built fixture, so compose_replay_tape's OWN resolution discipline (steps 1-8) is the only thing standing between a forged input and a falsely-verified tape"
+    },
+    {
+      "actor": "_check_composed_tape_roster_fixture(value) and _check_raw_event_member(value) (proposed, new, PRIVATE)",
+      "identity": "two new small pure private helpers in bundles.py, beside _check_tape/_check_event_envelope, per Decision points 7 (step 3) and 7 (step 6b)",
+      "authority": "default-deny, accumulate-then-raise style matching _check_tape/_check_event_envelope; NOT added to __all__ (Non-goals: 'no new public export beyond compose_replay_tape itself')"
+    },
+    {
+      "actor": "the composed-tape roster fixture (dskit.composed-tape-roster-fixture/v1) and raw-event/v1 members it resolves via read_member_bytes",
+      "identity": "test-only fixture bytes the test constructs and publishes through a real F4 lifecycle (Decision point 9), then resolves back out through compose_replay_tape -- see document_shapes_pinned below for the exact shapes",
+      "authority": "untrusted from compose_replay_tape's point of view exactly like any other read_member_bytes result: the function must validate the resolved bytes itself (steps 3, 6b), never assume the test built them honestly"
+    },
+    {
+      "actor": "trusted host / process owner",
+      "authority": "administers the process; non-adversarial, not part of the external threat model (unchanged from evidence 0181/0184/0187)"
+    },
+    {
+      "actor": "hostile caller / untrusted input boundary",
+      "scope": "all six compose_replay_tape arguments are potentially adversarial from the function's own point of view even though the intended caller is a trusted test: record/session/published/consumer_document_sha256 could be a forged or cross-capture-mismatched tuple (row 3, row 10); roster_relative_path could name a member outside the intended roster; raw_event_members could contain malformed metadata, wrong relative_paths, or be empty (row 5, row 9); the roster and raw-event BYTES resolved via read_member_bytes are untrusted regardless of caller intent, exactly as verify_causal_order already treats ordered_envelope_bytes as untrusted (evidence 0187's own framing, still true here one layer up)",
+      "explicitly_out_of_scope": "reflection/monkeypatching a broker-issued CapturedAuthorizationRecord's opaque internals, or constructing a fake object that merely duck-types record/session/published's public surface -- per implementation-workflow.md, mutable Python internals are not an external security boundary; RED should exercise this via genuine authorize_capture_set results only (fixed and dynamic)"
+    }
+  ],
+  "authority_boundary_statement": "compose_replay_tape crosses no NEW trust boundary: every credential it touches (record, session, published) was already minted by a real authorize_capture_set call before compose_replay_tape is invoked, and every read it performs (roster bytes, raw-event bytes) goes back through ADR-0129's own already-verified accessor, which independently rebinds record/session/published/consumer_document_sha256/relative_path and rechecks sealed member digests on every call. compose_replay_tape's own contribution to the trust boundary is entirely DOWNSTREAM validation: it must not silently accept a resolved-but-malformed roster or raw-event member, must not let a caller inject data_capture_root, and must genuinely re-verify via the build/canonical_bytes/parse/verify_causal_order round trip rather than trusting its own in-memory construction. This is consistent with ADR-0130/0141-0144's disjoint 'may this document CAPTURE this root' vs. 'are these envelope bytes in causal order' framing, now extended one hop further: 'was this specific record/session/published triple ACTUALLY the one that captured this content, and does the content it names actually verify end-to-end.'",
+  "class_function_inventory": [
+    {
+      "name": "compose_replay_tape(record, session, published, consumer_document_sha256, roster_relative_path, raw_event_members)",
+      "pin": "the exact 10-step body ADR-0146 Decision point 7 specifies, verbatim: (1) stream = published.sealed.prepared.stream_id; (2) roster_bytes = record.read_member_bytes(session, published, consumer_document_sha256, roster_relative_path); (3) parse+validate via _check_composed_tape_roster_fixture, raising ProductionError naming every problem; (4) source_rank_policy_sha256 = sha256(roster_bytes).hexdigest(); (5) source_rank_by_id built from the validated roster; (6) for each entry in raw_event_members IN ORDER (no sorting performed by this function): (6a) raw_bytes = record.read_member_bytes(...), (6b) parse+validate via _check_raw_event_member, (6c) source_rank = source_rank_by_id[source_id] with an absent source_id accumulated into the raised error rather than a bare KeyError, (6d) assemble the 15-field event-envelope/v2 object, (6e) validate via _check_event_envelope (the SAME function verify_causal_order itself uses per-position), (6f) envelope_bytes = _canonical_bytes(envelope); append to ordered_envelope_bytes and hashlib.sha256(envelope_bytes).hexdigest() to ordered_envelope_digests; (7) data_capture_root computed from the live published token INSIDE this function, never an argument; (8) data_captured_receipt = record.lifecycle_captured_receipt_sha256(stream, consumer_document_sha256); (9) tape = CapturedReplayTape._build(...), reparsed = CapturedReplayTape.parse(tape.canonical_bytes()); (10) verify_causal_order(reparsed, ordered_envelope_bytes) -- on success returns reparsed, on failure the ProductionError propagates unedited, no second error-handling layer"
+    },
+    {
+      "name": "data_capture_root derivation (Decision point 4's own named open pin -- THIS Phase 0 matrix resolves it)",
+      "pin": "data_capture_root = _canonical_hash(published.descriptor). NOT sealed._member_manifest_sha256 ('the F4 publication receipt's own self digest' option the ADR text names as the alternative): that attribute is underscore-prefixed on trust.py's private _Sealed class, and reading it from bundles.py would violate the exact underscore-prefix/no-private-cross-package-reach rule AGENTS.md states twice and tests/production/test_purity.py's test_no_private_name_is_imported_from_another_package machine-checks (code_read above). published.descriptor is the ONE public, non-underscore, already-frozen attribute _Published exposes that identifies the captured root (root_ref, snapshot_version, document_sha256, node, output, purpose) -- exactly the shape Decision point 7's own reasoning requires ('calls only their existing public methods/attributes'). This is a code-shape-level argument (mirrors evidence 0187 row 9's reasoning), not merely a preference, and Phase 0 pins it as the required implementation choice, closing the ADR's own 'remains the Phase 0 pin' deferral."
+    },
+    {
+      "name": "data_capture_root tamper-resistance (task item 6)",
+      "pin": "a caller cannot substitute a different root because (a) data_capture_root is not a parameter at all -- it is computed from published.descriptor inside the function, and (b) published itself is independently rebound against the exact committed record/session/descriptor on EVERY read_member_bytes call (steps 2 and 6a, which both run BEFORE step 7). A published token whose descriptor was tampered, or that belongs to a different capture than record/session, fails read_member_bytes's own 'P4 record/session/publication mismatch' or 'P4 sealed member manifest mismatch' refusal at step 2, before compose_replay_tape ever reaches step 7 -- so a successful tape can only ever be built from a published token that already survived the SAME binding check twice."
+    },
+    {
+      "name": "_check_composed_tape_roster_fixture(value)",
+      "pin": "schema_version must equal the literal 'dskit.composed-tape-roster-fixture/v1' (carrying a one-line test-only/placeholder comment per Decision point 3's Nit pin); sources must be a list of {source_id: nonempty str, rank: nonnegative int} objects; source_id values unique across the list; rank values must equal the item's own LIST INDEX exactly (0..len(sources)-1 in list order -- not merely 'the set {0..n-1} present somewhere', an out-of-position rank at the right VALUE but wrong INDEX must still refuse); every problem accumulated into one ProductionError, mirroring _check_tape/_check_event_envelope's style"
+    },
+    {
+      "name": "_check_raw_event_member(value)",
+      "pin": "the closed six-key dskit.raw-event/v1 shape, reimplemented locally (not imported, per the layering boundary): schema_version literal, source_id/event_id nonempty str, source_sequence/availability_ms int (non-negative for source_sequence per ADR-0132 parity), payload_sha256 a well-formed sha256 digest -- mirrors trust.py:7072 _SYNTHETIC_RAW_EVENT_KEYS field-for-field but is NOT imported from trust.py (bounded restatement, per Decision point 6b's own text)"
+    },
+    {
+      "name": "CapturedReplayTape / _check_tape / _check_event_envelope / verify_causal_order (bundles.py, ALREADY MERGED, unedited)",
+      "pin": "zero behavioral change; compose_replay_tape composes these exactly as they exist today (confirmed by code_read above -- unlike evidence 0187, which reviewed them as still-proposed, this matrix confirms they are REAL code now). Non-goals explicitly forbid any edit to these four names."
+    }
+  ],
+  "public_facades": [
+    "dskit/production/bundles.py: compose_replay_tape(record, session, published, consumer_document_sha256, roster_relative_path, raw_event_members) -- new module-level function, the ADR's entire new public surface",
+    "dskit/production/bundles.py: __all__ (lines 44-55) -- PINNED: compose_replay_tape IS added, per ADR-0146's own text ('compose_replay_tape is exported alongside verify_causal_order, added to __all__'). This directly closes the ambiguity ADR-0145's own Phase 0 matrix (evidence 0187, public_facades row 108) had to leave as an open recommendation because ADR-0145's text never said so explicitly -- ADR-0146 does not repeat that gap. Recommended list position: after 'Schedule', before 'verify_causal_order' (case-sensitive ASCII order, matching the existing list's own ordering convention where uppercase-initial names precede lowercase-initial names)",
+    "dskit/production/bundles.py: _check_composed_tape_roster_fixture, _check_raw_event_member -- PINNED PRIVATE, NOT added to __all__ (Non-goals: 'no new public export beyond compose_replay_tape itself'); test_purity.py's test_no_underscore_name_is_exported already machine-checks this once the module exists",
+    "dskit/production/bundles.py: CapturedReplayTape.parse, CapturedReplayTape._build, verify_causal_order, _check_event_envelope -- all UNEDITED, already in __all__ or already module-private as before; compose_replay_tape calls them, adds no new export for any of them",
+    "dskit/pipeline/trust.py: CapturedAuthorizationRecord.read_member_bytes / .lifecycle_captured_receipt_sha256, CapturedAuthorizationAuthority.authorize_capture_set, trust._development_dynamic_p4_broker -- all UNEDITED, already public/already-tested; compose_replay_tape reaches them only through values the caller already holds, never via an import of dskit.pipeline.trust from bundles.py (Decision point 10) -- see open_findings for the gap in AUTOMATED enforcement of this specific commitment"
+  ],
+  "document_shapes_pinned": {
+    "note": "Field-by-field pins for RED to consume directly, in the same style as evidence 0187's document_shapes_pinned section.",
+    "compose_replay_tape_signature": {
+      "record": "CapturedAuthorizationRecord -- the exact object one authorize_capture_set call returned",
+      "session": "LaunchSession -- the exact session object returned alongside record",
+      "published": "the _Published token the caller captured from the same F4 lifecycle that fed authorize_capture_set's captures tuple",
+      "consumer_document_sha256": "str -- frozen.document_sha256 / port['consumer_document_sha256'], ADR-0129's existing shape",
+      "roster_relative_path": "str -- the source_roster.json member's relative path in the sealed manifest",
+      "raw_event_members": "ordered sequence (list/tuple, NOT a one-shot iterator -- mirrors evidence 0187 row 12's pin for verify_causal_order's own ordered_envelope_bytes), one item per envelope, position i in the sequence becomes tape position i, NO sorting performed by compose_replay_tape itself"
+    },
+    "raw_event_members_entry": {
+      "relative_path": "str -- the raw-event/v1 member's path in the sealed manifest",
+      "exchange_ms": "nonnegative int",
+      "receive_ms": "nonnegative int, receive_ms >= exchange_ms (checked by _check_event_envelope after assembly, unchanged from ADR-0145)",
+      "source_provenance_tag": "nonempty str",
+      "source_timezone_tag": "nonempty str",
+      "correction_position": "nonnegative int",
+      "corrects_event_id": "str or None; must be None iff correction_position==0 (checked by _check_event_envelope after assembly)",
+      "prior_envelope_sha256": "sha256 digest or None; must be None iff correction_position==0 (checked by _check_event_envelope after assembly)"
+    },
+    "composed_tape_roster_fixture_v1": {
+      "schema_version": "literal 'dskit.composed-tape-roster-fixture/v1' -- NEW, ADR-0146-owned, test-only/placeholder (one-line comment pin, Decision point 3 Nit)",
+      "sources": "list of {source_id: nonempty str, rank: nonnegative int}, unique source_id, rank == list index exactly (0..len(sources)-1, no gap, no duplicate, no out-of-position value)"
+    },
+    "raw_event_v1_six_key_shape": {
+      "note": "ADR-0132's existing closed shape, reimplemented (not imported) as _check_raw_event_member per Decision point 6b -- exact same six keys as trust.py:7072 _SYNTHETIC_RAW_EVENT_KEYS",
+      "schema_version": "literal 'dskit.raw-event/v1'",
+      "source_id": "nonempty str",
+      "event_id": "nonempty str",
+      "source_sequence": "int",
+      "availability_ms": "int",
+      "payload_sha256": "sha256 digest"
+    },
+    "event_envelope_v2_15_field_shape": "unedited from ADR-0145 (evidence 0187's own document_shapes_pinned.event-envelope-v2) -- compose_replay_tape assembles this object at step 6d from raw-event verbatim fields + step 6c's source_rank + step 4's source_rank_policy_sha256 + the raw_event_members entry's own seven caller-supplied fields, then validates it with the SAME _check_event_envelope function, unedited"
+  },
+  "matrix": [
+    {
+      "id": 1,
+      "family": "task item (1) -- POSITIVE case through the FIXED authority",
+      "entry_points": [
+        "compose_replay_tape, full success path, steps 1-10, driven via f4._publish/authorize_capture_set on the ordinary fixed CapturedAuthorizationAuthority"
+      ],
+      "cases": [
+        "one real F4 produce/seal/publish/authorize_capture_set lifecycle on the fixed authority; a valid roster fixture (>=2 sources, correctly rank-sorted); a straight-line raw_event_members list (>=2 entries, correction_position=0/corrects_event_id=None/prior_envelope_sha256=None for every entry, per Decision point 5's minimal positive fixture); compose_replay_tape called with the resulting (record, session, published, consumer_document_sha256, roster_relative_path, raw_event_members)"
+      ],
+      "expected_outcome": "returns a CapturedReplayTape instance (the reparsed, verify_causal_order-verified tape); tape.envelope_count == len(raw_event_members); tape.data_capture_root/data_captured_receipt/source_rank_policy_sha256 all non-placeholder 64-hex digests; a second call with the SAME arguments must refuse at the accessor's single-read discipline (read_member_bytes's 'P4 member bytes already consumed'), confirming compose_replay_tape does not itself cache or bypass that discipline",
+      "forbidden_effect": "any F4/broker/signer/ledger call other than the two accessor methods; any silent success despite a malformed fixture; a second call succeeding by re-reading already-consumed member bytes"
+    },
+    {
+      "id": 2,
+      "family": "task item (2) -- POSITIVE case through the DYNAMIC authority (Decision point 8's mandatory capstone)",
+      "entry_points": [
+        "compose_replay_tape, full success path, driven via trust._development_dynamic_p4_broker(issuer) + _adr143_issued_case + _adr144_document_and_captures + _adr144_admission_ref, exactly mirroring the existing ADR-0144 test's own construction"
+      ],
+      "cases": [
+        "identical fixture shape to row 1, but record/session/published are produced by authorize_capture_set on the DYNAMIC authority (trust._DynamicP4TrustedArtifactResolver / _DynamicCapturedAuthorizationContract) rather than the fixed one -- this is the ADR's OWN stated positive proof case (Decision point 2), not a substitutable variant of row 1"
+      ],
+      "expected_outcome": "identical success shape to row 1: read_member_bytes and lifecycle_captured_receipt_sha256 (ADR-0129's accessor) must work UNCHANGED against a dynamic-authority-issued record/session, confirming the 'resolver-type-agnostic by inspection' claim (ADR Context point 1) with a REAL test rather than a restated claim -- this is the ADR's own preapproval-review Major finding #1's fix, and Decision point 8 states this case 'must not substitute' for row 1's fixed-authority case, only complement it",
+      "forbidden_effect": "this case being silently skipped, weakened to only assert authorize_capture_set succeeds (without also driving it through compose_replay_tape -> verify_causal_order end-to-end), or substituted by row 1's fixed-authority case alone -- RED must contain this case as a DISTINCT test, not a parametrization collapsed into row 1 that could be accidentally deleted or skipped without the loss being obvious"
+    },
+    {
+      "id": 3,
+      "family": "task item (3) -- forged/mismatched record/session/published triple not corresponding to a real committed CAPTURED admission",
+      "entry_points": [
+        "compose_replay_tape step 1 (published.sealed.prepared.stream_id) and step 2 (record.read_member_bytes) -- the FIRST accessor call in the function body"
+      ],
+      "cases": [
+        "record is a genuine CapturedAuthorizationRecord from a DIFFERENT, valid, unrelated capture (not this stream/consumer_document_sha256) -- p4_receipt_digest/read_p4_member's own _p4_record_capture lookup fails to find an entry",
+        "session is a genuine LaunchSession but from a DIFFERENT capture than record (session is entry[5] identity check fails)",
+        "session was already ended (session._ended True) before compose_replay_tape is called",
+        "published is a genuine _Published token but for a different root than the one record/session captured (descriptor mismatch at the request['captures'][index][3]==dict(descriptor) check)",
+        "consumer_document_sha256 is a syntactically valid sha256-shaped string that simply does not match the frozen document actually used at capture time"
+      ],
+      "expected_outcome": "compose_replay_tape raises (ProductionError from its own accumulate-then-raise style is NOT required here -- read_member_bytes/lifecycle_captured_receipt_sha256 raise ValueError directly per their own docstring's Raises section; Phase 0 should pin whether compose_replay_tape lets that ValueError propagate unwrapped or wraps it into ProductionError -- ADR text does not say, and this is a genuine remaining Phase 0 pin for the independent skeptic, since Decision point 10's own text only discusses ProductionError propagation for verify_causal_order's raise at step 10, not the earlier accessor-raised ValueError at steps 2/6a/8)",
+      "forbidden_effect": "compose_replay_tape ever returning a CapturedReplayTape built from member bytes that were not genuinely authorized by THIS exact record/session/published/consumer_document_sha256 combination"
+    },
+    {
+      "id": 4,
+      "family": "task item (4) -- roster fixture failing _check_composed_tape_roster_fixture",
+      "entry_points": [
+        "compose_replay_tape step 3"
+      ],
+      "cases": [
+        "schema_version is a near-miss string (e.g. 'dskit.composed-tape-roster-fixture/v2' or missing the /v1 suffix)",
+        "sources is missing, not a list, or an empty list",
+        "one source item missing source_id or rank, or with an extra unknown key",
+        "source_id present but empty string, or non-string (int/None)",
+        "two sources share the same source_id",
+        "rank values are the correct SET {0,1,2} but in the WRONG LIST ORDER (e.g. list order gives ranks [0,2,1]) -- must refuse per the 'rank == list index exactly' pin above, not merely per-item 'rank is a nonnegative int'",
+        "rank values skip a value (0,1,3) or duplicate a value (0,1,1)",
+        "rank values start above zero (1,2,3 instead of 0,1,2)"
+      ],
+      "expected_outcome": "ProductionError naming every problem found, raised BEFORE any raw-event member is read (step 6 never begins) -- roster_bytes was already successfully resolved via read_member_bytes at step 2, so this is a content-validation refusal, not an authorization refusal",
+      "forbidden_effect": "any of the above sub-cases silently coerced/accepted; step 4's source_rank_policy_sha256 or step 5's source_rank_by_id being computed from an unvalidated roster"
+    },
+    {
+      "id": 5,
+      "family": "task item (5) -- raw-event member failing validation before it ever reaches envelope assembly",
+      "entry_points": [
+        "compose_replay_tape step 6b (_check_raw_event_member), strictly before step 6d's envelope assembly"
+      ],
+      "cases": [
+        "schema_version wrong literal for the raw-event member",
+        "source_id/event_id missing or empty",
+        "source_sequence or availability_ms wrong type (float/bool/string) or negative where the six-key shape requires non-negative",
+        "payload_sha256 malformed (wrong length, non-hex, uppercase where lowercase required per check_digest)",
+        "an extra unknown key present alongside all six required keys",
+        "a raw-event member whose source_id is NOT present anywhere in the resolved, already-validated roster (task item 3's own text: 'accumulates into the raised ProductionError rather than raising a bare KeyError') -- distinct from a malformed raw-event member: this one is individually well-formed but orphaned from the roster"
+      ],
+      "expected_outcome": "ProductionError naming the problem, with the entry's POSITION in raw_event_members included (mirroring verify_causal_order's own 'position included in the message' style, ADR-0145 precedent) -- the envelope is never assembled or validated by _check_event_envelope for that entry",
+      "forbidden_effect": "a malformed raw-event member reaching step 6d (envelope assembly) and being silently coerced there instead of refused at 6b; the source_id-not-in-roster case raising an unhandled KeyError instead of an accumulated ProductionError message"
+    },
+    {
+      "id": 6,
+      "family": "task item (6) -- data_capture_root tamper-resistance",
+      "entry_points": [
+        "compose_replay_tape step 7 (data_capture_root derivation) and steps 2/6a (published rebinding, which gates step 7 from ever running on a tampered published)"
+      ],
+      "cases": [
+        "confirm data_capture_root does not appear anywhere in compose_replay_tape's own parameter list (a caller literally cannot pass one)",
+        "confirm two DIFFERENT genuine captures of the SAME underlying root content (re-published via a distinct F4 lifecycle) produce DIFFERENT data_capture_root values, since descriptor's document_sha256/node/output/purpose fields differ per publish even when the raw member bytes are byte-identical -- i.e. data_capture_root identifies the CAPTURE, not merely the content",
+        "confirm a caller cannot achieve a chosen data_capture_root by constructing a published-shaped duck-type object: _Published has no public constructor reachable from outside trust.py, and read_member_bytes's own type(published) is _Published check (trust.py:5319) refuses anything else outright, before compose_replay_tape's step 7 is ever reached"
+      ],
+      "expected_outcome": "data_capture_root == _canonical_hash(published.descriptor) always, computed fresh inside compose_replay_tape from the SAME published object that already survived steps 2 and 6a's binding checks -- see class_function_inventory's dedicated pin above for the full derivation argument",
+      "forbidden_effect": "any code path where data_capture_root is accepted as, or derived from, caller-supplied data other than the already-rebound published token's own public descriptor attribute"
+    },
+    {
+      "id": 7,
+      "family": "task item (7) -- the _build -> canonical_bytes -> parse round-trip actually catching a construction bug, not trivially succeeding on its own output",
+      "entry_points": [
+        "compose_replay_tape step 9 (the round trip itself) -- this row tests the round trip's OWN fault-catching power, not compose_replay_tape's happy path"
+      ],
+      "cases": [
+        "a deliberately-broken compose_replay_tape variant (Phase 0 recommends RED include a whitebox unit test directly against CapturedReplayTape._build/parse, reusing ADR-0145's own established whitebox pattern per Decision point 6's text 'already reached directly by test_captured_replay_tape.py') that passes a non-canonical or malformed ordered_envelope_digests list into _build and confirms parse(canonical_bytes()) refuses rather than silently accepting -- this is NOT a new requirement of ADR-0146, it is ADR-0145's own already-covered guarantee (evidence 0188), but Decision point 6's text explicitly calls it out as 'a genuine round trip, not a construction shortcut' so Phase 0 records it as a row here to confirm compose_replay_tape does not accidentally short-circuit it (e.g. by calling _build once and reusing the unreparsed object instead of the actual reparsed = CapturedReplayTape.parse(tape.canonical_bytes()) result)",
+        "confirm compose_replay_tape's step 10 argument is 'reparsed', never the pre-round-trip 'tape' object from step 9's _build call -- a code-reading check, not a runtime-observable behavior difference in the happy path, since both objects have identical field values by construction; RED should use a monkeypatch/spy on CapturedReplayTape.parse to assert it is actually called with tape.canonical_bytes() and that its return value, not the _build result, flows into verify_causal_order"
+      ],
+      "expected_outcome": "the round trip is a genuine parse of freshly-serialized bytes, not a no-op passthrough; a spy/monkeypatch on parse confirms it executes with the exact canonical_bytes() output and its RETURN VALUE (not the pre-round-trip object) is what verify_causal_order receives",
+      "forbidden_effect": "compose_replay_tape calling CapturedReplayTape.parse but discarding its return value and passing the original _build result to verify_causal_order instead -- this would make the round trip decorative rather than a real verification step, exactly the risk Decision point 6's 'genuine round trip, not a construction shortcut' language is guarding against"
+    },
+    {
+      "id": 8,
+      "family": "task item (8) -- verify_causal_order genuinely called on the round-tripped/re-parsed tape, and ADR-0145's own 14 matrix rows (evidence 0187) transitively still holding when reached through compose_replay_tape",
+      "entry_points": [
+        "compose_replay_tape step 10, and by extension every ADR-0145 matrix row's entry point, now reached one hop upstream via raw_event_members rather than direct ordered_envelope_bytes"
+      ],
+      "cases": [
+        "confirmed via row 7's spy: verify_causal_order's first argument is literally the step 9 'reparsed' object",
+        "evidence 0187 row 1 (digest substitution) -- STRUCTURALLY UNREACHABLE via compose_replay_tape's own construction path in the happy-path sense (compose_replay_tape computes both ordered_envelope_bytes and ordered_envelope_digests from the SAME envelope object in the SAME loop iteration at step 6f, so they cannot diverge by construction) -- Phase 0 records this as a confirmed-unreachable sub-case (mirrors 0187 row 2's own 'structurally impossible' sub-case), not a gap; it remains reachable only via direct whitebox misuse of CapturedReplayTape/verify_causal_order outside compose_replay_tape, which ADR-0145's own matrix (row 1) already covers",
+        "evidence 0187 rows 2-7 (out-of-causal-order, correction-chain forward-ref/gap/non-bottoming, duplicate event_id, policy mismatch) -- fully reachable and MUST still hold: compose_replay_tape's raw_event_members argument is the new attacker-controlled surface that lets a caller construct exactly these malformed envelopes (via the seven caller-supplied metadata fields plus a crafted roster/raw-event pairing), so RED must re-derive at least one representative case per family through raw_event_members, not merely re-cite 0187's own already-passing unit tests as sufficient",
+        "evidence 0187 row 8 (malformed new field) -- reachable via a malformed raw_event_members entry that passes _check_raw_event_member's raw-event checks (which do not cover exchange_ms/receive_ms/etc.) but fails _check_event_envelope's checks at step 6e",
+        "evidence 0187 row 9 (noncanonical bytes) -- STRUCTURALLY UNREACHABLE via compose_replay_tape for the same reason as row 1 above: envelope_bytes is always _canonical_bytes(envelope), never caller-supplied raw bytes",
+        "evidence 0187 row 10 (empty tape) -- maps directly to task item (9) below",
+        "evidence 0187 row 11 (exchange_ms/receive_ms non-ordering) -- fully reachable and unchanged: order_key still never reads those two fields, regardless of entry point",
+        "evidence 0187 row 12 (mutation/aliasing of the whole list) -- PARTIALLY reachable: since compose_replay_tape builds ordered_envelope_bytes/digests itself in lockstep, a caller cannot independently reorder/duplicate/omit ONE against the OTHER (unlike calling verify_causal_order directly) -- the only residual attack surface is reordering raw_event_members itself, which Decision point 7 explicitly makes a LEGITIMATE caller choice ('position i in the sequence becomes tape position i'), not an attack; RED should confirm this reasoning rather than attempt an unreachable case",
+        "evidence 0187 row 13 (default-deny closure, unknown/extra keys) -- fully reachable via a raw_event_members entry with an extra key beyond the seven ADR-0145-scoped fields (caught at step 6d's assembly boundary -- Phase 0 should pin whether compose_replay_tape silently drops an unrecognized raw_event_members entry key or refuses if one is present; the ADR's Decision point 7 signature text lists exactly eight keys per entry (relative_path + seven), so an extra ninth key should refuse, not be silently ignored -- this is a genuine Phase 0 pin the independent skeptic should confirm is actually enforced, since Decision point 7's prose does not explicitly say what happens to an unrecognized ninth dict key)",
+        "evidence 0187 row 14 (regression -- CapturedReplayTape.parse/_check_tape unedited) -- fully reachable and required: compose_replay_tape's own existence must not change any pre-existing CapturedReplayTape.parse/_check_tape/_check_event_envelope RED case's outcome"
+      ],
+      "expected_outcome": "every reachable 0187 row's invariant continues to hold when driven through compose_replay_tape's raw_event_members surface instead of verify_causal_order's direct ordered_envelope_bytes surface; the two structurally-unreachable rows (1, 9) are explicitly documented as unreachable-by-construction rather than silently dropped from coverage",
+      "forbidden_effect": "any of the transitively-reachable 0187 rows silently regressing because compose_replay_tape's own construction path accidentally bypasses a check verify_causal_order would otherwise apply; the unrecognized-ninth-key case in raw_event_members being silently accepted rather than refused"
+    },
+    {
+      "id": 9,
+      "family": "task item (9) -- empty raw_event_members list",
+      "entry_points": [
+        "compose_replay_tape step 6 (the for-loop, zero iterations) and step 9/10 (empty ordered_envelope_digests/ordered_envelope_bytes)"
+      ],
+      "cases": [
+        "raw_event_members == [] with an otherwise-valid roster and a genuine record/session/published triple"
+      ],
+      "expected_outcome": "PASSES vacuously, consistent with ADR-0130 Decision point 4's 'a zero-envelope root is valid' and evidence 0187 row 10's identical ruling for verify_causal_order directly -- tape.envelope_count==0, ordered_envelope_digests==(), and verify_causal_order(reparsed, []) succeeds vacuously per its own already-covered length-check logic",
+      "forbidden_effect": "an empty raw_event_members list being refused outright (would contradict the already-established zero-envelope-is-valid ruling this ADR inherits, not overrides)"
+    },
+    {
+      "id": 10,
+      "family": "task item (10) -- cross-capture substitution: record/session/published triple where one value belongs to a DIFFERENT capture than the others",
+      "entry_points": [
+        "compose_replay_tape step 2 (first read_member_bytes call) -- the binding check that must catch this before any roster content is even read"
+      ],
+      "cases": [
+        "record and session both genuinely belong to capture A; published genuinely belongs to capture B (a different, otherwise-valid F4 lifecycle) -- read_p4_member's stream/descriptor lookup for record fails to find an entry matching B's stream, or the request['captures'][index][3]==dict(descriptor) identity check fails",
+        "record belongs to capture A; session is a genuine LaunchSession from capture B (different object, session is entry[5] identity check fails even if both sessions are otherwise valid, unended LaunchSession instances)",
+        "record and published both belong to capture A; consumer_document_sha256 is the genuine digest for a DIFFERENT frozen document that also captured stream A's root under a different purpose/consumer_input (ADR-0128 multi-consumer territory) -- confirms the check is keyed on the EXACT consumer_document_sha256, not merely 'any document that captured this stream'"
+      ],
+      "expected_outcome": "refused at step 2, before roster_bytes is ever returned -- none of steps 3 onward execute",
+      "forbidden_effect": "compose_replay_tape ever combining member bytes or a receipt digest from one capture with the record/session identity of a different capture into a single reported-successful tape"
+    },
+    {
+      "id": 11,
+      "family": "task item (11) -- the one-hop scope boundary itself: no path in this design could be mistaken for or misused as multi-hop/real composition",
+      "entry_points": [
+        "compose_replay_tape's own docstring (the recheck Minor's implementation pin) and the absence of any second capture/publish/consumer anywhere in the function body"
+      ],
+      "cases": [
+        "confirm compose_replay_tape's docstring carries the EXACT one-line warning the ADR-0146 recheck Minor pins, verbatim: \"Bounded synthetic/test use only; not for real replay operations\"",
+        "confirm compose_replay_tape performs no second F4 produce/seal/publish/authorize_capture_set call anywhere in its own body -- it is handed an ALREADY-captured record/session/published triple and only READS from it (via the two accessor methods); it never itself captures, publishes, or authorizes anything",
+        "confirm compose_replay_tape has no code path that could be handed a genuinely separate, second published manifest root and combine it with the data capture -- the function signature itself has no second 'manifest_published' or 'manifest_record' parameter, so a caller physically cannot drive a three-hop composition through this entry point even by misuse; a real multi-hop composition would require a DIFFERENT function this ADR does not add (Non-goals)"
+      ],
+      "expected_outcome": "the docstring warning is present verbatim; grep/AST-level confirmation that compose_replay_tape's body contains no call to produce/seal/publish/freeze_consumer_document/derive_consumer_port/authorize_capture_set (the F4 lifecycle methods) -- only read_member_bytes and lifecycle_captured_receipt_sha256",
+      "forbidden_effect": "a docstring that omits the warning, states it in weaker/ambiguous language, or omits 'not for real replay operations'; any code path in compose_replay_tape that constructs, publishes, or captures a second root"
+    },
+    {
+      "id": 12,
+      "family": "task item (12) -- compose_replay_tape reachability/isolation from the fixed P4 corpus's forbidden symbols and from dskit.pipeline.trust (no import)",
+      "entry_points": [
+        "module-level import statements in dskit/production/bundles.py; AST-level static check (proposed, does not exist yet)"
+      ],
+      "cases": [
+        "confirm bundles.py's import list after this ADR lands still reads exactly as today plus stdlib (hashlib, json already present) -- no 'from dskit.pipeline import trust' or 'from dskit.pipeline.trust import ...' anywhere, at any depth (module level or inside compose_replay_tape's own body)",
+        "confirm compose_replay_tape reaches none of ADR-0143's five forbidden-legacy symbols (not enumerated in this ADR's text by name, but referenced by cross-reference; Phase 0 should have the independent skeptic re-pull the exact five names from ADR-0143's own Decision text before RED, since this matrix does not re-derive them independently here)",
+        "GENUINE GAP FOUND: tests/production/test_purity.py's ALLOWED_PREFIXES for dskit.production explicitly INCLUDES 'dskit.pipeline' at module level, any depth (code_read above) -- this is the general production-package rule (ADR-0056), and it does NOT structurally forbid bundles.py specifically from importing dskit.pipeline.trust. ADR-0146 Decision point 10's 'no trust.py import' commitment is therefore enforced ONLY by this ADR's own text, bundles.py's own module docstring prose ('the only production module imported here is base'), and manual code review during RED/GREEN's two final lenses -- no existing automated test would fail if a future edit added 'from dskit.pipeline import trust' to bundles.py. Phase 0 recommends RED either add a small module-scoped AST check (mirroring test_purity's own _imports helper, but asserting bundles.py's import set specifically, not just the package-wide one) or explicitly accept this as a documentation-only commitment and record that acceptance for the independent skeptic to weigh in on"
+      ],
+      "expected_outcome": "zero dskit.pipeline.trust import anywhere in bundles.py, confirmed by direct read at GREEN time and ideally by a dedicated regression test this Phase 0 matrix recommends adding",
+      "forbidden_effect": "an import of dskit.pipeline.trust (or a from-import of any of its names) anywhere in dskit/production/bundles.py, at any depth, landing with no test ever catching it"
+    },
+    {
+      "id": 13,
+      "family": "__all__ regression -- compose_replay_tape's addition must not disturb the existing exported names",
+      "entry_points": [
+        "dskit/production/bundles.py __all__ list"
+      ],
+      "cases": [
+        "confirm CapturedReplayTape, Data, Decision, Execution, Invocation, Observability, Recording, ReplayTape, Safety, Schedule, verify_causal_order all remain exported, unedited, unreordered relative to each other",
+        "confirm compose_replay_tape is the ONLY new name added"
+      ],
+      "expected_outcome": "__all__ gains exactly one new entry; test_purity.py's test_no_underscore_name_is_exported and test_every_module_declares_all continue to pass unmodified",
+      "forbidden_effect": "any existing __all__ entry removed, renamed, or reordered as a side effect of this addition"
+    }
+  ],
+  "non_goals": [
+    "Wiring ReplayRun.run() into the pipeline execution engine (a distinct, larger capability -- delivering a live CapturedAuthorizationRecord/session to any node's run(ctx, inputs) -- that exists for no node today)",
+    "A real multi-hop, three-consumer composition chain matching the original ADR-0127 Decision.2 design -- a genuinely separate, separately-published and -captured outer-manifest root produced by a distinct manifest-producer consumer -- retired by the Scope decision subsection",
+    "Any extension to the dynamic authority's closed 12-reference graph",
+    "Exercising ADR-0128 multi-consumer capture as a requirement (available, not required, per Decision point 2)",
+    "Resurrecting ADR-0130's undelivered SourceRosterCapture.v1/RawEventDatasetCapture.v1/DatasetCaptureAuthorization.v1 broker",
+    "The full master F3 EventEnvelope.v2 lane (ADR-0145's own non-goals, unchanged)",
+    "Real replay, backtest, paper or live operation",
+    "Packet 8 durable consume-once (F5A-R23)",
+    "Deployment",
+    "Any production surface beyond the single compose_replay_tape function and its two small private shape-check helpers (_check_composed_tape_roster_fixture, _check_raw_event_member) -- no new public export beyond compose_replay_tape itself, no new class, and no edit to CapturedReplayTape, _check_tape, _check_event_envelope, or verify_causal_order themselves",
+    "Any edit to trust.py's dynamic P4 authority, the five ADR-0143 forbidden-legacy symbols, or ADR-0144's dynamic-dispatch code -- none of that is touched, referenced beyond read-only reuse, or depended on for a code change; nor is dskit.pipeline.trust imported by production/bundles.py",
+    "deployment_eligible=false throughout"
+  ],
+  "open_findings_for_independent_skeptic": [
+    {
+      "finding": "the exception type compose_replay_tape should let propagate from steps 2/6a/8's accessor calls is not pinned by the ADR text",
+      "detail": "record.read_member_bytes and record.lifecycle_captured_receipt_sha256 raise ValueError per their own docstrings (trust.py:4824-4898), while compose_replay_tape's own content-validation steps (3, 6b, 6e) and verify_causal_order (step 10) raise ProductionError. ADR-0146 Decision point 7's prose never states whether compose_replay_tape wraps an accessor-raised ValueError into a ProductionError or lets it propagate unwrapped as a ValueError. Both are internally consistent with different parts of the ADR text (Decision point 10's last bullet only discusses verify_causal_order's own raise); this Phase 0 matrix recommends the independent skeptic pin one explicitly before RED, since RED's exact assertion (pytest.raises(ProductionError) vs pytest.raises(ValueError) vs pytest.raises((ProductionError, ValueError))) depends on it."
+    },
+    {
+      "finding": "no automated test currently enforces ADR-0146 Decision point 10's 'no dskit.pipeline.trust import' commitment specifically for bundles.py",
+      "detail": "see matrix row 12 above -- test_purity.py's package-wide ALLOWED_PREFIXES rule permits dskit.production to import dskit.pipeline at any depth; this ADR's stricter, module-specific commitment is currently enforced only by code review and the module docstring's prose claim. Recommend RED add a small dedicated regression test (or the independent skeptic explicitly accept documentation-only enforcement as sufficient for a deployment_eligible=false slice)."
+    },
+    {
+      "finding": "an unrecognized ninth key in a raw_event_members entry dict (beyond the eight the ADR's signature text names) has no stated behavior",
+      "detail": "see matrix row 8's case list -- Decision point 7's prose lists exactly eight keys per raw_event_members entry (relative_path plus the seven ADR-0145-scoped metadata fields) but never states whether compose_replay_tape validates the ENTRY dict itself for unknown keys (default-deny, matching every other shape check in this ADR lineage) or simply reads the eight named keys via dict indexing/.get() and silently ignores anything else present. Recommend Phase 0 pin default-deny for consistency with _check_tape/_check_event_envelope/_check_composed_tape_roster_fixture/_check_raw_event_member's own accumulate-then-raise style, even though raw_event_members entries are plain caller-supplied dicts rather than resolved-and-parsed bytes."
+    },
+    {
+      "finding": "data_capture_root's exact derivation (_canonical_hash(published.descriptor)) is THIS matrix's own resolution of an ADR-text-acknowledged open pin, not a restatement of settled ADR text",
+      "detail": "ADR-0146 Decision point 4/7 explicitly states 'the exact bytes hashed... remains the Phase 0 pin.' This matrix pins it (class_function_inventory above) using a code-shape-level argument (the underscore-prefix API-contract rule, machine-checked by test_purity.py's test_no_private_name_is_imported_from_another_package, forecloses the alternative). The independent skeptic should specifically re-verify this reasoning rather than accept it on the implementer's authority alone, since it is the single highest-leverage design choice this matrix makes that the ADR itself declined to make."
+    }
+  ],
+  "deployment_eligible": false,
+  "tests_run": "none; design inspection",
+  "gate": "Phase 0 matrix authored by implementer; requires independent Phase 0 skeptic review before RED."
+}
