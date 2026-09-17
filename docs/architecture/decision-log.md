@@ -13279,3 +13279,96 @@ test_as_of_acquisition_ms_is_a_declared_knob`.
 **Consequence stated, not worked around.** Every model already trained or
 evaluated through `scan_stream` saw revised values at instants they did not
 exist. This closes the gap forward; it does not re-open those results.
+
+## ADR-0157 - F3's derivation hop spends through the existing authorization reserve
+
+*(Number taken at commit time. 0149, 0151, 0152, 0155 and 0156 are held by
+unmerged branches; this skips them rather than adding a collision.)*
+
+**Status:** PROPOSED, awaiting owner approval. NOT implemented, and deliberately
+NOT a fourth patch to ADR-0148, which stays **STOPPED / DO NOT IMPLEMENT**.
+This is a different mechanism reached by inventory, not another revision of
+that contract.
+
+**Context.** ADR-0148 was written, reviewed and stopped three times (v1 2C/6M,
+evidence 0196; v2 1C/4M, 0198; v3 1C/5M, 0201). Three consecutive stops tripped
+`docs/skills/skeptic-review.md`'s convergence checkpoint (recorded at 0202),
+which forbids a fourth patch to the same contract.
+
+The repeated family, stated plainly: every round re-specified the SAME
+invariant -- at most one PUBLISHED root per derivation intent, and its
+durability story -- with a NEW mechanism, and each new mechanism was defective
+in a way the previous one was not. An asserted `ChainLedger` that is not in
+`trust.py`; then a crash taxonomy describing behavior `_reload_stream`/
+`_prepare_receipt` do not produce; then an ascending-scan retry protocol that
+races.
+
+**The inventory was the defect.** "`trust.py` has no `ChainLedger`" was true
+and useless. Nobody asked what durable mechanism `trust.py` DOES have.
+
+**What it has.** `_SyntheticAuthorizationReserve` (`trust.py:6186`): SQLite in
+WAL mode (`:6219`, `:6273`), every transition under `BEGIN IMMEDIATE`, and a
+`reserve_uses` table keyed `PRIMARY KEY (kind, signed_id)` (`:6176-6179`).
+Four authority kinds already spend through it -- `roster-bootstrap`,
+`raw-dataset`, `root-pis`, `dynamic-p4-authority`.
+
+**And the move already has a written spec AND a working implementation.**
+ADR-0143 Decision point 9 (`decision-log.md:10707-10729`) specifies exactly how
+a NEW authority kind joins that reserve, and `trust.py:9936-9985` implements it
+point for point: a `signed_id` DERIVED by digest from the parent row's own
+`signed_id` and `intent_sha256` -- never the original signed text -- so
+`(kind, signed_id)` can never collide with the parent row even though both
+trace to the same signed pair; the parent row required to be `ISSUED` inside
+the same `BEGIN IMMEDIATE`; one `RESERVED -> ISSUED` transition in that one
+transaction; `sqlite3.IntegrityError` translated to a clean refusal; and a
+failed or ambiguous commit only ever reaching `QUARANTINED`, never a second
+construction.
+
+**Decision.** F3's derivation hop becomes one new reserve kind, built to that
+precedent. `kind = "derivation-root"`. `signed_id = _digest(_hs_canonical_bytes(
+{schema, parent_signed_id, parent_intent_sha256}))`.
+
+The `(kind, signed_id)` primary key IS the fencing the racing ascending scan
+lacked. Two concurrent derivations over one intent attempt the identical
+INSERT under `BEGIN IMMEDIATE`; one wins, the loser gets `IntegrityError` and
+refuses cleanly. No scan, no retry protocol, no "abandoned vs in-flight"
+judgement call -- the database decides, once, atomically.
+
+No new durability mechanism is introduced. `_SYNTHETIC_RESERVE_SCHEMA` does not
+change. Nothing moves out of `trust.py`.
+
+**What this does NOT close. Named before building, not after.**
+
+1. **Liveness, and it is the real open question.** The `dynamic-p4-authority`
+   precedent commits `RESERVED -> ISSUED` BEFORE construction, by its own
+   design. A crash between that commit and the real PUBLISH leaves the intent
+   permanently unpublishable: there is no `attempt` dimension and no
+   `RESERVED -> QUARANTINED -> retry-with-a-new-signed_id` path. **Folding
+   `attempt` into `signed_id` reintroduces precisely the undecidable
+   "abandoned versus in-flight" question that killed v3.** This must be settled
+   before any code.
+2. **No shared transaction.** `reserve_uses` is SQLite; the PUBLISHED root
+   lives in the broker receipt store (`_reload_stream`, `trust.py:1720-1741`).
+   There is no two-phase commit, so the two stores can disagree across a crash
+   in either direction.
+3. **Single host only.** WAL requires shared memory and does not work over NFS,
+   and `_provision(path)`/`__init__(path)` take a plain filesystem path. This
+   is the same limitation `health.py:1303-1305` already discloses for
+   `InstanceLock`.
+4. **Generation and revocation do not reach it.** `reserve_meta.generation` and
+   `reserve_revoked` do not clear `reserve_uses`, so an `ISSUED` row survives a
+   generation bump and a rotated domain can never re-derive that intent.
+
+**Scope, stated so it cannot be overread.** The reserve hangs off
+`publisher._reserve` (`trust.py:6508`, `:7520`), and ADR-0148 itself claimed
+durability only at development-broker scope. This ADR claims that same scope
+and no more. **It is not production race closure for F3**, and no evidence from
+it may be cited as such.
+
+**The next deliverable is a test, not code.** The convergence checkpoint's own
+lesson was "specify it against an executable test, not in prose" -- prose
+specification of a stateful concurrent protocol against a 10k-line lifecycle is
+what failed three times. So the first deliverable is a RED test that two
+concurrent derivations over one intent yield exactly one PUBLISHED root, run
+against the real reserve. Gap 1 is settled by that test, with a recorded
+answer, or this ADR does not proceed to code.
