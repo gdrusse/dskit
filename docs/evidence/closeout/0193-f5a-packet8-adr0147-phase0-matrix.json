@@ -375,5 +375,21 @@
   ],
   "deployment_eligible": false,
   "tests_run": "none; design inspection",
-  "gate": "Phase 0 matrix authored by implementer; requires independent Phase 0 skeptic review before RED."
+  "phase0_skeptic_review": {
+    "reviewer": "independent, fresh-context adversarial skeptic (Phase 0 round)",
+    "result_on_original_draft": "0 Critical, 1 Major, 0 Minor, 2 Nit",
+    "resolutions": {
+      "finding_i_lock_ordering": "non-issue, resolved -- each verifier instance holds a distinct _capture_lock; all share the ledger's single _transition_lock; acquisition order is always verifier-lock then ledger-lock, never reversed anywhere in the design; no circular wait, no deadlock by construction.",
+      "finding_ii_canonicalization": "confirmed equivalent -- _canonical_bytes and _hs_canonical_bytes use identical json.dumps parameters (sort_keys=True, separators=(',',':'), ensure_ascii=True, allow_nan=False) and produce byte-identical output for admission_ref's plain-dict-of-strings shape; recommend a regression test asserting this for both resolver arms during GREEN.",
+      "finding_iii_all_export": "MAJOR, confirmed real -- LEDGER_HEALTH_STATES was described but not explicitly pinned to vocab.py.__all__ in the ADR text (unlike ADR-0146's explicit compose_replay_tape __all__ handling); this exact class of gap needed a final-lens correction round on ADR-0145's own candidate. CORRECTED: Decision point 7 now explicitly requires LEDGER_HEALTH_STATES added to __all__ alongside CACHE_STATES.",
+      "finding_iv_posix_assumption": "confirmed correctly elevated -- matrix row 13 and evidence 0192's recheck both require this explicit; recommend a one-line code comment at _acquire_lock during GREEN noting POSIX flock-release-on-crash is a target-platform assumption, not proven by code.",
+      "finding_v_subprocess_test": "confirmed real requirement -- tests/production/test_ledger.py has zero existing subprocess/multiprocessing tests; row 4 (second-process contention) requires genuinely new subprocess-based test infrastructure with event coordination, not a same-process simulation, which would not actually exercise fcntl's per-process semantics."
+    },
+    "matrix_rows_spot_checked": "rows 1, 2, 5, 6, 7, 9, 10, 11, 12, 13 verified correct against actual code",
+    "non_goals_check": "confirmed faithfully restated: authorize_capture_set route untouched, development/synthetic-boundary-only scope, no external-broker deployment claim",
+    "disposition": "RED_MAY_PROCEED: yes, after the Major (finding iii) is closed in the ADR text -- done inline (Decision point 7 amended). Implementer must apply findings ii/iv/v as GREEN-time implementation/test-infrastructure requirements; none else block RED.",
+    "tests_run": "none; design inspection"
+  },
+  "critical_correction_applied": "Decision point 7 in docs/architecture/decision-log.md amended in place to explicitly require LEDGER_HEALTH_STATES in vocab.py.__all__, closing the Phase 0 Major without a further review round (a textual/design-precision fix, not a behavioral change requiring recheck).",
+  "gate": "Phase 0 clean after the Major correction (0 Critical/Major on the corrected ADR text; findings ii/iv/v are GREEN-time implementation/test requirements). RED may proceed."
 }

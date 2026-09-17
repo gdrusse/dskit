@@ -12416,7 +12416,12 @@ unchanged.
 7. **Health states.** A new closed vocabulary,
    `LEDGER_HEALTH_STATES = ("opening", "healthy", "uncertain", "closed",
    "readonly")` in `vocab.py`, pinned in `ledger.py` the way `CACHE_STATES`
-   already is (`pin_members(..., exact=True)`). `ChainLedger` tracks
+   already is (`pin_members(..., exact=True)`). **Implementation pin (Phase
+   0 Major):** `LEDGER_HEALTH_STATES` is added to `vocab.py`'s `__all__`
+   alongside `CACHE_STATES`, matching this repo's `__all__`-plus-underscore
+   public-API-contract convention (AGENTS.md) -- ADR-0145's own GREEN
+   candidate needed a final-lens correction round for exactly this class of
+   omission; this ADR closes it in the design instead. `ChainLedger` tracks
    `self._health` across its lifecycle: `"opening"` during `_open()` (no
    writes, no reservations); `"healthy"` once `_open()` returns cleanly
    (the only state `append`/`append_many`/`reserve_once`/`snapshot` accept,
