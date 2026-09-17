@@ -341,5 +341,19 @@
 
   "deployment_eligible": false,
   "tests_run": "none; design inspection",
-  "gate": "Phase 0 matrix authored by implementer; requires independent Phase 0 skeptic review before RED."
+  "phase0_skeptic_review": {
+    "reviewer": "independent, fresh-context adversarial skeptic (Phase 0 round)",
+    "result": "0 Critical, 0 Major, 2 Minor, 1 Nit",
+    "open_findings_resolutions": {
+      "field_count_imprecision": "Minor confirmed - Decision point 1's operative 15-field spec is correct (8 carried-over + 7 new); only the Context prose's 'beyond those ten' summary undercounts. Does not block RED.",
+      "adr0132_duplicate_fencing_claim": "Minor confirmed - trust.py:7401's seen set is actually threaded across ALL members of one raw-event capture (dataset-wide, not per-member as ADR-0145 claims); the ADR's stated justification is imprecise but creates no safety gap since verify_causal_order independently re-checks tape-wide uniqueness against untrusted caller-supplied bytes regardless.",
+      "envelope_naming_collision": "Nit confirmed - trust.py's existing G1/G2-grant 'envelope' concept has no functional/import collision with the new bundles.py parser, only a grep-ability naming trap worth a disambiguating docstring.",
+      "adr0130_unimplemented_projection": "not a flaw - ADR-0130's four-field projection exists only as a schema-name constant today; ADR-0145's parser is genuinely first-implementation of that spec, not a code-reuse extension. Decision point 5 is explicit only base canonical-bytes functions are reused, so this does not change the risk assessment."
+    },
+    "matrix_rows_spot_checked": "rows 3-5 (correction-chain forward-reference/gap/non-bottoming) verified sound: positional requirement blocks forward refs, exact event_id/digest match plus correction_position decrement-by-1 blocks gaps and broken links, required bottom-out at 0 blocks dangling/cyclic chains. Row 9 (digest-vs-canonicalization) verified sound: SHA-256 over the actual claimed bytes is deterministic and catches any noncanonical variant by construction; combined with default-deny parsing this is correct defense-in-depth, no second-preimage-style gap applies to this non-adversarial-input model.",
+    "non_goals_and_facades_check": "non-goals faithfully restated; both new public surfaces (envelope parser, verify_causal_order) accounted for, no new import cycle",
+    "disposition": "RED_MAY_PROCEED: yes. Implementer should apply the 2 Minor + 1 Nit as documentation/comment clarifications during GREEN; none block RED.",
+    "tests_run": "none; design inspection"
+  },
+  "gate": "Phase 0 clean (0 Critical/Major; 2 Minor + 1 Nit documentation pins for GREEN). RED may proceed."
 }
