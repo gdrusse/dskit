@@ -967,3 +967,229 @@ TestSb3EvalEpisodesConformance = conformance_suite(
     expected_roles=EXPECTED_ROLES,
     name="TestSb3EvalEpisodesConformance",
 )
+
+
+# ---------------------------------------------------------------------------
+# Review corrections
+# ---------------------------------------------------------------------------
+
+#: The three declared defaults, each pinned at RUN level. A default that no
+#: test asserts is a default a refactor moves silently, and all three land in
+#: durable evidence: `environment.seed`, `environment.deterministic`, and how
+#: many episode records the artifact carries.
+def test_an_omitted_n_episodes_rolls_the_declared_default(tmp_path, lab):
+    _node, outputs = evaluate(tmp_path, n_episodes=_DROP)
+    assert outputs["metrics"]["n_episodes"] == 5
+    assert len(lab.envs) == 5
+
+
+def test_an_omitted_seed_resets_from_the_declared_default(tmp_path, lab):
+    _node, outputs = evaluate(tmp_path, n_episodes=2, seed=_DROP)
+    assert [env.seeds for env in lab.envs] == [[0], [1]]
+    assert record(outputs)["environment"]["seed"] == 0
+
+
+def test_an_omitted_deterministic_asks_the_policy_for_its_modal_action(
+    tmp_path, lab
+):
+    _node, outputs = evaluate(tmp_path, n_episodes=1, deterministic=_DROP)
+    assert all(call[1] is True for call in lab.model.calls)
+    assert record(outputs)["environment"]["deterministic"] is True
+
+
+# -- a truth flag is never a reward, whichever library minted it ------------
+
+
+def test_a_numpy_bool_reward_is_refused_like_a_python_one(tmp_path, lab):
+    """``isinstance(np.True_, bool)`` is False, so the plain bool exclusion
+    misses exactly the scalar type this pack's own docstring says rewards
+    normally arrive as — and a flag stream would average as 1.0/0.0
+    returns into durable audit evidence."""
+    numpy = pytest.importorskip("numpy")
+    lab.scripts([("obs", numpy.True_, True, False, {})])
+    with pytest.raises(ValueError, match="reward"):
+        evaluate(tmp_path, n_episodes=1)
+
+
+def test_a_numpy_float_reward_is_accepted(tmp_path, lab):
+    """The other half: Gymnasium types a reward as ``SupportsFloat`` and a
+    numpy scalar is the ordinary shape, so the exclusion must not widen
+    into refusing real environments."""
+    numpy = pytest.importorskip("numpy")
+    lab.scripts([("obs", numpy.float32(1.5), True, False, {})])
+    _node, outputs = evaluate(tmp_path, n_episodes=1)
+    assert record(outputs)["episodes"][0]["return"] == pytest.approx(1.5)
+
+
+# -- the contract names math.fsum, so the fixtures must be able to tell ----
+
+#: Three rewards whose NAIVE left-to-right sum loses the middle term
+#: entirely (1e16 + 1.0 == 1e16 in binary floating point) while ``fsum``
+#: keeps it. Any fixture whose values sum identically either way cannot
+#: pin the numerical guarantee §4.1 actually names.
+_FSUM_REWARDS = (1e16, 1.0, -1e16)
+
+
+def test_an_episode_return_is_summed_exactly(tmp_path, lab):
+    assert sum(_FSUM_REWARDS) == 0.0 and math.fsum(_FSUM_REWARDS) == 1.0
+    lab.scripts([
+        step(_FSUM_REWARDS[0]), step(_FSUM_REWARDS[1]),
+        step(_FSUM_REWARDS[2], terminated=True),
+    ])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=5)
+    assert record(outputs)["episodes"][0]["return"] == 1.0
+
+
+def test_the_mean_return_is_summed_exactly(tmp_path, lab):
+    lab.scripts(*([step(reward, terminated=True)] for reward in _FSUM_REWARDS))
+    _node, outputs = evaluate(tmp_path, n_episodes=3, max_episode_steps=5)
+    assert outputs["metrics"]["mean_return"] == pytest.approx(1.0 / 3)
+
+
+# -- close, and the refusal it must not outrank ----------------------------
+
+
+def test_a_raising_close_does_not_replace_the_refusal_that_caused_it(
+    tmp_path, lab
+):
+    """The message explaining WHY the episode failed is the one worth
+    keeping; a bare ``finally`` leaves it reachable only through
+    ``__context__``."""
+    class ClosesBadly(StubEnv):
+        def close(self):
+            self.closed += 1
+            raise RuntimeError("close blew up")
+
+    lab.factory = lambda index: ClosesBadly([("obs", 1.0, False, False)])
+    with pytest.raises(ValueError, match="episode 0 step 1"):
+        evaluate(tmp_path, n_episodes=1)
+    assert lab.envs[0].closed == 1
+
+
+def test_a_raising_close_on_the_success_path_still_propagates(tmp_path, lab):
+    """Nothing else failed, so the close failure IS the failure."""
+    class ClosesBadly(StubEnv):
+        def close(self):
+            self.closed += 1
+            raise RuntimeError("close blew up")
+
+    lab.factory = lambda index: ClosesBadly()
+    with pytest.raises(RuntimeError, match="close blew up"):
+        evaluate(tmp_path, n_episodes=1)
+
+
+def test_a_predict_that_is_not_a_pair_refuses_by_name(tmp_path, lab):
+    """Every other refusal in this class identifies itself; a bare unpack
+    would say "not enough values to unpack" and name nothing."""
+    class OneValue:
+        def predict(self, observation, deterministic=True):
+            return "just-an-action"
+
+    lab.model = OneValue()
+    with pytest.raises(ValueError, match="episode 0 step 1: predict"):
+        evaluate(tmp_path, n_episodes=1)
+
+
+def test_unsafe_env_params_refuse_before_the_model_is_loaded_too(
+    tmp_path, lab
+):
+    """Ordering, pinned: the check sits above ``_load_model``, not merely
+    above ``_build_env``."""
+    node = Sb3EvalEpisodes("eval", params(env_params=_DROP))
+    node.params["env_params"] = {"window": (1, 2)}
+    reference, _sidecar = artifact(tmp_path)
+
+    with pytest.raises(ValueError, match="env_params"):
+        node.run(ctx(tmp_path), {"artifact_path": reference})
+    assert lab.envs == [] and lab.loads == []
+
+
+# ---------------------------------------------------------------------------
+# The document doorway — plan-time, with neither library imported
+# ---------------------------------------------------------------------------
+
+DAY = 24 * 60 * 60 * 1000
+
+
+_PLAN_WITH_LIBRARIES_BLOCKED = """
+import sys
+sys.path[:] = {path!r}
+for name in ("gymnasium", "stable_baselines3", "torch"):
+    sys.modules[name] = None   # `import name` now raises
+
+from dskit.pipeline.document import PipelineDocument
+from dskit.pipeline.libs.sb3 import register
+from dskit.pipeline.planner import plan
+
+register()
+DAY = 24 * 60 * 60 * 1000
+document = PipelineDocument.from_obj({{
+    "name": "rl-doc",
+    "splits": {{"kind": "time", "train_end_ms": 10 * DAY,
+               "val_end_ms": 20 * DAY, "test_end_ms": 30 * DAY}},
+    "pipeline": {{
+        "agent": {{"uses": "sb3-train", "params": {{
+            "algo": "PPO", "env": "my_child.envs:ReplayEnv",
+            "env_params": {{"scenario": "train"}},
+            "total_timesteps": 32, "seed": 7}}}},
+        "eval": {{"uses": "sb3-eval-episodes", "params": {{
+            "split": "val", "env": "my_child.envs:ReplayEnv",
+            "env_params": {{"scenario": "validation"}},
+            "n_episodes": 3, "max_episode_steps": 500, "seed": 17}},
+            "inputs": {{"artifact_path": "$agent.artifact_path"}}}},
+    }},
+}})
+assert plan(document).role_of("eval") == "score"
+print("PLANNED")
+"""
+
+
+def test_a_document_wiring_this_kind_plans_with_no_library_installed():
+    """The doorway a user reaches, and the doctrine the pack promises: a
+    document naming an RL algorithm and a Gymnasium env class PLANS on a
+    machine that has neither library, and fails only when a run path runs.
+
+    In a SUBPROCESS with both blocked, because that is the only honest
+    way — ``import_with_blocked``'s own docstring names the trap: in this
+    process the libraries are already imported by the time any test runs,
+    so an ``"x" not in sys.modules`` assertion is vacuous, and a sibling
+    test file that imports them for its own PPO fixture would break it
+    besides.
+    """
+    import subprocess
+    import sys
+
+    done = subprocess.run(
+        [sys.executable, "-c",
+         _PLAN_WITH_LIBRARIES_BLOCKED.format(path=list(sys.path))],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "PLANNED" in done.stdout
+
+
+@pytest.mark.parametrize("split", ["train", "cal"])
+def test_a_document_declaring_a_selection_split_refuses_at_plan(split):
+    """The narrowing reaches a DOCUMENT, not only a constructed node.
+
+    At ``plan``, not at ``from_obj``: the document grammar checks generic
+    shape and knows nothing about a kind's own knobs, so the refusal lands
+    where the planner asks the kind — which is still before anything runs.
+    """
+    from dskit.pipeline.base import ConfigError
+    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.libs.sb3 import register
+    from dskit.pipeline.planner import plan
+
+    register()
+    document = PipelineDocument.from_obj({
+        "name": "rl-doc",
+        "splits": {"kind": "time", "train_end_ms": 10 * DAY,
+                   "val_end_ms": 20 * DAY, "test_end_ms": 30 * DAY},
+        "pipeline": {
+            "eval": {"uses": "sb3-eval-episodes",
+                     "params": params(split=split, artifact="runs/x/model.zip")},
+        },
+    })
+    with pytest.raises(ConfigError, match="split"):
+        plan(document)

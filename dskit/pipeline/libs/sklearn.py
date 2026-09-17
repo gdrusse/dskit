@@ -435,7 +435,7 @@ def _seed_problems(value):
 
 
 def _kwargs_problems(name, value):
-    """Shape only: a dict with NON-EMPTY string keys. What is INSIDE is the
+    """Shape only: a dict with string keys. What is INSIDE is the
     constructor's contract — a typo'd nested key ([[I-227]]) surfaces as
     the constructor's own refusal at fit time, wrapped by name.
 
@@ -444,17 +444,21 @@ def _kwargs_problems(name, value):
     ``algorithm_params``): the shape question is identical, and a second
     copy would be the place they drifted.
 
-    The empty key is refused HERE rather than left to the constructor
-    because ``cls(**{"": 1})`` is not a kwarg any Python callable can
-    accept — it is a plan-time shape error wearing a run-time costume,
-    and this pack refuses shape at plan.
+    Deliberately NOT tightened to require a non-EMPTY key, though no
+    callable can take ``**{"": 1}``. This rule is also what
+    :func:`load_bundle` grades a written manifest by
+    (``_bundle_head_params_problems``), and ``head_params`` is hash
+    material — so narrowing what it accepts would strand multi-head
+    bundles that already exist on disk, with no repair path: editing the
+    manifest to remove the key moves the content hash. A member that
+    wants the stricter rule narrows it for ITSELF
+    (:meth:`SklearnSegment._algorithm_problems`), which reaches no stored
+    artifact.
     """
-    if not isinstance(value, dict) or any(
-        not isinstance(k, str) or not k for k in value
-    ):
+    if not isinstance(value, dict) or any(not isinstance(k, str) for k in value):
         return [
             f"{name} must be a dict of constructor kwargs with "
-            f"non-empty string keys, got {value!r}"
+            f"string keys, got {value!r}"
         ]
     return []
 
@@ -464,8 +468,14 @@ def _segment_number(value):
 
     The envelope's own number rule (:func:`~dskit.pipeline.records.number_ok`,
     which excludes ``bool``) plus the conversion the JSON state stores.
-    numpy scalars arrive as ``float`` subclasses, so nothing special is
-    needed for what sklearn hands back.
+
+    ``numpy.float64`` passes because it IS a ``float`` subclass; a
+    ``float32`` or an ``int64`` would not, and that is deliberate rather
+    than lucky. The matrix handed to the estimator is built from Python
+    floats by :func:`_design_matrix`, so every catalog member answers
+    ``float64`` centers — a narrower scalar coming back would mean the
+    estimator invented a precision this node never gave it, and refusing
+    by name beats storing a value the JSON state cannot round-trip.
     """
     return float(value) if number_ok(value) else None
 
@@ -2531,6 +2541,16 @@ class SklearnSegment(FittedTransform):
             )
         kwargs = params.get("algorithm_params", {})
         problems += _kwargs_problems("algorithm_params", kwargs)
+        if isinstance(kwargs, dict) and any(
+            isinstance(key, str) and not key for key in kwargs
+        ):
+            problems.append(
+                "algorithm_params carries an empty key — no callable takes "
+                "one as a keyword argument, so it is a plan-time shape error "
+                "wearing a run-time costume. Narrowed for THIS node rather "
+                "than in the shared kwargs rule, which is also what "
+                "load_bundle grades a written manifest by"
+            )
         problems += cls._randomness_problems(params, algorithm, kwargs)
         return problems
 
@@ -2608,9 +2628,20 @@ class SklearnSegment(FittedTransform):
         """Ways ``rows`` cannot be segmented; empty when every one can.
 
         This class's per-row admission is bespoke — it inherits none —
-        and it is the SOLE owner of the rule, reached both by this node's
-        own stream and by the second stream an
-        :class:`~dskit.pipeline.fitted.ApplyTransform` carrier projects.
+        and it is the SOLE owner of the rule, reached from THREE places:
+        this node's own stream, the second stream an
+        :class:`~dskit.pipeline.fitted.ApplyTransform` carrier projects,
+        and :meth:`fit` itself, so a caller reaching the fit directly
+        cannot learn a state from rows :meth:`apply_state` would then
+        refuse to assign.
+
+        Bounded by the RULES, not by the stream: each distinct rule is
+        reported once, naming the first row that broke it. A stream whose
+        every row lacks a declared feature would otherwise answer one
+        message per row per feature — unreadable at a hundred rows, and
+        the validator itself becoming the memory event at a million.
+        :meth:`~dskit.pipeline.fitted.Standardize.row_problems` names the
+        first offender for the same reason.
 
         Parameters
         ----------
@@ -2620,39 +2651,55 @@ class SklearnSegment(FittedTransform):
         Returns
         -------
         list of str
-            One problem per row that is not a mapping, per declared
-            feature that is absent or not a finite real number (a
-            ``bool`` is not one — ``True`` would otherwise enter the
-            distance as ``1``), and per row already carrying one of the
-            two keys this node writes.
+            One problem per BROKEN RULE: a row that is not a mapping, a
+            declared feature that is absent, a declared feature that is
+            not a finite real number (a ``bool`` is not one — ``True``
+            would otherwise enter the distance as ``1``), and either key
+            this node writes already being present.
         """
-        features = self.features()
+        return self._unusable_rows(rows, self.features())
+
+    def _unusable_rows(self, rows, features):
+        """The row rule, over whichever feature list is about to be read."""
         if _feature_list_problems("features", features):
             # validate_params already named the broken knob; repeating it
             # once per row would bury the message that matters.
             features = ()
-        problems = []
-        for i, row in enumerate(rows):
-            if not isinstance(row, Mapping):
-                problems.append(
-                    f"rows[{i}] is a {type(row).__name__} — a segment reads "
-                    "features by key and writes two keys of its own, so "
-                    "every row must be a mapping"
-                )
-                continue
-            problems += self._row_feature_problems(i, row, features)
-            problems += self._reserved_key_problems(i, row)
-        return problems
+        first = {}
+        for index, row in enumerate(rows):
+            for key, message in self._broken_rules(index, row, features):
+                first.setdefault(key, message)
+        return list(first.values())
 
-    def _reserved_key_problems(self, index, row):
-        """The two keys this node writes, refused rather than overwritten."""
-        return [
-            f"rows[{index}] already carries {name!r}, which this node "
-            "writes — a segmentation never overwrites the evidence it was "
-            "handed; rename the incoming field upstream"
-            for name in _SEGMENT_OUTPUT_KEYS
-            if name in row
-        ]
+    def _broken_rules(self, index, row, features):
+        """``(rule key, message)`` for every rule ONE row breaks."""
+        if not isinstance(row, Mapping):
+            yield ("not-a-mapping",), (
+                f"rows[{index}] is a {type(row).__name__} — a segment reads "
+                "features by key and writes two keys of its own, so every "
+                "row must be a mapping"
+            )
+            return
+        for name in features:
+            if name not in row:
+                yield ("feature-absent", name), (
+                    f"rows[{index}] carries no {name!r} — EVERY row is "
+                    "assigned, so every row must carry every declared "
+                    "feature (cut or repair the stream upstream)"
+                )
+            elif not number_ok(row[name]):
+                yield ("feature-not-a-number", name), (
+                    f"rows[{index}] field {name!r} is {row[name]!r}, not a "
+                    "finite real number — the assignment is arithmetic on "
+                    "the declared features, and a bool is not a number here"
+                )
+        for name in _SEGMENT_OUTPUT_KEYS:
+            if name in row:
+                yield ("output-key-present", name), (
+                    f"rows[{index}] already carries {name!r}, which this "
+                    "node writes — a segmentation never overwrites the "
+                    "evidence it was handed; rename the field upstream"
+                )
 
     # -- the fitted state --------------------------------------------------
 
@@ -2681,9 +2728,10 @@ class SklearnSegment(FittedTransform):
         ValueError
             When ``fit_split`` is anything but ``"train"`` (the SECOND of
             the two gates — a caller reaching here directly never passed
-            the first), when a row cannot supply every declared feature,
-            when the catalog member rejects ``algorithm_params`` or
-            refuses the fit, or when the fitted estimator exposes no
+            the first), when a row breaks this class's own
+            :meth:`row_problems` rule (the same repetition, for the same
+            caller), when the catalog member rejects ``algorithm_params``
+            or refuses the fit, or when the fitted estimator exposes no
             usable centers and labels. Nothing is written in any case.
         """
         problem = _non_train_fit_split_problem(params.get("fit_split"))
@@ -2691,6 +2739,16 @@ class SklearnSegment(FittedTransform):
             raise ValueError(f"{self.key}: {problem}")
         algorithm = params["algorithm"]
         features = list(params["features"])
+        unusable = self._unusable_rows(rows, features)
+        if unusable:
+            raise ValueError(
+                f"{self.key}: {'; '.join(unusable)}. That is this class's "
+                "own row rule, asked here for the same reason the fit_split "
+                "check is: a caller reaching fit() directly would otherwise "
+                "learn a state from rows apply_state then refuses to assign "
+                "— the pack's shared matrix reader counts a bool as 0/1, and "
+                "this class does not"
+            )
         matrix = _design_matrix(rows, features, self.key)
         estimator = self._fitted_estimator(algorithm, params, matrix)
         centers, labels = self._extracted(estimator, algorithm, len(features))
@@ -3007,24 +3065,6 @@ class SklearnSegment(FittedTransform):
             "fit_split, so the artifact's own record is the only thing that "
             "can catch this"
         ]
-
-    def _row_feature_problems(self, index, row, features):
-        """The declared features of one row: present, and real numbers."""
-        problems = []
-        for name in features:
-            if name not in row:
-                problems.append(
-                    f"rows[{index}] carries no {name!r} — EVERY row is "
-                    "assigned, so every row must carry every declared "
-                    "feature (cut or repair the stream upstream)"
-                )
-            elif not number_ok(row[name]):
-                problems.append(
-                    f"rows[{index}] field {name!r} is {row[name]!r}, not a "
-                    "finite real number — the assignment is arithmetic on "
-                    "the declared features, and a bool is not a number here"
-                )
-        return problems
 
 
 # ---------------------------------------------------------------------------

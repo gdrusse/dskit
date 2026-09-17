@@ -154,6 +154,21 @@ def _params_dict_problem(problems, name, value):
         )
 
 
+def _is_truth_flag(value):
+    """Say whether ``value`` is a truth FLAG rather than a number.
+
+    Python's ``bool`` and numpy's ``bool_`` both answer arithmetic like
+    the numbers 1 and 0 while MEANING a flag, and ``isinstance(x, bool)``
+    catches only the first — ``np.True_`` is not a ``bool`` subclass.
+    numpy is never imported here: a scalar is asked for its own
+    ``dtype.kind``, which is ``"b"`` for exactly the boolean types, so
+    any array library following the same protocol answers too.
+    """
+    if isinstance(value, bool):
+        return True
+    return getattr(getattr(value, "dtype", None), "kind", None) == "b"
+
+
 def _episode_reward(value):
     """``value`` as a finite ``float``, or ``None`` when it is not a reward.
 
@@ -163,14 +178,17 @@ def _episode_reward(value):
     reward as ``SupportsFloat`` and a numpy scalar is the ordinary shape
     one arrives in. Refusing those would refuse most real environments.
 
-    ``bool`` is excluded explicitly all the same — ``number_ok``'s own
+    A truth flag is excluded all the same — ``number_ok``'s own
     documented hazard, for the same reason: ``True`` would enter the
     return as ``1.0``, and an environment emitting flags instead of
-    rewards would average perfectly cleanly. ``str`` and ``bytes`` are
-    excluded because ``float("1.5")`` succeeds, and a reward stream
-    arriving as text is corruption to report, never data to launder.
+    rewards would average perfectly cleanly. Because a numpy scalar IS
+    accepted here, the exclusion has to reach ``numpy.bool_`` too, or the
+    one shape the docstring above endorses is exactly the one that
+    launders (:func:`_is_truth_flag`). ``str`` and ``bytes`` are excluded
+    because ``float("1.5")`` succeeds, and a reward stream arriving as
+    text is corruption to report, never data to launder.
     """
-    if isinstance(value, (bool, str, bytes, bytearray)):
+    if _is_truth_flag(value) or isinstance(value, (str, bytes, bytearray)):
         return None
     try:
         out = float(value)
@@ -1053,16 +1071,53 @@ class Sb3EvalEpisodes(_Sb3Base):
             observation = self._reset(env, index, seed)
             trace = []
             for step in range(1, self.max_episode_steps() + 1):
-                action, _state = model.predict(
-                    observation, deterministic=self.deterministic()
-                )
+                action = self._action(model, observation, index, step)
                 observation, record = self._stepped(env, index, step, action)
                 trace.append(record)
                 if record["terminated"] or record["truncated"]:
                     break
-        finally:
+            result = self._result(index, seed, trace)
+        except BaseException:
+            self._close_quietly(env, index)
+            raise
+        env.close()
+        return result
+
+    def _close_quietly(self, env, index):
+        """Close an environment on the way out of a FAILURE.
+
+        A bare ``finally`` would let a raising ``close()`` REPLACE the
+        reset, step or validation error that brought us here, leaving the
+        message that explains the failure reachable only through
+        ``__context__``. On the SUCCESS path there is no such error, so a
+        close that fails there IS the failure and propagates normally —
+        which is why this is not simply wrapped around both.
+        """
+        try:
             env.close()
-        return self._result(index, seed, trace)
+        except Exception:  # noqa: BLE001 - never outrank the real refusal
+            self.log.warning(
+                "episode %d: env.close() raised while unwinding; the "
+                "original refusal stands",
+                index, exc_info=True,
+            )
+
+    def _action(self, model, observation, index, step):
+        """The policy's action, or a refusal naming episode and step.
+
+        Every other refusal in this class identifies itself; a bare
+        ``action, _state = model.predict(...)`` on a non-pair raises
+        "not enough values to unpack", naming neither the node, the
+        episode, nor the artifact it restored.
+        """
+        answer = model.predict(observation, deterministic=self.deterministic())
+        if not (isinstance(answer, tuple) and len(answer) == 2):
+            raise ValueError(
+                f"{self.key}: episode {index} step {step}: predict(...) "
+                f"returned {answer!r}, not the two-item (action, state) "
+                "tuple stable-baselines3 defines"
+            )
+        return answer[0]
 
     def _reset(self, env, index, seed):
         """The first observation, or a refusal naming the EPISODE only.

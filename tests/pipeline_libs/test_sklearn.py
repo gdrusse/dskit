@@ -1524,9 +1524,13 @@ def test_load_mode_accepts_a_document_carrying_only_what_describes_the_state():
 #: compound fixture proves at most one of its branches.
 _UNPROJECTABLE_ROWS = [
     ("non-mapping-row", [SimpleNamespace(f0=0.0, f1=1.0)], "mapping"),
-    ("absent-feature", [{"f0": 0.0}], "'f1'"),
-    ("non-finite-feature", [{"f0": 0.0, "f1": float("nan")}], "'f1'"),
-    ("bool-feature", [{"f0": 0.0, "f1": True}], "'f1'"),
+    # The fragments DISTINGUISH the three feature branches. Asserting a bare
+    # "'f1'" for all three would pass an implementation that collapsed
+    # "absent" into "not a number" — the branches would be indistinguishable
+    # from the outside, which is exactly what an atomic fixture is for.
+    ("absent-feature", [{"f0": 0.0}], "carries no 'f1'"),
+    ("non-finite-feature", [{"f0": 0.0, "f1": float("nan")}], "'f1' is nan"),
+    ("bool-feature", [{"f0": 0.0, "f1": True}], "'f1' is True"),
     ("segment-already-present", [{**SEGMENT_ROW, "segment": 0}], "'segment'"),
     (
         "segment_model_id-already-present",
@@ -2190,6 +2194,89 @@ def test_the_segment_is_exported_and_registered():
     assert cls is SklearnSegment and owned is False
 
 
+# -- review corrections: the shared kwargs rule, and the bounded row rule ---
+
+
+def test_the_shared_kwargs_rule_still_accepts_what_a_written_bundle_carries():
+    """``_kwargs_problems`` is also what ``load_bundle`` grades a written
+    manifest by, and ``head_params`` is HASH MATERIAL — so narrowing it
+    would strand bundles that already exist, with no repair path: editing
+    the manifest to drop the key moves the content hash. The empty-key
+    rule belongs to the one node that wants it, not to the shared rule.
+    """
+    from dskit.pipeline.libs.sklearn import _kwargs_problems
+
+    assert _kwargs_problems("estimator_params", {"": 1}) == []
+    assert _kwargs_problems("selector_params", {"": 1}) == []
+    assert SklearnFit.validate_params({
+        "estimator": RIDGE, "features": ["x"], "label": "y",
+        "estimator_params": {"": 1},
+    }) == []
+    assert _kwargs_problems("estimator_params", {3: 1})  # non-string still refused
+
+
+def test_the_segment_still_refuses_an_empty_algorithm_params_key():
+    problems = SklearnSegment.validate_params(
+        _segment_params(algorithm_params={"": 1})
+    )
+    assert any("algorithm_params" in p and "empty key" in p for p in problems)
+
+
+def test_the_row_rule_names_the_first_offender_not_every_row():
+    """One message per broken RULE, not per row. A stream of identically
+    broken rows would otherwise answer one string per row per feature:
+    unreadable at a hundred rows, and the validator itself becoming the
+    memory event at a million. ``Standardize.row_problems`` names the
+    first offender for the same reason."""
+    problems = _segment().validate_common_inputs(
+        {"rows": [{"f0": 0.0} for _ in range(5_000)]}
+    )
+    assert len(problems) == 1
+    assert "rows[0]" in problems[0] and "'f1'" in problems[0]
+
+
+def test_every_distinct_broken_rule_is_still_reported_once():
+    """Bounding must not collapse DIFFERENT rules into one message."""
+    rows = [
+        {"f0": 0.0},                               # f1 absent
+        {"f0": 0.0, "f1": True},                   # f1 not a number
+        {**SEGMENT_ROW, "segment": 0},             # one reserved key
+        {**SEGMENT_ROW, "segment_model_id": "x"},  # the other
+        "not a mapping at all",
+    ]
+    assert len(_segment().validate_common_inputs({"rows": rows})) == 5
+
+
+def test_fit_refuses_the_very_rows_its_own_row_rule_refuses():
+    """The pack's shared matrix reader counts a bool as 0/1; this class
+    does not. Without the repeated rule, a caller reaching ``fit()``
+    directly learned a persistable state from bools that ``apply_state``
+    then refused to assign — the state and the projection disagreeing
+    about the same rows."""
+    pytest.importorskip("sklearn")
+    node = _state_node(algorithm_params={"n_clusters": 2})
+    rows = [{"f0": True, "f1": False}, {"f0": False, "f1": True}]
+    with pytest.raises(ValueError, match="not a finite real number"):
+        node.fit(rows, node.params)
+
+
+def test_an_omitted_seed_still_fits_reproducibly():
+    """``seed`` defaults to ``DEFAULT_SEGMENT_SEED``, and the default is
+    what makes an omitting document reproducible. Dropping the default —
+    passing ``random_state=None`` — moves the centers, every row's
+    ``segment`` and the ``segment_model_id`` between two runs of one
+    identity, silently. The two-part seed fixtures cannot catch it: both
+    halves DECLARE a seed."""
+    pytest.importorskip("sklearn")
+    node = _state_node(
+        seed=_DROP, algorithm_params={"n_clusters": 5, "n_init": 1}
+    )
+    first = node.fit(SEED_ROWS, node.params)
+    second = node.fit(SEED_ROWS, node.params)
+    assert first["centers"] == second["centers"]
+    assert node.segment_model_id(first) == node.segment_model_id(second)
+
+
 # ---------------------------------------------------------------------------
 # The conformance hookup (docs/24 §10 step 8)
 # ---------------------------------------------------------------------------
@@ -2334,6 +2421,78 @@ TestSklearnConformance = conformance_suite(
     name="TestSklearnConformance",
 )
 
+
+
+# -- the document doorway: plan-time rules and a real run ------------------
+
+#: The synthetic data kind stamps its events around day 1000, so the cuts
+#: are placed where its rows actually are rather than where a hand-written
+#: fixture would like them to be.
+SEGMENT_DOC_SPLITS = {
+    "train_end_ms": 1005 * DAY,
+    "val_end_ms": 1020 * DAY,
+    "test_end_ms": 2000 * DAY,
+}
+
+
+def _segment_document(tmp_path, **params):
+    from dskit.pipeline.base import OutputsConfig, TimeSplitConfig
+    from dskit.pipeline.document import NodeSpec
+
+    declared = {
+        "fit_split": "train",
+        "features": ["mid", "p_true"],
+        "algorithm": "kmeans",
+        "algorithm_params": {"n_clusters": 2, "n_init": 1},
+        "seed": 17,
+        **params,
+    }
+    return PipelineDocument(
+        name="segment-doc",
+        splits=TimeSplitConfig(**SEGMENT_DOC_SPLITS),
+        pipeline={
+            "rows": NodeSpec(
+                uses="dskit.pipeline.synthetic_nodes:SynthEvents",
+                params={"n_events": 24, "n_instruments": 2, "seed": 3},
+            ),
+            "regime": NodeSpec(
+                uses="sklearn-segment",
+                inputs={"rows": "$rows.events"},
+                params={k: v for k, v in declared.items() if v is not _DROP},
+            ),
+        },
+        outputs=OutputsConfig(run_root=str(tmp_path / "runs")),
+    )
+
+
+def test_a_segment_document_plans_and_runs_end_to_end(tmp_path):
+    """The doorway a user actually reaches: a JSON document, the registry,
+    the planner and the driver — not a directly constructed node."""
+    pytest.importorskip("sklearn")
+    register()
+    document = _segment_document(tmp_path)
+    assert plan(document).role_of("regime") == "fitted_transform"
+
+    result = run_document(document, asof=ASOF)
+    assert result.state == "ran", result.error
+    out = result.outputs["regime"]
+
+    assert out["metrics"]["n_rows"] == 48
+    assert 0 < out["metrics"]["n_fit_rows"] < 48, "the fit saw one split only"
+    assert out["metrics"]["n_segments"] == 2
+    assert len({row["segment_model_id"] for row in out["rows"]}) == 1
+    assert out["segment_model_id"] == out["rows"][0]["segment_model_id"]
+    assert all("segment" in row for row in out["rows"])
+
+
+def test_a_segment_document_that_fits_off_train_refuses_at_the_run(tmp_path):
+    """The leakage gate, reached the way a document reaches it."""
+    pytest.importorskip("sklearn")
+    register()
+    document = _segment_document(tmp_path, fit_split="val")
+    result = run_document(document, asof=ASOF)
+    assert result.state != "ran"
+    assert "fit_split" in str(result.error)
 
 # ---------------------------------------------------------------------------
 # The example document — loads, hashes, plans, runs
