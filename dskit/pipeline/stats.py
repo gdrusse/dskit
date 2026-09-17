@@ -64,6 +64,7 @@ __all__ = [
     "no_correction",
     "no_information_test",
     "register_correction",
+    "regularized_incomplete_beta",
     "skill_vs_mean",
     "weighted_benjamini_hochberg",
 ]
@@ -779,8 +780,34 @@ def _betacf(a, b, x):
     return h
 
 
-def _betai(a, b, x):
-    """Regularized incomplete beta ``I_x(a, b)``, stdlib only."""
+def regularized_incomplete_beta(a, b, x):
+    """Regularized incomplete beta ``I_x(a, b)``, stdlib only.
+
+    The one owner of the beta tail in this package: the Student-t tail
+    here and the exact binomial limits in
+    :mod:`~dskit.pipeline.false_signal` both read it rather than each
+    carrying a copy of the continued fraction.
+
+    Parameters
+    ----------
+    a : float
+        First shape, > 0.
+    b : float
+        Second shape, > 0.
+    x : float
+        Evaluation point; clamped to the closed unit interval.
+
+    Returns
+    -------
+    float
+        ``I_x(a, b)``, the Beta(a, b) CDF at ``x``.
+
+    Examples
+    --------
+    Beta(1, 1) is the uniform distribution::
+
+        regularized_incomplete_beta(1.0, 1.0, 0.25)  # 0.25
+    """
     if x <= 0.0:
         return 0.0
     if x >= 1.0:
@@ -796,7 +823,7 @@ def _betai(a, b, x):
 
 def _student_sf(t, df):
     """Upper tail ``P(T > t)`` for Student's t on ``df`` degrees."""
-    tail = 0.5 * _betai(df / 2.0, 0.5, df / (df + t * t))
+    tail = 0.5 * regularized_incomplete_beta(df / 2.0, 0.5, df / (df + t * t))
     return tail if t > 0.0 else 1.0 - tail
 
 

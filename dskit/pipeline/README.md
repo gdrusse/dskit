@@ -685,6 +685,10 @@ dskit/pipeline/
 │                      registry (bh / bonferroni / none / weighted-bh) +
 │                      register_correction; no-information vs mean
 │                      (Clark–West HAC + sequential h*, ADR-0057)
+├── false_signal.py    per-signal false-signal probability (ADR-0149):
+│                      SignalEvidence + FalseSignalEstimator ->
+│                      pi_hat and a conservative pi_upper;
+│                      GrenanderLocalFdr + register_estimator
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

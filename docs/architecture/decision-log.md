@@ -13016,3 +13016,158 @@ The prior uncommitted ADR-0148 draft and its five-Major verdict live in a
 Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
 from this Linux container. If that draft carries findings beyond the five stated
 in the task, they are not addressed here.
+
+---
+
+## ADR-0149 - `false_signal.py`: a generic per-signal false-signal probability (`pi_hat`, `pi_upper`)
+
+**Status:** accepted (owner pre-approved 2026-09-17)
+
+**Context.** ADR-0088 locks the HFDR capital constraint
+`sum_i(x_i * pi_i) <= q * sum_i(x_i)`, and the conservative-pi note
+(`children/intraday_equities/docs/research/hfdr-mio-uncertainty/2026-09-05-conservative-pi-hfdr.md`)
+shows that constraint is only sound when the optimizer is handed a conservative
+`pi_upper`, not a point estimate. `forecast_bundle.ForecastBundle` already
+VALIDATES `pi_hat`/`pi_upper` (both finite in `[0, 1]`, `pi_hat <= pi_upper`) and
+says in its own module docstring that it "calibrates nothing" and that a generic
+estimator, once ruled, "graduate[s] to `dskit`". Nothing in dskit produces those
+two numbers: the only source today is the hardcoded `_PI_HAT`/`_PI_UPPER` test
+fixtures in `children/intraday_equities/intraday_equities/testing.py`. The
+estimand is domain-neutral -- "given out-of-fold evidence and a scramble null,
+how probable is it that this signal's apparent edge is nothing" is a question a
+project that never heard of equities asks.
+
+**Decision.** A new tier-1 core module, `dskit/pipeline/false_signal.py`, stdlib
+only, no RNG. It exposes an abstract estimator with three `@abstractmethod`
+hooks and one template method, one shipping member, a registry seam, and two
+pure rules:
+
+- `SignalEvidence(statistic, null_draws)` -- one signal's evidence, validated in
+  `__post_init__`. `statistic` is the out-of-fold number (any scale);
+  `null_draws` are that same statistic recomputed under scrambles. Orientation is
+  the repo's existing one: LARGER is stronger evidence against the null, matching
+  `attempts.beat_all` / `attempts.tier2_verdict`.
+- `permutation_pvalue(statistic, null_draws)` -- the add-one permutation p-value
+  `(1 + #{draw >= statistic}) / (1 + B)`. Never zero, never a point value; the
+  same doctrine `attempts.early_stop_p_bound` already states for the stopped
+  audit. The EMPIRICAL NULL enters here and only here: because the p-value is
+  computed against the scramble draws themselves, the p-scale null is uniform by
+  construction, so no separate empirical-null fitting (and no normal-theory
+  assumption) is needed downstream.
+- `clopper_pearson_upper(successes, trials, confidence)` -- the exact binomial
+  upper confidence limit, by bisection on the regularized incomplete beta.
+- `FalseSignalEstimator` (ABC) -- `estimate(evidence, independent_units)` is the
+  TEMPLATE and is never overridden. Subclasses supply the estimator FAMILY
+  through `fit(pvalues)` (returns the subclass's own opaque state),
+  `null_proportion(state)` and `density(state, p)`.
+- `GrenanderLocalFdr` -- the shipping member.
+- `FalseSignalEstimate` -- the frozen result: `pi_hat`, `pi_upper`, `evidence`.
+- `ESTIMATORS` / `register_estimator` / `estimator` -- the registry, mirroring
+  `stats.register_correction` exactly, so a project brings its own family without
+  editing the package.
+
+**The family.** Storey-style `pi0` plus a two-groups local FDR, with the marginal
+p-value density estimated by the **Grenander** (least-concave-majorant)
+estimator -- the nonparametric MLE of a decreasing density, which is what the
+two-groups model implies on the p-scale (uniform null plus stochastically smaller
+alternatives). `pi_i = min(1, pi0 * f0(p_i) / f(p_i))` with `f0 == 1`. Chosen
+over the kernel or spline local-fdr fit of the Efron note because a kernel needs
+a BANDWIDTH: that is a hardcoded number governing the answer, which this repo
+forbids, and CLAUDE.md's "never hardcode what could change" would push it into
+config where no config author can choose it well. Grenander has no tuning
+constant at all, is deterministic and is O(m log m) in pure Python. `pi0` itself
+is Storey's `#{p > null_threshold} / (m * (1 - null_threshold))`, capped at 1;
+`null_threshold` is a DECLARED policy knob (`DEFAULT_NULL_THRESHOLD = 0.5`, the
+literature's value) and not the same kind of thing as a bandwidth -- its
+direction of effect is known, it is named once, and it is a constructor
+argument rather than a number buried in a fitting routine. `pi0` is floored at
+`1 / (m + 1)` --
+`m` observations can never evidence ZERO nulls, the same add-one reasoning as the
+permutation p-value, and the explicit refusal to default a rate to zero.
+
+**The conservative bound.** `pi_upper` is NOT a second fit. The family's density
+is fitted ONCE, on the point-estimate p-values, and both numbers read that one
+shape:
+
+```
+pi_hat_i   = min(1, pi0_hat   / f(p_hat_i))
+pi_upper_i = min(1, pi0_upper / f(p_upper_i))
+```
+
+Because `f` is non-increasing and `p_upper_i >= p_hat_i` and
+`pi0_upper >= pi0_hat`, `pi_upper_i >= pi_hat_i` holds by CONSTRUCTION, not by
+clamping -- which is what ADR-0088's constraint needs. The two conservative
+inputs are where dependence is handled, each at half the error budget
+(a Bonferroni split of `1 - confidence`):
+
+- `p_upper_i` is the Clopper-Pearson upper limit on the exceedance probability
+  from `(k_i, B_i)`. This is the Monte-Carlo error of a finite scramble, and it
+  is exact under ARBITRARY temporal dependence inside the exchangeable unit,
+  because the scramble permutes WHOLE blocks: the exceedance indicator is a
+  Bernoulli draw whatever the within-block correlation is. Validity is inherited
+  from the caller's scramble design (the whole-session unit `attempts.py`
+  documents); this module states the requirement and does not create it.
+- `pi0_upper` is the Clopper-Pearson upper limit for a proportion observed on
+  `independent_units` -- the count of EFFECTIVELY INDEPENDENT signals in the
+  family, a REQUIRED argument with no default and refused above the family size.
+  Signals fitted on overlapping time share sessions, so the naive binomial bound
+  at `m` is anti-conservative; declaring `independent_units == m` is an explicit
+  assertion of cross-signal independence, and is the caller's to make. Disclosed
+  limit: this is a plug-in effective-count widening, exact when `pi0` is a
+  proportion of independent units and strictly wider than the `m`-count bound
+  whenever `independent_units < m`. It does not claim exact finite-sample
+  coverage of the two-groups `pi0`.
+
+**Fail-closed, fail-loud.** Non-finite statistics or draws, an empty family, an
+empty draw set, a non-int or out-of-range `independent_units`, a `pi0` outside
+`(0, 1]`, a non-positive or non-finite density, and a density the subclass
+returned NON-MONOTONICALLY are each refused by name. The monotonicity screen is
+the load-bearing one: the bound's validity argument rests on `f` being
+non-increasing, so the template CHECKS the hook's contract over every evaluated
+point rather than trusting it, and a subclass that breaks it fails loudly instead
+of returning a `pi_upper` below its own `pi_hat`. `pi_upper < pi_hat` is
+additionally asserted and named, so the guarantee cannot rot silently.
+
+**What was reused.** `stats._betai`/`_betacf` (the regularized incomplete beta,
+promoted to the public name `regularized_incomplete_beta` and exported, its one
+call site in `_student_sf` updated) -- per CLAUDE.md's "a function is never
+repeated across modules", the beta tail gets ONE owner rather than a second copy
+here. `records.number_ok` is the finiteness rule. `stats.register_correction`'s
+registry is the pattern the estimator registry copies verbatim (a dict of
+`name -> {"cls", "doc"}`, loud lookup, refuse re-registration). `attempts.py`
+supplies the scramble doctrine and the evidence ORIENTATION and shape this
+consumes -- `(observed, [nulls])` is exactly `tier2_verdict`'s pair, so a project
+already running a tier-2 audit feeds this estimator with no new plumbing, and
+`early_stop_p_bound` supplies the never-zero p-value doctrine.
+`predictions.read_prediction_series` is the out-of-fold row source the caller
+reduces to `statistic`; this module deliberately does NOT read it, because which
+statistic a project reduces its rows to is the project's choice.
+`forecast_bundle`'s validation defines the output shape and is met exactly.
+
+**What was rejected.** (1) Adding this to `stats.py` -- it is a different
+estimand with its own family registry, and the repo's own precedent is a core
+module per ADR-scale estimand (`attempts.py`, `ordering.py`, `predictions.py`,
+`conquest.py`). (2) A kernel or spline local-fdr density -- the bandwidth, above.
+(3) A new `pi` NODE KIND -- the consumer is a child's bundle assembly, not a
+document port, and ADR-0113 already establishes plain generic VALUES in this
+package (`CandidateInventory`, `TrialLedger`, `OneStandardErrorSelector`). A node
+kind over this doorway stays additive and is deferred, not forbidden. (4) A
+`libs/` pack -- there is no library being wrapped. (5) numpy -- the whole
+computation is a sort, a convex-hull scan and a bisection, so nothing forces a
+dependency, which keeps it tier 1. (6) Clamping `pi_upper` up to `pi_hat` --
+that converts a broken estimator into a silent one. (7) Touching the
+`_PI_HAT`/`_PI_UPPER` fixtures in the child's `testing.py`; they are test data
+and are left alone. Wiring any child to this estimator is separate, unauthorized
+work.
+
+**Tier justification.** Tier 1. The code IS a domain-neutral statistical rule:
+stdlib only, no library wrapped, no venue or project vocabulary, a "signal" is
+any string key and a "statistic" is any finite float. It passes
+`tests/pipeline/test_purity.py`'s core rule unchanged.
+
+**Consequences.** `dskit` gains a real source for the two numbers
+`ForecastBundle` has been validating from fixtures. Nothing is wired: no child
+config, no node kind and no document reads this yet. The estimator is exercised
+on synthetic and analytically-checkable inputs only -- no real out-of-fold or
+scramble evidence has been passed through it, and its calibration on a real
+signal population remains the empirical question the Efron note names.
