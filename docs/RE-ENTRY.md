@@ -1,6 +1,52 @@
 # Re-entry
 
-## Current checkpoint: P7 dynamic authorize_capture_set closed (2026-09-16)
+## Current checkpoint: P7 synthetic EventEnvelope.v2 causal order verified (2026-09-16)
+
+Remote main verified at 08bb7be. ADR-0145 adds a bounded, synthetic,
+nondeployment causal-order verification for the `dskit.event-envelope/v2`
+schema: a closed 15-field envelope shape (8 carried over from ADR-0130's
+projection and ADR-0132's raw-event/v1, 7 new -- exchange_ms, receive_ms,
+source_provenance_tag, source_timezone_tag, correction_position,
+corrects_event_id, prior_envelope_sha256) and a pure, read-only
+`verify_causal_order(tape, ordered_envelope_bytes)` in
+`dskit/production/bundles.py`. It checks each envelope's byte digest
+against the already-merged `CapturedReplayTape.v1` codec's
+`ordered_envelope_digests`, default-deny parses every envelope, fences
+`source_rank_policy_sha256` tape-wide, enforces tape-wide `event_id`
+uniqueness, validates every correction chain (no forward reference, no
+gap, must bottom out at `correction_position == 0`), and asserts the
+6-field order key -- `(availability_ms, source_rank, source_sequence,
+correction_position, payload_sha256, event_id)` -- is non-decreasing.
+`dskit/pipeline/trust.py` and the existing tape codec are untouched.
+
+This is explicitly NOT the full master F3 package (`docs/plans/2026-09-12-
+json-pipeline-historical-backtester-tdd.md` lines 426-620), which remains a
+separate, forecast-capital-owned lane that must not start while whole F5a
+is open; the ADR's Non-goals section states plainly that reusing the
+`dskit.event-envelope/v2` schema name here does not authorize or
+pre-validate the real F3 lane's own contract.
+
+A one-Major review round (an `__all__` public-API-surface violation caught
+by the first final lens -- `verify_causal_order` and its private helper
+were initially left out of `bundles.__all__` against AGENTS.md's own
+convention) was corrected and both final lenses then found 0
+Critical/Major/Minor on the corrected candidate, with 1 deferred Nit
+(an unused private fixture-construction helper). 63 focused and 179
+affected tests passed; ruff and `git diff --check` clean. Full suite not
+run per owner preference. Evidence: 0186 (ADR proposal/preapproval/owner
+approval), 0187 (Phase 0 matrix + skeptic review), 0188 (RED/GREEN,
+post-GREEN `__all__` correction, two final lenses). The primary
+`/home/russell/dskit` checkout and protected source `c489199` remain
+untouched.
+
+**Next:** composed-tape verification -- resolving envelope bytes from a
+capture/session/broker and constructing a runtime composed-tape capability
+that calls `verify_causal_order` end-to-end, the next and final P7 gate per
+this ADR's own stated ordering. Then Packet 8 durable consume-once
+(F5A-R23). P7 remains open until composed-tape is closed; Packet8 is
+ordered after P7. `deployment_eligible=false`.
+
+## Prior checkpoint: P7 dynamic authorize_capture_set closed (2026-09-16)
 
 Remote main verified at 71e05a3. ADR-0144 closes the gap ADR-0143 disclosed:
 `authorize_capture_set` now reaches a genuine CAPTURED admission for the
