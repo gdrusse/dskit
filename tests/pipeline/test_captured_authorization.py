@@ -2289,6 +2289,45 @@ def test_adr133_refuses_substituted_or_noncanonical_grants(change):
         cls().verify(authorization, g1, g2)
 
 
+@pytest.mark.parametrize("change", [
+    "event-schema", "event-schema-v2", "media-type", "allow-empty-type",
+])
+def test_adr133_dataset_authorization_pins_schema_media_and_empty_policy(change):
+    """Pin the dataset-capture wire guard, which had no negative coverage.
+
+    ``trust.py:5711`` refuses any ``event_schema``/``media_type`` other than
+    ``dskit.raw-event/v1``/``application/x-ndjson``, and a non-``bool``
+    ``allow_empty_capture``. Before this test the message ``dataset schema,
+    media or empty policy refused`` was unreachable from the suite. The
+    ``event-schema-v2`` case pins that a v2 wire is refused *today*.
+
+    This guard is also why the cross-object ``event_schema`` equality at
+    ``trust.py:7332`` cannot be reached through that field: both the dataset
+    and the roster-bootstrap authorizations are independently pinned to the
+    same literal, so they can never disagree on it while v1 is the only
+    accepted value.
+    """
+    cls = getattr(trust, "NonAuthorizingSyntheticGrantVerifier")
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    value = json.loads(authorization)
+    if change == "event-schema":
+        value["event_schema"] = "dskit.raw-event/v0"
+    elif change == "event-schema-v2":
+        value["event_schema"] = "dskit.raw-event/v2"
+    elif change == "media-type":
+        value["media_type"] = "application/json"
+    else:
+        value["allow_empty_capture"] = "true"
+    authorization = f4._json_bytes(value)
+    auth_digest = hashlib.sha256(authorization).hexdigest()
+    left, right = json.loads(g1), json.loads(g2)
+    left["authorization_sha256"] = auth_digest
+    right["authorization_sha256"] = auth_digest
+    g1, g2 = _resign_synthetic_grant(left), _resign_synthetic_grant(right)
+    with pytest.raises(ValueError, match="dataset schema, media or empty policy refused"):
+        cls().verify(authorization, g1, g2)
+
+
 def test_adr133_rechecks_revocation_and_never_spends_or_mints(monkeypatch):
     verifier = trust.NonAuthorizingSyntheticGrantVerifier()
     authorization, g1, g2 = _synthetic_dataset_grant_fixture()
@@ -2752,6 +2791,41 @@ def test_adr135_bootstrap_refuses_authorization_mutations(change):
             grant[field] = auth[field]
         grants.append(_resign_roster_bootstrap_grant(grant))
     with pytest.raises(ValueError):
+        trust.NonAuthorizingRosterBootstrapVerifier().verify(
+            changed_auth, *grants,
+        )
+
+
+@pytest.mark.parametrize("change", ["event-schema", "event-schema-v2", "media-type"])
+def test_adr135_bootstrap_authorization_pins_schema_and_media(change):
+    """Pin the roster-bootstrap wire guard, which had no negative coverage.
+
+    ``trust.py:5970`` refuses any ``event_schema``/``media_type`` other than
+    ``dskit.raw-event/v1``/``application/x-ndjson``. Before this test the
+    message ``roster bootstrap schema or media refused`` was unreachable from
+    the suite: every fixture set both fields to the valid value. The
+    ``event-schema-v2`` case additionally pins that a v2 wire is refused
+    *today*, so a later versioned-wire change cannot widen this boundary
+    silently.
+    """
+    raw_auth, raw_g1, raw_g2, _policy = _synthetic_roster_bootstrap_fixture()
+    auth = json.loads(raw_auth)
+    if change == "event-schema":
+        auth["event_schema"] = "dskit.raw-event/v0"
+    elif change == "event-schema-v2":
+        auth["event_schema"] = "dskit.raw-event/v2"
+    else:
+        auth["media_type"] = "application/json"
+    changed_auth = f4._json_bytes(auth)
+    digest = hashlib.sha256(changed_auth).hexdigest()
+    grants = []
+    for raw in (raw_g1, raw_g2):
+        grant = json.loads(raw)
+        grant["bootstrap_sha256"] = digest
+        for field in ("issued_at_ms", "not_before_ms", "expires_at_ms"):
+            grant[field] = auth[field]
+        grants.append(_resign_roster_bootstrap_grant(grant))
+    with pytest.raises(ValueError, match="roster bootstrap schema or media refused"):
         trust.NonAuthorizingRosterBootstrapVerifier().verify(
             changed_auth, *grants,
         )

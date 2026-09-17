@@ -12637,3 +12637,382 @@ parallel store -- `reserve_once`/`_transition_lock` are added once on the
 shared `ChainLedger` base and inherited, not reimplemented per store; a
 store-conformance test for `libs/sqlite.py` is left to Phase 0 to scope, not
 assumed clean by this ADR. `deployment_eligible=false` throughout.
+
+
+
+## ADR-0148 - master F3 three-hop captured replay lane and F5b V2 port-set injection
+
+**Status:** PROPOSED (v3) -- **STOPPED AT A CONVERGENCE CHECKPOINT. DO NOT
+IMPLEMENT.** Not approved, not implemented; no code or test file touched.
+v3 itself carries **8 unresolved Critical/Major findings**: 1 Critical + 5
+Major from its own Phase 0 review (evidence 0201) and 2 Major found by the
+author afterwards (evidence 0200). Three consecutive candidates were stopped,
+which under `docs/skills/skeptic-review.md` forbids a fourth patch until an
+independent checkpoint; that checkpoint (evidence 0202) ruled to narrow the
+work, so the decision points below are **unlanded contracts**, retained for
+the next slice to build on, not a design anyone should code against. Review
+lineage, all retained:
+
+- **v1 stopped** — 2 Critical, 6 Major (evidence 0196). Its `ChainLedger`
+  durability claim named a mechanism absent from `trust.py`; its `stream_id` was
+  not intent-pure; its two-port `CapturedBindings` could never be fully consumed;
+  and it cited `bind_captured`, a symbol that does not exist.
+- **v2 stopped** — 1 Critical, 4 Major, 3 Minor (evidence 0198). Every v1
+  finding was independently confirmed **genuinely closed**, but v2's replacement
+  crash taxonomy described behavior the unedited lifecycle does not produce.
+- **v3 (this text)** closes v2's C-1 and M-1..M-4. v2's three Minors are
+  recorded to the backlog per the owner's standing instruction that only
+  Critical and Major block; N-1 (line drift) and N-2 (wording) are corrected
+  here anyway because the surrounding text changed.
+
+Phase 0 review of THIS text is required next, then owner approval. Neither v1's
+nor v2's approval carries: Decision points 1, 4, 5 and 6 all changed materially.
+
+**Context.** ADR-0147 closed whole F5a, whose own text states the consequence:
+"F3 may now start per its own stated dependency". The controlling DAG is
+`"F3":["F1","F2","F4","F5a"]`, `"F5b":["F3","F5a"]`. Master F3 is
+`docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md` lines 426-620;
+F5b lines 739-748; the normative manifest lines 1095 and 1104.
+
+**The residue P7 left, re-verified at `3b73361`.**
+
+1. `compose_replay_tape` (bundles.py:771) is **one-hop**: roster and
+   `dskit.raw-event/v1` members come from the same committed P4 capture.
+2. It takes `exchange_ms`, `receive_ms`, `source_provenance_tag`,
+   `source_timezone_tag`, `correction_position`, `corrects_event_id` and
+   `prior_envelope_sha256` as **caller-supplied** `raw_event_members` values
+   (bundles.py:909-915) — unauthorized, covered by no signed digest.
+3. `ReplayRun.run` (trust.py:5605) raises unconditionally; the broker entry its
+   message names does not exist.
+4. The authorized wire is pinned to v1 at nine literal sites (Decision point 4).
+5. `produce`/`seal`/`publish` (trust.py:1120/1212/1250) require
+   `kind="producer"`; `open_capture` (1461) and `captured_bindings` (1532)
+   require `kind="consumer"`. No session is both.
+
+### Decision
+
+**Decision point 1 - attempt-indexed derivation, and a crash story that matches the code.**
+
+`produce`, `seal`, `publish`, `open_capture` and `captured_bindings` are not
+edited. A hop that reads a published root and writes a new one is an ordered
+pair of sessions joined by one broker-issued, opaque `CapturedDerivationHop`.
+
+The derivation intent is canonical:
+
+```json
+{"schema_version":"dskit.captured-derivation-intent/v1",
+ "hop":"tape-data|tape-manifest",
+ "attempt":0,
+ "consumer_document_sha256":"<sha256>",
+ "consumed_ports":[{"input":"<name>","root_ref":"<str>",
+                    "captured_receipt_sha256":"<sha256>"}],
+ "output_member":"<relative-path>","purpose":"<str>"}
+```
+
+`consumed_ports` sorted by `input` and unique; `attempt` a non-negative int below
+a fixed ceiling; `derivation_intent_sha256` the sha256 of those bytes with itself
+absent.
+
+**Identity.** `produce` computes `stream_id = _digest(_canonical_bytes({
+"producer": producer, "root": root, "purpose": purpose}))` (trust.py:1175-1183).
+The hop supplies `producer = {"run_identity": "derived-run/" +
+derivation_intent_sha256, ...}`, `root = {"root_ref": "derived-root/" +
+derivation_intent_sha256, ...}`, `purpose` a fixed per-hop literal — so
+`stream_id` is a pure function of `derivation_intent_sha256`, which itself
+includes `attempt`. The consuming session's `run_identity` is recorded in
+`_Prepared`/`_ReceiptSubject` (trust.py:1192, 1198) but never feeds `stream_id`.
+
+**What v2 got wrong.** v2 claimed a crashed hop "must re-run" and that a crash
+after publish is "idempotent, observing its PUBLISHED head". Neither happens.
+`_reload_stream` (trust.py:1720-1741) rehydrates **only** `self._streams` from
+the receipt store; `_stream_pin` (initialised empty at trust.py:1069) and
+`_nonces` (1057) are fresh per broker and are never reconstructed, and member
+**bytes** are never persisted at all — only signed digests are. So a retry
+calling `produce()` on a rehydrated stream reaches `_prepare_receipt`, which
+computes `expected = _EVENTS[len(rows)]` and raises `"replay of %s is refused"`
+(trust.py:2246-2248). A stream left at PRODUCED or SEALED is therefore
+**permanently unresumable** — `seal`/`publish` additionally require a live
+`_Prepared` whose `_stream_pin` entry no longer exists (trust.py:1878-1884).
+
+**What v3 does instead.** The hop never retries a stream; it retries an
+*attempt*. A new read-only accessor `derivation_head(derivation_intent_sha256)`
+returns the recorded head event for that stream, or `None`, granting nothing and
+writing nothing. The hop's contract, which is the thing that makes idempotence
+real rather than assumed:
+
+1. Scan attempts ascending from 0 to the ceiling, reading `derivation_head`.
+2. First attempt whose head is **PUBLISHED** → reuse that root and stop. This is
+   the idempotent case, and it is idempotent because the orchestrator checks,
+   not because `produce` recovers.
+3. First attempt with **no stream** → `produce`/`seal`/`publish` there.
+4. An attempt at **PRODUCED or SEALED** is an abandoned attempt: skip it. Its
+   stream stays incomplete forever, by design of the unedited lifecycle, and
+   this ADR states that plainly rather than implying recovery.
+5. Exceeding the ceiling refuses.
+
+**The invariant this preserves** is *at most one PUBLISHED root per derivation
+intent* — enforced by step 2 refusing to produce once any attempt published —
+not "one stream per intent", which v2 asserted and could not deliver.
+
+**Scope of the durability claim (closing v2's M-4).** `_development_broker`
+(trust.py:2301-2338) is private, absent from `trust.__all__`, and its own
+docstring says "for focused tests only". This ADR therefore claims durability
+**only at development-broker scope**: an injected `receipt_store` mapping makes
+the receipt chain survive an in-process restart against the same backing store,
+which is what the focused tests exercise. It does **not** claim operational or
+deployment durability, does not repurpose the private factory as production
+wiring, and does not propose exporting it. Real deployment durability remains an
+explicitly open gate, consistent with `deployment_eligible=false` throughout.
+
+**Decision point 2 - the broker-owned execution entry.**
+
+`ReplayRun.run` (trust.py:5605) is not edited: its unconditional raise, its
+message and the `replay` grammar stay exactly as merged, so ordinary
+`run_document` refuses where and how it does today. The sole execution entry is
+`LifecycleAuthority.execute_replay_run(session, port_set, *, transition_nonce)`,
+reachable only with a broker-minted, interned `CapturedPortSet`. It calls
+`ReplayRun._run_captured`, a private hook taking only the opaque port set and the
+injected `EnvironmentIdentity` — never a `NodeContext`, `run_dir`, path,
+provider, registry, clock or RNG. RED asserts both halves.
+
+**Decision point 3 - two chronologies, with the claim narrowed to what is checked.**
+
+The grant families are disjoint: `_SYNTHETIC_ROSTER_BOOTSTRAP_KEYS`
+(trust.py:5890) and `_SYNTHETIC_GRANT_PUBLIC_KEYS` (trust.py:5635) are disjoint
+closed key tables with disjoint schema literals. Cross-substitution refuses on
+the key set before any effect; RED covers both directions.
+
+**Chronology A.** A one-use roster-bootstrap G1 **and** G2 pair authorizes one
+roster producer run, which PUBLISHES the `dskit.source-roster-capture/v1` root.
+G2 alone refuses before member, data or capture access. `source_ids` canonical
+sorted/unique; ranks contiguous `0..n-1`; `policy_sha256` omits itself; the scope
+is the complete authorized universe, so an authorized zero-event source keeps its
+rank.
+
+**Chronology B.** `DatasetCaptureAuthorization.v2` carries the three roster
+digests (already-required keys, trust.py:5646-5648).
+
+**The claim, narrowed.** `NonAuthorizingSyntheticGrantVerifier._authorization`
+(trust.py:5677-5719) checks those digests for sha256 **shape only**
+(`cls._hash`), comparing them to nothing. So this ADR claims only:
+**syntactically well-formed at grant issuance, semantically cross-checked at
+hop-1 preflight.** That cross-check is the v2 sibling of
+`_SyntheticRawPreflight._parse_member` (trust.py:7446-7447), required to compare
+the three digests against the live PUBLISHED roster root, receipt and policy and
+refuse before any member is projected. RED covers a grant naming no published
+roster.
+
+**Decision point 4 - the versioned wire, with one owner across all nine sites.**
+
+v1 and v2 of the raw-event and dataset-authorization schemas keep their meaning
+exactly; every reviewed v1 identity stays byte-identical.
+
+New `dskit.raw-event/v2`: a closed twelve-key object — v1's six
+(`schema_version`, `source_id`, `event_id`, `source_sequence`,
+`availability_ms`, `payload_sha256`) plus `exchange_ms`, `receive_ms`,
+`source_provenance_tag`, `source_timezone_tag`, `correction_position`,
+`corrects_event_id`. `prior_envelope_sha256` is deliberately **not** a member
+field: it is the correction chain's prior digest, derived by the hop from events
+it has already projected, so no source can assert it.
+
+New `dskit.dataset-capture-authorization/v2`: identical to v1 except
+`event_schema` is exactly `"dskit.raw-event/v2"` and `scope` gains
+`tzdata_version_sha256`, compared by the hop-1 v2 preflight against the tzdata
+identity in `EnvironmentIdentity.v1`; if that comparison is not implemented the
+field is dropped rather than shipped inert.
+
+**The roster-bootstrap wire is in scope too.** `NonAuthorizingRosterBootstrap
+Verifier` pins `event_schema == "dskit.raw-event/v1"` at trust.py:5970, so a v2
+wire requires a `dskit.roster-bootstrap-authorization/v2` alongside it. Omitting
+this was a gap in v2's own enumeration and is corrected here.
+
+**The nine sites, by grep at `3b73361`.** Three pin `dskit.raw-event/v1` —
+trust.py:5711 (dataset grant `event_schema`), 5970 (roster-bootstrap
+`event_schema`), 7447 (`_SyntheticRawPreflight._parse_member`, beside
+`set(event) == _SYNTHETIC_RAW_EVENT_KEYS`, the closed six-key set at 7150). Five
+pin `dskit.dataset-capture-authorization/v1` — trust.py:5680, 7797, 8181, 8401,
+9039. The ninth is `production/bundles.py:653`, `_RAW_EVENT_V1_SCHEMA`.
+
+**One owner, including the ninth (closing v2's M-3).** v2 left bundles.py's
+constant as a style precedent, which would have left two independent
+declarations of the same literal with only one covered by the pinning test —
+the exact "value in two places with nothing pinning them" defect CLAUDE.md
+names. Instead: `trust.py` owns the single versioned shape table, all eight
+trust-side sites read from it, and **`bundles.py` imports it** rather than
+keeping its own constant. That import is production -> pipeline, the direction
+that already exists, so it introduces no cycle. `test_raw_event_schema_sites_
+agree` asserts that no bare literal survives at any of the nine.
+
+Under v2 of the wire, hop 1 projects **every** `dskit.event-envelope/v2` field
+from authorized captured bytes: six from the raw member, six from the v2
+additions, `source_rank` and `source_rank_policy_sha256` from the verified
+pre-document roster policy, and `prior_envelope_sha256` from the hop's own
+correction chain.
+
+**Decision point 5 - V2 as a port SET on the P4 path, with the resolver named.**
+
+Ownership, pinned. `CapturedBindings` is at trust.py:694, exported in
+`trust.__all__` (trust.py:33), constructed only at trust.py:1592 by
+`captured_bindings` (trust.py:1532). `production/bundles.py` neither defines nor
+imports it. The master plan's F5b citation of
+`dskit/production/bundles.py:CapturedBindings.require` is a mis-citation;
+nothing moves.
+
+**V1 is not edited at all.** `captured_bindings` keeps building exactly one port
+(trust.py:1591) and `_consume_binding` keeps its whole-stream `_consumed_streams`
+gate and terminal `CONSUMED` append (trust.py:1658, 1671-1679). RED pins V1's
+messages and cardinality unchanged.
+
+**V2 is a different primitive, and the capability already exists.** A two-port
+`CapturedBindings` is impossible: `_consume_binding` advances the whole stream to
+CONSUMED on the first `require`, and `CapturedBindings` holds one scalar
+`_stream_id` (trust.py:709) while hop 3 needs two roots. V2 is therefore a new
+opaque `CapturedPortSet` over the P4 path — `authorize_capture_set`
+(trust.py:2501) -> `CapturedAuthorizationRecord` (**trust.py:4902-4980**, whose
+public surface is exactly `lifecycle_captured_receipt_sha256` at 4919-4942 and
+`read_member_bytes` at 4944-4972). This is not speculative: `_validate_capture_
+request` (trust.py:2514-2565) collects streams and ports as sets with no
+cardinality cap, requiring only that all captures share one frozen consumer
+document (trust.py:2562-2563), and an existing test already freezes one document
+with two `$captured_artifact` inputs and derives two ports
+(`tests/pipeline/test_captured_authorization.py:5271-5285`), with
+`assert len(audit["ports"]) == len(audit["receipts"]) == count` under
+`parametrize("count", [1, 2])` at line 969. That is exactly hop 3's shape.
+
+**Which resolver (closing v2's M-2).** The two contracts are not
+interchangeable, and v2 pointed at the wrong one:
+
+- **Hop 1 uses the dynamic path.** `_dynamic_p4_reconstruct_admission_chain`
+  (trust.py:9612-9619) hardcodes `{"raw_event_dataset", "source_roster"}` and
+  `len(captures) == 2` — literally hop 1's own pair.
+- **Hop 3 uses the fixed path.** `_FixedCapturedAuthorizationContract._prepare`
+  (trust.py:5028-5111) loops generically over `cas["entries"]` with no
+  cardinality or name assumption and handles the replay subject kind explicitly
+  (`replay = subject["kind"] == "replay"`, trust.py:5039). `commit_p4_batch`
+  dispatches on `type(resolver) is _FixedWormTrustedArtifactResolver`
+  (trust.py:5485-5489). Routing hop 3 through the dynamic resolver would hit
+  "P4 dynamic PIS entry closure refused"; no new dynamic sibling is needed.
+
+- **Exact-set cardinality** comes from the real declaration,
+  `document.py:766 _REPLAY_TAPE_INPUTS = ("tape_manifest", "tape_data")`,
+  enforced at parse by `_replay_node_errors` (document.py:805-838). A missing,
+  extra, duplicated, renamed or reordered input refuses before any port is built.
+- **One-shot per input.** `CapturedPortSet.require(name)` returns each declared
+  input exactly once, backed by P4's per-`(stream, relative_path)` read tracking
+  (`_p4_reads`, trust.py:5190, 5413-5416) — not `_consume_binding`'s whole-stream
+  lockout. Consuming `tape_manifest` leaves `tape_data` reachable, in either
+  order. **P4 finality is atomic at authorization time** (`commit_p4_batch`,
+  trust.py:5524, `consumed=True`); `CapturedPortSet.release()` is local
+  bookkeeping over an already-final commit, not deferred broker-side finality.
+  v2's "the terminal transition happens at release" wording was wrong and is
+  corrected here.
+
+**Decision point 6 - the hop-1 writer: named owner, constrained signature.**
+
+`production/bundles.py` owns envelope shape, canonical bytes and ordering today
+(`_check_event_envelope` 354, `_parse_event_envelope` 463,
+`_event_envelope_order_key` 498) and the master plan already assigns it the
+default-deny parser and private verification seam. The hop-1 projection and
+ordering function is added there, reusing those helpers rather than restating
+them. `trust.py` never imports it; the writer is passed into the hop, so the
+call direction stays production -> pipeline.
+
+**The signature is constrained, and the v2 analogy is withdrawn.** v2 said the
+writer is passed in "exactly as `compose_replay_tape` already receives" its
+arguments — an analogy to the one function whose defining defect, named in this
+ADR's own Context item 2, is accepting free-form caller-supplied timing,
+provenance and correction values. `produce` performs no content verification
+(it checks member shape and order only, trust.py:1141-1174), so nothing would
+have caught an implementation that recreated that parameter. The analogy is
+therefore withdrawn and replaced by a hard constraint: **the writer takes only
+(a) verified `dskit.raw-event/v2` member bytes resolved through the captured
+port and (b) the verified roster policy.** It has no free-form per-event
+metadata parameter of any kind. RED asserts that no envelope field can originate
+from a caller argument.
+
+**Decision point 7 - F5b's named symbol, and the collision disclaimed.**
+
+F5b adds `CapturedForecastInput` to
+`children/intraday_equities/intraday_equities/forecast_bundle.py`: a thin child
+adapter accepting only a broker-minted `CapturedPortSet` and resolving exactly
+one declared consumer input. The child's own rule binds it —
+`children/intraday_equities/AGENTS.md:9-11`, "Never edit dskit from here.
+Generic gaps graduate upstream. Domain stays here" — so the mechanism stays in
+dskit and only the declaration is child-side. The module imports nothing from
+`dskit.pipeline.trust` or `dskit.production` today and has no existing captured-
+input consumer, so this is a genuinely new seam. It is **not** coupled to
+`ForecastBundle` (355) or `ConfirmedCaps` (594), which are the file's existing
+Gate-4/ADR-0114/ADR-0121 capital machinery and are not edited, subclassed or
+constructed by the new path.
+
+`test_forecast_consumer_requires_v2_captured_set` refuses, each its own case: a
+V1 `CapturedBindings`; a set whose descriptor is not the frozen one, whose port
+is not the derived one, whose receipt is not the issued one; a set minted for a
+different session; a copied or re-interned set — and accepts the one valid
+declared-port consumer.
+
+`docs/plans/closeout-2026-09-14/02-shared-foundations.md:29-31` carries the same
+`bundles.py:CapturedBindings` mis-citation and is corrected in the same change.
+
+### The three hops, in order
+
+1. **Hop 0.** Chronology A publishes the roster root; chronology B publishes the
+   raw-event-dataset root. Both PUBLISHED, neither CAPTURED, no consumer
+   document yet.
+2. **Hop 1 (`ReplayTapeDataCapture`).** Declares exactly `raw_event_dataset` and
+   `source_roster` — no alias, extra or nested descriptor. Frozen only after hop
+   0 published; ports derived, roots and receipts verified, port-bound CAPTURED
+   receipts issued through the **dynamic** resolver. Runs as a Decision point 1
+   hop: verifies every event's `source_id` is in the consumed pre-document
+   roster, binds that exact `policy_sha256` without deriving a new one, writes
+   canonical F3-ordered `dskit.event-envelope/v2` bytes through Decision point
+   6's writer, and PUBLISHES its own data root. Order is availability, derived
+   source rank, source sequence, correction position, payload digest, event ID.
+3. **Hop 2 (`ReplayTapeManifestProducer`).** A distinct, later consumer document
+   frozen against hop 1's published root and receipt. Derives the inner
+   `dskit.captured-replay-tape/v1` bytes with the **unedited**
+   `CapturedReplayTape` codec, then PUBLISHES them in its own separate
+   `ReplayTapeManifestCapture` root. It never records its own root or receipt
+   inside the inner manifest: `data_capture_root`/`data_captured_receipt` name
+   hop 1's root and *this hop's* port-bound receipt for it — parent publish ->
+   manifest capture -> manifest publish, never a same-root, self-receipt or cycle.
+4. **Hop 3 (`ReplayRun`).** A third, distinct consumer run through the **fixed**
+   resolver. Its document freezes descriptors resolving to both published roots;
+   two replay-specific CAPTURED receipts are issued; Decision point 5's
+   `CapturedPortSet` carries both; Decision point 2's entry executes it. It
+   verifies the outer manifest's `VerifiedCapture` and bytes; requires the
+   manifest's inner bytes to equal the data entry's resolved root, PUBLISHED
+   members, source-rank policy, envelope count, ordered digest list and
+   recomputed inner `tape_digest`; and requires the inner `data_captured_receipt`
+   to verify the **prior** hop-2 port, while the data entry carries its own later
+   replay-specific receipt. Only then is the composed tape capability issued.
+
+### Non-goals
+
+No real data, source read, acquisition, market replay, HPO/refit, training,
+lockbox, backtest, paper or live action follows from this ADR. Every fixture is
+deterministic and synthetic, every authority the nondeployment equivalent,
+`deployment_eligible=false` throughout. Durability is claimed only at
+development-broker scope (Decision point 1); operational durability is an open
+gate, not a claim. Not implemented: E1, C0, the A or B lanes, calibration or
+statistical policy, queue/impact/venue realism, any external OS sandbox. Not
+edited: `ReplayRun.run`, the `replay` grammar, `captured_bindings`,
+`_consume_binding`, `CapturedBindings`, `compose_replay_tape`,
+`CapturedReplayTape`, `verify_causal_order`, `dskit.raw-event/v1`,
+`dskit.dataset-capture-authorization/v1`, `ForecastBundle`, `ConfirmedCaps`, or
+any ADR-0143 forbidden-legacy symbol. Nothing moves out of `trust.py`. This ADR
+does not claim whole-F3 or whole-F5b closure; it is the contract their RED/GREEN
+must satisfy.
+
+**Retained Minor backlog (not blocking, per the owner's Critical/Major bar):**
+v2 N-3, `stream_id` is publicly predictable, so a holder of producer-session
+capability could pre-empt a stream a legitimate hop is about to use; producer
+session issuance is itself gated elsewhere, and this is recorded rather than
+assumed away. Also retained: `_p4_reads` per-input read bookkeeping
+(trust.py:5190) is in-RAM and not persisted, so a crash mid-hop-3 loses it;
+re-reading immutable WORM bytes is not harmful, so it is disclosed, not fixed.
+
+The prior uncommitted ADR-0148 draft and its five-Major verdict live in a
+Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
+from this Linux container. If that draft carries findings beyond the five stated
+in the task, they are not addressed here.

@@ -1,6 +1,82 @@
 # Re-entry
 
-## Current checkpoint: whole F5a closed -- Packet 8 / F5A-R23 done (2026-09-17)
+## Current checkpoint: F3 design stopped at convergence; wire guards pinned (2026-09-17)
+
+**F3/F5b design did NOT land, and must not be implemented as written.**
+ADR-0148 was written, reviewed and stopped three times (v1: 2C/6M evidence
+0196; v2: 1C/4M evidence 0198; v3: 1C/5M evidence 0201, plus 2 author-found
+Major in 0200). Three consecutive stopped candidates trip
+`docs/skills/skeptic-review.md`'s convergence checkpoint, which forbids a
+fourth patch to the same contract. The checkpoint is recorded at evidence
+0202 and its owner-approved ruling was to narrow the work. ADR-0148 v3 stays
+in the decision log marked **STOPPED / DO NOT IMPLEMENT** with its 8 open
+Critical/Major findings named in its own status block -- an unlanded contract
+retained for the next slice, not a design to code against.
+
+The repeated family, stated plainly so the next session does not repeat it:
+each round re-specified the same invariant (at most one PUBLISHED root per
+derivation intent, and its durability story) with a NEW mechanism, and each
+new mechanism was defective in a way the previous one was not -- an asserted
+ChainLedger that is not in `trust.py`; then a crash taxonomy describing
+behavior `_reload_stream`/`_prepare_receipt` do not produce; then an
+ascending-scan retry protocol that races. The method was the defect: prose
+specification of a stateful concurrent protocol, ahead of any executable
+test, against a 10k-line lifecycle. A secondary repeated family was
+overclaimed exhaustiveness (v1 named 1 of 8 literal sites; v3 claimed "nine
+sites" and missed a whole class of cross-object equality check).
+
+**What DID land.** Inventory showed the manifest's named F3 sentinel
+(`test_roster_rejects_g2_without_g1`) is already covered in substance by
+`test_adr135_bootstrap_refuses_grant_mutations[swap|wrong-role|wrong-key]`,
+and `verify()` structurally requires both grants -- so there was no honest
+RED there and none was manufactured. The genuine gap found instead was five
+authority refusal rules with ZERO negative coverage. Two of them are cleanly
+reachable and are now pinned by
+`tests/pipeline/test_captured_authorization.py::
+test_adr133_dataset_authorization_pins_schema_media_and_empty_policy` and
+`::test_adr135_bootstrap_authorization_pins_schema_and_media` (7 cases).
+Each includes an `event-schema-v2` case pinning that a v2 wire is refused
+TODAY, so the deferred versioned-wire work cannot widen that boundary
+silently. These are characterization/regression pins over existing approved
+behavior, not RED->GREEN, and are labelled as such.
+
+**Proven load-bearing, not decorative:** a controlled negative probe weakened
+both guards in `trust.py`; all 7 cases failed, and passed again once
+`trust.py` was restored clean (verified by `git diff --stat`).
+
+**A genuine finding for the deferred wire work:** the cross-object
+`event_schema` equality at `trust.py:7332` is UNREACHABLE through that field
+while v1 is the only accepted value -- guards at 5711 and 5970 independently
+pin both objects to the same literal, so they can never disagree. That check
+only becomes live once a v2 wire exists.
+
+**Environment:** this container had a broken `cryptography` CFFI backend
+(`No module named '_cffi_backend'`), which was silently failing large parts
+of the trust suites. Fixed with `pip install cffi`; `tests/pipeline/
+test_captured_authorization.py` + `test_trust.py` now run **1420 passed**.
+
+**Disclosed pre-existing failures, reproduced on the unchanged base with the
+same command and environment, NOT fixed here:** 4 in
+`tests/production/test_captured_authorization.py`
+(`test_v1_p4_refusal_has_no_effect_and_does_not_burn_legacy_admission` and
+`test_issued_p4_facades_reach_only_the_same_held_admission_lookup`, each
+[verifier] and [driver]).
+
+**Not done, and not claimed:** no real data, replay, backtest, POC, paper or
+live activity; no WSL2 (this was a Linux container, so the referenced Windows
+worktree and its ADR-0148 draft were unreachable and the real-data POC could
+not run regardless of its own gates); `deployment_eligible=false` throughout.
+
+**Next:** F3 remains open. The next bounded slice is the owner's choice
+between (a) the remaining three uncovered refusal rules at trust.py:7332 /
+8535 / 8808, which need the heavier `_adr132_raw_case` / `_adr140_published_
+raw_case` machinery, and (b) re-opening ADR-0148's DP5 (`CapturedPortSet`)
+as its own sized contract -- the one mechanism all three review rounds
+verified sound, with the two-port precedent confirmed at
+`tests/pipeline/test_captured_authorization.py:5271-5285` and `:969`.
+Whatever is chosen, specify it against an executable test, not in prose.
+
+## Prior checkpoint: whole F5a closed -- Packet 8 / F5A-R23 done (2026-09-17)
 
 Remote main verified at 937770d. ADR-0147 replaces
 `HistoricalStudyVerifier.capture`'s publicly-reachable `_spend` constructor

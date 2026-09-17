@@ -1,0 +1,33 @@
+{
+  "schema_version": "Phase0Review.v1",
+  "slice_id": "F3",
+  "review_kind": "Author-found findings against ADR-0148 v3, from an independent read-only wire-migration inventory (not a design review)",
+  "base_commit": "3b73361",
+  "source": "parallel fact-finding agent, exhaustive grep over dskit/ and children/; every claim below re-verified by the author directly against the code",
+  "counts": {"critical": 0, "major": 2, "minor": 0, "nit": 0, "unresolved_critical_major": 2},
+  "findings": [
+    {
+      "id": "A-1", "severity": "Major", "breaks": "ADR-0148 v3 Decision point 4 (the M-3 closure) / F3-I11",
+      "claim": "v3 closes v2's M-3 duplication finding by having production/bundles.py IMPORT the trust-side shape table. That is forbidden by a dedicated, currently-passing regression test and reverses an approved architectural commitment.",
+      "author_verification": "CONFIRMED by direct read. tests/production/test_purity.py:170 test_bundles_module_never_imports_pipeline_trust AST-checks that bundles.py imports dskit.pipeline.trust at NO depth; its docstring states it is 'Stricter than the package-wide rule' and is the dedicated regression test for ADR-0146 Decision point 10. Separately, bundles.py:735-738 (_check_raw_event_member docstring) states the restatement is deliberate: 'reimplemented, not imported, because production/bundles.py must not import dskit.pipeline.trust (Decision point 10's own layering boundary)'.",
+      "consequence": "Implementing v3's DP4 as written requires deleting or rewriting a passing test that asserts the opposite, silently retiring an approved boundary to satisfy a duplication rule that CLAUDE.md itself offers another remedy for.",
+      "family": "trading an approved architectural boundary for a style rule; unreviewed contract change",
+      "disposition": "TO FIX in v4. CLAUDE.md's own text gives the correct remedy: 'If a value MUST appear twice, pin the agreement with a test or a runtime refusal', and 'deliberate independent restatement is correct'. So: trust.py owns the table for its own sites; bundles.py KEEPS its independent restatement untouched; test_raw_event_schema_sites_agree lives in tests/ and imports BOTH modules, asserting they agree. Tests are tier-free, so the pin costs no cross-tier import and ADR-0146 DP10 and its regression test both stand."
+    },
+    {
+      "id": "A-2", "severity": "Major", "breaks": "ADR-0148 v3 Decision point 4 exhaustiveness claim / F3-I05",
+      "claim": "v3 states 'The nine sites, by grep at 3b73361'. The enumeration is not exhaustive and omits a whole CLASS of check.",
+      "author_verification": "CONFIRMED by direct read of each. Missing bare-literal sites: trust.py:5938 (the roster-bootstrap authorization's OWN schema_version, distinct from its event_schema pin at 5970); stamping sites 6702, 7046, 8407, 9045. Missing and more important, three CROSS-OBJECT event_schema equality checks that v3 never mentions: trust.py:7332 (_SyntheticRawPreflight._derive_intent, all(authorization[name] == bootstrap[name] for name in (... 'event_schema' ...)), reached from _transition and _SyntheticRawPublisher._check_row so it runs on every raw preflight/publish path); trust.py:8535 (_SyntheticRootPisIssuer.issue); trust.py:8808-8809 (NonAuthorizingSyntheticRootPisProof.verify).",
+      "consequence": "A migration touching only the enumerated sites leaves the cross-object equality rule intact, so a v2 dataset authorization can never pair with a roster-bootstrap object built under the v1-only rule at 5970. v3's roster-bootstrap-v2 conclusion happens to be right, but it is justified from one site when three independent cross-checks actually force it.",
+      "family": "incomplete enumeration presented as exhaustive (the same overclaim pattern v1 and v2 were each stopped for)",
+      "disposition": "TO FIX in v4: replace the nine-site list with the full inventory, split explicitly into (a) bare-literal equality, (b) cross-object equality, (c) stamping-only sites whose failure mode is mislabelling rather than refusal. State the exhaustiveness claim only for the classes actually swept."
+    }
+  ],
+  "related_coverage_gap_recorded": {
+    "claim": "event_schema appears in exactly three places in tests/pipeline/test_captured_authorization.py (2165, 2642, 3737), all fixture CONSTRUCTION setting the valid value. No test mutates it to a wrong value, so the cross-object equality rule at 7332/8535/8808-8809 is exercised only on the happy path; the refusal messages 'post-roster raw equality refused', 'root-PIS source contract mismatch', 'root-PIS source contract changed', 'dataset schema, media or empty policy refused' and 'roster bootstrap schema or media refused' have zero test hits.",
+    "disposition": "A genuine pre-existing RED opportunity, recorded for the F3 matrix rather than asserted as a defect in existing code."
+  },
+  "process_note": "These were found while a fresh independent Phase 0 skeptic was already reviewing v3. Per skeptic-review.md's candidate round, corrections are BATCHED after that review returns rather than applied mid-review, so the in-flight lens is not wasted. v3 is already known-defective at the time of that review; its verdict is retained regardless and both findings carry into v4.",
+  "red_authorization": false,
+  "deployment_eligible": false
+}
