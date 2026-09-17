@@ -11550,7 +11550,17 @@ proposal.
 
 ## ADR-0146 - bounded synthetic composed-tape verification (P7 closure gate)
 
-**Status:** proposed.
+**Status:** proposed. Independent preapproval review found 1 Critical, 2
+Major, 1 Minor, 2 Nit. Corrected below: the Critical (RE-ENTRY's stated gate
+names a callable capability, not merely a passing test) is closed by
+Decision point 7, a real production function `compose_replay_tape` in
+`production/bundles.py`; the two Majors are closed by Decision point 8 (an
+explicit dynamic-authority RED requirement) and the "Scope decision: one-hop
+vs three-hop composition" subsection below; the Minor (fixture-builder
+duplication risk) is closed as a consequence of Decision point 7, since the
+test now calls one production function instead of reimplementing envelope
+construction. Full review record and corrections in evidence 0189. A fresh
+independent reviewer has not yet examined this corrected draft.
 
 **Context.** RE-ENTRY's current "Next" line, unchanged since ADR-0144 closed
 the dynamic `authorize_capture_set` -> CAPTURED path and ADR-0145 closed the
@@ -11628,10 +11638,12 @@ of two independently sufficient resolutions.**
   composed-tape verifier built this way never performs a legacy v1 capture
   at all, so there is no second leg left to mix with the P4 leg, and 0176's
   conflict does not arise irrespective of the per-ledger-scoping argument
-  below. This is the smallest correct fix: it needs no `trust.py` or
-  `production/bundles.py` edit, reuses only already-merged, already-tested
-  public entry points, and does not touch any of the five ADR-0143
-  forbidden-legacy symbols or ADR-0144's dynamic-dispatch code.
+  below. This is the smallest correct fix: it needs no `trust.py` edit and
+  no `trust.py` import, composes `production/bundles.py`'s existing codec/
+  verification seam behind one new function (Decision point 7) rather than
+  a second one, reuses only already-merged, already-tested public entry
+  points, and does not touch any of the five ADR-0143 forbidden-legacy
+  symbols or ADR-0144's dynamic-dispatch code.
 - **Considered and recorded, not adopted:** the task's suggested
   alternative -- a genuinely separate outer-manifest leg captured through a
   *different* broker/ledger instance than the dynamic authority's own,
@@ -11667,8 +11679,34 @@ retired from the plan; evidence 0175 MAJ-4 ("location incoherent... the
 broker is private/unreachable from production") already argued against a
 production-side republish module for exactly this reason.
 
-**What is already merged and reused as-is, with no code change required by
-this ADR:**
+**Scope decision: one-hop vs three-hop composition.** The original
+ADR-0127 Decision.2 design was a three-hop composition: a data capture, a
+separate manifest-producer consumer of that data, a manifest publish of the
+resulting outer-manifest root, and a third `ReplayRun` consumer of that
+published manifest. That design was abandoned after three failed Phase 0
+cycles (evidence 0174/0175/0176) because it requires production republishing
+a second manifest root outside the fixed P4 corpus and outside the dynamic
+authority's closed graph (ADR-0142 Decision point 3) -- an unbuilt
+capability, not a bounded extension of anything already merged. This ADR
+proves the achievable one-hop version instead: one dynamic-authority
+CAPTURED admission supplies both the data and, via in-process construction
+inside `compose_replay_tape` (Decision point 7), the manifest -- no separate
+publish, no separate consumer, no second root. This is P7's actual, honest
+closure criterion for a bounded, nondeployment, synthetic slice: it proves
+`verify_causal_order` reachable end-to-end from resolved bytes, not that the
+full three-hop production composition pipeline exists. A real multi-hop
+composition -- a genuinely separate, separately-published and -captured
+outer-manifest root, produced by a distinct consumer -- remains explicitly
+out of scope here. It is ordered under the real F3 lane's own future work
+(the forecast-capital-owned lane named in Context above), not this ADR. This
+is recorded here as an explicit scope-narrowing decision, in this ADR
+lineage's own established pattern (evidence 0179's
+`owner_delegated_scope_decision` entries), rather than left implicit in the
+"Correction" paragraph above.
+
+**What is already merged and reused as-is, with no edit required by this
+ADR** (contrast Decision point 7 below, which adds one new function and two
+new small private helpers -- the only code this ADR itself contributes):
 
 - `CapturedAuthorizationRecord.read_member_bytes` /
   `.lifecycle_captured_receipt_sha256` (ADR-0129, `trust.py`).
@@ -11677,11 +11715,16 @@ this ADR:**
   `tests/pipeline/test_captured_authorization.py`'s `_adr143_issued_case`,
   `_adr144_document_and_captures`, `_adr144_admission_ref`, and the generic
   single-stream produce/seal/publish helper `f4._publish`).
-- `CapturedReplayTape._build` / `.canonical_bytes()` / `.parse()` and
-  `verify_causal_order` (ADR-0145, `production/bundles.py`), and its
-  existing closed-envelope-shape fixture builder
-  (`tests/production/test_event_envelope_causal_order.py`'s `_envelope` /
-  `_bytes`).
+- `CapturedReplayTape._build` / `.canonical_bytes()` / `.parse()`,
+  `verify_causal_order`, and `_check_event_envelope` (ADR-0145,
+  `production/bundles.py`) -- `_check_event_envelope` is module-private but
+  not test-private, and Decision point 7 below reuses it directly rather
+  than the test-only `_envelope`/`_bytes` fixture builder in
+  `tests/production/test_event_envelope_causal_order.py`, which remains that
+  file's own, deliberately-isolated, unit-level fixture and is not reused
+  here (this closes the preapproval review's Minor duplication-risk finding:
+  envelope construction now has exactly one owner, Decision point 7's
+  `compose_replay_tape`).
 - ADR-0128's distinct-document multi-consumer capture remains available for
   a future real manifest-producer role but is **not** exercised as a
   requirement by this bounded proof (Decision point 2).
@@ -11728,86 +11771,271 @@ open (Non-goals).
    shape scoped to this ADR; it does not implement, extend, or depend on
    ADR-0130's never-delivered `SourceRosterCapture.v1`/
    `RawEventDatasetCapture.v1` grammar, and this ADR does not reopen that
-   separate, larger, non-goal-fenced scope.
+   separate, larger, non-goal-fenced scope. **Implementation pin (Nit,
+   closed here):** wherever the `dskit.composed-tape-roster-fixture/v1`
+   literal is defined in `production/bundles.py` (Decision point 7 below),
+   it carries a one-line code comment marking it test-only/placeholder --
+   not a real `SourceRosterCapture.v1` and not a claim toward ADR-0130's
+   undelivered broker.
 4. **Resolve, don't assume, every `CapturedReplayTape` field.**
    `source_rank_policy_sha256` is the sha256 of the resolved roster
-   member's own canonical bytes (recomputed by the proof from bytes read
-   via `read_member_bytes`, never a caller literal); each envelope's
-   `source_rank` is that source's index in the resolved, rank-sorted
-   roster. `data_capture_root` and `data_captured_receipt` are populated
-   from the real capture -- the captured root's own identity digest (from
-   the live `published`/descriptor this proof's own `authorize_capture_set`
-   call returns) and the real `lifecycle_captured_receipt_sha256` for this
-   exact `(stream, consumer_document_sha256)` -- never the placeholder
+   member's own canonical bytes (recomputed by `compose_replay_tape` from
+   bytes read via `read_member_bytes`, never a caller literal); each
+   envelope's `source_rank` is that source's index in the resolved,
+   rank-sorted roster. `data_capture_root` and `data_captured_receipt` are
+   populated from the real capture -- the captured root's own identity
+   digest (from the live `published` token `compose_replay_tape` is handed,
+   computed inside the function, never accepted as one of its arguments)
+   and the real `lifecycle_captured_receipt_sha256` for this exact
+   `(stream, consumer_document_sha256)` -- never the placeholder
    `_ROOT`/`_RECEIPT` literals `test_event_envelope_causal_order.py` uses
    for its own, deliberately-isolated, unit-level proof of
    `verify_causal_order`. Pinning the exact bytes `data_capture_root` hashes
    (the F4 publication receipt's own self digest vs. a canonical hash of
    the descriptor tuple) is a Phase 0 deliverable, not frozen here; the
-   invariant is that it is computed from the live capture, not supplied.
+   invariant, enforced by `compose_replay_tape`'s own signature (Decision
+   point 7), is that it is computed from the live capture, never supplied
+   by a caller.
 5. **Project, don't forward, raw-event bytes into envelopes.** Each resolved
    raw-event/v1 member is parsed, and its `event_id`/`source_sequence`/
    `payload_sha256`/`availability_ms`/`source_id` are carried verbatim into
    a full closed `dskit.event-envelope/v2` object (ADR-0145 Decision point
-   1), reusing `test_event_envelope_causal_order.py`'s `_envelope`/`_bytes`
-   shape directly rather than a new builder. `source_rank` and
-   `source_rank_policy_sha256` come from step 4, resolved, not fixture
+   1), assembled and validated by `compose_replay_tape` itself (Decision
+   point 7), via `_check_event_envelope` -- the same validated shape check
+   `verify_causal_order` applies per-position -- not by reusing
+   `test_event_envelope_causal_order.py`'s test-private `_envelope`/`_bytes`
+   fixture builder, which remains that file's own, deliberately-isolated
+   construction path and is not called from production code. `source_rank`
+   and `source_rank_policy_sha256` come from step 4, resolved, not fixture
    literals; `exchange_ms`/`receive_ms`/`source_provenance_tag`/
-   `source_timezone_tag` remain synthetic, fixture-declared metadata exactly
-   as ADR-0145 already scopes them (Decision point 1: opaque, never
-   interpreted). The minimal positive fixture is one straight-line tape --
-   `correction_position=0`, `corrects_event_id=None`,
+   `source_timezone_tag`/`correction_position`/`corrects_event_id`/
+   `prior_envelope_sha256` remain synthetic, fixture-declared metadata the
+   caller supplies to `compose_replay_tape` per envelope, exactly as
+   ADR-0145 already scopes them (Decision point 1: opaque, never
+   interpreted; real F1/F2 derivation of these fields is that ADR's own
+   non-goal, unchanged). The minimal positive fixture is one straight-line
+   tape -- `correction_position=0`, `corrects_event_id=None`,
    `prior_envelope_sha256=None` for every envelope -- sufficient to prove
    the chain end-to-end; at least one negative-family case additionally
    proves the digest/receipt/policy checks are live against *resolved*
    bytes, not merely against `test_event_envelope_causal_order.py`'s
    already-covered in-memory fixtures (e.g., mutate one resolved raw-event
-   member's byte after capture and before the proof's own re-derivation,
-   and confirm `verify_causal_order`'s digest check -- or, if tampering is
-   caught earlier, `read_member_bytes`'s own digest refusal -- still fires;
-   the exact tamper point is a Phase 0 deliverable).
+   member's byte after capture and before `compose_replay_tape`'s own
+   re-derivation, and confirm `verify_causal_order`'s digest check -- or, if
+   tampering is caught earlier, `read_member_bytes`'s own digest refusal --
+   still fires; the exact tamper point is a Phase 0 deliverable).
 6. **Build, round-trip, then verify -- using only already-merged functions.**
-   The proof calls `CapturedReplayTape._build(data_capture_root,
-   data_captured_receipt, source_rank_policy_sha256,
-   ordered_envelope_digests)`, then `.canonical_bytes()` followed by
-   `CapturedReplayTape.parse(...)` (a genuine default-deny round trip, not a
-   construction shortcut), then `verify_causal_order(tape,
-   ordered_envelope_bytes)` with the same resolved envelope bytes the
-   digests were computed from. No new function is added to
-   `production/bundles.py`; `_build`, `canonical_bytes`, `parse`, and
-   `verify_causal_order` are all already merged and public (or, for
-   `_build`, already reached directly by `test_captured_replay_tape.py`,
-   an established whitebox pattern this proof continues).
-7. **This is fixture-only integration test code, not new shipped API.**
-   Consistent with every other P7 slice's `deployment_eligible=false`
-   framing and with ADR-0145's own "test-fixture code, not shipped runtime
-   API" precedent, this ADR adds **no new function or class to
-   `dskit/pipeline/trust.py` or `dskit/production/bundles.py`**. The
-   entire proof is new test code. Two placements are available and the
-   choice is a Phase 0 pin: (a) append to
+   `compose_replay_tape` (Decision point 7) calls
+   `CapturedReplayTape._build(data_capture_root, data_captured_receipt,
+   source_rank_policy_sha256, ordered_envelope_digests)`, then
+   `.canonical_bytes()` followed by `CapturedReplayTape.parse(...)` (a
+   genuine default-deny round trip, not a construction shortcut), then
+   `verify_causal_order(tape, ordered_envelope_bytes)` with the same
+   resolved envelope bytes the digests were computed from, and returns
+   `verify_causal_order`'s own verified tape on success. `_build`,
+   `canonical_bytes`, `parse`, and `verify_causal_order` themselves are
+   unchanged and already merged and public (or, for `_build`, already
+   reached directly by `test_captured_replay_tape.py`, an established
+   whitebox pattern this proof continues); Decision point 7 below is the
+   one place that composes them into a new callable.
+7. **One new pure production function, `compose_replay_tape`, in
+   `production/bundles.py`.** This closes the preapproval review's Critical
+   finding: RE-ENTRY's stated gate is "constructing a runtime composed-tape
+   capability that calls `verify_causal_order` end-to-end", language naming
+   a callable capability, not merely a passing test. `compose_replay_tape`
+   is that capability -- the actual "composed-tape capability" P7's gate
+   calls for. The Decision point 9 test calls this function; it does not
+   orchestrate these steps inline itself, closing the Minor duplication-risk
+   finding at the same time (envelope construction has exactly one owner).
+
+   **Signature:**
+   ```python
+   def compose_replay_tape(
+       record, session, published, consumer_document_sha256,
+       roster_relative_path, raw_event_members,
+   ):
+   ```
+   `record` (`CapturedAuthorizationRecord`), `session` (`LaunchSession`),
+   and `published` are the exact three values one `authorize_capture_set`
+   call already returned (`record`, `session`) plus the `published` token
+   the caller captured (ADR-0129's own shapes, unchanged) --
+   `compose_replay_tape` calls only their existing public
+   methods/attributes and imports no symbol from `dskit.pipeline.trust`,
+   so it adds no new cross-module dependency and does not disturb the
+   pipeline/production layering boundary ADR-0145 Decision point 5 already
+   relies on ("the only production module imported here is `base`",
+   `bundles.py`'s own module docstring). `consumer_document_sha256` is the
+   frozen consumer document's own digest (`frozen.document_sha256` /
+   `port["consumer_document_sha256"]`, ADR-0129's existing shape).
+   `roster_relative_path` is the `source_roster.json` member's relative path
+   in the sealed manifest (Decision point 3). `raw_event_members` is an
+   ordered sequence, one item per envelope, **in the exact intended final
+   tape order** (position `i` in the sequence becomes tape position `i`; no
+   sorting is performed by this function -- Decision point 5's order-key
+   check is `verify_causal_order`'s job, downstream), each item a mapping:
+   `relative_path` (str, the raw-event/v1 member's path), `exchange_ms`,
+   `receive_ms` (nonnegative int), `source_provenance_tag`,
+   `source_timezone_tag` (nonempty str), `correction_position` (nonnegative
+   int), `corrects_event_id` (str or `None`), `prior_envelope_sha256` (sha256
+   or `None`) -- exactly the seven ADR-0145 Decision point 1 fields Decision
+   point 5 above already scopes as caller-supplied, synthetic, fixture-
+   declared metadata.
+
+   **Steps** (all inside the function; the caller supplies only the six
+   arguments above):
+   1. `stream = published.sealed.prepared.stream_id` -- the committed
+      publication stream identity `lifecycle_captured_receipt_sha256`
+      requires, recovered from the `published` token's own public
+      attribute path, not a seventh argument.
+   2. `roster_bytes = record.read_member_bytes(session, published,
+      consumer_document_sha256, roster_relative_path)`.
+   3. Parse `roster_bytes` as JSON and validate it with a new, small,
+      private `_check_composed_tape_roster_fixture(value)` (added beside
+      `_check_tape`/`_check_event_envelope`, same accumulate-then-raise
+      style): `schema_version` must equal the literal
+      `dskit.composed-tape-roster-fixture/v1`; `sources` must be a list of
+      `{source_id: nonempty str, rank: nonnegative int}` objects, unique
+      `source_id`, and `rank` values forming exactly `0..len(sources)-1` in
+      list order (i.e., already rank-sorted, no gap, no duplicate -- Decision
+      point 3's "sorted by rank from 0" is enforced here, not assumed). Any
+      problem raises `ProductionError` naming every problem found.
+   4. `source_rank_policy_sha256 = hashlib.sha256(roster_bytes).hexdigest()`
+      (Decision point 4: the resolved roster member's own bytes' digest,
+      never a caller literal).
+   5. `source_rank_by_id = {item["source_id"]: item["rank"] for item in
+      roster_value["sources"]}` (Decision point 4: each source's index in
+      the resolved, rank-sorted roster).
+   6. For each `entry` in `raw_event_members`, in order:
+      a. `raw_bytes = record.read_member_bytes(session, published,
+         consumer_document_sha256, entry["relative_path"])`.
+      b. Parse as JSON and validate with a new, small, private
+         `_check_raw_event_member(value)`: the closed six-key
+         `dskit.raw-event/v1` shape (`schema_version` literal, `source_id`/
+         `event_id` nonempty str, `source_sequence`/`availability_ms` int,
+         `payload_sha256` a sha256 digest) -- mirroring ADR-0132's
+         `_SYNTHETIC_RAW_EVENT_KEYS` shape (`trust.py:7072`), reimplemented
+         locally, not imported, solely because `production/bundles.py` must
+         not import `dskit.pipeline.trust` (the same layering boundary step
+         1 cites); this is a bounded, ADR-scoped restatement of an existing
+         six-field shape, not new grammar, and is distinct from the Minor
+         finding's envelope-construction duplication (that was two *envelope*
+         builders; this is one small *raw-event* shape check that cannot be
+         imported across the layering boundary).
+      c. `source_rank = source_rank_by_id[value["source_id"]]`; a
+         `source_id` absent from the roster accumulates into the raised
+         `ProductionError` rather than raising a bare `KeyError`.
+      d. Assemble the 15-field `dskit.event-envelope/v2` object (ADR-0145
+         Decision point 1): `schema_version`, `source_id`, `event_id`,
+         `source_sequence`, `payload_sha256`, `availability_ms` carried
+         verbatim from the parsed raw-event member; `source_rank` (6c);
+         `source_rank_policy_sha256` (step 4); `exchange_ms`, `receive_ms`,
+         `source_provenance_tag`, `source_timezone_tag`,
+         `correction_position`, `corrects_event_id`, `prior_envelope_sha256`
+         taken verbatim from `entry`.
+      e. Validate the assembled object with `_check_event_envelope`
+         (already in `production/bundles.py`, not test-private) -- the
+         *same* validated path `verify_causal_order` itself applies
+         per-position later (Decision point 5 above). Any problem raises,
+         position included in the message.
+      f. `envelope_bytes = _canonical_bytes(envelope)`; append to
+         `ordered_envelope_bytes`; append
+         `hashlib.sha256(envelope_bytes).hexdigest()` to
+         `ordered_envelope_digests`.
+   7. Compute `data_capture_root` from the live `published` token, inside
+      this function -- never accepted as an argument, closing the risk of a
+      caller injecting an arbitrary root digest. The exact bytes hashed (the
+      F4 publication receipt's own self digest vs.
+      `_canonical_hash(published.descriptor)`) remains the Phase 0 pin
+      Decision point 4 already named; `compose_replay_tape`'s contract is
+      only that the value is computed here, from the live capture.
+   8. `data_captured_receipt = record.lifecycle_captured_receipt_sha256(
+      stream, consumer_document_sha256)` (`stream` from step 1).
+   9. `tape = CapturedReplayTape._build(data_capture_root,
+      data_captured_receipt, source_rank_policy_sha256,
+      ordered_envelope_digests)`, then `reparsed =
+      CapturedReplayTape.parse(tape.canonical_bytes())` -- Decision point
+      6's genuine round trip, unchanged.
+   10. `verify_causal_order(reparsed, ordered_envelope_bytes)`. On success
+       (the function's own contract: returns `None`), `compose_replay_tape`
+       returns `reparsed`, the verified tape. On any violation, the
+       `ProductionError` `verify_causal_order` raises propagates unchanged --
+       `compose_replay_tape` adds no second error-handling layer around it.
+
+   **Non-duplication guarantee.** No file other than `production/bundles.py`
+   constructs a `dskit.event-envelope/v2` object or a `CapturedReplayTape`
+   value under this ADR; the Decision point 9 test calls
+   `compose_replay_tape` and inspects its return value and raised errors, it
+   does not reimplement steps 1-10. `compose_replay_tape` is exported
+   alongside `verify_causal_order` (added to `__all__`), so it is equally
+   reachable from a test fixture or a later real composed-tape caller
+   (`ReplayRun`'s eventual wiring, Non-goals below), matching
+   `verify_causal_order`'s own "callable equally from a test fixture or a
+   later composed-tape caller" framing (ADR-0145 Decision point 3).
+8. **Dynamic-authority RED requirement.** `read_member_bytes` and
+   `lifecycle_captured_receipt_sha256` are claimed resolver-type-agnostic
+   "by inspection" (Context above, re-reading `trust.py` directly); that
+   claim is not itself a test. Phase 0's RED matrix **must** include at
+   least one case that drives the full chain -- `authorize_capture_set` ->
+   `record`/`session` -> `compose_replay_tape` -> `verify_causal_order` --
+   end-to-end through the **dynamic** authority (ADR-0143/0144's
+   `trust._development_dynamic_p4_broker`/
+   `trust._DynamicP4TrustedArtifactResolver`, the same construction
+   `_adr143_issued_case` already uses), not only the fixed/legacy authority.
+   This is this ADR's own positive proof case -- Decision point 2 names the
+   dynamic authority specifically -- and it must not be allowed to quietly
+   default to covering only the easier fixed-authority path the way a
+   RED matrix can silently do when both are nominally "a P4 capture." A
+   fixed-authority case may additionally exist (e.g., as a second
+   comparison case or a regression guard) but does not substitute for the
+   dynamic-authority case this point requires.
+9. **Test-only fixture fabrication, file placement.** What remains
+   test-only is the fixture *fabrication* -- choosing the roster's
+   `source_id`s/ranks, the raw-event members' field values, and the per-
+   envelope `exchange_ms`/`receive_ms`/`source_provenance_tag`/
+   `source_timezone_tag`/`correction_position`/`corrects_event_id`/
+   `prior_envelope_sha256` metadata Decision point 7's `raw_event_members`
+   argument carries -- and driving one real F4 produce/seal/publish/
+   `authorize_capture_set` lifecycle to obtain `record`/`session`/
+   `published`. `deployment_eligible=false` throughout; the fixture bytes,
+   layout, and driving code are exactly as bounded and synthetic as every
+   prior P7 slice's. The test then calls `compose_replay_tape` (Decision
+   point 7) rather than repeating steps 1-10 inline (this is what closes
+   the Minor finding, alongside Decision point 7 itself). Two placements
+   remain available and the choice is a Phase 0 pin: (a) append to
    `tests/pipeline/test_captured_authorization.py`, reusing its private
    `_adr143_issued_case`/`_adr144_document_and_captures`/
    `_adr144_admission_ref`/`f4._publish` helpers directly and importing
-   `dskit.production.bundles` locally for the codec/verify calls (test code
-   is not bound by `production/test_purity.py`'s "function depth only"
-   rule or `pipeline`'s "never import production" rule, both of which bind
-   package code, not tests); or (b) a new
-   `tests/production/test_composed_replay_tape.py` that imports the needed
-   `trust.py` fixture helpers directly. This ADR recommends (a), since it
-   avoids re-deriving working fixture construction across two files, but
-   defers the final choice to Phase 0.
-8. **No trust.py or bundles.py edit of any kind.** Every symbol this
-   Decision touches already exists, is already merged, and is already
-   exercised by a passing test. This ADR's own implementation is therefore
-   lower-risk than any prior P7 slice in this lineage: it adds proof, not
-   production surface.
+   `dskit.production.bundles` locally for the `compose_replay_tape`/
+   `verify_causal_order` calls (test code is not bound by
+   `production/test_purity.py`'s "function depth only" rule or `pipeline`'s
+   "never import production" rule, both of which bind package code, not
+   tests); or (b) a new `tests/production/test_composed_replay_tape.py`
+   that imports the needed `trust.py` fixture helpers directly. This ADR
+   recommends (a), since it avoids re-deriving working fixture construction
+   across two files, but defers the final choice to Phase 0.
+10. **No `trust.py` edit, and no `trust.py` import.** Every `trust.py`
+    symbol this Decision touches (`CapturedAuthorizationRecord`,
+    `LaunchSession`, `authorize_capture_set`, the ADR-0143/0144 dynamic
+    authority) already exists, is already merged, and is already exercised
+    by a passing test; `compose_replay_tape` reaches them only through
+    values the caller already holds and their own public
+    methods/attributes (Decision point 7's signature), never through an
+    import of `dskit.pipeline.trust` from `production/bundles.py`. This
+    ADR's total code delta is therefore exactly one new production function
+    plus two new small, pure, private shape-check helpers
+    (`_check_composed_tape_roster_fixture`, `_check_raw_event_member`), all
+    in `production/bundles.py`, plus the Decision point 9 test -- lower-risk
+    than any prior P7 slice that edited `trust.py` directly, and strictly
+    smaller than the three-hop design the Scope decision subsection above
+    retires.
 
 **Process.** Design proposal only. Requires independent preapproval review
 and owner ADR approval, then Phase 0 skeptic review (to pin the exact
-Decision point 4 digest-tamper location, the Decision point 7 file
-placement, and the exact `data_capture_root` derivation), then focused
-RED/GREEN with the synthetic fixture described above, two independent final
-lenses (correctness/authority, then tests/integration), affected tests, and
+Decision point 4 digest-tamper location, the Decision point 7 `data_capture_root`
+derivation, and the Decision point 9 file placement), then focused RED/GREEN
+with the synthetic fixture described above -- including the Decision point 8
+dynamic-authority RED case -- two independent final lenses
+(correctness/authority, then tests/integration), affected tests, and
 evidence, per `docs/skills/implementation-workflow.md` and
 `docs/skills/skeptic-review.md`. No RED/GREEN, no merge, no code or test
 file has been touched by this proposal.
@@ -11815,15 +12043,29 @@ file has been touched by this proposal.
 **Non-goals.** Wiring `ReplayRun.run()` into the pipeline execution engine
 (a distinct, larger capability -- delivering a live `CapturedAuthorizationRecord`/
 session to any node's `run(ctx, inputs)` -- that exists for no node today);
-a second manifest-publish capability or any extension to the dynamic
-authority's closed 12-reference graph; exercising ADR-0128 multi-consumer
-capture as a requirement (available, not required, per Decision point 2);
-resurrecting ADR-0130's undelivered `SourceRosterCapture.v1`/
-`RawEventDatasetCapture.v1`/`DatasetCaptureAuthorization.v1` broker; the
-full master F3 `EventEnvelope.v2` lane (ADR-0145's own non-goals,
-unchanged); real replay, backtest, paper or live operation; Packet 8
-durable consume-once (F5A-R23); deployment. Any edit to `trust.py`'s
-dynamic P4 authority, the five ADR-0143 forbidden-legacy symbols, or
-ADR-0144's dynamic-dispatch code -- none of that is touched, referenced
-beyond read-only reuse, or depended on for a code change by this ADR.
-`deployment_eligible=false` throughout.
+**a real multi-hop, three-consumer composition chain** matching the original
+ADR-0127 Decision.2 design -- a genuinely separate, separately-published and
+-captured outer-manifest root produced by a distinct manifest-producer
+consumer -- retired by the Scope decision subsection above; this is the
+precise replacement for any earlier "no production code" framing, now that
+Decision point 7 adds `compose_replay_tape`: what stays out of scope is the
+*multi-hop composition*, not production code as such. Also out of scope: any
+extension to the dynamic authority's closed 12-reference graph; exercising
+ADR-0128 multi-consumer capture as a requirement (available, not required,
+per Decision point 2); resurrecting ADR-0130's undelivered
+`SourceRosterCapture.v1`/`RawEventDatasetCapture.v1`/
+`DatasetCaptureAuthorization.v1` broker; the full master F3 `EventEnvelope.v2`
+lane (ADR-0145's own non-goals, unchanged); real replay, backtest, paper or
+live operation; Packet 8 durable consume-once (F5A-R23); deployment. Any
+production surface beyond the single `compose_replay_tape` function and its
+two small private shape-check helpers (`_check_composed_tape_roster_fixture`,
+`_check_raw_event_member`) -- no new public export beyond `compose_replay_tape`
+itself, no new class, and no edit to `CapturedReplayTape`, `_check_tape`,
+`_check_event_envelope`, or `verify_causal_order` themselves (Decision
+point 6's "using only already-merged functions" is unchanged; they are
+composed, not modified). Any edit to `trust.py`'s dynamic P4 authority, the
+five ADR-0143 forbidden-legacy symbols, or ADR-0144's dynamic-dispatch code
+-- none of that is touched, referenced beyond read-only reuse, or depended
+on for a code change by this ADR; nor is `dskit.pipeline.trust` imported by
+`production/bundles.py` (Decision point 10). `deployment_eligible=false`
+throughout.
