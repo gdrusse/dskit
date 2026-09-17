@@ -645,7 +645,12 @@ def test_the_episodes_port_is_a_json_artifact_with_exactly_four_keys(tmp_path):
     assert set(outputs) == {"metrics", "episodes"}
     assert isinstance(outputs["episodes"], JsonArtifact)
     assert set(record(outputs)) == {"schema", "environment", "episodes", "summary"}
-    assert record(outputs)["schema"] == EPISODE_SCHEMA
+    # The LITERAL, not the constant: comparing the record against
+    # EPISODE_SCHEMA moves both sides together, so a silently renamed
+    # schema would still read as agreeing with itself. The tag is what a
+    # future reader dispatches on, so its value is the thing to pin.
+    assert record(outputs)["schema"] == "dskit.sb3-eval-episodes/v1"
+    assert EPISODE_SCHEMA == "dskit.sb3-eval-episodes/v1"
 
 
 def test_the_environment_block_carries_exactly_the_nine_provenance_facts(

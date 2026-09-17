@@ -1139,3 +1139,65 @@ called), HPO, final refit, market replay, backtest, paper or live trading,
 lockbox access. Every test is tiny, synthetic and local; the SB3 episode suite
 constructs no SB3 or Gymnasium object at all. This change adds no production
 authority.
+
+## 11. Convergence checkpoint (2026-09-17, after review round 3)
+
+**Triggered by a REPEATED FAMILY**, not by a cycle count — skeptic-review.md
+lets a repeated family fire the checkpoint before three failed cycles, and
+this one recurred across two consecutive rounds. Recorded before any fourth
+patch, as the rule requires.
+
+**Cycle history.** Round 1 (`fceb32a`): two lenses, both CLEAN; Minors
+corrected in `f43b6fe`. Round 2 (`f43b6fe`): correctness lens CLEAN,
+tests lens **FAIL, 2 Major** — failed cycle 1. Round 3 (`faa524c`): tests
+lens **FAIL, 2 Major** — failed cycle 2.
+
+**The family, stated precisely.** *An assertion whose two candidate sources
+COINCIDE in the fixture, so it cannot distinguish them.* Every Major found
+after round 1 is an instance:
+
+| # | Round | The value | Sources that coincided |
+|---|---|---|---|
+| 1 | 2 | the episode outcome | `trace[-1]` vs `trace[0]`, equal on one-step episodes |
+| 2 | 2 | `DEFAULT_SEGMENT_SEED` | two omitting fits agree under ANY fixed default |
+| 3 | 3 | the environment rolled on | declared `env` vs the sidecar's, equal in the fixture |
+| 4 | 3 | five provenance facts | same coincidence, plus `deterministic` only asserted at its default |
+
+**Why the earlier fixes did not cover it.** Each was a POINT fix for the
+instance the reviewer named — a multi-step fixture, a literal-zero
+comparison — and none asked the general question the instances are answers
+to. A reviewer finding instance *n* and an author fixing instance *n* is a
+loop that terminates only when the reviewers run out of ideas, not when the
+defect class is closed.
+
+**The changed approach: inventory, then batch.** Enumerate EVERY value the
+two new kinds publish or act on that has more than one candidate source, and
+for each, either make the fixture's sources DIFFER or record why they
+provably cannot. Done, with the result:
+
+- `env`, `env_params` — declared vs sidecar: now differ (`TRAINED`).
+- `algo`, `policy` — sidecar vs this pack's defaults: now differ.
+- `deterministic`, `seed`, `n_episodes` — declared vs default: differ, and
+  each asserted in BOTH the declared and the omitted case.
+- the episode outcome — `trace[-1]` vs `trace[0]`: multi-step fixtures.
+- `SEGMENT_SCHEMA`, `EPISODE_SCHEMA` — the record vs the constant it is
+  compared against: now pinned to LITERALS, so a rename cannot move both
+  sides of its own assertion.
+- `n_segments` — distinct labels vs centre count: coincide for KMeans by
+  construction, so it is now asserted on a many-to-one Birch state.
+- `artifact_path` — `params["artifact"]` vs the wired port: CANNOT differ;
+  `pinned_artifact` refuses a contradiction between them.
+- `features`, `algorithm` — document vs restored state: CANNOT differ;
+  `state_problems` refuses a load whose state disagrees, and a carrier
+  always carries its own fitting node's state.
+- `split`, `max_episode_steps`, `state_hash`, the step number, the episode
+  index, every computed aggregate — single-sourced.
+
+**Why the next round should differ from the last two.** The previous rounds
+were reviewing patches; this one reviews a closed inventory. A round-4 Major
+in this family now means the inventory MISSED a value, which is a different
+and checkable claim — and the remedy would be to widen the inventory's
+definition, not to patch another instance.
+
+Scope, contract, authority and the trust boundary are unchanged by this
+checkpoint. No production code moved in rounds 2 or 3: both were test-only.

@@ -1658,7 +1658,12 @@ def test_fit_returns_exactly_the_declared_json_state(algorithm):
     assert set(state) == {
         "schema", "algorithm", "features", "centers", "center_labels",
     }
-    assert state["schema"] == SEGMENT_SCHEMA
+    # The LITERAL, not the constant: comparing the state against
+    # SEGMENT_SCHEMA moves both sides together, so a silently renamed
+    # schema would still read as agreeing with itself — and the tag is
+    # what a stored state is dispatched on years from now.
+    assert state["schema"] == "dskit.sklearn-segment/v1"
+    assert SEGMENT_SCHEMA == "dskit.sklearn-segment/v1"
     assert state["algorithm"] == algorithm
     assert state["features"] == ["f0", "f1"]
     assert state["centers"] and all(
@@ -1684,12 +1689,25 @@ def test_the_kmeans_family_labels_centers_positionally(algorithm):
 
 def test_birch_carries_its_own_subcluster_labels_which_may_repeat():
     """Birch's sub-centers map MANY-to-one onto global labels, so the label
-    list is read from the estimator, never derived from a position."""
+    list is read from the estimator, never derived from a position.
+
+    ``n_segments`` is asserted HERE and not on a KMeans state, because
+    KMeans is the case where the two candidate answers COINCIDE: its
+    labels are ``range(len(centers))``, so "distinct labels" and "number
+    of centers" are the same number and a metric computed either way
+    reads correctly. Only a many-to-one state tells them apart.
+    """
     pytest.importorskip("sklearn")
     node = _state_node(algorithm="birch", seed=_DROP,
                        algorithm_params={"n_clusters": 2, "threshold": 0.05})
     state = node.fit(SEGMENT_FIT_ROWS, node.params)
-    assert len(state["centers"]) >= len(set(state["center_labels"]))
+
+    distinct = len(set(state["center_labels"]))
+    assert len(state["centers"]) > distinct, (
+        "this fixture exists to make the two answers differ; a Birch that "
+        "stopped merging sub-centers would make it prove nothing"
+    )
+    assert node.state_metrics(state) == {"n_segments": distinct}
 
 
 def test_the_model_id_is_the_canonical_digest_of_the_state_itself():
