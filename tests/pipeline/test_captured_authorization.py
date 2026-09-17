@@ -5097,35 +5097,39 @@ def test_adr143_positive_close_admission_succeeds_for_a_real_captured_chain(tmp_
 
 
 def test_adr143_authorize_capture_set_blocked_by_prepare_contract(tmp_path, monkeypatch):
-    """Disclosed convergence finding (evidence 0182): the SHARED, unedited
-    ``_p4_checked_dispatch`` -> ``_p4_reference_bytes`` gate (Decision point
-    3/6: commit_p4_batch/its signer infrastructure stay shared and unedited
-    for both authority instances) hardcodes its accepted admission kinds to
-    ``_P4_ADMISSION_SCHEMAS = {"action-execution-admission", "final-replay-
-    admission"}`` -- it has no case for ``root-capture-admission``. This
-    refuses BEFORE close_admission is ever reached, and -- deeper still --
-    ``_FixedCapturedAuthorizationContract._prepare`` (also shared/unedited)
-    reads ``resolver._records`` directly and requires
-    ``admission["plan_evaluation_authorization_sha256"]``-family fields that
-    this resolver (no ``_records`` slot, Decision point 1/2) and this narrow
-    root-capture-admission/cas/pce chain (Decision point 7 explicitly
-    excludes pea/ces/bvp/scope machinery) do not have. The full
-    authorize_capture_set -> CAPTURED path is therefore blocked for the
-    dynamic authority until a follow-on ADR resolves this contradiction
-    between Decision points 3/6 (shared, unedited batch-signing pipeline)
-    and Decision point 7 (narrow chain with no pea/ces/bvp). This test pins
-    the current, disclosed refusal rather than hiding it; it is not a
-    regression this GREEN introduces -- it is the discovered gap itself."""
+    """ADR-0144 CLOSES this disclosed convergence finding (evidence 0182).
+
+    This test originally pinned a refusal: the SHARED, unedited
+    ``_p4_checked_dispatch`` -> ``_p4_reference_bytes`` gate hardcoded its
+    accepted admission kinds to ``_P4_ADMISSION_SCHEMAS = {"action-execution-
+    admission", "final-replay-admission"}`` -- no case for
+    ``root-capture-admission`` -- so a full ``authorize_capture_set`` call
+    for the dynamic authority always refused right there, before
+    ``close_admission``/``_prepare`` were ever reached.
+
+    ADR-0144 Decision point 1 adds a resolver-dispatched ``elif`` arm to
+    ``_p4_reference_bytes`` that accepts a well-formed ``root-capture-
+    admission`` reference for the dynamic resolver. That SPECIFIC historical
+    blocker is therefore gone: this test now confirms the shared gate no
+    longer refuses a well-formed root-capture-admission reference, and that
+    the call instead proceeds to the (unrelated, unedited)
+    nonempty-captures precondition -- not back to the old kind/schema
+    refusal. See test_adr144_dynamic_authorize_capture_set_reaches_genuine_captured_admission
+    (below) for the full positive path with real, nonempty captures."""
     _publisher, _issuer, _graph, authority = _adr143_issued_case(tmp_path, monkeypatch)
     resolver = authority._p4_resolver
     assert not hasattr(resolver, "_records")
-    with pytest.raises(ValueError, match="kind, role and schema must agree"):
+    admission_ref = {"kind": "root-capture-admission", "role": "study-lifecycle",
+                     "schema": "dskit.root-capture-admission/v1", "sha256": "a" * 64}
+    # The shared gate itself no longer objects to the kind/role/schema.
+    assert trust._p4_reference_bytes(admission_ref, resolver) == trust._hs_canonical_bytes(admission_ref)
+    with pytest.raises(ValueError) as failure:
         authority.authorize_capture_set(
-            (), {"kind": "root-capture-admission", "role": "study-lifecycle",
-                 "schema": "dskit.root-capture-admission/v1", "sha256": "a" * 64},
+            (), admission_ref,
             consumer_run_identity="x", process_measurement_sha256=f4._SHA["consumer_process"],
             runtime_sha256=f4._SHA["consumer_runtime"], transition_nonces=(),
         )
+    assert "kind, role and schema must agree" not in str(failure.value)
 
 
 def test_adr143_dynamic_authority_binds_transparently_into_verifier_facade(tmp_path, monkeypatch):
@@ -5293,7 +5297,10 @@ def test_adr144_dynamic_authorize_capture_set_reaches_genuine_captured_admission
     assert session._kind == "captured-authorization-v2"
     audit = authority._p4_ledger._audit(record)
     assert audit["admission_ref"] == admission_ref and audit["consumed"] is True
-    assert audit["nonces"] == list(nonces)
+    # _audit's canonical-bytes round trip parses JSON arrays back to tuples
+    # (this codebase's _hs_parse_canonical convention), so compare directly
+    # against the already-tuple `nonces`, not a list.
+    assert audit["nonces"] == nonces
     assert authority._p4_ledger.resolve_p4(audit["execution_key"], admission_ref) == (record, session)
     # Idempotent re-issuance: the same request returns the same committed pair.
     assert authority.authorize_capture_set(
@@ -5347,8 +5354,16 @@ def test_adr144_forged_admission_ref_refused_through_full_authorize_capture_set(
         authority.authorize_capture_set(
             captures, forged, transition_nonces=("adr144-forged-0", "adr144-forged-1"), **runtime,
         )
+    # A wrong kind is refused even earlier than close_admission's own inner
+    # check: through the full authorize_capture_set path this first hits the
+    # shared _p4_checked_dispatch -> _p4_reference_bytes gate (Decision
+    # point 1), which reuses the identical legacy exception text for the
+    # same class of failure -- not close_admission's own
+    # "kind/role/schema refused" message (that inner check is only reached
+    # directly via resolver.close_admission, see
+    # test_adr143_matrix_row6_forged_admission_ref_refuses above).
     wrong_kind = dict(forged, kind="dataset-capture-grant")
-    with pytest.raises(ValueError, match="kind/role/schema refused"):
+    with pytest.raises(ValueError, match="kind, role and schema must agree"):
         authority.authorize_capture_set(
             captures, wrong_kind, transition_nonces=("adr144-forged-2", "adr144-forged-3"), **runtime,
         )
@@ -5377,15 +5392,21 @@ def test_adr144_signed_batch_matches_close_admission_reconstruction_exactly(tmp_
         seen_close.append(result)
         return result
 
+    # commit_p4_batch calls the MODULE-LEVEL pin _P4_DYNAMIC_PREPARE (a
+    # plain function reference captured at import time), not
+    # _DynamicCapturedAuthorizationContract._prepare through the class --
+    # exactly mirroring how the fixed contract's own _P4_PREPARE pin is
+    # immune to class-level monkeypatching by design (anti-tampering,
+    # _p4_fixed_integrity-style). So the spy must replace the pin itself.
     seen_prepare = []
-    real_prepare = trust._DynamicCapturedAuthorizationContract._prepare
+    real_prepare = trust._P4_DYNAMIC_PREPARE
 
-    def spy_prepare(self, resolver_arg, admission_ref_arg, streams, runtime_arg, nonces, captures_arg, reconstruction):
+    def spy_prepare(contract, resolver_arg, admission_ref_arg, streams, runtime_arg, nonces, captures_arg, reconstruction):
         seen_prepare.append(reconstruction)
-        return real_prepare(self, resolver_arg, admission_ref_arg, streams, runtime_arg, nonces, captures_arg, reconstruction)
+        return real_prepare(contract, resolver_arg, admission_ref_arg, streams, runtime_arg, nonces, captures_arg, reconstruction)
 
     monkeypatch.setattr(trust._DynamicP4TrustedArtifactResolver, "close_admission", spy_close)
-    monkeypatch.setattr(trust._DynamicCapturedAuthorizationContract, "_prepare", spy_prepare)
+    monkeypatch.setattr(trust, "_P4_DYNAMIC_PREPARE", spy_prepare)
     nonces = ("adr144-match-0", "adr144-match-1")
     record, session = authority.authorize_capture_set(
         captures, admission_ref, transition_nonces=nonces, **runtime,

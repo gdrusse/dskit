@@ -2264,25 +2264,48 @@ _P4_ADMISSION_SCHEMAS = MappingProxyType({
     "action-execution-admission": "dskit.action-execution-admission/v1",
     "final-replay-admission": "dskit.final-replay-admission/v1",
 })
+_P4_DYNAMIC_ADMISSION_SCHEMAS = MappingProxyType({
+    "root-capture-admission": "dskit.root-capture-admission/v1",
+})
 _P4_PENDING_TOKENS = set()
 _P4_PENDING_RESOLVER_TOKENS = set()
 _P4_ISSUED = WeakKeyDictionary()
 
 
-def _p4_reference_bytes(value):
-    """Validate the closed selected-admission reference before canonicalizing."""
-    if type(value) is not dict or set(value) != {"kind", "role", "schema", "sha256"}:
-        raise ValueError("exact P4 admission reference is required")
-    if any(type(item) is not str for item in value.values()):
-        raise TypeError("exact P4 reference strings are required")
-    if (
-        value["role"] != "study-lifecycle"
-        or value["kind"] not in _P4_ADMISSION_SCHEMAS
-        or value["schema"] != _P4_ADMISSION_SCHEMAS[value["kind"]]
-    ):
-        raise ValueError("P4 admission kind, role and schema must agree")
-    _require_sha256(value["sha256"], "admission")
-    return _canonical_bytes(value)
+def _p4_reference_bytes(value, resolver):
+    """Validate the closed selected-admission reference before canonicalizing.
+
+    ADR-0144 Decision point 1: dispatches on ``type(resolver)`` through the
+    identical closed if/elif/else pattern ADR-0143 already used for
+    ``_p4_require_issued_authority``/``_p4_snapshot_integrity``. The legacy
+    (``if``) arm below is byte-identical to the prior single-branch body; the
+    dynamic (``elif``) arm is new and self-contained, sharing no schema
+    whitelist with the legacy arm.
+    """
+    if type(resolver) is _FixedWormTrustedArtifactResolver:
+        if type(value) is not dict or set(value) != {"kind", "role", "schema", "sha256"}:
+            raise ValueError("exact P4 admission reference is required")
+        if any(type(item) is not str for item in value.values()):
+            raise TypeError("exact P4 reference strings are required")
+        if (
+            value["role"] != "study-lifecycle"
+            or value["kind"] not in _P4_ADMISSION_SCHEMAS
+            or value["schema"] != _P4_ADMISSION_SCHEMAS[value["kind"]]
+        ):
+            raise ValueError("P4 admission kind, role and schema must agree")
+        _require_sha256(value["sha256"], "admission")
+        return _canonical_bytes(value)
+    elif type(resolver) is _DynamicP4TrustedArtifactResolver:
+        _p4_dynamic_reference_bytes(value)
+        if (
+            value["role"] != "study-lifecycle"
+            or value["kind"] not in _P4_DYNAMIC_ADMISSION_SCHEMAS
+            or value["schema"] != _P4_DYNAMIC_ADMISSION_SCHEMAS[value["kind"]]
+        ):
+            raise ValueError("P4 admission kind, role and schema must agree")
+        return _hs_canonical_bytes(value)
+    else:
+        raise TypeError("exact broker-issued P4 capability is required")
 
 
 def _p4_copy_facts(value, seen=None):
@@ -2517,7 +2540,7 @@ def _p4_checked_dispatch(authority, captures, admission_ref, **runtime):
     if _p4_require_issued_authority is not _P4_ISSUED_CHECK:
         raise TypeError("P4 authority identity dispatch integrity refused")
     _P4_ISSUED_CHECK(authority)
-    _p4_reference_bytes(admission_ref)
+    _p4_reference_bytes(admission_ref, authority._p4_resolver)
     ledger = _LIFECYCLE_LEDGERS.get(authority)
     if ledger is None or authority._p4_ledger is not ledger or _P4_COMMIT is not _LifecycleAuthorizationLedger.commit_p4_batch:
         raise TypeError("P4 same-domain ledger required")
@@ -5047,6 +5070,37 @@ _P4_VERIFY_BATCH = _FixedCapturedAuthorizationContract._verify
 _P4_VERIFY_BYTES = _FixedCapturedAuthorizationContract._verify_bytes
 
 
+def _p4_close_admission_once(resolver, snapshot, admission_ref, live_projection, cell):
+    """Dispatch one commit_p4_batch admission-closure checkpoint.
+
+    ADR-0144 Decision point 6: replaces all three of commit_p4_batch's
+    former individual admission-closure call sites -- including the third,
+    which previously called ``_P4_CLOSE_ADMISSION`` (the legacy-only closure
+    walk) directly instead of ``resolver.close_admission`` (Context point
+    4's latent bug). For the fixed resolver this is byte-behavior-identical
+    to three individual ``_hs_refuse(resolver.close_admission(...) is
+    None)`` calls at every checkpoint. For the dynamic resolver, the first
+    call performs the one and only graph-reading reconstruction and stores
+    it in ``cell[0]``; every later call within the same commit_p4_batch
+    invocation reuses the frozen result via a cheap identity/class re-check
+    (Phase 0 pin F5: ``_p4_snapshot_integrity`` plus an
+    ``expected_admission_sha256`` comparison against the already-frozen
+    value), never re-reading the graph.
+    """
+    if type(resolver) is _FixedWormTrustedArtifactResolver:
+        _hs_refuse(resolver.close_admission(snapshot, admission_ref, live_projection) is None)
+    elif type(resolver) is _DynamicP4TrustedArtifactResolver:
+        if cell[0] is None:
+            reconstruction = resolver.close_admission(snapshot, admission_ref, live_projection)
+            _hs_refuse(reconstruction is not None)
+            cell[0] = reconstruction
+        else:
+            _p4_snapshot_integrity(resolver, snapshot)
+            _hs_refuse(admission_ref["sha256"] == cell[0].expected_admission_sha256)
+    else:
+        raise TypeError("exact broker-issued P4 capability is required")
+
+
 class _LifecycleAuthorizationLedger(_Opaque):
     """One process-local lock and immutable admission/batch/session record domain."""
 
@@ -5302,7 +5356,8 @@ class _LifecycleAuthorizationLedger(_Opaque):
             digest_field = "action_execution_admission_sha256" if authority_ref["kind"] == "action" else "final_replay_admission_sha256"
             _hs_refuse(set(authority_ref) == {"kind", digest_field})
             _hs_validate_spec(authority_ref[digest_field], "H")
-            admission_bytes = _p4_reference_bytes(admission_ref)
+            resolver = self._authority._p4_resolver
+            admission_bytes = _p4_reference_bytes(admission_ref, resolver)
             for entry in self._p4_entries():
                 if entry[0] == execution_key and entry[1] == admission_bytes:
                     session = entry[5]
@@ -5319,9 +5374,14 @@ class _LifecycleAuthorizationLedger(_Opaque):
         with self._lock:
             self._check()
             authority, resolver = self._authority, self._authority._p4_resolver
+            # ADR-0144 Decision point 4: one per-call local, harmless and
+            # never read on the legacy path, threaded through every
+            # admission-closure checkpoint below so the dynamic
+            # reconstruction executes at most once per commit.
+            dynamic_reconstruction_cell = [None]
             _P4_SNAPSHOT_INTEGRITY(resolver, resolver._snapshot)
             fingerprint = self._request(captures, admission_ref, runtime)
-            admission_bytes = _p4_reference_bytes(admission_ref)
+            admission_bytes = _p4_reference_bytes(admission_ref, resolver)
             for entry in self._p4_entries():
                 if entry[1] == admission_bytes:
                     _hs_refuse(entry[2] == fingerprint, "P4 committed admission request conflict")
@@ -5332,27 +5392,44 @@ class _LifecycleAuthorizationLedger(_Opaque):
             _P4_REQUEST_CHECK(authority, captures, checked_runtime, nonces)
             _hs_refuse(not any(self._nonce_used(nonce) for nonce in nonces), "P4 nonce already committed")
             # Dispatch through the resolver's own close_admission (four-method
-            # contract, ADR-0143 Decision point 1): the fixed resolver forwards
-            # to the unedited _P4_CLOSE_ADMISSION exactly as before; the dynamic
-            # resolver forwards to its own separate _dynamic_p4_close_admission.
-            # _p4_close_admission/_P4_CLOSE_ADMISSION are never called directly
-            # from here, and neither branch shares the other's closure walk.
-            _hs_refuse(resolver.close_admission(resolver._snapshot, admission_ref, (authority, captures, checked_runtime)) is None)
+            # contract, ADR-0143 Decision point 1) via _p4_close_admission_once
+            # (ADR-0144 Decision points 4/6): the fixed resolver forwards to
+            # the unedited _P4_CLOSE_ADMISSION exactly as before, at all three
+            # checkpoints -- including this one, which previously called
+            # _P4_CLOSE_ADMISSION directly instead of resolver.close_admission
+            # (Context point 4's latent bug); the dynamic resolver derives its
+            # reconstruction at most once and reuses the frozen result at the
+            # later checkpoints. _p4_close_admission/_P4_CLOSE_ADMISSION are
+            # never called directly from here any more.
+            _p4_close_admission_once(resolver, resolver._snapshot, admission_ref,
+                                      (authority, captures, checked_runtime), dynamic_reconstruction_cell)
             streams = tuple(authority._stream_for_published(item[0], "P4 publication required") for item in captures)
-            raw = _P4_PREPARE(_P4_CONTRACT, resolver, admission_ref, streams, checked_runtime, nonces)
+            if type(resolver) is _FixedWormTrustedArtifactResolver:
+                raw = _P4_PREPARE(_P4_CONTRACT, resolver, admission_ref, streams, checked_runtime, nonces)
+            else:
+                raw = _P4_DYNAMIC_PREPARE(_P4_DYNAMIC_CONTRACT, resolver, admission_ref, streams, checked_runtime,
+                                           nonces, captures, dynamic_reconstruction_cell[0])
             self._fault("prepared")
             self._reserving = streams
             try:
                 self._fault("reserved")
-                batch = _P4_VERIFY_BATCH(_P4_CONTRACT, raw, resolver, admission_ref, streams, checked_runtime, nonces)
+                if type(resolver) is _FixedWormTrustedArtifactResolver:
+                    batch = _P4_VERIFY_BATCH(_P4_CONTRACT, raw, resolver, admission_ref, streams, checked_runtime, nonces)
+                else:
+                    batch = _P4_DYNAMIC_VERIFY_BATCH(_P4_DYNAMIC_CONTRACT, raw, resolver, admission_ref, streams,
+                                                       checked_runtime, nonces, captures, dynamic_reconstruction_cell[0])
                 self._fault("verified")
                 self._check()
                 _P4_REQUEST_CHECK(authority, captures, checked_runtime, nonces)
-                _hs_refuse(resolver.close_admission(resolver._snapshot, admission_ref, (authority, captures, checked_runtime)) is None)
+                _p4_close_admission_once(resolver, resolver._snapshot, admission_ref,
+                                          (authority, captures, checked_runtime), dynamic_reconstruction_cell)
                 _hs_refuse(self._request(captures, admission_ref, runtime) == fingerprint)
                 captured_set = batch["set"]
-                cas = next(_hs_parse_canonical(raw) for ref, raw in resolver._records
-                           if _hs_parse_canonical(ref)["sha256"] == captured_set["capture_admission_set_sha256"])
+                if type(resolver) is _DynamicP4TrustedArtifactResolver:
+                    cas = dynamic_reconstruction_cell[0].cas
+                else:
+                    cas = next(_hs_parse_canonical(raw) for ref, raw in resolver._records
+                               if _hs_parse_canonical(ref)["sha256"] == captured_set["capture_admission_set_sha256"])
                 key = (captured_set["study_id"], _hs_canonical_bytes(captured_set["execution_authority_ref"]),
                        captured_set["logical_execution_id"], captured_set["run_id"])
                 _hs_refuse(not any(entry[0] == key or entry[0][3] == key[3] for entry in self._p4_entries()), "P4 execution identity conflict")
@@ -5385,8 +5462,8 @@ class _LifecycleAuthorizationLedger(_Opaque):
                 # local/terminal closure and live aliases while still locked.
                 self._check()
                 _P4_REQUEST_CHECK(authority, captures, checked_runtime, nonces)
-                _hs_refuse(_P4_CLOSE_ADMISSION(resolver, resolver._snapshot, admission_ref,
-                           (authority, captures, checked_runtime)) is None)
+                _p4_close_admission_once(resolver, resolver._snapshot, admission_ref,
+                                          (authority, captures, checked_runtime), dynamic_reconstruction_cell)
                 _hs_refuse(self._request(captures, admission_ref, runtime) == fingerprint)
                 # Sole logical publication: consumption, artifacts, claims and
                 # session-start are inseparable fields in this immutable root.
@@ -9364,50 +9441,70 @@ def _p4_dynamic_planned_entry(pis_entry, consumer_document_sha256, consumer_node
     }
 
 
-def _p4_dynamic_capture_admission_set(root_capture_admission_sha256, entries):
-    """Build the closed ``dskit.capture-admission-set/v1`` (cas) payload."""
+def _p4_dynamic_capture_admission_set(root_capture_admission_sha256, entries,
+                                      consumer_document_sha256, purpose):
+    """Build the closed ``dskit.capture-admission-set/v1`` (cas) payload.
+
+    ADR-0144 Decision point 8: gains ``consumer_document_sha256``/``purpose``
+    top-level fields versus ADR-0143's original two-parameter signature,
+    sourced from the batch's own live captures. Purely additive:
+    ``_dynamic_p4_close_admission``'s existing checks read neither field.
+    """
     payload = {
         "schema_version": "dskit.capture-admission-set/v1",
         "study_id": "synthetic-study",
         "subject_ref": {"kind": "action"},
         "root_capture_admission_sha256": root_capture_admission_sha256,
         "entries": entries,
+        "consumer_document_sha256": consumer_document_sha256,
+        "purpose": purpose,
     }
     digest = _digest(_hs_canonical_bytes(payload))
     return dict(payload, capture_admission_set_sha256=digest), digest
 
 
-def _dynamic_p4_close_admission(resolver, snapshot, admission_ref, live_projection):
-    """Close one synthesized root-capture-admission -> cas -> pce chain.
+class _DynamicP4AdmissionReconstruction:
+    """Frozen reconstruction of one dynamic root-capture-admission chain.
 
-    ADR-0143 Decision point 7: mirrors ``_p4_close_admission``'s find/get
-    recursion shape, sized only to this resolver's own narrow chain.
-    ``_p4_close_admission``/``_P4_CLOSE_ADMISSION`` are never called or
-    edited from this path (Decision point 4, last sentence); this function
-    shares no dependency-walk helper with the legacy grammar.
-
-    Design note (GREEN-time scoping, evidence 0182): the resolver has no
-    ``_records`` table (Decision point 1/2), so ``root-capture-admission``
-    and ``cas`` are not stored artifacts resolved by reference -- they are
-    deterministically reconstructed here from the graph's own closed
-    12-reference set plus the live ``runtime``/``captures`` already gated by
-    ``commit_p4_batch``. A caller-supplied ``admission_ref`` is admitted only
-    if its digest matches this reconstruction exactly, which is what refuses
-    an aliased/swapped/foreign reference (matrix row 6).
+    Not exported. ADR-0144 Phase 0 pin F6: uses this codebase's existing
+    hand-rolled frozen-object idiom (``__slots__`` plus a ``_locked`` guard,
+    matching ``_Frozen``/``_Published`` above) rather than namedtuple or
+    dataclass, neither of which appears anywhere else in this file.
     """
-    _p4_snapshot_integrity(resolver, snapshot)
-    authority, captures, runtime = live_projection
-    _hs_refuse(type(authority) is _SyntheticP4CapturedAuthorizationAuthority
-               and authority._p4_resolver is resolver,
-               "P4 dynamic admission authority identity refused")
-    _p4_dynamic_reference_bytes(admission_ref)
-    _hs_refuse(
-        admission_ref["kind"] == "root-capture-admission"
-        and admission_ref["role"] == "study-lifecycle"
-        and admission_ref["schema"] == "dskit.root-capture-admission/v1",
-        "P4 dynamic admission kind/role/schema refused",
+
+    __slots__ = (
+        "root_pis_ref", "dataset_g1_ref", "dataset_g2_ref", "pis", "entries",
+        "expected_admission", "expected_admission_sha256", "pce_entries", "cas", "cas_sha256",
+        "_locked",
     )
 
+    def __init__(self, **kwargs):
+        object.__setattr__(self, "_locked", False)
+        for key, value in kwargs.items():
+            object.__setattr__(self, key, value)
+        object.__setattr__(self, "_locked", True)
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise AttributeError("P4 dynamic admission reconstruction is frozen")
+        object.__setattr__(self, name, value)
+
+
+def _dynamic_p4_reconstruct_admission_chain(resolver, snapshot, admission_ref,
+                                            run_id, logical_execution_id, captures):
+    """Deterministically reconstruct one root-capture-admission -> cas -> pce chain.
+
+    Reconstructed from the graph's own closed 12-reference set plus the live
+    captures already gated by commit_p4_batch.
+
+    ADR-0144 Decision point 6 / Phase 0 pin F5: extracted VERBATIM (zero
+    behavior change -- same checks, same order, same exception messages)
+    from ``_dynamic_p4_close_admission``'s prior inline body, from the
+    ``graph_refs`` read through the per-entry live-projection loop's last
+    check. Has exactly one call site in the whole design: inside
+    ``_dynamic_p4_close_admission``, itself invoked at most once per
+    ``commit_p4_batch`` call.
+    """
     graph_refs = tuple(resolver._graph._records)
 
     def kind_matches(kind, role=None):
@@ -9427,8 +9524,6 @@ def _dynamic_p4_close_admission(resolver, snapshot, admission_ref, live_projecti
     dataset_g1_ref = kind_matches("dataset-capture-grant", role="G1")
     dataset_g2_ref = kind_matches("dataset-capture-grant", role="G2")
 
-    run_id = runtime["consumer_run_identity"]
-    logical_execution_id = run_id
     expected_admission, expected_admission_sha256 = _p4_dynamic_root_capture_admission(
         root_pis_ref, dataset_g1_ref, dataset_g2_ref, run_id, logical_execution_id,
     )
@@ -9457,7 +9552,18 @@ def _dynamic_p4_close_admission(resolver, snapshot, admission_ref, live_projecti
                    "P4 dynamic planned entry binding refused")
         pce_entries.append(pce)
 
-    cas, _cas_sha256 = _p4_dynamic_capture_admission_set(expected_admission_sha256, pce_entries)
+    # ADR-0144 Decision point 8: purpose-uniqueness, mirroring
+    # _validate_capture_request's existing consumer-document-uniqueness
+    # check (`len(documents) != 1`); this is the sole call site of
+    # _p4_dynamic_capture_admission_set, so it runs at most once per commit.
+    purposes = {port["purpose"] for _published, _frozen, port in captures}
+    _hs_refuse(len(purposes) == 1, "P4 captures must share one purpose")
+    consumer_document_sha256 = captures[0][2]["consumer_document_sha256"]
+    purpose = captures[0][2]["purpose"]
+
+    cas, cas_sha256 = _p4_dynamic_capture_admission_set(
+        expected_admission_sha256, pce_entries, consumer_document_sha256, purpose,
+    )
     _hs_refuse(len(cas["entries"]) == len(captures), "P4 dynamic live capture cardinality differs")
     for entry, (_published, frozen, port) in zip(cas["entries"], captures):
         _hs_refuse(
@@ -9469,13 +9575,214 @@ def _dynamic_p4_close_admission(resolver, snapshot, admission_ref, live_projecti
         )
         _hs_refuse(_digest(_canonical_bytes(frozen.source)) == entry["consumer_document_sha256"],
                    "P4 dynamic frozen document digest differs")
+
+    return _DynamicP4AdmissionReconstruction(
+        root_pis_ref=root_pis_ref, dataset_g1_ref=dataset_g1_ref, dataset_g2_ref=dataset_g2_ref,
+        pis=pis, entries=entries, expected_admission=expected_admission,
+        expected_admission_sha256=expected_admission_sha256, pce_entries=pce_entries,
+        cas=cas, cas_sha256=cas_sha256,
+    )
+
+
+def _dynamic_p4_close_admission(resolver, snapshot, admission_ref, live_projection):
+    """Close one synthesized root-capture-admission -> cas -> pce chain.
+
+    ADR-0143 Decision point 7: mirrors ``_p4_close_admission``'s find/get
+    recursion shape, sized only to this resolver's own narrow chain.
+    ``_p4_close_admission``/``_P4_CLOSE_ADMISSION`` are never called or
+    edited from this path (Decision point 4, last sentence); this function
+    shares no dependency-walk helper with the legacy grammar.
+
+    Design note (GREEN-time scoping, evidence 0182): the resolver has no
+    ``_records`` table (Decision point 1/2), so ``root-capture-admission``
+    and ``cas`` are not stored artifacts resolved by reference -- they are
+    deterministically reconstructed here from the graph's own closed
+    12-reference set plus the live ``runtime``/``captures`` already gated by
+    ``commit_p4_batch``. A caller-supplied ``admission_ref`` is admitted only
+    if its digest matches this reconstruction exactly, which is what refuses
+    an aliased/swapped/foreign reference (matrix row 6).
+
+    ADR-0144 Decision point 6 (disclosed divergence from
+    ``_FixedWormTrustedArtifactResolver.close_admission``'s ``None``-on-
+    success convention): on success this now returns the frozen
+    ``_DynamicP4AdmissionReconstruction`` the single internal derivation
+    produced, instead of ``None``. Every failure path is unchanged -- every
+    refusal this method already raised still raises identically.
+    """
     _p4_snapshot_integrity(resolver, snapshot)
-    return None
+    authority, captures, runtime = live_projection
+    _hs_refuse(type(authority) is _SyntheticP4CapturedAuthorizationAuthority
+               and authority._p4_resolver is resolver,
+               "P4 dynamic admission authority identity refused")
+    _p4_dynamic_reference_bytes(admission_ref)
+    _hs_refuse(
+        admission_ref["kind"] == "root-capture-admission"
+        and admission_ref["role"] == "study-lifecycle"
+        and admission_ref["schema"] == "dskit.root-capture-admission/v1",
+        "P4 dynamic admission kind/role/schema refused",
+    )
+
+    run_id = runtime["consumer_run_identity"]
+    logical_execution_id = run_id
+    reconstruction = _dynamic_p4_reconstruct_admission_chain(
+        resolver, snapshot, admission_ref, run_id, logical_execution_id, captures,
+    )
+
+    _p4_snapshot_integrity(resolver, snapshot)
+    return reconstruction
 
 
 _P4_DYNAMIC_CLOSE_ADMISSION = _dynamic_p4_close_admission
 _P4_DYNAMIC_CLOCK_NOW_MS = _DynamicP4VerificationClock.now_ms
 _P4_DYNAMIC_REVOCATIONS_UNREVOKED = _DynamicP4VerificationRevocations.is_unrevoked
+
+
+class _DynamicCapturedAuthorizationContract(_Opaque):
+    """Pure private batch preparation/verification for the dynamic domain.
+
+    ADR-0144 Decision point 5: a new sibling class beside
+    ``_FixedCapturedAuthorizationContract``, mirroring its construction shape
+    exactly (stateless, no token, no ``__init__`` override, one module-level
+    singleton). Reuses the SAME shared ``_FixedP4Signer``/``_P4_SIGN``/
+    ``_P4_SIGNER``/``_P4_BATCH_USES``/``_PreparedP4Batch``/``_P4_PREPARED``
+    signing infrastructure the fixed contract already uses -- no new signer,
+    no new key material, no new signed-schema names. Its three methods take
+    two additional positional parameters versus their fixed-contract
+    namesakes (``captures``, ``reconstruction``) because the dynamic chain's
+    cas/pce content depends on the live captures being authorized and has
+    nothing pre-stored to read.
+    """
+
+    def _prepare(self, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction):
+        # Phase 0 pin F2: explicit type/shape check of `reconstruction`
+        # before use (defense in depth against a caller or future refactor
+        # invoking _prepare with `reconstruction` still None or wrong shape).
+        if type(reconstruction) is not _DynamicP4AdmissionReconstruction:
+            raise TypeError("exact P4 dynamic admission reconstruction is required")
+        # Unlike the fixed resolver's snapshot() (an idempotent cached
+        # singleton), the dynamic resolver's snapshot() mints a brand-new
+        # token object and re-runs a full graph proof on every call. Reading
+        # the already-current cached `_snapshot` here matches exactly what
+        # commit_p4_batch's own locked critical section already established
+        # (and what the reconstruction was itself checked against) instead
+        # of triggering a second, redundant re-derivation.
+        _p4_snapshot_integrity(resolver, resolver._snapshot)
+        snapshot = resolver._snapshot
+        admission = reconstruction.expected_admission
+        cas = reconstruction.cas
+        subject_ref = {"kind": "action"}
+        identity = {
+            "execution_authority_ref": {
+                "kind": "action",
+                "action_execution_admission_sha256": admission_ref["sha256"],
+            },
+            "logical_execution_id": admission["logical_execution_id"],
+            "run_id": admission["run_id"],
+        }
+        # Decision point 7 substitution table: the fixed contract's
+        # pea/ces/bvp/cas-resolved fields are replaced by three digests
+        # already owned by this ADR's own closed graph, plus the
+        # reconstructed cas's own digest for capture_admission_set_sha256.
+        common = {
+            "study_id": admission["study_id"], **identity, "subject_ref": subject_ref,
+            "plan_evaluation_authorization_sha256": reconstruction.root_pis_ref["sha256"],
+            "capture_expectation_set_sha256": reconstruction.dataset_g1_ref["sha256"],
+            "broker_verified_plan_sha256": reconstruction.dataset_g2_ref["sha256"],
+            "capture_admission_set_sha256": cas["capture_admission_set_sha256"],
+        }
+        tuple_refs = [dict(admission_ref), dict(reconstruction.root_pis_ref),
+                      dict(reconstruction.dataset_g1_ref), dict(reconstruction.dataset_g2_ref)]
+        _hs_refuse(len(tuple_refs) == 4)
+        pce_refs = [{"kind": "planned-capture-entry", "role": "security-broker",
+            "schema": "dskit.planned-capture-entry/v1", "sha256": entry["planned_entry_sha256"]}
+            for entry in cas["entries"]]
+        bases, ports, receipts, entries = [], [], [], []
+
+        def signed(kind, payload, refs):
+            schema, self_field, usage = _P4_BATCH_USES[kind]
+            refs = sorted(refs, key=lambda ref: tuple(ref[key] for key in ("kind", "role", "schema", "sha256")))
+            _hs_refuse(len({_hs_canonical_bytes(ref) for ref in refs}) == len(refs))
+            basis = _P4_SIGN(_P4_SIGNER, {"schema": "dskit.issuance-basis/v1", "kind": kind,
+                "study_id": admission["study_id"], "refs": refs}, "issuance_basis_sha256", usage)
+            bases.append(basis)
+            return _P4_SIGN(_P4_SIGNER, dict(payload, schema=schema, issuance_basis_sha256=basis["issuance_basis_sha256"]), self_field, usage)
+
+        for index, pce in enumerate(cas["entries"]):
+            refs = tuple_refs + [pce_refs[index]]
+            port = signed("captured-port", dict(common, planned_entry_sha256=pce["planned_entry_sha256"]), refs)
+            publication = pce["published_input"]
+            genesis = {"schema": "dskit.lifecycle-captured-receipt-genesis/v1", "stream_id": streams[index],
+                "predecessor_publication_receipt_schema": publication["publication_receipt_schema"],
+                "predecessor_publication_receipt_sha256": publication["publication_receipt_sha256"]}
+            receipt = signed("captured-receipt", dict(common, stream_id=streams[index], sequence=1,
+                previous_lifecycle_captured_receipt_sha256=_digest(_hs_canonical_bytes(genesis)),
+                consumer_kind="action", consumer_id=admission["run_id"],
+                predecessor_publication_receipt_schema=publication["publication_receipt_schema"],
+                predecessor_publication_receipt_sha256=publication["publication_receipt_sha256"],
+                planned_capture_set_sha256=admission_ref["sha256"], planned_entry_sha256=pce["planned_entry_sha256"],
+                captured_port_authorization_sha256=port["captured_port_authorization_sha256"],
+                actor_runtime_sha256=runtime["runtime_sha256"], transition_nonce=nonces[index]), refs)
+            ports.append(port)
+            receipts.append(receipt)
+            entries.append(dict(identity, planned_entry_sha256=pce["planned_entry_sha256"],
+                captured_port_authorization_sha256=port["captured_port_authorization_sha256"],
+                lifecycle_captured_receipt_sha256=receipt["lifecycle_captured_receipt_sha256"]))
+        captured_set = signed("captured-set", dict(common, planned_capture_set_sha256=admission_ref["sha256"],
+                                                  entries=entries), tuple_refs + pce_refs)
+        # No replay/evidence branch: subject_ref.kind is fixed to "action" by
+        # ADR-0143 Decision point 7, so the fixed contract's `if replay:`
+        # branch never applies here and is omitted entirely (Decision point 5).
+        raw = _hs_canonical_bytes({"ports": ports, "receipts": receipts, "set": captured_set, "replay": None, "bases": bases})
+        binding = (resolver, snapshot, _hs_canonical_bytes(admission_ref), streams, _hs_canonical_bytes(runtime), nonces,
+                   captures, reconstruction)
+        prepared = object.__new__(_PreparedP4Batch)
+        object.__setattr__(prepared, "_raw", raw)
+        object.__setattr__(prepared, "_binding", binding)
+        _P4_PREPARED[prepared] = (raw, binding)
+        return prepared
+
+    def _verify(self, prepared, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction):
+        """Require an exact registered candidate from this snapshot and request."""
+        _hs_refuse(type(prepared) is _PreparedP4Batch)
+        issued = _P4_PREPARED.get(prepared)
+        _hs_refuse(issued is not None and prepared._raw is issued[0] and prepared._binding is issued[1],
+                   "P4 prepared candidate integrity refused")
+        # The binding tuple additionally includes `captures`/`reconstruction`
+        # (Phase 0 pin, matrix class_function_inventory row for _verify): a
+        # _verify call cannot be satisfied by a _PreparedP4Batch built
+        # against a DIFFERENT reconstruction/captures pair than this one.
+        # Reads the cached `_snapshot` rather than calling resolver.snapshot()
+        # again, for the same non-idempotent-token reason as _prepare above.
+        _p4_snapshot_integrity(resolver, resolver._snapshot)
+        _hs_refuse(prepared._binding == (resolver, resolver._snapshot, _hs_canonical_bytes(admission_ref),
+                   streams, _hs_canonical_bytes(runtime), nonces, captures, reconstruction),
+                   "P4 prepared candidate binding refused")
+        return _P4_DYNAMIC_VERIFY_BYTES(self, prepared._raw, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction)
+
+    def _verify_bytes(self, raw, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction):
+        """Reparse every byte and compare the full deterministic closed projection."""
+        parsed = _hs_parse_canonical(raw)
+        _hs_refuse(set(parsed) == {"ports", "receipts", "set", "replay", "bases"})
+        expected = _P4_DYNAMIC_PREPARE(self, resolver, admission_ref, streams, runtime, nonces, captures, reconstruction)
+        _hs_refuse(raw == expected._raw, "P4 complete signed batch adjacency refused")
+        for kind, slot in (("captured-port", "ports"), ("captured-receipt", "receipts"),
+                           ("captured-set", "set"), ("replay-capture-evidence", "replay")):
+            values = parsed[slot] if slot in ("ports", "receipts") else [parsed[slot]]
+            for value in values:
+                if value is None:
+                    continue
+                _schema, self_field, usage = _P4_BATCH_USES[kind]
+                _p4_verify_local_signed(value, self_field, "security-broker", usage)
+                bases = [basis for basis in parsed["bases"] if basis["issuance_basis_sha256"] == value["issuance_basis_sha256"]]
+                _hs_refuse(len(bases) == 1 and bases[0]["kind"] == kind)
+                _p4_verify_local_signed(bases[0], "issuance_basis_sha256", "security-broker", usage)
+        return parsed
+
+
+_P4_DYNAMIC_CONTRACT = _DynamicCapturedAuthorizationContract()
+_P4_DYNAMIC_PREPARE = _DynamicCapturedAuthorizationContract._prepare
+_P4_DYNAMIC_VERIFY_BATCH = _DynamicCapturedAuthorizationContract._verify
+_P4_DYNAMIC_VERIFY_BYTES = _DynamicCapturedAuthorizationContract._verify_bytes
 
 
 def _p4_dynamic_authority_quarantine(reserve, signed_id):
