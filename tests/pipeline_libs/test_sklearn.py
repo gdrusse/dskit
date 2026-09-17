@@ -3061,6 +3061,20 @@ def test_reduce_state_problems_refuses_a_misdescribed_width():
     assert any("n_components" in p for p in problems)
 
 
+def test_reduce_state_problems_refuses_a_state_wider_than_declared():
+    _node3, state3 = _fit_reduction("pca", 3)
+    other = _RaiseReduction("reduce", {**REDUCE_PARAMS, "n_components": 2})
+    problems = other.state_problems(state3)
+    assert any("n_components" in p for p in problems)
+
+
+def test_reduce_params_refuse_a_produced_column_feature_at_width_one():
+    problems = SklearnReduction.validate_params(
+        {**REDUCE_PARAMS_2F, "features": ["component_0", "other"]}
+    )
+    assert any("component_0" in p for p in problems)
+
+
 def test_reduce_state_problems_refuses_a_broken_state_shape():
     node, state = _fit_reduction("pca", 2)
     cases = [
