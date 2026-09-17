@@ -57,13 +57,21 @@ import os
 
 from dskit.pipeline.base import import_ref, is_class_ref
 from dskit.pipeline.kinds_stats import _check_int, _reject_unknown
-from dskit.pipeline.node import DEFAULT_NODE_KINDS, Node, TrainableNode
+from dskit.pipeline.node import (
+    DEFAULT_NODE_KINDS,
+    JsonArtifact,
+    Node,
+    TrainableNode,
+)
 from dskit.pipeline.split_policy import SPLIT_NAMES
 
 __all__ = [
     "ARTIFACT_FORMAT",
+    "EPISODE_SCHEMA",
+    "EPISODE_SPLITS",
     "NODE_KINDS",
     "Sb3Eval",
+    "Sb3EvalEpisodes",
     "Sb3Policy",
     "Sb3PolicySignal",
     "Sb3Train",
@@ -131,6 +139,71 @@ def _params_dict_problem(problems, name, value):
             f"{name} must be a dict of constructor kwargs (string keys), "
             f"got {value!r}"
         )
+
+
+def _episode_reward(value):
+    """``value`` as a finite ``float``, or ``None`` when it is not a reward.
+
+    NOT :func:`~dskit.pipeline.records.number_ok`, and the divergence is
+    deliberate rather than a forgotten import: that rule answers "is this
+    RECORD CELL an exact int or float", while Gymnasium's own API types a
+    reward as ``SupportsFloat`` and a numpy scalar is the ordinary shape
+    one arrives in. Refusing those would refuse most real environments.
+
+    ``bool`` is excluded explicitly all the same — ``number_ok``'s own
+    documented hazard, for the same reason: ``True`` would enter the
+    return as ``1.0``, and an environment emitting flags instead of
+    rewards would average perfectly cleanly. ``str`` and ``bytes`` are
+    excluded because ``float("1.5")`` succeeds, and a reward stream
+    arriving as text is corruption to report, never data to launder.
+    """
+    if isinstance(value, (bool, str, bytes, bytearray)):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _json_safe_problem(value, where):
+    """The first way ``value`` is not EXACTLY JSON-safe, or ``None``.
+
+    Exact type, never ``isinstance``: a ``dict``, ``str`` or ``int``
+    SUBCLASS passes an isinstance check and then serializes as something
+    its author did not write — an ``IntEnum`` member as a bare number, a
+    path subclass as a string. Recursion descends into both container
+    types, because a walker that entered dict values but not list
+    elements would pass one nested violation and fail the other.
+    """
+    if type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str or not key:
+                return (
+                    f"{where} carries the key {key!r} — every key must be a "
+                    "non-empty built-in str"
+                )
+            problem = _json_safe_problem(item, f"{where}[{key!r}]")
+            if problem:
+                return problem
+        return None
+    if type(value) is list:
+        for index, item in enumerate(value):
+            problem = _json_safe_problem(item, f"{where}[{index}]")
+            if problem:
+                return problem
+        return None
+    if value is None or type(value) in (bool, str, int):
+        return None
+    if type(value) is float:
+        if math.isfinite(value):
+            return None
+        return f"{where} is {value!r}, which JSON cannot hold"
+    return (
+        f"{where} is a {type(value).__name__} — env_params must be built-in "
+        "dict/list/str/bool/int/float/null values exactly, and a subclass of "
+        "one of them is not one of them"
+    )
 
 
 def _algo_problem(problems, value, *, required):
@@ -847,12 +920,287 @@ class Sb3EvalEpisodes(_Sb3Base):
             inputs, "artifact_path", hint="wire it from an sb3-train node"
         )
 
+    # -- the knobs, read once each ----------------------------------------
+
+    def n_episodes(self):
+        """How many episodes this node rolls (int)."""
+        return int(self.params.get("n_episodes", DEFAULT_EPISODES))
+
+    def max_episode_steps(self):
+        """The per-episode step cap (int)."""
+        return int(self.params["max_episode_steps"])
+
+    def seed(self):
+        """The first episode's reset seed; episode ``i`` uses ``seed + i`` (int)."""
+        return int(self.params.get("seed", DEFAULT_SEED))
+
+    def deterministic(self):
+        """Whether the policy answers its modal action (bool)."""
+        return bool(self.params.get("deterministic", DEFAULT_DETERMINISTIC))
+
+    # -- the run ----------------------------------------------------------
+
+    def run(self, ctx, inputs):
+        """Roll bounded episodes and answer the record plus its aggregates.
+
+        Parameters
+        ----------
+        ctx : dskit.pipeline.node.NodeContext
+            The run frame; unused — this node persists through the
+            ``episodes`` port's own artifact seam and writes nothing of
+            its own.
+        inputs : dict
+            The optional ``artifact_path`` pin.
+
+        Returns
+        -------
+        dict
+            ``metrics`` (the seven flat numbers) and ``episodes`` (a
+            :class:`~dskit.pipeline.node.JsonArtifact` carrying the
+            schema tag, the resolved environment and model provenance,
+            the ordered episode records, and the same seven numbers as
+            ``summary``). The environment and the provenance appear in
+            the ARTIFACT only: metrics are numbers a report summarizes.
+
+        Raises
+        ------
+        ValueError
+            When nothing pins an artifact, when the sidecar or model does
+            not verify, when the resolved ``env_params`` are not exactly
+            JSON-safe, or when the environment breaks the Gymnasium reset
+            or step contract. No partial aggregate is ever presented as a
+            result: one broken episode fails the node.
+        """
+        reference = self.pinned_artifact(
+            self.params.get("artifact"),
+            (inputs or {}).get("artifact_path"),
+            missing=(
+                "no artifact reference — set params['artifact'] or wire "
+                "inputs['artifact_path'] from an sb3-train node"
+            ),
+        )
+        sidecar = self._read_sidecar(reference)
+        env_ref, env_params = self._resolved_environment(sidecar)
+        model = self._load_model(reference, sidecar)
+        episodes = [
+            self._episode(index, env_ref, env_params, model)
+            for index in range(self.n_episodes())
+        ]
+        summary = self._summary(episodes)
+        self.log.info(
+            "rolled %d episode(s) of %s on %s (the %r split's env): mean "
+            "return %.6f over %d step(s)",
+            summary["n_episodes"], sidecar["algo"], env_ref,
+            self.params["split"], summary["mean_return"],
+            summary["total_steps"],
+        )
+        return {
+            "metrics": dict(summary),
+            "episodes": JsonArtifact({
+                "schema": EPISODE_SCHEMA,
+                "environment": self._provenance(
+                    env_ref, env_params, reference, sidecar
+                ),
+                "episodes": episodes,
+                "summary": summary,
+            }),
+        }
+
+    def _resolved_environment(self, sidecar):
+        """The env this run measures on — declared, or the trained one.
+
+        Its params are held to exact JSON-safety BEFORE anything is
+        constructed: they are recorded verbatim in the persisted
+        evidence, and a value JSON cannot hold would fail the write after
+        every episode had already run.
+        """
+        env_ref = self.params.get("env") or sidecar["env"]
+        env_params = self.params.get("env_params")
+        if env_params is None:
+            env_params = sidecar["env_params"]
+        problem = _json_safe_problem(env_params, "env_params")
+        if problem:
+            raise ValueError(
+                f"{self.key}: {problem}. The resolved env_params are "
+                "recorded verbatim in this node's evidence, so they are "
+                "checked before the environment is built"
+            )
+        return env_ref, env_params
+
+    def _episode(self, index, env_ref, env_params, model):
+        """One episode, on a FRESH environment that is always closed.
+
+        Fresh per episode by design: an environment carried across
+        episodes could remember the previous one, and a recorded seed
+        that no longer determines the rollout is provenance for nothing.
+        """
+        seed = self.seed() + index
+        env = self._build_env(env_ref, env_params)
+        try:
+            observation = self._reset(env, index, seed)
+            trace = []
+            for step in range(1, self.max_episode_steps() + 1):
+                action, _state = model.predict(
+                    observation, deterministic=self.deterministic()
+                )
+                observation, record = self._stepped(env, index, step, action)
+                trace.append(record)
+                if record["terminated"] or record["truncated"]:
+                    break
+        finally:
+            env.close()
+        return self._result(index, seed, trace)
+
+    def _reset(self, env, index, seed):
+        """The first observation, or a refusal naming the EPISODE only.
+
+        There is no step number yet, which is exactly why a reset-shape
+        refusal must not invent one.
+        """
+        outcome = env.reset(seed=seed)
+        where = f"episode {index}"
+        if not (isinstance(outcome, tuple) and len(outcome) == 2):
+            raise ValueError(
+                f"{self.key}: {where}: reset(seed={seed}) returned "
+                f"{outcome!r}, not the two-item (observation, info) tuple "
+                "the Gymnasium API defines"
+            )
+        observation, info = outcome
+        if not isinstance(info, dict):
+            raise ValueError(
+                f"{self.key}: {where}: reset(seed={seed}) returned info "
+                f"{info!r}, which is not a dict"
+            )
+        return observation
+
+    def _stepped(self, env, index, step, action):
+        """``(observation, step record)``, or a refusal naming episode AND step.
+
+        The record deliberately keeps no observation, action or info
+        payload: those may be huge, secret, or not JSON at all, and what
+        a domain wants remembered about them is the child's to define.
+        """
+        outcome = env.step(action)
+        where = f"episode {index} step {step}"
+        if not (isinstance(outcome, tuple) and len(outcome) == 5):
+            raise ValueError(
+                f"{self.key}: {where}: step(...) returned {outcome!r}, not "
+                "the five-item (observation, reward, terminated, truncated, "
+                "info) tuple the Gymnasium API defines"
+            )
+        observation, reward, terminated, truncated, info = outcome
+        value = _episode_reward(reward)
+        if value is None:
+            raise ValueError(
+                f"{self.key}: {where}: reward is {reward!r}, not a finite "
+                "real number — a bool is not one, and True would enter the "
+                "return as 1.0 where a stream of flags averages cleanly"
+            )
+        for name, flag in (("terminated", terminated), ("truncated", truncated)):
+            if not isinstance(flag, bool):
+                raise ValueError(
+                    f"{self.key}: {where}: {name} is {flag!r}, not a bool — "
+                    "the Gymnasium API defines both flags as bool; convert a "
+                    "numpy scalar inside the environment"
+                )
+        if not isinstance(info, dict):
+            raise ValueError(
+                f"{self.key}: {where}: info is {info!r}, which is not a dict"
+            )
+        return observation, {
+            "step": step,
+            "reward": value,
+            "terminated": terminated,
+            "truncated": truncated,
+        }
+
+    def _result(self, index, seed, trace):
+        """One episode's record: its trace, its total, and WHY it ended.
+
+        Precedence is ``terminated``, then ``truncated``, then the cap.
+        When Gymnasium sets both flags the record keeps both true and the
+        reason is ``terminated`` — which is why the aggregate counts below
+        read this field rather than the flags.
+        """
+        last = trace[-1]
+        terminated, truncated = last["terminated"], last["truncated"]
+        total = math.fsum(record["reward"] for record in trace)
+        if not math.isfinite(total):
+            raise ValueError(
+                f"{self.key}: episode {index}'s return is {total!r} — a "
+                "reward stream that sums past what a float can hold "
+                "measures nothing"
+            )
+        return {
+            "episode": index,
+            "seed": seed,
+            "steps": len(trace),
+            "return": total,
+            "terminated": terminated,
+            "truncated": truncated,
+            "reason": (
+                "terminated" if terminated
+                else "truncated" if truncated
+                else "max_episode_steps"
+            ),
+            "trace": trace,
+        }
+
+    def _summary(self, episodes):
+        """The seven flat numbers, every one derived from the records above.
+
+        The three reason counts are EXCLUSIVE, and they are counted off
+        each episode's own ``reason`` rather than by summing the raw
+        flags. An episode that sets both ``terminated`` and ``truncated``
+        — which Gymnasium permits — would otherwise be counted twice,
+        while every per-episode ``reason`` still read correctly and no
+        precedence test noticed.
+        """
+        returns = [episode["return"] for episode in episodes]
+        count = len(returns)
+        mean = math.fsum(returns) / count
+        variance = math.fsum((value - mean) ** 2 for value in returns) / count
+        reasons = [episode["reason"] for episode in episodes]
+        summary = {
+            "n_episodes": count,
+            "mean_return": mean,
+            "std_return": math.sqrt(variance),
+            "total_steps": sum(episode["steps"] for episode in episodes),
+            "terminated_episodes": reasons.count("terminated"),
+            "truncated_episodes": reasons.count("truncated"),
+            "max_episode_steps_episodes": reasons.count("max_episode_steps"),
+        }
+        unusable = sorted(
+            name for name, value in summary.items() if not math.isfinite(value)
+        )
+        if unusable:
+            raise ValueError(
+                f"{self.key}: {unusable} came out non-finite — a search "
+                "cannot rank what it cannot measure"
+            )
+        return summary
+
+    def _provenance(self, env_ref, env_params, reference, sidecar):
+        """The nine facts saying WHAT produced this record."""
+        return {
+            "env": env_ref,
+            "env_params": env_params,
+            "artifact_path": reference,
+            "state_hash": sidecar["state_hash"],
+            "algo": sidecar["algo"],
+            "policy": sidecar["policy"],
+            "split": self.params["split"],
+            "deterministic": self.deterministic(),
+            "seed": self.seed(),
+        }
+
 
 #: The pack's registerable kinds — concrete classes only.
 NODE_KINDS = (
     ("sb3-train", Sb3Train),
     ("sb3-policy", Sb3Policy),
     ("sb3-eval", Sb3Eval),
+    ("sb3-eval-episodes", Sb3EvalEpisodes),
 )
 
 

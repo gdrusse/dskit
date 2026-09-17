@@ -13,8 +13,8 @@ import pytest
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.libs.sb3 import (
     ARTIFACT_FORMAT,
-    NODE_KINDS,
     Sb3Eval,
+    Sb3EvalEpisodes,
     Sb3Policy,
     Sb3Train,
     register,
@@ -398,11 +398,26 @@ def test_register_is_explicit_and_idempotent():
     registry = NodeKindRegistry()
     register(registry)
     register(registry)
-    assert registry.kinds() == ("sb3-eval", "sb3-policy", "sb3-train")
+    assert registry.kinds() == (
+        "sb3-eval", "sb3-eval-episodes", "sb3-policy", "sb3-train",
+    )
     assert registry.get("sb3-train") == (Sb3Train, False)
     assert registry.get("sb3-policy") == (Sb3Policy, False)
     assert registry.get("sb3-eval") == (Sb3Eval, False)
+    assert registry.get("sb3-eval-episodes") == (Sb3EvalEpisodes, False)
 
+
+#: The three kinds THIS file's conformance suite owns — spelled out rather
+#: than read off the live ``NODE_KINDS``. The table gained a fourth kind
+#: (``sb3-eval-episodes``, ADR-0148) whose probe and role census belong to
+#: ``test_sb3_eval_episodes.py``, which needs neither library; reading the
+#: live table here would drag that kind into this file's PPO-backed
+#: ``probes()`` instead, where it has no probe and no reason to be.
+LEGACY_NODE_KINDS = (
+    ("sb3-train", Sb3Train),
+    ("sb3-policy", Sb3Policy),
+    ("sb3-eval", Sb3Eval),
+)
 
 EXPECTED_ROLES = {
     "sb3-train": "train",
@@ -455,7 +470,7 @@ def probes(tmp_path):
 
 
 TestSb3Conformance = conformance_suite(
-    registry=NODE_KINDS,
+    registry=LEGACY_NODE_KINDS,
     module="dskit.pipeline.libs.sb3",
     probes=probes,
     expected_roles=EXPECTED_ROLES,
