@@ -1193,3 +1193,51 @@ def test_a_document_declaring_a_selection_split_refuses_at_plan(split):
     })
     with pytest.raises(ConfigError, match="split"):
         plan(document)
+
+
+# -- the outcome is read from the LAST step, and that position is pinned ---
+
+
+def test_a_multi_step_episode_reports_what_its_last_step_gave(tmp_path, lab):
+    """Where the per-episode outcome comes from, on episodes that do not
+    end on step 1.
+
+    Every other fixture here terminates or truncates immediately, where
+    ``trace[0] is trace[-1]`` — so none of them can tell the two apart.
+    That position is where ``terminated``, ``truncated``, ``reason`` and
+    all three exclusive counts are read from, into the durable artifact,
+    which is the whole reason ``episodes`` exists.
+    """
+    lab.scripts(
+        [step(0.1), step(0.2), step(0.3, terminated=True)],
+        [step(0.1), step(0.2, truncated=True)],
+        [step(0.1), step(0.2), step(0.3)],          # runs into the cap
+    )
+    _node, outputs = evaluate(tmp_path, n_episodes=3, max_episode_steps=3)
+    episodes = record(outputs)["episodes"]
+
+    assert [e["steps"] for e in episodes] == [3, 2, 3]
+    assert [e["reason"] for e in episodes] == [
+        "terminated", "truncated", "max_episode_steps",
+    ]
+    assert [(e["terminated"], e["truncated"]) for e in episodes] == [
+        (True, False), (False, True), (False, False),
+    ]
+    assert outputs["metrics"]["terminated_episodes"] == 1
+    assert outputs["metrics"]["truncated_episodes"] == 1
+    assert outputs["metrics"]["max_episode_steps_episodes"] == 1
+
+
+def test_both_flags_true_on_a_later_step_still_counts_once(tmp_path, lab):
+    """Reason precedence AND exclusive counting, off step 1 — so neither
+    claim rests on the degenerate one-step case."""
+    lab.scripts([step(0.1), step(0.2, terminated=True, truncated=True)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=4)
+    episode = record(outputs)["episodes"][0]
+
+    assert episode["steps"] == 2
+    assert episode["terminated"] is True and episode["truncated"] is True
+    assert episode["reason"] == "terminated"
+    assert outputs["metrics"]["terminated_episodes"] == 1
+    assert outputs["metrics"]["truncated_episodes"] == 0
+    assert outputs["metrics"]["max_episode_steps_episodes"] == 0

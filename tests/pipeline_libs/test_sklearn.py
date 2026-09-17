@@ -2260,21 +2260,36 @@ def test_fit_refuses_the_very_rows_its_own_row_rule_refuses():
         node.fit(rows, node.params)
 
 
-def test_an_omitted_seed_still_fits_reproducibly():
-    """``seed`` defaults to ``DEFAULT_SEGMENT_SEED``, and the default is
-    what makes an omitting document reproducible. Dropping the default —
-    passing ``random_state=None`` — moves the centers, every row's
-    ``segment`` and the ``segment_model_id`` between two runs of one
-    identity, silently. The two-part seed fixtures cannot catch it: both
-    halves DECLARE a seed."""
+def test_an_omitted_seed_fits_exactly_as_an_explicit_seed_of_zero_does():
+    """The default's VALUE, not merely that it HAS one.
+
+    Two halves, and the first alone is not enough. Asserting that two
+    omitting fits agree with each other is true of ANY fixed default, so
+    it catches a dropped default (``random_state=None``) but not a MOVED
+    one — and ``seed`` is not a config-identity input for an omitting
+    document, so moving it computes a different segmentation and a
+    different ``segment_model_id`` under the SAME config hash and the
+    same run directory, orphaning every artifact keyed to the old one.
+
+    The literal ``0`` is deliberate: this test IS the pin between the
+    constant, the class docstring and the plan's §3.1, and comparing
+    against ``DEFAULT_SEGMENT_SEED`` would move both sides together. The
+    comparison against seed 1 is what keeps the first assertion from
+    being vacuous — it proves the knob is threaded at all.
+    """
     pytest.importorskip("sklearn")
-    node = _state_node(
-        seed=_DROP, algorithm_params={"n_clusters": 5, "n_init": 1}
+    kwargs = {"n_clusters": 5, "n_init": 1}
+    omitted = _state_node(seed=_DROP, algorithm_params=kwargs)
+    zero = _state_node(seed=0, algorithm_params=kwargs)
+    one = _state_node(seed=1, algorithm_params=kwargs)
+
+    state = omitted.fit(SEED_ROWS, omitted.params)
+    assert state["centers"] == omitted.fit(SEED_ROWS, omitted.params)["centers"]
+    assert state["centers"] == zero.fit(SEED_ROWS, zero.params)["centers"]
+    assert state["centers"] != one.fit(SEED_ROWS, one.params)["centers"]
+    assert omitted.segment_model_id(state) == zero.segment_model_id(
+        zero.fit(SEED_ROWS, zero.params)
     )
-    first = node.fit(SEED_ROWS, node.params)
-    second = node.fit(SEED_ROWS, node.params)
-    assert first["centers"] == second["centers"]
-    assert node.segment_model_id(first) == node.segment_model_id(second)
 
 
 # ---------------------------------------------------------------------------
