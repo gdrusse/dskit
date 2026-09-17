@@ -13061,8 +13061,11 @@ than re-derived:
 - `pipeline/stats.py:97` `_bootstrap_rng` -- the pinned `sha256(seed:label)`
   RNG recipe. Imported, NOT copied (see Non-goals for the promotion left
   undone).
-- `pipeline/records.py` `number_ok` / `cluster_ok`; `pipeline/node.py`
-  `class_ref`. Imported.
+- `pipeline/records.py` `number_ok`, and `pipeline/node.py` `class_ref`.
+  Both imported. `records.cluster_ok` is referenced only in a docstring
+  comparison (`BlockResiduals` block id widening vs the envelope cluster
+  id) -- it is NOT imported, and this branch does not modify
+  `records.py` at all.
 - `pipeline/predictions.py` `read_prediction_series` -- the time-ordered
   out-of-fold `(ts, series, fold, horizon, yhat, y, mu)` rows are the intended
   residual source. Nothing here reads it; the caller reduces its own rows to

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 import random
+import re
+from pathlib import Path
 
 import pytest
 
@@ -580,6 +582,19 @@ class TestScenarioSetValue:
                 provenance={},
             )
 
+    def test_a_draw_shorter_than_the_weights_also_refuses(self):
+        # The existing mismatch test above is one-directional (too LONG);
+        # a length check loosened to only catch "too long" would pass it
+        # while missing this direction entirely.
+        with pytest.raises(ValueError, match="length"):
+            ScenarioSet(
+                weights=(0.5, 0.25, 0.25),
+                draws={"a": (0.1, 0.2)},
+                calibration_hash="h",
+                seed=0,
+                provenance={},
+            )
+
 
 # ---------------------------------------------------------------------------
 # the declared consumer shapes (compatibility only — nothing is wired)
@@ -816,3 +831,262 @@ class TestMeasuredCoverage:
         # The honest number: a volatility regime inside one window covers
         # worse than the pooled average, and the result says so.
         assert result.conditional_coverage["a"] < result.realized_coverage["a"]
+
+# ---------------------------------------------------------------------------
+# skeptic-review correction pass (2026-09-17): Me-1, Me-2, and the recorded
+# Minors. See docs/architecture/decision-log.md ADR-0155.
+# ---------------------------------------------------------------------------
+
+
+class TestAchievedLevelOfOneIsHandled:
+    """Me-1: an achieved level of exactly 1.0 is a legitimate, maximally-
+    conservative outcome -- BlockCalibrator.achievable_level only refuses
+    ABOVE one, and OutcomeCalibrator._checked_level accepts up to and
+    including one. _diagnostics must agree rather than crash through
+    metrics.pinball's open-interval contract when the tail quantile levels
+    land exactly on 0 or 1."""
+
+    def test_the_class_docstring_worked_example_runs(self):
+        # OutcomeIntervalResult's own Examples block: B=2, coverage=0.6
+        # lands achieved_level exactly on 1.0 (ceil(3 * 0.6) / 2 == 1.0).
+        # Verbatim repro from the skeptic finding -- must run, not raise.
+        ev = BlockResiduals(
+            names=("alpha",),
+            rows=[(0.1,), (-0.2,), (0.3,), (0.0,)],
+            blocks=["s1", "s1", "s2", "s2"],
+        )
+        result = BlockConformalInterval().calibrate(ev, coverage=0.6, window_blocks=2)
+        assert result.achieved_level == 1.0
+        assert result.upper_offset["alpha"] >= 0.0
+
+    @pytest.mark.parametrize(
+        ("member_cls", "n_blocks", "coverage"),
+        [
+            (BlockConformalInterval, 2, 0.5),
+            (TwoSidedBlockConformalInterval, 2, 0.5),
+            (BlockConformalInterval, 8, 0.85),
+            (TwoSidedBlockConformalInterval, 8, 0.85),
+            (BlockConformalInterval, 20, DEFAULT_COVERAGE),
+            (TwoSidedBlockConformalInterval, 20, DEFAULT_COVERAGE),
+            (BlockConformalInterval, 30, DEFAULT_COVERAGE),
+            (TwoSidedBlockConformalInterval, 30, DEFAULT_COVERAGE),
+        ],
+    )
+    def test_a_coverage_landing_exactly_on_the_ceiling_does_not_crash(
+        self, member_cls, n_blocks, coverage
+    ):
+        ev = _residuals(n_blocks=n_blocks, per_block=5, names=("a",))
+        result = member_cls().calibrate(ev, coverage=coverage, window_blocks=min(10, n_blocks))
+        assert result.achieved_level == 1.0
+        assert math.isfinite(result.tail_loss["a"])
+        assert result.tail_loss["a"] >= 0.0
+        assert 0.0 <= result.realized_coverage["a"] <= 1.0
+        assert 0.0 <= result.conditional_coverage["a"] <= 1.0
+
+
+class TestPublicHooksRefuseLoudly:
+    """Me-2: achievable_level/offsets/draw_blocks are documented as directly
+    callable (the class docstrings demonstrate exactly that), so a bad
+    direct-call argument must refuse by name instead of leaking a raw
+    stdlib exception (ZeroDivisionError, a bare TypeError, or a silently
+    wrong answer)."""
+
+    def test_achievable_level_refuses_zero_blocks_by_name(self):
+        with pytest.raises(ValueError, match="n_blocks"):
+            BlockConformalInterval().achievable_level(0.9, 0)
+
+    def test_achievable_level_refuses_negative_blocks_by_name(self):
+        with pytest.raises(ValueError, match="n_blocks"):
+            BlockConformalInterval().achievable_level(0.9, -5)
+
+    @pytest.mark.parametrize("bad", [2.5, "x", None, True])
+    def test_achievable_level_refuses_a_non_int_block_count_by_name(self, bad):
+        with pytest.raises(ValueError, match="n_blocks"):
+            BlockConformalInterval().achievable_level(0.9, bad)
+
+    @pytest.mark.parametrize(
+        "bad", [float("nan"), float("inf"), -float("inf"), "x", None, 1.5, True]
+    )
+    def test_achievable_level_refuses_an_unusable_coverage_by_name(self, bad):
+        with pytest.raises(ValueError, match="coverage"):
+            BlockConformalInterval().achievable_level(bad, 40)
+
+    def test_offsets_refuses_anything_that_is_not_block_residuals(self):
+        with pytest.raises(TypeError, match="BlockResiduals"):
+            BlockConformalInterval().offsets({"a": [0.1]}, 0.9)
+        with pytest.raises(TypeError, match="BlockResiduals"):
+            TwoSidedBlockConformalInterval().offsets({"a": [0.1]}, 0.9)
+
+    @pytest.mark.parametrize("bad", [0.0, -0.1, 1.2, float("nan"), "x", None])
+    def test_offsets_refuses_an_unusable_level_by_name(self, bad):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match="level"):
+            BlockConformalInterval().offsets(ev, bad)
+        with pytest.raises(ValueError, match="level"):
+            TwoSidedBlockConformalInterval().offsets(ev, bad)
+
+    def test_draw_blocks_refuses_anything_that_is_not_block_residuals(self):
+        with pytest.raises(TypeError, match="BlockResiduals"):
+            BlockConformalInterval().draw_blocks({"a": [0.1]}, 5, random.Random(0))
+
+    @pytest.mark.parametrize("bad", [2.5, "x", None, True])
+    def test_draw_blocks_refuses_a_non_int_scenario_count_by_name(self, bad):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match="n_scenarios"):
+            BlockConformalInterval().draw_blocks(ev, bad, random.Random(0))
+
+    def test_draw_blocks_refuses_a_negative_scenario_count_by_name(self):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match="n_scenarios"):
+            BlockConformalInterval().draw_blocks(ev, -3, random.Random(0))
+
+    def test_draw_blocks_refuses_an_unusable_rng_by_name(self):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match="rng"):
+            BlockConformalInterval().draw_blocks(ev, 5, None)
+
+
+class TestQuantileEpsilonIsLoadBearing:
+    """Minor: _QUANTILE_EPS was an undisclosed live mutation survivor. Pin
+    it directly rather than remove it -- it is genuinely load-bearing."""
+
+    def test_it_absorbs_representation_noise_at_an_exact_weight_tie(self):
+        from dskit.pipeline.outcome_interval import _weighted_quantile
+
+        # Seven equal 1/7 weights summed left-to-right land ~1.1e-16 short
+        # of the exact tie at level 5/7 -- pure float representation
+        # noise. Without _QUANTILE_EPS the tie is missed and the quantile
+        # reads one row high (5.0 instead of the correct 4.0).
+        values = list(range(7))
+        weights = [1.0 / 7.0] * 7
+        level = 5.0 / 7.0
+        assert _weighted_quantile(values, weights, level) == 4.0
+
+    def test_the_epsilon_shifted_boundary_is_inclusive(self):
+        from dskit.pipeline.outcome_interval import _weighted_quantile
+
+        # cumulative after the first item is exactly level - _QUANTILE_EPS
+        # (0.3 == 0.3 + 1e-12 - 1e-12 in float). The boundary comparison
+        # must stay ">=": the tied value is correct, the next one up is
+        # not. A ">" mutation here is otherwise invisible to every other
+        # test in the suite.
+        level = 0.3 + 1e-12
+        assert _weighted_quantile([10.0, 20.0], [0.3, 0.7], level) == 10.0
+
+
+class TestClosedPinballBoundary:
+    """_closed_pinball's two boundary formulas are both always >= 0 by
+    construction, so TestAchievedLevelOfOneIsHandled's finiteness/
+    non-negativity checks cannot tell a correct formula from a swapped
+    one. Pin the exact values directly."""
+
+    def test_the_boundary_formulas_are_not_interchangeable(self):
+        from dskit.pipeline.outcome_interval import _closed_pinball
+
+        assert _closed_pinball(1.0, 3.0, 0.0) == 0.0
+        assert _closed_pinball(3.0, 1.0, 0.0) == 2.0
+        assert _closed_pinball(1.0, 3.0, 1.0) == 2.0
+        assert _closed_pinball(3.0, 1.0, 1.0) == 0.0
+
+    def test_interior_tau_still_routes_through_pinball(self):
+        from dskit.pipeline.outcome_interval import _closed_pinball
+        from dskit.pipeline.metrics import pinball
+
+        assert _closed_pinball(1.0, 3.0, 0.5) == pinball(1.0, 3.0, 0.5)
+
+
+class TestProvenanceFreezesDeep:
+    """Minor: provenance was shallow-frozen -- only the top-level dict was a
+    MappingProxyType, so the nested ``components`` list could be mutated
+    in place through a live reference."""
+
+    def test_a_results_provenance_list_cannot_be_mutated_in_place(self):
+        ev = _residuals(n_blocks=20, per_block=4, names=("a", "b"))
+        result = BlockConformalInterval().calibrate(ev, coverage=0.9, window_blocks=5)
+        assert isinstance(result.provenance["components"], tuple)
+        with pytest.raises(AttributeError):
+            result.provenance["components"].append("HACKED")
+
+    def test_a_scenario_sets_provenance_list_cannot_be_mutated_in_place(self):
+        ev = _residuals(n_blocks=20, per_block=4, names=("a",))
+        s = BlockConformalInterval().scenarios(ev, n_scenarios=16, seed=1)
+        assert isinstance(s.provenance["components"], tuple)
+        with pytest.raises(AttributeError):
+            s.provenance["components"].append("HACKED")
+
+
+class TestMutationProbePrecisionPins:
+    """Boundary-precision regressions surfaced by re-running the mutation
+    probe on the correction pass. Each existing test that came close to
+    these boundaries used a margin wide enough that a one-sided or
+    off-by-one mutation slipped through; these pin the exact edge."""
+
+    def test_the_template_accepts_a_level_exactly_at_the_epsilon_floor(self):
+        from dskit.pipeline.outcome_interval import _QUANTILE_EPS
+
+        class RightAtFloor(BlockConformalInterval):
+            def achievable_level(self, coverage, n_blocks):
+                return coverage - _QUANTILE_EPS
+
+        ev = _residuals(n_blocks=20, per_block=5, names=("a",))
+        result = RightAtFloor().calibrate(ev, coverage=0.9, window_blocks=5)
+        assert result.achieved_level == pytest.approx(0.9 - _QUANTILE_EPS)
+
+    def test_the_template_accepts_equal_lower_and_upper_bounds(self):
+        # _checked_offsets's own docstring says "lower at or below upper"
+        # -- equal is legitimate, not inverted.
+        class Pointwise(BlockCalibrator):
+            def offsets(self, residuals, level):
+                return {n: (0.0, 0.0) for n in residuals.names}
+
+        ev = _residuals(n_blocks=20, per_block=5, names=("a",))
+        result = Pointwise().calibrate(ev, coverage=0.9, window_blocks=5)
+        assert result.lower_offset["a"] == result.upper_offset["a"] == 0.0
+
+    def test_the_template_refuses_a_member_short_by_exactly_one_row(self):
+        class OffByOne(BlockConformalInterval):
+            def draw_blocks(self, residuals, n_scenarios, rng):
+                return residuals.block_ids[:-1]
+
+        ev = _residuals(n_blocks=21, per_block=1, names=("a",))
+        with pytest.raises(ValueError, match="OffByOne"):
+            OffByOne().scenarios(ev, n_scenarios=21, seed=1)
+
+    def test_a_level_barely_above_one_is_still_refused(self):
+        # The natural formula's smallest possible excess over 1.0 is
+        # 1 / n_blocks, so a very large (but O(1) to evaluate) n_blocks
+        # lands just inside a hypothetical hard-coded tolerance window
+        # without needing to build a panel of that size.
+        n = 20_000_000
+        coverage = 1.0 - 0.5 / (n + 1)
+        with pytest.raises(ValueError, match="not achievable"):
+            BlockConformalInterval().achievable_level(coverage, n)
+
+    def test_draw_blocks_refuses_a_scenario_count_of_exactly_negative_one(self):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match="n_scenarios"):
+            BlockConformalInterval().draw_blocks(ev, -1, random.Random(0))
+
+
+class TestWeightsToleranceSiblingAgreement:
+    """Minor: WEIGHTS_SUM_TOLERANCE is duplicated with the unmerged sibling
+    uncertainty_set.py (ADR-0156). No cross-branch import is possible, so
+    this is a plain TEXT scan across dskit/ for the constant's definition,
+    refusing on divergence -- the mirror image of the pin the sibling's own
+    suite carries, so whichever module lands first protects the other."""
+
+    _DEFINITION = re.compile(r"^WEIGHTS_SUM_TOLERANCE\s*=\s*([0-9eE.+-]+)\s*$", re.MULTILINE)
+
+    def test_every_definition_of_the_constant_across_dskit_agrees(self):
+        root = Path(__file__).resolve().parents[2] / "dskit"
+        found = {}
+        for path in root.rglob("*.py"):
+            match = self._DEFINITION.search(path.read_text(encoding="utf-8"))
+            if match:
+                found[str(path)] = float(match.group(1))
+        # The scan itself must not be vacuous: this module's own constant
+        # must be among what it found, or a broken pattern would pass by
+        # finding nothing at all.
+        assert any(name.endswith("outcome_interval.py") for name in found)
+        assert len(set(found.values())) == 1, f"WEIGHTS_SUM_TOLERANCE diverged: {found}"
+

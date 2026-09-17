@@ -82,6 +82,7 @@ import hashlib
 import json
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
@@ -183,6 +184,12 @@ def _check_coverage(value):
         raise ValueError(f"coverage must be a number in (0, 1), got {value!r}")
 
 
+def _check_level(value):
+    """Refuse a level that is not a finite number in (0, 1]."""
+    if not number_ok(value) or not 0.0 < float(value) <= 1.0:
+        raise ValueError(f"level must be a number in (0, 1], got {value!r}")
+
+
 def _weighted_quantile(values, weights, level):
     """Return the smallest value whose cumulative weight reaches ``level``.
 
@@ -209,6 +216,34 @@ def _weighted_quantile(values, weights, level):
         if cumulative >= level - _QUANTILE_EPS:
             return float(value)
     return float(pairs[-1][0])
+
+
+def _closed_pinball(q, y, tau):
+    """Pinball loss widened to the CLOSED [0, 1] tau range via its own limit at 0 and 1.
+
+    ``metrics.pinball`` refuses ``tau`` outside the open ``(0, 1)`` by
+    contract (ADR-0054) -- correct, and untouched here. An achieved
+    level of exactly 1.0 is a legitimate, maximally-conservative outcome
+    (:meth:`BlockCalibrator.achievable_level` only refuses ABOVE one),
+    and it drives both tail quantile levels to that boundary. The loss
+    is continuous in ``tau`` and has a well-defined limit there --
+    ``max(q - y, 0)`` as ``tau -> 0``, ``max(y - q, 0)`` as ``tau -> 1``
+    -- computed directly instead of routing through ``pinball``.
+    """
+    if tau <= 0.0:
+        return max(q - y, 0.0)
+    if tau >= 1.0:
+        return max(y - q, 0.0)
+    return pinball(q, y, tau)
+
+
+def _frozen_tree(value):
+    """Return a read-only copy of nested mappings and sequences; other values as given."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(k): _frozen_tree(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(_frozen_tree(v) for v in value)
+    return value
 
 
 @dataclass(frozen=True)
@@ -518,16 +553,16 @@ class OutcomeIntervalResult:
     provenance: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        """Freeze every mapping behind a read-only view."""
+        """Freeze every mapping behind a read-only view; provenance freezes DEEP."""
         for name in (
             "lower_offset",
             "upper_offset",
             "realized_coverage",
             "conditional_coverage",
             "tail_loss",
-            "provenance",
         ):
             object.__setattr__(self, name, MappingProxyType(dict(getattr(self, name))))
+        object.__setattr__(self, "provenance", _frozen_tree(dict(self.provenance)))
 
 
 @dataclass(frozen=True)
@@ -535,8 +570,8 @@ class ScenarioSet:
     """A finite JOINT scenario set: shared weights and one array per component.
 
     Scenario ``omega`` means the SAME state of the world in every array,
-    which is the property a portfolio-level consumer depends on and the
-    reason these are not sampled per component.
+    which is the property a caller combining every component into one
+    decision depends on and the reason these are not sampled per component.
 
     Parameters
     ----------
@@ -619,7 +654,7 @@ class ScenarioSet:
 
         object.__setattr__(self, "weights", weights)
         object.__setattr__(self, "draws", MappingProxyType(draws))
-        object.__setattr__(self, "provenance", MappingProxyType(dict(self.provenance)))
+        object.__setattr__(self, "provenance", _frozen_tree(dict(self.provenance)))
 
     def weighted_draws(self):
         """Return the ``(weights, arrays)`` pairing a scenario-consuming optimizer takes.
@@ -942,7 +977,7 @@ class OutcomeCalibrator(ABC):
             inside = [1.0 if lower <= v <= upper else 0.0 for v in values]
             realized[name] = math.fsum(w * hit for w, hit in zip(weights, inside))
             tail[name] = math.fsum(
-                w * (pinball(lower, v, lo_tau) + pinball(upper, v, hi_tau))
+                w * (_closed_pinball(lower, v, lo_tau) + _closed_pinball(upper, v, hi_tau))
                 for w, v in zip(weights, values)
             )
             per_block = {}
@@ -1017,9 +1052,15 @@ class BlockCalibrator(OutcomeCalibrator):
         Raises
         ------
         ValueError
-            When the correction exceeds one, i.e. no quantile of this
-            many blocks can support the requested coverage.
+            When ``coverage`` is not a finite number in ``(0, 1)``, when
+            ``n_blocks`` is not a positive int, or when the correction
+            exceeds one, i.e. no quantile of this many blocks can
+            support the requested coverage.
         """
+        _check_coverage(coverage)
+        if isinstance(n_blocks, bool) or not isinstance(n_blocks, int) or n_blocks < 1:
+            raise ValueError(f"n_blocks must be a positive int, got {n_blocks!r}")
+        coverage = float(coverage)
         level = math.ceil((n_blocks + 1) * coverage) / n_blocks
         if level > 1.0:
             raise ValueError(
@@ -1045,7 +1086,22 @@ class BlockCalibrator(OutcomeCalibrator):
         -------
         list
             Block labels, with replacement.
+
+        Raises
+        ------
+        TypeError
+            When ``residuals`` is not a :class:`BlockResiduals`.
+        ValueError
+            When ``n_scenarios`` is not a non-negative int, or ``rng``
+            does not expose ``randrange``.
         """
+        self._require_panel(residuals)
+        if isinstance(n_scenarios, bool) or not isinstance(n_scenarios, int) or n_scenarios < 0:
+            raise ValueError(f"n_scenarios must be a non-negative int, got {n_scenarios!r}")
+        if not callable(getattr(rng, "randrange", None)):
+            raise ValueError(
+                f"rng must be a random.Random-like generator exposing randrange, got {rng!r}"
+            )
         counts = residuals.block_counts()
         labels, collected = [], 0
         while collected < n_scenarios:
@@ -1086,7 +1142,16 @@ class BlockConformalInterval(BlockCalibrator):
         dict
             ``{name: (-q, q)}`` where ``q`` is the block-equalized
             ``level``-quantile of that component's absolute residuals.
+
+        Raises
+        ------
+        TypeError
+            When ``residuals`` is not a :class:`BlockResiduals`.
+        ValueError
+            When ``level`` is not a finite number in ``(0, 1]``.
         """
+        self._require_panel(residuals)
+        _check_level(level)
         weights = residuals.row_weights()
         out = {}
         for name in residuals.names:
@@ -1102,7 +1167,7 @@ class TwoSidedBlockConformalInterval(BlockCalibrator):
     Where the symmetric member folds the residuals onto one scale, this
     one takes each tail's own block-equalized quantile, so a skewed
     residual law produces a skewed band. That matters whenever the
-    consumer reads one tail specifically -- a shortfall constraint does.
+    consumer reads one tail specifically -- a one-sided tail constraint does.
 
     Examples
     --------
@@ -1128,7 +1193,16 @@ class TwoSidedBlockConformalInterval(BlockCalibrator):
         dict
             ``{name: (lower, upper)}`` at levels ``alpha / 2`` and
             ``1 - alpha / 2`` where ``alpha = 1 - level``.
+
+        Raises
+        ------
+        TypeError
+            When ``residuals`` is not a :class:`BlockResiduals`.
+        ValueError
+            When ``level`` is not a finite number in ``(0, 1]``.
         """
+        self._require_panel(residuals)
+        _check_level(level)
         weights = residuals.row_weights()
         alpha = 1.0 - level
         out = {}
