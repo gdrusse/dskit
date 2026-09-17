@@ -3,7 +3,7 @@
 ## Current checkpoint: ADR-0148 clustering/RL extensions landed on a branch (2026-09-17)
 
 Branch `claude/dskit-rl-clustering-zy2dge`, based on `origin/main` at
-`3b73361`, candidate `3ca3d72`. This is the clustering/RL lane the closeout
+`3b73361`, candidate `34ab030`. This is the clustering/RL lane the closeout
 index calls "separate, with its own approvals" — not F3, not F5b, and it
 touches `dskit/production` nowhere.
 
@@ -79,9 +79,44 @@ consequence it measured:
    default, so moving the constant changed `segment_model_id` for an
    omitting document at the SAME config hash.
 
-Both are fixed test-only in `3ca3d72` and mutation-verified RED in both
-directions. `git diff f43b6fe..HEAD -- dskit/ pyproject.toml` is EMPTY, so
-the correctness lens's CLEAN verdict stands on unmoved production code.
+Both were fixed test-only in `3ca3d72` and mutation-verified RED in both
+directions.
+
+Rounds 3 and 4 each found two more Majors, and ALL of them are one family:
+*an assertion whose candidate sources coincide in the fixture, so no test
+can tell them apart*. Round 3: the environment actually rolled on (declared
+`env` vs the artifact's — the same string in the fixture, so a regression
+would measure a held-out policy on its TRAINING environment and label the
+record with it), and five of the nine provenance facts for the same reason.
+Because the family REPEATED, a convergence checkpoint was recorded (plan
+§11) rather than a third point fix: an inventory of every value these kinds
+publish that has more than one candidate source. Round 4's brief was then to
+FALSIFY that inventory, and it did — §11.1 records both failures rather than
+amending them away. §11 was wrong that `params["artifact"]` and a wired
+`artifact_path` cannot differ (`pinned_artifact` refuses only
+node-level-vs-declared, and `node_level_pin()` answers `None` for a `score`
+role, so that branch is dead code), and its DEFINITION was too narrow,
+filing `split` under "single-sourced" when the real problem was that it was
+only ever asserted at ONE value.
+
+**Every Major after round 1 was a TEST-COVERAGE defect, not a shipping
+bug.** `git diff f43b6fe..HEAD -- dskit/ pyproject.toml` is EMPTY: no
+production code has moved since round 1's corrections, and the
+correctness/authority lens cleared exactly that code by direct execution.
+
+**The gate is NOT met and this is not claimed as closed.** skeptic-review.md
+closes a candidate on two independent lenses reporting zero unresolved
+Critical/Major; rounds 2, 3 and 4 each ended FAIL, and the current candidate
+`34ab030` has had no clean pair. What is true is narrower and worth stating
+exactly: no Major is open right now, every one found has been fixed and
+mutation-pinned, and the production code carries a clean correctness verdict.
+The branch is offered for human review on that basis, not as a closed
+candidate.
+
+**Disclosed for a future ADR, not fixed here:** a declared/wired artifact
+pin DISAGREEMENT is resolved silently rather than refused, for every pinning
+kind in the sb3 pack and beyond, and is untested for all of them. Refusing
+it changes a shared tier-1 service with its own blast radius.
 
 Three defects this session introduced were caught by review rather than by
 itself: a `_kwargs_problems` tightening reachable from `load_bundle`, where
