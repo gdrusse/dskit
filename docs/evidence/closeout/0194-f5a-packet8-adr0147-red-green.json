@@ -103,5 +103,42 @@
     "13_torn_final_line_never_poisons": "tests/production/test_ledger.py::test_a_torn_final_admission_use_line_is_discarded_never_treated_as_spent, test_a_torn_admission_use_line_inside_a_sealed_segment_still_refuses, test_the_posix_flock_release_on_crash_assumption_is_documented_at_acquire_lock"
   },
   "deployment_eligible": false,
-  "stop_condition_at_red_green_time": "no unresolved architecture contradiction; two genuine, narrow interactions between this ADR's design and pre-existing F4/vocab.py rules were found (see convergence_checkpoints and forbidden_symbol_isolation.two_adjacent_test_corrections_disclosed) and resolved within ADR-0147's own text, disclosed in full rather than papered over. Per the packet instructions, this session stops here: no final-lens review, no merge, no wrap of main. Branch codex/f5a-p7-remainder-20260916 pushed to origin at the end of this session."
+  "stop_condition_at_red_green_time": "no unresolved architecture contradiction; two genuine, narrow interactions between this ADR's design and pre-existing F4/vocab.py rules were found (see convergence_checkpoints and forbidden_symbol_isolation.two_adjacent_test_corrections_disclosed) and resolved within ADR-0147's own text, disclosed in full rather than papered over.",
+
+  "final_review": {
+    "candidate": "3531461 (GREEN) + 8e5be10 (evidence, at review time)",
+    "authority_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (authority/correctness lens)",
+      "verdict": "0 Critical, 0 Major, 0 Minor, 0 Nit",
+      "deep_dive_a_narrowed_test": "confirmed legitimate: the original test_there_is_no_second_list_of_ledger_kinds used an overly-broad LEDGER substring match that would false-positive on any lifecycle-state vocabulary, not only a genuine second kinds-enumeration; LEDGER_HEALTH_STATES is instance-lifecycle vocabulary (mirroring the existing CACHE_STATES precedent), never a store/kind enumeration, so the narrowing removes no real coverage.",
+      "deep_dive_b_convergence_checkpoints": "both confirmed correctly resolved: (1) a dedicated isolated test independently proves reserve_once's own (False, seq) duplicate-refusal path is reachable and exercised, not masked/dead code, even though a literal same-stream repeat is caught earlier by an unrelated F4-liveness check first; (2) HistoricalStudyVerifier.durable() explicitly replays the full chain and refuses construction on any state/ledger head divergence -- confirmed JsonlLedger._open() itself does not silently re-fold, so replay is never accidentally skipped.",
+      "other_verified": [
+        "forbidden-symbol isolation reconfirmed via direct diff (5 ADR-0143 symbols, compose_replay_tape, authorize_capture_set/commit_p4_batch all zero touched lines)",
+        "genuine subprocess-based second-process test confirmed (real subprocess.run, exit-code-based refusal, held for the writer's whole lifetime)",
+        "LEDGER_HEALTH_STATES confirmed in vocab.py __all__",
+        "inspect_capture_admission confirmed genuinely read-only by call-graph inspection"
+      ],
+      "gate": "CLEAN"
+    },
+    "tests_integration_lens": {
+      "reviewer": "independent, fresh-context adversarial skeptic (tests/integration lens)",
+      "verdict": "0 Critical, 0 Major, 0 Nit (1 Minor noted in summary line but not separately itemized in the report body -- no material or blocking finding was named)",
+      "verified": [
+        "all 13 Phase-0-matrix rows have explicit, dedicated test coverage (full row-by-row mapping produced)",
+        "row 4 (second-process) deep-dive: genuine subprocess isolation, refusal held for whole writer lifetime, no wall-clock sleeps, deterministic process-lifecycle coordination",
+        "row 5 (write-then-raise) deep-dive: admission_use record confirmed durably committed BEFORE the delegate capture call, confirmed to survive the raised exception and be visible on reopen",
+        "row 7 (crash-recovery) deep-dive: three distinct fault-injection tests genuinely touch on-disk state transitions (barrier failure, state.apply failure, sync failure) each correctly quarantining to 'uncertain' and correctly recovering on a fresh reopen",
+        "idempotency-key tests confirmed to construct genuinely distinct admission_refs and confirm nonce-exclusion with a real fresh-nonce attempt",
+        "canonicalization-equivalence and POSIX-assumption Phase-0 pins both confirmed present as dedicated tests/code comment",
+        "independently re-ran 246 focused + 1764 affected tests (1 pre-existing unrelated baseline failure), ruff and git diff --check clean",
+        "test isolation confirmed clean: per-test tmp_path roots, threading.Barrier for deterministic thread coordination, no shared mutable state"
+      ],
+      "gate": "CLEAN"
+    },
+    "combined_result": "0 Critical, 0 Major, 0 Minor (materially), 0 Nit",
+    "gate": "Two fresh independent completed lenses, zero unresolved in-scope Critical/Major. Packet 8's core admission gate is locked and ready to integrate.",
+    "deployment_eligible": false
+  },
+
+  "stop_condition_at_red_green_time_historical": "At RED/GREEN time this session stopped before final-lens review, merge, or wrap, per that task's own instruction. Final review is now complete above; ready for integration and Packet 8 wrap."
 }
