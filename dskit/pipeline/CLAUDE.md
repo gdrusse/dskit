@@ -77,6 +77,17 @@ on it without breaking its rulings.
   `fingerprint()` at resolve and `run()` at execute see one snapshot;
   `scan_stream` is imported inside the scan, never at module top.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
+- **Uncertainty sets** — `register_uncertainty_set`
+  (`uncertainty_set.py`); `probability`/`mean`/`outcome` ship. Subclass
+  `BudgetedUncertaintySet` and supply three declaration hooks
+  (`worst_case_sense`, `component_bounds`, `coefficient_domain`); the four
+  templates (`worst_case`, `protection`, `counterpart`, `realizations`) are
+  final and `__init_subclass__` refuses a subclass that replaces one. Nominal
+  values, BOTH deviation halves and the budget are arguments with no defaults,
+  and a half the geometry can never read must be passed as zero. The budget is
+  tuned by rolling validation — no interval identifies it. `realizations()`
+  weights are a uniform CONVENTION over the points emitted, never an estimated
+  measure; `worst_case`/`counterpart` are the exact doorway.
 - **Corrections** — `register_correction` (`stats.py`);
   `bh`/`bonferroni`/`none`/`weighted-bh` ship. `needs_weights` metadata
   gates the stat_test `weights` input port (plan-time mirror in
@@ -568,6 +579,8 @@ dskit/pipeline/
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction
 │                      registry; no-information vs mean (Clark–West, h*)
+├── uncertainty_set.py budgeted uncertainty sets: worst case over a set,
+│                      robust counterpart, weighted realizations
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets
