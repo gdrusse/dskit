@@ -3501,6 +3501,15 @@ def test_reduce_plans_via_the_real_planner(tmp_path):
     assert the_plan.role_of("reduce") == "fitted_transform"
 
 
+def test_reduce_document_refuses_a_missing_fit_split(tmp_path):
+    pytest.importorskip("sklearn")
+    obj = json.loads(json.dumps(REDUCE_FLOW))
+    obj["outputs"] = {"run_root": str(tmp_path)}
+    del obj["pipeline"]["reduce"]["params"]["fit_split"]
+    with pytest.raises(ConfigError, match="fit_split"):
+        plan(PipelineDocument.from_obj(obj))
+
+
 def test_reduce_runs_through_a_document(tmp_path):
     pytest.importorskip("sklearn")
     obj = json.loads(json.dumps(REDUCE_FLOW))
