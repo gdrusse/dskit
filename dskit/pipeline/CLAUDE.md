@@ -89,6 +89,25 @@ on it without breaking its rulings.
   Not a `stat_test` `method`. A panel is the caller's to collapse or
   test per unit. `clark_west_series` can feed `cluster_bootstrap_t`
   when the independence unit is a cluster.
+- **Realized-outcome uncertainty** — `outcome_interval.py` (ADR-0152) is a
+  plain value API, not a node kind. `BlockResiduals` REFUSES to exist
+  without explicit block labels: the dependence statement is an argument
+  and never a default, because the only available default is the
+  too-narrow answer. It is `attempts.py`'s session doctrine in argument
+  form, so `utc_day`'s integer day index is an accepted block id where
+  `records.cluster_ok` would take only a string — a deliberate, documented
+  widening, not a second opinion. `OutcomeCalibrator.calibrate` and
+  `.scenarios` are FINAL (`__init_subclass__` raises); a member supplies
+  `achievable_level` / `offsets` / `draw_blocks` and the templates SCREEN
+  each answer (a level below the requested coverage, a missing component,
+  an inverted or non-finite bound, an unknown block, a short draw). The
+  conformal correction counts BLOCKS, not rows, and RAISES when the
+  coverage is unachievable rather than clamping. Scenarios are COPIED
+  rows of whole blocks, so the joint cross-component vector survives by
+  construction. Coverage is claimed as APPROXIMATE under weak dependence
+  and is measured by `@pytest.mark.slow` tests, never asserted in prose.
+  `MAX_SCENARIOS` mirrors `libs/pyomo.HARD_N_SCENARIOS_CEILING` (tier 1
+  cannot import tier 2) and the two are pinned to agree.
 - **Split policies** — `register_split_policy` (`split_policy.py`);
   `record` / `event-open` / `event-close` ship. An event policy needs a
   data node implementing `event_bounds()`, and the driver refuses when
@@ -550,6 +569,8 @@ dskit/pipeline/
 │                      with the <5-name usability refusal (ADR-0068, `ordering` verb)
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
+├── outcome_interval.py block-conformal predictive intervals + joint scenario sets
+│                      over dependent residual vectors (ADR-0152)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING

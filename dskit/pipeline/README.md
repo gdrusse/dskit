@@ -662,6 +662,9 @@ dskit/pipeline/
 │                      per-timestamp cross-sectional IC + its usability guard (ADR-0068)
 ├── attempts.py        the many-attempts bar: AttemptRegistry, session-block
 │                      sign-flip max_bar, the tier-2 scramble seam (ADR-0069)
+├── outcome_interval.py REALIZED-outcome uncertainty: block-conformal predictive
+│                      intervals + joint scenario sets over dependent, time-ordered
+│                      out-of-fold residual vectors (ADR-0152)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING

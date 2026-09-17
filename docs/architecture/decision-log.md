@@ -13016,3 +13016,232 @@ The prior uncommitted ADR-0148 draft and its five-Major verdict live in a
 Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
 from this Linux container. If that draft carries findings beyond the five stated
 in the task, they are not addressed here.
+
+## ADR-0152 - dependence-aware calibration of REALIZED-outcome uncertainty (predictive intervals + joint scenario sets)
+
+**Status:** accepted (pre-approved by the owner with Path row A18042, locked
+2026-09-17). Written before code, per CLAUDE.md's "ADR before code".
+
+**ADR number provenance.** Not `max + 1`: 0149 is double-allocated by two
+colliding lanes and 0150 is deliberately vacant to absorb that renumber. The
+number was taken by scanning EVERY ref rather than this branch alone --
+`for r in $(git for-each-ref --format='%(refname:short)' refs/heads
+refs/remotes); do git grep -hoE '^## ADR-0[0-9]{3}' "$r" --
+docs/architecture/decision-log.md; done | sort -u` over all **29** refs
+(`refs/heads` + `refs/remotes`) present at `origin/main` = e989dff. Highest
+allocated anywhere: 0151. This ADR takes **0152**, the first free number.
+
+**Context.** `children/intraday_equities/docs/research/hfdr-mio-uncertainty/
+2026-09-05-dependent-return-calibration.md` is ratified: estimate realized-
+outcome uncertainty as a predictive interval or joint scenario distribution,
+NEVER as the confidence interval for an expected effect; calibrate from
+time-ordered out-of-fold residuals using whole-session blocks, preserving the
+simultaneous cross-component vector; emit coverage, tail-loss diagnostics, a
+calibration hash and complete scenario provenance; and do NOT assume ordinary
+IID split conformal is valid, using instead a dependence-aware block
+construction with rolling conditional coverage. Its companion
+`2026-09-05-u-r.md` adds the scenario-set half: resample entire sessions,
+retain each timestamp's cross-component vector so covariance, common shocks
+and tails are not broken, and record weights, block rule, seed, calibration
+window and source hashes.
+
+**Inventory.** "dskit has no conformal machinery" was verified, not assumed.
+`git grep -lIiE 'conformal|nonconformity' -- '*.py'` over all 29 refs returns
+**zero files on every ref**. Adjacent capability exists and is REUSED rather
+than re-derived:
+
+- `pipeline/metrics.py:181` `pinball(q, y, tau)` + `DEFAULT_PINBALL_TAU`
+  (ADR-0054) -- the quantile-loss owner, and exactly the tail-loss diagnostic
+  a calibrated interval endpoint needs. Imported.
+- `pipeline/attempts.py` -- the session-block doctrine (one coin per SESSION,
+  never per row, because a session moves every overlapping label with it) and
+  its `utc_day` session key. This module's block construction is that same
+  doctrine in argument form, not a second opinion; `utc_day` is named as the
+  canonical key a caller passes.
+- `pipeline/stats.py:97` `_bootstrap_rng` -- the pinned `sha256(seed:label)`
+  RNG recipe. Imported, NOT copied (see Non-goals for the promotion left
+  undone).
+- `pipeline/records.py` `number_ok` / `cluster_ok`; `pipeline/node.py`
+  `class_ref`. Imported.
+- `pipeline/predictions.py` `read_prediction_series` -- the time-ordered
+  out-of-fold `(ts, series, fold, horizon, yhat, y, mu)` rows are the intended
+  residual source. Nothing here reads it; the caller reduces its own rows to
+  residual vectors, which keeps this module free of parquet and of any opinion
+  about what was predicted.
+
+What does NOT exist anywhere and is genuinely built here: any nonconformity
+score, any conformal quantile, any block-resampled joint scenario set, any
+rolling conditional-coverage diagnostic. `production/monitors.py` has a
+`Coverage` class and a `Calibration` monitor, but those are OPERATIONAL
+coverage (required-key freshness, leg abstention) and probability-forecast ECE
+-- different quantities in a package `pipeline` never imports.
+
+### Decision 1 -- tier 1 core, `dskit/pipeline/outcome_interval.py`
+
+Tier 1: the whole computation is sorting, weighted quantiles, a seeded
+resample and a hash. Stdlib only, zero required deps, no module-level import
+outside the package -- it passes the existing purity gate unchanged. A tier-2
+pack would be wrong (no library is being wrapped); a child would be wrong
+(CLAUDE.md: missing capability graduates INTO dskit, always).
+
+The name pairs deliberately with the sibling `mean_interval.py`: an interval
+for a MEAN versus an interval for a realized OUTCOME is precisely the
+distinction the ratified note draws, and the file names now carry it.
+
+### Decision 2 -- the dependence statement is an argument and is NEVER defaulted
+
+`BlockResiduals` is a frozen value that cannot exist without explicit block
+ids: one block label per observation row, supplied by the caller. There is no
+default, because the only available default ("every row is its own evidence")
+is the answer that is too narrow, and a too-narrow interval is the exact
+failure this row exists to prevent.
+
+It additionally refuses, by name: a non-finite or missing residual; a row
+whose width does not match `names`; duplicate or empty names; a block id
+`cluster_ok` rejects; fewer than `MIN_CALIBRATION_BLOCKS` distinct blocks; and
+-- load-bearing -- a block that REAPPEARS after a different block has started,
+which means the rows are not in time order and the blocks are not contiguous
+runs. Every field is normalized to tuples under `object.__setattr__`, so the
+frozen dataclass holds no mutable dict (a defect found in a sibling).
+
+A residual VECTOR, not a scalar, is the unit: row `i` is the simultaneous
+cross-component observation. A caller with a missing component at a row aligns
+or drops the row before constructing; partial vectors are refused rather than
+imputed, because an imputed component is a fabricated joint observation.
+
+### Decision 3 -- block-corrected split conformal, with an honest validity claim
+
+`OutcomeCalibrator` is an ABC whose `calibrate` and `scenarios` are TEMPLATE
+methods, enforced final by `__init_subclass__` raising on a subclass that
+defines either -- the repo idiom (`production/leg.py:1117-1126`,
+`loop.py:469`, 14 sites in `trust.py`), never a docstring saying "do not
+override". Three hooks are `@abstractmethod`, so an incomplete subclass
+refuses at CONSTRUCTION rather than failing later: `achievable_level`,
+`offsets`, `draw_blocks`.
+
+The construction, from Chernozhukov-Wuthrich-Zhu (2018): the exchangeable unit
+is the BLOCK, not the row. Two consequences, both load-bearing:
+
+1. **The conformal correction counts BLOCKS.** The level actually taken is
+   `ceil((B + 1) * c) / B` at `B` blocks and target coverage `c`, not `c`.
+   When that exceeds 1 the coverage is NOT ACHIEVABLE at this block count and
+   the calibrator RAISES naming `c` and `B` -- it never clamps to the widest
+   available quantile and calls it calibrated. This is the "say so rather than
+   overclaim" requirement in executable form.
+2. **Blocks are equally weighted in the quantile.** Row `i`'s weight is
+   `1 / (B * n_b(i))`, so a long block cannot dominate a short one and the
+   effective sample size is the block count.
+
+Two members ship, which is what proves the seam is a family and not a
+decorated function:
+
+- `BlockConformalInterval` -- symmetric, over `|residual|`, one corrected
+  upper quantile. The textbook split-conformal shape.
+- `TwoSidedBlockConformalInterval` -- signed, two corrected tail quantiles at
+  half the miscoverage each, so a skewed residual law gives an asymmetric
+  interval. This matters because the consumer is a CVaR block that reads the
+  LEFT tail specifically.
+
+The template CHECKS each hook's contract rather than trusting it, the
+`false_signal.py` pattern: a member's `achievable_level` that returns anything
+BELOW the requested coverage, or above 1, is refused by name -- a member can
+choose a different validity argument but can never make the interval narrower
+than the uncorrected empirical quantile.
+
+**What is claimed, and what is not.** This is APPROXIMATE validity under weak
+dependence, in the CWZ sense, plus a finite-sample correction applied at the
+block level. It is NOT an exact finite-sample coverage guarantee: exact split
+conformal needs exchangeability, which time-ordered residuals do not have, and
+block-equalized weighting transfers the row-level result to blocks by argument,
+not by theorem. The docstring says this in the same words. Per the ratified
+note, the decision criterion is EMPIRICAL, so coverage is measured and shipped
+as a test (Decision 5) rather than asserted in prose.
+
+### Decision 4 -- scenarios are drawn as WHOLE ROWS of whole blocks
+
+`scenarios()` is the second template method. The member's `draw_blocks` hook
+chooses block ids with replacement; the BASE then appends each drawn block's
+rows IN ORDER and stops at `n_scenarios`. Because a scenario is a copied ROW,
+scenario index `omega` is a real historical simultaneous cross-component
+vector -- covariance, common shocks and tail co-movement survive by
+construction, and per-name independent sampling is structurally impossible
+rather than merely discouraged. The invariant is pinned by a test asserting
+every emitted scenario vector is a member of the calibration row set.
+
+Output shape satisfies both declared consumers without either being wired:
+
+- `libs/pyomo.py` `ScenarioUtilitySolve.payoffs` wants `(weights, r)` with
+  weights summing to one and `name -> (n_omega,)` arrays. `ScenarioSet
+  .weighted_draws()` returns exactly that pairing, as plain lists the consumer
+  converts. The consumer's own `HARD_N_SCENARIOS_CEILING` (256) is mirrored
+  here as `MAX_SCENARIOS`, so a set too wide for the optimizer refuses HERE
+  rather than deep inside a solve; the two copies are pinned to agree by a
+  test, since `pipeline/libs/pyomo.py` is a tier-2 pack a tier-1 module must
+  not import.
+- `children/intraday_equities/.../forecast_bundle.py` validates `scenarios` as
+  a list of finite numbers and `weights` as a same-length list summing to 1,
+  SHARED across the tick. One weights vector for every name is what this
+  module emits, so the pairing check passes.
+
+Residuals are emitted, never gross returns: converting a residual to a payoff,
+and any haircut or recentering, is domain policy the child already owns
+(`forecast_bundle._recentered_scenarios`). dskit would have to know what was
+predicted to do it, which is precisely what tier 1 must not know.
+
+Determinism: `_bootstrap_rng(seed, calibration_hash)` -- stats' pinned recipe,
+keyed by the calibration CONTENT. Identical inputs give identical scenarios;
+different calibration data gives different draws at the same seed, which is
+the correct behavior for a provenance-bearing artifact.
+
+A scenario set whose draws for any name are all identical is DEGENERATE and
+refuses by name. So does a weights vector that misses summing to one.
+
+### Decision 5 -- the diagnostics, and the coverage experiment as a test
+
+`OutcomeIntervalResult` carries, per component: `realized_coverage` (block-
+equalized, on the calibration residuals, labelled in-sample), `conditional_
+coverage` (the MINIMUM coverage over rolling windows of consecutive blocks --
+the "rolling conditional coverage, especially through volatility regimes" the
+note requires, summarized at its worst rather than its average), and
+`tail_loss` (weighted `metrics.pinball` at both endpoints' quantile levels).
+Plus `n_blocks`, `n_rows`, `calibration_hash`, and a `provenance` mapping
+carrying the block rule (`class_ref` of the member), the calibration window,
+the window size and the achievable level.
+
+The empirical criterion ships as `@pytest.mark.slow` tests: synthetic blocks
+carrying a within-block common shock and cross-component correlation,
+calibrated on one set of blocks and evaluated on HELD-OUT blocks, asserting
+(a) out-of-block coverage holds near target across repetitions, and (b) the
+naive IID row-level quantile UNDER-covers where the block-corrected one does
+not -- so the correction is shown to earn its place rather than claimed to.
+
+### Non-goals, and what is deliberately left undone
+
+Nothing is wired into any document, node, registry or child; this is a plain
+value API like `kinds_search`'s search values. No node kind, no `SINK_KINDS`
+entry (that registry is tracking sinks, not file writers).
+
+`stats._bootstrap_rng` is IMPORTED as a private cross-module name -- the
+repo's own precedent (`production/libs/parquet.py` imports `base._check_str`;
+`assets/sync.py` imports `base._check_str`/`_raise_if`). It DESERVES promotion
+to a public `bootstrap_rng`, and this ADR deliberately does not make it:
+`stats.py` has two other live branches editing it concurrently
+(`regularized_incomplete_beta`, `student_t_sf`), and a third edit would
+conflict. Recorded here as the follow-up, not performed.
+
+A canonical-JSON digest is computed for `calibration_hash` using the repo's
+pinned recipe (sorted keys, compact separators, ASCII, `allow_nan=False`,
+sha256). `pipeline` has no PUBLIC general-purpose object hasher -- only three
+private copies (`driver._canonical_hash`, `release_rotation._canonical_digest`,
+`trust._canonical_bytes`) -- and `production`/`assets` `canonical_hash` are in
+packages `pipeline` deliberately never imports. Rather than add a fourth
+unpinned copy, the agreement is PINNED by a test asserting byte-parity with
+`driver._canonical_hash` on a shared payload. Promoting one owner is the
+follow-up.
+
+Not claimed: exact finite-sample coverage; validity under regime CHANGE rather
+than weak dependence; any statement about coverage at block counts near
+`MIN_CALIBRATION_BLOCKS`, which is a refusal threshold and not a sufficiency
+claim. Not built: a stationary/geometric-block member, conformal risk control
+(Angelopoulos et al. 2024) as a separate calibrated-risk doorway, or any
+reader that turns `predictions.parquet` into `BlockResiduals`.
