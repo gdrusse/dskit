@@ -10791,18 +10791,16 @@ Decision point 8 as claiming that path is closed.
 
 ## ADR-0144 - dynamic authorize_capture_set closure to a genuine CAPTURED admission
 
-**Status:** proposed (2026-09-16, design-only; drafted from direct reading of the
-current `dskit/pipeline/trust.py` on `codex/f5a-p7-remainder-20260916` at
-origin/main tip `9d97f5c`). Independent preapproval review round 1 found 1
-Major + 1 Minor + 1 Nit (evidence 0183); all three are corrected in place
-below (Decision points 6, 7, 8 and the construction profile). A fresh
-independent recheck of this corrected draft found 0 Critical/Major/Minor
-and 1 residual Nit (name the specific ADR-0143 test needing a
-return-value update during RED); recheck result is recorded in evidence
-0183. No Phase 0, no RED/GREEN, no code written. Follows on ADR-0143's
-disclosed convergence-checkpoint gap (evidence 0182) and closes the
-`authorize_capture_set` -> CAPTURED path for the dynamic authority the
-two-root graph already resolves.
+**Status:** accepted. Design-only; drafted from direct reading of the
+current `dskit/pipeline/trust.py`. Independent preapproval review round 1
+found 1 Major + 1 Minor + 1 Nit, corrected in place (Decision points 6, 7,
+8 and the construction profile). Independent recheck of the corrected
+draft found 0 Critical/Major/Minor, 1 residual Nit. Full review and
+approval history recorded in evidence 0183. Phase 0 skeptic review is
+required next, before any RED. No Phase 0, no RED/GREEN, no code written
+yet. Follows on ADR-0143's disclosed convergence-checkpoint gap (evidence
+0182) and closes the `authorize_capture_set` -> CAPTURED path for the
+dynamic authority the two-root graph already resolves.
 
 **Context.** ADR-0143 built `_DynamicP4TrustedArtifactResolver` and its
 `resolver.close_admission` proof (`_dynamic_p4_close_admission`), and extended
