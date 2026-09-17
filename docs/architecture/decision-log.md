@@ -13019,8 +13019,12 @@ in the task, they are not addressed here.
 
 ## ADR-0149 - dimensionality reduction as a closed-catalog `FittedTransform` member
 
-**Status:** PROPOSED -- awaiting owner approval before any code or test is
-written. Nothing below is implemented.
+**Status:** APPROVED and implemented (2026-09-17). `SklearnReduction`
+(kind `sklearn-reduce`) lands in `dskit/pipeline/libs/sklearn.py` as a member of
+the fitted-transform family, in four TDD slices each closed by two independent
+skeptic lenses with zero unresolved Critical/Major. Two convergence checkpoints
+are recorded below (the `range(width)` name-derivation family and the
+canonical-shape pin family).
 
 **Numbering note (recorded to prevent a third collision).** `origin/main`'s
 highest ADR is 0148 (the F3 replay lane above). PR #15 is open and unmerged; it
