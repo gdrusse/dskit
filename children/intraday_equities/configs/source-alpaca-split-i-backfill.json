@@ -1,0 +1,43 @@
+{
+  "notes": "Ninth immutable research cohort: industrials, energy, materials and utilities breadth. Split-adjusted SIP minute bars on the established window/feed/codec/cut. Frozen on non-backtest facts only. In-window splits removed by adjustment=split: NEE 4-for-1 ex 2020-10-26. EXCLUDED: HON (Solstice spin-off separate trading 2025, inside the window), GE (2021 reverse split + GEHC/GEV distributions), DOW and DD (DowDuPont split/merge), LIN (PX->LIN 2018), CTRA (Cabot rename 2021), HWM (Arconic->Howmet 2020), LHX (L3/Harris 2019), USO (1-for-8 reverse 2020-04-28), XOP (1-for-4 reverse 2020-03-30). Backfill only.",
+  "symbols": [
+    "UNP",
+    "LMT",
+    "CAT",
+    "DE",
+    "UPS",
+    "EMR",
+    "ETN",
+    "ITW",
+    "CVX",
+    "COP",
+    "SLB",
+    "MPC",
+    "VLO",
+    "OXY",
+    "APD",
+    "SHW",
+    "ECL",
+    "NUE",
+    "NEE",
+    "DUK",
+    "SO",
+    "AEP",
+    "EXC",
+    "SRE",
+    "XEL",
+    "WM"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

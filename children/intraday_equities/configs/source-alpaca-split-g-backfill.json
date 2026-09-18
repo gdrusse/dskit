@@ -1,0 +1,35 @@
+{
+  "notes": "Seventh immutable research cohort: financials, real estate and communication breadth. Split-adjusted SIP minute bars on the established window/feed/codec/cut. Frozen on non-backtest facts only. In-window splits removed by adjustment=split: CMCSA 2-for-1 ex 2017-02-17. In-window M&A without a price factor: SCHW/TD-Ameritrade closed 2020-10-06. EXCLUDED here and not to be re-proposed: SPGI (MHFI->SPGI rename 2016-04-27, inside the window), COF (pending Discover merger), T/AT&T and WBD (2022 WarnerMedia distribution), RTX (UTX->RTX 2020-04-03), CB (ACE->CB 2016-01-15). Backfill only.",
+  "symbols": [
+    "GS",
+    "MS",
+    "WFC",
+    "BLK",
+    "SCHW",
+    "AXP",
+    "USB",
+    "PNC",
+    "CME",
+    "ICE",
+    "AMT",
+    "PLD",
+    "EQIX",
+    "SPG",
+    "VZ",
+    "CMCSA",
+    "EA",
+    "TTWO"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}
