@@ -16442,3 +16442,198 @@ No production authority is added and no `deployment_eligible` claim is made.
 `learn`, HPO, final refit, market replay, backtest, paper trading and lockbox
 access remain unauthorized and untouched; the SB3 episode suite constructs no
 SB3 or Gymnasium object at all.
+
+## ADR-0165 — `uncertainty_intake.py`: whether an uncertainty artifact may inform THIS decision
+
+**Status:** accepted. **Number centrally reserved** for this lane by the task
+that commissioned it, not chosen by scanning the log — four collisions
+happened in one session because concurrent lanes scanned a moving target
+(the precedent ADR-0156 set). Base: `origin/main` at `842d226`.
+
+**Context.** `children/intraday_equities/docs/explanations/production-research-audit.tex`,
+topic "Forecasts and uncertainty: machinery versus evidence", records two
+findings and one acceptance test. The findings: the repository withdrew the
+`pi_upper` guarantee after measuring coverage far below the stated target and
+renamed the output `pi_widened`, so it must not be wired into an HFDR
+constraint as if it were a valid probability upper bound — "a class accepting
+a field named `pi_upper` proves schema compliance, not coverage" — and mean
+confidence uncertainty and realized-return uncertainty answer different
+questions. The acceptance test: *feed an apparently well-formed bundle whose
+uncertainty artifact is stale, wrong-unit, post-decision, uncalibrated or from
+a different model; capital must refuse.*
+
+Both findings are about the same missing thing. Three modules PRODUCE
+uncertainty — `mean_interval.py` (ADR-0151), `outcome_interval.py`
+(ADR-0155), `false_signal.py` (ADR-0152) — and `uncertainty_set.py`
+(ADR-0156) consumes plain numbers. **Nothing anywhere decides whether a
+particular artifact may be used at a particular decision.** Each producing
+ADR says in its own Consequences that it is not wired to any consumer, so
+nothing had yet had to answer the question.
+
+**Inventory (read before designing, not assumed).** All four modules and
+their ADRs were read in full.
+
+* `false_signal.FalseSignalEstimate` carries `pi_hat` and `pi_widened` and
+  NO `pi_upper`; ADR-0152 measured `P(pi_widened >= true local fdr)` at
+  0.53–0.82 against a 0.95 nominal, proved the knob cannot repair it, and
+  states the cause is the unpriced Grenander density error. **Reused as-is:
+  this ADR adds no second opinion about that number and no repair.**
+* `mean_interval` already carries its claim as a TYPE —
+  `ConfidenceInterval` (measured) versus `WidenedInterval` (a widening knob
+  only), with `result_class` abstract so a member must SAY which it earned.
+  **That device is the one this module generalizes**, rather than inventing
+  a parallel mechanism.
+* `outcome_interval.OutcomeIntervalResult` carries `realized_coverage`,
+  which its own docstring calls IN-SAMPLE and "not evidence of
+  out-of-sample coverage". **Deliberately NOT read as the attested
+  number** — the two are different quantities, and conflating them would be
+  this ADR committing the audit's own error.
+* `uncertainty_set` takes plain numbers and "inherits whatever that
+  deviation was worth, and no more". Unchanged and not imported.
+* Searched and absent on every ref: any attestation, freshness, identity or
+  admission machinery for an uncertainty artifact. `production/monitors.py`
+  has operational freshness for a serving loop, in a package `pipeline`
+  never imports and about a different subject.
+
+**Decision — tier 1, `dskit/pipeline/uncertainty_intake.py`.** Stdlib plus
+three sibling tier-1 modules; no library wrapped, so tier 2 is wrong, and
+nothing is domain-specific, so tier 3 is wrong. A project that never heard of
+equities has the same problem the moment it consumes a calibrated artifact at
+a decision: staffing under uncertain demand must not size against last
+quarter's calibration, or against a band fitted for a different model. It
+passes `tests/pipeline/test_purity.py` unchanged.
+
+* `CoverageEvidence(target, measured, evidence_id, n_units)` — what a
+  producer ATTESTS it measured. A record, not a measurement.
+* `UncertaintyAttestation(artifact_id, model_identity, calibration_end_ms,
+  known_at_ms, coverage)` — the provenance an artifact travels with.
+  `coverage` is `None` for an artifact whose producer measured nothing,
+  which is an honest record rather than a missing field.
+* `DecisionDemand(decision_ts_ms, model_identity, max_calibration_age_ms,
+  min_measured_coverage)` — what ONE decision requires. **No field has a
+  default.** How stale is too stale and how much coverage is enough are risk
+  choices, and a default would be this package making them for a caller.
+* `AttestedUncertainty` (ABC) — the doorway. `problems(demand, expected)` and
+  `admit(demand, expected)` are TEMPLATE methods `__init_subclass__` refuses
+  to let a member override (the `production/leg.py` idiom the sibling
+  doorways already use). Two `@abstractmethod` hooks, one job each:
+  `artifact_type()` and `estimand()`.
+* Members `AttestedMeanConfidence` (accepts only `ConfidenceInterval`),
+  `AttestedOutcomeBand` (`OutcomeIntervalResult`) and
+  `AttestedFalseSignalRate` (`FalseSignalEstimate`), plus the registry
+  `UNCERTAINTY_INTAKES` / `register_uncertainty_intake` /
+  `uncertainty_intake`, named for its subject like every sibling.
+
+**The estimand is a TYPE, never a string.** A member declares the artifact
+CLASS it accepts and the constructor refuses anything else, so the question an
+envelope answers is derived from the artifact rather than asserted by the
+caller; a consumer states what it needs by naming a class, and relabelling is
+a type error rather than a spelling change. `AttestedMeanConfidence` accepts
+`ConfidenceInterval` and not its `MeanIntervalResult` base, so a
+`WidenedInterval` is refused by its own type with no flag to flip. An artifact
+that satisfies TWO registered members' declared types is ambiguous and is
+refused, never assigned to one of them.
+
+**`ProbabilityUpperBound` is a family with nothing in it, on purpose.** A
+chance constraint needs `P(true rate <= reported rate) >= level`. A consumer
+that needs one names this class; every artifact in the package today is
+refused with `wrong_unit`, because no member joins the family. A member joins
+only when a producer has MEASURED attainment of the bound and can attest it.
+This is what makes ADR-0152's retreat structural instead of advisory: no
+rename, alias, schema shape or config flag can promote `pi_widened` into the
+role, because the role is a type nothing inhabits.
+
+**Five refusals, closed set** (`REFUSAL_REASONS`, each opening its message):
+`foreign_model` (calibrated for another model), `post_decision` (the artifact
+became knowable after the decision, or its calibration window reaches past
+it), `stale` (the window ended further back than the consumer allows),
+`uncalibrated` (no `CoverageEvidence`, or an attested measurement below the
+consumer's declared floor) and `wrong_unit` (it answers a different question
+than the one asked). A sixth way to be unusable is a sixth screen here, not a
+free-form string invented at a call site.
+
+**What this module does NOT establish, stated plainly.** It measures nothing.
+It records what a producer attests and compares those recorded numbers with a
+consumer's declared policy. It cannot verify that the measurement happened,
+that it was honest, or that it transfers to the decision being made. **The
+presence of an attestation is not evidence of calibration**, and this ADR
+produces no coverage evidence for any artifact. What it produces is the
+refusal machinery: an artifact that is unattested, mis-attested or
+mis-addressed cannot reach a consumer that uses this seam.
+
+### The child wiring (`children/intraday_equities`, tier 3)
+
+`forecast_bundle.py` and `nodes_capital.py` are the audit's named consumer.
+
+* **`pi_upper` is refused by name.** `WITHDRAWN_FIELD_ALIASES` maps it to
+  `pi_widened`; a row, or a `known_at` stamp, carrying the withdrawn name
+  refuses with the withdrawal and its measured reason named — not with the
+  generic unknown-field message, because the rename is a statistical retreat
+  and a caller still spelling it the old way is asserting a guarantee the
+  release does not have. The screen exists at BOTH boundaries, because a
+  bundle can reach `EquityKellyMIO` without passing through
+  `ForecastBundle`. The alias-alongside-the-valid-field attack (a
+  schema-complete row with `pi_upper` added beside `pi_widened`) is refused
+  by the same screen and pinned by a test at each boundary.
+* **The HFDR row's reading is recorded, not assumed.** ADR-0088's
+  `sum_i (pi_i - q) * x_i <= 0` keeps exactly the numbers it had — this is a
+  rename, not a risk change — and `HFDR_COEFFICIENT_FIELD` names the one
+  field the constraint, the evidence record and the tests all read. `run`'s
+  `evidence` output now states `{"field": "pi_widened", "claim":
+  "widened_point_estimate", "chance_constraint": false}` at every decision,
+  so a reader never has to infer that the row is not a chance constraint at
+  level `1 - q`.
+* **A bundle names its calibration artifacts** (`UNCERTAINTY_ARTIFACT_FIELDS`
+  = `false_signal`, `outcome`), stamped on every assembled row, and
+  `EquityKellyMIO` gains a REQUIRED `uncertainty` input port carrying one
+  envelope per slot. Each is admitted against ONE `DecisionDemand` built from
+  the bundle's own shared `decision_ts` and `model_release_id`, so bundle,
+  cap, scenarios and both artifacts agree on a single decision timestamp or
+  the node refuses. Beyond the five generic screens the child adds its own
+  domain bindings: a row's declared identities must equal the admitted
+  artifacts', every row's entity must be covered by both artifacts, and a
+  row's `pi_hat`/`pi_widened` must EQUAL the admitted false-signal
+  artifact's — the number the capital program reads must be the number that
+  was attested.
+* **Two new required params**, default-deny in `_PARAMS` with no code-level
+  default: `uncertainty_max_calibration_age_ms` and
+  `uncertainty_min_coverage`. Both are owner risk decisions. The values in
+  `configs/run-mio-demo.json` are illustrative demo numbers chosen so the
+  synthetic source's artifacts pass, and its `notes` says so.
+* `intraday_equities.testing.SyntheticMioSource` emits the two artifacts so
+  the demo document exercises the seam end to end. **Their attested coverage
+  was never measured** — the evidence id is literally
+  `synthetic-demo-no-measurement-was-performed`, and the class docstring and
+  the config `notes` both say the document proves the refusal machinery runs
+  and proves nothing about coverage.
+
+**Rejected.**
+
+* *A boolean or string "kind" field on one envelope class.* That is the
+  spoofable label the audit's finding is about. The claim is a type.
+* *Letting `AttestedMeanConfidence` accept `MeanIntervalResult`.* The base
+  carries no claim, so accepting it would admit `WidenedInterval` too.
+* *Reading `OutcomeIntervalResult.realized_coverage` as the attested
+  coverage.* It is in-sample by its own contract; using it would manufacture
+  the evidence this ADR exists to require.
+* *Defaulting `max_calibration_age_ms` or `min_measured_coverage`.* Owner
+  risk decisions. Required config, no default, exactly as the sibling ADRs
+  treat `independent_units` and the dependence statement.
+* *Changing the HFDR coefficient to `pi_hat`.* That would make the
+  constraint materially less conservative — a risk change nobody authorized.
+  The number is unchanged; only its name and its recorded claim moved.
+* *Shipping a `ProbabilityUpperBound` member built from `pi_widened`.*
+  Explicitly refused: that is the audit's finding restated as code.
+* *A node kind.* The consumer is a child's capital node, not a document
+  port, the same reasoning ADR-0152 and ADR-0155 give. Additive later.
+
+**Consequences.** `dskit` gains the seam its three uncertainty producers were
+missing, and the child's capital step can no longer size against uncertainty
+it cannot attest. Nothing about the statistical quality of any artifact
+changed: `pi_widened` is the same number with the same measured shortfall, the
+HFDR row has the same coefficients, and no coverage was measured by this work.
+The demo document's artifacts are synthetic and self-declared uncalibrated. A
+real deployment still needs the audit's "Required evidence" section in full —
+causal calibration folds, effective independent sample counts, mean and
+outcome coverage per entity/lead and regime, and recorded calibration-window
+endpoints — and this ADR supplies none of it.

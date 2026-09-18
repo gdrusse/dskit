@@ -79,6 +79,20 @@ Agent orientation — see README.md for operator commands.
   project's field names onto the generic event catalogue and returns the
   per-lead decay profile as artifact DATA; the metric registry refuses either
   as a label. Nothing here sets a threshold — plan §11 item 7 is open.
+- `pi_upper` was WITHDRAWN and is refused by name at both the bundle and
+  the capital boundary (ADR-0152/ADR-0165). The number is `pi_widened`, a
+  widened POINT ESTIMATE; the ADR-0088 HFDR row is fed it unchanged and
+  `run`'s evidence records that the row is NOT a chance constraint. A
+  genuine bound would be a `uncertainty_intake.ProbabilityUpperBound`
+  member and `dskit` ships none.
+- Capital never sizes against uncertainty it cannot attest. Every bundle
+  names its calibration artifacts and `EquityKellyMIO` takes a required
+  `uncertainty` port of `uncertainty_intake` envelopes, admitted against
+  ONE decision timestamp; stale / wrong-unit / post-decision /
+  uncalibrated / foreign-model refuses. The seam MEASURES NOTHING — it
+  screens what a producer attests, and the two knobs it screens against
+  (`uncertainty_max_calibration_age_ms`, `uncertainty_min_coverage`) are
+  required owner decisions with no default.
 
 ## Machine knobs
 

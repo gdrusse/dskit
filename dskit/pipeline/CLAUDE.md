@@ -77,6 +77,22 @@ on it without breaking its rulings.
   `fingerprint()` at resolve and `run()` at execute see one snapshot;
   `scan_stream` is imported inside the scan, never at module top.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
+- **Admitting an uncertainty artifact at a decision** —
+  `uncertainty_intake.py` (ADR-0165). The producing modules
+  (`false_signal`, `mean_interval`, `outcome_interval`) say what a number
+  IS; this one says whether it may be USED at the decision in front of
+  you. `AttestedUncertainty` binds one artifact CLASS to one estimand, so
+  "mean confidence" and "realized outcome" are different TYPES rather than
+  different strings, and a consumer states what it needs by naming a
+  class. `problems`/`admit` are templates `__init_subclass__` refuses to
+  let a member override; five screens, one per `REFUSAL_REASONS` code.
+  `ProbabilityUpperBound` is the family a genuine bound would join and
+  **dskit ships no member of it**, so a widened `pi_widened` can never be
+  admitted as the `pi` of a chance constraint — by construction, not by
+  convention. The module MEASURES NOTHING: `CoverageEvidence` records what
+  a producer attests, and the floor it is compared against
+  (`DecisionDemand.min_measured_coverage`) is the consumer's, with no
+  default. Presence of an attestation is not evidence of calibration.
 - **Uncertainty sets** — `register_uncertainty_set`
   (`uncertainty_set.py`); `probability`/`mean`/`outcome` ship. Subclass
   `BudgetedUncertaintySet` and supply three declaration hooks
@@ -681,6 +697,10 @@ dskit/pipeline/
 │                      ConfidenceInterval only where coverage was measured
 ├── uncertainty_set.py budgeted uncertainty sets: worst case over a set,
 │                      robust counterpart, weighted realizations
+├── uncertainty_intake.py  whether an artifact may inform THIS decision:
+│                      attestation + demand, five refusals, the estimand as
+│                      a TYPE, and an empty ProbabilityUpperBound family
+│                      (ADR-0165)
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets

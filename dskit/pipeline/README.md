@@ -735,6 +735,14 @@ dskit/pipeline/
 ├── uncertainty_set.py budgeted uncertainty sets: the BudgetedUncertaintySet
 │                      doorway + probability / mean / outcome members;
 │                      worst_case, protection, counterpart, realizations
+├── uncertainty_intake.py  the gate an uncertainty artifact passes to reach a
+│                      decision (ADR-0165): UncertaintyAttestation +
+│                      CoverageEvidence + DecisionDemand, and the
+│                      AttestedUncertainty family whose members bind ONE
+│                      artifact class to ONE estimand. Five refusals —
+│                      foreign_model / post_decision / stale / uncalibrated /
+│                      wrong_unit. ProbabilityUpperBound is the bound-bearing
+│                      family and dskit ships no member of it
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

@@ -25,6 +25,20 @@ from intraday_equities.forecast_bundle import (
     ForecastBundle,
     default_label_contract,
 )
+from dskit.pipeline.false_signal import FalseSignalEstimate
+from dskit.pipeline.mean_interval import ConfidenceInterval
+from dskit.pipeline.outcome_interval import BlockConformalInterval, BlockResiduals
+from dskit.pipeline.uncertainty_intake import (
+    REFUSAL_REASONS,
+    AttestedFalseSignalRate,
+    AttestedMeanConfidence,
+    AttestedOutcomeBand,
+    CoverageEvidence,
+    DecisionDemand,
+    ProbabilityUpperBound,
+    UncertaintyAttestation,
+)
+
 from intraday_equities.nodes_capital import (
     BUNDLE_FIELDS,
     NODE_KINDS,
@@ -66,12 +80,28 @@ PARAMS = {
 
 ASOF_MS = 1_700_000_000_000
 
+#: The one instant this tick's bundle, cap and uncertainty artifacts must
+#: all agree on — the audit's "a single decision timestamp".
+DECISION_TS = ASOF_MS - 1000
+FALSE_SIGNAL_ID = "fs-calibration-0001"
+OUTCOME_ID = "outcome-calibration-0001"
+UNCERTAINTY_IDS = {"false_signal": FALSE_SIGNAL_ID, "outcome": OUTCOME_ID}
+
+#: Owner-declared intake policy. Neither number is derived from anything
+#: measured here — they are the REQUIRED config a document must state,
+#: exercised at a value that lets the attested fixtures pass.
+UNCERTAINTY_PARAMS = {
+    "uncertainty_max_calibration_age_ms": 600_000,
+    "uncertainty_min_coverage": 0.90,
+}
+PARAMS.update(UNCERTAINTY_PARAMS)
+
 
 def _weights(n=8):
     return [1.0 / n] * n
 
 
-def _row(entity, price, pi_upper, scenarios, decision_ts=ASOF_MS - 1000, weights=None):
+def _row(entity, price, pi_widened, scenarios, decision_ts=DECISION_TS, weights=None):
     return {
         "entity": entity,
         "decision_ts": decision_ts,
@@ -79,14 +109,15 @@ def _row(entity, price, pi_upper, scenarios, decision_ts=ASOF_MS - 1000, weights
         "model_release_id": RELEASE,
         "unit": BUNDLE_UNIT,
         "price": price,
-        "pi_hat": min(pi_upper, 0.10),
-        "pi_upper": pi_upper,
+        "pi_hat": min(pi_widened, 0.10),
+        "pi_widened": pi_widened,
         "weights": weights or _weights(len(scenarios)),
         "scenarios": list(scenarios),
         "reference_policy": ZERO_DRIFT,
         "label": default_label_contract(),
         "model_manifest_sha256": MODEL_MANIFEST_SHA256,
         "producer": dict(BUNDLE_PRODUCER),
+        "uncertainty": dict(UNCERTAINTY_IDS),
         "known_at": {
             "sigma": decision_ts - 1,
             "beta": decision_ts - 1,
@@ -94,7 +125,7 @@ def _row(entity, price, pi_upper, scenarios, decision_ts=ASOF_MS - 1000, weights
             "price": decision_ts - 1,
             "yhat": decision_ts - 1,
             "pi_hat": decision_ts - 1,
-            "pi_upper": decision_ts - 1,
+            "pi_widened": decision_ts - 1,
             "scenarios": decision_ts - 1,
         },
     }
@@ -263,9 +294,9 @@ class TestBundleValidation:
 
     def test_a_missing_field_is_refused_by_name(self):
         bad = [dict(_bundle()[0])]
-        del bad[0]["pi_upper"]
+        del bad[0]["pi_widened"]
         problems = _bundle_problems(bad)
-        assert any("pi_upper" in p for p in problems)
+        assert any("pi_widened" in p for p in problems)
 
     def test_mismatched_weights_across_rows_are_refused(self):
         bad = _bundle()
@@ -293,7 +324,7 @@ class TestEmptyGate:
         node = _node(bundle=[])
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set(), "cap": _cap()},
+            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty([])},
         )
         assert out["target"] == {}
         assert out["metrics"]["objective"] == 0.0
@@ -302,7 +333,7 @@ class TestEmptyGate:
 
     def test_an_unpinned_empty_bundle_refuses(self):
         problems = _node().validate_inputs(
-            {"bundle": [], "portfolio": _portfolio(), "survivors": set(), "cap": _cap()}
+            {"bundle": [], "portfolio": _portfolio(), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty([])}
         )
         assert any("bundle_artifact_sha256" in p for p in problems), problems
 
@@ -315,7 +346,7 @@ class TestEmptyGate:
                     positions={"AAPL": 1}, mark_prices={"AAPL": 190.0}
                 ),
                 "survivors": set(),
-                "cap": _cap(),
+                "cap": _cap(), "uncertainty": _uncertainty(empty_bundle),
             }
         )
         assert any("cannot authorize liquidation" in p for p in problems), problems
@@ -326,7 +357,7 @@ class TestRealSolve:
         node = _node()
         survivors = {"AAPL", "MSFT", "XOM"}
         out = node.run(
-            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap()}
+            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert len(out["target"]) <= PARAMS["cardinality"]
         assert out["metrics"]["gross_exposure"] <= 12000.0 + 1e-6
@@ -339,7 +370,7 @@ class TestRealSolve:
         node = _node()
         survivors = {"AAPL", "MSFT"}  # XOM not a survivor
         out = node.run(
-            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap()}
+            _ctx(tmp_path), {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert "XOM" not in out["target"]
         assert out["evidence"]["routed_out"]["XOM"] == "not a stat_test survivor"
@@ -351,7 +382,7 @@ class TestRealSolve:
         with pytest.raises(ValueError, match="shared decision_ts"):
             node.run(
                 _ctx(tmp_path),
-                {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+                {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)},
             )
 
     def test_a_price_below_min_price_is_routed_out(self, tmp_path):
@@ -360,7 +391,7 @@ class TestRealSolve:
         node = _node(bundle=bundle)
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)},
         )
         assert "XOM" not in out["target"]
         assert "min_price" in out["evidence"]["routed_out"]["XOM"]
@@ -370,21 +401,21 @@ class TestRealSolve:
         portfolio = _portfolio(positions={"XOM": 20}, mark_prices={"XOM": 108.0})
         node = _node(bundle=bundle)
         out = node.run(
-            _ctx(tmp_path), {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
+            _ctx(tmp_path), {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)}
         )
         assert "XOM" not in out["target"]
         assert out["trades"]["XOM"] == {"buy": 0, "sell": 20}
 
     def test_the_hfdr_row_excludes_a_name_above_q(self, tmp_path):
-        # Push XOM's pi_upper above hfdr_q with nothing to offset it — the
+        # Push XOM's pi_widened above hfdr_q with nothing to offset it — the
         # ADR-0088 row must refuse XOM exposure even though its own return
         # scenarios look attractive.
         bundle = _bundle()
-        bundle[2] = dict(bundle[2], pi_upper=0.95)
+        bundle[2] = dict(bundle[2], pi_widened=0.95)
         node = _node(bundle=bundle, hfdr_q=0.10)
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+            {"bundle": bundle, "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)},
         )
         assert "XOM" not in out["target"]
 
@@ -402,7 +433,7 @@ class TestRealSolve:
         node = _node(band_bps=1000.0)  # a deliberately huge band
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)},
         )
         moved = out["trades"].get("AAPL", {"buy": 0, "sell": 0})
         total = moved["buy"] + moved["sell"]
@@ -412,7 +443,7 @@ class TestRealSolve:
 
     def test_identical_inputs_give_identical_output_twice(self, tmp_path):
         survivors = {"AAPL", "MSFT", "XOM"}
-        inputs = {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap()}
+        inputs = {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         out_a = _node().run(_ctx(tmp_path), inputs)
         out_b = _node().run(_ctx(tmp_path), inputs)
         assert out_a["target"] == out_b["target"]
@@ -428,7 +459,7 @@ class TestExitCostIsPriced:
     def test_exit_cost_per_share_is_populated_and_matches_the_sell_cost(self, tmp_path):
         node = _node()
         names, rows, _account = node.instruments(
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert names
         for name in names:
@@ -444,7 +475,7 @@ class TestExitCostIsPriced:
         portfolio = _portfolio(positions={"XOM": 20}, mark_prices={"XOM": 108.0})
         node = _node()
         names, rows, _account = node.instruments(
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)}
         )
         assert "XOM" in names
         assert rows["XOM"]["exit_cost_per_share"] == pytest.approx(rows["XOM"]["cost_sell"])
@@ -453,7 +484,7 @@ class TestExitCostIsPriced:
     def test_zeroing_exit_cost_understates_the_reported_cvar(self, tmp_path):
         survivors = {"AAPL", "MSFT", "XOM"}
         portfolio = _portfolio(positions={"AAPL": 50}, cash=15000.0, buying_power=15000.0)
-        inputs = {"bundle": _bundle(), "portfolio": portfolio, "survivors": survivors, "cap": _cap()}
+        inputs = {"bundle": _bundle(), "portfolio": portfolio, "survivors": survivors, "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
 
         real_out = _node(cvar_limit=100000.0).run(_ctx(tmp_path), inputs)
 
@@ -480,7 +511,7 @@ class TestPositionBookkeeping:
         node = _node(bundle=bundle)
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)},
         )
         assert "XOM" not in out["target"]
         assert "XOM" not in out["trades"]
@@ -499,7 +530,7 @@ class TestTafNeverUndercharges:
             {
                 "bundle": [],
                 "portfolio": _portfolio(positions={"AAPL": 1000}, mark_prices={"AAPL": 190.0}),
-                "survivors": set(), "cap": _cap(),
+                "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty([]),
             }
         )
         assert names == ["AAPL"]
@@ -518,14 +549,14 @@ class TestAdversarialInputsAreRefusedByName:
     def test_a_fractional_position_is_refused_not_silently_truncated(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": 19.9}), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": 19.9}), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("XOM" in p and "integer" in p for p in problems)
 
     def test_a_negative_position_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": -5}), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={"XOM": -5}), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("XOM" in p for p in problems)
 
@@ -535,7 +566,7 @@ class TestAdversarialInputsAreRefusedByName:
             {
                 "bundle": _bundle(),
                 "portfolio": _portfolio(positions={"XOM": 5}, mark_prices={"XOM": float("nan")}),
-                "survivors": set(), "cap": _cap(),
+                "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("mark_prices" in p and "XOM" in p for p in problems)
@@ -580,7 +611,7 @@ class TestNoTradeBandNeverStrandsAPosition:
         node = _node(bundle=bundle, band_bps=10000.0)
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)},
         )
         assert "AAPL" not in out["target"]
         assert out["trades"]["AAPL"] == {"buy": 0, "sell": 1}
@@ -607,12 +638,12 @@ class TestNoTradeBandFloorsAreLoadBearing:
         gross_limit = price * held + 5 * price  # room for exactly 5 more shares — < the floor
         rng = np.random.default_rng(7)
         weights = _weights(64)
-        row = _row("AAPL", price, pi_upper=0.10, scenarios=rng.normal(0.02, 0.01, 64), weights=weights)
+        row = _row("AAPL", price, pi_widened=0.10, scenarios=rng.normal(0.02, 0.01, 64), weights=weights)
         portfolio = _portfolio(
             positions={"AAPL": held}, cash=999999.0, buying_power=999999.0, gross_limit=gross_limit
         )
         node = _node(band_bps=band_bps, cardinality=1, max_position_notional=999999.0)
-        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"AAPL"}, "cap": _cap()}
+        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"AAPL"}, "cap": _cap(), "uncertainty": _uncertainty([row])}
         # instruments() alone, not post-run state — run() clears its
         # transient bookkeeping in a finally (a round-10 skeptic-review fix).
         _names, _rows, _account = node.instruments(inputs)
@@ -629,7 +660,7 @@ class TestNoTradeBandFloorsAreLoadBearing:
         band_bps = 1000.0  # -> band_shares = ceil(1000*1e-4*190000/190) = 100
         rng = np.random.default_rng(1)
         weights = _weights(64)
-        row = _row("XOM", price, pi_upper=0.10, scenarios=rng.normal(0.015, 0.02, 64), weights=weights)
+        row = _row("XOM", price, pi_widened=0.10, scenarios=rng.normal(0.015, 0.02, 64), weights=weights)
         portfolio = _portfolio(
             positions={"XOM": held}, cash=5000.0, buying_power=5000.0, gross_limit=None
         )
@@ -638,7 +669,7 @@ class TestNoTradeBandFloorsAreLoadBearing:
         # 100, so the floor (not coincidence) is what forces the jump.
         node_params = dict(band_bps=band_bps, cardinality=1, cvar_alpha=0.9, cvar_limit=3400.0,
                             max_position_notional=999999.0)
-        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"XOM"}, "cap": _cap()}
+        inputs = {"bundle": [row], "portfolio": portfolio, "survivors": {"XOM"}, "cap": _cap(), "uncertainty": _uncertainty([row])}
         # instruments() alone, not post-run state — run() clears its
         # transient bookkeeping in a finally (a round-10 skeptic-review fix).
         node = _node(**node_params)
@@ -661,49 +692,49 @@ class TestAccountFieldsAreValidated:
     def test_nan_cash_reserve_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(cash_reserve=float("nan")), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(cash_reserve=float("nan")), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("cash_reserve" in p for p in problems)
 
     def test_nan_gross_limit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=float("nan")), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=float("nan")), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("gross_limit" in p for p in problems)
 
     def test_a_negative_gross_limit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=-50.0), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit=-50.0), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("gross_limit" in p for p in problems)
 
     def test_a_non_numeric_gross_limit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit="not-a-number"), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(gross_limit="not-a-number"), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("gross_limit" in p for p in problems)
 
     def test_an_out_of_range_sale_credit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=1.5), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=1.5), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("sale_credit" in p for p in problems)
 
     def test_a_nan_sale_credit_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=float("nan")), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(sale_credit=float("nan")), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("sale_credit" in p for p in problems)
 
     def test_a_non_string_survivor_is_refused(self, tmp_path):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {12345}, "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {12345}, "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("survivors entries must be strings" in p for p in problems)
 
@@ -714,7 +745,7 @@ class TestAccountFieldsAreValidated:
         # mixed str/int set.
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(positions={42: 100}), "survivors": set(), "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(positions={42: 100}), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert any("portfolio.positions keys" in p for p in problems)
 
@@ -724,7 +755,7 @@ class TestAccountFieldsAreValidated:
             {
                 "bundle": _bundle(),
                 "portfolio": _portfolio(mark_prices={42: 100.0}),
-                "survivors": set(), "cap": _cap(),
+                "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("portfolio.mark_prices keys" in p for p in problems)
@@ -750,9 +781,9 @@ class TestTransientStateIsClearedAfterRun:
         node = _node()
         node.run(
             _ctx(tmp_path),
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(_bundle())},
         )
-        assert node._pi_upper is None
+        assert node._pi_widened is None
         assert node._band_shares is None
         assert node._payoffs is None
         assert node._evidence is None
@@ -761,9 +792,9 @@ class TestTransientStateIsClearedAfterRun:
         node = _node(bundle=[])
         node.run(
             _ctx(tmp_path),
-            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set(), "cap": _cap()},
+            {"bundle": [], "portfolio": _portfolio(cash=500.0), "survivors": set(), "cap": _cap(), "uncertainty": _uncertainty([])},
         )
-        assert node._pi_upper is None
+        assert node._pi_widened is None
         assert node._band_shares is None
         assert node._payoffs is None
         assert node._evidence is None
@@ -788,7 +819,7 @@ class TestNegativeNetWorthGivesTheClearMessage:
         with pytest.raises(ValueError, match="net worth"):
             node.run(
                 _ctx(tmp_path),
-                {"bundle": _bundle(), "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()},
+                {"bundle": _bundle(), "portfolio": portfolio, "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(_bundle())},
             )
 
 
@@ -822,7 +853,7 @@ class TestSmallPositiveNetWorthSolvesInsteadOfRefusing:
         }
         out = node.run(
             _ctx(tmp_path),
-            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL"}, "cap": _cap()},
+            {"bundle": bundle, "portfolio": portfolio, "survivors": {"AAPL"}, "cap": _cap(), "uncertainty": _uncertainty(bundle)},
         )
         assert "AAPL" not in out["target"]
         assert out["trades"]["AAPL"] == {"buy": 0, "sell": 1}
@@ -912,7 +943,7 @@ class TestConfirmedCapEnforcement:
     def test_the_reference_cap_input_validates_clean(self):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap()}
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": _cap(), "uncertainty": _uncertainty(_bundle())}
         )
         assert problems == [], problems
 
@@ -926,7 +957,7 @@ class TestConfirmedCapEnforcement:
     def test_a_malformed_cap_artifact_is_refused_by_name(self):
         node = _node()
         problems = node.validate_inputs(
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": set(), "cap": {"schema_version": 1}}
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": set(), "cap": {"schema_version": 1}, "uncertainty": _uncertainty(_bundle())}
         )
         assert any("cap" in p for p in problems), problems
 
@@ -936,7 +967,7 @@ class TestConfirmedCapEnforcement:
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
-                "cap": cap,
+                "cap": cap, "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("deployment_eligible" in p for p in problems), problems
@@ -947,7 +978,7 @@ class TestConfirmedCapEnforcement:
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(),
-                "survivors": {"AAPL"}, "cap": cap,
+                "survivors": {"AAPL"}, "cap": cap, "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("trusted real" in p for p in problems), problems
@@ -957,7 +988,7 @@ class TestConfirmedCapEnforcement:
         problems = _node().validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(),
-                "survivors": {"AAPL"}, "cap": cap,
+                "survivors": {"AAPL"}, "cap": cap, "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("cap_artifact_sha256" in p for p in problems), problems
@@ -968,7 +999,7 @@ class TestConfirmedCapEnforcement:
         problems = _node().validate_inputs(
             {
                 "bundle": bundle, "portfolio": _portfolio(),
-                "survivors": {"AAPL"}, "cap": _cap(),
+                "survivors": {"AAPL"}, "cap": _cap(), "uncertainty": _uncertainty(bundle),
             }
         )
         assert any("bundle_artifact_sha256" in p for p in problems), problems
@@ -987,7 +1018,7 @@ class TestConfirmedCapEnforcement:
         problems = _node(cap=cap).validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(),
-                "survivors": {"AAPL"}, "cap": cap,
+                "survivors": {"AAPL"}, "cap": cap, "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("after bundle decision_ts" in p for p in problems), problems
@@ -997,7 +1028,7 @@ class TestConfirmedCapEnforcement:
         problems = _node(cap=cap).validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(),
-                "survivors": {"AAPL"}, "cap": cap,
+                "survivors": {"AAPL"}, "cap": cap, "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("generated_ms" in p and "integer" in p for p in problems), problems
@@ -1008,7 +1039,7 @@ class TestConfirmedCapEnforcement:
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
-                "cap": cap,
+                "cap": cap, "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("stale" in p for p in problems), problems
@@ -1019,7 +1050,7 @@ class TestConfirmedCapEnforcement:
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
-                "cap": cap,
+                "cap": cap, "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("cap" in p and ("future" in p or "stale" in p) for p in problems), problems
@@ -1030,7 +1061,7 @@ class TestConfirmedCapEnforcement:
         problems = node.validate_inputs(
             {
                 "bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"},
-                "cap": cap,
+                "cap": cap, "uncertainty": _uncertainty(_bundle()),
             }
         )
         assert any("model_release_id" in p for p in problems), problems
@@ -1039,7 +1070,7 @@ class TestConfirmedCapEnforcement:
         cap = _cap(caps=[{"symbol": "AAPL", "capped_horizon": 10}])
         out = _node(cap=cap).run(
             _ctx(tmp_path),
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap, "uncertainty": _uncertainty(_bundle())},
         )
         assert "MSFT" not in out["target"]
         assert "XOM" not in out["target"]
@@ -1053,7 +1084,7 @@ class TestConfirmedCapEnforcement:
         ])
         out = _node(cap=cap).run(
             _ctx(tmp_path),
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap, "uncertainty": _uncertainty(_bundle())},
         )
         assert "XOM" not in out["target"]
         assert "zero" in out["evidence"]["routed_out"]["XOM"]
@@ -1066,7 +1097,7 @@ class TestConfirmedCapEnforcement:
         ])
         out = _node(cap=cap).run(
             _ctx(tmp_path),
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap, "uncertainty": _uncertainty(_bundle())},
         )
         assert "AAPL" not in out["target"]
         assert "above" in out["evidence"]["routed_out"]["AAPL"]
@@ -1081,7 +1112,7 @@ class TestConfirmedCapEnforcement:
         ])
         out = _node(cap=cap).run(
             _ctx(tmp_path),
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap},
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": {"AAPL", "MSFT", "XOM"}, "cap": cap, "uncertainty": _uncertainty(_bundle())},
         )
         assert "AAPL" not in out["evidence"]["routed_out"]
 
@@ -1096,7 +1127,7 @@ class TestConfirmedCapEnforcement:
                 {
                     "bundle": _bundle(), "portfolio": _portfolio(),
                     "survivors": {"AAPL", "MSFT", "XOM"},
-                    "cap": cap,
+                    "cap": cap, "uncertainty": _uncertainty(_bundle()),
                 },
             )
 
@@ -1114,6 +1145,329 @@ class TestConfirmedCapEnforcement:
         survivors = {"AAPL", "MSFT"}  # XOM covered by cap but not a survivor
         out = _node().run(
             _ctx(tmp_path),
-            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap()},
+            {"bundle": _bundle(), "portfolio": _portfolio(), "survivors": survivors, "cap": _cap(), "uncertainty": _uncertainty(_bundle())},
         )
         assert out["evidence"]["routed_out"]["XOM"] == "not a stat_test survivor"
+
+
+# ---------------------------------------------------------------------------
+# EQ-02: attested uncertainty at the capital boundary.
+#
+# The audit's acceptance test, verbatim: "Feed an apparently well-formed
+# bundle whose uncertainty artifact is stale, wrong-unit, post-decision,
+# uncalibrated or from a different model. Capital must refuse."  Each case
+# below changes exactly ONE thing about the attestation and leaves the
+# bundle, cap, portfolio and survivors identical to the passing case.
+# ---------------------------------------------------------------------------
+
+PI_WIDENED_BY_ENTITY = {"AAPL": 0.20, "MSFT": 0.25, "XOM": 0.28}
+
+
+def _coverage(measured=0.94):
+    """One producer's attested out-of-sample coverage measurement."""
+    return CoverageEvidence(
+        target=0.95,
+        measured=measured,
+        evidence_id="synthetic-coverage-probe",
+        n_units=40,
+    )
+
+
+def _attestation(artifact_id, **overrides):
+    base = {
+        "artifact_id": artifact_id,
+        "model_identity": RELEASE,
+        "calibration_end_ms": DECISION_TS - 60_000,
+        "known_at_ms": DECISION_TS - 30_000,
+        "coverage": _coverage(),
+    }
+    base.update(overrides)
+    return UncertaintyAttestation(**base)
+
+
+def _false_signal_artifact(bundle=None):
+    """The per-entity rates, read off the rows they will be checked against."""
+    rows = _bundle() if not bundle else bundle
+    return FalseSignalEstimate(
+        pi_hat={row["entity"]: row["pi_hat"] for row in rows},
+        pi_widened={row["entity"]: row["pi_widened"] for row in rows},
+        evidence={"estimator": "tests.synthetic_false_signal"},
+    )
+
+
+def _outcome_artifact(bundle=None):
+    """A block-conformal band over the entities the tick is sizing."""
+    rows = _bundle() if not bundle else bundle
+    names = tuple(sorted({row["entity"] for row in rows}))
+    panel = [
+        tuple(
+            0.01 * (r + 1) * (c + 1) * (1 if (r + c) % 2 == 0 else -1)
+            for c in range(len(names))
+        )
+        for r in range(8)
+    ]
+    residuals = BlockResiduals(
+        names=names,
+        rows=panel,
+        blocks=["s1", "s1", "s2", "s2", "s3", "s3", "s4", "s4"],
+    )
+    return BlockConformalInterval().calibrate(residuals, coverage=0.6, window_blocks=2)
+
+
+def _mean_artifact():
+    return ConfidenceInterval(
+        mean=0.004,
+        standard_error=0.001,
+        low=0.002,
+        high=0.006,
+        level=0.95,
+        independent_units=40,
+        method="tests.synthetic_mean_interval",
+    )
+
+
+def _uncertainty(bundle=None, false_signal=None, outcome=None):
+    """The `uncertainty` port: one attested envelope per estimand.
+
+    Both artifacts are DERIVED from the bundle they will be checked
+    against, which is what a sound producer does. Their agreeing with the
+    rows is the baseline; what the tests below vary is the ATTESTATION.
+    """
+    if false_signal is None:
+        false_signal = AttestedFalseSignalRate(
+            _false_signal_artifact(bundle), _attestation(FALSE_SIGNAL_ID)
+        )
+    if outcome is None:
+        outcome = AttestedOutcomeBand(
+            _outcome_artifact(bundle), _attestation(OUTCOME_ID)
+        )
+    return {"false_signal": false_signal, "outcome": outcome}
+
+
+def _uinputs(bundle=None, uncertainty=None, cap=None, portfolio=None):
+    bundle = _bundle() if bundle is None else bundle
+    return {
+        "bundle": bundle,
+        "portfolio": _portfolio() if portfolio is None else portfolio,
+        "survivors": ["AAPL", "MSFT", "XOM"],
+        "cap": _cap() if cap is None else cap,
+        "uncertainty": _uncertainty(bundle) if uncertainty is None else uncertainty,
+    }
+
+
+class TestAttestedUncertaintyIsRequired:
+    """The port exists, is required, and every row's ids must match it."""
+
+    def test_a_bundle_with_no_uncertainty_port_refuses(self):
+        node = _node()
+        inputs = _uinputs()
+        del inputs["uncertainty"]
+        problems = node.validate_inputs(inputs)
+        assert any("uncertainty" in p for p in problems), problems
+
+    def test_the_two_intake_policy_knobs_have_no_default(self):
+        for name in UNCERTAINTY_PARAMS:
+            params = {**PARAMS, **UNCERTAINTY_PARAMS, **_bundle_pins(_bundle())}
+            params.pop(name)
+            problems = EquityKellyMIO.validate_params(params)
+            assert any(name in p for p in problems), (name, problems)
+
+    def test_a_row_naming_a_different_calibration_refuses(self):
+        bundle = _bundle()
+        bundle[1]["uncertainty"] = {
+            "false_signal": "some-other-calibration",
+            "outcome": OUTCOME_ID,
+        }
+        node = _node(bundle=bundle)
+        problems = node.validate_inputs(_uinputs(bundle=bundle))
+        assert any("some-other-calibration" in p for p in problems), problems
+
+
+class TestCapitalRefusesAnInvalidUncertaintyArtifact:
+    """Five refusals, one per reason, each on an otherwise well-formed bundle."""
+
+    def test_a_stale_calibration_refuses(self):
+        stale = AttestedOutcomeBand(
+            _outcome_artifact(),
+            _attestation(
+                OUTCOME_ID,
+                calibration_end_ms=DECISION_TS
+                - UNCERTAINTY_PARAMS["uncertainty_max_calibration_age_ms"]
+                - 1,
+                known_at_ms=DECISION_TS - 30_000,
+            ),
+        )
+        problems = _node().validate_inputs(_uinputs(uncertainty=_uncertainty(outcome=stale)))
+        assert any(p.startswith("uncertainty.outcome: ") and "stale" in p for p in problems), problems
+
+    def test_a_wrong_unit_artifact_refuses(self):
+        mean_where_outcome_is_needed = AttestedMeanConfidence(
+            _mean_artifact(), _attestation(OUTCOME_ID)
+        )
+        problems = _node().validate_inputs(
+            _uinputs(uncertainty=_uncertainty(outcome=mean_where_outcome_is_needed))
+        )
+        assert any("wrong_unit" in p for p in problems), problems
+
+    def test_a_post_decision_artifact_refuses(self):
+        later = AttestedOutcomeBand(
+            _outcome_artifact(),
+            _attestation(OUTCOME_ID, known_at_ms=DECISION_TS + 1),
+        )
+        problems = _node().validate_inputs(_uinputs(uncertainty=_uncertainty(outcome=later)))
+        assert any("post_decision" in p for p in problems), problems
+
+    def test_an_uncalibrated_artifact_refuses(self):
+        uncalibrated = AttestedOutcomeBand(
+            _outcome_artifact(), _attestation(OUTCOME_ID, coverage=None)
+        )
+        problems = _node().validate_inputs(
+            _uinputs(uncertainty=_uncertainty(outcome=uncalibrated))
+        )
+        assert any("uncalibrated" in p for p in problems), problems
+
+    def test_an_artifact_from_a_different_model_refuses(self):
+        foreign = AttestedOutcomeBand(
+            _outcome_artifact(),
+            _attestation(OUTCOME_ID, model_identity="some-other-release"),
+        )
+        problems = _node().validate_inputs(_uinputs(uncertainty=_uncertainty(outcome=foreign)))
+        assert any("foreign_model" in p for p in problems), problems
+
+    def test_every_refusal_reason_is_reachable_from_this_boundary(self):
+        assert set(REFUSAL_REASONS) == {
+            "foreign_model",
+            "post_decision",
+            "stale",
+            "uncalibrated",
+            "wrong_unit",
+        }
+
+
+class TestTheWidenedRateIsNotAnUpperBound:
+    """`pi_upper` cannot enter, under that name or any other."""
+
+    def test_a_row_carrying_pi_upper_is_refused_by_name(self):
+        bundle = _bundle()
+        bundle[0]["pi_upper"] = bundle[0].pop("pi_widened")
+        problems = _bundle_problems(bundle)
+        assert any(
+            "pi_upper" in p and "WITHDRAWN" in p and "pi_widened" in p
+            for p in problems
+        ), problems
+
+    def test_a_row_smuggling_pi_upper_alongside_pi_widened_still_refuses(self):
+        # The alias/rename attack: a schema-complete row with the withdrawn
+        # name added beside the valid one. A bundle can reach this node
+        # without passing through ForecastBundle, so the screen lives here
+        # too rather than only at the assembler.
+        bundle = _bundle()
+        bundle[0]["pi_upper"] = 0.99
+        problems = _bundle_problems(bundle)
+        assert any("WITHDRAWN" in p for p in problems), problems
+
+    def test_a_known_at_stamp_named_pi_upper_is_refused_by_name(self):
+        bundle = _bundle()
+        stamps = bundle[0]["known_at"]
+        stamps["pi_upper"] = stamps.pop("pi_widened")
+        problems = _bundle_problems(bundle)
+        assert any(
+            "pi_upper" in p and "WITHDRAWN" in p for p in problems
+        ), problems
+
+    def test_the_widened_rate_cannot_be_admitted_as_a_probability_bound(self):
+        env = AttestedFalseSignalRate(_false_signal_artifact(), _attestation(FALSE_SIGNAL_ID))
+        demand = DecisionDemand(
+            decision_ts_ms=DECISION_TS,
+            model_identity=RELEASE,
+            max_calibration_age_ms=UNCERTAINTY_PARAMS["uncertainty_max_calibration_age_ms"],
+            min_measured_coverage=UNCERTAINTY_PARAMS["uncertainty_min_coverage"],
+        )
+        problems = env.problems(demand, ProbabilityUpperBound)
+        assert any(p.startswith("wrong_unit") for p in problems), problems
+
+    def test_the_hfdr_row_records_that_it_is_not_a_chance_constraint(self, tmp_path):
+        pytest.importorskip("pyomo")
+        node = _node()
+        out = node.run(_ctx(tmp_path), _uinputs())
+        claim = out["evidence"]["uncertainty"]["hfdr_coefficient"]
+        assert claim["field"] == "pi_widened"
+        assert claim["chance_constraint"] is False
+
+
+class TestAFullyAttestedTickAgreesOnOneDecisionTimestamp:
+    """The positive case: everything admitted, every identity on one stamp."""
+
+    def test_a_fully_attested_bundle_solves_and_records_its_provenance(self, tmp_path):
+        pytest.importorskip("pyomo")
+        node = _node()
+        inputs = _uinputs()
+        assert node.validate_inputs(inputs) == []
+        out = node.run(_ctx(tmp_path), inputs)
+        record = out["evidence"]["uncertainty"]
+        assert record["decision_ts"] == DECISION_TS
+        assert record["model_identity"] == RELEASE
+        assert record["admitted"]["false_signal"]["artifact_id"] == FALSE_SIGNAL_ID
+        assert record["admitted"]["outcome"]["artifact_id"] == OUTCOME_ID
+        assert {row["decision_ts"] for row in inputs["bundle"]} == {DECISION_TS}
+        assert inputs["cap"]["generated_ms"] <= DECISION_TS
+        assert set(out["target"]) <= set(inputs["survivors"])
+
+
+class TestTheUncertaintyPortIsRefusedByNameNotWalked:
+    """Adversarial port shapes name the problem instead of raising a bare error."""
+
+    @pytest.mark.parametrize(
+        "port",
+        [
+            {},
+            {"false_signal": "fs-calibration-0001"},
+            "not-a-mapping",
+            {"false_signal": 0.2, "outcome": 0.3},
+            {"false_signal": object(), "outcome": object()},
+        ],
+    )
+    def test_a_malformed_port_is_refused(self, port):
+        problems = _node().validate_inputs(_uinputs(uncertainty=port))
+        assert any("uncertainty" in p for p in problems), problems
+
+    def test_a_null_port_is_refused(self):
+        inputs = _uinputs()
+        inputs["uncertainty"] = None
+        problems = _node().validate_inputs(inputs)
+        assert any("uncertainty" in p for p in problems), problems
+
+    def test_a_non_string_port_key_is_refused_rather_than_sorted(self):
+        # A mixed-type key set would raise a bare TypeError out of sorted();
+        # the screen compares sets so it refuses by name instead.
+        problems = _node().validate_inputs(
+            _uinputs(uncertainty={"false_signal": object(), 42: object()})
+        )
+        assert any("uncertainty" in p for p in problems), problems
+
+    def test_a_row_naming_a_non_string_calibration_identity_is_refused(self):
+        bundle = _bundle()
+        bundle[0]["uncertainty"] = {"false_signal": 7, "outcome": OUTCOME_ID}
+        problems = _bundle_problems(bundle)
+        assert any("uncertainty" in p for p in problems), problems
+
+    def test_a_row_whose_numbers_differ_from_the_admitted_artifact_is_refused(self):
+        bundle = _bundle()
+        uncertainty = _uncertainty(bundle)
+        bundle = [dict(row) for row in bundle]
+        bundle[0]["pi_widened"] = 0.99
+        problems = _node(bundle=bundle).validate_inputs(
+            _uinputs(bundle=bundle, uncertainty=uncertainty)
+        )
+        assert any("does not match the admitted" in p for p in problems), problems
+
+    def test_an_entity_the_artifacts_do_not_cover_is_refused(self):
+        covered = _bundle()
+        uncertainty = _uncertainty(covered)
+        extra = dict(covered[0], entity="NVDA")
+        bundle = covered + [extra]
+        problems = _node(bundle=bundle).validate_inputs(
+            _uinputs(bundle=bundle, uncertainty=uncertainty)
+        )
+        assert any("no entry in the admitted false-signal" in p for p in problems), problems
+        assert any("no calibrated outcome band" in p for p in problems), problems

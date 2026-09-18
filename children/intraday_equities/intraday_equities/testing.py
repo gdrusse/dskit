@@ -10,7 +10,15 @@ import math
 from datetime import timedelta, timezone
 
 from dskit.onboarding import parse_utc
+from dskit.pipeline.false_signal import FalseSignalEstimate
 from dskit.pipeline.node import Node
+from dskit.pipeline.outcome_interval import BlockConformalInterval, BlockResiduals
+from dskit.pipeline.uncertainty_intake import (
+    AttestedFalseSignalRate,
+    AttestedOutcomeBand,
+    CoverageEvidence,
+    UncertaintyAttestation,
+)
 
 from .connectors import AlpacaBars, SchwabBars
 from .final_model import HEADS
@@ -303,6 +311,13 @@ class SyntheticMioSource(Node):
     ``deployment_eligible=false`` and is usable only with the demo's
     ``deployment_mode=false`` plus exact artifact/producer/evidence pins.
 
+    It also emits the two attested uncertainty artifacts the capital step
+    now requires. **Their attested coverage is a declared demo number that
+    nothing measured** — the evidence id spells that out
+    (``synthetic-demo-no-measurement-was-performed``). They exist to
+    exercise the intake seam, and they are exactly the kind of artifact a
+    real run must replace before any number here means anything.
+
     Parameters
     ----------
     params : dict
@@ -319,7 +334,7 @@ class SyntheticMioSource(Node):
     """
 
     role = "data"
-    outputs = ("scores", "bundle", "portfolio", "cap")
+    outputs = ("scores", "bundle", "portfolio", "cap", "uncertainty")
 
     #: Three names with a clear, deterministic positive edge — enough to
     #: prove the whole gate-then-size loop end to end without needing real
@@ -327,11 +342,27 @@ class SyntheticMioSource(Node):
     _NAMES = ("AAPL", "MSFT", "XOM")
     _N_CLUSTERS = 8
     _N_SCENARIOS = 64
+    #: How many of each name's scenario residuals become the demo's
+    #: calibration panel, as four contiguous two-row blocks.
+    _N_CALIBRATION_ROWS = 8
     _PRICES = {"AAPL": 190.0, "MSFT": 410.0, "XOM": 110.0}
     _MU = {"AAPL": 0.006, "MSFT": 0.004, "XOM": 0.002}
     _SIGMA = {"AAPL": 0.012, "MSFT": 0.010, "XOM": 0.008}
     _PI_HAT = {"AAPL": 0.08, "MSFT": 0.12, "XOM": 0.18}
-    _PI_UPPER = {"AAPL": 0.15, "MSFT": 0.20, "XOM": 0.25}
+    _PI_WIDENED = {"AAPL": 0.15, "MSFT": 0.20, "XOM": 0.25}
+    #: Identities for the two synthetic calibration artifacts this source
+    #: emits beside the bundle. They exist so the demo exercises the
+    #: capital step's attested-uncertainty seam end to end.
+    _FALSE_SIGNAL_ID = "synthetic-mio-demo-false-signal"
+    _OUTCOME_ID = "synthetic-mio-demo-outcome-band"
+    #: The block-conformal coverage the demo band is calibrated at, and the
+    #: coverage its attestation CLAIMS was measured. Both are illustrative
+    #: demo numbers. **Nothing measured them.** The evidence id below says
+    #: so in words, so a reader who follows the provenance finds a
+    #: statement that no measurement exists rather than a missing report.
+    _DEMO_COVERAGE_TARGET = 0.6
+    _DEMO_ATTESTED_COVERAGE = 0.94
+    _DEMO_COVERAGE_EVIDENCE_ID = "synthetic-demo-no-measurement-was-performed"
     _RELEASE_ID = "synthetic-mio-demo-release"
     _LEAD = 3
     _CAP_PRODUCER_DOCUMENT_SHA256 = "c" * 64
@@ -373,7 +404,9 @@ class SyntheticMioSource(Node):
         -------
         dict
             ``scores`` (the stat_test's food), plus ``bundle``,
-            ``portfolio``, and a deterministic nonproduction ``cap``
+            ``portfolio``, a deterministic nonproduction ``cap``, and
+            ``uncertainty`` — two attested artifacts whose declared
+            coverage was NOT measured (see the class docstring)
             (EquityKellyMIO's inputs).
         """
         import numpy as np
@@ -382,7 +415,7 @@ class SyntheticMioSource(Node):
         rng = np.random.default_rng(seed)
         weights = [1.0 / self._N_SCENARIOS] * self._N_SCENARIOS
 
-        scores, bundle_inputs = {}, []
+        scores, bundle_inputs, panel = {}, [], {}
         for i, name in enumerate(self._NAMES):
             scores[name] = {
                 f"c{c}": 0.02 + 0.001 * ((seed + i + c) % 5) for c in range(self._N_CLUSTERS)
@@ -399,6 +432,7 @@ class SyntheticMioSource(Node):
             scale = label_sigma * math.sqrt(self._LEAD)
             yhat = math.log1p(self._MU[name]) / scale
             residuals = [math.log1p(float(value)) / scale - yhat for value in simple_draws]
+            panel[name] = residuals[: self._N_CALIBRATION_ROWS]
             known_at = self._ASOF_MS - 2000
             bundle_inputs.append(
                 {
@@ -410,7 +444,7 @@ class SyntheticMioSource(Node):
                     "sigma_t": label_sigma,
                     "beta_t": 1.0,
                     "pi_hat": self._PI_HAT[name],
-                    "pi_upper": self._PI_UPPER[name],
+                    "pi_widened": self._PI_WIDENED[name],
                     "weights": weights,
                     "scenarios": residuals,
                     "label": default_label_contract(),
@@ -418,7 +452,7 @@ class SyntheticMioSource(Node):
                         field: known_at
                         for field in (
                             "sigma", "beta", "reference", "price", "yhat",
-                            "pi_hat", "pi_upper", "scenarios",
+                            "pi_hat", "pi_widened", "scenarios",
                         )
                     },
                 }
@@ -433,6 +467,10 @@ class SyntheticMioSource(Node):
                 "output": "bundle",
             },
             model_manifest_sha256=self._MODEL_MANIFEST_SHA256,
+            uncertainty={
+                "false_signal": self._FALSE_SIGNAL_ID,
+                "outcome": self._OUTCOME_ID,
+            },
         ).rows
 
         portfolio = {
@@ -471,4 +509,46 @@ class SyntheticMioSource(Node):
             "bundle": bundle,
             "portfolio": portfolio,
             "cap": cap,
+            "uncertainty": self._uncertainty(panel),
+        }
+
+    def _attestation(self, artifact_id):
+        """One synthetic attestation; its coverage was declared, never measured."""
+        return UncertaintyAttestation(
+            artifact_id=artifact_id,
+            model_identity=self._RELEASE_ID,
+            calibration_end_ms=self._ASOF_MS - 120_000,
+            known_at_ms=self._ASOF_MS - 60_000,
+            coverage=CoverageEvidence(
+                target=0.95,
+                measured=self._DEMO_ATTESTED_COVERAGE,
+                evidence_id=self._DEMO_COVERAGE_EVIDENCE_ID,
+                n_units=self._N_CLUSTERS,
+            ),
+        )
+
+    def _uncertainty(self, panel):
+        """Build the demo's two attested artifacts, keyed by the capital node's slots."""
+        rows = [
+            tuple(panel[name][r] for name in self._NAMES)
+            for r in range(self._N_CALIBRATION_ROWS)
+        ]
+        blocks = [f"b{r // 2 + 1}" for r in range(self._N_CALIBRATION_ROWS)]
+        band = BlockConformalInterval().calibrate(
+            BlockResiduals(names=tuple(self._NAMES), rows=rows, blocks=blocks),
+            coverage=self._DEMO_COVERAGE_TARGET,
+            window_blocks=2,
+        )
+        estimate = FalseSignalEstimate(
+            pi_hat=dict(self._PI_HAT),
+            pi_widened=dict(self._PI_WIDENED),
+            evidence={"estimator": "intraday_equities.testing:SyntheticMioSource"},
+        )
+        return {
+            "false_signal": AttestedFalseSignalRate(
+                estimate, self._attestation(self._FALSE_SIGNAL_ID)
+            ),
+            "outcome": AttestedOutcomeBand(
+                band, self._attestation(self._OUTCOME_ID)
+            ),
         }

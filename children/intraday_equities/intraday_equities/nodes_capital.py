@@ -28,11 +28,34 @@ proposal describes. In particular:
   opposite, safe direction — it can only overstate the true fee on a
   single large sell that would hit the per-order cap, never understate
   it — so it never overstates achievable edge;
-* ``lambda_t_bps`` (the joint opportunity-cost charge), the counterfactual
-  (unfunded-candidate) ledger, and every calibration artifact (``pi_upper``,
-  ``U_mu``, ``U_r`` by time-of-day) are NOT built — they need real market
-  data and the plan's remaining owner decisions (§10) and are named,
+* ``lambda_t_bps`` (the joint opportunity-cost charge) and the
+  counterfactual (unfunded-candidate) ledger are NOT built — they need real
+  market data and the plan's remaining owner decisions (§10) and are named,
   deliberate follow-on work.
+
+**Uncertainty reaches this node only through an attested seam.** The
+``uncertainty`` port carries one ``dskit.pipeline.uncertainty_intake``
+envelope per estimand — a false-signal rate and a realized-outcome band —
+and each is admitted against ONE ``DecisionDemand`` built from the bundle's
+own shared decision timestamp and release identity. An artifact that is
+stale, wrong-unit, post-decision, uncalibrated or from a different model is
+refused by name (ADR-0165). What that machinery establishes is that an
+UNATTESTED artifact cannot be consumed; it establishes nothing about
+whether any particular artifact is well calibrated, because it measures
+nothing. The two policy knobs it screens against
+(``uncertainty_max_calibration_age_ms``, ``uncertainty_min_coverage``) are
+owner risk decisions and are REQUIRED params with no code-level default.
+
+**The HFDR row is fed a widened POINT ESTIMATE, not a bound.** ADR-0088
+locks ``sum_i (pi_i - q) * x_i <= 0``; the number available for ``pi_i``
+today is ``pi_widened``, whose measured attainment of the true rate is
+0.53-0.82 against a 0.95 nominal (ADR-0152). The row is therefore NOT a
+chance constraint at level ``1 - q``, and ``run`` records exactly that in
+its ``evidence`` output. The withdrawn name ``pi_upper`` is refused at this
+boundary as well as at the bundle's, and
+``uncertainty_intake.ProbabilityUpperBound`` — the family a genuine bound
+would belong to — has no member anywhere in ``dskit``, so no code path can
+promote the widened reading into one.
 
 Every owner-only risk number (``risk_aversion_gamma``, ``cardinality``,
 ``cvar_alpha``/``cvar_limit``, ``min_ticket`` from the doorway; ``hfdr_q``,
@@ -51,11 +74,19 @@ from dskit.pipeline.libs.pyomo import ScenarioUtilitySolve
 from dskit.pipeline.node import ConfigError, check_int_param, register_node_kind, reject_unknown_params
 from dskit.pipeline.records import number_ok
 from dskit.pipeline.stages import is_sha256hex
+from dskit.pipeline.uncertainty_intake import (
+    AttestedFalseSignalRate,
+    AttestedOutcomeBand,
+    AttestedUncertainty,
+    DecisionDemand,
+)
 
 from .final_model import HEADS
 from .forecast_bundle import (
     BUNDLE_UNIT,
     KNOWN_AT_FIELDS,
+    UNCERTAINTY_ARTIFACT_FIELDS,
+    WITHDRAWN_FIELD_ALIASES,
     ZERO_DRIFT,
     ConfirmedCaps,
     ForecastBundle,
@@ -65,6 +96,8 @@ from .forecast_bundle import (
 __all__ = [
     "BUNDLE_FIELDS",
     "DEFAULT_LOT_SIZE",
+    "HFDR_COEFFICIENT_FIELD",
+    "REQUIRED_INTAKES",
     "EquityKellyMIO",
     "NODE_KINDS",
     "SchwabCostModel",
@@ -84,14 +117,31 @@ BUNDLE_FIELDS = (
     "unit",
     "price",
     "pi_hat",
-    "pi_upper",
+    "pi_widened",
     "weights",
     "scenarios",
     "reference_policy",
     "label",
     "model_manifest_sha256",
     "producer",
+    "uncertainty",
     "known_at",
+)
+
+#: Which bundle field the ADR-0088 HFDR row's ``pi_i`` coefficient reads.
+#: Named once, here, because the constraint, the evidence record and the
+#: tests must all agree on it and a second spelling is how they stop
+#: agreeing. It is ``pi_widened``: a widened POINT ESTIMATE, so the row is
+#: not a chance constraint — see the module docstring.
+HFDR_COEFFICIENT_FIELD = "pi_widened"
+
+#: The ``uncertainty`` port's slots, each bound to the ONE intake member
+#: that may fill it. A slot is a question; the member is the only kind of
+#: answer that question takes, and it is a TYPE, so a caller cannot
+#: relabel an artifact into the wrong slot.
+REQUIRED_INTAKES = (
+    ("false_signal", AttestedFalseSignalRate),
+    ("outcome", AttestedOutcomeBand),
 )
 
 #: The no-trade band's rounding granularity, absent a declared
@@ -204,6 +254,7 @@ def _bundle_problems(bundle):
         ]
     problems = []
     weights_ref = None
+    uncertainty_ref = None
     decision_ts_ref = None
     lead_ref = None
     release_ref = None
@@ -212,6 +263,15 @@ def _bundle_problems(bundle):
         if not isinstance(row, dict):
             problems.append(f"bundle[{i}] must be a mapping, got {type(row).__name__}")
             continue
+        for alias in sorted(set(row) & set(WITHDRAWN_FIELD_ALIASES)):
+            problems.append(
+                f"bundle[{i}] ({row.get('entity', '?')!r}) carries the WITHDRAWN "
+                f"field {alias!r}, renamed {WITHDRAWN_FIELD_ALIASES[alias]!r} "
+                "(ADR-0152) — a widened point estimate presented under a name "
+                "that asserts a probability upper bound is refused here as well "
+                "as at the bundle boundary, because a bundle can reach this node "
+                "without passing through ForecastBundle"
+            )
         missing = sorted(set(BUNDLE_FIELDS) - set(row))
         if missing:
             problems.append(
@@ -306,7 +366,35 @@ def _bundle_problems(bundle):
                 problems.append(
                     f"bundle[{i}] ({entity!r}).producer.output must be 'bundle'"
                 )
+        uncertainty = row["uncertainty"]
+        if not isinstance(uncertainty, dict) or set(uncertainty) != set(
+            UNCERTAINTY_ARTIFACT_FIELDS
+        ):
+            problems.append(
+                f"bundle[{i}] ({entity!r}).uncertainty must carry exactly "
+                f"{sorted(UNCERTAINTY_ARTIFACT_FIELDS)!r} — one calibration "
+                "artifact identity per estimand"
+            )
+        elif any(not isinstance(v, str) or not v for v in uncertainty.values()):
+            problems.append(
+                f"bundle[{i}] ({entity!r}).uncertainty values must be non-empty "
+                f"artifact identities, got {uncertainty!r}"
+            )
+        elif uncertainty_ref is None:
+            uncertainty_ref = dict(uncertainty)
+        elif dict(uncertainty) != uncertainty_ref:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).uncertainty {dict(uncertainty)!r} "
+                f"differs from the batch's shared identities {uncertainty_ref!r} "
+                "— one decision tick is calibrated by one set of artifacts"
+            )
         known_at = row["known_at"]
+        for alias in sorted(set(known_at or {}) & set(WITHDRAWN_FIELD_ALIASES)):
+            problems.append(
+                f"bundle[{i}] ({entity!r}).known_at stamps the WITHDRAWN field "
+                f"{alias!r}, renamed {WITHDRAWN_FIELD_ALIASES[alias]!r} "
+                "(ADR-0152)"
+            )
         if not isinstance(known_at, dict) or set(known_at) != set(KNOWN_AT_FIELDS):
             problems.append(
                 f"bundle[{i}] ({entity!r}).known_at must carry exactly "
@@ -360,14 +448,18 @@ def _bundle_problems(bundle):
         if not number_ok(row.get("price")) or row["price"] <= 0.0:
             problems.append(f"bundle[{i}] ({entity!r}).price must be a finite number > 0")
         pi_hat = row["pi_hat"]
-        pi_upper = row["pi_upper"]
+        pi_widened = row[HFDR_COEFFICIENT_FIELD]
         if not number_ok(pi_hat) or not 0.0 <= pi_hat <= 1.0:
             problems.append(f"bundle[{i}] ({entity!r}).pi_hat must be a finite number in [0, 1]")
-        if not number_ok(pi_upper) or not 0.0 <= pi_upper <= 1.0:
-            problems.append(f"bundle[{i}] ({entity!r}).pi_upper must be a finite number in [0, 1]")
-        elif number_ok(pi_hat) and pi_hat > pi_upper:
+        if not number_ok(pi_widened) or not 0.0 <= pi_widened <= 1.0:
             problems.append(
-                f"bundle[{i}] ({entity!r}).pi_hat must not exceed pi_upper"
+                f"bundle[{i}] ({entity!r}).{HFDR_COEFFICIENT_FIELD} must be a "
+                "finite number in [0, 1]"
+            )
+        elif number_ok(pi_hat) and pi_hat > pi_widened:
+            problems.append(
+                f"bundle[{i}] ({entity!r}).pi_hat must not exceed "
+                f"{HFDR_COEFFICIENT_FIELD}"
             )
     return problems
 
@@ -383,9 +475,16 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     optional ``mark_prices`` for a held name the bundle dropped, optional
     ``cash_reserve``/``gross_limit``/``sale_credit``), ``survivors``
     (the ``stat_test`` gate REQUIRED by the planner's capital rule — only
-    bundle rows whose ``entity`` is a survivor enter the program), and
+    bundle rows whose ``entity`` is a survivor enter the program),
     ``cap`` (the required, fresh, release-matched confirmed-cap artifact;
-    its digest and producer/evidence identities must match config pins).
+    its digest and producer/evidence identities must match config pins),
+    and ``uncertainty`` (a mapping carrying exactly the
+    :data:`REQUIRED_INTAKES` slots, each an
+    ``uncertainty_intake.AttestedUncertainty`` envelope of that slot's
+    member type; each is admitted against ONE ``DecisionDemand`` built
+    from the bundle's own shared decision timestamp and release, and each
+    row's declared calibration identities and ``pi`` numbers must match
+    the admitted artifacts).
 
     Parameters
     ----------
@@ -410,8 +509,14 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         ``bundle_model_manifest_sha256`` (trusted bundle provenance),
         ``cap_artifact_sha256`` (canonical artifact digest),
         ``cap_producer_document_sha256``/``cap_producer_node`` (producer
-        identity), ``cap_evidence_sha256`` (evidence identity), and
-        ``deployment_mode`` (required bool). Development mode accepts only
+        identity), ``cap_evidence_sha256`` (evidence identity),
+        ``deployment_mode`` (required bool),
+        ``uncertainty_max_calibration_age_ms`` (required int >= 0 — how far
+        a decision may sit past the end of an artifact's calibration
+        window) and ``uncertainty_min_coverage`` (required, in (0, 1) —
+        the floor an artifact's ATTESTED measured coverage must reach;
+        nothing here measures coverage, it screens what a producer
+        attests). Development mode accepts only
         an explicitly non-deployable cap; deployment mode fails closed until
         a trusted real cap producer exists. ``lot_size`` (int >=
         1, default :data:`DEFAULT_LOT_SIZE` — scales
@@ -443,6 +548,8 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             "cap_producer_node": "source",
             "cap_evidence_sha256": "c" * 64,
             "deployment_mode": False,
+            "uncertainty_max_calibration_age_ms": 600_000,
+            "uncertainty_min_coverage": 0.90,
         })
     """
 
@@ -468,13 +575,15 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         "cap_producer_node",
         "cap_evidence_sha256",
         "deployment_mode",
+        "uncertainty_max_calibration_age_ms",
+        "uncertainty_min_coverage",
         "lot_size",
     )
 
     #: Per-run bookkeeping for :meth:`domain_constraints`, set by
     #: :meth:`instruments` and cleared by :meth:`run` — the ``_current_event``
     #: precedent (``pmquant.nodes_capital.KellyMIO``).
-    _pi_upper = None
+    _pi_widened = None
     _band_shares = None
     _payoffs = None
     _evidence = None
@@ -568,7 +677,41 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             problems.append("deployment_mode is required — development versus deployment must be explicit")
         elif not isinstance(params["deployment_mode"], bool):
             problems.append("deployment_mode must be a JSON boolean")
+        problems.extend(cls._intake_policy_problems(params))
         check_int_param(problems, "lot_size", params.get("lot_size", DEFAULT_LOT_SIZE), ge=1)
+        return problems
+
+    @classmethod
+    def _intake_policy_problems(cls, params):
+        """Problems with the two owner-only uncertainty-intake knobs."""
+        problems = []
+        if "uncertainty_max_calibration_age_ms" not in params:
+            problems.append(
+                "uncertainty_max_calibration_age_ms is required — how far a "
+                "decision may sit past the end of an artifact's calibration "
+                "window is an owner risk decision, there is no default"
+            )
+        else:
+            check_int_param(
+                problems,
+                "uncertainty_max_calibration_age_ms",
+                params["uncertainty_max_calibration_age_ms"],
+                ge=0,
+            )
+        if "uncertainty_min_coverage" not in params:
+            problems.append(
+                "uncertainty_min_coverage is required — the floor an artifact's "
+                "ATTESTED measured coverage must reach is an owner risk "
+                "decision, there is no default and nothing here measures it"
+            )
+        elif (
+            not number_ok(params["uncertainty_min_coverage"])
+            or not 0.0 < params["uncertainty_min_coverage"] < 1.0
+        ):
+            problems.append(
+                "uncertainty_min_coverage must be a finite number in (0, 1), got "
+                f"{params['uncertainty_min_coverage']!r}"
+            )
         return problems
 
     def validate_inputs(self, inputs):
@@ -672,6 +815,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                     f"portfolio.sale_credit must be a finite number in [0, 1] when given, got "
                     f"{portfolio['sale_credit']!r}"
                 )
+        problems.extend(self._uncertainty_problems(inputs, bundle, bundle_problems))
         survivors = inputs.get("survivors")
         if not isinstance(survivors, (list, tuple, set, frozenset)):
             problems.append(
@@ -762,6 +906,166 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 )
         return problems
 
+    def decision_demand(self, bundle):
+        """State what this tick demands of any uncertainty it consumes.
+
+        Parameters
+        ----------
+        bundle : list of dict
+            The validated bundle rows. Their SHARED ``decision_ts`` and
+            ``model_release_id`` are what every artifact is screened
+            against, which is what makes "everything agrees on a single
+            decision timestamp" a checkable claim rather than a hope.
+
+        Returns
+        -------
+        dskit.pipeline.uncertainty_intake.DecisionDemand or None
+            The demand, or ``None`` when the bundle is empty or its first
+            row's identity fields are unusable — the empty gate sizes
+            nothing, so there is no decision for an artifact to inform.
+        """
+        if not bundle or not isinstance(bundle[0], dict):
+            return None
+        decision_ts = bundle[0].get("decision_ts")
+        release = bundle[0].get("model_release_id")
+        if (
+            isinstance(decision_ts, bool)
+            or not isinstance(decision_ts, int)
+            or decision_ts < 0
+            or not isinstance(release, str)
+            or not release
+        ):
+            return None
+        return DecisionDemand(
+            decision_ts_ms=decision_ts,
+            model_identity=release,
+            max_calibration_age_ms=int(
+                self.params["uncertainty_max_calibration_age_ms"]
+            ),
+            min_measured_coverage=float(self.params["uncertainty_min_coverage"]),
+        )
+
+    def _uncertainty_problems(self, inputs, bundle, bundle_problems):
+        """Problems with the ``uncertainty`` port, empty when none."""
+        slots = sorted(name for name, _ in REQUIRED_INTAKES)
+        if "uncertainty" not in inputs:
+            return [
+                f"uncertainty is required — one attested artifact per {slots!r}; "
+                "capital never sizes against uncertainty it cannot attest"
+            ]
+        port = inputs["uncertainty"]
+        # set, not sorted: a mapping with a non-string key would raise a bare
+        # TypeError out of sorted() instead of refusing by name.
+        if not isinstance(port, dict) or set(port) != set(slots):
+            return [
+                f"uncertainty must be a mapping carrying exactly {slots!r}, got "
+                f"{port!r}"
+            ]
+        problems = []
+        for slot, _member in REQUIRED_INTAKES:
+            envelope = port[slot]
+            if not isinstance(envelope, AttestedUncertainty):
+                problems.append(
+                    f"uncertainty.{slot} must be an AttestedUncertainty envelope "
+                    "(dskit.pipeline.uncertainty_intake), got "
+                    f"{type(envelope).__name__} — a bare number or mapping "
+                    "carries no attestation and cannot be admitted"
+                )
+        if problems or bundle_problems:
+            return problems
+        demand = self.decision_demand(bundle)
+        if demand is None:
+            return problems
+        for slot, member in REQUIRED_INTAKES:
+            for problem in port[slot].problems(demand, member):
+                problems.append(f"uncertainty.{slot}: {problem}")
+        return problems + self._binding_problems(bundle, port)
+
+    def _binding_problems(self, bundle, port):
+        """Problems binding each bundle row to the admitted artifacts, empty when none."""
+        problems = []
+        for index, row in enumerate(bundle):
+            entity = row["entity"]
+            for slot, member in REQUIRED_INTAKES:
+                envelope = port[slot]
+                declared = row["uncertainty"][slot]
+                if declared != envelope.attestation.artifact_id:
+                    problems.append(
+                        f"bundle[{index}] ({entity!r}) names {slot} calibration "
+                        f"{declared!r}, but the admitted artifact is "
+                        f"{envelope.attestation.artifact_id!r}"
+                    )
+                elif isinstance(envelope, member):
+                    problems.extend(
+                        self._entity_problems(index, row, slot, envelope.artifact)
+                    )
+        return problems
+
+    @staticmethod
+    def _entity_problems(index, row, slot, artifact):
+        """Problems binding ONE row's numbers to ONE admitted artifact."""
+        entity = row["entity"]
+        where = f"bundle[{index}] ({entity!r})"
+        if slot == "outcome":
+            if entity not in artifact.lower_offset:
+                return [
+                    f"{where} has no calibrated outcome band — the admitted "
+                    "realized-outcome artifact covers "
+                    f"{sorted(artifact.lower_offset)!r}"
+                ]
+            return []
+        if entity not in artifact.pi_hat:
+            return [
+                f"{where} has no entry in the admitted false-signal artifact, "
+                f"which covers {sorted(artifact.pi_hat)!r}"
+            ]
+        problems = []
+        for field, attested in (
+            ("pi_hat", artifact.pi_hat[entity]),
+            (HFDR_COEFFICIENT_FIELD, artifact.pi_widened[entity]),
+        ):
+            if float(row[field]) != float(attested):
+                problems.append(
+                    f"{where}.{field} {row[field]!r} does not match the admitted "
+                    f"false-signal artifact's {attested!r} — the number the "
+                    "capital program reads must be the number that was attested"
+                )
+        return problems
+
+    def _intake_evidence(self, inputs):
+        """Record the admitted-uncertainty provenance beside every decision."""
+        demand = self.decision_demand(inputs["bundle"])
+        port = inputs["uncertainty"]
+        admitted = {}
+        for slot, _member in REQUIRED_INTAKES:
+            attestation = port[slot].attestation
+            coverage = attestation.coverage
+            admitted[slot] = {
+                "artifact_id": attestation.artifact_id,
+                "estimand": type(port[slot]).estimand(),
+                "calibration_end_ms": attestation.calibration_end_ms,
+                "known_at_ms": attestation.known_at_ms,
+                "attested_measured_coverage": None if coverage is None else coverage.measured,
+                "coverage_evidence_id": None if coverage is None else coverage.evidence_id,
+            }
+        return {
+            "decision_ts": None if demand is None else demand.decision_ts_ms,
+            "model_identity": None if demand is None else demand.model_identity,
+            "max_calibration_age_ms": int(
+                self.params["uncertainty_max_calibration_age_ms"]
+            ),
+            "min_measured_coverage": float(self.params["uncertainty_min_coverage"]),
+            "admitted": admitted,
+            # Stated at every decision so a reader of the evidence never has
+            # to infer it: ADR-0088's row is fed a widened point estimate,
+            # which does not make it hold with probability 1 - hfdr_q.
+            "hfdr_coefficient": {
+                "field": HFDR_COEFFICIENT_FIELD,
+                "claim": "widened_point_estimate",
+                "chance_constraint": False,
+            },
+        }
+
     # -- the three doorway hooks --------------------------------------------
 
     def instruments(self, inputs):
@@ -821,9 +1125,10 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             "n_gated": len(by_name),
             "n_held": len(held),
             "routed_out": routed_out,
+            "uncertainty": self._intake_evidence(inputs),
         }
         if not names:
-            self._pi_upper, self._band_shares = {}, {}
+            self._pi_widened, self._band_shares = {}, {}
             return [], {}, {"cash": float(portfolio.get("cash", 0.0))}
 
         # The batch's shared scenario weights: a gated row's (validated
@@ -836,7 +1141,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             list(next(iter(by_name.values()))["weights"]) if by_name else [1.0]
         )
 
-        rows, pi_upper, band_shares, payoffs_r = {}, {}, {}, {}
+        rows, pi_widened, band_shares, payoffs_r = {}, {}, {}, {}
         worst_r, best_r = 0.0, 0.0
         for name in names:
             row = by_name.get(name)
@@ -844,7 +1149,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             if row is None:
                 # Held but the bundle dropped it: mandatory exit only. No
                 # live belief exists for it, so the HFDR row must not bind
-                # it either — pi_upper=0 keeps its (pi_upper - q) coefficient
+                # it either — a zero coefficient keeps its (pi_i - q) term
                 # negative, and x_max=0 (below) already forces q=0 whatever
                 # the HFDR row says.
                 mark = mark_prices.get(name)
@@ -856,12 +1161,12 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                         "> 0 to trade against"
                     )
                 price = float(mark)
-                pi_upper_i = 0.0
+                pi_widened_i = 0.0
                 x_max = 0.0
                 scenarios = [0.0] * len(shared_weights)
             else:
                 price = float(row["price"])
-                pi_upper_i = float(row["pi_upper"])
+                pi_widened_i = float(row[HFDR_COEFFICIENT_FIELD])
                 x_max = max_notional
                 scenarios = [float(v) for v in row["scenarios"]]
             # Uncapped TAF lives in SchwabCostModel (see that class and the
@@ -883,7 +1188,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 "exit_cost_per_share": sell_cost,
                 "lot": lot,
             }
-            pi_upper[name] = pi_upper_i
+            pi_widened[name] = pi_widened_i
             payoffs_r[name] = scenarios
             if row is None:
                 band_shares[name] = 0
@@ -893,7 +1198,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 band_shares[name] = lot * _ceil_div(band_bps * 1e-4 * ticket, price * lot)
             worst_r = min(worst_r, min(scenarios))
             best_r = max(best_r, max(scenarios))
-        self._pi_upper, self._band_shares = pi_upper, band_shares
+        self._pi_widened, self._band_shares = pi_widened, band_shares
         self._payoffs = (shared_weights, payoffs_r)
 
         notional_cap = sum(r["x_max"] for r in rows.values())
@@ -941,9 +1246,17 @@ class EquityKellyMIO(ScenarioUtilitySolve):
     def domain_constraints(self, model, inputs, params):
         """Add the ADR-0088 HFDR row and a proportional-cost no-trade band.
 
-        HFDR (C7, ADR-0088, locked): ``sum_i (pi_upper_i - q) * x_i <= 0`` —
+        HFDR (C7, ADR-0088, locked): ``sum_i (pi_i - q) * x_i <= 0`` —
         linear in the target notional the doorway already exposes as
-        ``model.x``.
+        ``model.x``. ``pi_i`` is every gated row's
+        :data:`HFDR_COEFFICIENT_FIELD`, taken from the ADMITTED
+        false-signal artifact (``validate_inputs`` refuses a row whose
+        number differs from the attested one). That number is a WIDENED
+        POINT ESTIMATE, so this row does not hold with probability
+        ``1 - q``: ADR-0152 measured 0.53-0.82 attainment against a 0.95
+        nominal and withdrew the bound claim. ``run`` records the reading
+        in its ``evidence`` output rather than leaving a reader to assume
+        a chance constraint.
 
         No-trade band (§3.3(b)): a trade either does not happen at all, or
         moves at least ``band_shares_i`` — the wedge-shaped inaction region
@@ -983,7 +1296,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         rows = model._scn["rows"]
         q = float(params["hfdr_q"])
         model.hfdr = Constraint(
-            expr=sum((self._pi_upper[i] - q) * model.x[i] for i in names) <= 0
+            expr=sum((self._pi_widened[i] - q) * model.x[i] for i in names) <= 0
         )
 
         band = self._band_shares
@@ -1018,10 +1331,12 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             out = super().run(ctx, inputs)
             out["evidence"] = self._evidence or {
                 "n_bundle_rows": 0, "n_gated": 0, "n_held": 0, "routed_out": {},
+                "uncertainty": self._intake_evidence(inputs),
             }
             return out
         finally:
-            self._pi_upper = self._band_shares = self._payoffs = self._evidence = None
+            self._pi_widened = self._band_shares = self._payoffs = None
+            self._evidence = None
 
 
 #: kind name -> class: what the registry, the conformance suite, and a
