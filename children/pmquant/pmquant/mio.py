@@ -1065,12 +1065,23 @@ def _lots_of(variable, where):
 
 
 def _check_exact_budget(inputs, outlay, approx_outlay, policy_name):
-    """Refuse an exact bill that breaks the budget or the event cap, by name."""
-    for limit_name, limit in (("deployable", float(inputs.deployable)), ("event cap", inputs.cap)):
-        if outlay > limit + _OUTLAY_TOL:
-            raise ExactFeeBudgetExceeded(
-                inputs.event_id, limit_name, limit, outlay, approx_outlay, policy_name
-            )
+    """Refuse an exact bill that breaks a ceiling, naming the TIGHTEST one it broke."""
+    broken = [
+        (limit, name)
+        for name, limit in (("deployable", float(inputs.deployable)), ("event cap", inputs.cap))
+        if outlay > limit + _OUTLAY_TOL
+    ]
+    if not broken:
+        return
+    # The SMALLEST broken ceiling is the binding one, so it carries the true
+    # shortfall. Reporting whichever was listed first would understate the
+    # overrun whenever the cap is tighter than the budget — and the retighten
+    # loop reserves exactly that shortfall, so it would under-reserve and
+    # spend rounds it did not need to.
+    limit, limit_name = min(broken)
+    raise ExactFeeBudgetExceeded(
+        inputs.event_id, limit_name, limit, outlay, approx_outlay, policy_name
+    )
 
 
 def read_allocation(model, results):

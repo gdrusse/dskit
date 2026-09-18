@@ -719,10 +719,6 @@ class KellyMIO(PyomoSolve):
     def _solve_all(self, events, candidates):
         """Solve every event through the two hooks with ONE resolved solver; fold the outputs."""
         positions, outlay, lots, growth, evidence = {}, 0.0, 0, 0.0, {}
-        resolution = _EventResolution(
-            self.params.get("on_exact_fee_exceeded", mio.DEFAULT_ON_EXACT_FEE_EXCEEDED),
-            int(self.params.get("max_retighten_rounds", mio.DEFAULT_RETIGHTEN_ROUNDS)),
-        )
         solver = None
         for event_id in sorted(events):
             event = events[event_id]
@@ -738,6 +734,12 @@ class KellyMIO(PyomoSolve):
                 # The solve is wrapped, not called: an exact bill that will
                 # not fit is refused or re-solved under reserved headroom,
                 # never reported at the program's linear approximation.
+                # Built from the EVENT, never re-read from params: the
+                # event already carries both knobs, and a second reader is
+                # a second place for a default to drift.
+                resolution = _EventResolution(
+                    event.on_exact_fee_exceeded, event.max_retighten_rounds
+                )
                 out = resolution.resolve(
                     event,
                     partial(self._solve_once, solver=solver),

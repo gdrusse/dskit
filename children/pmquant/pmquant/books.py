@@ -38,11 +38,12 @@ from dataclasses import dataclass
 
 from dskit.pipeline.records import MarketRecord
 
-from .fees import trading_fee_for_series
+from .fees import DEFAULT_FILL_FEE_POLICY, fill_fee_policy, trading_fee_for_series
 
 __all__ = [
     "CROSS_EPS",
     "EPOCH_KINDS",
+    "FILL_FEE_POLICY",
     "NET_EDGE_EPS",
     "BookSnapshot",
     "ContractInputs",
@@ -67,6 +68,15 @@ __all__ = [
 
 #: The three kinds of decision epoch a ladder is read at.
 EPOCH_KINDS = ("open", "lead", "settle")
+
+#: What a FILL is billed: the venue's order-level rule, one fee on the
+#: total at VWAP. It is deliberately the encoded INVOICE rule and not
+#: whatever a document's sizer ``fee_policy`` reserves against — a
+#: conservative sizer reserves MORE than the venue bills, which is its
+#: whole point. Held as the one policy object rather than a second copy of
+#: its arithmetic: the sizer's recompute and this walk must price one fill
+#: identically, and they do so by sharing the rule, not by agreeing twice.
+FILL_FEE_POLICY = fill_fee_policy(DEFAULT_FILL_FEE_POLICY)
 
 #: A book is crossed when the best YES ask and best NO ask sum to less
 #: than one dollar by more than representation dust; a TOUCHING book
@@ -881,9 +891,11 @@ def walk_book(book, order):
     -------
     FillResult
         Best-first partial fills up to the limit, VWAP, slippage against
-        the mid, and ONE fee on the total at VWAP through the venue
-        dispatch. An empty fill is ``is_partial=True`` with ``nan``
-        prices and a zero fee.
+        the mid, and ONE fee on the total at VWAP through
+        :data:`FILL_FEE_POLICY` — the same policy object the sizer's
+        post-solve recompute bills with, so the fill path and the sizer
+        cannot price one fill two ways. An empty fill is
+        ``is_partial=True`` with ``nan`` prices and a zero fee.
     """
     mid = float(book.mid) if book.mid is not None else book.best_price
     remaining = order.size
@@ -905,6 +917,8 @@ def walk_book(book, order):
         return FillResult(0, True, nan, nan, 0.0, nan, ())
     vwap = sum(h.price * h.contracts for h in hits) / filled
     slip = (vwap - mid) if book.side == "ask" else (mid - vwap)
-    fee = trading_fee_for_series(book.ticker, filled, vwap, order.fee_rate)
+    fee = FILL_FEE_POLICY.fee_for(
+        book.ticker, [(h.price, h.contracts) for h in hits], order.fee_rate
+    )
     premium = filled * vwap if book.side == "ask" else filled * (1.0 - vwap)
     return FillResult(filled, filled < order.size, vwap, slip, fee, premium + fee, tuple(hits))

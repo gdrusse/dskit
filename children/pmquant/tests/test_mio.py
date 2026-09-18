@@ -859,3 +859,166 @@ def test_a_refused_allocation_is_an_empty_one_that_says_why():
     assert alloc.status == REFUSED_STATUS and alloc.refusal == "because"
     assert alloc.lots == 0 and alloc.outlay == 0.0 and alloc.fees == {}
     assert empty_allocation(inputs).refusal is None
+
+
+# --- PM-01 round 2: the ceilings, the tolerance, and the policy knob --------
+
+#: A two-level book whose fills are small enough that Kalshi's per-ORDER cent
+#: floor reverses the Jensen ordering: per-fill bills 0.01 twice, the single
+#: order-level charge rounds to one cent in total.
+TINY_FILLS = (("0.02", 1), ("0.03", 1))
+
+
+def _tiny_contract(rate=RATE):
+    return contract_inputs_from_book(
+        "C", 0.30, yes_bids=[[0.01, 10]], no_bids=[[0.98, 1], [0.97, 1]], fee_rate=rate
+    )
+
+
+def _billed(inputs, lots=None):
+    """Build, hand-load the full depth (or ``lots``) and read one allocation."""
+    model = event_program(inputs)
+    return read_allocation(model, _load(model, lots or {(0, 0): 500, (0, 1): 500}))
+
+
+def test_a_cap_tighter_than_the_budget_refuses_on_the_exact_bill_alone():
+    # The DEFAULT ceiling is a per-event cap, not the deployable: the node
+    # divides the budget across gated events. So the cap must be enforced on
+    # the exact bill in its own right, with the budget never in question.
+    inputs = _audit_inputs(deployable=B, event_cap=365.80)
+    model = event_program(inputs)
+    results = _load(model, {(0, 0): 500, (0, 1): 500})
+    assert model.outlay() == pytest.approx(AUDIT_LINEAR_OUTLAY, abs=1e-9)
+    assert model.outlay() <= 365.80  # the program calls this fill feasible under the cap
+    assert AUDIT_EXACT_OUTLAY < B  # ... and the deployable is nowhere near broken
+    with pytest.raises(ExactFeeBudgetExceeded) as exc:
+        read_allocation(model, results)
+    assert exc.value.limit_name == "event cap" and exc.value.limit == 365.80
+    assert exc.value.shortfall == pytest.approx(AUDIT_EXACT_OUTLAY - 365.80, abs=1e-9)
+
+
+def test_the_exact_bill_names_the_tightest_ceiling_it_broke():
+    # Both ceilings broken: the binding one is the SMALLER, and it carries the
+    # true shortfall the retighten loop must reserve against.
+    inputs = _audit_inputs(deployable=100.0, event_cap=50.0)
+    with pytest.raises(ExactFeeBudgetExceeded) as exc:
+        _billed(inputs)
+    assert exc.value.limit_name == "event cap" and exc.value.limit == 50.0
+    assert exc.value.shortfall == pytest.approx(AUDIT_EXACT_OUTLAY - 50.0, abs=1e-9)
+    # naming the deployable instead would have understated it by 50 dollars
+    assert exc.value.shortfall - (AUDIT_EXACT_OUTLAY - 100.0) == pytest.approx(50.0, abs=1e-9)
+    # and with only the deployable broken, that is what it names
+    with pytest.raises(ExactFeeBudgetExceeded) as loose:
+        _billed(_audit_inputs(deployable=100.0))
+    assert loose.value.limit_name == "deployable" and loose.value.limit == 100.0
+
+
+def test_a_tight_event_cap_is_enforced_end_to_end_and_retightened_against(solver):
+    # cap 365.77: linear 365.76 fits it, exact 365.93 does not, budget is 500
+    refused = solve_event(_audit_inputs(deployable=B, event_cap=365.77), solver)
+    assert refused.status == REFUSED_STATUS
+    assert refused.positions == {} and refused.outlay == 0.0
+    assert "event cap" in refused.refusal
+    keen = solve_event(
+        _audit_inputs(deployable=B, event_cap=365.77, on_exact_fee_exceeded="retighten"), solver
+    )
+    assert keen.status == "optimal" and keen.lots > 0
+    assert keen.outlay <= 365.77 + 1e-9  # the CAP bound it, with the budget slack
+    assert keen.outlay < AUDIT_EXACT_OUTLAY and keen.lots < 1000
+    fills = tuple((f"{price:.2f}", lots) for price, lots in keen.level_fills[("C", "yes")])
+    assert keen.outlay == pytest.approx(oracle_cash("kalshi", fills, "0.07"), abs=1e-9)
+
+
+def test_the_outlay_tolerance_absorbs_float_dust_but_not_a_real_overrun():
+    # _OUTLAY_TOL claims to sit four orders below a cent: big enough that
+    # representation dust never refuses an honest solve, small enough that a
+    # real overrun always does. These two cases bracket it; it cannot be
+    # loosened to a cent or tightened to a float epsilon and stay green.
+    exact = _billed(_audit_inputs()).outlay
+    assert exact == pytest.approx(AUDIT_EXACT_OUTLAY, abs=1e-9)
+    hair = _billed(_audit_inputs(deployable=exact - 1e-9))
+    assert hair.outlay == pytest.approx(exact, abs=1e-12)
+    with pytest.raises(ExactFeeBudgetExceeded) as exc:
+        _billed(_audit_inputs(deployable=exact - 1e-3))
+    assert exc.value.shortfall == pytest.approx(1e-3, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("policy", "wide_fee", "tiny_fee"),
+    [("order_vwap", 15.93, 0.01), ("per_fill", 15.75, 0.02), ("conservative", 15.93, 0.02)],
+)
+def test_every_declared_fee_policy_bills_its_own_money(policy, wide_fee, tiny_fee):
+    # The knob is not a string the validator approves: it decides the dollars.
+    wide = _billed(_audit_inputs(fee_policy=policy))
+    assert wide.fee_policy == policy
+    assert wide.fees[("C", "yes")] == pytest.approx(wide_fee, abs=1e-9)
+    assert wide.outlay == pytest.approx(AUDIT_PREMIUM + wide_fee, abs=1e-9)
+    tiny = _billed(
+        _inputs([_tiny_contract()], fee_policy=policy, kelly_fraction=1.0),
+        lots={(0, 0): 1, (0, 1): 1},
+    )
+    assert tiny.fees[("C", "yes")] == pytest.approx(tiny_fee, abs=1e-9)
+    assert tiny.outlay == pytest.approx(oracle_premium(TINY_FILLS) + tiny_fee, abs=1e-9)
+
+
+def test_the_three_policies_disagree_in_both_directions_through_the_sizer():
+    # Jensen makes order-level the dearer one on a wide fill; the per-ORDER
+    # cent floor reverses it on a tiny one. Conservative is the max of both,
+    # so no single policy is a universal upper bound and the knob matters.
+    wide = {p: _billed(_audit_inputs(fee_policy=p)).outlay
+            for p in ("order_vwap", "per_fill", "conservative")}
+    tiny = {p: _billed(_inputs([_tiny_contract()], fee_policy=p, kelly_fraction=1.0),
+                       lots={(0, 0): 1, (0, 1): 1}).outlay
+            for p in ("order_vwap", "per_fill", "conservative")}
+    assert wide["order_vwap"] > wide["per_fill"]
+    assert tiny["per_fill"] > tiny["order_vwap"]
+    for billed in (wide, tiny):
+        assert billed["conservative"] == pytest.approx(
+            max(billed["order_vwap"], billed["per_fill"]), abs=1e-12
+        )
+
+
+def test_the_configured_retighten_round_budget_is_obeyed(solver):
+    # rounds=0 means "solve once": retighten degenerates to refusing, and the
+    # SAME event with the default round budget fits.
+    none = solve_event(
+        _audit_inputs(deployable=365.77, on_exact_fee_exceeded="retighten",
+                      max_retighten_rounds=0),
+        solver,
+    )
+    assert none.status == REFUSED_STATUS and none.lots == 0
+    some = solve_event(
+        _audit_inputs(deployable=365.77, on_exact_fee_exceeded="retighten"), solver
+    )
+    assert some.status == "optimal" and some.lots > 0
+
+
+def test_a_shortfall_below_the_minimum_step_still_makes_progress():
+    # A two-microdollar overrun would reserve two microdollars and re-solve the
+    # identical integer program forever; the floor is what makes each round
+    # move. This is the constant's whole job, so it is asserted, not assumed.
+    inputs = _audit_inputs()
+    seen = []
+
+    def barely_over(current):
+        seen.append(current.fee_allowance)
+        raise ExactFeeBudgetExceeded("E", "deployable", 10.0, 10.0 + 2e-6, 10.0, "order_vwap")
+
+    alloc = ExactFeeResolution("retighten", 3).resolve(inputs, barely_over, entered=())
+    assert alloc.status == REFUSED_STATUS and len(seen) == 4
+    steps = [b - a for a, b in zip(seen, seen[1:])]
+    assert steps == pytest.approx([RETIGHTEN_MIN_STEP] * 3, abs=1e-12)
+
+
+def test_the_partition_slack_tolerance_is_bracketed():
+    # LAW_SLACK_TOL decides when leftover belief becomes a NONE cell. A slack
+    # two orders above it must produce one; a slack an order below it must not.
+    def law(slack):
+        rungs = [
+            _contract(0.5, cid="A"),
+            _contract(0.5 - slack, cid="B"),
+        ]
+        return mutually_exclusive_scenarios(rungs, exhaustive=False)
+
+    assert law(1e-7).n_omega == 3  # a real hole in the partition
+    assert law(1e-10).n_omega == 2  # representation dust, renormalized away

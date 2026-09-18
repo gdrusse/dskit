@@ -21,6 +21,7 @@ from pmquant import mio
 from pmquant.books import DecisionEpochRecord, market_record_from_epoch, mid_from_ladders
 from pmquant.fees import DEFAULT_FILL_FEE_POLICY, FILL_FEE_POLICIES, FeeRateUnresolved
 from pmquant.nodes_capital import (
+    BUDGET_TOL,
     DEFAULT_SPLIT,
     DISPOSITION_DECLINED,
     DISPOSITION_FEE_GATE,
@@ -169,6 +170,34 @@ TestKellyConformance = conformance_suite(
 class TestParams:
     def test_the_reference_params_validate_clean(self):
         assert KellyMIO.validate_params(dict(PARAMS)) == []
+
+    def test_the_params_tuple_is_pinned(self):
+        # Restated in full, never derived from the class: a pin that reads its
+        # expectation from its subject asserts nothing, and a pin that omits a
+        # knob claims coverage it lacks. The first two are the doorway's.
+        assert KellyMIO._PARAMS == (
+            "solver",
+            "solver_options",
+            "bankroll",
+            "deploy_frac",
+            "kelly_fraction",
+            "min_lot",
+            "fee_rate_by_series",
+            "tau",
+            "depth_haircut",
+            "n_tangents",
+            "event_cap",
+            "fee_policy",
+            "on_exact_fee_exceeded",
+            "max_retighten_rounds",
+            "split",
+        )
+
+    def test_the_cross_event_budget_tolerance_is_the_documented_one(self):
+        # A relative hair on the folded batch total, four orders below the
+        # solver's own feasibility tolerance. Nothing else in the suite would
+        # notice it degrading toward a cent, so it is pinned here.
+        assert BUDGET_TOL == 1e-9
 
     @pytest.mark.parametrize(
         "missing", ["bankroll", "deploy_frac", "kelly_fraction", "fee_rate_by_series"]
@@ -690,6 +719,51 @@ class TestRun:
                 event["premium"] + sum(event["fees"].values()), abs=1e-12
             )
             assert set(event["fees"]) == set(event["level_fills"])
+
+    @pytest.mark.parametrize(
+        ("policy", "fee"),
+        [("order_vwap", 15.93), ("per_fill", 15.75), ("conservative", 15.93)],
+    )
+    def test_the_documents_fee_policy_bills_the_reported_money(self, policy, fee, tmp_path):
+        # The knob decides dollars, not just whether validate_params approves a
+        # string. Same records, same fills, three different bills.
+        _n, out = _run(
+            tmp_path, inputs=_multilevel_inputs(), deploy_frac=0.5, kelly_fraction=1.0,
+            fee_policy=policy,
+        )
+        event = out["evidence"]["events"]["KXTEST-E1"]
+        assert event["fee_policy"] == policy
+        assert out["lots"] == 1000
+        assert event["fees"] == {"KXTEST-E1-T1|yes": pytest.approx(fee, abs=1e-9)}
+        assert out["outlay"] == pytest.approx(350.0 + fee, abs=1e-9)
+
+    def test_the_documents_retighten_round_budget_is_obeyed(self, tmp_path):
+        common = dict(inputs=_multilevel_inputs(), deploy_frac=0.36577, kelly_fraction=1.0,
+                      on_exact_fee_exceeded="retighten")
+        _n, none = _run(tmp_path, max_retighten_rounds=0, **common)
+        assert none["lots"] == 0
+        assert none["evidence"]["totals"]["n_events_refused"] == 1
+        _n2, some = _run(tmp_path, **common)
+        assert some["lots"] > 0
+        assert some["evidence"]["totals"]["n_events_refused"] == 0
+
+    @pytest.mark.parametrize(
+        ("knob", "value"),
+        [
+            ("min_lot", 10_000),
+            ("tau", 0.5),
+            ("depth_haircut", 0.01),
+            ("n_tangents", 2),
+            ("event_cap", 5.0),
+        ],
+    )
+    def test_every_document_knob_reaches_the_program(self, knob, value, tmp_path):
+        # A knob validated at plan time and never threaded into EventInputs is
+        # the repo's commonest defect. One probe per knob: move it, and the
+        # allocation must move with it.
+        _n, base = _run(tmp_path)
+        _n2, moved = _run(tmp_path, **{knob: value})
+        assert (moved["lots"], moved["outlay"]) != (base["lots"], base["outlay"]), knob
 
     def test_build_model_outside_run_refuses(self):
         with pytest.raises(RuntimeError, match="run"):

@@ -7,6 +7,7 @@ import math
 import pytest
 
 from pmquant.books import (
+    FILL_FEE_POLICY,
     BookSnapshot,
     ContractInputs,
     CrossedBookError,
@@ -236,34 +237,75 @@ def test_walk_book_is_best_first_partial_and_limit_bound():
         BookSnapshot("KXA-1", "ask", ((0.30, 1), (0.25, 1)))
 
 
-def test_walk_book_bills_exactly_what_the_sizers_default_fee_policy_bills():
-    """The fill path and the sizer must price one fill the SAME way.
+def decimal_order_fee(ticker, fills, rate):
+    """The venue's ORDER-level fee on ``fills``, restated in exact decimal.
 
-    ``walk_book`` charges one venue fee on the total at VWAP; the MIO's
-    post-solve recompute charges its declared
-    :class:`~pmquant.fees.FillFeePolicy`, whose default is that same rule.
-    They are two expressions of one rule, so this pins them together: a
-    sizer that reserved a different number than the fill path bills is
-    the money model splitting in two, which is what PM-01 was about.
+    Deliberately independent (CLAUDE.md): nothing here imports pmquant's
+    own fee arithmetic, and prices and rates arrive as decimal STRINGS so
+    the oracle prices the number the case MEANS rather than a float's tail.
     """
-    policy = fill_fee_policy(DEFAULT_FILL_FEE_POLICY)
-    cases = [
-        ("KXCOPPERD-X", ((0.25, 100),), 100, 1.0, 0.07),
-        ("KXA-1", ((0.25, 40), (0.30, 50), (0.40, 100)), 70, 0.35, 0.07),
-        ("KXA-1", ((0.25, 40), (0.30, 50)), 500, 0.30, 0.07),  # a partial walk
-        ("POLYBTCUPDOWN15M-X", ((0.25, 100),), 100, 1.0, 0.07),
-        ("POLYWXHINYC-X", ((0.02, 1), (0.03, 1)), 2, 1.0, 0.07),
-        ("KXA-1", ((0.02, 1), (0.03, 1)), 2, 1.0, 0.07),  # where per-fill would differ
-    ]
-    for ticker, levels, size, limit, rate in cases:
-        fill = walk_book(BookSnapshot(ticker, "ask", levels), Order(size, limit, rate))
-        fills = tuple((h.price, h.contracts) for h in fill.levels)
-        assert fill.fee == pytest.approx(policy.fee_for(ticker, fills, rate), abs=1e-12), (
-            ticker, fills
-        )
-        assert fill.net_cost == pytest.approx(
-            sum(p * n for p, n in fills) + policy.fee_for(ticker, fills, rate), abs=1e-12
-        )
+    from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
+
+    n = sum(int(c) for _p, c in fills)
+    if n == 0:
+        return 0.0
+    vwap = sum(Decimal(str(price)) * int(c) for price, c in fills) / Decimal(n)
+    raw = Decimal(str(rate)) * Decimal(n) * vwap * (Decimal(1) - vwap)
+    if ticker.startswith("KX"):
+        return float(raw.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
+    return float(raw.quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP))
+
+
+#: (ticker, ask levels as decimal strings, order size, limit, rate). The
+#: rate VARIES on purpose: six cases at one rate would let a walk that
+#: ignored ``order.fee_rate`` entirely pass. So do the venue (Kalshi's
+#: ceil-to-cent against Polymarket's 1e-5 grid), the level count, and
+#: whether the order fills completely.
+WALK_CASES = [
+    ("KXA-1", (("0.25", 100),), 100, 1.0, "0.07"),
+    ("KXA-1", (("0.25", 100),), 100, 1.0, "0.01"),
+    ("KXA-1", (("0.25", 40), ("0.30", 50), ("0.40", 100)), 70, 0.35, "0.07"),
+    ("KXA-1", (("0.25", 40), ("0.30", 50), ("0.40", 100)), 70, 0.35, "0.20"),
+    ("KXA-1", (("0.25", 40), ("0.30", 50)), 500, 0.30, "0.035"),
+    ("KXA-1", (("0.02", 1), ("0.03", 1)), 2, 1.0, "0.07"),
+    ("POLYB-1", (("0.25", 100),), 100, 1.0, "0.07"),
+    ("POLYB-1", (("0.25", 40), ("0.30", 50), ("0.40", 100)), 70, 0.35, "0.05"),
+    ("POLYB-1", (("0.25", 40), ("0.30", 50)), 500, 0.30, "0.013"),
+    ("POLYB-1", (("0.02", 1), ("0.03", 1)), 2, 1.0, "0.07"),
+]
+
+
+@pytest.mark.parametrize(("ticker", "levels", "size", "limit", "rate"), WALK_CASES)
+def test_walk_book_bills_the_independent_oracle_at_every_rate_and_venue(
+    ticker, levels, size, limit, rate
+):
+    """The fill path's money, held to a restatement of the venue's own rule.
+
+    ``walk_book`` bills through :data:`~pmquant.books.FILL_FEE_POLICY`, the
+    same policy object the sizer's post-solve recompute uses, so there is
+    one rule and not two that must agree. What still needs proving is that
+    the rule is applied to the RIGHT arguments — the threaded rate, the
+    ticker's venue, and the levels actually hit rather than those offered.
+    """
+    book = BookSnapshot(ticker, "ask", tuple((float(price), n) for price, n in levels))
+    fill = walk_book(book, Order(size, limit, float(rate)))
+    hit = tuple(
+        (price, min(int(available), max(0, size - sum(int(a) for _p, a in levels[:i]))))
+        for i, (price, available) in enumerate(levels)
+        if float(price) <= limit and sum(int(a) for _p, a in levels[:i]) < size
+    )
+    assert [(float(p), c) for p, c in hit] == [(h.price, h.contracts) for h in fill.levels]
+    expected = decimal_order_fee(ticker, hit, rate)
+    assert fill.fee == pytest.approx(expected, abs=1e-12), (ticker, rate, hit)
+    premium = sum(float(price) * c for price, c in hit)
+    assert fill.net_cost == pytest.approx(premium + expected, abs=1e-12)
+
+
+def test_the_fill_path_and_the_sizer_share_one_fee_policy_object():
+    # Not two expressions of one rule that a test must keep equal: ONE object.
+    # A second copy of the arithmetic is the defect this pins out of existence.
+    assert FILL_FEE_POLICY is fill_fee_policy(DEFAULT_FILL_FEE_POLICY)
+    assert FILL_FEE_POLICY.name == DEFAULT_FILL_FEE_POLICY == "order_vwap"
 
 
 def test_fee_rate_none_on_the_series_path_refuses():
