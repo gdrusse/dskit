@@ -262,6 +262,22 @@ to a decision) and subscribed by the composition root; `run` and `sqlite` are
 phase 2's reference and ledger. A failing exporter is swallowed and counted,
 like every other sink.
 
+**Arrival-time execution** (ADR-0161) — `ArrivalPaperExecutor` is
+`PaperExecutor` with its `latency_ms` read as a SCHEDULE rather than a stamp.
+A submit sent at `t` lands at `t + latency_ms.submit` and consumes the book of
+that later instant; until then it is `pending` and held apart from the book. A
+cancel lands at `t + latency_ms.cancel`, and in between the order is
+`pending_cancel` and still working — a fill delivered before the cancel
+acknowledgement is retained and only the remainder is cancelled. A quote older
+than the one standing is refused and counted (`stream_gaps`), and
+`TransportEvidence` retains the send, acknowledgement, fills, cancel request
+and terminal acknowledgement, plus the clock offset of the book each order
+priced against. It is not registered: name it by
+`dskit.production.executor:ArrivalPaperExecutor`, the way a child names its
+own venue, so `EXECUTOR_KINDS` stays D14's three and `paper` is byte-identical
+to what it always was. Ordering realism is the first gate; measured fill and
+markout agreement is a later, separate one.
+
 **Push sources** — `websocket` is the same `Feed` seam with the rows still
 arriving through your connector: one supervised daemon worker owns the socket,
 hands what it receives to your `StreamTransport` and lands it with the same
@@ -309,7 +325,8 @@ dskit/production/
 │                      approve_hold, the early release of one); Limit; RangeGuard; Measure + registry
 ├── breaker.py         the breaker, its trips, the kill switch, cooling-off
 ├── arming.py          ApprovalVerifier ABC; maker-checker proofs; the arming fold
-├── executor.py        Executor / SubmittingExecutor; Shadow, Paper, Recorded, Live
+├── executor.py        Executor / SubmittingExecutor; Shadow, Paper, ArrivalPaper,
+│                      Recorded, Live; TransportEvidence
 ├── accounting.py      Accounting ABC; PaperAccounting; RecordedAccounting
 ├── coordination.py    Lease ABC; ProcessLease; LeasePermit; fencing tokens
 ├── policy.py          ActionPolicy; TransitionPolicy; the composed rule sets

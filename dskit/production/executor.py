@@ -36,6 +36,7 @@ proves ``PaperExecutor``.
 """
 
 import dataclasses
+import heapq
 import random
 from abc import ABC, abstractmethod
 from decimal import Decimal, InvalidOperation
@@ -75,6 +76,7 @@ from dskit.production.vocab import (
 )
 
 __all__ = [
+    "ArrivalPaperExecutor",
     "BpsFee",
     "Capabilities",
     "DEFAULT_FEE_KIND",
@@ -102,6 +104,7 @@ __all__ = [
     "SIMULATED_UNITS",
     "ShadowExecutor",
     "SubmittingExecutor",
+    "TransportEvidence",
     "empty_ack",
     "executor_conformance_suite",
 ]
@@ -147,9 +150,33 @@ _UNIT_NAMES = ("qty", "price", "cash")
 _LATENCY_VERBS = pin_members("executor.py's latency verbs", ("submit", "cancel"), OPERATIONS)
 
 #: The order statuses this module spells for itself, pinned to ``STATUSES``.
-_OPEN, _PARTIAL, _FILLED, _CANCELLED, _EXPIRED, _REJECTED, _NOT_SENT, _UNKNOWN = pin_members(
+#: ``pending`` and ``pending_cancel`` are the two an asynchronous venue
+#: reaches (ADR-0161); a synchronous one never leaves an order in either.
+(
+    _OPEN,
+    _PARTIAL,
+    _FILLED,
+    _CANCELLED,
+    _EXPIRED,
+    _REJECTED,
+    _NOT_SENT,
+    _UNKNOWN,
+    _PENDING,
+    _PENDING_CANCEL,
+) = pin_members(
     "executor.py's statuses",
-    ("open", "partial", "filled", "cancelled", "expired", "rejected", "not_sent", "unknown"),
+    (
+        "open",
+        "partial",
+        "filled",
+        "cancelled",
+        "expired",
+        "rejected",
+        "not_sent",
+        "unknown",
+        "pending",
+        "pending_cancel",
+    ),
     STATUSES,
 )
 _FINAL, _REVERSED = pin_members("executor.py's fill statuses", ("final", "reversed"), FILL_STATUSES)
@@ -211,6 +238,13 @@ def _intent_of(intent):
     if not isinstance(intent, Intent):
         raise ProductionError([f"submit takes an Intent, got {intent!r}"])
     return intent
+
+
+def _quote_of(quote):
+    """Return ``quote``, refusing anything that is not a ``Quote`` — ``_intent_of``'s twin."""
+    if not isinstance(quote, Quote):
+        raise ProductionError([f"on_quote takes a Quote, got {quote!r}"])
+    return quote
 
 
 def empty_ack(client_ref, ts_ms, status, reason):
@@ -1212,6 +1246,11 @@ def _decimal(value):
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
+def _orderable(proposal):
+    """Say whether a proposal names a side and a size a book can work at all."""
+    return proposal.side in _SIDES and proposal.qty is not None
+
+
 class PaperExecutor(SubmittingExecutor):
     """A deterministic simulated venue, fed ``on_quote`` by the loop (§5.7).
 
@@ -1342,8 +1381,7 @@ class PaperExecutor(SubmittingExecutor):
         ProductionError
             If ``quote`` is not a ``Quote``.
         """
-        if not isinstance(quote, Quote):
-            raise ProductionError([f"on_quote takes a Quote, got {quote!r}"])
+        _quote_of(quote)
         self._quotes[quote.instrument] = quote
         self._march(self._clock.now_ms())
 
@@ -1438,14 +1476,21 @@ class PaperExecutor(SubmittingExecutor):
         self._acks[ref] = self._take(intent, now)
         return self._acks[ref]
 
+    def _gated(self, ref, proposal, now):
+        """Return the refusal a proposal earns before any I/O, or None when none applies."""
+        if proposal.tif not in self.capabilities().tifs:
+            return empty_ack(ref, now, _REJECTED, "unsupported_tif")
+        if not _orderable(proposal):
+            return empty_ack(ref, now, _REJECTED, "no_order")
+        return None
+
     def _take(self, intent, now):
         """Gate, price and book one new order; return its ``Ack``."""
         ref, proposal = intent.client_ref, intent.proposal
-        if proposal.tif not in self.capabilities().tifs:
-            return empty_ack(ref, now, _REJECTED, "unsupported_tif")
-        side = _SIDES.get(proposal.side)
-        if side is None or proposal.qty is None:
-            return empty_ack(ref, now, _REJECTED, "no_order")
+        gated = self._gated(ref, proposal, now)
+        if gated is not None:
+            return gated
+        side = _SIDES[proposal.side]
         quote = self._quotes.get(proposal.instrument)
         if quote is None:
             return empty_ack(ref, now, _REJECTED, "no_quote")
@@ -1648,6 +1693,543 @@ class PaperExecutor(SubmittingExecutor):
         tuple
         """
         return ()
+
+
+# ---------------------------------------------------------------------------
+# ArrivalPaperExecutor — transport as an object (ADR-0161)
+# ---------------------------------------------------------------------------
+
+#: A message has LANDED once the instant has reached its arrival; a quote
+#: DISPLACES only the messages that landed strictly before its own
+#: publication, because a quote published at ``asof_ms`` stands in the book
+#: from ``asof_ms`` onward and an order that arrived earlier never saw it.
+#: Both reuse the module's existing reach strategy rather than a flag.
+_LANDED = _Reach(through=False)
+_DISPLACED = _Reach(through=True)
+
+#: What a ``pending`` acknowledgement says: nothing yet, and why.
+_IN_FLIGHT = "in_flight"
+
+
+@dataclasses.dataclass(frozen=True)
+class TransportEvidence:
+    """Every instant one order's transport exposed, as the VENUE saw them (ADR-0161).
+
+    The audit's clock contract asks a serve process to retain exchange
+    event time, local receive time, feature cutoff, decision completion,
+    send time, acknowledgement, each fill, the cancel request and the
+    terminal acknowledgement. This record holds the part the EXECUTOR
+    owns. Feature cutoff and decision completion are upstream of the venue
+    and are deliberately absent: inventing fields for them here would put
+    the serve loop's facts behind a venue's signature.
+
+    Parameters
+    ----------
+    client_ref : str
+        The reference the fold matches every answer by.
+    sent_ms : int
+        When ``submit`` was called — the injected clock's reading.
+    arrival_ms : int
+        When the order was scheduled to reach the venue.
+    acked_ms : int or None
+        When the venue answered; None while the order is in transport.
+    fill_ms : tuple of int
+        One instant per fill, in the order they were booked.
+    cancel_requested_ms, cancel_arrival_ms : int or None
+        When ``cancel`` was called, and when that request landed.
+    terminal_ack_ms : int or None
+        When the order first reached a state it never leaves.
+    book_asof_ms : int or None
+        The publication instant of the book the order priced against —
+        exchange event time.
+    book_recv_ms : int or None
+        When that book was handed to this venue — local receive time.
+
+    Examples
+    --------
+    An order sent at ``t`` that reached the venue 50 ms later::
+
+        evidence = TransportEvidence(
+            client_ref="cref-1", sent_ms=1_767_268_800_000,
+            arrival_ms=1_767_268_800_050, acked_ms=1_767_268_800_050,
+            fill_ms=(1_767_268_800_050,), cancel_requested_ms=None,
+            cancel_arrival_ms=None, terminal_ack_ms=1_767_268_800_050,
+            book_asof_ms=1_767_268_800_045, book_recv_ms=1_767_268_800_048,
+        )
+        evidence.clock_offset_ms()
+        # -> 3
+    """
+
+    client_ref: str
+    sent_ms: int
+    arrival_ms: int
+    acked_ms: int | None
+    fill_ms: tuple
+    cancel_requested_ms: int | None
+    cancel_arrival_ms: int | None
+    terminal_ack_ms: int | None
+    book_asof_ms: int | None
+    book_recv_ms: int | None
+
+    def clock_offset_ms(self):
+        """Return local receipt minus venue publication for the book this order priced against.
+
+        Returns
+        -------
+        int or None
+            None until the order has priced against a book, since an
+            offset nobody observed is not zero.
+        """
+        if self.book_recv_ms is None or self.book_asof_ms is None:
+            return None
+        return self.book_recv_ms - self.book_asof_ms
+
+
+@dataclasses.dataclass(frozen=True)
+class _InFlight(ABC):
+    """One message in transport: the instant it lands, and the order it names."""
+
+    at_ms: int
+    client_ref: str
+
+    @abstractmethod
+    def deliver(self, venue, now_ms):
+        """Apply this message to ``venue`` as at ``now_ms``."""
+
+
+@dataclasses.dataclass(frozen=True)
+class _InFlightSubmit(_InFlight):
+    """A submit in transport: it prices against whatever book it finds on arrival."""
+
+    intent: object
+
+    def deliver(self, venue, now_ms):
+        """Hand the order to the venue, which prices it against the book of this instant."""
+        venue._land_submit(self.client_ref, self.intent, now_ms)
+
+
+@dataclasses.dataclass(frozen=True)
+class _InFlightCancel(_InFlight):
+    """A cancel in transport: it applies to whatever is still working on arrival."""
+
+    def deliver(self, venue, now_ms):
+        """Hand the cancel to the venue, which takes only the remainder."""
+        venue._land_cancel(self.client_ref, now_ms)
+
+
+class _ArrivalQueue:
+    """Messages in transport, delivered in ``(arrival instant, send order)`` order."""
+
+    def __init__(self):
+        self._queued = []
+        self._sent = 0
+
+    def add(self, message):
+        """Queue one message; two landing at one instant keep the order they were sent in."""
+        self._sent += 1
+        heapq.heappush(self._queued, (message.at_ms, self._sent, message))
+
+    def due(self, instant, reach):
+        """Remove and return every message ``instant`` has reached under ``reach``, earliest first."""
+        landed = []
+        while self._queued and reach.reached(instant - self._queued[0][0]):
+            landed.append(heapq.heappop(self._queued)[2])
+        return landed
+
+
+class ArrivalPaperExecutor(PaperExecutor):
+    """The paper venue with TRANSPORT: an order is priced by the book it FINDS (ADR-0161).
+
+    ``PaperExecutor`` adds ``latency_ms`` to the instant it stamps and then
+    prices immediately, so latency is a label on an answer that was already
+    decided. Here the same two knobs are a SCHEDULE. A submit sent at ``t``
+    lands at ``t + latency_ms.submit`` and consumes the book of that later
+    instant; until then it is ``pending`` and held apart from the book, so
+    nothing can fill an order the venue has not received. A cancel sent at
+    ``t`` lands at ``t + latency_ms.cancel``; in between the order is
+    ``pending_cancel`` and STILL WORKING, so a fill the market delivers
+    before the cancel acknowledgement is kept and the landing cancel takes
+    only the remainder. Both statuses are ``vocab.STATUSES`` members the
+    fold, ``leg.py``'s event table, ``StateView.pending``, ``Reconciler``
+    and ``Recovery`` already understand.
+
+    A simulated venue has no thread, so time advances inside it only when
+    it is asked something: ``on_quote``, ``submit``, ``cancel``, ``order``,
+    ``open_orders`` and ``fills`` each land what transport owes before
+    answering. ``on_quote`` uses the quote's OWN publication instant:
+    messages that landed strictly before ``asof_ms`` are delivered against
+    the book that stands, then the quote is published, then the rest are
+    delivered against it — which is what stops an arrival from seeing a
+    book published after it. A quote older than the one standing for its
+    instrument is refused and counted (``stream_gaps``), because an
+    arrival-time book that can move backwards is not one.
+
+    With ``latency_ms = {submit: 0, cancel: 0}`` every message is queued and
+    landed inside the same call at the same instant, so this venue answers
+    exactly what ``PaperExecutor`` answers — the degeneration is by
+    construction, not by a branch.
+
+    **What passing this proves.** That the seam ORDERS send, arrival, fill
+    and cancel correctly against a book it is GIVEN. It proves nothing about
+    agreement with a real venue: the latency values are declared, not
+    measured, and ``queue_frac`` and ``size_cap`` remain heuristics rather
+    than exchange queue position. Deterministic ordering is the first gate;
+    measured fill and markout agreement is a later, separate one.
+
+    Parameters
+    ----------
+    params : dict, optional
+        ``PaperExecutor``'s eleven knobs, unchanged; ``notes`` is allowed.
+    clock : Clock
+    scope : ExecutionScope, optional
+        As for :class:`PaperExecutor`.
+
+    Examples
+    --------
+    A market buy that pays the ask of its ARRIVAL, not of its decision::
+
+        clock = TestClock(start_ms=0)
+        venue = ArrivalPaperExecutor({"latency_ms": {"submit": 50}}, clock=clock)
+        venue.on_quote(Quote(instrument="INS1", bid=Decimal("99.95"), ask=Decimal("100.00"),
+                             mid=Decimal("99.975"), asof_ms=0))
+        venue.submit(intent, SimulatedPermit(...), state).status  # 'pending'
+        clock.advance(50)
+        venue.on_quote(Quote(instrument="INS1", bid=Decimal("100.00"), ask=Decimal("100.05"),
+                             mid=Decimal("100.025"), asof_ms=50))
+        venue.order(intent.client_ref).avg_price
+        # -> Decimal('100.05')
+    """
+
+    def __init__(self, params=None, *, clock, scope=None):
+        super().__init__(params, clock=clock, scope=scope)
+        self._queue = _ArrivalQueue()
+        self._inflight = {}
+        self._cancelling = {}
+        self._evidence = {}
+        self._asof = {}
+        self._recv = {}
+        self._gaps = {}
+
+    # -- the market -------------------------------------------------------
+
+    def on_quote(self, quote):
+        """Take one quote as of ITS OWN publication, not the moment it was handed over.
+
+        Parameters
+        ----------
+        quote : Quote
+
+        Raises
+        ------
+        ProductionError
+            If ``quote`` is not a ``Quote``.
+        """
+        _quote_of(quote)
+        now = self._clock.now_ms()
+        # A publication stamp ahead of the local clock is a clock offset, not
+        # a licence to land a message before the process has reached it.
+        published = min(quote.asof_ms, now)
+        self._release(published, _DISPLACED)
+        self._publish(quote, now)
+        self._land(now)
+        self._march(now)
+
+    def _publish(self, quote, now_ms):
+        """Put ``quote`` in the book unless it is older than the one standing, which is a gap."""
+        standing = self._asof.get(quote.instrument)
+        if standing is not None and quote.asof_ms < standing:
+            self._gaps[quote.instrument] = self._gaps.get(quote.instrument, 0) + 1
+            return
+        self._asof[quote.instrument] = quote.asof_ms
+        self._recv[quote.instrument] = now_ms
+        self._quotes[quote.instrument] = quote
+
+    # -- transport --------------------------------------------------------
+
+    def _release(self, instant, reach):
+        """Deliver every queued message ``instant`` has reached, each at its own arrival."""
+        for message in self._queue.due(instant, reach):
+            message.deliver(self, message.at_ms)
+
+    def _land(self, now_ms):
+        """Deliver every message that has landed by ``now_ms``."""
+        self._release(now_ms, _LANDED)
+
+    def _note(self, ref, **changes):
+        """Amend one order's transport evidence; a ref this venue never sent has none."""
+        record = self._evidence.get(ref)
+        if record is not None:
+            self._evidence[ref] = dataclasses.replace(record, **changes)
+
+    def _note_terminal(self, ref):
+        """Record, once, the instant ``ref`` first reached a state it never leaves."""
+        working, record = self._book.get(ref), self._evidence.get(ref)
+        if working is None or record is None or record.terminal_ack_ms is not None:
+            return
+        if working.order.status in TERMINAL_STATUSES:
+            self._note(ref, terminal_ack_ms=working.order.updated_ms)
+
+    # -- submit -----------------------------------------------------------
+
+    def submit(self, intent, permit, state):
+        """Send one order into transport; the book of its ARRIVAL prices it.
+
+        Parameters
+        ----------
+        intent : Intent
+        permit : Permit
+            Any permit; anything that is not one is ``permit_type``.
+        state : TickState
+            Ignored.
+
+        Returns
+        -------
+        Ack
+            ``pending``/``in_flight`` stamped at the arrival while the order
+            is in transport, and the venue's own answer once it lands —
+            which, under a zero ``latency_ms.submit``, is this same call. A
+            re-used ``client_ref`` returns the standing answer. A proposal
+            this venue's own ``capabilities`` decline never enters transport
+            at all: §5.7's gating precedes the I/O it would have caused.
+
+        Raises
+        ------
+        ProductionError
+            If ``intent`` is not an ``Intent``.
+        """
+        ref = _intent_of(intent).client_ref
+        sent_ms = self._clock.now_ms()
+        arrival_ms = sent_ms + self._latency["submit"]
+        self._land(sent_ms)
+        if not isinstance(permit, Permit):
+            return empty_ack(ref, arrival_ms, _NOT_SENT, "permit_type")
+        if ref in self._acks:
+            return self._acks[ref]
+        gated = self._gated(ref, intent.proposal, arrival_ms)
+        if gated is not None:
+            self._acks[ref] = gated
+            return gated
+        self._send(ref, intent, sent_ms, arrival_ms)
+        self._land(sent_ms)
+        return self._acks[ref]
+
+    def _send(self, ref, intent, sent_ms, arrival_ms):
+        """Put one order into transport: answer it ``pending`` and queue its arrival."""
+        self._acks[ref] = empty_ack(ref, arrival_ms, _PENDING, _IN_FLIGHT)
+        self._evidence[ref] = TransportEvidence(
+            client_ref=ref,
+            sent_ms=sent_ms,
+            arrival_ms=arrival_ms,
+            acked_ms=None,
+            fill_ms=(),
+            cancel_requested_ms=None,
+            cancel_arrival_ms=None,
+            terminal_ack_ms=None,
+            book_asof_ms=None,
+            book_recv_ms=None,
+        )
+        self._inflight[ref] = self._pending_order(ref, intent.proposal, sent_ms, arrival_ms)
+        self._queue.add(_InFlightSubmit(arrival_ms, ref, intent))
+
+    def _pending_order(self, ref, proposal, sent_ms, arrival_ms):
+        """Return the ``pending`` order a gated-and-accepted proposal shows while in transport."""
+        return OrderState(
+            client_ref=ref,
+            venue_ref=None,
+            status=_PENDING,
+            ts_ms=arrival_ms,
+            filled_qty=_ZERO,
+            avg_price=None,
+            fee=_ZERO,
+            reason=_IN_FLIGHT,
+            native={},
+            instrument=proposal.instrument,
+            side=proposal.side,
+            qty=proposal.qty,
+            remaining_qty=proposal.qty,
+            limit=proposal.limit,
+            tif=proposal.tif,
+            created_ms=sent_ms,
+            updated_ms=sent_ms,
+        )
+
+    def _land_submit(self, ref, intent, now_ms):
+        """Deliver one submit: the book of this instant prices it, and a chasing cancel still applies."""
+        self._inflight.pop(ref, None)
+        self._acks[ref] = self._take(intent, now_ms)
+        instrument = intent.proposal.instrument
+        quote = self._quotes.get(instrument)
+        self._note(
+            ref,
+            acked_ms=now_ms,
+            book_asof_ms=None if quote is None else quote.asof_ms,
+            book_recv_ms=self._recv.get(instrument),
+        )
+        self._note_terminal(ref)
+        self._restate_pending_cancel(ref)
+
+    # -- resting orders ---------------------------------------------------
+
+    def _book_fill(self, ref, venue_ref, instrument, side_name, qty, price, liquidity, now):
+        """Book the fill as the base does, and keep the instant it happened."""
+        fee = super()._book_fill(ref, venue_ref, instrument, side_name, qty, price, liquidity, now)
+        record = self._evidence.get(ref)
+        if record is not None:
+            self._note(ref, fill_ms=record.fill_ms + (now,))
+        return fee
+
+    def _fill_working(self, ref, order, qty, quote, now):
+        """Fill as the base does, then restore the ``pending_cancel`` the fill's status overwrote."""
+        super()._fill_working(ref, order, qty, quote, now)
+        self._restate_pending_cancel(ref)
+
+    def _rebook(self, ref, **changes):
+        """Rebook as the base does, then record a terminal state the moment it is reached."""
+        super()._rebook(ref, **changes)
+        self._note_terminal(ref)
+
+    def _restate_pending_cancel(self, ref):
+        """Label an order whose cancel is still in transport ``pending_cancel``."""
+        working = self._book.get(ref)
+        if ref not in self._cancelling or working is None:
+            return
+        if working.order.status not in TERMINAL_STATUSES:
+            self._rebook(ref, status=_PENDING_CANCEL)
+
+    # -- read and cancel --------------------------------------------------
+
+    def cancel(self, ref):
+        """Ask the venue to cancel one order; the request lands after ``latency_ms.cancel``.
+
+        Parameters
+        ----------
+        ref : str
+
+        Returns
+        -------
+        Ack
+            Stamped at the cancel's arrival, and ``pending_cancel`` while
+            the request is in transport — the order is still working and
+            may still fill. A cancel for an order whose own submit has not
+            landed CHASES it rather than refusing it, because a terminal
+            refusal would report the end of an order that is still on its
+            way. ``rejected``/``unknown_ref`` is kept for a reference this
+            venue has never been sent at all.
+        """
+        sent_ms = self._clock.now_ms()
+        arrival_ms = sent_ms + self._latency["cancel"]
+        self._land(sent_ms)
+        held = self._held(ref)
+        if held is None:
+            return empty_ack(ref, arrival_ms, _REJECTED, "unknown_ref")
+        if held.status in TERMINAL_STATUSES:
+            return dataclasses.replace(_ack_of(held), ts_ms=arrival_ms)
+        self._request_cancel(ref, sent_ms, arrival_ms)
+        self._land(sent_ms)
+        return dataclasses.replace(_ack_of(self._held(ref)), ts_ms=arrival_ms)
+
+    def _request_cancel(self, ref, sent_ms, arrival_ms):
+        """Mark one order as cancelling — booked or still in transport — and queue the request."""
+        self._cancelling[ref] = arrival_ms
+        self._note(ref, cancel_requested_ms=sent_ms, cancel_arrival_ms=arrival_ms)
+        if ref in self._inflight:
+            self._restate_inflight(ref, _PENDING_CANCEL, sent_ms)
+        else:
+            self._rebook(ref, status=_PENDING_CANCEL, updated_ms=sent_ms)
+        self._queue.add(_InFlightCancel(arrival_ms, ref))
+
+    def _land_cancel(self, ref, now_ms):
+        """Deliver one cancel: what is still working is cancelled, every fill already made stands."""
+        self._cancelling.pop(ref, None)
+        if ref in self._inflight:
+            # The cancel overtook its own order. The venue has nothing to
+            # cancel, so the request is refused and the order lands as sent.
+            self._restate_inflight(ref, _PENDING, now_ms)
+            return
+        working = self._book.get(ref)
+        if working is None or working.order.status in TERMINAL_STATUSES:
+            return
+        self._rebook(ref, status=_CANCELLED, updated_ms=now_ms)
+
+    def _held(self, ref):
+        """Return what this venue holds for ``ref`` — booked, still in transport, or None."""
+        working = self._book.get(ref)
+        return self._inflight.get(ref) if working is None else working.order
+
+    def _restate_inflight(self, ref, status, at_ms):
+        """Move the status of an order that has not reached the venue yet."""
+        order = self._inflight.get(ref)
+        if order is not None:
+            self._inflight[ref] = dataclasses.replace(order, status=status, updated_ms=at_ms)
+
+    def order(self, ref):
+        """Return the venue's order for ``ref``, or the ``pending`` one still in transport.
+
+        Parameters
+        ----------
+        ref : str
+
+        Returns
+        -------
+        OrderState or None
+            The answer a recovering process needs: a reference whose submit
+            has not landed resolves to ``pending`` rather than to None, so
+            an ambiguous outcome is settled by asking rather than resending.
+        """
+        self._land(self._clock.now_ms())
+        return self._held(ref)
+
+    def open_orders(self):
+        """Return the VENUE's working orders; one still in transport is not open at the venue.
+
+        Returns
+        -------
+        tuple of OrderState
+        """
+        self._land(self._clock.now_ms())
+        return super().open_orders()
+
+    def fills(self, since_ms, cursor=None):
+        """Return every fill at or after ``since_ms``, landing what transport owes first.
+
+        Parameters
+        ----------
+        since_ms : int
+        cursor : object, optional
+            Ignored: the page is exhaustive, so the next cursor is None.
+
+        Returns
+        -------
+        tuple
+            ``(fills, None)``.
+        """
+        self._land(self._clock.now_ms())
+        return super().fills(since_ms, cursor)
+
+    # -- the evidence the venue itself owns --------------------------------
+
+    def transport(self):
+        """Return one :class:`TransportEvidence` per order sent, in send order.
+
+        Lands what transport owes first, like every other read here, so the
+        evidence describes the same instant the order verbs would answer for.
+
+        Returns
+        -------
+        tuple of TransportEvidence
+        """
+        self._land(self._clock.now_ms())
+        return tuple(self._evidence.values())
+
+    def stream_gaps(self):
+        """Return how many out-of-order quotes each instrument's book refused.
+
+        Returns
+        -------
+        mapping
+            Instrument to count; an instrument that never saw one is absent.
+        """
+        return MappingProxyType(dict(self._gaps))
 
 
 # ---------------------------------------------------------------------------
