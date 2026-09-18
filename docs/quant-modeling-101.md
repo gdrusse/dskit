@@ -17,12 +17,17 @@ From the repository root, with TeX Live and the packages declared in the source:
 
 ```bash
 mkdir -p /tmp/quant101-build
-pdflatex -interaction=nonstopmode -halt-on-error -output-directory=/tmp/quant101-build children/intraday_equities/docs/explanations/quant-modeling-101.tex
-pdflatex -interaction=nonstopmode -halt-on-error -output-directory=/tmp/quant101-build children/intraday_equities/docs/explanations/quant-modeling-101.tex
-cp /tmp/quant101-build/quant-modeling-101.pdf children/intraday_equities/docs/explanations/quant-modeling-101.pdf
+pdflatex -interaction=nonstopmode -halt-on-error -output-directory=/tmp/quant101-build docs/quant-modeling-101.tex
+pdflatex -interaction=nonstopmode -halt-on-error -output-directory=/tmp/quant101-build docs/quant-modeling-101.tex
+cp /tmp/quant101-build/quant-modeling-101.pdf docs/quant-modeling-101.pdf
 ```
 
 ## Verification and scope
+
+Moved PDF, source and this page to root `docs/` on 2026-09-18 at the owner's
+request; PDF content is unchanged. Follow-on production-machinery audits live in
+[equities](../children/intraday_equities/docs/explanations/production-research-audit.md)
+and [pmquant](../children/pmquant/docs/explanations/production-research-audit.md).
 
 2026-09-18, GPT-6; base `9926d5c8bd1e555b63e9af8755fbb4eed7d03070`.
 Owner requested the guide, LaTeX PDF, wrap, and push. Allowed changes are this

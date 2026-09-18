@@ -1,5 +1,32 @@
 # Re-entry
 
+## Current wrap: project production-machinery audits (2026-09-18)
+
+Moved the unchanged Quantitative Modeling 101 PDF and its LaTeX/Markdown companions
+to root `docs/quant-modeling-101.{pdf,tex,md}` at the owner's request. The older
+handoff below preserves history; its child location is superseded by this move.
+
+Delivered 16-page research-proposal/machinery audits for each child at
+`children/{intraday_equities,pmquant}/docs/explanations/production-research-audit.{pdf,tex,md}`.
+They inventory shared production/pipeline/library machinery, actual child wiring,
+and standalone pmquant legacy capabilities at `d12526e9`, with source directories,
+P0/P1 gaps and concrete production acceptance drills. Inspected dskit base: `72b9b33`.
+
+Key findings: generic paper latency shifts timestamps, not arrival-time books;
+equity replay excludes partial fills and uses zero latency; final refit remains
+fail-closed and widened false-signal estimates are not certified upper bounds.
+pmquant's reported MIO outlay/wealth still use approximate fees; eventual-rung
+features need a causal membership contract; legacy inventory/dependence/settlement
+machinery exists but is not automatically migrated into the child money path.
+Neither child has a demonstrated venue-bound production deployment.
+
+Verification: targeted executor, equity replay/bundle and pmquant book/fee tests
+**336 passed / 12 skipped** (68.81s); no full suite. Both PDFs compile without
+overfull boxes or unresolved references; all 32 rendered pages visually checked.
+Proportionate editorial accuracy/path/layout review; no code review or live
+conformance claimed. Documentation only: operational checkout and owner Path untouched.
+Next: choose an audit P0 acceptance milestone and approve any required ADR before code.
+
 ## Current wrap: Quantitative Modeling 101 reference (2026-09-18)
 
 Delivered the owner-requested 27-page LaTeX PDF and editable source at
