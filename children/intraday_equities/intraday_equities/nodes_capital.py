@@ -54,8 +54,12 @@ chance constraint at level ``1 - q``, and ``run`` records exactly that in
 its ``evidence`` output. The withdrawn name ``pi_upper`` is refused at this
 boundary as well as at the bundle's, and
 ``uncertainty_intake.ProbabilityUpperBound`` — the family a genuine bound
-would belong to — has no member anywhere in ``dskit``, so no code path can
-promote the widened reading into one.
+would belong to — is CLOSED and has no member, so a caller cannot define
+one to promote the widened reading into a bound. What that buys is that
+the promotion cannot happen by accident or by a downstream subclass; it is
+not protection against code that already controls the interpreter
+(ADR-0122's Correction), and the intake screens generally are in-process
+checks, not a root of trust.
 
 Every owner-only risk number (``risk_aversion_gamma``, ``cardinality``,
 ``cvar_alpha``/``cvar_limit``, ``min_ticket`` from the doorway; ``hfdr_q``,

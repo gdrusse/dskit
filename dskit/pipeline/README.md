@@ -739,10 +739,12 @@ dskit/pipeline/
 │                      decision (ADR-0165): UncertaintyAttestation +
 │                      CoverageEvidence + DecisionDemand, and the
 │                      AttestedUncertainty family whose members bind ONE
-│                      artifact class to ONE estimand. Five refusals —
+│                      artifact class to ONE estimand. Six refusals —
 │                      foreign_model / post_decision / stale / uncalibrated /
-│                      wrong_unit. ProbabilityUpperBound is the bound-bearing
-│                      family and dskit ships no member of it
+│                      unknown_producer / wrong_unit. ProbabilityUpperBound is
+│                      the bound-bearing family and it is CLOSED: no member,
+│                      and none can be defined. Screens fail closed for an
+│                      ordinary caller; they are not a root of trust
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

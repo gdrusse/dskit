@@ -41,7 +41,7 @@
         "band_bps": 10.0,
         "max_position_notional": 5000.0,
         "bundle_max_staleness_ms": 5000,
-        "bundle_artifact_sha256": "c15b67bc7186ee073e7ad7974202c473b0d73cc5d225e317e24c2eb686c8e691",
+        "bundle_artifact_sha256": "f84b40af53024903fa70b84fa811d99bb1903af734b62bf18464ccb599a66362",
         "bundle_producer_document_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         "bundle_producer_node": "source",
         "bundle_model_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",

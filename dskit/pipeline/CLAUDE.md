@@ -86,13 +86,24 @@ on it without breaking its rulings.
   different strings, and a consumer states what it needs by naming a
   class. `problems`/`admit` are templates `__init_subclass__` refuses to
   let a member override; five screens, one per `REFUSAL_REASONS` code.
-  `ProbabilityUpperBound` is the family a genuine bound would join and
-  **dskit ships no member of it**, so a widened `pi_widened` can never be
-  admitted as the `pi` of a chance constraint — by construction, not by
-  convention. The module MEASURES NOTHING: `CoverageEvidence` records what
-  a producer attests, and the floor it is compared against
-  (`DecisionDemand.min_measured_coverage`) is the consumer's, with no
-  default. Presence of an attestation is not evidence of calibration.
+  `ProbabilityUpperBound` is the family a genuine bound would join and it
+  is **CLOSED** (`CLOSED_FAMILIES`): `__init_subclass__` refuses every
+  subclass at class-definition time, so there is no member and a caller
+  cannot define one. The seal was added after a review showed four lines
+  re-creating the defect it was supposed to prevent — the first version
+  only *documented* that nothing joined. Every other name the doorway
+  defines is sealed too (`_FINAL_METHODS`, with a test asserting it and
+  `_HOOKS` cover every callable the class declares), because overriding a
+  single screen erases a refusal just as effectively as overriding the
+  template. The module MEASURES NOTHING and is NOT a root of trust:
+  `CoverageEvidence` records what a producer attests, the floor it is
+  compared against (`DecisionDemand.min_measured_coverage`) is the
+  consumer's with no default, and the `unknown_producer` screen narrows
+  "any object of the right shape" to "one whose attestation and self-report
+  agree on a producer this package has registered" — real narrowing, not
+  provenance. An admitted artifact is not evidence that a calibrated
+  estimator produced it (ADR-0122's Correction: a Python check cannot be a
+  root of trust).
 - **Uncertainty sets** — `register_uncertainty_set`
   (`uncertainty_set.py`); `probability`/`mean`/`outcome` ship. Subclass
   `BudgetedUncertaintySet` and supply three declaration hooks
@@ -698,9 +709,9 @@ dskit/pipeline/
 ├── uncertainty_set.py budgeted uncertainty sets: worst case over a set,
 │                      robust counterpart, weighted realizations
 ├── uncertainty_intake.py  whether an artifact may inform THIS decision:
-│                      attestation + demand, five refusals, the estimand as
-│                      a TYPE, and an empty ProbabilityUpperBound family
-│                      (ADR-0165)
+│                      attestation + demand, six refusals, the estimand as
+│                      a TYPE, and a CLOSED ProbabilityUpperBound family
+│                      nothing can join (ADR-0165)
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets

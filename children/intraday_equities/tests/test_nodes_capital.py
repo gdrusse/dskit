@@ -25,10 +25,16 @@ from intraday_equities.forecast_bundle import (
     ForecastBundle,
     default_label_contract,
 )
-from dskit.pipeline.false_signal import FalseSignalEstimate
-from dskit.pipeline.mean_interval import ConfidenceInterval
-from dskit.pipeline.outcome_interval import BlockConformalInterval, BlockResiduals
+from dskit.pipeline.false_signal import FalseSignalEstimate, GrenanderLocalFdr
+from dskit.pipeline.mean_interval import ClusterBootstrapInterval, MeanEvidence
+from dskit.pipeline.node import class_ref
+from dskit.pipeline.outcome_interval import (
+    BlockConformalInterval,
+    BlockResiduals,
+    TwoSidedBlockConformalInterval,
+)
 from dskit.pipeline.uncertainty_intake import (
+    CLOSED_FAMILIES,
     REFUSAL_REASONS,
     AttestedFalseSignalRate,
     AttestedMeanConfidence,
@@ -43,6 +49,7 @@ from intraday_equities.nodes_capital import (
     BUNDLE_FIELDS,
     NODE_KINDS,
     EquityKellyMIO,
+    SchwabCostModel,
     _bundle_problems,
 )
 
@@ -96,12 +103,38 @@ UNCERTAINTY_PARAMS = {
 }
 PARAMS.update(UNCERTAINTY_PARAMS)
 
+#: Per-entity false-signal rates. ``pi_hat`` is DELIBERATELY not a function
+#: of ``pi_widened``: round-1 review proved the old fixture clamped it to
+#: ``min(pi_widened, 0.10)``, a name-independent constant, which made the
+#: two candidate fields indistinguishable in exactly the test written to
+#: distinguish them — swapping the HFDR row's field source left 127 tests
+#: green. Independent values, plus the behavioural pin in
+#: ``TestTheHfdrRowReadsTheWidenedField``, are what hold the field source
+#: down now.
+PI_WIDENED_BY_ENTITY = {"AAPL": 0.20, "MSFT": 0.25, "XOM": 0.28}
+PI_HAT_BY_ENTITY = {"AAPL": 0.04, "MSFT": 0.11, "XOM": 0.19}
+
 
 def _weights(n=8):
     return [1.0 / n] * n
 
 
-def _row(entity, price, pi_widened, scenarios, decision_ts=DECISION_TS, weights=None):
+def _ascending_weights(n=8):
+    """Distinct, ascending scenario probabilities, so their ORDER matters."""
+    total = n * (n + 1) / 2.0
+    return [(i + 1) / total for i in range(n)]
+
+
+def _row(
+    entity,
+    price,
+    pi_widened,
+    scenarios,
+    decision_ts=DECISION_TS,
+    weights=None,
+    pi_hat=None,
+):
+    pi_hat = PI_HAT_BY_ENTITY[entity] if pi_hat is None else pi_hat
     return {
         "entity": entity,
         "decision_ts": decision_ts,
@@ -109,7 +142,7 @@ def _row(entity, price, pi_widened, scenarios, decision_ts=DECISION_TS, weights=
         "model_release_id": RELEASE,
         "unit": BUNDLE_UNIT,
         "price": price,
-        "pi_hat": min(pi_widened, 0.10),
+        "pi_hat": pi_hat,
         "pi_widened": pi_widened,
         "weights": weights or _weights(len(scenarios)),
         "scenarios": list(scenarios),
@@ -405,6 +438,13 @@ class TestRealSolve:
         )
         assert "XOM" not in out["target"]
         assert out["trades"]["XOM"] == {"buy": 0, "sell": 20}
+        # The mandatory-exit name's HFDR coefficient is inert BECAUSE its
+        # x_max is 0 — the coefficient sweep showed changing that
+        # coefficient cannot move the answer. What must stay true, and is
+        # asserted here rather than left implicit, is that a legacy
+        # position being unwound never blocks the surviving names from
+        # being funded.
+        assert "AAPL" in out["target"]
 
     def test_the_hfdr_row_excludes_a_name_above_q(self, tmp_path):
         # Push XOM's pi_widened above hfdr_q with nothing to offset it — the
@@ -497,6 +537,62 @@ class TestExitCostIsPriced:
 
         zero_out = ZeroExitCost("size2", {**PARAMS, "cvar_limit": 100000.0}).run(_ctx(tmp_path), inputs)
         assert zero_out["metrics"]["cvar"] < real_out["metrics"]["cvar"]
+
+
+class TestTheDoorwayHooksReadTheDeclaredFields:
+    """Each value this node hands the MILP comes from the field it names.
+
+    Round-1 review found the HFDR coefficient's field source unpinned; a
+    sweep over every other field a constraint or objective coefficient
+    reads found three more mutations the suite could not see. These are
+    assertions on the doorway hooks' own declared outputs — the shape
+    ``TestExitCostIsPriced`` already uses — not on internal state.
+    """
+
+    def test_cost_buy_is_the_declared_half_spread(self):
+        # `"cost_buy": spread -> 0.0` survived the whole suite: the entry
+        # half-spread also reaches cost_sell and exit_cost_per_share, so a
+        # comparative solve at two spread_bps values still differs even
+        # when the buy side is dead.
+        node = _node()
+        _names, rows, _account = node.instruments(_uinputs())
+        costs = SchwabCostModel(
+            {name: PARAMS[name] for name in SchwabCostModel._PARAMS}
+        )
+        for name, row in rows.items():
+            assert row["cost_buy"] == costs.buy_per_share(row["price"])
+        assert any(row["cost_buy"] > 0.0 for row in rows.values())
+
+    def test_cost_buy_tracks_the_configured_rate(self):
+        node = _node(spread_bps=50.0)
+        _names, rows, _account = node.instruments(_uinputs())
+        for name, row in rows.items():
+            assert row["cost_buy"] == pytest.approx(row["price"] * 50.0 * 1e-4)
+
+    def test_the_payoff_weights_are_the_bundles_declared_weights(self):
+        # Uniform weights make their ORDER unobservable, so this case
+        # declares ascending ones: reversing the vector in `instruments`
+        # is then a different distribution, and is caught here.
+        weights = _ascending_weights(8)
+        bundle = [
+            dict(row, weights=list(weights))
+            for row in _bundle()
+        ]
+        node = _node(bundle=bundle)
+        node.instruments(_uinputs(bundle=bundle))
+        emitted, matrix = node.payoffs(_uinputs(bundle=bundle))
+        assert emitted == weights
+        assert emitted != list(reversed(weights))
+        for row in bundle:
+            assert matrix[row["entity"]] == [float(v) for v in row["scenarios"]]
+
+    def test_the_payoff_matrix_is_the_bundles_scenarios(self):
+        bundle = _bundle()
+        node = _node(bundle=bundle)
+        node.instruments(_uinputs(bundle=bundle))
+        _weights_out, matrix = node.payoffs(_uinputs(bundle=bundle))
+        for row in bundle:
+            assert matrix[row["entity"]] == [float(v) for v in row["scenarios"]]
 
 
 class TestPositionBookkeeping:
@@ -660,7 +756,10 @@ class TestNoTradeBandFloorsAreLoadBearing:
         band_bps = 1000.0  # -> band_shares = ceil(1000*1e-4*190000/190) = 100
         rng = np.random.default_rng(1)
         weights = _weights(64)
-        row = _row("XOM", price, pi_widened=0.10, scenarios=rng.normal(0.015, 0.02, 64), weights=weights)
+        row = _row(
+            "XOM", price, pi_widened=0.10, scenarios=rng.normal(0.015, 0.02, 64),
+            weights=weights, pi_hat=0.02,
+        )
         portfolio = _portfolio(
             positions={"XOM": held}, cash=5000.0, buying_power=5000.0, gross_limit=None
         )
@@ -1160,9 +1259,6 @@ class TestConfirmedCapEnforcement:
 # bundle, cap, portfolio and survivors identical to the passing case.
 # ---------------------------------------------------------------------------
 
-PI_WIDENED_BY_ENTITY = {"AAPL": 0.20, "MSFT": 0.25, "XOM": 0.28}
-
-
 def _coverage(measured=0.94):
     """One producer's attested out-of-sample coverage measurement."""
     return CoverageEvidence(
@@ -1173,12 +1269,21 @@ def _coverage(measured=0.94):
     )
 
 
-def _attestation(artifact_id, **overrides):
+#: The registered producers the child's fixtures attest. dskit's intake
+#: screen checks the attested producer against the estimand's registry AND
+#: against the artifact's own self-report.
+RATE_PRODUCER = class_ref(GrenanderLocalFdr)
+BAND_PRODUCER = class_ref(BlockConformalInterval)
+MEAN_PRODUCER = class_ref(ClusterBootstrapInterval)
+
+
+def _attestation(artifact_id, producer=BAND_PRODUCER, **overrides):
     base = {
         "artifact_id": artifact_id,
         "model_identity": RELEASE,
         "calibration_end_ms": DECISION_TS - 60_000,
         "known_at_ms": DECISION_TS - 30_000,
+        "producer": producer,
         "coverage": _coverage(),
     }
     base.update(overrides)
@@ -1186,12 +1291,21 @@ def _attestation(artifact_id, **overrides):
 
 
 def _false_signal_artifact(bundle=None):
-    """The per-entity rates, read off the rows they will be checked against."""
+    """The per-entity rates, read off the rows they will be checked against.
+
+    Assembled by hand rather than fitted: these tests need rates that MATCH
+    arbitrary fixture rows (a 0.95 widened rate for one name, say), which no
+    real fit can be asked to produce on demand. It therefore travels on the
+    limit dskit discloses and pins — an artifact that merely NAMES a
+    registered producer is admitted. The child's job here is the wiring; the
+    SHIPPED producer (``testing.SyntheticMioSource``) goes through the real
+    registered estimator instead.
+    """
     rows = _bundle() if not bundle else bundle
     return FalseSignalEstimate(
         pi_hat={row["entity"]: row["pi_hat"] for row in rows},
         pi_widened={row["entity"]: row["pi_widened"] for row in rows},
-        evidence={"estimator": "tests.synthetic_false_signal"},
+        evidence={"estimator": RATE_PRODUCER},
     )
 
 
@@ -1215,14 +1329,11 @@ def _outcome_artifact(bundle=None):
 
 
 def _mean_artifact():
-    return ConfidenceInterval(
-        mean=0.004,
-        standard_error=0.001,
-        low=0.002,
-        high=0.006,
-        level=0.95,
-        independent_units=40,
-        method="tests.synthetic_mean_interval",
+    """A real fitted mean interval — the wrong ESTIMAND for the outcome slot."""
+    values = [0.004 + 0.01 * ((i % 7) - 3) for i in range(40)]
+    units = [f"u{i // 2}" for i in range(40)]
+    return ClusterBootstrapInterval(replicates=200, seed=3).interval(
+        MeanEvidence(values=values, units=units)
     )
 
 
@@ -1235,7 +1346,8 @@ def _uncertainty(bundle=None, false_signal=None, outcome=None):
     """
     if false_signal is None:
         false_signal = AttestedFalseSignalRate(
-            _false_signal_artifact(bundle), _attestation(FALSE_SIGNAL_ID)
+            _false_signal_artifact(bundle),
+            _attestation(FALSE_SIGNAL_ID, producer=RATE_PRODUCER),
         )
     if outcome is None:
         outcome = AttestedOutcomeBand(
@@ -1302,7 +1414,7 @@ class TestCapitalRefusesAnInvalidUncertaintyArtifact:
 
     def test_a_wrong_unit_artifact_refuses(self):
         mean_where_outcome_is_needed = AttestedMeanConfidence(
-            _mean_artifact(), _attestation(OUTCOME_ID)
+            _mean_artifact(), _attestation(OUTCOME_ID, producer=MEAN_PRODUCER)
         )
         problems = _node().validate_inputs(
             _uinputs(uncertainty=_uncertainty(outcome=mean_where_outcome_is_needed))
@@ -1334,14 +1446,54 @@ class TestCapitalRefusesAnInvalidUncertaintyArtifact:
         problems = _node().validate_inputs(_uinputs(uncertainty=_uncertainty(outcome=foreign)))
         assert any("foreign_model" in p for p in problems), problems
 
-    def test_every_refusal_reason_is_reachable_from_this_boundary(self):
-        assert set(REFUSAL_REASONS) == {
-            "foreign_model",
-            "post_decision",
-            "stale",
-            "uncalibrated",
-            "wrong_unit",
+    def test_an_artifact_from_an_unregistered_producer_refuses(self):
+        forged = AttestedOutcomeBand(
+            _outcome_artifact(),
+            _attestation(OUTCOME_ID, producer="attacker.module:TotallyFakeCalibrator"),
+        )
+        problems = _node().validate_inputs(_uinputs(uncertainty=_uncertainty(outcome=forged)))
+        assert any("unknown_producer" in p for p in problems), problems
+
+    def test_an_artifact_whose_self_report_contradicts_its_attestation_refuses(self):
+        band = _outcome_artifact()
+        mislabelled = AttestedOutcomeBand(
+            band,
+            _attestation(OUTCOME_ID, producer=class_ref(TwoSidedBlockConformalInterval)),
+        )
+        problems = _node().validate_inputs(
+            _uinputs(uncertainty=_uncertainty(outcome=mislabelled))
+        )
+        assert any("must agree on what made it" in p for p in problems), problems
+
+    @pytest.mark.parametrize("reason", REFUSAL_REASONS)
+    def test_every_declared_reason_is_reachable_from_this_boundary(self, reason):
+        """Each refusal code must be producible through the capital node.
+
+        Parameterized over the module's own tuple, so a seventh reason
+        added upstream fails here until the child exercises it too.
+        """
+        cases = {
+            "stale": _attestation(
+                OUTCOME_ID,
+                calibration_end_ms=DECISION_TS
+                - UNCERTAINTY_PARAMS["uncertainty_max_calibration_age_ms"]
+                - 1,
+            ),
+            "post_decision": _attestation(OUTCOME_ID, known_at_ms=DECISION_TS + 1),
+            "uncalibrated": _attestation(OUTCOME_ID, coverage=None),
+            "foreign_model": _attestation(OUTCOME_ID, model_identity="other-release"),
+            "unknown_producer": _attestation(OUTCOME_ID, producer="nobody:Nothing"),
         }
+        if reason == "wrong_unit":
+            envelope = AttestedMeanConfidence(
+                _mean_artifact(), _attestation(OUTCOME_ID, producer=MEAN_PRODUCER)
+            )
+        else:
+            envelope = AttestedOutcomeBand(_outcome_artifact(), cases[reason])
+        problems = _node().validate_inputs(
+            _uinputs(uncertainty=_uncertainty(outcome=envelope))
+        )
+        assert any(reason in p for p in problems), (reason, problems)
 
 
 class TestTheWidenedRateIsNotAnUpperBound:
@@ -1375,6 +1527,14 @@ class TestTheWidenedRateIsNotAnUpperBound:
             "pi_upper" in p and "WITHDRAWN" in p for p in problems
         ), problems
 
+    def test_the_bound_family_stays_closed_and_unjoinable(self):
+        # The child's own pin on the seal dskit added in round 2: no
+        # member exists, and none can be minted to slip a widened rate
+        # into the HFDR row through a "bound" that was never earned.
+        assert ProbabilityUpperBound in CLOSED_FAMILIES
+        with pytest.raises(TypeError, match="CLOSED"):
+            type("LocalBound", (ProbabilityUpperBound,), {})
+
     def test_the_widened_rate_cannot_be_admitted_as_a_probability_bound(self):
         env = AttestedFalseSignalRate(_false_signal_artifact(), _attestation(FALSE_SIGNAL_ID))
         demand = DecisionDemand(
@@ -1385,6 +1545,42 @@ class TestTheWidenedRateIsNotAnUpperBound:
         )
         problems = env.problems(demand, ProbabilityUpperBound)
         assert any(p.startswith("wrong_unit") for p in problems), problems
+
+    def test_the_hfdr_row_reads_the_widened_field_not_the_point_estimate(
+        self, tmp_path
+    ):
+        """Swapping the HFDR coefficient's field source must FAIL here.
+
+        Round-1 review: changing ``row[HFDR_COEFFICIENT_FIELD]`` to
+        ``row["pi_hat"]`` in ``instruments`` left the whole capital suite
+        green (127 passed). Every row below carries a ``pi_hat`` BELOW
+        ``hfdr_q`` and a ``pi_widened`` far above it, so the two fields
+        give opposite answers: reading the widened rate makes every
+        coefficient positive and the row forces zero exposure, while
+        reading the point estimate makes every coefficient negative and
+        the row funds names whose attested widened rate says refuse.
+        """
+        pytest.importorskip("pyomo")
+        bundle = [dict(row, pi_hat=0.05, pi_widened=0.95) for row in _bundle()]
+        node = _node(bundle=bundle, hfdr_q=0.10)
+        out = node.run(_ctx(tmp_path), _uinputs(bundle=bundle))
+        assert out["target"] == {}
+        assert out["trades"] == {} or all(
+            trade == {"buy": 0, "sell": 0} for trade in out["trades"].values()
+        )
+
+    def test_the_two_rates_are_independent_in_the_fixtures(self):
+        # The pin above is only as good as the fixture: if pi_hat were a
+        # function of pi_widened again, the two fields would stop
+        # disagreeing and the pin would go quiet.
+        ratios = {
+            entity: PI_HAT_BY_ENTITY[entity] / PI_WIDENED_BY_ENTITY[entity]
+            for entity in PI_WIDENED_BY_ENTITY
+        }
+        assert len(set(round(r, 6) for r in ratios.values())) == len(ratios)
+        assert len(set(PI_HAT_BY_ENTITY.values())) == len(PI_HAT_BY_ENTITY)
+        for entity, widened in PI_WIDENED_BY_ENTITY.items():
+            assert PI_HAT_BY_ENTITY[entity] <= widened
 
     def test_the_hfdr_row_records_that_it_is_not_a_chance_constraint(self, tmp_path):
         pytest.importorskip("pyomo")

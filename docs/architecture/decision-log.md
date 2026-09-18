@@ -16536,12 +16536,19 @@ refused, never assigned to one of them.
 
 **`ProbabilityUpperBound` is a family with nothing in it, on purpose.** A
 chance constraint needs `P(true rate <= reported rate) >= level`. A consumer
-that needs one names this class; every artifact in the package today is
-refused with `wrong_unit`, because no member joins the family. A member joins
-only when a producer has MEASURED attainment of the bound and can attest it.
-This is what makes ADR-0152's retreat structural instead of advisory: no
-rename, alias, schema shape or config flag can promote `pi_widened` into the
-role, because the role is a type nothing inhabits.
+that needs one names this class; every artifact in the package is refused with
+`wrong_unit`, because no member joins the family. A member joins only when a
+producer has MEASURED attainment of the bound and can attest it.
+
+> **Corrected 2026-09-18 — see the Correction round below.** As first written
+> this section claimed the retreat was "structural instead of advisory: no
+> rename, alias, schema shape or config flag can promote `pi_widened` into the
+> role, because the role is a type nothing inhabits." **That was false.** The
+> family was an ordinary abstract class and four lines subclassing it minted a
+> member. The family is now CLOSED — `__init_subclass__` refuses every
+> subclass — which makes the sentence true of subclassing, and it is still not
+> true of code that controls the interpreter. The corrected claim is stated in
+> the Correction round.
 
 **Five refusals, closed set** (`REFUSAL_REASONS`, each opening its message):
 `foreign_model` (calibrated for another model), `post_decision` (the artifact
@@ -16637,3 +16644,147 @@ real deployment still needs the audit's "Required evidence" section in full —
 causal calibration folds, effective independent sample counts, mean and
 outcome coverage per entity/lead and regime, and recorded calibration-window
 endpoints — and this ADR supplies none of it.
+
+### Correction round, 2026-09-18 — the seal was documented, not built; and shape is not provenance
+
+Two-lens review of candidate `7098571` returned **2 Critical, 1 Major**. Every
+one of them is the same defect class this ADR exists to name: a guarantee
+asserted in prose that nothing in the code held down.
+
+**Critical 1 — the closed family was not closed.** Four lines re-created the
+exact defect:
+
+```python
+class MyBoundFromWidened(ProbabilityUpperBound):
+    @classmethod
+    def artifact_type(cls): return FalseSignalEstimate
+    @classmethod
+    def estimand(cls): return "sneaky_bound"
+
+MyBoundFromWidened(fse, att).problems(demand, ProbabilityUpperBound)  # -> []
+```
+
+No registration needed, `admit()` succeeded, and `pi_widened` was handed over
+as a bound. Registering it did not trip the ambiguity screen either, because
+that screen EXEMPTED any member declaring an artifact type another member
+already claimed — precisely the attack's shape.
+
+*Correction, swept rather than patched.* The sweep asked "what else can a
+member override to defeat a refusal", not "how do I stop this one class":
+
+* `CLOSED_FAMILIES` + `__init_subclass__` refuse any subclass of a closed
+  family, whether direct, sideways through multiple inheritance, or a
+  grandchild. `ProbabilityUpperBound` is its one entry.
+* `_FINAL_METHODS` grew from `("problems", "admit")` to every name the doorway
+  defines: `__init__`, `__init_subclass__`, both accessors, and each of the
+  five individual screens. Overriding `_coverage_problems` and
+  `_timing_problems` returned `[]` for a stale, post-decision, uncalibrated
+  artifact on the reviewed candidate; that member is now refused at
+  class-definition time. The list is read off `AttestedUncertainty`
+  explicitly, never off `cls`, so a member cannot shrink it.
+* `_HOOKS` names what a member MUST supply, and
+  `test_the_two_tuples_cover_every_callable_the_doorway_defines` asserts the
+  two tuples between them cover every callable `AttestedUncertainty` declares
+  — the anti-drift pin, so a new method cannot be added without being
+  classified as sealed or as a hook.
+* Registration now refuses a second member for an artifact type another member
+  already claims, and the runtime ambiguity screen's same-`artifact_type`
+  exemption is gone.
+
+**Critical 2 — the type proves SHAPE, not provenance.** The three artifact
+types are plain frozen dataclasses whose docstrings say "built by X, never by
+hand" with nothing enforcing it, so a hand-built `ConfidenceInterval` naming
+`attacker.module:TotallyFakeEstimator` was admitted; so was
+`class Both(ConfidenceInterval, WidenedInterval)`, *while also being a
+`WidenedInterval`*. Worse, **this repository's own reference implementation
+shipped on the unguarded path**: `testing.SyntheticMioSource` assembled a
+`FalseSignalEstimate` by hand instead of calling `GrenanderLocalFdr`.
+
+*Correction, in two parts, because only one of them is achievable.*
+
+1. **Strengthen what can be strengthened.** `UncertaintyAttestation` gains a
+   required `producer`, and a sixth refusal reason `unknown_producer` screens
+   it two ways: the attested producer must be the `class_ref` of a class in
+   that estimand's own registry (`MEAN_INTERVAL_ESTIMATORS`, `CALIBRATORS`,
+   `FALSE_SIGNAL_ESTIMATORS`, read through the abstract
+   `registered_producers` hook), and the artifact's OWN self-report
+   (`method` / `provenance["block_rule"]` / `evidence["estimator"]`, read
+   through the abstract `artifact_producer` hook) must equal it. A new
+   abstract `excluded_types` hook refuses the diamond at construction:
+   `AttestedMeanConfidence.excluded_types() == (WidenedInterval,)`, stated by
+   the member rather than inherited by silence, for the reason ADR-0151 made
+   `result_class` abstract. `SyntheticMioSource` now fits the registered
+   `GrenanderLocalFdr` on a synthetic 40-signal scramble family and the
+   registered `BlockConformalInterval` on synthetic residual blocks, so the
+   reference implementation is on the guarded path.
+
+2. **Correct the language.** What the producer screen establishes is that an
+   artifact's attestation and its own self-report agree on a producer this
+   package has REGISTERED. It is a real narrowing of "any object of the right
+   shape" and **it is not provenance**: the registries are open by design, the
+   comparison is between strings, and nothing imports the named module,
+   re-runs an estimator or verifies a signature. `test_what_this_does_NOT_
+   establish_is_pinned` asserts that a hand-built artifact naming a registered
+   producer is still admitted, so the disclosure cannot drift away from the
+   behaviour. More generally, and now stated in the module docstring, in
+   `dskit/pipeline/CLAUDE.md`, and in the child's agent docs: **these are
+   in-process checks that fail closed for ordinary callers and for the shipped
+   configuration; they are not a root of trust.** ADR-0122's Correction
+   settles why — a Python resolver "cannot be a root of trust: Python has
+   already selected and started its interpreter, import machinery, bootstrap
+   modules, and possible import hooks before that resolver can run" — and this
+   module runs inside that same interpreter. **An admitted artifact is not
+   evidence that a calibrated estimator produced it**, and `CoverageEvidence`
+   RECORDS what a producer asserts and measures nothing.
+
+   Strictness beyond this was considered and is not added: the child's
+   `deployment_mode` already refuses outright (`no trusted real
+   confirmation-cap producer exists yet`), so there is no mode in which a
+   weaker check ships, and anything stronger needs the out-of-Python launch
+   root ADR-0122 describes rather than another in-process comparison.
+
+**Major — the HFDR coefficient's field source was unpinned.** Changing
+`pi_widened_i = float(row[HFDR_COEFFICIENT_FIELD])` to `float(row["pi_hat"])`
+left the whole capital suite green: **127 passed, 0 failed**, including the one
+test aimed at the constraint. The cause was the fixture, not the assertion —
+`_row()` set `pi_hat = min(pi_widened, 0.10)`, a name-independent clamp, so the
+two candidate fields were indistinguishable in exactly the test written to
+distinguish them. Same defect class as the `pi_upper` work this ADR is about:
+the number was right and nothing held it down.
+
+*Correction, swept.* `PI_HAT_BY_ENTITY` and `PI_WIDENED_BY_ENTITY` now vary
+independently (and a test asserts they do, so the pin cannot go quiet again),
+and `test_the_hfdr_row_reads_the_widened_field_not_the_point_estimate` gives
+every row a `pi_hat` below `hfdr_q` and a `pi_widened` far above it, so the two
+fields give opposite answers: the widened rate forces zero exposure, the point
+estimate funds names whose attested rate says refuse. The mutation now fails
+that test.
+
+The sweep then mutated **every** field or knob a constraint or objective
+coefficient in `instruments`/`domain_constraints` reads — eleven in total. Four
+survived the suite and three were real gaps, now closed by
+`TestTheDoorwayHooksReadTheDeclaredFields`, which asserts the doorway hooks'
+own declared outputs: `cost_buy` is the declared half-spread (zeroing it
+survived, because the same rate also reaches `cost_sell` and
+`exit_cost_per_share`, so a comparative solve still differed), and `payoffs()`
+emits the bundle's declared weights in order and its declared scenario matrix
+(reversing the weight vector survived because every fixture used uniform
+weights; the pin uses ascending ones). One survivor is left deliberately: a
+mandatory-exit name's HFDR coefficient, because that name's `x_max` is 0, so
+its `(pi_i - q) * x_i` term is identically zero whatever the coefficient — an
+equivalent mutant, disclosed rather than papered over with a test that cannot
+fail for the right reason.
+
+**Also corrected (Minor).** `test_configs.py` ran the demo source and asserted
+nothing about `out["uncertainty"]` while asserting `cap` and `bundle`;
+`test_mio_demo_source_emits_admissible_attested_uncertainty` now pins the port
+shape, both producers, the artifact/attestation agreement, admissibility under
+the document's own declared intake policy, and that every row's rates ARE the
+fitted ones.
+
+**What is still not established.** No coverage evidence for any artifact; no
+provenance; no root of trust. The demo's attested coverage remains a declared
+number that nothing measured — the evidence id is literally
+`synthetic-demo-no-measurement-was-performed`, and fitting the rates through a
+registered estimator does not change that. The audit's "Required evidence"
+section remains unmet in full.

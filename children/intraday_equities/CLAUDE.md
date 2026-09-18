@@ -84,15 +84,22 @@ Agent orientation — see README.md for operator commands.
   widened POINT ESTIMATE; the ADR-0088 HFDR row is fed it unchanged and
   `run`'s evidence records that the row is NOT a chance constraint. A
   genuine bound would be a `uncertainty_intake.ProbabilityUpperBound`
-  member and `dskit` ships none.
+  member; that family is CLOSED, so there is none and no caller can
+  define one. The field source is pinned behaviourally
+  (`test_the_hfdr_row_reads_the_widened_field_not_the_point_estimate`) —
+  a round-1 review swapped it to `pi_hat` and 127 tests stayed green.
 - Capital never sizes against uncertainty it cannot attest. Every bundle
   names its calibration artifacts and `EquityKellyMIO` takes a required
   `uncertainty` port of `uncertainty_intake` envelopes, admitted against
   ONE decision timestamp; stale / wrong-unit / post-decision /
-  uncalibrated / foreign-model refuses. The seam MEASURES NOTHING — it
-  screens what a producer attests, and the two knobs it screens against
+  uncalibrated / foreign-model / unknown-producer refuses. The seam
+  MEASURES NOTHING and is NOT a root of trust — it screens what a
+  producer attests, and the two knobs it screens against
   (`uncertainty_max_calibration_age_ms`, `uncertainty_min_coverage`) are
-  required owner decisions with no default.
+  required owner decisions with no default. An admitted artifact is not
+  evidence that a calibrated estimator produced it; the producer screen
+  narrows "any object of the right shape" to "one naming a producer the
+  package has registered", and no further.
 
 ## Machine knobs
 

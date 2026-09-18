@@ -15,11 +15,19 @@ all, or answering a different question than the one being asked.
 Five refusals, one per way that goes wrong
 ------------------------------------------
 
-``foreign_model``, ``post_decision``, ``stale``, ``uncalibrated`` and
-``wrong_unit`` (:data:`REFUSAL_REASONS`). Each is screened by
-:meth:`AttestedUncertainty.problems`, which is a TEMPLATE a member can
-never override — ``__init_subclass__`` refuses the class at definition
-time, the ``production/leg.py`` idiom the sibling doorways already use.
+``foreign_model``, ``post_decision``, ``stale``, ``uncalibrated``,
+``unknown_producer`` and ``wrong_unit`` (:data:`REFUSAL_REASONS`). Each is
+screened by :meth:`AttestedUncertainty.problems`, which is a TEMPLATE a
+member can never override — ``__init_subclass__`` refuses the class at
+definition time, the ``production/leg.py`` idiom the sibling doorways
+already use. So is **every other name the doorway defines**
+(:data:`AttestedUncertainty._FINAL_METHODS`): the constructor, both
+accessors and each individual screen, because overriding any one of them
+defeats a refusal just as surely as overriding the template that calls
+them. A member supplies the hooks in
+:data:`AttestedUncertainty._HOOKS` and nothing else, and a test asserts
+those two tuples between them cover every callable the class defines, so
+a new method cannot be added without being classified.
 
 The question is a TYPE, never a string
 --------------------------------------
@@ -47,16 +55,46 @@ ships ``pi_widened``, which is a widened POINT ESTIMATE: ADR-0152's
 measurement puts its attainment of the true local fdr at 0.53–0.82
 against a 0.95 nominal, and that module renamed the field rather than
 repair a claim it could not make. :class:`ProbabilityUpperBound` is the
-family a member joins by EARNING that claim; ``dskit`` ships no member of
-it, so a consumer that demands one refuses every artifact in the package
-today — by construction, not by convention. Accepting a field named
-``pi_upper`` would prove schema compliance and nothing else, which is the
-error this family exists to make unrepresentable.
+family such a bound would belong to, and it is **CLOSED**: it is listed in
+:data:`CLOSED_FAMILIES`, so ``__init_subclass__`` refuses ANY subclass of
+it at class-definition time, here or downstream. A consumer that demands
+one therefore refuses every artifact that exists, and a project cannot
+mint its own member to get past that. Adding a member is an edit to THIS
+module plus an ADR carrying the measurement that earns the claim — a
+reviewable act, not a four-line subclass in a caller.
+
+(Round-1 review proved the first version of this family was not sealed:
+four lines subclassing it with ``artifact_type() -> FalseSignalEstimate``
+constructed, admitted, and handed ``pi_widened`` over as a bound. The
+sealing below is that finding's correction.)
 
 What this module does NOT do
 ----------------------------
 
-It measures nothing. :class:`CoverageEvidence` RECORDS what a producer
+**It is not a root of trust.** ADR-0122's Correction settles the point for
+this repository: a Python resolver "cannot be a root of trust: Python has
+already selected and started its interpreter, import machinery, bootstrap
+modules, and possible import hooks before that resolver can run."
+Everything here runs inside that interpreter and inherits exactly that
+limit. What these screens DO is fail closed for an ordinary caller and for
+the shipped configuration — an artifact of the wrong type, an unattested
+one, a stale or foreign one, or one naming a producer this package does
+not know is refused without the caller having to remember to check. What
+they cannot do is stop code that already controls the interpreter.
+
+**An admitted artifact is not evidence that a calibrated estimator
+produced it.** The three artifact types are plain frozen dataclasses whose
+``__post_init__`` invariants hold for every instance, so an admitted
+artifact is internally consistent and nothing more; a hand-built one of
+the right shape is indistinguishable from a fitted one. The producer
+screen narrows that to "an object whose attestation and whose own
+self-report agree on a producer this package has REGISTERED". That is a
+real narrowing and it is not provenance: the registries are open by
+design, the comparison is between strings, and nothing here re-runs an
+estimator, imports the named module or verifies a signature. Real
+provenance needs the out-of-Python launch root ADR-0122 describes.
+
+**It measures nothing.** :class:`CoverageEvidence` RECORDS what a producer
 attests about its own artifact — a target, a measured attainment, an
 effective independent sample count and the identity of the experiment
 that produced them — and this module compares those recorded numbers with
@@ -80,14 +118,21 @@ Import cost: stdlib plus this package's ``false_signal``, ``mean_interval``,
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 
-from .false_signal import FalseSignalEstimate
-from .mean_interval import ConfidenceInterval
-from .outcome_interval import OutcomeIntervalResult
+from .false_signal import FALSE_SIGNAL_ESTIMATORS, FalseSignalEstimate
+from .mean_interval import (
+    MEAN_INTERVAL_ESTIMATORS,
+    ConfidenceInterval,
+    WidenedInterval,
+)
+from .node import class_ref
+from .outcome_interval import CALIBRATORS, OutcomeIntervalResult
 from .records import number_ok
 
 __all__ = [
+    "CLOSED_FAMILIES",
     "REFUSAL_REASONS",
     "UNCERTAINTY_INTAKES",
     "AttestedFalseSignalRate",
@@ -112,8 +157,16 @@ REFUSAL_REASONS = (
     "post_decision",
     "stale",
     "uncalibrated",
+    "unknown_producer",
     "wrong_unit",
 )
+
+#: Families nothing may join — ``__init_subclass__`` refuses any subclass
+#: of one at class-definition time, in this package or downstream. A family
+#: is closed when membership would ASSERT a guarantee no member can
+#: currently earn, so leaving it open lets a caller mint the guarantee for
+#: itself. Assigned below, once its members exist.
+CLOSED_FAMILIES = ()
 
 #: Registered intake members, ``name -> class``. Mirrors the sibling
 #: registries (``register_false_signal_estimator``,
@@ -241,6 +294,12 @@ class UncertaintyAttestation:
     known_at_ms : int
         Epoch ms at which this artifact became knowable. A decision may
         only consume what existed before it.
+    producer : str
+        Non-empty ``module:QualName`` of the estimator that produced the
+        artifact, as :func:`~dskit.pipeline.node.class_ref` spells it. It
+        is screened against the member's own registry and against the
+        artifact's own self-report. It is a NAME, not a credential: see
+        the module docstring on what that does and does not establish.
     coverage : CoverageEvidence or None
         The producer's attested measurement, or ``None`` when it measured
         nothing (the default). ``None`` is an honest record of an
@@ -249,8 +308,9 @@ class UncertaintyAttestation:
     Raises
     ------
     ValueError
-        On an empty ``artifact_id`` or ``model_identity``, a non-integer
-        or negative stamp, a ``calibration_end_ms`` after ``known_at_ms``
+        On an empty ``artifact_id``, ``model_identity`` or ``producer``, a
+        non-integer or negative stamp, a ``calibration_end_ms`` after
+        ``known_at_ms``
         (evidence cannot cover time the artifact predates), or a
         ``coverage`` that is neither a :class:`CoverageEvidence` nor
         ``None``.
@@ -264,6 +324,7 @@ class UncertaintyAttestation:
             model_identity="release-1",
             calibration_end_ms=1_699_000_000_000,
             known_at_ms=1_699_500_000_000,
+            producer="dskit.pipeline.outcome_interval:BlockConformalInterval",
             coverage=CoverageEvidence(0.95, 0.94, "cal-2026-09-17", 40),
         )
         att.model_identity
@@ -274,12 +335,14 @@ class UncertaintyAttestation:
     model_identity: str
     calibration_end_ms: int
     known_at_ms: int
+    producer: str
     coverage: CoverageEvidence = None
 
     def __post_init__(self):
         """Refuse provenance that could not describe a real artifact."""
         _check_text(self.artifact_id, "artifact_id")
         _check_text(self.model_identity, "model_identity")
+        _check_text(self.producer, "producer")
         _check_stamp(self.calibration_end_ms, "calibration_end_ms")
         _check_stamp(self.known_at_ms, "known_at_ms")
         if self.calibration_end_ms > self.known_at_ms:
@@ -398,18 +461,55 @@ class AttestedUncertainty(ABC):
         # -> True
     """
 
-    #: The two template methods a member may never replace.
-    _FINAL_METHODS = ("problems", "admit")
+    #: Every name a member may NOT replace. Round-1 review sealed only
+    #: ``problems``/``admit``, which left each individual screen, both
+    #: accessors and the constructor overridable — and overriding any one of
+    #: them defeats a refusal just as surely. The list is read off
+    #: ``AttestedUncertainty`` explicitly, never off ``cls``, so a member
+    #: cannot shrink it; ``test_uncertainty_intake`` asserts it and
+    #: :data:`_HOOKS` between them cover every callable this class defines,
+    #: so a new method cannot be added without being classified.
+    _FINAL_METHODS = (
+        "__init__",
+        "__init_subclass__",
+        "_coverage_problems",
+        "_identity_problems",
+        "_producer_problems",
+        "_question_problems",
+        "_timing_problems",
+        "admit",
+        "artifact",
+        "attestation",
+        "problems",
+    )
+
+    #: The names a member MUST supply. Every one is ``@abstractmethod``, so
+    #: an incomplete member refuses at construction rather than later.
+    _HOOKS = (
+        "artifact_producer",
+        "artifact_type",
+        "estimand",
+        "excluded_types",
+        "registered_producers",
+    )
 
     def __init_subclass__(cls, **kwargs):
-        """Refuse, at class-definition time, a member that overrides a template."""
+        """Refuse, at class-definition time, a member that overrides a seal or joins a closed family."""
         super().__init_subclass__(**kwargs)
         for name in AttestedUncertainty._FINAL_METHODS:
             if name in cls.__dict__:
                 raise TypeError(
-                    f"{cls.__name__} may not override {name}() — it is the screen every "
-                    "member is admitted through, and a member that replaces it can skip "
-                    "the refusals this doorway exists to make"
+                    f"{cls.__name__} may not override {name} — it is part of the screen "
+                    "every member is admitted through, and a member that replaces it can "
+                    "skip the refusals this doorway exists to make"
+                )
+        for family in globals().get("CLOSED_FAMILIES", ()):
+            if cls is not family and family in cls.__mro__:
+                raise TypeError(
+                    f"{cls.__name__} may not join {family.__name__}: that family is CLOSED "
+                    "because membership ASSERTS a guarantee no member has earned. Joining it "
+                    "is an edit to dskit/pipeline/uncertainty_intake.py plus an ADR carrying "
+                    "the measurement, never a subclass in a caller"
                 )
 
     def __init__(self, artifact, attestation):
@@ -425,8 +525,20 @@ class AttestedUncertainty(ABC):
                 f"{wanted.__name__}, got {type(artifact).__name__} — the estimand is the "
                 "artifact's TYPE, not a label a caller supplies"
             )
+        for excluded in type(self).excluded_types():
+            if isinstance(artifact, excluded):
+                raise ValueError(
+                    f"{type(self).__name__}: {type(artifact).__name__} is ALSO a "
+                    f"{excluded.__name__}, a claim this member excludes — a type that "
+                    "carries two incompatible claims at once is refused, never read as "
+                    "the stronger one"
+                )
+        # No same-artifact_type exemption. Round-1 review proved that
+        # exemption skipped precisely the shape of the attack it was meant
+        # to catch; registration now refuses a second member for one
+        # artifact type, so two registered members can never share one.
         for name, other in sorted(UNCERTAINTY_INTAKES.items()):
-            if other is type(self) or other.artifact_type() is wanted:
+            if other is type(self):
                 continue
             if isinstance(artifact, other.artifact_type()):
                 raise ValueError(
@@ -474,6 +586,59 @@ class AttestedUncertainty(ABC):
             never be spoofed into admitting the wrong artifact.
         """
 
+    @classmethod
+    @abstractmethod
+    def excluded_types(cls):
+        """Name the claims an accepted artifact may NOT also carry.
+
+        Abstract with no default, for the reason ``mean_interval``'s
+        ``result_class`` is: a member that inherits "nothing is excluded"
+        by silence has not thought about it. Multiple inheritance can
+        produce a type that satisfies a claim-bearing class AND its
+        weaker sibling at once, and reading such a type as the stronger
+        claim is exactly the overclaim this package refuses.
+
+        Returns
+        -------
+        tuple
+            Classes an artifact must not be an instance of. Empty is a
+            legitimate answer, and it is a STATEMENT, not a default.
+        """
+
+    @classmethod
+    @abstractmethod
+    def registered_producers(cls):
+        """List the producer classes this package knows for this estimand.
+
+        Returns
+        -------
+        tuple
+            The classes currently registered in this estimand's own
+            registry. Read fresh on every call, because a registry is
+            open and a project may add to it — which is also why passing
+            this screen means "a producer the package knows", never "this
+            estimator ran".
+        """
+
+    @classmethod
+    @abstractmethod
+    def artifact_producer(cls, artifact):
+        """Read the producer an artifact reports for ITSELF.
+
+        Parameters
+        ----------
+        artifact : object
+            An instance of :meth:`artifact_type`.
+
+        Returns
+        -------
+        str or None
+            The ``module:QualName`` the artifact records, or ``None``
+            when it records none — which is refused, because an artifact
+            that will not say what made it cannot be checked against an
+            attestation that does.
+        """
+
     def problems(self, demand, expected):
         """List every reason this artifact may not inform ``demand``, empty when none.
 
@@ -513,6 +678,7 @@ class AttestedUncertainty(ABC):
             + self._identity_problems(demand)
             + self._timing_problems(demand)
             + self._coverage_problems(demand)
+            + self._producer_problems()
         )
 
     def admit(self, demand, expected):
@@ -587,6 +753,32 @@ class AttestedUncertainty(ABC):
             )
         return out
 
+    def _producer_problems(self):
+        """Screen unknown_producer: attestation and artifact agree on a producer we know."""
+        attested = self._attestation.producer
+        known = sorted(class_ref(cls) for cls in type(self).registered_producers())
+        out = []
+        if attested not in known:
+            out.append(
+                f"unknown_producer: the attestation names producer {attested!r}, which is "
+                f"not a registered {type(self).estimand()!r} producer ({known}) — this "
+                "compares strings against an open registry and imports nothing, so it "
+                "establishes that the producer is one this package knows, never that it ran"
+            )
+        reported = type(self).artifact_producer(self._artifact)
+        if reported is None:
+            out.append(
+                "unknown_producer: the artifact records no producer of its own, so nothing "
+                "can be checked against the attestation's claim"
+            )
+        elif reported != attested:
+            out.append(
+                f"unknown_producer: the artifact records producer {reported!r} but the "
+                f"attestation names {attested!r} — an artifact and its provenance must "
+                "agree on what made it"
+            )
+        return out
+
     def _coverage_problems(self, demand):
         """Screen uncalibrated: attested coverage present, and above the floor."""
         coverage = self._attestation.coverage
@@ -607,19 +799,30 @@ class AttestedUncertainty(ABC):
 class ProbabilityUpperBound(AttestedUncertainty):
     """The family whose members attest a genuine probability UPPER BOUND.
 
-    ``dskit`` ships NO member of this family, and that is the point. A
-    chance constraint needs ``P(true rate <= reported rate) >= level``;
+    This family is **CLOSED**. It is listed in :data:`CLOSED_FAMILIES`, so
+    ``AttestedUncertainty.__init_subclass__`` refuses ANY subclass of it —
+    direct, sideways through multiple inheritance, or a grandchild — at
+    class-definition time, in this package and downstream. There is
+    therefore no member, and no caller can mint one.
+
+    A chance constraint needs ``P(true rate <= reported rate) >= level``;
     :class:`~dskit.pipeline.false_signal.FalseSignalEstimate` ships
     ``pi_widened``, a widened point estimate whose measured attainment is
     0.53–0.82 against a 0.95 nominal (ADR-0152, which renamed the field
     rather than claim what it could not deliver). A consumer that needs a
-    bound names this class, and every artifact in the package today is
-    refused with ``wrong_unit`` — structurally, so that no rename, alias
-    or schema shape can smuggle a widened estimate into the role.
+    bound names this class and every artifact in the package is refused
+    with ``wrong_unit``.
 
-    A future member joins this family only when a producer has MEASURED
-    attainment of the bound and can attest it; joining is a decision with
-    evidence behind it, not a subclass declaration.
+    **Why the seal, and what it is worth.** The first version of this
+    class was an ordinary abstract family, and a round-1 review showed
+    four lines re-creating the defect: a subclass declaring
+    ``artifact_type() -> FalseSignalEstimate`` constructed, admitted and
+    handed ``pi_widened`` over as a bound. Closing the family moves the
+    act of claiming a bound from a caller's subclass to an edit of THIS
+    file plus an ADR carrying the measurement that earns it — a reviewable
+    act rather than a silent one. It does not, and cannot, stop code that
+    already controls the interpreter: see the module docstring on why
+    nothing here is a root of trust.
 
     Parameters
     ----------
@@ -633,6 +836,11 @@ class ProbabilityUpperBound(AttestedUncertainty):
         rate.problems(demand, ProbabilityUpperBound)[0][:10]
         # -> 'wrong_unit'
     """
+
+
+#: Closed now that its one member exists. Read by ``__init_subclass__``
+#: through ``globals()`` so the class can name a family defined after it.
+CLOSED_FAMILIES = (ProbabilityUpperBound,)
 
 
 class AttestedMeanConfidence(AttestedUncertainty):
@@ -682,6 +890,47 @@ class AttestedMeanConfidence(AttestedUncertainty):
         """
         return "mean_confidence"
 
+    @classmethod
+    def excluded_types(cls):
+        """Give ``(WidenedInterval,)``.
+
+        Returns
+        -------
+        tuple
+            A diamond inheriting both claim-bearing subclasses satisfies
+            ``isinstance`` for each; reading it as the measured one would
+            be the overclaim. Refused at construction.
+        """
+        return (WidenedInterval,)
+
+    @classmethod
+    def registered_producers(cls):
+        """Give the classes registered in ``MEAN_INTERVAL_ESTIMATORS``.
+
+        Returns
+        -------
+        tuple
+            Every currently registered mean-interval estimator class.
+        """
+        return tuple(entry["cls"] for entry in MEAN_INTERVAL_ESTIMATORS.values())
+
+    @classmethod
+    def artifact_producer(cls, artifact):
+        """Give the interval's own ``method`` field.
+
+        Parameters
+        ----------
+        artifact : dskit.pipeline.mean_interval.ConfidenceInterval
+            The wrapped interval.
+
+        Returns
+        -------
+        str or None
+            ``artifact.method``, which the estimator template sets to its
+            own ``class_ref``.
+        """
+        return getattr(artifact, "method", None)
+
 
 class AttestedOutcomeBand(AttestedUncertainty):
     """Uncertainty about a REALIZED OUTCOME, from a block-conformal calibration.
@@ -728,17 +977,62 @@ class AttestedOutcomeBand(AttestedUncertainty):
         """
         return "realized_outcome"
 
+    @classmethod
+    def excluded_types(cls):
+        """Give ``()``.
+
+        Returns
+        -------
+        tuple
+            Empty, stated rather than inherited: ``OutcomeIntervalResult``
+            has no claim-bearing sibling to be confused with.
+        """
+        return ()
+
+    @classmethod
+    def registered_producers(cls):
+        """Give the classes registered in ``CALIBRATORS``.
+
+        Returns
+        -------
+        tuple
+            Every currently registered outcome calibrator class.
+        """
+        return tuple(entry["cls"] for entry in CALIBRATORS.values())
+
+    @classmethod
+    def artifact_producer(cls, artifact):
+        """Give the band's own ``provenance["block_rule"]``.
+
+        Parameters
+        ----------
+        artifact : dskit.pipeline.outcome_interval.OutcomeIntervalResult
+            The wrapped band.
+
+        Returns
+        -------
+        str or None
+            The ``class_ref`` the calibrator template recorded, or
+            ``None`` when the provenance carries none.
+        """
+        provenance = getattr(artifact, "provenance", None)
+        if not isinstance(provenance, Mapping):
+            return None
+        value = provenance.get("block_rule")
+        return value if isinstance(value, str) else None
+
 
 class AttestedFalseSignalRate(AttestedUncertainty):
     """A per-signal false-signal rate: ``pi_hat`` and the widened reading.
 
     Accepts only
     :class:`~dskit.pipeline.false_signal.FalseSignalEstimate`. It is NOT a
-    :class:`ProbabilityUpperBound` and never becomes one: ``pi_widened``
-    is a widened point estimate, and a consumer that asks this envelope
-    for a bound is refused with ``wrong_unit``. Reading ``pi_widened`` off
-    the wrapped artifact as a SENSITIVITY number stays available and
-    honest; calling it a bound does not.
+    :class:`ProbabilityUpperBound`, and no class can be: that family is
+    closed, so the route this member would have to take to become one does
+    not exist. ``pi_widened`` is a widened point estimate, and a consumer
+    that asks this envelope for a bound is refused with ``wrong_unit``.
+    Reading ``pi_widened`` off the wrapped artifact as a SENSITIVITY
+    number stays available and honest; calling it a bound does not.
 
     Parameters
     ----------
@@ -775,6 +1069,52 @@ class AttestedFalseSignalRate(AttestedUncertainty):
         """
         return "false_signal_rate"
 
+    @classmethod
+    def excluded_types(cls):
+        """Give ``()``.
+
+        Returns
+        -------
+        tuple
+            Empty, stated rather than inherited: ``FalseSignalEstimate``
+            has no claim-bearing sibling. What this member must never be
+            is a :class:`ProbabilityUpperBound`, and that is enforced by
+            the family being closed, not by this tuple.
+        """
+        return ()
+
+    @classmethod
+    def registered_producers(cls):
+        """Give the classes registered in ``FALSE_SIGNAL_ESTIMATORS``.
+
+        Returns
+        -------
+        tuple
+            Every currently registered false-signal estimator class.
+        """
+        return tuple(entry["cls"] for entry in FALSE_SIGNAL_ESTIMATORS.values())
+
+    @classmethod
+    def artifact_producer(cls, artifact):
+        """Give the estimate's own ``evidence["estimator"]``.
+
+        Parameters
+        ----------
+        artifact : dskit.pipeline.false_signal.FalseSignalEstimate
+            The wrapped estimate.
+
+        Returns
+        -------
+        str or None
+            The ``class_ref`` the estimator template recorded, or
+            ``None`` when the evidence carries none.
+        """
+        evidence = getattr(artifact, "evidence", None)
+        if not isinstance(evidence, Mapping):
+            return None
+        value = evidence.get("estimator")
+        return value if isinstance(value, str) else None
+
 
 def register_uncertainty_intake(name, cls, doc=""):
     """Register one intake member under ``name``.
@@ -797,8 +1137,9 @@ def register_uncertainty_intake(name, cls, doc=""):
     ------
     ValueError
         On an empty ``name``, a ``cls`` that is not an
-        :class:`AttestedUncertainty` subclass, or a name already bound to
-        a DIFFERENT class.
+        :class:`AttestedUncertainty` subclass, a name already bound to a
+        DIFFERENT class, or an ``artifact_type`` another member already
+        claims.
 
     Examples
     --------
@@ -816,6 +1157,14 @@ def register_uncertainty_intake(name, cls, doc=""):
         raise ValueError(
             f"uncertainty intake {name!r} is already registered to {existing.__name__}"
         )
+    wanted = cls.artifact_type()
+    for other_name, other in sorted(UNCERTAINTY_INTAKES.items()):
+        if other_name != name and other is not cls and other.artifact_type() is wanted:
+            raise ValueError(
+                f"{name!r} claims artifact type {wanted.__name__}, which {other_name!r} "
+                "already claims — one artifact type answers one question, and two members "
+                "claiming it would make every such artifact ambiguous"
+            )
     UNCERTAINTY_INTAKES[name] = cls
     if doc:
         cls.__doc__ = cls.__doc__ or doc
