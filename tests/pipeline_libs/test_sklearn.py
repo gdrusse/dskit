@@ -1321,9 +1321,15 @@ class TestSelectionDemo:
 _DROP = object()
 
 #: The canonical segment params every case below varies one knob of.
+#:
+#: ``features`` is declared OUT of alphabetical order deliberately. The
+#: centers are points in the state's feature order, so "the order the
+#: document declared" and "``sorted()`` of those names" have to be told
+#: apart -- and while every fixture listed them ascending they could not
+#: be, which left both the fit-side and the apply-side read unpinned.
 SEGMENT_PARAMS = {
     "fit_split": "train",
-    "features": ["f0", "f1"],
+    "features": ["f1", "f0"],
     "algorithm": "kmeans",
     "algorithm_params": {"n_clusters": 2, "n_init": 1},
     "seed": 17,
@@ -1671,7 +1677,9 @@ def test_fit_returns_exactly_the_declared_json_state(algorithm):
     assert state["schema"] == "dskit.sklearn-segment/v1"
     assert SEGMENT_SCHEMA == "dskit.sklearn-segment/v1"
     assert state["algorithm"] == algorithm
-    assert state["features"] == ["f0", "f1"]
+    # The literal again, and in the DECLARED order rather than sorted:
+    # the centers below are points in exactly this order.
+    assert state["features"] == ["f1", "f0"]
     assert state["centers"] and all(
         len(center) == 2 and all(isinstance(v, float) for v in center)
         for center in state["centers"]
@@ -1913,6 +1921,37 @@ def test_a_restored_artifact_fitted_off_train_refuses_even_when_undeclared(
         loading._sidecar(ctx, path)
 
 
+@pytest.mark.parametrize("split", ["val", "cal", "test"])
+def test_a_restored_artifact_fitted_off_train_refuses_when_declared_too(
+    tmp_path, split
+):
+    """The other half of the case above, and the one no fixture held.
+
+    There the document omitted ``fit_split``, so the base had nothing to
+    compare. Here it RESTATES the artifact's own non-train split, so the
+    base's restate-never-misdescribe check PASSES -- declared equals
+    recorded -- and the member's veto is the only thing left between a
+    segmentation fitted on held-out rows and a restore.
+
+    Every load fixture in this repo holds the loading node's ``fit_split``
+    absent, so "the hook is asked unconditionally" and "the hook is asked
+    only when the document declared nothing" could not be told apart.
+    """
+    ctx = _sidecar_ctx(tmp_path)
+    fitting = _state_node()
+    state = _fitted_state(fitting)
+    path = _persist(ctx, fitting, state, fit_split=split)
+
+    loading = ApplyWouldRaise(
+        "regime",
+        _segment_params(fit_split=split, seed=_DROP, algorithm_params=_DROP),
+        mode="load",
+        artifact=path,
+    )
+    with pytest.raises(ValueError, match="fit_split"):
+        loading._sidecar(ctx, path)
+
+
 def test_a_restored_artifact_fitted_on_train_is_accepted_with_no_declaration(
     tmp_path
 ):
@@ -1950,7 +1989,7 @@ _CORRUPT_IDS = [case[0] for case in _CORRUPT_STATES]
 _SOUND_STATE = {
     "schema": SEGMENT_SCHEMA,
     "algorithm": "kmeans",
-    "features": ["f0", "f1"],
+    "features": ["f1", "f0"],
     "centers": [[0.0, 0.0], [9.0, 9.0]],
     "center_labels": [0, 1],
 }
@@ -1973,7 +2012,7 @@ def test_a_corrupt_stored_state_is_refused_by_name(_id, mutation, fragment):
 
 @pytest.mark.parametrize(
     "knob,value",
-    [("algorithm", "birch"), ("features", ["f1", "f0"]), ("features", ["f0"])],
+    [("algorithm", "birch"), ("features", ["f0", "f1"]), ("features", ["f0"])],
 )
 def test_a_document_that_misdescribes_the_restored_state_refuses(knob, value):
     """A document may restate what a state is, never misdescribe it — the
@@ -2061,11 +2100,13 @@ def test_assignment_agrees_with_the_library_it_extracted_from(algorithm):
     kwargs = {"n_clusters": 2}
     if algorithm != "birch":
         kwargs["random_state"] = 17
+    # Built in the DECLARED order, so the estimator is handed exactly the
+    # design matrix the node builds. Reading f0/f1 by habit here would
+    # quietly agree with a fit-side sorted(features) instead of exposing it.
+    matrix = [[row[name] for name in node.features()] for row in SEGMENT_STREAM]
     reference = getattr(
         sklearn_cluster, _SEGMENT_PATHS[algorithm].rpartition(".")[2]
-    )(**kwargs).fit([[row["f0"], row["f1"]] for row in SEGMENT_STREAM])
-
-    matrix = [[row["f0"], row["f1"]] for row in SEGMENT_STREAM]
+    )(**kwargs).fit(matrix)
     assert [row["segment"] for row in node.apply_state(state, SEGMENT_STREAM,
                                                        node.params)] == [
         int(label) for label in reference.predict(matrix)
@@ -2080,7 +2121,7 @@ def test_an_exact_tie_goes_to_the_lowest_center_index():
     state = {
         "schema": SEGMENT_SCHEMA,
         "algorithm": "kmeans",
-        "features": ["f0", "f1"],
+        "features": ["f1", "f0"],
         "centers": [[0.0, 0.0], [10.0, 10.0]],
         "center_labels": [7, 3],
     }
@@ -2111,13 +2152,15 @@ def test_the_coordinates_are_read_in_the_states_feature_order():
     state = {
         "schema": SEGMENT_SCHEMA,
         "algorithm": "kmeans",
-        "features": ["f0", "f1"],
+        "features": ["f1", "f0"],
         "centers": [[0.0, 10.0], [10.0, 0.0]],
         "center_labels": [0, 1],
     }
-    # (1, 9) is nearly on top of center 0; transposed to (9, 1) it is
-    # nearly on top of center 1.
-    row = [{"f0": 1.0, "f1": 9.0}]
+    # Declared order reads (f1, f0) = (1, 9), nearly on top of center 0.
+    # Sorting those names, or reversing them, reads (9, 1) instead, which
+    # is nearly on top of center 1 -- so this fixture separates "the order
+    # the state declared" from BOTH.
+    row = [{"f0": 9.0, "f1": 1.0}]
     assert node.apply_state(state, row, node.params)[0]["segment"] == 0
 
 
@@ -2132,11 +2175,11 @@ def test_the_nearest_center_rule_measures_squared_euclidean_distance():
     state = {
         "schema": SEGMENT_SCHEMA,
         "algorithm": "kmeans",
-        "features": ["f0", "f1"],
+        "features": ["f1", "f0"],
         "centers": [[0.0, 0.0], [1.0, 2.0]],
         "center_labels": [0, 1],
     }
-    row = [{"f0": 3.0, "f1": 0.0}]
+    row = [{"f0": 0.0, "f1": 3.0}]
     assert node.apply_state(state, row, node.params)[0]["segment"] == 1
 
 
@@ -2172,7 +2215,7 @@ def test_a_projected_row_keeps_every_field_and_gains_exactly_two():
     state = {
         "schema": SEGMENT_SCHEMA,
         "algorithm": "kmeans",
-        "features": ["f0", "f1"],
+        "features": ["f1", "f0"],
         "centers": [[0.0, 0.0], [9.0, 9.0]],
         "center_labels": [0, 1],
     }

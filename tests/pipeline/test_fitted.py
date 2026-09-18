@@ -805,8 +805,9 @@ class TestTheSidecarHook:
         node.run(ctx, {"rows": TRAIN_ROWS + VAL_ROWS})
         return os.path.join(node.artifact_dir(ctx), SIDECAR_NAME)
 
-    def _served(self, cls, sidecar):
-        return cls("scaler", {"features": ["x"]}, mode="load", artifact=sidecar)
+    def _served(self, cls, sidecar, **extra):
+        return cls("scaler", {"features": ["x"], **extra},
+                   mode="load", artifact=sidecar)
 
     def test_the_base_default_is_a_no_op(self):
         node = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
@@ -818,13 +819,31 @@ class TestTheSidecarHook:
         observable for a member that does not override the hook."""
         assert Standardize.sidecar_problems is FittedTransform.sidecar_problems
 
-    def test_the_hook_is_asked_on_every_restore(self, split_ctx, monkeypatch):
+    @pytest.mark.parametrize(
+        "extra", [{}, {"fit_split": "train"}],
+        ids=["document-undeclared", "document-declares-train"],
+    )
+    def test_the_hook_is_asked_on_every_restore(
+        self, split_ctx, monkeypatch, extra
+    ):
+        """UNCONDITIONALLY -- including when the document declared a
+        ``fit_split`` of its own.
+
+        The base compares its own declared split against the artifact's
+        just above the call site, and every load fixture in this repo
+        leaves that knob absent. With only the absent case, "asked always"
+        and "asked only when the document declared nothing" are the same
+        test, and a member's veto could be skipped for exactly the
+        documents that name a split.
+        """
         monkeypatch.setattr(_WatchedScaler, "seen", [])
         monkeypatch.setattr(_WatchedScaler, "refuse", None)
         sidecar = self._fit(split_ctx, _WatchedScaler)
         bare = NodeContext(name="f", asof=ASOF, run_dir=split_ctx.run_dir)
 
-        self._served(_WatchedScaler, sidecar).run(bare, {"rows": VAL_ROWS})
+        self._served(_WatchedScaler, sidecar, **extra).run(
+            bare, {"rows": VAL_ROWS}
+        )
 
         assert len(_WatchedScaler.seen) == 1
         assert _WatchedScaler.seen[0]["fit_split"] == "train"
