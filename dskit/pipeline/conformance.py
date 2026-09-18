@@ -92,6 +92,7 @@ __all__ = [
 #: keeping a second.
 DEFAULT_BLOCKED_IMPORTS = (
     "exchange_calendars",
+    "gymnasium",
     "highspy",
     "matplotlib",
     "mlflow",
@@ -104,6 +105,7 @@ DEFAULT_BLOCKED_IMPORTS = (
     "pyomo",
     "scipy",
     "sklearn",
+    "stable_baselines3",
     "torch",
     "transformers",
 )

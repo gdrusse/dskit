@@ -198,6 +198,13 @@ on it without breaking its rulings.
   scaler's `features` does): under `mode="load"` a document may restate
   what a state is and never misdescribe it, and a knob `apply_state`
   never reads is where train/serve skew hides. Override
+  `sidecar_problems(payload)` (ADR-0160) when a restore must be refused on
+  a fact the base does not own: the base compares `fit_split` only when the
+  DOCUMENT declared one, and ADR-0040 lets a load omit it, so a member whose
+  state is meaningful from exactly one split has nowhere else to say so. It
+  is asked UNCONDITIONALLY in `_sidecar` and defaults to `[]` — every
+  pre-ADR-0160 member keeps that default, pinned in `test_fitted.py` and
+  `test_selector.py` on their existing fixtures. Override
   `row_problems(rows)` for the member's own INPUT shape: it is asked on
   both doorways — this node's stream and the second stream an
   `apply-transform` wires its carrier to — so the sibling half cannot
@@ -232,7 +239,14 @@ on it without breaking its rulings.
   signature is the family's and does not change. Two packs ship members:
   `sklearn-select` (any selector by import path — `get_support` is the
   whole requirement) and `torch-importance` (input-gradient sensitivity
-  over a wired `signal`). ADR-0044 made a member's own knobs searchable,
+  over a wired `signal`). The family's other sklearn member,
+  `sklearn-segment` (ADR-0160), is NOT a selector: it is a plain
+  `FittedTransform` whose catalog is deliberately CLOSED
+  (`kmeans`/`minibatch_kmeans`/`birch`) because it persists EXTRACTED
+  centers and labels as JSON instead of a pickled model, and only those
+  three are known to expose them. It carries no
+  `serving_load_audited` licence — ADR-0160 adds no production authority —
+  so `serving_effect` answers `forbidden`. ADR-0044 made a member's own knobs searchable,
   so owner flow 2 (a space over `select.n` / `select.selector`) plans
   and runs; the family's three leakage knobs still refuse.
 - **Fold execution** — `BoundedFoldRunner` (`folds.py`, ADR-0093). Subclass

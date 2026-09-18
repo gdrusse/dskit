@@ -538,6 +538,38 @@ class FittedTransform(TrainableNode):
         """
         return []
 
+    def sidecar_problems(self, payload):
+        """Ways a RESTORED ARTIFACT is unfit for this member; none by default.
+
+        The sibling of :meth:`state_problems`, one level up: that hook is
+        asked about the STATE, this one about the RECORD OF THE FIT
+        wrapped around it — the class that wrote it, the split it saw,
+        how many rows it saw. The base already checks the two facts it
+        owns, and one of them is CONDITIONAL: ``fit_split`` is compared
+        only when the document declared one, and ADR-0040 deliberately
+        lets a load omit it. So a member whose state is meaningful from
+        exactly one split has nowhere else to say so — an omitted
+        declaration means the base has nothing to compare and waves the
+        artifact through.
+
+        Asked UNCONDITIONALLY, on every restore, before the payload is
+        handed back: a member's refusal cannot be routed around by
+        leaving a knob out of the document.
+
+        Parameters
+        ----------
+        payload : dict
+            The sidecar as it was written: ``node_class``, ``fit_split``,
+            ``n_fit_rows`` and ``state``.
+
+        Returns
+        -------
+        list of str
+            One problem per reason this artifact must not restore here;
+            empty when it may.
+        """
+        return []
+
     def state_metrics(self, state):
         """Numeric metrics describing a fitted state; none by default.
 
@@ -946,6 +978,12 @@ class FittedTransform(TrainableNode):
         if not isinstance(payload.get("state"), dict):
             raise ValueError(
                 f"{self.key}: {ref} carries no fitted state"
+            )
+        unfit = self.sidecar_problems(payload)
+        if unfit:
+            raise ValueError(
+                f"{self.key}: {'; '.join(unfit)} — this artifact is not one "
+                "this node may restore from"
             )
         problems = self.state_problems(payload["state"])
         if problems:
