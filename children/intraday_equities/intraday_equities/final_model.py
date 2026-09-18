@@ -91,7 +91,13 @@ _UNRESOLVED = object()
 
 
 def _sealed_violations(subclass):
-    """Sealed names ``subclass`` resolves to something other than FinalRefit's own."""
+    """Sealed names ``subclass`` resolves to something other than FinalRefit's own.
+
+    The comparison is ``is not`` — IDENTITY, never ``!=``. An object whose
+    ``__eq__`` returns ``True`` for anything would otherwise pass for a
+    sealed member while behaving as the attacker wrote it, so relaxing this
+    one token to ``!=`` reopens every sealed name at once (round-4 review).
+    """
     return [
         name
         for name in FinalRefit._FINAL_METHODS
@@ -140,20 +146,22 @@ class FinalRefit(Node):
     relabelled without failing :func:`load_bundle`.
 
     **What this is NOT: a root of trust, or evidence of authorization.**
-    Every refusal here is an IN-PROCESS check. It fails closed for every
-    ordinary caller and for the shipped configuration, and
-    :data:`_FINAL_METHODS` with ``__init_subclass__`` refuses the subclass
-    that would replace one — but that seal fires at class-definition time
-    only, so a post-hoc ``FinalRefit.<name> = ...`` assignment still
-    works. That limit is deliberate and disclosed: it forces an edit to
-    trusted source, which is a different threat class, not a defence
-    against one. The run directory this node reads is UNAUTHENTICATED —
-    ADR-0119 disclosed that nothing hash-chains ``nodes/*.json`` to
-    ``resolved.json``, so anyone with write access to a run directory can
-    fabricate the records, the carry and the evidence artifacts together.
-    A bundle's stamp records what the writing process believed; it is
-    never by itself evidence that anyone authorized the release. ADR-0122's
-    Correction states the rule this class obeys rather than contradicts:
+    Every refusal here is an IN-PROCESS check, and the seal on
+    :data:`_FINAL_METHODS` is an accident-and-drift guard, **not an
+    authority boundary**. ``__init_subclass__``'s own docstring is the ONE
+    place listing the resolution paths that reach past it; this paragraph
+    points at it rather than restating it, because a restatement is how one
+    of the two copies came to be false. Two of those paths cost nothing —
+    no repository file is edited, since ``uses:`` supplies the class — so
+    the seal buys ordinary-caller safety and drift detection, never defence
+    against a caller who wants past it.
+
+    The run directory this node reads is UNAUTHENTICATED (ADR-0119's
+    disclosed gap: nothing hash-chains ``nodes/*.json`` to
+    ``resolved.json``), so anyone with write access to it can fabricate the
+    evidence. A bundle's stamp records what the writing process believed,
+    never that anyone authorized it. ADR-0122 — accepted 2026-09-12, and
+    NOT built — states the rule this class obeys rather than contradicts:
     a Python resolver cannot be a root of trust, and release trust must
     begin outside Python.
 
@@ -242,20 +250,24 @@ class FinalRefit(Node):
         ``cls.__dict__`` saw none of those (round-2 review, 2026-09-18).
 
         This is an accident-and-drift guard, **not an authority boundary**.
-        Four resolution paths reach past it by construction, and are
-        disclosed rather than silently left open:
+        Four resolution paths reach past it. The first two cost NOTHING —
+        **no repository file is edited** — because ``uses:
+        "module:ClassName"`` supplies the subclass, not this module:
 
-        * an intermediate class that defines its own ``__init_subclass__``
-          and does not call ``super()`` stops this running for anything
-          built below it — that intermediate is itself refused, because
-          ``__init_subclass__`` is sealed, so the path costs an edit to
-          trusted source;
-        * post-hoc assignment (``FinalRefit.run = ...`` after the class
-          exists), because this fires at class definition only;
+        * post-hoc assignment on a subclass. ``class S(FinalRefit): pass``
+          has an empty body and passes this check; ``S._channel_problems =
+          ...`` afterwards is never seen, because the check fires at class
+          definition only.
+        * a base EARLIER IN THE MRO whose own ``__init_subclass__`` does
+          not call ``super()`` — this then never runs at all. An
+          intermediate that DERIVES from ``FinalRefit`` is refused, because
+          ``__init_subclass__`` is itself sealed; a plain mixin derives from
+          nothing, is not a subclass, and so cannot be reached that way.
         * per-instance shadowing (``node.run = ...``), because an instance
-          is not a class;
-        * a custom metaclass, which can doctor ``__mro__`` or intercept
-          attribute access on the class itself.
+          is not a class.
+        * a custom metaclass, which can build the class from an empty
+          namespace and inject the overrides afterwards, or doctor
+          ``__mro__``.
 
         The guarantee claimed is against an ordinary caller wiring the wrong
         class and against a future edit quietly dropping a refusal, never

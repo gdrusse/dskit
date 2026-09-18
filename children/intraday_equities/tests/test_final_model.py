@@ -1546,7 +1546,8 @@ def test_a_mixin_is_refused_at_depth_too():
             pass
 
 
-def test_a_subclass_that_overrides_nothing_is_still_allowed():
+def test_a_subclass_may_still_override_an_unsealed_node_hook():
+    """The boundary, not only the no-op: an UNSEALED hook stays overridable."""
     class Mid(final_model.FinalRefit):
         pass
 
@@ -1555,16 +1556,27 @@ def test_a_subclass_that_overrides_nothing_is_still_allowed():
 
     assert issubclass(Leaf, final_model.FinalRefit)
 
+    # `serving_effect` is a Node hook the release gate does not resolve
+    # through, so sealing it would be over-reach. Adding it to
+    # `_FINAL_METHODS` must break this test.
+    class Extended(final_model.FinalRefit):
+        @classmethod
+        def serving_effect(cls, params, verified_run_evidence):
+            return None
+
+    assert Extended.serving_effect({}, None) is None
+    assert "serving_effect" not in final_model.FinalRefit._FINAL_METHODS
+
 
 def test_nothing_executable_can_hide_in_the_class_metadata_allowlist():
     """Round-2 Major 4: widening `ignored` turned a red suite green."""
-    import types
-
     members = vars(final_model.FinalRefit)
     for name in CLASS_METADATA_NAMES:
         raw = members.get(name)
-        assert not isinstance(
-            raw, (types.FunctionType, classmethod, staticmethod, property)
+        # CALLABILITY, not a type list: a `__call__`-bearing instance under a
+        # dunder-shaped name passed the isinstance check (round-4 review).
+        assert not callable(raw) and not isinstance(
+            raw, (classmethod, staticmethod, property)
         ), f"{name!r} is an executable member hiding in the metadata allowlist"
     # Pinned exactly: extending the allowlist is itself a failure.
     assert len(CLASS_METADATA_NAMES) == 12
@@ -1575,7 +1587,7 @@ def test_nothing_executable_can_hide_in_the_class_metadata_allowlist():
 
 
 def test_the_seal_discloses_the_limits_it_does_not_cover():
-    """The honest boundary is executable, not just prose in an ADR."""
+    """One owner for the limits, and the class docstring may not contradict it."""
     disclosure = " ".join(
         final_model.FinalRefit.__init_subclass__.__doc__.split()
     )
@@ -1585,24 +1597,108 @@ def test_the_seal_discloses_the_limits_it_does_not_cover():
         "post-hoc",
         "metaclass",
         "per-instance",
+        "no repository file is edited",
     ):
         assert phrase in disclosure, phrase
 
+    contract = " ".join(final_model.FinalRefit.__doc__.split())
+    assert "not an authority boundary" in contract
+    assert "cost nothing" in contract
+    # Round-3 wrote these in the class docstring and round-4 review disproved
+    # them: a post-hoc override on a SUBCLASS edits no repository file, so it
+    # is not "an edit to trusted source" and not "a different threat class".
+    assert "forces an edit to trusted source" not in contract
+    assert "different threat class" not in contract
 
-def test_an_intermediate_that_swallows_init_subclass_is_a_disclosed_limit():
-    """This bypass WORKS. It is pinned so the disclosure cannot drift away.
 
-    An intermediate class that defines its own ``__init_subclass__`` and does
-    not call ``super()`` stops the seal running below it. Refusing THAT
-    intermediate is what the seal can do, and it does; a caller who edits
-    source to build one has already crossed a boundary this check never
-    claimed to hold. Nothing here executes a release.
-    """
+def test_an_intermediate_deriving_from_final_refit_may_not_swallow_the_seal():
+    """A swallowing intermediate that IS a subclass is refused at its own definition."""
     with pytest.raises(TypeError, match="__init_subclass__"):
         class Swallow(final_model.FinalRefit):
             def __init_subclass__(cls, **kwargs):
                 pass
 
-    # Reached only by editing trusted source, and disclosed in the docstring
-    # and in ADR-0166 rather than silently left as a hole.
-    assert "does not call ``super()``" in final_model.FinalRefit.__init_subclass__.__doc__
+
+def test_a_swallowing_mixin_is_an_uncovered_path_the_docstring_discloses():
+    """This bypass WORKS, costs nothing, and is pinned so the disclosure cannot drift.
+
+    A plain mixin is not a subclass, so sealing ``__init_subclass__`` cannot
+    reach it: when the mixin sits earlier in the MRO and does not call
+    ``super()``, ``FinalRefit.__init_subclass__`` never runs at all. No
+    repository file is edited — ``uses:`` supplies the class. The test asserts
+    the bypass AND that the docstring admits it; nothing here runs a release.
+    """
+    class SwallowMixin:
+        def __init_subclass__(cls, **kwargs):
+            pass
+
+    class Evil(SwallowMixin, final_model.FinalRefit):
+        @classmethod
+        def _channel_problems(cls, params):
+            return []
+
+    assert Evil._channel_problems({}) == []          # the seal never ran
+    # What the seal WOULD have reported had it run at all.
+    assert final_model._sealed_violations(Evil) == ["__init_subclass__", "_channel_problems"]
+
+    disclosure = " ".join(
+        final_model.FinalRefit.__init_subclass__.__doc__.split()
+    )
+    assert "does not call ``super()``" in disclosure
+    assert "no repository file is edited" in disclosure
+
+
+def test_a_rigged_equality_object_cannot_pass_for_a_sealed_member():
+    """The seal compares IDENTITY. Relaxing `is not` to `!=` admits this."""
+    class FakeEqual:
+        def __call__(self, *args, **kwargs):
+            return {"release_channel": "production", "deployment_eligible": True}
+
+        def __eq__(self, other):
+            return True
+
+        def __hash__(self):
+            return 0
+
+    with pytest.raises(TypeError, match="_release_identity"):
+        type(
+            "Sneaky",
+            (final_model.FinalRefit,),
+            {"_release_identity": FakeEqual()},
+        )
+
+
+def test_a_subclass_cannot_shrink_the_sealed_list_to_admit_an_override():
+    """The seal reads FinalRefit's own list, never the subclass's.
+
+    Reading `subclass._FINAL_METHODS` would let an empty tuple in the
+    subclass body silence every name at once. The refusal must name the
+    override, not merely the shrink.
+    """
+    with pytest.raises(TypeError, match="_channel_problems"):
+        type(
+            "Sneaky",
+            (final_model.FinalRefit,),
+            {
+                "_FINAL_METHODS": (),
+                "_channel_problems": classmethod(lambda cls, params: []),
+            },
+        )
+
+
+def test_post_hoc_assignment_on_a_subclass_is_an_uncovered_path(tmp_path):
+    """This bypass WORKS and costs nothing; pinned so the disclosure stays true.
+
+    `class Sneaky(FinalRefit): pass` passes the seal with an empty body, and
+    assigning to a sealed name afterwards is never seen. No repository file is
+    edited — `uses:` supplies the subclass. Nothing here runs a release.
+    """
+    class Sneaky(final_model.FinalRefit):
+        pass
+
+    assert final_model._sealed_violations(Sneaky) == []
+    Sneaky._channel_problems = classmethod(lambda cls, params: [])
+    assert Sneaky._channel_problems({}) == []
+
+    contract = " ".join(final_model.FinalRefit.__doc__.split())
+    assert "cost nothing" in contract

@@ -16482,6 +16482,16 @@ seal patch: resolve the seal through the MRO, which is what enumeration CAN do
 correctly, and delete the claim that the enumeration is a boundary. There is no
 third bypass to hunt because nothing is claimed that a bypass would falsify.*
 
+*Corrected again 2026-09-18 after round-3 review found 3 Major, all of them a
+test that could not express what it claimed or a sentence that was not true: the
+seal's `is not` was pinned by nothing (an `!=` mutation passed 110/110 and a
+rigged-`__eq__` object then walks through), the `FinalRefit._FINAL_METHODS` read
+was pinned only by an unrelated `TypeError`, and the class docstring still
+carried a cost claim this entry had already corrected elsewhere. Sweeping that
+last family found a SECOND false claim review had not named — a swallowing
+mixin, unlike a swallowing intermediate, is never refused and costs nothing —
+so limits 1 and 2 below are rewritten rather than patched.*
+
 **Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
 three missing pieces; ADR-0119 built two of the generic halves
 (`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
@@ -16573,7 +16583,7 @@ described and nothing more:
   `load_bundle`.
 - **The gate has an accident guard, not an authority boundary.** Every
   refusal above is a method and `uses: "module:ClassName"` accepts any
-  class, so `FinalRefit._FINAL_METHODS` names the twenty-six members the
+  class, so `FinalRefit._FINAL_METHODS` names the twenty-nine members the
   gate resolves through — the twenty-three this class defines, the
   inherited `__init__`, `__new__` and `artifact_dir`, and the three
   attribute-resolution hooks `__getattribute__`, `__getattr__` and
@@ -16585,7 +16595,7 @@ described and nothing more:
   `vars(cls)` can never surface, and both are now refused, at any depth of
   subclassing. The list is restated independently in
   `tests/test_final_model.py`; one test refuses any member of the class
-  absent from it, and another refuses anything executable hiding in that
+  absent from it, another refuses anything CALLABLE hiding in that
   test's own metadata allowlist — round-2 proved an unpinned allowlist is an
   escape hatch a rushed author widens to turn a red suite green. This is the
   `production/leg.py` and `production/loop.py` idiom widened from one name
@@ -16621,17 +16631,24 @@ withdrawn.
 
 Six limits, disclosed rather than papered over:
 
-1. An intermediate class that defines its own `__init_subclass__` and does
-   not call `super()` stops the check running for anything built below it.
-   That intermediate is itself refused, so the path costs an edit to trusted
-   source. `pipeline/uncertainty_set.py` states the same limit for the same
-   idiom; every user of it in this repo shares the limit.
-2. Post-hoc assignment — `FinalRefit.run = ...` after the class exists —
-   because the check fires at class definition only.
+1. Post-hoc assignment on a SUBCLASS. `class S(FinalRefit): pass` has an
+   empty body and passes the check; `S._channel_problems = ...` afterwards is
+   never seen. **This costs nothing — no repository file is edited** — because
+   `uses: "module:ClassName"` supplies the subclass. Round-3 wrote that this
+   path "forces an edit to trusted source, a different threat class"; round-4
+   review disproved it and that claim is withdrawn.
+2. A base EARLIER IN THE MRO whose own `__init_subclass__` does not call
+   `super()`: the check then never runs at all. An intermediate that DERIVES
+   from `FinalRefit` is refused, because `__init_subclass__` is itself sealed
+   — but a plain mixin derives from nothing, is not a subclass, and cannot be
+   refused that way, so **this also costs nothing**. Verified:
+   `class Evil(SwallowMixin, FinalRefit)` is created with overrides in place.
+   `pipeline/uncertainty_set.py` states the same limit for the same idiom;
+   every user of it in this repo shares it.
 3. Per-instance shadowing — `node.run = ...` — because an instance is not a
    class.
-4. A custom metaclass, which can doctor `__mro__` or intercept attribute
-   access on the class itself.
+4. A custom metaclass, which can build the class from an empty namespace and
+   inject the overrides afterwards, or doctor `__mro__`.
 5. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
    hash-chains `nodes/*.json` to `resolved.json` or to each other, and this
    entry does not change that. Anyone with write access to a run directory
