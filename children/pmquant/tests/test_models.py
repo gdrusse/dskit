@@ -328,7 +328,9 @@ def test_prepare_keeps_panel_items_counts_the_rest_and_refuses_none_usable():
 def test_module_params_are_implied_by_the_data():
     adapter = LadderPanelAdapter({})
     prepared = adapter.prepare(make_items(), {}, where="rows")
-    assert adapter.module_params(prepared, {}) == {"n_markets": 2, "n_leads": 3}
+    assert adapter.module_params(prepared, {}) == {
+        "n_markets": 2, "n_leads": 3, "token_revision": TOKEN_REVISION,
+    }
     # the WHOLE vocab sizes the embedding, not the markets train happens to hold
     rng = np.random.default_rng(1)
     only_a = [make_item(rng, C=2, series="KXA", event="KXA-9", vocab={"KXA": 0, "KXB": 1, "KXC": 2})]
@@ -464,6 +466,7 @@ def test_save_and_load_state_round_trip_and_refusals(tmp_path):
     payload = json.loads(text)
     assert payload["lead_key_dp"] == LEAD_ROUND_DP
     assert payload["vocab"] == VOCAB  # the vocab travels with the artifact
+    assert payload["token_revision"] == TOKEN_REVISION  # and so does what they meant
     assert payload["cells"] == sorted(payload["cells"])
     assert {(c, lead) for c, lead, _ in payload["cells"]} == set(table)
 
@@ -502,6 +505,9 @@ def test_save_and_load_state_round_trip_and_refusals(tmp_path):
 
     forge({"lead_key_dp": LEAD_ROUND_DP, "vocab": VOCAB, "cells": []}, "empty")
     forge({"lead_key_dp": LEAD_ROUND_DP, "cells": payload["cells"]}, "no market vocab")
+    # a table that records no revision at all is as unusable as a wrong one
+    forge({"lead_key_dp": LEAD_ROUND_DP, "vocab": VOCAB, "cells": payload["cells"]},
+          "records token revision None")
 
 
 # --- through the pack ---------------------------------------------------------
@@ -515,7 +521,9 @@ def test_the_declared_seam_fits_persists_and_restores(tmp_path):
     assert out["metrics"]["epochs_run"] == 1
     assert math.isfinite(out["metrics"]["final_logloss"])  # beliefs fed the pack's metrics
     sidecar = json.load(open(os.path.splitext(out["artifact_path"])[0] + ".json"))
-    assert sidecar["data_params"] == {"n_markets": 2, "n_leads": 3}
+    assert sidecar["data_params"] == {
+        "n_markets": 2, "n_leads": 3, "token_revision": TOKEN_REVISION,
+    }
     assert sidecar["adapter_state"]["serving_table"]["cells"] > 0
     probe = {"contract": "KXA-1-R0", "lead_frac": 0.9}
     expected = out["signal"].predict(probe)
@@ -533,3 +541,59 @@ def test_the_declared_seam_fits_persists_and_restores(tmp_path):
     # adapter_params are default-deny: the vocab is data, never a knob
     problems = DeclaredTrain.validate_params(params(adapter_params={"n_markets": 5}))
     assert any("n_markets" in p for p in problems)
+
+
+def test_a_checkpoint_fit_under_an_older_token_revision_refuses_new_panels(monkeypatch):
+    """train -> upgrade -> load. The revision must travel INSIDE the artifact's
+    module_params: if both sides re-read the installed global, old weights and
+    new code always agree and the mechanism protects nothing."""
+    import pmquant.ladder.panels as panels_mod
+
+    rng = np.random.default_rng(0)
+    monkeypatch.setattr(panels_mod, "TOKEN_REVISION", 1)
+    old_items = [make_item(rng, C=2, series="KXA", event="KXA-1", identity=(5, (), 1))]
+    adapter = LadderPanelAdapter({})
+    prepared = adapter.prepare(old_items, {}, where="rows")
+    persisted = {**MODULE_PARAMS, **adapter.module_params(prepared, {})}
+    assert "token_revision" in persisted, (
+        "the artifact's module_params record no token revision, so a restored "
+        "module re-reads whatever global happens to be installed"
+    )
+    assert persisted["token_revision"] == 1
+
+    # the code is upgraded and the panels are rebuilt under the new semantics
+    monkeypatch.setattr(panels_mod, "TOKEN_REVISION", 2)
+    restored = LadderQhatModule(**persisted)
+    assert restored.featurizer.identity == (5, (), 1)
+    fresh = collate_items(
+        [make_item(rng, C=2, series="KXA", event="KXA-1", identity=(5, (), 2))]
+    )
+    with pytest.raises(ValueError, match="revision"):
+        restored(fresh)
+
+
+def test_the_serving_table_records_the_revision_its_beliefs_were_computed_under(
+    tmp_path, monkeypatch
+):
+    """The second load path: a q table is a set of beliefs read off features.
+    Restoring it under code where those features mean something else is not a
+    stale artifact, it is a wrong one."""
+    import pmquant.ladder.panels as panels_mod
+
+    torch.manual_seed(0)
+    monkeypatch.setattr(panels_mod, "TOKEN_REVISION", 1)
+    adapter = LadderPanelAdapter({})
+    items = [make_item(np.random.default_rng(0), C=2, series="KXA", event="KXA-1",
+                       identity=(5, (), 1))]
+    prepared = adapter.prepare(items, {}, where="rows")
+    module = LadderQhatModule(n_markets=2, n_leads=3, token_revision=1, **MODULE_PARAMS)
+    adapter.fitted(module, prepared, None)
+    prefix = str(tmp_path / "model")
+    recorded = adapter.save_state(prefix)
+    with open(f"{prefix}{SERVING_SUFFIX}", encoding="utf-8") as fh:
+        assert json.load(fh)["token_revision"] == 1
+    assert LadderPanelAdapter({}).load_state(prefix, recorded)
+
+    monkeypatch.setattr(panels_mod, "TOKEN_REVISION", 2)
+    with pytest.raises(ValueError, match="revision"):
+        LadderPanelAdapter({}).load_state(prefix, recorded)

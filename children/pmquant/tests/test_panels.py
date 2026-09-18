@@ -642,15 +642,87 @@ def test_a_lead_resolves_the_duration_from_the_close_it_could_know():
     assert panel.close_ts_ms == close + 5 * HOUR_MS
 
 
-def test_a_late_rung_that_would_change_the_settlement_law_refuses():
+def under_over_event(series="KXA", event="KXA-1", close_ms=100 * HOUR_MS):
+    """The ordinary binary market: `less` under 50 and `greater` over 50 — its
+    exact partition-completing mirror — listed 0.7h apart."""
+    under, over = f"{event}-LESS50", f"{event}-GREATER50"
+    records = [lead_record(series, event, under, f, close_ms) for f in FRACS]
+    records += [lead_record(series, event, over, f, close_ms) for f in (0.5, 0.1)]
+    markets = [
+        market_row(under, event, series, "less", None, 50.0, close_ms),
+        {
+            **market_row(over, event, series, "greater", 50.0, None, close_ms),
+            "open_ms": int(close_ms - 0.7 * HOUR_MS),
+        },
+    ]
+    return records, markets, {under: True, over: False}
+
+
+def test_a_late_rung_that_would_change_the_settlement_law_is_skipped_and_counted():
     """Two `greater` rungs read as an upper threshold; a `between` rung listed
     later would make the whole panel a partition, retroactively changing the
-    law applied to leads that could not have known it. Refuse, never guess."""
+    law applied to leads that could not have known it. The event is
+    DISQUALIFIED — skipped and counted, exactly like an unsettled one."""
     records, markets, outcomes, _early, _late = listed_later_event(
         late_strike=55.0, late_type="between"
     )
-    with pytest.raises(ValueError, match="settlement law"):
-        build(records, markets, outcomes)
+    built = build(records, markets, outcomes)
+    assert built.panels == []
+    assert built.counts["n_skipped_unstable_law"] == 1
+    assert built.counts["n_events_seen"] == 1 and built.counts["n_panels"] == 0
+
+
+def test_an_under_over_pair_listed_minutes_apart_never_kills_the_family():
+    """An ordinary under/over market whose two legs listed minutes apart is a
+    modeling ambiguity, not a malformed record: it is skipped and counted, and
+    an independent healthy event in the same build still comes back."""
+    close = 100 * HOUR_MS
+    r_pair, m_pair, o_pair = under_over_event(close_ms=close)
+    r_ok, m_ok, o_ok, _contracts = threshold_event(
+        series="KXB", event="KXB-1", close_ms=close
+    )
+    built = build(r_pair + r_ok, m_pair + m_ok, {**o_pair, **o_ok})
+    assert built.counts["n_skipped_unstable_law"] == 1
+    assert [p.event for p in built.panels] == ["KXB-1"]
+    assert built.counts["n_events_seen"] == 2 and built.counts["n_panels"] == 1
+
+
+def test_a_between_anchored_partition_admits_a_late_tail():
+    """The ADMIT direction, so the guard cannot widen unnoticed: `between`
+    anywhere already reads PARTITION, so a `less` tail listed later changes no
+    law and the event is modelled normally."""
+    close = 100 * HOUR_MS
+    series, event = "KXA", "KXA-1"
+    brackets = [f"{event}-B{lo}" for lo in (50, 60)]
+    tail = f"{event}-L50"
+    records = [lead_record(series, event, c, f, close) for c in brackets for f in FRACS]
+    records += [lead_record(series, event, tail, f, close) for f in (0.5, 0.1)]
+    markets = [
+        market_row(brackets[0], event, series, "between", 50.0, 60.0, close),
+        market_row(brackets[1], event, series, "between", 60.0, 70.0, close),
+        {
+            **market_row(tail, event, series, "less", None, 50.0, close),
+            "open_ms": int(close - 0.7 * HOUR_MS),
+        },
+    ]
+    outcomes = {brackets[0]: True, brackets[1]: False, tail: False}
+    built = build(records, markets, outcomes)
+    assert built.counts["n_skipped_unstable_law"] == 0
+    assert len(built.panels) == 1
+    panel = built.panels[0]
+    assert panel.ladder_type is LadderType.PARTITION
+    late_rung = panel.contracts.index(tail)
+    assert not panel.listed[0][late_rung]
+    assert panel.listed[1].all() and panel.listed[2].all()
+
+
+def test_an_all_greater_ladder_admits_a_late_greater_rung():
+    """The other ADMIT case: a rung that does not move the classification is
+    modelled, so only the genuinely ambiguous event is disqualified."""
+    records, markets, outcomes, _early, _late = listed_later_event(late_strike=70.0)
+    built = build(records, markets, outcomes)
+    assert built.counts["n_skipped_unstable_law"] == 0
+    assert built.panels[0].ladder_type is LadderType.UPPER_THRESHOLD
 
 
 def test_a_lead_nothing_was_read_at_carries_the_last_membership_it_resolved():
@@ -693,3 +765,12 @@ def test_the_layout_identity_carries_the_token_revision():
     assert fz.identity[:2] == (DEFAULT_K_LVL, ())
     assert fz.identity != (DEFAULT_K_LVL, ())  # the pre-PM-02 spelling
     assert TokenFeaturizer(drop="context").identity[2] == fz.identity[2]
+    # the revision IS this column list under point-in-time semantics: moving
+    # one without the other is exactly what this pin exists to catch
+    assert TOKEN_REVISION == 2
+    assert fz.feature_names() == EXPECTED_NAMES
+    # and it is CAPTURED, so a restored artifact CAN disagree with today's code
+    assert TokenFeaturizer(revision=1).identity == (DEFAULT_K_LVL, (), 1)
+    for bad in (0, -1, 1.5, True, "2"):
+        with pytest.raises(ValueError, match="revision"):
+            TokenFeaturizer(revision=bad)

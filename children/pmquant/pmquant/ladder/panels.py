@@ -11,7 +11,9 @@ audited on its own:
   rung_sort_key` order (load-bearing: the settlement head runs each
   threshold tail as one contiguous run), the settled label per rung, the
   ladder geometry, and the strike features. Events that cannot be
-  labelled or are too thin are SKIPPED AND COUNTED, never fabricated.
+  labelled, are too thin, or cannot name one settlement law across
+  every lead are SKIPPED AND COUNTED, never fabricated — one anomalous
+  event never costs the family the rest of its markets.
   Rung membership is POINT-IN-TIME: each rung's markets row
   declares the instant it was listed, and every lead resolves the set
   that existed at its own decision instant through
@@ -78,8 +80,16 @@ __all__ = [
 #: partition's probability denominator changed with them. A checkpoint
 #: trained under revision 1 would load clean and score silently wrong
 #: under this one, so the revision travels with the layout and refuses
-#: the pairing. BUMP IT whenever a column's meaning changes, not when a
-#: column moves (that is what ``k_lvl`` and ``drop`` already say).
+#: the pairing. BUMP IT whenever a column's MEANING or ORDER changes —
+#: ``k_lvl`` and ``drop`` only say how many columns there are and which
+#: are zeroed, never what they mean.
+#:
+#: This is the DEFAULT for a featurizer built here and now. It is
+#: CAPTURED at construction and persisted into the artifact
+#: (``LadderPanelAdapter.module_params``, and the serving table's own
+#: file), because a value both sides re-read from the installed module
+#: can never disagree with itself: old weights under new code would
+#: always match, which is precisely the pairing this refuses.
 TOKEN_REVISION = 2
 
 #: Book levels per executable side entering a token — the frozen recipe.
@@ -370,8 +380,8 @@ class PanelBuild:
         Over the series of the panels built.
     counts : dict
         ``n_events_seen``, ``n_panels``, ``n_skipped_unsettled``,
-        ``n_skipped_min_contracts``, ``n_off_grid_rows``,
-        ``n_skipped_non_lead`` — every drop, counted.
+        ``n_skipped_min_contracts``, ``n_skipped_unstable_law``,
+        ``n_off_grid_rows``, ``n_skipped_non_lead`` — every drop, counted.
 
     Examples
     --------
@@ -502,23 +512,40 @@ def _pit_durations(closes, listed, epoch_ts):
     return dur
 
 
-def _refuse_an_unstable_law(series, event, strike_types, listed, ladder_type):
-    """Refuse an event whose settlement law is not the one every lead could read."""
+# OPEN OWNER DECISION — how to treat an event whose law is not stable.
+#
+# The law is inferred from the rungs' strike types, so an event can read
+# as one law at an early lead and another at settlement: the plainest
+# case is an under/over pair (`less` under X, `greater` over X) whose two
+# legs list minutes apart. At lead 0 only the `less` leg exists and the
+# event reads lower_threshold; it SETTLES as a partition. Three answers,
+# none of them free:
+#
+#   (a) admit it with a PER-LEAD law. Honest about what each lead knew,
+#       but `is_partition` must become (B, T) through LawHead,
+#       q_from_logits and head_loss — and head_loss's partition branch
+#       indexes WHOLE EVENTS (`logit[part]`) to keep its event-equal
+#       weighting, so that is a loss-structure change, not a reshape.
+#       It also trains a threshold head at lead 0 against an outcome
+#       that settles under partition semantics, which may simply be the
+#       wrong target rather than the causal one.
+#   (b) skip and count it — IMPLEMENTED HERE as the safe default. Costs
+#       coverage (every under/over pair with staggered legs), fabricates
+#       nothing, and is reversible.
+#   (c) refuse the build. Rejected: one anomalous event would cost the
+#       family every other market in the same call.
+#
+# The owner rules; until then this is (b). See children/pmquant/CLAUDE.md.
+def _law_is_stable(strike_types, listed, ladder_type):
+    """Say whether every lead's listed rungs read as the event's own law."""
     n_steps, n_rungs = listed.shape
     for step in range(n_steps):
         members = [rung for rung in range(n_rungs) if listed[step, rung]]
-        if not members:
-            continue
-        at_step = LadderType.classify([strike_types[rung] for rung in members])
-        if at_step is not ladder_type:
-            raise ValueError(
-                f"event {event!r} ({series}): the rungs listed at lead step {step} "
-                f"read as {at_step.value!r} but the event's full rung set reads as "
-                f"{ladder_type.value!r} — a rung listed later would retroactively "
-                "change the settlement law applied to a decision that could not "
-                "have known it; declare the event's law rather than inferring it "
-                "from whichever rungs happen to have listed by then"
-            )
+        if members and LadderType.classify(
+            [strike_types[rung] for rung in members]
+        ) is not ladder_type:
+            return False
+    return True
 
 
 def _pit_geometry(contracts, strike_values, instants, membership):
@@ -647,7 +674,9 @@ def _panel_of(series, event, natives, rows, outcomes, grid, counts):
     listed, strike_z, gap_z = _pit_geometry(
         contracts, strike_values, instants, membership
     )
-    _refuse_an_unstable_law(series, event, strike_types, listed, ladder_type)
+    if not _law_is_stable(strike_types, listed, ladder_type):
+        counts["n_skipped_unstable_law"] += 1
+        return None
     return EventPanel(
         series=series,
         event=event,
@@ -708,15 +737,19 @@ def build_panels(records, outcomes, markets, grid, *, min_contracts=DEFAULT_MIN_
     ValueError
         On a contract without a markets row, a malformed markets row, a
         row with no usable ``open_ms`` listing instant, a book read
-        before its contract was listed, an event whose settlement law
-        differs between the rungs listed at a lead and its full rung set,
-        or two records for one contract at one lead.
+        before its contract was listed, or two records for one contract
+        at one lead. Every one of those is a CONTRADICTION between two
+        declarations. An event that is merely unmodellable — unsettled,
+        too thin, or unable to name one settlement law across every lead
+        — is skipped and counted instead, so one anomalous event never
+        costs the rest of the family.
     """
     counts = {
         "n_events_seen": 0,
         "n_panels": 0,
         "n_skipped_unsettled": 0,
         "n_skipped_min_contracts": 0,
+        "n_skipped_unstable_law": 0,
         "n_off_grid_rows": 0,
         "n_skipped_non_lead": 0,
     }
@@ -759,6 +792,11 @@ class TokenFeaturizer:
         Ablation groups (:data:`TAIL_GROUPS` names) whose tail columns are
         zeroed LAST, after every feature is computed. Unknown names refuse
         at construction.
+    revision : int or None
+        The token layout's semantic revision (int >= 1), CAPTURED here.
+        None takes :data:`TOKEN_REVISION` — what this installed code
+        means. An artifact restores its OWN recorded revision instead, so
+        a checkpoint fit under an older one refuses today's panels.
 
     Examples
     --------
@@ -769,9 +807,13 @@ class TokenFeaturizer:
         feats, seen = featurizer.encode(panel, LeadGrid())
     """
 
-    def __init__(self, k_lvl=DEFAULT_K_LVL, drop=()):
+    def __init__(self, k_lvl=DEFAULT_K_LVL, drop=(), revision=None):
         if isinstance(k_lvl, bool) or not isinstance(k_lvl, int) or k_lvl < 1:
             raise ValueError(f"k_lvl must be an int >= 1, got {k_lvl!r}")
+        revision = TOKEN_REVISION if revision is None else revision
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ValueError(f"revision must be an int >= 1, got {revision!r}")
+        self.revision = int(revision)
         drop = (drop,) if isinstance(drop, str) else tuple(drop or ())
         unknown = sorted(set(drop) - set(TAIL_GROUPS))
         if unknown:
@@ -807,11 +849,13 @@ class TokenFeaturizer:
     def identity(self):
         """Give the layout identity ``(k_lvl, drop, revision)`` — what a batch and a model must agree on.
 
-        The revision (:data:`TOKEN_REVISION`) is what makes a stale
-        checkpoint fail closed: the column ORDER can be unchanged while
-        the columns mean something else.
+        The revision is what makes a stale checkpoint fail closed: the
+        column ORDER can be unchanged while the columns mean something
+        else. It is this featurizer's OWN captured revision, never the
+        installed :data:`TOKEN_REVISION`, so a restored artifact and
+        today's panels can actually disagree.
         """
-        return (self.k_lvl, self.drop, TOKEN_REVISION)
+        return (self.k_lvl, self.drop, self.revision)
 
     def feature_names(self):
         """Name every column, in frozen order.

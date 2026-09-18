@@ -57,7 +57,12 @@ import torch.nn as nn
 
 from dskit.pipeline.libs.torch import TorchAdapter, TorchBatches
 
-from pmquant.ladder.panels import DEFAULT_K_LVL, PANEL_KEYS, TokenFeaturizer, collate_items
+from pmquant.ladder.panels import (
+    DEFAULT_K_LVL,
+    PANEL_KEYS,
+    TokenFeaturizer,
+    collate_items,
+)
 from pmquant.ladder.protocols import LEAD_ROUND_DP, STRIKE_CODES, lead_key
 
 __all__ = [
@@ -434,6 +439,13 @@ class LadderQhatModule(nn.Module):
         Transformer depth.
     wide_head : bool
         The deeper head trunk (E5b).
+    token_revision : int or None
+        The token layout's semantic revision the panels were built under,
+        supplied by the adapter from the DATA (``module_params``) and so
+        persisted with the artifact. None means "whatever this code
+        means" (:data:`~pmquant.ladder.panels.TOKEN_REVISION`), which is
+        correct for a fresh fit and WRONG for a restore — which is why
+        the adapter always names it.
 
     Examples
     --------
@@ -453,9 +465,12 @@ class LadderQhatModule(nn.Module):
         d_model=DEFAULT_D_MODEL,
         n_time_layers=DEFAULT_N_TIME_LAYERS,
         wide_head=False,
+        token_revision=None,
     ):
         super().__init__()
-        self.featurizer = TokenFeaturizer(int(k_lvl), drop=() if drop is None else drop)
+        self.featurizer = TokenFeaturizer(
+            int(k_lvl), drop=() if drop is None else drop, revision=token_revision
+        )
         self.enc = TokenEncoder(
             int(n_markets),
             self.featurizer.n_features,
@@ -542,6 +557,7 @@ class LadderPanelAdapter(TorchAdapter):
         super().__init__(params)
         self._serving = None
         self._vocab = None
+        self._token_revision = None
 
     # -- dataset -----------------------------------------------------------
 
@@ -641,12 +657,14 @@ class LadderPanelAdapter(TorchAdapter):
         Returns
         -------
         dict
-            ``{"n_markets": len(vocab), "n_leads": T}`` — the WHOLE vocab
-            the panels were indexed by, not the markets the train split
-            happens to hold, so a series first seen in val or test has an
-            embedding row; merged UNDER the document's ``module_params``
-            by the pack, so a declared value wins. ``{}`` for an empty
-            split.
+            ``{"n_markets": len(vocab), "n_leads": T, "token_revision":
+            r}`` — the WHOLE vocab the panels were indexed by, not the
+            markets the train split happens to hold, so a series first
+            seen in val or test has an embedding row; the revision read
+            off the ITEMS' own layout identity, so the artifact records
+            what its features meant rather than what a later install
+            means. Merged UNDER the document's ``module_params`` by the
+            pack, so a declared value wins. ``{}`` for an empty split.
         """
         items = batches.payload
         if not items:
@@ -654,6 +672,7 @@ class LadderPanelAdapter(TorchAdapter):
         return {
             "n_markets": len(items[0]["vocab"]),
             "n_leads": int(items[0]["feats"].shape[0]),
+            "token_revision": int(tuple(items[0]["featurizer"])[2]),
         }
 
     def select(self, batches, index):
@@ -888,6 +907,7 @@ class LadderPanelAdapter(TorchAdapter):
         self._serving = table
         source = next(b for b in (train_batches, val_batches) if b is not None and len(b))
         self._vocab = {str(k): int(v) for k, v in source.payload[0]["vocab"].items()}
+        self._token_revision = int(module.featurizer.revision)
         return table
 
     def predict(self, module, record):
@@ -944,7 +964,8 @@ class LadderPanelAdapter(TorchAdapter):
             ``{"serving_table": {"file", "cells", "sha256"}}`` — recorded
             in the sidecar, hence under the artifact's content hash. The
             file also carries ``vocab``, the ``{series: market_id}`` map
-            the weights are indexed by.
+            the weights are indexed by, and ``token_revision``, what the
+            feature columns MEANT when these beliefs were read off them.
 
         Raises
         ------
@@ -952,7 +973,7 @@ class LadderPanelAdapter(TorchAdapter):
             When there is no table (or no vocab) to write.
         """
         table = self._serving
-        if not table or self._vocab is None:
+        if not table or self._vocab is None or self._token_revision is None:
             raise ValueError(
                 "refusing to write a ladder artifact with no serving table — it would "
                 "restore into a model that answers nothing"
@@ -961,6 +982,7 @@ class LadderPanelAdapter(TorchAdapter):
         text = json.dumps(
             {
                 "lead_key_dp": LEAD_ROUND_DP,
+                "token_revision": int(self._token_revision),
                 "vocab": dict(sorted(self._vocab.items())),
                 "cells": [[contract, lead, q] for (contract, lead), q in sorted(table.items())],
             },
@@ -996,7 +1018,10 @@ class LadderPanelAdapter(TorchAdapter):
         ------
         ValueError
             On a manifest with no serving-table entry, a missing file, a
-            sha256 mismatch, an empty table, or a file without the vocab.
+            sha256 mismatch, an empty table, a file without the vocab, or
+            a file whose ``token_revision`` is not the one this installed
+            code means — the beliefs were read off columns that no longer
+            say the same thing.
         """
         entry = (recorded or {}).get(SERVING_STATE_KEY)
         if not entry:
@@ -1032,6 +1057,15 @@ class LadderPanelAdapter(TorchAdapter):
                 f"the serving table {path!r} records no market vocab — without the "
                 "{series: market_id} map the weights were indexed by, a restored model "
                 "cannot tell a series from the one whose embedding it would borrow"
+            )
+        today = TokenFeaturizer().revision
+        if payload.get("token_revision") != today:
+            raise ValueError(
+                f"the serving table {path!r} records token revision "
+                f"{payload.get('token_revision')!r} but this code means {today} — "
+                "these beliefs were read off feature columns that no longer say the "
+                "same thing, so restoring them would serve numbers nothing here "
+                "computes; re-fit under the current layout"
             )
         self._serving = table
         self._vocab = {str(k): int(v) for k, v in vocab.items()}
