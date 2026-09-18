@@ -1643,7 +1643,24 @@ class TunedEvidenceSource(Node):
     def run(self, ctx, inputs):
         value = float(self.params["theta"])
         durable = getattr(node_module, "JsonArtifact", lambda value: value)
-        return {"value": value, "episodes": durable({"scored": value})}
+        return {"value": value, "episodes": durable({"by": "evid", "scored": value})}
+
+
+class EvidenceRelay(Node):
+    """A second re-executed node between the other two.
+
+    Three nodes, because at TWO "the first", "the first and the last" and
+    "all of them" are the same list -- and the shipped subgraphs are
+    longer: `["clip", "market", "qhat", "validate"]`.
+    """
+
+    role = "train"
+    outputs = ("value", "episodes")
+
+    def run(self, ctx, inputs):
+        value = float(inputs["value"])
+        durable = getattr(node_module, "JsonArtifact", lambda value: value)
+        return {"value": value, "episodes": durable({"by": "relay", "scored": value})}
 
 
 class EvidenceScore(Node):
@@ -1666,7 +1683,7 @@ class EvidenceScore(Node):
         durable = getattr(node_module, "JsonArtifact", lambda value: value)
         return {
             "metrics": {"loss": (value - 3.0) ** 2},
-            "episodes": durable({"scored": value}),
+            "episodes": durable({"by": "val", "scored": value}),
         }
 
 
@@ -1687,15 +1704,19 @@ def test_a_search_winners_json_artifact_is_persisted_not_the_losing_pass(tmp_pat
 
     registry = NodeKindRegistry()
     registry.register("tuned-evidence", TunedEvidenceSource)
+    registry.register("evidence-relay", EvidenceRelay)
     registry.register("evidence-score", EvidenceScore)
     register_search(registry)
     document = PipelineDocument(
         name="winner-evidence",
         pipeline={
             "evid": NodeSpec(uses="tuned-evidence", params={"theta": 10.0}),
+            "relay": NodeSpec(
+                uses="evidence-relay", inputs={"value": "$evid.value"}
+            ),
             "val": NodeSpec(
                 uses="evidence-score",
-                inputs={"value": "$evid.value"},
+                inputs={"value": "$relay.value"},
                 params={"split": "val"},
             ),
             "search": NodeSpec(
@@ -1722,16 +1743,28 @@ def test_a_search_winners_json_artifact_is_persisted_not_the_losing_pass(tmp_pat
     # first element: the search re-ran ["evid", "val"], and the kind this
     # fix exists for would sit at the END of such a list.
     search_record = read_json(
-        result.run_dir, os.path.join("nodes", "03-search.json")
+        result.run_dir, os.path.join("nodes", "04-search.json")
     )
-    assert search_record["winner_reran"] == ["evid", "val"]
-    for node_key, record_name in (("evid", "01-evid.json"), ("val", "02-val.json")):
+    assert search_record["winner_reran"] == ["evid", "relay", "val"]
+    manifests = {}
+    for node_key, record_name in (
+        ("evid", "01-evid.json"),
+        ("relay", "02-relay.json"),
+        ("val", "03-val.json"),
+    ):
         manifest = result.outputs[node_key]["episodes"]
         assert set(manifest) == {"path", "sha256", "bytes", "media_type"}, node_key
-        assert resolve_json_artifact(result.run_dir, manifest) == {"scored": 3.0}
-        # the node record points at the winner's bytes, not a bare type name
+        # Each payload names its own node. Persistence is CONTENT-addressed,
+        # so identical payloads would share one manifest and every check
+        # below would be satisfied by some other node's artifact -- a driver
+        # stamping one node's manifest onto the rest would read as correct.
+        assert resolve_json_artifact(result.run_dir, manifest) == {
+            "by": node_key, "scored": 3.0,
+        }
         record = read_json(result.run_dir, os.path.join("nodes", record_name))
         assert record["outputs"]["episodes"]["sha256"] == manifest["sha256"], node_key
+        manifests[node_key] = manifest["sha256"]
+    assert len(set(manifests.values())) == 3, manifests
     # and $prev binds it: a dropped manifest silently deletes the port here
     carry = read_json(result.run_dir, "carry.json")
     assert set(carry["val"]) == {"metrics", "episodes"}

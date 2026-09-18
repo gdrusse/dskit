@@ -465,7 +465,9 @@ def test_each_episode_gets_a_fresh_environment_seeded_from_its_index(
     ]
 
 
-@pytest.mark.parametrize("count", [2, 4], ids=["two-episodes", "four-episodes"])
+@pytest.mark.parametrize(
+    "count", [2, 5, 8], ids=["two-episodes", "the-default", "eight-episodes"]
+)
 def test_each_episode_record_carries_its_own_index(tmp_path, lab, count):
     """The per-episode IDENTITY, separated from the constant it equals in
     the contract's worked example.
@@ -478,16 +480,25 @@ def test_each_episode_record_carries_its_own_index(tmp_path, lab, count):
     de-duplicates on ``episode`` collapses every rollout onto one if these
     are not distinct and in order.
 
-    Two counts, because a numbering can be right at one of them and wrong
-    at another -- ``min(index, 2)`` matches identity at three episodes and
-    repeats the last id at four. And a seed that is NOT this file's default
-    17, because ``index`` and ``seed - 17`` coincide at that default, so a
-    record numbered off the seed would read as correct.
+    Three counts, because a numbering can be right at some and wrong at
+    others: ``min(index, 2)`` matches identity at three episodes and
+    repeats the last id at four, ``min(index, 3)`` survives two and four
+    alike, and ``index % 4`` needs more than four to show itself. One of
+    the counts is ``DEFAULT_EPISODES`` -- a numbering that breaks at the
+    kind's OWN default should not need a bespoke document to be caught.
+
+    The seed is NOT this file's default 17, because ``index`` and
+    ``seed - 17`` coincide at that default, so a record numbered off the
+    seed would read as correct.
     """
     _node, outputs = evaluate(tmp_path, n_episodes=count, seed=5)
-    assert [
-        episode["episode"] for episode in record(outputs)["episodes"]
-    ] == list(range(count))
+    ids = [episode["episode"] for episode in record(outputs)["episodes"]]
+    assert ids == list(range(count))
+    # ints, not floats: the artifact is durable evidence and its digest,
+    # and a typed reader's column, both change under float(index).
+    assert all(
+        isinstance(value, int) and not isinstance(value, bool) for value in ids
+    ), ids
 
 
 def test_every_environment_is_closed_exactly_once(tmp_path, lab):
