@@ -46,7 +46,7 @@ def test_private_plan_precedes_capture():
     broker, published, frozen, port = _setup()
     verifier = verifier_module.HistoricalStudyVerifier(broker)
 
-    with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS|admission"):
+    with pytest.raises(ValueError, match="refuses before ScopeIntent, CES, PEA, BVP, and CAS are bound"):
         verifier.capture(
             published,
             frozen,
@@ -112,7 +112,7 @@ def test_driver_uses_class_method_not_rebound_instance_capture():
     verifier.capture = broker.capture
     driver = verifier_module.HistoricalStudyCaptureDriver(verifier)
 
-    with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS|admission"):
+    with pytest.raises(ValueError, match="refuses before ScopeIntent, CES, PEA, BVP, and CAS are bound"):
         _capture(driver, published, frozen, port)
     assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
 
@@ -129,7 +129,7 @@ def test_authority_only_bound_verifier_still_permanently_refuses_capture():
     verifier.bind(**_PLAN)
     driver = verifier_module.HistoricalStudyCaptureDriver(verifier)
 
-    with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS"):
+    with pytest.raises(ValueError, match="no durable ledger"):
         _capture(driver, published, frozen, port)
     assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
 
@@ -139,7 +139,7 @@ def test_unbound_driver_refuses_without_broker_fallback_then_f4_broker_still_wor
     verifier = verifier_module.HistoricalStudyVerifier(broker)
     driver = verifier_module.HistoricalStudyCaptureDriver(verifier)
 
-    with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS|admission"):
+    with pytest.raises(ValueError, match="refuses before ScopeIntent, CES, PEA, BVP, and CAS are bound"):
         _capture(driver, published, frozen, port)
     assert broker._receipt_audit(published)[-1]["event"] == "PUBLISHED"
 

@@ -1,0 +1,50 @@
+{
+  "notes": "Tenth immutable research cohort: remaining technology plus broad/sector/commodity/rate/international ETFs. Split-adjusted SIP minute bars on the established window/feed/codec/cut. Frozen on non-backtest facts only. In-window splits removed by adjustment=split: MCHP 2-for-1 ex 2021-12-21. QCOM was cohort-E's documented fourth-semiconductor reserve; it is claimed here. EXCLUDED: KLAC (10-for-1 ex 2026-06-12, after the cut, wrong scale for the window), SMCI (2019 delisting hole), XLC (inception 2018-06, not continuous to 2016), XLRE (inception 2015-10-07, opens at window start, admitted), post-2016-IPO names (PLTR, CRWD, SNOW, COIN, UBER, ABNB, SPOT, DDOG, NET, RBLX, MRNA, CVNA, TTD, ZS, OKTA, ROKU), leveraged/inverse ETFs on reverse splits (VXX, UVXY, SVXY, UNG, OIH, USO). Backfill only.",
+  "symbols": [
+    "QCOM",
+    "TXN",
+    "ADI",
+    "AMAT",
+    "MCHP",
+    "INTU",
+    "ANSS",
+    "FICO",
+    "XLY",
+    "XLB",
+    "XLI",
+    "XLRE",
+    "XLU",
+    "XRT",
+    "KRE",
+    "DIA",
+    "MDY",
+    "IWF",
+    "IWD",
+    "VOO",
+    "VTI",
+    "VNQ",
+    "SLV",
+    "TLT",
+    "IEF",
+    "HYG",
+    "LQD",
+    "EMB",
+    "EFA",
+    "EEM",
+    "EWC",
+    "EWJ",
+    "EWU"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

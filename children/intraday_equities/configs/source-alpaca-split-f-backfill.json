@@ -1,0 +1,31 @@
+{
+  "notes": "Sixth immutable research cohort: healthcare and biopharma breadth. Split-adjusted SIP minute bars on the established window/feed/codec/cut so every bar shares the alpaca-sip-split* scale. Selection is frozen on non-backtest facts only (continuous ticker since before 2016-01-04, SIP coverage, liquidity, no delisting or reverse split). In-window splits are removed by adjustment=split: ISRG 3-for-1 ex 2021-10-05. In-window M&A that does not break the ticker and carries no price factor: BMY/Celgene closed 2019-11-20, TMO/PPD 2021. Backfill only; the cursor is per source.",
+  "symbols": [
+    "UNH",
+    "JNJ",
+    "PFE",
+    "ABBV",
+    "ABT",
+    "TMO",
+    "BMY",
+    "AMGN",
+    "GILD",
+    "VRTX",
+    "REGN",
+    "ISRG",
+    "SYK",
+    "BSX"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

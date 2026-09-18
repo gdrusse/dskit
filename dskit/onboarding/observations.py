@@ -5,8 +5,10 @@ Deduplicated snapshots of what acquire wrote. Acquire appends envelope rows unde
 module is the one generic way to read them BACK: :func:`scan_stream`
 returns the bitemporally deduplicated snapshot (for one declared key,
 the row with the LATEST ``acquired_at`` wins — supersede, never
-duplicate), and :func:`stream_digest` fingerprints it against the
-frozen whole-dump recipe without ever building the whole dump.
+duplicate; ``as_of_acquisition_ms`` reads that snapshot at an earlier
+ACQUISITION vintage, ADR-0154), and :func:`stream_digest` fingerprints
+it against the frozen whole-dump recipe without ever building the whole
+dump.
 
 Memory discipline is the contract, not an optimization (the first
 2M-bar child run peaked at 14.3 GB holding its stream four times over):
@@ -120,11 +122,24 @@ def _key_display(key) -> list:
 
 def _scan_problems(root, source, stream, key_fields, ts_field, ts_out,
                    shared_fields, since_ms=None, keep_values=None,
-                   admit=None) -> list:
+                   admit=None, as_of_acquisition_ms=None) -> list:
     """Every problem with a scan request, accumulated (never raises)."""
     problems = []
     if admit is not None and not callable(admit):
         problems.append(f"admit must be None or callable, got {admit!r}")
+    if as_of_acquisition_ms is not None and (
+        isinstance(as_of_acquisition_ms, bool)
+        or not isinstance(as_of_acquisition_ms, int)
+        or as_of_acquisition_ms < 0
+    ):
+        # Floored at 0, where since_ms is not: acquired_at is minted by
+        # the writer at commit time, so no acquisition is pre-epoch. A
+        # negative vintage would otherwise read as a store holding
+        # nothing but its unstamped rows — a mistake answered quietly.
+        problems.append(
+            "as_of_acquisition_ms must be None or an int >= 0, got "
+            f"{as_of_acquisition_ms!r}"
+        )
     if since_ms is not None:
         if isinstance(since_ms, bool) or not isinstance(since_ms, int):
             problems.append(
@@ -221,7 +236,7 @@ def stream_dir(root, source) -> str:
 
 def scan_stream(root, source, stream, key_fields, ts_field=None,
                 ts_out="asof_ms", shared_fields=(), since_ms=None,
-                keep_values=None, admit=None):
+                keep_values=None, admit=None, as_of_acquisition_ms=None):
     """One deduplicated snapshot of a source's observation stream.
 
     Parameters
@@ -287,12 +302,13 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         and ``true`` are three values), so an allow-list is matched
         through :func:`_key_part`.
     admit : callable, optional
-        ``admit(data, stamp)`` for each record that cleared the two
-        bounds above, where ``stamp`` is its ``ts_out`` (``None``
-        without ``ts_field``). Returning a false value drops the record
-        AT INTAKE. It is the bound for a rule this function cannot
-        spell — a derived one, such as "regular trading hours only",
-        which no field carries. It may add its derived field to
+        ``admit(data, stamp)`` for each record that cleared the three
+        declared bounds (``since_ms``, ``keep_values`` and
+        ``as_of_acquisition_ms``), where ``stamp`` is its ``ts_out``
+        (``None`` without ``ts_field``). Returning a false value drops
+        the record AT INTAKE. It is the bound for a rule this function
+        cannot spell — a derived one, such as "regular trading hours
+        only", which no field carries. It may add its derived field to
         ``data``, which is that record's own dict and becomes the
         emitted record; adding one is how a caller pays for the
         derivation once instead of once here and once downstream.
@@ -301,6 +317,25 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
         being a function of the bytes on disk. Dropping a record here
         does NOT relax the refusals above it — every line is still
         parsed and its key fields still checked.
+    as_of_acquisition_ms : int, optional
+        An INCLUSIVE upper bound on a record's ``acquired_at`` — the
+        READ VINTAGE (ADR-0154) — applied AT INTAKE beside ``since_ms``
+        and on the same grounds: a record above it is never deduped,
+        never kept, never sorted, and never offered to ``admit``. The
+        winner per key becomes the latest value AS OF THAT VINTAGE
+        rather than the latest value outright, so a 2015 bar revised in
+        2026 reads as its 2015 self to a run simulating 2015. It bounds
+        ENVELOPE metadata, so — unlike ``since_ms`` — it needs no
+        ``ts_field``, and its stamps are the ones the dedup already
+        parses (``parse_utc``), never string-compared. Applied BEFORE
+        adjudication, so the tie rule above is unchanged and simply
+        evaluated within the vintage: a differing tie a later
+        acquisition supersedes is history at the later vintage and a
+        live, winner-less refusal at the earlier one. An ABSENT
+        ``acquired_at`` reads as the earliest possible instant and
+        therefore ALWAYS passes a vintage bound. A bound below every
+        stamped record reads truthfully empty; a negative one refuses,
+        since no acquisition is pre-epoch.
 
     Returns
     -------
@@ -323,7 +358,7 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
     """
     _raise_if(_scan_problems(root, source, stream, key_fields, ts_field,
                              ts_out, shared_fields, since_ms, keep_values,
-                             admit))
+                             admit, as_of_acquisition_ms))
     key_fields = tuple(key_fields)
     shared_fields = tuple(shared_fields)
     # Canonical membership, matching the dedup key's own identity rule.
@@ -455,19 +490,10 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                     ) from exc
                 if since_ms is not None and stamp < since_ms:
                     continue
-            if admit is not None and not admit(data, stamp):
-                continue
-            # json.loads mints fresh key strings for every line; on a
-            # 2M-row stream those duplicates are gigabytes. Rebuild each
-            # record on the canonical copies (the fresh ones free
-            # immediately).
-            data = {_share(k, k): v for k, v in data.items()}
-            if stamp is not None:
-                data[ts_out] = stamp
-            for field in shared_fields:
-                value = data.get(field)
-                if isinstance(value, str):
-                    data[field] = _share(value, value)
+            # The record's VINTAGE, resolved before the last two
+            # gates: a bound record must cost its line and nothing else,
+            # and admit must never be asked to judge a row that does
+            # not exist at the vintage being read.
             if "acquired_at" in row:
                 acquired = row["acquired_at"]
                 if not isinstance(acquired, str):
@@ -494,9 +520,26 @@ def scan_stream(root, source, stream, key_fields, ts_field=None,
                     instants[acquired] = when
             else:
                 # True ABSENCE of acquired_at is the earliest possible
-                # instant: it loses to any stamped row.
+                # instant: it loses to any stamped row — and clears
+                # every vintage bound, however early (ADR-0154).
                 acquired = ""
                 when = float("-inf")
+            if (as_of_acquisition_ms is not None
+                    and when > as_of_acquisition_ms):
+                continue
+            if admit is not None and not admit(data, stamp):
+                continue
+            # json.loads mints fresh key strings for every line; on a
+            # 2M-row stream those duplicates are gigabytes. Rebuild each
+            # record on the canonical copies (the fresh ones free
+            # immediately).
+            data = {_share(k, k): v for k, v in data.items()}
+            if stamp is not None:
+                data[ts_out] = stamp
+            for field in shared_fields:
+                value = data.get(field)
+                if isinstance(value, str):
+                    data[field] = _share(value, value)
             key = tuple(_key_part(data[f]) for f in key_fields)
             try:
                 held = best.get(key)

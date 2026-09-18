@@ -1,0 +1,336 @@
+{
+ "schema_version": "Phase0Matrix.v4",
+ "slice_id": "F3",
+ "packet": "f3-three-hop-captured-replay-and-f5b-v2-port-set",
+ "review_kind": "Phase 0 contract/threat matrix for ADR-0148 v3 (rewrite after v2's C-1 and M-1..M-4)",
+ "base_commit": "3b73361",
+ "supersedes": {
+  "matrix": "0197-f3-adr0148-contract-matrix.v2.json",
+  "verdict": "0198-f3-adr0148-phase0-verdict.v2.json",
+  "changed_approach": "C-1: the hop retries an ATTEMPT, not a stream -- the intent gains an `attempt` field, a read-only derivation_head accessor is added, and an ascending-scan orchestrator contract makes idempotence real; abandoned PRODUCED/SEALED attempts are disclosed as permanently unresumable because _reload_stream restores only _streams. M-1: DP6's compose_replay_tape analogy withdrawn; writer signature hard-constrained to verified raw-event/v2 bytes plus verified roster policy. M-2: hop 1 -> dynamic resolver, hop 3 -> fixed resolver, both named. M-3: bundles.py imports the trust-side shape table instead of keeping its own constant. M-4: durability scoped explicitly to the development broker; operational durability named an open gate."
+ },
+ "sources": {
+  "adr_0148_v2": "docs/architecture/decision-log.md :: ADR-0148 (v2, PROPOSED)",
+  "master_f3": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:426-620",
+  "master_f5b": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:739-748",
+  "manifest": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md:1095,1104",
+  "prior_adrs": [
+   "ADR-0127",
+   "ADR-0128",
+   "ADR-0129",
+   "ADR-0132",
+   "ADR-0143",
+   "ADR-0144",
+   "ADR-0145",
+   "ADR-0146",
+   "ADR-0147"
+  ],
+  "frozen": [
+   "dskit/pipeline/trust.py (not edited at proposal time)",
+   "dskit/production/bundles.py (not edited)",
+   "dskit/pipeline/document.py (not edited)"
+  ]
+ },
+ "corrected_citations": {
+  "captured_bindings": "trust.py:1532 (v1 wrongly called this 'bind_captured', which does not exist)",
+  "open_capture": "trust.py:1461 (v1 said ~1464)",
+  "replay_input_declaration": "document.py:766 _REPLAY_TAPE_INPUTS, enforced by _replay_node_errors at document.py:806-838 (v1 wrongly cited trust.py:4991 _P4_BATCH_USES, a signing-usage table)",
+  "receipt_store_seam": "trust.py:2303 param, 2333 default, 2231-2232 write-through, 1721-1743 rehydration",
+  "stream_id_formula": "trust.py:1175-1183",
+  "v1_literal_sites": {
+   "raw_event_v1": [
+    5711,
+    5970,
+    7447
+   ],
+   "closed_six_key_set": 7150,
+   "dataset_auth_v1": [
+    5680,
+    7797,
+    8181,
+    8401,
+    9039
+   ],
+   "outside_trust": "production/bundles.py:653 (_RAW_EVENT_V1_SCHEMA, already a named constant)"
+  },
+  "captured_authorization_record": "trust.py:4902-4980 (public surface exactly lifecycle_captured_receipt_sha256 4919-4942 and read_member_bytes 4944-4972); NOT ~4824, which is _p4_terminal_parent_projection",
+  "reload_recover": "_reload_stream 1720-1741, _recover 1742-1775; they rehydrate ONLY _streams (+ _receipt_len/_receipt_high/_consumed_streams)",
+  "in_ram_not_rehydrated": "_nonces 1057, _stream_pin 1069; seal/publish gate on _stream_pin at 1878-1884",
+  "expected_event_gate": "_prepare_receipt 2246-2248, expected = _EVENTS[len(rows)]",
+  "resolver_split": "hop1 dynamic _dynamic_p4_reconstruct_admission_chain 9612-9619 (hardcodes {raw_event_dataset, source_roster}); hop3 fixed _FixedCapturedAuthorizationContract._prepare 5028-5111 (generic, replay subject at 5039); dispatch at commit_p4_batch 5485-5489",
+  "p4_finality": "commit_p4_batch trust.py:5524, consumed=True -- atomic at authorization, NOT deferred to release",
+  "p4_per_input_reads": "_p4_reads trust.py:5190, mutated 5413-5416",
+  "two_ports_one_run_precedent": "tests/pipeline/test_captured_authorization.py:5271-5285 (one document, two $captured_artifact inputs) and :969 assert len(ports)==len(receipts)==count under parametrize count [1,2]",
+  "ninth_literal_site": "production/bundles.py:653 _RAW_EVENT_V1_SCHEMA -- now imported from the trust-side table, not an independent constant",
+  "roster_bootstrap_wire": "trust.py:5970 pins event_schema == dskit.raw-event/v1, so a roster-bootstrap-authorization/v2 is required alongside raw-event/v2",
+  "child_rule": "children/intraday_equities/AGENTS.md:9-11 -- never edit dskit from here; generic gaps graduate upstream"
+ },
+ "actors": {
+  "roster_bootstrap_authority": "RosterBootstrapAuthorization.v1 + one-use G1/G2; key table _SYNTHETIC_ROSTER_BOOTSTRAP_KEYS (trust.py:5890).",
+  "dataset_capture_broker": "DatasetCaptureAuthorization.v2 + its own one-use G1/G2; key table _SYNTHETIC_GRANT_PUBLIC_KEYS (trust.py:5635). The only actor performing a source provider/filesystem/network read.",
+  "lifecycle_authority": "Owns PRODUCED->SEALED->PUBLISHED->CAPTURED->CONSUMED, session kinds, port derivation, receipt issuance, CapturedPortSet minting/interning, the derivation-hop and the replay-execution entry.",
+  "durable_store_owner": "A production/-side caller owning a ChainLedger-backed mapping adapter, injected via receipt_store. dskit/pipeline imports nothing from dskit/production.",
+  "envelope_writer": "production/bundles.py. Owns envelope shape/canonical bytes/ordering; passed INTO the hop as a strategy. Never imported by trust.py.",
+  "hostile": "Code with full interpreter control in-process. Mutable Python internals are NOT an external security boundary (implementation-workflow.md step 4); the claim is the interning/opaque-handle boundary."
+ },
+ "invariants": [
+  {
+   "id": "F3-I01",
+   "invariant": "At most ONE PUBLISHED root per derivation intent; stream_id is a pure function of derivation_intent_sha256 (which includes `attempt`).",
+   "entry_points": [
+    "CapturedDerivationHop",
+    "produce (trust.py:1120)"
+   ],
+   "input_families": [
+    "caller-supplied root_ref",
+    "intent not equal to ports actually consumed",
+    "reordered/duplicated consumed_ports",
+    "retry under a different consumer session run_identity",
+    "retry after an attempt already PUBLISHED",
+    "attempt beyond the ceiling"
+   ],
+   "expected": "refuse before produce; a PUBLISHED attempt is REUSED and never re-produced; the ceiling refuses",
+   "forbidden_effect": "two PUBLISHED roots for one intent"
+  },
+  {
+   "id": "F3-I02",
+   "invariant": "The crash story matches the code: the hop retries an attempt, never a stream, and idempotence comes from the orchestrator's ascending scan.",
+   "entry_points": [
+    "derivation_head accessor",
+    "CapturedDerivationHop orchestration",
+    "_development_broker(receipt_store=...)"
+   ],
+   "input_families": [
+    "no stream",
+    "attempt at PRODUCED",
+    "attempt at SEALED",
+    "attempt at PUBLISHED",
+    "mixed: attempt 0 SEALED and attempt 1 absent",
+    "attempt 0 PUBLISHED and attempt 1 absent",
+    "default {} store"
+   ],
+   "expected": "absent -> produce there; PRODUCED/SEALED -> skipped as abandoned and NEVER resumed (disclosed); PUBLISHED -> reuse and stop; with the default {} store no durability is claimed and RED asserts none is made",
+   "forbidden_effect": "any claim that produce() resumes a crashed stream; any dskit.pipeline -> dskit.production import"
+  },
+  {
+   "id": "F3-I03",
+   "invariant": "ReplayRun.run refuses identically; only the broker entry executes.",
+   "entry_points": [
+    "ReplayRun.run (trust.py:5605)",
+    "run_document over a replay document",
+    "LifecycleAuthority.execute_replay_run"
+   ],
+   "input_families": [
+    "ordinary run_document",
+    "direct run call",
+    "forged/copied/pickled/subclassed CapturedPortSet",
+    "foreign-broker port set",
+    "a V1 CapturedBindings offered in place of a port set"
+   ],
+   "expected": "unchanged RuntimeError on ordinary paths; intern-check refusal on every forged set; success ONLY on a broker-minted V2 port set",
+   "forbidden_effect": "execution reachable without a broker-minted set; any weakening of the existing refusal"
+  },
+  {
+   "id": "F3-I04",
+   "invariant": "Ranks derive only from the verified pre-document roster policy over the complete authorized source universe.",
+   "entry_points": [
+    "hop 1 projection",
+    "production/bundles.py writer"
+   ],
+   "input_families": [
+    "rank derived from observed events",
+    "authorized zero-event source",
+    "noncontiguous/duplicate/missing/reordered ranks",
+    "policy substitution",
+    "roster descriptor or digest swap",
+    "event whose source_id is not in the roster"
+   ],
+   "expected": "zero-event source keeps its rank; every other family refuses before envelope bytes",
+   "forbidden_effect": "any policy derived from the resulting tape"
+  },
+  {
+   "id": "F3-I05",
+   "invariant": "Every event-envelope/v2 field is projected from authorized captured bytes; no caller supplies envelope metadata.",
+   "entry_points": [
+    "hop 1 projection",
+    "raw-event/v2 parser",
+    "dataset-capture-authorization/v2 verifier",
+    "all eight v1-literal sites"
+   ],
+   "input_families": [
+    "v1 member to a v2 authorization",
+    "v2 member to a v1 authorization",
+    "unknown/missing/extra v2 key",
+    "source-asserted prior_envelope_sha256",
+    "tzdata_version_sha256 mismatch",
+    "any caller-supplied timing/provenance/correction argument",
+    "a bare v1 literal surviving at any of the NINE sites including bundles.py:653",
+    "a roster-bootstrap authorization still pinning raw-event/v1 under a v2 wire"
+   ],
+   "expected": "refuse on the literal or closed key set; prior_envelope_sha256 is hop-derived and is not a member field",
+   "forbidden_effect": "an unauthorized envelope field reaching a tape; a bare v1 literal surviving at any of the eight sites"
+  },
+  {
+   "id": "F3-I06",
+   "invariant": "Chronology is publish -> freeze -> port -> CAPTURED -> session -> CONSUME per hop, with no self-receipt or cycle.",
+   "entry_points": [
+    "hop 1",
+    "hop 2",
+    "hop 3"
+   ],
+   "input_families": [
+    "CAPTURED before consumer document",
+    "prefreeze port",
+    "publish omission",
+    "descriptor mutation after freeze",
+    "wrong consumer-doc hash",
+    "same run/session across hops",
+    "manifest recording its own root or receipt",
+    "hop-2 receipt offered as hop 3's",
+    "placeholder/self hash",
+    "dataset grant whose roster digests name NO published roster"
+   ],
+   "expected": "each refuses before the stream, planner or root exists; the exact valid order succeeds; the last family refuses at the hop-1 v2 preflight, NOT at grant issuance",
+   "forbidden_effect": "a manifest naming its own root/receipt"
+  },
+  {
+   "id": "F3-I07",
+   "invariant": "ReplayRun consumes an exact sorted two-port set over TWO roots; the manifest's inner bytes must agree with the data entry on every named field.",
+   "entry_points": [
+    "CapturedPortSet minting",
+    "hop 3 verification"
+   ],
+   "input_families": [
+    "missing/extra/duplicated/renamed/reordered port",
+    "the two ports naming one root",
+    "mismatched root, PUBLISHED members, policy, envelope count, ordered digest list, recomputed tape_digest",
+    "inner data_captured_receipt naming the replay port instead of the prior hop-2 port",
+    "hop 3 routed through the DYNAMIC resolver (must refuse: hardcoded to hop 1's pair)",
+    "the two ports naming one root"
+   ],
+   "expected": "exact-set cardinality checked against document.py:766 before any port object is built; every mismatch refuses before the tape capability is issued",
+   "forbidden_effect": "a partially minted set; a tape issued on a disagreeing pair"
+  },
+  {
+   "id": "F3-I08",
+   "invariant": "V1 is byte-for-byte unchanged; V2 is a separate primitive on the P4 path.",
+   "entry_points": [
+    "captured_bindings (trust.py:1532)",
+    "_consume_binding (trust.py:1624-1679)",
+    "CapturedPortSet.require"
+   ],
+   "input_families": [
+    "V1 second require of the same input",
+    "V1 require of another name",
+    "V2 require of each input once",
+    "V2 second require of one input",
+    "V2 require of an undeclared name",
+    "V2 require of tape_data THEN tape_manifest and the reverse order"
+   ],
+   "expected": "V1 messages and cardinality identical to base; V2 consuming one input leaves the other reachable in BOTH orders and neither twice; no stream lifecycle advances until release",
+   "forbidden_effect": "any V1 message/cardinality change; the v1 C2 defect recurring"
+  },
+  {
+   "id": "F5B-I09",
+   "invariant": "CapturedForecastInput accepts only the exact F5a V2 verified set, injected non-serializably at the declared input.",
+   "entry_points": [
+    "children/intraday_equities/intraday_equities/forecast_bundle.py::CapturedForecastInput"
+   ],
+   "input_families": [
+    "a V1 CapturedBindings",
+    "descriptor not the frozen one",
+    "port not the derived one",
+    "receipt not the issued one",
+    "set minted for another session",
+    "copied/re-interned set",
+    "valid declared-port consumer"
+   ],
+   "expected": "six refusals, one acceptance",
+   "forbidden_effect": "an ambient path or later reconstruction replacing trusted captured input; ANY read/write/subclass/construction of ForecastBundle or ConfirmedCaps by the new path"
+  },
+  {
+   "id": "F3-I10",
+   "invariant": "Ordering is availability, derived source rank, source sequence, correction position, payload digest, event ID, stable across restart.",
+   "entry_points": [
+    "hop 1 ordering",
+    "verify_causal_order"
+   ],
+   "input_families": [
+    "equal-availability tie",
+    "reordered availability",
+    "correction/bust chain",
+    "shuffle",
+    "deterministic restart",
+    "duplicate event ID"
+   ],
+   "expected": "one stable canonical order; restart reproduces the identical terminal identity",
+   "forbidden_effect": "an order depending on input presentation"
+  },
+  {
+   "id": "F3-I11",
+   "invariant": "No cross-tier import is introduced in either direction.",
+   "entry_points": [
+    "dskit/pipeline/trust.py imports",
+    "dskit/production/bundles.py imports"
+   ],
+   "input_families": [
+    "trust.py importing production",
+    "bundles.py gaining a trust symbol import",
+    "the envelope writer being called FROM trust rather than passed INTO the hop"
+   ],
+   "expected": "production -> pipeline only, as today",
+   "forbidden_effect": "the build-order cycle ADR-0145 D5 / ADR-0146 D10 refuse"
+  },
+  {
+   "id": "F3-I12",
+   "invariant": "No envelope field can originate from a caller argument: the hop-1 writer has no free-form per-event metadata parameter.",
+   "entry_points": [
+    "production/bundles.py hop-1 projection/ordering function",
+    "CapturedDerivationHop strategy injection"
+   ],
+   "input_families": [
+    "a writer offered a raw_event_members-shaped metadata argument",
+    "a writer given exchange_ms/receive_ms/provenance/timezone/correction directly",
+    "a substituted strategy object",
+    "a strategy that ignores the verified roster policy"
+   ],
+   "expected": "the signature accepts only verified raw-event/v2 member bytes and the verified roster policy; anything else refuses",
+   "forbidden_effect": "recreating compose_replay_tape's unauthorized-metadata defect on the F3 path"
+  }
+ ],
+ "compatibility": {
+  "unchanged_required": [
+   "ReplayRun.run text and the replay grammar",
+   "captured_bindings and _consume_binding",
+   "CapturedBindings class body",
+   "compose_replay_tape",
+   "CapturedReplayTape",
+   "verify_causal_order",
+   "dskit.raw-event/v1",
+   "dskit.dataset-capture-authorization/v1",
+   "ForecastBundle",
+   "ConfirmedCaps",
+   "every ADR-0143 forbidden-legacy symbol"
+  ],
+  "baseline_pinned": "tests/production/test_feed.py + children/intraday_equities/tests/test_forecast_bundle.py = 208 passed at 3b73361 (recorded this session). Any diff in the P7 suites (test_bundles, test_capture_lifecycle, test_captured_authorization, test_captured_replay_tape, test_verifier, test_trust, test_captured_artifact_grammar) is a Major."
+ },
+ "non_goals": [
+  "no real data/source read/acquisition/replay/HPO/refit/training/lockbox/backtest/paper/live",
+  "no E1, C0, A or B lane",
+  "no calibration or statistical policy",
+  "no queue/impact/venue realism",
+  "no external OS sandbox",
+  "no CapturedBindings relocation",
+  "no whole-F3 or whole-F5b closure claim from this ADR alone"
+ ],
+ "open_risks": [
+  "ADR-0147's disclosed limit inherited verbatim: POSIX flock release-on-crash is documented, not proven by code, so F3-I02's cross-process claim is same-machine/same-filesystem only.",
+  "The prior Windows-worktree draft was unreachable; findings beyond the five stated in the task are not addressed.",
+  "M3's eight-site list was produced by grep over dskit/ at 3b73361 and is asserted exhaustive for these two literals only; Phase 0 must confirm.",
+  "v2 N-3 retained: intent-pure stream_id is publicly predictable, so a producer-session holder could pre-empt a stream a legitimate hop will use; producer-session issuance is gated elsewhere. Disclosed, not fixed.",
+  "v2 context item retained: _p4_reads (trust.py:5190) per-input read bookkeeping is in-RAM and lost on crash; re-reading immutable WORM bytes is not harmful."
+ ],
+ "red_authorization": false,
+ "deployment_eligible": false,
+ "next_gate": "One fresh independent Sonnet Phase 0 skeptic on ADR-0148 v3, then owner approval. Neither v1's nor v2's approval carries."
+}

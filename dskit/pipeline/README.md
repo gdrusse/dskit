@@ -320,6 +320,27 @@ scramble — refitting ~100 walks with the label days reshuffled — is a
 documented seam (`TIER2_SEAM`, `tier2_plan`, `tier2_verdict`), not a
 thing this runs.
 
+**`false_signal.py`** turns that same evidence shape into one number per
+signal (ADR-0152): `SignalEvidence(statistic, [nulls])` — exactly
+`tier2_verdict`'s pair — becomes `pi_hat`, the probability that this signal's
+apparent edge is nothing, through a Storey null share over a Grenander
+density. The family is a `FalseSignalEstimator` subclass supplying three hooks
+(`fit` / `null_proportion` / `density`); `estimate` is a template
+`__init_subclass__` will not let a member override, and
+`register_false_signal_estimator` brings your own family the way
+`register_correction` brings your own correction.
+
+It returns a second number, `pi_widened`, and **that number is not a
+confidence bound.** It is the same ratio re-read with its two binomial inputs
+pushed to their Clopper-Pearson limits: it prices the Monte-Carlo error of a
+finite scramble and the binomial error of the null share, and it does NOT
+price the error of the density fit, which sits in the denominator and
+dominates. Measured against a known two-groups truth with fully independent
+signals, `P(pi_widened >= true local fdr)` is 0.53–0.82 against a 0.95
+nominal, and raising `widening_level` to one-in-a-million still does not reach
+0.95. A `slow`-marked test ships that measurement. Use it as a sensitivity
+reading, not as the `pi` in a chance constraint.
+
 Registered kinds (`DEFAULT_NODE_KINDS`, importing `dskit.pipeline`):
 
 | Kind | Role | Does |
@@ -674,6 +695,9 @@ dskit/pipeline/
 │                      per-timestamp cross-sectional IC + its usability guard (ADR-0068)
 ├── attempts.py        the many-attempts bar: AttemptRegistry, session-block
 │                      sign-flip max_bar, the tier-2 scramble seam (ADR-0069)
+├── outcome_interval.py REALIZED-outcome uncertainty: block-conformal predictive
+│                      intervals + joint scenario sets over dependent, time-ordered
+│                      out-of-fold residual vectors (ADR-0155)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
@@ -697,6 +721,20 @@ dskit/pipeline/
 │                      registry (bh / bonferroni / none / weighted-bh) +
 │                      register_correction; no-information vs mean
 │                      (Clark–West HAC + sequential h*, ADR-0057)
+├── false_signal.py    per-signal false-signal probability (ADR-0152):
+│                      SignalEvidence + FalseSignalEstimator ->
+│                      pi_hat and a widened pi_widened (NOT a bound);
+│                      GrenanderLocalFdr +
+│                      register_false_signal_estimator
+├── mean_interval.py   MeanEvidence + the MeanIntervalEstimator family: a mean,
+│                      a dependence-aware SE and two-sided bounds; the
+│                      dependence statement is required, never defaulted, and
+│                      a member returns ConfidenceInterval only where its
+│                      coverage was MEASURED — WidenedInterval otherwise
+│                      (ADR-0151)
+├── uncertainty_set.py budgeted uncertainty sets: the BudgetedUncertaintySet
+│                      doorway + probability / mean / outcome members;
+│                      worst_case, protection, counterpart, realizations
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

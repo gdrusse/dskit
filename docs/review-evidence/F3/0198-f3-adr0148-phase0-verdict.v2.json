@@ -1,0 +1,41 @@
+{
+  "schema_version": "Phase0Review.v1",
+  "slice_id": "F3",
+  "review_kind": "Phase 0 independent design skeptic, candidate ADR-0148 v2",
+  "base_commit": "3b73361",
+  "reviewed": {"adr": "decision-log.md :: ADR-0148 (v2, PROPOSED)", "matrix": "0197-f3-adr0148-contract-matrix.v2.json"},
+  "reviewer": {"lens": "Phase 0 design: authority/contract falsification", "model": "Claude Sonnet (fresh, independent; did not review v1)", "implementer": "Claude Opus 5", "read_only": true, "tests_run": "none"},
+  "verdict": "NOT CLEAN",
+  "counts": {"critical": 1, "major": 4, "minor": 3, "nit": 0, "unresolved_critical_major": 5},
+  "v1_findings_rechecked": {
+    "C1_mechanism": "GENUINELY CLOSED (no ChainLedger/JsonlLedger/fcntl import; DI via receipt_store)",
+    "C1b_stream_id": "GENUINELY CLOSED (verified intent-pure at trust.py:1175-1183)",
+    "C2_multiport": "GENUINELY CLOSED (V2 abandons CapturedBindings; _validate_capture_request trust.py:2514-2565 is set-based with no cardinality cap; _p4_reads gives per-(stream,path) one-shot, not whole-stream lockout)",
+    "M1_wrong_table": "GENUINELY CLOSED (document.py:766 is the real declaration)",
+    "M2_bind_captured": "GENUINELY CLOSED (zero live citations remain)",
+    "M3_eight_sites": "GENUINELY CLOSED (all nine line numbers individually verified)",
+    "M4_unowned_writer": "GENUINELY CLOSED as to ownership; a new gap found in HOW (v2 M-1)",
+    "M5_by_construction": "GENUINELY CLOSED (narrowed claim matches trust.py:5677-5719 exactly)",
+    "M6_bare_path": "GENUINELY CLOSED (CapturedForecastInput confirmed absent/new)",
+    "N1_tzdata": "GENUINELY CLOSED (consumer named, honest fallback)",
+    "N2_plan_doc": "GENUINELY CLOSED as a plan (correction lands with implementation)"
+  },
+  "findings": [
+    {"id": "C-1", "severity": "Critical", "breaks": "F3-I02 / Decision point 1", "claim": "v2's crash taxonomy is false for 2 of 3 windows: a crashed hop cannot re-run and a post-publish retry does not observe its PUBLISHED head -- it raises.", "author_verification": "CONFIRMED by direct read: _reload_stream (trust.py:1720-1741) rehydrates ONLY self._streams; _stream_pin (1069) and _nonces (1057) are fresh per broker and never reconstructed; member bytes are never persisted. A retry reaches _prepare_receipt, which computes expected = _EVENTS[len(rows)] and raises 'replay of %s is refused' (2246-2248). seal/publish additionally require a live _Prepared whose _stream_pin entry is gone (1878-1884).", "consequence": "the intent's only stream is permanently bricked -- an undisclosed failure mode standing in for the one v1 fixed", "family": "overclaimed durability, restated not fixed", "disposition": "CLOSED in v3 Decision point 1: attempt-indexed intent + read-only derivation_head accessor + an orchestrator contract that makes idempotence real; abandoned attempts are disclosed as permanently unresumable"},
+    {"id": "M-1", "severity": "Major", "breaks": "F3-I05 / Decision point 6", "claim": "DP6 analogized the new writer's invocation to compose_replay_tape -- the exact function whose defining defect is free-form caller-supplied metadata -- and nothing pinned the new signature against repeating it. produce performs no content verification (trust.py:1141-1174).", "author_verification": "Accepted; the analogy was in v2's text and produce's non-verification is confirmed.", "family": "missing essential protection", "disposition": "CLOSED in v3 DP6: analogy withdrawn, signature hard-constrained to verified raw-event/v2 member bytes + verified roster policy, no free-form metadata parameter, RED asserts it"},
+    {"id": "M-2", "severity": "Major", "breaks": "F3-I07 / Decision point 5", "claim": "v2 did not name which resolver hop 3 uses, and its supporting text pointed at the dynamic path, which hardcodes {raw_event_dataset, source_roster} -- hop 1's pair, not hop 3's.", "author_verification": "CONFIRMED by direct read: trust.py:9612-9619 hardcodes that pair and len(captures)==2; _FixedCapturedAuthorizationContract._prepare (5028-5111) is generic over cas['entries'] and handles replay subject kind at 5039; commit_p4_batch dispatches on resolver type at 5485-5489.", "family": "under-specified citation, consequence-graded", "disposition": "CLOSED in v3 DP5: hop 1 -> dynamic resolver, hop 3 -> fixed resolver, both named with citations"},
+    {"id": "M-3", "severity": "Major", "breaks": "F3-I05 / CLAUDE.md duplication rule", "claim": "v2 left bundles.py:653 _RAW_EVENT_V1_SCHEMA as a style precedent, leaving two independent declarations of the literal with only the trust-side one covered by the pinning test.", "author_verification": "Accepted; v2's text did say 'the pattern to follow' rather than rewiring it.", "family": "duplication that diverges, unpinned", "disposition": "CLOSED in v3 DP4: bundles.py IMPORTS the trust-side table (production -> pipeline, the existing direction); the pinning test covers all nine sites"},
+    {"id": "M-4", "severity": "Major", "breaks": "F3-I02 / F3-I11 / CLAUDE.md encapsulation", "claim": "_development_broker is private, absent from __all__, and documented 'for focused tests only'; v2 named it as the production-side durability seam without resolving whether the claim is fixture-scoped or real.", "author_verification": "CONFIRMED: trust.py:2301-2338, docstring at 2309, and _development_broker is absent from trust.__all__ (30-58).", "family": "unresolved layering/encapsulation ambiguity", "disposition": "CLOSED in v3 DP1: the durability claim is stated explicitly as development-broker scope only; no export, no repurposing, and operational durability is named an open gate"}
+  ],
+  "minor_backlog_not_blocking": [
+    {"id": "N-1", "claim": "citation line drift of a few lines in several places (no wrong symbol/table, unlike v1)", "disposition": "corrected in v3 because the surrounding text changed"},
+    {"id": "N-2", "claim": "'terminal transition happens at release' misdescribes P4 finality, which is atomic at commit_p4_batch (trust.py:5524, consumed=True)", "disposition": "corrected in v3 DP5"},
+    {"id": "N-3", "claim": "intent-pure stream_id is publicly predictable; a holder of producer-session capability could pre-empt a stream a legitimate hop will use", "disposition": "RETAINED in the v3 backlog, disclosed not fixed; producer-session issuance is gated elsewhere"},
+    {"id": "context", "claim": "_p4_reads (trust.py:5190) per-input read bookkeeping is in-RAM, lost on crash", "disposition": "RETAINED in the v3 backlog; re-reading immutable WORM bytes is not harmful"}
+  ],
+  "matrix_rows_not_covered": ["production/feed.py and clock.py not opened", "verify_causal_order not re-read line-by-line", "_p4_close_admission and dynamic siblings not fully traced", "HistoricalStudyEnvelopePreflight not opened", "_SyntheticRawPreflight._parse_member body only partially read; whether the v1 flow already does a live-roster cross-check is unconfirmed", "EnvironmentIdentity.v1 field shape not located, so N1's named tzdata consumer is unverified", "_DynamicCapturedAuthorizationContract._prepare/_verify not read beyond the helper; if it handles replay subject kind, M-2 would soften to a documentation gap"],
+  "outcome": "CANDIDATE v2 STOPPED. Rewritten as v3, which closes C-1 and M-1..M-4. Per the owner's standing instruction, only Critical and Major block; the three Minors are recorded above and two are carried into v3's retained backlog. No RED authorized or started; no implementation file touched.",
+  "red_authorization": false,
+  "deployment_eligible": false,
+  "next_gate": "Fresh independent Phase 0 skeptic on ADR-0148 v3, then owner approval of that text."
+}

@@ -12638,6 +12638,3737 @@ shared `ChainLedger` base and inherited, not reimplemented per store; a
 store-conformance test for `libs/sqlite.py` is left to Phase 0 to scope, not
 assumed clean by this ADR. `deployment_eligible=false` throughout.
 
+## ADR-0148 - master F3 three-hop captured replay lane and F5b V2 port-set injection
+
+**Status:** PROPOSED (v3) -- **STOPPED AT A CONVERGENCE CHECKPOINT. DO NOT
+IMPLEMENT.** Not approved, not implemented; no code or test file touched.
+v3 itself carries **8 unresolved Critical/Major findings**: 1 Critical + 5
+Major from its own Phase 0 review (evidence 0201) and 2 Major found by the
+author afterwards (evidence 0200). Three consecutive candidates were stopped,
+which under `docs/skills/skeptic-review.md` forbids a fourth patch until an
+independent checkpoint; that checkpoint (evidence 0202) ruled to narrow the
+work, so the decision points below are **unlanded contracts**, retained for
+the next slice to build on, not a design anyone should code against. Review
+lineage, all retained:
+
+- **v1 stopped** — 2 Critical, 6 Major (evidence 0196). Its `ChainLedger`
+  durability claim named a mechanism absent from `trust.py`; its `stream_id` was
+  not intent-pure; its two-port `CapturedBindings` could never be fully consumed;
+  and it cited `bind_captured`, a symbol that does not exist.
+- **v2 stopped** — 1 Critical, 4 Major, 3 Minor (evidence 0198). Every v1
+  finding was independently confirmed **genuinely closed**, but v2's replacement
+  crash taxonomy described behavior the unedited lifecycle does not produce.
+- **v3 (this text)** closes v2's C-1 and M-1..M-4. v2's three Minors are
+  recorded to the backlog per the owner's standing instruction that only
+  Critical and Major block; N-1 (line drift) and N-2 (wording) are corrected
+  here anyway because the surrounding text changed.
+
+Phase 0 review of THIS text is required next, then owner approval. Neither v1's
+nor v2's approval carries: Decision points 1, 4, 5 and 6 all changed materially.
+
+**Context.** ADR-0147 closed whole F5a, whose own text states the consequence:
+"F3 may now start per its own stated dependency". The controlling DAG is
+`"F3":["F1","F2","F4","F5a"]`, `"F5b":["F3","F5a"]`. Master F3 is
+`docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md` lines 426-620;
+F5b lines 739-748; the normative manifest lines 1095 and 1104.
+
+**The residue P7 left, re-verified at `3b73361`.**
+
+1. `compose_replay_tape` (bundles.py:771) is **one-hop**: roster and
+   `dskit.raw-event/v1` members come from the same committed P4 capture.
+2. It takes `exchange_ms`, `receive_ms`, `source_provenance_tag`,
+   `source_timezone_tag`, `correction_position`, `corrects_event_id` and
+   `prior_envelope_sha256` as **caller-supplied** `raw_event_members` values
+   (bundles.py:909-915) — unauthorized, covered by no signed digest.
+3. `ReplayRun.run` (trust.py:5605) raises unconditionally; the broker entry its
+   message names does not exist.
+4. The authorized wire is pinned to v1 at nine literal sites (Decision point 4).
+5. `produce`/`seal`/`publish` (trust.py:1120/1212/1250) require
+   `kind="producer"`; `open_capture` (1461) and `captured_bindings` (1532)
+   require `kind="consumer"`. No session is both.
+
+### Decision
+
+**Decision point 1 - attempt-indexed derivation, and a crash story that matches the code.**
+
+`produce`, `seal`, `publish`, `open_capture` and `captured_bindings` are not
+edited. A hop that reads a published root and writes a new one is an ordered
+pair of sessions joined by one broker-issued, opaque `CapturedDerivationHop`.
+
+The derivation intent is canonical:
+
+```json
+{"schema_version":"dskit.captured-derivation-intent/v1",
+ "hop":"tape-data|tape-manifest",
+ "attempt":0,
+ "consumer_document_sha256":"<sha256>",
+ "consumed_ports":[{"input":"<name>","root_ref":"<str>",
+                    "captured_receipt_sha256":"<sha256>"}],
+ "output_member":"<relative-path>","purpose":"<str>"}
+```
+
+`consumed_ports` sorted by `input` and unique; `attempt` a non-negative int below
+a fixed ceiling; `derivation_intent_sha256` the sha256 of those bytes with itself
+absent.
+
+**Identity.** `produce` computes `stream_id = _digest(_canonical_bytes({
+"producer": producer, "root": root, "purpose": purpose}))` (trust.py:1175-1183).
+The hop supplies `producer = {"run_identity": "derived-run/" +
+derivation_intent_sha256, ...}`, `root = {"root_ref": "derived-root/" +
+derivation_intent_sha256, ...}`, `purpose` a fixed per-hop literal — so
+`stream_id` is a pure function of `derivation_intent_sha256`, which itself
+includes `attempt`. The consuming session's `run_identity` is recorded in
+`_Prepared`/`_ReceiptSubject` (trust.py:1192, 1198) but never feeds `stream_id`.
+
+**What v2 got wrong.** v2 claimed a crashed hop "must re-run" and that a crash
+after publish is "idempotent, observing its PUBLISHED head". Neither happens.
+`_reload_stream` (trust.py:1720-1741) rehydrates **only** `self._streams` from
+the receipt store; `_stream_pin` (initialised empty at trust.py:1069) and
+`_nonces` (1057) are fresh per broker and are never reconstructed, and member
+**bytes** are never persisted at all — only signed digests are. So a retry
+calling `produce()` on a rehydrated stream reaches `_prepare_receipt`, which
+computes `expected = _EVENTS[len(rows)]` and raises `"replay of %s is refused"`
+(trust.py:2246-2248). A stream left at PRODUCED or SEALED is therefore
+**permanently unresumable** — `seal`/`publish` additionally require a live
+`_Prepared` whose `_stream_pin` entry no longer exists (trust.py:1878-1884).
+
+**What v3 does instead.** The hop never retries a stream; it retries an
+*attempt*. A new read-only accessor `derivation_head(derivation_intent_sha256)`
+returns the recorded head event for that stream, or `None`, granting nothing and
+writing nothing. The hop's contract, which is the thing that makes idempotence
+real rather than assumed:
+
+1. Scan attempts ascending from 0 to the ceiling, reading `derivation_head`.
+2. First attempt whose head is **PUBLISHED** → reuse that root and stop. This is
+   the idempotent case, and it is idempotent because the orchestrator checks,
+   not because `produce` recovers.
+3. First attempt with **no stream** → `produce`/`seal`/`publish` there.
+4. An attempt at **PRODUCED or SEALED** is an abandoned attempt: skip it. Its
+   stream stays incomplete forever, by design of the unedited lifecycle, and
+   this ADR states that plainly rather than implying recovery.
+5. Exceeding the ceiling refuses.
+
+**The invariant this preserves** is *at most one PUBLISHED root per derivation
+intent* — enforced by step 2 refusing to produce once any attempt published —
+not "one stream per intent", which v2 asserted and could not deliver.
+
+**Scope of the durability claim (closing v2's M-4).** `_development_broker`
+(trust.py:2301-2338) is private, absent from `trust.__all__`, and its own
+docstring says "for focused tests only". This ADR therefore claims durability
+**only at development-broker scope**: an injected `receipt_store` mapping makes
+the receipt chain survive an in-process restart against the same backing store,
+which is what the focused tests exercise. It does **not** claim operational or
+deployment durability, does not repurpose the private factory as production
+wiring, and does not propose exporting it. Real deployment durability remains an
+explicitly open gate, consistent with `deployment_eligible=false` throughout.
+
+**Decision point 2 - the broker-owned execution entry.**
+
+`ReplayRun.run` (trust.py:5605) is not edited: its unconditional raise, its
+message and the `replay` grammar stay exactly as merged, so ordinary
+`run_document` refuses where and how it does today. The sole execution entry is
+`LifecycleAuthority.execute_replay_run(session, port_set, *, transition_nonce)`,
+reachable only with a broker-minted, interned `CapturedPortSet`. It calls
+`ReplayRun._run_captured`, a private hook taking only the opaque port set and the
+injected `EnvironmentIdentity` — never a `NodeContext`, `run_dir`, path,
+provider, registry, clock or RNG. RED asserts both halves.
+
+**Decision point 3 - two chronologies, with the claim narrowed to what is checked.**
+
+The grant families are disjoint: `_SYNTHETIC_ROSTER_BOOTSTRAP_KEYS`
+(trust.py:5890) and `_SYNTHETIC_GRANT_PUBLIC_KEYS` (trust.py:5635) are disjoint
+closed key tables with disjoint schema literals. Cross-substitution refuses on
+the key set before any effect; RED covers both directions.
+
+**Chronology A.** A one-use roster-bootstrap G1 **and** G2 pair authorizes one
+roster producer run, which PUBLISHES the `dskit.source-roster-capture/v1` root.
+G2 alone refuses before member, data or capture access. `source_ids` canonical
+sorted/unique; ranks contiguous `0..n-1`; `policy_sha256` omits itself; the scope
+is the complete authorized universe, so an authorized zero-event source keeps its
+rank.
+
+**Chronology B.** `DatasetCaptureAuthorization.v2` carries the three roster
+digests (already-required keys, trust.py:5646-5648).
+
+**The claim, narrowed.** `NonAuthorizingSyntheticGrantVerifier._authorization`
+(trust.py:5677-5719) checks those digests for sha256 **shape only**
+(`cls._hash`), comparing them to nothing. So this ADR claims only:
+**syntactically well-formed at grant issuance, semantically cross-checked at
+hop-1 preflight.** That cross-check is the v2 sibling of
+`_SyntheticRawPreflight._parse_member` (trust.py:7446-7447), required to compare
+the three digests against the live PUBLISHED roster root, receipt and policy and
+refuse before any member is projected. RED covers a grant naming no published
+roster.
+
+**Decision point 4 - the versioned wire, with one owner across all nine sites.**
+
+v1 and v2 of the raw-event and dataset-authorization schemas keep their meaning
+exactly; every reviewed v1 identity stays byte-identical.
+
+New `dskit.raw-event/v2`: a closed twelve-key object — v1's six
+(`schema_version`, `source_id`, `event_id`, `source_sequence`,
+`availability_ms`, `payload_sha256`) plus `exchange_ms`, `receive_ms`,
+`source_provenance_tag`, `source_timezone_tag`, `correction_position`,
+`corrects_event_id`. `prior_envelope_sha256` is deliberately **not** a member
+field: it is the correction chain's prior digest, derived by the hop from events
+it has already projected, so no source can assert it.
+
+New `dskit.dataset-capture-authorization/v2`: identical to v1 except
+`event_schema` is exactly `"dskit.raw-event/v2"` and `scope` gains
+`tzdata_version_sha256`, compared by the hop-1 v2 preflight against the tzdata
+identity in `EnvironmentIdentity.v1`; if that comparison is not implemented the
+field is dropped rather than shipped inert.
+
+**The roster-bootstrap wire is in scope too.** `NonAuthorizingRosterBootstrap
+Verifier` pins `event_schema == "dskit.raw-event/v1"` at trust.py:5970, so a v2
+wire requires a `dskit.roster-bootstrap-authorization/v2` alongside it. Omitting
+this was a gap in v2's own enumeration and is corrected here.
+
+**The nine sites, by grep at `3b73361`.** Three pin `dskit.raw-event/v1` —
+trust.py:5711 (dataset grant `event_schema`), 5970 (roster-bootstrap
+`event_schema`), 7447 (`_SyntheticRawPreflight._parse_member`, beside
+`set(event) == _SYNTHETIC_RAW_EVENT_KEYS`, the closed six-key set at 7150). Five
+pin `dskit.dataset-capture-authorization/v1` — trust.py:5680, 7797, 8181, 8401,
+9039. The ninth is `production/bundles.py:653`, `_RAW_EVENT_V1_SCHEMA`.
+
+**One owner, including the ninth (closing v2's M-3).** v2 left bundles.py's
+constant as a style precedent, which would have left two independent
+declarations of the same literal with only one covered by the pinning test —
+the exact "value in two places with nothing pinning them" defect CLAUDE.md
+names. Instead: `trust.py` owns the single versioned shape table, all eight
+trust-side sites read from it, and **`bundles.py` imports it** rather than
+keeping its own constant. That import is production -> pipeline, the direction
+that already exists, so it introduces no cycle. `test_raw_event_schema_sites_
+agree` asserts that no bare literal survives at any of the nine.
+
+Under v2 of the wire, hop 1 projects **every** `dskit.event-envelope/v2` field
+from authorized captured bytes: six from the raw member, six from the v2
+additions, `source_rank` and `source_rank_policy_sha256` from the verified
+pre-document roster policy, and `prior_envelope_sha256` from the hop's own
+correction chain.
+
+**Decision point 5 - V2 as a port SET on the P4 path, with the resolver named.**
+
+Ownership, pinned. `CapturedBindings` is at trust.py:694, exported in
+`trust.__all__` (trust.py:33), constructed only at trust.py:1592 by
+`captured_bindings` (trust.py:1532). `production/bundles.py` neither defines nor
+imports it. The master plan's F5b citation of
+`dskit/production/bundles.py:CapturedBindings.require` is a mis-citation;
+nothing moves.
+
+**V1 is not edited at all.** `captured_bindings` keeps building exactly one port
+(trust.py:1591) and `_consume_binding` keeps its whole-stream `_consumed_streams`
+gate and terminal `CONSUMED` append (trust.py:1658, 1671-1679). RED pins V1's
+messages and cardinality unchanged.
+
+**V2 is a different primitive, and the capability already exists.** A two-port
+`CapturedBindings` is impossible: `_consume_binding` advances the whole stream to
+CONSUMED on the first `require`, and `CapturedBindings` holds one scalar
+`_stream_id` (trust.py:709) while hop 3 needs two roots. V2 is therefore a new
+opaque `CapturedPortSet` over the P4 path — `authorize_capture_set`
+(trust.py:2501) -> `CapturedAuthorizationRecord` (**trust.py:4902-4980**, whose
+public surface is exactly `lifecycle_captured_receipt_sha256` at 4919-4942 and
+`read_member_bytes` at 4944-4972). This is not speculative: `_validate_capture_
+request` (trust.py:2514-2565) collects streams and ports as sets with no
+cardinality cap, requiring only that all captures share one frozen consumer
+document (trust.py:2562-2563), and an existing test already freezes one document
+with two `$captured_artifact` inputs and derives two ports
+(`tests/pipeline/test_captured_authorization.py:5271-5285`), with
+`assert len(audit["ports"]) == len(audit["receipts"]) == count` under
+`parametrize("count", [1, 2])` at line 969. That is exactly hop 3's shape.
+
+**Which resolver (closing v2's M-2).** The two contracts are not
+interchangeable, and v2 pointed at the wrong one:
+
+- **Hop 1 uses the dynamic path.** `_dynamic_p4_reconstruct_admission_chain`
+  (trust.py:9612-9619) hardcodes `{"raw_event_dataset", "source_roster"}` and
+  `len(captures) == 2` — literally hop 1's own pair.
+- **Hop 3 uses the fixed path.** `_FixedCapturedAuthorizationContract._prepare`
+  (trust.py:5028-5111) loops generically over `cas["entries"]` with no
+  cardinality or name assumption and handles the replay subject kind explicitly
+  (`replay = subject["kind"] == "replay"`, trust.py:5039). `commit_p4_batch`
+  dispatches on `type(resolver) is _FixedWormTrustedArtifactResolver`
+  (trust.py:5485-5489). Routing hop 3 through the dynamic resolver would hit
+  "P4 dynamic PIS entry closure refused"; no new dynamic sibling is needed.
+
+- **Exact-set cardinality** comes from the real declaration,
+  `document.py:766 _REPLAY_TAPE_INPUTS = ("tape_manifest", "tape_data")`,
+  enforced at parse by `_replay_node_errors` (document.py:805-838). A missing,
+  extra, duplicated, renamed or reordered input refuses before any port is built.
+- **One-shot per input.** `CapturedPortSet.require(name)` returns each declared
+  input exactly once, backed by P4's per-`(stream, relative_path)` read tracking
+  (`_p4_reads`, trust.py:5190, 5413-5416) — not `_consume_binding`'s whole-stream
+  lockout. Consuming `tape_manifest` leaves `tape_data` reachable, in either
+  order. **P4 finality is atomic at authorization time** (`commit_p4_batch`,
+  trust.py:5524, `consumed=True`); `CapturedPortSet.release()` is local
+  bookkeeping over an already-final commit, not deferred broker-side finality.
+  v2's "the terminal transition happens at release" wording was wrong and is
+  corrected here.
+
+**Decision point 6 - the hop-1 writer: named owner, constrained signature.**
+
+`production/bundles.py` owns envelope shape, canonical bytes and ordering today
+(`_check_event_envelope` 354, `_parse_event_envelope` 463,
+`_event_envelope_order_key` 498) and the master plan already assigns it the
+default-deny parser and private verification seam. The hop-1 projection and
+ordering function is added there, reusing those helpers rather than restating
+them. `trust.py` never imports it; the writer is passed into the hop, so the
+call direction stays production -> pipeline.
+
+**The signature is constrained, and the v2 analogy is withdrawn.** v2 said the
+writer is passed in "exactly as `compose_replay_tape` already receives" its
+arguments — an analogy to the one function whose defining defect, named in this
+ADR's own Context item 2, is accepting free-form caller-supplied timing,
+provenance and correction values. `produce` performs no content verification
+(it checks member shape and order only, trust.py:1141-1174), so nothing would
+have caught an implementation that recreated that parameter. The analogy is
+therefore withdrawn and replaced by a hard constraint: **the writer takes only
+(a) verified `dskit.raw-event/v2` member bytes resolved through the captured
+port and (b) the verified roster policy.** It has no free-form per-event
+metadata parameter of any kind. RED asserts that no envelope field can originate
+from a caller argument.
+
+**Decision point 7 - F5b's named symbol, and the collision disclaimed.**
+
+F5b adds `CapturedForecastInput` to
+`children/intraday_equities/intraday_equities/forecast_bundle.py`: a thin child
+adapter accepting only a broker-minted `CapturedPortSet` and resolving exactly
+one declared consumer input. The child's own rule binds it —
+`children/intraday_equities/AGENTS.md:9-11`, "Never edit dskit from here.
+Generic gaps graduate upstream. Domain stays here" — so the mechanism stays in
+dskit and only the declaration is child-side. The module imports nothing from
+`dskit.pipeline.trust` or `dskit.production` today and has no existing captured-
+input consumer, so this is a genuinely new seam. It is **not** coupled to
+`ForecastBundle` (355) or `ConfirmedCaps` (594), which are the file's existing
+Gate-4/ADR-0114/ADR-0121 capital machinery and are not edited, subclassed or
+constructed by the new path.
+
+`test_forecast_consumer_requires_v2_captured_set` refuses, each its own case: a
+V1 `CapturedBindings`; a set whose descriptor is not the frozen one, whose port
+is not the derived one, whose receipt is not the issued one; a set minted for a
+different session; a copied or re-interned set — and accepts the one valid
+declared-port consumer.
+
+`docs/plans/closeout-2026-09-14/02-shared-foundations.md:29-31` carries the same
+`bundles.py:CapturedBindings` mis-citation and is corrected in the same change.
+
+### The three hops, in order
+
+1. **Hop 0.** Chronology A publishes the roster root; chronology B publishes the
+   raw-event-dataset root. Both PUBLISHED, neither CAPTURED, no consumer
+   document yet.
+2. **Hop 1 (`ReplayTapeDataCapture`).** Declares exactly `raw_event_dataset` and
+   `source_roster` — no alias, extra or nested descriptor. Frozen only after hop
+   0 published; ports derived, roots and receipts verified, port-bound CAPTURED
+   receipts issued through the **dynamic** resolver. Runs as a Decision point 1
+   hop: verifies every event's `source_id` is in the consumed pre-document
+   roster, binds that exact `policy_sha256` without deriving a new one, writes
+   canonical F3-ordered `dskit.event-envelope/v2` bytes through Decision point
+   6's writer, and PUBLISHES its own data root. Order is availability, derived
+   source rank, source sequence, correction position, payload digest, event ID.
+3. **Hop 2 (`ReplayTapeManifestProducer`).** A distinct, later consumer document
+   frozen against hop 1's published root and receipt. Derives the inner
+   `dskit.captured-replay-tape/v1` bytes with the **unedited**
+   `CapturedReplayTape` codec, then PUBLISHES them in its own separate
+   `ReplayTapeManifestCapture` root. It never records its own root or receipt
+   inside the inner manifest: `data_capture_root`/`data_captured_receipt` name
+   hop 1's root and *this hop's* port-bound receipt for it — parent publish ->
+   manifest capture -> manifest publish, never a same-root, self-receipt or cycle.
+4. **Hop 3 (`ReplayRun`).** A third, distinct consumer run through the **fixed**
+   resolver. Its document freezes descriptors resolving to both published roots;
+   two replay-specific CAPTURED receipts are issued; Decision point 5's
+   `CapturedPortSet` carries both; Decision point 2's entry executes it. It
+   verifies the outer manifest's `VerifiedCapture` and bytes; requires the
+   manifest's inner bytes to equal the data entry's resolved root, PUBLISHED
+   members, source-rank policy, envelope count, ordered digest list and
+   recomputed inner `tape_digest`; and requires the inner `data_captured_receipt`
+   to verify the **prior** hop-2 port, while the data entry carries its own later
+   replay-specific receipt. Only then is the composed tape capability issued.
+
+### Non-goals
+
+No real data, source read, acquisition, market replay, HPO/refit, training,
+lockbox, backtest, paper or live action follows from this ADR. Every fixture is
+deterministic and synthetic, every authority the nondeployment equivalent,
+`deployment_eligible=false` throughout. Durability is claimed only at
+development-broker scope (Decision point 1); operational durability is an open
+gate, not a claim. Not implemented: E1, C0, the A or B lanes, calibration or
+statistical policy, queue/impact/venue realism, any external OS sandbox. Not
+edited: `ReplayRun.run`, the `replay` grammar, `captured_bindings`,
+`_consume_binding`, `CapturedBindings`, `compose_replay_tape`,
+`CapturedReplayTape`, `verify_causal_order`, `dskit.raw-event/v1`,
+`dskit.dataset-capture-authorization/v1`, `ForecastBundle`, `ConfirmedCaps`, or
+any ADR-0143 forbidden-legacy symbol. Nothing moves out of `trust.py`. This ADR
+does not claim whole-F3 or whole-F5b closure; it is the contract their RED/GREEN
+must satisfy.
+
+**Retained Minor backlog (not blocking, per the owner's Critical/Major bar):**
+v2 N-3, `stream_id` is publicly predictable, so a holder of producer-session
+capability could pre-empt a stream a legitimate hop is about to use; producer
+session issuance is itself gated elsewhere, and this is recorded rather than
+assumed away. Also retained: `_p4_reads` per-input read bookkeeping
+(trust.py:5190) is in-RAM and not persisted, so a crash mid-hop-3 loses it;
+re-reading immutable WORM bytes is not harmful, so it is disclosed, not fixed.
+
+The prior uncommitted ADR-0148 draft and its five-Major verdict live in a
+Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
+from this Linux container. If that draft carries findings beyond the five stated
+in the task, they are not addressed here.
+
+## ADR-0149 - dimensionality reduction as a closed-catalog `FittedTransform` member
+
+**Status:** APPROVED and implemented (2026-09-17). `SklearnReduction`
+(kind `sklearn-reduce`) lands in `dskit/pipeline/libs/sklearn.py` as a member of
+the fitted-transform family, in four TDD slices each closed by two independent
+skeptic lenses with zero unresolved Critical/Major. Two convergence checkpoints
+are recorded below (the `range(width)` name-derivation family and the
+canonical-shape pin family).
+
+**Numbering note (recorded to prevent a third collision).** `origin/main`'s
+highest ADR is 0148 (the F3 replay lane above). PR #15 is open and unmerged; it
+adds a *different* `## ADR-0148` (segmentation) on its branch, which collides
+with the F3 one already on main. This ADR therefore takes **0149** -- the next
+free number, used by no open branch or PR (verified against every `refs/pull/*`
+and remote branch head).
+
+**Context.** dskit has feature SELECTION (`sklearn-select`, `torch-importance`,
+ADR-0042): it keeps a subset of existing columns. It has no dimensionality
+REDUCTION: nothing projects rows onto new axes. Verified by tree search
+(`pca`, `TruncatedSVD`, `decomposition`, `SVD`, `manifold`, `umap`,
+`autoencoder`, `latent`). The only hits are unrelated -- long-method
+"decomposition", the Murphy decomposition, a `torch_ts` "decomposition linear"
+architecture name, and a child's supervised
+`sklearn.cross_decomposition.PLSRegression` chosen through the generic
+`sklearn-fit` estimator doorway (a child document picking a supervised
+estimator, not a reduction capability).
+
+The fitted-transform family (ADR-0040) is the right seam: it already owns the
+split selection, the JSON sidecar, the restore, the purity screen and the
+metrics. This ADR adds ONE member to that family in `dskit/pipeline/libs/sklearn.py`,
+tier 2. It branches from `origin/main`, so it adds **no tier-1 hook** -- it
+reads ADR-0148's `SklearnSegment` as a *pattern* (closed catalog, extracted
+JSON state, projection computed here, recomputed identity hash), not as a base.
+
+### Decision
+
+**Decision point 1 -- the catalog is closed: `pca` and `svd`, nothing else.**
+
+The catalog is closed for the same reason SklearnSegment's is: the state is
+EXTRACTED to JSON, not a pickled model, and only members that expose the
+extraction belong.
+
+- `pca` (`sklearn.decomposition.PCA`): exposes `components_`
+  (`n_components` x `n_features`) and `mean_` (`n_features`). Its projection
+  is `(X - mean_) @ components_.T` -- a matrix multiply this module owns.
+- `svd` (`sklearn.decomposition.TruncatedSVD`): exposes `components_` and no
+  mean (it never centres). Its projection is `X @ components_.T`.
+
+- UMAP is OUT: it has no components to extract; the fitted neighbour graph IS
+  the state, and this module does not persist native models. Inclusion would
+  change the state format from JSON to a pickled model, a different seam.
+- t-SNE is OUT, and not merely "not in the catalog": it has NO `transform()`
+  at all, so it cannot project unseen rows. It is not a fitted transform in
+  this family's fit-then-apply sense, so it belongs out of scope, not in a
+  closed catalog.
+- KernelPCA, IncrementalPCA, FactorAnalysis, NMF and the manifold learners are
+  OUT by the same extraction argument (state beyond `components_`/`mean_`, or a
+  projection that is not a plain matrix multiply); named in Non-goals.
+
+The catalog resolves through the pack's existing `_import_object` doorway to
+exactly those two dotted paths -- never an arbitrary document-supplied path.
+
+**Decision point 2 -- the projection is computed HERE, and must match the library's `transform`.**
+
+`apply_state` computes the projection from the stored arrays: for `pca`,
+`(X - mean_) @ components_.T`; for `svd`, `X @ components_.T`. This mirrors
+SklearnSegment computing nearest-centre distance here rather than calling
+`predict`. The consequence, stated as a contract: for every catalog member,
+`apply_state`'s answer must equal the fitted estimator's own `transform(X)` on
+fixtures -- proven per member in tests, not asserted. A serving run restores
+JSON and never rebuilds the estimator, so the only transform that exists is
+this module's own; if it disagreed with the library, the served rows would be
+quietly wrong and nothing would compare them.
+
+One constructor knob changes the transform and is REFUSED by name rather than
+forwarded: `whiten` (PCA). Whitened PCA projects with
+`components_.T / sqrt(explained_variance_)`, which needs `singular_values_` in
+the state -- a second stored array and a second formula. Every other
+constructor knob (`svd_solver`, `tol`, `iterated_power`, `n_iter`, `algorithm`,
+`n_oversamples`, `power_iteration_normalizer`) forwards unchanged through
+`algorithm_params`, because none of them changes the projection formula.
+
+**Decision point 3 -- the JSON state and its schema tag.**
+
+Tag: `"dskit.sklearn-reduction/v1"`. State keys:
+
+- `pca`: exactly `{schema, algorithm, features, components, mean}`.
+- `svd`: exactly `{schema, algorithm, features, components}` -- no `mean`,
+  because TruncatedSVD never centres; the omission is the record of that fact.
+
+`components` is `n_components` x `len(features)`, every entry a finite JSON
+number; `mean` (when present) has width `len(features)`. `state_problems`
+validates the state completely on load -- schema tag, algorithm in-catalog,
+feature-list shape, component width, and per-algorithm presence/absence of
+`mean` -- then compares the document's `algorithm`, `features` and
+`n_components` against it, because those are the knobs that DESCRIBE the state
+(a document may restate what a state is, never misdescribe it). `n_components`
+is NOT stored in the state: it is `len(components)`, and the comparison reads
+that. Storing it would be the same fact in two places with nothing pinning
+their agreement.
+
+**Decision point 4 -- output contract.**
+
+- The declared `features` columns are DROPPED from every output row; the
+  projected axes replace them.
+- New columns: `component_<i>` for `i` in `0..n_components-1`, in component
+  order. The prefix `component` is one module-level constant; a knob to rename
+  it is out of scope.
+- Every non-feature column (the label, the decision instant, the cluster
+  identity, anything else the row carried) rides along unchanged.
+- Input rows are never mutated; a NEW row is emitted per input row.
+- A row that already carries a produced name (`component_<i>`, from the
+  DECLARED `n_components` -- known at validate time in both modes) is refused
+  in `row_problems`, never overwritten: input evidence is not overwritten.
+
+`n_components` is a top-level REQUIRED param (int `>= 1`, non-bool), not a key
+inside `algorithm_params`, for three reasons: it names the OUTPUT width, so the
+document and the rows it feeds can reason about it; `row_problems` needs it at
+validate time (before any fit) to refuse a colliding `component_<i>`; and
+ADR-0044 makes a member's own top-level knob searchable, so owner flow 2 can
+tune it. It is threaded into the constructor as `n_components`, and spelling it
+again inside `algorithm_params` refuses (one source). `n_components <=
+len(features)` is a plan-time check, and the fit refuses when the estimator
+produces fewer than `n_components` components -- sklearn clamps to
+`min(n_components, n_features, n_samples)`, and a silent clamp would emit
+fewer columns than every document declared.
+
+Ports/outputs: `transform`, `rows`, `metrics`, plus `reduction_model_id` -- the
+identity hash, emitted BOTH as a field on every output row and as a port via
+`state_outputs`, so a downstream row can be traced to the exact projection that
+produced it (the SklearnSegment `segment_model_id` precedent). It is the
+lowercase sha256 of the state's canonical JSON (sorted keys, compact
+separators, `allow_nan=False`), RECOMPUTED from the restored state on every
+projection -- never copied from an artifact field, because an id a file states
+is an id a file could lie about.
+
+Numeric-only metrics: `n_rows` (the family's), `n_fit_rows` (the family's), and
+`n_components` (this member's `state_metrics`). Nothing else.
+
+**Decision point 5 -- no variance / reconstruction score is reported.**
+
+PCA and TruncatedSVD both expose `explained_variance_ratio_`, and it is
+DELIBERATELY not reported. The reason is SklearnSegment's, restated: an
+internal quality number reported beside a run is one a search would rank
+reduction candidates by, which is model selection this node must not perform --
+choosing `n_components` by maximising explained variance is the caller's
+decision, not an objective this node supplies. Reporting it would also make
+`pca` and `svd` asymmetric (they answer different variance definitions). A
+caller that wants the number can fit through the generic `sklearn-fit` doorway;
+this member supplies no such objective.
+
+**Decision point 6 -- no `sidecar_problems` override; the Standardize posture.**
+
+The load path needs no sidecar-level hook. Every refusal fact this member owns
+lives either in the STATE (`state_problems` compares `algorithm`, `features`
+and `n_components`) or in the document's own params (`validate_load_inputs`
+refuses the fitting-only knobs `algorithm_params` and `seed`). The base's
+`_sidecar` already compares `fit_split` when the document declared one, and --
+unlike a segmentation "regime" -- a reduction is a data transformation that the
+family's existing unsupervised member (Standardize) lets a document fit on any
+declared split; the leakage protection is the DECLARED `fit_split` and the
+plan/run refusal to fit on anything else, not a train-only narrowing. Adding
+`sidecar_problems` would be a tier-1 change this ADR does not need and does not
+make (it is ADR-0148's, unmerged).
+
+**Decision point 7 -- out of scope, named.**
+
+UMAP, t-SNE, KernelPCA, IncrementalPCA, FactorAnalysis, NMF, all manifold
+learners; `n_components` as a float fraction or `"mle"` (the output width must
+be a declared int, not a fit-time answer); PCA `whiten`; a configurable
+component-name prefix; supervised reduction (LDA/PLS -- the child's PLS use
+stays on the generic `sklearn-fit` doorway); any variance/quality ranking;
+production serving authority (`serving_load_audited` is NOT claimed -- a
+serving licence is its own ADR with its own audit, the SklearnSegment
+precedent). `deployment_eligible=false` throughout.
+
+**Parameters.** The class's `_PARAMS` is `FittedTransform._PARAMS +
+("algorithm", "algorithm_params", "features", "n_components", "seed")`.
+`seed` (int in `[0, 2**32)`, default 0) is threaded as `random_state`; both
+catalog members accept it, so there is no "seed refused beside X" case. Kind
+`sklearn-reduce`, class `SklearnReduction`, added to the pack's explicit
+`NODE_KINDS`/`register()`. `fit_split`, `order_field` and `purity_check` keep
+their accepted meanings and validators unchanged.
+
+### Convergence checkpoint (slice 1, after review round 2)
+
+**Triggered by a REPEATED FAMILY across two rounds**, not by a cycle count.
+
+The family: *a set of `component_<i>` names derived from `range(width)` is
+pinned at exactly one index or one width, so a hardcoded or truncated
+derivation survives the suite.* Round 1 found it in `_component_names`
+(`row_problems` collision tested only at `component_0` at width 2); the
+round-1 correction pinned `_component_names` at width 3 but INTRODUCED a
+second derivation site — `_feature_component_overlap_problems` — carrying the
+same unpinned shape, which round 2 then found (tested only at `component_0`).
+
+Why the earlier fix did not cover it: it patched the instance, not the family.
+The family is "every place that DERIVES the produced-name set from
+`range(width)` must be pinned at a non-zero index AND at a beyond-width
+non-collision", and the correction added a new instance without applying the
+rule it had just learned.
+
+The changed approach — an inventory, not another point patch. Every site that
+derives `component_<i>` names (present and future) must carry a test that
+exercises (a) a non-zero index `component_<k>` for `k >= 1` COLLIDES, and (b) a
+beyond-width name `component_<width>` does NOT collide. Inventory so far:
+
+1. `_component_names` (row rule) — pinned at width 2 AND width 3 (component_2
+   collides, component_3 does not).
+2. `_feature_component_overlap_problems` (plan check) — pinned at component_0,
+   component_1 AND component_2 (width 3) colliding, and component_2 (width 2) /
+   component_3 (width 3) NOT colliding — both the (a) non-zero-index and (b)
+   beyond-width halves of the rule. Round 3 falsified the first draft of this
+   bullet (it had only the (a) half), so the (b) half is now applied too.
+
+The next derivation site is `apply_state`'s projection (slice 3), which writes
+`component_0..k-1` from the STATE's width — it must satisfy the same
+(a)/(b) rule on its FIRST red-green cycle, not be retrofitted after a reviewer
+finds it. A round-3 Major in this family means the inventory missed a site,
+which is a checkable claim rather than another point fix.
+
+### Convergence checkpoint 2 (slice 2, after review round 3) — the canonical-shape pin
+
+**Same family, wider form.** The slice-1 checkpoint pinned the `component_<i>`
+name derivation. Slice 2's final mutation sweep found the family again, this
+time as: *every value that should read `len(features)` / `n_components` /
+`width` is exercised only at the fixture's canonical shape — 3 features,
+`n_components=2` — so a hardcoded `3` or `2` survives the suite.* Eight Major
+survivors (hardcoding `width=3`, `len(features)=3`, the `!=` geometry checks
+turned one-directional, `algorithm_params` dropped, the validator bound
+`> 3`, tuple features left un-coerced) plus three Minor.
+
+Why the slice-1 fix did not cover it: slice 1 enumerated *name-derivation*
+sites; slice 2 introduced *shape-derivation* sites (`len(features)`,
+`n_components`, `width`) whose fixture happens to equal the natural hardcode.
+The one-fixture-shape oracle is the root cause, not any single site.
+
+The changed approach — a SECOND fixture shape, and a direction battery. No more
+single-value pins. The reduction tests now run against TWO shapes — the
+canonical 3-feature/2-component document AND a 2-feature/1-component one — so
+every `len(features)`/`n_components`/`width` read is exercised at two distinct
+values, and every `!=` geometry check is proven BOTH directions (fewer AND
+more). The next slice (`apply_state`, slice 3) inherits the two-shape rule and
+must also project a 2-feature state, so its width reads are pinned at both
+shapes from its first cycle.
+---
+
+## ADR-0150 - the durable admission ledger's fold and composition seams
+
+*(Number taken at commit time. 0149, 0151 and 0152 are already held by unmerged branches
+(`codex/dim-reduction-adr149`, `codex/mean-alpha-intervals`, `codex/pi-estimator`), so
+this skips them rather than adding a third collision to the 0126 one already latent
+in the tree. 0124 remains a genuine gap and is NOT back-filled -- numbers are taken
+in commit order, never reserved or reclaimed.)*
+
+**Status:** APPROVED by the owner 2026-09-17 and IMPLEMENTED, with Decision
+point 3 changed during implementation -- see the note under it. `tests/
+production` is **6470 passed / 0 failed**, and `tests/pipeline/
+test_captured_authorization.py` + `test_trust.py` are **1420 passed**. Both AST
+tests were probed by reintroducing the two violations behind a never-taken
+branch: `2 failed` with them, `2 passed` restored.
+
+**Context.** ADR-0147 landed the durable consume-once admission gate
+(`3531461`). `HistoricalStudyVerifier.durable()` (`verifier.py:924-958`)
+constructs `ServeRoot`, `SeriesState` and `JsonlLedger` by name, then replays
+the whole chain into that fold with `ledger.scan()`. Three of the package's
+own AST invariant tests refuse this, and all three are correct:
+
+- `test_state.py::test_only_the_fold_and_its_named_readers_scan_the_ledger`
+  names `verifier.py:947`. `SCAN_READERS` is `{state, ledger, reconcile,
+  __main__, outcomes, report}`, and `state.py`'s module docstring declares
+  "Nothing else folds the ledger ... two AST tests pin that no other module
+  scans the ledger or assigns a folded attribute."
+- `test_oop.py::test_no_registry_family_member_is_instantiated_by_name` names
+  `verifier.py:931`. `compose.py` is the only MODULE-level exemption
+  (`COMPOSER`, `test_oop.py:344`); the scan has three in total -- the test is
+  named `test_the_scan_exempts_only_the_composer_a_copy_constructor_and_the_
+  battery` (`test_oop.py:371`), the third being `executor.py`'s
+  `executor_conformance_suite`, exempted by (module, function) at `:345`.
+- `test_oop.py::test_the_shared_checker_vocabulary_is_the_only_private_name_
+  the_package_passes_around` names `verifier.py:76`, which imports `state.py`'s
+  private `_check_admission_use_body`.
+
+These are not stale fixtures. They are three readings of one fact: ADR-0147
+placed the admission-spend series' **composition**, its **fold replay** and its
+**record validation** inside `verifier.py`, which owns none of the three.
+
+**The capability already existed; nothing needs inventing.**
+`state.py`'s `Recovery._replay()` (`state.py:2166-2178`) is the sanctioned
+replay-into-fold: `validate_cache_head`, an optional snapshot restore, then
+`scan(since_seq=...)` -> `state.apply` per envelope, returning the replayed
+count. `compose.py` is the sanctioned by-name constructor. Both seams exist
+and are already exempt.
+
+`durable()` (`verifier.py:946-957`) is NOT a degraded copy of `_replay()` --
+stating it as one would be wrong. It is a DIFFERENT POLICY: it adds a
+head-disagreement refusal `Recovery` does not have, and it deliberately
+refuses the snapshot resume (ADR-0147 D10, commented at `:940-946`), where
+`Recovery` deliberately uses one. What it lacks is `validate_cache_head`, and
+on a fresh `SeriesState` (`head_seq=0`) that call returns `"stale"` rather
+than raising -- so restoring it is a consistency win, NOT a live bug fix, and
+this ADR does not claim otherwise. The reason to move the replay is the
+boundary, not a defect in what `durable()` computes.
+
+**Decision.**
+
+1. **Neither `SCAN_READERS` nor `COMPOSER` is extended.** An allowlist entry
+   would record that the boundary was crossed, not that it was designed, and
+   would leave `state.py`'s docstring claim false while the test that pins it
+   still passed. The access pattern is routed through the sanctioned owners
+   instead.
+
+2. `state.py` gains one public seam, `replay_from_genesis(ledger, state)`:
+   `Recovery._replay()`'s replay half, generalised. It validates the cache
+   head, folds every envelope in chain order from genesis, and refuses when
+   the replayed fold's own head disagrees with the ledger's independently
+   verified head (ADR-0147 Decision point 10's requirement, unchanged).
+   `Recovery._replay()` is re-expressed in terms of it; the snapshot-restore
+   step stays Recovery's, because only the serve series has snapshots to
+   resume from and ADR-0147 D10 deliberately refuses to resume from one. The
+   scan stays in the fold's own module, which is already in `SCAN_READERS`.
+
+3. ~~`compose.py` gains one factory, `admission_spend_ledger(root, *,
+   clock)`.~~ **SUPERSEDED DURING IMPLEMENTATION. `compose.py` is not
+   touched at all.**
+
+   The proposal was to relocate the by-name construction into the exempt
+   module. Implementation found the better answer: `ledger.py` already
+   publishes the §4.3 store family as a registry (`LEDGER_KINDS`,
+   `ledger.py:1533`), which is what `compose.bundles_for` itself resolves
+   through (`ledger_class(document)`). `durable()` now resolves
+   `LEDGER_KINDS.resolve(_ADMISSION_SPEND_LEDGER_KIND)` instead of naming
+   `JsonlLedger`, so the violation **disappears** rather than relocating to
+   a module allowed to commit it. `verifier.py` already imported from
+   `ledger.py` and `ledger.py` imports neither `compose` nor `verifier`, so
+   the `compose -> verifier` cycle the review found (`compose.py:123` ->
+   `verifier.py:285`) never arises and no function-local import is needed.
+
+   The kind is PINNED as `_ADMISSION_SPEND_LEDGER_KIND = "jsonl"`, NOT
+   aliased to `ledger.DEFAULT_LEDGER_KIND`: moving the package default must
+   not silently change this gate's durability. Per the repo rule that a value
+   appearing twice is pinned by a test or a runtime refusal, `durable()`
+   refuses at construction if what it resolves cannot `reserve_once` -- the
+   consume-once primitive the whole gate rests on.
+
+   **ADR-0147's security property is preserved exactly.** `durable()` still
+   takes `root` -- trusted composition input -- and still never accepts a
+   pre-built `Ledger`/`ChainLedger`. The "freshly constructed, empty ledger
+   pointed at a throwaway directory" attack its docstring names remains
+   impossible: a caller supplies a directory, never an instance. The factory
+   is reachable only with a `root`, so it widens no caller surface.
+
+4. `_check_admission_use_body` becomes public: `check_admission_use_body`, in
+   `state.py`'s `__all__`. In this package `__all__` plus the `_` prefix IS the
+   API contract (AGENTS.md), so a validator two modules legitimately share is
+   public by contract and should say so. Adding it to `SHARED_CHECKERS`
+   instead is REJECTED: that tuple means "the checkers `base.py` re-exports
+   from `dskit.assets.base` so three packages share one vocabulary", and this
+   validator is not one of them; widening the name would make the exemption
+   mean two different things.
+
+**Consequences.**
+
+- `verifier.py:931` and `:947` disappear. All three tests pass with their
+  allowlists untouched, which is the point.
+- `durable()` gains the `validate_cache_head` call it currently skips (via
+  `replay_into_fold`), plus the new resolve-time `reserve_once` refusal.
+- `Recovery._replay()` keeps its own pre-restore `validate_cache_head`, since
+  that check runs against the head BEFORE a snapshot restore and
+  `replay_into_fold`'s runs against the head after -- two different heads,
+  not one check written twice.
+- No change to `reserve_once`, to the `(kind, signed_id)` fencing, to
+  `LEDGER_HEALTH_STATES`, or to any on-disk format. No record kind is added or
+  removed. The identity hash of no config moves.
+- Two new public names in `state.py` (`replay_into_fold`,
+  `check_admission_use_body`) and none anywhere else; no file is added, so no
+  README or `AGENTS.md` directory tree changes.
+
+**Explicitly NOT in scope.** The four `tests/production/
+test_captured_authorization.py` failures were a separate question, since
+resolved under the owner's 2026-09-17 ruling, and the two tests are NOT alike:
+
+- `test_issued_p4_facades_reach_only_the_same_held_admission_lookup` builds
+  its broker from `p4._factory()()`, which IS a
+  `CapturedAuthorizationAuthority` with `inspect_capture_admission`. Its
+  positive half was recoverable and HAS been recovered, on a `.durable(...)`
+  verifier via `test_adr0147_durable_admission._p4_fixture`.
+- `test_v1_p4_refusal_has_no_effect_and_does_not_burn_legacy_admission` uses
+  `legacy._setup()`'s `_DevelopmentBroker`, which is neither, so it has no
+  capture-capable broker to migrate to. It is narrowed to the no-effect half
+  it can still prove, and says so in place. **The unburned-admission half is
+  now unproven** and stays that way unless the F4-only capture path returns.
+
+## ADR-0151 — Mean-effect intervals under temporal dependence
+
+**Status:** accepted (2026-09-17; owner pre-approved 2026-09-17, path row A18041).
+
+**ADR-id allocation.** Scanned every ref and every working tree reachable from
+this clone before allocating: `git for-each-ref refs/heads refs/remotes` plus
+`git grep '^## ADR-0[0-9]{3}'` over `docs/architecture/decision-log.md`, plus a
+direct grep of each `~/wt/*` working copy. Highest seen anywhere: **0149**,
+which is ALREADY DOUBLE-ALLOCATED (`codex/pi-estimator-20260917` and
+`codex/dim-reduction-adr149-20260917` both took it from the same base). 0150 is
+free but is the obvious landing spot for that collision's renumber, so this ADR
+takes 0151 and deliberately leaves 0150 vacant. Base for this lane:
+`origin/main` at `e989dff`. The decision log has no merge driver and no
+uniqueness test; until it has one, `max + 1` from a single base is not a safe
+allocation rule.
+
+**Context.** A robust uncertainty set (`U_mu`, the Bertsimas–Sim budgeted
+counterpart sketched in the intraday_equities research notes) needs, per
+component, a point mean and an adverse deviation around it. The evidence is
+out-of-fold per-row scores whose labels OVERLAP in time, so the naive
+`s/sqrt(n)` interval is too narrow by exactly the factor that matters. dskit had
+the arithmetic for both standard answers and no doorway that makes a caller
+STATE the dependence before it gets a number.
+
+Gamma (the Bertsimas–Sim budget) is tuned by rolling validation and is
+explicitly NOT identified by anything here. This ADR produces per-component
+deviations only.
+
+**Inventory (what already existed).**
+
+* `stats.cluster_bootstrap_t` — studentized recentered cluster bootstrap-t;
+  already returns `mean`, `se`, `ci_low`, `ci_high`. With clusters = trading
+  sessions this IS the whole-session block bootstrap the research note ratified.
+* `stats.newey_west_mean` — the HAC mean/SE owner. Returns **no interval**.
+* `stats.dm_lags`, `across_fold_t`, `clark_west_series`, `_student_sf`/`_betai`.
+* `attempts.py` — the scramble doctrine: the exchangeable unit is a whole
+  SESSION, because a session moves every overlapping label with it.
+* Searched and **absent**: any block/stationary bootstrap by that name, any
+  effective-sample-size helper, any inverse CDF or critical-value inverter, any
+  second `ci_low`/`ci_high` producer. `cluster_bootstrap_t` is the only interval
+  in `dskit`.
+
+**Three proven gaps** (probed on `e989dff`, not assumed):
+
+1. `cluster_bootstrap_t({"a": [1.0, nan], "b": [2.0, 3.0]}, 50, 7)` returns
+   `mean=nan, ci_low=nan, ci_high=nan` — a non-finite score propagates silently.
+2. `newey_west_mean` defaults `lags=0`. A caller who says nothing gets the
+   independence assumption for free — the exact silent too-narrow answer this
+   row exists to prevent — and gets no bounds at all even when they do say.
+3. Neither refuses on too-few independent units. `cluster_bootstrap_t` runs on
+   two clusters and reports a `mean`/`se`/`p_value` from them.
+
+**Decision.** A thin tier-1 core module, `dskit/pipeline/mean_interval.py`, that
+owns the CONTRACT and delegates the ARITHMETIC to the two functions above.
+Nothing resamples or kernel-weights here; no estimator is re-derived.
+
+* `MeanEvidence` — frozen value: time-ordered `values`, plus the dependence
+  statement in whichever spelling the caller has (`units` = per-observation
+  independence-unit label, and/or `overlap_steps` = label overlap in observation
+  steps). **Construction refuses when BOTH are absent.** The dependence is never
+  defaulted; it has no default to fall back to.
+* `MeanIntervalEstimator(ABC)` — the doorway. `interval(evidence, level=)`
+  is a TEMPLATE method a member never overrides — **enforced by
+  `__init_subclass__`** (the `production/leg.py:1117` idiom), not by a docstring
+  asking nicely. It owns the screens, the minimum-units refusal, the result
+  invariants and determinism. Four `@abstractmethod` hooks, one job each —
+  `result_class`, `independent_units(evidence)`, `mean_and_se(evidence)` and
+  `bounds(evidence, mean, se, level)` — plus a `minimum_units` hook, because
+  "fewer units than the method can support" is the METHOD's fact.
+* `MeanIntervalResult` — frozen; cannot exist with `low > mean` or
+  `mean > high`, or with a non-finite field. Exposes `deviation_below` /
+  `deviation_above` (pure geometry). Naming one of them "adverse" needs the
+  consumer's sign convention, which dskit does not have. Its level field is
+  `level`, not `confidence`, and the CLAIM is carried by the two subclasses
+  `ConfidenceInterval` / `WidenedInterval` — see the correction round below.
+* Two members: `ClusterBootstrapInterval` (delegates to `cluster_bootstrap_t`;
+  units are the resampling unit) and `NeweyWestInterval` (delegates to
+  `newey_west_mean`; `lags = overlap_steps`, Student-t critical value on
+  `independent_units - 1` degrees of freedom, where independent units are the
+  non-overlapping-block count `n // (overlap_steps + 1)`).
+* `MEAN_INTERVAL_ESTIMATORS` / `register_mean_interval_estimator` /
+  `mean_interval_estimator` — the registry idiom `stats.register_correction`
+  set and `false_signal.py` reused. The registry holds CLASSES, because the
+  family is an object with hooks. All three names spell the SUBJECT out:
+  a bare `estimator` already means the opposite thing next door
+  (`libs/sklearn.py` uses it ~135 times, `_PARAMS` at line 1689 included, for
+  the dotted path to an ML model), every other registry here names its subject
+  (`register_node_kind`, `register_correction`, `register_metric`,
+  `register_split_policy`), and the two concurrent lanes were pushed the same
+  way (`FALSE_SIGNAL_ESTIMATORS`, `CALIBRATORS`). Renamed while nothing is
+  wired, so the rename costs nothing.
+* `ClusterBootstrapInterval` additionally refuses when a stated `overlap_steps`
+  could not FIT inside the shortest unit's contiguous run. That is `attempts.py`'s
+  whole-block doctrine screened rather than assumed. It is a NECESSARY and not a
+  sufficient condition — see the correction round below — and the class says so.
+
+**Fail-closed, not fail-quiet.** A bound the method cannot claim RAISES; it is
+never `None`, never NaN, never a silently narrower number. This deliberately
+diverges from `cluster_bootstrap_t`, which returns `None` bounds on a degenerate
+pivot tail. That is correct for descriptive per-instrument evidence beside a
+p-value and wrong for a number a robust constraint consumes: a consumer that
+reads `None` as "no adjustment" sizes as if there were no uncertainty.
+
+**One edit outside the new module.** `stats._student_sf` is promoted to public
+`stats.student_t_sf`, and (correction round) made to ENFORCE its documented
+`df > 0` precondition instead of assuming it. The Student tail stays owned by
+`stats.py`; the new module bisects on it for the quantile. Copying the continued
+fraction into a second module is the defect CLAUDE.md's "a function is never
+repeated across modules" names. The same shape is being done concurrently on
+`codex/pi-estimator-20260917`, which promotes `_betai` to public
+`regularized_incomplete_beta` and has `false_signal.clopper_pearson_upper` bisect
+on it — that is a PARALLEL lane, not merged precedent, and neither branch's
+promotion exists in this branch's base (`origin/main` at `e989dff`). The two
+were arrived at independently and agree; that is the strength of the argument,
+not an appeal to something already landed.
+
+**Tier: 1 (core), `dskit/pipeline/`.** The code is a pure rule over numbers with
+zero required dependencies and no library to wrap, and a project that has never
+heard of returns, portfolios or trading sessions can use it on any overlapping
+mean. It is not a node kind: like `false_signal.py` and `kinds_search.py`'s
+values it is a plain API a node or a child may call, and wiring it into a
+document is separate, unauthorized work.
+
+**New module rather than more functions in `stats.py`**, because what this IS is
+an estimator FAMILY with a doorway, a required contract and a registry — the
+same shape `false_signal.py` was given today — whereas `stats.py` holds pure
+statistical rules and the correction registry. `stats.py` is already 1,293 lines
+and owns three distinct estimands.
+
+**Rejected.**
+
+* *Extend `cluster_bootstrap_t` in place.* It backs the OWNED `stat_test` kind
+  and `benchmarks.py` reads its `ci_high`. Tightening its screens or changing a
+  `None` bound to a raise would move an owned verdict path for a reason that has
+  nothing to do with multiplicity testing.
+* *A loose `mean_interval(...)` function.* Owner ruling 2026-09-04 prefers
+  objects; and the two interval families differ in real behavior, which is a
+  subclass, not an `if method ==` in one body.
+* *A true stationary bootstrap (Politis–Romano geometric blocks).* The research
+  note names it beside the block bootstrap. Not built: the whole-session block
+  case is what the evidence actually has (sessions are natural, non-overlapping
+  blocks) and `cluster_bootstrap_t` already delivers it exactly. A geometric-
+  block member is a later subclass behind this same doorway and needs no
+  redesign — which is the point of making the doorway a class.
+* *Defaulting `overlap_steps` from `dm_lags`.* `dm_lags` is a sensible automatic
+  rule, and wiring it as a DEFAULT would reintroduce exactly the silent
+  dependence assumption this row exists to remove. A caller may pass
+  `dm_lags(...)` in; nothing here will pass it for them.
+* *Simultaneous / joint coverage across components.* Marginal intervals are not
+  a joint region, and the research note says so. Each call describes ONE
+  component. Nothing here claims family-wise coverage, and `U_mu`'s geometry
+  remains the consumer's decision.
+
+**Consequences.** Not wired to any node, document or child; `nodes_capital.py`
+is untouched. Not validated on real data — every test is synthetic, and the
+research note's acceptance criterion (empirical coverage and width on a later,
+untouched calibration segment) is NOT met by this ADR and is named follow-on
+work. Gamma remains untouched and unidentified.
+
+### Correction round, 2026-09-17 — the nominal level was not delivered
+
+A two-lens skeptic review of `4ee599d` returned `method 0C/2M`,
+`architecture 0C/3M` and five Minors. The Major that reshaped the module:
+
+**What was measured.** Monte Carlo against a known true mean, nominal level
+0.95, 1,000–2,500 trials per cell, reproduced independently during the
+correction:
+
+| sample | independent units | measured |
+|---|---|---|
+| whole independent units, every label realized inside its unit | 8 / 20 / 50 | **94.6–96.3%** |
+| 10-step rolling mean, `overlap_steps=9` (CORRECTLY stated), units carved at the overlap length | 8 / 20 / 50 | **86.9–91.1%** |
+| AR(1) φ=0.8 at the overlap `stats.dm_lags` suggests (5) | 53 | **~81%** |
+| AR(1) φ=0.8 at a generous `overlap_steps=30` | 10 | ~93% |
+
+The shortfall is FLAT in `n` — it is not a small-sample effect that more data
+resolves — and it reaches BOTH members whenever the units are merely contiguous
+blocks cut from one overlapping series. The first row is the positive control:
+given its actually-intended input, `ClusterBootstrapInterval` delivers.
+
+**Diagnosis.** Two causes, and only the second is this module's.
+
+1. `newey_west_mean`'s Bartlett kernel weights lag `k` by `1 - k/(lags+1)`, so
+   truncating at exactly the stated overlap downweights every autocovariance the
+   overlap creates. For an `h`-step rolling mean at `lags = h-1` the estimated
+   long-run variance is analytically **0.67** of the truth and the standard
+   error **0.82** of it; measured `mean(SE_hat) / true SD(mean)` was 0.72 at
+   `n=80` and 0.80 at `n=500`. The attenuation does not vanish with `n`.
+2. `independent_units = n // (overlap_steps + 1)` counts adjacent
+   non-overlapping blocks, but the last row of block `i` still shares raw shocks
+   with the first `overlap_steps` rows of block `i+1`. The count is an UPPER
+   BOUND on independence, never a certificate — the reviewer's point, confirmed.
+
+**Decision: outcome 2 — stop licensing the `overlap_steps` path as a
+confidence level.** Option 1 (repair the block count) was tried on paper and
+rejected with a reason, not a shrug: the dominant term is a systematically
+attenuated standard error, and no degrees-of-freedom discount repairs a biased
+SE. Worse, the attenuation factor depends on the autocovariance SHAPE — 0.82 for
+a rolling mean, something else for an AR(1) — so any constant chosen here would
+be tuned to one DGP and silently wrong for the next caller's. The honest repairs
+are a different kernel or bandwidth inside `newey_west_mean`, or fixed-`b`
+(Kiefer–Vogelsang–Bunzel) critical values in place of Student-t. Both are NEW
+ARITHMETIC in a module this ADR deliberately does not re-derive, and
+`newey_west_mean` additionally backs the owned `stat_test`/`diebold_mariano`
+paths. Neither is authorized here.
+
+So, following `false_signal.py`'s `pi_upper → pi_widened` /
+`confidence → widening_level` retreat:
+
+* `MeanIntervalResult.confidence` → **`level`**, and `interval(..., level=)`.
+  The field now names what was REQUESTED, not what was delivered.
+* Two claim-bearing subclasses: **`ConfidenceInterval`** (the level IS coverage,
+  and was measured) and **`WidenedInterval`** (the level widens the bounds
+  monotonically and nothing more). No boolean flag, no `if method ==` — the
+  claim is a type, so a consumer can `isinstance` it.
+* **`result_class` is an abstract hook with NO default.** A new member must
+  state which of the two it has earned; inheriting the calibrated claim by
+  silence is precisely the overclaim. `ClusterBootstrapInterval` →
+  `ConfidenceInterval`; `NeweyWestInterval` → `WidenedInterval`.
+* `units` is now the PRIMARY contract in prose and in the docstrings.
+  `overlap_steps` is NOT refused — the HAC bracket is still a useful sensitivity
+  reading, and refusing it would delete the only answer available to a caller
+  who has no unit labels — but nothing calls it a confidence level any more.
+* The Monte Carlo SHIPS, `slow`-marked, in `tests/pipeline/test_mean_interval.py`
+  (`TestMeasuredCoverage`), including the `units` positive control. Every
+  coverage number above is pinned by an assertion, in BOTH directions: the
+  calibrated path must stay ≥ 0.92 and the widened paths must stay < 0.94, so a
+  future change that quietly starts overclaiming fails a test.
+
+**The overlap screen is necessary, not sufficient, and now says so.**
+`ClusterBootstrapInterval.independent_units` refuses an overlap that cannot fit
+inside the shortest unit run. It CANNOT detect the residual error: an overlap
+that fits still reaches out of the last rows of every unit unless the units are
+separated in time, which is exactly what a caller asserts by calling them units
+and is not something this module can see. Contiguous blocks carved from one
+overlapping series pass the screen and measured 89.5%. Tightening the screen to
+the truly sufficient condition would refuse `overlap_steps >= 1` with contiguous
+units, which would refuse the legitimate whole-block case as well. The screen
+therefore stays, redocumented, with the failure mode measured and pinned.
+
+**Other findings corrected in this round.**
+
+* **`stats.student_t_sf` enforces its preconditions** (`df` a finite number > 0,
+  `t` finite). It silently returned `0.0` at `df=0`, `0.5` at `df=-5`, and raised
+  a bare undocumented `ZeroDivisionError` at `df=-1`. A silently wrong
+  probability is worse than a crash. `Raises` section added.
+* **`student_t_sf`'s sign correction is now tested directly.** Mutating
+  `return tail if t > 0.0 else 1.0 - tail` to an unconditional `return tail`
+  passed all 138 tests: `_student_t_critical` bisects upward from `high = 1.0`
+  so it never probes `t < 0`, and `across_fold_t` varies no sign. The new
+  `TestStudentTailSymmetry` asserts `sf(-t, df) == 1 - sf(t, df)` and checks both
+  tails against INDEPENDENT closed forms for `df` 1, 2 and 4, restated from the
+  distribution's own algebra rather than read back from the implementation.
+* **`__init_subclass__` enforces the final template** (M3). The docstring said
+  `interval` is never overridden and nothing stopped a third subclass from
+  overriding it and skipping the `MIN_INDEPENDENT_UNITS` floor, the NaN screens
+  and the zero-SE refusal.
+* **Registry renamed** (M4), as recorded in the Decision bullets above.
+* **Mutation gaps closed** (M2): `MeanIntervalResult`'s standalone
+  `standard_error <= 0` (now tested AT zero) and non-empty `method` checks; all
+  three `ClusterBootstrapInterval.__init__` validations; the template's
+  `mean`/`se` NaN screens and its unit-count screen (aimed via a stub member —
+  dead against the two shipped members, but the only protection a future
+  registered member gets); `_QUANTILE_CEILING`'s refusal (reachable only at
+  `df = 1`, where the Cauchy tail stays above a representable target past 1e8);
+  and `cluster_bootstrap_t`'s mean-agreement sanity check. Two loose match
+  strings were tightened: `"units" in str(err)` could not tell
+  `ClusterBootstrapInterval`'s own guard from `shortest_unit_run`'s None-check,
+  which fires on the same input and also says "units".
+* **Domain vocabulary removed** from the docstrings ("capital constraint",
+  "session"). The code and API were already generic.
+* **The "Import cost: stdlib only" line was false** — `node.class_ref` drags
+  `base.py` and `document.py` in. The docstring is corrected rather than the
+  import dropped, citing the no-duplicate-function rule, matching the sibling
+  lane's resolution of the identical finding.
+
+**Merge resolution, recorded before it is needed.** `git merge-tree` against
+`codex/pi-estimator-20260917` (`b820dad`) conflicts in `stats.py`. That branch
+renames `_betai` → public `regularized_incomplete_beta` and DELETES `_betai`;
+this branch renames `_student_sf` → public `student_t_sf` with a body still
+calling `_betai`. Git resolves the `_betai` hunk in their favour automatically
+and leaves only the `student_t_sf` body in conflict, so **a careless resolution
+ships `student_t_sf` calling a deleted `_betai` — a `NameError` on every call,
+including `across_fold_t` and all of `NeweyWestInterval`.** The correct
+resolution: keep this branch's PUBLIC `student_t_sf`, with its docstring and its
+new precondition block, and change its body to call
+`regularized_incomplete_beta`; keep both names in `__all__` (that hunk merges
+cleanly and yields both). The two precondition blocks are independent guards and
+both stay. The edit on this side was kept as small and as local as the M5 fix
+allows. The decision-log, `dskit/pipeline/CLAUDE.md` and `dskit/pipeline/README.md`
+also conflict; all three are additive, side-by-side entries.
+
+**Pre-existing defect, disclosed and NOT fixed.** `cluster_bootstrap_t` still
+propagates a non-finite score silently — gap 1 above. One detail the original
+entry omitted: alongside `mean=nan`, `se=nan`, `ci_low=nan`, `ci_high=nan`, it
+returns a normal-looking **`p_value = 0.0196`**, because `t >= nan` is always
+`False` so no replicate counts as an exceedance. That number could be mistaken
+for a real significant result. It is out of scope here for the reason the
+Rejected section already gives — `cluster_bootstrap_t` backs the owned
+`stat_test` kind and `benchmarks.py` reads its `ci_high`. `MeanEvidence`'s
+`number_ok` screen fully shields THIS module: a non-finite value cannot reach
+the delegate through `mean_interval.py`.
+## ADR-0152 - `false_signal.py`: a generic per-signal false-signal number (`pi_hat`, `pi_widened`)
+
+**Status:** accepted (owner pre-approved 2026-09-17). Evidence: the owner's
+pre-approval of the estimator is recorded in the 2026-09-17 task that
+commissioned it; the corrections below (including this renumber and the
+contract change from `pi_upper` to `pi_widened`) come from the two-lens
+independent skeptic review of candidate `4e8dec0` on
+`codex/pi-estimator-20260917`, whose findings are corrected in the follow-on
+commit on that branch. Not wired to any consumer, so nothing downstream is
+gated on this.
+
+**Numbering.** First drafted as ADR-0149, which
+`codex/dim-reduction-adr149-20260917` had allocated eight minutes earlier
+(`git merge-tree` showed a content conflict in this file). Renumbered to 0151
+after scanning `## ADR-0____` headings in `docs/architecture/decision-log.md`
+across **every** ref — 20 local heads and 8 remote refs, the full output of
+`git for-each-ref refs/heads refs/remotes`. Highest anywhere was 0149 (on
+`codex/dim-reduction-adr149-20260917` and on this branch); `origin/main` was at
+0148. 0150 is deliberately skipped: another lane was taking it concurrently.
+The original commit message `4e8dec0` still says ADR-0149 and cannot be fixed
+without rewriting history.
+
+**Context.** ADR-0088 locks the HFDR capital constraint
+`sum_i(x_i * pi_i) <= q * sum_i(x_i)`, and the conservative-pi note
+(`children/intraday_equities/docs/research/hfdr-mio-uncertainty/2026-09-05-conservative-pi-hfdr.md`)
+argues that constraint should be handed a conservative `pi`, not a point
+estimate. `forecast_bundle.ForecastBundle` already VALIDATES a `pi_hat`/`pi_upper`
+pair (both finite in `[0, 1]`, `pi_hat <= pi_upper`) and says in its own module
+docstring that it "calibrates nothing" and that a generic estimator, once ruled,
+"graduate[s] to `dskit`". Nothing in dskit produces those numbers: the only
+source today is the hardcoded `_PI_HAT`/`_PI_UPPER` test fixtures in
+`children/intraday_equities/intraday_equities/testing.py`. The estimand is
+domain-neutral -- "given out-of-fold evidence and a scramble null, how probable
+is it that this signal's apparent edge is nothing" is a question a project that
+never heard of equities asks.
+
+**Decision.** A new tier-1 core module, `dskit/pipeline/false_signal.py`,
+stdlib plus three siblings, no RNG. It exposes an abstract estimator with three
+`@abstractmethod` hooks and one template method, one shipping member, a registry
+seam, and two pure rules:
+
+- `SignalEvidence(statistic, null_draws)` -- one signal's evidence, validated in
+  `__post_init__`. `statistic` is the out-of-fold number (any scale);
+  `null_draws` are that same statistic recomputed under scrambles. Orientation is
+  the repo's existing one: LARGER is stronger evidence against the null, matching
+  `attempts.beat_all` / `attempts.tier2_verdict`.
+- `permutation_pvalue(statistic, null_draws)` -- the add-one permutation p-value
+  `(1 + #{draw >= statistic}) / (1 + B)`. Never zero, never a point value; the
+  same doctrine `attempts.early_stop_p_bound` already states for the stopped
+  audit. The EMPIRICAL NULL enters here and only here: because the p-value is
+  computed against the scramble draws themselves, the p-scale null is uniform by
+  construction, so no separate empirical-null fitting (and no normal-theory
+  assumption) is needed downstream. It is the ONE owner of the add-one rule --
+  `estimate` calls it rather than restating it inline.
+- `clopper_pearson_upper(successes, trials, confidence)` -- the exact binomial
+  upper confidence limit, by bisection on the regularized incomplete beta.
+- `FalseSignalEstimator` (ABC) -- `estimate(evidence, independent_units)` is the
+  TEMPLATE, and `__init_subclass__` REFUSES at class-definition time any member
+  that overrides it, so the screens cannot be skipped by subclassing. Subclasses
+  supply the estimator FAMILY through `fit(pvalues)` (returns the subclass's own
+  opaque state), `null_proportion(state)` and `density(state, p)`.
+- `GrenanderLocalFdr` -- the shipping member.
+- `FalseSignalEstimate` -- the frozen result: `pi_hat`, `pi_widened`, `evidence`,
+  all three wrapped read-only (`MappingProxyType`, one level deep) so a `frozen`
+  dataclass over mappings is actually frozen.
+- `FALSE_SIGNAL_ESTIMATORS` / `register_false_signal_estimator` /
+  `false_signal_estimator` -- the registry, mirroring `stats.register_correction`.
+  Named for its SUBJECT like every sibling registry (`register_node_kind`,
+  `register_correction`, `register_metric`, `register_split_policy`) rather than
+  for the mechanism; the bare word `estimator` is already taken in this package
+  by `libs/sklearn.py`'s `_PARAMS` field for a model dotted path, and
+  `dskit/pipeline/CLAUDE.md` uses "estimator registry" as the thing
+  `benchmarks.py` is explicitly NOT (ADR-0097).
+
+**The family.** Storey-style `pi0` plus a two-groups local FDR, with the marginal
+p-value density estimated by the **Grenander** (least-concave-majorant)
+estimator -- the nonparametric MLE of a decreasing density, which is what the
+two-groups model implies on the p-scale (uniform null plus stochastically smaller
+alternatives). `pi_i = min(1, pi0 * f0(p_i) / f(p_i))` with `f0 == 1`. Chosen
+over the kernel or spline local-fdr fit of the Efron note because a kernel needs
+a BANDWIDTH: that is a hardcoded number governing the answer, which this repo
+forbids, and CLAUDE.md's "never hardcode what could change" would push it into
+config where no config author can choose it well. Grenander has no tuning
+constant at all, is deterministic and is O(m log m) in pure Python. `pi0` itself
+is Storey's `#{p > null_threshold} / (m * (1 - null_threshold))`, capped at 1 and
+floored at `1 / (m + 1)` -- `m` observations can never evidence ZERO nulls, the
+same add-one reasoning as the permutation p-value, and the explicit refusal to
+default a rate to zero. `null_threshold` is a DECLARED policy knob
+(`DEFAULT_NULL_THRESHOLD = 0.5`, the literature's value) and not the same kind of
+thing as a bandwidth -- its direction of effect is known, it is named once, and
+it is a constructor argument rather than a number buried in a fitting routine.
+
+**The second number is NOT a confidence bound, and this ADR stops claiming one.**
+The first draft called it `pi_upper` and described two Clopper-Pearson inputs
+"each spending half the error budget", which reads as a 95% joint statement. It
+is not one. A two-groups Monte Carlo with known truth and FULLY independent
+signals (`independent_units == m`, the most favourable case there is) measured
+`P(pi_upper >= true local fdr)` at `confidence = 0.95`:
+
+| `pi0` | `m` | `B` | measured coverage |
+|---|---|---|---|
+| 0.80 | 200 | 999 | 0.82 |
+| 0.90 | 200 | 999 | 0.78 |
+| 0.95 | 100 | 999 | 0.68 |
+| 0.80 | 40 | 999 | 0.72 |
+| 0.99 | 200 | 999 | 0.53 |
+
+The knob cannot repair it: at `pi0 = 0.9, m = 200, B = 999`, sweeping it 0.5 ->
+0.95 -> 0.999999 moves measured coverage 0.563 -> 0.732 -> 0.897. A nominal
+one-in-a-million still falls short of 0.95, and it gets there by pinning 76% of
+all readings at the maximum value 1.0. The cause is structural, not arithmetic:
+both widened inputs price only
+BINOMIAL error, while the Grenander density `f` sits in the DENOMINATOR of every
+number, converges at `m ** (-1/3)` in the interior, and is not consistent at all
+at the left boundary (Woodroofe-Sun). That error is unpriced and it dominates.
+The under-coverage is worst at `pi0 ~ 0.99`, which is the regime a real signal
+search lives in, and it falls on the signals with the SMALLEST `pi` -- exactly
+the ones a capital constraint would fund.
+
+**Why the number was renamed rather than repaired.** Both repairs were tried
+before choosing. Pricing the density error nonparametrically at this `m` needs a
+simultaneous statement about `F`, and the only tuning-free device available is a
+DKW band: `f(p) >= max_{q > p} (F_m(q) - F_m(p) - 2*eps) / (q - p)` with
+`eps = sqrt(ln(2/alpha) / (2m))`. Measured on the same Monte Carlo, that envelope
+reaches coverage 1.000 at every setting above -- by returning `pi = 1.0` for
+**100%** of signals. It is valid and completely vacuous: `2*eps` is about 0.22 at
+`m = 200`, which swamps every p-value gap the family has. A bootstrap of the
+whole fit-and-read pipeline is worse than useless here: the n-out-of-n bootstrap
+is known INCONSISTENT for the Grenander estimator (Sen-Banerjee-Woodroofe), and
+the m-out-of-n subsample that fixes it reintroduces exactly the tuning constant
+this module rejected the kernel to avoid. The honest reading of the measurement
+is that at `m` in the tens-to-low-hundreds a nonparametric upper confidence bound
+on a LOCAL fdr is either absent or vacuous; local-fdr estimation is an
+`m ~ 10,000` technique. Tail Fdr is root-`m` estimable but is a LOWER bound on
+the local fdr for a decreasing density, so it cannot be substituted.
+
+So the module ships the widened reading under a name that says what it is:
+
+- `pi_upper` -> **`pi_widened`**, `confidence` -> **`widening_level`**,
+  `DEFAULT_CONFIDENCE` -> `DEFAULT_WIDENING_LEVEL`. `pvalues_upper` and
+  `pi0_upper` keep their names because each of those really IS a Clopper-Pearson
+  upper limit; the RATIO of them is not.
+- The module docstring leads with the measured coverage table and states in the
+  first screen that a chance constraint cannot be built on this number.
+- `evidence` carries `"prices": ("scramble_monte_carlo", "null_share_binomial")`
+  and `"unpriced": ("density_estimation",)`, so the limitation travels WITH the
+  numbers to the call site instead of living only in prose.
+- The Monte Carlo ships as a `slow`-marked test
+  (`TestWidenedReadingIsNotAConfidenceBound`), asserting the under-coverage and
+  the inertness of the knob. If a future change ever does buy real coverage,
+  those tests fail and the prose must be rewritten with them.
+
+**Consequence for ADR-0088 / path row A18040.** The HFDR capital constraint
+`sum_i(x_i * pi_i) <= q * sum_i(x_i)` fed `pi_widened` is a constraint on a
+widened POINT ESTIMATE. It does not hold with probability `widening_level`, and
+at `pi0 ~ 0.99` it is violated about half the time. That is now stated where a
+caller cannot miss it. Nothing is wired, so nothing is currently mis-sized; the
+constraint's remaining risk has to be sized some other way, and that is separate
+work.
+
+**How the two numbers relate.** The family's density is fitted ONCE, on the
+point-estimate p-values, and both numbers read that one shape:
+
+```
+pi_hat_i     = min(1, pi0_hat   / f(p_hat_i))
+pi_widened_i = min(1, pi0_upper / f(p_upper_i))
+```
+
+`f` is non-increasing and `p_upper_i >= p_hat_i` and `pi0_upper >= pi0_hat`, so
+`pi_widened_i >= pi_hat_i` follows -- but **not "by construction"**, which the
+first draft claimed in three places. `_MONOTONE_SLACK` (1e-12) lets a member's
+density rise by float noise without tripping the monotonicity screen, and that
+is enough to invert the pair in the last bits; a test builds exactly such a
+member and shows it. The ordering is therefore enforced by TWO screens, and the
+second one -- `FalseSignalEstimate.__post_init__` -- now names the ESTIMATOR that
+produced the bad pair, read out of `evidence["estimator"]`, per this module's own
+"every refusal names its offender". The two widened inputs are where dependence
+is handled, each at half of `1 - widening_level` (a Bonferroni split):
+
+- `p_upper_i` is the Clopper-Pearson upper limit on the exceedance probability
+  from `(k_i, B_i)`. This is the Monte-Carlo error of a finite scramble, and it
+  is exact under ARBITRARY temporal dependence inside the exchangeable unit,
+  because the scramble permutes WHOLE blocks: the exceedance indicator is a
+  Bernoulli draw whatever the within-block correlation is. Validity is inherited
+  from the caller's scramble design (the whole-session unit `attempts.py`
+  documents); this module states the requirement and does not create it.
+- `pi0_upper` is the Clopper-Pearson upper limit for a proportion observed on
+  `independent_units` -- the count of EFFECTIVELY INDEPENDENT signals in the
+  family, a REQUIRED argument with no default and refused above the family size.
+  Signals fitted on overlapping time share sessions, so the naive binomial bound
+  at `m` is anti-conservative; declaring `independent_units == m` is an explicit
+  assertion of cross-signal independence, and is the caller's to make. The
+  observed count is `ceil(pi0_hat * independent_units)`, never `round`: rounding
+  DOWN drops up to half a unit of null share and the error never cancels, while
+  the `min(observed, independent_units)` on the next line already caps the top,
+  so `ceil` is free. Disclosed limit: this is a plug-in effective-count widening,
+  strictly wider than the `m`-count limit whenever `independent_units < m`. It
+  does not claim exact finite-sample coverage of the two-groups `pi0`.
+
+**Disclosed limits of the p-scale and of Grenander.** These are properties of
+the technique, not defects to be patched. Each is disclosed here and in the
+module docstring, and all but one are pinned by a test so they cannot change
+silently:
+
+- **Resolution floor.** `permutation_pvalue` cannot return below `1 / (1 + B)`,
+  so a statistic of `1e-12` and one of `1e12` that both beat every draw get the
+  same `pi_hat`. More scrambles do not add evidence about how far past the null
+  a signal sits.
+- **Boundary inconsistency.** The Grenander density near zero is driven by the
+  smallest fitted p-value, so `pi` for the strongest signal falls roughly like
+  `1 / B` -- more scrambles buy a smaller number with no new evidence. Grenander
+  is known-inconsistent at the boundary and OVER-estimates `f(0)`, which biases
+  `pi_hat` LOW for the signal that would get capital.
+- **Minimum family size.** The first draft imposed none: a one-signal family
+  reduced the fit to `f(p) = 1 / p` and reported `pi_upper = 9.75e-5` from a
+  two-groups model fitted to one observation. `estimate` now refuses a family
+  below `min_family` (`DEFAULT_MIN_FAMILY = 10`, a constructor knob). 10 is a
+  DECLARED policy floor, the same kind of number as `null_threshold` -- it is not
+  derived. What is derived is the DIRECTION: measured coverage falls and the
+  share of readings already pinned at 1.0 rises as `m` falls, and at `m = 1` the
+  fit degenerates entirely.
+- **Step function.** `pi_widened / pi_hat` is a step function with unbounded
+  jumps at order statistics (the review measured a ratio of 250 in one `m = 40`
+  family and 1.7 in another); the magnitude is set by p-value spacing, not by
+  any error budget. Another reason not to read it as a confidence statement.
+  This is the one limit NOT pinned by a test: the hand-computed-majorant and
+  left-continuity tests pin the step STRUCTURE, but no test measures the jump
+  magnitude, because it is a property of whatever family is passed in.
+- **`density` is a READ, not a normalized density.** Past the largest fitted
+  p-value it extends the FINAL slope rather than dropping to the majorant's zero,
+  which keeps the ratio defined and positive but lets the implied mass over
+  `(0, 1]` exceed 1. The hook and the class docstring now say so; the extension
+  and the left-continuous convention at a breakpoint are both pinned by tests.
+
+**Fail-closed, fail-loud.** Non-finite statistics or draws, an empty family, a
+family below `min_family`, an empty draw set, a non-int or out-of-range
+`independent_units`, a `pi0` outside `(0, 1]`, a non-positive or non-finite
+density, a density the subclass returned NON-MONOTONICALLY, and a subclass that
+overrides `estimate` are each refused by name.
+
+**What was reused.** `stats._betai`/`_betacf` (the regularized incomplete beta,
+promoted to the public name `regularized_incomplete_beta` and exported, its one
+call site in `_student_sf` updated) -- per CLAUDE.md's "a function is never
+repeated across modules", the beta tail gets ONE owner rather than a second copy
+here. Being public, it now ENFORCES its preconditions (finite shapes `> 0`,
+finite `x`) instead of letting `a = 0.0` escape as a bare `math domain error`
+from `lgamma` or `x = nan` return `nan` in silence. `records.number_ok` is the
+finiteness rule. `node.class_ref` is the one owner of the `module:QualName`
+spelling recorded in `evidence`; it drags `base` and `document` in behind it, so
+the module docstring states the real import cost rather than claiming "stdlib
+only". `stats.register_correction`'s registry is the pattern the estimator
+registry copies. `production/leg.py`'s `__init_subclass__` guard (and the same
+idiom in `loop.py` and `trust.py`) is what makes the template non-overridable.
+`attempts.py` supplies the scramble doctrine and the evidence ORIENTATION and
+shape this consumes -- `(observed, [nulls])` is exactly `tier2_verdict`'s pair,
+so a project already running a tier-2 audit feeds this estimator with no new
+plumbing, and `early_stop_p_bound` supplies the never-zero p-value doctrine.
+`predictions.read_prediction_series` is the out-of-fold row source the caller
+reduces to `statistic`; this module deliberately does NOT read it, because which
+statistic a project reduces its rows to is the project's choice.
+
+**What was rejected.** (1) Adding this to `stats.py` -- it is a different
+estimand with its own family registry, and the repo's precedent is a core module
+per ADR-scale estimand: `attempts.py`, `ordering.py` and `predictions.py`, which
+are value/rule modules like this one. (The first draft also cited `conquest.py`;
+that is wrong -- `conquest.py` is a Node module, `__all__ = ["HorizonConquest"]`,
+so it is precedent for the opposite shape.) Honest difference from all three:
+every one of them has a live consumer -- `attempts` and `ordering` behind CLI
+verbs, `predictions` written by score nodes, `conquest` as a registered kind --
+and this module has NONE. (2) A kernel or spline local-fdr density -- the
+bandwidth, above. (3) A new `pi` NODE KIND -- the consumer is a child's bundle
+assembly, not a document port, and ADR-0113 already establishes plain generic
+VALUES in this package (`CandidateInventory`, `TrialLedger`,
+`OneStandardErrorSelector`). A node kind over this doorway stays additive and is
+deferred, not forbidden. (4) A `libs/` pack -- there is no library being wrapped.
+(5) numpy -- the whole computation is a sort, a convex-hull scan and a bisection,
+so nothing forces a dependency, which keeps it tier 1. (6) Clamping `pi_widened`
+up to `pi_hat` -- that converts a broken estimator into a silent one; the
+`__post_init__` refusal names the offender instead. (7) Touching the
+`_PI_HAT`/`_PI_UPPER` fixtures in the child's `testing.py`; they are test data
+and are left alone. Wiring any child to this estimator is separate, unauthorized
+work -- and given the measurement above, wiring `pi_widened` into a chance
+constraint would be wrong work.
+
+**Tier justification.** Tier 1. The code IS a domain-neutral statistical rule:
+no third-party dependency, no library wrapped, and no venue or project
+vocabulary in any identifier, any error message or any test assertion -- a
+"signal" is any string key and a "statistic" is any finite float. Docstrings and
+comments DO motivate with the consumer that drove the work ("sizes exposure",
+"capital constraint", "session"), because a reader needs to know why the two
+numbers exist and why the second one is dangerous; that is prose, and prose is
+the only place such words appear. It passes `tests/pipeline/test_purity.py`'s core rule
+unchanged.
+
+**Consequences.** `dskit` gains a real source for the two numbers
+`ForecastBundle` has been validating from fixtures -- but the second number is
+now called `pi_widened` and is explicitly not the `pi_upper` a chance constraint
+wants, so a caller assembling a `ForecastBundle` has a decision to make rather
+than a drop-in. Nothing is wired: no child config, no node kind and no document
+reads this yet. The estimator is exercised on synthetic, analytically-checkable
+and Monte-Carlo inputs only -- no real out-of-fold or scramble evidence has been
+passed through it, and its calibration on a real signal population remains the
+empirical question the Efron note names.
+---
+
+## ADR-0153 - effective-dated universe composition (survivorship)
+
+*(Number taken at commit time; see ADR-0150's note on the skipped numbers.)*
+
+**Status:** APPROVED by the owner 2026-09-17 ("ADR now, build now") and
+IMPLEMENTED. `tests/production` is **6516 passed / 0 failed** (111 skipped,
+optional-dependency gated). Twelve new refusals were each probed by disabling
+the guard behind a never-taken branch: **FAILED** with it disabled, **PASSED**
+restored -- covering `UniverseInterval`/`UniverseMembership` validation in
+`records.py`, the sentinel
+`test_feed.py::test_a_tick_before_a_listing_refuses_the_unlisted_key` and its
+delisting and empty-universe siblings, and the shared `from_obj` int-coercion
+and missing-key checks it also relies on. Both legacy-form identity digests --
+the `ServeDocument` hash and the `FeedSpec` manifest hash -- were independently
+recomputed against the pre-ADR base commit (3a3d76f) and match byte for byte;
+see the literals pinned in `test_document.py::
+test_a_legacy_universe_keeps_the_identity_it_had_before_adr_0153` and
+`test_feed.py::test_a_flat_specs_manifest_bytes_are_what_they_were_before_adr_0153`.
+The `PHASE_SIGNATURES` pin in `test_loop.py` and the phase list in
+docs/new_package_proposals/production.md were updated for the new `at_ms`
+parameter the coverage phase gained.
+
+**Context.** `serving.required_universe` accepts a path to a JSON key list or
+an inline list of key strings (`document.py:374`, `_Universe`), and
+`__main__.py:232` resolves it once per run: `list(_read_json(declared))` or
+`list(declared)`. `feed.py:479-485` then requires every tick to cover that set
+**exactly** (the rule is stated at `feed.py:183`). There is no as-of dimension anywhere in the shape, so one
+composition serves the whole run.
+
+A walk-forward over N years therefore prices every historical tick against
+today's membership: a name that delisted in year 2 is absent from year 1's
+folds, and a name that listed in year 4 is demanded from year 1's folds.
+That is textbook survivorship bias, and it is invisible to the 24-slice plan:
+**no slice checks universe composition at all.** A grep over `docs/plans/` for
+`survivorship|required_universe` returns nothing, so a survivorship-biased run
+passes every one of them.
+
+**Decision.**
+
+1. `required_universe` gains a THIRD accepted form beside the two it has: a
+   list of membership intervals, `{key, from_ms, to_ms}`, where a null
+   `to_ms` means "still a member". The two existing forms are unchanged and
+   mean "a member for the whole run", so **no existing document changes
+   identity and no existing run is orphaned**. Only a document that adopts
+   the interval form changes its own hash, which is correct -- it computes
+   something different.
+2. `_universe(document)` becomes `_universe(document, at_ms)` and resolves
+   membership at the tick's own instant. Under either legacy form the answer
+   is instant-independent, so existing behavior is preserved exactly.
+3. `FeedSpec`'s exact-coverage check compares the tick against the RESOLVED
+   set, never the declared one.
+4. The interval form is default-deny like every other config surface:
+   overlapping intervals for one key, `to_ms <= from_ms`, a duplicate key
+   with no interval, or an unknown field all refuse at validation.
+
+**RED families.** A key demanded before its `from_ms`; a key demanded after
+its `to_ms`; overlapping intervals for one key; a non-integer or inverted
+bound; and the survivorship case itself -- a tick whose coverage matches the
+flat list but NOT the set resolved at its own instant.
+
+**Sentinel:** NEW `tests/production/test_feed.py::
+test_a_tick_before_a_listing_refuses_the_unlisted_key`.
+
+**Consequence stated, not worked around.** This does not retro-correct any
+backtest already run against a flat universe. Those results carry the bias;
+closing the gap does not reopen them.
+
+
+## ADR-0154 - as-of-acquisition reads (read vintage)
+
+*(Number taken at commit time; see ADR-0150's note on the skipped numbers.)*
+
+**Status:** APPROVED by the owner and IMPLEMENTED 2026-09-17 -- **SIX
+Decision points, not the five originally written.** Independent review found
+two Majors after the first implementation: a false identity-hash claim (see
+Decision 5's correction) and a serving path that silently ignored the declared
+knob. Both are fixed, and the serving fix is recorded as Decision 6 rather
+than as a footnote, because a Decision list that omits what shipped is the
+same overstatement the digest claim was corrected for. A re-review of the
+fixes returned 0 Critical / 0 Major. `tests/onboarding` +
+`tests/pipeline_libs` are **2174 passed / 0 failed** (112 skipped) and
+`tests/production/test_feed.py` is **127 passed**; the two suites the work touched are
+`tests/onboarding/test_observations.py` **77 passed** (65 before) and
+`tests/pipeline_libs/test_observations.py` **67 passed / 8 skipped** (62
+before) -- 17 new cases, 16 of them RED before the code existed. Every new
+guard was probed by disabling it: the function's refusal, the node's refusal,
+the intake gate itself, its placement ABOVE `admit`, the `_PARAMS` entry, the
+docstring entry, and the pass-through into the scan each `1 failed` disabled
+and `1 passed` restored. Decision 5's identity claim as first written here was FALSE, and was
+corrected 2026-09-17 by an independent review of `a458e03`, reproduced
+before being corrected: omitting the knob hashes `6689bdef...f353`, the
+hash the same document had on the parent commit; DECLARING it moves the
+hash for any value, including `null` (`ae3c15d8...3879`) or a real bound
+(`381220f0...601b`) -- omitted and `null` are two different digests,
+never one, because `"as_of_acquisition_ms":null` is present in the
+canonical JSON when declared and absent when omitted, so a declared
+`null` is graded like any other param value. This still orphans no
+pre-existing document, because no document could have declared this key
+before the ADR. All three digests are now pinned as literals in
+`test_declaring_the_vintage_moves_no_existing_documents_identity`.
+
+Two details the Decision points left open, settled in the loud direction. The
+keyword is APPENDED to `scan_stream`'s signature rather than inserted beside
+`since_ms`, so no positional caller moves; the docstring documents it in
+signature order. And the bound is evaluated BEFORE `admit`, which moved the
+`acquired_at` resolution above that gate -- a record `admit` drops now has its
+stamp parsed, so a corrupt `acquired_at` on such a row refuses where it
+previously passed unseen. That widens an existing refusal rather than
+narrowing one, and it is what lets `admit` keep the promise that it never
+judges a row which does not exist at the vintage being read.
+
+**Context.** `onboarding.observations.scan_stream` deduplicates by "for one
+key, the row with the LATEST `acquired_at` INSTANT wins"
+(`observations.py:238-249`). Its `since_ms` bound is on `ts_out` -- EVENT
+time -- applied at intake (`observations.py:455`), not on acquisition time.
+Its `admit(data, stamp)` escape hatch receives the record's `data` payload
+and its event stamp (`observations.py:458`); `acquired_at` is envelope
+metadata and never reaches it, **so a caller cannot implement a vintage
+bound at this seam even by hand.**
+
+The result: a 2015 bar revised in 2026 is served with its 2026 value to a
+run simulating 2015. The model sees a number that did not exist at decision
+time.
+
+**The discipline already exists one package over.** `production/outcomes.py`
+is D21's bitemporal join -- "what happened to a leg, as far as anyone knew
+at time T" -- and `accounting.py:485` (`effective_bodies`) returns "the
+bitemporal bodies known by `at_ms`". Nothing needs inventing; the vintage discipline simply stops at the
+onboarding boundary and must be carried across it.
+
+**Decision.**
+
+1. `scan_stream` gains one optional keyword, `as_of_acquisition_ms`: an
+   INCLUSIVE upper bound on a record's `acquired_at`, applied AT INTAKE
+   beside `since_ms` and on the same grounds (a record above it is never
+   deduped, never kept, never sorted). The winner per key becomes the latest
+   value AS OF THAT VINTAGE rather than the latest value outright.
+2. The bound applies BEFORE dedup adjudication, so the existing loud-direction
+   tie rule is unchanged -- identical data dedups, differing data refuses --
+   just evaluated within the vintage. A tie a later acquisition supersedes is
+   history at the later vintage and a live tie at the earlier one, which is
+   the correct answer at each.
+3. An ABSENT `acquired_at` currently reads as the earliest possible instant;
+   under a vintage bound it therefore always passes. That is stated
+   explicitly rather than left to be discovered.
+4. `admit` gains nothing. This is a rule the function CAN spell, so it is a
+   first-class parameter, per AGENTS.md's own test for where a rule belongs.
+5. `dskit/pipeline/libs/observations.py`'s `ObservationRows` exposes it:
+   `as_of_acquisition_ms` joins `_PARAMS` (line 116) and the class docstring.
+   It is JSON-expressible, unlike `keep_values`/`admit`, so it belongs there.
+   Being optional, it is emitted only when present -- **no existing document's
+   identity hash moves.**
+
+6. **The serving path honours the bound too.** Added 2026-09-17, after
+   review found it missing: `ObservationRows.serving_contract` emits
+   `as_of_acquisition_ms` inside `digest_recipe`, and ONLY when declared, so
+   `production/feed.py`'s `_IsoStamps.scan_args`/`_MsStamps.scan_args` carry
+   it into `_latest_by_key`'s freshness re-scan. Without this a served
+   document's declared vintage reached the rows (through `run()`) but not the
+   live/stale/dead classification, so a vintage-bound feed could report LIVE
+   on data outside its own vintage -- exactly the "a serving path never
+   restates a training knob" trap `AGENTS.md` names.
+
+   It rides in `digest_recipe` rather than as a new `ServingContract` or
+   `FeedSpec` field because those are fixed dataclass fields that cannot be
+   omitted-when-absent; a new one would put `None` into every entry's
+   `FeedSpec.to_obj()`, which is embedded in `ReleaseManifest.to_obj()`, whose
+   `canonical_hash` IS the release identity. `digest_recipe` is already a
+   free-form dict serving exactly this purpose. Verified: a non-declaring
+   entry's `digest_recipe`, `FeedSpec.to_obj()` and manifest hash are
+   byte-identical before and after.
+
+   **This was a sixth decision, not one of the five.** It is numbered here
+   rather than buried in a correction note, because a Decision list that
+   omits what shipped is the same overstatement this ADR's own digest claim
+   was corrected for.
+
+**RED families.** A revised record invisible at its pre-revision vintage and
+visible after; an absent `acquired_at` under a bound; a bound below every
+record; interaction with `since_ms` and `keep_values`; determinism (one
+vintage always yields one snapshot); and the default-deny refusal for a
+non-integer or negative bound, in both the function and the node.
+
+**Sentinels:** NEW `tests/onboarding/test_observations.py::
+test_a_later_revision_is_invisible_at_an_earlier_acquisition_vintage` and
+NEW `tests/pipeline_libs/test_observations.py::
+test_as_of_acquisition_ms_is_a_declared_knob`.
+
+**Consequence stated, not worked around.** Every model already trained or
+evaluated through `scan_stream` saw revised values at instants they did not
+exist. This closes the gap forward; it does not re-open those results.
+
+**2026-09-17 correction (independent review of `a458e03`).** Two MAJOR
+findings, both fixed on `claude/adr0154-vintage`. (1) The false identity
+claim above, corrected in place. (2) The serving path silently ignored
+the declared vintage: `ObservationRows.serving_contract`'s `digest_recipe`
+never carried `as_of_acquisition_ms`, so `EntrySourceFeed._latest_by_key`'s
+own freshness re-scan -- built from `digest_recipe` alone, per
+`_IsoStamps.scan_args`/`_MsStamps.scan_args` -- could report a
+vintage-bound feed `live` on the strength of a record acquired after its
+own declared bound. Served row CONTENT was never affected: `snapshot_entry`
+reads `entry_outputs`, i.e. `ObservationRows.run()`, which already threads
+the knob. Fixed by emitting `as_of_acquisition_ms` in `digest_recipe` ONLY
+WHEN DECLARED -- mirroring Decision 5, so no existing release's identity
+moves: `digest_recipe` is embedded in `FeedSpec.to_obj()`, embedded in
+`ReleaseManifest.to_obj()`, whose `canonical_hash` IS the release
+identity -- and reading it back in both stamp readers' `scan_args`.
+Pinned by
+`TestFreshnessLadder::test_a_vintage_bound_feed_cannot_see_a_record_acquired_after_the_bound`.
+Also pinned, the one Minor: the general (non-vintage) consequence of
+moving `acquired_at` resolution above `admit` -- a row `admit` would have
+dropped for its own reason now refuses instead of passing unseen -- by
+`TestIntakeBounds::test_a_corrupt_acquired_at_refuses_even_when_admit_would_drop_the_row`.
+Real counts: `tests/onboarding` + `tests/pipeline_libs` are
+**2174 passed / 0 failed** (112 skipped, one more pass than the
+2173 above -- the one new Minor pin); `tests/production/test_feed.py`
+is **127 passed** (one more than before -- the one new MAJOR-2 pin).
+
+## ADR-0155 - dependence-aware calibration of REALIZED-outcome uncertainty (predictive intervals + joint scenario sets)
+
+**Status:** accepted (pre-approved by the owner with Path row A18042, locked
+2026-09-17). Written before code, per CLAUDE.md's "ADR before code".
+
+**ADR number provenance.** Not `max + 1`: 0149 is double-allocated by two
+colliding lanes and 0150 is deliberately vacant to absorb that renumber. The
+number was taken by scanning EVERY ref rather than this branch alone --
+`for r in $(git for-each-ref --format='%(refname:short)' refs/heads
+refs/remotes); do git grep -hoE '^## ADR-0[0-9]{3}' "$r" --
+docs/architecture/decision-log.md; done | sort -u` over all **29** refs
+(`refs/heads` + `refs/remotes`) present at `origin/main` = e989dff. Highest
+allocated anywhere: 0151. This ADR takes **0152**, the first free number.
+
+**Context.** `children/intraday_equities/docs/research/hfdr-mio-uncertainty/
+2026-09-05-dependent-return-calibration.md` is ratified: estimate realized-
+outcome uncertainty as a predictive interval or joint scenario distribution,
+NEVER as the confidence interval for an expected effect; calibrate from
+time-ordered out-of-fold residuals using whole-session blocks, preserving the
+simultaneous cross-component vector; emit coverage, tail-loss diagnostics, a
+calibration hash and complete scenario provenance; and do NOT assume ordinary
+IID split conformal is valid, using instead a dependence-aware block
+construction with rolling conditional coverage. Its companion
+`2026-09-05-u-r.md` adds the scenario-set half: resample entire sessions,
+retain each timestamp's cross-component vector so covariance, common shocks
+and tails are not broken, and record weights, block rule, seed, calibration
+window and source hashes.
+
+**Inventory.** "dskit has no conformal machinery" was verified, not assumed.
+`git grep -lIiE 'conformal|nonconformity' -- '*.py'` over all 29 refs returns
+**zero files on every ref**. Adjacent capability exists and is REUSED rather
+than re-derived:
+
+- `pipeline/metrics.py:181` `pinball(q, y, tau)` + `DEFAULT_PINBALL_TAU`
+  (ADR-0054) -- the quantile-loss owner, and exactly the tail-loss diagnostic
+  a calibrated interval endpoint needs. Imported.
+- `pipeline/attempts.py` -- the session-block doctrine (one coin per SESSION,
+  never per row, because a session moves every overlapping label with it) and
+  its `utc_day` session key. This module's block construction is that same
+  doctrine in argument form, not a second opinion; `utc_day` is named as the
+  canonical key a caller passes.
+- `pipeline/stats.py:97` `_bootstrap_rng` -- the pinned `sha256(seed:label)`
+  RNG recipe. Imported, NOT copied (see Non-goals for the promotion left
+  undone).
+- `pipeline/records.py` `number_ok`, and `pipeline/node.py` `class_ref`.
+  Both imported. `records.cluster_ok` is referenced only in a docstring
+  comparison (`BlockResiduals` block id widening vs the envelope cluster
+  id) -- it is NOT imported, and this branch does not modify
+  `records.py` at all.
+- `pipeline/predictions.py` `read_prediction_series` -- the time-ordered
+  out-of-fold `(ts, series, fold, horizon, yhat, y, mu)` rows are the intended
+  residual source. Nothing here reads it; the caller reduces its own rows to
+  residual vectors, which keeps this module free of parquet and of any opinion
+  about what was predicted.
+
+What does NOT exist anywhere and is genuinely built here: any nonconformity
+score, any conformal quantile, any block-resampled joint scenario set, any
+rolling conditional-coverage diagnostic. `production/monitors.py` has a
+`Coverage` class and a `Calibration` monitor, but those are OPERATIONAL
+coverage (required-key freshness, leg abstention) and probability-forecast ECE
+-- different quantities in a package `pipeline` never imports.
+
+### Decision 1 -- tier 1 core, `dskit/pipeline/outcome_interval.py`
+
+Tier 1: the whole computation is sorting, weighted quantiles, a seeded
+resample and a hash. Stdlib only, zero required deps, no module-level import
+outside the package -- it passes the existing purity gate unchanged. A tier-2
+pack would be wrong (no library is being wrapped); a child would be wrong
+(CLAUDE.md: missing capability graduates INTO dskit, always).
+
+The name pairs deliberately with the sibling `mean_interval.py`: an interval
+for a MEAN versus an interval for a realized OUTCOME is precisely the
+distinction the ratified note draws, and the file names now carry it.
+
+### Decision 2 -- the dependence statement is an argument and is NEVER defaulted
+
+`BlockResiduals` is a frozen value that cannot exist without explicit block
+ids: one block label per observation row, supplied by the caller. There is no
+default, because the only available default ("every row is its own evidence")
+is the answer that is too narrow, and a too-narrow interval is the exact
+failure this row exists to prevent.
+
+It additionally refuses, by name: a non-finite or missing residual; a row
+whose width does not match `names`; duplicate or empty names; a block id
+`cluster_ok` rejects; fewer than `MIN_CALIBRATION_BLOCKS` distinct blocks; and
+-- load-bearing -- a block that REAPPEARS after a different block has started,
+which means the rows are not in time order and the blocks are not contiguous
+runs. Every field is normalized to tuples under `object.__setattr__`, so the
+frozen dataclass holds no mutable dict (a defect found in a sibling).
+
+A residual VECTOR, not a scalar, is the unit: row `i` is the simultaneous
+cross-component observation. A caller with a missing component at a row aligns
+or drops the row before constructing; partial vectors are refused rather than
+imputed, because an imputed component is a fabricated joint observation.
+
+### Decision 3 -- block-corrected split conformal, with an honest validity claim
+
+`OutcomeCalibrator` is an ABC whose `calibrate` and `scenarios` are TEMPLATE
+methods, enforced final by `__init_subclass__` raising on a subclass that
+defines either -- the repo idiom (`production/leg.py:1117-1126`,
+`loop.py:469`, 14 sites in `trust.py`), never a docstring saying "do not
+override". Three hooks are `@abstractmethod`, so an incomplete subclass
+refuses at CONSTRUCTION rather than failing later: `achievable_level`,
+`offsets`, `draw_blocks`.
+
+The construction, from Chernozhukov-Wuthrich-Zhu (2018): the exchangeable unit
+is the BLOCK, not the row. Two consequences, both load-bearing:
+
+1. **The conformal correction counts BLOCKS.** The level actually taken is
+   `ceil((B + 1) * c) / B` at `B` blocks and target coverage `c`, not `c`.
+   When that exceeds 1 the coverage is NOT ACHIEVABLE at this block count and
+   the calibrator RAISES naming `c` and `B` -- it never clamps to the widest
+   available quantile and calls it calibrated. This is the "say so rather than
+   overclaim" requirement in executable form.
+2. **Blocks are equally weighted in the quantile.** Row `i`'s weight is
+   `1 / (B * n_b(i))`, so a long block cannot dominate a short one and the
+   effective sample size is the block count.
+
+Two members ship, which is what proves the seam is a family and not a
+decorated function:
+
+- `BlockConformalInterval` -- symmetric, over `|residual|`, one corrected
+  upper quantile. The textbook split-conformal shape.
+- `TwoSidedBlockConformalInterval` -- signed, two corrected tail quantiles at
+  half the miscoverage each, so a skewed residual law gives an asymmetric
+  interval. This matters because the consumer is a CVaR block that reads the
+  LEFT tail specifically.
+
+The template CHECKS each hook's contract rather than trusting it, the
+`false_signal.py` pattern: a member's `achievable_level` that returns anything
+BELOW the requested coverage, or above 1, is refused by name -- a member can
+choose a different validity argument but can never make the interval narrower
+than the uncorrected empirical quantile.
+
+**What is claimed, and what is not.** This is APPROXIMATE validity under weak
+dependence, in the CWZ sense, plus a finite-sample correction applied at the
+block level. It is NOT an exact finite-sample coverage guarantee: exact split
+conformal needs exchangeability, which time-ordered residuals do not have, and
+block-equalized weighting transfers the row-level result to blocks by argument,
+not by theorem. The docstring says this in the same words. Per the ratified
+note, the decision criterion is EMPIRICAL, so coverage is measured and shipped
+as a test (Decision 5) rather than asserted in prose.
+
+### Decision 4 -- scenarios are drawn as WHOLE ROWS of whole blocks
+
+`scenarios()` is the second template method. The member's `draw_blocks` hook
+chooses block ids with replacement; the BASE then appends each drawn block's
+rows IN ORDER and stops at `n_scenarios`. Because a scenario is a copied ROW,
+scenario index `omega` is a real historical simultaneous cross-component
+vector -- covariance, common shocks and tail co-movement survive by
+construction, and per-name independent sampling is structurally impossible
+rather than merely discouraged. The invariant is pinned by a test asserting
+every emitted scenario vector is a member of the calibration row set.
+
+Output shape satisfies both declared consumers without either being wired:
+
+- `libs/pyomo.py` `ScenarioUtilitySolve.payoffs` wants `(weights, r)` with
+  weights summing to one and `name -> (n_omega,)` arrays. `ScenarioSet
+  .weighted_draws()` returns exactly that pairing, as plain lists the consumer
+  converts. The consumer's own `HARD_N_SCENARIOS_CEILING` (256) is mirrored
+  here as `MAX_SCENARIOS`, so a set too wide for the optimizer refuses HERE
+  rather than deep inside a solve; the two copies are pinned to agree by a
+  test, since `pipeline/libs/pyomo.py` is a tier-2 pack a tier-1 module must
+  not import.
+- `children/intraday_equities/.../forecast_bundle.py` validates `scenarios` as
+  a list of finite numbers and `weights` as a same-length list summing to 1,
+  SHARED across the tick. One weights vector for every name is what this
+  module emits, so the pairing check passes.
+
+Residuals are emitted, never gross returns: converting a residual to a payoff,
+and any haircut or recentering, is domain policy the child already owns
+(`forecast_bundle._recentered_scenarios`). dskit would have to know what was
+predicted to do it, which is precisely what tier 1 must not know.
+
+Determinism: `_bootstrap_rng(seed, calibration_hash)` -- stats' pinned recipe,
+keyed by the calibration CONTENT. Identical inputs give identical scenarios;
+different calibration data gives different draws at the same seed, which is
+the correct behavior for a provenance-bearing artifact.
+
+A scenario set whose draws for any name are all identical is DEGENERATE and
+refuses by name. So does a weights vector that misses summing to one.
+
+### Decision 5 -- the diagnostics, and the coverage experiment as a test
+
+`OutcomeIntervalResult` carries, per component: `realized_coverage` (block-
+equalized, on the calibration residuals, labelled in-sample), `conditional_
+coverage` (the MINIMUM coverage over rolling windows of consecutive blocks --
+the "rolling conditional coverage, especially through volatility regimes" the
+note requires, summarized at its worst rather than its average), and
+`tail_loss` (weighted `metrics.pinball` at both endpoints' quantile levels).
+Plus `n_blocks`, `n_rows`, `calibration_hash`, and a `provenance` mapping
+carrying the block rule (`class_ref` of the member), the calibration window,
+the window size and the achievable level.
+
+The empirical criterion ships as `@pytest.mark.slow` tests: synthetic blocks
+carrying a within-block common shock and cross-component correlation,
+calibrated on one set of blocks and evaluated on HELD-OUT blocks, asserting
+(a) out-of-block coverage holds near target across repetitions, and (b) the
+naive IID row-level quantile UNDER-covers where the block-corrected one does
+not -- so the correction is shown to earn its place rather than claimed to.
+
+### Non-goals, and what is deliberately left undone
+
+Nothing is wired into any document, node, registry or child; this is a plain
+value API like `kinds_search`'s search values. No node kind, no `SINK_KINDS`
+entry (that registry is tracking sinks, not file writers).
+
+`stats._bootstrap_rng` is IMPORTED as a private cross-module name -- the
+repo's own precedent (`production/libs/parquet.py` imports `base._check_str`;
+`assets/sync.py` imports `base._check_str`/`_raise_if`). It DESERVES promotion
+to a public `bootstrap_rng`, and this ADR deliberately does not make it:
+`stats.py` has two other live branches editing it concurrently
+(`regularized_incomplete_beta`, `student_t_sf`), and a third edit would
+conflict. Recorded here as the follow-up, not performed.
+
+A canonical-JSON digest is computed for `calibration_hash` using the repo's
+pinned recipe (sorted keys, compact separators, ASCII, `allow_nan=False`,
+sha256). `pipeline` has no PUBLIC general-purpose object hasher -- only three
+private copies (`driver._canonical_hash`, `release_rotation._canonical_digest`,
+`trust._canonical_bytes`) -- and `production`/`assets` `canonical_hash` are in
+packages `pipeline` deliberately never imports. Rather than add a fourth
+unpinned copy, the agreement is PINNED by a test asserting byte-parity with
+`driver._canonical_hash` on a shared payload. Promoting one owner is the
+follow-up.
+
+Not claimed: exact finite-sample coverage; validity under regime CHANGE rather
+than weak dependence; any statement about coverage at block counts near
+`MIN_CALIBRATION_BLOCKS`, which is a refusal threshold and not a sufficiency
+claim. Not built: a stationary/geometric-block member, conformal risk control
+(Angelopoulos et al. 2024) as a separate calibrated-risk doorway, or any
+reader that turns `predictions.parquet` into `BlockResiduals`.
+
+### Correction (2026-09-17, re-review 0C/3M) -- `achieved_level == 1.0` is a legitimate outcome, not an edge case
+
+`f24aa1d` fixed the crash `_diagnostics` hit whenever the block-conformal
+correction landed exactly on `achieved_level == 1.0` (Me-1: `metrics.pinball`
+refuses its `tau` argument at the open-interval boundary by contract, and the
+tail quantile levels land exactly on `0`/`1` at that achieved level), but
+never recorded the semantic decision the fix rests on. Recorded now, per
+CLAUDE.md's "no decision undocumented":
+
+An achieved level of exactly one is not a degenerate input to tolerate --
+it is the LEGITIMATE, maximally-conservative outcome the block correction
+can name. `BlockCalibrator.achievable_level` (Decision 3) and the
+`OutcomeCalibrator._checked_level` template screen already accepted it
+before this correction; only `_diagnostics` disagreed, and disagreed by
+crashing rather than by computing a wrong number.
+
+**Why this is not the same kind of boundary as anything above one.**
+`achievable_level`'s own correction is `level = k / B` with
+`k = ceil((B + 1) * coverage)` -- `achieved_level == 1.0` is exactly the
+case `k = B`: the widest order statistic the `B` calibration blocks can
+name, i.e. their maximum. That is split conformal's own most conservative
+legal setting, not an extrapolation past it, and it carries split
+conformal's standard finite-sample guarantee, coverage `>= B / (B + 1)
+>= c` -- satisfied a fortiori at `k = B`. A level ABOVE one has no such
+reading: it would need `k > B`, an order statistic the `B` blocks do not
+have, which is exactly why `achievable_level` and the `_checked_level`
+template screen raise above one and only above one. The two boundaries
+sit at opposite ends of the same-looking edge of `(0, 1]` but are
+categorically different: one is the correction's own most conservative
+legal answer, the other is a request the evidence cannot support at all.
+
+One further consequence, also proved algebraically and confirmed
+empirically, and now documented on `OutcomeIntervalResult.tail_loss`
+itself: at `achieved_level == 1.0` the two offsets are the calibration
+sample's extremes, so every calibration residual lies inside the band by
+construction and `tail_loss` is identically `0.0` for both calibrators --
+correctly, not as a placeholder, since there is no remaining tail to price
+once nothing in the calibration set lies outside the band.
+## ADR-0156 - the budgeted uncertainty-set family (`dskit/pipeline/uncertainty_set.py`)
+
+**ADR number centrally assigned.** 0156 was handed to this lane by the owner,
+not chosen by scanning the log -- four collisions happened in one session
+because concurrent lanes scanned a moving target.
+
+**Context.** Three Path rows in `children/intraday_equities` (A18044 `U_pi`,
+A18046 `U_mu`, A18047 `U_r`) each ask for a joint uncertainty set over a named
+family of quantities, consumed by a robust counterpart or by a
+scenario-consuming optimizer. The owner ruled the geometry: **budgeted
+(Bertsimas-Sim, a budget parameter) rather than box worst-case**, so the three
+sets cannot all bind at once and the consumer is not driven to a degenerate
+do-nothing answer. `children/intraday_equities/intraday_equities/nodes_capital.py`
+states in its own header that the budgeted robust counterpart is NOT built --
+only scenario recentering.
+
+Inventory first. A search over `dskit/`, every child and every ref found **no
+uncertainty-set, robust-counterpart or deviation-budget machinery anywhere**.
+**"Only three `budget` hits" undercounted the search surface -- reworded.**
+`budget` is a common word: retry and lease budgets in `dskit/production/`,
+`budget_seconds` in onboarding, HPO trial budgets, `conformance.py`'s
+capital-role spend ceiling, and a per-child dollar-budget vocabulary put the
+real count near 80 hits, not three. Three were named because they were the
+only ones shaped anything like this module's subject -- an unrelated retry
+budget (`dskit/production/resilience.py`), a knapsack resource cap
+(`libs.pyomo.BudgetedSelect`, what `planner._accepts_split`'s "a generic
+budgeted selection" means) and a multiple-testing alpha budget (`stats.py`) --
+but naming only those three read as a narrower search than the one actually
+run. The substantive claim stands past the recount: none of the ~80 hits,
+that handful included, is a Bertsimas-Sim budget, a robust counterpart, or
+anything this module reduces to -- each is a differently-shaped ceiling (time,
+retries, dollars, an estimation knapsack, a testing-error allowance) sharing a
+word and no machinery. So this is new capability, not a rebuild.
+
+**Decision.** One tier-1 module, `dskit/pipeline/uncertainty_set.py`: an
+abstract `BudgetedUncertaintySet` doorway plus three concrete members. The
+three rows are ONE family with three members, never three implementations.
+
+* `BudgetedUncertaintySet` (ABC). Takes nominal values, per-component
+  `(below, above)` deviations and a budget -- **all three explicit, never
+  defaulted**. Owns four TEMPLATE methods a member can never replace, enforced
+  by `__init_subclass__` (the `production/leg.py`, `production/loop.py`,
+  `pipeline/trust.py` idiom), not by a docstring: `worst_case`, `protection`,
+  `counterpart`, `realizations`.
+* Three member hooks, all `@abstractmethod`, so an incomplete member refuses at
+  construction: `worst_case_sense` (is the adverse extreme the MAXIMUM or the
+  MINIMUM of the linear form), `component_bounds` (the feasible domain a
+  realization may not leave), `coefficient_domain` (whether decision
+  coefficients are non-negative or real -- which decides how many deviation
+  halves must be non-zero).
+* `BudgetedProbabilitySet` (A18044 / `U_pi` shape): components are
+  probabilities, adverse is the MAXIMUM, domain `[0, 1]`, non-negative
+  coefficients.
+* `BudgetedMeanSet` (A18046 / `U_mu` shape): estimation uncertainty in an
+  expected value, adverse is the MINIMUM, unbounded domain, real coefficients.
+* `BudgetedOutcomeSet` (A18047 / `U_r` shape): dispersion of a realized
+  outcome. Same geometry as the mean member and a DIFFERENT subject --
+  `realizations()` on this member is exactly the
+  `libs.pyomo.ScenarioUtilitySolve.payoffs` pair.
+
+**Strict separation is structural.** `BudgetedMeanSet` and `BudgetedOutcomeSet`
+are separate classes with separate constructors sharing no state; neither can
+absorb the other, because neither can see the other's numbers.
+
+**What was reused.** `records.number_ok` (the repo's one "is this a number"
+rule), `node.class_ref` (artifact identity spelling), `stats._bootstrap_rng`
+(the pinned seeded-RNG recipe -- imported, never re-derived). Nothing is
+re-implemented.
+
+**What was rejected, and why.**
+
+* *Three separate modules, one per row.* Rejected: they differ in three
+  declarations, not in mechanism.
+* *Box worst-case.* Rejected by the owner's own ruling.
+* *Importing the sibling lanes.* `false_signal.py`, `mean_interval.py` and
+  `outcome_interval.py` are all unmerged. This module takes plain numbers, so
+  it works with whatever produced them and nothing here binds an unmerged
+  branch.
+* *Re-importing `pi_widened` as a confidence bound.* Explicitly rejected. That
+  sibling MEASURED 53-84% attainment against a 95% nominal and withdrew the
+  claim. `BudgetedProbabilitySet` takes a caller-supplied deviation and
+  inherits whatever that deviation was worth, and no more; its docstring says
+  so.
+* *Deriving the budget from an interval.* Rejected: the budget is a
+  conservatism/dependence parameter tuned by rolling validation. No interval
+  identifies it, and nothing here pretends one does.
+
+**The `U_r`-vs-`ScenarioSet` overlap, stated honestly.** The unmerged
+`outcome_interval.ScenarioSet` already carries a weighted joint scenario set
+and already emits `(weights, arrays)`. Where A18047 asks for *empirical joint
+outcome scenarios drawn from blocked resampling*, that IS built and this module
+does not rebuild it: `BudgetedOutcomeSet` takes nominal-plus-deviation numbers,
+which a caller may derive from exactly those residuals. What is NOT in
+`ScenarioSet`, and is the only thing added here, is the **budget**: an
+empirical scenario set carries no budget parameter and no robust counterpart,
+so it cannot express "at most this many components deviate adversely at once".
+The overlap is therefore real but partial -- `U_r` reduces to `ScenarioSet` for
+its scenario half and does not for its budgeted half.
+
+**The overlap reaches the value TYPE, not only the concept -- disclosed.**
+`RealizationSet` (`uncertainty_set.py:456-610`) independently rebuilds
+`ScenarioSet`, not just its idea: `__post_init__`
+(`uncertainty_set.py:523-561`, vs `outcome_interval.py:586-622` at `git show
+58ba1a8`) runs the same six screens in the same order, both expose an
+identical `weighted_draws`, and `WEIGHTS_SUM_TOLERANCE = 1e-9`
+(`uncertainty_set.py:177`) is independently redefined verbatim at
+`outcome_interval.py:152`. Importing `ScenarioSet` is rejected above for the
+same reason it is rejected here -- an unmerged, moving branch -- so the
+duplication stands on purpose, not as an oversight; the risk is that tuning
+either copy's tolerance or degeneracy rule leaves the other one silently
+disagreeing. Mitigated, not solved: `TestSiblingAgreement`
+(`tests/pipeline/test_uncertainty_set.py`) scans every `.py` file under
+`dskit/` for a `WEIGHTS_SUM_TOLERANCE` assignment and fails if more than one
+distinct value turns up, so a future divergence -- from this module, from
+`outcome_interval.py` once it merges, or from anywhere else -- is refused
+loudly instead of drifting silently; today it costs nothing, because the scan
+finds exactly one definition. **Named follow-up:** when `outcome_interval.py`
+merges, consolidate `RealizationSet` and `ScenarioSet` into one value type (or
+have one import the other's validation) instead of carrying two
+hand-synchronized copies indefinitely.
+
+**The weights are a convention, not a measure -- disclosed.** A budgeted set is
+a SET; it carries no probability measure. `realizations()` emits uniform
+weights over the realizations it emits and declares it two ways: the returned
+value's own `weighting_kind` field, and `provenance["weighting"]`/
+`["weighting_note"]`. A consumer reading them as estimated probabilities is
+computing a uniform average over budget-feasible corners: a robustness
+diagnostic in the Calafiore-Campi sense, NOT a calibrated expectation. This is
+the module's largest stated limitation, and the reason `worst_case`/
+`counterpart` -- which need no measure at all -- are the primary doorway.
+`weighted_draws(reading_weights_as=...)` is the only way to read the numbers
+back out at all, and it refuses a caller who does not name the weighting or
+names the wrong one.
+
+**Re-review response (2026-09-17, corrected by owner ruling): the
+acknowledgement gate is ADVISORY, not load-bearing.** An independent re-review
+(verdict 0C/1M) proved the gate above was trivially bypassable: `RealizationSet.
+weights`/`.draws` were plain public dataclass fields, so a `payoffs()`
+implementation could `return rs.weights, rs.draws` and reach byte-identical
+numbers to `weighted_draws()` without ever naming a weighting, and
+`dataclasses.replace(rs, weighting_kind="measure")` relabelled a convention set
+as a measure without re-stating either array. The first response closed the two
+ACCIDENTAL versions -- `weights`/`draws` are now `dataclasses.InitVar` fields,
+so neither name is ever a public attribute and `replace()` without re-supplying
+both arrays refuses -- and called the gate load-bearing. That claim was wrong.
+
+The owner ruled the gate advisory: Python has no private, and a check on data
+the caller already holds can only ever be advisory. Three DELIBERATE bypasses
+were demonstrated, and no fourth patch to close them is authorized (skeptic
+convergence rule). All three are reproduced and pinned as known, documented
+behaviour rather than defects:
+
+1. `rs._weights`/`rs._draws` are one attribute access away and byte-identical
+   to what `weighted_draws()` returns, so a caller who has already decided to
+   skip naming the weighting reads the numbers straight off the instance.
+2. `object.__setattr__(rs, "weighting_kind", "measure")` relabels a live
+   instance in place -- it bypasses the frozen-dataclass guard -- and
+   `weighted_draws()` then honours the new label.
+3. `dataclasses.replace(rs, weighting_kind="measure", weights=rs._weights,
+   draws=dict(rs._draws))` launders a convention set into a measure one the
+   moment those harvested arrays are fed back in, because `replace()` cannot
+   tell a re-supplied array from a re-affirmed one.
+
+The honest statement, now carried by the module docstring and the class
+docstring, is that the gate makes the honest path convenient and the dishonest
+one deliberate: it stops the limitation being lost BY ACCIDENT, never on
+purpose. Pinned by
+`TestTheWeightingAcknowledgmentIsAdvisory::test_the_raw_weights_and_draws_are_not_public_attributes`,
+`::test_replace_without_the_arrays_cannot_recover_them`,
+`::test_the_private_arrays_are_one_attribute_access_away`,
+`::test_a_live_instance_can_be_relabelled_in_place`, and
+`::test_replace_launders_the_set_when_the_arrays_are_resupplied`.
+
+**Tier justification: tier 1** (`dskit/pipeline/uncertainty_set.py`, stdlib
+only). The module is arithmetic over named finite families of numbers. A
+project that never heard of the domain these rows came from -- scheduling under
+uncertain task durations, staffing under uncertain demand -- uses it unchanged.
+No library is wrapped, so tier 2 is wrong; nothing is domain-specific, so tier
+3 is wrong.
+
+**Non-goals.** Nothing is wired into any document, node or child; no node kind
+is registered; `path.csv` is untouched; `dskit/pipeline/stats.py` is not
+edited. Ellipsoidal, polyhedral and Wasserstein geometries from the owner's
+research note are not built. No coverage or violation-frequency claim is made
+anywhere -- the owner's own criterion for these rows is rolling validation,
+which is not this module's work.
+## ADR-0157 - F3's derivation hop spends through the existing authorization reserve
+
+*(Number taken at commit time. 0149, 0151, 0152, 0155 and 0156 are held by
+unmerged branches; this skips them rather than adding a collision.)*
+
+**Status:** APPROVED (v4; independent skeptic review returned CLEAN, 0 Critical/0 Major). Both RED gates built and run on `claude/adr0157-gates` (tests-only; see the dated bullet below for results). The `derivation-root` reserve kind itself remains NOT implemented -- this pass built gates only, per task scope.
+
+- **v1 BLOCKED** (0C/1M): the `signed_id` formula bound ONE parent, copying a
+  precedent whose authority kind genuinely has one, while two of F3's three
+  hops have TWO. v2 fixed it; independent re-review confirmed it closed.
+- **v1 also carried a second, separate false claim**, corrected in v2 and
+  called out here because a status block that narrates one correction and
+  hides another is the same overclaiming this lane keeps failing on: v1 said
+  its race test settled Gap 1. It does not.
+- **v2 BLOCKED** (0C/1M): the liveness gate was asserted, not shown
+  constructible -- one gate proven, one hand-waved, presented as equals.
+- **v3 BLOCKED** (0C/1M), and the finding was embarrassing. v3 justified an
+  in-process substitute by asserting "the repo has NO process-kill
+  precedent". **That was false.** It rested on a grep for
+  `SIGKILL|os.kill|.terminate()` that omitted `os._exit`, which is what this
+  repo actually uses. `tests/pipeline/test_captured_authorization.py:3080`
+  (`_adr136_crash_with_uncommitted_insert`) forks a real OS process against
+  THIS EXACT reserve class, runs `BEGIN IMMEDIATE` + `INSERT INTO
+  reserve_uses`, and calls `os._exit(17)` -- roughly seventy lines below the
+  race test v3 quoted verbatim. `tests/production/test_ledger.py:1685`/`:1723`
+  and `tests/production_libs/test_sqlite.py:429` are three more. v4 adopts the
+  real transplant and retracts the claim.
+
+- **Gates built and run** (2026-09-17,
+  `tests/pipeline/test_captured_authorization.py`, branch
+  `claude/adr0157-gates`). **Gate 1 (race) came back GREEN, not RED**:
+  `test_adr157_derivation_root_two_parent_race_has_one_cross_process_winner`
+  races two forked processes over one `derivation-root` two-parent identity
+  (both real `_REPLAY_TAPE_INPUTS` ports, `document.py:766`) and gets
+  exactly one `reserved`/one `spent`;
+  `test_adr157_derivation_root_identity_binds_port_not_just_pair` confirms a
+  role-swap changes the identity while reordering the same roles does not.
+  Both pass today because `reserve_uses.kind` carries no CHECK constraint,
+  so the `(kind, signed_id)` primary key already fences a brand new kind
+  with zero new code -- this validates the v1->v2 correction but is not
+  itself an open defect. Recorded as a divergence from this ADR's own "both
+  must be RED first" text rather than silently reconciled.
+- **Gate 2 (liveness) came back RED**, `xfail(strict=True,
+  raises=ValueError)` -- the first use of `xfail` in this repo (`tests/`
+  grepped clean beforehand; no existing convention for a recorded-open-defect
+  test was found, so this is a new pattern, flagged for owner awareness
+  rather than assumed accepted).
+  `test_adr157_p4_authority_crash_after_commit_strands_the_intent` forks a
+  real process into the EXISTING, shipped `_development_dynamic_p4_broker`
+  (`trust.py:9900-10018`, per the reviewer's finding, not unbuilt
+  `derivation-root` code) and calls `os._exit(17)` immediately after its
+  real `RESERVED -> ISSUED` commit (`:9981-9982`), before any construction
+  (`:9991`). **OBSERVED**, not inferred: the parent reopens the reserve and
+  finds `reserve_uses` stuck at `state='ISSUED'` for that row, with no
+  authority ever constructed; retrying the identical call against the same
+  issuer raises `ValueError("dynamic P4 authority already constructed for
+  this graph")` (`:9986`), because the retry recomputes the same
+  deterministic `signed_id` and collides with the crashed attempt's own
+  committed row.
+- **Gap 1's recorded answer**: stranding after a post-commit crash is real
+  and, in the code that exists today, permanent. No existing mechanism
+  reaches it: quarantine only runs from an in-process `except Exception:`
+  (`_p4_dynamic_authority_quarantine`), which a real `os._exit` never
+  triggers; `reserve_meta.generation`/`reserve_revoked` do not touch
+  `reserve_uses` (Gap 4); there is no `attempt` dimension and no
+  `RESERVED -> QUARANTINED -> retry` path (as this ADR already named). That
+  is the observation. The inference -- whether that stranding is an
+  acceptable, scoped limitation (development-broker scope only, per this
+  ADR's own Scope paragraph) or whether it justifies reintroducing v3's
+  "abandoned vs in-flight" ambiguity via an `attempt` dimension -- is an
+  OWNER DECISION this gate supplies evidence for, not one it makes.
+
+Deliberately
+NOT a fourth patch to ADR-0148, which stays **STOPPED / DO NOT IMPLEMENT**.
+This is a different mechanism reached by inventory, not another revision of
+that contract.
+
+**Context.** ADR-0148 was written, reviewed and stopped three times (v1 2C/6M,
+evidence 0196; v2 1C/4M, 0198; v3 1C/5M, 0201). Three consecutive stops tripped
+`docs/skills/skeptic-review.md`'s convergence checkpoint (recorded at 0202),
+which forbids a fourth patch to the same contract.
+
+The repeated family, stated plainly: every round re-specified the SAME
+invariant -- at most one PUBLISHED root per derivation intent, and its
+durability story -- with a NEW mechanism, and each new mechanism was defective
+in a way the previous one was not. An asserted `ChainLedger` that is not in
+`trust.py`; then a crash taxonomy describing behavior `_reload_stream`/
+`_prepare_receipt` do not produce; then an ascending-scan retry protocol that
+races.
+
+**The inventory was the defect.** "`trust.py` has no `ChainLedger`" was true
+and useless. Nobody asked what durable mechanism `trust.py` DOES have.
+
+**What it has.** `_SyntheticAuthorizationReserve` (`trust.py:6186`): SQLite in
+WAL mode (`:6219`, `:6273`), every transition under `BEGIN IMMEDIATE`, and a
+`reserve_uses` table keyed `PRIMARY KEY (kind, signed_id)` (`:6176-6179`).
+Four authority kinds already spend through it -- `roster-bootstrap`,
+`raw-dataset`, `root-pis`, `dynamic-p4-authority`.
+
+**And the move already has a written spec AND a working implementation.**
+ADR-0143 Decision point 9 (`decision-log.md:10707-10729`) specifies exactly how
+a NEW authority kind joins that reserve, and `trust.py:9936-9985` implements its
+substance (the QUARANTINE helper at `trust.py:9866` sits outside that cited
+range and mirrors a sibling kind's shape rather than DP9's own prose, so
+"point for point" is the intent, not the letter): a `signed_id` DERIVED by digest from the parent row's own
+`signed_id` and `intent_sha256` -- never the original signed text -- so
+`(kind, signed_id)` can never collide with the parent row even though both
+trace to the same signed pair; the parent row required to be `ISSUED` inside
+the same `BEGIN IMMEDIATE`; one `RESERVED -> ISSUED` transition in that one
+transaction; `sqlite3.IntegrityError` translated to a clean refusal; and a
+failed or ambiguous commit only ever reaching `QUARANTINED`, never a second
+construction.
+
+**Decision.** F3's derivation hop becomes one new reserve kind, built to that
+precedent's SHAPE but not to its arity. `kind = "derivation-root"`.
+
+    signed_id = _digest(_hs_canonical_bytes({
+        "schema": "dskit.derivation-root-intent/v1",
+        "hop": <the hop's own canonical name>,
+        "parents": [{"port": ..., "signed_id": ..., "intent_sha256": ...}, ...],
+    }))
+
+`parents` carries EVERY upstream row the hop declares, sorted canonically by
+`port`, and the hop name is bound alongside them.
+
+**`port` is not decoration.** Hop 1's two parents are different reserve kinds
+(`raw-dataset`, `roster-bootstrap`) and cannot be confused. Hop 3's two are
+BOTH `derivation-root` rows -- hop 1's and hop 2's, filling
+`_REPLAY_TAPE_INPUTS = ("tape_manifest", "tape_data")` (`document.py:766`) --
+so a bare `{signed_id, intent_sha256}` pair list hashes a role-swapped
+construction identically to the correct one. Downstream shape checks would
+refuse such a swap before it ever reached `ISSUED`, but an identity that
+relies on a check it does not name is not intent-pure on its own terms, and
+intent purity is the whole point of this formula. Binding the declared port
+makes it pure without depending on anything downstream.
+
+**This kind's own `intent_sha256`** is `_digest(_hs_canonical_bytes({
+"schema_version": "dskit.derivation-root-intent/v1", "hop": <name>,
+"parents": <the same list>}))` -- the same closed content as `signed_id`, and
+NOTHING ELSE. The precedent is asymmetric here (`trust.py:9955-9960` folds
+`graph_references`, drawn from an in-memory graph rather than any parent row,
+into `intent_sha256` but not into `signed_id`), and Hop 2 and Hop 3 both READ
+a prior hop's `intent_sha256` as part of their own parent binding. An
+implementer importing the precedent's asymmetry by reflex would make a
+parent's identity depend on state no parent row carries. Stated explicitly so
+that cannot happen.
+
+**This is the correction v1 got wrong, and it is load-bearing.** The
+`dynamic-p4-authority` precedent hashes a single parent because that kind has
+exactly one (`root-pis`). F3 does not: ADR-0148's own retained hop text has
+Hop 1 (`ReplayTapeDataCapture`) declaring `raw_event_dataset` AND
+`source_roster` (`decision-log.md:12962`), and Hop 3 (`ReplayRun`) freezing
+descriptors resolving to BOTH published roots (`:12980`); only Hop 2 is
+single-parent (`:12972`). A single-parent digest would make two derivation
+intents differing ONLY in the unbound parent alias to one `(kind, signed_id)`
+-- so a legitimate derivation would permanently lose the unique-INSERT race to
+an unrelated intent, with no recovery path. That is strictly worse than any
+gap named below, and it is the same "identity not intent-pure" family that
+sank v1 of ADR-0148 (`:12657-12658`). Every parent row must also be `ISSUED`,
+checked inside the same `BEGIN IMMEDIATE` as the INSERT -- the precedent's
+one-parent check, applied to all of them.
+
+The `(kind, signed_id)` primary key IS the fencing the racing ascending scan
+lacked. Two concurrent derivations over one intent attempt the identical
+INSERT under `BEGIN IMMEDIATE`; one wins, the loser gets `IntegrityError` and
+refuses cleanly. No scan, no retry protocol, no "abandoned vs in-flight"
+judgement call -- the database decides, once, atomically.
+
+No new durability mechanism is introduced. `_SYNTHETIC_RESERVE_SCHEMA` does not
+change. Nothing moves out of `trust.py`.
+
+**What this does NOT close. Named before building, not after.**
+
+1. **Liveness, and it is the real open question.** The `dynamic-p4-authority`
+   precedent commits `RESERVED -> ISSUED` BEFORE construction, by its own
+   design. A crash between that commit and the real PUBLISH leaves the intent
+   permanently unpublishable: there is no `attempt` dimension and no
+   `RESERVED -> QUARANTINED -> retry-with-a-new-signed_id` path. **Folding
+   `attempt` into `signed_id` reintroduces precisely the undecidable
+   "abandoned versus in-flight" question that killed v3.** This must be settled
+   before any code.
+2. **No shared transaction.** `reserve_uses` is SQLite; the PUBLISHED root
+   lives in the broker receipt store (`_reload_stream`, `trust.py:1720-1741`).
+   There is no two-phase commit, so the two stores can disagree across a crash
+   in either direction.
+3. **Single host only.** WAL requires shared memory and does not work over NFS,
+   and `_provision(path)`/`__init__(path)` take a plain filesystem path. This
+   is the same limitation `health.py:1303-1305` already discloses for
+   `InstanceLock`.
+4. **Generation and revocation do not reach it.** `reserve_meta.generation` and
+   `reserve_revoked` do not clear `reserve_uses`, so an `ISSUED` row survives a
+   generation bump and a rotated domain can never re-derive that intent.
+5. **Torn writes mid-publish are not covered by the two gates above, but the
+   technique for them EXISTS too.** A real crash can land INSIDE the
+   multi-step publish and leave a partially written receipt; the Gap 1 gate
+   crashes at a clean boundary and will not produce that. v3 claimed closing
+   this "needs a process-kill technique the repo does not have" -- also false,
+   from the same bad grep. `tests/production/test_ledger.py:1679-1701`
+   monkeypatches `os.replace`/`os.rename`/`pathlib.Path.replace`/`.rename` to
+   `os._exit(9)` in a real `subprocess`, interrupting a multi-step write
+   mid-flight, and asserts the previous checkpoint is still readable. That is
+   structurally the torn-write test this gap needs. It is NOT specified here
+   because the publish path's own steps are F3's to define and do not exist
+   yet -- so this is deferred for a named reason, with its technique already
+   identified, rather than deferred because nothing could be built.
+6. **The "hop" term is a fixed per-type literal, and that is deliberate.**
+   `hop` is the hop type's own canonical name (`"ReplayRun"` and so on), not a
+   document- or graph-scoped value. F3 is a fixed singleton three-hop lane, so
+   each hop type occurs exactly once and the literal cannot collide. Hop 1's
+   `policy_sha256` is parent-derived, not free (`decision-log.md:12848-12849`:
+   "`source_rank_policy_sha256` from the verified pre-document roster
+   policy"), so it is already bound transitively through the roster parent's
+   own `intent_sha256`. Recorded because this ADR calls that exact category of
+   unstated assumption dangerous when it criticises the precedent, and the
+   same standard has to apply to its own terms.
+7. **The existing quarantine precedent is wider than this ADR's invariant.**
+   `trust.py:9882` quarantines on `row[0] != "QUARANTINED"`, with no check
+   that the prior state was `RESERVED` -- so it can downgrade an already
+   `ISSUED` row. This ADR's own text says a failed or ambiguous commit reaches
+   `QUARANTINED` and never a second construction. The new kind's quarantine
+   analog must check the prior state explicitly rather than copying that
+   shape. Existing-code observation, recorded so it is not inherited.
+
+**Scope, stated so it cannot be overread.** The reserve hangs off
+`publisher._reserve` (`trust.py:6508`, `:7520`), and ADR-0148 itself claimed
+durability only at development-broker scope. This ADR claims that same scope
+and no more. **It is not production race closure for F3**, and no evidence from
+it may be cited as such.
+
+**The next deliverable is TWO tests, not code.** The convergence checkpoint's
+lesson was "specify it against an executable test, not in prose" -- prose
+specification of a stateful concurrent protocol against a 10k-line lifecycle is
+what failed three times.
+
+1. **The race test.** Two concurrent derivations over one intent yield exactly
+   one PUBLISHED root, against the real reserve. This is a TRANSPLANT, not an
+   invention: `tests/pipeline/test_captured_authorization.py:3010-3033`
+   (`test_adr136_roster_signed_id_has_one_cross_process_winner`) already races
+   two real OS processes against this same reserve, synchronized on an
+   `Event`, asserting exactly one winner -- for a different kind. It must also
+   cover the two-parent case above, or it will not exercise the correction.
+2. **The liveness test, which is a DIFFERENT test, and is ALSO a transplant.**
+   v1 claimed the race test settled Gap 1. It does not: Gap 1 is a lone winner
+   dying between the `RESERVED -> ISSUED` commit and the real PUBLISH, and
+   two-racers-yield-one never exercises that.
+
+   The transplant is `_adr136_crash_with_uncommitted_insert`
+   (`tests/pipeline/test_captured_authorization.py:3080-3092`) and its driver
+   `test_adr136_crash_before_commit_does_not_spend_id` (`:3094`). That helper
+   already opens this same `_SyntheticAuthorizationReserve`, runs `BEGIN
+   IMMEDIATE` and an `INSERT INTO reserve_uses`, and calls `os._exit(17)` in a
+   real forked `multiprocessing` child; the parent asserts the exit code, then
+   reopens the reserve and checks what survived.
+
+   Gap 1's test moves that `os._exit` from BEFORE the insert to AFTER a full
+   `RESERVED -> ISSUED` commit -- mirroring `trust.py:9938-9985`, where the
+   transaction completes at `:9981-9982` and no construction code runs before
+   `:9991` -- then reopens from the parent and asserts the row is stuck
+   `ISSUED` with no published root and no path to retry or quarantine. A real
+   OS-level crash at the real boundary, not a simulation.
+
+   **v3 proposed an in-process substitute instead, and that was wrong twice
+   over.** It rested on the false "no precedent" claim retracted above, and
+   the substitute is itself unsound: `_development_dynamic_p4_broker`
+   (`trust.py:9900-10018`) is ONE function with two sequential `try` blocks
+   and no standalone reserve-step callable, so a plain exception injected into
+   the second block is caught by that block's own `except Exception:`
+   (`:10015-10018`) and QUARANTINED -- which would disprove Gap 1 rather than
+   demonstrate it. The fork transplant sidesteps this entirely.
+
+Both must be RED first, with recorded answers, or this ADR does not proceed to
+code. Gap 1's answer specifically decides whether an `attempt` dimension is
+acceptable -- and `attempt` reintroduces v3's ambiguity, so that answer is the
+real gate on this work.
+
+**Still outstanding (Minor, recorded, not blocking):** every ADR-0148 round had
+a Phase 0 contract matrix under `docs/review-evidence/F3/` (0195/0197/0199);
+ADR-0157 has none. A matrix is the artifact that forces an explicit row per hop
+cardinality -- which is exactly where v1's Major hid. Worth writing before the
+tests.
+
+
+---
+
+## ADR-0158 — Proposed transactional replay and operations seams
+
+**Status:** accepted (2026-09-12; owner approved the external launcher/broker architecture and synthetic TDD implementation only). Extends ADR-0090/0091, ADR-0112, ADR-0114, ADR-0117/0118 and ADR-0120. It authorizes no market tape, paper/live action, HPO/refit, lockbox read or full backtest.
+
+**Context.** Round-5 review proved two gaps: `ServeLoop` writes the real checkpoint cache directly, and handlers close over original bundles. The existing `report.Replay` and CLI also compose a runnable replay without a typed execution authority. A replay transaction must additionally fence every series mutation, bind one immutable series genesis, freeze the whole lifecycle plan before publish, and use the same external launcher/broker trust boundary approved for model release. Retain the existing loop, ledger/fold, accounting, report, replay clock/feed and released graph; do not create a parallel simulator.
+
+**Live dispatch and transaction binding.** Extract the current body of
+`ServeLoop._tick` verbatim into `_tick_once`. `ServeLoop._tick` becomes the
+small dispatcher: its default internal live mode delegates to `_tick_once`,
+with the current call order, checkpoint bytes and observable behavior
+unchanged; only `ReplayRun` may inject `ReplayTransactionalMode`. A serve
+document, rung, child adapter, or CLI flag cannot select transaction mode.
+`TickTransactionMode` has exactly `run(loop, tick_at_ms, absorbed,
+reduction_cycle)` and `recover(loop)` hooks. Recovery offers an incomplete
+transaction to that mode before ordinary recovery; live mode has no
+transaction journal and retains ordinary recovery unchanged.
+
+Add internal `CheckpointWriter`. The live writer contains the exact current
+`Checkpoint(...).write(serve_root.checkpoint_cache)` construction; the replay
+writer can only freeze a `CacheWriteIntent.v2`, never write the live cache.
+That intent has the exact keys `schema_version`, `target`, `release_hash`,
+`process_id`, `tick_id`, `pre_head`, `projected_head`, `prior`, `bytes_b64`
+and `sha256`; `prior` is either `{present: false}` or
+`{present: true, bytes_b64, sha256}`. Commit independently verifies the
+prior bytes/absence, projected-head ancestry and new bytes before one durable
+replace. A provisional head therefore cannot reach the real cache; stale
+caches rebuild, while ahead, divergent, substituted or mismatched caches
+refuse.
+
+`ReplayTransactionalMode` acquires a `FencedSeriesWriterLease` before
+`BEGIN`, holds it through cache, outbox, result and `COMMITTED`, and releases
+it only after commit or abort. The lease is rooted at the one `ServeRoot`
+series and contains the immutable `(series_id, genesis_sha256, transaction_id)`
+identity plus a monotonically increasing fencing token. Every real-ledger
+append, checkpoint/cache replacement, command-inbox move, outbox/ACK write,
+result write and deferred-effect receipt requires the currently held token.
+Recovery first reacquires the same series with a strictly higher token and
+records a durable lease handoff before reading or mutating the transaction;
+an old or parallel holder is fenced out. `series_id` and the canonical digest
+of `series.json` are bound into the replay identity, permit, transaction,
+frozen plan, cache intents, outbox evidence and result; any root/genesis
+substitution refuses.
+
+`_LoopBinding` is an exception-safe, single-use scope. It constructs and
+installs one transaction-bound `Recording`, bundles, handler map from
+`handlers_for`, command processor, checkpoint writer and
+observation/control callbacks, then restores the exact originals once after
+commit or abort. `_recorded_bodies`, monitors, commands, approvals and every
+control handler must use the bound set. Its canonical `binding_digest` binds
+the handler classes, processor class, bundle/config/runtime digests and
+callback identities; any recovery substitution refuses. A collaborator with
+an external effect that cannot stage and replay its exact effect refuses
+before `BEGIN`.
+
+**Durable transaction and frozen publication.** `ServeRoot` owns the
+discoverable layout, creates it with the series root, and is the only path
+builder:
+
+```
+<series>/replay/transactions/<transaction_id>.json
+<series>/replay/outbox/<replay_id>/<emitter_digest>.json
+<series>/replay/outbox/<replay_id>/<emitter_digest>/acks/<event_id>.json
+<series>/replay/results/<replay_id>.json
+```
+
+Every path segment is a validated lowercase SHA-256 identity:
+`replay_id` hashes schema version plus release, document, tape, cadence,
+clock, recorded-ID and code digests; `transaction_id` hashes `replay_id`,
+the deterministic replay process id and tape-derived tick id; `emitter_digest`
+hashes the emitter identity/configuration. No replay process id is a random
+UUID.
+
+`ReplayTransaction.v1` is one canonical, default-deny JSON object with exact
+keys `schema_version`, `transaction_id`, `replay_id`, `release_hash`,
+`document_hash`, `tape_digest`, `cadence_digest`, `clock_digest`,
+`id_source_digest`, `code_digest`, `permit_digest`, `process_id`, `tick_id`,
+`series_id`, `genesis_sha256`, `binding_digest`, `state`, `pre_head`,
+`pre_checkpoint`, `lease`, `frozen` and `transitions`. `pre_head` is
+`{seq, hash}`; `pre_checkpoint` is the exact cache bytes-or-absence; `lease`
+is the current fenced-token evidence; `frozen` is null before `FROZEN` and
+otherwise a `FrozenReplayPlan.v1`; `transitions` is the append-only ordered
+tuple of state names and lease handoffs. Creation is idempotent only when the
+complete canonical `BEGIN` object, series identity and first lease evidence
+match; a same-path conflict refuses. Every transition is
+`durable_write_json`/file fsync/rename/directory fsync, may advance only
+once, and preserves every prior transition.
+
+`FrozenReplayPlan.v1` is immutable and default-deny. Its exact keys are
+`schema_version`, `replay_id`, `transaction_id`, `series_id`,
+`genesis_sha256`, `release_hash`, `document_hash`, `tape_digest`,
+`cadence_digest`, `clock_digest`, `id_source_digest`, `code_digest`,
+`permit_digest`, `binding_digest`, `records`, `snapshot`, `cache`,
+`control_inbox`, `outbox`, `result`, `deferred_effects`, `phase_order` and
+`plan_sha256`. `plan_sha256` is SHA-256 of its canonical object with that
+field omitted. Every member is mandatory. `records` is the ordered tuple of
+full frozen envelope canonical bytes and digests; `snapshot` and `cache` are
+the complete canonical bytes/digests of their intents; `control_inbox` names
+the exact pending/applied/rejected bytes, digests and move order; `outbox`
+names the ordered event-item bytes/digests; `result` names the canonical
+result bytes/digest; and `deferred_effects` is the ordered tuple of canonical
+effect-intent bytes/digests and idempotency keys. No post-`FROZEN` code may
+derive, add, replace, reorder or serialize any of these values anew.
+
+The sole order is `BEGIN -> PROVISIONAL -> FROZEN -> PUBLISHING ->
+RECORDS_BARRIERED -> SNAPSHOTTED -> CHECKPOINTED -> OUTBOX_DRAINED ->
+EFFECTS_DONE -> COMMITTED`. A `TransactionalLedger` implements the existing
+ledger contract against provisional state only; it invents no envelope, hash,
+fold or accounting rule. Before `FROZEN`, recovery requires the real ledger
+to equal `pre_head`, restores replay clock/IDs/bindings and may evaluate once.
+At or after `FROZEN`, recovery never evaluates the graph: it verifies every
+identity, frozen instant and exact real-ledger prefix, publishes only the
+missing frozen suffix, and otherwise refuses.
+
+`ChainLedger` owns a verified frozen append seam shared by JSONL and SQLite:
+`freeze_appends(records, recorded_at_ms)` constructs full canonical envelopes
+from an explicit head and explicit append instants, and
+`append_frozen(envelopes)` independently reconstructs and byte-compares every
+envelope before writing it. It never reads ambient time. `SnapshotIntent.v2`
+has exact keys `schema_version`, `pre_head`, `at_seq`, `recorded_at_ms`,
+`state`, `state_digest`, `envelope`, `bytes_b64` and `sha256`; only the
+under-lock `freeze_snapshot` path may construct it, and transactional replay
+may publish it only with `append_frozen`. Its state is the provisional fold
+after the frozen caller-record suffix. `CacheWriteIntent.v2` is likewise
+frozen before publication. This makes provisional and real publication use
+the same independently verified append-time/envelope bytes, regardless of
+restart timing or ambient clock.
+
+After the frozen record barrier, recovery publishes the frozen snapshot and
+barriers, writes the exact checkpoint intent, drains the outbox, runs deferred
+after-tick effects, records result/cursor projections, then restores bindings.
+At every step a non-prefix, substituted envelope, changed append instant,
+changed preimage or off-chain cache refuses.
+`ReplayRun` does not call raw `ServeLoop.run`. It drives three lifecycle
+transactions using the same journal, fence and `FrozenReplayPlan`: `startup`
+for process/recovery/reconciliation mutations, one `tick` transaction per
+tape-derived tick, and `shutdown` for process-stop, final checkpoint/result,
+observability teardown and all deferred effects. Every lifecycle mutation or
+effect must be present in its frozen plan and execute under the transaction
+lease; an existing startup/tick/shutdown callback that cannot be made
+planable and idempotent refuses replay before it runs. This is a replay-only
+lifecycle; the ordinary live lifecycle remains the exact `_tick_once` path.
+
+
+**Authorized replay entry point.** Add generic `dskit.production.replay.ReplayRun`;
+remove `report.Replay` as a runnable public API and route
+`production.__main__.ReplayVerb` through `ReplayRun`. `ReplayRun` accepts
+only an opaque, process-bound `VerifiedReplayExecutionPermit`, never a claims
+mapping, signature, key, local file path or constructible public value. The
+independent launcher validates the immutable runtime/image and series/genesis
+binding before Python starts; its external permit broker alone reads the
+protected keyring, trusted clock and revocation state, validates the opaque
+capability's purpose, release/document/tape/replay/series/genesis/process
+bindings and expiry, and returns the typed permit plus non-secret digest.
+DSKit has no signing key, trusted wall clock, revocation reader or permit
+minting/serialization path. The CLI passes an opaque `--permit-handle` to the
+broker and refuses before creating a root if the broker does not return the
+typed permit. Its decider executes the manifest-pinned graph each tick;
+paper/full tapes refuse precomputed decisions, weights, orders, fills or
+returns.
+
+Tests may inject a separate `SyntheticReplayAuthority`, defined only in
+`tests/production/test_replay.py`, which can mint a typed permit only for an
+explicit synthetic tape and `deployment_eligible=false`. It is not exported,
+registered, accepted by the CLI, or usable for paper/live input. Thus a test
+fixture cannot become an execution bypass.
+
+**Post-commit events and result.** `EventOutboxItem.v1` has exact keys
+`schema_version`, `replay_id`, `emitter_digest`, `ledger_seq`, `ledger_hash`,
+`event_id`, `event`, and `event_digest`; it is generated only from committed
+ledger envelopes through the ADR-0118 event adapter. `event_id` hashes the
+replay/emitter identities and the envelope `(seq, hash)`. The durable outbox
+contains the ordered pending items; no caller supplies event bodies.
+`EventAckEvidence.v1` is signed and default-deny with exact keys
+`schema_version`, `replay_id`, `series_id`, `genesis_sha256`,
+`emitter_digest`, `event_id`, `ledger_seq`, `ledger_hash`, `event_digest`,
+`ack_id`, `acknowledged_at_ms`, `emitter_receipt`, `key_id`, `signature` and
+`evidence_sha256`; `evidence_sha256` omits itself. `ack_id` is deterministic
+over the item and receipt, so only byte-identical repeat evidence is
+idempotent and a competing ACK refuses. The registered emitter receipt
+verifier checks its signature before the evidence is durably stored.
+
+`EventCursorSet.v1`, rather than an unbound singleton cursor, has exact keys
+`schema_version`, `replay_id`, `series_id`, `genesis_sha256`, `ledger_head`,
+`cursors` and `cursor_set_sha256`; its digest omits itself. `cursors` is a
+strictly sorted tuple by `emitter_digest`, with no duplicate, and each
+default-deny `EventCursor.v1` binds that emitter's last ACK evidence digest,
+last ACK `(seq, hash)` and last seen ledger head. For each item: persist the
+frozen pending bytes under the transaction fence, emit its stable id, verify
+and durably persist matching signed ACK evidence, then atomically replace the
+sorted cursor set. A crash after emission may redeliver only the same id.
+Emitter recovery starts from frozen pending/ACK evidence in sequence order;
+skips, changed items, ahead/non-ancestor heads and identity mismatches refuse,
+while a stale ancestor rebuilds from the ledger.
+
+`ReplayResult.v1` is the ServeRoot cache with exact keys `schema_version`,
+`replay_id`, `ledger_head`, `checkpoint_sha256`, `account_sha256`,
+`event_cursor_sha256`, `metrics_sha256`, `report_sha256` and `result_sha256`.
+`result_sha256` is SHA-256 of the canonical result object with
+`result_sha256` omitted; readers recompute that same omission before trusting
+it. Every remaining value is derived at the stated ledger head; stale
+ancestors rebuild and ahead, non-ancestor or tampered values refuse.
+
+**Cash flows and holds.** Version `RecurringCashFlowSchedule` serialization
+and `ReplayCashFlowComposer` additively. V1 parses and emits every existing
+scheduled deposit, withdrawal, adjustment and correction unchanged. V2 adds
+immutable `policy_digest`, `schedule_digest` and one `initial_flow`, while
+preserving signed-`Decimal` amount, `flow_kind`, effective/known instants,
+deterministic ID and `supersedes`. The positivity/external/unsuperseded rule
+applies only to `initial_flow`; it must be one positive external deposit with
+no supersession. It does not reinterpret, reject or constrain scheduled V1/V2
+deposits, withdrawals, adjustments or corrections. Production remains
+settlement/adoption driven; NAV/TWR/MWR/returns/results derive only from the
+ledger external-flow/PnL partition.
+
+`MonitorHoldGuard` accepts legacy monitor responses only as record-only.
+A V2 hold may enter the existing `guard_state`, fold, snapshot, expiry and
+`approve_hold` path only when a signed, immutable release-pinned
+`HoldActionPolicy.v1` and a verified `HoldActionCapability.v1` agree on
+purpose, release/document/policy digests, monitor and target scope, issuer,
+issued-at, expiry and bounded TTL. Invalid, absent, expired or out-of-scope
+authority records the response/rejection without a hold; a malformed claimed
+capability refuses the action. `halt` remains breaker-only. This adds no
+threshold, warn/hold boundary, authority, scope or TTL policy and preserves
+ADR-0114 §11 item 7 as open.
+
+Add pure sibling `RollingReleaseRotationCalendar` without changing
+ADR-0112: explicit bounded UTC cadence/training/embargo and
+model/data/cache/policy availability pins; no training, promotion,
+deployment, I/O, implicit now or exchange-session policy.
+
+**Placement.** `dskit.production.loop` owns the live-preserving dispatch,
+writer and binding; `ledger` owns ServeRoot paths and frozen envelopes;
+new generic `production.replay` owns transactions, permits, outbox, cursor
+and result; `cashflows`, `compose`, `guards`, `report` and `__main__` receive
+only their stated seam changes. Update `dskit.production` README/AGENTS
+inventories. `children/intraday_equities` supplies only thin released-graph,
+exchange-session, horizon/cost/fill and event adapters plus pinned
+configuration; it owns no loop, clock, ledger/fold, permit authority, returns
+simulator or canonicalization.
+
+**Focused TDD after approval.** First add focused failures in
+`tests/production/test_loop.py`, `test_ledger.py`, new `test_replay.py`,
+`test_report.py`, `test_cashflows.py`, `test_compose.py`, `test_guards.py`,
+`test_control.py`, and `children/intraday_equities/tests/test_replay.py`.
+They first prove failures for a second writer/recovery fence, changed
+series/genesis, every missing/extra/reordered `FrozenReplayPlan` member, and
+every startup/tick/shutdown mutation or effect outside a lifecycle plan.
+Inject crashes around every journal state, frozen append/barrier, snapshot
+preview/append/barrier, checkpoint write, command move, event
+pending/emit/signed-ACK/cursor-set replacement, deferred effect and restore.
+Require uninterrupted/restarted byte-identical ledger/head, checkpoint,
+terminal identities, account, events, metrics and report. Pin unchanged live
+`_tick_once` checkpoint bytes/order, opaque broker-only permit refusal,
+synthetic-authority isolation, all substitutions, V1/V2 cashflow
+compatibility, ACK idempotency/signature failure/cursor sorting, hold
+restart/expiry, result self-digest omission, result tamper/staleness and
+rolling pins. Run only those files and directly affected purity/OOP/producer
+gates.
+
+**Owner gates.** This acceptance permits only deterministic synthetic TDD
+through the test-only authority and a temporary test ServeRoot. The production
+entry point remains fail-closed. Actual replay separately requires owner
+activation of the external launcher/broker, protected keyring/clock/revocation
+operations, event retention/redaction/sink reliability, hold authority/scope/TTL,
+capital timing/settlement/corrections, cadence/session/training/embargo/
+availability, released model/calibration/cap/MIO identities and rung gates.
+No market replay, paper/market action, lockbox/full backtest, HPO or final
+refit is authorized.
+
+
+---
+
+## ADR-0159 -- Deferred terminal projection for fenced replay
+
+**Status:** accepted (2026-09-12; explicitly owner-approved in the active
+thread). Corrects ADR-0158 at
+77697edf823810e0832f02f73511638b681a9834 but does not amend the model plan
+at 40ab10fa7428e5eab14cff2f082c781cf962b860. Its current V1 requirement
+therefore remains conflicting and fail-closed. This ADR authorizes no
+implementation, synthetic execution, market replay, paper/live action, HPO,
+refit, lockbox read or backtest.
+
+**Problem.** ADR-0158 freezes final ReplayResult.v1 bytes before effects, but
+that result binds event_cursor_sha256. Signed ACK/cursor evidence exists only
+after outbox emission and effect completion. A pre-effect final result is
+unknowable or silently omits/substitutes the evidence it claims to bind.
+
+**Decision.** Add FrozenReplayPlan.v2. It freezes every
+pre-effect invariant and the complete ordered language of allowed post-effect
+receipts, then derives one terminal cursor/result projection from verified
+evidence. Canonical JSON/UTF-8 bytes, lowercase SHA-256, exact-key default
+denial and self-digest omission retain ADR-0158 meaning.
+
+**Frozen V2 schema.** FrozenReplayPlan.v2 has exactly schema_version, study_id,
+replay_id, transaction_id, series_id, genesis_sha256, release_hash,
+document_hash, tape_digest, cadence_digest, clock_digest, id_source_digest,
+code_digest, permit_digest, binding_digest, pre_head, records, snapshot, cache,
+control_inbox, outbox, deferred_effects, transaction_header_sha256,
+effect_slot_set, effect_broker_policy, emitter_verifier_map, result_intent,
+result_projection, phase_order and plan_sha256; plan_sha256 omits itself. It has
+no result member.
+pre_head is canonical JSON with exactly ledger_seq (a non-negative integer) and
+ledger_hash (a lowercase SHA-256 string), with no null or omitted member. Its
+canonical UTF-8 bytes are byte-identical in the plan and header and are bound by
+both plan_sha256 and header_sha256. A V1 result, omitted/unknown member or
+non-V2 nested schema refuses.
+
+ReplayResultIntent.v2 has exactly schema_version, study_id, replay_id,
+transaction_id, series_id, genesis_sha256, release_hash, document_hash, tape_digest,
+cadence_digest, clock_digest, id_source_digest, code_digest, permit_digest,
+binding_digest, ledger_head, checkpoint_sha256, account_sha256, metrics_sha256,
+report_sha256, cursor_transition, result_schema_version and intent_sha256;
+intent_sha256 omits itself. It is built before projection from static fields and
+the pre-effect frozen cursor transition; the later plan must byte-verify those
+fields. Effect-derived and projection-derived data refuses.
+
+ResultProjectionSpec.v2 has exactly schema_version, study_id, replay_id,
+transaction_id, intent_sha256, projection_algorithm, projection_version,
+canonicalization_version, projection_code_digest, environment_identity_sha256,
+result_schema_version, effect_slot_set_sha256, cursor_transition_sha256 and
+projection_sha256; projection_sha256 omits itself. cursor_transition_sha256 must
+equal the self digest of the exact ReplayResultIntent.v2.cursor_transition bytes.
+Algorithm/version/canonicalizer/code/environment are identity: another runtime,
+serializer or environment refuses.
+
+
+FrozenEmitterVerifierMap.v2 is canonical, externally authorized pre-plan bytes
+with exactly schema_version, study_id, replay_id, series_id, genesis_sha256,
+transaction_id, transaction_key, pre_head, entries,
+authority_envelope_bytes_b64, authority_envelope_sha256 and verifier_map_sha256;
+verifier_map_sha256 omits authority-envelope fields and itself. entries are
+strictly sorted by emitter_digest without duplicates. Each entry has exactly
+emitter_digest, emitter_keyring_id, emitter_keyring_version,
+emitter_keyring_as_of_ms, revocation_source_id, revocation_version,
+revocation_as_of_ms, verifier_key_id, verifier_key_sha256 and
+signature_algorithm. The only permitted signature algorithms are the closed,
+registered emitter-verifier algorithm set. Its emitter_verifier_map authority
+envelope uses BOOTSTRAP_PREPLAN_V2 and exact BootstrapScope.v2 bindings, has no
+plan_sha256, and may sign only this immutable map. FrozenReplayPlan.v2 embeds
+the exact map bytes/digest; the map is thereby plan-bound without a plan-to-map
+cycle. Any map/keyring/revocation snapshot or authority substitution refuses.
+Study identity is a nonempty canonical identifier equal byte-for-byte to the
+trusted authority scope. Every identity-bearing V2 document below carries
+study_id: plan, header intent/header, result/projection/result witness, journal
+snapshot, series head, lease lineage/elevation, event/commit, effect/receipt,
+broker policy/verifier-map/authorization, terminal pair/bundle/manifest and commit/reader authority. No
+path, series, replay or transaction may imply it; any mismatch or reuse across
+studies refuses, and transaction/terminal identities are distinct across studies.
+
+study_path_key is lowercase hexadecimal SHA-256 of the canonical UTF-8 raw
+study_id; series_path_key is lowercase hexadecimal SHA-256 of the canonical
+UTF-8 raw series_id. Every rooted key below uses only these fixed 64-hex
+segments, never raw study_id or series_id; every schema still stores and
+byte-compares raw canonical identities plus its derived path key. transaction_key,
+payload_sha256, manifest_sha256, head_sha256, snapshot_sha256 and all other
+digest path components are likewise exactly lowercase 64-hex; generations and
+fences are canonical non-negative decimal integers. Any raw segment, '.', '..',
+separator, percent/Unicode alias, noncanonical integer or nonmatching digest
+refuses. No identity-derived path has an unstated encoding.
+
+Topological construction is mandatory: derive BootstrapIdentity.v2, immutable
+header intent, replay/transaction identities and static result inputs first;
+the external authority next signs InitialReservationAuthority.v2 and
+InitialLeaseAcquisition.v2 from BootstrapIdentity.v2 and only the exact selected
+committed predecessor (or canonical genesis sentinel), never a reservation or
+series-state digest; only then acquire the bootstrap reservation and read its
+selected committed series head and prior cursor bytes or genesis sentinel; build each EffectIntent.v2,
+QueryRequest.v2 and EffectSlotSet.v2; construct the pre-plan broker policy and
+frozen emitter verifier map under bootstrap scope; construct cursor_transition;
+build ReplayResultIntent.v2, then
+ResultProjectionSpec.v2; then canonicalize, hash and embed exact intent,
+projection, slot set, policy and verifier map
+in FrozenReplayPlan.v2. Under only the bootstrap lease, atomically persist those
+exact plan bytes in the FROZEN journal snapshot. Only after that durable snapshot
+may the external authority create and atomically select a plan-bound lease
+elevation; only then may it sign broker transaction authorization or advance any
+outbox, effect, consumer or execution phase. Neither elevation nor authorization
+is a plan member or may alter frozen bytes. Tests construct only in this order
+and prove every forward/cyclic reference, mutable policy, scope-phase violation
+and fallback authorization refuses.
+
+ReplayTransactionHeaderIntent.v2 is canonical pre-plan header identity with
+exactly schema_version, study_id, replay_id, transaction_id, series_id,
+genesis_sha256, release_hash, document_hash, tape_digest, cadence_digest,
+clock_digest, id_source_digest, code_digest, permit_digest, binding_digest,
+pre_head_bytes_b64, pre_head_sha256 and header_intent_sha256; its self digest
+omits itself. The later immutable header must byte-match this intent in every
+shared field.
+
+BootstrapIdentity.v2 has exactly schema_version, study_id, replay_id, series_id,
+genesis_sha256, transaction_id, transaction_key, header_intent_sha256,
+pre_head_bytes_b64, pre_head_sha256, permit_digest,
+environment_identity_sha256 and bootstrap_identity_sha256; its self digest omits
+itself. It is immutable, distinct per study and transaction, and has no plan
+member or plan-derived digest.
+
+ExternalAuthorityEnvelope.v2 is the sole signing transport for bootstrap_lease,
+initial_reservation, initial_lease_acquisition, lease_handoff, pre_effect_abort,
+plan_lease, broker_policy, emitter_verifier_map, broker_transaction, commit and
+reader capabilities.
+It has exactly schema_version, authority_kind, scope_variant, domain_separator,
+algorithm_id, canonicalization_version, payload_preimage_sha256, issuer_key_id,
+verifier_keyring_id, verifier_keyring_version, trusted_clock_id, valid_from_ms,
+expires_at_ms, revocation_source_id, revocation_version, revocation_as_of_ms,
+scope, audience, signature and envelope_sha256; envelope_sha256 omits signature
+and itself. scope_variant is closed to INITIAL_RESERVATION_V2,
+BOOTSTRAP_PREPLAN_V2 or PLAN_BOUND_V2.
+BootstrapScope.v2 has exactly schema_version, bootstrap_identity_sha256,
+study_id, replay_id, series_id, genesis_sha256, transaction_id, transaction_key,
+header_intent_sha256, pre_head_sha256, permit_digest,
+environment_identity_sha256 and plan_sha256; it requires exact BootstrapIdentity
+equality and plan_sha256 exactly NOT_APPLICABLE_V2. It cannot name, infer or
+later mutate a plan. PlanBoundScope.v2 has exactly schema_version,
+bootstrap_identity_sha256, study_id, replay_id, series_id, genesis_sha256,
+transaction_id, transaction_key, plan_sha256, pre_head_sha256, permit_digest and
+environment_identity_sha256; all fields must byte-equal the persisted frozen
+plan/header/permit/environment bindings.
+
+Only initial_reservation and initial_lease_acquisition use
+INITIAL_RESERVATION_V2; their scopes are defined below and default-deny every
+plan, reservation and series-state member. Only bootstrap_lease, broker_policy
+and emitter_verifier_map use BOOTSTRAP_PREPLAN_V2. A
+bootstrap_lease authorizes only header creation, first journal snapshot,
+read-only planning inputs and BEGIN/PROVISIONAL/FROZEN events; it cannot publish
+outbox, dispatch/query effects, invoke consumers or create plan-bound authority.
+broker_policy and emitter_verifier_map may sign only their pure pre-plan bytes. plan_lease,
+broker_transaction, commit and reader require PLAN_BOUND_V2. signature verifies
+the domain-separated canonical preimage under issuer_key_id looked up only in
+the named/versioned keyring; trusted-clock validity and named revocation
+source/version/as-of must verify. Unknown kind, scope variant, field, algorithm,
+key, audience, clock or revocation state refuses. Each externally-authorized payload below
+carries authority_envelope_bytes_b64 and authority_envelope_sha256; its self
+digest omits those fields and the envelope binds that self digest. DSKit holds no
+private authority key and supplies no fallback verifier.
+ReplayResultIntent.v2.cursor_transition has exactly
+prior_committed_transaction_key, prior_terminal_manifest_key,
+prior_terminal_manifest_sha256, prior_terminal_generation,
+prior_projection_pair_sha256, prior_cursor_set_bytes_b64,
+prior_cursor_set_sha256, pre_transaction_ledger_head, terminal_generation,
+target_ledger_head, updates and transition_sha256; transition_sha256 omits
+itself. It freezes the exact immediate committed predecessor and cursor bytes.
+For genesis, the five prior-transaction/manifest/pair fields and prior cursor
+bytes/digest are their named canonical GENESIS_*_V2 sentinels and
+prior_terminal_generation is zero; otherwise all are byte-equal to the current
+ReplaySeriesCommittedHead.v2. terminal_generation is exactly
+prior_terminal_generation plus one. The prior cursor terminal_ledger_head equals
+pre_transaction_ledger_head, which equals FrozenPlan.v2 pre_head. target_ledger_head
+and ordered event_ack updates then follow. Each update
+has exactly position, emitter_digest, event_id, ledger_seq, ledger_hash,
+event_digest and receipt_slot_id. The first ordered frozen record predecessor
+equals pre_head; each later record predecessor equals its prior frozen record.
+The ordered frozen record-chain terminal equals cursor_transition.target_ledger_head
+and ReplayResultIntent.v2.ledger_head. Frozen snapshot/cache preimages and the
+starting AccountState ledger_head bind pre_head by exact canonical bytes. The
+expected cursor transition is frozen, while its signed evidence digest is post-effect.
+
+EventAckEvidence.v2 is canonical signed, default-deny evidence with exactly
+schema_version, study_id, replay_id, series_id, genesis_sha256, transaction_id,
+transaction_key, frozen_plan_sha256, pre_head, terminal_ledger_head,
+result_intent_sha256, effect_slot_set_sha256, slot_position, ack_position,
+effect_intent_sha256, effect_resolution_sha256, effect_receipt_sha256,
+emitter_digest, event_id, ledger_seq, ledger_hash, event_digest, ack_id,
+acknowledged_at_ms, emitter_receipt, emitter_verifier_map_sha256,
+emitter_keyring_id, emitter_keyring_version, emitter_keyring_as_of_ms,
+revocation_source_id, revocation_version, revocation_as_of_ms, key_id,
+verifier_key_sha256, signature_algorithm, ack_signature_preimage_sha256,
+signature and ack_evidence_sha256; ack_evidence_sha256 omits itself. slot_position
+and ack_position equal the one frozen event_ack slot and cursor_transition update;
+all study/replay/series/transaction/plan/pre_head/result-intent/terminal-head
+identities byte-match the plan, header, transition and terminal resolution. Every
+map/keyring/version/as-of/revocation/key/algorithm field equals the one frozen
+FrozenEmitterVerifierMap.v2 entry for emitter_digest.
+
+ack_signature_preimage_sha256 is SHA-256 of canonical UTF-8 JSON with exactly
+the keys domain, canonicalization_version and payload under the stated canonicalizer;
+domain is the literal dskit.replay.event_ack.v2.signature,
+canonicalization_version is the literal CANONICAL_JSON_UTF8_V2, and payload P is
+the exact EventAckEvidence.v2 field projection containing every field above except
+ack_signature_preimage_sha256, signature and ack_evidence_sha256. signature
+verifies only that digest under verifier_key_sha256 from the immutable named
+keyring snapshot at emitter_keyring_version/emitter_keyring_as_of_ms after the
+named revocation source/version/as-of check. Unknown field, map, keyring version,
+as-of, revocation snapshot, key, algorithm, domain or signature refuses. The ACK
+follows exactly its terminal EffectResolutionEvidence.v2 and binds that
+resolution and receipt, so one slot has one signed ACK; repeat is idempotent only
+for byte-identical evidence.
+
+EventCursorSet.v2 is canonical, default-deny bytes with exactly schema_version,
+study_id, replay_id, series_id, genesis_sha256, transaction_id, transaction_key,
+frozen_plan_sha256, pre_head, prior_committed_transaction_key,
+prior_terminal_manifest_key, prior_terminal_manifest_sha256,
+prior_terminal_generation, prior_projection_pair_sha256,
+prior_cursor_set_bytes_b64, prior_cursor_set_sha256, terminal_generation,
+terminal_ledger_head, result_intent_sha256, effect_slot_set_sha256,
+post_effect_receipts_sha256, acknowledgements, cursors and
+cursor_set_sha256; cursor_set_sha256 omits itself. cursors is strictly sorted by
+emitter_digest with no duplicate; each EventCursor.v2 has exactly emitter_digest,
+event_id, ledger_seq, ledger_hash, event_digest, slot_position, ack_position,
+ack_evidence_sha256, effect_receipt_sha256 and last_seen_ledger_head. Each
+EventAckReference.v2 has exactly ack_position, slot_position, emitter_digest,
+event_id, ledger_seq, ledger_hash, event_digest, ack_evidence_sha256 and
+effect_receipt_sha256. acknowledgements are contiguous by ack_position and give
+one entry for every frozen event_ack update; cursors retain only each emitter
+terminal entry. Every cursor last_seen_ledger_head equals terminal_ledger_head.
+The set validates every acknowledgement against EventAckEvidence.v2 and the
+exact terminal resolution/receipt in PostEffectReceiptSet.v2; missing, extra,
+reordered or substituted entry/evidence refuses. Its predecessor fields and
+terminal_generation must byte-equal ReplayResultIntent.v2.cursor_transition and
+the selected immediate ReplaySeriesCommittedHead.v2 predecessor. result_intent_sha256 is the frozen final
+result identity. result_sha256 intentionally cannot occur here because the
+result later binds cursor_set_sha256; ReplayResult.v2, projection, pair,
+manifest and COMMITTED bind both without a cycle. The terminal manifest binds
+the resulting result_sha256 and terminal_ledger_head only after projection.
+An absent prior cursor is the one canonical pre-plan EventCursorSet.v2 sentinel
+for the current header identities, with frozen_plan_sha256 equal to
+NO_FROZEN_PLAN_V2, terminal_ledger_head equal to pre_head,
+post_effect_receipts_sha256 equal to NO_POST_EFFECT_RECEIPTS_V2, and empty
+acknowledgements/cursors; this pre-plan sentinel prevents a plan-to-prior-cursor
+cycle. null, a V1 set or any other empty encoding refuses.
+
+**Effects and terminal order.** Records, snapshot and checkpoint/cache publish
+from frozen bytes, then outbox, then effects/query receipts/signed ACKs, then
+derive+validate cursor/result projection, then durable projected result/cursor
+storage, then durable ReplayTerminalBundle.v2 write and full byte verification,
+then TERMINAL_BUNDLE_DURABLE event, then COMMITTED. All run under the current
+fence. Append-only, exact-key/default-deny
+EffectResolutionEvidence.v2 binds slot, intent, idempotency key, dispatch/query
+request+response bytes, verifier result, receipt bytes/digest and resolution
+path. The receipt must match the declared slot schema, identity and verifier.
+
+After a durable dispatch without receipt, recovery queries the registered
+broker/emitter using the frozen query before resend. Verified known uses that
+receipt; verified not-seen permits only the identical idempotent resend;
+unknown/unavailable/contradictory/unverifiable query state refuses. An
+undispatched intent emits once. No fresh effect/event/idempotency key,
+unrecorded query, timeout or blind resend is allowed. EventAckEvidence.v2 still
+needs its registered signature verifier and exact slot match; only
+byte-identical repeat evidence is idempotent. Missing, extra, reordered,
+substituted, conflicting or signature-invalid receipt/ACK evidence refuses.
+
+The pinned projection reads exactly persisted verified slots in position order,
+validates prior cursor bytes and the complete transition, constructs sorted
+EventCursorSet.v2 at the frozen head, then constructs ReplayResult.v2 with
+exactly schema_version, study_id, replay_id, ledger_head, checkpoint_sha256,
+account_sha256, event_cursor_sha256, metrics_sha256, report_sha256,
+result_intent_sha256, result_projection_sha256, post_effect_receipts_sha256 and
+result_sha256; result_sha256 omits itself. Static fields equal the intent and
+its ledger_head equals the frozen record-chain terminal and cursor target. The
+projected terminal AccountState has that same ledger_head; account_sha256,
+result_sha256 and terminal identity bind it with cursor/receipt evidence.
+
+ReplayTerminalProjection.v2 has exactly schema_version, study_id, transaction_id,
+plan_sha256, ledger_head, result_sha256, event_cursor_sha256,
+post_effect_receipts_sha256 and terminal_identity_sha256; its self digest omits
+itself. Its ledger_head exactly equals the terminal record/cursor/result head.
+It is the durable commit witness. The projection-pair payload accepts only
+projected canonical bytes; an existing different payload refuses. Readers expose
+neither result nor cursor as terminal until
+COMMITTED binds this witness. Uninterrupted and recovered completion must have
+byte-identical result, cursor, receipt sequence and terminal identity; a
+different signed receipt refuses.
+
+**Recovery/versioning.** Before FROZEN, V2 may restore pre-head and evaluate
+once. At/after FROZEN it never evaluates the graph or derives plan content. It
+cannot interpret or recover a journal until its externally authorized handoff
+successor is durable. For takeover, the external authority (not the recovering
+worker) validates the current series state under series_state/lock, signs the
+handoff request, atomically advances only the operational reservation to its
+higher fence/owner, durably writes matching handoff evidence, then permits the
+bounded journal CAS that publishes its operational successor. The worker may
+read that exact predecessor only inside this CAS; it must publish the successor
+before any generic recovery read or suffix decision. A state showing the new
+reservation without matching evidence/successor, or evidence without matching
+state, is handoff-pending and denies all worker reads/writes except the external
+authority's idempotent repair. Old journal bytes remain readable only as
+historical evidence after lineage validation; they grant no current writer
+authority. The successor snapshot is the only plan source: recovery decodes its complete
+frozen_plan_bytes_b64, canonicalizes it, recomputes frozen_plan_bytes_sha256 and
+plan_sha256, and byte-compares its study_id and every plan/header/BootstrapIdentity
+binding before any recovery decision. An event or other payload cannot substitute
+for plan bytes. A FROZEN bootstrap-scope snapshot permits only a verified
+plan-lease elevation; every later suffix requires the selected PLAN_BOUND_V2
+lease and same active Reservation.v2. Before any suffix publication it verifies the selected
+ReplaySeriesState.v2 committed-head chain to genesis and requires the frozen
+cursor-transition immediate predecessor to byte-match it.
+It byte-compares plan/header pre_head with the real ledger prefix ending at its
+exact ledger_seq and ledger_hash. It verifies root/genesis, study, permit,
+binding, environment, lineage/fence, frozen bytes, frozen verifier-map bytes and
+persisted idempotency/effect evidence; canonicalizes and verifies every
+EventAckEvidence.v2, PostEffectReceiptSet.v2 and EventCursorSet.v2 identity,
+ordering, receipt/ACK and self-digest binding; queries before resend; publishes
+only missing frozen bytes; and projects identically. Missing, substituted, ahead,
+stale or nonancestor pre_head/real-prefix, cache preimage mismatch, cursor
+mismatch, receipt substitution, changed runtime or terminal-identity mismatch refuses.
+
+ReplayTransaction.v2 names only FrozenReplayPlan.v2 and includes plan/projection
+schema versions in replay/transaction identity. A V1 journal at every phase is
+inspect-only: it cannot become, continue as or share transaction, series or root
+identity with V2. A V2 run requires a distinct study, replay, series, genesis and
+transaction identity, with no V1 journal, cursor, ledger, cache, account or other
+state carry. There is no V1 abandonment, migration, replacement or handoff path.
+Absent, unknown, unsupported or mixed versions default-deny.
+
+**Durable transaction root.** No ServeRoot object uses a bare digest alias.
+Its exact fully rooted keys are immutable header
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/header.json; immutable lease
+lineage studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/lineage/
+<fence_token>-<lineage_sha256>.json; the sole authoritative journal snapshot
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/journal/current.json; its
+non-authoritative journal next sibling
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/journal/current.json.next-<snapshot_sha256>;
+exclusive lock studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/journal/lock;
+plan-lease elevation studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/
+elevations/<fence_token>-<elevation_sha256>.json;
+post-plan broker authorization
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/broker/authorization.json;
+the transaction-local terminal-manifest candidate
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/terminal/manifest.json; its
+non-authoritative manifest next sibling
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/terminal/manifest.json.next-<manifest_sha256>;
+non-authoritative content-addressed payload blobs
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/payloads/<payload_sha256>.json;
+and their non-authoritative next siblings
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/payloads/<payload_sha256>.json.next.
+The sole authoritative per-series state is
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/current.json;
+its exclusive lock is
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/lock;
+its non-authoritative next sibling is
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/current.json.next-<series_state_sha256>;
+and immutable committed-head lineage candidates are
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/heads/<generation>-<head_sha256>.json.
+No transaction manifest is globally terminal unless this one series-state file
+atomically selects its head and clears its active reservation.
+
+There are no separate index, event, attempt, resolution, result, cursor,
+projection or bundle keys. transaction_key is SHA-256 of canonical JSON
+containing schema_version, study_id, transaction_id, replay_id, series_id and genesis_sha256.
+Header creation is put-if-absent: an existing header is accepted only when
+canonical bytes match exactly.
+
+ReplayTransaction.v2 header has exactly schema_version, study_id, transaction_id,
+replay_id, series_id, genesis_sha256, release_hash, document_hash, tape_digest,
+cadence_digest, clock_digest, id_source_digest, code_digest, permit_digest,
+binding_digest, pre_head, header_intent_sha256, frozen_plan_schema_version,
+projection_schema_version, transaction_key and header_sha256; header_sha256 omits itself. It is immutable;
+state is never overwritten into the header.
+
+ReplaySeriesCommittedHead.v2 is immutable lineage only, never a mutable pointer.
+It exists only at its derived heads/<generation>-<head_sha256>.json path and has
+exactly schema_version, study_id, study_path_key, series_id, series_path_key,
+genesis_sha256, committed_generation, transaction_key, terminal_manifest_key,
+terminal_manifest_sha256, projection_pair_sha256, cursor_set_bytes_b64,
+cursor_set_sha256, terminal_ledger_head, prior_committed_transaction_key,
+prior_terminal_manifest_key, prior_terminal_manifest_sha256,
+prior_terminal_generation, prior_projection_pair_sha256,
+prior_cursor_set_bytes_b64, prior_cursor_set_sha256, prior_head_sha256 and
+head_sha256; head_sha256 omits itself. For its first non-genesis record,
+prior_head_sha256 and every prior transaction/manifest/pair/cursor value are
+the named GENESIS_*_V2 sentinels and prior_terminal_generation is zero. They are
+exactly GENESIS_COMMITTED_TRANSACTION_V2, GENESIS_TERMINAL_MANIFEST_KEY_V2,
+GENESIS_TERMINAL_MANIFEST_SHA256_V2, GENESIS_PROJECTION_PAIR_SHA256_V2 and
+SERIES_HEAD_GENESIS_V2, each SHA-256 of its domain-separated canonical UTF-8
+token; GENESIS_CURSOR_SET_BYTES_V2 is base64 of canonical UTF-8 token
+dskit.replay.v2.genesis.cursor-set and GENESIS_CURSOR_SET_SHA256_V2 is SHA-256
+of its decoded bytes. No null, empty string or alternate genesis encoding is
+accepted. Otherwise the preceding immutable lineage record is generation minus
+one and byte-matches every prior field. committed_generation is positive and
+equals TerminalManifest.v2.terminal_generation.
+
+ReplaySeriesState.v2 at series_state/current.json is the one authoritative
+per-series state. It has exactly schema_version, study_id, study_path_key,
+series_id, series_path_key, genesis_sha256, series_state_generation, committed_head_sha256,
+committed_generation, committed_transaction_key, committed_terminal_manifest_key,
+committed_terminal_manifest_sha256, committed_projection_pair_sha256,
+committed_cursor_set_bytes_b64, committed_cursor_set_sha256,
+committed_terminal_ledger_head, active_reservation,
+active_reservation_authority_envelope_sha256 and series_state_sha256;
+series_state_sha256 omits itself. Before the first terminal it carries the exact
+genesis sentinels and committed_generation zero; series_state_generation is one
+on first creation and increments by one at every StateReplace. Otherwise every committed field must
+byte-match the selected immutable ReplaySeriesCommittedHead.v2. active_reservation
+is either canonical NO_ACTIVE_RESERVATION_V2 or Reservation.v2, never null; its
+authority-envelope digest must equal active_reservation_authority_envelope_sha256.
+With no active reservation that state field is the exact
+NO_ACTIVE_RESERVATION_AUTHORITY_V2 sentinel.
+
+Reservation.v2 has exactly schema_version, bootstrap_identity_sha256,
+transaction_key, transaction_id, prior_reservation_sha256,
+prior_series_state_sha256, reservation_fence, owner_id, owner_lease_token,
+owner_lease_lineage_key, owner_lease_lineage_sha256, lease_scope_phase,
+reservation_phase, authority_kind, authority_envelope_bytes_b64,
+authority_envelope_sha256 and reservation_sha256; reservation_sha256 omits
+authority-envelope fields and itself. reservation_phase is closed to BOOTSTRAP,
+PLANNING, FROZEN, PLAN_ELEVATED, EXECUTING or TERMINAL. For initial
+acquisition, both prior fields are named canonical INITIAL_RESERVATION_*_GENESIS_V2
+sentinels and authority_kind is initial_reservation; for handoff they name the
+exact prior reservation/state and authority_kind is lease_handoff; for a
+plan elevation they likewise name the exact prior reservation/state and
+authority_kind is plan_lease. Every
+reservation field is operational state, not immutable transaction semantics, and
+must byte-compare to the active state, journal snapshot and external authority
+scope at that instant.
+
+AtomicSeriesStateReplace.v2 has exactly expected_series_state_sha256,
+expected_reservation_fence, expected_committed_generation,
+expected_series_state_generation,
+new_series_state_bytes_b64 and new_series_state_sha256. It is an actual
+single-file filesystem procedure, never a multi-key CAS or blind os.replace:
+ServeRoot first lstat-checks every root/series directory, lock, current file and
+candidate sibling, rejects symlink, non-directory root/series, non-regular current/lock, owner/group/mode
+mismatch, link count other than one or a path not owned by its configured
+ServeRoot uid/gid, and uses only same-directory paths. On genesis only the
+InitialReservationAuthority may provision lock with O_CREAT|O_EXCL|O_NOFOLLOW,
+mode 0600, fsync its file and parent; thereafter a writer opens that verified
+lock O_NOFOLLOW and holds flock(LOCK_EX) for the whole procedure. Under the held
+lock it reads and hashes current.json, verifies its exact expected SHA,
+series-state generation, committed predecessor, active reservation/fence and authority; a
+replacement also must preserve the committed fields unless it is the terminal
+publication defined below, and its series_state_generation must equal the
+expected_series_state_generation plus one.
+
+It then creates the deterministic same-directory sibling
+current.json.next-<new_series_state_sha256> with O_WRONLY|O_CREAT|O_EXCL|
+O_NOFOLLOW and mode 0600, writes exactly the decoded canonical new bytes,
+fsyncs and rehashes it. A surviving sibling is reusable only after the same
+lstat/owner/type and full-byte validation; otherwise it is ignored and refuses
+the operation. Still holding the lock, it re-reads and rehashes current.json and
+requires the expected SHA/series-state-generation/reservation fence unchanged before renameat
+atomically replaces it, then fsyncs the parent directory. Genesis instead uses
+renameat2(RENAME_NOREPLACE) from the fsynced sibling and requires absence of
+current.json; a filesystem without this no-replace primitive refuses V2.
+Temporary siblings are never authoritative and may be unlinked only under the
+same lock after reference scans prove they are not current. Any failed lstat,
+lock, authority/fence, expected-byte, fsync, rename or directory-fsync step
+refuses; crash before rename leaves only ignored staging bytes, while crash after
+rename is validated by the new exact current SHA. No actor may bypass this lock.
+
+InitialReservationAuthority.v2 has exactly schema_version,
+bootstrap_identity_sha256, study_id, replay_id, series_id, transaction_id,
+transaction_key, genesis_sha256, expected_committed_head_sha256,
+expected_committed_generation, expected_genesis_sha256, requested_owner_id,
+requested_lease_token, requested_reservation_fence, request_nonce,
+requested_lease_scope_phase, permit_digest, environment_identity_sha256,
+authority_envelope_bytes_b64, authority_envelope_sha256 and
+initial_reservation_authority_sha256; its self digest omits authority-envelope
+fields and itself. Its ExternalAuthorityEnvelope.v2 is signed before any
+series-state exists, uses INITIAL_RESERVATION_V2, binds the exact
+BootstrapIdentity and expected predecessor or genesis sentinel, and MUST NOT
+contain reservation_sha256, series_state_sha256 or any inferred equivalent.
+InitialLeaseAcquisition.v2 has exactly schema_version, study_id, transaction_key,
+transaction_id, bootstrap_identity_sha256, header_intent_sha256,
+initial_reservation_authority_sha256, expected_committed_head_sha256,
+expected_committed_generation, expected_genesis_sha256, requested_owner_id,
+requested_lease_token, requested_reservation_fence, request_nonce,
+requested_lease_scope_phase, authority_envelope_bytes_b64,
+authority_envelope_sha256 and acquisition_sha256; its self digest omits authority
+envelope fields and itself, carries the matching independently signed
+initial_lease_acquisition envelope, and also MUST NOT contain a reservation or
+series-state digest.
+
+Before any planning read, header creation, FROZEN transition, outbox or effect,
+the external authority obtains those two envelopes, verifies the selected
+predecessor under series_state/lock, and AtomicSeriesStateReplace.v2 creates the
+generation-zero state or replaces only an exact idle state with a BOOTSTRAP
+Reservation.v2. The new state and reservation both bind the same independent
+initial authority-envelope digest. Only then may it create the header and the
+immutable InitialLeaseAcquisition evidence; only then may it create the first
+journal snapshot. This DAG is InitialAuthority/Acquisition -> Reservation+State
+-> Header/Acquisition evidence -> Journal, never the reverse. Any active other
+transaction, predecessor mismatch, wrong nonce/owner/fence, changed authority or
+failed no-replace refuses. All planning, journal mutation, elevation, outbox,
+effect/query and terminal operations verify the same active transaction,
+bootstrap identity, reservation fence and current owner lease lineage; no effect
+may occur before this reservation or after it is lost.
+
+Only recovery/takeover of this exact active bootstrap_identity_sha256 and
+transaction_key may change owner, owner lease lineage or strictly increase
+reservation_fence; it uses the same atomic replacement and a valid handoff
+authority. No competing transaction may acquire, plan, freeze or effect this
+series. Immutable transaction semantics are FrozenReplayPlan.v2 bytes/digests,
+header/pre_head, result intent/projection, effect slots and their declarative
+EffectIntent.v2 bytes, all record/event/attempt/resolution payload bytes and
+positions, and every terminal payload; a takeover must byte-preserve them.
+Operational bindings are prior_snapshot_sha256, snapshot_sha256, state_generation,
+current owner/token, fence, lease lineage, series_state_sha256,
+series_state_generation, reservation fence and reservation SHA. A handoff successor changes exactly those operational
+bindings to its exact post-takeover values; it must never require a byte-identical
+reservation, owner or fence.
+
+Effect progress is independent of journal phase and is derived from persisted
+evidence, never inferred from FROZEN or PLAN_ELEVATED. A FrozenReplayPlan.v2
+EffectIntent.v2 is declarative only; it is not a durable effect intent. The first
+durable effect intent is an EffectIntentActivation.v2 carried as the exact payload
+of one EFFECTS_RESOLVING ReplayTransactionEvent.v2. It has exactly schema_version,
+study_id, transaction_key, transaction_id, slot_position, effect_intent_sha256,
+logical_effect_at_ms, activation_position, fence_token, lease_lineage_sha256 and
+activation_sha256; its self digest omits itself. Activation positions are unique,
+contiguous from zero and canonical slot order. A broker/emitter call, query,
+outbox release or dispatch attempt is forbidden until its matching activation is
+durable. EffectProgress.v2 is the closed derived classification NO_EFFECT,
+INTENT_DURABLE, ATTEMPT_DURABLE, RECEIPT_DURABLE or EXTERNAL_EMISSION, calculated
+from activations, attempts, resolutions and queried broker evidence in that
+order. It cannot regress and phase alone never changes it.
+
+PreEffectAbortAuthority.v2 has exactly schema_version, study_id,
+bootstrap_identity_sha256, transaction_key, transaction_id, snapshot_sha256,
+series_state_sha256, series_state_generation, reservation_sha256, reservation_fence,
+lease_lineage_sha256, effect_progress, permit_digest,
+authority_envelope_bytes_b64, authority_envelope_sha256 and abort_authority_sha256;
+its self digest omits authority-envelope fields and itself. Its external envelope
+matches the current bootstrap or plan-bound scope and is valid only when the
+exact derived effect_progress is NO_EFFECT: no EffectIntentActivation.v2,
+EffectDispatchAttempt.v2, terminal EffectResolutionEvidence.v2, receipt or
+queried external emission exists. Thus a pre-effect abort remains possible in
+FROZEN or PLAN_ELEVATED; FROZEN does not imply an effect is durable. On the first
+durable activation, or any attempt, receipt or external emission, abort is
+forbidden and recovery must continue this exact transaction until committed or
+fail-closed.
+
+The abort sequence is exact. Under series_state/lock then journal/lock, the
+current owner verifies PreEffectAbortAuthority.v2 and appends ABORTING, then
+ABORTED, each with the unchanged active reservation/fence/lineage and an
+AtomicJournalReplace.v2. The durable ABORTED snapshot comes before any state
+clear. Only then AtomicSeriesStateReplace.v2 replaces that same active
+reservation and authority-envelope digest with their NO_ACTIVE_* sentinels.
+Crash before ABORTING leaves an active transaction; between ABORTING and ABORTED
+the same owner/recovery must revalidate NO_EFFECT and finish ABORTED or refuse;
+after ABORTED but before clear, recovery performs only the idempotent exact
+clear. No new transaction may acquire the series until that clear is durable.
+
+At terminal, the active owner writes the immutable head candidate, obtains the
+external commit signature, and while holding series_state/lock then journal/lock
+publishes COMMITTED. AtomicSeriesStateReplace.v2 then atomically advances every
+committed head/generation field to that candidate and replaces the matching
+active reservation and its authority-envelope digest with their NO_ACTIVE_*_V2
+sentinels. This single rename is terminal
+visibility. A crash before it leaves the exact reservation active and no terminal
+visible; recovery verifies the candidate and same reservation, then completes
+only that replacement. A crash after it leaves a selected head and no active
+reservation. Orphan head candidates and next files are non-authoritative; no
+multi-key CAS exists.
+
+For an active nonterminal snapshot, its state/reservation generation and digests
+must equal current series state exactly. The only post-publication exceptions are
+an ABORTED snapshot, whose selected state must be its direct one-generation
+NO_ACTIVE_* clear successor with unchanged committed fields, and a COMMITTED
+snapshot, whose selected state must be its direct one-generation terminal
+successor with the exact committed head/generation/cursor/result fields bound by
+that commit. Any other state/journal mismatch, including a stale reader or a
+handoff-pending state, refuses.
+
+Readers/recovery follow committed_head_sha256 through immutable lineage paths to
+the genesis sentinel, verify every generation and cross-check each prior
+manifest, projection pair and cursor bytes/digests; gap, fork, rollback, stale
+predecessor, conflicting active reservation, handoff-pending operational binding
+or non-genesis root refuses.
+
+ReplayTransactionJournalSnapshot.v2 is the sole authoritative record, index and
+frozen-plan state at journal/current.json. It has exactly schema_version,
+study_id, transaction_key, transaction_id, state_generation,
+prior_snapshot_sha256, frozen_plan_state, frozen_plan_bytes_b64,
+frozen_plan_sha256, frozen_plan_bytes_sha256, bootstrap_identity_sha256,
+lease_scope_phase, plan_lease_elevation_sha256, phase, current_owner_id,
+current_lease_token, fence_token, lease_lineage_key, lease_lineage_sha256,
+series_state_sha256, series_state_generation, reservation_fence, reservation_sha256, journal_head_event_sha256, events, attempts, resolutions,
+terminal_manifest_sha256, series_head_sha256, series_head_generation and
+snapshot_sha256; snapshot_sha256 omits itself.
+Before FROZEN, frozen_plan_state is NOT_FROZEN_V2, frozen_plan_bytes_b64 is the
+canonical empty byte string, frozen_plan_sha256 is NO_FROZEN_PLAN_V2 and
+frozen_plan_bytes_sha256 is SHA-256 of those empty bytes. The atomic FROZEN
+snapshot instead embeds the complete canonical FrozenReplayPlan.v2 bytes/base64,
+requires frozen_plan_sha256 equal to its plan_sha256 and
+frozen_plan_bytes_sha256 equal to SHA-256 of the full decoded bytes. Readers and
+recovery decode, UTF-8/canonicalize, recompute both digests, byte-compare every
+plan/header/bootstrap-study field and reject any event payload as a plan
+substitute. events/attempts/resolutions contain complete canonical bytes/base64,
+digest, position, fence and lineage, rather than object keys; every list is
+unique, contiguous from zero and self-verifies its predecessor chain. Thus a
+record, index and plan authority are one canonical file, never separate objects.
+
+AtomicJournalReplace.v2 is the only journal mutation. It has exactly
+expected_snapshot_sha256, expected_fence_token, expected_lease_lineage_sha256,
+new_snapshot_bytes_b64 and new_snapshot_sha256. Under the exclusive journal/lock
+all writers read and byte-verify current.json against the expected snapshot and
+active lease, write a sibling current.json.next-<new_snapshot_sha256>, fsync it,
+atomically rename it over current.json, then fsync the parent directory. Initial
+creation uses the same fsynced sibling and atomic no-replace rename from the
+canonical absence sentinel. The next file is non-authoritative and is ignored
+and garbage-collected if a crash occurs before rename. There is no multi-key
+filesystem CAS, and no reader treats a payload or next file as state. A
+ServeRoot without exclusive lock, same-directory atomic rename and file-plus-
+directory fsync semantics refuses V2.
+
+Lease bootstrap has canonical immutable sentinels JOURNAL_SNAPSHOT_GENESIS_V2,
+JOURNAL_HEAD_GENESIS_V2, NO_CURRENT_LEASE_V2, NO_FROZEN_PLAN_V2,
+NO_PLAN_LEASE_ELEVATION_V2 and NO_TERMINAL_MANIFEST_V2, each the SHA-256 of its
+named domain-separated canonical UTF-8 token. The first snapshot uses journal
+genesis, current-lease and not-frozen sentinels, exact BootstrapIdentity.v2,
+lease_scope_phase BOOTSTRAP_PREPLAN_V2, plan_lease_elevation_sha256 equal to
+NO_PLAN_LEASE_ELEVATION_V2, empty events/attempts/resolutions and canonical
+terminal_manifest_sha256 equal to NO_TERMINAL_MANIFEST_V2.
+series_head_sha256 is NO_SERIES_HEAD_V2 and series_head_generation is zero until COMMITTED.
+
+InitialLeaseAcquisition.v2, defined above, is immutable at
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/lineage/1-<acquisition_sha256>.json.
+Its authority envelope was signed before state creation and carries no
+reservation/state digest. Its requested_reservation_fence is exactly 1 and its
+requested_lease_scope_phase is BOOTSTRAP_PREPLAN_V2.
+
+The externally authorized first-acquisition protocol alone may create the
+initial series state, header and acquisition lineage. First it performs the
+StateReplace defined above, creating generation-zero committed fields and an
+active BOOTSTRAP reservation, or replacing only an exact generation-zero idle
+state. The state and reservation bind the exact independently signed initial
+authority-envelope digest, not a digest of each other. Second, it put-if-absent
+creates the header matching HeaderIntent.v2. Third, it put-if-absent writes this
+InitialLeaseAcquisition.v2 evidence, whose initial authority and envelope digest
+match the active reservation/state. Fourth, under journal/lock it atomically
+no-replace publishes the first bootstrap snapshot carrying that lineage and the
+exact current state/reservation generation/digests. Only after this publication may a worker
+append BEGIN or conduct a planning read; no record, effect, terminal, payload
+reference or alternate lease may precede it. An initial state without matching
+acquisition/snapshot is initial-pending and grants no worker authority; only the
+external authority may idempotently complete it. Any active other transaction,
+failed no-replace, authority, predecessor, lease or digest mismatch refuses.
+
+ReplayPlanLeaseElevation.v2 is immutable at
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/elevations/
+<fence_token>-<elevation_sha256>.json. It has exactly schema_version, study_id,
+transaction_key, transaction_id, bootstrap_identity_sha256,
+prior_lease_lineage_sha256, prior_snapshot_sha256, frozen_plan_sha256,
+frozen_plan_bytes_sha256, prior_owner_id, prior_lease_token, owner_id,
+lease_token, prior_fence_token, fence_token, prior_series_state_sha256,
+prior_series_state_generation, prior_reservation_sha256, series_state_sha256,
+series_state_generation, reservation_sha256,
+lease_scope_phase, process_id, permit_digest, reason, trusted_issued_at_ms, authority_envelope_bytes_b64,
+authority_envelope_sha256 and elevation_sha256; elevation_sha256 omits authority
+envelope fields and itself. fence_token is strictly greater than prior_fence_token
+and lease_scope_phase is PLAN_BOUND_V2.
+
+Only after a BOOTSTRAP_PREPLAN_V2 snapshot durably reaches FROZEN with complete
+plan bytes may the external plan_lease authority put-if-absent write this
+elevation. Under journal/lock it re-reads that exact FROZEN snapshot, recomputes
+the plan bytes/digests and BootstrapIdentity.v2, verifies the bootstrap lease,
+then under series_state/lock atomically replaces the active reservation with the
+plan_lease reservation matching the exact prior state/reservation and new
+owner/token/fence. It durably writes this elevation evidence binding both prior
+and new operational generation/digests, then under journal/lock AtomicJournalReplace.v2
+publishes the operational successor with those same new owner/token/fence,
+state generation/reservation and elevation lineage bindings. Only that post-elevation
+snapshot authorizes broker transaction authorization, outbox, effects, consumers
+or execution. A crash before the replace leaves an
+unauthoritative elevation candidate; a missing, stale, unsigned, wrong-plan or
+wrong-phase elevation refuses. No bootstrap lease, handoff or authority is a
+fallback for post-plan work.
+
+ReplayLeaseHandoff.v2 is immutable at
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/lease/lineage/
+<fence_token>-<handoff_sha256>.json. It has exactly schema_version,
+study_id, transaction_key, transaction_id, bootstrap_identity_sha256,
+frozen_plan_sha256, lease_scope_phase, prior_lineage_sha256,
+prior_snapshot_sha256, journal_head_event_sha256, prior_owner_id,
+prior_lease_token, owner_id, lease_token, prior_fence_token, fence_token,
+prior_series_state_sha256, prior_series_state_generation, prior_reservation_sha256,
+series_state_sha256, series_state_generation, reservation_sha256, process_id,
+permit_digest, reason, trusted_issued_at_ms,
+authority_envelope_bytes_b64, authority_envelope_sha256 and handoff_sha256;
+handoff_sha256 omits authority_envelope fields and itself. fence_token is
+strictly greater than prior_fence_token, and all prior/new state generations,
+state/reservation digests are required exact canonical values.
+
+For takeover, the external lease authority first acquires series_state/lock and
+reads the exact active state/reservation and its selected predecessor. It signs a
+lease_handoff envelope binding the bootstrap identity, exact prior state/
+reservation/snapshot/lineage values, requested owner/token/fence/scope and
+immutable semantic identities, but not a successor state digest. Under that lock
+AtomicSeriesStateReplace.v2 creates the higher-fence Reservation.v2 for the same
+transaction; the new reservation binds the handoff-envelope bytes/digest and the
+state binds that same digest. The authority next put-if-absent durably writes
+ReplayLeaseHandoff.v2 with those exact prior and resulting state/generation/reservation
+digests. Only then, under journal/lock, does the designated worker make the
+bounded AtomicJournalReplace.v2 CAS from handoff.prior_snapshot_sha256 to its
+successor. It changes prior_snapshot_sha256, snapshot_sha256, state_generation,
+current owner/token/fence, lease lineage, series_state_sha256, series_state_generation,
+reservation_fence and reservation_sha256 to the exact post-takeover values; all immutable semantic
+fields named above, phase, frozen bytes, events, attempts, resolutions and
+terminal payload fields stay byte-identical.
+
+A BOOTSTRAP_PREPLAN_V2 handoff requires BootstrapScope.v2,
+NO_FROZEN_PLAN_V2 and remains limited to planning recovery; a PLAN_BOUND_V2
+handoff requires PlanBoundScope.v2 and full persisted plan bytes/digests. No
+handoff changes scope phase; only ReplayPlanLeaseElevation.v2 may do so. No
+recovery worker may interpret the old snapshot: its sole permitted read is the
+expected-byte check within the stated CAS, and the journal successor must be
+durable before generic recovery starts. After state replacement but before
+handoff evidence, or after evidence but before journal successor, the state is
+handoff-pending: old owners fail the active state/fence check and every worker
+refuses; only the external authority may idempotently complete the exact next
+step. A lineage object not selected by the successor snapshot is an
+unauthoritative candidate and may be garbage-collected only after external
+expiry/revocation evidence.
+
+The first recovery append binds lease_evidence_kind handoff and handoff_sha256;
+all later writes require the new in-snapshot lease. Readers verify every inline
+event, activation, attempt and resolution fence/lineage against the immutable
+acquisition/handoff chain: each historical append is valid when its recorded
+fence was current, and only current writes need the successor fence. Prior-fence
+bytes remain readable; a handoff never re-fences or rewrites them. Missing,
+stale, forked, substituted or lease-mismatched lineage refuses.
+
+An append clones the complete current snapshot, adds exactly one canonical
+event, attempt or resolution and its contiguous list entry, advances the phase
+when applicable, then uses AtomicJournalReplace.v2. The copied snapshot is the
+only authoritative index; partial or orphan record files cannot exist. Recovery
+reads only current.json under lock, validates snapshot self digest, all inline
+bytes/digests, complete contiguous lists and predecessor chains, then ignores
+and eventually garbage-collects every unreferenced payload or next file.
+
+Each non-COMMITTED ReplayTransactionEvent.v2, including ABORTING and ABORTED, has exactly schema_version,
+study_id, transaction_key, transaction_id, event_position, phase, prior_event_position,
+prior_event_sha256, prior_ledger_head, ledger_head, fence_token,
+lease_lineage_sha256, lease_evidence_kind, lease_evidence_sha256,
+payload_bytes_b64, payload_sha256 and event_sha256; event_sha256 omits itself.
+BEGIN uses prior_event_position -1 and header_sha256 as prior_event_sha256.
+BEGIN and FROZEN each require prior_ledger_head exactly equal to pre_head; their
+ledger_head also equals pre_head. Every later event names the immediately
+preceding durable event and ledger head. The sole contiguous transition is BEGIN
+-> PROVISIONAL -> FROZEN -> PUBLISHING -> RECORDS_BARRIERED -> SNAPSHOTTED ->
+CHECKPOINTED -> OUTBOX_PUBLISHED -> EFFECTS_RESOLVING -> EFFECTS_RESOLVED ->
+TERMINAL_PROJECTED -> RESULT_CURSOR_DURABLE -> TERMINAL_BUNDLE_DURABLE ->
+COMMITTED. Independently, from any nonterminal phase for which the exact derived
+EffectProgress.v2 is NO_EFFECT, PreEffectAbortAuthority.v2 alone may take the
+current phase -> ABORTING -> ABORTED; ABORTED has no terminal result, cursor or
+head and admits no normal successor. Both abort events preserve the same active
+reservation/fence/lineage until the post-ABORTED state clear. Any other skip,
+repeat, fork, changed prior digest/head, payload, progress or fence refuses.
+
+COMMITTED is ReplayCommitEvent.v2, never a generic payload. It has exactly
+schema_version, study_id, transaction_key, transaction_id, event_position, phase,
+prior_event_position, prior_event_sha256, prior_ledger_head, ledger_head,
+lease_evidence_kind, lease_evidence_sha256, frozen_plan_sha256,
+plan_lease_elevation_sha256,
+terminal_bundle_key, terminal_bundle_sha256, projection_pair_key,
+projection_pair_sha256, terminal_witness_sha256, result_sha256,
+cursor_set_sha256, post_effect_receipts_sha256, terminal_manifest_sha256,
+series_head_sha256, series_head_generation, fence_token,
+commit_authority_digest, signer_key_id, signer_key_version, signer_key_usage,
+signer_algorithm, commit_signature_domain, commit_canonicalization_version,
+commit_verifier_keyring_id, commit_verifier_keyring_version,
+commit_verifier_keyring_as_of_ms, commit_revocation_source_id,
+commit_revocation_version, commit_revocation_as_of_ms, trusted_issued_at_ms,
+valid_from_ms, valid_until_ms, revocation_evidence_bytes_b64,
+revocation_evidence_sha256, commit_signature_preimage_bytes_b64,
+commit_signature_preimage_sha256, commit_signature and commit_sha256. phase is
+COMMITTED; commit_signature_preimage_sha256 is SHA-256 of decoded canonical preimage bytes,
+and commit_sha256 omits commit_signature and itself.
+The only commit signing protocol is commit_signature_domain literal
+dskit.replay.commit.v2, commit_canonicalization_version literal
+CANONICAL_JSON_UTF8_V2 and the closed signer_algorithm from CommitAuthority.v2.
+commit_signature_preimage_bytes_b64 decodes to canonical UTF-8 JSON with exactly
+domain, canonicalization_version and payload. payload is the exact
+ReplayCommitEvent.v2 field projection containing every listed field except
+commit_signature_preimage_bytes_b64, commit_signature_preimage_sha256,
+commit_signature and commit_sha256. Its decoded bytes hash to the declared
+preimage SHA; commit_signature verifies only that SHA under signer_key_id/version/
+usage from the immutable commit_verifier_keyring_id/version/as_of snapshot after
+the named commit revocation source/version/as-of check. The event, authority,
+verified signer and plan-bound authority envelope must byte-match every domain,
+algorithm, keyring, clock and revocation field. Independent readers rebuild the
+exact bytes/digest, verify the signature and all bindings, and refuse unknown
+field, domain, canonicalizer, algorithm, key, version, clock or revocation state.
+
+Its prior event is TERMINAL_BUNDLE_DURABLE and every digest
+equals the actual canonical manifest/pair/bundle/witness/result/cursor/receipt
+bytes; series_head_sha256/generation equal the exact next immediate-successor
+ReplaySeriesCommittedHead.v2 selected only after this event is durable.
+
+ReplayCommitAuthority.v2 is opaque broker-owned payload with exactly
+schema_version, study_id, authority_id, authority_version, authority_keyring_digest,
+permit_digest, environment_identity_sha256, series_id, transaction_id,
+transaction_key, frozen_plan_sha256, commit_signature_domain,
+commit_canonicalization_version, signer_key_id, signer_key_version, signer_key_usage,
+signer_algorithm, commit_verifier_keyring_id, commit_verifier_keyring_version,
+commit_verifier_keyring_as_of_ms, commit_revocation_source_id,
+commit_revocation_version, commit_revocation_as_of_ms,
+authority_envelope_bytes_b64, authority_envelope_sha256 and commit_authority_digest;
+commit_authority_digest omits authority_envelope fields and itself. Its commit
+ExternalAuthorityEnvelope.v2 binds that digest and exact plan scope; only the
+external authority owns its private signing key.
+
+VerifiedCommitSigner.v2 is the reader payload with exactly schema_version,
+study_id, commit_authority_digest, reader_keyring_digest, permit_digest,
+environment_identity_sha256, series_id, transaction_id, transaction_key,
+frozen_plan_sha256, commit_signature_domain, commit_canonicalization_version,
+signer_key_id, signer_key_version, signer_key_usage, signer_algorithm,
+commit_verifier_keyring_id, commit_verifier_keyring_version,
+commit_verifier_keyring_as_of_ms, commit_revocation_source_id,
+commit_revocation_version, commit_revocation_as_of_ms,
+authority_envelope_bytes_b64, authority_envelope_sha256 and capability_sha256;
+capability_sha256 omits authority_envelope fields and itself. Its reader
+ExternalAuthorityEnvelope.v2 supplies the trusted clock, keyring lookup,
+revocation source/version/as-of, scope, audience and verifier rule.
+
+Before signing, the external authority verifies the current journal snapshot,
+lease/handoff/fence lineage, complete inline event/attempt/resolution chains and
+the terminal manifest plus every referenced payload blob. It signs only the
+canonical CommitEvent preimage above. DSKit and its workers hold no commit
+signing key; readers verify only through VerifiedCommitSigner.v2 and the
+external authority, with no local or fallback verification path.
+
+Header, lease lineage and broker authorization are put-if-absent and accept only
+byte equality. The journal snapshot and terminal manifest are each changed only
+by their one-file fsync-and-rename protocols under journal/lock. Payload blobs
+are never authoritative, even when content-addressed and fsynced. Every read
+validates the snapshot current lease/fence/lineage and inline chains. Readers
+expose nothing terminal unless the selected ReplaySeriesCommittedHead.v2, header,
+current journal snapshot, manifest, referenced payload bytes and externally
+verified COMMITTED event validate, including identical V2 cursor digest in head,
+manifest, pair, result and projection.
+
+Terminal receipt set, projection/witness, result/cursor pair and bundle have
+only fully rooted non-authoritative payload keys
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/payloads/<payload_sha256>.json.
+The sole durable terminal visibility pointer is
+studies/<study_path_key>/series/<series_path_key>/replay/v2/series_state/current.json.
+Payload presence alone is neither discoverability nor terminal visibility.
+
+ReplayProjectionPair.v2 has exactly schema_version, study_id, transaction_key,
+transaction_id, result_bytes_b64, result_sha256, cursor_set_bytes_b64,
+cursor_set_sha256, post_effect_receipt_set_key, post_effect_receipts_sha256,
+terminal_projection_key, terminal_witness_sha256 and pair_sha256; pair_sha256
+omits itself. It is a payload blob; result/cursor canonical bytes occur only
+inside it and are never independently addressable or visible. Its referenced
+payload digests must byte-verify.
+
+ReplayTerminalBundle.v2 is a payload blob, not a terminal pointer. It has
+exactly schema_version, study_id, terminal_key, series_id, genesis_sha256,
+transaction_id, projection_pair_key, projection_pair_sha256,
+terminal_witness_sha256, post_effect_receipts_sha256 and bundle_sha256;
+bundle_sha256 omits itself. terminal_key is SHA-256 of canonical JSON containing
+schema_version, study_id, series_id, genesis_sha256 and transaction_id. The manifest alone makes its exact pair,
+witness and receipt-set references candidate terminal state.
+
+TerminalManifest.v2 is an immutable transaction-local candidate at the rooted
+manifest key, never a globally visible terminal pointer. It has exactly schema_version, study_id, series_id, transaction_key,
+transaction_id, frozen_plan_sha256, plan_lease_elevation_sha256,
+prior_committed_transaction_key, prior_terminal_manifest_key,
+prior_terminal_manifest_sha256, prior_terminal_generation,
+prior_projection_pair_sha256, prior_cursor_set_bytes_b64, prior_cursor_set_sha256,
+terminal_generation, terminal_ledger_head, result_sha256, result_cursor_event_sha256,
+lease_lineage_sha256, fence_token, receipt_set_key, post_effect_receipts_sha256,
+cursor_set_sha256, projection_key, terminal_witness_sha256, projection_pair_key,
+projection_pair_sha256, bundle_key, terminal_bundle_sha256, commit_authority_digest,
+verified_signer_capability_sha256 and manifest_sha256;
+manifest_sha256 omits itself. Its replace preimage is either canonical
+NO_TERMINAL_MANIFEST_V2 or byte-identical prior manifest bytes; any other
+preimage refuses.
+Its predecessor fields and terminal_generation must byte-equal the frozen
+cursor_transition and EventCursorSet.v2, and the selected series-head immediate
+predecessor; any non-genesis predecessor mismatch refuses.
+Every receipt_set_key, projection_key, projection_pair_key and bundle_key must
+be exactly its fully rooted payload key with a filename digest equal to the
+referenced canonical bytes; any other key form refuses.
+
+At RESULT_CURSOR_DURABLE, the worker creates each canonical receipt set,
+projection/witness, pair and bundle only by writing its exact payload next path,
+fsyncing, atomic no-replace renaming to its payload key and fsyncing that parent;
+an existing payload must byte-equal. It then AtomicJournalReplace.v2 publishes
+the RESULT_CURSOR_DURABLE snapshot event binding every payload digest. It
+reopens and byte-verifies those blobs, reads the manifest preimage under
+journal/lock, writes the exact manifest next path, fsyncs, atomically renames it
+to terminal/manifest.json and fsyncs that parent. It next
+AtomicJournalReplace.v2 publishes TERMINAL_BUNDLE_DURABLE with
+terminal_manifest_sha256. This manifest is only a candidate. Under the global
+lock order series_state/lock then journal/lock, the current PLAN_BOUND_V2 owner
+verifies its exact active reservation/fence and the committed fields or canonical
+genesis state. It requires immediate-predecessor equality against the frozen
+transition, cursor set and manifest, then constructs and put-if-absent writes one
+immutable ReplaySeriesCommittedHead.v2 candidate. The external commit authority
+verifies that candidate, active reservation, frozen verifier map, journal/lease
+chains and all terminal bytes, then signs ReplayCommitEvent.v2 binding its head
+sha/generation. Still holding both locks, AtomicJournalReplace.v2 publishes
+COMMITTED with that exact candidate digest/generation. AtomicSeriesStateReplace.v2
+then performs the only terminal visibility mutation: it advances committed fields
+to that candidate and clears that exact active reservation in one CAS/rename. No
+step is a multi-key CAS.
+
+A crash before payload or manifest rename leaves only ignored garbage; after a
+manifest or head-lineage candidate but before COMMITTED it leaves the reservation
+active and no terminal visible; after COMMITTED but before series-state rename,
+recovery verifies the same active reservation/fence, candidate and predecessor,
+then performs only that series-state replacement or refuses. After its rename
+readers may expose the selected terminal. Orphan payload, manifest candidate,
+head candidate and next files are ignored and garbage-collected only after scans
+prove no current journal or selected series state/lineage references them.
+Independent readers require selected series state, head, current COMMITTED
+snapshot, signed CommitEvent and manifest to agree on transaction, predecessor,
+generation, manifest/pair/cursor/result digests; they then verify all payload
+bytes/digests, complete inline receipt enumeration, projection, bundle, fence
+lineage, full head chain and authority capability before exposure.
+
+**Frozen effect protocol.** EffectSlotSet.v2 has exactly schema_version,
+study_id, replay_id, transaction_id, slots and slot_set_sha256; slot_set_sha256
+omits itself. Each slot has exactly slot_id, slot_position, origin_kind,
+origin_position, effect_kind, effect_intent_bytes_b64, effect_intent_sha256,
+query_request_bytes_b64 and query_request_sha256. origin_kind is closed to
+outbox or deferred_effect; effect_kind is closed to event_ack or deferred_effect.
+Slots are contiguous from zero and are the exhaustive one-to-one merge of frozen
+outbox items in canonical plan order, then frozen deferred_effects in canonical
+plan order. No alternate merge, gap, duplicate or unreferenced origin is legal.
+This is the exclusive slot definition.
+
+EffectIntent.v2 canonical bytes have exactly schema_version, replay_id,
+study_id, transaction_key, transaction_id, slot_id, slot_position, origin_kind,
+origin_position, effect_kind, logical_effect_at_ms, idempotency_key,
+effect_request_bytes_b64, effect_request_sha256 and intent_sha256;
+intent_sha256 omits itself. It never references a query, broker policy or authorization.
+QueryRequest.v2 canonical bytes have exactly schema_version, replay_id,
+study_id, transaction_key, transaction_id, slot_id, effect_kind, logical_effect_at_ms,
+idempotency_key, effect_intent_sha256, query_operation and query_request_sha256;
+query_request_sha256 omits itself. It is built only after and binds the intent.
+The slot stores exact canonical base64 bytes and digest of both objects; decode,
+re-canonicalize or digest mismatch refuses.
+
+Before any send, ServeRoot embeds fenced EffectDispatchAttempt.v2 into the next
+atomic ReplayTransactionJournalSnapshot.v2; it has no standalone object key.
+It has exactly schema_version, study_id, transaction_key, transaction_id, slot_id,
+slot_position, global_attempt_position, slot_attempt_position,
+prior_global_attempt_sha256, prior_slot_attempt_sha256,
+prior_transaction_event_sha256, effect_intent_bytes_b64, effect_intent_sha256,
+idempotency_key, query_request_bytes_b64, query_request_sha256,
+logical_effect_at_ms, fence_token, lease_lineage_sha256 and attempt_sha256; attempt_sha256 omits
+itself. Global and per-slot positions are contiguous from zero; both prior
+fields are EFFECT_DISPATCH_GENESIS_V2 at their position zero and otherwise name
+the immediate prior append. A durable AtomicJournalReplace.v2 containing it is
+the only send authority.
+After any attempt, including crash before/after send, recovery queries before resend.
+
+EffectResolutionEvidence.v2 is a fenced inline record in the next atomic
+ReplayTransactionJournalSnapshot.v2
+with exactly schema_version, study_id, transaction_key, transaction_id, slot_id,
+slot_position, global_resolution_position, slot_resolution_position,
+prior_global_resolution_sha256, prior_slot_resolution_sha256,
+dispatch_attempt_sha256, effect_intent_bytes_b64, effect_intent_sha256,
+query_request_bytes_b64, query_request_sha256, query_response_bytes_b64,
+query_response_sha256, query_verifier_sha256, query_verdict,
+receipt_bytes_b64, receipt_sha256, receipt_verifier_sha256, receipt_verdict,
+resolution_path, terminal, fence_token, lease_lineage_sha256 and evidence_sha256; evidence_sha256
+omits itself. Global/per-slot positions are contiguous from zero; both prior
+fields are EFFECT_RESOLUTION_GENESIS_V2 at position zero and otherwise name
+the immediate prior resolution. dispatch_attempt_sha256 must name the exact
+attempt. resolution_path is closed to query_not_seen, initial_send_receipt,
+query_known_receipt or query_not_seen_resend_receipt. query_not_seen has
+terminal false and canonical null receipt fields; the other paths have terminal
+true. Exactly one terminal true resolution exists per slot. Canonical
+query/receipt bytes revalidate before append/projection; gap, fork, duplicate,
+reordered or substituted attempt/query/resolution evidence refuses.
+
+PostEffectReceiptSet.v2 has exactly schema_version, study_id, transaction_key,
+effect_slot_set_sha256, entries and post_effect_receipts_sha256;
+post_effect_receipts_sha256 omits itself. Each entry has exactly slot_position,
+terminal_resolution_bytes_b64, terminal_resolution_sha256, receipt_bytes_b64,
+receipt_sha256, ack_evidence_bytes_b64 and ack_evidence_sha256. Entries occur once in ascending
+slot_position, bind that slot's one terminal resolution and its exact receipt;
+event_ack additionally binds its exact EventAckEvidence.v2 bytes/digest, while
+deferred_effect uses canonical null ACK-evidence fields. No gap, fork, duplicate
+or substitution is legal. ReplayResult.v2, EventCursorSet.v2, terminal
+witness/bundle/manifest and COMMITTED bind this exact post_effect_receipts_sha256,
+never an unstructured receipt collection.
+**Deterministic replay broker.** DeterministicReplayBrokerPolicy.v2 is built
+and externally authorized before the plan. It has exactly schema_version,
+study_id, replay_id, transaction_id, transaction_header_sha256, effect_slot_set_sha256,
+permit_digest, environment_identity_sha256, broker_id, receipt_function,
+receipt_function_version, receipt_key_id, receipt_key_fingerprint_sha256,
+broker_runtime_sha256, authority_envelope_bytes_b64, authority_envelope_sha256
+and policy_sha256; policy_sha256 omits authority_envelope fields and itself. Its
+broker_policy envelope has canonical scope.plan_sha256 NOT_APPLICABLE_V2 and
+binds policy_sha256; neither policy nor its envelope contains or derives a plan.
+FrozenReplayPlan.v2 embeds exact policy bytes/digest, and only that pre-plan
+policy is immutable-plan content.
+
+Only after the complete FrozenReplayPlan.v2 bytes are persisted in the FROZEN
+snapshot and its plan-lease elevation replacement selects PLAN_BOUND_V2 may the
+external broker authority put-if-absent create ReplayBrokerTransactionAuthorization.v2 at
+studies/<study_path_key>/series/<series_path_key>/replay/v2/transactions/<transaction_key>/broker/authorization.json.
+It has exactly schema_version, study_id, replay_id, transaction_id,
+transaction_header_sha256, plan_sha256, policy_sha256, effect_slot_set_sha256,
+permit_digest, environment_identity_sha256, broker_id,
+authority_envelope_bytes_b64, authority_envelope_sha256 and authorization_sha256;
+authorization_sha256 omits authority_envelope fields and itself. Its
+broker_transaction envelope binds authorization_sha256 and all ten exact scope
+fields, including plan_sha256. This authorization is never a plan member and
+cannot revise the policy, slots, plan or any frozen byte; missing, changed,
+expired, revoked or non-byte-identical policy/authorization refuses.
+
+ReplayRun accepts effects only with both the frozen policy and its exact
+post-plan authorization. For each such policy/authorization, idempotency_key,
+effect_intent_sha256 and logical_effect_at_ms, this broker durably put-if-absent
+creates one canonical receipt forever. It additionally requires the current
+snapshot to carry the exact plan-lease elevation and PLAN_BOUND_V2. acknowledged_at_ms equals
+logical_effect_at_ms; ack_id and emitter_receipt are deterministic functions of
+frozen inputs. Query returns byte-identical receipt; a not-seen resend produces
+the same bytes. Random IDs, later timestamps, changed keys/functions or
+environment drift refuse. A nondeterministic, paper or live emitter cannot
+satisfy this protocol and ReplayRun refuses it.
+
+**V1 denial.** Every V1 journal, at every phase, is inspect-only. It cannot
+be abandoned, migrated, replaced, handed off, continued as V2 or share V2
+transaction, series or ServeRoot identity. A fresh V2 requires distinct study,
+replay, series, genesis and transaction identities with no carried V1 state.
+No V1 permit, evidence, journal mutation or execution authority exists.
+
+**Skeptic closure.** The construction DAG is acyclic: policy and its envelope
+and verifier map are pre-plan and forbid plan_sha256; the plan freezes both;
+authorization is post-plan and is not a plan member. Bootstrap publishes
+the reservation, then header/acquisition and one first journal snapshot. Every record/index cutpoint
+is one locked fsync and atomic rename of current.json; transaction manifests are
+candidates and terminal visibility is one series-state replacement that selects
+the signed immediate-successor head and clears its reservation; next files and
+payload blobs are non-authoritative and safely ignored until referenced.
+Immutable lineage, full rooted keys and envelope scope/key/
+clock/revocation checks prevent fence, key and capability substitution. This
+self-review preserves ADR-0158 fences, identity and ordering guarantees.
+
+**Additional focused failures.** Prove header/lineage/snapshot key or digest
+substitution, phase skip/fork, missing/stale/forked lease handoff, wrong
+owner/token/fence and recovery-before-handoff refusal; lock contention, expected
+snapshot mismatch, interrupted next-file write/rename/directory-fsync, inline
+position/digest/predecessor gap/fork and ignored-orphan blob refusal; manifest
+preimage conflict, manifest-before-COMMITTED and result/cursor invisibility;
+crash before/after each attempt/send and query-before-resend; resolution/receipt
+substitution; pre-plan policy plan binding, post-plan authorization absence or
+substitution, later timestamp/random-ID and broker key/function/environment/
+permit/plan/slot substitution; external signature/keyring/clock/revocation
+failure; and every V1 execution, migration, replacement, handoff or identity
+sharing refusal.
+
+**Tests following acceptance.** First fail every V2 exact-key/version/default-deny
+and plan-intent-spec equality boundary; pre-plan policy scope.plan_sha256,
+post-plan authorization scope/digest and all cyclic/mutable/fallback variants;
+missing, substituted, ahead, stale or nonancestor pre_head across plan/header/
+real-ledger prefix; first frozen-record predecessor, record-chain terminal/
+ReplayResultIntent ledger_head and cursor target; initial acquisition and handoff
+lineage/authority/lock/one-file snapshot replacement; initial authority/acquisition
+envelopes with no reservation/state digest, exact predecessor/genesis/nonce and
+bootstrap DAG-cycle refusal; lstat/type/owner/link/mode failure, O_EXCL staging,
+expected-state-generation conflict, fsync/rename/directory-fsync crash and
+ignored temp handling; first recovery handoff binding, state-replace -> evidence
+-> journal-successor ordering, stale/forked fence rejection, prior/new
+series-state generation/digest substitution and no old-owner write; inline
+snapshot positions, bytes, digests, chains and no record/index orphan; next-file
+crash before/after fsync/rename/directory-fsync and safe payload garbage
+collection; series-head genesis, immediate-successor CAS, monotonic generation,
+duplicate same-prehead selection, head/manifest/pair/cursor predecessor
+substitution, full chain-to-genesis, bootstrap reservation before planning,
+active-reservation conflict, only-same-transaction takeover/fence increase,
+FROZEN/PLAN_ELEVATED pre-effect abort, activation/attempt/receipt/emission
+non-abandonability, ABORTING/ABORTED pre/post-clear crashes and new-transaction
+race refusal, and pre/post-series-state-replacement crash recovery; lock
+order/fence and no result/cursor visibility before selected-head publication;
+external commit authority, signer key/version/usage/algorithm, exact commit
+domain/canonical preimage/digest, frozen verifier keyring/version/as-of, trusted
+clock, validity and revocation rejection; raw/aliased study or series path,
+digest-segment and key substitution refusal; all missing/extra/reordered/substituted/invalid receipts
+and EventAckEvidence.v2 values; V2 ACK map/keyring version/as-of/revocation
+snapshot/key/algorithm/domain/preimage/signature substitution, slot/update/
+receipt/result-intent/terminal-head substitution, duplicate-emitter cursor,
+noncontiguous acknowledgement, empty-cursor sentinel and manifest/pair/result/
+projection cursor-digest mismatch; query-known, query-not-seen/resend and ambiguous/unavailable query
+refusal; result/cursor preimage, self-digest and witness tamper; and every V1
+execute/migrate/replace/handoff or identity-sharing refusal. Inject crashes
+after records, snapshot, cache, outbox, dispatch, query, receipt, ACK,
+projection, payload fsync, snapshot rename, manifest rename and pre/post-
+COMMITTED. Assert terminal identity equality and no out-of-order visibility.
+Run only focused replay/ledger/loop and directly affected purity/OOP/producer
+gates.
+
+**Authority and scope.** dskit.production.replay owns V2 validation/recovery;
+ServeRoot owns fenced durability/terminal visibility; ChainLedger remains sole
+frozen record/snapshot authority; registered emitters/effect brokers own query,
+signature verification and idempotency evidence; the external permit broker is
+sole execution authority. Children, CLI documents and fixtures cannot mint a
+permit, declare a projection algorithm or broaden a receipt slot. Synthetic
+authority remains test-only.
+
+This accepted ADR supersedes only ADR-0158 clauses requiring
+final ReplayResult/cursor bytes before effects or prohibiting this V2 terminal
+derivation. Every other ADR-0158 fence, immutable-plan, identity, outbox and
+owner gate remains unchanged. This ADR does not amend the master plan at
+40ab10fa7428e5eab14cff2f082c781cf962b860: its V1 requirement conflicts and
+remains fail-closed. This acceptance permits only a subsequent Terra-authored
+plan correction to replace R1--R3/I with V2; implementation remains forbidden
+until that corrected plan receives its required clean reviews. Before that, no
+real replay, paper/live action or other execution may use this ADR.
+
 ## ADR-0160 — Segmentation and auditable SB3 episode evaluation
 
 *(Number taken at commit time, renumbered 0122 → 0148 → 0160. 0122 was

@@ -1262,51 +1262,71 @@ def test_first_v2_genesis_has_no_default_or_alternate_sentinel(committed_replay_
 
 
 @pytest.mark.parametrize("facade", ["direct", "verifier", "driver"])
-def test_legacy_capture_waits_for_the_same_lock_then_observes_p4_commit(facade):
+def test_legacy_capture_waits_for_the_same_lock_then_observes_p4_commit(facade, tmp_path):
+    """A v1 capture blocked on the P4 ledger's lock observes the commit taken while it waited.
+
+    Every facade drives a REAL capture that reaches
+    `broker._p4_ledger._lock`. ADR-0147 Decision point 2 made
+    `.durable(...)` the only capture-capable verifier shape, so the
+    verifier/driver facades are built that way; an authority-only verifier
+    would refuse mechanically before the lock and prove nothing about lock
+    ordering. The refusal each facade ends at is pinned to the exact
+    committed-P4 observation that caused it, so "refused for some other
+    reason" cannot satisfy this test.
+    """
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
-    from dskit.production.verifier import HistoricalStudyCaptureDriver, HistoricalStudyVerifier
+    from dskit.production.verifier import HistoricalStudyCaptureDriver
+    from tests.production import test_adr0147_durable_admission as durable
 
     graph, document = _complete_signed_graph()
     broker, captures, runtime, before = _graph_live(graph, document, 1)
     published, frozen, port = captures[0]
-    verifier = HistoricalStudyVerifier(broker)
-    from tests.production.test_capture_lifecycle import _PLAN
-    verifier.bind(**_PLAN)
-    doorway = broker if facade == "direct" else verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier)
+    legacy_runtime = {key: val for key, val in runtime.items() if key != "transition_nonces"}
+    # `.durable(...)` demands a genuine P4 capability; this fixture's broker is one.
+    assert isinstance(broker, trust.CapturedAuthorizationAuthority)
+    verifier = None if facade == "direct" else durable._durable(broker, tmp_path / "root")
+    if verifier is not None:
+        verifier.bind(**durable._PLAN)
+    doorway = (broker if facade == "direct" else
+               verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier))
+    observed = ("P4 committed stream cannot enter legacy capture" if facade == "direct"
+                else "P4 consumer document already captured this stream")
     started, done = Event(), Event()
 
-    if facade != "direct":
-        # ADR-0147 Decision point 2: an authority-only verifier/driver (the
-        # ONLY way to reach these facades without a genuine durable ledger)
-        # now refuses capture() mechanically, BEFORE it can ever reach
-        # broker._p4_ledger's lock at all -- there is no lock contention
-        # left to observe through these two facades, only the immediate,
-        # unconditional refusal itself.
-        with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS"):
-            doorway.capture(published, frozen, port, **{key: val for key, val in runtime.items() if key != "transition_nonces"},
-                            transition_nonce="legacy-loser")
-        _assert_graph_no_effect(broker, captures, before)
-        return
+    def attempt():
+        if facade == "direct":
+            return doorway.capture(published, frozen, port, **legacy_runtime,
+                                   transition_nonce="legacy-loser")
+        return durable._capture(doorway, captures, graph.selected, runtime,
+                                bind=False, transition_nonce="legacy-loser")
 
     def loser():
         started.set()
         try:
-            doorway.capture(published, frozen, port, **{key: val for key, val in runtime.items() if key != "transition_nonces"},
-                            transition_nonce="legacy-loser")
-        except (TypeError, ValueError):
-            return "refused"
+            attempt()
+        except (TypeError, ValueError) as refusal:
+            return str(refusal)
         finally:
             done.set()
-        return "incorrectly captured"
+        return "CAPTURED WITHOUT REFUSAL"
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        with broker._p4_ledger._lock:
-            future = pool.submit(loser)
-            assert started.wait(timeout=5)
-            assert not done.is_set()
-            broker.authorize_capture_set(captures, graph.selected, **runtime)
-        assert future.result(timeout=5) == "refused"
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with broker._p4_ledger._lock:
+                future = pool.submit(loser)
+                assert started.wait(timeout=5)
+                assert not done.wait(timeout=0.25)  # held off by THIS lock, not by a gate
+                broker.authorize_capture_set(captures, graph.selected, **runtime)
+            assert observed in future.result(timeout=5)
+        assert broker._p4_ledger._committed()
+        assert not broker._p4_ledger._legacy_captures()
+        if verifier is not None:
+            # The refusal preceded the durable spend, so the admission is unburned.
+            assert not list(verifier._ledger.scan(kind="admission_use"))
+    finally:
+        if verifier is not None:
+            verifier._ledger.close()
     _assert_graph_no_effect(broker, captures, before)
 
 
@@ -1768,34 +1788,30 @@ def test_single_surface_substitution_during_reservation_or_precommit_is_empty(ph
 
 
 @pytest.mark.parametrize("facade", ["direct", "verifier", "driver"])
-def test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect(facade):
+def test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect(facade, tmp_path):
+    """A P4 set blocked on the lock observes the v1 capture committed while it waited.
+
+    The mirror of the previous test: here the capture wins the lock and
+    commits, and the contending `authorize_capture_set` must refuse ON that
+    committed legacy capture -- pinned to the exact message -- leaving no P4
+    commit of its own. The verifier/driver facades run through
+    `.durable(...)`, ADR-0147's only capture-capable shape, so their capture
+    genuinely reaches and holds the same ledger lock.
+    """
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
-    from dskit.production.verifier import HistoricalStudyCaptureDriver, HistoricalStudyVerifier
-    from tests.production.test_capture_lifecycle import _PLAN
+    from dskit.production.verifier import HistoricalStudyCaptureDriver
+    from tests.production import test_adr0147_durable_admission as durable
 
     graph, document = _complete_signed_graph()
     broker, captures, runtime, _before = _graph_live(graph, document, 1)
-    verifier = HistoricalStudyVerifier(broker)
-    verifier.bind(**_PLAN)
-    doorway = broker if facade == "direct" else verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier)
-
-    if facade != "direct":
-        # ADR-0147 Decision point 2: an authority-only verifier/driver
-        # refuses capture() mechanically before it can ever reach
-        # broker._p4_ledger's lock -- there is no "winner" through these
-        # two facades any more, only the immediate, unconditional refusal;
-        # a concurrent authorize_capture_set is therefore never contended
-        # against and succeeds on its own.
-        with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS"):
-            doorway.capture(*captures[0], **{key: val for key, val in runtime.items() if key != "transition_nonces"},
-                            transition_nonce="legacy-lock-winner")
-        record, session = broker.authorize_capture_set(captures, graph.selected, **runtime)
-        assert record is not None and session is not None
-        assert broker._p4_ledger._committed()
-        assert len(broker._p4_ledger._legacy_captures()) == 0
-        return
-
+    legacy_runtime = {key: val for key, val in runtime.items() if key != "transition_nonces"}
+    assert isinstance(broker, trust.CapturedAuthorizationAuthority)
+    verifier = None if facade == "direct" else durable._durable(broker, tmp_path / "root")
+    if verifier is not None:
+        verifier.bind(**durable._PLAN)
+    doorway = (broker if facade == "direct" else
+               verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier))
     started, done = Event(), Event()
 
     def contender():
@@ -1805,17 +1821,32 @@ def test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect(fac
         finally:
             done.set()
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        with broker._p4_ledger._lock:
-            future = pool.submit(contender)
-            assert started.wait(timeout=5) and not done.wait(timeout=0.05)
-            doorway.capture(*captures[0], **{key: val for key, val in runtime.items() if key != "transition_nonces"},
-                            transition_nonce="legacy-lock-winner")
-        with pytest.raises((TypeError, ValueError)):
-            future.result(timeout=5)
-    assert not broker._p4_ledger._committed()
-    assert len(broker._p4_ledger._legacy_captures()) == 1
-    assert not broker._member_events
+    def winner():
+        if facade == "direct":
+            return doorway.capture(*captures[0], **legacy_runtime,
+                                   transition_nonce="legacy-lock-winner")
+        return durable._capture(doorway, captures, graph.selected, runtime,
+                                bind=False, transition_nonce="legacy-lock-winner")
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with broker._p4_ledger._lock:
+                future = pool.submit(contender)
+                assert started.wait(timeout=5) and not done.wait(timeout=0.25)
+                captured, session = winner()
+                assert captured is not None and session is not None
+            with pytest.raises((TypeError, ValueError),
+                               match="P4 stream was already captured by the same legacy ledger"):
+                future.result(timeout=5)
+        assert not broker._p4_ledger._committed()
+        assert len(broker._p4_ledger._legacy_captures()) == 1
+        assert not broker._member_events
+        if verifier is not None:
+            # The winning capture spent its admission durably, exactly once.
+            assert len(list(verifier._ledger.scan(kind="admission_use"))) == 1
+    finally:
+        if verifier is not None:
+            verifier._ledger.close()
 
 
 def _request():
@@ -2289,6 +2320,45 @@ def test_adr133_refuses_substituted_or_noncanonical_grants(change):
         cls().verify(authorization, g1, g2)
 
 
+@pytest.mark.parametrize("change", [
+    "event-schema", "event-schema-v2", "media-type", "allow-empty-type",
+])
+def test_adr133_dataset_authorization_pins_schema_media_and_empty_policy(change):
+    """Pin the dataset-capture wire guard, which had no negative coverage.
+
+    ``trust.py:5711`` refuses any ``event_schema``/``media_type`` other than
+    ``dskit.raw-event/v1``/``application/x-ndjson``, and a non-``bool``
+    ``allow_empty_capture``. Before this test the message ``dataset schema,
+    media or empty policy refused`` was unreachable from the suite. The
+    ``event-schema-v2`` case pins that a v2 wire is refused *today*.
+
+    This guard is also why the cross-object ``event_schema`` equality at
+    ``trust.py:7332`` cannot be reached through that field: both the dataset
+    and the roster-bootstrap authorizations are independently pinned to the
+    same literal, so they can never disagree on it while v1 is the only
+    accepted value.
+    """
+    cls = getattr(trust, "NonAuthorizingSyntheticGrantVerifier")
+    authorization, g1, g2 = _synthetic_dataset_grant_fixture()
+    value = json.loads(authorization)
+    if change == "event-schema":
+        value["event_schema"] = "dskit.raw-event/v0"
+    elif change == "event-schema-v2":
+        value["event_schema"] = "dskit.raw-event/v2"
+    elif change == "media-type":
+        value["media_type"] = "application/json"
+    else:
+        value["allow_empty_capture"] = "true"
+    authorization = f4._json_bytes(value)
+    auth_digest = hashlib.sha256(authorization).hexdigest()
+    left, right = json.loads(g1), json.loads(g2)
+    left["authorization_sha256"] = auth_digest
+    right["authorization_sha256"] = auth_digest
+    g1, g2 = _resign_synthetic_grant(left), _resign_synthetic_grant(right)
+    with pytest.raises(ValueError, match="dataset schema, media or empty policy refused"):
+        cls().verify(authorization, g1, g2)
+
+
 def test_adr133_rechecks_revocation_and_never_spends_or_mints(monkeypatch):
     verifier = trust.NonAuthorizingSyntheticGrantVerifier()
     authorization, g1, g2 = _synthetic_dataset_grant_fixture()
@@ -2757,6 +2827,41 @@ def test_adr135_bootstrap_refuses_authorization_mutations(change):
         )
 
 
+@pytest.mark.parametrize("change", ["event-schema", "event-schema-v2", "media-type"])
+def test_adr135_bootstrap_authorization_pins_schema_and_media(change):
+    """Pin the roster-bootstrap wire guard, which had no negative coverage.
+
+    ``trust.py:5970`` refuses any ``event_schema``/``media_type`` other than
+    ``dskit.raw-event/v1``/``application/x-ndjson``. Before this test the
+    message ``roster bootstrap schema or media refused`` was unreachable from
+    the suite: every fixture set both fields to the valid value. The
+    ``event-schema-v2`` case additionally pins that a v2 wire is refused
+    *today*, so a later versioned-wire change cannot widen this boundary
+    silently.
+    """
+    raw_auth, raw_g1, raw_g2, _policy = _synthetic_roster_bootstrap_fixture()
+    auth = json.loads(raw_auth)
+    if change == "event-schema":
+        auth["event_schema"] = "dskit.raw-event/v0"
+    elif change == "event-schema-v2":
+        auth["event_schema"] = "dskit.raw-event/v2"
+    else:
+        auth["media_type"] = "application/json"
+    changed_auth = f4._json_bytes(auth)
+    digest = hashlib.sha256(changed_auth).hexdigest()
+    grants = []
+    for raw in (raw_g1, raw_g2):
+        grant = json.loads(raw)
+        grant["bootstrap_sha256"] = digest
+        for field in ("issued_at_ms", "not_before_ms", "expires_at_ms"):
+            grant[field] = auth[field]
+        grants.append(_resign_roster_bootstrap_grant(grant))
+    with pytest.raises(ValueError, match="roster bootstrap schema or media refused"):
+        trust.NonAuthorizingRosterBootstrapVerifier().verify(
+            changed_auth, *grants,
+        )
+
+
 @pytest.mark.parametrize("change", [
     "swap", "wrong-role", "wrong-key", "wrong-digest", "wrong-signature",
     "stale-snapshot", "extra-key", "noncanonical",
@@ -3034,6 +3139,214 @@ def test_adr136_crash_before_commit_does_not_spend_id(tmp_path):
     assert cls(path)._reserve_roster(authorization, g1, g2, intent) is None
 
 
+
+# ---------------------------------------------------------------------------
+# ADR-0157: F3's derivation hop spends through the existing authorization
+# reserve (decision-log.md, search "## ADR-0157"). Two RED gates, both
+# transplanted from the ADR-0136 tests directly above, per the ADR's own
+# "next deliverable is TWO tests, not code" section. Gates only -- the
+# "derivation-root" reserve kind itself is not implemented here.
+# ---------------------------------------------------------------------------
+
+
+def _adr157_derivation_root_identity(parents, hop="ReplayRun"):
+    """Return the ADR-0157 two-parent (signed_id, intent_sha256) pair."""
+    ordered = sorted(parents, key=lambda parent: parent["port"])
+    signed_id = trust._digest(trust._hs_canonical_bytes({
+        "schema": "dskit.derivation-root-intent/v1",
+        "hop": hop,
+        "parents": ordered,
+    }))
+    intent_sha256 = trust._digest(trust._hs_canonical_bytes({
+        "schema_version": "dskit.derivation-root-intent/v1",
+        "hop": hop,
+        "parents": ordered,
+    }))
+    return signed_id, intent_sha256
+
+
+def test_adr157_derivation_root_identity_binds_port_not_just_pair():
+    """Swapping which port a parent fills changes the identity; reordering
+    the same port/parent assignments does not.
+
+    ADR-0157: "port is not decoration" -- Hop 3's two parents are BOTH
+    ``derivation-root`` rows, so a bare ``{signed_id, intent_sha256}`` pair
+    list would hash a role-swapped construction identically to the correct
+    one. This is the correction v2 made after v1's Major (a single-parent
+    formula that aliased two distinct intents).
+    """
+    manifest = {"port": "tape_manifest", "signed_id": "a" * 64,
+                "intent_sha256": "c" * 64}
+    data = {"port": "tape_data", "signed_id": "b" * 64,
+            "intent_sha256": "d" * 64}
+    canonical, _ = _adr157_derivation_root_identity([manifest, data])
+    reordered, _ = _adr157_derivation_root_identity([data, manifest])
+    assert canonical == reordered
+
+    role_swapped, _ = _adr157_derivation_root_identity([
+        {"port": "tape_manifest", "signed_id": data["signed_id"],
+         "intent_sha256": data["intent_sha256"]},
+        {"port": "tape_data", "signed_id": manifest["signed_id"],
+         "intent_sha256": manifest["intent_sha256"]},
+    ])
+    assert role_swapped != canonical
+
+
+def _adr157_derivation_reserve_in_process(path, kind, signed_id,
+                                          intent_sha256, start, results):
+    """Attempt one derivation-root reservation from a separate OS process."""
+    import sqlite3
+
+    store = trust._SyntheticAuthorizationReserve(path)
+    connection = store._connection
+    start.wait()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "INSERT INTO reserve_uses VALUES (?,?,?,?,?,?,?,?)",
+            (kind, signed_id, "1" * 64, "2" * 64, "3" * 64, "4" * 64,
+             intent_sha256, "RESERVED"),
+        )
+        connection.execute("COMMIT")
+    except sqlite3.IntegrityError:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        results.put("spent")
+    else:
+        results.put("reserved")
+    finally:
+        store._close()
+
+
+def test_adr157_derivation_root_two_parent_race_has_one_cross_process_winner(
+    tmp_path,
+):
+    """ADR-0157 Gate 1 (the race gate).
+
+    Transplant of
+    ``test_adr136_roster_signed_id_has_one_cross_process_winner``
+    (``:3010-3033``): the same ``fork``/``Event``/two-``Process`` race,
+    against the same real ``_SyntheticAuthorizationReserve``, retargeted at
+    the ADR's own ``derivation-root`` identity formula instead of
+    ``roster-bootstrap``.
+
+    ``reserve_uses.kind`` carries no CHECK constraint, so the
+    ``(kind, signed_id)`` primary key fences a brand new kind exactly as it
+    fences the four kinds already shipped: this proves the fencing
+    mechanism the ADR's Decision relies on -- "the database decides, once,
+    atomically" -- independent of whether ``derivation-root``'s own
+    construction code exists (it does not; this task builds gates only).
+
+    Covers the TWO-PARENT case: both parents are the real
+    ``_REPLAY_TAPE_INPUTS`` ports (``document.py:766``) Hop 3 actually
+    uses, and the identity is the ADR's exact formula with parents sorted
+    canonically by ``port``.
+    """
+    import multiprocessing
+
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    parents = [
+        {"port": "tape_data", "signed_id": "b" * 64,
+         "intent_sha256": "d" * 64},
+        {"port": "tape_manifest", "signed_id": "a" * 64,
+         "intent_sha256": "c" * 64},
+    ]
+    signed_id, intent_sha256 = _adr157_derivation_root_identity(parents)
+    ctx = multiprocessing.get_context("fork")
+    start, results = ctx.Event(), ctx.Queue()
+    workers = [
+        ctx.Process(
+            target=_adr157_derivation_reserve_in_process,
+            args=(path, "derivation-root", signed_id, intent_sha256,
+                  start, results),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    start.set()
+    for worker in workers:
+        worker.join(timeout=10)
+        assert worker.exitcode == 0
+    assert sorted(results.get(timeout=2) for _ in workers) == [
+        "reserved", "spent",
+    ]
+
+
+def _adr157_crash_after_p4_commit(issuer, path):
+    """Crash right after the dynamic-p4-authority RESERVED->ISSUED commit."""
+    import os
+
+    def _crash_on_construct(_self, _token, _graph_arg):
+        os._exit(17)
+
+    issuer._publisher._reserve = trust._SyntheticAuthorizationReserve(path)
+    trust._DynamicP4TrustedArtifactResolver.__init__ = _crash_on_construct
+    trust._development_dynamic_p4_broker(issuer)
+    os._exit(1)  # pragma: no cover -- must never be reached
+
+
+@pytest.mark.xfail(
+    strict=True, raises=ValueError,
+    reason="ADR-0157 Gap 1 (recorded open, decision-log.md ## ADR-0157): a "
+           "crash between the RESERVED->ISSUED commit and construction "
+           "strands the intent permanently -- no retry or quarantine path "
+           "reaches it. Remove this marker only once Gap 1 is closed.",
+)
+def test_adr157_p4_authority_crash_after_commit_strands_the_intent(
+    tmp_path, monkeypatch,
+):
+    """ADR-0157 Gate 2 (the liveness gate).
+
+    Transplant of ``_adr136_crash_with_uncommitted_insert`` /
+    ``test_adr136_crash_before_commit_does_not_spend_id`` (``:3080-3094``),
+    with the ``os._exit`` moved from BEFORE the reserve INSERT to AFTER a
+    full ``RESERVED -> ISSUED`` commit.
+
+    Per the independent skeptic review that cleared ADR-0157 v4, this
+    targets the EXISTING, shipped ``_development_dynamic_p4_broker``
+    (``trust.py:9900-10018``) rather than the unbuilt ``derivation-root``
+    kind: that function has the identical commit-then-construct shape (the
+    commit completes at ``:9981-9982``, no construction runs before
+    ``:9991``), so crashing it right there reproduces Gap 1's exact
+    symptom in code that ships today, in a real forked OS process, not a
+    simulation.
+
+    XFAIL, strict, records Gap 1 as OPEN: a real crash at this boundary
+    leaves the row permanently ``ISSUED`` with no published authority. The
+    only available recovery -- retrying the same construction call --
+    recomputes the identical deterministic ``signed_id`` and dies on the
+    same ``IntegrityError`` the precedent uses to detect a second
+    construction, so it can never distinguish "died after commit" from
+    "already built". This is the first ``xfail`` in this repo (grepped,
+    zero prior uses under ``tests/``): used for lack of an existing
+    convention for a recorded-open-defect test.
+    """
+    import multiprocessing
+
+    publisher, issuer, _graph, _snapshot = _adr142_graph_case(
+        tmp_path, monkeypatch,
+    )
+    path = publisher._reserve._path
+    process = multiprocessing.get_context("fork").Process(
+        target=_adr157_crash_after_p4_commit, args=(issuer, path),
+    )
+    process.start()
+    process.join(timeout=10)
+    assert process.exitcode == 17
+
+    fresh = trust._SyntheticAuthorizationReserve(path)
+    row = fresh._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='dynamic-p4-authority'"
+    ).fetchone()
+    assert row == ("ISSUED",)  # OBSERVED: the commit survived the crash.
+    issuer._publisher._reserve = fresh
+
+    # Desired postcondition: a stuck-ISSUED intent should still be
+    # recoverable. It is not, today -- this is Gap 1, recorded open.
+    authority = trust._development_dynamic_p4_broker(issuer)
+    assert isinstance(authority, trust.CapturedAuthorizationAuthority)
 
 def test_adr136_roster_transition_audits_exact_order(tmp_path):
     cls = trust._SyntheticAuthorizationReserve
