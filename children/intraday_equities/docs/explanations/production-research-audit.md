@@ -39,6 +39,9 @@ PYTHONPATH=$PWD:$PWD/children/intraday_equities:$PWD/children/pmquant \
 ```
 
 Result: **336 passed, 12 skipped in 68.81s**. Skips are not verification credit.
+After integrating main `046197b`, the same checks on `efa8649` passed again:
+**336 passed, 12 skipped in 60.50s**. Audited child/production/uncertainty source
+identities remained unchanged; the PDFs retain their explicit inspection baseline.
 No live conformance, profitability, real-data replay or full-suite claim.
 The money/latency findings were traced in implementation, not inferred from test names.
 Fee arithmetic in the pmquant audit is an illustrative consistency check against

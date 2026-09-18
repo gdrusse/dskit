@@ -27,6 +27,13 @@ Proportionate editorial accuracy/path/layout review; no code review or live
 conformance claimed. Documentation only: operational checkout and owner Path untouched.
 Next: choose an audit P0 acceptance milestone and approve any required ADR before code.
 
+Documentation candidate: `bfe6f06`; integrated current main `046197b` in `efa8649`.
+Upstream added ADR-0160 clustering/RL machinery and search-winner artifact persistence;
+the audited production package, child source/configs and four uncertainty modules
+are byte-identical to the inspected base. The guide PDF's SHA-256 is unchanged.
+The same targeted checks on integrated `efa8649` passed again: **336 passed,
+12 skipped in 60.50s**. Only this evidence append followed that verification.
+
 ## Current checkpoint: ADR-0160 clustering/RL closed and merged (2026-09-18)
 
 `SklearnSegment`, `Sb3EvalEpisodes` and `FittedTransform.sidecar_problems`
