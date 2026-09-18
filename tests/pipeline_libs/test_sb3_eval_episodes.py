@@ -465,7 +465,8 @@ def test_each_episode_gets_a_fresh_environment_seeded_from_its_index(
     ]
 
 
-def test_each_episode_record_carries_its_own_index(tmp_path, lab):
+@pytest.mark.parametrize("count", [2, 4], ids=["two-episodes", "four-episodes"])
+def test_each_episode_record_carries_its_own_index(tmp_path, lab, count):
     """The per-episode IDENTITY, separated from the constant it equals in
     the contract's worked example.
 
@@ -476,11 +477,17 @@ def test_each_episode_record_carries_its_own_index(tmp_path, lab):
     this kind's whole deliverable: anything that joins, indexes or
     de-duplicates on ``episode`` collapses every rollout onto one if these
     are not distinct and in order.
+
+    Two counts, because a numbering can be right at one of them and wrong
+    at another -- ``min(index, 2)`` matches identity at three episodes and
+    repeats the last id at four. And a seed that is NOT this file's default
+    17, because ``index`` and ``seed - 17`` coincide at that default, so a
+    record numbered off the seed would read as correct.
     """
-    _node, outputs = evaluate(tmp_path, n_episodes=3, seed=17)
-    assert [episode["episode"] for episode in record(outputs)["episodes"]] == [
-        0, 1, 2,
-    ]
+    _node, outputs = evaluate(tmp_path, n_episodes=count, seed=5)
+    assert [
+        episode["episode"] for episode in record(outputs)["episodes"]
+    ] == list(range(count))
 
 
 def test_every_environment_is_closed_exactly_once(tmp_path, lab):

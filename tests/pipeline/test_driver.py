@@ -1647,13 +1647,27 @@ class TunedEvidenceSource(Node):
 
 
 class EvidenceScore(Node):
-    """Scores what the tunable node produced; the search's objective."""
+    """Scores what the tunable node produced; the search's objective.
+
+    It emits durable evidence of its OWN, because the only kind in the
+    library that produces a ``JsonArtifact`` -- ``sb3-eval-episodes`` -- is
+    a ``score`` node, and a search's objective target is a score node. So
+    the artifact-bearing node is always LAST in ``winner_reran``, never
+    first: ``["theta", "val"]``, ``["clip", "market", "qhat", "validate"]``.
+    A fixture that emitted evidence only from the tunable node would pin
+    the fix at the one position the motivating kind can never occupy.
+    """
 
     role = "score"
-    outputs = ("metrics",)
+    outputs = ("metrics", "episodes")
 
     def run(self, ctx, inputs):
-        return {"metrics": {"loss": (float(inputs["value"]) - 3.0) ** 2}}
+        value = float(inputs["value"])
+        durable = getattr(node_module, "JsonArtifact", lambda value: value)
+        return {
+            "metrics": {"loss": (value - 3.0) ** 2},
+            "episodes": durable({"scored": value}),
+        }
 
 
 def test_a_search_winners_json_artifact_is_persisted_not_the_losing_pass(tmp_path):
@@ -1704,13 +1718,23 @@ def test_a_search_winners_json_artifact_is_persisted_not_the_losing_pass(tmp_pat
     # the winner pass really did replace the outputs
     assert result.outputs["evid"]["value"] == 3.0
 
-    manifest = result.outputs["evid"]["episodes"]
-    assert set(manifest) == {"path", "sha256", "bytes", "media_type"}
-    with open(os.path.join(result.run_dir, manifest["path"]), "rb") as handle:
-        assert json.loads(handle.read())["scored"] == 3.0
-    # and the node record points at the winner's bytes, not a type name
-    record = read_json(result.run_dir, os.path.join("nodes", "01-evid.json"))
-    assert record["outputs"]["episodes"]["sha256"] == manifest["sha256"]
+    # BOTH re-executed nodes, so membership is pinned rather than the
+    # first element: the search re-ran ["evid", "val"], and the kind this
+    # fix exists for would sit at the END of such a list.
+    search_record = read_json(
+        result.run_dir, os.path.join("nodes", "03-search.json")
+    )
+    assert search_record["winner_reran"] == ["evid", "val"]
+    for node_key, record_name in (("evid", "01-evid.json"), ("val", "02-val.json")):
+        manifest = result.outputs[node_key]["episodes"]
+        assert set(manifest) == {"path", "sha256", "bytes", "media_type"}, node_key
+        assert resolve_json_artifact(result.run_dir, manifest) == {"scored": 3.0}
+        # the node record points at the winner's bytes, not a bare type name
+        record = read_json(result.run_dir, os.path.join("nodes", record_name))
+        assert record["outputs"]["episodes"]["sha256"] == manifest["sha256"], node_key
+    # and $prev binds it: a dropped manifest silently deletes the port here
+    carry = read_json(result.run_dir, "carry.json")
+    assert set(carry["val"]) == {"metrics", "episodes"}
 
 
 def test_explicit_json_artifact_survives_driver_recording_with_digest_manifest(tmp_path):
