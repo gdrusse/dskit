@@ -1,0 +1,408 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[margin=0.72in,headheight=14pt]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,microtype,amsmath,amssymb,booktabs,tabularx,enumitem,xcolor,fancyhdr,hyperref}
+\definecolor{navy}{HTML}{14334A}
+\definecolor{teal}{HTML}{087F8C}
+\hypersetup{colorlinks=true,linkcolor=navy,urlcolor=teal,pdftitle={Quantitative Modeling 101},pdfauthor={GPT-6 for Russell}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\setlength{\emergencystretch}{3em}
+\setlist{nosep,leftmargin=*}
+\pagestyle{fancy}\fancyhf{}\fancyhead[L]{\small\textcolor{navy}{QUANTITATIVE MODELING 101}}
+\fancyhead[R]{\small ML practitioner edition}\fancyfoot[L]{\small Research reference | September 2026}\fancyfoot[R]{\thepage}
+\newcommand{\bl}[1]{\noindent\colorbox{navy}{\parbox{\dimexpr\linewidth-2\fboxsep}{\color{white}\textbf{Bottom line.} #1}}\par\medskip}
+\newcommand{\topic}[2]{\clearpage\section{#1}\bl{#2}}
+\newcommand{\sub}[1]{\par\textbf{\textcolor{teal}{#1}}\par}
+\newcommand{\ex}[1]{\sub{Worked example}#1}
+\newcommand{\pit}[1]{\sub{Common mistake}#1}
+\newcommand{\src}[2]{\par{\footnotesize Source: \href{#1}{#2}.}}
+\begin{document}
+\thispagestyle{empty}
+{\Huge\bfseries\color{navy} Quantitative\\[6pt] Modeling 101}\par\bigskip
+{\Large A finance field guide for an ML practitioner}\par
+{\large Equities, ETFs, and prediction markets}\par\bigskip
+\bl{A good model is only one component of a good trade. You need an executable price, a correctly specified payoff, positive expected value after costs, and a position small enough to survive being wrong.}
+\sub{Who this is for}
+An individual investor who already understands regression, classification, validation, and optimization. The emphasis is on decisions a small systematic trader can implement: liquid stocks and ETFs, modest-frequency signals, and event probabilities. Options, futures, bonds, and currencies provide the essential instrument vocabulary.
+\sub{How to use this reference}
+Read Sections 1--5 to translate finance into ML language. Use Sections 6--10 as the instrument desk reference. Sections 11--19 cover research, execution, and capital. Sections 20--22 connect the ideas to \texttt{intraday\_equities} and \texttt{pmquant}. The final pages collect formulas, vocabulary, and sources.
+\sub{Scope and interpretation}
+US retail access is the provisional working assumption. Access, fees, margin, taxes, and contract specifications vary by venue, account, and date. Verify them before deployment. Examples are invented teaching arithmetic, not backtest results or recommendations to buy a security. An attractive research area is not a promise of profit.
+\sub{The research contract}
+Write down: \emph{What do I forecast? At what timestamp? What can I trade? At which executable price? For how long? Against what benchmark? Under which loss limit?} A backtest without these answers does not define a strategy.
+\vfill
+{\small Prepared 18 September 2026. Project connections are based on repository documentation and configurations inspected on that date. Source links appear near relevant concepts and in the reference directory.}
+\clearpage{\small\tableofcontents}
+\topic{Where a personal algorithm can compete}{Compete on careful research, specialization, and low capacity requirements. Treat exchange-speed competition as a different business.}
+\sub{A practical starting map}
+\textbf{Liquid equities and ordinary ETFs:} accessible instruments, observable prices, and manageable position sizes. Cross-sectional rankings, slower trend signals, and event studies are useful starting hypotheses. Intraday turnover raises the burden of proof because spreads and slippage consume small edges.
+
+\textbf{Prediction markets:} a natural home for calibrated probability models and domain expertise. A weather or economic-release model may have a clearer target than next-minute stock returns. Thin liquidity, correlated contracts, and exact resolution rules constrain monetization.
+
+\textbf{Micro futures:} potentially efficient index or rate exposure for an account that understands margin and contract multipliers. Small margin deposits do not make the economic exposure small.
+
+\textbf{Options:} useful when the view is about volatility, tails, timing, or asymmetric payoff. They add an entire pricing and execution problem; directional forecasting alone is insufficient.
+\sub{What small size buys you}
+A strategy earning a few hundred dollars per event may be irrelevant to a large fund but worth researching personally. Small orders can reduce impact and permit niche opportunities. The advantage disappears if data subscriptions, engineering time, taxes, and execution consume the revenue.
+\sub{Start with a benchmark and a budget}
+Compare active results with cash yield and a simple passive portfolio at comparable risk. Set a research budget, maximum affordable loss, and realistic trading frequency. Include the value of time when deciding whether the system is worthwhile.
+\pit{Assuming sophisticated architecture implies edge. Start with cash, market-implied probabilities, a constant forecast, and regularized linear models. Complexity must improve honest out-of-sample decisions.}
+\sub{Project connection}
+Your equity work asks whether names and horizons contain usable predictive information. Your prediction-market work asks whether an estimated event law improves on tradable market prices. Both are plausible research programs; neither question is answered by training loss alone.
+\topic{Returns, compounding, and the cash benchmark}{Define the economic return before choosing the label or evaluation metric. Dollars, percentages, and basis points are different units.}
+\sub{Core definitions}
+For a share bought at $P_0$, sold at $P_1$, with cash distribution $D$:
+\[R=\frac{P_1-P_0+D}{P_0},\qquad r=\log(1+R),\qquad W_T=W_0\prod_{t=1}^T(1+R_t).\]
+$R$ is a simple total return; $r$ is a log return. Log returns add across time for a compounded investment. Simple returns aggregate across contemporaneous portfolio weights. Do not average log returns across assets as if that were portfolio return.
+
+One basis point (bp) is $0.01\%=10^{-4}$. A 6 bp expected move on \$10,000 is \$6 before costs. \textbf{Excess return} subtracts the applicable cash return. \textbf{Active return} subtracts the chosen benchmark return.
+\ex{An investment rises 10\%, then falls 10\%. Wealth becomes $100(1.10)(0.90)=99$. The arithmetic average return is zero; the compounded return is $-1\%$. A 50\% loss needs a 100\% gain to recover.}
+\sub{Time value of money}
+With effective annual rate $r_f$ and maturity $T$ years, a certain \$1 payment has present value $(1+r_f)^{-T}$. Discounting is an opportunity-cost calculation. With continuous compounding, its value is $e^{-r_fT}$. Do not mix rate conventions.
+
+For cash flow $C_t$ at time $t$, $PV=\sum_t C_t/(1+r)^t$ under a flat appropriate discount rate. Risky cash flows require a risk-adjusted valuation framework, not automatic use of the Treasury rate.
+\sub{Capital time matters}
+Two trades can have the same expected dollars but tie up cash for very different periods. Compare return on deployed capital, uncertainty, and time to settlement. Annualizing a single successful one-day bet assumes opportunities and reinvestment that may not exist.
+\pit{Treating split-adjusted prices as total-return prices. Splits alter units; cash dividends are a separate return component unless explicitly reinvested in the data series.}
+\topic{Risk, beta, alpha, and the source of profit}{Separate compensation for bearing risk from skill at predicting mispricing. A profitable strategy can still be a disguised market bet.}
+\sub{Expected return and dispersion}
+$\mu=E[R]$ summarizes the mean; $\sigma^2=E[(R-\mu)^2]$ summarizes variance. Neither describes the whole distribution. Skewness, fat tails, jumps, and liquidity during losses affect survival.
+
+A simple factor decomposition is
+\[R_i-r_f=\alpha_i+\beta_i(R_m-r_f)+\epsilon_i,\qquad
+\beta_i=\frac{\operatorname{Cov}(R_i,R_m)}{\operatorname{Var}(R_m)}.\]
+$R_m$ is the market return. Estimated $\alpha$ depends on the factors, sample, and estimation error. A positive intercept against one benchmark is not proof of unique skill. Extend the model with sectors, size, value, momentum, or other economically relevant exposures.
+\ex{Suppose a stock position earns 1.2\% on a day the market earns 1\%, and its previously estimated beta is 1.2. Its market-adjusted surprise is approximately zero, before costs. The profit was real; this observation alone provides no evidence of alpha.}
+\sub{Three broad economic explanations}
+\textbf{Risk premium:} accepting unpleasant states, such as equity drawdowns or crash insurance losses.\par
+\textbf{Behavioral or structural effect:} underreaction, forced flows, or constraints affecting other participants.\par
+\textbf{Information advantage:} a better estimate from legal public information, processing, or specialized domain knowledge.
+\sub{Residual targets}
+A label such as $R_i-\widehat\beta_iR_m$ isolates a market-relative target. A literal $R_i-R_m$ assumes beta one. Fit any beta using past data only. If a model forecasts residual return, translating it into a trade requires either a hedge or explicit acceptance of the remaining exposure.
+\pit{Calling a hedge ``risk-free.'' A market hedge leaves idiosyncratic, sector, basis, liquidity, and estimation risk. Dollar neutrality and beta neutrality are different constraints.}
+\topic{No-arbitrage and two kinds of probability}{Forecasting asks what is likely to happen; pricing asks what a payoff costs under market constraints. These are related but different questions.}
+\sub{Physical versus risk-neutral probability}
+$\mathbb P$ is the real-world distribution used for forecasting and expected profit. $\mathbb Q$ is a pricing measure under which appropriately discounted traded assets are martingales, under the relevant no-arbitrage assumptions. Risk premia can make these distributions differ.
+
+In a simple constant-rate pricing model, $V_0=e^{-r_fT}E_{\mathbb Q}[X_T]$. Expected trading profit instead uses your physical belief: $E_{\mathbb P}[X_T]-\text{purchase cost}$, with financing and transaction costs accounted for consistently.
+\sub{Replication intuition}
+If two portfolios pay exactly the same amount in every state, at the same times, with equivalent obligations, they should have the same frictionless price. Actual arbitrage requires executable legs, financing, borrow, compatible settlement, and enough capacity.
+\ex{Exactly complementary YES and NO contracts pay \$1 combined. If both can be bought at \$0.48 with \$0.01 total fees, the combined cost is \$0.97 and the terminal surplus is \$0.03. This assumes mutually exhaustive resolution, no void mismatch, executable size, and holding through settlement. Different venues can invalidate those assumptions.}
+\sub{Why prices are useful but imperfect forecasts}
+Binary prices reflect information plus supply, demand, constraints, fees, and risk preferences. Use them as a strong baseline, not as an unquestionable calibrated physical probability. An option's implied volatility is the volatility input consistent with its quoted price in a pricing model, not an unbiased forecast by definition.
+\pit{Calling a positive expected-value bet an arbitrage. A 60\%-likely event bought at 50 cents still loses its stake 40\% of the time under that belief.}
+\topic{Market plumbing: quotes, orders, and fills}{Backtest against prices you could trade, at the time you could trade them. A quote or bar is not a guaranteed fill.}
+\sub{The order book}
+The \textbf{bid} is a resting buy price; the \textbf{ask} is a resting sell price. The quoted spread is ask minus bid. Midprice is their average. Depth is available size at each level, conditional on orders still existing when yours arrives.
+
+A \textbf{market order} prioritizes execution, not price. A \textbf{limit order} caps purchase price or floors sale price, but can remain unfilled. A marketable limit can execute immediately and be a taker. \textbf{Maker/taker} refers to adding/removing liquidity, not simply limit/market labels.
+\ex{Bid/ask is \$99.99/\$100.01. Buying at the ask and immediately selling at the bid loses \$0.02 per share, about 2 bp, before explicit fees. If the midpoint forecast rises only 1 bp, crossing twice can erase the prediction.}
+\sub{Passive execution has a selection problem}
+Your bid is most likely to fill when someone wants to sell. The next price may move against you. This is \textbf{adverse selection}. Model expected profit conditional on filling, not just fill probability times an unconditional price forecast.
+\sub{Data hierarchy}
+Trades report executed transactions. Top-of-book quotes show the best prices. Level-2 data shows depth. OHLCV bars compress a path and do not reveal queue position, the order of intrabar extremes, or executable size at each instant.
+\sub{Operational details to model}
+Latency; stale quotes; partial fills; cancel acknowledgments; order rejects; tick and lot size; trading halts; auction periods; overnight gaps. A stop order is a trigger, not insurance at its trigger price.
+\pit{Computing a feature from the close of a bar and filling at that same close without an executable timing argument. Decision, send, arrival, and fill timestamps belong in the simulator.}
+\topic{Stocks, ETFs, and short positions}{Stocks are ownership claims; ETFs package exposures; shorts introduce borrowing obligations. Know the underlying exposure, not just the ticker.}
+\sub{Long equity and ordinary ETFs}
+A stock participates in a company's residual value. An ETF trades as a share while holding a portfolio or other specified exposure. NAV is the value of its net assets per share; market price can differ. Fund expenses, distributions, tracking error, and underlying liquidity affect returns.
+
+An index ETF can simplify broad-market exposure. Sector ETFs concentrate industry risk. Bond ETFs carry duration and often credit exposure. An exchange-traded note is generally an issuer debt obligation; it is not interchangeable with an ETF portfolio.
+\ex{Buy 20 shares at \$50 and sell at \$51. Gross profit is $20(51-50)=\$20$. If a \$0.25 distribution belongs to you during the holding period, add \$5, then subtract execution and financing costs.}
+\sub{Short selling}
+Borrow shares, sell them, and later buy shares back to return. Gross short P\&L is $n(P_0-P_1)$. Borrow fees, distributions owed to the lender, and financing affect the result. Borrow can become expensive or unavailable; recalls and buy-ins can force closure. A stock's upside is unbounded, so an unhedged short has unbounded theoretical loss.
+\sub{Leveraged and inverse funds}
+Many target a multiple of \emph{daily} returns. Compounding and rebalancing mean their multi-day return need not equal that multiple of the index's multi-day return. They are not a frictionless substitute for a persistent leveraged position.
+\sub{Model-to-decision example}
+Rank liquid stocks on predicted next-hour residual returns. Translate scores into bounded weights, constrain sector and market exposure, and trade only when estimated incremental benefit exceeds turnover cost. Ranking quality alone does not choose leverage or price limits.
+\src{https://www.finra.org/investors/investing/investment-products/exchange-traded-funds-and-products}{FINRA: exchange-traded funds and products}
+\src{https://www.finra.org/rules-guidance/key-topics/margin-accounts}{FINRA: margin accounts}
+\topic{Bonds, rates, currencies, and cash}{Interest rates price time and funding. Even an equity or event trader needs a cash benchmark and an understanding of duration.}
+\sub{A bond in one paragraph}
+A bond promises coupons and principal under its terms, subject to issuer default and other provisions. Price is the discounted value of promised cash flows under the selected valuation assumptions. Yield to maturity is the discount rate matching price; it is not a guaranteed realized return if you sell early, default occurs, or coupons are reinvested at different rates.
+\[P=\sum_{t=1}^{T}\frac{C_t}{(1+y)^t},\qquad
+\frac{\Delta P}{P}\approx-D_{\rm mod}\Delta y.\]
+Here periods and yield conventions must match; $D_{\rm mod}$ is modified duration. Convexity improves the approximation for larger rate changes.
+\ex{For modified duration 5 years and a yield increase of 0.01 (one percentage point), the first-order price change is approximately $-5\%$. This ignores convexity, cash flows during the interval, and credit-spread changes.}
+\sub{Bills, cash, and funding}
+Treasury bills are short-term government obligations generally issued at a discount. Cash-like instruments still differ in maturity, liquidity, account protection, and access. The yield you actually earn on idle cash may differ from the financing rate you pay on leverage.
+\sub{Credit and term structure}
+The yield curve gives rates by maturity. \textbf{Credit spread} is extra yield relative to a benchmark for credit and related risks. An apparent carry profit can be compensation for default or liquidity risk. A high coupon is not the same as high expected total return.
+\sub{Currencies}
+FX is a relative price, such as dollars per euro. A dollar investor in an unhedged foreign asset earns the interaction of local asset and currency returns: $(1+R_{\rm local})(1+R_{\rm FX})-1$. FX carry can earn interest differentials while losing on exchange-rate moves. Funding and rollover conventions matter.
+\pit{Comparing a six-month locked event bet with an immediately reusable dollar. Include expected settlement timing and cash opportunity cost in the decision.}
+\topic{Forwards, futures, and leverage}{A futures position creates exposure to a large notional amount; margin is collateral, not the purchase price or maximum loss.}
+\sub{Payoff and mark-to-market}
+A forward fixes a future transaction price, typically through a bilateral contract. A futures contract is standardized and cleared, with gains and losses settled through margin procedures. For a long futures position with multiplier $m$, a price move from $F_0$ to $F_1$ produces $m(F_1-F_0)$ before costs, for one contract.
+\ex{A hypothetical index future has multiplier \$5 per index point. At index 5,000, notional exposure is \$25,000. A 50-point fall loses \$250. If the posted margin were \$2,000, the loss is 12.5\% of posted margin but 1\% of notional. Actual required margin is contract- and date-specific.}
+\sub{Initial and maintenance margin}
+Initial margin opens the position; maintenance requirements govern continuing collateral. Brokers can impose stricter house requirements. Variation margin realizes gains and losses along the path. A position can have a favorable terminal forecast but fail because the account cannot fund an interim loss.
+\sub{Basis and roll}
+\textbf{Basis} is the relationship between futures and spot prices. In a simplified equity-index setting with continuous rate $r$ and dividend yield $q$, $F_0\approx S_0e^{(r-q)T}$. Commodity storage and convenience yields change the economics.
+
+Contracts expire. Rolling closes one maturity and opens another; the price difference is not automatically free profit or loss independent of the underlying exposures. Continuous back-adjusted histories help research but are not themselves executable price series.
+\sub{Personal use}
+Small contracts can support trend strategies or portfolio hedges. Size using notional, volatility, and stress losses; then check collateral. Know whether expiration settles in cash or delivery and close or roll in time if delivery is unsuitable.
+\src{https://www.cmegroup.com/education/courses/understanding-the-benefits-of-futures/the-benefits-of-futures-margins}{CME: futures margin}
+\topic{Options: payoff, pricing, and Greeks}{Options trade a distribution, not just a direction. A correct directional call can lose money because timing, implied volatility, or premium was unfavorable.}
+\sub{The contract}
+A call gives its holder a right to buy at strike $K$; a put gives a right to sell. At expiration, per-unit payoffs are $(S_T-K)^+$ and $(K-S_T)^+$, where $x^+=\max(x,0)$. Buyer profit subtracts premium and costs. Multiply by the actual contract multiplier; standard US equity options commonly represent 100 shares, but adjusted contracts differ.
+\ex{Buy a call with strike \$100 for \$3 per share. At expiry with stock \$108, payoff is \$8 and profit \$5 per share, or \$500 for a 100-share contract before costs. At \$102, the directional forecast was right but profit is $2-3=-\$1$ per share. Expiry break-even is \$103.}
+\sub{Five sensitivities}
+\textbf{Delta:} sensitivity to underlying price. \textbf{Gamma:} change in delta as price changes. \textbf{Vega:} sensitivity to implied volatility, with quotation units checked. \textbf{Theta:} sensitivity to passage of time. \textbf{Rho:} sensitivity to interest rates. They are local approximations, not hard bounds in a jump.
+\[\Delta V\approx\Delta\,\Delta S+\tfrac12\Gamma(\Delta S)^2
++\text{Vega}\,\Delta\sigma+\Theta\,\Delta t.\]
+\sub{Pricing versus forecasting}
+Black--Scholes is a useful replication benchmark under restrictive assumptions including continuous diffusion and frictionless hedging. Real desks model smiles, jumps, dividends, early exercise, and execution. An ML volatility forecast must beat the volatility already priced into options, after hedge and trading costs.
+\sub{Exercise, assignment, and short convexity}
+American-style options can be exercised before expiry; European-style exercise is at expiry. Settlement can be shares or cash. Short options bring assignment and tail exposure. Premium received is not automatically income earned. Defined-risk spreads cap a specified terminal payoff, but legging and assignment can still create operational exposure.
+\src{https://www.optionseducation.org/optionsoverview/options-basics}{OIC: options basics}
+\topic{Event contracts and probability ladders}{Price the exact resolution rule. Then compare your probability with executable cost, not merely with the displayed midpoint.}
+\sub{Binary expected value}
+Let a YES contract pay \$1 if event $Y=1$ and zero otherwise. With belief $p=P(Y=1\mid\mathcal I_t)$, purchase ask $a$, and known per-contract cost $c$:
+\[E[\Pi]=p-a-c,\qquad \operatorname{Var}(\Pi)=p(1-p).\]
+This assumes holding to resolution, a fixed deterministic cost, and no funding adjustment. For outcome-dependent fees, put the appropriate fee inside each outcome payoff.
+\ex{Your probability is 0.60, executable ask 0.54, and all-in fixed cost 0.01. Expected profit is \$0.05 per contract. Winning net profit is \$0.45; losing net profit is $-\$0.55$. Buying 100 costs \$55 and has expected profit \$5, but can lose the entire \$55.}
+\sub{A distribution makes a coherent ladder}
+For numeric outcome $X$ with CDF $F$, an above-threshold contract has $P(X>k)=1-F(k)$. For continuous $X$, interval probability is $P(a<X\le b)=F(b)-F(a)$. Discrete outcomes require exact boundary conventions.
+
+Above-threshold probabilities must be non-increasing with the threshold. Mutually exclusive, exhaustive bins must sum to one. Independently fitting each rung can create incoherent prices and underestimated portfolio risk.
+\sub{Contract identity is part of the model}
+Check observation source, units, rounding, time zone, release vintage, revisions, cancellation, and dispute rules. ``Temperature above 80'' may refer to a specific station and official daily high, not your preferred weather feed. Similar names on two venues need not have identical payoffs.
+\sub{Execution and access}
+Fees and maker incentives vary by venue and market. Model the dated schedule, including rounding. Verify access for the exact platform and account; Polymarket products and geography are not interchangeable. These notes do not assume an international platform is available to a US account.
+\src{https://help.kalshi.com/en/articles/13823805-fees}{Kalshi: fees}
+\src{https://help.polymarket.com/en/articles/13364478-trading-fees}{Polymarket: trading fees}
+\src{https://help.polymarket.com/en/articles/13364163-geographic-restrictions}{Polymarket: geographic restrictions}
+\topic{Industry model families and their jobs}{Pick a model for its decision role: expected return, risk, probability, execution, or pricing. These are not interchangeable objectives.}
+\sub{Linear models and factor models}
+OLS, ridge, elastic net, and generalized linear models provide interpretable baselines. Factor models estimate common exposures and covariance. Shrinkage controls noisy coefficients. Logistic models are strong probability baselines when coupled with honest calibration.
+\sub{Time-series and state models}
+AR/ARIMA model serial structure; EWMA and GARCH model changing conditional variance; state-space/Kalman methods estimate latent states and time-varying relationships. Stationarity assumptions must be challenged. A latent regime explanation fitted after the fact can be a form of hindsight.
+\sub{Cross-sectional and relative-value models}
+Rank assets by expected returns or estimate residuals around an economic relationship. Cointegration models a stationary combination of nonstationary price levels; correlation alone does not establish it. A spread that used to revert can break when the economic relationship changes.
+\sub{Trees, ensembles, and neural networks}
+Boosted trees handle nonlinear tabular features well. Neural sequence models can use richer temporal and cross-asset representations. Their data requirements, tuning multiplicity, and inference cost must be justified by incremental out-of-sample value. More timestamps do not necessarily mean more independent examples.
+\sub{Probability and distribution models}
+Logistic regression, gradient boosting, Bayesian hierarchical models, quantile regression, and distributional networks support event probabilities and uncertainty. Hierarchical pooling can help sparse event series; model checking should be by series, horizon, and regime, not only pooled.
+\sub{Execution and control models}
+Fill-probability, adverse-selection, and impact models turn signals into orders. Dynamic programming and reinforcement learning can optimize sequential actions, but simulator misspecification is especially dangerous: an agent can learn to exploit fictional fills.
+\pit{Using one ``best model'' for everything. A simple signal plus a careful cost and risk model can outperform an elaborate predictor with naive execution.}
+\topic{Signals, targets, and causal availability}{Every feature must have been available before the decision, and every label must describe the trade you intend to evaluate.}
+\sub{Useful target choices}
+\textbf{Forward return:} $y_t=P_{t+h}/P_t-1$, adjusted for the chosen distribution convention.\par
+\textbf{Residual return:} removes selected common exposure.\par
+\textbf{Volatility-scaled return:} $y_t=R_{t,t+h}/\widehat\sigma_t$, using a past-only scale.\par
+\textbf{Event probability:} $y\in\{0,1\}$ with an exact resolution definition.\par
+\textbf{Distribution forecast:} predicts multiple outcomes for risk and portfolio decisions.
+\sub{Units must survive the pipeline}
+If a model predicts volatility-normalized residual return, convert it back before comparing with costs quoted in basis points. State whether $h$ counts minutes, grid rows, sessions, or calendar days. Session gaps can make these very different.
+\sub{Point-in-time data}
+Keep observation time, publication time, receipt time, and decision time distinct. Revised macro data, corrected vendor histories, current index membership, and retroactively adjusted fundamentals can all leak future information.
+\ex{An economic release for August arrives at 08:30 on September 6 and is revised October 4. A September 10 decision can use the September 6 vintage, not the revised October number. Splitting a final revised table by date does not restore historical availability.}
+\sub{Feature engineering}
+Momentum, reversal, volatility, liquidity, spread, volume surprises, time of day, sector returns, and event time are candidate features, not established edges. Fit normalization, imputation, PCA, clustering, and feature selection using training data only. Use separate publication lags for external data.
+\pit{Making the label easier without noticing. Removing difficult assets or failed folds after seeing outcomes changes the research population. Record the exclusion and preserve the failed evidence.}
+\topic{Walk-forward validation and leakage}{Finance requires chronological, dependence-aware validation. Random row splitting often tests whether the model recognizes nearby observations.}
+\sub{The chronology}
+Train on past data, tune inside that past window, then evaluate on the next unseen interval. Repeat forward through time. A final lockbox evaluates a frozen decision process; repeatedly inspecting it converts it into development data.
+\sub{Purging and embargo}
+Purge training examples whose label information overlaps the validation interval. An embargo removes an additional boundary gap where needed for the information structure. The gap must follow label horizons and data construction; a convenient fixed number is not universal protection.
+\ex{A label formed at 15:55 uses the next 30 minutes. If validation begins at 16:00, that training label overlaps validation information. Merely assigning the row to training because its timestamp is 15:55 is insufficient.}
+\sub{Split by the independent decision unit}
+Prediction-market rungs and lead-time snapshots from one event share an outcome. Put the entire event into one split. Equities at the same timestamp share market shocks; train/test asset separation alone does not create temporal independence.
+\sub{Nested model selection}
+The outer fold estimates performance. Inner folds select hyperparameters, transformations, thresholds, and sometimes model families. Carrying the outer test feedback into the search biases the outer result. A later strategy choice among many outer results is itself another selection layer.
+\sub{Training windows and retraining}
+Expanding windows use more history; rolling windows adapt faster but discard information. Recency weights trade variance for responsiveness. Compare them within the selection budget and freeze the chosen procedure before the final evaluation.
+\pit{Reporting the best fold or dropping a broken one. A failed computation is a failed computation; a losing fold is economic evidence. Neither can silently disappear from the denominator.}
+\topic{Metrics: prediction quality versus trading quality}{Evaluate the forecast, the decision rule, and the realized portfolio separately. Strong scores at one layer do not prove the next layer works.}
+\sub{Forecast metrics}
+\textbf{MSE/MAE:} scale-sensitive point accuracy. \textbf{IC:} correlation of predictions and realized returns. \textbf{Rank IC:} rank correlation, useful for relative ordering. Specify cross-sectional versus time-series computation. \textbf{Out-of-sample $R^2$:}
+\[R^2_{\rm OOS}=1-\frac{\sum_t(y_t-\hat y_t)^2}{\sum_t(y_t-\hat y^{\rm base}_t)^2}.\]
+The baseline must be available at prediction time. A train-only mean and a full-sample mean are not equivalent baselines.
+\sub{Probability metrics}
+Brier score is $N^{-1}\sum_i(p_i-y_i)^2$; log loss is
+$-N^{-1}\sum_i[y_i\log p_i+(1-y_i)\log(1-p_i)]$.
+Lower is better. Calibration asks whether events forecast at 60\% happen about 60\% of the time. Resolution asks whether predictions distinguish high- from low-probability cases. Check both against market-implied and climatology baselines.
+\sub{Portfolio metrics}
+Net P\&L; compounded return; excess return; volatility; drawdown; turnover; exposure; capacity; and tail loss. Report realized and unrealized P\&L consistently. Record deposits separately from investment returns.
+\[\operatorname{Sharpe}=\frac{\operatorname{mean}(R-r_f)}{\operatorname{sd}(R-r_f)}.\]
+Multiplying a per-period Sharpe by $\sqrt{N}$ requires suitable assumptions about dependence and sampling. Overlapping returns and autocorrelation can make naive annualization misleading.
+\ex{Model A has better return IC but trades every five minutes. Model B has weaker IC but stable daily positions. If A's turnover costs exceed its gross advantage, B can be the better strategy.}
+\pit{Equating win rate with profitability. A system winning \$1 nine times and losing \$20 once has a 90\% win rate and loses \$11 over those ten trades.}
+\topic{Uncertainty, multiple testing, and null experiments}{An edge estimate needs uncertainty that respects dependence and a correction for the research search that produced it.}
+\sub{Dependent observations}
+An IID standard error $s/\sqrt n$ can be much too small when returns overlap or events are clustered. HAC estimators adjust for serial covariance under assumptions; block or cluster bootstraps resample meaningful units. The resampling unit, block length, and number of independent groups are modeling choices.
+\sub{Selection is part of the experiment}
+Trying 100 signals, horizons, model families, or thresholds raises the chance of a lucky result. Keep an attempt ledger including failures. Family-wise error control targets any false discovery; false-discovery-rate control targets an expected fraction among discoveries under its conditions. An FDR level is not a guarantee about an individual trade's truth.
+\sub{A useful null}
+Whole-session scrambling can break an intended predictive link while preserving selected within-session structure. Define exactly what is shuffled and what stays fixed. The null distribution is only relevant to the information relationship it destroys. A failed null audit does not become a pass by choosing a different shuffle after inspecting results.
+\sub{Test the actual improvement}
+Paired loss differences against a baseline can be more informative than absolute MSE. Diebold--Mariano-style comparisons require a valid treatment of dependence; a tiny p-value does not establish a large economically useful advantage.
+\ex{An estimated edge is 8 bp, execution costs 5 bp, and the uncertainty interval for gross edge is $[-2,18]$ bp. Net point estimate is 3 bp, but the evidence is weak. Increasing leverage does not resolve uncertainty about whether the edge exists.}
+\pit{Confusing confidence intervals for an estimated mean with prediction intervals for a future return. The future outcome can vary greatly even when the mean is precisely estimated.}
+\topic{Position sizing and portfolio construction}{Size from edge, uncertainty, covariance, liquidity, and loss tolerance together. A probability forecast does not specify a portfolio.}
+\sub{Mean--variance as a decision template}
+With weights $w$, expected excess returns $\mu$, covariance $\Sigma$, risk aversion $\lambda$, and trading costs $C$:
+\[\max_w\quad w^\top\mu-\frac{\lambda}{2}w^\top\Sigma w-C(w-w_{\rm old}).\]
+Add cash, gross/net exposure, turnover, leverage, sector, borrow, and position limits. The unconstrained frictionless solution is $w=\lambda^{-1}\Sigma^{-1}\mu$, but sample estimates can make it unstable. Shrinkage and constraints are practical necessities.
+\sub{Fractional Kelly for one binary bet}
+If a contract costs $q$ and pays one, and fraction $f$ of wealth is spent buying contracts, win wealth is $W[1+f(1/q-1)]$ and loss wealth is $W(1-f)$. Maximizing expected log wealth gives
+\[f^*=\frac{p-q}{1-q},\]
+for an interior, fee-free, single independent opportunity with known $p$, with a zero floor for long-only bets. Shared outcomes require joint optimization. Fees change the payoffs and therefore the formula.
+\ex{For $p=0.60$ and $q=0.55$, full Kelly spends $0.05/0.45=11.1\%$ of wealth. Quarter Kelly spends 2.78\%. Even that can be too large if the belief is wrong or other positions share the same event. Fractional Kelly is a heuristic response to uncertainty, not a guaranteed drawdown bound.}
+\sub{Correlated event ladders}
+Holding several YES contracts on adjacent thresholds is concentrated exposure to one outcome. Evaluate terminal portfolio wealth in each underlying scenario. The number of tickets is not the number of independent bets.
+\pit{Optimizing noisy means at full precision. Shrink forecasts toward a baseline, stress correlations, cap concentration, and account for model uncertainty before allowing optimization to amplify it.}
+\topic{Costs, turnover, and capacity}{A signal is tradable only when incremental expected profit exceeds all incremental costs at the intended size.}
+\sub{Cost inventory}
+Explicit commissions and exchange fees; spread paid; slippage; market impact; borrow and financing; data and infrastructure; funding or transfer costs; and taxes when comparing personal outcomes. Avoid counting the same spread or impact twice when the fill simulator already includes it.
+\sub{A no-trade region}
+If expected gross return $\hat\mu$ must pay round-trip cost $c$, a simple entry screen is $\hat\mu>c+b$, where $b$ is an uncertainty or model-risk buffer. The exact decision depends on existing holdings, risk, and exit policy. A good held position may not justify another trade to a barely better one.
+\ex{On \$10,000 notional, forecast 8 bp gives \$8 expected gross profit. Round-trip spread and slippage of 4 bp cost \$4; fees of 1 bp cost \$1. Expected net profit is \$3. If stressed execution reaches 9 bp total, expected profit becomes $-\$1$.}
+\sub{Capacity}
+Increasing order size consumes depth and can move prices. Estimate P\&L as a function of size, not a fixed return multiplied by arbitrary capital. Limit participation relative to actual volume or book depth, and stress reduced liquidity during adverse events.
+\sub{Turnover conventions}
+One-way turnover is often half the sum of absolute weight changes for a fully invested portfolio, while other reporting uses the whole sum. State your convention. Costs are applied to actual buys and sells; do not let a reporting convention halve real costs.
+\pit{Using the historical midpoint as both buy and sell price. That assumption can create a strategy whose entire apparent advantage is an unearned spread.}
+\topic{Risk management and survival}{Risk controls bound exposure and operational failure; they cannot make a weak signal profitable.}
+\sub{Exposure measures}
+Gross exposure is the sum of absolute position notionals divided by equity; net exposure is signed notional divided by equity. Beta exposure scales positions by market sensitivity. Options also need delta, gamma, vega, and scenario risk. Cash available and collateral requirements are distinct from equity value.
+\sub{Drawdown and tails}
+Drawdown is the percentage decline from a prior equity peak. VaR at confidence $\alpha$ is a loss quantile; expected shortfall averages the tail beyond that level in a suitable continuous formulation. Neither is a worst-case guarantee. Historical stress episodes and designed scenarios complement distributional summaries.
+\sub{Useful controls}
+Per-name and per-event limits; aggregate sector and factor limits; maximum leverage; stale-data refusal; price collars; order-rate limits; daily loss escalation; reconciliation; and a tested stop mechanism. Some actions should prevent new risk while allowing orderly reductions.
+\ex{Ten prediction contracts each cost \$100 but all settle from one economic release. A \$100 ticket cap permits \$1,000 on one event. An event-level exposure cap catches the concentration that a contract-level cap misses.}
+\sub{Model and regime risk}
+Monitor input distribution, missingness, calibration, realized costs, fill behavior, exposure, and outcome performance. A change alarm is a reason to investigate. Repeatedly retraining on the latest losses can overfit noise and invalidate an evaluation policy.
+\pit{Treating a stop-loss as a hard loss cap. Gaps, illiquidity, halts, and venue failures can prevent execution near the stop price. Capital limits and stress analysis remain necessary.}
+\topic{Backtest, paper trading, and live operation}{Each stage answers a different question. Simulation measures a stated model of execution; paper trading checks machinery; small live exposure tests actual fills.}
+\sub{An event-driven accounting loop}
+Receive timestamped data; update features; forecast; choose target exposure; validate constraints; send orders; process acknowledgments and fills; update cash and inventory; mark positions; reconcile with the venue. The same fill should not be booked twice after a retry.
+\sub{Minimum backtest outputs}
+An order and fill ledger, cash ledger, positions, corporate actions or settlements, fees, financing, timestamps, and marked equity. Reconcile cash plus marked holdings to equity and explain every jump. For shorts and derivatives, include liabilities and collateral correctly.
+\sub{Sensitivity before deployment}
+Run worse fills, delays, wider spreads, lower size caps, missed trades, outages, and alternate plausible fee assumptions. If the sign of profit flips under a tiny realistic change, execution uncertainty dominates the strategy.
+\sub{Paper trading limitations}
+Paper fills often omit queue priority, impact, borrow scarcity, and actual clearing frictions. A successful paper run is valuable operational evidence but weak evidence of achievable economics. Small live testing requires separate explicit authorization and a capital-at-risk budget.
+\sub{Reproducibility}
+Pin data vintages, source and config identity, model artifact, feature definitions, fee schedules, and simulator assumptions. Keep prediction and trade timestamps. A reproducible wrong backtest is easier to repair than a beautiful result with no lineage.
+\pit{Changing a model, fill rule, or filter while continuing to label the equity curve one frozen test. Version the policy and mark the transition.}
+\topic{Your equity project: translating the research gates}{Your current equity work is a search for defensible predictive structure. A gate pass is evidence for further testing, not a live-profit certificate.}
+\sub{What the P18 configuration actually declares}
+The inspected P18 document uses asset-local LightGBM, a two-year training window, twenty walk-forward folds, and ordered horizons. Its universe grid is five minutes; scoring is on a thirty-minute lattice. Targets use volatility scaling and a SPY residual convention. Interpret those units before translating a horizon index into a trading schedule.
+\sub{Gate 1: can the forecast beat its baseline?}
+The implementation evaluates paired forecast skill and walks horizons in order, stopping that asset's search at a failed horizon. This is more informative than simply asking whether IC is positive. Constant predictions trigger an explicit degenerate-forecast guard.
+\sub{Gate 3: does the structure survive a null comparison?}
+Selected horizons undergo whole-session scramble refits with declared seeds. A null matching or beating the observed statistic can stop the audit. This tests a particular information claim; it does not model every trading cost or execution failure.
+\sub{The CMG lesson}
+On 18 September, CMG failed at the thirteenth horizon-one fold with a constant training forecast. That is an invalid/degenerate model result, not proof the stock is intrinsically unforecastable. You chose to exclude it for this study. The continuation starts at TJX; earlier completed evidence remains part of the research history.
+\sub{Next economic question}
+For a surviving signal, restore return units, specify a hedge if the target is residual, define orders and exits, apply a realistic cost model, and evaluate net portfolio outcomes. Respect the project's held-out periods and paper-only authorization boundary.
+\sub{Local reading map}
+\path{configs/run-p18-modelability.json}; \path{intraday_equities/modelability_study.py}; \path{docs/decisioning/framework.md}; and the child's \texttt{AGENTS.md}. Older framework prose can describe prior cohorts; use dated evidence and the actual run configuration for a specific experiment.
+\topic{Your prediction-market project: from belief to capital}{Forecast the joint event law, compare it with the executable book, and size the resulting portfolio across shared outcomes.}
+\sub{The project architecture in finance language}
+\textbf{Acquired ladders and settlement labels} define what was knowable and what eventually paid. \textbf{Event panels} align related contracts and lead times. A \textbf{seeded ensemble} estimates a distribution or probability law. An \textbf{edge gate} evaluates out-of-fold evidence. \textbf{Fractional-Kelly optimization} converts surviving opportunities into constrained positions.
+\sub{Why event-level evaluation matters}
+Twenty strikes and ten snapshots of one weather day are not 200 independent outcomes. Keep events together in splits and uncertainty estimates. Compare calibrated forecasts with a market-implied baseline at the same timestamp and with comparable information.
+\ex{For three exhaustive bins, forecast probabilities $(0.20,0.50,0.30)$ and asks $(0.25,0.44,0.36)$. Before fees, per-contract edges are $(-0.05,0.06,-0.06)$. The middle bin looks attractive. Buying all three costs \$1.05 for a \$1 terminal payout, so that basket loses \$0.05 before fees.}
+\sub{Portfolio decision}
+For scenario probabilities $p_s$, initial wealth $W$, and portfolio profit $\Pi_s(n)$ at integer quantities $n$, a Kelly-style objective is $\sum_s p_s\log(W+\Pi_s(n))$. Require positive wealth in every modeled scenario and apply capital, liquidity, concentration, and uncertainty controls. Unmodeled scenarios remain a risk.
+\sub{What to inspect before trusting a run}
+The actual fee book; executable depth; exact resolution law; stale and one-sided book treatment; event-based splits; and whether the result is synthetic, historical, paper, or live. A passing synthetic end-to-end test establishes pipeline behavior, not market edge.
+\sub{Local reading map}
+\texttt{children/pmquant/README.md}; \texttt{configs/run-kalshi-ladders.json}; and \texttt{books.py}, \texttt{fees.py}, \texttt{mio.py}. The documented baseline is market-implied belief; the optimizer must use scenario payoffs consistent with the settlement labels.
+\topic{Two complete decision examples}{Follow one forecast all the way to a bounded trade decision. The arithmetic should expose every assumption.}
+\sub{Example A: a stock signal}
+Assume a \$20,000 account, a \$100 stock, and an \emph{unhedged total-return} forecast of 12 bp over the next hour. Estimated round-trip costs are 5 bp; a chosen uncertainty buffer is 4 bp. The screened edge is $12-5-4=3$ bp, so the signal passes this illustrative entry rule.
+
+The position cap is 10\% of equity: \$2,000 or 20 shares. Expected gross profit is $2{,}000(0.0012)=\$2.40$. Estimated costs are $2{,}000(0.0005)=\$1.00$, leaving \$1.40 expected net profit. The buffer is a decision hurdle, not an additional realized fee.
+
+If horizon volatility is 0.8\%, one-standard-deviation P\&L is roughly \$16, much larger than the expected \$1.40. Many genuinely independent opportunities and stable execution would be needed to distinguish skill from noise. Check a worse-fill scenario and aggregate portfolio exposure before submitting a price-limited order.
+\sub{Example B: an event contract}
+Belief $p=0.63$, ask $a=0.56$, and fixed purchase fee 0.01 give effective cost $q=0.57$. Per-contract expected profit is $0.63-0.57=\$0.06$. With this particular deterministic-fee structure, single-bet full Kelly spends $(0.63-0.57)/(1-0.57)=13.95\%$ of wealth.
+
+Quarter Kelly suggests 3.49\%, but an event cap of 1\% overrides it. For \$10,000 equity, budget is \$100. Integer size is $\lfloor100/0.57\rfloor=175$ contracts if depth supports it. Cost is \$99.75; win profit \$75.25; loss \$99.75; expected profit $175(0.06)=\$10.50$.
+
+If conservative belief is only 0.56, expected profit becomes negative. The correct action can be no trade despite the original model point estimate. A different fee structure requires recomputing each scenario payoff.
+\pit{Reading either example as a recommended risk budget. The numbers illustrate unit conversion and constraint priority; your budget and evidence must be chosen explicitly.}
+\topic{Formula sheet and unit checks}{Most expensive errors are a wrong unit, wrong denominator, wrong timestamp, or wrong payoff.}
+\begin{tabularx}{\linewidth}{@{}lX@{}}\toprule
+Quantity & Definition or decision use\\\midrule
+Simple total return & $(P_1-P_0+D)/P_0$; distributions explicit.\\
+Compounded return & $\prod_t(1+R_t)-1$; separate deposits.\\
+Excess return & $R-r_f$ over matching periods.\\
+Portfolio mean & $w^\top\mu$ for simple returns with consistent weights.\\
+Portfolio variance & $w^\top\Sigma w$; covariance matters.\\
+Beta & $\operatorname{Cov}(R_i,R_m)/\operatorname{Var}(R_m)$.\\
+Gross exposure & $\sum_i|\text{notional}_i|/\text{equity}$.\\
+Net exposure & $\sum_i\text{notional}_i/\text{equity}$.\\
+Binary expected P\&L & $p-a-c$ for fixed costs and hold-to-resolution.\\
+Long call expiry P\&L & $(S_T-K)^+-\text{premium}$, per underlying unit.\\
+Long put expiry P\&L & $(K-S_T)^+-\text{premium}$, per underlying unit.\\
+Futures P\&L & $n\times m\times(F_1-F_0)$ for signed contracts $n$.\\
+Kelly stake fraction & $(p-q)/(1-q)$ under the single-binary assumptions.\\
+Duration approximation & $\Delta P/P\approx-D_{\rm mod}\Delta y$.\\
+Drawdown & $1-W_t/\max_{u\le t}W_u$.\\\bottomrule
+\end{tabularx}
+\sub{Always label these}
+Return horizon; compounding convention; annual versus period volatility; basis points versus percentage points; share quantity versus dollar notional; price multiplier; fee per contract versus fee per order; spread per side versus round trip; bid/ask versus midpoint; observation versus publication time.
+\sub{Sanity checks}
+A cost-free zero position produces zero trading P\&L. Buying and instantly selling at unchanged quotes normally loses the spread and fees. Exhaustive binary outcomes sum to one. Account equity reconciles to cash plus marked assets minus liabilities. Bigger leverage scales exposure even when margin rules allow it.
+\topic{Vocabulary you should recognize}{Learn terms by the decision they affect, not as isolated definitions.}
+\small
+\begin{tabularx}{\linewidth}{@{}lX@{}}\toprule
+Term & Working meaning\\\midrule
+Alpha / beta & Benchmark-relative component / exposure to a common factor.\\
+Carry & Return from holding an exposure absent specified price changes; may hide tail risk.\\
+Notional / margin & Economic exposure / required collateral.\\
+Liquidity / capacity & Ability to transact / size at which the strategy remains viable.\\
+Slippage / impact & Difference from execution benchmark / price effect of your trading.\\
+Adverse selection & Fills occur when counterparties have favorable information or urgency.\\
+Mark-to-market & Valuation at current market marks, distinct from realized cash settlement.\\
+Realized / implied vol & Measured return variability / pricing-model volatility backed out of quotes.\\
+Risk premium & Compensation for bearing priced risk, not necessarily forecasting skill.\\
+Basis risk & Hedge and target do not move or settle identically.\\
+Tracking error & Variability of return relative to a benchmark.\\
+Information ratio & Mean active return divided by tracking error, with matching periods.\\
+Sharpe / Sortino & Excess return per volatility / per defined downside deviation.\\
+Maximum drawdown & Largest observed peak-to-trough equity loss in a sample.\\
+VaR / expected shortfall & Loss quantile / average sufficiently severe tail loss.\\
+Cointegration & Stationary combination of nonstationary series under a specified model.\\
+Regime / drift & Changing market state / changing data or target relationship.\\
+Calibration & Agreement between probability forecasts and observed frequencies.\\
+PIT / vintage & Point-in-time availability / version known at a historical decision.\\
+Purging / embargo & Remove overlapping label information / add a justified boundary gap.\\
+Survivorship bias & Excluding assets that disappeared or failed from historical analysis.\\
+Look-ahead bias & Using information unavailable at the simulated decision time.\\
+Multiple testing & Selection among many tried hypotheses inflates apparent success.\\
+Market neutral & Intended low exposure to selected market factors; not no risk.\\
+Settlement risk & Payment or delivery differs from the expected contract process.\\
+Counterparty risk & Another party may fail to honor an obligation.\\
+Oracle risk & The event resolution source or process may fail or be disputed.\\\bottomrule
+\end{tabularx}
+\normalsize
+\topic{References and a practical study sequence}{Use this guide to frame research; use original specifications and dated evidence to make operational decisions.}
+\sub{Primary instrument and venue references}
+\begin{enumerate}
+\item \href{https://www.finra.org/investors/investing/investment-products/exchange-traded-funds-and-products}{FINRA: Exchange-Traded Funds and Products}. Exposure, structure, and leveraged/inverse products.
+\item \href{https://www.finra.org/rules-guidance/key-topics/margin-accounts}{FINRA: Margin Accounts}. Margin rules and account risks. Verify current broker requirements rather than hardcoding a historical day-trading threshold.
+\item \href{https://www.cmegroup.com/education/courses/understanding-the-benefits-of-futures/the-benefits-of-futures-margins}{CME: The Benefits of Futures Margins}. Collateral versus notional exposure.
+\item \href{https://www.optionseducation.org/optionsoverview/options-basics}{Options Industry Council: Options Basics}. Calls, puts, strikes, exercise, and specifications.
+\item \href{https://help.kalshi.com/en/articles/13823805-fees}{Kalshi: Fees}. Follow the current market-specific fee schedule.
+\item \href{https://help.polymarket.com/en/articles/13364478-trading-fees}{Polymarket: Trading Fees} and \href{https://help.polymarket.com/en/articles/13364163-geographic-restrictions}{Geographic Restrictions}. Confirm the exact platform, instrument, and access conditions.
+\end{enumerate}
+\sub{Project sources}
+Repository \texttt{gdrusse/dskit}, documentation inspected 18 September 2026: equity and pmquant READMEs; equity \texttt{AGENTS.md}; \path{configs/run-p18-modelability.json}; \path{modelability_study.py}; and \path{docs/decisioning/framework.md}. Project workflow descriptions are explanations of the inspected implementation, not industry-wide standards. The earlier P18 results and CMG exception are dated operational observations.
+\sub{A compact learning sequence}
+\textbf{First:} hand-calculate returns, option payoffs, futures notional, binary expected value, and account cash flows.\par
+\textbf{Then:} reproduce one linear baseline with chronological validation and a deliberately simple cost model.\par
+\textbf{Next:} add uncertainty, selection accounting, and portfolio constraints. Compare with cash and a simple market baseline.\par
+\textbf{Finally:} build execution evidence and evaluate stability under worse assumptions before considering any separately authorized live trial.
+\sub{The one-page research proposal test}
+Before a new model, state the economic hypothesis, target, decision time, data vintage, instrument, benchmark, validation unit, cost model, search budget, sizing rule, and stopping criterion. If those do not fit on one page, clarify the strategy before expanding the architecture.
+\end{document}
