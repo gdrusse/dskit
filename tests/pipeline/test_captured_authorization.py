@@ -3140,6 +3140,214 @@ def test_adr136_crash_before_commit_does_not_spend_id(tmp_path):
 
 
 
+# ---------------------------------------------------------------------------
+# ADR-0157: F3's derivation hop spends through the existing authorization
+# reserve (decision-log.md, search "## ADR-0157"). Two RED gates, both
+# transplanted from the ADR-0136 tests directly above, per the ADR's own
+# "next deliverable is TWO tests, not code" section. Gates only -- the
+# "derivation-root" reserve kind itself is not implemented here.
+# ---------------------------------------------------------------------------
+
+
+def _adr157_derivation_root_identity(parents, hop="ReplayRun"):
+    """Return the ADR-0157 two-parent (signed_id, intent_sha256) pair."""
+    ordered = sorted(parents, key=lambda parent: parent["port"])
+    signed_id = trust._digest(trust._hs_canonical_bytes({
+        "schema": "dskit.derivation-root-intent/v1",
+        "hop": hop,
+        "parents": ordered,
+    }))
+    intent_sha256 = trust._digest(trust._hs_canonical_bytes({
+        "schema_version": "dskit.derivation-root-intent/v1",
+        "hop": hop,
+        "parents": ordered,
+    }))
+    return signed_id, intent_sha256
+
+
+def test_adr157_derivation_root_identity_binds_port_not_just_pair():
+    """Swapping which port a parent fills changes the identity; reordering
+    the same port/parent assignments does not.
+
+    ADR-0157: "port is not decoration" -- Hop 3's two parents are BOTH
+    ``derivation-root`` rows, so a bare ``{signed_id, intent_sha256}`` pair
+    list would hash a role-swapped construction identically to the correct
+    one. This is the correction v2 made after v1's Major (a single-parent
+    formula that aliased two distinct intents).
+    """
+    manifest = {"port": "tape_manifest", "signed_id": "a" * 64,
+                "intent_sha256": "c" * 64}
+    data = {"port": "tape_data", "signed_id": "b" * 64,
+            "intent_sha256": "d" * 64}
+    canonical, _ = _adr157_derivation_root_identity([manifest, data])
+    reordered, _ = _adr157_derivation_root_identity([data, manifest])
+    assert canonical == reordered
+
+    role_swapped, _ = _adr157_derivation_root_identity([
+        {"port": "tape_manifest", "signed_id": data["signed_id"],
+         "intent_sha256": data["intent_sha256"]},
+        {"port": "tape_data", "signed_id": manifest["signed_id"],
+         "intent_sha256": manifest["intent_sha256"]},
+    ])
+    assert role_swapped != canonical
+
+
+def _adr157_derivation_reserve_in_process(path, kind, signed_id,
+                                          intent_sha256, start, results):
+    """Attempt one derivation-root reservation from a separate OS process."""
+    import sqlite3
+
+    store = trust._SyntheticAuthorizationReserve(path)
+    connection = store._connection
+    start.wait()
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "INSERT INTO reserve_uses VALUES (?,?,?,?,?,?,?,?)",
+            (kind, signed_id, "1" * 64, "2" * 64, "3" * 64, "4" * 64,
+             intent_sha256, "RESERVED"),
+        )
+        connection.execute("COMMIT")
+    except sqlite3.IntegrityError:
+        if connection.in_transaction:
+            connection.execute("ROLLBACK")
+        results.put("spent")
+    else:
+        results.put("reserved")
+    finally:
+        store._close()
+
+
+def test_adr157_derivation_root_two_parent_race_has_one_cross_process_winner(
+    tmp_path,
+):
+    """ADR-0157 Gate 1 (the race gate).
+
+    Transplant of
+    ``test_adr136_roster_signed_id_has_one_cross_process_winner``
+    (``:3010-3033``): the same ``fork``/``Event``/two-``Process`` race,
+    against the same real ``_SyntheticAuthorizationReserve``, retargeted at
+    the ADR's own ``derivation-root`` identity formula instead of
+    ``roster-bootstrap``.
+
+    ``reserve_uses.kind`` carries no CHECK constraint, so the
+    ``(kind, signed_id)`` primary key fences a brand new kind exactly as it
+    fences the four kinds already shipped: this proves the fencing
+    mechanism the ADR's Decision relies on -- "the database decides, once,
+    atomically" -- independent of whether ``derivation-root``'s own
+    construction code exists (it does not; this task builds gates only).
+
+    Covers the TWO-PARENT case: both parents are the real
+    ``_REPLAY_TAPE_INPUTS`` ports (``document.py:766``) Hop 3 actually
+    uses, and the identity is the ADR's exact formula with parents sorted
+    canonically by ``port``.
+    """
+    import multiprocessing
+
+    path = str(tmp_path / "synthetic-reserve.sqlite")
+    trust._SyntheticAuthorizationReserve._provision(path)
+    parents = [
+        {"port": "tape_data", "signed_id": "b" * 64,
+         "intent_sha256": "d" * 64},
+        {"port": "tape_manifest", "signed_id": "a" * 64,
+         "intent_sha256": "c" * 64},
+    ]
+    signed_id, intent_sha256 = _adr157_derivation_root_identity(parents)
+    ctx = multiprocessing.get_context("fork")
+    start, results = ctx.Event(), ctx.Queue()
+    workers = [
+        ctx.Process(
+            target=_adr157_derivation_reserve_in_process,
+            args=(path, "derivation-root", signed_id, intent_sha256,
+                  start, results),
+        )
+        for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    start.set()
+    for worker in workers:
+        worker.join(timeout=10)
+        assert worker.exitcode == 0
+    assert sorted(results.get(timeout=2) for _ in workers) == [
+        "reserved", "spent",
+    ]
+
+
+def _adr157_crash_after_p4_commit(issuer, path):
+    """Crash right after the dynamic-p4-authority RESERVED->ISSUED commit."""
+    import os
+
+    def _crash_on_construct(_self, _token, _graph_arg):
+        os._exit(17)
+
+    issuer._publisher._reserve = trust._SyntheticAuthorizationReserve(path)
+    trust._DynamicP4TrustedArtifactResolver.__init__ = _crash_on_construct
+    trust._development_dynamic_p4_broker(issuer)
+    os._exit(1)  # pragma: no cover -- must never be reached
+
+
+@pytest.mark.xfail(
+    strict=True, raises=ValueError,
+    reason="ADR-0157 Gap 1 (recorded open, decision-log.md ## ADR-0157): a "
+           "crash between the RESERVED->ISSUED commit and construction "
+           "strands the intent permanently -- no retry or quarantine path "
+           "reaches it. Remove this marker only once Gap 1 is closed.",
+)
+def test_adr157_p4_authority_crash_after_commit_strands_the_intent(
+    tmp_path, monkeypatch,
+):
+    """ADR-0157 Gate 2 (the liveness gate).
+
+    Transplant of ``_adr136_crash_with_uncommitted_insert`` /
+    ``test_adr136_crash_before_commit_does_not_spend_id`` (``:3080-3094``),
+    with the ``os._exit`` moved from BEFORE the reserve INSERT to AFTER a
+    full ``RESERVED -> ISSUED`` commit.
+
+    Per the independent skeptic review that cleared ADR-0157 v4, this
+    targets the EXISTING, shipped ``_development_dynamic_p4_broker``
+    (``trust.py:9900-10018``) rather than the unbuilt ``derivation-root``
+    kind: that function has the identical commit-then-construct shape (the
+    commit completes at ``:9981-9982``, no construction runs before
+    ``:9991``), so crashing it right there reproduces Gap 1's exact
+    symptom in code that ships today, in a real forked OS process, not a
+    simulation.
+
+    XFAIL, strict, records Gap 1 as OPEN: a real crash at this boundary
+    leaves the row permanently ``ISSUED`` with no published authority. The
+    only available recovery -- retrying the same construction call --
+    recomputes the identical deterministic ``signed_id`` and dies on the
+    same ``IntegrityError`` the precedent uses to detect a second
+    construction, so it can never distinguish "died after commit" from
+    "already built". This is the first ``xfail`` in this repo (grepped,
+    zero prior uses under ``tests/``): used for lack of an existing
+    convention for a recorded-open-defect test.
+    """
+    import multiprocessing
+
+    publisher, issuer, _graph, _snapshot = _adr142_graph_case(
+        tmp_path, monkeypatch,
+    )
+    path = publisher._reserve._path
+    process = multiprocessing.get_context("fork").Process(
+        target=_adr157_crash_after_p4_commit, args=(issuer, path),
+    )
+    process.start()
+    process.join(timeout=10)
+    assert process.exitcode == 17
+
+    fresh = trust._SyntheticAuthorizationReserve(path)
+    row = fresh._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='dynamic-p4-authority'"
+    ).fetchone()
+    assert row == ("ISSUED",)  # OBSERVED: the commit survived the crash.
+    issuer._publisher._reserve = fresh
+
+    # Desired postcondition: a stuck-ISSUED intent should still be
+    # recoverable. It is not, today -- this is Gap 1, recorded open.
+    authority = trust._development_dynamic_p4_broker(issuer)
+    assert isinstance(authority, trust.CapturedAuthorizationAuthority)
+
 def test_adr136_roster_transition_audits_exact_order(tmp_path):
     cls = trust._SyntheticAuthorizationReserve
     path = str(tmp_path / "synthetic-reserve.sqlite")
