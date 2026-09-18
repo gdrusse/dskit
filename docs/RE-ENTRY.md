@@ -1,6 +1,251 @@
 # Re-entry
 
-## Current checkpoint: clustering/RL lane caught up and renumbered, NOT yet closed (2026-09-17)
+## Current checkpoint: ADR-0160 clustering/RL closed and merged (2026-09-18)
+
+`SklearnSegment`, `Sb3EvalEpisodes` and `FittedTransform.sidecar_problems`
+are on `main`, together with a six-line driver fix they made reachable.
+Candidate `b4af350`, branched from `origin/main` `9926d5c`, which it had
+already caught up with (72 commits) and renumbered 0148 -> 0160.
+
+**Affected suite on the merged candidate: 13833 passed, 0 failed, 265
+skipped, 1 xfailed** (`tests/pipeline pipeline_libs production onboarding
+production_libs`, 7m58s). Ruff and `git diff --check` clean.
+
+**Fifteen independent fresh-context lenses across seven rounds.** Six
+correctness/authority lenses returned CLEAN. Eight tests/integration lenses
+found eleven Majors between them; a seventh correctness lens found the one
+Major that was not a test defect.
+
+| round | candidate | correctness/authority | tests/integration |
+|---|---|---|---|
+| 5 | `46fbf7b` | CLEAN | FAIL, 3 Major |
+| 5b | `5bb6367` | CLEAN | FAIL, 2 Major |
+| 6 | `59143e1` | CLEAN | FAIL, 1 Major |
+| 7 | `d382c42` | CLEAN | FAIL, 1 Major |
+| 8 | `9cd5ba9` | **FAIL, 1 Major** | FAIL, 1 Major |
+| 9 | `33aeab5` | CLEAN | FAIL, 1 Major |
+| 10 | `66ea643` | (carried) | FAIL, 3 Major |
+| 11 | `b4af350` | (carried) | CLEAN |
+
+Rounds 10 and 11 carry the round-9 correctness verdict rather than
+skipping it: that lens returned CLEAN on `33aeab5`, and
+`git diff 33aeab5..b4af350 -- dskit/` is EMPTY, so the production blobs it
+cleared are byte-identical here. Both later rounds were test-only. The
+comparison is recorded per skeptic-review.md §5, and the final
+tests/integration lens verified it independently.
+
+### The one shipping defect
+
+Every Major but one was a test-coverage defect. The exception, found on
+`9cd5ba9` by a correctness lens and fixed in `965d6b9`:
+
+`_persist_json_artifacts` was called for the node being run and nothing
+else, but `_SearchSeam.apply_winner` re-executes `needed & dirty` and
+REPLACES those nodes' outputs in the live `node_outputs`. So when a node
+producing a `JsonArtifact` sat inside a search's re-execution set, the run
+exited `ran` reporting the WINNER's metrics while `artifacts/json/` held
+only the base pass's record -- the configuration the search rejected --
+the node record carried `{"type": "JsonArtifact"}` where its manifest
+belongs, and `resolve_json_artifact` refused the raw wrapper. Measured:
+a run reporting `mean_return 18.0` beside a single on-disk record of
+`mean_return 0.2`.
+
+The driver line is older than this ADR, but ADR-0160 is what makes it
+reachable: `git grep "JsonArtifact(" 9926d5c -- dskit/` returns NOTHING,
+so `Sb3EvalEpisodes` is the first production producer of the type, and it
+is the kind whose whole value proposition is the durable ordered record.
+`sklearn-segment` is unaffected -- it persists through
+`Node.write_artifact` inside `run()`, so the winner pass rewrites its
+sidecar correctly.
+
+**The entire production delta of this branch is those six lines:**
+`git diff 46fbf7b..66ea643 -- dskit/` is `driver.py | 6 ++++++`. The
+correctness lens that cleared them proved they are idempotent (the
+manifest written back is not a `JsonArtifact`, so a second call is an
+exact no-op), that no dict is persisted twice on any reachable path
+(10 calls, 10 distinct objects under a two-chained-search document), that
+the content-collision refusal is unreachable because the path IS the
+digest, that they are a strict no-op for a node emitting no artifact, and
+that `foreach`, walk-forward and `optuna-search` all come out correct.
+
+### The test-coverage family, and why it took six rounds
+
+Every other Major was *an assertion whose candidate sources coincide in
+the fixture, so no test can tell them apart* -- and each fix exposed a
+deeper instance of itself:
+
+1. the `fsum` guard asserted `sum((1e16,1.0,-1e16)) == 0.0`, false since
+   CPython 3.12 gave the builtin Neumaier compensation, so the fixture
+   could not separate `math.fsum` from `sum` at all;
+2. the per-episode `step` and the raw-vs-`float()` reward, both only ever
+   read on single-step episodes;
+3. the feature->axis mapping by VALUE: every cloud fixture was diagonal
+   (`f0 == f1`), so any transposition was invisible and mis-segmented 61%
+   of a three-cloud stream while the suite stayed green;
+4. the same mapping by NAME: every `features` list was alphabetical, so
+   "declared order" and `sorted()` coincided;
+5. **the fix for (4) was symmetric, not incomplete** -- `["f1","f0"]` IS
+   `sorted(reverse=True)`, so a descending normalisation became the
+   identity on the fixture and walked free at all three sites. Two names
+   can never separate a declared order from all its normalisations; three
+   in a rotation can;
+6. a FOURTH order-bearing site nobody had mutated, `segment_model_id`'s
+   digest, whose oracle sat on a fixture whose every list was already
+   canonical -- collapsing two predictors that assign the same row
+   differently onto one identity;
+7. `sidecar_problems` "asked unconditionally", pinned at exactly one value
+   of the LOADING node's `fit_split` (always absent), so gating the call
+   on `split is None` survived 6334 tests while leaking a `val`-fitted
+   segmentation;
+8. the `episode` id in the durable record, asserted only at
+   `n_episodes=1` where the live counter and the constant `0` coincide --
+   so `"episode": 0`, a reversed numbering and `index * 2` all survived;
+9. the regression test for the driver fix itself pinned only the FIRST
+   element of `winner_reran` -- fatal, because the only
+   `JsonArtifact`-emitting kind is a `score` node and a search's objective
+   target IS a score node, so the artifact-bearing node is always LAST;
+10. its two fixture nodes then emitted BYTE-IDENTICAL payloads, and
+   `_persist_json_artifacts` is content-addressed, so both shared ONE
+   manifest and every per-node assertion was satisfied by the OTHER node's
+   artifact -- a driver persisting only the first node and stamping its
+   manifest onto the rest passed 131 tests here and 302 across the search
+   suites;
+11. and `winner_reran` was exactly two elements, where "the first two",
+   "the first and the last" and "all of them" are the same list. That is
+   (5) again one level up: at two elements a list is indistinguishable
+   from several functions of itself;
+12. while the episode-id fix stopped one count short of the kind's own
+   `DEFAULT_EPISODES = 5`, leaving `min(index, 3)` and `index % 4` alive
+   -- both of which collapse the record at the DEFAULT configuration.
+
+### What now holds the line
+
+Mutation-verified throughout with `python -B`,
+`PYTHONDONTWRITEBYTECODE=1` and `__pycache__` cleared between mutants
+(a shared `__pycache__` silently runs stale bytecode on a same-second,
+same-length rewrite, which produced phantom results early in this lane).
+
+Zero survivors across: six permutations x four order-bearing sites x two
+arities, plus arity-gated variants, exhaustively re-run by an independent
+lens as all 5 non-identity 3-permutations and all 23 4-permutations at
+three sites (69 runs, 69 killed); three `segment_model_id`
+canonicalisations; the tier-1 hook gate; the center-index-for-label
+substitution; five episode-numbering mutants at two arities and a
+non-default seed; and five mutants of the driver fix including
+`winner_reran[:1]` and `[-1:]`. The permutation mutants die against the
+NEW TESTS ALONE with the rest of the file deselected, so nothing depends
+on a legacy fixture catching something by accident of arity.
+
+### Open backlog -- Minors and Nits, none blocking, none fixed
+
+*Bounded-arity fixtures, inherently* -- a final lens proved two
+survivors that are movable but not closable, and judged neither to hide a
+bug a person would plausibly write. `winner_reran[:3]` survives because the
+driver fixture's re-run chain is three nodes; the shortest shipped subgraph
+it cites is four (`["clip", "market", "qhat", "validate"]`), which is the
+principled length to move to. And `min(index, 7)` survives the episode-id
+counts `{2, 5, 8}`, because no finite count set kills every `min(index, K)`.
+Relatedly, the count `5` and the id `"the-default"` are bare literals: if
+`DEFAULT_EPISODES` moves and the two hardcoded 5s move with it, that
+parametrization silently stops covering the default while still claiming to.
+
+*The driver fix's own edges* -- wrapping the new loop in
+`try/except Exception: pass` survives, so the run-aborting path it
+introduces is unexercised; when it does fire, the failure is attributed to
+the SEARCH node and `json.dumps` names no node; the `except` overwrites
+`run.search_meta[key]`, dropping the `winner_reran` list; carry/`$prev`
+widens for re-executed nodes (the fix's intent, but observable for an
+existing document that silently always got its default); on a PARTIALLY
+completed winner pass the original defect remains, unchanged either way;
+a node returning shared module-level output state defeats the fix
+entirely, which violates the node contract anyway.
+
+*Refusals that raise instead of naming themselves* -- `_nearest` raises an
+unnamed `OverflowError` at |x| > ~1.3e154, and `records.number_ok`
+(tier 1, pre-existing, shared with `Standardize`/`SklearnReduction`)
+raises on a huge Python int reaching the validator or a 400-digit JSON
+integer in a sidecar; `_json_safe_problem` raises `RecursionError` on a
+deeply nested `env_params`; sb3's two finiteness guards are unreachable
+because `fsum` raises `OverflowError` first, and unexercised.
+
+*Coverage gaps* -- the variance `fsum` site; the `if counts:`
+message-completeness claim; `_build_env`'s `issubclass` gate for the new
+kind; the conformance `digest` never invoked for `sb3-eval-episodes`;
+`test_a_load_restores_the_identical_state_and_never_refits` cannot see a
+refit (the conformance probe does); the reward conversion pinned only for
+a non-float-subclass numpy type; the `sklearn-segment` conformance probe
+is not a value oracle (both sides permute together); the end-to-end
+document test asserts structure but never a value; no walk-forward,
+`foreach` or `$select.features` test for `sklearn-segment` in the file,
+though lenses drove all three by hand and they behaved; the diagnostic
+`where` strings in `_stepped`/`_action`/`_close_quietly` are pinned at
+`episode 0`; `_design_matrix`'s zero-row refusal and `_unusable_rows`'
+message-blanking branch are unpinned; and two PRE-EXISTING base sites --
+`fitted.py`'s written `fit_split`/`n_fit_rows` provenance, and the
+`state_outputs` would-overwrite guard -- are each pinned at one value.
+
+*Behaviour worth an ADR, not a patch* -- a declared-vs-wired artifact pin
+DISAGREEMENT is resolved silently rather than refused, for every pinning
+kind in the sb3 pack and beyond; the new hook is applied only where the
+authority is NOT (`Standardize` and `SklearnSelect` carry
+`serving_load_audited` but no override, so the ADR-0040 hole stays open on
+exactly the two classes licensed to serve a release -- pre-existing, and
+this change does not widen it); `Sb3EvalEpisodes` hands ONE `env_params`
+object to every episode and records that same live object, so a child env
+that mutates the dict it is handed makes the audit record describe a
+configuration episode 0 never saw; `birch` silently degrades a requested
+`n_clusters` where `kmeans` refuses by name; `features` may name the keys
+the node itself writes, so an unsatisfiable document plans clean while the
+sibling `SklearnReduction` refuses the analogous case at plan.
+
+*Owed to ADR-0149, not to this one* -- **`SklearnReduction` carries the
+identical feature-order blind spot**, at its apply site and at its own
+digest site: `REDUCE_PARAMS`' features `["strong","other","flat"]` are
+exactly their own descending sort, and
+`sorted(state["features"], reverse=True)` at `sklearn.py:3770` survives a
+green suite. Rotating that fixture was tried here and REVERTED: it changes
+nothing measurable, because those tests cannot see a swap of the first two
+features either. It needs its own bounded correction under its own ADR.
+
+*Nits* -- the module docstring's "proven against each member's own
+`predict`" overclaims: `_nearest` diverges from sklearn on near-duplicate
+centres from a degenerate fit, where DSKit's exactly-rounded answer is the
+mathematically correct one; `segment_model_id` differs for `0.0` vs
+`-0.0`; `_close_quietly` catches `Exception`, so a `BaseException` from
+`close()` does outrank the refusal it was meant never to outrank;
+`metrics: dict(summary)` aliasing and `sklearn.py:2955` recording
+`params["features"]` by alias; `mean_return`/`std_return` asserted with
+`pytest.approx` where the contract states exactness; "never calls `learn`"
+pinned only implicitly; `test_sb3.py` reads a hardcoded
+`LEGACY_NODE_KINDS` rather than the live `NODE_KINDS`;
+`test_the_model_id_moves_when_any_part_of_the_state_moves` moves only
+`centers`; `_json_safe_problem` lives in the tier-2 sb3 pack; `Sb3Eval`
+keeps bare `0`/`True`; `DEFAULT_SEGMENT_SEED` is public but absent from
+`__all__`; `_node_metrics` treats a manifest as a dict.
+
+### Limits, disclosed
+
+`deployment_eligible=false`. No real data, replay, training, paper or live
+activity; no HPO, final refit, backtest or lockbox. `learn` is never
+called and no real SB3 or Gymnasium object is constructed anywhere in the
+new suite, by design -- so `test_sb3.py`'s PPO round-trip and
+`TestSb3Conformance` were deliberately not run by any reviewer, and
+`_build_env`'s `issubclass` gate is unexercised for the new kind.
+Cross-host reproducibility of `centers` is an explicit non-promise.
+`SklearnSegment` deliberately does NOT carry `serving_load_audited`:
+licensing a kind to serve a release is authority this ADR does not claim.
+`dskit/production/` serving drives `SubgraphRunner` but never called
+`_persist_json_artifacts`, and whether it SHOULD persist JSON artifacts
+was not audited.
+
+### Next
+
+The child-side work ADR-0160 explicitly does not do -- an environment, a
+reward, a transition, orders and fills, and what a segment MEANS -- needs
+its own child ADR before any of it exists. The `SklearnReduction`
+feature-order correction above is the nearest bounded packet.
+
+## Prior checkpoint: clustering/RL lane caught up and renumbered, NOT yet closed (2026-09-17)
 
 Branch `claude/rl-clustering-adr0160` (`1929c3c`). The clustering/RL slice
 (`SklearnSegment`, `Sb3EvalEpisodes`, `FittedTransform.sidecar_problems`) has
