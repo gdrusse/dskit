@@ -472,7 +472,12 @@ def submitting_executors():
 #: How to build each concrete venue: the collaborators its constructor
 #: requires, and nothing else. A new core venue must appear here, which is the
 #: completeness half of the behavioural check below.
-VENUE_KEYWORDS = {"ShadowExecutor": {}, "PaperExecutor": {}, "RecordedExecutor": {"tape": ()}}
+VENUE_KEYWORDS = {
+    "ShadowExecutor": {},
+    "PaperExecutor": {},
+    "ArrivalPaperExecutor": {},
+    "RecordedExecutor": {"tape": ()},
+}
 
 
 @pytest.mark.parametrize("cls", submitting_executors(), ids=lambda cls: cls.__name__)

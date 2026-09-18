@@ -16442,3 +16442,157 @@ No production authority is added and no `deployment_eligible` claim is made.
 `learn`, HPO, final refit, market replay, backtest, paper trading and lockbox
 access remain unauthorized and untouched; the SB3 episode suite constructs no
 SB3 or Gymnasium object at all.
+
+## ADR-0161 — arrival-time execution: transport as an object in the simulated venue
+
+**Status:** accepted 2026-09-18 under the owner's standing pre-approval of
+tier-1/tier-2 additions for the production-audit arrival slice (session
+`claude/pg-f1-arrival-20260918`). Closes the shared seam behind the equity
+audit's EQ-04 and the pmquant audit's PM-05; both children wrap it later, and
+no child is wired here.
+
+**Context.** `PaperExecutor.submit` computes `now = clock.now_ms() +
+latency_ms.submit` and then immediately calls `_take(intent, now)`, which
+prices against `self._quotes[instrument]` — whatever quote is stored at the
+moment of the call, not the one that will stand at `now`. `cancel` applies the
+same shifted stamp and terminalises the order in the same call, so no fill can
+ever be delivered while a cancel is in flight. The suite's only latency test
+asserts the acknowledgment stamp alone. Latency is therefore a timestamp label,
+never a gate on which book an order sees, and the audit is right that
+time-stamping a fill later cannot reproduce adverse selection during transport.
+
+The lifecycle vocabulary for the missing states already exists and is already
+wired: `vocab.STATUSES` carries `pending` and `pending_cancel`,
+`TERMINAL_STATUSES` excludes both, `leg._EVENT_BY_STATUS` maps them to `ack`
+and `status` under an `exact=True` pin, `SeriesState` folds an `order_event`
+by that status, `StateView.pending` is the fold's in-flight slot,
+`Reconciler._orders` resolves every pending ref through `executor.order(ref)`
+and `Recovery.run` queries the same verb and never resends. Nothing asynchronous
+has ever exercised that path: `executor.py` pins only eight of the eleven
+statuses, because a synchronous venue never reaches the other three.
+
+**Decision.** Add one concrete simulated venue, `ArrivalPaperExecutor`, as a
+subclass of `PaperExecutor` in `executor.py`, plus the transport objects it
+needs. No branch selects it; the serve document names the class.
+
+1. **Transport is an object, not a delay.** `_InFlight` is an ABC with one
+   `@abstractmethod`, `deliver(venue, now_ms)`. `_InFlightSubmit` prices the
+   order against the book it finds on arrival; `_InFlightCancel` applies to
+   whatever remains. `_ArrivalQueue` holds them ordered on
+   `(at_ms, send order)`, so ties at one instant keep send order. A venue has
+   no thread, so the queue is drained by the verbs that TELL it about an
+   instant — `on_quote`, `submit`, `cancel` — and by nothing else.
+2. **A read never commits.** `order`, `open_orders`, `fills` and `transport`
+   answer from what has already happened and land nothing. A query that could
+   make an order arrive would make its fill a function of when somebody
+   happened to ask rather than of the tape: `Recovery.run` queries every
+   pending ref, so after an outage longer than the latency it would price the
+   order against the last pre-crash book and append that fill to the chain as
+   fact, and two restarts of different duration would record different
+   ledgers. Uncontrolled non-determinism is not admissible in a package whose
+   replay-parity and no-wall-clock claims are load-bearing.
+3. **An arrival is priced by the book of its own instant.** `on_quote` lands
+   every message due *strictly before* the quote's `asof_ms` against the book
+   that stands, then publishes the quote, then lands the rest. A quote
+   published at `asof_ms` is in the book from `asof_ms` onward; an order that
+   arrived earlier must never see it. The two reaches reuse the module's
+   existing `_Reach(through=...)` strategy rather than a boolean flag.
+4. **In flight is `pending`; cancelling is `pending_cancel`.** Both come from
+   `vocab.STATUSES` — no new status is invented and `vocab.py` is unchanged.
+   `executor.py`'s own status pin widens from eight names to ten. An order in
+   transport is held apart from the BOOK, so `_march` can never fill something
+   the venue has not received — but it is still one of this venue's
+   `open_orders()`, because `Executor.open_orders` promises "the non-terminal
+   `OrderState`s this executor owns" and an order in transport is both. Two
+   generic bodies depend on that: `Executor.cancel_all`, which is the halt's
+   only cancellation path, and `Reconciler._orders`, where a ref the fold
+   holds `working` and the venue omits reads as `missing_at_venue` — an
+   economic break that can halt a series over nothing but transport. The
+   invariant is restored rather than patched per consumer, so neither is
+   overridden and a future consumer inherits the same guarantee.
+5. **A fill delivered before a cancel acknowledgment is retained.** A cancel
+   is marked at send time and applied at `sent + latency_ms.cancel`; between
+   those instants the order keeps marching and may fill. The landing cancel
+   only sets the status, so `filled_qty` stands and only the remainder is
+   cancelled. A fill during that window re-states `pending_cancel` rather than
+   erasing it.
+6. **A cancel for an order still in transport CHASES it, and never lands
+   before it.** §5.7's battery requires that a terminal cancel acknowledgement
+   mean a terminal order, so the tempting `rejected`/`unknown_ref` is wrong
+   here: it would report the end of an order still on its way. The request is
+   queued instead and the order reads `pending_cancel`. A cancel carrying less
+   latency than its own order would otherwise overtake it and find nothing at
+   the venue; dropping it there would make an ACCEPTED cancel request a lie
+   and would leave the halt's kill switch unable to stop an order in transport
+   — the one thing it exists to do — so the venue queues it behind the order
+   at `max(sent + cancel latency, the order's arrival)`. What the sweep can
+   NOT undo is a fill an order takes the instant it lands: no venue processes
+   a cancel for an order it has not received, so the guarantee is that nothing
+   SURVIVES the sweep, not that nothing trades. `unknown_ref` is kept for a
+   reference this venue was never sent at all.
+7. **What the venue's own `capabilities` decline never enters transport.**
+   §5.7's "capability gating precedes any I/O" is a local refusal, so an
+   unsupported time-in-force and a proposal naming no order are answered
+   terminally at the sender. The rule has one owner, `_gated`, which `_take`
+   reads too — the gate is not restated for the asynchronous path.
+8. **The book is monotone in exchange event time.** A quote older than the one
+   standing for its instrument is refused and counted as a stream gap, per
+   instrument. An arrival-time book that can move backwards is not one.
+9. **Evidence the executor owns.** `TransportEvidence` retains, per client
+   ref: send, scheduled arrival, acknowledgment, every fill instant, cancel
+   request, cancel arrival, terminal acknowledgment, and the publication and
+   local-receipt instants of the book the order priced against — whose
+   difference is the clock offset the venue can see. `stream_gaps()` reports
+   the out-of-order count per instrument. Feature cutoff and decision
+   completion are NOT here: they are upstream of the venue and belong to the
+   serve loop and the child.
+
+**Reachability, and the contract literals this moves.** A seam no document
+can name closes no gap, and `compose.RUNG_TABLE` admits a core KIND at a
+simulated rung and nothing else — so a class reference refuses at `shadow` and
+`paper` exactly as `PaperExecutor` by path always did, and the four rungs
+between them refused every spelling of this venue. Two literals therefore move
+deliberately, under the owner's pre-approval for this work. `EXECUTOR_KINDS`
+gains a fourth kind, `paper-arrival`; the D14 property that matters — core
+registers nothing that can reach a socket — is now asserted rather than
+counted. And `_Rung`'s four core-kind slots become TUPLES of admissible kinds:
+`paper` admits `("paper", "paper-arrival")`, because they are one venue family
+differing only in how they model transport, while `shadow` still admits
+`("shadow",)` alone — a rung that decides and declines may not select a venue
+that books fills — and the live rungs still admit none.
+
+**Compatibility.** `PaperExecutor`'s behaviour is unchanged for every existing
+document, and the guarantee is structural rather than conditional: there is no
+new knob whose default could be misread and `_PARAMS` is unmoved. Selecting
+the new venue is a change to a graded document field, and therefore a new
+release hash.
+Two extractions inside `PaperExecutor` give a rule one owner instead of two
+copies — `_orderable(proposal)` and `_quote_of(quote)`, the twin of the
+existing `_intent_of` — and are provably equivalent to the conditions they
+replace. With `latency_ms = {submit: 0, cancel: 0}` the arrival queue
+degenerates to the synchronous path BY CONSTRUCTION: the message is queued and
+landed inside the same call, at the same instant, so the acknowledgment and the
+book are the ones today produces. That degeneration is pinned by a test that
+runs the same script against both classes and compares every field.
+
+**Non-goals.** Measured latency, queue-position or slippage distributions (that
+is EQ-08, a later gate); a real venue adapter or any concrete `LiveExecutor`;
+child wiring; the replay-tape codec; the ADR-0157 liveness xfail. Passing these
+deterministic ordering tests is the FIRST gate — it establishes that the seam
+orders events correctly, and establishes nothing about agreement with a real
+venue's fills or markouts, which is a separate, separately authorized gate.
+
+**Consequences.** The fold's in-flight machinery becomes reachable: a ref in
+`StateView.pending` now resolves to a `pending` `OrderState` through
+`executor.order(ref)` instead of `None`, so `Recovery.run` records `pending`
+— for an order still in transport, whether recovery runs inside the latency
+window or long after it, because querying never lands it — and
+`Reconciler._orders` resolves it instead of raising.
+`breaker.cancel_working` additionally judges the sweep against the fold it was
+handed: a `view.working` ref no ack answered for downgrades `submitted` or
+`partial` to `unknown`, because `cancel_outcome` reads only the acks it was
+given and a halt that under-reports is worse than one that fails loudly.
+A venue that answers a pending ref is what makes "an unknown outcome is
+resolved by querying, never by resending" true for an order still in transport.
+The terminal acknowledgment of a landed cancel reaches the fold through the
+existing reconcile/query path, not through a second return value from `cancel`.
