@@ -36,6 +36,7 @@ document naming this kind plans on a machine without either.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import partial
 
 from dskit.pipeline.document import is_node_ref, is_prev_ref
 from dskit.pipeline.libs.pyomo import DEFAULT_SOLVER, PyomoSolve
@@ -51,7 +52,7 @@ from .books import (
     contract_inputs_from_book,
     entry_gate,
 )
-from .fees import FeeBook, resolve_fee_rates
+from .fees import DEFAULT_FILL_FEE_POLICY, FILL_FEE_POLICIES, FeeBook, resolve_fee_rates
 from .ladder.protocols import LadderType, SettlementLaw, rung_sort_key
 
 __all__ = [
@@ -190,6 +191,11 @@ def _event_output(alloc):
             for (c, s), fills in alloc.level_fills.items()
         },
         "fee_reconciled": {_position_key(c, s): ok for (c, s), ok in alloc.fee_reconciled.items()},
+        "premium": float(alloc.premium),
+        "fees": {_position_key(c, s): float(v) for (c, s), v in alloc.fees.items()},
+        "fee_policy": alloc.fee_policy,
+        "approx_outlay": float(alloc.approx_outlay),
+        "refusal": alloc.refusal,
         "wealth_min": float(alloc.wealth.min()),
         "wealth_max": float(alloc.wealth.max()),
     }
@@ -205,6 +211,16 @@ def _event_output(alloc):
         },
         "evidence": evidence,
     }
+
+
+class _EventResolution(mio.ExactFeeResolution):
+    """The exact-fee resolution, answering THIS node's outputs on a refusal."""
+
+    __slots__ = ()
+
+    def refused(self, inputs, entered, reason):
+        """Shape a refused allocation as the node's five named outputs (dict)."""
+        return _event_output(super().refused(inputs, entered, reason))
 
 
 def _spread(values):
@@ -238,8 +254,12 @@ class KellyMIO(PyomoSolve):
         (>= 0, default 0), ``depth_haircut`` (in (0, 1], default 1),
         ``n_tangents`` (int >= 2, default 128), ``event_cap`` (optional
         dollars > 0; absent, the deployable is divided evenly across the
-        batch's gated events), ``split`` (one of the split names, default
-        ``"test"``).
+        batch's gated events), ``fee_policy`` (how the venue bills a
+        multi-level fill — ``order_vwap`` (default), ``per_fill`` or
+        ``conservative``), ``on_exact_fee_exceeded`` (``refuse``, the
+        fail-closed default, or ``retighten``),
+        ``max_retighten_rounds`` (int >= 0, default 4), ``split`` (one of
+        the split names, default ``"test"``).
 
     Examples
     --------
@@ -267,6 +287,9 @@ class KellyMIO(PyomoSolve):
         "depth_haircut",
         "n_tangents",
         "event_cap",
+        "fee_policy",
+        "on_exact_fee_exceeded",
+        "max_retighten_rounds",
         "split",
     )
 
@@ -326,6 +349,26 @@ class KellyMIO(PyomoSolve):
         if params.get("event_cap") is not None:
             _bounded(problems, params, "event_cap", default=None, lo=0.0, hi=None,
                      lo_open=True, hi_open=True)
+        policy = params.get("fee_policy", DEFAULT_FILL_FEE_POLICY)
+        if not isinstance(policy, str) or policy not in FILL_FEE_POLICIES:
+            problems.append(
+                "fee_policy must name a declared fill fee policy "
+                f"({'/'.join(sorted(FILL_FEE_POLICIES))}) — it says how the venue bills "
+                f"the SET of fills behind one position, got {policy!r}"
+            )
+        on_exceeded = params.get("on_exact_fee_exceeded", mio.DEFAULT_ON_EXACT_FEE_EXCEEDED)
+        if not isinstance(on_exceeded, str) or on_exceeded not in mio.ON_EXACT_FEE_EXCEEDED:
+            problems.append(
+                "on_exact_fee_exceeded must be one of "
+                f"({'/'.join(mio.ON_EXACT_FEE_EXCEEDED)}) — what an event does when its "
+                f"EXACT bill will not fit, got {on_exceeded!r}"
+            )
+        check_int_param(
+            problems,
+            "max_retighten_rounds",
+            params.get("max_retighten_rounds", mio.DEFAULT_RETIGHTEN_ROUNDS),
+            ge=0,
+        )
         split = params.get("split", DEFAULT_SPLIT)
         if split not in SPLIT_NAMES:
             problems.append(
@@ -406,6 +449,14 @@ class KellyMIO(PyomoSolve):
         ValueError
             A record whose native is not a decision epoch; a threshold rung
             with no ``markets`` row; or a total outlay past the deployable.
+
+        Notes
+        -----
+        Every dollar reported here is the EXACT venue bill on the fills
+        the solver chose, never the program's linear fee: an event whose
+        exact bill will not fit its budget is refused (or re-solved under
+        reserved headroom) and contributes nothing, which
+        ``evidence.totals.n_events_refused`` counts.
         """
         params = self.params
         bankroll = float(params["bankroll"])
@@ -645,13 +696,33 @@ class KellyMIO(PyomoSolve):
                 depth_haircut=float(params.get("depth_haircut", mio.DEFAULT_DEPTH_HAIRCUT)),
                 n_tangents=int(params.get("n_tangents", mio.DEFAULT_N_TANGENTS)),
                 event_cap=event_cap,
+                fee_policy=params.get("fee_policy", DEFAULT_FILL_FEE_POLICY),
+                on_exact_fee_exceeded=params.get(
+                    "on_exact_fee_exceeded", mio.DEFAULT_ON_EXACT_FEE_EXCEEDED
+                ),
+                max_retighten_rounds=int(
+                    params.get("max_retighten_rounds", mio.DEFAULT_RETIGHTEN_ROUNDS)
+                ),
             )
             laws[event] = kind.law.value
         return events, laws
 
+    def _solve_once(self, event, solver):
+        """Build, solve and read ONE program through the doorway's two hooks."""
+        self._current_event = event
+        try:
+            model = self.build_model(None, self.params)
+            return self.extract(model, solver.solve(model))
+        finally:
+            self._current_event = None
+
     def _solve_all(self, events, candidates):
         """Solve every event through the two hooks with ONE resolved solver; fold the outputs."""
         positions, outlay, lots, growth, evidence = {}, 0.0, 0, 0.0, {}
+        resolution = _EventResolution(
+            self.params.get("on_exact_fee_exceeded", mio.DEFAULT_ON_EXACT_FEE_EXCEEDED),
+            int(self.params.get("max_retighten_rounds", mio.DEFAULT_RETIGHTEN_ROUNDS)),
+        )
         solver = None
         for event_id in sorted(events):
             event = events[event_id]
@@ -664,13 +735,18 @@ class KellyMIO(PyomoSolve):
                 if solver is None:
                     solver = self._resolve_solver()
                     self.log.info("solving with %r", self.params.get("solver", DEFAULT_SOLVER))
-                self._current_event = event
-                try:
-                    model = self.build_model(None, self.params)
-                    results = solver.solve(model)
-                    out = self.extract(model, results)
-                finally:
-                    self._current_event = None
+                # The solve is wrapped, not called: an exact bill that will
+                # not fit is refused or re-solved under reserved headroom,
+                # never reported at the program's linear approximation.
+                out = resolution.resolve(
+                    event,
+                    partial(self._solve_once, solver=solver),
+                    entered=[s.key for s in gated],
+                )
+                if out["evidence"]["status"] == mio.REFUSED_STATUS:
+                    self.log.warning(
+                        "event %s refused: %s", event_id, out["evidence"]["refusal"]
+                    )
             positions.update(out["positions"])
             outlay += out["outlay"]
             lots += out["lots"]
@@ -718,6 +794,9 @@ class KellyMIO(PyomoSolve):
                     1 for row in candidates.values() if row["disposition"] == DISPOSITION_ROUTED_OUT
                 ),
                 "n_arb_routed": len(arbs),
+                "n_events_refused": sum(
+                    1 for e in events.values() if e["status"] == mio.REFUSED_STATUS
+                ),
                 "budget": float(deployable),
                 "outlay": float(outlay),
                 "bankroll": float(bankroll),

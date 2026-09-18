@@ -19,7 +19,7 @@ from dskit.pipeline.node import NodeContext
 
 from pmquant import mio
 from pmquant.books import DecisionEpochRecord, market_record_from_epoch, mid_from_ladders
-from pmquant.fees import FeeRateUnresolved
+from pmquant.fees import DEFAULT_FILL_FEE_POLICY, FILL_FEE_POLICIES, FeeRateUnresolved
 from pmquant.nodes_capital import (
     DEFAULT_SPLIT,
     DISPOSITION_DECLINED,
@@ -183,6 +183,23 @@ class TestParams:
         assert DEFAULT_SPLIT == "test"
         assert KellyMIO.validate_params({**PARAMS, "n_tangents": mio.DEFAULT_N_TANGENTS}) == []
         assert KellyMIO.validate_params({**PARAMS, "min_lot": mio.DEFAULT_MIN_LOT}) == []
+        assert KellyMIO.validate_params(
+            {**PARAMS, "fee_policy": DEFAULT_FILL_FEE_POLICY}
+        ) == []
+        assert KellyMIO.validate_params(
+            {**PARAMS, "on_exact_fee_exceeded": mio.DEFAULT_ON_EXACT_FEE_EXCEEDED}
+        ) == []
+        assert KellyMIO.validate_params(
+            {**PARAMS, "max_retighten_rounds": mio.DEFAULT_RETIGHTEN_ROUNDS}
+        ) == []
+
+    @pytest.mark.parametrize("policy", sorted(FILL_FEE_POLICIES))
+    def test_every_declared_fee_policy_is_accepted(self, policy):
+        assert KellyMIO.validate_params({**PARAMS, "fee_policy": policy}) == []
+
+    @pytest.mark.parametrize("mode", list(mio.ON_EXACT_FEE_EXCEEDED))
+    def test_every_declared_exceeded_mode_is_accepted(self, mode):
+        assert KellyMIO.validate_params({**PARAMS, "on_exact_fee_exceeded": mode}) == []
 
     @pytest.mark.parametrize(
         ("knob", "value"),
@@ -199,6 +216,10 @@ class TestParams:
             ("fee_rate_by_series", {}), ("fee_rate_by_series", {"KXA": 1.5}),
             ("fee_rate_by_series", "0.07"), ("fee_rate_by_series", [("KXA", 0.07)]),
             ("fee_rate_by_series", {"KXA": {"cases": []}}),
+            ("fee_policy", "vwap"), ("fee_policy", None), ("fee_policy", 7),
+            ("on_exact_fee_exceeded", "ignore"), ("on_exact_fee_exceeded", None),
+            ("max_retighten_rounds", -1), ("max_retighten_rounds", 1.5),
+            ("max_retighten_rounds", "4"),
         ],
     )
     def test_bad_knobs_refuse_by_name(self, knob, value):
@@ -301,6 +322,20 @@ class TestInputs:
 # ---------------------------------------------------------------------------
 
 
+def _multilevel_inputs():
+    """One contract with a TWO-level YES ask (0.30 and 0.40, 500 lots each).
+
+    The shared fixture's books are single-level, where the exact fee never
+    exceeds the program's linear one; a Jensen gap needs two prices.
+    """
+    records = [
+        _lead(SERIES, "KXTEST-E1", "KXTEST-E1-T1", NEW_TS,
+              [[0.28, 10]], [[0.70, 500], [0.60, 500]]),
+        _settle(SERIES, "KXTEST-E1", "KXTEST-E1-T1"),
+    ]
+    return _inputs(records=records, beliefs={"KXTEST-E1-T1": 0.70})
+
+
 def _run(tmp_path, inputs=None, splits=None, **over):
     node = _node(**over)
     return node, node.run(_ctx(tmp_path, splits), inputs or _inputs())
@@ -321,8 +356,9 @@ class TestRun:
         assert ev["stage"] == "sizing" and ev["split"] == "test"
         assert set(ev["totals"]) == {
             "n_candidates", "n_priced", "n_entered", "n_entered_zero_lots", "n_routed_out",
-            "n_arb_routed", "budget", "outlay", "bankroll",
+            "n_arb_routed", "n_events_refused", "budget", "outlay", "bankroll",
         }
+        assert ev["totals"]["n_events_refused"] == 0
         assert out["metrics"]["n_rows"] == len(_records())
         assert out["metrics"]["n_events"] == 2
         assert out["metrics"]["outlay"] == out["outlay"]
@@ -603,6 +639,57 @@ class TestRun:
         assert out["positions"] == {f"{c}|{s}": n for (c, s), n in alloc.positions.items()}
         assert out["outlay"] == pytest.approx(alloc.outlay)
         assert out["metrics"]["expected_log_growth"] == pytest.approx(alloc.expected_log_growth)
+
+    def test_an_event_whose_exact_bill_will_not_fit_is_refused_not_billed(self, tmp_path):
+        # One contract, YES asks at 0.30 and 0.40, 500 lots each — the audit's
+        # own example. The program bills the full depth at 365.76 (linear) and
+        # the venue bills 365.93, so a 365.77 budget admits the first and not
+        # the second. deploy_frac x bankroll IS 365.77 here.
+        node, out = _run(
+            tmp_path,
+            inputs=_multilevel_inputs(),
+            deploy_frac=0.36577,
+            kelly_fraction=1.0,
+        )
+        assert out["positions"] == {} and out["outlay"] == 0.0 and out["lots"] == 0
+        totals = out["evidence"]["totals"]
+        assert totals["n_events_refused"] == 1
+        assert totals["n_entered"] == 1  # entered, considered, then withdrawn
+        event = out["evidence"]["events"]["KXTEST-E1"]
+        assert event["status"] == mio.REFUSED_STATUS
+        assert "exact" in event["refusal"]
+        assert event["lots"] == 0 and event["outlay"] == 0.0
+
+    def test_the_same_event_retightens_into_the_budget_when_asked(self, tmp_path):
+        node, out = _run(
+            tmp_path,
+            inputs=_multilevel_inputs(),
+            deploy_frac=0.36577,
+            kelly_fraction=1.0,
+            on_exact_fee_exceeded="retighten",
+        )
+        assert out["lots"] > 0
+        assert 0.0 < out["outlay"] <= 365.77 + 1e-9
+        assert out["evidence"]["totals"]["n_events_refused"] == 0
+        event = out["evidence"]["events"]["KXTEST-E1"]
+        assert event["status"] == "optimal"
+        assert event["fee_policy"] == DEFAULT_FILL_FEE_POLICY
+        # the reported outlay is premium + the exact fees, and it is STRICTLY
+        # more than the linear cost the program solved on
+        assert event["outlay"] == pytest.approx(
+            event["premium"] + sum(event["fees"].values()), abs=1e-12
+        )
+        assert event["outlay"] > event["approx_outlay"]
+        assert event["refusal"] is None
+
+    def test_the_evidence_carries_the_exact_bill_beside_the_approximation(self, tmp_path):
+        _node_, out = _run(tmp_path)
+        for event in out["evidence"]["events"].values():
+            assert set(event) >= {"premium", "fees", "fee_policy", "approx_outlay", "refusal"}
+            assert event["outlay"] == pytest.approx(
+                event["premium"] + sum(event["fees"].values()), abs=1e-12
+            )
+            assert set(event["fees"]) == set(event["level_fills"])
 
     def test_build_model_outside_run_refuses(self):
         with pytest.raises(RuntimeError, match="run"):

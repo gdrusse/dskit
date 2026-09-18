@@ -16,20 +16,29 @@ from pmquant.books import (
     IncompleteBookError,
     contract_inputs_from_book,
 )
+from pmquant.fees import DEFAULT_FILL_FEE_POLICY, FeeBook
 from pmquant.mio import (
     DEFAULT_DEPTH_HAIRCUT,
     DEFAULT_MIN_LOT,
     DEFAULT_N_TANGENTS,
+    DEFAULT_ON_EXACT_FEE_EXCEEDED,
+    DEFAULT_RETIGHTEN_ROUNDS,
     DEFAULT_TAU,
+    ON_EXACT_FEE_EXCEEDED,
+    REFUSED_STATUS,
+    RETIGHTEN_MIN_STEP,
     ROUND_UP_CENT,
     DegenerateScenarioLawError,
     EventInputs,
+    ExactFeeBudgetExceeded,
+    ExactFeeResolution,
     ScenarioSet,
     empty_allocation,
     event_program,
     gated_sides,
     mutually_exclusive_scenarios,
     read_allocation,
+    refused_allocation,
     solve_event,
     threshold_scenarios,
     utility_at,
@@ -37,6 +46,7 @@ from pmquant.mio import (
 )
 
 SERIES = "KXTEST"
+POLY_SERIES = "POLYTEST"
 W0, B = 1000.0, 500.0
 DEPTH = 2000
 RATE = 0.07
@@ -98,7 +108,13 @@ def _u(w, w0, lam):
 def oracle_yes(q, ask, rate, w0, budget, depth, lam, min_lot=1):
     """Brute-force single-contract fractional Kelly on the YES side.
 
-    ``phi = rate*ask*(1-ask)``; ``outlay(n) = n*ask + n*phi + 0.01``;
+    This oracle predicts WHAT THE SOLVER CHOOSES, so it optimizes the
+    program's own LINEAR cost — ``phi = rate*ask*(1-ask)``,
+    ``outlay(n) = n*ask + n*phi + 0.01`` — which is what the MILP
+    maximizes against. The growth it REPORTS comes back from
+    :func:`growth_yes`, which bills the exact venue fee instead: the two
+    fee models have different jobs and the test holds each to its own.
+
     ``w_yes = w0 + n - outlay``; ``w_no = w0 - outlay``; the best ``n``
     maximizes ``q*u(w_yes) + (1-q)*u(w_no)`` over every feasible lot count
     (``n = 0`` scores ``u(w0) = 0``; a positive ``n`` starts at ``min_lot``).
@@ -115,11 +131,14 @@ def oracle_yes(q, ask, rate, w0, budget, depth, lam, min_lot=1):
 
 
 def growth_yes(n, q, ask, rate, w0):
-    """Exact expected log growth of ``n`` YES lots at one level."""
+    """Expected log growth of ``n`` YES lots at one level, on the EXACT bill.
+
+    The outlay is the independent oracle's — premium plus the venue's own
+    rounded fee on the whole position — never the program's linear phi.
+    """
     if n == 0:
         return 0.0
-    phi = rate * ask * (1.0 - ask)
-    outlay = n * ask + n * phi + 0.01
+    outlay = oracle_cash("kalshi", ((ask, n),), rate)
     return q * math.log((w0 + n - outlay) / w0) + (1.0 - q) * math.log((w0 - outlay) / w0)
 
 
@@ -132,6 +151,15 @@ def test_the_defaults_are_the_documented_ones():
     assert DEFAULT_DEPTH_HAIRCUT == 1.0
     assert DEFAULT_MIN_LOT == 1
     assert ROUND_UP_CENT == 0.01
+    # the exact-fee contract's own constants
+    assert DEFAULT_FILL_FEE_POLICY == "order_vwap"
+    assert ON_EXACT_FEE_EXCEEDED == ("refuse", "retighten")
+    assert DEFAULT_ON_EXACT_FEE_EXCEEDED == "refuse"  # fail closed, never report the estimate
+    assert DEFAULT_RETIGHTEN_ROUNDS == 4
+    assert REFUSED_STATUS == "refused-exact-fee"
+    # two facts that happen to share a value; the pin is what keeps them honest
+    assert RETIGHTEN_MIN_STEP == 0.01
+    assert RETIGHTEN_MIN_STEP == ROUND_UP_CENT
 
 
 # --- scenario laws ----------------------------------------------------------
@@ -299,6 +327,11 @@ def test_event_inputs_refuse_bad_knobs():
         {"depth_haircut": 0.0}, {"depth_haircut": 1.5}, {"n_tangents": 1},
         {"event_cap": 0.0}, {"series": ""}, {"event_id": ""}, {"contracts": []},
         {"scenarios": ScenarioSet([1.0], {"OTHER": [1]})},
+        {"fee_policy": "vwap"}, {"fee_policy": None}, {"fee_policy": 1},
+        {"on_exact_fee_exceeded": "ignore"}, {"on_exact_fee_exceeded": None},
+        {"max_retighten_rounds": -1}, {"max_retighten_rounds": True},
+        {"max_retighten_rounds": 1.0},
+        {"fee_allowance": -1.0}, {"fee_allowance": B}, {"fee_allowance": B + 1.0},
     ):
         with pytest.raises(ValueError):
             EventInputs(**{**good, **bad})
@@ -364,8 +397,12 @@ def test_single_contract_yes_matches_the_brute_force_oracle(solver):
     assert alloc.expected_log_growth == pytest.approx(g_oracle, abs=1e-4)
     # the reported growth is the EXACT recompute at the solver's own n
     assert alloc.expected_log_growth == pytest.approx(growth_yes(n, q, 0.30, RATE, W0), abs=1e-9)
+    # the reported outlay is the venue's own bill, matched to the oracle ...
+    assert alloc.outlay == pytest.approx(oracle_cash("kalshi", ((0.30, n),), RATE), abs=1e-9)
+    # ... and the program's linear cost is carried beside it, never in its place
     phi = RATE * 0.30 * 0.70
-    assert alloc.outlay == pytest.approx(n * (0.30 + phi) + ROUND_UP_CENT, abs=1e-9)
+    assert alloc.approx_outlay == pytest.approx(n * (0.30 + phi) + ROUND_UP_CENT, abs=1e-9)
+    assert alloc.outlay < alloc.approx_outlay  # one level: no Jensen gap, the cent is real
     ((price, filled),) = alloc.level_fills[("C", "yes")]
     assert price == pytest.approx(0.30) and filled == n  # the mirror of the 0.70 NO bid
     assert alloc.fee_reconciled == {("C", "yes"): True}
@@ -508,3 +545,317 @@ def test_the_module_imports_without_numpy_or_pyomo():
     done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     importlib.import_module("pmquant.mio")
+
+
+# --- PM-01: the reported money must be the venue's EXACT bill ---------------
+#
+# The independent fee/cash oracle. It restates the two venues' published
+# arithmetic in EXACT DECIMAL and imports nothing from ``pmquant.fees``:
+# the production path guards binary dust with a nine-decimal snap, this
+# one never meets dust at all, and the two must agree on every dollar
+# this child reports (CLAUDE.md's blessed "deliberate independent
+# restatement"). Prices and rates come in as decimal STRINGS so the
+# oracle prices the number the test MEANS, never a float's tail.
+
+AUDIT_FILLS = (("0.30", 500), ("0.40", 500))
+AUDIT_PREMIUM = 350.0
+AUDIT_LINEAR_OUTLAY = 365.76  # 350 + 15.75 linear + the one-cent allowance
+AUDIT_EXACT_OUTLAY = 365.93  # 350 + ceil-to-cent(1000 * 0.07 * 0.35 * 0.65)
+
+
+def oracle_fee(venue, contracts, price, rate):
+    """One venue fee on one billable quantity, in exact decimal."""
+    from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
+
+    c, p, r = Decimal(int(contracts)), Decimal(str(price)), Decimal(str(rate))
+    raw = r * c * p * (Decimal(1) - p)
+    if venue == "kalshi":
+        return float(raw.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
+    if venue == "polymarket":
+        return float(raw.quantize(Decimal("0.00001"), rounding=ROUND_HALF_UP))
+    raise AssertionError(f"the oracle prices no venue {venue!r}")
+
+
+def oracle_vwap(fills):
+    """The volume-weighted average price of ``fills``, in exact decimal."""
+    from decimal import Decimal
+
+    n = sum(int(lots) for _p, lots in fills)
+    return sum(Decimal(str(p)) * int(lots) for p, lots in fills) / Decimal(n)
+
+
+def oracle_order_fee(venue, fills, rate):
+    """ONE fee on the total at VWAP — the order-level rule ``walk_book`` bills."""
+    return oracle_fee(venue, sum(int(n) for _p, n in fills), oracle_vwap(fills), rate)
+
+
+def oracle_per_fill_fee(venue, fills, rate):
+    """One fee per FILL, summed — the per-fill alternative."""
+    return float(sum(oracle_fee(venue, n, p, rate) for p, n in fills if int(n) > 0))
+
+
+def oracle_premium(fills):
+    """The premium ``fills`` consume, in exact decimal."""
+    from decimal import Decimal
+
+    return float(sum(Decimal(str(p)) * int(n) for p, n in fills))
+
+
+def oracle_cash(venue, fills, rate):
+    """Premium plus the order-level fee: the cash one side's fills consume."""
+    return oracle_premium(fills) + oracle_order_fee(venue, fills, rate)
+
+
+def _audit_contract(q=0.70, rate=RATE, cid="C", depth=500):
+    """The audit's book: YES asks at 0.30 and 0.40, ``depth`` lots each."""
+    return contract_inputs_from_book(
+        cid, q, yes_bids=[[0.28, 10]], no_bids=[[0.70, depth], [0.60, depth]], fee_rate=rate
+    )
+
+
+def _audit_inputs(series=SERIES, **over):
+    over.setdefault("kelly_fraction", 1.0)
+    return _inputs([_audit_contract()], series=series, **over)
+
+
+def _load(model, lots):
+    """Load an integer solution into a built program; fake an optimal result.
+
+    ``lots`` maps ``(side index, level index) -> lots``. This hands the
+    reader the exact fill set the LINEAR program calls feasible, which is
+    the whole point: the defect is what the reader then bills for it.
+    """
+    from types import SimpleNamespace
+
+    sides = model._mio["sides"]
+    for k, side in enumerate(sides):
+        total = 0
+        for i in range(len(side.levels)):
+            n = int(lots.get((k, i), 0))
+            model.q[k, i].value = n
+            total += n
+        model.n[k].value = total
+        model.y[k].value = 1 if total else 0
+    model.z.value = 1 if any(int(v) for v in lots.values()) else 0
+    for o in range(model._mio["inputs"].scenarios.n_omega):
+        model.W[o].value = float(model._mio["w_lo"])
+        model.t[o].value = 0.0
+    return SimpleNamespace(solver=SimpleNamespace(termination_condition="optimal"))
+
+
+def test_the_oracle_reproduces_the_audits_own_arithmetic():
+    # A guard on the guard: the oracle must land on the audit's published
+    # numbers before it is allowed to judge the implementation.
+    assert oracle_premium(AUDIT_FILLS) == pytest.approx(350.0, abs=1e-12)
+    assert oracle_per_fill_fee("kalshi", AUDIT_FILLS, "0.07") == pytest.approx(15.75, abs=1e-12)
+    assert oracle_order_fee("kalshi", AUDIT_FILLS, "0.07") == pytest.approx(15.93, abs=1e-12)
+    assert oracle_cash("kalshi", AUDIT_FILLS, "0.07") == pytest.approx(
+        AUDIT_EXACT_OUTLAY, abs=1e-12
+    )
+
+
+def test_the_audited_worked_example_is_billed_at_the_encoded_exact_fee():
+    inputs = _audit_inputs()
+    model = event_program(inputs)
+    results = _load(model, {(0, 0): 500, (0, 1): 500})
+    alloc = read_allocation(model, results)
+    assert alloc.positions == {("C", "yes"): 1000}
+    # the program's own linear cost — the approximation, still what it solved on
+    assert model.outlay() == pytest.approx(AUDIT_LINEAR_OUTLAY, abs=1e-9)
+    # ... but the REPORTED outlay is the exact bill, matched to the oracle
+    assert alloc.outlay == pytest.approx(oracle_cash("kalshi", AUDIT_FILLS, "0.07"), abs=1e-9)
+    assert alloc.outlay == pytest.approx(AUDIT_EXACT_OUTLAY, abs=1e-9)
+
+
+def test_a_budget_the_approximation_clears_but_the_exact_bill_does_not_is_refused():
+    # The audit's consequence: 365.76 <= 365.80 < 365.93. The linear program
+    # calls this fill feasible; the encoded exact bill does not fit the budget.
+    inputs = _audit_inputs(deployable=365.80)
+    model = event_program(inputs)
+    results = _load(model, {(0, 0): 500, (0, 1): 500})
+    assert model.outlay() == pytest.approx(AUDIT_LINEAR_OUTLAY, abs=1e-9)
+    assert model.outlay() <= 365.80
+    with pytest.raises(ValueError, match="exact"):
+        read_allocation(model, results)
+
+
+def test_scenario_wealth_and_growth_follow_the_exact_outlay():
+    inputs = _audit_inputs()
+    model = event_program(inputs)
+    alloc = read_allocation(model, _load(model, {(0, 0): 500, (0, 1): 500}))
+    exact = oracle_cash("kalshi", AUDIT_FILLS, "0.07")
+    assert list(alloc.wealth) == pytest.approx([W0 + 1000 - exact, W0 - exact], abs=1e-9)
+    weights = list(inputs.scenarios.weights)
+    expected = sum(
+        w * math.log(x / W0) for w, x in zip(weights, [W0 + 1000 - exact, W0 - exact])
+    )
+    assert alloc.expected_log_growth == pytest.approx(expected, abs=1e-12)
+
+
+def test_the_polymarket_rounding_branch_is_not_an_unconditional_cent():
+    inputs = _audit_inputs(series=POLY_SERIES)
+    model = event_program(inputs)
+    alloc = read_allocation(model, _load(model, {(0, 0): 500, (0, 1): 500}))
+    poly = oracle_order_fee("polymarket", AUDIT_FILLS, "0.07")
+    assert poly == pytest.approx(15.925, abs=1e-12)  # on the 1e-5 grid, no cent floor
+    assert alloc.fees[("C", "yes")] == pytest.approx(poly, abs=1e-9)
+    assert alloc.outlay == pytest.approx(350.0 + 15.925, abs=1e-9)
+    # three different numbers over ONE fill set: the grid is not Kalshi's cent,
+    # and neither is the program's linear estimate
+    assert abs(alloc.outlay - AUDIT_EXACT_OUTLAY) > 1e-6
+    assert abs(alloc.outlay - AUDIT_LINEAR_OUTLAY) > 1e-6
+
+
+def test_the_ceil_to_cent_boundary_bills_a_cent_only_when_one_is_needed():
+    # one level at exactly 0.50, so the VWAP is on the cent grid too
+    c = contract_inputs_from_book(
+        "C", 0.70, yes_bids=[[0.45, 10]], no_bids=[[0.50, 300]], fee_rate=RATE
+    )
+    model = event_program(_inputs([c], kelly_fraction=1.0))
+    # 0.07 * 100 * 0.50 * 0.50 = 1.75 exactly on the cent: the ceiling adds nothing
+    on_grid = read_allocation(model, _load(model, {(0, 0): 100}))
+    assert on_grid.fees[("C", "yes")] == oracle_fee("kalshi", 100, "0.50", "0.07")
+    assert on_grid.fees[("C", "yes")] == pytest.approx(1.75, abs=1e-12)
+    assert on_grid.outlay == pytest.approx(50.0 + 1.75, abs=1e-9)
+    # 0.07 * 101 * 0.25 = 1.7675: one lot more crosses the boundary
+    over = read_allocation(model, _load(model, {(0, 0): 101}))
+    assert over.fees[("C", "yes")] == oracle_fee("kalshi", 101, "0.50", "0.07")
+    assert over.fees[("C", "yes")] == pytest.approx(1.77, abs=1e-12)
+    assert over.outlay == pytest.approx(50.5 + 1.77, abs=1e-9)
+
+
+def test_a_partial_fill_is_billed_on_what_filled_not_on_what_was_offered():
+    model = event_program(_audit_inputs())
+    part = read_allocation(model, _load(model, {(0, 0): 500, (0, 1): 137}))
+    partial_fills = (("0.30", 500), ("0.40", 137))
+    assert part.positions == {("C", "yes"): 637}
+    assert part.level_fills[("C", "yes")][1][1] == 137  # 137 of the 500 offered
+    assert part.outlay == pytest.approx(oracle_cash("kalshi", partial_fills, "0.07"), abs=1e-9)
+    full = read_allocation(model, _load(model, {(0, 0): 500, (0, 1): 500}))
+    assert part.fees[("C", "yes")] < full.fees[("C", "yes")]
+    assert part.outlay < full.outlay
+    # a fill of nothing at all bills nothing at all
+    none = read_allocation(model, _load(model, {}))
+    assert none.positions == {} and none.fees == {} and none.outlay == 0.0
+
+
+def test_a_fee_regime_change_mid_window_bills_each_market_at_its_own_rate():
+    switch = "2026-03-30T12:00:00Z"
+    book = FeeBook.from_document({
+        SERIES: {"cases": [
+            {"when": [{"field": "close_ts", "op": "<", "value": switch}], "value": 0.0},
+            {"when": [{"field": "close_ts", "op": ">=", "value": switch}], "value": 0.07},
+        ]},
+    })
+    before = book.rate_for(SERIES, close_ms=1_774_000_000_000)  # 2026-03-20
+    after = book.rate_for(SERIES, close_ms=1_774_872_000_000)  # the switch instant
+    assert (before, after) == (0.0, 0.07)
+    billed = {}
+    for rate in (before, after):
+        inputs = _inputs([_audit_contract(rate=rate)], kelly_fraction=1.0)
+        model = event_program(inputs)
+        alloc = read_allocation(model, _load(model, {(0, 0): 500, (0, 1): 500}))
+        assert alloc.outlay == pytest.approx(oracle_cash("kalshi", AUDIT_FILLS, str(rate)), abs=1e-9)
+        billed[rate] = alloc.fees[("C", "yes")]
+    # a SOURCED zero rate is a real zero fee, and the regime change is the
+    # whole difference between the two bills
+    assert billed[0.0] == 0.0
+    assert billed[0.07] == pytest.approx(15.93, abs=1e-12)
+
+
+def test_fee_reconciliation_bills_the_same_exact_fee_the_outlay_does():
+    model = event_program(_audit_inputs())
+    alloc = read_allocation(model, _load(model, {(0, 0): 500, (0, 1): 500}))
+    key = ("C", "yes")
+    edge = 1000 * 0.70 - oracle_premium(AUDIT_FILLS) - oracle_order_fee(
+        "kalshi", AUDIT_FILLS, "0.07"
+    )
+    assert alloc.fee_reconciled[key] is (edge > 0.0)
+    # the exported flag and the reported money now come from ONE number
+    assert alloc.outlay == pytest.approx(alloc.premium + sum(alloc.fees.values()), abs=1e-12)
+    assert alloc.fee_policy == DEFAULT_FILL_FEE_POLICY
+
+
+def test_an_exact_bill_that_will_not_fit_is_refused_end_to_end(solver):
+    # 365.76 (linear) <= 365.77 < 365.93 (exact): the program calls the full
+    # depth feasible and the venue's own bill does not fit.
+    alloc = solve_event(_audit_inputs(deployable=365.77), solver)
+    assert alloc.status == REFUSED_STATUS
+    assert alloc.positions == {} and alloc.level_fills == {}
+    assert alloc.outlay == 0.0 and alloc.lots == 0 and alloc.expected_log_growth == 0.0
+    assert list(alloc.wealth) == [W0, W0]
+    assert alloc.entered == (("C", "yes"),)  # a refusal still says what it considered
+    assert "exact" in alloc.refusal and "365.9" in alloc.refusal
+
+
+def test_retighten_re_solves_under_reserved_headroom_until_the_exact_bill_fits(solver):
+    inputs = _audit_inputs(deployable=365.77, on_exact_fee_exceeded="retighten")
+    alloc = solve_event(inputs, solver)
+    assert alloc.status == "optimal" and alloc.lots > 0
+    assert alloc.outlay <= 365.77 + 1e-9
+    # every level price here is on the cent grid, so the oracle prices the
+    # decimals the book actually carries
+    fills = tuple((f"{price:.2f}", lots) for price, lots in alloc.level_fills[("C", "yes")])
+    assert alloc.outlay == pytest.approx(oracle_cash("kalshi", fills, "0.07"), abs=1e-9)
+    # it bought strictly less than the approximation would have allowed
+    assert alloc.lots < 1000
+
+
+def test_the_resolution_refuses_an_unknown_mode_and_a_bad_round_count():
+    with pytest.raises(ValueError, match="mode"):
+        ExactFeeResolution("ignore")
+    with pytest.raises(ValueError, match="max_rounds"):
+        ExactFeeResolution("retighten", -1)
+    with pytest.raises(ValueError, match="max_rounds"):
+        ExactFeeResolution("retighten", True)
+    assert ExactFeeResolution().mode == DEFAULT_ON_EXACT_FEE_EXCEEDED
+    assert ExactFeeResolution().max_rounds == DEFAULT_RETIGHTEN_ROUNDS
+
+
+def _always_over(seen):
+    def solve_once(current):
+        seen.append(current.fee_allowance)
+        raise ExactFeeBudgetExceeded("E", "deployable", 10.0, 10.5, 10.0, "order_vwap")
+
+    return solve_once
+
+
+def test_refusing_never_re_solves_and_retightening_always_terminates():
+    inputs = _audit_inputs()
+    seen = []
+    refused = ExactFeeResolution("refuse", 3).resolve(
+        inputs, _always_over(seen), entered=[("C", "yes")]
+    )
+    assert refused.status == REFUSED_STATUS and seen == [0.0]  # one solve, no retry
+    seen = []
+    gave_up = ExactFeeResolution("retighten", 3).resolve(
+        inputs, _always_over(seen), entered=[("C", "yes")]
+    )
+    assert gave_up.status == REFUSED_STATUS
+    assert len(seen) == 4  # the first solve plus exactly three tightened re-solves
+    assert seen[0] == 0.0
+    # strictly increasing reserved headroom is what makes the loop terminate
+    assert all(b > a for a, b in zip(seen, seen[1:]))
+    # and the refusal never quietly relaxes the event's real budget
+    assert gave_up.outlay == 0.0 and gave_up.positions == {}
+
+
+def test_retightening_stops_rather_than_reserving_the_whole_budget():
+    # a shortfall larger than the budget can never be reserved away
+    inputs = _audit_inputs(deployable=10.0)
+    seen = []
+
+    def solve_once(current):
+        seen.append(current.fee_allowance)
+        raise ExactFeeBudgetExceeded("E", "deployable", 10.0, 999.0, 10.0, "order_vwap")
+
+    alloc = ExactFeeResolution("retighten", 9).resolve(inputs, solve_once, entered=())
+    assert alloc.status == REFUSED_STATUS and seen == [0.0]
+
+
+def test_a_refused_allocation_is_an_empty_one_that_says_why():
+    inputs = _audit_inputs()
+    alloc = refused_allocation(inputs, entered=[("C", "yes")], reason="because")
+    assert alloc.status == REFUSED_STATUS and alloc.refusal == "because"
+    assert alloc.lots == 0 and alloc.outlay == 0.0 and alloc.fees == {}
+    assert empty_allocation(inputs).refusal is None

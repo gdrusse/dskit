@@ -25,7 +25,7 @@ from pmquant.books import (
     records_from_pit_rows,
     walk_book,
 )
-from pmquant.fees import FeeRateUnresolved
+from pmquant.fees import DEFAULT_FILL_FEE_POLICY, FeeRateUnresolved, fill_fee_policy
 
 # --- ladders --------------------------------------------------------------
 
@@ -234,6 +234,36 @@ def test_walk_book_is_best_first_partial_and_limit_bound():
     assert bids.filled == 15 and bids.net_cost == pytest.approx(15 * (1.0 - bids.vwap) + bids.fee)
     with pytest.raises(ValueError, match="executable order"):
         BookSnapshot("KXA-1", "ask", ((0.30, 1), (0.25, 1)))
+
+
+def test_walk_book_bills_exactly_what_the_sizers_default_fee_policy_bills():
+    """The fill path and the sizer must price one fill the SAME way.
+
+    ``walk_book`` charges one venue fee on the total at VWAP; the MIO's
+    post-solve recompute charges its declared
+    :class:`~pmquant.fees.FillFeePolicy`, whose default is that same rule.
+    They are two expressions of one rule, so this pins them together: a
+    sizer that reserved a different number than the fill path bills is
+    the money model splitting in two, which is what PM-01 was about.
+    """
+    policy = fill_fee_policy(DEFAULT_FILL_FEE_POLICY)
+    cases = [
+        ("KXCOPPERD-X", ((0.25, 100),), 100, 1.0, 0.07),
+        ("KXA-1", ((0.25, 40), (0.30, 50), (0.40, 100)), 70, 0.35, 0.07),
+        ("KXA-1", ((0.25, 40), (0.30, 50)), 500, 0.30, 0.07),  # a partial walk
+        ("POLYBTCUPDOWN15M-X", ((0.25, 100),), 100, 1.0, 0.07),
+        ("POLYWXHINYC-X", ((0.02, 1), (0.03, 1)), 2, 1.0, 0.07),
+        ("KXA-1", ((0.02, 1), (0.03, 1)), 2, 1.0, 0.07),  # where per-fill would differ
+    ]
+    for ticker, levels, size, limit, rate in cases:
+        fill = walk_book(BookSnapshot(ticker, "ask", levels), Order(size, limit, rate))
+        fills = tuple((h.price, h.contracts) for h in fill.levels)
+        assert fill.fee == pytest.approx(policy.fee_for(ticker, fills, rate), abs=1e-12), (
+            ticker, fills
+        )
+        assert fill.net_cost == pytest.approx(
+            sum(p * n for p, n in fills) + policy.fee_for(ticker, fills, rate), abs=1e-12
+        )
 
 
 def test_fee_rate_none_on_the_series_path_refuses():

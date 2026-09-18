@@ -25,6 +25,19 @@ Two rounding models, one dispatch:
 (:func:`pmquant.ladder.protocols.venue_of`) — the single fill-time entry
 point ``walk_book`` and the MIO call.
 
+One question sits ABOVE the rounding model and is not the same question:
+a position is built out of several fills, and what the venue bills for
+that SET depends on whether it charges the order or each fill. Both
+convex formulas are nonlinear in price, so the two answers differ by
+``rate · n · Var(price)`` before rounding (Jensen), and after rounding
+neither dominates — Kalshi's per-order cent floor lets a sum of tiny
+per-fill charges EXCEED the single order-level charge. So the choice is
+a DECLARED :class:`FillFeePolicy`, never an assumption:
+:class:`OrderVwapFee` (one fee on the total at VWAP — exactly what
+``walk_book`` bills, hence :data:`DEFAULT_FILL_FEE_POLICY`),
+:class:`PerFillFee`, and :class:`ConservativeFee` (the maximum over
+both, for a venue whose aggregation rule has not been validated).
+
 The fee BOOK keys rates on the market's own CLOSE instant, never the
 fill instant: a venue's schedule attaches to the market when it is
 deployed, so a daily market closing after a rate switch bills the new
@@ -43,6 +56,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 
 from dskit.pipeline.kinds_flow import CLAUSE_OPS, clause_holds, clause_problems
@@ -52,14 +66,21 @@ from .ladder.protocols import VENUES, venue_of
 __all__ = [
     "CENT_ROUNDING_DECIMALS",
     "CLOSE_TS_FIELD",
+    "DEFAULT_FILL_FEE_POLICY",
     "FEE_ROUNDING",
+    "FILL_FEE_POLICIES",
     "POLY_FEE_DECIMALS",
     "POLY_TIE_RELATIVE",
+    "ConservativeFee",
     "FeeBook",
     "FeeCase",
     "FeeRateUnresolved",
+    "FillFeePolicy",
+    "OrderVwapFee",
+    "PerFillFee",
     "close_ts_of",
     "fill_cost_for_series",
+    "fill_fee_policy",
     "kalshi_trading_fee",
     "poly_trading_fee",
     "resolve_fee_rates",
@@ -267,6 +288,253 @@ def fill_cost_for_series(series, contracts, price, rate):
     """
     fee = trading_fee_for_series(series, contracts, price, rate)
     return float(contracts) * float(price) + fee
+
+
+def _checked_fills(fills):
+    """Return ``fills`` as ``((price, lots), ...)`` floats/ints, dropping empty lots."""
+    out = []
+    for price, lots in fills:
+        n = int(lots)
+        if isinstance(lots, bool) or n != lots:
+            raise ValueError(f"a fill's lot count must be a whole number, got {lots!r}")
+        if n < 0:
+            raise ValueError(f"a fill's lot count must be non-negative, got {lots!r}")
+        if n:
+            out.append((float(price), n))
+    return tuple(out)
+
+
+class FillFeePolicy(ABC):
+    """How a venue bills the SET of fills that built one position.
+
+    The rounding model (:data:`FEE_ROUNDING`) says what one billable
+    quantity costs; this says what the quantities ARE. A subclass answers
+    exactly one question — :meth:`fee_for` — and never re-implements a
+    venue's arithmetic: every concrete policy routes through
+    :func:`trading_fee_for_series`, so a new venue is a row in
+    ``FEE_ROUNDING`` and reaches every policy at once.
+
+    Examples
+    --------
+    Price the audit's worked example both ways::
+
+        fills = ((0.30, 500), (0.40, 500))
+        OrderVwapFee().fee_for("KXA", fills, 0.07)   # 15.93
+        PerFillFee().fee_for("KXA", fills, 0.07)     # 15.75
+    """
+
+    __slots__ = ()
+
+    #: The name a document declares this policy by.
+    name = ""
+
+    @abstractmethod
+    def fee_for(self, series, fills, rate):
+        """Compute the venue's fee on one side's fills, in dollars.
+
+        Parameters
+        ----------
+        series : str
+            Series or market ticker; its venue picks the rounding model.
+        fills : sequence of tuple
+            ``((price, lots), ...)`` — the fills that built the position.
+            Zero-lot entries are ignored; an empty set costs nothing.
+        rate : float
+            The threaded rate. Required, as everywhere in this module.
+
+        Returns
+        -------
+        float
+            The fee in dollars.
+        """
+
+    def __repr__(self):
+        """Spell the policy for a log line."""
+        return f"{type(self).__name__}({self.name!r})"
+
+
+class OrderVwapFee(FillFeePolicy):
+    """ONE fee on the total at VWAP — the rule :func:`pmquant.books.walk_book` bills.
+
+    Examples
+    --------
+    ::
+
+        OrderVwapFee().fee_for("KXA", ((0.30, 500), (0.40, 500)), 0.07)   # 15.93
+    """
+
+    __slots__ = ()
+
+    name = "order_vwap"
+
+    def fee_for(self, series, fills, rate):
+        """Compute one fee on the summed lots at their volume-weighted price.
+
+        Parameters
+        ----------
+        series : str
+            Series or market ticker.
+        fills : sequence of tuple
+            ``((price, lots), ...)``.
+        rate : float
+            The threaded rate.
+
+        Returns
+        -------
+        float
+            ``trading_fee_for_series(series, Σ lots, VWAP, rate)``; zero
+            for an empty fill set.
+        """
+        rows = _checked_fills(fills)
+        if not rows:
+            return 0.0
+        total = sum(n for _price, n in rows)
+        vwap = sum(price * n for price, n in rows) / total
+        return trading_fee_for_series(series, total, vwap, rate)
+
+
+class PerFillFee(FillFeePolicy):
+    """One fee per FILL, summed — the per-execution alternative.
+
+    Examples
+    --------
+    ::
+
+        PerFillFee().fee_for("KXA", ((0.30, 500), (0.40, 500)), 0.07)   # 15.75
+    """
+
+    __slots__ = ()
+
+    name = "per_fill"
+
+    def fee_for(self, series, fills, rate):
+        """Sum one venue fee per fill.
+
+        Parameters
+        ----------
+        series : str
+            Series or market ticker.
+        fills : sequence of tuple
+            ``((price, lots), ...)``.
+        rate : float
+            The threaded rate.
+
+        Returns
+        -------
+        float
+            ``Σ trading_fee_for_series(series, lots, price, rate)``; zero
+            for an empty fill set.
+        """
+        return float(
+            sum(
+                trading_fee_for_series(series, n, price, rate)
+                for price, n in _checked_fills(fills)
+            )
+        )
+
+
+class ConservativeFee(FillFeePolicy):
+    """The MAXIMUM over several policies — for an unvalidated aggregation rule.
+
+    Neither :class:`OrderVwapFee` nor :class:`PerFillFee` dominates once
+    rounding enters (the Jensen gap points one way, a per-order cent
+    floor the other), so a child that does not yet KNOW which rule its
+    venue applies bills the larger of the two rather than picking the
+    cheaper and hoping.
+
+    Parameters
+    ----------
+    members : sequence of FillFeePolicy, optional
+        The policies to maximize over; defaults to one of each concrete
+        aggregation this module declares.
+
+    Examples
+    --------
+    ::
+
+        ConservativeFee().fee_for("KXA", ((0.02, 1), (0.03, 1)), 0.07)   # 0.02
+    """
+
+    __slots__ = ("_members",)
+
+    name = "conservative"
+
+    def __init__(self, members=None):
+        self._members = (OrderVwapFee(), PerFillFee()) if members is None else tuple(members)
+        if not self._members:
+            raise ValueError("a conservative fee policy needs at least one member policy")
+        for member in self._members:
+            if not isinstance(member, FillFeePolicy):
+                raise ValueError(
+                    f"every member must be a FillFeePolicy, got {type(member).__name__}"
+                )
+
+    @property
+    def members(self):
+        """List the policies this one maximizes over (tuple of FillFeePolicy)."""
+        return self._members
+
+    def fee_for(self, series, fills, rate):
+        """Take the largest fee any member policy bills.
+
+        Parameters
+        ----------
+        series : str
+            Series or market ticker.
+        fills : sequence of tuple
+            ``((price, lots), ...)``.
+        rate : float
+            The threaded rate.
+
+        Returns
+        -------
+        float
+            ``max`` over the member policies.
+        """
+        return max(member.fee_for(series, fills, rate) for member in self._members)
+
+
+#: policy name -> the instance a document's name resolves to. The
+#: policies are stateless, so one shared instance each is correct.
+FILL_FEE_POLICIES = {
+    policy.name: policy for policy in (OrderVwapFee(), PerFillFee(), ConservativeFee())
+}
+
+#: The aggregation this child bills by default: the same order-level rule
+#: :func:`pmquant.books.walk_book` charges a fill against. Named ONCE —
+#: the sizer, the node's validation and the documents all read this.
+DEFAULT_FILL_FEE_POLICY = OrderVwapFee.name
+
+
+def fill_fee_policy(name=None):
+    """Resolve a declared policy name to its :class:`FillFeePolicy`, or refuse.
+
+    Parameters
+    ----------
+    name : str or None
+        A key of :data:`FILL_FEE_POLICIES`; ``None`` takes
+        :data:`DEFAULT_FILL_FEE_POLICY`.
+
+    Returns
+    -------
+    FillFeePolicy
+        The shared instance for that name.
+
+    Raises
+    ------
+    ValueError
+        When ``name`` is not a declared policy — a mistyped aggregation
+        rule silently costing the wrong money is the failure to design
+        against.
+    """
+    key = DEFAULT_FILL_FEE_POLICY if name is None else name
+    policy = FILL_FEE_POLICIES.get(key)
+    if policy is None:
+        raise ValueError(
+            f"no fill fee policy named {key!r} — declared policies are "
+            f"{sorted(FILL_FEE_POLICIES)}"
+        )
+    return policy
 
 
 def close_ts_of(close_ms):
