@@ -30,7 +30,8 @@ channel: over synthetic rows, bound to a document that is deliberately not
 the shipped final-HPO one, stamping ``deployment_eligible: false`` into
 every head's hashed bundle training identity.  The ``production`` channel
 refuses outright, because a real final-model release needs the signed
-run-output attestation contract ADR-0122 only PROPOSES.  Synthetic helper
+run-output attestation contract ADR-0122 specifies and nothing builds
+yet.  Synthetic helper
 assembly is not a completed real final-model release.  Nothing here reads
 market data, fits a real model against real history, or loads a real P16
 artifact.
@@ -38,6 +39,7 @@ artifact.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from collections.abc import Mapping
@@ -83,6 +85,21 @@ __all__ = [
 ]
 
 
+#: "this name resolves to nothing at all" — distinct from resolving to
+#: ``None``, which a subclass could supply deliberately.
+_UNRESOLVED = object()
+
+
+def _sealed_violations(subclass):
+    """Sealed names ``subclass`` resolves to something other than FinalRefit's own."""
+    return [
+        name
+        for name in FinalRefit._FINAL_METHODS
+        if inspect.getattr_static(subclass, name, _UNRESOLVED)
+        is not inspect.getattr_static(FinalRefit, name, _UNRESOLVED)
+    ]
+
+
 class FinalRefit(Node):
     """One frozen-winner refit over an attested completed run and ten labelled wires (ADR-0166, completing ADR-0116).
 
@@ -115,7 +132,8 @@ class FinalRefit(Node):
     document identity, so a fixture run and a real final-model release
     are runs of different documents. :data:`PRODUCTION_CHANNEL` refuses
     outright, because a real release needs the signed run-output
-    attestation contract ADR-0122 only PROPOSES. Every head's hashed
+    attestation contract ADR-0122 specifies and nothing builds yet.
+    Every head's hashed
     bundle training identity carries the channel and
     ``deployment_eligible: false``, and ``write_bundle``'s content hash
     covers ``training_identities``, so a written bundle cannot be
@@ -167,16 +185,21 @@ class FinalRefit(Node):
     """
 
     #: Every name this class defines, plus the inherited hooks its release
-    #: gate depends on. ``__init_subclass__`` refuses a subclass that
-    #: replaces any of them, because ``uses: "module:ClassName"`` accepts
-    #: ANY class: before this seal, a subclass overriding
-    #: ``_channel_problems`` constructed on the production channel and
-    #: ``_release_identity`` stamped ``deployment_eligible: True``, with no
-    #: edit to dskit or to this module (round-1 review, 2026-09-18). The
-    #: list is restated independently by ``tests/test_final_model.py``, and
-    #: a test refuses any member of this class absent from it — an
-    #: unsealed hook added later fails there, not in review.
+    #: gate resolves through — including ``__getattribute__``, which a
+    #: ``vars(cls)`` check could never surface. ``__init_subclass__``
+    #: refuses a subclass that resolves any of them to something other than
+    #: this class's own, because ``uses: "module:ClassName"`` accepts ANY
+    #: class: a subclass overriding ``_channel_problems`` once constructed
+    #: on the production channel and, with ``_release_identity`` also
+    #: replaced, stamped ``deployment_eligible: True`` (round-1 and round-2
+    #: reviews, 2026-09-18). The list is restated independently by
+    #: ``tests/test_final_model.py``, and a test refuses any member of this
+    #: class absent from it — an unsealed hook added later fails there, not
+    #: in review. Read ``__init_subclass__``'s own docstring for what this
+    #: does NOT cover; it is an accident guard, not an authority boundary.
     _FINAL_METHODS = (
+        "__getattr__",
+        "__getattribute__",
         "__init__",
         "__init_subclass__",
         "__new__",
@@ -191,6 +214,7 @@ class FinalRefit(Node):
         "_lean_drop",
         "_release_identity",
         "_row_identities",
+        "__setattr__",
         "_run_pin_problems",
         "_schema_problems",
         "_verified_hpo_outputs",
@@ -206,17 +230,50 @@ class FinalRefit(Node):
     )
 
     def __init_subclass__(cls, **kwargs):
-        """Refuse, at class-definition time, a subclass that replaces any part of the gate."""
+        """Refuse a subclass that resolves a sealed member to anything but this class's own.
+
+        Scoped honestly, and the scope IS the contract. Each name in
+        :data:`_FINAL_METHODS` is resolved THROUGH THE MRO
+        (:func:`inspect.getattr_static`, which walks ``__mro__`` without
+        invoking a descriptor) and compared with what ``FinalRefit`` itself
+        resolves it to, so a mixin earlier in the MRO, an intermediate
+        class, any depth of subclassing, and a hijack of an inherited hook
+        such as ``__getattribute__`` are all refused. A check against
+        ``cls.__dict__`` saw none of those (round-2 review, 2026-09-18).
+
+        This is an accident-and-drift guard, **not an authority boundary**.
+        Four resolution paths reach past it by construction, and are
+        disclosed rather than silently left open:
+
+        * an intermediate class that defines its own ``__init_subclass__``
+          and does not call ``super()`` stops this running for anything
+          built below it — that intermediate is itself refused, because
+          ``__init_subclass__`` is sealed, so the path costs an edit to
+          trusted source;
+        * post-hoc assignment (``FinalRefit.run = ...`` after the class
+          exists), because this fires at class definition only;
+        * per-instance shadowing (``node.run = ...``), because an instance
+          is not a class;
+        * a custom metaclass, which can doctor ``__mro__`` or intercept
+          attribute access on the class itself.
+
+        The guarantee claimed is against an ordinary caller wiring the wrong
+        class and against a future edit quietly dropping a refusal, never
+        against a subclass built to defeat the check — the same scope
+        :mod:`dskit.pipeline.uncertainty_set` states for this idiom. The
+        trust root for a real release is ADR-0122's out-of-Python launcher,
+        which is not built.
+        """
         super().__init_subclass__(**kwargs)
-        for name in FinalRefit._FINAL_METHODS:
-            if name in cls.__dict__:
-                raise TypeError(
-                    f"{cls.__name__} may not override {name} — it is part of the "
-                    "release gate every refusal in FinalRefit resolves to, and a "
-                    "subclass that replaces it can stamp a release nothing earned. "
-                    "This seal fires at class definition only; it is not a root of "
-                    "trust (ADR-0166)"
-                )
+        violations = _sealed_violations(cls)
+        if violations:
+            raise TypeError(
+                f"{cls.__name__} may not override {', '.join(violations)} — part "
+                "of the release gate every refusal in FinalRefit resolves to, and "
+                "a subclass that replaces it can stamp a release nothing earned. "
+                "This is an accident guard checked at class definition, not a "
+                "root of trust (ADR-0166)"
+            )
 
     role = "train"
     outputs = ("bundle_path", "manifest")
@@ -266,8 +323,9 @@ class FinalRefit(Node):
             problems = [
                 "FinalRefit is non-executable on the production channel: a real "
                 "final-model release requires the signed run-output attestation "
-                "contract ADR-0122 only PROPOSES (issuer, key authority, trusted "
-                "clock, runtime identity). Driver run attestation alone does not "
+                "contract ADR-0122 accepted on 2026-09-12 and not built (issuer, "
+                "key authority, trusted clock, runtime identity, and an "
+                "out-of-Python launch root). Driver run attestation alone does not "
                 "authorize one, and no placeholder here can supply it"
             ]
             if pinned != shipped:
@@ -653,7 +711,8 @@ HEADS = tuple(f"h{i:02d}" for i in range(1, 11))
 #: may never claim the shipped final-HPO document identity.
 #: ``"production"`` — a real final-model release — refuses outright,
 #: because it needs the signed run-output attestation contract ADR-0122
-#: only PROPOSES. Synthetic helper assembly is not a completed real
+#: accepted and nothing builds yet. Synthetic helper assembly is not a
+#: completed real
 #: final-model release, and the two stay distinguishable by the document
 #: they are bound to AND by the channel stamped into every head's hashed
 #: bundle training identity.

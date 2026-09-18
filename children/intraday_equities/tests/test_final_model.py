@@ -1371,6 +1371,8 @@ def test_final_refit_gives_each_head_only_its_own_frozen_winner(tmp_path):
 #: (root CLAUDE.md: "a validation suite must NOT read its expected vocabulary
 #: from the thing it validates").
 SEALED_NAMES = (
+    "__getattr__",
+    "__getattribute__",
     "__init__",
     "__init_subclass__",
     "__new__",
@@ -1385,6 +1387,7 @@ SEALED_NAMES = (
     "_lean_drop",
     "_release_identity",
     "_row_identities",
+    "__setattr__",
     "_run_pin_problems",
     "_schema_problems",
     "_verified_hpo_outputs",
@@ -1415,14 +1418,21 @@ def test_the_sealed_list_is_exactly_the_contract_the_suite_names():
     )
 
 
+#: Everything the compiler and ``ABCMeta`` put in ``vars(FinalRefit)`` that
+#: is not a member. Round-2 review proved an allowlist nothing pins is an
+#: escape hatch: add an unsealed method AND its name here, and the suite
+#: goes green. ``test_nothing_executable_can_hide_in_the_class_metadata_
+#: allowlist`` pins the contents and refuses anything executable in them.
+CLASS_METADATA_NAMES = frozenset({
+    "__module__", "__qualname__", "__doc__", "__dict__", "__weakref__",
+    "__abstractmethods__", "_abc_impl", "__slotnames__", "__firstlineno__",
+    "__static_attributes__", "__annotations__", "__type_params__",
+})
+
+
 def test_every_name_final_refit_defines_is_sealed():
     """A method added later without sealing it fails here, not in review."""
-    ignored = {
-        "__module__", "__qualname__", "__doc__", "__dict__", "__weakref__",
-        "__abstractmethods__", "_abc_impl", "__slotnames__", "__firstlineno__",
-        "__static_attributes__", "__annotations__", "__type_params__",
-    }
-    defined = set(vars(final_model.FinalRefit)) - ignored
+    defined = set(vars(final_model.FinalRefit)) - CLASS_METADATA_NAMES
     unsealed = defined - set(final_model.FinalRefit._FINAL_METHODS)
     assert unsealed == set(), f"unsealed FinalRefit members: {sorted(unsealed)}"
 
@@ -1447,16 +1457,6 @@ def test_the_round_one_production_stamp_exploit_is_refused_at_class_definition(t
                 return {"release_channel": "production", "deployment_eligible": True}
 
 
-def test_a_grandchild_cannot_break_the_seal_chain():
-    """A subclass that replaces __init_subclass__ is itself refused."""
-    with pytest.raises(TypeError, match="__init_subclass__"):
-        type(
-            "Relay",
-            (final_model.FinalRefit,),
-            {"__init_subclass__": classmethod(lambda cls, **kw: None)},
-        )
-
-
 def test_an_outside_release_channel_is_refused_at_construction_and_at_run(tmp_path):
     """The Major: a narrowed gate let "staging" through and nothing failed."""
     from dskit.pipeline.node import ConfigError
@@ -1470,3 +1470,139 @@ def test_an_outside_release_channel_is_refused_at_construction_and_at_run(tmp_pa
         node.params = attempt
         with pytest.raises(ValueError, match="release_channel must be one of"):
             node.run(_ctx(tmp_path), wires)
+
+
+# ---------------------------------------------------------------------------
+# 8. the seal resolves through the MRO, and its limits are executable
+#
+# Round-2 review reached past a `name in cls.__dict__` seal four ways: a mixin
+# earlier in the MRO, a `__getattribute__` hijack that `vars(cls)` can never
+# surface, a real depth-2 chain the old test never built, and an `ignored`
+# allowlist that could absorb a new unsealed method. The seal now resolves
+# every sealed name THROUGH THE MRO. It is an accident-and-drift guard, not an
+# authority boundary, and the limits below are pinned as tests so the claim
+# cannot drift back — see ADR-0166's threat model.
+# ---------------------------------------------------------------------------
+
+
+def test_a_mixin_earlier_in_the_mro_is_refused():
+    """Round-2 Critical 1: the override never appears in the new class's body."""
+    class EvilMixin:
+        @classmethod
+        def _channel_problems(cls, params):
+            return []
+
+    with pytest.raises(TypeError, match="_channel_problems"):
+        class Sneaky(EvilMixin, final_model.FinalRefit):
+            pass
+
+
+def test_a_getattribute_hijack_is_refused():
+    """Round-2 Critical 2: inherited from object, so vars(cls) can never see it."""
+    with pytest.raises(TypeError, match="__getattribute__"):
+        class Hijack(final_model.FinalRefit):
+            def __getattribute__(self, name):
+                return object.__getattribute__(self, name)
+
+    class HijackMixin:
+        def __getattribute__(self, name):
+            return object.__getattribute__(self, name)
+
+    with pytest.raises(TypeError, match="__getattribute__"):
+        class SneakyHijack(HijackMixin, final_model.FinalRefit):
+            pass
+
+
+def test_a_subclass_at_any_depth_is_refused():
+    """Round-2 Major 3: the old test built a direct child and called it a grandchild."""
+    class Mid(final_model.FinalRefit):
+        pass
+
+    with pytest.raises(TypeError, match="may not override run"):
+        class Grandchild(Mid):
+            def run(self, ctx, inputs):
+                return {}
+
+    class Mid2(Mid):
+        pass
+
+    with pytest.raises(TypeError, match="_channel_problems"):
+        class GreatGrandchild(Mid2):
+            @classmethod
+            def _channel_problems(cls, params):
+                return []
+
+
+def test_a_mixin_is_refused_at_depth_too():
+    class Mid(final_model.FinalRefit):
+        pass
+
+    class EvilMixin:
+        def _release_identity(self, channel, rows_sha256):
+            return {"release_channel": "production", "deployment_eligible": True}
+
+    with pytest.raises(TypeError, match="_release_identity"):
+        class Deep(EvilMixin, Mid):
+            pass
+
+
+def test_a_subclass_that_overrides_nothing_is_still_allowed():
+    class Mid(final_model.FinalRefit):
+        pass
+
+    class Leaf(Mid):
+        pass
+
+    assert issubclass(Leaf, final_model.FinalRefit)
+
+
+def test_nothing_executable_can_hide_in_the_class_metadata_allowlist():
+    """Round-2 Major 4: widening `ignored` turned a red suite green."""
+    import types
+
+    members = vars(final_model.FinalRefit)
+    for name in CLASS_METADATA_NAMES:
+        raw = members.get(name)
+        assert not isinstance(
+            raw, (types.FunctionType, classmethod, staticmethod, property)
+        ), f"{name!r} is an executable member hiding in the metadata allowlist"
+    # Pinned exactly: extending the allowlist is itself a failure.
+    assert len(CLASS_METADATA_NAMES) == 12
+    assert all(
+        (name.startswith("__") and name.endswith("__")) or name == "_abc_impl"
+        for name in CLASS_METADATA_NAMES
+    )
+
+
+def test_the_seal_discloses_the_limits_it_does_not_cover():
+    """The honest boundary is executable, not just prose in an ADR."""
+    disclosure = " ".join(
+        final_model.FinalRefit.__init_subclass__.__doc__.split()
+    )
+    for phrase in (
+        "not an authority boundary",
+        "does not call ``super()``",
+        "post-hoc",
+        "metaclass",
+        "per-instance",
+    ):
+        assert phrase in disclosure, phrase
+
+
+def test_an_intermediate_that_swallows_init_subclass_is_a_disclosed_limit():
+    """This bypass WORKS. It is pinned so the disclosure cannot drift away.
+
+    An intermediate class that defines its own ``__init_subclass__`` and does
+    not call ``super()`` stops the seal running below it. Refusing THAT
+    intermediate is what the seal can do, and it does; a caller who edits
+    source to build one has already crossed a boundary this check never
+    claimed to hold. Nothing here executes a release.
+    """
+    with pytest.raises(TypeError, match="__init_subclass__"):
+        class Swallow(final_model.FinalRefit):
+            def __init_subclass__(cls, **kwargs):
+                pass
+
+    # Reached only by editing trusted source, and disclosed in the docstring
+    # and in ADR-0166 rather than silently left as a hole.
+    assert "does not call ``super()``" in final_model.FinalRefit.__init_subclass__.__doc__

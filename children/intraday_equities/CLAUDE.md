@@ -80,7 +80,8 @@ Agent orientation — see README.md for operator commands.
   identity and stamps `deployment_eligible: false` into every head's HASHED
   bundle training identity. This document declares `release_channel:
   "production"`, which refuses outright until the owner accepts the signed
-  run-output attestation contract ADR-0122 only PROPOSES; its pins are
+  run-output attestation contract ADR-0122 accepted but nothing builds
+  yet (its out-of-Python launch root does not exist); its pins are
   PENDING besides. Filling them cannot enable planning. No real final-model
   release exists. `FinalRefit._FINAL_METHODS` + `__init_subclass__` refuse a
   subclass that replaces any part of that gate (`uses:` accepts any class).

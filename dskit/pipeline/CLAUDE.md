@@ -360,9 +360,13 @@ on it without breaking its rulings.
   re-materializing the same rows in another order must identify as the same
   rows. Both are additive and wired into no generic node. All of this is
   read-only and additive to `run_document`'s own lifecycle (the one
-  write-side change is the new `document_hash` field on each node record);
-  none of it is wired into any node — building that wiring (`FinalRefit`,
-  or any other consumer) is separate, unauthorized work.
+  write-side change is the new `document_hash` field on each node record).
+  No GENERIC node consumes it; the one consumer is the child adapter
+  `intraday_equities.final_model.FinalRefit`, which composes
+  `attested_output` and `row_set_identity` under ADR-0166. (The earlier
+  wording here — "none of it is wired into any node ... separate,
+  unauthorized work" — was written in the same commit that did the wiring
+  and was false on arrival.)
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there

@@ -16472,6 +16472,16 @@ vocabulary from the module under test, so narrowing the gate to `if not
 channel` let `"staging"` through with a green suite. Both corrections are
 below.*
 
+*Corrected again 2026-09-18 after round-2 review found 2 Critical and 2 Major
+and the coordinator invoked `skeptic-review.md`'s convergence checkpoint. The
+Critical pair reached past the round-1 seal through a mixin earlier in the MRO
+and through a `__getattribute__` hijack `vars(cls)` cannot surface; the Major
+pair were test defects (a "grandchild" test that built a direct child, and an
+unpinned `ignored` allowlist). The checkpoint's changed approach is not a third
+seal patch: resolve the seal through the MRO, which is what enumeration CAN do
+correctly, and delete the claim that the enumeration is a boundary. There is no
+third bypass to hunt because nothing is claimed that a bypass would falsify.*
+
 **Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
 three missing pieces; ADR-0119 built two of the generic halves
 (`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
@@ -16556,23 +16566,31 @@ described and nothing more:
   never claim the shipped `configs/run-final-hpo.json` identity (read from
   that document, never restated). `"production"` — a real final-model
   release — refuses OUTRIGHT, at construction and again inside `run`: it
-  needs the signed run-output attestation contract ADR-0122 only PROPOSES.
+  needs the signed run-output attestation contract ADR-0122 accepted on
+  2026-09-12, whose out-of-Python launch root NOTHING BUILDS YET.
   Because `write_bundle`'s content hash covers `training_identities`, a
   written bundle cannot be relabelled afterwards without failing
   `load_bundle`.
-- **The gate is sealed against the seam that resolves it.** Every refusal
-  above is a method, and `uses: "module:ClassName"` accepts any class, so
-  `FinalRefit._FINAL_METHODS` names every member the gate depends on — the
-  twenty-three this class defines plus the inherited `__init__`, `__new__`
-  and `artifact_dir` — and `__init_subclass__` raises `TypeError` at
-  class-definition time for a subclass that replaces one. A subclass that
-  replaces `__init_subclass__` itself is refused for the same reason, so the
-  chain cannot be broken at depth. The list is restated independently in
-  `tests/test_final_model.py`, and a test refuses any member of the class
-  absent from it, so an unsealed hook added later fails in the suite rather
-  than in review. This is the `production/leg.py` and `production/loop.py`
-  idiom (`if "run" in vars(cls): raise`), widened from one name to the whole
-  gate.
+- **The gate has an accident guard, not an authority boundary.** Every
+  refusal above is a method and `uses: "module:ClassName"` accepts any
+  class, so `FinalRefit._FINAL_METHODS` names the twenty-six members the
+  gate resolves through — the twenty-three this class defines, the
+  inherited `__init__`, `__new__` and `artifact_dir`, and the three
+  attribute-resolution hooks `__getattribute__`, `__getattr__` and
+  `__setattr__` — and `__init_subclass__` raises `TypeError` for a subclass
+  that resolves any of them to something other than this class's own.
+  Resolution is THROUGH THE MRO (`inspect.getattr_static`), not against
+  `cls.__dict__`: round-2 review reached past a `__dict__` check with a
+  mixin earlier in the MRO and with a `__getattribute__` hijack that
+  `vars(cls)` can never surface, and both are now refused, at any depth of
+  subclassing. The list is restated independently in
+  `tests/test_final_model.py`; one test refuses any member of the class
+  absent from it, and another refuses anything executable hiding in that
+  test's own metadata allowlist — round-2 proved an unpinned allowlist is an
+  escape hatch a rushed author widens to turn a red suite green. This is the
+  `production/leg.py` and `production/loop.py` idiom widened from one name
+  to the whole gate, and it carries the same honest scope
+  `pipeline/uncertainty_set.py` already states for it.
 
 `configs/run-final-refit.json` declares `release_channel: "production"` and
 `refit_identity.rows`, and every pin stays PENDING. It still refuses to plan,
@@ -16588,30 +16606,55 @@ never planned successfully at either commit, no run directory exists under
 series or release is keyed to the old hash. Nothing is orphaned.
 
 **Threat model, and what this entry is NOT.** Everything above is an
-IN-PROCESS check. It fails closed for every ordinary caller, for the shipped
-configuration, for `object.__new__` construction and for the documented
-`uses:` subclassing seam. It is not a root of trust, and three limits are
-disclosed rather than papered over:
+IN-PROCESS check. **It is not an authority boundary and it cannot become
+one.** Two review rounds each found a new way past the previous round's
+class-definition seal, and the reason is structural rather than a missing
+case: `__init_subclass__` can only inspect names, while Python resolves
+attributes through the whole MRO, through `__getattribute__`, through the
+metaclass and through instance dictionaries. An enumeration cannot close an
+open set. What the check earns is real but bounded — it stops an ordinary
+caller wiring the wrong class, and it stops a future edit quietly dropping a
+refusal — and this entry claims exactly that and nothing more. The earlier
+wording here ("fails closed for ... the documented `uses:` subclassing seam",
+"the chain cannot be broken at depth") was falsified by review and is
+withdrawn.
 
-1. `__init_subclass__` fires at class creation, so a post-hoc
-   `FinalRefit._channel_problems = ...` assignment still takes effect. That
-   is accepted: it forces an edit to trusted in-process source, a different
-   threat class from supplying a class name in a JSON document.
-2. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
+Six limits, disclosed rather than papered over:
+
+1. An intermediate class that defines its own `__init_subclass__` and does
+   not call `super()` stops the check running for anything built below it.
+   That intermediate is itself refused, so the path costs an edit to trusted
+   source. `pipeline/uncertainty_set.py` states the same limit for the same
+   idiom; every user of it in this repo shares the limit.
+2. Post-hoc assignment — `FinalRefit.run = ...` after the class exists —
+   because the check fires at class definition only.
+3. Per-instance shadowing — `node.run = ...` — because an instance is not a
+   class.
+4. A custom metaclass, which can doctor `__mro__` or intercept attribute
+   access on the class itself.
+5. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
    hash-chains `nodes/*.json` to `resolved.json` or to each other, and this
    entry does not change that. Anyone with write access to a run directory
    can fabricate the records, the carry and the evidence artifacts together
    and satisfy every check here. Before this slice that gap had no payload
    to reach, because `FinalRefit.run` raised unconditionally; this slice is
    the first to give it a high-value target, and that is stated plainly.
-3. A bundle's `release_channel` / `deployment_eligible` stamp records what
+6. A bundle's `release_channel` / `deployment_eligible` stamp records what
    the writing process believed. It is never, by itself, evidence that
    anyone authorized the release, and no consumer should read it as one.
 
-ADR-0122's Correction already states the rule this entry obeys rather than
+**Where the trust root actually is, and that it does not exist yet.**
+ADR-0122's Correction states the rule this entry obeys rather than
 contradicts: "A Python `PreImportResolver` cannot be a root of trust", and
-"Release trust must therefore begin outside Python." Nothing here is offered
-as a substitute for that external launch root.
+"Release trust must therefore begin outside Python, and release model
+members must be non-pickle data." ADR-0122 is ACCEPTED (2026-09-12) — its
+title still reads "Proposed", which is stale — and its out-of-Python launch
+root is NOT BUILT: no `PreImportResolver`, launch profile or launcher exists
+anywhere in `dskit/`. Until it does, no bundle stamp this entry produces is
+evidence of authorization, and nothing here is offered as a substitute for
+that launcher. The second half of that quotation also bears on this entry's
+disclosed A3 conflict: the bundle written here is joblib, which is pickle,
+which ADR-0122 rules out for release model members.
 
 **Scope.** `dskit/pipeline/driver.py`, `dskit/pipeline/{README.md,CLAUDE.md}`,
 `tests/pipeline/test_driver.py`,
@@ -16632,7 +16675,8 @@ refuse. **No real final-model release was produced.** The production channel
 is closed, the fixture channel is synthetic by construction, and every bundle
 it writes is stamped `deployment_eligible: false` — but "closed" means this
 process refuses, not that the artifact is trustworthy: read the threat model
-above before treating any stamp as authorization. ADR-0122 remains PROPOSED and unimplemented;
+above before treating any stamp as authorization. ADR-0122 is accepted but
+its launch root is unimplemented;
 `FinalRefit` remains a `Node`, not the `TrainableNode` that entry and the
 2026-09-14 closeout packet A4 propose; and the closeout packet's native
 LightGBM text artifact (A3) would replace the joblib bundle this uses, which
