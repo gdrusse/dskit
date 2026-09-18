@@ -194,13 +194,14 @@ import re
 import sys
 from collections.abc import Mapping
 
-from dskit.pipeline.fitted import FeatureSelector
+from dskit.pipeline.fitted import FeatureSelector, FittedTransform
 from dskit.pipeline.node import (
     DEFAULT_NODE_KINDS,
     TrainableNode,
     atomic_write,
     reject_unknown_params,
 )
+from dskit.pipeline.records import number_ok
 
 __all__ = [
     "ColumnSubsetEstimator",
@@ -208,6 +209,7 @@ __all__ = [
     "NODE_KINDS",
     "SklearnFit",
     "SklearnPredict",
+    "SklearnReduction",
     "SklearnSelect",
     "SklearnSignal",
     "load_bundle",
@@ -260,6 +262,187 @@ _SEED_MAX = 2**32
 #: EVERYTHING else — estimator, estimator_params, features, label,
 #: predict_method, seed, n_rows, format — is hash material (S2-A).
 _UNHASHED_SIDECAR_FIELDS = ("sha256", "library_version")
+
+# ---------------------------------------------------------------------------
+# Dimensionality reduction (ADR-0149) — the closed-catalog state constants
+# ---------------------------------------------------------------------------
+
+#: The tag a reduction state carries, and the only one a load accepts. The
+#: ``_ARTIFACT_FORMAT`` precedent: an identity a reader can refuse by name
+#: beats a shape it has to guess at.
+REDUCTION_SCHEMA = "dskit.sklearn-reduction/v1"
+
+#: The closed catalog :class:`SklearnReduction` fits. An arbitrary import
+#: path is deliberately excluded: this node EXTRACTS ``components_`` (and,
+#: for pca, ``mean_``) into JSON, and only these two expose that extraction
+#: behind a projection that is a plain matrix multiply.
+_REDUCTION_ALGORITHMS = ("pca", "svd")
+
+#: Catalog member -> the dotted path it resolves through, the same
+#: doorway :class:`SklearnFit` opens for an estimator.
+_REDUCTION_PATHS = {
+    "pca": "sklearn.decomposition.PCA",
+    "svd": "sklearn.decomposition.TruncatedSVD",
+}
+
+#: The fitted attributes each member's extracted state is read from:
+#: ``(components, mean)``. TruncatedSVD never centres, so its mean is
+#: ``None`` and the state omits the key — the omission IS the record.
+_REDUCTION_ATTRIBUTES = {
+    "pca": ("components_", "mean_"),
+    "svd": ("components_", None),
+}
+
+#: The seed a fit runs under when the document declares none. Named once:
+#: a literal in both the validator and the fit path is how a run comes to
+#: be seeded by a number nothing recorded.
+DEFAULT_REDUCTION_SEED = 0
+
+#: The prefix of the projected columns an output row gains. One name, so
+#: the writer and the collision refusal agree on what the columns are
+#: called; a knob to rename it is out of ADR-0149's scope.
+_COMPONENT_PREFIX = "component"
+
+#: The field naming the projection's identity on every output row, and the
+#: port :meth:`SklearnReduction.state_outputs` publishes. One name, so the
+#: writer and the collision refusal agree (``segment_model_id``'s rule).
+_MODEL_ID_FIELD = "reduction_model_id"
+
+#: The constructor knobs this node already owns, spelled a second way
+#: inside ``algorithm_params``, mapped to the reason each is refused. Two
+#: spellings of one argument would disagree, and a search space addressing
+#: the node's knob would tune the loser — so ``n_components`` refuses a
+#: second spelling of the top-level knob, and ``random_state``/``seed``
+#: both refuse a second spelling of the node's ``seed`` (which threads as
+#: ``random_state``). ``whiten`` is refused for a different reason: it
+#: changes PCA's projection to need ``singular_values_`` in the state,
+#: which this node does not store. The validator reads THIS table — one
+#: owner, so a name added here is refused the same day, and a name dropped
+#: here stops being refused.
+_REDUCTION_SHADOWED_KNOBS = {
+    "n_components": "declare params.n_components instead, the one knob this "
+                    "node threads and records",
+    "random_state": "declare params.seed instead, the one knob this node "
+                    "threads as random_state",
+    "seed": "declare params.seed instead, the one knob this node threads as "
+            "random_state",
+    "whiten": "whitened PCA projects with components_.T scaled by the "
+              "singular values, which this node does not store — it computes "
+              "a plain matrix multiply",
+}
+
+
+def _reduction_number(value):
+    """A component/mean coordinate as a finite ``float``, or ``None``.
+
+    The envelope's own number rule (:func:`~dskit.pipeline.records.number_ok`,
+    which excludes ``bool``) plus the conversion the JSON state stores.
+    ``numpy.float64`` passes because it IS a ``float`` subclass; a narrower
+    scalar coming back would mean the estimator invented a precision this
+    node never gave it, and refusing by name beats storing a value the JSON
+    state cannot round-trip.
+    """
+    return float(value) if number_ok(value) else None
+
+
+def _reduction_rows(value):
+    """``value`` as a list of lists (numpy rows included), or ``None``.
+
+    A string is iterable but is not a list of points, so both the outer
+    and the inner shape must be a sequence rather than merely iterable.
+    """
+    if isinstance(value, (str, bytes, Mapping)):
+        return None
+    try:
+        rows = list(value)
+    except TypeError:
+        return None
+    out = []
+    for row in rows:
+        if isinstance(row, (str, bytes, Mapping)):
+            return None
+        try:
+            out.append(list(row))
+        except TypeError:
+            return None
+    return out
+
+
+def _reduction_flat(value):
+    """``value`` as a flat list of scalars (a numpy 1-D row), or ``None``."""
+    if isinstance(value, (str, bytes, Mapping)):
+        return None
+    try:
+        return list(value)
+    except TypeError:
+        return None
+
+
+def _reduction_geometry_problems(components, mean, width, n_components, *, mean_expected):
+    """Ways a ``(components, mean)`` pair is not a usable reduction.
+
+    ONE rule asked TWICE: of what a fit just extracted from an estimator,
+    and of what a load restored from JSON. A second copy is exactly where a
+    state this version writes and the next refuses would come from.
+
+    Parameters
+    ----------
+    components : list of list, or None
+        The component points, already normalized by :func:`_reduction_rows`;
+        ``None`` means the value was not a list of points at all.
+    mean : object
+        The centering vector RAW. Ignored when ``mean_expected`` is false.
+    width : int
+        The number of declared features every component and the mean span.
+    n_components : int
+        The declared projected width the components must equal.
+    mean_expected : bool
+        Whether a mean is required (``pca``) — when true, ``mean`` must
+        flatten to a width-length list of finite numbers, and a ``None`` or
+        scalar is refused rather than conflated with an absent one.
+
+    Returns
+    -------
+    list of str
+        One problem per broken invariant; empty when the pair is usable.
+    """
+    if components is None:
+        return ["components is not a list of points"]
+    problems = []
+    if len(components) != n_components:
+        problems.append(
+            f"components has {len(components)} row(s), n_components is "
+            f"{n_components} — sklearn clamps a too-large n_components to "
+            "the sample count, and a silent clamp would emit fewer columns "
+            "than the document declared"
+        )
+    for i, row in enumerate(components):
+        if len(row) != width:
+            problems.append(
+                f"components[{i}] has {len(row)} value(s), not the {width} "
+                "declared feature(s)"
+            )
+        for j, value in enumerate(row):
+            if _reduction_number(value) is None:
+                problems.append(
+                    f"components[{i}][{j}] is {value!r}, not a finite number"
+                )
+    if mean_expected:
+        mean_flat = _reduction_flat(mean)
+        if mean_flat is None:
+            problems.append(f"mean is {mean!r}, not a list of numbers")
+        else:
+            if len(mean_flat) != width:
+                problems.append(
+                    f"mean has {len(mean_flat)} value(s), not the {width} "
+                    "declared feature(s)"
+                )
+            for j, value in enumerate(mean_flat):
+                if _reduction_number(value) is None:
+                    problems.append(
+                        f"mean[{j}] is {value!r}, not a finite number"
+                    )
+    return problems
 
 # ---------------------------------------------------------------------------
 # The multi-head bundle artifact (ADR-0114 Phase 2) — one joblib file
@@ -581,6 +764,21 @@ def _library_version(path):
     module = sys.modules.get(path.split(".", 1)[0])
     version = getattr(module, "__version__", None)
     return version if isinstance(version, str) else None
+
+
+def _canonical_digest(value):
+    """Lowercase sha256 of a value's canonical JSON.
+
+    Sorted keys, compact separators, NaN and Infinity refused (they are not
+    JSON, and a digest some writers can produce and others cannot is not an
+    identity), UTF-8 encoded. A reduction's ``reduction_model_id`` asks this
+    of its state; the bundle's prediction checksum asks the same question of
+    a different payload and reuses the recipe.
+    """
+    canon = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
 def _content_hash(path, sidecar):
@@ -2172,6 +2370,681 @@ class SklearnSelect(FeatureSelector):
             ) from exc
 
 
+class SklearnReduction(FittedTransform):
+    """Project rows onto learned axes — PCA or TruncatedSVD (ADR-0149).
+
+    A member of the fitted-transform family (ADR-0040): the base owns the
+    whole envelope — fitting on the declared split and nothing else, the
+    persisted JSON sidecar, the load-mode restore that never refits, and
+    the row-independence screen — and this class supplies ``fit`` and
+    ``apply_state``.
+
+    The catalog is CLOSED (``pca``, ``svd``), unlike this pack's estimator
+    and selector doorways, which take any import path. The reason is the
+    state: this node persists EXTRACTED ``components_`` (and, for ``pca``,
+    ``mean_``) as JSON rather than a pickled model, and only these two
+    expose that extraction behind a projection that is a plain matrix
+    multiply this module owns. A native model is never written, so a
+    serving run restores a plain JSON object and no deserialiser takes a
+    path.
+
+    The projection is computed HERE from the stored arrays — for ``pca``,
+    ``(X - mean_) @ components_.T``; for ``svd``, ``X @ components_.T`` —
+    and must equal the fitted estimator's own ``transform`` on fixtures,
+    proven per catalog member. The declared ``features`` columns are
+    DROPPED from every output row and replaced by ``component_<i>`` for
+    ``i`` in ``0..n_components-1``; every non-feature column rides along.
+    ``reduction_model_id`` (the sha256 of the canonical state, recomputed
+    never copied) labels every row and is also a port, so a downstream row
+    can be traced to the exact projection that produced it. No
+    variance/reconstruction score is reported: an internal quality number
+    is one a search would rank reductions by, which is model selection this
+    node deliberately supplies no objective for.
+
+    Parameters
+    ----------
+    params : dict
+        ``algorithm`` (required, one of ``"pca"``, ``"svd"``),
+        ``features`` (required, the row keys the matrix reads, in column
+        order), ``n_components`` (required, a non-bool int ``>= 1`` and
+        ``<= len(features)`` — the projected width), ``algorithm_params``
+        (dict of the class's constructor kwargs, default ``{}``; ``seed``
+        is threaded as ``random_state`` for either member), plus the
+        family's ``fit_split`` / ``order_field`` / ``purity_check``.
+
+    Examples
+    --------
+    Project two features onto two principal axes::
+
+        node = SklearnReduction("reduce", {
+            "fit_split": "train",
+            "features": ["feature_a", "feature_b"],
+            "algorithm": "pca",
+            "n_components": 2,
+            "seed": 17,
+        })
+        out = node.run(ctx, {"rows": rows})
+        # -> out["rows"][0]["component_0"] == ...
+        # -> out["reduction_model_id"] == "9f86d0…"
+    """
+
+    outputs = FittedTransform.outputs + (_MODEL_ID_FIELD,)
+
+    _PARAMS = FittedTransform._PARAMS + (
+        "algorithm",
+        "algorithm_params",
+        "features",
+        "n_components",
+        "seed",
+    )
+
+    # -- the knobs ---------------------------------------------------------
+
+    def features(self):
+        """The declared feature keys, in the order components store them (list)."""
+        declared = self.params.get("features")
+        return list(declared) if isinstance(declared, (list, tuple)) else []
+
+    def algorithm(self):
+        """The catalog member this node fits (str)."""
+        return self.params.get("algorithm")
+
+    def n_components(self):
+        """The declared projected width, or ``None`` when undeclared (int)."""
+        return self.params.get("n_components")
+
+    def _component_names(self, width=None):
+        """The projected column names for ``width`` (default the declared one).
+
+        The width is a parameter, not read from ``self.params``: the fit
+        path hands the width it is about to fit, so the collision rule and
+        the matrix can never disagree about which names are produced.
+        """
+        if width is None:
+            width = self.n_components()
+        if isinstance(width, bool) or not isinstance(width, int) or width < 1:
+            return []
+        return [f"{_COMPONENT_PREFIX}_{i}" for i in range(width)]
+
+    # -- validation --------------------------------------------------------
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The family's problems, plus one per broken knob of this
+            class's own: a missing or off-catalog ``algorithm``, a
+            ``features`` list that is not distinct and non-empty, a
+            missing or malformed ``n_components``, a malformed
+            ``algorithm_params`` block, a malformed ``seed``, and any
+            second spelling of a knob this node already owns.
+        """
+        problems = super().validate_params(params)
+        if "features" not in params:
+            problems.append(
+                "features is required — the row keys the matrix reads, in "
+                "the order the components store them"
+            )
+        else:
+            problems += _feature_list_problems("features", params["features"])
+        problems += cls._algorithm_problems(params)
+        return problems
+
+    @classmethod
+    def _algorithm_problems(cls, params):
+        """The closed catalog, its kwargs block, and the shadowed knobs."""
+        problems = []
+        algorithm = params.get("algorithm")
+        if algorithm not in _REDUCTION_ALGORITHMS:
+            problems.append(
+                f"algorithm is required and must be one of "
+                f"{list(_REDUCTION_ALGORITHMS)} — this node extracts "
+                "components into JSON, so the catalog is closed rather than "
+                f"an arbitrary import path, got {algorithm!r}"
+            )
+        kwargs = params.get("algorithm_params", {})
+        problems += _kwargs_problems("algorithm_params", kwargs)
+        if isinstance(kwargs, dict) and any(
+            isinstance(key, str) and not key for key in kwargs
+        ):
+            problems.append(
+                "algorithm_params carries an empty key — no callable takes "
+                "one as a keyword argument, so it is a plan-time shape error "
+                "wearing a run-time costume"
+            )
+        problems += cls._n_components_problems(params)
+        problems += cls._shadowed_knob_problems(kwargs)
+        problems += cls._feature_component_overlap_problems(params)
+        if "seed" in params:
+            problems += _seed_problems(params["seed"])
+        return problems
+
+    @classmethod
+    def _feature_component_overlap_problems(cls, params):
+        """Refuse a declared feature that is also a produced column name.
+
+        A projection DROPS the declared features and ADDS ``component_<i>``
+        for ``i`` in ``0..n_components-1``; a feature that IS one of those
+        names is both dropped and written, so no run can ever succeed and
+        the row rule's remedy ("rename the field upstream") is the wrong
+        one. All three facts — the features, the width, and the prefix —
+        are known at plan time, so the refusal happens where the document
+        is read, not where it executes.
+        """
+        features = params.get("features")
+        width = params.get("n_components")
+        if (
+            not isinstance(features, (list, tuple))
+            or not all(isinstance(name, str) for name in features)
+            or isinstance(width, bool)
+            or not isinstance(width, int)
+            or width < 1
+        ):
+            return []
+        produced = {f"{_COMPONENT_PREFIX}_{i}" for i in range(width)}
+        overlap = sorted(set(features) & produced)
+        if not overlap:
+            return []
+        return [
+            f"features declares {overlap}, which this node writes as a "
+            "projected column name — a projected column cannot also be a "
+            "source feature; rename the feature upstream"
+        ]
+
+    @classmethod
+    def _n_components_problems(cls, params):
+        """``n_components`` is a non-bool int ``>= 1`` and ``<= len(features)``."""
+        if "n_components" not in params:
+            return [
+                "n_components is required — the number of projected columns "
+                "the output emits"
+            ]
+        value = params["n_components"]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return [
+                f"n_components must be a non-bool int >= 1, got {value!r}"
+            ]
+        features = params.get("features")
+        if isinstance(features, (list, tuple)) and value > len(features):
+            return [
+                f"n_components={value} exceeds the {len(features)} declared "
+                "feature(s) — a projection cannot emit more axes than its "
+                "source columns"
+            ]
+        return []
+
+    @classmethod
+    def _shadowed_knob_problems(cls, kwargs):
+        """Refuse a second spelling of a knob this node already owns.
+
+        Reads :data:`_REDUCTION_SHADOWED_KNOBS` — the one owner of which
+        constructor args are already claimed by the node's own knobs — so
+        a name added there is refused the same day, and a name dropped
+        there stops being refused. An inline second copy is exactly the
+        drift the module docstring's duplication rule exists to prevent.
+        """
+        if not isinstance(kwargs, dict):
+            return []
+        return [
+            f"algorithm_params.{name} is set — {reason}"
+            for name, reason in _REDUCTION_SHADOWED_KNOBS.items()
+            if name in kwargs
+        ]
+
+    def validate_load_inputs(self, inputs):
+        """Problems a RESTORE reads, empty when none.
+
+        Parameters
+        ----------
+        inputs : dict
+            The materialized inputs; unused.
+
+        Returns
+        -------
+        list of str
+            One problem per FITTING knob the document declared.
+            ``seed`` and ``algorithm_params`` describe how a state was
+            learned, never what the extracted projection IS — a load that
+            accepted them would imply it could rebuild the native model
+            they configured, which this node never persisted.
+        """
+        return [
+            f"{knob} describes FITTING, not the restored state — a loaded "
+            "projection is components (and, for pca, a mean), and nothing "
+            f"in it can be rebuilt from {knob}; drop the knob under "
+            "mode='load'"
+            for knob in ("algorithm_params", "seed")
+            if knob in self.params
+        ]
+
+    def row_problems(self, rows):
+        """Ways ``rows`` cannot be projected; empty when every one can.
+
+        This class's per-row admission is bespoke — it inherits none — and
+        it is the SOLE owner of the rule, reached from the fitting node's
+        own stream, the second stream an
+        :class:`~dskit.pipeline.fitted.ApplyTransform` carrier projects, and
+        :meth:`fit` itself. Bounded by the RULES, not the stream: each
+        distinct rule is reported once, naming the first row that broke it.
+
+        Parameters
+        ----------
+        rows : list
+            The stream, already known to be a list.
+
+        Returns
+        -------
+        list of str
+            One problem per BROKEN RULE: a row that is not a mapping, a
+            declared feature that is absent, a declared feature that is
+            not a finite real number (a ``bool`` is not one), and a
+            projected column name the row already carries.
+        """
+        features = self.features()
+        if _feature_list_problems("features", features):
+            features = ()
+        return self._unusable_rows(rows, features, self._component_names())
+
+    def _unusable_rows(self, rows, features, component_names):
+        """The row rule over whichever feature list is about to be read."""
+        first = {}
+        for index, row in enumerate(rows):
+            for key, message in self._broken_rules(
+                index, row, features, component_names
+            ):
+                first.setdefault(key, message)
+        return list(first.values())
+
+    def _broken_rules(self, index, row, features, component_names):
+        """``(rule key, message)`` for every rule ONE row breaks."""
+        if not isinstance(row, Mapping):
+            yield ("not-a-mapping",), (
+                f"rows[{index}] is a {type(row).__name__} — a reduction "
+                "reads features by key and writes component columns of its "
+                "own, so every row must be a mapping"
+            )
+            return
+        for name in features:
+            if name not in row:
+                yield ("feature-absent", name), (
+                    f"rows[{index}] carries no {name!r} — EVERY row is "
+                    "projected, so every row must carry every declared "
+                    "feature (cut or repair the stream upstream)"
+                )
+            elif not number_ok(row[name]):
+                yield ("feature-not-a-number", name), (
+                    f"rows[{index}] field {name!r} is {row[name]!r}, not a "
+                    "finite real number — the projection is a matrix "
+                    "multiply over the declared features, and a bool is not "
+                    "a number here"
+                )
+        for name in component_names:
+            if name in row:
+                yield ("output-key-present", name), (
+                    f"rows[{index}] already carries {name!r}, which this "
+                    "node writes — a reduction never overwrites the "
+                    "evidence it was handed; rename the field upstream"
+                )
+        if _MODEL_ID_FIELD in row:
+            yield ("output-key-present", _MODEL_ID_FIELD), (
+                f"rows[{index}] already carries {_MODEL_ID_FIELD!r}, which "
+                "this node writes — a reduction never overwrites the "
+                "evidence it was handed; rename the field upstream"
+            )
+
+    # -- the fitted state --------------------------------------------------
+
+    def fit(self, rows, params):
+        """Learn the projection from the fit split's rows.
+
+        Parameters
+        ----------
+        rows : list
+            The rows of the declared ``fit_split``, and nothing else — the
+            base cut them, which is the whole leakage guarantee.
+        params : dict
+            ``self.params``, passed through by the base.
+
+        Returns
+        -------
+        dict
+            ``schema``, ``algorithm``, ``features``, ``components``, and —
+            for ``pca`` only — ``mean``. Exactly those, all JSON-safe. No
+            native estimator is persisted.
+
+        Raises
+        ------
+        ValueError
+            When a row breaks this class's own :meth:`row_problems` rule
+            (the same repetition a direct caller could otherwise go around),
+            when the catalog member rejects ``algorithm_params`` or refuses
+            the fit, or when the fitted estimator exposes no usable
+            components — including a component count sklearn silently
+            clamped below the declared ``n_components``. Nothing is written.
+        """
+        features = list(params["features"])
+        unusable = self._unusable_rows(
+            rows, features, self._component_names(params["n_components"])
+        )
+        if unusable:
+            raise ValueError(
+                f"{self.key}: {'; '.join(unusable)}. That is this class's "
+                "own row rule, asked here for the same reason the fit is "
+                "reached directly: a caller bypassing validate_inputs would "
+                "otherwise learn a state from rows the projection then "
+                "refuses — and the pack's shared matrix reader counts a bool "
+                "as 0/1, which this class does not"
+            )
+        algorithm = params["algorithm"]
+        matrix = _design_matrix(rows, features, self.key)
+        estimator = self._fitted_estimator(algorithm, params, matrix)
+        components, mean = self._extracted(
+            estimator, algorithm, len(features), params["n_components"]
+        )
+        state = {
+            "schema": REDUCTION_SCHEMA,
+            "algorithm": algorithm,
+            "features": features,
+            "components": components,
+        }
+        if mean is not None:
+            state["mean"] = mean
+        return state
+
+    def _fitted_estimator(self, algorithm, params, matrix):
+        """The catalog member, constructed and fitted — refusals name both."""
+        path = _REDUCTION_PATHS[algorithm]
+        named = f"algorithm {algorithm!r} ({path})"
+        kwargs = dict(params.get("algorithm_params") or {})
+        shadowed = self._shadowed_knob_problems(kwargs)
+        if shadowed:
+            raise ValueError(
+                f"{self.key}: {'; '.join(shadowed)} — the direct-caller "
+                "re-check, like the row rule: a caller bypassing "
+                "validate_params would otherwise fit a projection "
+                "``apply_state`` then computes wrongly (whiten changes the "
+                "transform beyond the stored components)"
+            )
+        kwargs["n_components"] = params["n_components"]
+        kwargs["random_state"] = params.get("seed", DEFAULT_REDUCTION_SEED)
+        estimator = _construct(
+            _import_object(path, self.key, subject="reduction"),
+            kwargs,
+            named,
+            self.key,
+            "algorithm_params",
+        )
+        try:
+            estimator.fit(matrix)
+        except Exception as exc:  # noqa: BLE001 - a refusal must name the node
+            raise ValueError(
+                f"{self.key}: {named} refused to fit {len(matrix)} row(s) of "
+                f"{len(matrix[0]) if matrix else 0} feature(s): {exc}"
+            ) from exc
+        return estimator
+
+    def _extracted(self, estimator, algorithm, width, n_components):
+        """The fitted estimator's components and mean, as JSON state."""
+        components_attr, mean_attr = _REDUCTION_ATTRIBUTES[algorithm]
+        components = _reduction_rows(
+            self._fitted_attribute(estimator, components_attr, algorithm)
+        )
+        mean = None
+        if mean_attr is not None:
+            mean = self._fitted_attribute(estimator, mean_attr, algorithm)
+        problems = _reduction_geometry_problems(
+            components,
+            mean,
+            width,
+            n_components,
+            mean_expected=mean_attr is not None,
+        )
+        if problems:
+            raise ValueError(
+                f"{self.key}: {algorithm!r} fitted a reduction this node "
+                f"cannot store — {'; '.join(problems)}. Nothing was written"
+            )
+        return (
+            [[float(value) for value in row] for row in components],
+            None if mean is None else [float(value) for value in _reduction_flat(mean)],
+        )
+
+    def _fitted_attribute(self, estimator, name, algorithm):
+        """One fitted attribute, or a refusal naming the node and the member."""
+        value = getattr(estimator, name, None)
+        if value is None:
+            raise ValueError(
+                f"{self.key}: {algorithm!r} exposes no {name!r} after fit — "
+                "this node stores EXTRACTED components (and, for pca, a mean) "
+                "rather than a pickled model, so a member without them cannot "
+                "be stored. Nothing was written"
+            )
+        return value
+
+    # -- the projection and its identity ----------------------------------
+
+    def apply_state(self, state, rows, params):
+        """Project every row through the stored components.
+
+        Pure and ROW-INDEPENDENT by construction: a row's answer is a
+        matrix multiply of its own coordinates against the stored
+        components (minus the stored mean for ``pca``), and nothing about
+        the other rows enters it. That is what makes a served row's
+        projection the same whether it arrives alone or in a batch — the
+        family's classic leak, structurally absent rather than merely
+        screened for.
+
+        Parameters
+        ----------
+        state : dict
+            What :meth:`fit` learned, or what load mode restored. The
+            coordinates are read in the STATE's feature order, never the
+            document's: the components are axes in that space, and
+            :meth:`state_problems` has already refused a document that
+            restates it differently.
+        rows : list
+            EVERY row of the input stream, whatever split it came from.
+        params : dict
+            ``self.params``; unused — everything the projection needs is
+            in the state.
+
+        Returns
+        -------
+        list of dict
+            A NEW row per input row, in order, carrying every field it
+            arrived with EXCEPT the declared features, plus exactly
+            ``component_<i>`` for ``i`` in ``0..k-1`` (``k`` the state's
+            width) and :data:`_MODEL_ID_FIELD`. Input rows are never
+            mutated.
+
+        Raises
+        ------
+        ValueError
+            When a row cannot supply a declared feature as a finite real
+            number — which :meth:`row_problems` refuses at both doorways,
+            so reaching it here means a caller went around them.
+        """
+        components = state["components"]
+        features = state["features"]
+        mean = state.get("mean")
+        model_id = self.reduction_model_id(state)
+        out = []
+        for index, row in enumerate(rows):
+            point = self._point(row, features, index)
+            if mean is not None:
+                point = [p - m for p, m in zip(point, mean)]
+            projected = dict(row)
+            for name in features:
+                projected.pop(name, None)
+            for j, component in enumerate(components):
+                projected[f"{_COMPONENT_PREFIX}_{j}"] = math.fsum(
+                    c * v for c, v in zip(component, point)
+                )
+            projected[_MODEL_ID_FIELD] = model_id
+            out.append(projected)
+        return out
+
+    def _point(self, row, features, index):
+        """One row's coordinates in the STATE's feature order, or a refusal."""
+        point = []
+        for name in features:
+            value = row.get(name) if isinstance(row, Mapping) else None
+            number = _reduction_number(value)
+            if number is None:
+                raise ValueError(
+                    f"{self.key}: rows[{index}] cannot be projected — "
+                    f"{name!r} is {value!r}, not a finite real number. "
+                    "row_problems refuses this at both doorways, so a "
+                    "stream reaching here unvalidated came past them"
+                )
+            point.append(number)
+        return point
+
+    def reduction_model_id(self, state):
+        """This projection's identity: the canonical digest of ``state``.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state, as :meth:`fit` returned it or a load
+            restored it.
+
+        Returns
+        -------
+        str
+            Lowercase sha256 of the state's canonical JSON. RECOMPUTED
+            every time, never read from a field the artifact carries — an
+            id a file could state is an id a file could lie about.
+        """
+        return _canonical_digest(state)
+
+    def state_metrics(self, state):
+        """Report how wide the projection is.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``{"n_components": ...}``. No variance/reconstruction score
+            appears: an internal quality number reported beside the run is
+            one a search would rank reductions by, and this node
+            deliberately supplies no such objective.
+        """
+        return {"n_components": len(state["components"])}
+
+    def state_outputs(self, state):
+        """The model id as a PORT as well as a row field.
+
+        Parameters
+        ----------
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        dict
+            ``{_MODEL_ID_FIELD: <hash>}``. A downstream node that must
+            record WHICH projection transformed its rows needs the value
+            itself, and metrics cannot carry it — they are numbers a
+            report summarizes.
+        """
+        return {_MODEL_ID_FIELD: self.reduction_model_id(state)}
+
+    # -- what a RESTORE is held to ----------------------------------------
+
+    def state_problems(self, state):
+        """Ways a restored state is broken or misdescribed; empty when neither.
+
+        Parameters
+        ----------
+        state : dict
+            The restored state, as :meth:`fit` returned it.
+
+        Returns
+        -------
+        list of str
+            The stored shape's own problems first — it is read verbatim, so
+            it is checked completely — then one problem per knob this
+            document declares that the state contradicts: ``algorithm``,
+            ``features``, and the projected width ``n_components``.
+        """
+        problems = self._state_shape_problems(state)
+        if problems:
+            return problems
+        if state["algorithm"] != self.algorithm():
+            problems.append(
+                f"the restored state was fitted with algorithm "
+                f"{state['algorithm']!r}, this document declares "
+                f"{self.algorithm()!r}"
+            )
+        if state["features"] != self.features():
+            problems.append(
+                f"the restored state reads features {state['features']}, "
+                f"this document declares {self.features()} — the components "
+                "are axes in the STATE's feature order, so a restated list "
+                "in any other order would project the wrong columns"
+            )
+        if len(state["components"]) != self.n_components():
+            problems.append(
+                f"the restored state has {len(state['components'])} "
+                f"component(s), this document declares n_components="
+                f"{self.n_components()} — the output width is the state's "
+                "answer, and a document may restate it, never misdescribe it"
+            )
+        return problems
+
+    def _state_shape_problems(self, state):
+        """The stored state, checked completely — a load reads it verbatim."""
+        if not isinstance(state, dict):
+            return ["the restored state is not a mapping"]
+        algorithm = state.get("algorithm")
+        expected = {"schema", "algorithm", "features", "components"}
+        if algorithm == "pca":
+            expected.add("mean")
+        if set(state) != expected:
+            return [
+                f"the restored state carries keys {sorted(state)}, not "
+                f"exactly {sorted(expected)}"
+            ]
+        problems = []
+        if state["schema"] != REDUCTION_SCHEMA:
+            problems.append(
+                f"the restored state declares schema {state['schema']!r}, "
+                f"not {REDUCTION_SCHEMA!r}"
+            )
+        if algorithm not in _REDUCTION_ALGORITHMS:
+            problems.append(
+                f"the restored state names algorithm {algorithm!r}, outside "
+                f"this node's catalog {list(_REDUCTION_ALGORITHMS)}"
+            )
+        problems += _feature_list_problems("features", state["features"])
+        if problems:
+            return problems
+        width = len(state["features"])
+        components_rows = _reduction_rows(state["components"])
+        n_components = len(state["components"]) if components_rows is not None else 0
+        problems += _reduction_geometry_problems(
+            components_rows,
+            state.get("mean"),
+            width,
+            n_components,
+            mean_expected=algorithm == "pca",
+        )
+        return problems
+
+
 # ---------------------------------------------------------------------------
 # Registration (explicit — importing this pack registers nothing)
 # ---------------------------------------------------------------------------
@@ -2183,6 +3056,7 @@ NODE_KINDS = (
     ("sklearn-fit", SklearnFit),
     ("sklearn-predict", SklearnPredict),
     ("sklearn-select", SklearnSelect),
+    ("sklearn-reduce", SklearnReduction),
 )
 
 

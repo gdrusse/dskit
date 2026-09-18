@@ -13017,6 +13017,253 @@ Windows worktree (`C:\Users\russe\f3-f5b-captured-replay-20260917`) unreachable
 from this Linux container. If that draft carries findings beyond the five stated
 in the task, they are not addressed here.
 
+## ADR-0149 - dimensionality reduction as a closed-catalog `FittedTransform` member
+
+**Status:** APPROVED and implemented (2026-09-17). `SklearnReduction`
+(kind `sklearn-reduce`) lands in `dskit/pipeline/libs/sklearn.py` as a member of
+the fitted-transform family, in four TDD slices each closed by two independent
+skeptic lenses with zero unresolved Critical/Major. Two convergence checkpoints
+are recorded below (the `range(width)` name-derivation family and the
+canonical-shape pin family).
+
+**Numbering note (recorded to prevent a third collision).** `origin/main`'s
+highest ADR is 0148 (the F3 replay lane above). PR #15 is open and unmerged; it
+adds a *different* `## ADR-0148` (segmentation) on its branch, which collides
+with the F3 one already on main. This ADR therefore takes **0149** -- the next
+free number, used by no open branch or PR (verified against every `refs/pull/*`
+and remote branch head).
+
+**Context.** dskit has feature SELECTION (`sklearn-select`, `torch-importance`,
+ADR-0042): it keeps a subset of existing columns. It has no dimensionality
+REDUCTION: nothing projects rows onto new axes. Verified by tree search
+(`pca`, `TruncatedSVD`, `decomposition`, `SVD`, `manifold`, `umap`,
+`autoencoder`, `latent`). The only hits are unrelated -- long-method
+"decomposition", the Murphy decomposition, a `torch_ts` "decomposition linear"
+architecture name, and a child's supervised
+`sklearn.cross_decomposition.PLSRegression` chosen through the generic
+`sklearn-fit` estimator doorway (a child document picking a supervised
+estimator, not a reduction capability).
+
+The fitted-transform family (ADR-0040) is the right seam: it already owns the
+split selection, the JSON sidecar, the restore, the purity screen and the
+metrics. This ADR adds ONE member to that family in `dskit/pipeline/libs/sklearn.py`,
+tier 2. It branches from `origin/main`, so it adds **no tier-1 hook** -- it
+reads ADR-0148's `SklearnSegment` as a *pattern* (closed catalog, extracted
+JSON state, projection computed here, recomputed identity hash), not as a base.
+
+### Decision
+
+**Decision point 1 -- the catalog is closed: `pca` and `svd`, nothing else.**
+
+The catalog is closed for the same reason SklearnSegment's is: the state is
+EXTRACTED to JSON, not a pickled model, and only members that expose the
+extraction belong.
+
+- `pca` (`sklearn.decomposition.PCA`): exposes `components_`
+  (`n_components` x `n_features`) and `mean_` (`n_features`). Its projection
+  is `(X - mean_) @ components_.T` -- a matrix multiply this module owns.
+- `svd` (`sklearn.decomposition.TruncatedSVD`): exposes `components_` and no
+  mean (it never centres). Its projection is `X @ components_.T`.
+
+- UMAP is OUT: it has no components to extract; the fitted neighbour graph IS
+  the state, and this module does not persist native models. Inclusion would
+  change the state format from JSON to a pickled model, a different seam.
+- t-SNE is OUT, and not merely "not in the catalog": it has NO `transform()`
+  at all, so it cannot project unseen rows. It is not a fitted transform in
+  this family's fit-then-apply sense, so it belongs out of scope, not in a
+  closed catalog.
+- KernelPCA, IncrementalPCA, FactorAnalysis, NMF and the manifold learners are
+  OUT by the same extraction argument (state beyond `components_`/`mean_`, or a
+  projection that is not a plain matrix multiply); named in Non-goals.
+
+The catalog resolves through the pack's existing `_import_object` doorway to
+exactly those two dotted paths -- never an arbitrary document-supplied path.
+
+**Decision point 2 -- the projection is computed HERE, and must match the library's `transform`.**
+
+`apply_state` computes the projection from the stored arrays: for `pca`,
+`(X - mean_) @ components_.T`; for `svd`, `X @ components_.T`. This mirrors
+SklearnSegment computing nearest-centre distance here rather than calling
+`predict`. The consequence, stated as a contract: for every catalog member,
+`apply_state`'s answer must equal the fitted estimator's own `transform(X)` on
+fixtures -- proven per member in tests, not asserted. A serving run restores
+JSON and never rebuilds the estimator, so the only transform that exists is
+this module's own; if it disagreed with the library, the served rows would be
+quietly wrong and nothing would compare them.
+
+One constructor knob changes the transform and is REFUSED by name rather than
+forwarded: `whiten` (PCA). Whitened PCA projects with
+`components_.T / sqrt(explained_variance_)`, which needs `singular_values_` in
+the state -- a second stored array and a second formula. Every other
+constructor knob (`svd_solver`, `tol`, `iterated_power`, `n_iter`, `algorithm`,
+`n_oversamples`, `power_iteration_normalizer`) forwards unchanged through
+`algorithm_params`, because none of them changes the projection formula.
+
+**Decision point 3 -- the JSON state and its schema tag.**
+
+Tag: `"dskit.sklearn-reduction/v1"`. State keys:
+
+- `pca`: exactly `{schema, algorithm, features, components, mean}`.
+- `svd`: exactly `{schema, algorithm, features, components}` -- no `mean`,
+  because TruncatedSVD never centres; the omission is the record of that fact.
+
+`components` is `n_components` x `len(features)`, every entry a finite JSON
+number; `mean` (when present) has width `len(features)`. `state_problems`
+validates the state completely on load -- schema tag, algorithm in-catalog,
+feature-list shape, component width, and per-algorithm presence/absence of
+`mean` -- then compares the document's `algorithm`, `features` and
+`n_components` against it, because those are the knobs that DESCRIBE the state
+(a document may restate what a state is, never misdescribe it). `n_components`
+is NOT stored in the state: it is `len(components)`, and the comparison reads
+that. Storing it would be the same fact in two places with nothing pinning
+their agreement.
+
+**Decision point 4 -- output contract.**
+
+- The declared `features` columns are DROPPED from every output row; the
+  projected axes replace them.
+- New columns: `component_<i>` for `i` in `0..n_components-1`, in component
+  order. The prefix `component` is one module-level constant; a knob to rename
+  it is out of scope.
+- Every non-feature column (the label, the decision instant, the cluster
+  identity, anything else the row carried) rides along unchanged.
+- Input rows are never mutated; a NEW row is emitted per input row.
+- A row that already carries a produced name (`component_<i>`, from the
+  DECLARED `n_components` -- known at validate time in both modes) is refused
+  in `row_problems`, never overwritten: input evidence is not overwritten.
+
+`n_components` is a top-level REQUIRED param (int `>= 1`, non-bool), not a key
+inside `algorithm_params`, for three reasons: it names the OUTPUT width, so the
+document and the rows it feeds can reason about it; `row_problems` needs it at
+validate time (before any fit) to refuse a colliding `component_<i>`; and
+ADR-0044 makes a member's own top-level knob searchable, so owner flow 2 can
+tune it. It is threaded into the constructor as `n_components`, and spelling it
+again inside `algorithm_params` refuses (one source). `n_components <=
+len(features)` is a plan-time check, and the fit refuses when the estimator
+produces fewer than `n_components` components -- sklearn clamps to
+`min(n_components, n_features, n_samples)`, and a silent clamp would emit
+fewer columns than every document declared.
+
+Ports/outputs: `transform`, `rows`, `metrics`, plus `reduction_model_id` -- the
+identity hash, emitted BOTH as a field on every output row and as a port via
+`state_outputs`, so a downstream row can be traced to the exact projection that
+produced it (the SklearnSegment `segment_model_id` precedent). It is the
+lowercase sha256 of the state's canonical JSON (sorted keys, compact
+separators, `allow_nan=False`), RECOMPUTED from the restored state on every
+projection -- never copied from an artifact field, because an id a file states
+is an id a file could lie about.
+
+Numeric-only metrics: `n_rows` (the family's), `n_fit_rows` (the family's), and
+`n_components` (this member's `state_metrics`). Nothing else.
+
+**Decision point 5 -- no variance / reconstruction score is reported.**
+
+PCA and TruncatedSVD both expose `explained_variance_ratio_`, and it is
+DELIBERATELY not reported. The reason is SklearnSegment's, restated: an
+internal quality number reported beside a run is one a search would rank
+reduction candidates by, which is model selection this node must not perform --
+choosing `n_components` by maximising explained variance is the caller's
+decision, not an objective this node supplies. Reporting it would also make
+`pca` and `svd` asymmetric (they answer different variance definitions). A
+caller that wants the number can fit through the generic `sklearn-fit` doorway;
+this member supplies no such objective.
+
+**Decision point 6 -- no `sidecar_problems` override; the Standardize posture.**
+
+The load path needs no sidecar-level hook. Every refusal fact this member owns
+lives either in the STATE (`state_problems` compares `algorithm`, `features`
+and `n_components`) or in the document's own params (`validate_load_inputs`
+refuses the fitting-only knobs `algorithm_params` and `seed`). The base's
+`_sidecar` already compares `fit_split` when the document declared one, and --
+unlike a segmentation "regime" -- a reduction is a data transformation that the
+family's existing unsupervised member (Standardize) lets a document fit on any
+declared split; the leakage protection is the DECLARED `fit_split` and the
+plan/run refusal to fit on anything else, not a train-only narrowing. Adding
+`sidecar_problems` would be a tier-1 change this ADR does not need and does not
+make (it is ADR-0148's, unmerged).
+
+**Decision point 7 -- out of scope, named.**
+
+UMAP, t-SNE, KernelPCA, IncrementalPCA, FactorAnalysis, NMF, all manifold
+learners; `n_components` as a float fraction or `"mle"` (the output width must
+be a declared int, not a fit-time answer); PCA `whiten`; a configurable
+component-name prefix; supervised reduction (LDA/PLS -- the child's PLS use
+stays on the generic `sklearn-fit` doorway); any variance/quality ranking;
+production serving authority (`serving_load_audited` is NOT claimed -- a
+serving licence is its own ADR with its own audit, the SklearnSegment
+precedent). `deployment_eligible=false` throughout.
+
+**Parameters.** The class's `_PARAMS` is `FittedTransform._PARAMS +
+("algorithm", "algorithm_params", "features", "n_components", "seed")`.
+`seed` (int in `[0, 2**32)`, default 0) is threaded as `random_state`; both
+catalog members accept it, so there is no "seed refused beside X" case. Kind
+`sklearn-reduce`, class `SklearnReduction`, added to the pack's explicit
+`NODE_KINDS`/`register()`. `fit_split`, `order_field` and `purity_check` keep
+their accepted meanings and validators unchanged.
+
+### Convergence checkpoint (slice 1, after review round 2)
+
+**Triggered by a REPEATED FAMILY across two rounds**, not by a cycle count.
+
+The family: *a set of `component_<i>` names derived from `range(width)` is
+pinned at exactly one index or one width, so a hardcoded or truncated
+derivation survives the suite.* Round 1 found it in `_component_names`
+(`row_problems` collision tested only at `component_0` at width 2); the
+round-1 correction pinned `_component_names` at width 3 but INTRODUCED a
+second derivation site — `_feature_component_overlap_problems` — carrying the
+same unpinned shape, which round 2 then found (tested only at `component_0`).
+
+Why the earlier fix did not cover it: it patched the instance, not the family.
+The family is "every place that DERIVES the produced-name set from
+`range(width)` must be pinned at a non-zero index AND at a beyond-width
+non-collision", and the correction added a new instance without applying the
+rule it had just learned.
+
+The changed approach — an inventory, not another point patch. Every site that
+derives `component_<i>` names (present and future) must carry a test that
+exercises (a) a non-zero index `component_<k>` for `k >= 1` COLLIDES, and (b) a
+beyond-width name `component_<width>` does NOT collide. Inventory so far:
+
+1. `_component_names` (row rule) — pinned at width 2 AND width 3 (component_2
+   collides, component_3 does not).
+2. `_feature_component_overlap_problems` (plan check) — pinned at component_0,
+   component_1 AND component_2 (width 3) colliding, and component_2 (width 2) /
+   component_3 (width 3) NOT colliding — both the (a) non-zero-index and (b)
+   beyond-width halves of the rule. Round 3 falsified the first draft of this
+   bullet (it had only the (a) half), so the (b) half is now applied too.
+
+The next derivation site is `apply_state`'s projection (slice 3), which writes
+`component_0..k-1` from the STATE's width — it must satisfy the same
+(a)/(b) rule on its FIRST red-green cycle, not be retrofitted after a reviewer
+finds it. A round-3 Major in this family means the inventory missed a site,
+which is a checkable claim rather than another point fix.
+
+### Convergence checkpoint 2 (slice 2, after review round 3) — the canonical-shape pin
+
+**Same family, wider form.** The slice-1 checkpoint pinned the `component_<i>`
+name derivation. Slice 2's final mutation sweep found the family again, this
+time as: *every value that should read `len(features)` / `n_components` /
+`width` is exercised only at the fixture's canonical shape — 3 features,
+`n_components=2` — so a hardcoded `3` or `2` survives the suite.* Eight Major
+survivors (hardcoding `width=3`, `len(features)=3`, the `!=` geometry checks
+turned one-directional, `algorithm_params` dropped, the validator bound
+`> 3`, tuple features left un-coerced) plus three Minor.
+
+Why the slice-1 fix did not cover it: slice 1 enumerated *name-derivation*
+sites; slice 2 introduced *shape-derivation* sites (`len(features)`,
+`n_components`, `width`) whose fixture happens to equal the natural hardcode.
+The one-fixture-shape oracle is the root cause, not any single site.
+
+The changed approach — a SECOND fixture shape, and a direction battery. No more
+single-value pins. The reduction tests now run against TWO shapes — the
+canonical 3-feature/2-component document AND a 2-feature/1-component one — so
+every `len(features)`/`n_components`/`width` read is exercised at two distinct
+values, and every `!=` geometry check is proven BOTH directions (fewer AND
+more). The next slice (`apply_state`, slice 3) inherits the two-shape rule and
+must also project a 2-feature state, so its width reads are pinned at both
+shapes from its first cycle.
+---
+
 ## ADR-0150 - the durable admission ledger's fold and composition seams
 
 *(Number taken at commit time. 0149, 0151 and 0152 are already held by unmerged branches
@@ -13162,6 +13409,613 @@ resolved under the owner's 2026-09-17 ruling, and the two tests are NOT alike:
   capture-capable broker to migrate to. It is narrowed to the no-effect half
   it can still prove, and says so in place. **The unburned-admission half is
   now unproven** and stays that way unless the F4-only capture path returns.
+
+## ADR-0151 — Mean-effect intervals under temporal dependence
+
+**Status:** accepted (2026-09-17; owner pre-approved 2026-09-17, path row A18041).
+
+**ADR-id allocation.** Scanned every ref and every working tree reachable from
+this clone before allocating: `git for-each-ref refs/heads refs/remotes` plus
+`git grep '^## ADR-0[0-9]{3}'` over `docs/architecture/decision-log.md`, plus a
+direct grep of each `~/wt/*` working copy. Highest seen anywhere: **0149**,
+which is ALREADY DOUBLE-ALLOCATED (`codex/pi-estimator-20260917` and
+`codex/dim-reduction-adr149-20260917` both took it from the same base). 0150 is
+free but is the obvious landing spot for that collision's renumber, so this ADR
+takes 0151 and deliberately leaves 0150 vacant. Base for this lane:
+`origin/main` at `e989dff`. The decision log has no merge driver and no
+uniqueness test; until it has one, `max + 1` from a single base is not a safe
+allocation rule.
+
+**Context.** A robust uncertainty set (`U_mu`, the Bertsimas–Sim budgeted
+counterpart sketched in the intraday_equities research notes) needs, per
+component, a point mean and an adverse deviation around it. The evidence is
+out-of-fold per-row scores whose labels OVERLAP in time, so the naive
+`s/sqrt(n)` interval is too narrow by exactly the factor that matters. dskit had
+the arithmetic for both standard answers and no doorway that makes a caller
+STATE the dependence before it gets a number.
+
+Gamma (the Bertsimas–Sim budget) is tuned by rolling validation and is
+explicitly NOT identified by anything here. This ADR produces per-component
+deviations only.
+
+**Inventory (what already existed).**
+
+* `stats.cluster_bootstrap_t` — studentized recentered cluster bootstrap-t;
+  already returns `mean`, `se`, `ci_low`, `ci_high`. With clusters = trading
+  sessions this IS the whole-session block bootstrap the research note ratified.
+* `stats.newey_west_mean` — the HAC mean/SE owner. Returns **no interval**.
+* `stats.dm_lags`, `across_fold_t`, `clark_west_series`, `_student_sf`/`_betai`.
+* `attempts.py` — the scramble doctrine: the exchangeable unit is a whole
+  SESSION, because a session moves every overlapping label with it.
+* Searched and **absent**: any block/stationary bootstrap by that name, any
+  effective-sample-size helper, any inverse CDF or critical-value inverter, any
+  second `ci_low`/`ci_high` producer. `cluster_bootstrap_t` is the only interval
+  in `dskit`.
+
+**Three proven gaps** (probed on `e989dff`, not assumed):
+
+1. `cluster_bootstrap_t({"a": [1.0, nan], "b": [2.0, 3.0]}, 50, 7)` returns
+   `mean=nan, ci_low=nan, ci_high=nan` — a non-finite score propagates silently.
+2. `newey_west_mean` defaults `lags=0`. A caller who says nothing gets the
+   independence assumption for free — the exact silent too-narrow answer this
+   row exists to prevent — and gets no bounds at all even when they do say.
+3. Neither refuses on too-few independent units. `cluster_bootstrap_t` runs on
+   two clusters and reports a `mean`/`se`/`p_value` from them.
+
+**Decision.** A thin tier-1 core module, `dskit/pipeline/mean_interval.py`, that
+owns the CONTRACT and delegates the ARITHMETIC to the two functions above.
+Nothing resamples or kernel-weights here; no estimator is re-derived.
+
+* `MeanEvidence` — frozen value: time-ordered `values`, plus the dependence
+  statement in whichever spelling the caller has (`units` = per-observation
+  independence-unit label, and/or `overlap_steps` = label overlap in observation
+  steps). **Construction refuses when BOTH are absent.** The dependence is never
+  defaulted; it has no default to fall back to.
+* `MeanIntervalEstimator(ABC)` — the doorway. `interval(evidence, level=)`
+  is a TEMPLATE method a member never overrides — **enforced by
+  `__init_subclass__`** (the `production/leg.py:1117` idiom), not by a docstring
+  asking nicely. It owns the screens, the minimum-units refusal, the result
+  invariants and determinism. Four `@abstractmethod` hooks, one job each —
+  `result_class`, `independent_units(evidence)`, `mean_and_se(evidence)` and
+  `bounds(evidence, mean, se, level)` — plus a `minimum_units` hook, because
+  "fewer units than the method can support" is the METHOD's fact.
+* `MeanIntervalResult` — frozen; cannot exist with `low > mean` or
+  `mean > high`, or with a non-finite field. Exposes `deviation_below` /
+  `deviation_above` (pure geometry). Naming one of them "adverse" needs the
+  consumer's sign convention, which dskit does not have. Its level field is
+  `level`, not `confidence`, and the CLAIM is carried by the two subclasses
+  `ConfidenceInterval` / `WidenedInterval` — see the correction round below.
+* Two members: `ClusterBootstrapInterval` (delegates to `cluster_bootstrap_t`;
+  units are the resampling unit) and `NeweyWestInterval` (delegates to
+  `newey_west_mean`; `lags = overlap_steps`, Student-t critical value on
+  `independent_units - 1` degrees of freedom, where independent units are the
+  non-overlapping-block count `n // (overlap_steps + 1)`).
+* `MEAN_INTERVAL_ESTIMATORS` / `register_mean_interval_estimator` /
+  `mean_interval_estimator` — the registry idiom `stats.register_correction`
+  set and `false_signal.py` reused. The registry holds CLASSES, because the
+  family is an object with hooks. All three names spell the SUBJECT out:
+  a bare `estimator` already means the opposite thing next door
+  (`libs/sklearn.py` uses it ~135 times, `_PARAMS` at line 1689 included, for
+  the dotted path to an ML model), every other registry here names its subject
+  (`register_node_kind`, `register_correction`, `register_metric`,
+  `register_split_policy`), and the two concurrent lanes were pushed the same
+  way (`FALSE_SIGNAL_ESTIMATORS`, `CALIBRATORS`). Renamed while nothing is
+  wired, so the rename costs nothing.
+* `ClusterBootstrapInterval` additionally refuses when a stated `overlap_steps`
+  could not FIT inside the shortest unit's contiguous run. That is `attempts.py`'s
+  whole-block doctrine screened rather than assumed. It is a NECESSARY and not a
+  sufficient condition — see the correction round below — and the class says so.
+
+**Fail-closed, not fail-quiet.** A bound the method cannot claim RAISES; it is
+never `None`, never NaN, never a silently narrower number. This deliberately
+diverges from `cluster_bootstrap_t`, which returns `None` bounds on a degenerate
+pivot tail. That is correct for descriptive per-instrument evidence beside a
+p-value and wrong for a number a robust constraint consumes: a consumer that
+reads `None` as "no adjustment" sizes as if there were no uncertainty.
+
+**One edit outside the new module.** `stats._student_sf` is promoted to public
+`stats.student_t_sf`, and (correction round) made to ENFORCE its documented
+`df > 0` precondition instead of assuming it. The Student tail stays owned by
+`stats.py`; the new module bisects on it for the quantile. Copying the continued
+fraction into a second module is the defect CLAUDE.md's "a function is never
+repeated across modules" names. The same shape is being done concurrently on
+`codex/pi-estimator-20260917`, which promotes `_betai` to public
+`regularized_incomplete_beta` and has `false_signal.clopper_pearson_upper` bisect
+on it — that is a PARALLEL lane, not merged precedent, and neither branch's
+promotion exists in this branch's base (`origin/main` at `e989dff`). The two
+were arrived at independently and agree; that is the strength of the argument,
+not an appeal to something already landed.
+
+**Tier: 1 (core), `dskit/pipeline/`.** The code is a pure rule over numbers with
+zero required dependencies and no library to wrap, and a project that has never
+heard of returns, portfolios or trading sessions can use it on any overlapping
+mean. It is not a node kind: like `false_signal.py` and `kinds_search.py`'s
+values it is a plain API a node or a child may call, and wiring it into a
+document is separate, unauthorized work.
+
+**New module rather than more functions in `stats.py`**, because what this IS is
+an estimator FAMILY with a doorway, a required contract and a registry — the
+same shape `false_signal.py` was given today — whereas `stats.py` holds pure
+statistical rules and the correction registry. `stats.py` is already 1,293 lines
+and owns three distinct estimands.
+
+**Rejected.**
+
+* *Extend `cluster_bootstrap_t` in place.* It backs the OWNED `stat_test` kind
+  and `benchmarks.py` reads its `ci_high`. Tightening its screens or changing a
+  `None` bound to a raise would move an owned verdict path for a reason that has
+  nothing to do with multiplicity testing.
+* *A loose `mean_interval(...)` function.* Owner ruling 2026-09-04 prefers
+  objects; and the two interval families differ in real behavior, which is a
+  subclass, not an `if method ==` in one body.
+* *A true stationary bootstrap (Politis–Romano geometric blocks).* The research
+  note names it beside the block bootstrap. Not built: the whole-session block
+  case is what the evidence actually has (sessions are natural, non-overlapping
+  blocks) and `cluster_bootstrap_t` already delivers it exactly. A geometric-
+  block member is a later subclass behind this same doorway and needs no
+  redesign — which is the point of making the doorway a class.
+* *Defaulting `overlap_steps` from `dm_lags`.* `dm_lags` is a sensible automatic
+  rule, and wiring it as a DEFAULT would reintroduce exactly the silent
+  dependence assumption this row exists to remove. A caller may pass
+  `dm_lags(...)` in; nothing here will pass it for them.
+* *Simultaneous / joint coverage across components.* Marginal intervals are not
+  a joint region, and the research note says so. Each call describes ONE
+  component. Nothing here claims family-wise coverage, and `U_mu`'s geometry
+  remains the consumer's decision.
+
+**Consequences.** Not wired to any node, document or child; `nodes_capital.py`
+is untouched. Not validated on real data — every test is synthetic, and the
+research note's acceptance criterion (empirical coverage and width on a later,
+untouched calibration segment) is NOT met by this ADR and is named follow-on
+work. Gamma remains untouched and unidentified.
+
+### Correction round, 2026-09-17 — the nominal level was not delivered
+
+A two-lens skeptic review of `4ee599d` returned `method 0C/2M`,
+`architecture 0C/3M` and five Minors. The Major that reshaped the module:
+
+**What was measured.** Monte Carlo against a known true mean, nominal level
+0.95, 1,000–2,500 trials per cell, reproduced independently during the
+correction:
+
+| sample | independent units | measured |
+|---|---|---|
+| whole independent units, every label realized inside its unit | 8 / 20 / 50 | **94.6–96.3%** |
+| 10-step rolling mean, `overlap_steps=9` (CORRECTLY stated), units carved at the overlap length | 8 / 20 / 50 | **86.9–91.1%** |
+| AR(1) φ=0.8 at the overlap `stats.dm_lags` suggests (5) | 53 | **~81%** |
+| AR(1) φ=0.8 at a generous `overlap_steps=30` | 10 | ~93% |
+
+The shortfall is FLAT in `n` — it is not a small-sample effect that more data
+resolves — and it reaches BOTH members whenever the units are merely contiguous
+blocks cut from one overlapping series. The first row is the positive control:
+given its actually-intended input, `ClusterBootstrapInterval` delivers.
+
+**Diagnosis.** Two causes, and only the second is this module's.
+
+1. `newey_west_mean`'s Bartlett kernel weights lag `k` by `1 - k/(lags+1)`, so
+   truncating at exactly the stated overlap downweights every autocovariance the
+   overlap creates. For an `h`-step rolling mean at `lags = h-1` the estimated
+   long-run variance is analytically **0.67** of the truth and the standard
+   error **0.82** of it; measured `mean(SE_hat) / true SD(mean)` was 0.72 at
+   `n=80` and 0.80 at `n=500`. The attenuation does not vanish with `n`.
+2. `independent_units = n // (overlap_steps + 1)` counts adjacent
+   non-overlapping blocks, but the last row of block `i` still shares raw shocks
+   with the first `overlap_steps` rows of block `i+1`. The count is an UPPER
+   BOUND on independence, never a certificate — the reviewer's point, confirmed.
+
+**Decision: outcome 2 — stop licensing the `overlap_steps` path as a
+confidence level.** Option 1 (repair the block count) was tried on paper and
+rejected with a reason, not a shrug: the dominant term is a systematically
+attenuated standard error, and no degrees-of-freedom discount repairs a biased
+SE. Worse, the attenuation factor depends on the autocovariance SHAPE — 0.82 for
+a rolling mean, something else for an AR(1) — so any constant chosen here would
+be tuned to one DGP and silently wrong for the next caller's. The honest repairs
+are a different kernel or bandwidth inside `newey_west_mean`, or fixed-`b`
+(Kiefer–Vogelsang–Bunzel) critical values in place of Student-t. Both are NEW
+ARITHMETIC in a module this ADR deliberately does not re-derive, and
+`newey_west_mean` additionally backs the owned `stat_test`/`diebold_mariano`
+paths. Neither is authorized here.
+
+So, following `false_signal.py`'s `pi_upper → pi_widened` /
+`confidence → widening_level` retreat:
+
+* `MeanIntervalResult.confidence` → **`level`**, and `interval(..., level=)`.
+  The field now names what was REQUESTED, not what was delivered.
+* Two claim-bearing subclasses: **`ConfidenceInterval`** (the level IS coverage,
+  and was measured) and **`WidenedInterval`** (the level widens the bounds
+  monotonically and nothing more). No boolean flag, no `if method ==` — the
+  claim is a type, so a consumer can `isinstance` it.
+* **`result_class` is an abstract hook with NO default.** A new member must
+  state which of the two it has earned; inheriting the calibrated claim by
+  silence is precisely the overclaim. `ClusterBootstrapInterval` →
+  `ConfidenceInterval`; `NeweyWestInterval` → `WidenedInterval`.
+* `units` is now the PRIMARY contract in prose and in the docstrings.
+  `overlap_steps` is NOT refused — the HAC bracket is still a useful sensitivity
+  reading, and refusing it would delete the only answer available to a caller
+  who has no unit labels — but nothing calls it a confidence level any more.
+* The Monte Carlo SHIPS, `slow`-marked, in `tests/pipeline/test_mean_interval.py`
+  (`TestMeasuredCoverage`), including the `units` positive control. Every
+  coverage number above is pinned by an assertion, in BOTH directions: the
+  calibrated path must stay ≥ 0.92 and the widened paths must stay < 0.94, so a
+  future change that quietly starts overclaiming fails a test.
+
+**The overlap screen is necessary, not sufficient, and now says so.**
+`ClusterBootstrapInterval.independent_units` refuses an overlap that cannot fit
+inside the shortest unit run. It CANNOT detect the residual error: an overlap
+that fits still reaches out of the last rows of every unit unless the units are
+separated in time, which is exactly what a caller asserts by calling them units
+and is not something this module can see. Contiguous blocks carved from one
+overlapping series pass the screen and measured 89.5%. Tightening the screen to
+the truly sufficient condition would refuse `overlap_steps >= 1` with contiguous
+units, which would refuse the legitimate whole-block case as well. The screen
+therefore stays, redocumented, with the failure mode measured and pinned.
+
+**Other findings corrected in this round.**
+
+* **`stats.student_t_sf` enforces its preconditions** (`df` a finite number > 0,
+  `t` finite). It silently returned `0.0` at `df=0`, `0.5` at `df=-5`, and raised
+  a bare undocumented `ZeroDivisionError` at `df=-1`. A silently wrong
+  probability is worse than a crash. `Raises` section added.
+* **`student_t_sf`'s sign correction is now tested directly.** Mutating
+  `return tail if t > 0.0 else 1.0 - tail` to an unconditional `return tail`
+  passed all 138 tests: `_student_t_critical` bisects upward from `high = 1.0`
+  so it never probes `t < 0`, and `across_fold_t` varies no sign. The new
+  `TestStudentTailSymmetry` asserts `sf(-t, df) == 1 - sf(t, df)` and checks both
+  tails against INDEPENDENT closed forms for `df` 1, 2 and 4, restated from the
+  distribution's own algebra rather than read back from the implementation.
+* **`__init_subclass__` enforces the final template** (M3). The docstring said
+  `interval` is never overridden and nothing stopped a third subclass from
+  overriding it and skipping the `MIN_INDEPENDENT_UNITS` floor, the NaN screens
+  and the zero-SE refusal.
+* **Registry renamed** (M4), as recorded in the Decision bullets above.
+* **Mutation gaps closed** (M2): `MeanIntervalResult`'s standalone
+  `standard_error <= 0` (now tested AT zero) and non-empty `method` checks; all
+  three `ClusterBootstrapInterval.__init__` validations; the template's
+  `mean`/`se` NaN screens and its unit-count screen (aimed via a stub member —
+  dead against the two shipped members, but the only protection a future
+  registered member gets); `_QUANTILE_CEILING`'s refusal (reachable only at
+  `df = 1`, where the Cauchy tail stays above a representable target past 1e8);
+  and `cluster_bootstrap_t`'s mean-agreement sanity check. Two loose match
+  strings were tightened: `"units" in str(err)` could not tell
+  `ClusterBootstrapInterval`'s own guard from `shortest_unit_run`'s None-check,
+  which fires on the same input and also says "units".
+* **Domain vocabulary removed** from the docstrings ("capital constraint",
+  "session"). The code and API were already generic.
+* **The "Import cost: stdlib only" line was false** — `node.class_ref` drags
+  `base.py` and `document.py` in. The docstring is corrected rather than the
+  import dropped, citing the no-duplicate-function rule, matching the sibling
+  lane's resolution of the identical finding.
+
+**Merge resolution, recorded before it is needed.** `git merge-tree` against
+`codex/pi-estimator-20260917` (`b820dad`) conflicts in `stats.py`. That branch
+renames `_betai` → public `regularized_incomplete_beta` and DELETES `_betai`;
+this branch renames `_student_sf` → public `student_t_sf` with a body still
+calling `_betai`. Git resolves the `_betai` hunk in their favour automatically
+and leaves only the `student_t_sf` body in conflict, so **a careless resolution
+ships `student_t_sf` calling a deleted `_betai` — a `NameError` on every call,
+including `across_fold_t` and all of `NeweyWestInterval`.** The correct
+resolution: keep this branch's PUBLIC `student_t_sf`, with its docstring and its
+new precondition block, and change its body to call
+`regularized_incomplete_beta`; keep both names in `__all__` (that hunk merges
+cleanly and yields both). The two precondition blocks are independent guards and
+both stay. The edit on this side was kept as small and as local as the M5 fix
+allows. The decision-log, `dskit/pipeline/CLAUDE.md` and `dskit/pipeline/README.md`
+also conflict; all three are additive, side-by-side entries.
+
+**Pre-existing defect, disclosed and NOT fixed.** `cluster_bootstrap_t` still
+propagates a non-finite score silently — gap 1 above. One detail the original
+entry omitted: alongside `mean=nan`, `se=nan`, `ci_low=nan`, `ci_high=nan`, it
+returns a normal-looking **`p_value = 0.0196`**, because `t >= nan` is always
+`False` so no replicate counts as an exceedance. That number could be mistaken
+for a real significant result. It is out of scope here for the reason the
+Rejected section already gives — `cluster_bootstrap_t` backs the owned
+`stat_test` kind and `benchmarks.py` reads its `ci_high`. `MeanEvidence`'s
+`number_ok` screen fully shields THIS module: a non-finite value cannot reach
+the delegate through `mean_interval.py`.
+## ADR-0152 - `false_signal.py`: a generic per-signal false-signal number (`pi_hat`, `pi_widened`)
+
+**Status:** accepted (owner pre-approved 2026-09-17). Evidence: the owner's
+pre-approval of the estimator is recorded in the 2026-09-17 task that
+commissioned it; the corrections below (including this renumber and the
+contract change from `pi_upper` to `pi_widened`) come from the two-lens
+independent skeptic review of candidate `4e8dec0` on
+`codex/pi-estimator-20260917`, whose findings are corrected in the follow-on
+commit on that branch. Not wired to any consumer, so nothing downstream is
+gated on this.
+
+**Numbering.** First drafted as ADR-0149, which
+`codex/dim-reduction-adr149-20260917` had allocated eight minutes earlier
+(`git merge-tree` showed a content conflict in this file). Renumbered to 0151
+after scanning `## ADR-0____` headings in `docs/architecture/decision-log.md`
+across **every** ref — 20 local heads and 8 remote refs, the full output of
+`git for-each-ref refs/heads refs/remotes`. Highest anywhere was 0149 (on
+`codex/dim-reduction-adr149-20260917` and on this branch); `origin/main` was at
+0148. 0150 is deliberately skipped: another lane was taking it concurrently.
+The original commit message `4e8dec0` still says ADR-0149 and cannot be fixed
+without rewriting history.
+
+**Context.** ADR-0088 locks the HFDR capital constraint
+`sum_i(x_i * pi_i) <= q * sum_i(x_i)`, and the conservative-pi note
+(`children/intraday_equities/docs/research/hfdr-mio-uncertainty/2026-09-05-conservative-pi-hfdr.md`)
+argues that constraint should be handed a conservative `pi`, not a point
+estimate. `forecast_bundle.ForecastBundle` already VALIDATES a `pi_hat`/`pi_upper`
+pair (both finite in `[0, 1]`, `pi_hat <= pi_upper`) and says in its own module
+docstring that it "calibrates nothing" and that a generic estimator, once ruled,
+"graduate[s] to `dskit`". Nothing in dskit produces those numbers: the only
+source today is the hardcoded `_PI_HAT`/`_PI_UPPER` test fixtures in
+`children/intraday_equities/intraday_equities/testing.py`. The estimand is
+domain-neutral -- "given out-of-fold evidence and a scramble null, how probable
+is it that this signal's apparent edge is nothing" is a question a project that
+never heard of equities asks.
+
+**Decision.** A new tier-1 core module, `dskit/pipeline/false_signal.py`,
+stdlib plus three siblings, no RNG. It exposes an abstract estimator with three
+`@abstractmethod` hooks and one template method, one shipping member, a registry
+seam, and two pure rules:
+
+- `SignalEvidence(statistic, null_draws)` -- one signal's evidence, validated in
+  `__post_init__`. `statistic` is the out-of-fold number (any scale);
+  `null_draws` are that same statistic recomputed under scrambles. Orientation is
+  the repo's existing one: LARGER is stronger evidence against the null, matching
+  `attempts.beat_all` / `attempts.tier2_verdict`.
+- `permutation_pvalue(statistic, null_draws)` -- the add-one permutation p-value
+  `(1 + #{draw >= statistic}) / (1 + B)`. Never zero, never a point value; the
+  same doctrine `attempts.early_stop_p_bound` already states for the stopped
+  audit. The EMPIRICAL NULL enters here and only here: because the p-value is
+  computed against the scramble draws themselves, the p-scale null is uniform by
+  construction, so no separate empirical-null fitting (and no normal-theory
+  assumption) is needed downstream. It is the ONE owner of the add-one rule --
+  `estimate` calls it rather than restating it inline.
+- `clopper_pearson_upper(successes, trials, confidence)` -- the exact binomial
+  upper confidence limit, by bisection on the regularized incomplete beta.
+- `FalseSignalEstimator` (ABC) -- `estimate(evidence, independent_units)` is the
+  TEMPLATE, and `__init_subclass__` REFUSES at class-definition time any member
+  that overrides it, so the screens cannot be skipped by subclassing. Subclasses
+  supply the estimator FAMILY through `fit(pvalues)` (returns the subclass's own
+  opaque state), `null_proportion(state)` and `density(state, p)`.
+- `GrenanderLocalFdr` -- the shipping member.
+- `FalseSignalEstimate` -- the frozen result: `pi_hat`, `pi_widened`, `evidence`,
+  all three wrapped read-only (`MappingProxyType`, one level deep) so a `frozen`
+  dataclass over mappings is actually frozen.
+- `FALSE_SIGNAL_ESTIMATORS` / `register_false_signal_estimator` /
+  `false_signal_estimator` -- the registry, mirroring `stats.register_correction`.
+  Named for its SUBJECT like every sibling registry (`register_node_kind`,
+  `register_correction`, `register_metric`, `register_split_policy`) rather than
+  for the mechanism; the bare word `estimator` is already taken in this package
+  by `libs/sklearn.py`'s `_PARAMS` field for a model dotted path, and
+  `dskit/pipeline/CLAUDE.md` uses "estimator registry" as the thing
+  `benchmarks.py` is explicitly NOT (ADR-0097).
+
+**The family.** Storey-style `pi0` plus a two-groups local FDR, with the marginal
+p-value density estimated by the **Grenander** (least-concave-majorant)
+estimator -- the nonparametric MLE of a decreasing density, which is what the
+two-groups model implies on the p-scale (uniform null plus stochastically smaller
+alternatives). `pi_i = min(1, pi0 * f0(p_i) / f(p_i))` with `f0 == 1`. Chosen
+over the kernel or spline local-fdr fit of the Efron note because a kernel needs
+a BANDWIDTH: that is a hardcoded number governing the answer, which this repo
+forbids, and CLAUDE.md's "never hardcode what could change" would push it into
+config where no config author can choose it well. Grenander has no tuning
+constant at all, is deterministic and is O(m log m) in pure Python. `pi0` itself
+is Storey's `#{p > null_threshold} / (m * (1 - null_threshold))`, capped at 1 and
+floored at `1 / (m + 1)` -- `m` observations can never evidence ZERO nulls, the
+same add-one reasoning as the permutation p-value, and the explicit refusal to
+default a rate to zero. `null_threshold` is a DECLARED policy knob
+(`DEFAULT_NULL_THRESHOLD = 0.5`, the literature's value) and not the same kind of
+thing as a bandwidth -- its direction of effect is known, it is named once, and
+it is a constructor argument rather than a number buried in a fitting routine.
+
+**The second number is NOT a confidence bound, and this ADR stops claiming one.**
+The first draft called it `pi_upper` and described two Clopper-Pearson inputs
+"each spending half the error budget", which reads as a 95% joint statement. It
+is not one. A two-groups Monte Carlo with known truth and FULLY independent
+signals (`independent_units == m`, the most favourable case there is) measured
+`P(pi_upper >= true local fdr)` at `confidence = 0.95`:
+
+| `pi0` | `m` | `B` | measured coverage |
+|---|---|---|---|
+| 0.80 | 200 | 999 | 0.82 |
+| 0.90 | 200 | 999 | 0.78 |
+| 0.95 | 100 | 999 | 0.68 |
+| 0.80 | 40 | 999 | 0.72 |
+| 0.99 | 200 | 999 | 0.53 |
+
+The knob cannot repair it: at `pi0 = 0.9, m = 200, B = 999`, sweeping it 0.5 ->
+0.95 -> 0.999999 moves measured coverage 0.563 -> 0.732 -> 0.897. A nominal
+one-in-a-million still falls short of 0.95, and it gets there by pinning 76% of
+all readings at the maximum value 1.0. The cause is structural, not arithmetic:
+both widened inputs price only
+BINOMIAL error, while the Grenander density `f` sits in the DENOMINATOR of every
+number, converges at `m ** (-1/3)` in the interior, and is not consistent at all
+at the left boundary (Woodroofe-Sun). That error is unpriced and it dominates.
+The under-coverage is worst at `pi0 ~ 0.99`, which is the regime a real signal
+search lives in, and it falls on the signals with the SMALLEST `pi` -- exactly
+the ones a capital constraint would fund.
+
+**Why the number was renamed rather than repaired.** Both repairs were tried
+before choosing. Pricing the density error nonparametrically at this `m` needs a
+simultaneous statement about `F`, and the only tuning-free device available is a
+DKW band: `f(p) >= max_{q > p} (F_m(q) - F_m(p) - 2*eps) / (q - p)` with
+`eps = sqrt(ln(2/alpha) / (2m))`. Measured on the same Monte Carlo, that envelope
+reaches coverage 1.000 at every setting above -- by returning `pi = 1.0` for
+**100%** of signals. It is valid and completely vacuous: `2*eps` is about 0.22 at
+`m = 200`, which swamps every p-value gap the family has. A bootstrap of the
+whole fit-and-read pipeline is worse than useless here: the n-out-of-n bootstrap
+is known INCONSISTENT for the Grenander estimator (Sen-Banerjee-Woodroofe), and
+the m-out-of-n subsample that fixes it reintroduces exactly the tuning constant
+this module rejected the kernel to avoid. The honest reading of the measurement
+is that at `m` in the tens-to-low-hundreds a nonparametric upper confidence bound
+on a LOCAL fdr is either absent or vacuous; local-fdr estimation is an
+`m ~ 10,000` technique. Tail Fdr is root-`m` estimable but is a LOWER bound on
+the local fdr for a decreasing density, so it cannot be substituted.
+
+So the module ships the widened reading under a name that says what it is:
+
+- `pi_upper` -> **`pi_widened`**, `confidence` -> **`widening_level`**,
+  `DEFAULT_CONFIDENCE` -> `DEFAULT_WIDENING_LEVEL`. `pvalues_upper` and
+  `pi0_upper` keep their names because each of those really IS a Clopper-Pearson
+  upper limit; the RATIO of them is not.
+- The module docstring leads with the measured coverage table and states in the
+  first screen that a chance constraint cannot be built on this number.
+- `evidence` carries `"prices": ("scramble_monte_carlo", "null_share_binomial")`
+  and `"unpriced": ("density_estimation",)`, so the limitation travels WITH the
+  numbers to the call site instead of living only in prose.
+- The Monte Carlo ships as a `slow`-marked test
+  (`TestWidenedReadingIsNotAConfidenceBound`), asserting the under-coverage and
+  the inertness of the knob. If a future change ever does buy real coverage,
+  those tests fail and the prose must be rewritten with them.
+
+**Consequence for ADR-0088 / path row A18040.** The HFDR capital constraint
+`sum_i(x_i * pi_i) <= q * sum_i(x_i)` fed `pi_widened` is a constraint on a
+widened POINT ESTIMATE. It does not hold with probability `widening_level`, and
+at `pi0 ~ 0.99` it is violated about half the time. That is now stated where a
+caller cannot miss it. Nothing is wired, so nothing is currently mis-sized; the
+constraint's remaining risk has to be sized some other way, and that is separate
+work.
+
+**How the two numbers relate.** The family's density is fitted ONCE, on the
+point-estimate p-values, and both numbers read that one shape:
+
+```
+pi_hat_i     = min(1, pi0_hat   / f(p_hat_i))
+pi_widened_i = min(1, pi0_upper / f(p_upper_i))
+```
+
+`f` is non-increasing and `p_upper_i >= p_hat_i` and `pi0_upper >= pi0_hat`, so
+`pi_widened_i >= pi_hat_i` follows -- but **not "by construction"**, which the
+first draft claimed in three places. `_MONOTONE_SLACK` (1e-12) lets a member's
+density rise by float noise without tripping the monotonicity screen, and that
+is enough to invert the pair in the last bits; a test builds exactly such a
+member and shows it. The ordering is therefore enforced by TWO screens, and the
+second one -- `FalseSignalEstimate.__post_init__` -- now names the ESTIMATOR that
+produced the bad pair, read out of `evidence["estimator"]`, per this module's own
+"every refusal names its offender". The two widened inputs are where dependence
+is handled, each at half of `1 - widening_level` (a Bonferroni split):
+
+- `p_upper_i` is the Clopper-Pearson upper limit on the exceedance probability
+  from `(k_i, B_i)`. This is the Monte-Carlo error of a finite scramble, and it
+  is exact under ARBITRARY temporal dependence inside the exchangeable unit,
+  because the scramble permutes WHOLE blocks: the exceedance indicator is a
+  Bernoulli draw whatever the within-block correlation is. Validity is inherited
+  from the caller's scramble design (the whole-session unit `attempts.py`
+  documents); this module states the requirement and does not create it.
+- `pi0_upper` is the Clopper-Pearson upper limit for a proportion observed on
+  `independent_units` -- the count of EFFECTIVELY INDEPENDENT signals in the
+  family, a REQUIRED argument with no default and refused above the family size.
+  Signals fitted on overlapping time share sessions, so the naive binomial bound
+  at `m` is anti-conservative; declaring `independent_units == m` is an explicit
+  assertion of cross-signal independence, and is the caller's to make. The
+  observed count is `ceil(pi0_hat * independent_units)`, never `round`: rounding
+  DOWN drops up to half a unit of null share and the error never cancels, while
+  the `min(observed, independent_units)` on the next line already caps the top,
+  so `ceil` is free. Disclosed limit: this is a plug-in effective-count widening,
+  strictly wider than the `m`-count limit whenever `independent_units < m`. It
+  does not claim exact finite-sample coverage of the two-groups `pi0`.
+
+**Disclosed limits of the p-scale and of Grenander.** These are properties of
+the technique, not defects to be patched. Each is disclosed here and in the
+module docstring, and all but one are pinned by a test so they cannot change
+silently:
+
+- **Resolution floor.** `permutation_pvalue` cannot return below `1 / (1 + B)`,
+  so a statistic of `1e-12` and one of `1e12` that both beat every draw get the
+  same `pi_hat`. More scrambles do not add evidence about how far past the null
+  a signal sits.
+- **Boundary inconsistency.** The Grenander density near zero is driven by the
+  smallest fitted p-value, so `pi` for the strongest signal falls roughly like
+  `1 / B` -- more scrambles buy a smaller number with no new evidence. Grenander
+  is known-inconsistent at the boundary and OVER-estimates `f(0)`, which biases
+  `pi_hat` LOW for the signal that would get capital.
+- **Minimum family size.** The first draft imposed none: a one-signal family
+  reduced the fit to `f(p) = 1 / p` and reported `pi_upper = 9.75e-5` from a
+  two-groups model fitted to one observation. `estimate` now refuses a family
+  below `min_family` (`DEFAULT_MIN_FAMILY = 10`, a constructor knob). 10 is a
+  DECLARED policy floor, the same kind of number as `null_threshold` -- it is not
+  derived. What is derived is the DIRECTION: measured coverage falls and the
+  share of readings already pinned at 1.0 rises as `m` falls, and at `m = 1` the
+  fit degenerates entirely.
+- **Step function.** `pi_widened / pi_hat` is a step function with unbounded
+  jumps at order statistics (the review measured a ratio of 250 in one `m = 40`
+  family and 1.7 in another); the magnitude is set by p-value spacing, not by
+  any error budget. Another reason not to read it as a confidence statement.
+  This is the one limit NOT pinned by a test: the hand-computed-majorant and
+  left-continuity tests pin the step STRUCTURE, but no test measures the jump
+  magnitude, because it is a property of whatever family is passed in.
+- **`density` is a READ, not a normalized density.** Past the largest fitted
+  p-value it extends the FINAL slope rather than dropping to the majorant's zero,
+  which keeps the ratio defined and positive but lets the implied mass over
+  `(0, 1]` exceed 1. The hook and the class docstring now say so; the extension
+  and the left-continuous convention at a breakpoint are both pinned by tests.
+
+**Fail-closed, fail-loud.** Non-finite statistics or draws, an empty family, a
+family below `min_family`, an empty draw set, a non-int or out-of-range
+`independent_units`, a `pi0` outside `(0, 1]`, a non-positive or non-finite
+density, a density the subclass returned NON-MONOTONICALLY, and a subclass that
+overrides `estimate` are each refused by name.
+
+**What was reused.** `stats._betai`/`_betacf` (the regularized incomplete beta,
+promoted to the public name `regularized_incomplete_beta` and exported, its one
+call site in `_student_sf` updated) -- per CLAUDE.md's "a function is never
+repeated across modules", the beta tail gets ONE owner rather than a second copy
+here. Being public, it now ENFORCES its preconditions (finite shapes `> 0`,
+finite `x`) instead of letting `a = 0.0` escape as a bare `math domain error`
+from `lgamma` or `x = nan` return `nan` in silence. `records.number_ok` is the
+finiteness rule. `node.class_ref` is the one owner of the `module:QualName`
+spelling recorded in `evidence`; it drags `base` and `document` in behind it, so
+the module docstring states the real import cost rather than claiming "stdlib
+only". `stats.register_correction`'s registry is the pattern the estimator
+registry copies. `production/leg.py`'s `__init_subclass__` guard (and the same
+idiom in `loop.py` and `trust.py`) is what makes the template non-overridable.
+`attempts.py` supplies the scramble doctrine and the evidence ORIENTATION and
+shape this consumes -- `(observed, [nulls])` is exactly `tier2_verdict`'s pair,
+so a project already running a tier-2 audit feeds this estimator with no new
+plumbing, and `early_stop_p_bound` supplies the never-zero p-value doctrine.
+`predictions.read_prediction_series` is the out-of-fold row source the caller
+reduces to `statistic`; this module deliberately does NOT read it, because which
+statistic a project reduces its rows to is the project's choice.
+
+**What was rejected.** (1) Adding this to `stats.py` -- it is a different
+estimand with its own family registry, and the repo's precedent is a core module
+per ADR-scale estimand: `attempts.py`, `ordering.py` and `predictions.py`, which
+are value/rule modules like this one. (The first draft also cited `conquest.py`;
+that is wrong -- `conquest.py` is a Node module, `__all__ = ["HorizonConquest"]`,
+so it is precedent for the opposite shape.) Honest difference from all three:
+every one of them has a live consumer -- `attempts` and `ordering` behind CLI
+verbs, `predictions` written by score nodes, `conquest` as a registered kind --
+and this module has NONE. (2) A kernel or spline local-fdr density -- the
+bandwidth, above. (3) A new `pi` NODE KIND -- the consumer is a child's bundle
+assembly, not a document port, and ADR-0113 already establishes plain generic
+VALUES in this package (`CandidateInventory`, `TrialLedger`,
+`OneStandardErrorSelector`). A node kind over this doorway stays additive and is
+deferred, not forbidden. (4) A `libs/` pack -- there is no library being wrapped.
+(5) numpy -- the whole computation is a sort, a convex-hull scan and a bisection,
+so nothing forces a dependency, which keeps it tier 1. (6) Clamping `pi_widened`
+up to `pi_hat` -- that converts a broken estimator into a silent one; the
+`__post_init__` refusal names the offender instead. (7) Touching the
+`_PI_HAT`/`_PI_UPPER` fixtures in the child's `testing.py`; they are test data
+and are left alone. Wiring any child to this estimator is separate, unauthorized
+work -- and given the measurement above, wiring `pi_widened` into a chance
+constraint would be wrong work.
+
+**Tier justification.** Tier 1. The code IS a domain-neutral statistical rule:
+no third-party dependency, no library wrapped, and no venue or project
+vocabulary in any identifier, any error message or any test assertion -- a
+"signal" is any string key and a "statistic" is any finite float. Docstrings and
+comments DO motivate with the consumer that drove the work ("sizes exposure",
+"capital constraint", "session"), because a reader needs to know why the two
+numbers exist and why the second one is dangerous; that is prose, and prose is
+the only place such words appear. It passes `tests/pipeline/test_purity.py`'s core rule
+unchanged.
+
+**Consequences.** `dskit` gains a real source for the two numbers
+`ForecastBundle` has been validating from fixtures -- but the second number is
+now called `pi_widened` and is explicitly not the `pi_upper` a chance constraint
+wants, so a caller assembling a `ForecastBundle` has a decision to make rather
+than a drop-in. Nothing is wired: no child config, no node kind and no document
+reads this yet. The estimator is exercised on synthetic, analytically-checkable
+and Monte-Carlo inputs only -- no real out-of-fold or scramble evidence has been
+passed through it, and its calibration on a real signal population remains the
+empirical question the Efron note names.
+---
 
 ## ADR-0153 - effective-dated universe composition (survivorship)
 

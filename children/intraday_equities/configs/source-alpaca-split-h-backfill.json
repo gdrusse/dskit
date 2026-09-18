@@ -1,0 +1,34 @@
+{
+  "notes": "Eighth immutable research cohort: consumer staples and discretionary breadth. Split-adjusted SIP minute bars on the established window/feed/codec/cut. Frozen on non-backtest facts only. In-window splits removed by adjustment=split: CMG 50-for-1 ex 2024-06-25. NKE's 2-for-1 ex 2015-12-24 sits seven sessions before the window. EXCLUDED: BKNG (PCLN rename 2018-02-27), GAP (GPS rename 2024-08-22), LVS/DHI/NKE are already-vetted cohort-D spares so NKE is included here. Backfill only.",
+  "symbols": [
+    "PG",
+    "KO",
+    "PEP",
+    "COST",
+    "MDLZ",
+    "CL",
+    "KMB",
+    "MCD",
+    "HD",
+    "LOW",
+    "NKE",
+    "CMG",
+    "TJX",
+    "ROST",
+    "ORLY",
+    "MAR",
+    "F"
+  ],
+  "start": "2016-01-01",
+  "end": "2026-02-28T23:59:59+00:00",
+  "feed": "sip",
+  "adjustment": "split",
+  "timeframe": [
+    1,
+    "Minute"
+  ],
+  "storage": {
+    "payload_codec": "gzip",
+    "observations_codec": "gzip"
+  }
+}

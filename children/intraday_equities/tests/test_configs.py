@@ -54,6 +54,7 @@ MODELABILITY_DOCS = {
     "run-p11-modelability.json": ("configs/universe-p10.json", 25),
     "run-p12-modelability.json": ("configs/universe-p12.json", 65),
     "run-p13-pooled-model-zoo.json": ("configs/universe-p13-pooled.json", 26),
+    "run-p18-modelability.json": ("configs/universe-p18.json", 109),
 }
 MODELABILITY_SOURCES = {
     "alpaca-sip-split",
@@ -61,6 +62,11 @@ MODELABILITY_SOURCES = {
     "alpaca-sip-split-c",
     "alpaca-sip-split-d",
     "alpaca-sip-split-e",
+    "alpaca-sip-split-f",
+    "alpaca-sip-split-g",
+    "alpaca-sip-split-h",
+    "alpaca-sip-split-i",
+    "alpaca-sip-split-j",
 }
 
 

@@ -83,12 +83,71 @@ on it without breaking its rulings.
   `planner.py`; the stage-list grammar refuses weighted corrections).
   The STATISTIC itself (`METHODS`: plain | studentized) is a closed
   tuple by owned-kind doctrine — never registrable.
+- **False-signal probability** — `register_false_signal_estimator`
+  (`false_signal.py`, ADR-0152); `grenander-local-fdr` ships. The
+  registry holds CLASSES, not functions: a family is a
+  `FalseSignalEstimator` subclass supplying `fit` /
+  `null_proportion` / `density`, and `estimate` is a TEMPLATE
+  `__init_subclass__` REFUSES to let a member override — not a
+  documented convention, a class-definition-time error. `density`
+  MUST be non-increasing in `p`, so the template SCREENS every
+  evaluated point and refuses a member that rises.
+  `independent_units` is required and never defaulted: signals
+  fitted on overlapping time are not independent, and a limit at the
+  signal count is anti-conservative. `min_family` refuses a family
+  too small to be a family. The consumer contract
+  (`pi_hat <= pi_widened`, both in `[0, 1]`, all three maps
+  read-only) lives on `FalseSignalEstimate.__post_init__` and its
+  refusal names the ESTIMATOR, not the field.
+  **`pi_widened` is NOT a confidence bound** — measured coverage of
+  the true local fdr is 0.53–0.82 against a 0.95 nominal, because
+  both widened inputs price only binomial error and the Grenander
+  density's error is unpriced and dominates. Read the module
+  docstring's table before feeding it to anything that calls itself
+  a chance constraint. Nothing is wired: no node kind reads it yet.
 - **No-information / h*** — `no_information_test` /
   `max_informative_horizon` (`stats.py`, ADR-0057). One time-ordered
   `(y, ŷ)` series vs a mean; Newey–West `lags` is overlap in **steps**.
   Not a `stat_test` `method`. A panel is the caller's to collapse or
   test per unit. `clark_west_series` can feed `cluster_bootstrap_t`
   when the independence unit is a cluster.
+- **Mean intervals under dependence** — `mean_interval.py`. The doorway
+  is `MeanIntervalEstimator`; `interval` is a TEMPLATE method a member
+  never overrides — `__init_subclass__` refuses the class at definition
+  time, the `production/leg.py` idiom — and a member supplies
+  `result_class` / `independent_units` / `mean_and_se` / `bounds`.
+  `ClusterBootstrapInterval` and `NeweyWestInterval` ship;
+  `register_mean_interval_estimator` / `MEAN_INTERVAL_ESTIMATORS` /
+  `mean_interval_estimator` mirror `register_correction` but hold
+  CLASSES, and spell the subject out because a bare `estimator` already
+  means a dotted path to an ML model in `libs/sklearn.py`. Three rules
+  bite. The DEPENDENCE IS NEVER DEFAULTED: `MeanEvidence` refuses to
+  construct without `units` (per-observation independence-unit labels,
+  held to `records.cluster_ok`) or `overlap_steps` (the
+  `newey_west_mean` `lags` idiom), because the only available default —
+  independence — is the answer that is too narrow, which is the whole
+  defect the module exists to stop. **THE LEVEL IS NOT A CONFIDENCE
+  LEVEL UNLESS A MEMBER EARNED IT** (ADR-0151, corrected 2026-09-17):
+  `result_class` is abstract with no default, and a member returns
+  `ConfidenceInterval` only if MEASURED to deliver its nominal level —
+  `ClusterBootstrapInterval` over genuine independence units did
+  (94.6–96.3%), `NeweyWestInterval` did not (86.9–91.1% at a nominal
+  95%, flat in n, ~81% on an AR(1) at `dm_lags`) and returns
+  `WidenedInterval`. Do not "fix" that by discounting the block count:
+  the shortfall is dominated by `newey_west_mean`'s Bartlett kernel
+  attenuating the SE to ~0.82 of the truth, which no df correction
+  repairs. The claim is pinned by a `slow`-marked Monte Carlo in
+  `tests/pipeline/test_mean_interval.py`. And it is FAIL-CLOSED: an
+  unclaimable bound RAISES, where `stats.cluster_bootstrap_t` returns
+  `None`. That divergence is deliberate — a `None` beside a p-value is
+  descriptive, a `None` reaching a robust constraint reads as "no
+  uncertainty". The arithmetic is NOT re-derived here: every replicate
+  is `stats.cluster_bootstrap_t`'s and every long-run variance is
+  `stats.newey_west_mean`'s. The one thing added is the HAC bracket
+  that never existed, and its Student-t critical value takes df from the
+  INDEPENDENT-UNIT count, never `n - 1`. `stats.student_t_sf` was made
+  public for that inversion, remains the only Student tail, and enforces
+  its own `df > 0` precondition.
 - **Split policies** — `register_split_policy` (`split_policy.py`);
   `record` / `event-open` / `event-close` ship. An event policy needs a
   data node implementing `event_bounds()`, and the driver refuses when
@@ -568,6 +627,12 @@ dskit/pipeline/
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction
 │                      registry; no-information vs mean (Clark–West, h*)
+├── false_signal.py    pi_hat + a widened pi_widened per signal, from
+│                      out-of-fold evidence and a scramble null (ADR-0152);
+│                      pi_widened is a widened point estimate, not a bound
+├── mean_interval.py   MeanEvidence + MeanIntervalEstimator: mean, dependence-
+│                      aware SE, two-sided bounds; dependence never defaulted;
+│                      ConfidenceInterval only where coverage was measured
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets
