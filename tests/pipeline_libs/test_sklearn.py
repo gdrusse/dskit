@@ -1996,13 +1996,16 @@ def test_a_corrupt_state_reaches_the_refusal_through_the_sidecar_too(tmp_path):
 # SklearnSegment — assignment: the concrete class, and what it emits
 # ---------------------------------------------------------------------------
 
-#: Two tight clouds with an exact midpoint at (4.5, 4.5), so a tie is
-#: constructible rather than hoped for.
+#: Two well-separated clouds, deliberately OFF-DIAGONAL: ``f0 != f1`` on
+#: every row and the two axes carry different ranges, so a transposed read
+#: of the coordinates lands somewhere else. A diagonal fixture (the shape
+#: this was) cannot see the difference, which is what let the axis mapping
+#: go unpinned; see the three rule tests below.
 SEGMENT_STREAM = [
-    {"f0": 0.0, "f1": 0.0, "keep": "a"},
-    {"f0": 0.2, "f1": 0.2, "keep": "b"},
-    {"f0": 9.0, "f1": 9.0, "keep": "c"},
-    {"f0": 8.8, "f1": 8.8, "keep": "d"},
+    {"f0": 0.0, "f1": 4.0, "keep": "a"},
+    {"f0": 0.2, "f1": 4.6, "keep": "b"},
+    {"f0": 9.0, "f1": 0.4, "keep": "c"},
+    {"f0": 8.8, "f1": 1.0, "keep": "d"},
 ]
 
 
@@ -2020,11 +2023,16 @@ def _fitted_segment(tmp_path, *, name="segmentfit", **overrides):
 
 
 def _clouds(day, *, offset=0.0):
-    """Four rows on one split day: two near the origin, two near (9, 9)."""
+    """Four rows on one split day: two near (0, 4), two near (9, 0.7).
+
+    Off-diagonal for the same reason :data:`SEGMENT_STREAM` is.
+    """
     return [
         {"asof_ms": day * DAY + i, "contract": f"C-{day}-{i}",
-         "f0": base + offset, "f1": base + offset, "keep": f"{day}-{i}"}
-        for i, base in enumerate((0.0, 0.2, 9.0, 8.8))
+         "f0": first + offset, "f1": second + offset, "keep": f"{day}-{i}"}
+        for i, (first, second) in enumerate(
+            ((0.0, 4.0), (0.2, 4.6), (9.0, 0.4), (8.8, 1.0))
+        )
     ]
 
 
@@ -2078,6 +2086,85 @@ def test_an_exact_tie_goes_to_the_lowest_center_index():
     }
     midpoint = [{"f0": 5.0, "f1": 5.0}]
     assert node.apply_state(state, midpoint, node.params)[0]["segment"] == 7
+
+
+#: ``2**26``, whose square is exactly ``2**52`` -- the largest binade where
+#: consecutive doubles are 1.0 apart, so a half-unit residue sits exactly on
+#: a rounding tie.
+_EXACT_BIG = 67108864.0
+#: Small enough that its square is far below that tie, and therefore visible
+#: only to a sum that carries every term exactly.
+_EXACT_TINY = 2.0 ** -100
+
+
+def test_the_coordinates_are_read_in_the_states_feature_order():
+    """``_point`` builds the vector by NAME, in the state's feature order;
+    reading the same values onto the other axes measures distance in a
+    mirrored space.
+
+    This geometry is off-diagonal on purpose. Every cloud fixture in this
+    file used to satisfy ``f0 == f1``, where a transposed read is invisible
+    -- so the whole segment suite stayed green with the axes swapped, while
+    61% of a three-cloud stream came out mis-segmented.
+    """
+    node = _segment_node()
+    state = {
+        "schema": SEGMENT_SCHEMA,
+        "algorithm": "kmeans",
+        "features": ["f0", "f1"],
+        "centers": [[0.0, 10.0], [10.0, 0.0]],
+        "center_labels": [0, 1],
+    }
+    # (1, 9) is nearly on top of center 0; transposed to (9, 1) it is
+    # nearly on top of center 1.
+    row = [{"f0": 1.0, "f1": 9.0}]
+    assert node.apply_state(state, row, node.params)[0]["segment"] == 0
+
+
+def test_the_nearest_center_rule_measures_squared_euclidean_distance():
+    """Not Manhattan, and not anything else that merely agrees on
+    well-separated clouds: here the two metrics rank the centers
+    OPPOSITELY.
+
+    Squared euclidean: 9 vs 8, so center 1. Manhattan: 3 vs 4, so center 0.
+    """
+    node = _segment_node()
+    state = {
+        "schema": SEGMENT_SCHEMA,
+        "algorithm": "kmeans",
+        "features": ["f0", "f1"],
+        "centers": [[0.0, 0.0], [1.0, 2.0]],
+        "center_labels": [0, 1],
+    }
+    row = [{"f0": 3.0, "f1": 0.0}]
+    assert node.apply_state(state, row, node.params)[0]["segment"] == 1
+
+
+def test_the_distance_sum_is_exact_rather_than_merely_compensated():
+    """``math.fsum``, not the builtin ``sum``.
+
+    CPython 3.12 gave ``sum`` Neumaier compensation, so on ordinary
+    coordinates the two agree and neither this rule nor any cloud fixture
+    can tell them apart. Here center 0's squared terms are
+    ``2**52 + 0.25 + 0.25 + 2**-200``: exactly rounded that is
+    ``2**52 + 1``, while the compensated sum drops the last term before the
+    tie is broken and returns ``2**52`` -- which is center 1's distance
+    EXACTLY. So the exact rule puts this row in center 1, and a merely
+    compensated one ties and takes the lower index instead.
+    """
+    node = _segment_node()
+    state = {
+        "schema": SEGMENT_SCHEMA,
+        "algorithm": "kmeans",
+        "features": ["f0", "f1", "f2", "f3"],
+        "centers": [
+            [_EXACT_BIG, 0.5, 0.5, _EXACT_TINY],
+            [_EXACT_BIG, 0.0, 0.0, 0.0],
+        ],
+        "center_labels": [0, 1],
+    }
+    row = [{"f0": 0.0, "f1": 0.0, "f2": 0.0, "f3": 0.0}]
+    assert node.apply_state(state, row, node.params)[0]["segment"] == 1
 
 
 def test_a_projected_row_keeps_every_field_and_gains_exactly_two():

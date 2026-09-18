@@ -1062,7 +1062,30 @@ def test_a_numpy_float_reward_is_accepted(tmp_path, lab):
     numpy = pytest.importorskip("numpy")
     lab.scripts([("obs", numpy.float32(1.5), True, False, {})])
     _node, outputs = evaluate(tmp_path, n_episodes=1)
-    assert record(outputs)["episodes"][0]["return"] == pytest.approx(1.5)
+    assert record(outputs)["episodes"][0]["return"] == 1.5
+
+
+def test_a_numpy_reward_is_converted_before_it_reaches_the_trace(
+    tmp_path, lab
+):
+    """Accepting the numpy scalar is half the job; the RECORD must hold a
+    builtin float.
+
+    ``return`` cannot show this -- it is an ``fsum`` output, so it is a
+    builtin float however the trace was written. The trace row is the only
+    place the raw value could survive, and the driver's JSON encoder, which
+    runs after every episode has already rolled, refuses numpy scalars: the
+    whole run's durable evidence is lost at persist time.
+    """
+    numpy = pytest.importorskip("numpy")
+    lab.scripts([step(numpy.float32(1.5), terminated=True)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1)
+
+    reward = record(outputs)["episodes"][0]["trace"][0]["reward"]
+    assert type(reward) is float
+    assert reward == 1.5
+    # and therefore the evidence actually persists
+    _persist_json_artifacts(str(tmp_path / "converted"), "eval", outputs)
 
 
 # -- the contract names math.fsum, so the fixtures must be able to tell ----
@@ -1294,6 +1317,27 @@ def test_a_multi_step_episode_reports_what_its_last_step_gave(tmp_path, lab):
     assert outputs["metrics"]["terminated_episodes"] == 1
     assert outputs["metrics"]["truncated_episodes"] == 1
     assert outputs["metrics"]["max_episode_steps_episodes"] == 1
+
+
+def test_step_numbers_count_from_one_and_restart_each_episode(tmp_path, lab):
+    """The step number is the trace's only ordinate -- the record carries no
+    timestamp and no observation, so it is the sole thing placing a reward
+    in the episode.
+
+    Every fixture that reads a trace ROW runs a single step, where the live
+    counter, the constant ``1``, and a counter that never resets all
+    coincide. Assert the sequence on episodes long enough to separate them.
+    """
+    lab.scripts(
+        [step(0.1), step(0.2), step(0.3, terminated=True)],
+        [step(0.4), step(0.5, terminated=True)],
+    )
+    _node, outputs = evaluate(tmp_path, n_episodes=2, max_episode_steps=5)
+    episodes = record(outputs)["episodes"]
+
+    assert [[row["step"] for row in e["trace"]] for e in episodes] == [
+        [1, 2, 3], [1, 2],
+    ]
 
 
 def test_both_flags_true_on_a_later_step_still_counts_once(tmp_path, lab):
