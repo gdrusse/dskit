@@ -19,7 +19,12 @@ torch = pytest.importorskip("torch")
 from dskit.pipeline.libs.torch import DeclaredPredict, DeclaredTrain
 from dskit.pipeline.node import NodeContext
 
-from pmquant.ladder.panels import PANEL_KEYS, TokenFeaturizer, collate_items
+from pmquant.ladder.panels import (
+    PANEL_KEYS,
+    TOKEN_REVISION,
+    TokenFeaturizer,
+    collate_items,
+)
 from pmquant.ladder.protocols import LEAD_ROUND_DP, STRIKE_CODES, lead_key
 from pmquant.models import (
     SERVING_SUFFIX,
@@ -40,7 +45,7 @@ ADAPTER_REF = "pmquant.models:LadderPanelAdapter"
 MODULE_REF = "pmquant.models:LadderQhatModule"
 MODULE_PARAMS = {"d_model": 16, "n_time_layers": 1, "k_lvl": 5}
 #: The frozen recipe's layout identity and the fixture's vocab — RESTATED.
-IDENTITY = (5, ())
+IDENTITY = (5, (), TOKEN_REVISION)
 VOCAB = {"KXA": 0, "KXB": 1}
 
 
@@ -283,13 +288,22 @@ def test_module_refuses_a_batch_featurized_under_another_layout():
     mismatch instead of naming an ablation its tokens never got."""
     torch.manual_seed(0)
     rng = np.random.default_rng(0)
-    dropped = [make_item(rng, C=2, series="KXA", event="KXA-1", identity=(5, ("context",)))]
+    dropped = [
+        make_item(rng, C=2, series="KXA", event="KXA-1",
+                  identity=(5, ("context",), TOKEN_REVISION))
+    ]
     plain = LadderQhatModule(n_markets=2, n_leads=3, **MODULE_PARAMS)
     with pytest.raises(ValueError, match="drop"):
         plain(collate_items(dropped))
+    # and the revision is the same gate: a batch featurized before the
+    # columns changed meaning names the SAME k_lvl and the SAME drop
+    stale = [make_item(rng, C=2, series="KXA", event="KXA-1", identity=(5, ()))]
+    assert tuple(stale[0]["featurizer"]) != plain.featurizer.identity
+    with pytest.raises(ValueError, match="revision"):
+        plain(collate_items(stale))
     ablated = LadderQhatModule(n_markets=2, n_leads=3, drop=["context"], **MODULE_PARAMS)
     assert ablated(collate_items(dropped)).shape == (1, 3, 2)
-    assert ablated.featurizer.identity == (5, ("context",))
+    assert ablated.featurizer.identity == (5, ("context",), TOKEN_REVISION)
     with pytest.raises(ValueError, match="layout"):
         collate_items(dropped + make_items()[:1])
 

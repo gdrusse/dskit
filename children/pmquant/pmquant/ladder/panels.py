@@ -55,6 +55,7 @@ __all__ = [
     "DEFAULT_K_LVL",
     "DEFAULT_MIN_CONTRACTS",
     "ITEM_KEYS",
+    "TOKEN_REVISION",
     "PANEL_KEYS",
     "SOURCE_VENUE",
     "TAIL_GROUPS",
@@ -68,6 +69,18 @@ __all__ = [
     "collate_items",
     "side_feature_names",
 ]
+
+#: The token layout's SEMANTIC revision, carried beside ``k_lvl`` and
+#: ``drop`` in :attr:`TokenFeaturizer.identity`. The 41 columns did not
+#: move at PM-02, but four of them changed MEANING — ``strike_z``,
+#: ``gap_z``, ``rung_pos`` and ``log_n_contracts`` now answer over the
+#: rungs LISTED at that lead rather than the event's eventual set — and a
+#: partition's probability denominator changed with them. A checkpoint
+#: trained under revision 1 would load clean and score silently wrong
+#: under this one, so the revision travels with the layout and refuses
+#: the pairing. BUMP IT whenever a column's meaning changes, not when a
+#: column moves (that is what ``k_lvl`` and ``drop`` already say).
+TOKEN_REVISION = 2
 
 #: Book levels per executable side entering a token — the frozen recipe.
 DEFAULT_K_LVL = 5
@@ -300,8 +313,12 @@ class EventPanel:
     gap_z : numpy.ndarray
         ``(T, C) float32`` normalized strike-gap deltas within that
         step's listed set (zeros off it, and where undefined).
-    dur_h : float
-        Hours from the first observed epoch to the close, floored at 0.
+    dur_h : numpy.ndarray
+        ``(T,) float32`` — hours from the first book observed AT OR
+        BEFORE each lead to the close of the rungs LISTED by then,
+        floored at 0 and zero at a lead that has seen nothing. Per-lead
+        because a rung listed later may declare a close of its own, and
+        an earlier decision cannot feel it.
     source_f : float
         ``1.0`` for a :data:`SOURCE_VENUE` series, else ``0.0``.
 
@@ -332,7 +349,7 @@ class EventPanel:
     listed: object
     strike_z: object
     gap_z: object
-    dur_h: float
+    dur_h: object
     source_f: float
 
     @property
@@ -464,6 +481,46 @@ def _refuse_books_before_listing(series, event, contracts, epoch_ts, membership)
             )
 
 
+def _pit_durations(closes, listed, epoch_ts):
+    """Hours from the first book seen by each lead to the close it could know."""
+    import numpy as np
+
+    n_steps, n_rungs = listed.shape
+    earliest = {}
+    for (_rung, step), ts in epoch_ts.items():
+        earliest[step] = ts if step not in earliest else min(earliest[step], ts)
+    dur = np.zeros(n_steps, dtype=np.float32)
+    first = None
+    for step in range(n_steps):
+        if step in earliest:
+            first = earliest[step] if first is None else min(first, earliest[step])
+        members = [rung for rung in range(n_rungs) if listed[step, rung]]
+        if first is None or not members:
+            continue
+        known_close = max(closes[rung] for rung in members)
+        dur[step] = max(0.0, (known_close - first) / _MS_PER_HOUR)
+    return dur
+
+
+def _refuse_an_unstable_law(series, event, strike_types, listed, ladder_type):
+    """Refuse an event whose settlement law is not the one every lead could read."""
+    n_steps, n_rungs = listed.shape
+    for step in range(n_steps):
+        members = [rung for rung in range(n_rungs) if listed[step, rung]]
+        if not members:
+            continue
+        at_step = LadderType.classify([strike_types[rung] for rung in members])
+        if at_step is not ladder_type:
+            raise ValueError(
+                f"event {event!r} ({series}): the rungs listed at lead step {step} "
+                f"read as {at_step.value!r} but the event's full rung set reads as "
+                f"{ladder_type.value!r} — a rung listed later would retroactively "
+                "change the settlement law applied to a decision that could not "
+                "have known it; declare the event's law rather than inferring it "
+                "from whichever rungs happen to have listed by then"
+            )
+
+
 def _pit_geometry(contracts, strike_values, instants, membership):
     """Resolve each lead's listed rungs, then THAT set's own strike geometry."""
     import numpy as np
@@ -561,7 +618,13 @@ def _panel_of(series, event, natives, rows, outcomes, grid, counts):
         for _, row in rows
     ]
     membership = _listing_membership(series, event, rows)
-    close_ts_ms = max(int(row["close_ms"]) for _, row in rows)
+    closes = [int(row["close_ms"]) for _, row in rows]
+    ladder_type = LadderType.classify(strike_types)
+    # The split cut's key, deliberately whole-set: assigning an event to a
+    # block is a study-design call made outside the decision timeline, it
+    # must put ONE event in ONE block, and it never reaches a feature or a
+    # probability. Everything that DOES reach one is resolved per lead.
+    close_ts_ms = max(closes)
     rung_of = {ticker: r for r, ticker in enumerate(contracts)}
     cells, epoch_ts, staleness = {}, {}, {}
     for native in natives:
@@ -584,13 +647,13 @@ def _panel_of(series, event, natives, rows, outcomes, grid, counts):
     listed, strike_z, gap_z = _pit_geometry(
         contracts, strike_values, instants, membership
     )
-    first = min(epoch_ts.values()) if epoch_ts else close_ts_ms
+    _refuse_an_unstable_law(series, event, strike_types, listed, ladder_type)
     return EventPanel(
         series=series,
         event=event,
         market_id=-1,
         close_ts_ms=close_ts_ms,
-        ladder_type=LadderType.classify(strike_types),
+        ladder_type=ladder_type,
         contracts=contracts,
         y=np.asarray(y, dtype=np.float32),
         st_code=st_code,
@@ -601,7 +664,7 @@ def _panel_of(series, event, natives, rows, outcomes, grid, counts):
         listed=listed,
         strike_z=strike_z,
         gap_z=gap_z,
-        dur_h=max(0.0, (close_ts_ms - first) / _MS_PER_HOUR),
+        dur_h=_pit_durations(closes, listed, epoch_ts),
         source_f=1.0 if venue_of(series, default=None) == SOURCE_VENUE else 0.0,
     )
 
@@ -645,8 +708,9 @@ def build_panels(records, outcomes, markets, grid, *, min_contracts=DEFAULT_MIN_
     ValueError
         On a contract without a markets row, a malformed markets row, a
         row with no usable ``open_ms`` listing instant, a book read
-        before its contract was listed, or two records for one contract
-        at one lead.
+        before its contract was listed, an event whose settlement law
+        differs between the rungs listed at a lead and its full rung set,
+        or two records for one contract at one lead.
     """
     counts = {
         "n_events_seen": 0,
@@ -741,8 +805,13 @@ class TokenFeaturizer:
 
     @property
     def identity(self):
-        """Give the layout identity ``(k_lvl, drop)`` — what a batch and a model must agree on."""
-        return (self.k_lvl, self.drop)
+        """Give the layout identity ``(k_lvl, drop, revision)`` — what a batch and a model must agree on.
+
+        The revision (:data:`TOKEN_REVISION`) is what makes a stale
+        checkpoint fail closed: the column ORDER can be unchanged while
+        the columns mean something else.
+        """
+        return (self.k_lvl, self.drop, TOKEN_REVISION)
 
     def feature_names(self):
         """Name every column, in frozen order.
@@ -860,7 +929,7 @@ class TokenFeaturizer:
         feats[:, :, base + 3] = np.where(listed, np.log1p(n_listed)[:, None], 0.0)
         for k in range(T):
             feats[k, :, base + 4] = grid.lead_fracs[k]
-        feats[:, :, base + 5] = math.log1p(panel.dur_h)
+        feats[:, :, base + 5] = np.log1p(np.asarray(panel.dur_h))[:, None]
         for k in range(T):
             pk = a_yes[k]
             fin = np.isfinite(pk)

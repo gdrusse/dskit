@@ -19,6 +19,7 @@ from pmquant.ladder.panels import (
     ITEM_KEYS,
     PANEL_KEYS,
     TAIL_GROUPS,
+    TOKEN_REVISION,
     EventPanel,
     MarketVocab,
     TokenFeaturizer,
@@ -118,8 +119,8 @@ def test_build_panels_orders_rungs_canonically_and_labels_them():
     assert panel.ladder_type is LadderType.PARTITION
     assert panel.close_ts_ms == close
     assert panel.source_f == 0.0
-    # dur_h: the earliest observed epoch is close - 0.9h
-    assert panel.dur_h == pytest.approx(0.9)
+    # dur_h: the earliest observed epoch is close - 0.9h, at every lead
+    assert panel.dur_h.tolist() == pytest.approx([0.9] * len(FRACS))
     assert built.vocab.series == ("KXA",)
     assert panel.market_id == 0
 
@@ -362,7 +363,8 @@ def test_items_carry_every_key_and_visible_is_the_running_or():
     assert item["market_id"] == 0 and item["contracts"] == contracts
     assert item["series"] == "KXA" and item["event"] == "KXA-1"
     assert item["close_ts_ms"] == close and item["lead_fracs"] == FRACS
-    assert item["featurizer"] == (5, ()) and item["vocab"] == {"KXA": 0}
+    assert item["featurizer"] == (5, (), TOKEN_REVISION)
+    assert item["vocab"] == {"KXA": 0}
     assert item["asks"][1].tolist() == pytest.approx([0.45, 0.45])
     assert math.isnan(item["asks"][0, 1]) and item["ask_sz"][0, 1] == 0.0
     assert item["ask_sz"][1].tolist() == pytest.approx([12.0, 12.0])
@@ -402,14 +404,14 @@ def test_collate_pads_the_contract_axis():
     assert batch["listed"].tolist() == [
         [[True, True, False]] * 3, [[True, True, True]] * 3,
     ]
-    assert batch["featurizer"] == (5, ())
+    assert batch["featurizer"] == (5, (), TOKEN_REVISION)
     # the padded rung is unseen and never visible
     assert not batch["seen"][0, :, 2].any() and not batch["visible"][0, :, 2].any()
     with pytest.raises(ValueError, match="empty"):
         collate_items([])
     # one layout per batch: the ablated item is refused beside the plain one
     ablated = build_panel_items(built.panels, TokenFeaturizer(drop="context"), GRID, eligible=())
-    assert ablated[0]["featurizer"] == (5, ("context",))
+    assert ablated[0]["featurizer"] == (5, ("context",), TOKEN_REVISION)
     with pytest.raises(ValueError, match="layout"):
         collate_items(items + ablated[:1])
 
@@ -417,12 +419,17 @@ def test_collate_pads_the_contract_axis():
 # --- point-in-time rung membership (PM-02) ------------------------------------
 
 
-def listed_later_event(close_ms=100 * HOUR_MS, late_strike=70.0, late_fracs=(0.5, 0.1)):
+def listed_later_event(close_ms=100 * HOUR_MS, late_strike=70.0, late_fracs=(0.5, 0.1),
+                       late_close_delta_ms=0, late_type="greater"):
     """Two rungs listed 24h out plus one listed AFTER the first lead epoch.
 
     The late rung is quoted only at steps 1 and 2 — nothing observed it at
-    step 0 because it did not exist there. Returns the records, the
-    markets rows, the outcomes, the early tickers and the late ticker.
+    step 0 because it did not exist there. ``late_close_delta_ms`` moves
+    the late rung's OWN close and ``late_type`` its strike type: both are
+    whole-set inputs an earlier lead must not be able to feel, so the
+    acceptance test varies them rather than only the strike. Returns the
+    records, the markets rows, the outcomes, the early tickers and the
+    late ticker.
     """
     series, event = "KXA", "KXA-1"
     early = [f"{event}-T50", f"{event}-T60"]
@@ -433,7 +440,11 @@ def listed_later_event(close_ms=100 * HOUR_MS, late_strike=70.0, late_fracs=(0.5
         market_row(early[0], event, series, "greater", 50.0, None, close_ms),
         market_row(early[1], event, series, "greater", 60.0, None, close_ms),
         {
-            **market_row(late, event, series, "greater", late_strike, None, close_ms),
+            **market_row(
+                late, event, series, late_type, late_strike,
+                None if late_type == "greater" else late_strike + 10.0,
+                close_ms + late_close_delta_ms,
+            ),
             # listed between step 0 (close - 0.9h) and step 1 (close - 0.5h)
             "open_ms": int(close_ms - 0.7 * HOUR_MS),
         },
@@ -442,14 +453,20 @@ def listed_later_event(close_ms=100 * HOUR_MS, late_strike=70.0, late_fracs=(0.5
     return records, markets, outcomes, early, late
 
 
-@pytest.mark.parametrize("late_strike", [55.0, 70.0])
+@pytest.mark.parametrize(
+    "late_strike, late_close_delta_ms",
+    [(55.0, 0), (70.0, 0), (70.0, 5 * HOUR_MS)],
+)
 def test_a_rung_listed_after_a_decision_epoch_leaves_that_epochs_features_identical(
-    late_strike,
+    late_strike, late_close_delta_ms,
 ):
     """The acceptance test the audit names: list a new rung after an earlier
-    decision and every earlier feature row must be BYTE-identical."""
+    decision and every earlier feature row must be BYTE-identical — whatever
+    the late rung declares, including a close of its own."""
     close = 100 * HOUR_MS
-    records, markets, outcomes, early, late = listed_later_event(close, late_strike)
+    records, markets, outcomes, early, late = listed_later_event(
+        close, late_strike, late_close_delta_ms=late_close_delta_ms
+    )
     before = [r for r in records if r.contract != late]
     rows_before = [row for row in markets if row["ticker"] != late]
     outcomes_before = {c: outcomes[c] for c in early}
@@ -601,3 +618,78 @@ def test_encoding_a_panel_on_another_grid_refuses():
     other = LeadGrid((0.9, 0.7, 0.5, 0.1))
     with pytest.raises(ValueError, match="BUILT with"):
         TokenFeaturizer().encode(panel, other)
+
+
+def test_a_lead_resolves_the_duration_from_the_close_it_could_know():
+    """dur_h is per-lead: the span from the first book observed by that lead
+    to the close of the rungs LISTED by then. A rung listed later cannot
+    stretch an earlier lead's clock."""
+    close = 100 * HOUR_MS
+    records, markets, outcomes, early, late = listed_later_event(
+        close, 70.0, late_close_delta_ms=5 * HOUR_MS
+    )
+    panel = build(records, markets, outcomes).panels[0]
+    # step 0 knows only the two early rungs, which close at `close`
+    assert panel.dur_h[0] == pytest.approx(0.9)
+    # steps 1 and 2 know the late rung too, and its close is 5h further out
+    assert panel.dur_h[1] == pytest.approx(5.9)
+    assert panel.dur_h[2] == pytest.approx(5.9)
+    feats, _ = TokenFeaturizer().encode(panel, GRID)
+    col = list(EXPECTED_NAMES).index("dur_h")
+    assert feats[0, :2, col].tolist() == pytest.approx([math.log1p(0.9)] * 2)
+    assert feats[1, :, col].tolist() == pytest.approx([math.log1p(5.9)] * 3)
+    # the split cut keeps the whole-event close: a block is not a per-lead call
+    assert panel.close_ts_ms == close + 5 * HOUR_MS
+
+
+def test_a_late_rung_that_would_change_the_settlement_law_refuses():
+    """Two `greater` rungs read as an upper threshold; a `between` rung listed
+    later would make the whole panel a partition, retroactively changing the
+    law applied to leads that could not have known it. Refuse, never guess."""
+    records, markets, outcomes, _early, _late = listed_later_event(
+        late_strike=55.0, late_type="between"
+    )
+    with pytest.raises(ValueError, match="settlement law"):
+        build(records, markets, outcomes)
+
+
+def test_a_lead_nothing_was_read_at_carries_the_last_membership_it_resolved():
+    close = 100 * HOUR_MS
+    records, markets, outcomes, _contracts = threshold_event()
+    records = [r for r in records if r.lead_frac != 0.5]  # step 1 goes dark
+    panel = build(records, markets, outcomes).panels[0]
+    assert panel.lead_epoch_ms == (
+        int(close - 0.9 * HOUR_MS),
+        int(close - 0.9 * HOUR_MS),  # carried forward, not None and not step 2's
+        int(close - 0.1 * HOUR_MS),
+    )
+    assert panel.listed.tolist() == [[True, True]] * 3
+    feats, seen = TokenFeaturizer().encode(panel, GRID)
+    assert not seen[1].any()
+    col = list(EXPECTED_NAMES).index("log_n_contracts")
+    assert feats[1, :, col].tolist() == pytest.approx([math.log1p(2)] * 2)
+
+
+def test_a_book_at_exactly_the_listing_instant_is_admitted():
+    """The membership window is half-open at its START: `from_ms <= at_ms`.
+    One millisecond either side of that boundary is a different answer."""
+    close = 100 * HOUR_MS
+    records, markets, outcomes, _contracts = threshold_event()
+    rows = [dict(row) for row in markets]
+    rows[1]["open_ms"] = int(close - 0.9 * HOUR_MS)  # exactly its first book
+    panel = build(records, rows, outcomes).panels[0]
+    assert panel.listed[0].tolist() == [True, True]
+    rows[1]["open_ms"] += 1
+    with pytest.raises(ValueError, match="listed"):
+        build(records, rows, outcomes)
+
+
+def test_the_layout_identity_carries_the_token_revision():
+    """A checkpoint trained before point-in-time membership indexes the SAME
+    41 columns under different semantics — and under a different partition
+    denominator. The identity must not match, so it fails closed."""
+    fz = TokenFeaturizer()
+    assert len(fz.identity) == 3
+    assert fz.identity[:2] == (DEFAULT_K_LVL, ())
+    assert fz.identity != (DEFAULT_K_LVL, ())  # the pre-PM-02 spelling
+    assert TokenFeaturizer(drop="context").identity[2] == fz.identity[2]

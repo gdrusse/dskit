@@ -483,13 +483,15 @@ class LadderQhatModule(nn.Module):
         ------
         ValueError
             When the batch's layout identity (``featurizer``: the panels
-            node's ``k_lvl``/``drop``) is not this module's — the artifact
-            would name an ablation its tokens never got.
+            node's ``k_lvl``/``drop`` and the token revision) is not this
+            module's — the artifact would name an ablation its tokens
+            never got, or read columns that have since changed meaning.
         """
         identity = tuple(batch["featurizer"])
         if identity != self.featurizer.identity:
             raise ValueError(
-                f"the batch was featurized as (k_lvl, drop) = {identity!r} but this "
+                f"the batch was featurized as (k_lvl, drop, revision) = {identity!r} "
+                f"but this "
                 f"module declares {self.featurizer.identity!r} — the panels node's "
                 "k_lvl/drop and the model's module_params must agree"
             )
