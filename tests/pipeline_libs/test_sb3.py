@@ -409,7 +409,7 @@ def test_register_is_explicit_and_idempotent():
 
 #: The three kinds THIS file's conformance suite owns — spelled out rather
 #: than read off the live ``NODE_KINDS``. The table gained a fourth kind
-#: (``sb3-eval-episodes``, ADR-0148) whose probe and role census belong to
+#: (``sb3-eval-episodes``, ADR-0160) whose probe and role census belong to
 #: ``test_sb3_eval_episodes.py``, which needs neither library; reading the
 #: live table here would drag that kind into this file's PPO-backed
 #: ``probes()`` instead, where it has no probe and no reason to be.

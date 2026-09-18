@@ -791,7 +791,7 @@ class _WatchedScaler(Standardize):
 
 
 class TestTheSidecarHook:
-    """``sidecar_problems`` (ADR-0148) — a member's veto over a RESTORE.
+    """``sidecar_problems`` (ADR-0160) — a member's veto over a RESTORE.
 
     The base already owns the two facts it can check itself: which class
     fitted the state, and — ONLY when the document declared one — which

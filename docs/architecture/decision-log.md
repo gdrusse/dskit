@@ -12638,13 +12638,18 @@ shared `ChainLedger` base and inherited, not reimplemented per store; a
 store-conformance test for `libs/sqlite.py` is left to Phase 0 to scope, not
 assumed clean by this ADR. `deployment_eligible=false` throughout.
 
-## ADR-0148 — Segmentation and auditable SB3 episode evaluation
+## ADR-0160 — Segmentation and auditable SB3 episode evaluation
+
+*(Number taken at commit time, renumbered 0122 → 0148 → 0160. 0122 was
+already the attested ten-head release ADR, and 0148 collides with main's own
+ADR-0148 — the F3 three-hop captured replay lane. Ids are cited from prose,
+never reclaimed.)*
 
 **Status:** accepted 2026-09-17 under owner-granted ADR authority (session
 `claude/dskit-rl-clustering-zy2dge`). Supersedes the 2026-09-13 proposal
 numbered ADR-0122 on the disjoint `codex/cluster-rl-framework-plan-20260913`
-branch; that number was already taken here by the attested ten-head release
-ADR, so the entry is renumbered rather than reused. The exact contract is
+branch; that number and its first renumber were both already taken, so the
+entry is renumbered rather than reused. The exact contract is
 `docs/plans/2026-09-clustering-rl-framework.md`, whose §8 records a
 seventeen-cycle skeptic loop and whose §10 dispositions the owner gates.
 

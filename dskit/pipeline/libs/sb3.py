@@ -34,7 +34,7 @@ the environment in the child: the DOCUMENT names everything.
   declared, not mechanical, because episodes are the env's to
   generate, not records the toolkit can partition.
 * ``sb3-eval-episodes`` (:class:`Sb3EvalEpisodes`, role ``score``,
-  ADR-0148) — the same restore, the same environment seam, but the
+  ADR-0160) — the same restore, the same environment seam, but the
   episode loop is written HERE rather than delegated, so the ordered
   per-step record survives: one ``JsonArtifact`` carrying the resolved
   environment, the verified model provenance, every episode's trace and

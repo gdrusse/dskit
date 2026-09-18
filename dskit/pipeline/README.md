@@ -444,7 +444,7 @@ JSON manifest for a caller-named, ORDERED mapping of many fitted estimators
 but over the whole manifest, plus a deterministic prediction-fixture
 checksum replayed at load so a restored head that does not reproduce
 write-time beliefs refuses even when the on-disk bytes are untouched;
-`sklearn-segment` (ADR-0148) is the pack's one CLOSED catalog —
+`sklearn-segment` (ADR-0160) is the pack's one CLOSED catalog —
 `kmeans`/`minibatch_kmeans`/`birch`, not an arbitrary import path — because
 it persists EXTRACTED centers and labels as JSON rather than a pickled
 model, fits on `train` alone behind two literal-`"train"` gates, labels every
@@ -464,7 +464,7 @@ CNN1d/PatchTST — `torch.py` stays byte-identical);
 **sb3** `sb3-train`/`sb3-policy`/`sb3-eval`/`sb3-eval-episodes`
 (ADR-0028: the document names the RL algorithm AND the gymnasium env class;
 artifacts are hash-pinned. `sb3-eval` answers the two scalars a SEARCH wants
-via SB3's own `evaluate_policy`; `sb3-eval-episodes` (ADR-0148) rolls bounded
+via SB3's own `evaluate_policy`; `sb3-eval-episodes` (ADR-0160) rolls bounded
 episodes itself and keeps the ordered per-step record an AUDIT wants, as a
 `JsonArtifact` beside seven flat metrics — its `split` narrows to
 `val`/`test`, because persisted evidence of held-out performance is not a

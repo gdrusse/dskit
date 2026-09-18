@@ -1307,7 +1307,7 @@ class TestSelectionDemo:
 
 
 # ---------------------------------------------------------------------------
-# SklearnSegment (ADR-0148) — the validation surface and the row rule
+# SklearnSegment (ADR-0160) — the validation surface and the row rule
 # ---------------------------------------------------------------------------
 
 #: Removes a key from :func:`_segment_params` rather than setting it, so a

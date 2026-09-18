@@ -1097,7 +1097,7 @@ Resume both skeptic lenses from segmentation-validation RED.
 
 ## 9. Owner gates and strict no-execution gates
 
-Required before RED: (1) owner approval of ADR-0148 and this reset plan;
+Required before RED: (1) owner approval of ADR-0160 and this reset plan;
 (2) exact GLM/DeepSeek model ID plus working chain mapping; (3) approval to
 install the bounded optional dependencies; (4) approval of a future child ADR
 before any child environment/reward/transition/order/fill semantics; and (5)
@@ -1113,13 +1113,14 @@ they must not call real SB3 training or use market data.
 
 The owner authorized this work in session `claude/dskit-rl-clustering-zy2dge`:
 ADR write/implement permission, autonomous completion, wrap, and a pull
-request. **`ADR-0122` was renumbered `ADR-0148`** — the number was already
-taken on `origin/main` by the attested ten-head release ADR, and this plan
-branched from a disjoint history that never saw it.
+request. **`ADR-0122` was renumbered `ADR-0160`** — 0122 was already taken
+on `origin/main` by the attested ten-head release ADR, and its first renumber
+`ADR-0148` then collided with main's own F3 replay ADR-0148; this plan
+branched from a disjoint history that never saw either.
 
 §9 gate dispositions:
 
-1. **ADR/plan approval — MET.** Owner-granted ADR authority; ADR-0148 is
+1. **ADR/plan approval — MET.** Owner-granted ADR authority; ADR-0160 is
    accepted in `docs/architecture/decision-log.md`.
 2. **Exact model ID — MET, by substitution.** No GLM/DeepSeek Terra chain is
    reachable from this environment. `Claude Opus 5` is the author and both
@@ -1234,7 +1235,7 @@ model, and the recorded `artifact_path`/`state_hash`.
 resolved silently rather than refused is tier-1 behaviour shared by every
 pinning kind in this pack (`sb3-eval`, `sb3-policy`) and beyond, and it is
 untested for all of them. Refusing it would be a change to a shared service
-with its own blast radius, which ADR-0148 does not cover. It needs its own
+with its own blast radius, which ADR-0160 does not cover. It needs its own
 ADR; this branch only stops ITS kind from being incoherent about which file
 it used.
 

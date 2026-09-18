@@ -1,4 +1,4 @@
-"""``sb3-eval-episodes`` (ADR-0148): the auditable per-episode evaluator.
+"""``sb3-eval-episodes`` (ADR-0160): the auditable per-episode evaluator.
 
 This module imports NEITHER Gymnasium NOR stable-baselines3, and has no
 ``pytest.importorskip`` — deliberately, and unlike its sibling

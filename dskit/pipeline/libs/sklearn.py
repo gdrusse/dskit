@@ -174,7 +174,7 @@ sklearn's ``fit`` signature cannot be asked (``SelectKBest.fit`` spells
 ``y=None`` exactly as ``VarianceThreshold.fit`` does).
 
 **Segmentation is the family's other member here** (``sklearn-segment``,
-ADR-0148), and it is the one place this pack CLOSES a catalog instead of
+ADR-0160), and it is the one place this pack CLOSES a catalog instead of
 opening a doorway. The reason is the state: it persists EXTRACTED centers
 and labels as JSON rather than a pickled estimator, and only ``KMeans``,
 ``MiniBatchKMeans`` and ``Birch`` are known to expose them. Everything
@@ -2463,7 +2463,7 @@ class SklearnSegment(FittedTransform):
     # class's restore has the same JSON-only shape its ``sklearn-select``
     # sibling was licensed for — ``FittedTransform.run_load`` -> ``_sidecar``
     # -> ``Node.read_artifact``, with no deserialiser taking a path — so it
-    # would very likely pass the same audit. But ADR-0148 adds no production
+    # would very likely pass the same audit. But ADR-0160 adds no production
     # authority, and licensing a kind to serve a release is authority.
     # `serving_effect` therefore answers ``forbidden`` here, and widening
     # that is its own ADR with its own audit, not a line inherited from a

@@ -1,6 +1,6 @@
 # Re-entry
 
-## Current checkpoint: ADR-0148 clustering/RL extensions landed on a branch (2026-09-17)
+## Current checkpoint: ADR-0160 clustering/RL extensions landed on a branch (2026-09-17)
 
 Branch `claude/dskit-rl-clustering-zy2dge`, based on `origin/main` at
 `3b73361`, candidate `34ab030`. This is the clustering/RL lane the closeout
@@ -13,7 +13,8 @@ base with `main`: a 1110-line plan carrying its own 17-cycle skeptic loop
 (§8), never implemented. It is ported here as
 `docs/plans/2026-09-clustering-rl-framework.md`. Its ADR was numbered
 **0122, which `main` had already given to the attested ten-head release**,
-so it is renumbered **ADR-0148** rather than reused — ids are cited from
+then **0148, which collides with main's own F3 replay ADR-0148**,
+so it is renumbered **ADR-0160** rather than reused — ids are cited from
 prose, and moving one silently breaks references no test covers. §10 is new
 and dispositions the plan's own §9 owner gates: ADR/plan approval and the
 bounded dependency install are MET; the exact-model gate is met by the same
@@ -148,7 +149,7 @@ at runtime under full release evidence, for the class and for a child
 subclass, against a discriminating probe (`SklearnSelect` answers
 `release_read` under the identical evidence). Its restore has the same
 JSON-only shape `sklearn-select` was licensed for and would likely pass the
-same audit, but licensing a kind to serve a release is authority ADR-0148
+same audit, but licensing a kind to serve a release is authority ADR-0160
 does not claim; widening it is its own ADR with its own audit. No child
 environment, reward, transition, order or fill semantics exist here.
 
@@ -185,7 +186,7 @@ unexercised for the new kind. Walk-forward and `foreach` carrying a
 Cross-host reproducibility of `centers` is explicitly a non-promise.
 
 **Next.** The branch is pushed and a pull request is open; it is NOT merged
-to `main`. The child-side work ADR-0148 explicitly does not do — an
+to `main`. The child-side work ADR-0160 explicitly does not do — an
 environment, a reward, a transition, orders and fills, and what a segment
 MEANS — needs its own child ADR before any of it exists. F3 (full lane) and
 F5b remain separately owned and untouched by this branch.

@@ -440,7 +440,7 @@ class TestTheArtifactIsTheColumns:
     def test_the_new_sidecar_hook_leaves_this_seam_exactly_as_it_was(
         self, split_ctx
     ):
-        """``FittedTransform.sidecar_problems`` (ADR-0148) is asked on every
+        """``FittedTransform.sidecar_problems`` (ADR-0160) is asked on every
         restore, including this one. The selector seam declares no override,
         so the hook must be the base's own no-op and a real load through
         these fixtures must stay clean — a shared tier-1 call site that
