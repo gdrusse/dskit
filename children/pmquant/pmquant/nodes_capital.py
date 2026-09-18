@@ -734,9 +734,11 @@ class KellyMIO(PyomoSolve):
                 # The solve is wrapped, not called: an exact bill that will
                 # not fit is refused or re-solved under reserved headroom,
                 # never reported at the program's linear approximation.
-                # Built from the EVENT, never re-read from params: the
-                # event already carries both knobs, and a second reader is
-                # a second place for a default to drift.
+                # Built from the EVENT rather than re-read from params.
+                # The two agree today by construction — one unmutated
+                # params drives both — so this fixes no live bug; it gives
+                # the knobs one owner and lets a future per-event override
+                # mean something.
                 resolution = _EventResolution(
                     event.on_exact_fee_exceeded, event.max_retighten_rounds
                 )

@@ -6,6 +6,7 @@ import math
 
 import pytest
 
+import pmquant.books as books
 from pmquant.books import (
     FILL_FEE_POLICY,
     BookSnapshot,
@@ -26,7 +27,13 @@ from pmquant.books import (
     records_from_pit_rows,
     walk_book,
 )
-from pmquant.fees import DEFAULT_FILL_FEE_POLICY, FeeRateUnresolved, fill_fee_policy
+from pmquant.fees import (
+    DEFAULT_FILL_FEE_POLICY,
+    FeeRateUnresolved,
+    FillFeePolicy,
+    PerFillFee,
+    fill_fee_policy,
+)
 
 # --- ladders --------------------------------------------------------------
 
@@ -301,11 +308,65 @@ def test_walk_book_bills_the_independent_oracle_at_every_rate_and_venue(
     assert fill.net_cost == pytest.approx(premium + expected, abs=1e-12)
 
 
-def test_the_fill_path_and_the_sizer_share_one_fee_policy_object():
-    # Not two expressions of one rule that a test must keep equal: ONE object.
-    # A second copy of the arithmetic is the defect this pins out of existence.
+class SentinelPolicy(FillFeePolicy):
+    """A policy billing a value no venue rounding rule could ever produce.
+
+    Substituting this for the real one is how the delegation is pinned:
+    an ``A is A`` assertion says nothing about whether the subject USES A,
+    but a fee that comes back as 123.456789 can only have travelled
+    through the object that was swapped in.
+    """
+
+    __slots__ = ("seen",)
+
+    name = "sentinel"
+    SENTINEL = 123.456789
+
+    def __init__(self):
+        self.seen = []
+
+    def fee_for(self, series, fills, rate):
+        self.seen.append((series, tuple(fills), rate))
+        return self.SENTINEL
+
+
+def test_walk_book_bills_through_the_policy_object_not_a_second_copy(monkeypatch):
+    # Re-inlining ``trading_fee_for_series`` here is arithmetically identical
+    # TODAY and a silently diverging second copy the moment the default
+    # policy or its rounding moves. An inlined call cannot see this
+    # substitution, so it fails here immediately.
+    stub = SentinelPolicy()
+    monkeypatch.setattr(books, "FILL_FEE_POLICY", stub)
+    book = BookSnapshot("KXA-1", "ask", ((0.25, 40), (0.30, 50)))
+    fill = walk_book(book, Order(70, 0.35, 0.07))
+    assert fill.fee == SentinelPolicy.SENTINEL
+    assert fill.net_cost == pytest.approx(0.25 * 40 + 0.30 * 30 + SentinelPolicy.SENTINEL)
+    # and the object was handed the levels ACTUALLY hit, with the threaded rate
+    assert stub.seen == [("KXA-1", ((0.25, 40), (0.30, 30)), 0.07)]
+
+
+def test_walk_book_bills_the_policy_the_caller_supplies():
+    # The parameter exists so a caller sizing under a document's own
+    # fee_policy can make the fill path bill the same way; a parameter that
+    # were accepted and ignored would be worse than none.
+    stub = SentinelPolicy()
+    book = BookSnapshot("KXA-1", "ask", ((0.25, 40), (0.30, 50)))
+    assert walk_book(book, Order(70, 0.35, 0.07), policy=stub).fee == SentinelPolicy.SENTINEL
+    assert stub.seen == [("KXA-1", ((0.25, 40), (0.30, 30)), 0.07)]
+    # a real non-default policy bills its own real number ...
+    per_fill = walk_book(book, Order(70, 0.35, 0.07), policy=PerFillFee())
+    assert per_fill.fee == pytest.approx(
+        decimal_order_fee("KXA-1", (("0.25", 40),), "0.07")
+        + decimal_order_fee("KXA-1", (("0.30", 30),), "0.07"),
+        abs=1e-12,
+    )
+    # ... and omitting it takes the venue's invoice rule, which differs here
+    plain = walk_book(book, Order(70, 0.35, 0.07))
+    assert plain.fee == pytest.approx(
+        decimal_order_fee("KXA-1", (("0.25", 40), ("0.30", 30)), "0.07"), abs=1e-12
+    )
+    assert plain.fee != pytest.approx(per_fill.fee, abs=1e-9)
     assert FILL_FEE_POLICY is fill_fee_policy(DEFAULT_FILL_FEE_POLICY)
-    assert FILL_FEE_POLICY.name == DEFAULT_FILL_FEE_POLICY == "order_vwap"
 
 
 def test_fee_rate_none_on_the_series_path_refuses():

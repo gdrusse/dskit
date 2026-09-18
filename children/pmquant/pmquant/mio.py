@@ -1067,8 +1067,10 @@ def _lots_of(variable, where):
 def _check_exact_budget(inputs, outlay, approx_outlay, policy_name):
     """Refuse an exact bill that breaks a ceiling, naming the TIGHTEST one it broke."""
     broken = [
-        (limit, name)
-        for name, limit in (("deployable", float(inputs.deployable)), ("event cap", inputs.cap))
+        (limit, declared, name)
+        for declared, (name, limit) in enumerate(
+            (("deployable", float(inputs.deployable)), ("event cap", inputs.cap))
+        )
         if outlay > limit + _OUTLAY_TOL
     ]
     if not broken:
@@ -1077,8 +1079,11 @@ def _check_exact_budget(inputs, outlay, approx_outlay, policy_name):
     # shortfall. Reporting whichever was listed first would understate the
     # overrun whenever the cap is tighter than the budget — and the retighten
     # loop reserves exactly that shortfall, so it would under-reserve and
-    # spend rounds it did not need to.
-    limit, limit_name = min(broken)
+    # spend rounds it did not need to. Two ceilings at the SAME dollar (the
+    # default shape, where ``cap`` is the deployable) carry the same
+    # shortfall, so the choice is arbitrary but must not be arbitrary-looking:
+    # the declaration index breaks the tie, naming ``deployable``.
+    limit, _declared, limit_name = min(broken)
     raise ExactFeeBudgetExceeded(
         inputs.event_id, limit_name, limit, outlay, approx_outlay, policy_name
     )

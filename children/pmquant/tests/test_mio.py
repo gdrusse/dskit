@@ -1010,9 +1010,11 @@ def test_a_shortfall_below_the_minimum_step_still_makes_progress():
     assert steps == pytest.approx([RETIGHTEN_MIN_STEP] * 3, abs=1e-12)
 
 
-def test_the_partition_slack_tolerance_is_bracketed():
-    # LAW_SLACK_TOL decides when leftover belief becomes a NONE cell. A slack
-    # two orders above it must produce one; a slack an order below it must not.
+def test_the_partition_slack_tolerance_is_bracketed_within_one_order():
+    # LAW_SLACK_TOL decides when leftover belief becomes a NONE cell. These
+    # two probes lock it into [1e-10, 1e-8): ONE order either side of its
+    # declared 1e-9. A looser pair (1e-7 against 1e-10) would have let it
+    # drift a hundredfold unnoticed.
     def law(slack):
         rungs = [
             _contract(0.5, cid="A"),
@@ -1020,5 +1022,68 @@ def test_the_partition_slack_tolerance_is_bracketed():
         ]
         return mutually_exclusive_scenarios(rungs, exhaustive=False)
 
-    assert law(1e-7).n_omega == 3  # a real hole in the partition
+    assert law(1e-8).n_omega == 3  # a real hole in the partition
     assert law(1e-10).n_omega == 2  # representation dust, renormalized away
+
+
+# --- the fee-policy asymmetry, closed -------------------------------------
+
+#: Lens A's counterexample: the fills on which the two aggregations differ by
+#: more than a dollar, in the DANGEROUS direction (a ``per_fill`` sizer would
+#: reserve LESS than the encoded invoice bills).
+DIVERGENCE_LEVELS = ((0.20, 300), (0.45, 300))
+DIVERGENCE_FILLS = (("0.20", 300), ("0.45", 300))
+DIVERGENCE_RATE = 0.12
+
+
+def _divergence_contract(rate=DIVERGENCE_RATE):
+    return contract_inputs_from_book(
+        "C", 0.70, yes_bids=[[0.15, 10]], no_bids=[[0.80, 300], [0.55, 300]], fee_rate=rate
+    )
+
+
+def test_the_sizer_and_the_fill_path_agree_when_handed_the_same_policy():
+    """The invariant the ``fee_policy`` knob must never break.
+
+    ``walk_book`` takes a policy, so the sizer's reserve and the fill
+    path's bill are the same number whenever the caller hands the walk the
+    document's own policy — and the default still simulates the invoice.
+    """
+    from pmquant.books import BookSnapshot, Order, walk_book
+    from pmquant.fees import fill_fee_policy
+
+    book = BookSnapshot(f"{SERIES}-C", "ask", DIVERGENCE_LEVELS)
+    order = Order(600, 1.0, DIVERGENCE_RATE)
+    billed = {}
+    for policy in ("order_vwap", "per_fill", "conservative"):
+        inputs = _inputs([_divergence_contract()], fee_policy=policy, kelly_fraction=1.0)
+        model = event_program(inputs)
+        alloc = read_allocation(model, _load(model, {(0, 0): 300, (0, 1): 300}))
+        walked = walk_book(book, order, policy=fill_fee_policy(policy))
+        assert alloc.fees[("C", "yes")] == pytest.approx(walked.fee, abs=1e-12), policy
+        billed[policy] = walked.fee
+    assert billed["order_vwap"] == pytest.approx(
+        oracle_order_fee("kalshi", DIVERGENCE_FILLS, "0.12"), abs=1e-12
+    )
+    assert billed["order_vwap"] == pytest.approx(15.80, abs=1e-12)
+    assert billed["per_fill"] == pytest.approx(
+        oracle_per_fill_fee("kalshi", DIVERGENCE_FILLS, "0.12"), abs=1e-12
+    )
+    assert billed["per_fill"] == pytest.approx(14.67, abs=1e-12)
+    # the divergence is real money, not float dust, and points DOWNWARD
+    assert billed["order_vwap"] - billed["per_fill"] == pytest.approx(1.13, abs=1e-12)
+    # ... and a walk with no policy still simulates the venue's invoice
+    assert walk_book(book, order).fee == pytest.approx(billed["order_vwap"], abs=1e-12)
+
+
+def test_two_ceilings_at_the_same_dollar_name_the_first_declared_one():
+    # ``event_cap=None`` makes cap == deployable, which is the DEFAULT shape.
+    # Either name carries the same shortfall, so the choice is arbitrary — but
+    # it is STATED, so it cannot quietly flip under an operator reading logs.
+    inputs = _audit_inputs(deployable=100.0)
+    assert inputs.cap == inputs.deployable == 100.0
+    with pytest.raises(ExactFeeBudgetExceeded) as exc:
+        _billed(inputs)
+    assert exc.value.limit_name == "deployable"
+    assert exc.value.limit == 100.0
+    assert exc.value.shortfall == pytest.approx(AUDIT_EXACT_OUTLAY - 100.0, abs=1e-9)
