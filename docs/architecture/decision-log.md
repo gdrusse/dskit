@@ -13433,7 +13433,7 @@ change. Nothing moves out of `trust.py`.
    multi-step publish and leave a partially written receipt; the Gap 1 gate
    crashes at a clean boundary and will not produce that. v3 claimed closing
    this "needs a process-kill technique the repo does not have" -- also false,
-   from the same bad grep. `tests/production/test_ledger.py:1674-1699`
+   from the same bad grep. `tests/production/test_ledger.py:1679-1701`
    monkeypatches `os.replace`/`os.rename`/`pathlib.Path.replace`/`.rename` to
    `os._exit(9)` in a real `subprocess`, interrupting a multi-step write
    mid-flight, and asserts the previous checkpoint is still readable. That is
@@ -13445,7 +13445,7 @@ change. Nothing moves out of `trust.py`.
    `hop` is the hop type's own canonical name (`"ReplayRun"` and so on), not a
    document- or graph-scoped value. F3 is a fixed singleton three-hop lane, so
    each hop type occurs exactly once and the literal cannot collide. Hop 1's
-   `policy_sha256` is parent-derived, not free (`decision-log.md:12846-12848`:
+   `policy_sha256` is parent-derived, not free (`decision-log.md:12848-12849`:
    "`source_rank_policy_sha256` from the verified pre-document roster
    policy"), so it is already bound transitively through the roster parent's
    own `intent_sha256`. Recorded because this ADR calls that exact category of
@@ -13503,7 +13503,7 @@ what failed three times.
    (`trust.py:9900-10018`) is ONE function with two sequential `try` blocks
    and no standalone reserve-step callable, so a plain exception injected into
    the second block is caught by that block's own `except Exception:`
-   (`:9987-10018`) and QUARANTINED -- which would disprove Gap 1 rather than
+   (`:10015-10018`) and QUARANTINED -- which would disprove Gap 1 rather than
    demonstrate it. The fork transplant sidesteps this entirely.
 
 Both must be RED first, with recorded answers, or this ADR does not proceed to
