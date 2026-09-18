@@ -1,5 +1,35 @@
 # Re-entry
 
+## Current wrap: P18 breadth cohort — 108 new assets pulled and gated (2026-09-17)
+
+Branch `deepseek/p18-breadth-cohort-20260917` (based on `origin/main`).
+
+Pulled 108 new US equities/ETFs across five split-adjusted sources
+(`alpaca-sip-split-f`..`-j`, 2016-01-01 -> 2026-02-28 cut, ~110M one-minute bars,
+hash-verified) selected for sector breadth and clean corporate-action history —
+the selection and its exclusions are documented in
+`children/intraday_equities/docs/research/cohort-f-through-j-hundred-asset-breadth.md`.
+The current universe is 173 tickers (65 prior + 108 new).
+
+`configs/run-p18-modelability.json` (identity `4a01861b…`) clones P12's asset-local
+study geometry: seven memory groups under the 17 GiB cap (cohorts i and j split in
+two to fit), ordered-horizon Gate 1, and the fail-fast whole-session scramble
+Gate 3. A stock:horizon clears only if BOTH gates pass. The P12 25 survivors remain
+frozen evidence; this run covers only the 108 new names.
+
+**Running overnight (tmux session `p18`, log `/home/russell/p18-modelability.log`).**
+Memory stage first (~35 min), Gate 1 ~2.5–3 h, Gate 3 ~5–9 h (scales with survivors).
+Resumable from journal+digest evidence.
+
+**Test status.** Config tests: 4 pre-existing failures unrelated to this work
+(`run-final-hpo.json` / `run-p13-model-zoo.json` have unwired config-test entries
+on `origin/main`). No new failures introduced.
+
+**Open.** Journal rows A18894–A18903 re-numbered on rebase (the stale
+`wrap-tft-rf-runs` branch had used A18801–A18810, colliding with `main`'s). Merge to
+`main` pending; `main` is checked out in another worktree
+(`wt/dim-reduction-adr149-20260917`).
+
 ## Current checkpoint: the uncertainty layer lands, two of four merged (2026-09-17)
 
 The owner worked the child's **Path to Production** end to end and locked the
