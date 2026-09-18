@@ -711,6 +711,12 @@ dskit/pipeline/
 │                      pi_hat and a widened pi_widened (NOT a bound);
 │                      GrenanderLocalFdr +
 │                      register_false_signal_estimator
+├── mean_interval.py   MeanEvidence + the MeanIntervalEstimator family: a mean,
+│                      a dependence-aware SE and two-sided bounds; the
+│                      dependence statement is required, never defaulted, and
+│                      a member returns ConfidenceInterval only where its
+│                      coverage was MEASURED — WidenedInterval otherwise
+│                      (ADR-0151)
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

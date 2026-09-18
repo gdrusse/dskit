@@ -66,6 +66,7 @@ __all__ = [
     "register_correction",
     "regularized_incomplete_beta",
     "skill_vs_mean",
+    "student_t_sf",
     "weighted_benjamini_hochberg",
 ]
 
@@ -838,8 +839,49 @@ def regularized_incomplete_beta(a, b, x):
     return 1.0 - front * _betacf(b, a, 1.0 - x) / b
 
 
-def _student_sf(t, df):
-    """Upper tail ``P(T > t)`` for Student's t on ``df`` degrees."""
+def student_t_sf(t, df):
+    """Compute the upper tail ``P(T > t)`` of a Student t distribution.
+
+    The one owner of the Student tail in this package. It is public
+    because the inversion a confidence interval needs lives in the module
+    that needs it (:mod:`~dskit.pipeline.mean_interval` bisects on this),
+    and a second copy of the continued fraction underneath would be the
+    duplication this repo forbids rather than a convenience.
+
+    Parameters
+    ----------
+    t : float
+        The evaluation point, any finite number.
+    df : float
+        Degrees of freedom, a finite number > 0.
+
+    Returns
+    -------
+    float
+        ``P(T > t)`` in ``[0, 1]``, decreasing in ``t``, and symmetric
+        about zero: ``student_t_sf(-t, df) == 1 - student_t_sf(t, df)``.
+
+    Raises
+    ------
+    ValueError
+        On a ``df`` that is not a finite number > 0, or a non-finite
+        ``t``. A PUBLIC name enforces its preconditions rather than
+        assuming them, and a silently wrong probability is worse than a
+        crash: ``df = 0`` used to return ``0.0``, ``df = -5`` used to
+        return ``0.5``, and ``df = -1`` used to escape as a bare,
+        undocumented ``ZeroDivisionError``.
+
+    Examples
+    --------
+    The distribution is symmetric about zero::
+
+        student_t_sf(0.0, 8)
+        # -> 0.5
+    """
+    if not number_ok(df) or df <= 0.0:
+        raise ValueError(f"student_t_sf needs a finite df > 0, got {df!r}")
+    if not number_ok(t):
+        raise ValueError(f"student_t_sf needs a finite t, got {t!r}")
     tail = 0.5 * regularized_incomplete_beta(df / 2.0, 0.5, df / (df + t * t))
     return tail if t > 0.0 else 1.0 - tail
 
@@ -960,7 +1002,7 @@ def across_fold_t(values):
         "mean": mean,
         "se": se,
         "t": t,
-        "p_value": _student_sf(t, n - 1),
+        "p_value": student_t_sf(t, n - 1),
         "df": n - 1,
     }
 
