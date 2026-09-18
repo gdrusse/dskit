@@ -1630,6 +1630,89 @@ class HpoEvidenceSource(Node):
         return {"hpo_ledger": durable(payload)}
 
 
+class TunedEvidenceSource(Node):
+    """A tunable node whose durable evidence records the value it ran with.
+
+    The payload is derived from the tuned param, so the bytes on disk say
+    WHICH pass wrote them.
+    """
+
+    role = "train"
+    outputs = ("value", "episodes")
+
+    def run(self, ctx, inputs):
+        value = float(self.params["theta"])
+        durable = getattr(node_module, "JsonArtifact", lambda value: value)
+        return {"value": value, "episodes": durable({"scored": value})}
+
+
+class EvidenceScore(Node):
+    """Scores what the tunable node produced; the search's objective."""
+
+    role = "score"
+    outputs = ("metrics",)
+
+    def run(self, ctx, inputs):
+        return {"metrics": {"loss": (float(inputs["value"]) - 3.0) ** 2}}
+
+
+def test_a_search_winners_json_artifact_is_persisted_not_the_losing_pass(tmp_path):
+    """The winner re-execution replaces a node's outputs IN PLACE, and
+    those outputs are what the records and ``$prev`` carry -- so its
+    durable artifacts must be written from that pass too.
+
+    Before this held, a run exited ``ran`` reporting the winner's metrics
+    while ``artifacts/json/`` held only the base pass's record -- the
+    configuration the search REJECTED -- and the node record carried a bare
+    ``{"type": "JsonArtifact"}`` where its manifest belongs, so a reader
+    could not even tell the bytes were stale. ``resolve_json_artifact``
+    refused the raw wrapper, so the documented seam returned nothing.
+    """
+    from dskit.pipeline.document import TimeSplitConfig
+    from dskit.pipeline.kinds_search import register as register_search
+
+    registry = NodeKindRegistry()
+    registry.register("tuned-evidence", TunedEvidenceSource)
+    registry.register("evidence-score", EvidenceScore)
+    register_search(registry)
+    document = PipelineDocument(
+        name="winner-evidence",
+        pipeline={
+            "evid": NodeSpec(uses="tuned-evidence", params={"theta": 10.0}),
+            "val": NodeSpec(
+                uses="evidence-score",
+                inputs={"value": "$evid.value"},
+                params={"split": "val"},
+            ),
+            "search": NodeSpec(
+                uses="hpo-grid",
+                params={
+                    "space": {"evid.theta": [0.0, 3.0]},
+                    "objective": "$val.metrics.loss",
+                    "select": "min",
+                },
+            ),
+        },
+        splits=TimeSplitConfig(train_end_ms=1, val_end_ms=2, test_end_ms=3),
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+
+    result = run_document(document, asof=ASOF, registry=registry, journal=False)
+
+    assert result.state == "ran"
+    assert result.outputs["search"]["best_params"] == {"evid.theta": 3.0}
+    # the winner pass really did replace the outputs
+    assert result.outputs["evid"]["value"] == 3.0
+
+    manifest = result.outputs["evid"]["episodes"]
+    assert set(manifest) == {"path", "sha256", "bytes", "media_type"}
+    with open(os.path.join(result.run_dir, manifest["path"]), "rb") as handle:
+        assert json.loads(handle.read())["scored"] == 3.0
+    # and the node record points at the winner's bytes, not a type name
+    record = read_json(result.run_dir, os.path.join("nodes", "01-evid.json"))
+    assert record["outputs"]["episodes"]["sha256"] == manifest["sha256"]
+
+
 def test_explicit_json_artifact_survives_driver_recording_with_digest_manifest(tmp_path):
     registry = NodeKindRegistry()
     registry.register("hpo-evidence-src", HpoEvidenceSource)
