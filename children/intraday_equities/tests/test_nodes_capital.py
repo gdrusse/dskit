@@ -1465,6 +1465,19 @@ class TestCapitalRefusesAnInvalidUncertaintyArtifact:
         )
         assert any("must agree on what made it" in p for p in problems), problems
 
+    def test_the_declared_reason_set_is_exactly_six(self):
+        # Shrink detection. The parametrized test below iterates
+        # REFUSAL_REASONS, so a reason REMOVED upstream would silently
+        # produce fewer cases instead of a failure; this pins the tuple.
+        assert REFUSAL_REASONS == (
+            "foreign_model",
+            "post_decision",
+            "stale",
+            "uncalibrated",
+            "unknown_producer",
+            "wrong_unit",
+        )
+
     @pytest.mark.parametrize("reason", REFUSAL_REASONS)
     def test_every_declared_reason_is_reachable_from_this_boundary(self, reason):
         """Each refusal code must be producible through the capital node.
@@ -1494,6 +1507,83 @@ class TestCapitalRefusesAnInvalidUncertaintyArtifact:
             _uinputs(uncertainty=_uncertainty(outcome=envelope))
         )
         assert any(reason in p for p in problems), (reason, problems)
+
+
+def _explode(self, demand, expected):
+    raise AssertionError("capital must not call the envelope's own method")
+
+
+class _NothingClaimsThis:
+    """An artifact type no registered intake claims, so it reaches use time."""
+
+
+class TestCapitalAsksTheRegistryNotTheEnvelope:
+    """Round-3 checkpoint, at the consumer boundary.
+
+    ``EquityKellyMIO`` admits through ``admission_problems`` — the dskit
+    module FUNCTION — precisely so that an envelope's own class never gets
+    to answer "what am I". These are the reviewer's reproducers pointed at
+    capital rather than at the seam.
+    """
+
+    def test_a_subclass_widening_its_hooks_cannot_reach_capital(self):
+        class SneakyOutcome(AttestedOutcomeBand):
+            @classmethod
+            def artifact_type(cls):
+                return object
+
+            @classmethod
+            def excluded_types(cls):
+                return ()
+
+        envelope = SneakyOutcome(
+            _NothingClaimsThis(), _attestation(OUTCOME_ID, producer=BAND_PRODUCER)
+        )
+        problems = _node().validate_inputs(
+            _uinputs(uncertainty=_uncertainty(outcome=envelope))
+        )
+        assert any("not a registered intake" in p for p in problems), problems
+
+    def test_an_artifact_swapped_after_construction_cannot_reach_capital(self):
+        port = _uncertainty()
+        assert _node().validate_inputs(_uinputs(uncertainty=port)) == []
+        port["outcome"]._artifact = _mean_artifact()
+        problems = _node().validate_inputs(_uinputs(uncertainty=port))
+        assert any("swapped in after construction" in p for p in problems), problems
+
+    def test_an_attestation_swapped_after_construction_cannot_reach_capital(self):
+        port = _uncertainty()
+        port["false_signal"]._attestation = _attestation(
+            FALSE_SIGNAL_ID, producer=RATE_PRODUCER, model_identity="other-release"
+        )
+        problems = _node().validate_inputs(_uinputs(uncertainty=port))
+        assert any("foreign_model" in p for p in problems), problems
+
+    def test_capital_does_not_call_the_envelopes_own_method(self):
+        # A hostile envelope whose problems() lies is still refused, because
+        # capital never calls it. Recorded as the boundary: the METHOD is
+        # defeatable, the module function is what capital uses.
+        class Lying(AttestedOutcomeBand):
+            @classmethod
+            def artifact_type(cls):
+                return object
+
+            @classmethod
+            def excluded_types(cls):
+                return ()
+
+        # Attached AFTER class creation, which is also how a hostile
+        # metaclass gets past __init_subclass__. If capital called the
+        # envelope's own method this test would ERROR rather than fail.
+        Lying.problems = _explode
+
+        envelope = Lying(
+            _NothingClaimsThis(), _attestation(OUTCOME_ID, producer=BAND_PRODUCER)
+        )
+        problems = _node().validate_inputs(
+            _uinputs(uncertainty=_uncertainty(outcome=envelope))
+        )
+        assert problems
 
 
 class TestTheWidenedRateIsNotAnUpperBound:

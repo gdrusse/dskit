@@ -10,6 +10,7 @@ measurement at all must not reach a decision.
 
 from __future__ import annotations
 
+import _abc
 import random
 import types
 
@@ -24,6 +25,7 @@ from dskit.pipeline.mean_interval import (
     ClusterBootstrapInterval,
     ConfidenceInterval,
     MeanEvidence,
+    MeanIntervalResult,
     NeweyWestInterval,
     WidenedInterval,
 )
@@ -36,6 +38,8 @@ from dskit.pipeline.outcome_interval import (
 )
 from dskit.pipeline.uncertainty_intake import (
     CLOSED_FAMILIES,
+    admission_problems,
+    admit_uncertainty,
     REFUSAL_REASONS,
     UNCERTAINTY_INTAKES,
     AttestedFalseSignalRate,
@@ -375,6 +379,10 @@ class TestTheFiveRefusals:
         problems = env.problems(_demand(), AttestedOutcomeBand)
         assert [p.split(":")[0] for p in problems] == ["wrong_unit"]
         assert "different questions" in problems[0]
+        # It short-circuits: an envelope that does not answer the demanded
+        # question has no attestation worth screening, and reading its own
+        # hooks to screen one would be trusting the class under suspicion.
+        assert len(problems) == 1
 
     def test_foreign_model(self):
         env = AttestedOutcomeBand(_band(), _attestation(model_identity="release-2"))
@@ -448,8 +456,8 @@ class TestTheFiveRefusals:
         assert seen == set(REFUSAL_REASONS)
 
     def test_admit_raises_with_every_reason_joined(self):
-        env = AttestedMeanConfidence(
-            _confidence(),
+        env = AttestedOutcomeBand(
+            _band(),
             _attestation(
                 model_identity="release-2",
                 known_at_ms=DECISION_TS + 1,
@@ -462,7 +470,6 @@ class TestTheFiveRefusals:
             env.admit(_demand(), AttestedOutcomeBand)
         message = str(err.value)
         for reason in (
-            "wrong_unit",
             "foreign_model",
             "post_decision",
             "uncalibrated",
@@ -491,10 +498,13 @@ class TestTheFiveRefusals:
 
 class TestTheWidenedRateCanNeverBecomeABound:
     def test_dskit_ships_no_member_of_the_bound_family(self):
+        # `__mro__`, not issubclass: a virtual registration would make
+        # issubclass say yes and this pin would then be asserting the
+        # forgery rather than the fact.
         members = [
             cls
             for cls in UNCERTAINTY_INTAKES.values()
-            if issubclass(cls, ProbabilityUpperBound)
+            if ProbabilityUpperBound in cls.__mro__
         ]
         assert members == []
 
@@ -552,7 +562,7 @@ class TestTheWidenedRateCanNeverBecomeABound:
         assert [
             cls
             for cls in UNCERTAINTY_INTAKES.values()
-            if issubclass(cls, ProbabilityUpperBound)
+            if ProbabilityUpperBound in cls.__mro__
         ] == []
 
 
@@ -633,18 +643,38 @@ class TestTheDoorwayIsSealedNotJustItsTemplate:
         with pytest.raises(TypeError, match=name.lstrip("_")):
             type("Sneaky", (AttestedMeanConfidence,), {name: lambda *a, **k: []})
 
-    def test_overriding_a_screen_can_no_longer_erase_a_refusal(self):
-        # The concrete consequence: this member returned [] for a stale,
-        # post-decision, uncalibrated artifact on candidate 7098571.
-        with pytest.raises(TypeError, match="coverage_problems"):
-            type(
-                "NoScreens",
-                (AttestedMeanConfidence,),
-                {
-                    "_coverage_problems": lambda self, demand: [],
-                    "_timing_problems": lambda self, demand: [],
-                },
-            )
+    def test_the_screens_are_not_methods_so_redefining_them_is_inert(self):
+        """The round-2 `NoScreens` attack, now dead by construction.
+
+        On candidate `7098571` a member overriding `_coverage_problems` and
+        `_timing_problems` returned `[]` for a stale, post-decision,
+        uncalibrated artifact. Round 3 moved the five screens OFF the class
+        into module-level functions taking explicit values, so those names
+        are inert attributes on a subclass rather than a bypass — the
+        checkpoint's "stop trying to seal every hook" in executable form.
+        """
+
+        class NoScreens(AttestedMeanConfidence):
+            def _coverage_problems(self, demand):
+                return []
+
+            def _timing_problems(self, demand):
+                return []
+
+        for name in ("_coverage_problems", "_timing_problems"):
+            assert not hasattr(AttestedUncertainty, name)
+        hopeless = _attestation(
+            model_identity="release-2",
+            known_at_ms=DECISION_TS + 1,
+            calibration_end_ms=0,
+            producer="nobody:Nothing",
+            coverage=None,
+        )
+        # It cannot even be constructed — the ambiguity screen refuses an
+        # unregistered class wrapping a registered member's artifact type —
+        # and if it could, the function would refuse it anyway.
+        with pytest.raises(ValueError, match="two questions at once"):
+            NoScreens(_confidence(), hopeless)
 
     def test_a_member_cannot_shrink_the_sealed_list(self):
         # The check reads AttestedUncertainty._FINAL_METHODS, never cls's.
@@ -781,3 +811,195 @@ class TestExcludedTypes:
     def test_every_member_states_its_exclusions(self):
         for cls in UNCERTAINTY_INTAKES.values():
             assert isinstance(cls.excluded_types(), tuple)
+
+
+class TestUseTimeVerification:
+    """Round-3 checkpoint: the rule reads the REGISTRY, not the class's claims.
+
+    Four bypasses on candidate `189125b` shared one root — the envelope
+    trusted an identity established at ``__init__`` and never re-checked —
+    and two of them could not be sealed away, because ``artifact_type`` and
+    ``excluded_types`` are hooks and must stay overridable. Each attack
+    below is the reviewer's own reproducer.
+    """
+
+    def test_a_subclass_widening_its_hooks_is_refused(self):
+        # CRITICAL 1. Loosening `artifact_type` to the shared base and
+        # emptying `excluded_types` admitted a WidenedInterval as measured
+        # mean confidence. The envelope's own declaration is no longer read.
+        class SneakyConfidence(AttestedMeanConfidence):
+            @classmethod
+            def artifact_type(cls):
+                return MeanIntervalResult
+
+            @classmethod
+            def excluded_types(cls):
+                return ()
+
+        env = SneakyConfidence(_widened(), _attestation(producer=MEAN_PRODUCER))
+        problems = admission_problems(env, _demand(), AttestedMeanConfidence)
+        assert [p.split(":")[0] for p in problems] == ["wrong_unit"]
+        assert "not a registered intake" in problems[0]
+        with pytest.raises(ValueError, match="not a registered intake"):
+            admit_uncertainty(env, _demand(), AttestedMeanConfidence)
+
+    def test_a_virtual_registration_cannot_forge_family_membership(self):
+        # CRITICAL 2. `ABCMeta.register()` flips isinstance without creating
+        # a class, so `__init_subclass__` never runs. The rule asks the
+        # registry and tests real inheritance (`expected in cls.__mro__`),
+        # neither of which `register()` can touch.
+        ProbabilityUpperBound.register(AttestedFalseSignalRate)
+        try:
+            env = AttestedFalseSignalRate(_rate(), _attestation(producer=RATE_PRODUCER))
+            assert isinstance(env, ProbabilityUpperBound)  # the forgery works
+            assert ProbabilityUpperBound not in AttestedFalseSignalRate.__mro__
+            problems = admission_problems(env, _demand(), ProbabilityUpperBound)
+            assert [p.split(":")[0] for p in problems] == ["wrong_unit"]
+            assert "no registered intake answers" in problems[0]
+        finally:
+            _abc._reset_registry(ProbabilityUpperBound)
+            _abc._reset_caches(ProbabilityUpperBound)
+        assert not isinstance(
+            AttestedFalseSignalRate(_rate(), _attestation(producer=RATE_PRODUCER)),
+            ProbabilityUpperBound,
+        )
+
+    def test_the_closed_family_answer_comes_from_the_registry(self):
+        assert ProbabilityUpperBound not in _registered()
+        problems = admission_problems(
+            AttestedOutcomeBand(_band(), _attestation()),
+            _demand(),
+            ProbabilityUpperBound,
+        )
+        assert problems and "no registered intake answers" in problems[0]
+
+    def test_an_artifact_swapped_after_construction_is_caught(self):
+        # CRITICAL 4. `_artifact` is a plain attribute; the rule re-reads it
+        # at every call instead of trusting `__init__`'s verdict.
+        env = AttestedMeanConfidence(_confidence(), _attestation(producer=MEAN_PRODUCER))
+        assert admission_problems(env, _demand(), AttestedMeanConfidence) == []
+        env._artifact = _widened()
+        problems = admission_problems(env, _demand(), AttestedMeanConfidence)
+        assert problems
+        assert all(p.startswith("wrong_unit") for p in problems)
+        assert any("swapped in after construction" in p for p in problems)
+
+    def test_an_attestation_swapped_after_construction_is_caught(self):
+        env = AttestedOutcomeBand(_band(), _attestation())
+        assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
+        env._attestation = _attestation(model_identity="release-2")
+        assert any(
+            p.startswith("foreign_model")
+            for p in admission_problems(env, _demand(), AttestedOutcomeBand)
+        )
+
+    def test_an_envelope_carrying_no_attestation_is_refused(self):
+        env = AttestedOutcomeBand(_band(), _attestation())
+        env._attestation = {"model_identity": "m"}
+        problems = admission_problems(env, _demand(), AttestedOutcomeBand)
+        assert problems and "no UncertaintyAttestation" in problems[0]
+
+    def test_a_metaclass_reattaching_methods_defeats_the_METHOD_not_the_RULE(self):
+        """CRITICAL 3, and the honest boundary this design does not cross.
+
+        A hostile metaclass can pop the sealed names out of the namespace,
+        let ``__init_subclass__`` see a clean class, and reattach them after
+        ``type.__new__``. Its ``problems()`` method then returns ``[]``.
+        The module FUNCTION is not resolved through that class, so it still
+        refuses — which is why a consumer sizing capital calls the function.
+        What this does NOT do is stop code that controls the interpreter,
+        and the module docstring says so rather than implying otherwise.
+        """
+
+        class Reattach(type(AttestedUncertainty)):
+            def __new__(mcls, name, bases, namespace, **kwargs):
+                stolen = {
+                    key: namespace.pop(key)
+                    for key in list(namespace)
+                    if key in AttestedUncertainty._FINAL_METHODS
+                }
+                cls = super().__new__(mcls, name, bases, namespace, **kwargs)
+                for key, value in stolen.items():
+                    setattr(cls, key, value)
+                return cls
+
+        class Neutralized(AttestedMeanConfidence, metaclass=Reattach):
+            @classmethod
+            def artifact_type(cls):
+                return MeanIntervalResult
+
+            @classmethod
+            def excluded_types(cls):
+                return ()
+
+            def problems(self, demand, expected):
+                return []
+
+        hopeless = _attestation(
+            model_identity="release-2",
+            known_at_ms=DECISION_TS + 1,
+            calibration_end_ms=0,
+            producer="nobody:Nothing",
+            coverage=None,
+        )
+        env = Neutralized(_widened(), hopeless)
+        # The METHOD is defeated — recorded, not hidden.
+        assert env.problems(_demand(), AttestedMeanConfidence) == []
+        # The RULE is not.
+        assert admission_problems(env, _demand(), AttestedMeanConfidence)
+
+    def test_a_registered_member_still_passes_through_both_spellings(self):
+        env = AttestedOutcomeBand(_band(), _attestation())
+        assert env.problems(_demand(), AttestedOutcomeBand) == []
+        assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
+        assert admit_uncertainty(env, _demand(), AttestedOutcomeBand) is env
+        assert env.admit(_demand(), AttestedOutcomeBand) is env
+
+    @pytest.mark.parametrize(
+        "bad", [object(), None, "AttestedOutcomeBand", ConfidenceInterval]
+    )
+    def test_a_non_envelope_is_a_caller_error(self, bad):
+        with pytest.raises(ValueError, match="envelope must be"):
+            admission_problems(bad, _demand(), AttestedOutcomeBand)
+
+    def test_the_same_artifact_type_exemption_stays_deleted(self):
+        """MAJOR: restoring the exemption left 4674 + 236 tests green.
+
+        The exemption skipped any registered member declaring the artifact
+        type being wrapped, which is exactly the shape of an unregistered
+        subclass of that member. This fails if it comes back.
+        """
+
+        class _Shadow(AttestedMeanConfidence):
+            pass
+
+        with pytest.raises(ValueError, match="two questions at once"):
+            _Shadow(_confidence(), _attestation(producer=MEAN_PRODUCER))
+
+    def test_the_declared_reason_set_is_exactly_six(self):
+        # Shrink detection: a reason REMOVED upstream must fail a test, not
+        # quietly produce fewer parametrized cases.
+        assert REFUSAL_REASONS == (
+            "foreign_model",
+            "post_decision",
+            "stale",
+            "uncalibrated",
+            "unknown_producer",
+            "wrong_unit",
+        )
+
+
+def _registered():
+    return list(UNCERTAINTY_INTAKES.values())
+
+
+def _widened():
+    return WidenedInterval(
+        mean=0.004,
+        standard_error=0.001,
+        low=0.002,
+        high=0.006,
+        level=0.95,
+        independent_units=40,
+        method=MEAN_PRODUCER,
+    )

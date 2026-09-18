@@ -16545,10 +16545,12 @@ producer has MEASURED attainment of the bound and can attest it.
 > rename, alias, schema shape or config flag can promote `pi_widened` into the
 > role, because the role is a type nothing inhabits." **That was false.** The
 > family was an ordinary abstract class and four lines subclassing it minted a
-> member. The family is now CLOSED — `__init_subclass__` refuses every
-> subclass — which makes the sentence true of subclassing, and it is still not
-> true of code that controls the interpreter. The corrected claim is stated in
-> the Correction round.
+> member. The round-2 response closed the family, and **the round-3 review then
+> showed that was still not enough**: `ABCMeta.register` forges the membership
+> without creating a class at all. The claim that survives both rounds is not
+> about subclassing — it is that **no registered intake answers this family**,
+> which `admission_problems` reads from the registry. See the second Correction
+> round.
 
 **Five refusals, closed set** (`REFUSAL_REASONS`, each opening its message):
 `foreign_model` (calibrated for another model), `post_decision` (the artifact
@@ -16788,3 +16790,103 @@ number that nothing measured — the evidence id is literally
 `synthetic-demo-no-measurement-was-performed`, and fitting the rates through a
 registered estimator does not change that. The audit's "Required evidence"
 section remains unmet in full.
+
+### Correction round 2, 2026-09-18 — the convergence checkpoint: stop sealing, verify at use time
+
+Review of candidate `189125b` returned **4 Critical, 1 Major**, and the owner's
+reviewer invoked `docs/skills/skeptic-review.md`'s convergence checkpoint: two
+correction cycles on one family, each finding new bypasses of the previous
+fix, with an explicit instruction not to write a third sealing patch. This
+section is the required concrete changed approach.
+
+**What the two failed cycles were.** Round 1 sealed `problems`/`admit` with
+`__init_subclass__`; defeated. Round 2 added `CLOSED_FAMILIES`, eleven sealed
+names and an anti-drift test; defeated four ways:
+
+1. **An ordinary subclass loosening two UNSEALED hooks.** `artifact_type` and
+   `excluded_types` are `@abstractmethod` hooks — a member MUST be able to
+   override them, so they can never be sealed. Widening `artifact_type` to the
+   shared `MeanIntervalResult` base and returning `()` from `excluded_types`
+   admitted a `WidenedInterval` as measured mean confidence; `problems()`
+   returned `[]` and `admit()` handed it over.
+2. **`abc.ABCMeta.register()`.** `ProbabilityUpperBound.register(
+   AttestedFalseSignalRate)` flips `isinstance` from False to True without
+   creating a class, so `__init_subclass__` never runs; `admit(demand,
+   ProbabilityUpperBound)` then handed `pi_widened` over as a probability upper
+   bound. Round 1's Critical, recreated through the standard library.
+3. **A metaclass reattaching sealed methods after `type.__new__`** — pop the
+   names out of the namespace so `__init_subclass__` sees a clean class, then
+   `setattr` them back. Every refusal neutralized at once.
+4. **`_artifact` is a plain mutable attribute.** Only the public `artifact`
+   property was sealed, so `env._artifact = a_WidenedInterval` succeeded
+   silently and `admit()` kept succeeding: the screens re-read `self._artifact`
+   but never re-ran the construction-time type checks.
+
+Findings 1 and 2 are structural. **Sealing cannot close this set**, and a third
+sealing patch finds a fifth hole.
+
+**The changed approach: stop trusting the class; verify at use time from
+registry-sourced truth.** Three of the four Criticals share one root — the
+envelope trusted an identity established at `__init__` and never re-checked —
+so the rule moved OUT of the class:
+
+* `admission_problems(envelope, demand, expected)` and
+  `admit_uncertainty(...)` are module-level FUNCTIONS and are the rule. The
+  same-named methods remain as convenience spellings that delegate. A method is
+  resolved through the instance's own class, which is the thing under
+  suspicion; a function is resolved through this module. `EquityKellyMIO` calls
+  the function.
+* **Which classes may answer a demand comes from `UNCERTAINTY_INTAKES`**, and
+  membership is tested as `expected in cls.__mro__` — real inheritance, never
+  `issubclass`, because that is exactly what `register()` forges. The envelope
+  must then BE one of those registered classes, by identity (`type()`, which
+  unlike `isinstance` does not consult `__class__`).
+* **The artifact and attestation are re-read from the instance at every call**
+  and re-checked against the types the ANSWERING class declares — not the types
+  the envelope's own class declares about itself.
+* **The five screens are no longer methods.** They are module functions taking
+  explicit values, so there is nothing on the class for a member to override.
+  `_FINAL_METHODS` shrank from eleven names to six accordingly.
+
+**What that closes, and what it does not.** Closed: finding 1 (an unregistered
+subclass's self-declaration is never read), finding 2 (`register()` can forge
+neither registry membership nor an `__mro__`), finding 4 (re-read at use time),
+and round 2's own `NoScreens` find (those names are not methods any more).
+Finding 3 is closed **for the function and not for the method**: a hostile
+metaclass can still make an envelope's `problems()` return `[]`, and
+`test_a_metaclass_reattaching_methods_defeats_the_METHOD_not_the_RULE` asserts
+both halves — the method is defeated, the function refuses — rather than
+pretending the method is safe.
+
+**Major — the deleted same-`artifact_type` exemption had no regression cover.**
+Restoring it left 4,674 + 236 tests green, and the safety comment justifying
+the deletion was itself unpinned and false for any class that never calls
+`register_uncertainty_intake` — the shape every fixture uses.
+`test_the_same_artifact_type_exemption_stays_deleted` now fails if it returns.
+
+**The language, corrected everywhere.** The module docstring, the
+`CLOSED_FAMILIES` comment, `ProbabilityUpperBound`, `AttestedFalseSignalRate`,
+`nodes_capital`'s module docstring, `dskit/pipeline/CLAUDE.md`,
+`dskit/pipeline/README.md` and both child orientation files said a project
+"cannot mint its own member" and "no caller can define one". Four reproducers
+say otherwise, so every one of those sentences is replaced. The load-bearing
+statement is now **"no registered intake answers this family"**, answered from
+the registry. `CLOSED_FAMILIES` and `_FINAL_METHODS` are described as
+accident-and-drift protection, which is what they genuinely are — the same
+honesty `dskit/pipeline/uncertainty_set.py` already applies to this idiom ("a
+class that overrides `__init_subclass__` itself and never calls `super()`
+escapes it, as it does for every user of the idiom"). ADR-0122's Correction is
+cited for why no in-process check can be a root of trust.
+
+**Minor, also fixed.** The `AttestedUncertainty` class docstring's `admit()`
+example still built an `UncertaintyAttestation` without `producer=` and would
+have raised `TypeError` verbatim; it now shows `admit_uncertainty`. The child's
+`test_every_declared_reason_is_reachable_from_this_boundary` is parametrized
+over `REFUSAL_REASONS`, so a REMOVED reason produced fewer cases rather than a
+failure; an explicit equality pin on the tuple sits beside it at both levels.
+
+**What is still not established** is unchanged and worth restating, because
+this round narrowed the threat model rather than widening the guarantee: no
+coverage evidence for any artifact, no provenance, no root of trust. What is
+built is refusal machinery that fails closed for every ordinary caller and for
+the shipped configuration.

@@ -37,7 +37,9 @@ proposal describes. In particular:
 ``uncertainty`` port carries one ``dskit.pipeline.uncertainty_intake``
 envelope per estimand — a false-signal rate and a realized-outcome band —
 and each is admitted against ONE ``DecisionDemand`` built from the bundle's
-own shared decision timestamp and release identity. An artifact that is
+own shared decision timestamp and release identity, through
+``uncertainty_intake.admission_problems`` (the module FUNCTION, which reads
+the registry rather than asking the envelope's class what it is). An artifact that is
 stale, wrong-unit, post-decision, uncalibrated or from a different model is
 refused by name (ADR-0165). What that machinery establishes is that an
 UNATTESTED artifact cannot be consumed; it establishes nothing about
@@ -54,12 +56,14 @@ chance constraint at level ``1 - q``, and ``run`` records exactly that in
 its ``evidence`` output. The withdrawn name ``pi_upper`` is refused at this
 boundary as well as at the bundle's, and
 ``uncertainty_intake.ProbabilityUpperBound`` — the family a genuine bound
-would belong to — is CLOSED and has no member, so a caller cannot define
-one to promote the widened reading into a bound. What that buys is that
-the promotion cannot happen by accident or by a downstream subclass; it is
-not protection against code that already controls the interpreter
-(ADR-0122's Correction), and the intake screens generally are in-process
-checks, not a root of trust.
+would belong to — has NO REGISTERED INTAKE, and ``admission_problems``
+answers that question from the registry rather than from any class's claim
+about itself, so a demand for a bound refuses every artifact that exists.
+What that buys is that the promotion cannot happen by accident, by a
+downstream subclass, or by a virtual ``ABCMeta.register``; it is not
+protection against code that already controls the interpreter (ADR-0122's
+Correction), and the intake screens generally are in-process checks, not a
+root of trust.
 
 Every owner-only risk number (``risk_aversion_gamma``, ``cardinality``,
 ``cvar_alpha``/``cvar_limit``, ``min_ticket`` from the doorway; ``hfdr_q``,
@@ -83,6 +87,9 @@ from dskit.pipeline.uncertainty_intake import (
     AttestedOutcomeBand,
     AttestedUncertainty,
     DecisionDemand,
+    admission_problems,
+    artifact_of,
+    attestation_of,
 )
 
 from .final_model import HEADS
@@ -981,9 +988,22 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         if demand is None:
             return problems
         for slot, member in REQUIRED_INTAKES:
-            for problem in port[slot].problems(demand, member):
+            # The FUNCTION, never the envelope's own method: a method is
+            # resolved through the envelope's class, and that class is
+            # exactly what capital has no reason to trust. admission_problems
+            # reads the dskit registry, this node's own REQUIRED_INTAKES
+            # class and the envelope's raw state instead (ADR-0165's
+            # 2026-09-18 correction round).
+            for problem in admission_problems(port[slot], demand, member):
                 problems.append(f"uncertainty.{slot}: {problem}")
-        return problems + self._binding_problems(bundle, port)
+        if problems:
+            # Fail closed in ORDER. The domain bindings below read artifact
+            # fields (`lower_offset`, `pi_hat`) that only an ADMITTED
+            # artifact is known to have; running them on a refused envelope
+            # raised AttributeError instead of naming the refusal, which is
+            # a crash where a refusal belongs.
+            return problems
+        return self._binding_problems(bundle, port)
 
     def _binding_problems(self, bundle, port):
         """Problems binding each bundle row to the admitted artifacts, empty when none."""
@@ -992,16 +1012,21 @@ class EquityKellyMIO(ScenarioUtilitySolve):
             entity = row["entity"]
             for slot, member in REQUIRED_INTAKES:
                 envelope = port[slot]
+                # artifact_of/attestation_of, never the properties: a
+                # consumer reads the SAME values the seam screened, rather
+                # than whatever a class-level descriptor chooses to return.
+                attested_id = attestation_of(envelope).artifact_id
                 declared = row["uncertainty"][slot]
-                if declared != envelope.attestation.artifact_id:
+                if declared != attested_id:
                     problems.append(
                         f"bundle[{index}] ({entity!r}) names {slot} calibration "
-                        f"{declared!r}, but the admitted artifact is "
-                        f"{envelope.attestation.artifact_id!r}"
+                        f"{declared!r}, but the admitted artifact is {attested_id!r}"
                     )
-                elif isinstance(envelope, member):
+                else:
                     problems.extend(
-                        self._entity_problems(index, row, slot, envelope.artifact)
+                        self._entity_problems(
+                            index, row, slot, artifact_of(envelope)
+                        )
                     )
         return problems
 
@@ -1042,7 +1067,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         port = inputs["uncertainty"]
         admitted = {}
         for slot, _member in REQUIRED_INTAKES:
-            attestation = port[slot].attestation
+            attestation = attestation_of(port[slot])
             coverage = attestation.coverage
             admitted[slot] = {
                 "artifact_id": attestation.artifact_id,

@@ -20,14 +20,23 @@ Five refusals, one per way that goes wrong
 screened by :meth:`AttestedUncertainty.problems`, which is a TEMPLATE a
 member can never override — ``__init_subclass__`` refuses the class at
 definition time, the ``production/leg.py`` idiom the sibling doorways
-already use. So is **every other name the doorway defines**
-(:data:`AttestedUncertainty._FINAL_METHODS`): the constructor, both
-accessors and each individual screen, because overriding any one of them
-defeats a refusal just as surely as overriding the template that calls
-them. A member supplies the hooks in
+already use, for the constructor, both accessors and the two templates
+(:data:`AttestedUncertainty._FINAL_METHODS`). **That sealing is
+accident-and-drift protection and is not a boundary** — see below. The
+screens themselves are no longer methods at all: they are module-level
+functions taking explicit values, so there is nothing on the class for a
+member to override. A member supplies the hooks in
 :data:`AttestedUncertainty._HOOKS` and nothing else, and a test asserts
 those two tuples between them cover every callable the class defines, so
 a new method cannot be added without being classified.
+
+**The rule is a function, not a method.** :func:`admission_problems` and
+:func:`admit_uncertainty` own it, and a consumer that does not trust the
+envelope's class — a consumer sizing capital should not — calls them. A
+method is resolved through the instance's own class, which is precisely
+the thing in question; the function is resolved through this module. The
+2026-09-18 convergence checkpoint required this change after two rounds of
+sealing patches each found new bypasses.
 
 The question is a TYPE, never a string
 --------------------------------------
@@ -55,18 +64,21 @@ ships ``pi_widened``, which is a widened POINT ESTIMATE: ADR-0152's
 measurement puts its attainment of the true local fdr at 0.53–0.82
 against a 0.95 nominal, and that module renamed the field rather than
 repair a claim it could not make. :class:`ProbabilityUpperBound` is the
-family such a bound would belong to, and it is **CLOSED**: it is listed in
-:data:`CLOSED_FAMILIES`, so ``__init_subclass__`` refuses ANY subclass of
-it at class-definition time, here or downstream. A consumer that demands
-one therefore refuses every artifact that exists, and a project cannot
-mint its own member to get past that. Adding a member is an edit to THIS
-module plus an ADR carrying the measurement that earns the claim — a
-reviewable act, not a four-line subclass in a caller.
+family such a bound would belong to, and **no registered intake answers
+it**. That is the load-bearing statement, and it is answered from
+:data:`UNCERTAINTY_INTAKES` rather than from any class's claim about
+itself: :func:`admission_problems` asks which REGISTERED intakes have
+``expected`` in their real ``__mro__``, gets none, and refuses every
+artifact that exists. Adding a member means editing THIS module and
+registering it, plus an ADR carrying the measurement that earns the claim.
 
-(Round-1 review proved the first version of this family was not sealed:
-four lines subclassing it with ``artifact_type() -> FalseSignalEstimate``
-constructed, admitted, and handed ``pi_widened`` over as a bound. The
-sealing below is that finding's correction.)
+``CLOSED_FAMILIES`` and ``__init_subclass__`` still refuse an ordinary
+subclass, and that is worth having — but it is accident-and-drift
+protection, NOT a boundary. Two review rounds proved it: round 1 found
+four lines subclassing the family, and round 2 found ``ABCMeta.register``
+flipping ``isinstance`` without creating a class at all, plus a subclass
+loosening the two hooks that must stay overridable. Sealing could not
+close that set, which is why the RULE moved out of the class.
 
 What this module does NOT do
 ----------------------------
@@ -81,6 +93,16 @@ the shipped configuration — an artifact of the wrong type, an unattested
 one, a stale or foreign one, or one naming a producer this package does
 not know is refused without the caller having to remember to check. What
 they cannot do is stop code that already controls the interpreter.
+
+Concretely, and recorded because review found each one: a hostile
+metaclass can pop the sealed names out of a namespace and reattach them
+after ``type.__new__``, so a class's ``problems()`` METHOD can be made to
+return ``[]`` — :func:`admission_problems` still refuses that envelope,
+and the test that proves it also asserts the method is defeated rather
+than pretending otherwise. A caller can simply not call this module. A
+project can register its own intake and its own producer, which is the
+registry's purpose. None of that is repaired by another screen; it is the
+boundary, and it is stated rather than sealed against.
 
 **An admitted artifact is not evidence that a calibrated estimator
 produced it.** The three artifact types are plain frozen dataclasses whose
@@ -135,6 +157,10 @@ __all__ = [
     "CLOSED_FAMILIES",
     "REFUSAL_REASONS",
     "UNCERTAINTY_INTAKES",
+    "admission_problems",
+    "admit_uncertainty",
+    "artifact_of",
+    "attestation_of",
     "AttestedFalseSignalRate",
     "AttestedMeanConfidence",
     "AttestedOutcomeBand",
@@ -161,11 +187,14 @@ REFUSAL_REASONS = (
     "wrong_unit",
 )
 
-#: Families nothing may join — ``__init_subclass__`` refuses any subclass
-#: of one at class-definition time, in this package or downstream. A family
-#: is closed when membership would ASSERT a guarantee no member can
-#: currently earn, so leaving it open lets a caller mint the guarantee for
-#: itself. Assigned below, once its members exist.
+#: Families no ordinary subclass may join — ``__init_subclass__`` refuses
+#: one at class-definition time. A family is closed when membership would
+#: ASSERT a guarantee no member has earned. **This is drift protection, not
+#: a boundary**: ``ABCMeta.register`` forges ``isinstance`` without creating
+#: a class, and a hostile metaclass escapes the hook entirely, so what
+#: actually answers "may this artifact inform this demand" is
+#: :func:`admission_problems` reading :data:`UNCERTAINTY_INTAKES`. Assigned
+#: below, once its members exist.
 CLOSED_FAMILIES = ()
 
 #: Registered intake members, ``name -> class``. Mirrors the sibling
@@ -455,16 +484,18 @@ class AttestedUncertainty(ABC):
             artifact_id="cal-abc", model_identity="release-1",
             calibration_end_ms=1_699_900_000_000,
             known_at_ms=1_699_900_000_000,
+            producer="dskit.pipeline.outcome_interval:BlockConformalInterval",
             coverage=CoverageEvidence(0.95, 0.94, "cal-2026-09-17", 40),
         ))
-        env.admit(demand, AttestedOutcomeBand) is env
+        admit_uncertainty(env, demand, AttestedOutcomeBand) is env
         # -> True
     """
 
-    #: Every name a member may NOT replace. Round-1 review sealed only
-    #: ``problems``/``admit``, which left each individual screen, both
-    #: accessors and the constructor overridable — and overriding any one of
-    #: them defeats a refusal just as surely. The list is read off
+    #: Every name a member may NOT replace. **This is accident-and-drift
+    #: protection, not a boundary** — see the module docstring. The five
+    #: screens are no longer methods at all: they are module-level
+    #: functions taking explicit values, so there is nothing on the class
+    #: for a member to override in the first place. The list is read off
     #: ``AttestedUncertainty`` explicitly, never off ``cls``, so a member
     #: cannot shrink it; ``test_uncertainty_intake`` asserts it and
     #: :data:`_HOOKS` between them cover every callable this class defines,
@@ -472,11 +503,6 @@ class AttestedUncertainty(ABC):
     _FINAL_METHODS = (
         "__init__",
         "__init_subclass__",
-        "_coverage_problems",
-        "_identity_problems",
-        "_producer_problems",
-        "_question_problems",
-        "_timing_problems",
         "admit",
         "artifact",
         "attestation",
@@ -535,8 +561,12 @@ class AttestedUncertainty(ABC):
                 )
         # No same-artifact_type exemption. Round-1 review proved that
         # exemption skipped precisely the shape of the attack it was meant
-        # to catch; registration now refuses a second member for one
-        # artifact type, so two registered members can never share one.
+        # to catch — and round 2 found the deletion had no regression
+        # cover, so ``test_the_same_artifact_type_exemption_stays_deleted``
+        # now fails if it comes back. The effect is that an UNREGISTERED
+        # class sharing a registered member's artifact type cannot wrap
+        # that artifact at all, which is the same rule
+        # ``admission_problems`` applies at use time, applied early.
         for name, other in sorted(UNCERTAINTY_INTAKES.items()):
             if other is type(self):
                 continue
@@ -642,47 +672,39 @@ class AttestedUncertainty(ABC):
     def problems(self, demand, expected):
         """List every reason this artifact may not inform ``demand``, empty when none.
 
+        A convenience spelling of :func:`admission_problems`, which owns the
+        rule. A consumer that does not trust the envelope's class — and a
+        consumer sizing capital should not — calls the FUNCTION, because a
+        method is resolved through the instance's own class and that class
+        is the thing under suspicion. The function reads the registry, the
+        consumer's own ``expected``, and the envelope's raw state.
+
         Parameters
         ----------
         demand : DecisionDemand
             The decision this artifact is being consumed at.
         expected : type
             The :class:`AttestedUncertainty` subclass the consumer needs.
-            Naming a class rather than a string is what makes
-            ``wrong_unit`` a type question.
 
         Returns
         -------
         list of str
             One message per refusal, each opening with its
-            :data:`REFUSAL_REASONS` code, so a caller's ``validate_inputs``
-            can accumulate them beside its own instead of catching.
+            :data:`REFUSAL_REASONS` code.
 
         Raises
         ------
         ValueError
             When ``demand`` is not a :class:`DecisionDemand` or
-            ``expected`` is not an :class:`AttestedUncertainty` subclass —
-            a caller error, refused rather than answered.
+            ``expected`` is not an :class:`AttestedUncertainty` subclass.
         """
-        if not isinstance(demand, DecisionDemand):
-            raise ValueError(
-                f"demand must be a DecisionDemand, got {type(demand).__name__}"
-            )
-        if not (isinstance(expected, type) and issubclass(expected, AttestedUncertainty)):
-            raise ValueError(
-                f"expected must be an AttestedUncertainty subclass, got {expected!r}"
-            )
-        return (
-            self._question_problems(expected)
-            + self._identity_problems(demand)
-            + self._timing_problems(demand)
-            + self._coverage_problems(demand)
-            + self._producer_problems()
-        )
+        return admission_problems(self, demand, expected)
 
     def admit(self, demand, expected):
         """Return this envelope, or raise naming every reason it is refused.
+
+        A convenience spelling of :func:`admit_uncertainty`; see
+        :meth:`problems` on why a consumer calls the function instead.
 
         Parameters
         ----------
@@ -699,111 +721,361 @@ class AttestedUncertainty(ABC):
         Raises
         ------
         ValueError
-            When :meth:`problems` is non-empty, with every reason joined.
+            When :func:`admission_problems` is non-empty, reasons joined.
         """
-        problems = self.problems(demand, expected)
-        if problems:
-            raise ValueError(f"{type(self).__name__}: " + "; ".join(problems))
-        return self
+        return admit_uncertainty(self, demand, expected)
 
-    def _question_problems(self, expected):
-        """Screen wrong_unit: does this envelope answer the question asked."""
-        if isinstance(self, expected):
-            return []
-        return [
-            f"wrong_unit: {type(self).__name__} answers {type(self).estimand()!r}, but this "
-            f"decision requires {expected.__name__} — uncertainty about an expected effect, "
-            "about a realized outcome and about a false-signal rate are different questions "
-            "with different answers"
-        ]
 
-    def _identity_problems(self, demand):
-        """Screen foreign_model: is this evidence about the model being decided."""
-        attested = self._attestation.model_identity
-        if attested == demand.model_identity:
-            return []
-        return [
-            f"foreign_model: calibrated for model {attested!r}, but this decision is about "
-            f"{demand.model_identity!r} — uncertainty calibrated for one model is not "
-            "evidence about another"
-        ]
+def _raw(envelope, name):
+    """Read an envelope's own slot past any redefined descriptor."""
+    try:
+        return object.__getattribute__(envelope, name)
+    except AttributeError:
+        return None
 
-    def _timing_problems(self, demand):
-        """Screen post_decision and stale, both against the decision stamp."""
-        att = self._attestation
-        out = []
-        if att.known_at_ms > demand.decision_ts_ms:
-            out.append(
-                f"post_decision: known_at_ms {att.known_at_ms!r} is after decision_ts_ms "
-                f"{demand.decision_ts_ms!r} — a decision may only consume what existed "
-                "before it"
-            )
-        if att.calibration_end_ms > demand.decision_ts_ms:
-            out.append(
-                f"post_decision: calibration_end_ms {att.calibration_end_ms!r} is after "
-                f"decision_ts_ms {demand.decision_ts_ms!r} — the calibration window reaches "
-                "past the decision it is informing"
-            )
-            return out
-        age = demand.decision_ts_ms - att.calibration_end_ms
-        if age > demand.max_calibration_age_ms:
-            out.append(
-                f"stale: the calibration window ended {age} ms before the decision, past the "
-                f"declared max_calibration_age_ms {demand.max_calibration_age_ms!r}"
-            )
-        return out
 
-    def _producer_problems(self):
-        """Screen unknown_producer: attestation and artifact agree on a producer we know."""
-        attested = self._attestation.producer
-        known = sorted(class_ref(cls) for cls in type(self).registered_producers())
-        out = []
-        if attested not in known:
-            out.append(
-                f"unknown_producer: the attestation names producer {attested!r}, which is "
-                f"not a registered {type(self).estimand()!r} producer ({known}) — this "
-                "compares strings against an open registry and imports nothing, so it "
-                "establishes that the producer is one this package knows, never that it ran"
-            )
-        reported = type(self).artifact_producer(self._artifact)
-        if reported is None:
-            out.append(
-                "unknown_producer: the artifact records no producer of its own, so nothing "
-                "can be checked against the attestation's claim"
-            )
-        elif reported != attested:
-            out.append(
-                f"unknown_producer: the artifact records producer {reported!r} but the "
-                f"attestation names {attested!r} — an artifact and its provenance must "
-                "agree on what made it"
-            )
-        return out
+def _registered_classes():
+    """List the registered intake classes, in registry-name order."""
+    return [UNCERTAINTY_INTAKES[name] for name in sorted(UNCERTAINTY_INTAKES)]
 
-    def _coverage_problems(self, demand):
-        """Screen uncalibrated: attested coverage present, and above the floor."""
-        coverage = self._attestation.coverage
-        if coverage is None:
-            return [
-                "uncalibrated: the attestation carries no CoverageEvidence — an artifact "
-                "whose producer measured nothing proves schema compliance, not coverage"
-            ]
-        if coverage.measured < demand.min_measured_coverage:
-            return [
-                f"uncalibrated: attested measured coverage {coverage.measured!r} (evidence "
-                f"{coverage.evidence_id!r}, {coverage.n_units} independent units) is below "
-                f"the declared min_measured_coverage {demand.min_measured_coverage!r}"
-            ]
+
+def _answering(expected):
+    """List the registered intakes that answer ``expected``, by real inheritance."""
+    # ``expected in cls.__mro__``, never ``issubclass``: ``ABCMeta.register``
+    # makes ``issubclass``/``isinstance`` say yes without creating a class,
+    # so a virtual registration would otherwise forge family membership.
+    return [cls for cls in _registered_classes() if expected in cls.__mro__]
+
+
+def _identity_problems(attestation, demand):
+    """Screen foreign_model: is this evidence about the model being decided."""
+    attested = attestation.model_identity
+    if attested == demand.model_identity:
         return []
+    return [
+        f"foreign_model: calibrated for model {attested!r}, but this decision is about "
+        f"{demand.model_identity!r} — uncertainty calibrated for one model is not "
+        "evidence about another"
+    ]
+
+
+def _timing_problems(attestation, demand):
+    """Screen post_decision and stale, both against the decision stamp."""
+    out = []
+    if attestation.known_at_ms > demand.decision_ts_ms:
+        out.append(
+            f"post_decision: known_at_ms {attestation.known_at_ms!r} is after "
+            f"decision_ts_ms {demand.decision_ts_ms!r} — a decision may only consume "
+            "what existed before it"
+        )
+    if attestation.calibration_end_ms > demand.decision_ts_ms:
+        out.append(
+            f"post_decision: calibration_end_ms {attestation.calibration_end_ms!r} is "
+            f"after decision_ts_ms {demand.decision_ts_ms!r} — the calibration window "
+            "reaches past the decision it is informing"
+        )
+        return out
+    age = demand.decision_ts_ms - attestation.calibration_end_ms
+    if age > demand.max_calibration_age_ms:
+        out.append(
+            f"stale: the calibration window ended {age} ms before the decision, past the "
+            f"declared max_calibration_age_ms {demand.max_calibration_age_ms!r}"
+        )
+    return out
+
+
+def _coverage_problems(attestation, demand):
+    """Screen uncalibrated: attested coverage present, and above the floor."""
+    coverage = attestation.coverage
+    if coverage is None:
+        return [
+            "uncalibrated: the attestation carries no CoverageEvidence — an artifact "
+            "whose producer measured nothing proves schema compliance, not coverage"
+        ]
+    if coverage.measured < demand.min_measured_coverage:
+        return [
+            f"uncalibrated: attested measured coverage {coverage.measured!r} (evidence "
+            f"{coverage.evidence_id!r}, {coverage.n_units} independent units) is below "
+            f"the declared min_measured_coverage {demand.min_measured_coverage!r}"
+        ]
+    return []
+
+
+def _producer_problems(authority, artifact, attestation):
+    """Screen unknown_producer: attestation and artifact agree on a producer we know."""
+    attested = attestation.producer
+    known = sorted(class_ref(cls) for cls in authority.registered_producers())
+    out = []
+    if attested not in known:
+        out.append(
+            f"unknown_producer: the attestation names producer {attested!r}, which is "
+            f"not a registered {authority.estimand()!r} producer ({known}) — this "
+            "compares strings against an open registry and imports nothing, so it "
+            "establishes that the producer is one this package knows, never that it ran"
+        )
+    reported = authority.artifact_producer(artifact)
+    if reported is None:
+        out.append(
+            "unknown_producer: the artifact records no producer of its own, so nothing "
+            "can be checked against the attestation's claim"
+        )
+    elif reported != attested:
+        out.append(
+            f"unknown_producer: the artifact records producer {reported!r} but the "
+            f"attestation names {attested!r} — an artifact and its provenance must "
+            "agree on what made it"
+        )
+    return out
+
+
+def _question_problems(envelope, expected, answering):
+    """Screen wrong_unit, from the registry rather than from the envelope's own claim."""
+    if not answering:
+        return [
+            f"wrong_unit: no registered intake answers {expected.__name__} — the "
+            "registry decides what may answer a demand, not a class's own claim "
+            "about itself, so a family with no registered member refuses every "
+            "artifact that exists"
+        ]
+    if any(cls is type(envelope) for cls in answering):
+        return []
+    mine = next(
+        (cls for cls in _registered_classes() if cls is type(envelope)), None
+    )
+    if mine is not None:
+        return [
+            f"wrong_unit: {mine.__name__} answers {mine.estimand()!r}, but this "
+            f"decision requires {expected.__name__} — uncertainty about an expected "
+            "effect, about a realized outcome and about a false-signal rate are "
+            "different questions with different answers"
+        ]
+    return [
+        f"wrong_unit: {type(envelope).__name__} is not a registered intake for "
+        f"{expected.__name__} (registered: {[cls.__name__ for cls in answering]}) — "
+        "an unregistered class's declaration about which question it answers is "
+        "not read, because that declaration is the thing in question"
+    ]
+
+
+def _artifact_problems(authority, artifact):
+    """Screen wrong_unit on the LIVE artifact, against the authority's declared types."""
+    wanted = authority.artifact_type()
+    out = []
+    if not isinstance(artifact, wanted):
+        out.append(
+            f"wrong_unit: {authority.__name__} answers {authority.estimand()!r} over "
+            f"{wanted.__name__}, and this envelope carries a "
+            f"{type(artifact).__name__} — re-read at use time, so an artifact swapped "
+            "in after construction is caught here rather than trusted"
+        )
+    for excluded in authority.excluded_types():
+        if isinstance(artifact, excluded):
+            out.append(
+                f"wrong_unit: {type(artifact).__name__} is ALSO a {excluded.__name__}, "
+                f"a claim {authority.__name__} excludes — a type carrying two "
+                "incompatible claims is never read as the stronger one"
+            )
+    return out
+
+
+def admission_problems(envelope, demand, expected):
+    """List every reason ``envelope`` may not inform ``demand`` as ``expected``.
+
+    **This function, not the method of the same name, is the rule.** It is
+    the correction the 2026-09-18 convergence checkpoint required: three of
+    the four bypasses found in review shared one root — the envelope trusted
+    an identity established at ``__init__`` and never re-checked — and two
+    of them could not be closed by sealing, because
+    :meth:`AttestedUncertainty.artifact_type` and
+    :meth:`~AttestedUncertainty.excluded_types` are hooks and must stay
+    overridable. So nothing here asks the envelope's class what it is:
+
+    * which classes may answer ``expected`` comes from
+      :data:`UNCERTAINTY_INTAKES`, tested by real inheritance
+      (``expected in cls.__mro__``), which ``ABCMeta.register`` cannot forge;
+    * the envelope must BE one of those classes, by identity;
+    * the artifact and attestation are re-read from the instance at every
+      call and re-checked against the types the ANSWERING class declares,
+      so a value swapped in after construction is refused on the next call;
+    * being a function rather than a method, it is not resolved through the
+      class under suspicion.
+
+    What it does NOT do is survive code that controls the interpreter: a
+    hostile metaclass can still reattach a method, and a caller can call the
+    method instead of this function. See the module docstring — these
+    screens fail closed for ordinary callers and for the shipped
+    configuration, and they are not a root of trust.
+
+    Parameters
+    ----------
+    envelope : AttestedUncertainty
+        The artifact-plus-attestation being offered.
+    demand : DecisionDemand
+        The decision it is being consumed at.
+    expected : type
+        The :class:`AttestedUncertainty` subclass the consumer requires.
+
+    Returns
+    -------
+    list of str
+        One message per refusal, each opening with its
+        :data:`REFUSAL_REASONS` code, so a caller's ``validate_inputs`` can
+        accumulate them beside its own rather than catching.
+
+    Raises
+    ------
+    ValueError
+        When ``demand`` is not a :class:`DecisionDemand`, ``expected`` is
+        not an :class:`AttestedUncertainty` subclass, or ``envelope`` is not
+        an :class:`AttestedUncertainty` — caller errors, refused rather than
+        answered.
+
+    Examples
+    --------
+    What a consumer that does not trust the envelope calls::
+
+        admission_problems(envelope, demand, AttestedOutcomeBand)
+        # -> []
+    """
+    if not isinstance(demand, DecisionDemand):
+        raise ValueError(f"demand must be a DecisionDemand, got {type(demand).__name__}")
+    if not (isinstance(expected, type) and AttestedUncertainty in expected.__mro__):
+        raise ValueError(
+            f"expected must be an AttestedUncertainty subclass, got {expected!r}"
+        )
+    if AttestedUncertainty not in type(envelope).__mro__:
+        raise ValueError(
+            f"envelope must be an AttestedUncertainty, got {type(envelope).__name__}"
+        )
+    answering = _answering(expected)
+    problems = _question_problems(envelope, expected, answering)
+    if problems:
+        return problems
+    authority = expected if any(cls is expected for cls in answering) else type(envelope)
+    artifact = _raw(envelope, "_artifact")
+    attestation = _raw(envelope, "_attestation")
+    if not isinstance(attestation, UncertaintyAttestation):
+        return [
+            "wrong_unit: the envelope carries no UncertaintyAttestation "
+            f"(got {type(attestation).__name__}), so there is no provenance to screen"
+        ]
+    return (
+        _artifact_problems(authority, artifact)
+        + _identity_problems(attestation, demand)
+        + _timing_problems(attestation, demand)
+        + _coverage_problems(attestation, demand)
+        + _producer_problems(authority, artifact, attestation)
+    )
+
+
+def artifact_of(envelope):
+    """Give the artifact :func:`admission_problems` screened, not a property's answer.
+
+    A consumer that has just admitted an envelope and now reads its
+    artifact should read the SAME value the screens read. ``envelope
+    .artifact`` goes through a descriptor, and a descriptor is part of the
+    class — the thing a consumer had reason not to trust in the first
+    place. This reads the instance slot directly.
+
+    Parameters
+    ----------
+    envelope : AttestedUncertainty
+        An envelope, normally one just returned by
+        :func:`admit_uncertainty`.
+
+    Returns
+    -------
+    object
+        The wrapped artifact, or ``None`` when the instance carries none.
+
+    Examples
+    --------
+    Read what was admitted::
+
+        band = artifact_of(admit_uncertainty(env, demand, AttestedOutcomeBand))
+        sorted(band.lower_offset)
+        # -> ['alpha', 'beta']
+    """
+    return _raw(envelope, "_artifact")
+
+
+def attestation_of(envelope):
+    """Give the attestation :func:`admission_problems` screened.
+
+    The :func:`artifact_of` argument applies unchanged: read the slot the
+    screens read, not what a class-level descriptor chooses to return.
+
+    Parameters
+    ----------
+    envelope : AttestedUncertainty
+        An envelope, normally one just returned by
+        :func:`admit_uncertainty`.
+
+    Returns
+    -------
+    UncertaintyAttestation or None
+        The provenance the envelope carries, or ``None`` when it has none.
+
+    Examples
+    --------
+    Record what was admitted::
+
+        attestation_of(env).artifact_id
+        # -> 'cal-abc'
+    """
+    return _raw(envelope, "_attestation")
+
+
+def admit_uncertainty(envelope, demand, expected):
+    """Return ``envelope``, or raise naming every reason it is refused.
+
+    Parameters
+    ----------
+    envelope : AttestedUncertainty
+        The artifact-plus-attestation being offered.
+    demand : DecisionDemand
+        The decision it is being consumed at.
+    expected : type
+        The :class:`AttestedUncertainty` subclass the consumer requires.
+
+    Returns
+    -------
+    AttestedUncertainty
+        ``envelope``, so an admitted artifact can be used inline.
+
+    Raises
+    ------
+    ValueError
+        When :func:`admission_problems` is non-empty, reasons joined.
+
+    Examples
+    --------
+    Admit one band at one decision::
+
+        admit_uncertainty(envelope, demand, AttestedOutcomeBand) is envelope
+        # -> True
+    """
+    problems = admission_problems(envelope, demand, expected)
+    if problems:
+        raise ValueError(f"{type(envelope).__name__}: " + "; ".join(problems))
+    return envelope
 
 
 class ProbabilityUpperBound(AttestedUncertainty):
     """The family whose members attest a genuine probability UPPER BOUND.
 
-    This family is **CLOSED**. It is listed in :data:`CLOSED_FAMILIES`, so
-    ``AttestedUncertainty.__init_subclass__`` refuses ANY subclass of it —
-    direct, sideways through multiple inheritance, or a grandchild — at
-    class-definition time, in this package and downstream. There is
-    therefore no member, and no caller can mint one.
+    **No registered intake answers this family**, and that — not the
+    subclass hook — is what refuses every artifact:
+    :func:`admission_problems` asks :data:`UNCERTAINTY_INTAKES` which
+    registered intakes have this class in their real ``__mro__``, finds
+    none, and stops. ``ABCMeta.register`` cannot forge registry membership
+    and cannot alter an ``__mro__``.
+
+    The family is also listed in :data:`CLOSED_FAMILIES`, so
+    ``AttestedUncertainty.__init_subclass__`` refuses an ordinary subclass
+    at class-definition time. That is drift protection and not a boundary;
+    a hostile metaclass escapes the hook, which is why the registry answer
+    above is the one that matters.
 
     A chance constraint needs ``P(true rate <= reported rate) >= level``;
     :class:`~dskit.pipeline.false_signal.FalseSignalEstimate` ships
@@ -813,16 +1085,16 @@ class ProbabilityUpperBound(AttestedUncertainty):
     bound names this class and every artifact in the package is refused
     with ``wrong_unit``.
 
-    **Why the seal, and what it is worth.** The first version of this
-    class was an ordinary abstract family, and a round-1 review showed
-    four lines re-creating the defect: a subclass declaring
-    ``artifact_type() -> FalseSignalEstimate`` constructed, admitted and
-    handed ``pi_widened`` over as a bound. Closing the family moves the
-    act of claiming a bound from a caller's subclass to an edit of THIS
-    file plus an ADR carrying the measurement that earns it — a reviewable
-    act rather than a silent one. It does not, and cannot, stop code that
-    already controls the interpreter: see the module docstring on why
-    nothing here is a root of trust.
+    **What two review rounds established.** Round 1: four lines
+    subclassing this family constructed, admitted, and handed
+    ``pi_widened`` over as a bound. Round 2, after the seal:
+    ``ProbabilityUpperBound.register(AttestedFalseSignalRate)`` did the
+    same without creating a class. Claiming a bound now means editing this
+    file, registering the member, and writing an ADR with the measurement
+    that earns it — a reviewable act rather than a silent one — and it
+    remains true that none of this stops code that already controls the
+    interpreter. See the module docstring on why nothing here is a root of
+    trust.
 
     Parameters
     ----------
@@ -1027,9 +1299,10 @@ class AttestedFalseSignalRate(AttestedUncertainty):
 
     Accepts only
     :class:`~dskit.pipeline.false_signal.FalseSignalEstimate`. It is NOT a
-    :class:`ProbabilityUpperBound`, and no class can be: that family is
-    closed, so the route this member would have to take to become one does
-    not exist. ``pi_widened`` is a widened point estimate, and a consumer
+    :class:`ProbabilityUpperBound`, and no registered intake is: a demand
+    for that family is answered from the registry and finds nothing, so
+    this member is refused for it however it is dressed up.
+    ``pi_widened`` is a widened point estimate, and a consumer
     that asks this envelope for a bound is refused with ``wrong_unit``.
     Reading ``pi_widened`` off the wrapped artifact as a SENSITIVITY
     number stays available and honest; calling it a bound does not.

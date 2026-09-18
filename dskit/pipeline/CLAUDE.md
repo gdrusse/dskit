@@ -86,16 +86,21 @@ on it without breaking its rulings.
   different strings, and a consumer states what it needs by naming a
   class. `problems`/`admit` are templates `__init_subclass__` refuses to
   let a member override; five screens, one per `REFUSAL_REASONS` code.
-  `ProbabilityUpperBound` is the family a genuine bound would join and it
-  is **CLOSED** (`CLOSED_FAMILIES`): `__init_subclass__` refuses every
-  subclass at class-definition time, so there is no member and a caller
-  cannot define one. The seal was added after a review showed four lines
-  re-creating the defect it was supposed to prevent — the first version
-  only *documented* that nothing joined. Every other name the doorway
-  defines is sealed too (`_FINAL_METHODS`, with a test asserting it and
-  `_HOOKS` cover every callable the class declares), because overriding a
-  single screen erases a refusal just as effectively as overriding the
-  template. The module MEASURES NOTHING and is NOT a root of trust:
+  **The rule is `admission_problems`/`admit_uncertainty`, module
+  FUNCTIONS, not the same-named methods** — a method resolves through the
+  envelope's own class, which is the thing under suspicion, so a consumer
+  sizing capital calls the function. It answers from the REGISTRY: which
+  registered intakes have `expected` in their real `__mro__` (never
+  `issubclass`, which `ABCMeta.register` forges), whether this envelope IS
+  one of them by identity, and then re-reads the artifact and attestation
+  from the instance at every call so a post-construction swap is caught.
+  `ProbabilityUpperBound` is the family a genuine bound would join and **no
+  registered intake answers it**; that, not the subclass hook, is what
+  refuses every artifact. `CLOSED_FAMILIES` + `_FINAL_METHODS` remain as
+  accident-and-drift protection and are **not a boundary** — three review
+  rounds found a subclass, `ABCMeta.register`, a hook-widening subclass, a
+  reattaching metaclass and a mutated `_artifact`, and sealing closed none
+  of the structural ones. The module MEASURES NOTHING and is NOT a root of trust:
   `CoverageEvidence` records what a producer attests, the floor it is
   compared against (`DecisionDemand.min_measured_coverage`) is the
   consumer's with no default, and the `unknown_producer` screen narrows
@@ -709,9 +714,10 @@ dskit/pipeline/
 ├── uncertainty_set.py budgeted uncertainty sets: worst case over a set,
 │                      robust counterpart, weighted realizations
 ├── uncertainty_intake.py  whether an artifact may inform THIS decision:
-│                      attestation + demand, six refusals, the estimand as
-│                      a TYPE, and a CLOSED ProbabilityUpperBound family
-│                      nothing can join (ADR-0165)
+│                      attestation + demand, six refusals, admission_problems
+│                      answering from the REGISTRY at use time, and a
+│                      ProbabilityUpperBound family no intake answers
+│                      (ADR-0165)
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets
