@@ -13220,9 +13220,16 @@ closing the gap does not reopen them.
 
 *(Number taken at commit time; see ADR-0150's note on the skipped numbers.)*
 
-**Status:** APPROVED by the owner and IMPLEMENTED 2026-09-17, all five
-Decision points as written. `tests/onboarding` + `tests/pipeline_libs` are
-**2173 passed / 0 failed** (112 skipped); the two suites the work touched are
+**Status:** APPROVED by the owner and IMPLEMENTED 2026-09-17 -- **SIX
+Decision points, not the five originally written.** Independent review found
+two Majors after the first implementation: a false identity-hash claim (see
+Decision 5's correction) and a serving path that silently ignored the declared
+knob. Both are fixed, and the serving fix is recorded as Decision 6 rather
+than as a footnote, because a Decision list that omits what shipped is the
+same overstatement the digest claim was corrected for. A re-review of the
+fixes returned 0 Critical / 0 Major. `tests/onboarding` +
+`tests/pipeline_libs` are **2174 passed / 0 failed** (112 skipped) and
+`tests/production/test_feed.py` is **127 passed**; the two suites the work touched are
 `tests/onboarding/test_observations.py` **77 passed** (65 before) and
 `tests/pipeline_libs/test_observations.py` **67 passed / 8 skipped** (62
 before) -- 17 new cases, 16 of them RED before the code existed. Every new
@@ -13293,6 +13300,30 @@ onboarding boundary and must be carried across it.
    It is JSON-expressible, unlike `keep_values`/`admit`, so it belongs there.
    Being optional, it is emitted only when present -- **no existing document's
    identity hash moves.**
+
+6. **The serving path honours the bound too.** Added 2026-09-17, after
+   review found it missing: `ObservationRows.serving_contract` emits
+   `as_of_acquisition_ms` inside `digest_recipe`, and ONLY when declared, so
+   `production/feed.py`'s `_IsoStamps.scan_args`/`_MsStamps.scan_args` carry
+   it into `_latest_by_key`'s freshness re-scan. Without this a served
+   document's declared vintage reached the rows (through `run()`) but not the
+   live/stale/dead classification, so a vintage-bound feed could report LIVE
+   on data outside its own vintage -- exactly the "a serving path never
+   restates a training knob" trap `AGENTS.md` names.
+
+   It rides in `digest_recipe` rather than as a new `ServingContract` or
+   `FeedSpec` field because those are fixed dataclass fields that cannot be
+   omitted-when-absent; a new one would put `None` into every entry's
+   `FeedSpec.to_obj()`, which is embedded in `ReleaseManifest.to_obj()`, whose
+   `canonical_hash` IS the release identity. `digest_recipe` is already a
+   free-form dict serving exactly this purpose. Verified: a non-declaring
+   entry's `digest_recipe`, `FeedSpec.to_obj()` and manifest hash are
+   byte-identical before and after.
+
+   **This was a sixth decision, not one of the five.** It is numbered here
+   rather than buried in a correction note, because a Decision list that
+   omits what shipped is the same overstatement this ADR's own digest claim
+   was corrected for.
 
 **RED families.** A revised record invisible at its pre-revision vintage and
 visible after; an absent `acquired_at` under a bound; a bound below every
