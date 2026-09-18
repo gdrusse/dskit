@@ -16,9 +16,11 @@ the environment asserted along the way.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
+import operator
 import os
 
 import pytest
@@ -1065,27 +1067,51 @@ def test_a_numpy_float_reward_is_accepted(tmp_path, lab):
 
 # -- the contract names math.fsum, so the fixtures must be able to tell ----
 
-#: Three rewards whose NAIVE left-to-right sum loses the middle term
-#: entirely (1e16 + 1.0 == 1e16 in binary floating point) while ``fsum``
-#: keeps it. Any fixture whose values sum identically either way cannot
-#: pin the numerical guarantee §4.1 actually names.
-_FSUM_REWARDS = (1e16, 1.0, -1e16)
+def _naive_sum(values):
+    """Left-to-right accumulation with no compensation — what a hand-rolled
+    ``total += reward`` loop does, and the floor ``fsum`` has to beat."""
+    return functools.reduce(operator.add, values, 0.0)
+
+
+#: Three rewards whose exact total, ``2**53 + 1 + 1e-300``, sits just PAST
+#: the midpoint between the adjacent doubles ``2**53`` and ``2**53 + 2``, so
+#: only an exactly-rounded sum reaches the upper one; both cheaper sums drop
+#: the tiny term before the tie is broken and round back down to ``2**53``.
+#:
+#: The tie is what the fixture needs, because ``sum`` is NOT naive here:
+#: CPython 3.12 gave the builtin Neumaier compensation, so a fixture chosen
+#: only to defeat left-to-right accumulation (``1e16, 1.0, -1e16``, say) is
+#: summed IDENTICALLY by ``sum`` and ``fsum`` and cannot catch ``fsum`` being
+#: swapped for the builtin. Any fixture whose values sum alike either way
+#: cannot pin the numerical guarantee §4.1 actually names.
+_FSUM_REWARDS = (1.0, 9007199254740992.0, 1e-300)
+
+#: What §4.1 requires of the total, and what both cheaper sums give instead.
+_FSUM_EXACT_RETURN = 9007199254740994.0
+_FSUM_INEXACT_RETURN = 9007199254740992.0
+
+
+def test_the_fixture_can_tell_an_exact_sum_from_a_cheaper_one():
+    """The guard for the two tests below: if this fails they prove nothing,
+    because every candidate implementation agrees on the fixture."""
+    assert math.fsum(_FSUM_REWARDS) == _FSUM_EXACT_RETURN
+    assert _naive_sum(_FSUM_REWARDS) == _FSUM_INEXACT_RETURN
+    assert sum(_FSUM_REWARDS) == _FSUM_INEXACT_RETURN
 
 
 def test_an_episode_return_is_summed_exactly(tmp_path, lab):
-    assert sum(_FSUM_REWARDS) == 0.0 and math.fsum(_FSUM_REWARDS) == 1.0
     lab.scripts([
         step(_FSUM_REWARDS[0]), step(_FSUM_REWARDS[1]),
         step(_FSUM_REWARDS[2], terminated=True),
     ])
     _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=5)
-    assert record(outputs)["episodes"][0]["return"] == 1.0
+    assert record(outputs)["episodes"][0]["return"] == _FSUM_EXACT_RETURN
 
 
 def test_the_mean_return_is_summed_exactly(tmp_path, lab):
     lab.scripts(*([step(reward, terminated=True)] for reward in _FSUM_REWARDS))
     _node, outputs = evaluate(tmp_path, n_episodes=3, max_episode_steps=5)
-    assert outputs["metrics"]["mean_return"] == pytest.approx(1.0 / 3)
+    assert outputs["metrics"]["mean_return"] == _FSUM_EXACT_RETURN / 3
 
 
 # -- close, and the refusal it must not outrank ----------------------------
