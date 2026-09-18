@@ -539,6 +539,14 @@ class AttestedUncertainty(ABC):
                 )
 
     def __init__(self, artifact, attestation):
+        # These screens read the CLASS's own declarations, deliberately:
+        # they are an early, convenient refusal for an ordinary caller, not
+        # the rule. `admission_problems` re-checks everything from the
+        # registry at use time and never consults `type(envelope)`'s
+        # declarations, so nothing downstream depends on a class being
+        # honest here. A sweep of this module (round 4) confirms
+        # `type(envelope)` is used at use time for IDENTITY and for message
+        # text only.
         if not isinstance(attestation, UncertaintyAttestation):
             raise ValueError(
                 f"{type(self).__name__}: attestation must be an UncertaintyAttestation, "
@@ -829,13 +837,23 @@ def _producer_problems(authority, artifact, attestation):
 
 
 def _question_problems(envelope, expected, answering):
-    """Screen wrong_unit, from the registry rather than from the envelope's own claim."""
-    if not answering:
+    """Screen wrong_unit: both the demand and the envelope must be registered intakes."""
+    if not any(cls is expected for cls in _registered_classes()):
+        # THE DEMAND ITSELF must name a registered intake. Round-3 review
+        # showed why: ``AttestedFalseSignalRate.__bases__ = (
+        # ProbabilityUpperBound,)`` puts the closed family into a REAL
+        # ``__mro__`` — ``__init_subclass__`` runs only inside
+        # ``type.__new__`` and never sees a rebinding — and the old code
+        # then fell back to ``authority = type(envelope)``, letting the
+        # subverted class adjudicate itself and hand ``pi_widened`` over as
+        # a bound. There is no fallback now: if the registry does not name
+        # the demand, the answer is refuse.
         return [
-            f"wrong_unit: no registered intake answers {expected.__name__} — the "
-            "registry decides what may answer a demand, not a class's own claim "
-            "about itself, so a family with no registered member refuses every "
-            "artifact that exists"
+            f"wrong_unit: {expected.__name__} is not a registered intake, so no "
+            f"demand for it can be satisfied (registered: "
+            f"{[cls.__name__ for cls in _registered_classes()]}) — the registry "
+            "names what may be demanded as well as what may answer, and nothing "
+            "registers a family whose guarantee no member has earned"
         ]
     if any(cls is type(envelope) for cls in answering):
         return []
@@ -890,10 +908,19 @@ def admission_problems(envelope, demand, expected):
     :meth:`~AttestedUncertainty.excluded_types` are hooks and must stay
     overridable. So nothing here asks the envelope's class what it is:
 
+    * ``expected`` itself must be a REGISTERED intake. A demand the
+      registry does not name is refused outright, with no fallback to the
+      envelope's own class — round-3 review reassigned
+      ``AttestedFalseSignalRate.__bases__`` to put the zero-member closed
+      family into a real ``__mro__`` (``__init_subclass__`` runs only
+      inside ``type.__new__`` and never sees a rebinding) and the old
+      fallback then let the subverted class adjudicate itself;
     * which classes may answer ``expected`` comes from
       :data:`UNCERTAINTY_INTAKES`, tested by real inheritance
       (``expected in cls.__mro__``), which ``ABCMeta.register`` cannot forge;
     * the envelope must BE one of those classes, by identity;
+    * every screen then runs against the DEMANDED class's declarations,
+      never the envelope's;
     * the artifact and attestation are re-read from the instance at every
       call and re-checked against the types the ANSWERING class declares,
       so a value swapped in after construction is refused on the next call;
@@ -951,7 +978,11 @@ def admission_problems(envelope, demand, expected):
     problems = _question_problems(envelope, expected, answering)
     if problems:
         return problems
-    authority = expected if any(cls is expected for cls in answering) else type(envelope)
+    # The authority is the DEMANDED class, always. It is a registered intake
+    # (the screen above refused anything else) and it is the consumer's own
+    # choice, so nothing here reads a declaration made by the envelope's
+    # class about itself.
+    authority = expected
     artifact = _raw(envelope, "_artifact")
     attestation = _raw(envelope, "_attestation")
     if not isinstance(attestation, UncertaintyAttestation):
@@ -1064,12 +1095,12 @@ def admit_uncertainty(envelope, demand, expected):
 class ProbabilityUpperBound(AttestedUncertainty):
     """The family whose members attest a genuine probability UPPER BOUND.
 
-    **No registered intake answers this family**, and that — not the
-    subclass hook — is what refuses every artifact:
-    :func:`admission_problems` asks :data:`UNCERTAINTY_INTAKES` which
-    registered intakes have this class in their real ``__mro__``, finds
-    none, and stops. ``ABCMeta.register`` cannot forge registry membership
-    and cannot alter an ``__mro__``.
+    **This family is not registered**, and that — not the subclass hook —
+    is what refuses every artifact: :func:`admission_problems` refuses any
+    demand :data:`UNCERTAINTY_INTAKES` does not name, before it selects an
+    authority or looks at an artifact. Neither ``ABCMeta.register`` nor a
+    ``__bases__`` rebinding can put a class into the registry, which is
+    why the registry and not the type graph is what is asked.
 
     The family is also listed in :data:`CLOSED_FAMILIES`, so
     ``AttestedUncertainty.__init_subclass__`` refuses an ordinary subclass
@@ -1082,8 +1113,9 @@ class ProbabilityUpperBound(AttestedUncertainty):
     ``pi_widened``, a widened point estimate whose measured attainment is
     0.53–0.82 against a 0.95 nominal (ADR-0152, which renamed the field
     rather than claim what it could not deliver). A consumer that needs a
-    bound names this class and every artifact in the package is refused
-    with ``wrong_unit``.
+    bound names this class; the class is not registered, so the demand is
+    refused outright and no artifact — however its class's bases, MRO or
+    virtual registrations are arranged — can satisfy it.
 
     **What two review rounds established.** Round 1: four lines
     subclassing this family constructed, admitted, and handed
@@ -1410,9 +1442,9 @@ def register_uncertainty_intake(name, cls, doc=""):
     ------
     ValueError
         On an empty ``name``, a ``cls`` that is not an
-        :class:`AttestedUncertainty` subclass, a name already bound to a
-        DIFFERENT class, or an ``artifact_type`` another member already
-        claims.
+        :class:`AttestedUncertainty` subclass, a ``cls`` that is still
+        abstract, a name already bound to a DIFFERENT class, or an
+        ``artifact_type`` another member already claims.
 
     Examples
     --------
@@ -1423,8 +1455,19 @@ def register_uncertainty_intake(name, cls, doc=""):
         # -> True
     """
     _check_text(name, "name")
-    if not (isinstance(cls, type) and issubclass(cls, AttestedUncertainty)):
+    if not (isinstance(cls, type) and AttestedUncertainty in getattr(cls, "__mro__", ())):
         raise ValueError(f"{name!r} must be an AttestedUncertainty subclass, got {cls!r}")
+    if getattr(cls, "__abstractmethods__", ()):
+        # A demand is satisfiable only if the registry names it, so a
+        # registered class is asked for its artifact type, its exclusions
+        # and its producers. An abstract member answers each of those with
+        # ``None``, which would make the screens meaningless rather than
+        # strict; registering one is refused instead.
+        raise ValueError(
+            f"{name!r} may not register {cls.__name__}: it is abstract "
+            f"({sorted(cls.__abstractmethods__)} unimplemented), and every "
+            "registered intake is asked for the declarations the screens run on"
+        )
     existing = UNCERTAINTY_INTAKES.get(name)
     if existing is not None and existing is not cls:
         raise ValueError(

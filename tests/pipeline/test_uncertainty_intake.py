@@ -11,6 +11,7 @@ measurement at all must not reach a decision.
 from __future__ import annotations
 
 import _abc
+import contextlib
 import random
 import types
 
@@ -40,6 +41,8 @@ from dskit.pipeline.uncertainty_intake import (
     CLOSED_FAMILIES,
     admission_problems,
     admit_uncertainty,
+    artifact_of,
+    attestation_of,
     REFUSAL_REASONS,
     UNCERTAINTY_INTAKES,
     AttestedFalseSignalRate,
@@ -119,7 +122,16 @@ def _handbuilt_confidence(method=MEAN_PRODUCER):
     )
 
 
-def _widened():
+def _widened(method="tests.synthetic"):
+    """The claim-free sibling of ConfidenceInterval.
+
+    ``method`` defaults to a producer NO registry knows, which is what a
+    hand-built artifact honestly looks like. Round-3 review found a second
+    definition of this helper further down the file, shadowing this one
+    with ``method=MEAN_PRODUCER``; the swap test below passed only because
+    that accidental equality silenced the producer screen. The duplicate
+    is gone and the choice is now explicit at each call site.
+    """
     return WidenedInterval(
         mean=0.004,
         standard_error=0.001,
@@ -127,7 +139,7 @@ def _widened():
         high=0.006,
         level=0.95,
         independent_units=40,
-        method="tests.synthetic",
+        method=method,
     )
 
 
@@ -836,10 +848,16 @@ class TestUseTimeVerification:
             def excluded_types(cls):
                 return ()
 
-        env = SneakyConfidence(_widened(), _attestation(producer=MEAN_PRODUCER))
+        env = SneakyConfidence(
+            _widened(method=MEAN_PRODUCER), _attestation(producer=MEAN_PRODUCER)
+        )
         problems = admission_problems(env, _demand(), AttestedMeanConfidence)
+        # Content, not count: a de-flaking edit to a length assertion must
+        # not be able to remove this coverage.
         assert [p.split(":")[0] for p in problems] == ["wrong_unit"]
+        assert "SneakyConfidence" in problems[0]
         assert "not a registered intake" in problems[0]
+        assert "AttestedMeanConfidence" in problems[0]
         with pytest.raises(ValueError, match="not a registered intake"):
             admit_uncertainty(env, _demand(), AttestedMeanConfidence)
 
@@ -855,7 +873,7 @@ class TestUseTimeVerification:
             assert ProbabilityUpperBound not in AttestedFalseSignalRate.__mro__
             problems = admission_problems(env, _demand(), ProbabilityUpperBound)
             assert [p.split(":")[0] for p in problems] == ["wrong_unit"]
-            assert "no registered intake answers" in problems[0]
+            assert "not a registered intake" in problems[0]
         finally:
             _abc._reset_registry(ProbabilityUpperBound)
             _abc._reset_caches(ProbabilityUpperBound)
@@ -871,18 +889,37 @@ class TestUseTimeVerification:
             _demand(),
             ProbabilityUpperBound,
         )
-        assert problems and "no registered intake answers" in problems[0]
+        assert problems and "not a registered intake" in problems[0]
 
-    def test_an_artifact_swapped_after_construction_is_caught(self):
+    @pytest.mark.parametrize(
+        "method,also_expected",
+        [
+            # The swapped artifact happens to name a registered producer:
+            # only the shape screens fire.
+            (MEAN_PRODUCER, set()),
+            # The honest case — a hand-built artifact naming nothing the
+            # registry knows. `unknown_producer` fires too, and the earlier
+            # `all(startswith("wrong_unit"))` assertion held only because a
+            # shadowing duplicate fixture made this case unreachable.
+            ("tests.synthetic", {"unknown_producer"}),
+        ],
+    )
+    def test_an_artifact_swapped_after_construction_is_caught(self, method, also_expected):
         # CRITICAL 4. `_artifact` is a plain attribute; the rule re-reads it
-        # at every call instead of trusting `__init__`'s verdict.
+        # at every call instead of trusting `__init__`'s verdict. What is
+        # INVARIANT is the shape refusal naming the swap; which OTHER
+        # screens fire depends on the artifact swapped in, and both cases
+        # are exercised rather than one being silenced by a fixture.
         env = AttestedMeanConfidence(_confidence(), _attestation(producer=MEAN_PRODUCER))
         assert admission_problems(env, _demand(), AttestedMeanConfidence) == []
-        env._artifact = _widened()
+        env._artifact = _widened(method=method)
         problems = admission_problems(env, _demand(), AttestedMeanConfidence)
-        assert problems
-        assert all(p.startswith("wrong_unit") for p in problems)
-        assert any("swapped in after construction" in p for p in problems)
+        reasons = {p.split(":")[0] for p in problems}
+        assert any("swapped in after construction" in p for p in problems), problems
+        assert any(
+            "is ALSO a WidenedInterval" in p for p in problems
+        ), problems
+        assert reasons == {"wrong_unit"} | also_expected
 
     def test_an_attestation_swapped_after_construction_is_caught(self):
         env = AttestedOutcomeBand(_band(), _attestation())
@@ -993,13 +1030,176 @@ def _registered():
     return list(UNCERTAINTY_INTAKES.values())
 
 
-def _widened():
-    return WidenedInterval(
-        mean=0.004,
-        standard_error=0.001,
-        low=0.002,
-        high=0.006,
-        level=0.95,
-        independent_units=40,
-        method=MEAN_PRODUCER,
+class TestTheAccessorsReadTheScreenedValues:
+    """`artifact_of`/`attestation_of` exist so a consumer reads the SLOT.
+
+    Round-3 review: reverting both bodies to ``return envelope.artifact`` /
+    ``return envelope.attestation`` left 112 + 241 tests green, because no
+    test made a property and its slot disagree. These do.
+    """
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _lying_descriptors():
+        """Redefine both accessors ON THE REGISTERED CLASS, then restore.
+
+        A subclass cannot be used: the construction screen refuses an
+        unregistered class wrapping a registered member's artifact type,
+        and the use-time rule refuses it again. Rebinding the descriptor on
+        the live class is how the disagreement is produced without leaving
+        the shipped, registered member — which is also the realistic shape
+        of the accident these accessors exist to survive.
+        """
+        AttestedOutcomeBand.artifact = property(lambda self: "not the artifact")
+        AttestedOutcomeBand.attestation = property(lambda self: "not the attestation")
+        try:
+            yield
+        finally:
+            del AttestedOutcomeBand.artifact
+            del AttestedOutcomeBand.attestation
+
+    def test_artifact_of_returns_the_slot_not_the_property(self):
+        band = _band()
+        env = AttestedOutcomeBand(band, _attestation())
+        with self._lying_descriptors():
+            assert env.artifact == "not the artifact"
+            assert artifact_of(env) is band
+        assert env.artifact is band
+
+    def test_attestation_of_returns_the_slot_not_the_property(self):
+        attested = _attestation()
+        env = AttestedOutcomeBand(_band(), attested)
+        with self._lying_descriptors():
+            assert env.attestation == "not the attestation"
+            assert attestation_of(env) is attested
+        assert env.attestation is attested
+
+    def test_the_screens_survive_a_lying_descriptor_too(self):
+        env = AttestedOutcomeBand(_band(), _attestation())
+        with self._lying_descriptors():
+            assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
+
+    def test_the_accessors_agree_with_the_screens_on_an_honest_envelope(self):
+        env = AttestedOutcomeBand(_band(), _attestation())
+        assert artifact_of(env) is env.artifact
+        assert attestation_of(env) is env.attestation
+
+    def test_the_accessors_are_total_on_a_stripped_instance(self):
+        env = AttestedOutcomeBand(_band(), _attestation())
+        del env._artifact
+        assert artifact_of(env) is None
+
+
+class TestTheRegistryIsAuthoritativeForTheDemandToo:
+    """Round-4 Critical: `__bases__` forges a REAL `__mro__`, so ask the registry."""
+
+    def test_a_bases_rebinding_cannot_satisfy_the_closed_family(self):
+        env = AttestedFalseSignalRate(_rate(), _attestation(producer=RATE_PRODUCER))
+        assert admission_problems(env, _demand(), ProbabilityUpperBound)
+        original = AttestedFalseSignalRate.__bases__
+        try:
+            AttestedFalseSignalRate.__bases__ = (ProbabilityUpperBound,)
+            # The forgery is REAL: this is ordinary C3 linearization, not a
+            # virtual registration, and __init_subclass__ never sees it.
+            assert ProbabilityUpperBound in AttestedFalseSignalRate.__mro__
+            problems = admission_problems(env, _demand(), ProbabilityUpperBound)
+            assert [p.split(":")[0] for p in problems] == ["wrong_unit"]
+            assert "not a registered intake" in problems[0]
+            with pytest.raises(ValueError, match="not a registered intake"):
+                admit_uncertainty(env, _demand(), ProbabilityUpperBound)
+            # And the envelope's own, legitimate demand still works.
+            assert admission_problems(env, _demand(), AttestedFalseSignalRate) == []
+        finally:
+            AttestedFalseSignalRate.__bases__ = original
+        assert ProbabilityUpperBound not in AttestedFalseSignalRate.__mro__
+
+    def test_a_bases_rebinding_is_still_caught_on_a_registered_demand(self):
+        env = AttestedFalseSignalRate(_rate(), _attestation(producer=RATE_PRODUCER))
+        original = AttestedFalseSignalRate.__bases__
+        try:
+            AttestedFalseSignalRate.__bases__ = (AttestedMeanConfidence,)
+            problems = admission_problems(env, _demand(), AttestedMeanConfidence)
+            assert any(
+                p.startswith("wrong_unit")
+                and "answers 'mean_confidence' over ConfidenceInterval" in p
+                for p in problems
+            ), problems
+        finally:
+            AttestedFalseSignalRate.__bases__ = original
+
+    def test_a_freshly_registered_rogue_cannot_reach_the_closed_family(self):
+        class _RogueArtifact:
+            def __init__(self):
+                self.evidence = {"estimator": RATE_PRODUCER}
+
+        class FreshRogue(AttestedMeanConfidence):
+            @classmethod
+            def artifact_type(cls):
+                return _RogueArtifact
+
+            @classmethod
+            def estimand(cls):
+                return "fresh_rogue"
+
+            @classmethod
+            def excluded_types(cls):
+                return ()
+
+            @classmethod
+            def registered_producers(cls):
+                return (GrenanderLocalFdr,)
+
+            @classmethod
+            def artifact_producer(cls, artifact):
+                return artifact.evidence.get("estimator")
+
+        register_uncertainty_intake("tests_fresh_rogue", FreshRogue)
+        try:
+            rogue = FreshRogue(_RogueArtifact(), _attestation(producer=RATE_PRODUCER))
+            assert admission_problems(rogue, _demand(), ProbabilityUpperBound)
+            original = FreshRogue.__bases__
+            try:
+                FreshRogue.__bases__ = (ProbabilityUpperBound,)
+                assert admission_problems(rogue, _demand(), ProbabilityUpperBound)
+            finally:
+                FreshRogue.__bases__ = original
+            # It also cannot answer a demand it does not really answer.
+            assert admission_problems(rogue, _demand(), AttestedMeanConfidence)
+        finally:
+            UNCERTAINTY_INTAKES.pop("tests_fresh_rogue", None)
+
+    @pytest.mark.parametrize(
+        "expected", [AttestedUncertainty, ProbabilityUpperBound]
     )
+    def test_a_demand_the_registry_does_not_name_is_refused(self, expected):
+        # Minor: `expected` was only ever a registered leaf in tests, and a
+        # non-leaf demand admitted a legitimate envelope of ANY estimand.
+        env = AttestedFalseSignalRate(_rate(), _attestation(producer=RATE_PRODUCER))
+        problems = admission_problems(env, _demand(), expected)
+        assert [p.split(":")[0] for p in problems] == ["wrong_unit"]
+        assert expected.__name__ in problems[0]
+        assert "not a registered intake" in problems[0]
+
+    def test_an_abstract_class_cannot_be_registered(self):
+        # Sweep (a): a registered intake is asked for the declarations the
+        # screens run on, and an abstract one answers each with None.
+        with pytest.raises(ValueError, match="abstract"):
+            register_uncertainty_intake("tests_abstract", ProbabilityUpperBound)
+        assert "tests_abstract" not in UNCERTAINTY_INTAKES
+
+    def test_the_authority_is_the_demanded_class_never_the_envelopes(self):
+        # The shipped members declare different artifact types, so an
+        # envelope answering one demand cannot satisfy another.
+        pairs = [
+            (AttestedMeanConfidence, _confidence(), MEAN_PRODUCER),
+            (AttestedOutcomeBand, _band(), BAND_PRODUCER),
+            (AttestedFalseSignalRate, _rate(), RATE_PRODUCER),
+        ]
+        for member, artifact, producer in pairs:
+            env = member(artifact, _attestation(producer=producer))
+            for other, _artifact, _producer in pairs:
+                problems = admission_problems(env, _demand(), other)
+                if other is member:
+                    assert problems == []
+                else:
+                    assert problems and problems[0].startswith("wrong_unit")

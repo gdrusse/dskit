@@ -16890,3 +16890,86 @@ this round narrowed the threat model rather than widening the guarantee: no
 coverage evidence for any artifact, no provenance, no root of trust. What is
 built is refusal machinery that fails closed for every ordinary caller and for
 the shipped configuration.
+
+### Correction round 3, 2026-09-18 — the registry names the DEMAND too, and a coverage audit
+
+Review of candidate `c60123a` confirmed the checkpoint worked — a reviewer
+hand-wrote all five earlier attacks and the round-3 FUNCTION blocks all five,
+with no production call site using the method — and returned **1 Critical, 2
+Major** against what remained.
+
+**Critical — `__bases__` reassignment forges a REAL `__mro__`.**
+
+```python
+AttestedFalseSignalRate.__bases__ = (ProbabilityUpperBound,)   # one line, no metaclass
+admission_problems(env, demand, ProbabilityUpperBound)         # -> []   *** observed ***
+```
+
+`__init_subclass__` runs only inside `type.__new__`; rebinding `__bases__`
+recomputes the MRO through ordinary C3 linearization and never re-invokes it,
+so `CLOSED_FAMILIES` never sees it and `isinstance` is genuinely — not
+virtually — true. The reviewer then bounded it, and the bound is the fix: the
+swap FAILS against any REGISTERED demand, because `authority = expected`
+catches the artifact shape. It succeeded only for an UNREGISTERED family —
+today exactly `ProbabilityUpperBound`, the zero-member family this whole
+correction exists for — where the old
+`authority = expected if ... else type(envelope)` fallback let the subverted
+class adjudicate itself with its own otherwise-legitimate hooks.
+
+*Correction.* **The registry names what may be DEMANDED as well as what may
+answer.** `_question_problems` now refuses, before any authority is selected or
+any artifact is read, a demand naming a class the registry does not hold; and
+`authority` is `expected`, unconditionally, with no fallback. Verified after
+the fix: the `__bases__` swap against the closed family refuses; the same swap
+against a registered demand refuses on artifact shape; a freshly
+self-registered rogue refuses both before and after its own swap; the
+envelope's own legitimate demand still passes; and both positive controls still
+pass. A sweep of the module for anywhere else the envelope's class supplies an
+AUTHORITY found none — `type(envelope)` now appears at use time only for
+identity and for message text, and the constructor's own screens (which do read
+the class's declarations) are documented as an early convenience the rule does
+not depend on.
+
+Two adjacent hardenings came out of the same sweep. `register_uncertainty_
+intake` now refuses an ABSTRACT class: every registered intake is asked for the
+declarations the screens run on, and an abstract one answers each with `None`.
+And the Minor the reviewer raised is closed structurally rather than by a test
+alone — `expected` was only ever a registered leaf in tests, and a non-leaf
+demand (`AttestedUncertainty` itself) admitted a legitimate envelope of ANY
+estimand; it is now refused by the same rule, with a parametrized test over
+both non-leaf classes.
+
+**Major 1 — a duplicate fixture made a test pass by coincidence.**
+`tests/pipeline/test_uncertainty_intake.py` defined `_widened()` twice; the
+round-3 definition shadowed the file's own earlier one and changed `method`
+from `"tests.synthetic"` to `MEAN_PRODUCER`. The swap test's
+`all(p.startswith("wrong_unit"))` held only because that accidental equality
+silenced `unknown_producer`. The duplicate is deleted, `_widened(method=...)`
+makes the choice explicit, and the test is parametrized over BOTH cases,
+asserting what is actually invariant about a post-construction swap (the shape
+refusal naming the swap) rather than a reason set that depends on the fixture.
+
+**Major 2 — `artifact_of`/`attestation_of` had zero coverage.** Round 3's own
+"sweep found two more" fix: reverting both to `return envelope.artifact` /
+`return envelope.attestation` left 112 + 241 green, and neither name appeared
+in any test. `TestTheAccessorsReadTheScreenedValues` now makes the descriptor
+and the slot disagree — by rebinding the property on the live REGISTERED class
+inside a context manager, because an unregistered subclass is refused at
+construction and again at use time — and asserts the accessors return the slot.
+Reverting either body now fails.
+
+**The coverage audit the reviewer asked for, run before reporting.** Seventeen
+claimed fixes from rounds 2, 3 and 4 were reverted one at a time against the
+four affected test files, over a temporary backup rather than `git checkout`.
+**Fifteen are covered.** One — "R4: `authority` is the demanded class" — shows
+no extra failures and is an EQUIVALENT mutant, not a gap: with the new
+registered-demand screen in place `expected` is always registered, `expected`
+is therefore always in `answering`, and the two spellings compute the same
+value. It is recorded here rather than papered over with a test that cannot
+fail for the right reason. One more, `SyntheticMioSource` fitting the
+registered estimators, is not source-revertible in one line and is covered
+behaviourally by `test_mio_demo_source_emits_admissible_attested_uncertainty`.
+Both files were verified byte-identical after the battery.
+
+Nothing about what is ESTABLISHED changed this round: still no coverage
+evidence for any artifact, still no provenance, still not a root of trust.
