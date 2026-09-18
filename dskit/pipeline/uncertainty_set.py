@@ -74,10 +74,14 @@ the consumer builds an expected utility and a tail-risk cap out of them either
 way. A tuple cannot carry which it received, so
 :meth:`RealizationSet.weighted_draws` does not produce that pair until the
 caller NAMES the weighting it is taking (:data:`WEIGHTING_KINDS`), and refuses
-when the name is not what the set actually carries. The acknowledgement then
-lives in the calling code, at the boundary where the number is acted on. That
-stops the limitation being lost SILENTLY; it cannot stop a caller who types the
-word and ignores it.
+when the name is not what the set actually carries. **The gate is
+load-bearing:** ``weights``/``draws`` are never public attributes of the
+returned value and ``dataclasses.replace`` cannot relabel a
+``weighting_kind`` without re-supplying both, so there is no shorter path to
+the numbers, and no way to relabel them after the fact, that skips naming the
+weighting. The acknowledgement then lives in the calling code, at the
+boundary where the number is acted on. That stops the limitation being lost
+SILENTLY; it cannot stop a caller who types the word and ignores it.
 
 **Fail-closed, and loudly.** A non-finite value, an empty family, a deviation
 that would leave the set unbounded, a budget outside its range, mismatched
@@ -108,7 +112,7 @@ import itertools
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from types import MappingProxyType
 
 from dskit.pipeline.node import class_ref
@@ -461,7 +465,8 @@ class RealizationSet:
     Read those weights as estimated probabilities and the result is a uniform
     average over budget-feasible corners, not an expectation -- so
     :meth:`weighted_draws` will not hand out the solver-shaped pair until the
-    caller names the weighting it is taking.
+    caller names the weighting it is taking, and there is no other way to read
+    ``weights``/``draws`` back out at all -- neither is a public attribute.
 
     Parameters
     ----------
@@ -472,6 +477,12 @@ class RealizationSet:
         ``name -> sequence of float``, each exactly as long as ``weights``,
         every value finite, and not all equal -- a component with no spread is
         a point estimate wearing a set's clothes, refused rather than emitted.
+        Both ``weights`` and ``draws`` are constructor-only: neither is
+        retained as a public attribute, so :meth:`weighted_draws` is the only
+        way back to these numbers, and ``dataclasses.replace`` cannot recover
+        them either -- both must be re-supplied, which is what stops a
+        ``weighting_kind`` from being swapped onto numbers that never
+        re-affirmed it.
     weighting_kind : str
         What these weights ARE, a member of :data:`WEIGHTING_KINDS`. It defaults
         to ``"convention"`` because that is the WEAKER claim: silence can demote
@@ -504,18 +515,18 @@ class RealizationSet:
         # -> [0.5, 0.5]
     """
 
-    weights: tuple
-    draws: dict
+    weights: InitVar[tuple]
+    draws: InitVar[dict]
     weighting_kind: str = "convention"
     provenance: dict = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self, weights, draws):
         """Refuse a set a consumer could not safely optimize against."""
         if self.weighting_kind not in WEIGHTING_KINDS:
             raise ValueError(
                 f"weighting_kind must be one of {WEIGHTING_KINDS}, got {self.weighting_kind!r}"
             )
-        weights = tuple(float(w) for w in self.weights)
+        weights = tuple(float(w) for w in weights)
         if not weights:
             raise ValueError("weights must be a non-empty sequence")
         for index, weight in enumerate(weights):
@@ -526,7 +537,7 @@ class RealizationSet:
             raise ValueError(
                 f"weights must sum to 1 within {WEIGHTS_SUM_TOLERANCE}, got {total!r}"
             )
-        draws = {str(n): tuple(float(v) for v in values) for n, values in self.draws.items()}
+        draws = {str(n): tuple(float(v) for v in values) for n, values in draws.items()}
         if not draws:
             raise ValueError("draws must name at least one component")
         for name, values in draws.items():
@@ -545,8 +556,8 @@ class RealizationSet:
                     f"draws[{name!r}] is degenerate — every point carries {values[0]!r}, "
                     "which is a point estimate rather than a set"
                 )
-        object.__setattr__(self, "weights", weights)
-        object.__setattr__(self, "draws", MappingProxyType(draws))
+        object.__setattr__(self, "_weights", weights)
+        object.__setattr__(self, "_draws", MappingProxyType(draws))
         object.__setattr__(self, "provenance", _frozen_tree(dict(self.provenance)))
 
     def weighted_draws(self, reading_weights_as):
@@ -596,7 +607,7 @@ class RealizationSet:
                 "name the one you actually hold, and ask worst_case()/counterpart() when the "
                 "exact answer over the whole set is what is wanted"
             )
-        return list(self.weights), {name: list(values) for name, values in self.draws.items()}
+        return list(self._weights), {name: list(values) for name, values in self._draws.items()}
 
 
 class BudgetedUncertaintySet(ABC):
@@ -1159,7 +1170,7 @@ class BudgetedUncertaintySet(ABC):
         """Yield corners that spend the whole budget, enumerated or sampled."""
         full, frac = self._budget_split()
         n = len(self._names)
-        if room <= 0 or full < 1 or (full == 1 and frac <= 0.0) or full > n:
+        if room <= 0 or full < 1 or (full == 1 and frac <= 0.0):
             return []
         directions = self._adverse
         extras = (n - full) * len(directions) if frac > 0.0 else 1

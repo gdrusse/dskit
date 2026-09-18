@@ -13058,9 +13058,9 @@ three rows are ONE family with three members, never three implementations.
 * `BudgetedUncertaintySet` (ABC). Takes nominal values, per-component
   `(below, above)` deviations and a budget -- **all three explicit, never
   defaulted**. Owns four TEMPLATE methods a member can never replace, enforced
-  by `__init_subclass__` (the `production/leg.py`, `loop.py`, `trust.py`
-  idiom), not by a docstring: `worst_case`, `protection`, `counterpart`,
-  `realizations`.
+  by `__init_subclass__` (the `production/leg.py`, `production/loop.py`,
+  `pipeline/trust.py` idiom), not by a docstring: `worst_case`, `protection`,
+  `counterpart`, `realizations`.
 * Three member hooks, all `@abstractmethod`, so an incomplete member refuses at
   construction: `worst_case_sense` (is the adverse extreme the MAXIMUM or the
   MINIMUM of the linear form), `component_bounds` (the feasible domain a
@@ -13117,12 +13117,12 @@ The overlap is therefore real but partial -- `U_r` reduces to `ScenarioSet` for
 its scenario half and does not for its budgeted half.
 
 **The overlap reaches the value TYPE, not only the concept -- disclosed.**
-`RealizationSet` (`uncertainty_set.py:452-599`) independently rebuilds
+`RealizationSet` (`uncertainty_set.py:456-610`) independently rebuilds
 `ScenarioSet`, not just its idea: `__post_init__`
-(`uncertainty_set.py:512-550`, vs `outcome_interval.py:586-620` at `git show
+(`uncertainty_set.py:523-561`, vs `outcome_interval.py:586-622` at `git show
 58ba1a8`) runs the same six screens in the same order, both expose an
 identical `weighted_draws`, and `WEIGHTS_SUM_TOLERANCE = 1e-9`
-(`uncertainty_set.py:173`) is independently redefined verbatim at
+(`uncertainty_set.py:177`) is independently redefined verbatim at
 `outcome_interval.py:152`. Importing `ScenarioSet` is rejected above for the
 same reason it is rejected here -- an unmerged, moving branch -- so the
 duplication stands on purpose, not as an oversight; the risk is that tuning
@@ -13140,12 +13140,41 @@ hand-synchronized copies indefinitely.
 
 **The weights are a convention, not a measure -- disclosed.** A budgeted set is
 a SET; it carries no probability measure. `realizations()` emits uniform
-weights over the realizations it emits and says so in the returned value's own
-`provenance`. A consumer reading them as estimated probabilities is computing a
-uniform average over budget-feasible corners: a robustness diagnostic in the
-Calafiore-Campi sense, NOT a calibrated expectation. This is the module's
-largest stated limitation, and the reason `worst_case`/`counterpart` -- which
-need no measure at all -- are the primary doorway.
+weights over the realizations it emits and declares it two ways: the returned
+value's own `weighting_kind` field, and `provenance["weighting"]`/
+`["weighting_note"]`. A consumer reading them as estimated probabilities is
+computing a uniform average over budget-feasible corners: a robustness
+diagnostic in the Calafiore-Campi sense, NOT a calibrated expectation. This is
+the module's largest stated limitation, and the reason `worst_case`/
+`counterpart` -- which need no measure at all -- are the primary doorway.
+`weighted_draws(reading_weights_as=...)` is the only way to read the numbers
+back out at all, and it refuses a caller who does not name the weighting or
+names the wrong one.
+
+**Re-review response (2026-09-17): the gate is now load-bearing, not merely
+disclosed.** An independent re-review (verdict 0C/1M) proved the
+acknowledgement gate above was trivially bypassable: `RealizationSet.weights`/
+`.draws` were plain public dataclass fields, so a `payoffs()` implementation
+could `return rs.weights, rs.draws` and reach byte-identical numbers to
+`weighted_draws()` without ever naming a weighting, and
+`dataclasses.replace(rs, weighting_kind="measure")` relabelled a convention set
+as a measure without re-stating either array. Both bypasses are closed the
+same way: `weights` and `draws` are now `dataclasses.InitVar` fields
+(`uncertainty_set.py:518-519`) rather than stored fields -- `__post_init__`
+receives them as plain constructor arguments and stores validated copies
+privately as `_weights`/`_draws` (`uncertainty_set.py:559-560`), so neither
+name is ever a public attribute of the returned value, and `weighted_draws`
+(`uncertainty_set.py:610`) is the only method that reads them. Because
+`weights`/`draws` are InitVar with no default, `dataclasses.replace()` cannot
+recover them from the instance and raises (`InitVar 'weights' must be
+specified with replace()`) unless both are re-supplied -- so relabelling a
+`weighting_kind` in place is no longer possible; the caller must construct a
+fresh value and re-affirm the numbers. One limitation this does NOT close, and
+which the module docstring still states plainly: a caller who names the
+weighting correctly and then reasons about the numbers incorrectly anyway
+cannot be stopped by any gate. Pinned by
+`TestTheWeightingSurvivesTheConsumerBoundary::test_the_raw_weights_and_draws_are_not_public_attributes`
+and `::test_replace_cannot_launder_a_convention_into_a_measure`.
 
 **Tier justification: tier 1** (`dskit/pipeline/uncertainty_set.py`, stdlib
 only). The module is arithmetic over named finite families of numbers. A

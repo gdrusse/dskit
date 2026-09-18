@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import math
 import pathlib
@@ -35,6 +36,16 @@ from dskit.pipeline.uncertainty_set import (
 # `ScenarioUtilitySolve.build_model`), so a drift in either direction is caught
 # rather than agreed with.
 CONSUMER_WEIGHT_TOLERANCE = 1e-8
+
+# The one pattern TestSiblingAgreement scans the toolkit with, and the one its
+# own unit tests exercise directly -- a second, slightly different copy inline
+# in a test would be exactly the kind of drift this suite exists to catch
+# elsewhere. `[ \t]*` after `^` is deliberate: a bare `^` only matches a
+# definition starting in column zero, missing an indented class- or
+# function-body redefinition entirely.
+_WEIGHTS_SUM_TOLERANCE_ASSIGNMENT = re.compile(
+    r"^[ \t]*WEIGHTS_SUM_TOLERANCE\s*=\s*(.+?)\s*(?:#.*)?$", re.MULTILINE
+)
 
 
 def two_sided(names, mean=0.0, width=1.0, budget=1.0, cls=BudgetedMeanSet):
@@ -203,8 +214,12 @@ class TestConstruction:
             two_sided(["a", "b"], budget=budget)
 
     def test_a_budget_above_the_component_count_refuses_naming_both(self):
-        with pytest.raises(ValueError, match="2"):
+        # match="2" used to pass on "2.5" alone (the budget value contains a
+        # "2"), never proving the component count itself was named. Pin the
+        # component count and the budget value as two separate facts.
+        with pytest.raises(ValueError, match=r"\(0, 2\]") as excinfo:
             two_sided(["a", "b"], budget=2.5)
+        assert "2.5" in str(excinfo.value)
 
     def test_a_budget_equal_to_the_component_count_is_the_box_and_is_allowed(self):
         u = two_sided(["a", "b"], width=0.1, budget=2.0)
@@ -541,7 +556,9 @@ class TestBudgetFloorTolerance:
     def test_a_budget_a_hair_under_an_integer_emits_the_same_corners(self):
         exact = two_sided(["a", "b"], mean=1.0, width=0.02, budget=2.0)
         hair = two_sided(["a", "b"], mean=1.0, width=0.02, budget=math.nextafter(2.0, 0.0))
-        assert hair.realizations(9, seed=0).draws == exact.realizations(9, seed=0).draws
+        _hair_weights, hair_draws = as_convention(hair.realizations(9, seed=0))
+        _exact_weights, exact_draws = as_convention(exact.realizations(9, seed=0))
+        assert hair_draws == exact_draws
 
 
 class TestCounterpart:
@@ -635,8 +652,9 @@ class TestRealizations:
 
     def test_provenance_records_the_request_and_what_was_emitted(self):
         out = two_sided(["a", "b"], budget=1.0).realizations(7, seed=4)
+        weights, _draws = as_convention(out)
         assert out.provenance["requested"] == 7
-        assert out.provenance["emitted"] == len(out.weights)
+        assert out.provenance["emitted"] == len(weights)
         assert out.provenance["seed"] == 4
         assert out.provenance["budget"] == 1.0
 
@@ -710,8 +728,8 @@ class TestRealizations:
         # The sampled tail dedups; a duplicated corner would quietly double a
         # weight and reweight the whole set.
         u = two_sided(["a", "b", "c", "d"], budget=3.0)
-        out = u.realizations(30, seed=13)
-        rows = list(zip(*[out.draws[n] for n in u.names]))
+        _weights, draws = as_convention(u.realizations(30, seed=13))
+        rows = list(zip(*[draws[n] for n in u.names]))
         assert len(set(rows)) == len(rows)
 
     def test_a_full_box_budget_still_emits_its_saturating_corners(self):
@@ -720,8 +738,8 @@ class TestRealizations:
         # Refusing to emit the saturating tail there would emit a set strictly
         # smaller than the one the counterpart describes.
         u = two_sided(["a", "b"], mean=1.0, width=0.1, budget=2.0)
-        out = u.realizations(9, seed=0)
-        rows = list(zip(*[out.draws[n] for n in u.names]))
+        _weights, draws = as_convention(u.realizations(9, seed=0))
+        rows = list(zip(*[draws[n] for n in u.names]))
         assert len(rows) == 9
         assert len([r for r in rows if r[0] != 1.0 and r[1] != 1.0]) == 4
 
@@ -730,10 +748,10 @@ class TestRealizations:
         # is emitted, so the seed cannot matter. Sampling at this boundary
         # would make an exhaustive answer depend on a seed.
         u = two_sided(["a", "b"], budget=1.5)
-        first = u.realizations(13, seed=0)
-        second = u.realizations(13, seed=99)
-        assert len(first.weights) == 13
-        assert first.draws == second.draws
+        first_weights, first_draws = as_convention(u.realizations(13, seed=0))
+        _second_weights, second_draws = as_convention(u.realizations(13, seed=99))
+        assert len(first_weights) == 13
+        assert first_draws == second_draws
 
     def test_a_sampled_request_the_geometry_can_fill_is_filled(self):
         # More corners exist than there is room for, so the tail is SAMPLED.
@@ -742,7 +760,8 @@ class TestRealizations:
         u = two_sided(["a", "b", "c", "d", "e"], budget=1.5)
         out = u.realizations(40, seed=3)
         assert out.provenance["emitted"] == 40
-        rows = list(zip(*[out.draws[n] for n in u.names]))
+        _weights, draws = as_convention(out)
+        rows = list(zip(*[draws[n] for n in u.names]))
         assert len(set(rows)) == 40
 
     def test_the_fractional_component_is_never_one_already_spent(self):
@@ -751,8 +770,8 @@ class TestRealizations:
         # already at full deviation, or the corner duplicates one already
         # emitted and the walk overruns the room it was handed.
         u = two_sided(["a", "b", "c"], budget=1.5)
-        out = u.realizations(31, seed=0)
-        rows = list(zip(*[out.draws[n] for n in u.names]))
+        _weights, draws = as_convention(u.realizations(31, seed=0))
+        rows = list(zip(*[draws[n] for n in u.names]))
         assert len(rows) == 31
         assert len(set(rows)) == 31
 
@@ -775,7 +794,8 @@ class TestRealizations:
             deviation_above={"a": 0.1, "b": 0.1, "c": 0.1},
             budget=1.0,
         )
-        assert len(u.realizations(4, seed=0).weights) == 4
+        weights, _draws = as_convention(u.realizations(4, seed=0))
+        assert len(weights) == 4
 
     def test_more_realizations_than_the_consumer_can_take_refuses(self):
         u = two_sided(["a", "b"], budget=1.0)
@@ -795,7 +815,8 @@ class TestRealizations:
     def test_it_never_emits_more_than_asked(self):
         u = two_sided(["a", "b", "c"], budget=3.0)
         out = u.realizations(12, seed=0)
-        assert len(out.weights) <= 12
+        weights, _draws = as_convention(out)
+        assert len(weights) <= 12
 
     def test_a_small_vertex_set_is_emitted_whole_rather_than_padded(self):
         # Budget 1 over two two-sided components has exactly five distinct
@@ -804,8 +825,9 @@ class TestRealizations:
         u = two_sided(["a", "b"], budget=1.0)
         out = u.realizations(40, seed=0)
         assert out.provenance["requested"] == 40
-        assert len(out.weights) == 5
-        rows = list(zip(*[out.draws[n] for n in u.names]))
+        weights, draws = as_convention(out)
+        assert len(weights) == 5
+        rows = list(zip(*[draws[n] for n in u.names]))
         assert len(set(rows)) == len(rows)
 
     def test_a_realization_set_refuses_weights_that_miss_summing_to_one(self):
@@ -820,8 +842,18 @@ class TestRealizations:
         # The tolerance is the contract, not exactness: a weight vector
         # accumulated from 1/n must not be refused for representation noise.
         s = RealizationSet(weights=(0.5, 0.5 - 1e-10), draws={"a": (0.9, 1.1)})
-        assert math.fsum(s.weights) != 1.0
-        assert abs(math.fsum(s.weights) - 1.0) <= WEIGHTS_SUM_TOLERANCE
+        weights, _draws = as_convention(s)
+        assert math.fsum(weights) != 1.0
+        assert abs(math.fsum(weights) - 1.0) <= WEIGHTS_SUM_TOLERANCE
+
+    def test_a_sum_between_the_real_and_a_loosened_tolerance_still_refuses(self):
+        # Pins the actual value of WEIGHTS_SUM_TOLERANCE, not just its
+        # existence: 1e-5 sits strictly between this module's 1e-9 and a
+        # mutant loosened to 1e-3, so only the real tolerance refuses it. The
+        # existing refuse/accept tests use misses of 0.1 and ~1e-10, neither
+        # of which falls in that gap, so a 1e-9 -> 1e-3 mutant survived both.
+        with pytest.raises(ValueError, match="sum to 1"):
+            RealizationSet(weights=(0.5 + 1e-5, 0.5), draws={"a": (1.0, 2.0)})
 
     def test_a_realization_set_refuses_a_component_with_no_spread(self):
         with pytest.raises(ValueError, match="'a'"):
@@ -841,10 +873,16 @@ class TestRealizations:
         with pytest.raises(ValueError, match="one value per weight"):
             RealizationSet(weights=(0.5, 0.5), draws={"a": (1.0, 2.0), "b": (1.0,)}, provenance={})
 
-    def test_a_realization_sets_draws_cannot_be_mutated(self):
+    def test_mutating_the_returned_draws_does_not_corrupt_the_set(self):
+        # `.draws` is no longer a public attribute to pin as frozen (M1); what
+        # matters now is that the copy weighted_draws() hands out is
+        # independent of the set's own internal state, so mutating it cannot
+        # corrupt what a second call returns.
         out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
-        with pytest.raises(TypeError):
-            out.draws["a"] = (0.0, 0.0)
+        _weights, draws = as_convention(out)
+        draws["a"] = [999.0] * len(draws["a"])
+        _weights_again, draws_again = as_convention(out)
+        assert draws_again["a"] != [999.0] * len(draws_again["a"])
         with pytest.raises(TypeError):
             out.provenance["seed"] = 99
 
@@ -971,6 +1009,26 @@ class TestTheWeightingSurvivesTheConsumerBoundary:
     def test_the_vocabulary_is_a_closed_pair(self):
         assert WEIGHTING_KINDS == ("convention", "measure")
 
+    def test_the_raw_weights_and_draws_are_not_public_attributes(self):
+        # M1 (re-review 2026-09-17): the reproduced bypass was reading
+        # .weights/.draws directly, never calling weighted_draws() at all.
+        # Closing it means those names must not exist on the instance.
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        with pytest.raises(AttributeError):
+            getattr(out, "weights")
+        with pytest.raises(AttributeError):
+            getattr(out, "draws")
+
+    def test_replace_cannot_launder_a_convention_into_a_measure(self):
+        # The other half of the same finding: dataclasses.replace(rs,
+        # weighting_kind="measure") used to carry the old weights/draws
+        # forward untouched, relabelling them without re-stating the numbers.
+        # weights/draws are InitVar now, so replace() cannot recover them and
+        # must refuse instead of laundering the label.
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        with pytest.raises(ValueError, match="weights"):
+            dataclasses.replace(out, weighting_kind="measure")
+
 
 class TestValueGuards:
     """The three values refuse directly, not only through the family."""
@@ -1078,7 +1136,8 @@ class TestTooWideToEmit:
         width = (MAX_REALIZATIONS - 1) // 2
         names = [f"c{i:03d}" for i in range(width)]
         u = two_sided(names, budget=1.0)
-        assert len(u.realizations(1 + 2 * width, seed=0).weights) == 1 + 2 * width
+        weights, _draws = as_convention(u.realizations(1 + 2 * width, seed=0))
+        assert len(weights) == 1 + 2 * width
 
     def test_a_family_whose_floor_is_exactly_the_ceiling_still_emits(self):
         # One adverse direction, so the floor is 1 + n. At n = 255 the floor IS
@@ -1091,7 +1150,8 @@ class TestTooWideToEmit:
             deviation_above={n: 0.1 for n in names},
             budget=1.0,
         )
-        assert len(u.realizations(MAX_REALIZATIONS, seed=0).weights) == MAX_REALIZATIONS
+        weights, _draws = as_convention(u.realizations(MAX_REALIZATIONS, seed=0))
+        assert len(weights) == MAX_REALIZATIONS
 
 
 class TestTemplateEnforcement:
@@ -1300,10 +1360,11 @@ class TestSiblingAgreement:
         import dskit.pipeline.uncertainty_set as module
 
         root = pathlib.Path(module.__file__).resolve().parent.parent
-        pattern = re.compile(r"^WEIGHTS_SUM_TOLERANCE\s*=\s*(.+?)\s*(?:#.*)?$", re.MULTILINE)
         found = []
         for path in sorted(root.rglob("*.py")):
-            for value in pattern.findall(path.read_text(encoding="utf-8")):
+            for value in _WEIGHTS_SUM_TOLERANCE_ASSIGNMENT.findall(
+                path.read_text(encoding="utf-8")
+            ):
                 found.append((str(path.relative_to(root)), float(value)))
         assert found, "the scan found no WEIGHTS_SUM_TOLERANCE at all — it has stopped pinning"
         assert len({value for _path, value in found}) == 1, (
@@ -1311,6 +1372,20 @@ class TestSiblingAgreement:
             f"{found} — give the rule one owner, or make the copies agree"
         )
         assert found[0][1] == WEIGHTS_SUM_TOLERANCE, found
+
+    def test_the_scan_pattern_catches_an_indented_redefinition(self):
+        # A bare `^WEIGHTS_SUM_TOLERANCE` used to require column zero, so a
+        # class- or function-body copy (indented) sailed through unseen —
+        # confirmed by injection, and not merely a hypothetical: this is the
+        # exact shape a future accidental copy would take.
+        sample = "class Foo:\n    WEIGHTS_SUM_TOLERANCE = 1e-3\n"
+        assert _WEIGHTS_SUM_TOLERANCE_ASSIGNMENT.findall(sample) == ["1e-3"]
+
+    def test_the_scan_pattern_ignores_a_fully_commented_out_definition(self):
+        # Leading whitespace must not widen the pattern into matching a line
+        # that never assigns anything at module or class/function scope.
+        sample = "# WEIGHTS_SUM_TOLERANCE = 1e-3\n"
+        assert _WEIGHTS_SUM_TOLERANCE_ASSIGNMENT.findall(sample) == []
 
 
 class TestEndToEndAgainstTheRealConsumer:
