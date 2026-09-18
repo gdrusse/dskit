@@ -720,6 +720,9 @@ dskit/pipeline/
 │                      a member returns ConfidenceInterval only where its
 │                      coverage was MEASURED — WidenedInterval otherwise
 │                      (ADR-0151)
+├── uncertainty_set.py budgeted uncertainty sets: the BudgetedUncertaintySet
+│                      doorway + probability / mean / outcome members;
+│                      worst_case, protection, counterpart, realizations
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

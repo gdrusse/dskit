@@ -14141,3 +14141,189 @@ sample's extremes, so every calibration residual lies inside the band by
 construction and `tail_loss` is identically `0.0` for both calibrators --
 correctly, not as a placeholder, since there is no remaining tail to price
 once nothing in the calibration set lies outside the band.
+## ADR-0156 - the budgeted uncertainty-set family (`dskit/pipeline/uncertainty_set.py`)
+
+**ADR number centrally assigned.** 0156 was handed to this lane by the owner,
+not chosen by scanning the log -- four collisions happened in one session
+because concurrent lanes scanned a moving target.
+
+**Context.** Three Path rows in `children/intraday_equities` (A18044 `U_pi`,
+A18046 `U_mu`, A18047 `U_r`) each ask for a joint uncertainty set over a named
+family of quantities, consumed by a robust counterpart or by a
+scenario-consuming optimizer. The owner ruled the geometry: **budgeted
+(Bertsimas-Sim, a budget parameter) rather than box worst-case**, so the three
+sets cannot all bind at once and the consumer is not driven to a degenerate
+do-nothing answer. `children/intraday_equities/intraday_equities/nodes_capital.py`
+states in its own header that the budgeted robust counterpart is NOT built --
+only scenario recentering.
+
+Inventory first. A search over `dskit/`, every child and every ref found **no
+uncertainty-set, robust-counterpart or deviation-budget machinery anywhere**.
+**"Only three `budget` hits" undercounted the search surface -- reworded.**
+`budget` is a common word: retry and lease budgets in `dskit/production/`,
+`budget_seconds` in onboarding, HPO trial budgets, `conformance.py`'s
+capital-role spend ceiling, and a per-child dollar-budget vocabulary put the
+real count near 80 hits, not three. Three were named because they were the
+only ones shaped anything like this module's subject -- an unrelated retry
+budget (`dskit/production/resilience.py`), a knapsack resource cap
+(`libs.pyomo.BudgetedSelect`, what `planner._accepts_split`'s "a generic
+budgeted selection" means) and a multiple-testing alpha budget (`stats.py`) --
+but naming only those three read as a narrower search than the one actually
+run. The substantive claim stands past the recount: none of the ~80 hits,
+that handful included, is a Bertsimas-Sim budget, a robust counterpart, or
+anything this module reduces to -- each is a differently-shaped ceiling (time,
+retries, dollars, an estimation knapsack, a testing-error allowance) sharing a
+word and no machinery. So this is new capability, not a rebuild.
+
+**Decision.** One tier-1 module, `dskit/pipeline/uncertainty_set.py`: an
+abstract `BudgetedUncertaintySet` doorway plus three concrete members. The
+three rows are ONE family with three members, never three implementations.
+
+* `BudgetedUncertaintySet` (ABC). Takes nominal values, per-component
+  `(below, above)` deviations and a budget -- **all three explicit, never
+  defaulted**. Owns four TEMPLATE methods a member can never replace, enforced
+  by `__init_subclass__` (the `production/leg.py`, `production/loop.py`,
+  `pipeline/trust.py` idiom), not by a docstring: `worst_case`, `protection`,
+  `counterpart`, `realizations`.
+* Three member hooks, all `@abstractmethod`, so an incomplete member refuses at
+  construction: `worst_case_sense` (is the adverse extreme the MAXIMUM or the
+  MINIMUM of the linear form), `component_bounds` (the feasible domain a
+  realization may not leave), `coefficient_domain` (whether decision
+  coefficients are non-negative or real -- which decides how many deviation
+  halves must be non-zero).
+* `BudgetedProbabilitySet` (A18044 / `U_pi` shape): components are
+  probabilities, adverse is the MAXIMUM, domain `[0, 1]`, non-negative
+  coefficients.
+* `BudgetedMeanSet` (A18046 / `U_mu` shape): estimation uncertainty in an
+  expected value, adverse is the MINIMUM, unbounded domain, real coefficients.
+* `BudgetedOutcomeSet` (A18047 / `U_r` shape): dispersion of a realized
+  outcome. Same geometry as the mean member and a DIFFERENT subject --
+  `realizations()` on this member is exactly the
+  `libs.pyomo.ScenarioUtilitySolve.payoffs` pair.
+
+**Strict separation is structural.** `BudgetedMeanSet` and `BudgetedOutcomeSet`
+are separate classes with separate constructors sharing no state; neither can
+absorb the other, because neither can see the other's numbers.
+
+**What was reused.** `records.number_ok` (the repo's one "is this a number"
+rule), `node.class_ref` (artifact identity spelling), `stats._bootstrap_rng`
+(the pinned seeded-RNG recipe -- imported, never re-derived). Nothing is
+re-implemented.
+
+**What was rejected, and why.**
+
+* *Three separate modules, one per row.* Rejected: they differ in three
+  declarations, not in mechanism.
+* *Box worst-case.* Rejected by the owner's own ruling.
+* *Importing the sibling lanes.* `false_signal.py`, `mean_interval.py` and
+  `outcome_interval.py` are all unmerged. This module takes plain numbers, so
+  it works with whatever produced them and nothing here binds an unmerged
+  branch.
+* *Re-importing `pi_widened` as a confidence bound.* Explicitly rejected. That
+  sibling MEASURED 53-84% attainment against a 95% nominal and withdrew the
+  claim. `BudgetedProbabilitySet` takes a caller-supplied deviation and
+  inherits whatever that deviation was worth, and no more; its docstring says
+  so.
+* *Deriving the budget from an interval.* Rejected: the budget is a
+  conservatism/dependence parameter tuned by rolling validation. No interval
+  identifies it, and nothing here pretends one does.
+
+**The `U_r`-vs-`ScenarioSet` overlap, stated honestly.** The unmerged
+`outcome_interval.ScenarioSet` already carries a weighted joint scenario set
+and already emits `(weights, arrays)`. Where A18047 asks for *empirical joint
+outcome scenarios drawn from blocked resampling*, that IS built and this module
+does not rebuild it: `BudgetedOutcomeSet` takes nominal-plus-deviation numbers,
+which a caller may derive from exactly those residuals. What is NOT in
+`ScenarioSet`, and is the only thing added here, is the **budget**: an
+empirical scenario set carries no budget parameter and no robust counterpart,
+so it cannot express "at most this many components deviate adversely at once".
+The overlap is therefore real but partial -- `U_r` reduces to `ScenarioSet` for
+its scenario half and does not for its budgeted half.
+
+**The overlap reaches the value TYPE, not only the concept -- disclosed.**
+`RealizationSet` (`uncertainty_set.py:456-610`) independently rebuilds
+`ScenarioSet`, not just its idea: `__post_init__`
+(`uncertainty_set.py:523-561`, vs `outcome_interval.py:586-622` at `git show
+58ba1a8`) runs the same six screens in the same order, both expose an
+identical `weighted_draws`, and `WEIGHTS_SUM_TOLERANCE = 1e-9`
+(`uncertainty_set.py:177`) is independently redefined verbatim at
+`outcome_interval.py:152`. Importing `ScenarioSet` is rejected above for the
+same reason it is rejected here -- an unmerged, moving branch -- so the
+duplication stands on purpose, not as an oversight; the risk is that tuning
+either copy's tolerance or degeneracy rule leaves the other one silently
+disagreeing. Mitigated, not solved: `TestSiblingAgreement`
+(`tests/pipeline/test_uncertainty_set.py`) scans every `.py` file under
+`dskit/` for a `WEIGHTS_SUM_TOLERANCE` assignment and fails if more than one
+distinct value turns up, so a future divergence -- from this module, from
+`outcome_interval.py` once it merges, or from anywhere else -- is refused
+loudly instead of drifting silently; today it costs nothing, because the scan
+finds exactly one definition. **Named follow-up:** when `outcome_interval.py`
+merges, consolidate `RealizationSet` and `ScenarioSet` into one value type (or
+have one import the other's validation) instead of carrying two
+hand-synchronized copies indefinitely.
+
+**The weights are a convention, not a measure -- disclosed.** A budgeted set is
+a SET; it carries no probability measure. `realizations()` emits uniform
+weights over the realizations it emits and declares it two ways: the returned
+value's own `weighting_kind` field, and `provenance["weighting"]`/
+`["weighting_note"]`. A consumer reading them as estimated probabilities is
+computing a uniform average over budget-feasible corners: a robustness
+diagnostic in the Calafiore-Campi sense, NOT a calibrated expectation. This is
+the module's largest stated limitation, and the reason `worst_case`/
+`counterpart` -- which need no measure at all -- are the primary doorway.
+`weighted_draws(reading_weights_as=...)` is the only way to read the numbers
+back out at all, and it refuses a caller who does not name the weighting or
+names the wrong one.
+
+**Re-review response (2026-09-17, corrected by owner ruling): the
+acknowledgement gate is ADVISORY, not load-bearing.** An independent re-review
+(verdict 0C/1M) proved the gate above was trivially bypassable: `RealizationSet.
+weights`/`.draws` were plain public dataclass fields, so a `payoffs()`
+implementation could `return rs.weights, rs.draws` and reach byte-identical
+numbers to `weighted_draws()` without ever naming a weighting, and
+`dataclasses.replace(rs, weighting_kind="measure")` relabelled a convention set
+as a measure without re-stating either array. The first response closed the two
+ACCIDENTAL versions -- `weights`/`draws` are now `dataclasses.InitVar` fields,
+so neither name is ever a public attribute and `replace()` without re-supplying
+both arrays refuses -- and called the gate load-bearing. That claim was wrong.
+
+The owner ruled the gate advisory: Python has no private, and a check on data
+the caller already holds can only ever be advisory. Three DELIBERATE bypasses
+were demonstrated, and no fourth patch to close them is authorized (skeptic
+convergence rule). All three are reproduced and pinned as known, documented
+behaviour rather than defects:
+
+1. `rs._weights`/`rs._draws` are one attribute access away and byte-identical
+   to what `weighted_draws()` returns, so a caller who has already decided to
+   skip naming the weighting reads the numbers straight off the instance.
+2. `object.__setattr__(rs, "weighting_kind", "measure")` relabels a live
+   instance in place -- it bypasses the frozen-dataclass guard -- and
+   `weighted_draws()` then honours the new label.
+3. `dataclasses.replace(rs, weighting_kind="measure", weights=rs._weights,
+   draws=dict(rs._draws))` launders a convention set into a measure one the
+   moment those harvested arrays are fed back in, because `replace()` cannot
+   tell a re-supplied array from a re-affirmed one.
+
+The honest statement, now carried by the module docstring and the class
+docstring, is that the gate makes the honest path convenient and the dishonest
+one deliberate: it stops the limitation being lost BY ACCIDENT, never on
+purpose. Pinned by
+`TestTheWeightingAcknowledgmentIsAdvisory::test_the_raw_weights_and_draws_are_not_public_attributes`,
+`::test_replace_without_the_arrays_cannot_recover_them`,
+`::test_the_private_arrays_are_one_attribute_access_away`,
+`::test_a_live_instance_can_be_relabelled_in_place`, and
+`::test_replace_launders_the_set_when_the_arrays_are_resupplied`.
+
+**Tier justification: tier 1** (`dskit/pipeline/uncertainty_set.py`, stdlib
+only). The module is arithmetic over named finite families of numbers. A
+project that never heard of the domain these rows came from -- scheduling under
+uncertain task durations, staffing under uncertain demand -- uses it unchanged.
+No library is wrapped, so tier 2 is wrong; nothing is domain-specific, so tier
+3 is wrong.
+
+**Non-goals.** Nothing is wired into any document, node or child; no node kind
+is registered; `path.csv` is untouched; `dskit/pipeline/stats.py` is not
+edited. Ellipsoidal, polyhedral and Wasserstein geometries from the owner's
+research note are not built. No coverage or violation-frequency claim is made
+anywhere -- the owner's own criterion for these rows is rolling validation,
+which is not this module's work.
