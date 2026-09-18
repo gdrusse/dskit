@@ -40,6 +40,7 @@ from dskit.pipeline.driver import (
     _too_big_to_carry,
     content_identity,
     resolve_json_artifact,
+    row_set_identity,
     run_document,
     run_walk_forward,
 )
@@ -2166,6 +2167,50 @@ class TestRunAttestationNodeOutputForDocument:
         assert forged.node_output_for_document("market", doc_b.hash) is False
 
 
+class TestRunAttestationAttestedOutput:
+    """ADR-0166: not merely THAT a node completed, but WHAT it recorded."""
+
+    def _run(self, tmp_path):
+        result = _two_artifact_run(tmp_path, {"x": 1}, {"y": 2})
+        document_hash = read_json(result.run_dir, "resolved.json")["document_hash"]
+        return result, document_hash, RunAttestation(result.run_dir)
+
+    def test_returns_the_value_a_completed_bound_node_recorded(self, tmp_path):
+        result, document_hash, attestation = self._run(tmp_path)
+        assert attestation.attested_output("src", "a", document_hash) == (
+            result.outputs["src"]["a"]
+        )
+        assert attestation.attested_output("src", "b", document_hash) == (
+            result.outputs["src"]["b"]
+        )
+
+    def test_a_wrong_document_node_or_output_attests_nothing(self, tmp_path):
+        _, document_hash, attestation = self._run(tmp_path)
+        assert attestation.attested_output("src", "a", "0" * 64) is None
+        assert attestation.attested_output("nope", "a", document_hash) is None
+        assert attestation.attested_output("src", "nope", document_hash) is None
+
+    def test_an_output_the_runs_own_carry_does_not_corroborate_attests_nothing(
+        self, tmp_path
+    ):
+        result, document_hash, attestation = self._run(tmp_path)
+        carry = read_json(result.run_dir, "carry.json")
+        carry["src"]["a"] = {"substituted": True}
+        with open(
+            os.path.join(result.run_dir, "carry.json"), "w", encoding="utf-8"
+        ) as fh:
+            json.dump(carry, fh)
+        assert attestation.attested_output("src", "a", document_hash) is None
+        assert attestation.attested_output("src", "b", document_hash) == (
+            result.outputs["src"]["b"]
+        )
+
+    def test_a_missing_or_malformed_carry_attests_nothing(self, tmp_path):
+        result, document_hash, attestation = self._run(tmp_path)
+        os.remove(os.path.join(result.run_dir, "carry.json"))
+        assert attestation.attested_output("src", "a", document_hash) is None
+
+
 class TwoArtifactsSource(Node):
     """Emit two independently named JsonArtifact payloads for one run."""
 
@@ -2234,3 +2279,50 @@ class TestContentIdentity:
             content_identity(
                 result.run_dir, {"a": manifest, "b": result.outputs["src"]["b"]}
             )
+
+
+class TestRowSetIdentity:
+    """ADR-0166: one content-derived identity for a materialized row set."""
+
+    def test_is_content_derived_and_independent_of_row_order(self):
+        rows = [{"b": 2, "a": 1}, {"a": 3, "b": 4}, {"a": 5, "b": 6}]
+        first = row_set_identity(rows)
+        assert re.fullmatch(r"[0-9a-f]{64}", first)
+        assert row_set_identity(list(reversed(rows))) == first
+        assert row_set_identity([rows[1], rows[0], rows[2]]) == first
+
+    def test_is_independent_of_key_order_inside_a_row(self):
+        assert row_set_identity([{"a": 1, "b": 2}]) == row_set_identity(
+            [{"b": 2, "a": 1}]
+        )
+
+    def test_changed_content_changes_the_identity(self):
+        base = [{"a": 1, "b": 2}, {"a": 3, "b": 4}]
+        assert row_set_identity([{"a": 1, "b": 2}, {"a": 3, "b": 5}]) != (
+            row_set_identity(base)
+        )
+        assert row_set_identity(base + [{"a": 3, "b": 4}]) != row_set_identity(base)
+        assert row_set_identity([{"a": 1.0, "b": 2}, {"a": 3, "b": 4}]) != (
+            row_set_identity(base)
+        )
+
+    def test_a_duplicated_row_is_a_multiset_not_a_set(self):
+        one = [{"a": 1}]
+        assert row_set_identity(one + one) != row_set_identity(one)
+
+    def test_is_not_derived_from_position_filename_or_a_caller_label(self):
+        rows = [{"a": 1}, {"a": 2}]
+        # No name, path, index or label is an argument at all: the only
+        # thing that can move the digest is the rows' own content.
+        assert row_set_identity(rows) == row_set_identity(list(reversed(rows)))
+        assert row_set_identity([{"a": 1, "wire": "h01"}]) != row_set_identity(
+            [{"a": 1, "wire": "h02"}]
+        )
+
+    def test_refuses_a_non_list_or_an_unserializable_row(self):
+        with pytest.raises(ValueError, match="must be a list"):
+            row_set_identity({"a": 1})
+        with pytest.raises(ValueError, match="canonically serialized"):
+            row_set_identity([{"a": float("nan")}])
+        with pytest.raises(ValueError, match="canonically serialized"):
+            row_set_identity([{"a": object()}])

@@ -71,10 +71,18 @@ Agent orientation — see README.md for operator commands.
   restates no model name and refuses a selection it has no recipe for. One
   fit, not a walk — the phase declares no fold schedule. Constructed and
   validated (`2db8e95a…`); it has NOT been run.
-- `configs/run-final-refit.json` is a non-executable contract. The driver has
-  no immutable completed-run attestation and no content-derived identity for
-  ten labelled input wires. Filling its pins cannot enable planning;
-  `final_model.FinalRefit` fails closed until those upstream contracts exist.
+- `configs/run-final-refit.json` is a non-executable contract, and stays one.
+  `final_model.FinalRefit` now owns the complete ADR-0166 contract — an
+  immutable completed-run attestation (`RunAttestation.attested_output`),
+  content-derived row identities (`row_set_identity`), and ten labelled
+  input wires keyed by `HEADS` — but it executes ONLY on the `fixture`
+  release channel, which may never claim the shipped `run-final-hpo.json`
+  identity and stamps `deployment_eligible: false` into every head's HASHED
+  bundle training identity. This document declares `release_channel:
+  "production"`, which refuses outright until the owner accepts the signed
+  run-output attestation contract ADR-0122 only PROPOSES; its pins are
+  PENDING besides. Filling them cannot enable planning. No real final-model
+  release exists.
 - Telemetry carries no symbol and no lead (ADR-0118). `metrics.py` maps this
   project's field names onto the generic event catalogue and returns the
   per-lead decay profile as artifact DATA; the metric registry refuses either

@@ -16442,3 +16442,137 @@ No production authority is added and no `deployment_eligible` claim is made.
 `learn`, HPO, final refit, market replay, backtest, paper trading and lockbox
 access remain unauthorized and untouched; the SB3 episode suite constructs no
 SB3 or Gymnasium object at all.
+---
+
+## ADR-0166 — Wiring `FinalRefit` to an attested run, content-derived row identities and ten labelled wires
+
+*(Number reserved for this work packet. 0122 is already taken by the
+PROPOSED attested ten-head release entry, which this ADR does NOT implement;
+0161-0165 are held by parallel lanes. Ids are cited from prose, never
+reclaimed.)*
+
+**Status:** accepted 2026-09-18 under the owner's pre-approval of tier-1/
+tier-2 additions for gap EQ-01 of
+`children/intraday_equities/docs/explanations/production-research-audit.tex`
+("finish the immutable completed-run/ten-wire FinalRefit contract and prove
+real frozen-bundle replay"). Completes ADR-0116's conditional future path and
+consumes ADR-0119's driver capabilities. It authorizes no real HPO, refit,
+market replay, backtest, lockbox read, paper/live action or deployment, and
+it does not accept ADR-0122.
+
+**Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
+three missing pieces; ADR-0119 built two of the generic halves
+(`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
+input wires, and the refit-identity's own source/cache/window-derived hash"
+and "wiring `FinalRefit` to any of this" unbuilt. Inventory for this entry
+read `dskit/pipeline/driver.py`, `node.py`, `document.py`,
+`libs/sklearn.py`'s `write_bundle`/`load_bundle`,
+`dskit/production/{release,bundles,ledger,verifier,ids}.py`,
+`dskit/pipeline/{trust,release_rotation,program_calendar}.py`,
+`dskit/onboarding/{base,snapshot,observations}.py` and ADR-0090/0091/0098/
+0112/0114/0116/0119/0122/0157. Two gaps survived that sweep:
+
+- Nothing returns the VALUE a completed, document-bound node recorded.
+  `node_output_for_document` returns a boolean, so a consumer had to read
+  `nodes/*.json` itself — run-directory layout knowledge a child must not own.
+- Every content digest in the repo is ORDER-DEPENDENT where it matters here.
+  `observations.stream_digest` hashes a snapshot in list order,
+  `CandidateInventory.digest` hashes an ordered tuple, `content_identity` is
+  order-independent across manifest NAMES but not within one artifact's rows,
+  and `production.base.canonical_hash` treats a list as ordered. None can say
+  "these are the same rows, re-materialized in another order".
+
+Everything else was reused unchanged: `resolve_json_artifact`,
+`RunAttestation`, `PipelineDocument.hash`, `CandidateInventory`,
+`TrialLedger`, `OneStandardErrorSelector`, `write_bundle`/`load_bundle`,
+`ColumnSubsetEstimator` and the child's own `refit_heads`.
+
+**Decision.** Two tier-1 additions to `dskit/pipeline/driver.py`, which
+already owns `resolve_json_artifact`, `_canonical_hash` and the RECORD-phase
+writers both read; a sibling module would restate that private recipe and
+run-dir layout.
+
+1. `RunAttestation.attested_output(node_key, output_name, document_hash)` —
+   the value `node_key` recorded for `output_name`, returned only when
+   `node_output_for_document` holds AND the run's own `carry.json` carries an
+   equal value under the same node and name. `None` on anything else, so an
+   unreadable run never looks different from one that did not happen. This is
+   exactly the corroboration ADR-0116 asked each consumer to make, owned once.
+   It composes evidence the driver already writes; it does not authenticate
+   it, and ADR-0119's disclosed node-record chaining gap is unchanged.
+
+2. `row_set_identity(rows)` — one sha256 over the canonical JSON of the
+   SORTED list of per-row canonical digests. Content-derived and
+   order-INDEPENDENT: position, filename, producer name and any label
+   supplied beside the rows are not arguments at all, so only the rows' own
+   JSON content can move it. Rows are a MULTISET, not a set. `NaN`, a
+   non-JSON type or a non-list raises, matching `content_identity`'s
+   fail-loud contract. (ADR-0122 proposes an ORDERED row-identity digest;
+   that entry is not accepted, and EQ-01's contract requires a re-materialized
+   set to identify as the same rows, so this one is order-independent.)
+
+Child-side (tier 3, `children/intraday_equities/intraday_equities/
+final_model.py`), `FinalRefit` becomes the orchestration node ADR-0116
+described and nothing more:
+
+- **Immutable completed-run provenance.** `_verified_hpo_outputs` attests the
+  run completed and binds the pinned document identity, then takes each
+  head's `hpo_ledger` through `attested_output` and refuses a manifest that
+  is not what `scan_hNN` recorded. Every artifact is re-read and re-digested
+  from bytes on every call, so a run mutated after binding refuses. The
+  attestation runs BEFORE the document pin is compared, so a run whose
+  `config.json` was swapped refuses as unattested, not as a mismatched pin.
+- **Content-derived materialized-row identities.** Each wire's identity is
+  `row_set_identity` over the delivered rows and must equal the sha256
+  `refit_identity.rows` pins for that head. The pin is an expectation; the
+  identity is always recomputed from content. The ten identities must differ.
+- **Ten labelled input wires.** `HEADS` is the only authority. Every row
+  carries `WIRE_LABEL_FIELD` naming its own head — ordinary content, which
+  moves the wire's identity like any other field — so a missing, extra,
+  empty, swapped, duplicated or mislabelled wire refuses by name before any
+  fit. `run` re-checks `validate_inputs` itself, so the refusal holds at
+  every entry point, not only through the driver.
+- **The bound release identity reaches the bundle.** Every head's HASHED
+  `training_identities` entry carries source, cache, that head's row
+  identity, the training-window start, the exclusive lockbox boundary, the
+  exact embargo interval, the bound HPO document identity, the release
+  channel and `deployment_eligible: false` — ADR-0116's requirement that
+  identical fitted bytes over different data/cache/cuts cannot attest as the
+  same release.
+- **Fixture and production are different releases, structurally.** A
+  `release_channel` param admits `"fixture"` or `"production"`. A fixture may
+  never claim the shipped `configs/run-final-hpo.json` identity (read from
+  that document, never restated). `"production"` — a real final-model
+  release — refuses OUTRIGHT, at construction and again inside `run`: it
+  needs the signed run-output attestation contract ADR-0122 only PROPOSES.
+  So no code path can emit a production-stamped bundle, and because
+  `write_bundle`'s content hash covers `training_identities`, a fixture
+  bundle cannot be relabelled without failing `load_bundle`.
+
+`configs/run-final-refit.json` declares `release_channel: "production"` and
+`refit_identity.rows`, and every pin stays PENDING. It still refuses to plan,
+for two independent reasons.
+
+**Scope.** `dskit/pipeline/driver.py`, `dskit/pipeline/{README.md,CLAUDE.md}`,
+`tests/pipeline/test_driver.py`,
+`children/intraday_equities/intraday_equities/final_model.py`,
+`children/intraday_equities/configs/run-final-refit.json`,
+`children/intraday_equities/{CLAUDE.md,AGENTS.md}`,
+`children/intraday_equities/tests/{test_final_model.py,test_configs.py}`, and
+this entry. No market data, HPO, refit, replay or `path.csv` edit.
+
+**Consequences.** The EQ-01 machinery is complete and exercised end to end:
+an attested fixture release refits ten frozen winners once, writes one
+bundle, and `load_bundle` replays it to the identical content hash and
+prediction checksum, while an incomplete run, a record bound to another
+document, evidence absent from the producer record or carry, a mutated
+artifact, rows whose content is not what the release pins, a swapped,
+duplicated or mislabelled wire, and a row outside the permitted window each
+refuse. **No real final-model release was produced and none can be produced
+by this entry**: the production channel is closed, the fixture channel is
+synthetic by construction, and every bundle it writes is stamped
+`deployment_eligible: false`. ADR-0122 remains PROPOSED and unimplemented;
+`FinalRefit` remains a `Node`, not the `TrainableNode` that entry and the
+2026-09-14 closeout packet A4 propose; and the closeout packet's native
+LightGBM text artifact (A3) would replace the joblib bundle this uses, which
+is a conflict for a later owner ruling, not one this entry resolves.

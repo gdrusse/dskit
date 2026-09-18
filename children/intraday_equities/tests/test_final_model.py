@@ -54,12 +54,16 @@ def _json_artifact(run_dir, payload):
     }
 
 
-def test_module_contract_describes_wired_fail_closed_final_refit():
+def test_module_contract_describes_the_wired_fixture_only_final_refit():
     contract = " ".join(final_model.__doc__.split())
     assert "wired by ``configs/run-final-refit.json``" in contract
-    assert "unconditionally refuses validation and runtime" in contract
     assert "ten labelled input wires" in contract
-    assert "cannot enable a refit or bundle write" in contract
+    assert "can execute ONLY on the ``fixture`` release channel" in contract
+    assert "The ``production`` channel refuses outright" in contract
+    assert (
+        "Synthetic helper assembly is not a completed real final-model release"
+        in contract
+    )
 
 
 def test_final_refit_refuses_pending_hpo_evidence_pins():
@@ -192,27 +196,31 @@ def test_final_refit_refuses_mutually_consistent_unbound_run_sidecars(tmp_path):
         node._verified_hpo_outputs()
 
 
-def test_final_refit_remains_non_executable_with_filled_asserted_identities():
-    """Config digests cannot attest the rows supplied to the node."""
+def test_final_refit_refuses_asserted_identities_no_run_or_content_earns():
+    """Config digests are an expectation; they can never BE the attestation."""
     params = {
+        "release_channel": final_model.FIXTURE_CHANNEL,
         "hpo_run_dir": "/completed/run", "hpo_document_sha256": "d" * 64,
         "hpo_evidence": {head: {} for head in HEADS},
         "feature_order": ["x"], "categorical_feature": [],
         "categorical_encoding": {}, "predict_fixture": [[0.0]],
         "refit_identity": {
             "source": {"sha256": "1" * 64}, "cache": {"sha256": "2" * 64},
+            "rows": {head: "PENDING-ROW-IDENTITY" for head in HEADS},
             "train_start_ms": 1, "refit_end_ms": LOCKBOX_START_MS,
             "embargo_start_ms": EMBARGO_START_MS,
             "embargo_end_ms": EMBARGO_END_MS,
         },
     }
-    with pytest.raises(ConfigError, match="non-executable.*attestation"):
+    with pytest.raises(ConfigError, match="non-executable"):
         final_model.FinalRefit("refit", params)
 
     node = object.__new__(final_model.FinalRefit)
     node.params = params
-    with pytest.raises(ValueError, match="non-executable.*attestation"):
+    with pytest.raises(ValueError, match="non-empty list of labelled rows"):
         node.run(None, {head: [] for head in HEADS})
+    with pytest.raises(ValueError, match="trustworthy run attestation"):
+        node._verified_hpo_outputs()
 
 
 def test_final_refit_recomputes_complete_pinned_one_se_selection():
@@ -830,3 +838,516 @@ def test_refit_heads_output_round_trips_through_write_bundle(tmp_path):
     assert manifest["heads"] == list(HEADS)
     bundle = load_bundle(str(tmp_path / "final-model.joblib"))
     assert set(bundle.estimators) == set(HEADS)
+
+
+# ---------------------------------------------------------------------------
+# EQ-01 — the immutable completed-run / content-derived-row / ten-labelled-wire
+# contract, proved end to end on a deterministic FIXTURE release.
+#
+# NOTHING here is a real final-model release. The fixture channel is
+# structurally unable to be one: it may never claim the shipped
+# configs/run-final-hpo.json identity, the production channel refuses
+# outright, and every head's HASHED bundle training identity carries
+# release_channel="fixture" plus deployment_eligible=false.
+# ---------------------------------------------------------------------------
+
+WIRE_FEATURES = ["f0", "f1", "vol_5m"]
+WIRE_DROP = ["vol_5m"]
+WIRE_PREDICT_FIXTURE = [[0.1, 0.9, 0.5], [0.4, 0.6, 0.5]]
+
+
+def _configs_dir():
+    import pathlib
+
+    return pathlib.Path(final_model.__file__).resolve().parents[1] / "configs"
+
+
+def _fixture_hpo_document():
+    """A REAL loadable document that is deliberately NOT the shipped final-HPO one."""
+    import json
+
+    from dskit.pipeline.document import PipelineDocument
+
+    raw = json.loads(
+        (_configs_dir() / "run-final-hpo.json").read_text(encoding="utf-8")
+    )
+    raw["name"] = "fixture-final-hpo"
+    template = [
+        t for t in raw["stages"]["finalist"]["params"]["templates"]
+        if t.get("family") == "pooled-lightgbm"
+    ][0]
+    estimator_params = template["model"]["estimator_params"]
+    estimator_params["drop"] = list(WIRE_DROP)
+    estimator_params["n_estimators"] = 3
+    estimator_params["n_jobs"] = 1
+    return PipelineDocument.from_obj(raw)
+
+
+def _head_rows(head, slope, n=6, start_ms=EMBARGO_END_MS):
+    return [
+        {
+            final_model.WIRE_LABEL_FIELD: head,
+            "f0": 0.1 * i,
+            "f1": 1.0 - 0.1 * i,
+            "vol_5m": 0.5,
+            "label": slope * (0.1 * i),
+            "ts_ms": start_ms + i * 86_400_000,
+        }
+        for i in range(n)
+    ]
+
+
+def _wires():
+    return {
+        head: _head_rows(head, 1.0 + 0.25 * index)
+        for index, head in enumerate(HEADS)
+    }
+
+
+def _head_evidence(head, index, document_obj):
+    model = [
+        t for t in document_obj["stages"]["finalist"]["params"]["templates"]
+        if t.get("family") == "pooled-lightgbm"
+    ][0]["model"]
+    inventory = CandidateInventory(
+        model["hpo_space"], n_trials=model["hpo_trials"], seed=model["hpo_seed"]
+    )
+    ledger = TrialLedger(inventory, evidence_fields=EVIDENCE_FIELDS)
+    for position, candidate in enumerate(inventory.combinations):
+        ledger.record(
+            candidate, float(position) + 0.01 * index, se=0.0, diagnostics={},
+            on_boundary={}, fit_seed=0, cuts={}, n_rows=6, train_val_gap=0.0,
+            collapsed_prediction_variance=False,
+        )
+    selection = OneStandardErrorSelector(
+        select="max", simplicity_key=simplicity_key
+    ).select(ledger)
+    return {
+        "producer_key": f"scan_{head}",
+        "feature_order": list(WIRE_FEATURES),
+        "categorical_feature": [],
+        "ledger": ledger.to_obj(),
+        "selection": selection.to_obj(),
+    }
+
+
+def _attested_hpo_run(
+    tmp_path, *, state="ran", node_document_hash=None, config_obj=None,
+    recorded=None, carried=None, name="hpo-run",
+):
+    """Write a run directory the driver's own RunAttestation accepts."""
+    import json
+
+    run_dir = tmp_path / name
+    (run_dir / "nodes").mkdir(parents=True)
+    document = _fixture_hpo_document()
+    obj = document.to_obj()
+    (run_dir / "config.json").write_text(
+        json.dumps(obj if config_obj is None else config_obj, indent=2, sort_keys=True)
+    )
+    (run_dir / "resolved.json").write_text(
+        json.dumps({"document_hash": document.hash, "run_hash": "e" * 64})
+    )
+    (run_dir / "result.json").write_text(json.dumps({
+        "name": obj["name"], "asof": "2026-02-28", "document_hash": document.hash,
+        "run_hash": "e" * 64, "state": state, "exit_code": 0,
+    }))
+    manifests, carry = {}, {}
+    for index, head in enumerate(HEADS):
+        manifest = _json_artifact(run_dir, _head_evidence(head, index, obj))
+        manifests[head] = manifest
+        carry[f"scan_{head}"] = {
+            "hpo_ledger": manifest if carried is None else carried(head, manifest)
+        }
+        (run_dir / "nodes" / f"{index + 1:02d}-scan_{head}.json").write_text(json.dumps({
+            "node": f"scan_{head}", "uses": "x:Y", "role": "search", "status": "ok",
+            "document_hash": node_document_hash or document.hash,
+            "outputs": {
+                "hpo_ledger": manifest if recorded is None else recorded(head, manifest)
+            },
+        }))
+    (run_dir / "carry.json").write_text(json.dumps(carry))
+    return run_dir, document, manifests
+
+
+def _fixture_params(run_dir, document, manifests, wires, **overrides):
+    from dskit.pipeline.driver import row_set_identity
+
+    params = {
+        "release_channel": final_model.FIXTURE_CHANNEL,
+        "hpo_run_dir": str(run_dir),
+        "hpo_document_sha256": document.hash,
+        "hpo_evidence": dict(manifests),
+        "feature_order": list(WIRE_FEATURES),
+        "categorical_feature": [],
+        "categorical_encoding": {},
+        "predict_fixture": [list(row) for row in WIRE_PREDICT_FIXTURE],
+        "refit_identity": {
+            "source": {"kind": "synthetic-fixture", "sha256": "1" * 64},
+            "cache": {"kind": "synthetic-fixture", "sha256": "2" * 64},
+            "train_start_ms": EMBARGO_END_MS,
+            "refit_end_ms": LOCKBOX_START_MS,
+            "embargo_start_ms": EMBARGO_START_MS,
+            "embargo_end_ms": EMBARGO_END_MS,
+            "rows": {head: row_set_identity(rows) for head, rows in wires.items()},
+        },
+        "seed": 0,
+    }
+    params.update(overrides)
+    return params
+
+
+def _fixture_release(tmp_path, **run_kwargs):
+    wires = _wires()
+    run_dir, document, manifests = _attested_hpo_run(tmp_path, **run_kwargs)
+    return wires, _fixture_params(run_dir, document, manifests, wires), run_dir
+
+
+def _ctx(tmp_path, name="refit-run"):
+    from dskit.pipeline.node import NodeContext
+
+    return NodeContext(name="fixture-refit", asof="2026-02-28",
+                       run_dir=str(tmp_path / name))
+
+
+def _run_fixture(tmp_path, params, wires, ctx_name="refit-run"):
+    return final_model.FinalRefit("refit", params).run(_ctx(tmp_path, ctx_name), wires)
+
+
+# --- 1. the frozen-bundle replay proof -------------------------------------
+
+
+def test_final_refit_executes_a_fixture_release_that_replays_to_identical_outputs(tmp_path):
+    pytest.importorskip("lightgbm")
+    from dskit.pipeline.libs.sklearn import load_bundle
+
+    wires, params, _ = _fixture_release(tmp_path)
+    out = _run_fixture(tmp_path, params, wires)
+
+    assert set(out) == {"bundle_path", "manifest"}
+    assert out["manifest"]["heads"] == list(HEADS)
+    replayed = load_bundle(out["bundle_path"])
+    assert replayed.manifest["predict_checksum"] == out["manifest"]["predict_checksum"]
+    assert replayed.manifest["sha256"] == out["manifest"]["sha256"]
+    assert set(replayed.estimators) == set(HEADS)
+
+
+def test_final_refit_refuses_to_overwrite_an_already_written_release(tmp_path):
+    pytest.importorskip("lightgbm")
+    wires, params, _ = _fixture_release(tmp_path)
+    _run_fixture(tmp_path, params, wires)
+    with pytest.raises(ValueError, match="exists|overwrite"):
+        _run_fixture(tmp_path, params, wires)
+
+
+# --- 2. content-derived materialized-row identities -------------------------
+
+
+def test_final_refit_row_identity_is_content_derived_not_positional(tmp_path):
+    pytest.importorskip("lightgbm")
+    wires, params, _ = _fixture_release(tmp_path)
+    first = _run_fixture(tmp_path, params, wires, "one")
+
+    reordered = {head: list(reversed(rows)) for head, rows in wires.items()}
+    second = _run_fixture(tmp_path, params, reordered, "two")
+
+    identities = [
+        second["manifest"]["training_identities"][head]["rows_sha256"]
+        for head in HEADS
+    ]
+    assert identities == [
+        first["manifest"]["training_identities"][head]["rows_sha256"]
+        for head in HEADS
+    ]
+    assert len(set(identities)) == len(HEADS)
+    assert second["manifest"]["predict_checksum"] == first["manifest"]["predict_checksum"]
+
+
+def test_final_refit_refuses_rows_whose_content_is_not_what_the_release_pins(tmp_path):
+    pytest.importorskip("lightgbm")
+    wires, params, _ = _fixture_release(tmp_path)
+    mutated = {head: [dict(row) for row in rows] for head, rows in wires.items()}
+    mutated["h04"][2]["label"] += 1e-9
+    with pytest.raises(ValueError, match="h04.*identif|identif.*h04"):
+        _run_fixture(tmp_path, params, mutated)
+
+
+def test_final_refit_refuses_a_caller_supplied_row_identity_that_content_does_not_produce(tmp_path):
+    """A pin is an expectation; the identity is always recomputed from content."""
+    wires, params, _ = _fixture_release(tmp_path)
+    params["refit_identity"]["rows"]["h07"] = "a" * 64
+    with pytest.raises(ValueError, match="h07"):
+        _run_fixture(tmp_path, params, wires)
+
+
+def test_final_refit_refuses_two_heads_pinned_to_one_materialized_row_set(tmp_path):
+    from dskit.pipeline.node import ConfigError
+
+    wires, params, _ = _fixture_release(tmp_path)
+    params["refit_identity"]["rows"]["h02"] = params["refit_identity"]["rows"]["h01"]
+    with pytest.raises(ConfigError, match="same materialized row set"):
+        final_model.FinalRefit("refit", params)
+
+
+# --- 3. ten labelled input wires -------------------------------------------
+
+
+def test_final_refit_refuses_a_swapped_or_mislabelled_wire(tmp_path):
+    wires, params, _ = _fixture_release(tmp_path)
+    swapped = dict(wires)
+    swapped["h04"] = wires["h03"]
+    with pytest.raises(ValueError, match="h04 is wired to rows labelled 'h03'"):
+        _run_fixture(tmp_path, params, swapped)
+
+    unlabelled = {head: [dict(row) for row in rows] for head, rows in wires.items()}
+    for row in unlabelled["h09"]:
+        row.pop(final_model.WIRE_LABEL_FIELD)
+    with pytest.raises(ValueError, match="h09 is wired to rows labelled None"):
+        _run_fixture(tmp_path, params, unlabelled)
+
+
+def test_final_refit_refuses_a_duplicated_wire(tmp_path):
+    """One producer wired to two ports: the second port refuses by label."""
+    wires, params, _ = _fixture_release(tmp_path)
+    duplicated = dict(wires)
+    duplicated["h02"] = wires["h01"]
+    with pytest.raises(ValueError, match="h02 is wired to rows labelled 'h01'"):
+        _run_fixture(tmp_path, params, duplicated)
+
+
+def test_final_refit_refuses_a_missing_extra_or_empty_wire(tmp_path):
+    wires, params, _ = _fixture_release(tmp_path)
+    node = final_model.FinalRefit("refit", params)
+
+    missing = {head: rows for head, rows in wires.items() if head != "h05"}
+    assert node.validate_inputs(missing) == [
+        f"inputs must be keyed by exactly {list(HEADS)!r}"
+    ]
+    assert node.validate_inputs(dict(wires, h11=[])) == [
+        f"inputs must be keyed by exactly {list(HEADS)!r}"
+    ]
+    assert node.validate_inputs(dict(wires, h05=[])) == [
+        "h05 must be a non-empty list of labelled rows"
+    ]
+    assert node.validate_inputs(wires) == []
+
+
+def test_final_refit_refuses_a_wire_row_outside_the_permitted_window(tmp_path):
+    wires, params, _ = _fixture_release(tmp_path)
+    node = final_model.FinalRefit("refit", params)
+
+    lockbox = {head: [dict(row) for row in rows] for head, rows in wires.items()}
+    lockbox["h10"][-1]["ts_ms"] = LOCKBOX_START_MS
+    assert any("h10" in problem for problem in node.validate_inputs(lockbox))
+
+    embargo = {head: [dict(row) for row in rows] for head, rows in wires.items()}
+    embargo["h01"][0]["ts_ms"] = EMBARGO_START_MS
+    assert any("h01" in problem for problem in node.validate_inputs(embargo))
+
+
+def test_heads_is_the_only_authority_for_the_ten_wire_labels(tmp_path):
+    from dskit.pipeline.node import ConfigError
+
+    wires, params, _ = _fixture_release(tmp_path)
+    for field in ("hpo_evidence", "refit_identity"):
+        broken = {key: value for key, value in params.items()}
+        if field == "hpo_evidence":
+            broken[field] = {k: v for k, v in params[field].items() if k != "h06"}
+        else:
+            broken[field] = dict(params[field])
+            broken[field]["rows"] = {
+                k: v for k, v in params[field]["rows"].items() if k != "h06"
+            }
+        with pytest.raises(ConfigError, match="h10"):
+            final_model.FinalRefit("refit", broken)
+    assert "search" not in " ".join(final_model.FinalRefit._PARAMS)
+
+
+# --- 4. immutable completed-run provenance ---------------------------------
+
+
+def test_final_refit_refuses_an_incomplete_upstream_run(tmp_path):
+    wires, params, _ = _fixture_release(tmp_path, state="error")
+    with pytest.raises(ValueError, match="trustworthy run attestation"):
+        _run_fixture(tmp_path, params, wires)
+
+
+def test_final_refit_refuses_a_run_whose_node_records_bind_another_document(tmp_path):
+    wires, params, _ = _fixture_release(tmp_path, node_document_hash="f" * 64)
+    with pytest.raises(ValueError, match="producer record and carry"):
+        _run_fixture(tmp_path, params, wires)
+
+
+def test_final_refit_refuses_a_run_whose_config_was_substituted_after_binding(tmp_path):
+    import json
+
+    from dskit.pipeline.document import load_document as _load
+
+    wires, params, run_dir = _fixture_release(tmp_path)
+    shipped = _load(str(_configs_dir() / "run-final-hpo.json")).to_obj()
+    (run_dir / "config.json").write_text(json.dumps(shipped, indent=2, sort_keys=True))
+    with pytest.raises(ValueError, match="trustworthy run attestation"):
+        _run_fixture(tmp_path, params, wires)
+
+
+def test_final_refit_refuses_evidence_absent_from_the_producer_record(tmp_path):
+    foreign = {
+        "path": "artifacts/json/" + "9" * 64 + ".json", "sha256": "9" * 64,
+        "bytes": 2, "media_type": "application/json",
+    }
+    wires, params, _ = _fixture_release(
+        tmp_path, recorded=lambda head, manifest: foreign
+    )
+    with pytest.raises(ValueError, match="producer record and carry|not what"):
+        _run_fixture(tmp_path, params, wires)
+
+
+def test_final_refit_refuses_evidence_absent_from_the_completed_runs_carry(tmp_path):
+    foreign = {
+        "path": "artifacts/json/" + "8" * 64 + ".json", "sha256": "8" * 64,
+        "bytes": 2, "media_type": "application/json",
+    }
+    wires, params, _ = _fixture_release(
+        tmp_path, carried=lambda head, manifest: foreign
+    )
+    with pytest.raises(ValueError, match="producer record and carry"):
+        _run_fixture(tmp_path, params, wires)
+
+
+def test_final_refit_refuses_a_substituted_run_directory(tmp_path):
+    """Binding is by content: another run's directory cannot serve the pins."""
+    wires, params, _ = _fixture_release(tmp_path)
+    other_dir, _, _ = _attested_hpo_run(tmp_path, name="other-run")
+    import shutil
+
+    shutil.rmtree(other_dir / "artifacts")
+    params["hpo_run_dir"] = str(other_dir)
+    with pytest.raises(ValueError, match="JSON artifact is missing|not what"):
+        _run_fixture(tmp_path, params, wires)
+
+
+def test_final_refit_refuses_a_run_mutated_after_it_was_bound(tmp_path):
+    wires, params, run_dir = _fixture_release(tmp_path)
+    artifact = run_dir / params["hpo_evidence"]["h01"]["path"]
+    artifact.write_bytes(artifact.read_bytes() + b" ")
+    with pytest.raises(ValueError, match="byte count|digest"):
+        _run_fixture(tmp_path, params, wires)
+
+
+# --- 5. a fixture release can never claim to be a production one -----------
+
+
+def test_final_refit_refuses_the_production_channel_outright(tmp_path):
+    from dskit.pipeline.node import ConfigError
+
+    wires, params, _ = _fixture_release(tmp_path)
+    params["release_channel"] = final_model.PRODUCTION_CHANNEL
+    with pytest.raises(ConfigError, match="non-executable on the production channel"):
+        final_model.FinalRefit("refit", params)
+
+    node = object.__new__(final_model.FinalRefit)
+    node.params = params
+    with pytest.raises(ValueError, match="non-executable on the production channel"):
+        node.run(_ctx(tmp_path), wires)
+
+
+def test_a_fixture_release_may_not_claim_the_shipped_final_hpo_document(tmp_path):
+    from dskit.pipeline.node import ConfigError
+
+    wires, params, _ = _fixture_release(tmp_path)
+    params["hpo_document_sha256"] = final_model.final_hpo_document_identity()
+    with pytest.raises(ConfigError, match="may not claim the shipped final-HPO"):
+        final_model.FinalRefit("refit", params)
+
+
+def test_final_refit_requires_a_declared_release_channel(tmp_path):
+    from dskit.pipeline.node import ConfigError
+
+    wires, params, _ = _fixture_release(tmp_path)
+    del params["release_channel"]
+    with pytest.raises(ConfigError, match="release_channel"):
+        final_model.FinalRefit("refit", params)
+
+
+def test_the_fixture_channel_stamp_is_inside_the_bundles_content_hash(tmp_path):
+    pytest.importorskip("lightgbm")
+    import json
+
+    from dskit.pipeline.libs.sklearn import load_bundle
+
+    wires, params, _ = _fixture_release(tmp_path)
+    out = _run_fixture(tmp_path, params, wires)
+    for head in HEADS:
+        identity = out["manifest"]["training_identities"][head]
+        assert identity["release_channel"] == final_model.FIXTURE_CHANNEL
+        assert identity["deployment_eligible"] is False
+
+    manifest_path = out["bundle_path"] + ".json"
+    manifest = json.loads(open(manifest_path, encoding="utf-8").read())
+    manifest["training_identities"]["h01"]["release_channel"] = (
+        final_model.PRODUCTION_CHANNEL
+    )
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh)
+    with pytest.raises(ValueError, match="content hash"):
+        load_bundle(out["bundle_path"])
+
+
+def test_no_release_channel_can_emit_a_production_stamped_bundle(tmp_path):
+    """The whole channel vocabulary, not one example of it."""
+    pytest.importorskip("lightgbm")
+    from dskit.pipeline.node import ConfigError
+
+    wires, params, _ = _fixture_release(tmp_path)
+    stamps = set()
+    for index, channel in enumerate(final_model.RELEASE_CHANNELS):
+        attempt = dict(params, release_channel=channel)
+        try:
+            out = _run_fixture(tmp_path, attempt, wires, f"channel-{index}")
+        except (ConfigError, ValueError):
+            continue
+        stamps |= {
+            out["manifest"]["training_identities"][head]["release_channel"]
+            for head in HEADS
+        }
+    assert stamps == {final_model.FIXTURE_CHANNEL}
+
+
+# --- 6. the bound window and data identities reach every head --------------
+
+
+def test_final_refit_copies_the_bound_window_and_data_identity_into_every_head(tmp_path):
+    pytest.importorskip("lightgbm")
+    wires, params, _ = _fixture_release(tmp_path)
+    out = _run_fixture(tmp_path, params, wires)
+    pinned = params["refit_identity"]
+    for head in HEADS:
+        identity = out["manifest"]["training_identities"][head]
+        assert identity["source"] == pinned["source"]
+        assert identity["cache"] == pinned["cache"]
+        assert identity["train_start_ms"] == pinned["train_start_ms"]
+        assert identity["refit_end_ms"] == LOCKBOX_START_MS
+        assert identity["embargo_start_ms"] == EMBARGO_START_MS
+        assert identity["embargo_end_ms"] == EMBARGO_END_MS
+        assert identity["rows_sha256"] == pinned["rows"][head]
+        assert identity["hpo_document_sha256"] == params["hpo_document_sha256"]
+        assert identity["winner"]["num_leaves"] in (4, 8, 16)
+
+
+def test_final_refit_gives_each_head_only_its_own_frozen_winner(tmp_path):
+    pytest.importorskip("lightgbm")
+    wires, params, _ = _fixture_release(tmp_path)
+    out = _run_fixture(tmp_path, params, wires)
+    identities = out["manifest"]["training_identities"]
+    surviving = out["manifest"]["surviving_features"]
+    assert all(surviving[head] == ["f0", "f1"] for head in HEADS)
+    assert len({identities[head]["rows_sha256"] for head in HEADS}) == len(HEADS)
+    assert all(
+        identities[head]["winner"]["n_estimators"] == 3 for head in HEADS
+    )
+    # The manifest states each head's recipe twice; pin the agreement.
+    assert all(
+        out["manifest"]["head_params"][head]["estimator_params"]
+        == identities[head]["winner"]
+        for head in HEADS
+    )
