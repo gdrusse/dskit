@@ -45,9 +45,11 @@ VOCAB = {"KXA": 0, "KXB": 1}
 
 
 def make_item(rng, *, C, series, event, market_id=0, partition=False, eligible=True,
-              y=None, unseen=(), vocab=VOCAB, identity=IDENTITY):
+              y=None, unseen=(), unlisted=(), vocab=VOCAB, identity=IDENTITY):
     """One hand-built panel item over T=3 leads: random tokens, full visibility
-    except the ``(step, rung)`` cells named in ``unseen``."""
+    except the ``(step, rung)`` cells named in ``unseen``, and every rung
+    LISTED except the ``(step, rung)`` cells named in ``unlisted`` — listing
+    and quoting are separate facts, which is the whole point of PM-02."""
     T = len(FRACS)
     feats = rng.normal(size=(T, C, F)).astype(np.float32) * 0.1
     feats[..., NAMES.index("yes_touch")] = rng.uniform(0.05, 0.95, size=(T, C))
@@ -55,6 +57,9 @@ def make_item(rng, *, C, series, event, market_id=0, partition=False, eligible=T
     seen = np.ones((T, C), dtype=bool)
     for k, r in unseen:
         seen[k, r] = False
+    listed = np.ones((T, C), dtype=bool)
+    for k, r in unlisted:
+        listed[k, r] = False
     if y is None:
         y = np.zeros(C, dtype=np.float32)
         y[0] = 1.0
@@ -63,6 +68,7 @@ def make_item(rng, *, C, series, event, market_id=0, partition=False, eligible=T
         "feats": feats,
         "seen": seen,
         "visible": np.logical_or.accumulate(seen, axis=0),
+        "listed": listed,
         "y": np.asarray(y, dtype=np.float32),
         "market_id": market_id,
         "is_partition": partition,
@@ -155,19 +161,20 @@ def test_two_tailed_ladders_run_each_tail_on_its_own_contiguous_run():
     assert (greater[..., 1:] <= greater[..., :-1] + 1e-6).all()
 
 
-def test_q_from_logits_sums_to_one_over_visible_rungs_for_partitions():
+def test_q_from_logits_sums_to_one_over_the_listed_rungs_for_partitions():
     logit = torch.tensor([[[2.0, -1.0, 0.5, 3.0]]])
-    visible = torch.tensor([[[True, True, True, False]]])
-    q = q_from_logits(logit, visible, torch.tensor([True]))
+    listed = torch.tensor([[[True, True, True, False]]])
+    q = q_from_logits(logit, listed, torch.tensor([True]))
     assert q[0, 0, 3].item() == pytest.approx(0.0, abs=1e-6)
     assert q[0, 0, :3].sum().item() == pytest.approx(1.0)
-    q_thr = q_from_logits(logit, visible, torch.tensor([False]))
+    q_thr = q_from_logits(logit, listed, torch.tensor([False]))
     assert torch.allclose(q_thr, torch.sigmoid(logit))
 
 
 def batch_for_loss(partition):
     return {
         "visible": torch.tensor([[[True, True, True]] * 2]),
+        "listed": torch.tensor([[[True, True, True]] * 2]),
         "contract_mask": torch.tensor([[True, True, True]]),
         "y": torch.tensor([[0.0, 1.0, 0.0]]),
         "is_partition": torch.tensor([partition]),
@@ -193,13 +200,29 @@ def test_head_loss_is_event_equal_and_restated_for_a_threshold_batch():
     assert head_loss(logit, b).item() == pytest.approx(expected.item())
 
 
-def test_head_loss_partition_skips_steps_where_the_winner_is_unlisted():
+def test_head_loss_partition_skips_steps_where_the_winner_is_not_yet_quoted():
     b = batch_for_loss(True)
     b["visible"] = torch.tensor([[[True, False, True], [True, True, True]]])
     logit = torch.tensor([[[5.0, 5.0, 5.0], [0.0, 2.0, 0.0]]])
     # only step 1 counts: -log_softmax([0,2,0])[1]
     expected = -torch.log_softmax(torch.tensor([0.0, 2.0, 0.0]), -1)[1]
     assert head_loss(logit, b).item() == pytest.approx(expected.item())
+
+
+def test_head_loss_normalizes_a_partition_over_the_listed_rungs_not_the_quoted_ones():
+    """An outcome the venue listed but nobody quoted still competes for the
+    winner's probability mass; dropping it from the denominator would train
+    the quoted rungs toward an inflated q."""
+    b = batch_for_loss(True)
+    b["visible"] = torch.tensor([[[True, True, False]] * 2])
+    logit = torch.tensor([[[0.0, 2.0, 0.0]] * 2])
+    over_listed = -torch.log_softmax(torch.tensor([0.0, 2.0, 0.0]), -1)[1]
+    over_quoted = -torch.log_softmax(torch.tensor([0.0, 2.0]), -1)[1]
+    assert head_loss(logit, b).item() == pytest.approx(over_listed.item())
+    assert head_loss(logit, b).item() > over_quoted.item()
+    # unlist the third rung and the denominator legitimately shrinks to two
+    b["listed"] = torch.tensor([[[True, True, False]] * 2])
+    assert head_loss(logit, b).item() == pytest.approx(over_quoted.item())
 
 
 @pytest.mark.parametrize("y", [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
@@ -354,7 +377,9 @@ def test_event_logloss_equals_an_independent_restatement():
     batch = collate_items(items)
     with torch.no_grad():
         vis = batch["visible"] & batch["contract_mask"][:, None, :]
-        q = q_from_logits(module(batch), vis, batch["is_partition"]).numpy()
+        # scored on the QUOTED cells, normalized over the LISTED ones
+        lis = batch["listed"] & batch["contract_mask"][:, None, :]
+        q = q_from_logits(module(batch), lis, batch["is_partition"]).numpy()
     per_event = []
     for i, item in enumerate(items):
         cells = []

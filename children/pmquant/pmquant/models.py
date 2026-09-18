@@ -16,16 +16,18 @@ The model is the parent program's frozen v3 recipe, ported verbatim:
   step only once it has shown a book, so nothing ever attends to a strike
   listed later.
 * :class:`LawHead` — the settlement law BY CONSTRUCTION. A partition
-  ladder keeps raw per-rung logits (softmax over visible rungs happens in
-  :func:`q_from_logits` / :func:`head_loss`); a threshold ladder rebuilds
+  ladder keeps raw per-rung logits (the softmax over the rungs LISTED at
+  that step happens in :func:`q_from_logits` / :func:`head_loss` — the
+  listed set, not the quoted one, so an outcome nobody quoted keeps its
+  mass instead of inflating the others); a threshold ladder rebuilds
   its logits as monotone chains along each tail (``less`` non-decreasing,
   ``greater`` non-increasing in rung order), so a trained model cannot
   emit a ladder that violates its own settlement rule. Market adaptation
   is an affine ``(1 + s, b)`` pair of zero-initialized embeddings that
   weight decay shrinks toward the pooled head.
-* :func:`head_loss` — winner-NLL over visible rungs (partition) and BCE
-  on visible cells (threshold), EVENT-EQUAL weighted: one event is one
-  example whatever its rung or lead count.
+* :func:`head_loss` — winner-NLL normalized over the LISTED rungs
+  (partition) and BCE on visible cells (threshold), EVENT-EQUAL
+  weighted: one event is one example whatever its rung or lead count.
 
 The adapter's serving surface is a ``(contract, lead) -> q`` table built
 once by ``fitted`` and persisted beside ``model.pt`` — ``mode="load"``
@@ -294,26 +296,30 @@ class LawHead(nn.Module):
         return torch.where(is_partition[:, None, None].expand_as(raw), raw, out)
 
 
-def q_from_logits(logit, visible, is_partition):
+def q_from_logits(logit, listed, is_partition):
     """Turn logits into probabilities under each event's settlement law.
 
     Parameters
     ----------
     logit : torch.Tensor
         ``(B, T, C)``.
-    visible : torch.Tensor
-        ``(B, T, C)`` bool — the rungs a partition softmax runs over.
+    listed : torch.Tensor
+        ``(B, T, C)`` bool — the rungs a partition softmax runs over: the
+        panel's point-in-time LISTED set (``batch["listed"]``), not the
+        quoted one. An outcome the venue listed but nobody quoted can
+        still settle YES, so dropping it from the denominator
+        renormalizes every other outcome upward.
     is_partition : torch.Tensor
         ``(B,)`` bool.
 
     Returns
     -------
     torch.Tensor
-        ``(B, T, C)``: sigmoid for threshold events, softmax over visible
-        rungs for partition events.
+        ``(B, T, C)``: sigmoid for threshold events, softmax over the
+        listed rungs for partition events.
     """
     q_thr = torch.sigmoid(logit)
-    q_par = torch.softmax(logit.masked_fill(~visible, _MASK_FILL), -1)
+    q_par = torch.softmax(logit.masked_fill(~listed, _MASK_FILL), -1)
     return torch.where(is_partition[:, None, None].expand_as(logit), q_par, q_thr)
 
 
@@ -325,14 +331,16 @@ def head_loss(logit, batch):
     logit : torch.Tensor
         ``(B, T, C)`` from :class:`LawHead`.
     batch : dict
-        A collated batch carrying ``visible``, ``contract_mask``, ``y``
-        and ``is_partition``.
+        A collated batch carrying ``visible``, ``listed``,
+        ``contract_mask``, ``y`` and ``is_partition``.
 
     Returns
     -------
     torch.Tensor
-        A scalar: the partition branch (winner-NLL over visible rungs at
-        the steps where the winner is listed, event-mean then mean over
+        A scalar: the partition branch (winner-NLL over the rungs LISTED
+        at that step — the same denominator serving uses, so a listed but
+        unquoted outcome is not silently dropped — scored at the steps
+        where the winner has been quoted, event-mean then mean over
         events) plus the threshold branch (BCE-with-logits on visible
         cells, event-mean then mean), divided by the number of branches
         present. A partition event whose labels do not name EXACTLY ONE
@@ -343,9 +351,10 @@ def head_loss(logit, batch):
     """
     part = batch["is_partition"]
     vis = batch["visible"] & batch["contract_mask"][:, None, :]
+    lis = batch["listed"] & batch["contract_mask"][:, None, :]
     total, n = logit.new_zeros(()), 0
     if part.any():
-        lg = logit[part].masked_fill(~vis[part], _MASK_FILL)
+        lg = logit[part].masked_fill(~lis[part], _MASK_FILL)
         y_part = batch["y"][part]
         win = y_part.argmax(-1)
         one_winner = y_part.sum(-1) == 1
@@ -729,7 +738,8 @@ class LadderPanelAdapter(TorchAdapter):
         try:
             with torch.no_grad():
                 visible = batch["visible"] & batch["contract_mask"][:, None, :]
-                q = q_from_logits(module(batch), visible, batch["is_partition"])
+                listed = batch["listed"] & batch["contract_mask"][:, None, :]
+                q = q_from_logits(module(batch), listed, batch["is_partition"])
         finally:
             module.train(training)
         where = visible.nonzero(as_tuple=False)

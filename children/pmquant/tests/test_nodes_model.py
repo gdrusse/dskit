@@ -443,7 +443,10 @@ def test_predict_emits_every_visible_cell_of_the_eligible_events_only(tmp_path):
     assert (first["series"], first["event"], first["step"], first["rung"]) == ("KXB", "KXB-1", 0, 0)
     assert first["lead"] == FRACS[0] and first["contract"] == "KXB-1-R0"
     assert first["partition"] is True and first["y"] == 0.0
-    assert first["q"] == 1.0  # a partition softmax over the ONE visible rung at step 0
+    # the partition softmax runs over the rungs LISTED at step 0 — both of
+    # them — so the one QUOTED rung no longer reads as certainty (PM-02)
+    assert 0.0 < first["q"] < 1.0
+    assert val_items[0]["listed"][0].all() and not val_items[0]["visible"][0].all()
     assert 0.0 < rows[1]["q"] < 1.0 and rows[1]["q"] + rows[2]["q"] == pytest.approx(1.0)
     assert first["ask"] == pytest.approx(0.45) and first["ask_no"] == pytest.approx(0.60)
     assert first["ask_sz"] == pytest.approx(12.0) and first["bid_sz"] == pytest.approx(10.0)
@@ -550,8 +553,8 @@ def test_signal_qhat_looks_up_the_frame_and_declines_uncovered_cells(tmp_path):
     node = SignalQhat("sig", {"price_field": "mid"})
     ctx = NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path))
     signal = node.run(ctx, {"pred_rows": rows})["signal"]
-    row = rows[0]  # a partition step with ONE visible rung: q is exactly 1.0
-    assert row["q"] == 1.0
+    row = rows[0]  # a partition step with one QUOTED rung of two LISTED ones
+    assert 0.0 < row["q"] < 1.0
     served = min(max(row["q"], 1e-6), 1.0 - 1e-6)  # the clip, restated
     record = {"contract": row["contract"], "lead_frac": row["lead"], "mid": 0.5, "asof_ms": 1}
     assert signal.predict(record) == pytest.approx(served, abs=1e-12)
