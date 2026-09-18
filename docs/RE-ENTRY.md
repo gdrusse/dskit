@@ -1,6 +1,67 @@
 # Re-entry
 
-## Current checkpoint: F3 design stopped at convergence; wire guards pinned (2026-09-17)
+## Current checkpoint: production lane -- main green, four slices landed (2026-09-17)
+
+**Candidate `9a62dd0` on `claude/prod-lane-20260917`.** Five independently
+reviewed pieces, every one returning **0 Critical / 0 Major** before merge.
+
+**The start state was misreported, and that is the headline.** `pytest
+tests/production` at `e989dff` gave **11** failures, not the 4 this file
+disclosed. The other seven were ADR-0147's own fallout and were never
+disclosed anywhere -- they landed under "whole F5a is closed" because the
+adjacent invariant suites were not re-run. Worse, ADR-0147 had hollowed out
+F5a's own sentinel: `test_private_plan_precedes_capture` passed with its
+gate entirely disabled, because one refusal message served two causes and
+six test sites matched the shared wording.
+
+**What landed.**
+
+- **ADR-0150** -- the durable admission ledger's fold and composition seams.
+  `durable()` crossed the single-fold and registry boundaries `state.py`
+  declares. The replay moved behind `state.replay_into_fold`; the store now
+  resolves through `LEDGER_KINDS` instead of naming `JsonlLedger`, so the
+  violation disappears rather than relocating into an exempt module.
+  Decision point 3 (a `compose.py` factory) was SUPERSEDED during
+  implementation -- the registry made it unnecessary and avoided a
+  `compose -> verifier` import cycle.
+- **ADR-0153** -- effective-dated universe composition. `required_universe`
+  gains an interval form; membership resolves at the tick's own instant.
+  Closes survivorship bias, which **no slice in the 24-slice plan checks**.
+- **ADR-0154** -- as-of-acquisition reads. `scan_stream` gains
+  `as_of_acquisition_ms`. **Six decisions shipped, not the five written**:
+  review found the serving path silently ignored the declared knob.
+- **ADR-0157** -- F3's derivation hop, DESIGN AND GATES ONLY. Approved after
+  four review rounds. Its `derivation-root` kind is **not implemented**.
+- **The hollowing guard** -- detects a `pytest.raises(match=...)` that passes
+  for the wrong reason, and restores 4 of 6 parametrizations of two named
+  concurrency tests that had been asserting nothing.
+
+**Suites on the merged tree:** `tests/production` **6523 passed / 111
+skipped**; `tests/pipeline` **3823 passed / 25 skipped / 1 xfailed** (the
+xfail is ADR-0157's Gap 1 gate, deliberate); `tests/onboarding` +
+`tests/pipeline_libs` + `tests/production_libs` **2347 passed / 118 skipped**.
+
+**Every refusal added was probed load-bearing** -- guard disabled, test
+FAILED, guard restored, test PASSED -- because this whole slice exists to fix
+assertions that had quietly stopped asserting.
+
+**OPEN, and it needs an owner ruling before ADR-0157 proceeds to code.**
+Gap 1: a crash between the `RESERVED -> ISSUED` commit and the real PUBLISH
+strands the intent **permanently** in code that ships today. Observed via a
+real forked `os._exit`: row stuck `ISSUED`, no authority constructed, retry
+raising "already constructed for this graph". No quarantine, generation-bump
+or revocation path reaches it. Accept as a scoped limitation, or add an
+`attempt` dimension -- which reintroduces the "abandoned vs in-flight"
+ambiguity that killed ADR-0148 v3?
+
+**Not done, and not claimed:** no real data, capture, replay, backtest,
+training, paper or live activity. ADR-0148 remains STOPPED / DO NOT
+IMPLEMENT. `deployment_eligible=false`.
+
+**Next:** the Gap 1 ruling, then ADR-0157's `derivation-root` kind against
+its two existing gates.
+
+## Prior checkpoint: F3 design stopped at convergence; wire guards pinned (2026-09-17)
 
 **F3/F5b design did NOT land, and must not be implemented as written.**
 ADR-0148 was written, reviewed and stopped three times (v1: 2C/6M evidence
