@@ -2113,6 +2113,95 @@ def test_assignment_agrees_with_the_library_it_extracted_from(algorithm):
     ]
 
 
+#: Three features in a ROTATED order -- distinct from ``sorted``, from
+#: ``reversed`` and from ``sorted(reverse=True)`` alike.
+#:
+#: TWO names cannot do this. A two-element list IS one of its own sorts, so
+#: whichever order the fixture picks, one normalisation is the identity on
+#: it and survives every test: with ``["f0", "f1"]`` a descending read is
+#: invisible, and with ``["f1", "f0"]`` -- which is exactly
+#: ``sorted(reverse=True)`` -- it is the ascending read that is pinned and
+#: the descending one that walks free. Only three names in a rotation
+#: separate the declared order from all of them at once.
+_ROTATED_FEATURES = ["f1", "f2", "f0"]
+
+#: Two clouds whose three axes carry different ranges, so ANY permutation
+#: of them moves rows across the boundary rather than merely relabelling.
+_ROTATED_ROWS = [
+    {"f0": 0.0, "f1": 4.0, "f2": 20.0},
+    {"f0": 0.2, "f1": 4.6, "f2": 21.0},
+    {"f0": 9.0, "f1": 0.4, "f2": 30.0},
+    {"f0": 8.8, "f1": 1.0, "f2": 31.0},
+]
+
+
+@pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans", "birch"])
+def test_a_rotated_feature_order_reaches_fit_state_and_apply_intact(algorithm):
+    """The declared order is carried verbatim through all THREE sites.
+
+    ``fit`` builds its design matrix in that order, the state records that
+    order, and ``apply_state`` reads coordinates back in it. Each site is
+    a separate chance to normalise the names behind the caller, and a
+    normalisation at any one of them measures distance on the wrong axes
+    while the other two still agree with each other.
+    """
+    sklearn_cluster = pytest.importorskip("sklearn.cluster")
+
+    node = _segment_node(
+        features=_ROTATED_FEATURES, algorithm=algorithm,
+        algorithm_params={"n_clusters": 2},
+        seed=_DROP if algorithm == "birch" else 17,
+    )
+    state = node.fit(_ROTATED_ROWS, node.params)
+
+    # The WRITE site: verbatim, not canonicalised.
+    assert state["features"] == _ROTATED_FEATURES
+
+    # The FIT and APPLY sites, against the library's own answer on the
+    # same design matrix the node should have built.
+    matrix = [[row[name] for name in _ROTATED_FEATURES] for row in _ROTATED_ROWS]
+    kwargs = {"n_clusters": 2}
+    if algorithm != "birch":
+        kwargs["random_state"] = 17
+    reference = getattr(
+        sklearn_cluster, _SEGMENT_PATHS[algorithm].rpartition(".")[2]
+    )(**kwargs).fit(matrix)
+
+    assert [
+        row["segment"]
+        for row in node.apply_state(state, _ROTATED_ROWS, node.params)
+    ] == [int(label) for label in reference.predict(matrix)]
+
+
+def test_no_permutation_of_the_declared_names_reads_the_same_point():
+    """Six centers, one sitting exactly on each permutation of the row's
+    three values.
+
+    The point therefore lands ON the center belonging to whichever order
+    was used, and all six orders answer a different label -- so ONE
+    assertion catches every wrong order at once: ascending, descending,
+    the reverse, and both partial swaps. A hand-picked geometry only
+    separates the one or two permutations it happened to be chosen for,
+    which is how a partial permutation slipped past the fixture above.
+    """
+    node = _segment_node()
+    state = {
+        "schema": SEGMENT_SCHEMA,
+        "algorithm": "kmeans",
+        "features": _ROTATED_FEATURES,
+        "centers": [
+            [1.0, 2.0, 3.0], [1.0, 3.0, 2.0], [2.0, 1.0, 3.0],
+            [2.0, 3.0, 1.0], [3.0, 1.0, 2.0], [3.0, 2.0, 1.0],
+        ],
+        "center_labels": [0, 1, 2, 3, 4, 5],
+    }
+    # With f0=1, f1=2, f2=3 the declared ["f1", "f2", "f0"] reads
+    # (2, 3, 1), which IS centers[3]. Every other order reads a different
+    # permutation and so sits on a different center.
+    row = [{"f0": 1.0, "f1": 2.0, "f2": 3.0}]
+    assert node.apply_state(state, row, node.params)[0]["segment"] == 3
+
+
 def test_an_exact_tie_goes_to_the_lowest_center_index():
     """Ties are decided by INDEX, not by whichever center was compared
     first — a rule that varied with dict or array order would assign the
