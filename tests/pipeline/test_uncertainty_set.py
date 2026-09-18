@@ -914,6 +914,15 @@ class TestRealizations:
         with pytest.raises(AttributeError):
             s.provenance["tag"].add("z")
 
+    def test_a_self_referential_provenance_is_refused_by_name(self):
+        # `_frozen_tree` gained a cycle guard: a directly-constructed
+        # provenance that refers to itself would otherwise exhaust the
+        # recursion stack. Refused by name, not recursed into.
+        cycle = {}
+        cycle["self"] = cycle
+        with pytest.raises(ValueError, match="self-referential"):
+            RealizationSet(weights=(0.5, 0.5), draws={"a": (0.9, 1.1)}, provenance=cycle)
+
     def test_a_realization_set_refuses_an_empty_family(self):
         with pytest.raises(ValueError, match="at least one component"):
             RealizationSet(weights=(1.0,), draws={}, provenance={})
@@ -931,13 +940,15 @@ class TestRealizations:
             )
 
 
-class TestTheWeightingSurvivesTheConsumerBoundary:
+class TestTheWeightingAcknowledgmentIsAdvisory:
     # The pair `weighted_draws` returns is exactly what
     # `libs.pyomo.ScenarioUtilitySolve.payoffs` must hand back, and the solver
     # computes an expected utility AND a Rockafellar-Uryasev CVaR cap from the
     # weights. The numbers of a convention weighting and of an estimated one are
     # indistinguishable, so the pair cannot carry the difference: the caller
-    # states it, and a mismatch refuses.
+    # states it, and a mismatch refuses. The gate is ADVISORY, not a barrier
+    # (owner ruling, ADR-0156): the accidental paths are closed, and the three
+    # deliberate bypasses are pinned below as known, documented behaviour.
 
     def test_the_pair_cannot_be_taken_without_naming_the_weighting(self):
         out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
@@ -1010,24 +1021,63 @@ class TestTheWeightingSurvivesTheConsumerBoundary:
         assert WEIGHTING_KINDS == ("convention", "measure")
 
     def test_the_raw_weights_and_draws_are_not_public_attributes(self):
-        # M1 (re-review 2026-09-17): the reproduced bypass was reading
+        # M1 (re-review 2026-09-17): the ACCIDENTAL bypass was reading
         # .weights/.draws directly, never calling weighted_draws() at all.
-        # Closing it means those names must not exist on the instance.
+        # Closing the accidental path means those names must not exist on the
+        # instance -- the DELIBERATE path through the private names is pinned
+        # separately below.
         out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
         with pytest.raises(AttributeError):
             getattr(out, "weights")
         with pytest.raises(AttributeError):
             getattr(out, "draws")
 
-    def test_replace_cannot_launder_a_convention_into_a_measure(self):
-        # The other half of the same finding: dataclasses.replace(rs,
+    def test_replace_without_the_arrays_cannot_recover_them(self):
+        # The accidental half of the same finding: dataclasses.replace(rs,
         # weighting_kind="measure") used to carry the old weights/draws
         # forward untouched, relabelling them without re-stating the numbers.
-        # weights/draws are InitVar now, so replace() cannot recover them and
-        # must refuse instead of laundering the label.
+        # weights/draws are InitVar now, so replace() without re-supplying them
+        # refuses -- the deliberate re-supply is pinned separately below.
         out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
         with pytest.raises(ValueError, match="weights"):
             dataclasses.replace(out, weighting_kind="measure")
+
+    def test_the_private_arrays_are_one_attribute_access_away(self):
+        # Owner ruling (ADR-0156): the gate is advisory. The validated arrays
+        # live under _weights/_draws, so a caller who has already decided to
+        # skip naming the weighting reads byte-identical numbers straight off
+        # the instance. Known, documented -- not a defect this module is
+        # waiting to fix.
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        weights, draws = out.weighted_draws(reading_weights_as="convention")
+        assert list(out._weights) == weights
+        assert {name: list(values) for name, values in out._draws.items()} == draws
+
+    def test_a_live_instance_can_be_relabelled_in_place(self):
+        # Owner ruling: object.__setattr__ bypasses the frozen-dataclass guard,
+        # so a caller can relabel a live instance and weighted_draws then
+        # honours the new label -- the check on data the caller already holds
+        # can only ever be advisory.
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        assert out.weighting_kind == "convention"
+        object.__setattr__(out, "weighting_kind", "measure")
+        assert out.weighting_kind == "measure"
+        assert out.weighted_draws(reading_weights_as="measure")[0] == list(out._weights)
+
+    def test_replace_launders_the_set_when_the_arrays_are_resupplied(self):
+        # Owner ruling: replace() cannot recover the InitVar arrays on its own,
+        # but a caller who re-supplies them -- harvested from _weights/_draws --
+        # launders a convention set into a measure one without ever naming the
+        # weighting at the boundary. Known, documented behaviour.
+        out = two_sided(["a", "b"], budget=1.0).realizations(5, seed=0)
+        laundered = dataclasses.replace(
+            out,
+            weighting_kind="measure",
+            weights=out._weights,
+            draws=dict(out._draws),
+        )
+        assert laundered.weighting_kind == "measure"
+        assert laundered.weighted_draws(reading_weights_as="measure")[0] == list(out._weights)
 
 
 class TestValueGuards:

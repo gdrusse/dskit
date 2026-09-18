@@ -74,14 +74,27 @@ the consumer builds an expected utility and a tail-risk cap out of them either
 way. A tuple cannot carry which it received, so
 :meth:`RealizationSet.weighted_draws` does not produce that pair until the
 caller NAMES the weighting it is taking (:data:`WEIGHTING_KINDS`), and refuses
-when the name is not what the set actually carries. **The gate is
-load-bearing:** ``weights``/``draws`` are never public attributes of the
-returned value and ``dataclasses.replace`` cannot relabel a
-``weighting_kind`` without re-supplying both, so there is no shorter path to
-the numbers, and no way to relabel them after the fact, that skips naming the
-weighting. The acknowledgement then lives in the calling code, at the
-boundary where the number is acted on. That stops the limitation being lost
-SILENTLY; it cannot stop a caller who types the word and ignores it.
+when the name is not what the set actually carries. **The gate makes the
+honest path convenient and the dishonest one deliberate -- it does not make
+the dishonest one impossible.** ``weights``/``draws`` are constructor-only
+(``InitVar``), which closes the ACCIDENTAL versions of both: there is no
+``rs.weights`` to stumble on, and ``dataclasses.replace`` cannot relabel a
+``weighting_kind`` without the caller re-typing both arrays. A DELIBERATE
+version of either is not closed, and no fourth mechanism is planned to close
+it, because Python has no private: a check on data the caller already holds
+can only ever be advisory. Concretely -- ``rs._weights``/``rs._draws`` are
+one attribute access away and byte-identical to what the gate hands out;
+``object.__setattr__(rs, "weighting_kind", ...)`` relabels a live instance in
+place and :meth:`RealizationSet.weighted_draws` then honours the new label;
+and ``dataclasses.replace`` launders a set the moment those harvested arrays
+are fed back into it as ``weights=``/``draws=``. All three are reproduced and
+pinned as known, documented behaviour in
+``tests/pipeline/test_uncertainty_set.py`` (ADR-0156); none is a defect this
+module is trying, or waiting, to fix. The acknowledgement lives in the
+calling code, at the boundary where the number is acted on, for a caller who
+chooses to put it there. That stops the limitation being lost BY ACCIDENT;
+it cannot stop, and was never able to stop, a caller working around the gate
+on purpose.
 
 **Fail-closed, and loudly.** A non-finite value, an empty family, a deviation
 that would leave the set unbounded, a budget outside its range, mismatched
@@ -208,12 +221,24 @@ def _frozen_floats(mapping):
     return MappingProxyType({str(k): float(v) for k, v in mapping.items()})
 
 
-def _frozen_tree(value):
-    """Return a read-only copy of nested mappings and sequences; other types as given."""
-    if isinstance(value, Mapping):
-        return MappingProxyType({str(k): _frozen_tree(v) for k, v in value.items()})
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return tuple(_frozen_tree(v) for v in value)
+def _frozen_tree(value, _ancestors=frozenset()):
+    """Freeze nested mappings/sequences; sets sort by ``repr`` first, and a cycle refuses by name."""
+    if isinstance(value, (Mapping, list, tuple, set, frozenset)):
+        if id(value) in _ancestors:
+            raise ValueError(
+                "provenance contains a self-referential structure and cannot be frozen"
+            )
+        _ancestors = _ancestors | {id(value)}
+        if isinstance(value, Mapping):
+            return MappingProxyType(
+                {str(k): _frozen_tree(v, _ancestors) for k, v in value.items()}
+            )
+        if isinstance(value, (set, frozenset)):
+            # A set's iteration order depends on PYTHONHASHSEED for string
+            # members; sorting by repr first makes the frozen order the same
+            # regardless of the seed, since repr does not depend on it.
+            value = sorted(value, key=repr)
+        return tuple(_frozen_tree(v, _ancestors) for v in value)
     return value
 
 
@@ -465,8 +490,20 @@ class RealizationSet:
     Read those weights as estimated probabilities and the result is a uniform
     average over budget-feasible corners, not an expectation -- so
     :meth:`weighted_draws` will not hand out the solver-shaped pair until the
-    caller names the weighting it is taking, and there is no other way to read
-    ``weights``/``draws`` back out at all -- neither is a public attribute.
+    caller names the weighting it is taking.
+
+    **That naming is advisory, not enforced.** Neither ``weights`` nor
+    ``draws`` is a public attribute, which closes the ACCIDENTAL way to skip
+    naming it -- there is no ``rs.weights`` to read instead. A DELIBERATE way
+    is not closed, in three ways this module does not try to close, because a
+    check on data the caller already holds is advisory by nature:
+    ``rs._weights``/``rs._draws`` are one attribute access away and
+    byte-identical to :meth:`weighted_draws`'s own numbers;
+    ``object.__setattr__(rs, "weighting_kind", ...)`` relabels a live
+    instance in place and :meth:`weighted_draws` then honours the new label;
+    and ``dataclasses.replace`` launders a set the moment those harvested
+    arrays are fed back into it. All three are pinned as known, documented
+    behaviour in ``tests/pipeline/test_uncertainty_set.py`` (ADR-0156).
 
     Parameters
     ----------
@@ -478,11 +515,13 @@ class RealizationSet:
         every value finite, and not all equal -- a component with no spread is
         a point estimate wearing a set's clothes, refused rather than emitted.
         Both ``weights`` and ``draws`` are constructor-only: neither is
-        retained as a public attribute, so :meth:`weighted_draws` is the only
-        way back to these numbers, and ``dataclasses.replace`` cannot recover
-        them either -- both must be re-supplied, which is what stops a
-        ``weighting_kind`` from being swapped onto numbers that never
-        re-affirmed it.
+        retained under its own name, so an ACCIDENTAL
+        ``dataclasses.replace(rs, weighting_kind=...)`` has nothing to fall
+        back on and refuses instead of swapping the label onto numbers that
+        never re-affirmed it. That refusal is not a barrier against a
+        deliberate relabel -- a caller who passes both back explicitly,
+        harvested from ``rs._weights``/``rs._draws``, is re-supplying exactly
+        what ``replace`` asked for (see the class docstring and ADR-0156).
     weighting_kind : str
         What these weights ARE, a member of :data:`WEIGHTING_KINDS`. It defaults
         to ``"convention"`` because that is the WEAKER claim: silence can demote
@@ -501,8 +540,8 @@ class RealizationSet:
     ValueError
         On an empty family, weights that are negative, non-finite or miss
         summing to one, a draw array whose length does not match the weights, a
-        non-finite draw, a component with no spread, or a ``weighting_kind``
-        outside :data:`WEIGHTING_KINDS`.
+        non-finite draw, a component with no spread, a ``weighting_kind``
+        outside :data:`WEIGHTING_KINDS`, or a self-referential ``provenance``.
 
     Examples
     --------

@@ -13151,30 +13151,44 @@ the module's largest stated limitation, and the reason `worst_case`/
 back out at all, and it refuses a caller who does not name the weighting or
 names the wrong one.
 
-**Re-review response (2026-09-17): the gate is now load-bearing, not merely
-disclosed.** An independent re-review (verdict 0C/1M) proved the
-acknowledgement gate above was trivially bypassable: `RealizationSet.weights`/
-`.draws` were plain public dataclass fields, so a `payoffs()` implementation
-could `return rs.weights, rs.draws` and reach byte-identical numbers to
-`weighted_draws()` without ever naming a weighting, and
+**Re-review response (2026-09-17, corrected by owner ruling): the
+acknowledgement gate is ADVISORY, not load-bearing.** An independent re-review
+(verdict 0C/1M) proved the gate above was trivially bypassable: `RealizationSet.
+weights`/`.draws` were plain public dataclass fields, so a `payoffs()`
+implementation could `return rs.weights, rs.draws` and reach byte-identical
+numbers to `weighted_draws()` without ever naming a weighting, and
 `dataclasses.replace(rs, weighting_kind="measure")` relabelled a convention set
-as a measure without re-stating either array. Both bypasses are closed the
-same way: `weights` and `draws` are now `dataclasses.InitVar` fields
-(`uncertainty_set.py:518-519`) rather than stored fields -- `__post_init__`
-receives them as plain constructor arguments and stores validated copies
-privately as `_weights`/`_draws` (`uncertainty_set.py:559-560`), so neither
-name is ever a public attribute of the returned value, and `weighted_draws`
-(`uncertainty_set.py:610`) is the only method that reads them. Because
-`weights`/`draws` are InitVar with no default, `dataclasses.replace()` cannot
-recover them from the instance and raises (`InitVar 'weights' must be
-specified with replace()`) unless both are re-supplied -- so relabelling a
-`weighting_kind` in place is no longer possible; the caller must construct a
-fresh value and re-affirm the numbers. One limitation this does NOT close, and
-which the module docstring still states plainly: a caller who names the
-weighting correctly and then reasons about the numbers incorrectly anyway
-cannot be stopped by any gate. Pinned by
-`TestTheWeightingSurvivesTheConsumerBoundary::test_the_raw_weights_and_draws_are_not_public_attributes`
-and `::test_replace_cannot_launder_a_convention_into_a_measure`.
+as a measure without re-stating either array. The first response closed the two
+ACCIDENTAL versions -- `weights`/`draws` are now `dataclasses.InitVar` fields,
+so neither name is ever a public attribute and `replace()` without re-supplying
+both arrays refuses -- and called the gate load-bearing. That claim was wrong.
+
+The owner ruled the gate advisory: Python has no private, and a check on data
+the caller already holds can only ever be advisory. Three DELIBERATE bypasses
+were demonstrated, and no fourth patch to close them is authorized (skeptic
+convergence rule). All three are reproduced and pinned as known, documented
+behaviour rather than defects:
+
+1. `rs._weights`/`rs._draws` are one attribute access away and byte-identical
+   to what `weighted_draws()` returns, so a caller who has already decided to
+   skip naming the weighting reads the numbers straight off the instance.
+2. `object.__setattr__(rs, "weighting_kind", "measure")` relabels a live
+   instance in place -- it bypasses the frozen-dataclass guard -- and
+   `weighted_draws()` then honours the new label.
+3. `dataclasses.replace(rs, weighting_kind="measure", weights=rs._weights,
+   draws=dict(rs._draws))` launders a convention set into a measure one the
+   moment those harvested arrays are fed back in, because `replace()` cannot
+   tell a re-supplied array from a re-affirmed one.
+
+The honest statement, now carried by the module docstring and the class
+docstring, is that the gate makes the honest path convenient and the dishonest
+one deliberate: it stops the limitation being lost BY ACCIDENT, never on
+purpose. Pinned by
+`TestTheWeightingAcknowledgmentIsAdvisory::test_the_raw_weights_and_draws_are_not_public_attributes`,
+`::test_replace_without_the_arrays_cannot_recover_them`,
+`::test_the_private_arrays_are_one_attribute_access_away`,
+`::test_a_live_instance_can_be_relabelled_in_place`, and
+`::test_replace_launders_the_set_when_the_arrays_are_resupplied`.
 
 **Tier justification: tier 1** (`dskit/pipeline/uncertainty_set.py`, stdlib
 only). The module is arithmetic over named finite families of numbers. A
