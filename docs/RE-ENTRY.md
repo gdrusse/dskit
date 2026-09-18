@@ -1,5 +1,18 @@
 # Re-entry
 
+## Current wrap: Quantitative Modeling 101 reference (2026-09-18)
+
+Delivered the owner-requested 27-page LaTeX PDF and editable source at
+`children/intraday_equities/docs/explanations/quant-modeling-101.{pdf,tex}`;
+the adjacent Markdown page records build commands, scope, and verification.
+Twenty-five bottom-line-first sections connect finance fundamentals, instruments,
+modeling, honest validation, execution, and capital allocation to equities and
+prediction markets. All pages rendered and visually checked; example arithmetic
+reviewed; no runtime changes or full test-suite run. Base: `9926d5c`.
+Remaining: no document blocker; venue access and fees must be checked at use time.
+Next: use the guide to specify a bounded research hypothesis and net-cost benchmark.
+The prior CMG/TJX operational edits remain outside this isolated documentation wrap.
+
 ## Current checkpoint: production-lane slice landed on main (2026-09-17)
 
 **Merged `claude/prod-lane-20260917` into `main`.** The slice branched at
