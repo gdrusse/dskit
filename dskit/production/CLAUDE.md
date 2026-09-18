@@ -173,6 +173,7 @@ dskit/production/
 ├── feed.py decider.py                 what enters the graph; the re-execution
 ├── guards.py breaker.py arming.py     what may pass; what stops it; who may arm it
 ├── executor.py accounting.py verifier.py coordination.py   the act and its gates
+├── encumbrance.py                      what an outstanding order holds (ADR-0162)
 ├── policy.py control.py resilience.py  the matrices; the inbox; retry/limits/Signer
 ├── ledger.py state.py reconcile.py     the chain; the sole fold; the venue truth
 ├── monitors.py metrics.py alerts.py health.py   what watches, counts, pages, probes

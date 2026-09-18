@@ -311,6 +311,8 @@ dskit/production/
 ├── arming.py          ApprovalVerifier ABC; maker-checker proofs; the arming fold
 ├── executor.py        Executor / SubmittingExecutor; Shadow, Paper, Recorded, Live
 ├── accounting.py      Accounting ABC; PaperAccounting; RecordedAccounting
+├── encumbrance.py     EncumbrancePolicy ABC + the two-policy table; UndeclaredSettlement
+│                      (the null object, available == total); CashSettlement; EncumberedAccounting
 ├── coordination.py    Lease ABC; ProcessLease; LeasePermit; fencing tokens
 ├── policy.py          ActionPolicy; TransitionPolicy; the composed rule sets
 ├── verifier.py        SubmissionVerifier — the final verify-and-call gate

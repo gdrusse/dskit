@@ -903,10 +903,7 @@ class PaperAccounting(Accounting):
             evidence_digest=canonical_hash(
                 {d: {s: e.to_obj() for s, e in by_scope.items()} for d, by_scope in evidence.items()}
             ),
-            balances=tuple(
-                Balance(currency=currency, total=total, available=total, native=None)
-                for currency, total in sorted(state_view.balances.items())
-            ),
+            balances=self._balances(state_view, at_ms),
             positions=tuple(state_view.positions),
             working=tuple(state_view.working.values()),
             measure_evidence=evidence,
@@ -914,6 +911,20 @@ class PaperAccounting(Accounting):
         )
         version = self.bind_tokens(executor, at_ms, economic_seq, account.risk_digest())
         return dataclasses.replace(account, risk_version=version)
+
+    def _balances(self, state_view, at_ms):
+        """Return one ``Balance`` per folded currency; this strategy encumbers nothing.
+
+        The hook ADR-0162 extracted: ``available`` is a DERIVED number,
+        and the paper strategy derives it from an account with no
+        declared settlement convention — so it equals ``total``. A
+        strategy that does hold funds against outstanding orders
+        overrides this hook and nothing else.
+        """
+        return tuple(
+            Balance(currency=currency, total=total, available=total, native=None)
+            for currency, total in sorted(state_view.balances.items())
+        )
 
     # -- requirements: checking and re-anchoring (R8) ---------------------------------
 

@@ -16442,3 +16442,131 @@ No production authority is added and no `deployment_eligible` claim is made.
 `learn`, HPO, final refit, market replay, backtest, paper trading and lockbox
 access remain unauthorized and untouched; the SB3 episode suite constructs no
 SB3 or Gymnasium object at all.
+
+## ADR-0162 — the funds-and-inventory encumbrance seam (`dskit/production/encumbrance.py`)
+
+**Status:** accepted 2026-09-18 under the owner's standing pre-approval of
+tier-1/tier-2 additions for this work (the production-research audit's gaps
+EQ-05 and PM-04, which are one requirement stated twice). Skeptic Phase 0
+applies: this crosses an accounting contract and reads persistent state, so
+actors, authority, identities, transitions, compatibility and non-goals are
+frozen below before RED.
+
+**Context.** `Balance` (`records.py`) already carries `total` and `available`,
+and `PaperAccounting.snapshot` already builds one per folded currency — but it
+writes `available=total` unconditionally. Nothing in the package derives
+`available` from what is outstanding. `Accounting.classify` computes signed
+exposure to LABEL a proposal's risk effect; `guards.Exposure`/`ExposureAfter`
+value working orders for a LIMIT check; `cashflows.py` schedules EXTERNAL
+deposits and withdrawals on a calendar. None of the three is a cash reservation
+ledger, and `"buying_power"` exists only as an uncomputed metrics label, as an
+externally supplied child input, and as a solver bound — never as something
+derived from committed funds.
+
+The word "reserve" is already spoken for four times in this tree:
+`arming.ReductionRights.reserve` (a single-use authorization right),
+`ledger.reserve_once` (an idempotent id claim), `resilience.RateLimiter`'s
+`reserved` cancel lane, and ADR-0157's authorization reserve (the onboarding
+admission ledger). None of them is brokerage cash. This decision therefore uses
+**encumbrance** throughout — a claim held against the account's own resources
+by something not yet finished. The noun is new to the repository, so no reader
+has to disambiguate it from the four.
+
+**Actors and authority.** The fold (`SeriesState`) remains the sole owner of
+positions, working orders and balances; the encumbrance seam DERIVES and never
+books. The injected history collaborator (`reconcile.LedgerHistory`) remains
+the sole source of fills. The seam mints no record kind, takes no lock and
+writes nothing, so it adds no authority and cannot corrupt the chain. The
+settlement period, the balance basis, margin, borrow and locate are owner and
+venue facts: the package holds none of them, and refuses when one is needed and
+absent.
+
+**Decision.**
+
+1. A new tier-1 module `dskit/production/encumbrance.py` holds one structural
+   ABC, `EncumbrancePolicy`, with three `@abstractmethod` hooks —
+   `encumber(state_view, at_ms, history)`, `fill_horizon_ms()` and
+   `borrow(instrument, qty, state_view, at_ms)` — plus two concrete
+   base-owned methods: `balances(...)`, the ONE owner of
+   `available = total - committed - unsettled`, and `admit(...)`, the ONE
+   owner of "may this proposal be committed".
+
+2. `EncumbrancePolicy` is a seam with a TABLE, not a §4.3 registry — the
+   `readiness.Evidence`, `report.ReportEmitter` and `metrics.EventAdapter`
+   precedent. No document key selects an encumbrance policy in this slice, and
+   a registry would add a §4.3 family nothing selects (and a twenty-fifth row
+   to the pin `test_oop.py` holds). `ENCUMBRANCE_POLICIES` maps the two core
+   names to their classes and is what `_PARAMS` resolves against.
+
+3. Two core policies. `UndeclaredSettlement` is the null object: it encumbers
+   nothing, so `balances` returns `available == total` through the SAME
+   arithmetic rather than through a special case, and it touches no history.
+   Its `admit` REFUSES — an account with no declared convention may report the
+   legacy figure but may never authorize a commitment against it.
+   `CashSettlement` is the real one: it requires `settlement_lag_ms` and
+   `balance_basis`, neither with a default, and refuses at construction when
+   either is absent.
+
+4. `BALANCE_BASES = ("trade_date", "settlement_date")` joins `vocab.py`, where
+   every closed set lives. Whether the balance a series folds already reflects
+   a fill at trade time is a venue and operations fact this package cannot
+   know: `SeriesState` moves `balances` only on `cash_flow`, yet a
+   reconciliation `adjustment` can sync folded cash to venue cash. Guessing
+   either way is the invented formula this ADR refuses to write, so the basis
+   is declared and dispatched through a table keyed by the vocabulary.
+
+5. `EncumberedAccounting(PaperAccounting)` lives in the new module, declares
+   `_PARAMS = ("encumbrance",)`, resolves its policy from the table and
+   overrides ONE new hook, `PaperAccounting._balances(state_view, at_ms)`.
+   `accounting.py`'s only change is extracting that hook out of `snapshot`
+   with an identical body. The import arrow points `encumbrance -> accounting`
+   and never back.
+
+**Identities and transitions.** An encumbrance has no id and no lifecycle of
+its own: it is a pure function of `(StateView, at_ms, history)`. Its
+transitions are the order and fill transitions the fold already owns. A working
+order — `pending`, `open`, `partial`, `pending_cancel` or `unknown` — holds its
+commitment; only a `TERMINAL_STATUSES` member releases it; and the FILLED
+portion of a partial leaves `remaining_qty` and reappears as a settlement
+obligation through the fill history, never as free cash. `unknown` is
+deliberately not terminal, so an uncertain remainder stays encumbered — §5.0's
+"the absence of certainty, not an end", applied to money.
+
+**Restart.** Nothing is held in memory. `StateView` is rebuilt by
+`SeriesState`/`Recovery` from the durable snapshot plus the chain, and the
+fills come from the chain through `LedgerHistory`; re-deriving at the same
+`at_ms` over the same chain therefore reproduces the same encumbrance, which is
+what "survives restart" means here. No parallel store is introduced, and there
+is no in-memory reservation that a crash could lose or double-count.
+
+**Compatibility.** `PaperAccounting` keeps `available == total` exactly, for
+every existing document, because the extracted hook's body is unchanged and no
+existing document names the new class. The new behaviour is reached only by
+explicitly selecting `EncumberedAccounting` and declaring a policy; `_PARAMS`
+grows from `()` to `("encumbrance",)` on the SUBCLASS only, which loosens
+nothing on the base and refuses nothing a base document used to allow. A silent
+change to `available` under every existing document was rejected for exactly
+this reason: an operator reading a narrower `available` that no document asked
+for is a behaviour change nobody approved.
+
+**Non-goals.** No margin, borrow, locate or short-sale modelling beyond the
+`borrow` refusal hook, which core answers with a refusal naming the instrument.
+No corporate actions and no cash distributions. No fee or slippage estimate
+inside a commitment — a commitment is `remaining_qty * limit`, and a market
+order with no declared price REFUSES rather than being valued by a guess. No
+multi-currency attribution: an order carries no currency, so a balance set
+spanning currencies refuses, exactly as `PaperAccounting.value` already does.
+No inventory settlement — only cash settles, and units committed to a working
+sell are the only inventory encumbrance. No document key, no rung-table row and
+no `ACCOUNTING_KINDS` registration in this slice; wiring any of them is a
+separate decision that would move document identity. No child is wired. A
+proposal whose size the fold cannot see — a `StateView.pending` client ref,
+whose intent has landed but whose `order_event` has not, and whose quantity the
+view does not carry — makes `admit` refuse rather than under-encumber.
+
+**Consequences.** Both children (equities EQ-05, pmquant PM-04) wrap ONE seam
+instead of writing two. The audit's acceptance test becomes expressible against
+core alone: two leads against one scarce balance, a partial fill whose
+remainder is `unknown`, a restart, and the two refusals (unavailable borrow,
+insufficient settled funds). Nothing here establishes broker conformance, and
+this package asserts no settlement period, margin rate or borrow rule.
