@@ -38,11 +38,12 @@ from dataclasses import dataclass
 
 from dskit.pipeline.records import MarketRecord
 
-from .fees import trading_fee_for_series
+from .fees import DEFAULT_FILL_FEE_POLICY, fill_fee_policy, trading_fee_for_series
 
 __all__ = [
     "CROSS_EPS",
     "EPOCH_KINDS",
+    "FILL_FEE_POLICY",
     "NET_EDGE_EPS",
     "BookSnapshot",
     "ContractInputs",
@@ -67,6 +68,21 @@ __all__ = [
 
 #: The three kinds of decision epoch a ladder is read at.
 EPOCH_KINDS = ("open", "lead", "settle")
+
+#: The DEFAULT biller for a fill: the venue's encoded invoice rule, one
+#: fee on the total at VWAP. It is the default and not the only answer,
+#: because a document's sizer reserves against a declared
+#: :class:`~pmquant.fees.FillFeePolicy` that need not be this one, and the
+#: two then price the SAME fill differently — ``order_vwap`` bills 15.80
+#: on 300 lots at 0.20 plus 300 at 0.45 at rate 0.12 where ``per_fill``
+#: bills 14.67. ``conservative`` diverging upward is harmless (the sizer
+#: reserved more than the invoice), but ``per_fill`` diverges DOWNWARD —
+#: the sizer would reserve less than this walk bills. So :func:`walk_book`
+#: takes a ``policy``: hand it the document's own and the sizer and the
+#: fill path price one fill identically; leave it out and the walk
+#: simulates the invoice. It is the one shared policy OBJECT either way,
+#: never a second copy of the arithmetic.
+FILL_FEE_POLICY = fill_fee_policy(DEFAULT_FILL_FEE_POLICY)
 
 #: A book is crossed when the best YES ask and best NO ask sum to less
 #: than one dollar by more than representation dust; a TOUCHING book
@@ -867,7 +883,7 @@ class FillResult:
     levels: tuple
 
 
-def walk_book(book, order):
+def walk_book(book, order, policy=None):
     """Walk an executable ladder best-first and fill an order against it.
 
     Parameters
@@ -876,14 +892,21 @@ def walk_book(book, order):
         The ladder, in executable order.
     order : Order
         Lots wanted, the limit, and the threaded fee rate.
+    policy : FillFeePolicy or None
+        How the levels hit are aggregated into a bill. ``None`` takes
+        :data:`FILL_FEE_POLICY`, the venue's invoice rule. A caller
+        sizing under a document's own ``fee_policy`` passes THAT policy,
+        so the sizer's reserve and this walk price one fill identically;
+        otherwise a ``per_fill`` document would reserve less than this
+        walk bills.
 
     Returns
     -------
     FillResult
         Best-first partial fills up to the limit, VWAP, slippage against
-        the mid, and ONE fee on the total at VWAP through the venue
-        dispatch. An empty fill is ``is_partial=True`` with ``nan``
-        prices and a zero fee.
+        the mid, and the levels actually hit billed through ``policy``.
+        An empty fill is ``is_partial=True`` with ``nan`` prices and a
+        zero fee.
     """
     mid = float(book.mid) if book.mid is not None else book.best_price
     remaining = order.size
@@ -905,6 +928,7 @@ def walk_book(book, order):
         return FillResult(0, True, nan, nan, 0.0, nan, ())
     vwap = sum(h.price * h.contracts for h in hits) / filled
     slip = (vwap - mid) if book.side == "ask" else (mid - vwap)
-    fee = trading_fee_for_series(book.ticker, filled, vwap, order.fee_rate)
+    biller = FILL_FEE_POLICY if policy is None else policy
+    fee = biller.fee_for(book.ticker, [(h.price, h.contracts) for h in hits], order.fee_rate)
     premium = filled * vwap if book.side == "ask" else filled * (1.0 - vwap)
     return FillResult(filled, filled < order.size, vwap, slip, fee, premium + fee, tuple(hits))
