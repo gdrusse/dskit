@@ -1,5 +1,84 @@
 # Re-entry
 
+## Current checkpoint: the uncertainty layer lands, two of four merged (2026-09-17)
+
+The owner worked the child's **Path to Production** end to end and locked the
+remaining seven rows, taking it from 5 locked of 14 to **12, with zero open**.
+Four generic dskit modules were built against those rows, each through
+build -> two-lens skeptic review -> correction -> independent re-review.
+
+**Merged here (both re-reviewed 0C/0M):**
+
+- **ADR-0152 `dskit/pipeline/false_signal.py`** (A18039) -- `pi_hat` plus a
+  widened `pi_widened` per signal, from out-of-fold evidence and a scramble
+  null. Storey null share over a Grenander least-concave majorant.
+- **ADR-0151 `dskit/pipeline/mean_interval.py`** (A18041) -- mean, dependence-
+  aware SE and two-sided bounds; the dependence statement is required and never
+  defaulted. Mostly thin delegation to `cluster_bootstrap_t` and
+  `newey_west_mean`; what was missing was an interval on the HAC path.
+
+**Both withdrew a claim rather than overclaim it, and that is the theme of the
+whole round.** `false_signal` measured 53-84% coverage against a 95% nominal,
+tried a DKW repair, measured that it reaches 95% only by returning 1.0 for
+every signal, and renamed `pi_upper` -> `pi_widened` / `confidence` ->
+`widening_level`. `mean_interval` measured 87.8-90.4% on the `overlap_steps`
+path (71.5-81.5% under AR(1)) and SPLIT the result type:
+`ClusterBootstrapInterval` keeps a calibrated `ConfidenceInterval` on the
+`units` path (measured 94.6-96.3%), `NeweyWestInterval` returns a
+`WidenedInterval`. Both ship their Monte Carlo as tests that fail if a future
+change ever does buy coverage.
+
+**The `stats.py` merge hazard is resolved, and it was real.** This round
+promoted two private helpers concurrently: `_betai` ->
+`regularized_incomplete_beta` (deleting `_betai`) and `_student_sf` ->
+`student_t_sf` (adding preconditions, body still calling `_betai`). A naive
+resolution leaves `student_t_sf` calling a deleted function -- `NameError` on
+every call, including `across_fold_t` and every `NeweyWestInterval`. Resolved
+as ADR-0151 prescribed; verified by running.
+
+**NOT merged, still on their branches:**
+
+- **ADR-0155 `outcome_interval.py`** (A18042), `codex/return-uncertainty-20260917`.
+  Block-conformal predictive intervals and joint scenario sets. Re-review
+  `0C/3M`: `TwoSidedBlockConformalInterval`'s `alpha/2` halving has no
+  regression test (mutating it away passes all 163 tests and drops held-out
+  coverage to 0.85 against a 0.90 target); `OverflowError` leaks from the new
+  validation on huge ints; `draw_blocks` has no upper bound and hangs at
+  `n_scenarios=10**9`. A fix pass was in flight at wrap.
+- **ADR-0156 `uncertainty_set.py`** (A18044/46/47), `codex/uncertainty-sets-20260917`.
+  One budgeted Bertsimas-Sim family, three members. Arithmetic independently
+  re-derived against scipy/HiGHS over 900 randomized trials, zero mismatches.
+  **Owner ruling: its acknowledgement gate is ADVISORY and every claim must say
+  so.** Three mechanisms were tried and all three bypassed (`rs._weights`;
+  `object.__setattr__` relabelling, after which the sanctioned method launders
+  the numbers; `replace()` with the private values supplied back). Python has no
+  private, so a gate on data the caller already holds cannot be enforced. Under
+  the `skeptic-review.md` convergence rule **no fourth patch is authorized** --
+  a truth-in-documentation pass was in flight at wrap.
+
+**ADR numbering is now assigned centrally, not scanned.** Four collisions
+happened in one day because concurrent lanes each scanned `max + 1` from the
+same base, and two of them even skipped the same number for each other. 0149
+(main), 0151, 0152, 0155, 0156 are taken; 0150 is deliberately vacant.
+
+**First end-to-end P&L on real bars.** A scratchpad probe wired real Alpaca
+bars through the shipped chain into `DevelopmentReplay`: 2,872 fills, 0
+refused, 0 skipped, then folded through `production.accounting.WindowBook`.
+**Net -$203.65 on gross +$9.68 -- fees were $213.33, 22x the gross.** Win rate
+21.9% net against 49.4% gross; the gap between those two is the finding. LLY
+alone is -$110.64, because bps fees scale with share price on a fixed 1-share
+lot, so the loss is substantially a SIZING artifact -- which is what the
+unbuilt MIO path exists to fix. Write-up at
+`~/scratch/dev-replay-pnl-result.md`. Development-window evidence,
+`deployment_eligible=false`; not a strategy and not evidence of edge.
+
+**Note for the next session.**
+`children/intraday_equities/configs/run-development-replay.json` is still the
+one-node stub it has always been, and `tests/test_configs.py` pins it into
+`_NON_MARKET_RUN_DOCS` ("no bars read", ADR-0120). The probe deliberately lives
+outside the repo for that reason. Wiring a real-bars replay wants its own
+config, not an edit to that one.
+
 ## Current checkpoint: ADR-0149 dimensionality reduction shipped (2026-09-17)
 
 **Shipped.** ADR-0149 (owner-approved) adds dimensionality reduction to the
