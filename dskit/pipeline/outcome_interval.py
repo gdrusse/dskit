@@ -178,15 +178,33 @@ def _block_ok(value):
     return isinstance(value, str) and value != ""
 
 
+def _finite_ok(value):
+    """``records.number_ok``, but never raises on a magnitude too large for a float.
+
+    ``math.isfinite`` raises ``OverflowError`` -- not ``ValueError`` --
+    when handed an ``int`` too large to convert to a ``float`` (Python
+    ints are unbounded; floats are not, so ``float(10**400)`` overflows).
+    Every refusal in this module is documented as ``ValueError``, so this
+    module's own boundary must absorb that one extra stdlib failure mode
+    itself rather than let it leak past the documented contract (M-A,
+    re-review 2026-09-17). Never touches ``records.number_ok`` -- other
+    modules depend on its exact behavior.
+    """
+    try:
+        return number_ok(value)
+    except OverflowError:
+        return False
+
+
 def _check_coverage(value):
     """Refuse a coverage that is not a finite number strictly inside (0, 1)."""
-    if not number_ok(value) or not 0.0 < float(value) < 1.0:
+    if not _finite_ok(value) or not 0.0 < float(value) < 1.0:
         raise ValueError(f"coverage must be a number in (0, 1), got {value!r}")
 
 
 def _check_level(value):
     """Refuse a level that is not a finite number in (0, 1]."""
-    if not number_ok(value) or not 0.0 < float(value) <= 1.0:
+    if not _finite_ok(value) or not 0.0 < float(value) <= 1.0:
         raise ValueError(f"level must be a number in (0, 1], got {value!r}")
 
 
@@ -238,7 +256,20 @@ def _closed_pinball(q, y, tau):
 
 
 def _frozen_tree(value):
-    """Return a read-only copy of nested mappings and sequences; other values as given."""
+    """Return a read-only copy of nested mappings and sequences; other values as given.
+
+    Recurses through ``Mapping``/``list``/``tuple``/``set``/``frozenset``
+    only; a leaf of any other type (including a custom mutable object) is
+    returned BY REFERENCE, unfrozen -- disclosed, not a gap, because the
+    only internal producer, :meth:`OutcomeCalibrator._provenance`, ever
+    builds ``provenance`` from flat scalars plus one list of strings, so
+    no such leaf reaches here today. For the same reason this has no
+    cycle guard: realistic dict/list/tuple/set nesting is fine to any
+    depth, but a directly-constructed, self-referential ``provenance``
+    (bypassing the calibrator) exhausts the recursion stack rather than
+    refusing by name. Widen this the day a producer other than
+    ``_provenance`` feeds it.
+    """
     if isinstance(value, Mapping):
         return MappingProxyType({str(k): _frozen_tree(v) for k, v in value.items()})
     if isinstance(value, (list, tuple, set, frozenset)):
@@ -282,8 +313,10 @@ class BlockResiduals:
     ValueError
         On an empty or duplicated family, no rows, a row of the wrong
         width, a non-finite residual, misaligned or unusable blocks,
-        non-contiguous blocks, out-of-order stamps, or fewer than
-        :data:`MIN_CALIBRATION_BLOCKS` distinct blocks.
+        non-contiguous blocks, out-of-order stamps, fewer than
+        :data:`MIN_CALIBRATION_BLOCKS` distinct blocks, or an unusable
+        ``names``/``rows``/``blocks``/``stamps`` container (e.g. ``None``
+        or a row that is not itself a sequence).
 
     Examples
     --------
@@ -306,7 +339,10 @@ class BlockResiduals:
 
     def __post_init__(self):
         """Normalize every field to tuples and refuse a panel that cannot be used."""
-        names = tuple(self.names)
+        try:
+            names = tuple(self.names)
+        except TypeError:
+            raise ValueError(f"names must be a sequence of strings, got {self.names!r}") from None
         if not names:
             raise ValueError("names must hold at least one component")
         for name in names:
@@ -315,7 +351,12 @@ class BlockResiduals:
         if len(set(names)) != len(names):
             raise ValueError(f"names must be unique — duplicate in {list(names)}")
 
-        rows = tuple(tuple(row) for row in self.rows)
+        try:
+            rows = tuple(tuple(row) for row in self.rows)
+        except TypeError as exc:
+            raise ValueError(
+                f"rows must be a sequence of sequences of numbers, got {self.rows!r}: {exc}"
+            ) from None
         if not rows:
             raise ValueError("rows must hold at least one row")
         width = len(names)
@@ -326,13 +367,16 @@ class BlockResiduals:
                     f"(one per component in {list(names)})"
                 )
             for position, value in enumerate(row):
-                if not number_ok(value):
+                if not _finite_ok(value):
                     raise ValueError(
                         f"row {index} component {names[position]!r} is not a finite "
                         f"number: {value!r}"
                     )
 
-        blocks = tuple(self.blocks)
+        try:
+            blocks = tuple(self.blocks)
+        except TypeError:
+            raise ValueError(f"blocks must be a sequence of block ids, got {self.blocks!r}") from None
         if len(blocks) != len(rows):
             raise ValueError(
                 f"blocks holds {len(blocks)} labels for {len(rows)} rows — the two must agree"
@@ -358,7 +402,10 @@ class BlockResiduals:
                 f"got {len(seen)}"
             )
 
-        stamps = tuple(self.stamps)
+        try:
+            stamps = tuple(self.stamps)
+        except TypeError:
+            raise ValueError(f"stamps must be a sequence of numbers, got {self.stamps!r}") from None
         if stamps:
             if len(stamps) != len(rows):
                 raise ValueError(
@@ -366,7 +413,7 @@ class BlockResiduals:
                     "the two must agree"
                 )
             for index, stamp in enumerate(stamps):
-                if not number_ok(stamp):
+                if not _finite_ok(stamp):
                     raise ValueError(f"stamps at row {index} is not a finite number: {stamp!r}")
             if any(b < a for a, b in zip(stamps, stamps[1:])):
                 raise ValueError("stamps must be non-decreasing — the rows are not time-ordered")
@@ -516,7 +563,14 @@ class OutcomeIntervalResult:
         average, because an average hides the regime that fails.
     tail_loss : mapping
         ``name -> float``: weighted ``metrics.pinball`` at both
-        endpoints' quantile levels.
+        endpoints' quantile levels, via :func:`_closed_pinball` so the
+        ``tau in {0, 1}`` boundary at ``achieved_level == 1.0`` has a
+        value instead of crashing. At that boundary the two offsets are
+        the sample extremes, so they bracket EVERY calibration value by
+        construction and both closed-form pinball terms are identically
+        zero for both calibrators -- ``tail_loss`` reads ``0.0`` for
+        every component, correctly: there is no remaining tail to price
+        once nothing in the calibration set lies outside the band.
     n_blocks, n_rows : int
         The calibration panel's size.
     calibration_hash : str
@@ -595,7 +649,9 @@ class ScenarioSet:
     ValueError
         On an empty family, weights that are negative, non-finite or miss
         summing to one, a draw array whose length does not match the
-        weights, a non-finite draw, or a component with no spread.
+        weights, a non-finite draw, a component with no spread, or an
+        unusable ``weights``/``draws`` container (e.g. ``None`` or a
+        non-mapping ``draws``).
 
     Examples
     --------
@@ -620,11 +676,16 @@ class ScenarioSet:
 
     def __post_init__(self):
         """Refuse a set a consumer could not safely maximize against."""
-        weights = tuple(float(w) for w in self.weights)
+        try:
+            weights = tuple(float(w) for w in self.weights)
+        except (TypeError, OverflowError) as exc:
+            raise ValueError(
+                f"weights must be a sequence of numbers, got {self.weights!r}: {exc}"
+            ) from None
         if not weights:
             raise ValueError("weights must be a non-empty sequence")
         for index, weight in enumerate(weights):
-            if not number_ok(weight) or weight < 0.0:
+            if not _finite_ok(weight) or weight < 0.0:
                 raise ValueError(
                     f"weights must be finite and >= 0 — weight {index} is {weight!r}"
                 )
@@ -632,7 +693,18 @@ class ScenarioSet:
         if abs(total - 1.0) > WEIGHTS_SUM_TOLERANCE:
             raise ValueError(f"weights must sum to 1 within {WEIGHTS_SUM_TOLERANCE}, got {total!r}")
 
-        draws = {name: tuple(float(v) for v in values) for name, values in self.draws.items()}
+        if not isinstance(self.draws, Mapping):
+            raise ValueError(
+                f"draws must be a mapping of name -> sequence of numbers, got {self.draws!r}"
+            )
+        draws = {}
+        for name, values in self.draws.items():
+            try:
+                draws[name] = tuple(float(v) for v in values)
+            except (TypeError, OverflowError) as exc:
+                raise ValueError(
+                    f"draws[{name!r}] must be a sequence of numbers, got {values!r}: {exc}"
+                ) from None
         if not draws:
             raise ValueError("draws must name at least one component")
         for name, values in draws.items():
@@ -642,7 +714,7 @@ class ScenarioSet:
                     "(one value per weight)"
                 )
             for index, value in enumerate(values):
-                if not number_ok(value):
+                if not _finite_ok(value):
                     raise ValueError(
                         f"draws[{name!r}] scenario {index} is not a finite number: {value!r}"
                     )
@@ -929,7 +1001,7 @@ class OutcomeCalibrator(ABC):
     def _checked_level(self, coverage, n_blocks):
         """Take the member's level and refuse one that is narrower or impossible."""
         level = self.achievable_level(coverage, n_blocks)
-        if not number_ok(level) or not coverage - _QUANTILE_EPS <= float(level) <= 1.0:
+        if not _finite_ok(level) or not coverage - _QUANTILE_EPS <= float(level) <= 1.0:
             raise ValueError(
                 f"{type(self).__name__}.achievable_level returned {level!r} for coverage "
                 f"{coverage!r} — a level must lie in [coverage, 1]; below it the interval "
@@ -952,7 +1024,7 @@ class OutcomeCalibrator(ABC):
             if not isinstance(pair, (tuple, list)) or len(pair) != 2:
                 raise ValueError(f"{member}.offsets[{name!r}] must be a (lower, upper) pair")
             lower, upper = pair
-            if not number_ok(lower) or not number_ok(upper):
+            if not _finite_ok(lower) or not _finite_ok(upper):
                 raise ValueError(
                     f"{member}.offsets[{name!r}] must be finite numbers, got {pair!r}"
                 )
@@ -1061,7 +1133,14 @@ class BlockCalibrator(OutcomeCalibrator):
         if isinstance(n_blocks, bool) or not isinstance(n_blocks, int) or n_blocks < 1:
             raise ValueError(f"n_blocks must be a positive int, got {n_blocks!r}")
         coverage = float(coverage)
-        level = math.ceil((n_blocks + 1) * coverage) / n_blocks
+        try:
+            level = math.ceil((n_blocks + 1) * coverage) / n_blocks
+        except OverflowError:
+            # n_blocks is a positive int (checked above) but too large for
+            # the int * float multiplication to convert to a float (M-A,
+            # re-review 2026-09-17) -- name it rather than leak the raw
+            # OverflowError past this method's documented ValueError.
+            raise ValueError(f"n_blocks is too large to compute a level from: {n_blocks!r}") from None
         if level > 1.0:
             raise ValueError(
                 f"coverage {coverage!r} is not achievable from {n_blocks} blocks — the "
@@ -1092,12 +1171,26 @@ class BlockCalibrator(OutcomeCalibrator):
         TypeError
             When ``residuals`` is not a :class:`BlockResiduals`.
         ValueError
-            When ``n_scenarios`` is not a non-negative int, or ``rng``
-            does not expose ``randrange``.
+            When ``n_scenarios`` is not an int between :data:`MIN_SCENARIOS`
+            and :data:`MAX_SCENARIOS`, or ``rng`` does not expose
+            ``randrange``.
         """
         self._require_panel(residuals)
-        if isinstance(n_scenarios, bool) or not isinstance(n_scenarios, int) or n_scenarios < 0:
-            raise ValueError(f"n_scenarios must be a non-negative int, got {n_scenarios!r}")
+        if (
+            isinstance(n_scenarios, bool)
+            or not isinstance(n_scenarios, int)
+            or not MIN_SCENARIOS <= n_scenarios <= MAX_SCENARIOS
+        ):
+            # Bounded to match the scenarios() template (M-B, re-review
+            # 2026-09-17): this hook is directly callable, documented as
+            # such, and its own while loop has no upper bound of its own
+            # -- an unchecked n_scenarios (10**9 or larger) hangs rather
+            # than refusing, which a property test would discover as a
+            # timeout or an OOM instead of a clean ValueError.
+            raise ValueError(
+                f"n_scenarios must be an int between {MIN_SCENARIOS} and {MAX_SCENARIOS}, "
+                f"got {n_scenarios!r}"
+            )
         if not callable(getattr(rng, "randrange", None)):
             raise ValueError(
                 f"rng must be a random.Random-like generator exposing randrange, got {rng!r}"
@@ -1233,8 +1326,8 @@ def register_calibrator(name, cls, doc="") -> None:
     Raises
     ------
     ValueError
-        When ``name`` is already registered, or ``cls`` is not an
-        :class:`OutcomeCalibrator` subclass.
+        When ``name`` is already registered, is not hashable, or ``cls``
+        is not an :class:`OutcomeCalibrator` subclass.
 
     Examples
     --------
@@ -1244,7 +1337,13 @@ def register_calibrator(name, cls, doc="") -> None:
             "my-stationary", MyStationaryBlocks, doc="Geometric run lengths."
         )
     """
-    if name in CALIBRATORS:
+    try:
+        already = name in CALIBRATORS
+    except TypeError:
+        # Same family as calibrator()'s unhashable-name gap: a list or
+        # dict fails the membership test itself, not just the lookup.
+        raise ValueError(f"calibrator name must be hashable, got {name!r}") from None
+    if already:
         raise ValueError(f"calibrator {name!r} is already registered")
     if not (isinstance(cls, type) and issubclass(cls, OutcomeCalibrator)):
         raise ValueError(f"calibrator {name!r} must be an OutcomeCalibrator subclass, got {cls!r}")
@@ -1279,7 +1378,10 @@ def calibrator(name):
     """
     try:
         return CALIBRATORS[name]
-    except KeyError:
+    except (KeyError, TypeError):
+        # TypeError alongside KeyError: an unhashable name (a list, a
+        # dict) fails the dict lookup itself rather than missing it, and
+        # this function's docstring promises ValueError either way.
         raise ValueError(f"unknown calibrator {name!r} — known: {sorted(CALIBRATORS)}") from None
 
 

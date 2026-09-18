@@ -12,6 +12,7 @@ import pytest
 from dskit.pipeline.attempts import utc_day
 from dskit.pipeline.driver import _canonical_hash
 from dskit.pipeline.libs.pyomo import HARD_N_SCENARIOS_CEILING
+from dskit.pipeline.node import class_ref
 from dskit.pipeline.outcome_interval import (
     CALIBRATORS,
     DEFAULT_COVERAGE,
@@ -334,19 +335,34 @@ class TestCalibrate:
         ev = _residuals(n_blocks=30, per_block=6, names=("a",))
         result = BlockConformalInterval().calibrate(ev, coverage=0.9, window_blocks=10)
         prov = result.provenance
-        assert prov["block_rule"].endswith("BlockConformalInterval")
+        # Exact match, not .endswith(...): a bare type(self).__name__ ends
+        # with "BlockConformalInterval" too, so .endswith survived that
+        # mutation (mutation-probe finding, re-review 2026-09-17).
+        assert prov["block_rule"] == class_ref(BlockConformalInterval)
         assert prov["window_blocks"] == 10
         assert prov["first_block"] == ev.block_ids[0]
         assert prov["last_block"] == ev.block_ids[-1]
         assert prov["first_stamp"] == ev.stamps[0]
+        assert prov["n_rows"] == ev.n_rows == 180
         assert result.calibration_hash == ev.digest()
         assert result.n_blocks == 30 and result.n_rows == 180
 
     def test_the_result_mappings_cannot_be_mutated(self):
+        # All SIX frozen fields, not just two: removing realized_coverage,
+        # conditional_coverage or tail_loss from the freeze loop survived
+        # the prior suite entirely (mutation-probe finding, re-review
+        # 2026-09-17).
         ev = _residuals(n_blocks=20, per_block=4, names=("a",))
         result = BlockConformalInterval().calibrate(ev, coverage=0.9, window_blocks=5)
-        with pytest.raises(TypeError):
-            result.lower_offset["a"] = 0.0
+        for field_name in (
+            "lower_offset",
+            "upper_offset",
+            "realized_coverage",
+            "conditional_coverage",
+            "tail_loss",
+        ):
+            with pytest.raises(TypeError):
+                getattr(result, field_name)["a"] = 0.0
         with pytest.raises(TypeError):
             result.provenance["block_rule"] = "x"
 
@@ -503,8 +519,11 @@ class TestScenarios:
         s = BlockConformalInterval().scenarios(ev, n_scenarios=32, seed=9)
         assert s.seed == 9
         assert s.calibration_hash == ev.digest()
-        assert s.provenance["block_rule"].endswith("BlockConformalInterval")
+        # Exact match, not .endswith(...) — see the twin assertion in
+        # TestCalibrate.test_the_result_records_its_provenance.
+        assert s.provenance["block_rule"] == class_ref(BlockConformalInterval)
         assert s.provenance["n_blocks"] == 30
+        assert s.provenance["n_rows"] == ev.n_rows
         assert s.provenance["first_block"] == ev.block_ids[0]
 
     def test_the_scenario_set_is_frozen_and_its_draws_unmutable(self):
@@ -832,6 +851,85 @@ class TestMeasuredCoverage:
         # worse than the pooled average, and the result says so.
         assert result.conditional_coverage["a"] < result.realized_coverage["a"]
 
+
+class TestTwoSidedOffsetsUseHalfAlphaPerTail:
+    """M-C (re-review 2026-09-17): TwoSidedBlockConformalInterval.offsets
+    computes each tail at ``alpha / 2.0`` -- the two-sided split-conformal
+    shape, each tail carrying half the miscoverage. Mutating away the
+    ``/2`` (a full ``alpha`` per tail) still returns a VALID interval
+    (finite, lower <= upper) but a narrower one, and TestMeasuredCoverage
+    above never exercises this class at all -- only BlockConformalInterval.
+    This pins the two tail LEVELS directly via _weighted_quantile, the
+    same primitive offsets() calls, with the tail probabilities re-derived
+    independently by the test rather than read off the result, and
+    self-checks that the panel actually tells the two formulas apart."""
+
+    def test_the_tail_offsets_are_the_half_alpha_quantiles_not_the_full_alpha_ones(self):
+        from dskit.pipeline.outcome_interval import _weighted_quantile
+
+        ev = _residuals(n_blocks=40, per_block=20, names=("a",), seed=42)
+        member = TwoSidedBlockConformalInterval()
+        level = member.achievable_level(0.9, ev.n_blocks)
+        result = member.calibrate(ev, coverage=0.9, window_blocks=10)
+        assert result.achieved_level == level
+
+        weights = ev.row_weights()
+        values = list(ev.column("a"))
+        alpha = 1.0 - level
+        expected_lower = _weighted_quantile(values, weights, alpha / 2.0)
+        expected_upper = _weighted_quantile(values, weights, 1.0 - alpha / 2.0)
+
+        # Self-check: the full-alpha (mutant) computation must actually
+        # differ on this panel, or the assertions below would pass by
+        # coincidence rather than by exercising the /2.
+        mutant_lower = _weighted_quantile(values, weights, alpha)
+        mutant_upper = _weighted_quantile(values, weights, 1.0 - alpha)
+        assert (expected_lower, expected_upper) != (mutant_lower, mutant_upper)
+
+        assert result.lower_offset["a"] == min(expected_lower, expected_upper)
+        assert result.upper_offset["a"] == max(expected_lower, expected_upper)
+
+
+@pytest.mark.slow
+class TestMeasuredCoverageTwoSided:
+    """M-C (re-review 2026-09-17): the empirical coverage experiment
+    TestMeasuredCoverage runs for BlockConformalInterval, repeated here for
+    TwoSidedBlockConformalInterval -- same design, same constants, held-out
+    blocks. The finding's own reproduction: at target 0.90 the correct
+    alpha/2-per-tail offsets measure ~0.93 held-out coverage; a full-alpha
+    mutant measures ~0.85, under target."""
+
+    TARGET = 0.9
+    CAL_BLOCKS = 40
+    TEST_BLOCKS = 40
+    REPS = 60
+
+    def _run(self):
+        coverage = []
+        for rep in range(self.REPS):
+            cal_rows, cal_blocks = _panel(self.CAL_BLOCKS, seed=3000 + rep)
+            test_rows, _ = _panel(self.TEST_BLOCKS, seed=7000 + rep)
+            ev = BlockResiduals(names=("a", "b"), rows=cal_rows, blocks=cal_blocks)
+            result = TwoSidedBlockConformalInterval().calibrate(
+                ev, coverage=self.TARGET, window_blocks=10
+            )
+            coverage.append(
+                _empirical_coverage(test_rows, 0, result.lower_offset["a"], result.upper_offset["a"])
+            )
+        return coverage
+
+    def test_out_of_block_coverage_holds_near_the_target(self):
+        coverage = self._run()
+        mean_cov = sum(coverage) / len(coverage)
+        print(
+            f"\nMEASURED two-sided out-of-block coverage at target {self.TARGET}: "
+            f"mean={mean_cov:.4f} min={min(coverage):.4f} | reps={self.REPS}"
+        )
+        # The finding's own numbers: correct ~0.93, a full-alpha mutant
+        # ~0.85 -- well under this floor.
+        assert mean_cov >= self.TARGET - 0.01
+
+
 # ---------------------------------------------------------------------------
 # skeptic-review correction pass (2026-09-17): Me-1, Me-2, and the recorded
 # Minors. See docs/architecture/decision-log.md ADR-0155.
@@ -946,6 +1044,144 @@ class TestPublicHooksRefuseLoudly:
             BlockConformalInterval().draw_blocks(ev, 5, None)
 
 
+class TestOverflowInputsRefuseAsValueError:
+    """M-A (re-review 2026-09-17): the four hooks' validation calls
+    ``records.number_ok``, which routes through ``math.isfinite`` --
+    and ``math.isfinite`` raises ``OverflowError``, not ``ValueError``,
+    on an int too large to convert to a float (``10**400``). Every
+    docstring here promises ``ValueError``, so an ``except ValueError``
+    at a caller would NOT catch this. Reproduced verbatim from the
+    finding."""
+
+    HUGE = 10**400
+
+    def test_achievable_level_refuses_a_huge_coverage_as_value_error(self):
+        with pytest.raises(ValueError, match="coverage"):
+            BlockConformalInterval().achievable_level(self.HUGE, 40)
+
+    def test_achievable_level_refuses_a_huge_n_blocks_as_value_error(self):
+        with pytest.raises(ValueError, match="n_blocks"):
+            BlockConformalInterval().achievable_level(0.9, self.HUGE)
+
+    @pytest.mark.parametrize("member_cls", [BlockConformalInterval, TwoSidedBlockConformalInterval])
+    def test_offsets_refuses_a_huge_level_as_value_error(self, member_cls):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match="level"):
+            member_cls().offsets(ev, self.HUGE)
+
+    def test_the_template_screens_also_absorb_a_huge_member_returned_level(self):
+        # _checked_level (the template's OWN screen of a member's answer)
+        # calls number_ok too -- a member that returns something monstrous
+        # must still surface as calibrate()'s documented ValueError.
+        class Monstrous(BlockConformalInterval):
+            def achievable_level(self, coverage, n_blocks):
+                return 10**400
+
+        ev = _residuals(n_blocks=20, per_block=5, names=("a",))
+        with pytest.raises(ValueError, match="Monstrous"):
+            Monstrous().calibrate(ev, coverage=0.9, window_blocks=5)
+
+    def test_the_template_screens_also_absorb_a_huge_member_returned_offset(self):
+        class Monstrous(BlockCalibrator):
+            def offsets(self, residuals, level):
+                return {n: (-10**400, 1.0) for n in residuals.names}
+
+        ev = _residuals(n_blocks=20, per_block=5, names=("a",))
+        with pytest.raises(ValueError, match="Monstrous"):
+            Monstrous().calibrate(ev, coverage=0.9, window_blocks=5)
+
+    def test_a_calibrator_lookup_by_an_unhashable_name_refuses_as_value_error(self):
+        with pytest.raises(ValueError, match="unknown calibrator"):
+            calibrator([])
+        with pytest.raises(ValueError, match="unknown calibrator"):
+            calibrator({})
+
+    def test_registering_an_unhashable_name_refuses_as_value_error(self):
+        with pytest.raises(ValueError, match="hashable"):
+            register_calibrator([], BlockConformalInterval)
+
+    @pytest.mark.parametrize("bad_kwargs", [{"names": None}, {"rows": None}, {"blocks": None}])
+    def test_block_residuals_refuses_none_containers_as_value_error(self, bad_kwargs):
+        kwargs = {"names": ("a",), "rows": [(0.1,), (0.2,)], "blocks": ["b0", "b1"]}
+        kwargs.update(bad_kwargs)
+        with pytest.raises(ValueError):
+            BlockResiduals(**kwargs)
+
+    def test_block_residuals_refuses_non_nested_rows_as_value_error(self):
+        with pytest.raises(ValueError, match="rows"):
+            BlockResiduals(names=("a",), rows=[1, 2, 3], blocks=["b0", "b0", "b1"])
+
+    def test_block_residuals_refuses_a_huge_residual_as_value_error(self):
+        with pytest.raises(ValueError, match="row 0"):
+            BlockResiduals(names=("a",), rows=[(self.HUGE,), (0.2,)], blocks=["b0", "b1"])
+
+    def test_block_residuals_refuses_a_huge_stamp_as_value_error(self):
+        with pytest.raises(ValueError, match="stamps"):
+            BlockResiduals(
+                names=("a",), rows=[(0.1,), (0.2,)], blocks=["b0", "b1"], stamps=[0, self.HUGE]
+            )
+
+    def test_scenario_set_refuses_none_weights_as_value_error(self):
+        with pytest.raises(ValueError, match="weights"):
+            ScenarioSet(weights=None, draws={"a": (0.1, 0.2)}, calibration_hash="h", seed=0, provenance={})
+
+    def test_scenario_set_refuses_a_none_weight_as_value_error(self):
+        with pytest.raises(ValueError, match="weights"):
+            ScenarioSet(
+                weights=(0.5, None), draws={"a": (0.1, 0.2)}, calibration_hash="h", seed=0, provenance={}
+            )
+
+    def test_scenario_set_refuses_a_none_draw_value_as_value_error(self):
+        with pytest.raises(ValueError, match="draws"):
+            ScenarioSet(
+                weights=(0.5, 0.5), draws={"a": (0.1, None)}, calibration_hash="h", seed=0, provenance={}
+            )
+
+    def test_scenario_set_refuses_non_dict_draws_as_value_error(self):
+        with pytest.raises(ValueError, match="draws"):
+            ScenarioSet(
+                weights=(0.5, 0.5), draws=[0.1, 0.2], calibration_hash="h", seed=0, provenance={}
+            )
+
+    def test_scenario_set_refuses_a_huge_weight_as_value_error(self):
+        with pytest.raises(ValueError, match="weights"):
+            ScenarioSet(
+                weights=(self.HUGE, 0.5), draws={"a": (0.1, 0.2)}, calibration_hash="h", seed=0,
+                provenance={},
+            )
+
+
+class TestDrawBlocksIsBounded:
+    """M-B (re-review 2026-09-17): draw_blocks validated n_scenarios as a
+    non-negative int but imposed no UPPER bound, unlike scenarios() (its
+    own caller) which bounds to [MIN_SCENARIOS, MAX_SCENARIOS]. Directly
+    callable and undocumented-as-bounded, so a huge n_scenarios spins the
+    while loop rather than refusing -- observed at 10**9 taking ~110s;
+    10**400 is effectively unbounded. Now bounded identically to
+    scenarios(), and pinned to return instantly rather than merely
+    'eventually'."""
+
+    def test_a_scenario_count_above_the_ceiling_refuses_instead_of_hanging(self):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match=str(MAX_SCENARIOS)):
+            BlockConformalInterval().draw_blocks(ev, 10**9, random.Random(0))
+
+    def test_an_astronomically_large_scenario_count_refuses_instead_of_hanging(self):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match="n_scenarios"):
+            BlockConformalInterval().draw_blocks(ev, 10**400, random.Random(0))
+
+    def test_the_ceiling_itself_is_still_accepted(self):
+        ev = _residuals(n_blocks=30, per_block=10, names=("a",))
+        labels = BlockConformalInterval().draw_blocks(ev, MAX_SCENARIOS, random.Random(0))
+        assert sum(ev.block_counts()[label] for label in labels) >= MAX_SCENARIOS
+
+    def test_one_above_the_ceiling_refuses(self):
+        ev = _residuals(n_blocks=10, per_block=4, names=("a",))
+        with pytest.raises(ValueError, match=str(MAX_SCENARIOS)):
+            BlockConformalInterval().draw_blocks(ev, MAX_SCENARIOS + 1, random.Random(0))
+
+
 class TestQuantileEpsilonIsLoadBearing:
     """Minor: _QUANTILE_EPS was an undisclosed live mutation survivor. Pin
     it directly rather than remove it -- it is genuinely load-bearing."""
@@ -1015,6 +1251,66 @@ class TestProvenanceFreezesDeep:
             s.provenance["components"].append("HACKED")
 
 
+class TestFrozenTreeDisclosedGaps:
+    """Minor: _frozen_tree's docstring now discloses two edge behaviors
+    rather than silently having them -- pin both so the disclosure stays
+    true. Both are safe in practice because the only internal producer,
+    OutcomeCalibrator._provenance, ever builds provenance from flat
+    scalars plus one list of strings; neither shape below is reachable
+    through calibrate()/scenarios(), only through direct construction."""
+
+    def test_a_custom_mutable_leaf_object_survives_unfrozen(self):
+        from dskit.pipeline.outcome_interval import _frozen_tree
+
+        class MutableThing:
+            def __init__(self):
+                self.value = 1
+
+        leaf = MutableThing()
+        frozen = _frozen_tree({"a": [leaf]})
+        # The leaf itself is returned BY REFERENCE, not copied or frozen.
+        assert frozen["a"][0] is leaf
+        leaf.value = 2
+        assert frozen["a"][0].value == 2
+
+    def test_a_self_referential_structure_raises_recursion_error_not_silently(self):
+        from dskit.pipeline.outcome_interval import _frozen_tree
+
+        cyclic = {}
+        cyclic["self"] = cyclic
+        with pytest.raises(RecursionError):
+            _frozen_tree(cyclic)
+
+    def test_realistic_deep_nesting_is_unaffected(self):
+        # The disclosed gap is CYCLES, not depth: ordinary nesting to 50+
+        # levels -- deeper than any real provenance ever goes -- freezes
+        # cleanly.
+        from dskit.pipeline.outcome_interval import _frozen_tree
+
+        deep = "leaf"
+        for _ in range(60):
+            deep = [deep]
+        frozen = _frozen_tree(deep)
+        for _ in range(60):
+            frozen = frozen[0]
+        assert frozen == "leaf"
+
+
+class TestTailLossIsZeroAtTheConservativeBoundary:
+    """Minor: tail_loss is unconditionally, deterministically 0.0 whenever
+    achieved_level == 1.0, for BOTH calibrators -- proved algebraically
+    (the level-1.0 quantile is the sample extreme, so both offsets bracket
+    every calibration value and both closed-form pinball terms vanish) and
+    pinned here rather than only documented."""
+
+    @pytest.mark.parametrize("member_cls", [BlockConformalInterval, TwoSidedBlockConformalInterval])
+    def test_tail_loss_is_exactly_zero_when_the_level_is_one(self, member_cls):
+        ev = _residuals(n_blocks=2, per_block=5, names=("a",))
+        result = member_cls().calibrate(ev, coverage=0.5, window_blocks=2)
+        assert result.achieved_level == 1.0
+        assert result.tail_loss["a"] == 0.0
+
+
 class TestMutationProbePrecisionPins:
     """Boundary-precision regressions surfaced by re-running the mutation
     probe on the correction pass. Each existing test that came close to
@@ -1068,6 +1364,20 @@ class TestMutationProbePrecisionPins:
             BlockConformalInterval().draw_blocks(ev, -1, random.Random(0))
 
 
+# The one pattern TestWeightsToleranceSiblingAgreement scans the toolkit
+# with, and the one its own unit tests exercise directly -- HOISTED to
+# module level (mirroring the sibling uncertainty_set.py's own fix) so a
+# second, slightly different copy inline in a test method can never drift
+# from what the scan actually uses. `[ \t]*` after `^` is deliberate: a
+# bare `^` only matches a definition starting in column zero, missing an
+# indented class- or function-body redefinition entirely -- the exact
+# blind spot a mutation probe found here (re-review 2026-09-17), already
+# fixed on the sibling lane; this is the mirror image of that fix.
+_WEIGHTS_SUM_TOLERANCE_ASSIGNMENT = re.compile(
+    r"^[ \t]*WEIGHTS_SUM_TOLERANCE\s*=\s*(.+?)\s*(?:#.*)?$", re.MULTILINE
+)
+
+
 class TestWeightsToleranceSiblingAgreement:
     """Minor: WEIGHTS_SUM_TOLERANCE is duplicated with the unmerged sibling
     uncertainty_set.py (ADR-0156). No cross-branch import is possible, so
@@ -1075,18 +1385,33 @@ class TestWeightsToleranceSiblingAgreement:
     refusing on divergence -- the mirror image of the pin the sibling's own
     suite carries, so whichever module lands first protects the other."""
 
-    _DEFINITION = re.compile(r"^WEIGHTS_SUM_TOLERANCE\s*=\s*([0-9eE.+-]+)\s*$", re.MULTILINE)
-
     def test_every_definition_of_the_constant_across_dskit_agrees(self):
         root = Path(__file__).resolve().parents[2] / "dskit"
-        found = {}
-        for path in root.rglob("*.py"):
-            match = self._DEFINITION.search(path.read_text(encoding="utf-8"))
-            if match:
-                found[str(path)] = float(match.group(1))
+        found = []
+        for path in sorted(root.rglob("*.py")):
+            for value in _WEIGHTS_SUM_TOLERANCE_ASSIGNMENT.findall(
+                path.read_text(encoding="utf-8")
+            ):
+                found.append((str(path.relative_to(root)), float(value)))
         # The scan itself must not be vacuous: this module's own constant
         # must be among what it found, or a broken pattern would pass by
         # finding nothing at all.
-        assert any(name.endswith("outcome_interval.py") for name in found)
-        assert len(set(found.values())) == 1, f"WEIGHTS_SUM_TOLERANCE diverged: {found}"
+        assert found, "the scan found no WEIGHTS_SUM_TOLERANCE at all — it has stopped pinning"
+        assert any(name.endswith("outcome_interval.py") for name, _value in found)
+        assert len({value for _name, value in found}) == 1, (
+            f"WEIGHTS_SUM_TOLERANCE diverged: {found}"
+        )
+
+    def test_the_scan_pattern_catches_an_indented_redefinition(self):
+        # A bare `^WEIGHTS_SUM_TOLERANCE` used to require column zero, so a
+        # class- or function-body copy (indented) sailed through unseen.
+        sample = "class Foo:\n    WEIGHTS_SUM_TOLERANCE = 1e-3\n"
+        assert _WEIGHTS_SUM_TOLERANCE_ASSIGNMENT.findall(sample) == ["1e-3"]
+
+    def test_the_scan_pattern_ignores_a_fully_commented_out_definition(self):
+        # Leading whitespace must not widen the pattern into matching a
+        # line that never assigns anything at module or class/function
+        # scope.
+        sample = "# WEIGHTS_SUM_TOLERANCE = 1e-3\n"
+        assert _WEIGHTS_SUM_TOLERANCE_ASSIGNMENT.findall(sample) == []
 

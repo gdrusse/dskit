@@ -13248,3 +13248,42 @@ than weak dependence; any statement about coverage at block counts near
 claim. Not built: a stationary/geometric-block member, conformal risk control
 (Angelopoulos et al. 2024) as a separate calibrated-risk doorway, or any
 reader that turns `predictions.parquet` into `BlockResiduals`.
+
+### Correction (2026-09-17, re-review 0C/3M) -- `achieved_level == 1.0` is a legitimate outcome, not an edge case
+
+`f24aa1d` fixed the crash `_diagnostics` hit whenever the block-conformal
+correction landed exactly on `achieved_level == 1.0` (Me-1: `metrics.pinball`
+refuses its `tau` argument at the open-interval boundary by contract, and the
+tail quantile levels land exactly on `0`/`1` at that achieved level), but
+never recorded the semantic decision the fix rests on. Recorded now, per
+CLAUDE.md's "no decision undocumented":
+
+An achieved level of exactly one is not a degenerate input to tolerate --
+it is the LEGITIMATE, maximally-conservative outcome the block correction
+can name. `BlockCalibrator.achievable_level` (Decision 3) and the
+`OutcomeCalibrator._checked_level` template screen already accepted it
+before this correction; only `_diagnostics` disagreed, and disagreed by
+crashing rather than by computing a wrong number.
+
+**Why this is not the same kind of boundary as anything above one.**
+`achievable_level`'s own correction is `level = k / B` with
+`k = ceil((B + 1) * coverage)` -- `achieved_level == 1.0` is exactly the
+case `k = B`: the widest order statistic the `B` calibration blocks can
+name, i.e. their maximum. That is split conformal's own most conservative
+legal setting, not an extrapolation past it, and it carries split
+conformal's standard finite-sample guarantee, coverage `>= B / (B + 1)
+>= c` -- satisfied a fortiori at `k = B`. A level ABOVE one has no such
+reading: it would need `k > B`, an order statistic the `B` blocks do not
+have, which is exactly why `achievable_level` and the `_checked_level`
+template screen raise above one and only above one. The two boundaries
+sit at opposite ends of the same-looking edge of `(0, 1]` but are
+categorically different: one is the correction's own most conservative
+legal answer, the other is a request the evidence cannot support at all.
+
+One further consequence, also proved algebraically and confirmed
+empirically, and now documented on `OutcomeIntervalResult.tail_loss`
+itself: at `achieved_level == 1.0` the two offsets are the calibration
+sample's extremes, so every calibration residual lies inside the band by
+construction and `tail_loss` is identically `0.0` for both calibrators --
+correctly, not as a placeholder, since there is no remaining tail to price
+once nothing in the calibration set lies outside the band.
