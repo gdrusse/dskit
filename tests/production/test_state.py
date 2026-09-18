@@ -1203,7 +1203,7 @@ def test_series_state_has_no_public_replay_enable_switch():
 
 
 def test_internal_replay_binding_requires_a_real_tape():
-    with pytest.raises(ProductionError, match="ReplayTape"):
+    with pytest.raises(ProductionError, match="replay capability requires a ReplayTape"):
         SeriesState._for_replay(SERIES_ID, object(), None)
 
 

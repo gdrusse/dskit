@@ -1262,51 +1262,71 @@ def test_first_v2_genesis_has_no_default_or_alternate_sentinel(committed_replay_
 
 
 @pytest.mark.parametrize("facade", ["direct", "verifier", "driver"])
-def test_legacy_capture_waits_for_the_same_lock_then_observes_p4_commit(facade):
+def test_legacy_capture_waits_for_the_same_lock_then_observes_p4_commit(facade, tmp_path):
+    """A v1 capture blocked on the P4 ledger's lock observes the commit taken while it waited.
+
+    Every facade drives a REAL capture that reaches
+    `broker._p4_ledger._lock`. ADR-0147 Decision point 2 made
+    `.durable(...)` the only capture-capable verifier shape, so the
+    verifier/driver facades are built that way; an authority-only verifier
+    would refuse mechanically before the lock and prove nothing about lock
+    ordering. The refusal each facade ends at is pinned to the exact
+    committed-P4 observation that caused it, so "refused for some other
+    reason" cannot satisfy this test.
+    """
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
-    from dskit.production.verifier import HistoricalStudyCaptureDriver, HistoricalStudyVerifier
+    from dskit.production.verifier import HistoricalStudyCaptureDriver
+    from tests.production import test_adr0147_durable_admission as durable
 
     graph, document = _complete_signed_graph()
     broker, captures, runtime, before = _graph_live(graph, document, 1)
     published, frozen, port = captures[0]
-    verifier = HistoricalStudyVerifier(broker)
-    from tests.production.test_capture_lifecycle import _PLAN
-    verifier.bind(**_PLAN)
-    doorway = broker if facade == "direct" else verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier)
+    legacy_runtime = {key: val for key, val in runtime.items() if key != "transition_nonces"}
+    # `.durable(...)` demands a genuine P4 capability; this fixture's broker is one.
+    assert isinstance(broker, trust.CapturedAuthorizationAuthority)
+    verifier = None if facade == "direct" else durable._durable(broker, tmp_path / "root")
+    if verifier is not None:
+        verifier.bind(**durable._PLAN)
+    doorway = (broker if facade == "direct" else
+               verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier))
+    observed = ("P4 committed stream cannot enter legacy capture" if facade == "direct"
+                else "P4 consumer document already captured this stream")
     started, done = Event(), Event()
 
-    if facade != "direct":
-        # ADR-0147 Decision point 2: an authority-only verifier/driver (the
-        # ONLY way to reach these facades without a genuine durable ledger)
-        # now refuses capture() mechanically, BEFORE it can ever reach
-        # broker._p4_ledger's lock at all -- there is no lock contention
-        # left to observe through these two facades, only the immediate,
-        # unconditional refusal itself.
-        with pytest.raises(ValueError, match="no durable ledger"):
-            doorway.capture(published, frozen, port, **{key: val for key, val in runtime.items() if key != "transition_nonces"},
-                            transition_nonce="legacy-loser")
-        _assert_graph_no_effect(broker, captures, before)
-        return
+    def attempt():
+        if facade == "direct":
+            return doorway.capture(published, frozen, port, **legacy_runtime,
+                                   transition_nonce="legacy-loser")
+        return durable._capture(doorway, captures, graph.selected, runtime,
+                                bind=False, transition_nonce="legacy-loser")
 
     def loser():
         started.set()
         try:
-            doorway.capture(published, frozen, port, **{key: val for key, val in runtime.items() if key != "transition_nonces"},
-                            transition_nonce="legacy-loser")
-        except (TypeError, ValueError):
-            return "refused"
+            attempt()
+        except (TypeError, ValueError) as refusal:
+            return str(refusal)
         finally:
             done.set()
-        return "incorrectly captured"
+        return "CAPTURED WITHOUT REFUSAL"
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        with broker._p4_ledger._lock:
-            future = pool.submit(loser)
-            assert started.wait(timeout=5)
-            assert not done.is_set()
-            broker.authorize_capture_set(captures, graph.selected, **runtime)
-        assert future.result(timeout=5) == "refused"
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with broker._p4_ledger._lock:
+                future = pool.submit(loser)
+                assert started.wait(timeout=5)
+                assert not done.wait(timeout=0.25)  # held off by THIS lock, not by a gate
+                broker.authorize_capture_set(captures, graph.selected, **runtime)
+            assert observed in future.result(timeout=5)
+        assert broker._p4_ledger._committed()
+        assert not broker._p4_ledger._legacy_captures()
+        if verifier is not None:
+            # The refusal preceded the durable spend, so the admission is unburned.
+            assert not list(verifier._ledger.scan(kind="admission_use"))
+    finally:
+        if verifier is not None:
+            verifier._ledger.close()
     _assert_graph_no_effect(broker, captures, before)
 
 
@@ -1768,34 +1788,30 @@ def test_single_surface_substitution_during_reservation_or_precommit_is_empty(ph
 
 
 @pytest.mark.parametrize("facade", ["direct", "verifier", "driver"])
-def test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect(facade):
+def test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect(facade, tmp_path):
+    """A P4 set blocked on the lock observes the v1 capture committed while it waited.
+
+    The mirror of the previous test: here the capture wins the lock and
+    commits, and the contending `authorize_capture_set` must refuse ON that
+    committed legacy capture -- pinned to the exact message -- leaving no P4
+    commit of its own. The verifier/driver facades run through
+    `.durable(...)`, ADR-0147's only capture-capable shape, so their capture
+    genuinely reaches and holds the same ledger lock.
+    """
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event
-    from dskit.production.verifier import HistoricalStudyCaptureDriver, HistoricalStudyVerifier
-    from tests.production.test_capture_lifecycle import _PLAN
+    from dskit.production.verifier import HistoricalStudyCaptureDriver
+    from tests.production import test_adr0147_durable_admission as durable
 
     graph, document = _complete_signed_graph()
     broker, captures, runtime, _before = _graph_live(graph, document, 1)
-    verifier = HistoricalStudyVerifier(broker)
-    verifier.bind(**_PLAN)
-    doorway = broker if facade == "direct" else verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier)
-
-    if facade != "direct":
-        # ADR-0147 Decision point 2: an authority-only verifier/driver
-        # refuses capture() mechanically before it can ever reach
-        # broker._p4_ledger's lock -- there is no "winner" through these
-        # two facades any more, only the immediate, unconditional refusal;
-        # a concurrent authorize_capture_set is therefore never contended
-        # against and succeeds on its own.
-        with pytest.raises(ValueError, match="no durable ledger"):
-            doorway.capture(*captures[0], **{key: val for key, val in runtime.items() if key != "transition_nonces"},
-                            transition_nonce="legacy-lock-winner")
-        record, session = broker.authorize_capture_set(captures, graph.selected, **runtime)
-        assert record is not None and session is not None
-        assert broker._p4_ledger._committed()
-        assert len(broker._p4_ledger._legacy_captures()) == 0
-        return
-
+    legacy_runtime = {key: val for key, val in runtime.items() if key != "transition_nonces"}
+    assert isinstance(broker, trust.CapturedAuthorizationAuthority)
+    verifier = None if facade == "direct" else durable._durable(broker, tmp_path / "root")
+    if verifier is not None:
+        verifier.bind(**durable._PLAN)
+    doorway = (broker if facade == "direct" else
+               verifier if facade == "verifier" else HistoricalStudyCaptureDriver(verifier))
     started, done = Event(), Event()
 
     def contender():
@@ -1805,17 +1821,32 @@ def test_p4_waits_for_legacy_full_commit_then_refuses_without_its_own_effect(fac
         finally:
             done.set()
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        with broker._p4_ledger._lock:
-            future = pool.submit(contender)
-            assert started.wait(timeout=5) and not done.wait(timeout=0.05)
-            doorway.capture(*captures[0], **{key: val for key, val in runtime.items() if key != "transition_nonces"},
-                            transition_nonce="legacy-lock-winner")
-        with pytest.raises((TypeError, ValueError)):
-            future.result(timeout=5)
-    assert not broker._p4_ledger._committed()
-    assert len(broker._p4_ledger._legacy_captures()) == 1
-    assert not broker._member_events
+    def winner():
+        if facade == "direct":
+            return doorway.capture(*captures[0], **legacy_runtime,
+                                   transition_nonce="legacy-lock-winner")
+        return durable._capture(doorway, captures, graph.selected, runtime,
+                                bind=False, transition_nonce="legacy-lock-winner")
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with broker._p4_ledger._lock:
+                future = pool.submit(contender)
+                assert started.wait(timeout=5) and not done.wait(timeout=0.25)
+                captured, session = winner()
+                assert captured is not None and session is not None
+            with pytest.raises((TypeError, ValueError),
+                               match="P4 stream was already captured by the same legacy ledger"):
+                future.result(timeout=5)
+        assert not broker._p4_ledger._committed()
+        assert len(broker._p4_ledger._legacy_captures()) == 1
+        assert not broker._member_events
+        if verifier is not None:
+            # The winning capture spent its admission durably, exactly once.
+            assert len(list(verifier._ledger.scan(kind="admission_use"))) == 1
+    finally:
+        if verifier is not None:
+            verifier._ledger.close()
 
 
 def _request():

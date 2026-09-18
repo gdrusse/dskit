@@ -2143,7 +2143,7 @@ def test_ordinary_composition_refuses_a_scheduled_cash_flow_composer(
     """A production-shaped process can spend only reconciled settled cash."""
     cash_flows, _anchor = replay_cash_flow_composer()
 
-    with pytest.raises(ProductionError, match="replay"):
+    with pytest.raises(ProductionError, match="cash_flow_composer is replay-only"):
         composer.build(shadow_document, cash_flow_composer=cash_flows)
 
 
