@@ -1369,25 +1369,29 @@ def test_an_over_committed_account_reports_a_negative_available_and_is_read_cons
 # ---------------------------------------------------------------------------
 
 
-def moving_view(balances=None, working=None, positions=None, pending=None):
-    """A real `StateView` over the caller's LIVE containers.
+def moving_view(balances=None, working=None, positions=(), pending=()):
+    """A real `StateView` whose fold can move without its identity changing.
 
-    `SeriesState.snapshot` wraps COPIES, so a view taken from the real fold
-    never moves — but `id()` is reused the moment one is collected, and a
-    cache keyed on an identity then hands the next tick the previous tick's
-    answer. This builder is how that is expressed deterministically: ONE
-    object whose contents change when the caller mutates what it was built
-    over. Every identity a cache could key on stays fixed; only the fold
-    moves.
+    Faithful in TYPE: `balances` and `working` come back as
+    `MappingProxyType`s and `positions`/`pending` as TUPLES, exactly the
+    shape `SeriesState.snapshot` yields and `test_state.py
+    ::test_state_view_members_are_immutable_containers` pins. A harness that
+    claimed to be a real view while handing out bare lists would be
+    exercising a `StateView` that cannot occur.
+
+    Faithful in HAZARD: the two proxies are live over the dicts the caller
+    passed, and :func:`move_view` rebinds the two tuple members on the SAME
+    object. `SeriesState.snapshot` wraps copies, so a view taken from the
+    real fold never moves — but `id()` is reused the moment one is
+    collected, and a cache keyed on an identity then hands the next tick the
+    previous tick's answer. This is how that is said deterministically.
     """
     balances = {USD: Decimal("1000")} if balances is None else balances
     working = {} if working is None else working
-    positions = [] if positions is None else positions
-    pending = [] if pending is None else pending
     return StateView(
-        positions=positions,
+        positions=tuple(positions),
         working=MappingProxyType(working),
-        pending=pending,
+        pending=tuple(pending),
         balances=MappingProxyType(balances),
         decision_history=(),
         breaker="active",
@@ -1402,6 +1406,21 @@ def moving_view(balances=None, working=None, positions=None, pending=None):
         head_seq=41,
         head_hash="a" * 64,
     )
+
+
+def move_view(state_view, positions=None, pending=None):
+    """Rebind a view's TUPLE members: the same object, a later fold.
+
+    The mapping members move by mutating the dicts their proxies were built
+    over; these two cannot, because a tuple is a tuple. Rebinding them
+    through `object.__setattr__` keeps both the declared type and the
+    object's identity, which is the pair the hazard needs.
+    """
+    if positions is not None:
+        object.__setattr__(state_view, "positions", tuple(positions))
+    if pending is not None:
+        object.__setattr__(state_view, "pending", tuple(pending))
+    return state_view
 
 
 class MovingTickState:
@@ -1430,15 +1449,15 @@ def test_the_book_tracks_a_fold_that_moves_under_one_held_identity(name):
     answer and fails.
     """
     policy = ENCUMBRANCE_POLICIES[name](POLICY_PARAMS[name])
-    balances, working, positions = {USD: Decimal("1000")}, {}, []
-    state_view = moving_view(balances=balances, working=working, positions=positions)
+    balances, working = {USD: Decimal("1000")}, {}
+    state_view = moving_view(balances=balances, working=working)
     history = FakeHistory()
 
     empty = policy.encumber(state_view, T0, history)
     assert empty.funds[USD].total == Decimal("1000")
     assert dict(empty.inventory) == {}
 
-    positions.append(position(qty="10"))
+    move_view(state_view, positions=(position(qty="10"),))
     buy = order(ref="w-1", qty="4", limit="10")
     working[buy.client_ref] = buy
     balances[USD] = Decimal("900")
@@ -1477,11 +1496,10 @@ def test_an_unsized_intent_appearing_under_one_identity_is_seen():
     """`unsized_refs` is read from the same view, so it carries the same
     hazard: a cached book would keep admitting after an intent landed."""
     policy = cash()
-    pending = []
-    state_view = moving_view(pending=pending)
+    state_view = moving_view()
     history = FakeHistory()
     assert policy.admit(proposal(qty="1", limit="1"), state_view, T0, history) == ()
-    pending.append("ref-9")
+    move_view(state_view, pending=("ref-9",))
     problems = policy.admit(proposal(qty="1", limit="1"), state_view, T0, history)
     assert problems and "ref-9" in problems[0]
 
@@ -1500,8 +1518,18 @@ def test_admit_and_balances_track_a_fold_that_moves_under_one_held_identity():
     lead = order(ref="lead-1", qty="10", limit="10")
     working[lead.client_ref] = lead
 
+    smaller = proposal(qty="5", limit="10", pid="cand-2")
     assert policy.admit(wanted, state_view, T0, history)
+    assert policy.admit(smaller, state_view, T0, history)
     assert only(policy.balances(state_view, T0, history)).available == Decimal("0")
+
+    # And once more moving in VALUE only — no container changes length or
+    # keys, and the order keeps its own identity — so a shape digest cannot
+    # invalidate either (round-3 Major). The SAME proposal that was refused
+    # a line ago is admitted now, which no stale answer can reproduce.
+    object.__setattr__(lead, "limit", Decimal("5"))
+    assert only(policy.balances(state_view, T0, history)).available == Decimal("50")
+    assert policy.admit(smaller, state_view, T0, history) == ()
 
 
 def test_the_snapshot_tracks_a_fold_that_moves_under_one_held_identity():
@@ -1524,8 +1552,16 @@ def test_the_snapshot_tracks_a_fold_that_moves_under_one_held_identity():
             state_view, Boom("executor"), NO_QUOTES, T0, (), FakeCalendar()
         ).balances
     )
+    balances[USD] = Decimal("500")
+    third = only(
+        strategy.snapshot(
+            state_view, Boom("executor"), NO_QUOTES, T0, (), FakeCalendar()
+        ).balances
+    )
     assert first.available == Decimal("1000")
     assert second.available == Decimal("960")
+    # The third move changes no container's length, keys or object identity.
+    assert (third.total, third.available) == (Decimal("500"), Decimal("460"))
 
 
 def test_each_measure_tracks_an_account_that_moves_under_one_held_identity():
@@ -1593,3 +1629,73 @@ def test_the_history_double_accepts_an_integral_float_like_the_real_one():
     for refused in (470.5, True, -1, -1.0):
         with pytest.raises(ProductionError, match="since_ms must be an int"):
             FakeHistory().fills(refused)
+
+
+#: What each core policy's `committed` reads before and after the value-only
+#: move below: 4 units at 10, then the same order at a limit of 20. The null
+#: object encumbers nothing either way, which is itself the thing to pin.
+VALUE_ONLY_COMMITTED = {
+    "undeclared": (Decimal("0"), Decimal("0")),
+    "cash": (Decimal("40"), Decimal("80")),
+}
+
+
+@pytest.mark.parametrize("name", CORE_POLICIES)
+def test_the_book_tracks_a_fold_that_moves_in_value_only(name):
+    """Round-3 Major, as a regression.
+
+    The rest of this family moves a fold by ADDING to it, so every container
+    changes length — and a cache keyed on a shape digest
+    (`(id(self), at_ms, id(history), len(balances), len(working), ...)`)
+    invalidates correctly and never returns a stale answer. Seven of these
+    tests passed with exactly that bug present.
+
+    The condition they cannot express is a fold that moves in VALUE only.
+    Here nothing a key could be built from moves except the values: the
+    policy, the view, the history and the instant keep their identities;
+    every container keeps its object, its length AND its key set; and the
+    working order keeps its own identity too, mutated in place the way `id()`
+    reuse presents a different order at one address. A key over the actual
+    VALUES is the only one left, and a key over the actual values is the one
+    kind that cannot go stale.
+    """
+    policy = ENCUMBRANCE_POLICIES[name](POLICY_PARAMS[name])
+    buy = order(ref="w-1", qty="4", limit="10")
+    balances, working = {USD: Decimal("1000")}, {buy.client_ref: buy}
+    state_view = moving_view(balances=balances, working=working)
+    history = FakeHistory()
+
+    before = policy.encumber(state_view, T0, history)
+    shape = (len(before.funds), set(before.funds), len(state_view.working))
+
+    # `OrderState` is frozen, which is what makes this the right way to say
+    # "the same address now holds a different order".
+    object.__setattr__(buy, "limit", Decimal("20"))
+    balances[USD] = Decimal("999")
+
+    after = policy.encumber(state_view, T0, history)
+
+    assert (len(after.funds), set(after.funds), len(state_view.working)) == shape
+    assert (before.funds[USD].total, after.funds[USD].total) == (
+        Decimal("1000"),
+        Decimal("999"),
+    )
+    assert (before.funds[USD].committed, after.funds[USD].committed) == (
+        VALUE_ONLY_COMMITTED[name]
+    )
+
+
+def test_a_held_position_that_moves_in_value_only_is_seen():
+    """The same, one resource over: the units a sell may still commit move
+    without the positions tuple changing length or the fold gaining a row."""
+    policy = cash()
+    state_view = moving_view(positions=(position(qty="10"),))
+    history = FakeHistory()
+    deep = policy.encumber(state_view, T0, history)
+    move_view(state_view, positions=(position(qty="2"),))
+    thin = policy.encumber(state_view, T0, history)
+    assert len(thin.inventory) == len(deep.inventory)
+    assert (deep.inventory[INS1].available, thin.inventory[INS1].available) == (
+        Decimal("10"),
+        Decimal("2"),
+    )

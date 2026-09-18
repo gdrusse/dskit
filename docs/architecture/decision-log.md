@@ -16593,7 +16593,12 @@ document naming it is REFUSED at construction, because §5.13.1's row admits
 `paper` and no other. No child is wired. A
 proposal whose size the fold cannot see — a `StateView.pending` client ref,
 whose intent has landed but whose `order_event` has not, and whose quantity the
-view does not carry — makes `admit` refuse rather than under-encumber.
+view does not carry — makes `admit` refuse rather than under-encumber. And one
+pin's REACH is worth stating: the AST check that a `Measure` reads no economic
+attribute off `state.view` scans `guards.py` only, so the two measures this
+decision adds comply by inspection rather than by that gate. Widening the scan
+is systemic work, the same shape as `test_oop.py`'s instantiation scan not
+seeing a bare-table seam, and belongs to whoever widens it — not here.
 
 **Consequences, stated as enforced versus merely available.** ENFORCED by a
 running `ServeLoop`, once a document declares the limits: a proposal reaching
@@ -16612,9 +16617,11 @@ outright while any is outstanding; a `Limit` over either measure returns
 protection against an unsized intent — the two entry points genuinely disagree
 on that one input, and they disagree by design rather than by defect. This is
 INHERITED from the pre-existing `Measure`/`state.view` split, not introduced
-here; closing it would mean either putting the pending refs on the account
-snapshot or letting a measure read the view, and both are contract changes
-outside this decision.
+here. What is missing is the DECISION to close it, not the authority: `pending`
+is not one of `vocab.ECONOMIC_ATTRS`, and Measures already read
+`state.view.decision_history` and `guard_holds`, so a measure over the pending
+refs is already in contract and would need no new permission — only an owner
+choosing what bound to hold them to.
 
 AVAILABLE but not enforced by the loop: `EncumbrancePolicy.admit` itself,
 which answers for a whole slate in one call and is what a child's proposer or
