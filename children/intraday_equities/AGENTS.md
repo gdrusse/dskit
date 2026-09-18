@@ -83,7 +83,11 @@ Agent orientation — see README.md for operator commands.
   "production"`, which refuses outright until the owner accepts the signed
   run-output attestation contract ADR-0122 only PROPOSES; its pins are
   PENDING besides. Filling them cannot enable planning. No real final-model
-  release exists.
+  release exists. `FinalRefit._FINAL_METHODS` + `__init_subclass__` refuse a
+  subclass that replaces any part of that gate (`uses:` accepts any class).
+  None of it is a root of trust: the seal fires at class definition only, the
+  run directory is unauthenticated (ADR-0119), and a bundle stamp is not
+  evidence of authorization. ADR-0166's threat model says so plainly.
 - Telemetry carries no symbol and no lead (ADR-0118). `metrics.py` maps this
   project's field names onto the generic event catalogue and returns the
   per-lead decay profile as artifact DATA; the metric registry refuses either

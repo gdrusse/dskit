@@ -16460,6 +16460,18 @@ consumes ADR-0119's driver capabilities. It authorizes no real HPO, refit,
 market replay, backtest, lockbox read, paper/live action or deployment, and
 it does not accept ADR-0122.
 
+*Corrected 2026-09-18 after round-1 independent review found 1 Critical and
+1 Major. The Critical: `uses: "module:ClassName"` accepts ANY class, so a
+subclass overriding `_channel_problems` constructed on the production channel
+and, with `_release_identity` also overridden, wrote a bundle stamped
+`production` / `deployment_eligible: True` over fabricated evidence, with no
+edit to dskit or to `final_model.py`. Fixed by sealing the gate and — the
+half that matters more — by deleting this entry's false claim that no code
+path could emit one. The Major: the closed-vocabulary test read its expected
+vocabulary from the module under test, so narrowing the gate to `if not
+channel` let `"staging"` through with a green suite. Both corrections are
+below.*
+
 **Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
 three missing pieces; ADR-0119 built two of the generic halves
 (`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
@@ -16545,21 +16557,69 @@ described and nothing more:
   that document, never restated). `"production"` — a real final-model
   release — refuses OUTRIGHT, at construction and again inside `run`: it
   needs the signed run-output attestation contract ADR-0122 only PROPOSES.
-  So no code path can emit a production-stamped bundle, and because
-  `write_bundle`'s content hash covers `training_identities`, a fixture
-  bundle cannot be relabelled without failing `load_bundle`.
+  Because `write_bundle`'s content hash covers `training_identities`, a
+  written bundle cannot be relabelled afterwards without failing
+  `load_bundle`.
+- **The gate is sealed against the seam that resolves it.** Every refusal
+  above is a method, and `uses: "module:ClassName"` accepts any class, so
+  `FinalRefit._FINAL_METHODS` names every member the gate depends on — the
+  twenty-three this class defines plus the inherited `__init__`, `__new__`
+  and `artifact_dir` — and `__init_subclass__` raises `TypeError` at
+  class-definition time for a subclass that replaces one. A subclass that
+  replaces `__init_subclass__` itself is refused for the same reason, so the
+  chain cannot be broken at depth. The list is restated independently in
+  `tests/test_final_model.py`, and a test refuses any member of the class
+  absent from it, so an unsealed hook added later fails in the suite rather
+  than in review. This is the `production/leg.py` and `production/loop.py`
+  idiom (`if "run" in vars(cls): raise`), widened from one name to the whole
+  gate.
 
 `configs/run-final-refit.json` declares `release_channel: "production"` and
 `refit_identity.rows`, and every pin stays PENDING. It still refuses to plan,
-for two independent reasons.
+in two categories — channel closure and pending pins — which `validate_params`
+reports as nine distinct problems.
+
+Adding those two graded fields moved the document's identity hash from
+`ed5709fbbbf56bc4dbdb3954ec8e81d5649b7605b936b30bd65eca18e2f3afd1` to
+`b0fe47c3456101cc2ce072df11d07df1e53e38db310a160be4a949e054593fd1`. That move
+is benign and is recorded here rather than left silent: this document has
+never planned successfully at either commit, no run directory exists under
+`children/intraday_equities/pipeline_runs`, and no stored artifact, `$prev`
+series or release is keyed to the old hash. Nothing is orphaned.
+
+**Threat model, and what this entry is NOT.** Everything above is an
+IN-PROCESS check. It fails closed for every ordinary caller, for the shipped
+configuration, for `object.__new__` construction and for the documented
+`uses:` subclassing seam. It is not a root of trust, and three limits are
+disclosed rather than papered over:
+
+1. `__init_subclass__` fires at class creation, so a post-hoc
+   `FinalRefit._channel_problems = ...` assignment still takes effect. That
+   is accepted: it forces an edit to trusted in-process source, a different
+   threat class from supplying a class name in a JSON document.
+2. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
+   hash-chains `nodes/*.json` to `resolved.json` or to each other, and this
+   entry does not change that. Anyone with write access to a run directory
+   can fabricate the records, the carry and the evidence artifacts together
+   and satisfy every check here. Before this slice that gap had no payload
+   to reach, because `FinalRefit.run` raised unconditionally; this slice is
+   the first to give it a high-value target, and that is stated plainly.
+3. A bundle's `release_channel` / `deployment_eligible` stamp records what
+   the writing process believed. It is never, by itself, evidence that
+   anyone authorized the release, and no consumer should read it as one.
+
+ADR-0122's Correction already states the rule this entry obeys rather than
+contradicts: "A Python `PreImportResolver` cannot be a root of trust", and
+"Release trust must therefore begin outside Python." Nothing here is offered
+as a substitute for that external launch root.
 
 **Scope.** `dskit/pipeline/driver.py`, `dskit/pipeline/{README.md,CLAUDE.md}`,
 `tests/pipeline/test_driver.py`,
 `children/intraday_equities/intraday_equities/final_model.py`,
 `children/intraday_equities/configs/run-final-refit.json`,
 `children/intraday_equities/{CLAUDE.md,AGENTS.md}`,
-`children/intraday_equities/tests/{test_final_model.py,test_configs.py}`, and
-this entry. No market data, HPO, refit, replay or `path.csv` edit.
+`children/intraday_equities/tests/{test_final_model.py,test_configs.py}`,
+`dskit/pipeline/AGENTS.md`, and this entry. No market data, HPO, refit, replay or `path.csv` edit.
 
 **Consequences.** The EQ-01 machinery is complete and exercised end to end:
 an attested fixture release refits ten frozen winners once, writes one
@@ -16568,10 +16628,11 @@ prediction checksum, while an incomplete run, a record bound to another
 document, evidence absent from the producer record or carry, a mutated
 artifact, rows whose content is not what the release pins, a swapped,
 duplicated or mislabelled wire, and a row outside the permitted window each
-refuse. **No real final-model release was produced and none can be produced
-by this entry**: the production channel is closed, the fixture channel is
-synthetic by construction, and every bundle it writes is stamped
-`deployment_eligible: false`. ADR-0122 remains PROPOSED and unimplemented;
+refuse. **No real final-model release was produced.** The production channel
+is closed, the fixture channel is synthetic by construction, and every bundle
+it writes is stamped `deployment_eligible: false` — but "closed" means this
+process refuses, not that the artifact is trustworthy: read the threat model
+above before treating any stamp as authorization. ADR-0122 remains PROPOSED and unimplemented;
 `FinalRefit` remains a `Node`, not the `TrainableNode` that entry and the
 2026-09-14 closeout packet A4 propose; and the closeout packet's native
 LightGBM text artifact (A3) would replace the joblib bundle this uses, which

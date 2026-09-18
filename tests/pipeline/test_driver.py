@@ -1942,6 +1942,26 @@ class TestSpentRelease:
         }
 
 
+class TestDriverPublicSurfaceForAttestation:
+    """ADR-0166's one new module-level export, and the method beside it."""
+
+    def test_row_set_identity_is_exported(self):
+        from dskit.pipeline import driver
+
+        assert "row_set_identity" in driver.__all__
+        assert "RunAttestation" in driver.__all__
+        assert "content_identity" in driver.__all__
+        assert "resolve_json_artifact" in driver.__all__
+
+    def test_attested_output_is_a_public_method_not_a_module_export(self):
+        from dskit.pipeline import driver
+
+        # It belongs to RunAttestation, so __all__ is not where it lives.
+        assert "attested_output" not in driver.__all__
+        assert callable(RunAttestation.attested_output)
+        assert not RunAttestation.attested_output.__name__.startswith("_")
+
+
 class TestRunAttestationCompleted:
     def test_a_clean_run_attests_completed(self, tmp_path, registry):
         result = run_document(bdoc(tmp_path), asof=ASOF, registry=registry)

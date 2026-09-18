@@ -1294,13 +1294,14 @@ def test_the_fixture_channel_stamp_is_inside_the_bundles_content_hash(tmp_path):
 
 
 def test_no_release_channel_can_emit_a_production_stamped_bundle(tmp_path):
-    """The whole channel vocabulary, not one example of it."""
+    """The whole channel vocabulary, transcribed here, never read from the module."""
     pytest.importorskip("lightgbm")
     from dskit.pipeline.node import ConfigError
 
     wires, params, _ = _fixture_release(tmp_path)
     stamps = set()
-    for index, channel in enumerate(final_model.RELEASE_CHANNELS):
+    attempted = LITERAL_RELEASE_CHANNELS + ("staging", "shadow", "Production")
+    for index, channel in enumerate(attempted):
         attempt = dict(params, release_channel=channel)
         try:
             out = _run_fixture(tmp_path, attempt, wires, f"channel-{index}")
@@ -1351,3 +1352,121 @@ def test_final_refit_gives_each_head_only_its_own_frozen_winner(tmp_path):
         == identities[head]["winner"]
         for head in HEADS
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. the gate is sealed against the seam that defeats it
+#
+# Round-1 review, Critical: `uses: "module:ClassName"` accepts ANY class, so
+# every refusal below resolves to ordinary overridable Python. A subclass that
+# replaced `_channel_problems` produced a bundle stamped `production` and
+# `deployment_eligible: True` over entirely fabricated evidence, with no edit
+# to dskit or to this module. `__init_subclass__` closes that at
+# class-definition time. It does NOT close post-hoc `Cls.attr = ...`
+# assignment, and nothing here is a root of trust — see ADR-0166.
+# ---------------------------------------------------------------------------
+
+#: Every name `FinalRefit` seals, transcribed independently here rather than
+#: imported, so this suite asserts something the module cannot echo back
+#: (root CLAUDE.md: "a validation suite must NOT read its expected vocabulary
+#: from the thing it validates").
+SEALED_NAMES = (
+    "__init__",
+    "__init_subclass__",
+    "__new__",
+    "_FINAL_METHODS",
+    "_PARAMS",
+    "_attestation",
+    "_channel",
+    "_channel_problems",
+    "_estimator_params",
+    "_hpo_template",
+    "_identity_problems",
+    "_lean_drop",
+    "_release_identity",
+    "_row_identities",
+    "_run_pin_problems",
+    "_schema_problems",
+    "_verified_hpo_outputs",
+    "_winner_from_evidence",
+    "_winners",
+    "_wire_problems",
+    "artifact_dir",
+    "outputs",
+    "role",
+    "run",
+    "validate_inputs",
+    "validate_params",
+)
+
+#: The two release channels, transcribed literally for the same reason.
+LITERAL_RELEASE_CHANNELS = ("fixture", "production")
+
+
+def test_release_channels_is_exactly_the_two_literal_names():
+    assert final_model.RELEASE_CHANNELS == LITERAL_RELEASE_CHANNELS
+    assert final_model.FIXTURE_CHANNEL == "fixture"
+    assert final_model.PRODUCTION_CHANNEL == "production"
+
+
+def test_the_sealed_list_is_exactly_the_contract_the_suite_names():
+    assert tuple(sorted(final_model.FinalRefit._FINAL_METHODS)) == tuple(
+        sorted(SEALED_NAMES)
+    )
+
+
+def test_every_name_final_refit_defines_is_sealed():
+    """A method added later without sealing it fails here, not in review."""
+    ignored = {
+        "__module__", "__qualname__", "__doc__", "__dict__", "__weakref__",
+        "__abstractmethods__", "_abc_impl", "__slotnames__", "__firstlineno__",
+        "__static_attributes__", "__annotations__", "__type_params__",
+    }
+    defined = set(vars(final_model.FinalRefit)) - ignored
+    unsealed = defined - set(final_model.FinalRefit._FINAL_METHODS)
+    assert unsealed == set(), f"unsealed FinalRefit members: {sorted(unsealed)}"
+
+
+@pytest.mark.parametrize("name", sorted(SEALED_NAMES))
+def test_a_subclass_may_not_override_any_sealed_member(name):
+    with pytest.raises(TypeError, match="may not override"):
+        type("Sneaky", (final_model.FinalRefit,), {name: lambda *a, **k: []})
+
+
+def test_the_round_one_production_stamp_exploit_is_refused_at_class_definition(tmp_path):
+    """The reviewer's exact class, verbatim in shape."""
+    with pytest.raises(TypeError, match="_channel_problems"):
+        class Sneaky(final_model.FinalRefit):  # noqa: D106
+            @classmethod
+            def _channel_problems(cls, params):
+                return []
+
+    with pytest.raises(TypeError, match="_release_identity"):
+        class Eligible(final_model.FinalRefit):  # noqa: D106
+            def _release_identity(self, channel, rows_sha256):
+                return {"release_channel": "production", "deployment_eligible": True}
+
+
+def test_a_grandchild_cannot_break_the_seal_chain():
+    """A subclass that replaces __init_subclass__ is itself refused."""
+    with pytest.raises(TypeError, match="__init_subclass__"):
+        type(
+            "Relay",
+            (final_model.FinalRefit,),
+            {"__init_subclass__": classmethod(lambda cls, **kw: None)},
+        )
+
+
+def test_an_outside_release_channel_is_refused_at_construction_and_at_run(tmp_path):
+    """The Major: a narrowed gate let "staging" through and nothing failed."""
+    from dskit.pipeline.node import ConfigError
+
+    wires, params, _ = _fixture_release(tmp_path)
+    for channel in ("staging", "Fixture", "PRODUCTION", " fixture", "", None, 0):
+        attempt = dict(params, release_channel=channel)
+        with pytest.raises(ConfigError, match="release_channel must be one of"):
+            final_model.FinalRefit("refit", attempt)
+        node = object.__new__(final_model.FinalRefit)
+        node.params = attempt
+        with pytest.raises(ValueError, match="release_channel must be one of"):
+            node.run(_ctx(tmp_path), wires)

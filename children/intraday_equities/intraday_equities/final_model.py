@@ -110,16 +110,34 @@ class FinalRefit(Node):
        :data:`WIRE_LABEL_FIELD`, and a missing, extra, empty, swapped or
        mislabelled wire refuses by name before any fit begins.
 
-    **The production channel is still closed.** Only
-    :data:`FIXTURE_CHANNEL` can execute, and a fixture may never claim
-    the shipped final-HPO document identity, so a fixture run and a real
-    final-model release are different runs of different documents.
-    :data:`PRODUCTION_CHANNEL` refuses outright: a real release needs the
-    signed run-output attestation contract that ADR-0122 only PROPOSES.
-    Every head's hashed bundle training identity carries the channel and
+    **The production channel is closed.** Only :data:`FIXTURE_CHANNEL`
+    can execute, and a fixture may never claim the shipped final-HPO
+    document identity, so a fixture run and a real final-model release
+    are runs of different documents. :data:`PRODUCTION_CHANNEL` refuses
+    outright, because a real release needs the signed run-output
+    attestation contract ADR-0122 only PROPOSES. Every head's hashed
+    bundle training identity carries the channel and
     ``deployment_eligible: false``, and ``write_bundle``'s content hash
-    covers ``training_identities`` — so a fixture bundle cannot be
-    relabelled as a production one without failing :func:`load_bundle`.
+    covers ``training_identities``, so a written bundle cannot be
+    relabelled without failing :func:`load_bundle`.
+
+    **What this is NOT: a root of trust, or evidence of authorization.**
+    Every refusal here is an IN-PROCESS check. It fails closed for every
+    ordinary caller and for the shipped configuration, and
+    :data:`_FINAL_METHODS` with ``__init_subclass__`` refuses the subclass
+    that would replace one — but that seal fires at class-definition time
+    only, so a post-hoc ``FinalRefit.<name> = ...`` assignment still
+    works. That limit is deliberate and disclosed: it forces an edit to
+    trusted source, which is a different threat class, not a defence
+    against one. The run directory this node reads is UNAUTHENTICATED —
+    ADR-0119 disclosed that nothing hash-chains ``nodes/*.json`` to
+    ``resolved.json``, so anyone with write access to a run directory can
+    fabricate the records, the carry and the evidence artifacts together.
+    A bundle's stamp records what the writing process believed; it is
+    never by itself evidence that anyone authorized the release. ADR-0122's
+    Correction states the rule this class obeys rather than contradicts:
+    a Python resolver cannot be a root of trust, and release trust must
+    begin outside Python.
 
     Parameters
     ----------
@@ -147,6 +165,58 @@ class FinalRefit(Node):
         node.run(ctx, wires)["manifest"]["heads"]
         # -> ['h01', 'h02', 'h03', 'h04', 'h05', 'h06', 'h07', 'h08', 'h09', 'h10']
     """
+
+    #: Every name this class defines, plus the inherited hooks its release
+    #: gate depends on. ``__init_subclass__`` refuses a subclass that
+    #: replaces any of them, because ``uses: "module:ClassName"`` accepts
+    #: ANY class: before this seal, a subclass overriding
+    #: ``_channel_problems`` constructed on the production channel and
+    #: ``_release_identity`` stamped ``deployment_eligible: True``, with no
+    #: edit to dskit or to this module (round-1 review, 2026-09-18). The
+    #: list is restated independently by ``tests/test_final_model.py``, and
+    #: a test refuses any member of this class absent from it — an
+    #: unsealed hook added later fails there, not in review.
+    _FINAL_METHODS = (
+        "__init__",
+        "__init_subclass__",
+        "__new__",
+        "_FINAL_METHODS",
+        "_PARAMS",
+        "_attestation",
+        "_channel",
+        "_channel_problems",
+        "_estimator_params",
+        "_hpo_template",
+        "_identity_problems",
+        "_lean_drop",
+        "_release_identity",
+        "_row_identities",
+        "_run_pin_problems",
+        "_schema_problems",
+        "_verified_hpo_outputs",
+        "_winner_from_evidence",
+        "_winners",
+        "_wire_problems",
+        "artifact_dir",
+        "outputs",
+        "role",
+        "run",
+        "validate_inputs",
+        "validate_params",
+    )
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse, at class-definition time, a subclass that replaces any part of the gate."""
+        super().__init_subclass__(**kwargs)
+        for name in FinalRefit._FINAL_METHODS:
+            if name in cls.__dict__:
+                raise TypeError(
+                    f"{cls.__name__} may not override {name} — it is part of the "
+                    "release gate every refusal in FinalRefit resolves to, and a "
+                    "subclass that replaces it can stamp a release nothing earned. "
+                    "This seal fires at class definition only; it is not a root of "
+                    "trust (ADR-0166)"
+                )
 
     role = "train"
     outputs = ("bundle_path", "manifest")
