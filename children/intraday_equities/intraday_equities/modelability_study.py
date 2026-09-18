@@ -775,7 +775,12 @@ class Gate1Stage(_StudyStage):
         }
 
     def run(self, ctx, inputs):
-        """Run, score and register only consecutive asset-local cells."""
+        """Run, score and register only consecutive asset-local cells.
+
+        A single asset whose walk raises (a degenerate forecast, an empty
+        trailing fold) is SKIPPED rather than allowed to abort the cohort:
+        it records one ``skipped`` row and the remaining names still run.
+        """
         self.check_asof(ctx)
         cohort = self.cohort(ctx)
         caches = self.caches(ctx, inputs)
@@ -787,7 +792,25 @@ class Gate1Stage(_StudyStage):
         cells = []
         rows = []
         for asset in cohort:
-            rows.append(self._search(ctx, asset, caches[placement[asset]], attempts, base_key, cells))
+            try:
+                rows.append(
+                    self._search(
+                        ctx, asset, caches[placement[asset]], attempts, base_key, cells
+                    )
+                )
+            except Exception as exc:
+                rows.append(
+                    {
+                        "asset": asset,
+                        "gate1_h": None,
+                        "gate1_passes": False,
+                        "skipped": True,
+                        "skip_reason": f"{type(exc).__name__}: {exc}",
+                        "first_failed_h": None,
+                        "attempted_horizons": [],
+                        "unrun_horizons": list(self.params["horizons"]),
+                    }
+                )
         return {"rows": rows, "cells": cells}
 
     def _search(self, ctx, asset, cache, attempts, base_key, cells):

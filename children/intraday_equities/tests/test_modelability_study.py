@@ -683,6 +683,31 @@ def test_gate1_searches_each_asset_alone_in_order_and_stops_at_the_first_failure
     assert fields["study_gate"] == "gate1" and fields["walk"] == "walk-A-1"
 
 
+def test_gate1_skips_an_asset_whose_walk_raises_and_keeps_going(tmp_path, monkeypatch):
+    ctx, stage, documents, _walks, _registered = _gate1_harness(
+        tmp_path, monkeypatch, passes=lambda a, h: True
+    )
+
+    def score_or_raise(summary, asset, horizon, alpha):
+        if asset == "B":
+            raise ValueError("empty trailing fold")
+        return {"passes": True, "t_pool": 1.0, "t_fold": 1.0, "r2oos": 0.01, "n_folds": 20}
+
+    monkeypatch.setattr(study, "_score_one", score_or_raise)
+    out = stage.run(ctx, {"preflight": True, "caches": _caches()})
+    assert [row["asset"] for row in out["rows"]] == ["A", "B"]
+    a_row, b_row = out["rows"]
+    assert a_row["gate1_passes"] is True and "skipped" not in a_row
+    assert b_row["gate1_passes"] is False
+    assert b_row["skipped"] is True
+    assert b_row["gate1_h"] is None
+    assert "empty trailing fold" in b_row["skip_reason"]
+    # B raised on its first horizon, so its horizon was derived but never scored.
+    assert ("B", 1) in [(a, h) for a, h, _c, _kw in documents]
+    # Every cell belongs to A; the skipped B contributed none.
+    assert {c["asset"] for c in out["cells"]} == {"A"}
+
+
 def test_gate1_refuses_a_failed_preflight_and_an_asset_without_a_cache(tmp_path, monkeypatch):
     ctx, stage, _d, _w, _r = _gate1_harness(tmp_path, monkeypatch, passes=lambda a, h: False)
     assert stage.validate_inputs({"preflight": False, "caches": _caches()}) != []
