@@ -38,6 +38,7 @@ No wall clock, no network, no real executor: every instant is an int computed
 here and the executor is a fake whose every attribute raises.
 """
 
+import dataclasses
 import inspect
 from decimal import Decimal
 from types import MappingProxyType
@@ -54,8 +55,11 @@ from dskit.production.encumbrance import (
     Encumbrance,
     EncumbrancePolicy,
     FundsRow,
+    SettledFundsShortfall,
+    UncommittedUnitsShortfall,
     UndeclaredSettlement,
 )
+from dskit.production.guards import MEASURE_KINDS, Limit, Window
 from dskit.production.state import SeriesState, StateView, TickState
 from tests.production.test_state import (
     BASE_MS as FOLD_BASE_MS,
@@ -141,6 +145,13 @@ class FakeHistory:
         self.calls = []
 
     def fills(self, since_ms):
+        # `reconcile.LedgerHistory.fills` refuses a bound that is not a
+        # non-negative int. A double that accepted one would hide an
+        # underflow in its caller, which is exactly what it did in round 1.
+        # Restated deliberately rather than imported: a double that read its
+        # rule from the thing it stands in for would assert nothing.
+        if isinstance(since_ms, bool) or not isinstance(since_ms, int) or since_ms < 0:
+            raise ProductionError([f"since_ms must be an int >= 0, got {since_ms!r}"])
         self.calls.append(since_ms)
         return tuple(f for f in self._fills if f["ts_ms"] >= since_ms)
 
@@ -172,6 +183,26 @@ class FakeCalendar:
 
 
 NO_QUOTES = records.QuoteSet(quotes=(), quote_digest="3" * 64, min_asof_ms=T0)
+
+
+def quotes_for(*instruments):
+    """A fresh `QuoteSet` covering every instrument a snapshot has to mark.
+
+    `PaperAccounting.snapshot` REFUSES a held instrument with no fresh mark —
+    a snapshot is what a permit binds — so any view carrying a position needs
+    one here. Prices are this suite's own; nothing reads them back.
+    """
+    quotes = tuple(
+        records.Quote(
+            instrument=instrument,
+            bid=Decimal("9.99"),
+            ask=Decimal("10.01"),
+            mid=Decimal("10"),
+            asof_ms=T0,
+        )
+        for instrument in instruments
+    )
+    return records.QuoteSet(quotes=quotes, quote_digest="3" * 64, min_asof_ms=T0)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +471,7 @@ def test_two_leads_cannot_both_commit_the_same_scarce_cash():
         proposal(qty="10", limit="10", pid="cand-2"), after_first, T0, FakeHistory()
     )
     assert second, "the second lead was funded out of cash the first already holds"
-    assert "of settled funds" in second[0]
+    assert "past the settled funds available" in second[0]
 
 
 # ---------------------------------------------------------------------------
@@ -736,8 +767,12 @@ def test_the_undeclared_policy_refuses_to_authorise_a_commitment():
     """The figure above asserts nothing about outstanding orders, so it must
     never be spent against. Reporting it and authorising against it are two
     different permissions."""
+    # NOT a `Boom` collaborator: `admit` refuses before reading anything, so a
+    # fixture that raises on attribute access would prove nothing here (round-1
+    # Nit 6). The two `Boom` tests above are the ones where not-touching is
+    # the claim.
     with pytest.raises(ProductionError, match="declares no settlement convention"):
-        UndeclaredSettlement({}).admit(proposal(), view(), T0, Boom("history"))
+        UndeclaredSettlement({}).admit(proposal(), view(), T0, FakeHistory())
 
 
 def test_paper_accounting_still_reports_available_equal_to_total():
@@ -797,6 +832,22 @@ def test_the_policys_own_params_are_validated_at_the_accounting_site():
         accounting(policy={"uses": "cash", "params": {"balance_basis": "trade_date"}})
 
 
+def test_the_strategys_two_pass_throughs_answer_exactly_what_its_policy_answers():
+    """A child holds the `Accounting` object, not the policy, so `encumbrance`
+    and `admit` are the surface it wraps — and the round-1 Major 1 sweep found
+    both reachable and untested, which is the same shape as the finding.
+    Pinned against the policy directly so a pass-through that started
+    answering for itself fails."""
+    history = FakeHistory((fill_body("f-1", "sell", "10", "10", T0 - MINUTE),))
+    strategy = accounting(history=history)
+    busy = view(working=(order(qty="4", limit="10"),), positions=(position(),))
+    policy = cash()
+    assert strategy.encumbrance(busy, T0) == policy.encumber(busy, T0, history)
+    wanted = proposal(qty="500", limit="10")
+    assert strategy.admit(wanted, busy, T0) == policy.admit(wanted, busy, T0, history)
+    assert strategy.admit(wanted, busy, T0)
+
+
 def test_the_encumbered_strategy_keeps_every_other_paper_behaviour():
     """It changes ONE hook. `classify` still proves a reduction against
     positions and working orders rather than believing a model claim."""
@@ -841,8 +892,7 @@ def test_the_book_survives_a_restart_because_nothing_is_stored():
     book at the same instant. A policy holding a reservation in memory would
     come back with an empty one."""
     state, chain, history = scarce_series()
-    policy = cash(basis="settlement_date")
-    before = policy.encumber(state.snapshot(), FOLD_AT_MS, history)
+    before = cash(basis="settlement_date").encumber(state.snapshot(), FOLD_AT_MS, history)
 
     env = snapshot_env(state, chain)
     state.apply(env)
@@ -850,7 +900,12 @@ def test_the_book_survives_a_restart_because_nothing_is_stored():
     restarted.restore(env)
     restarted.apply(env)
 
-    after = policy.encumber(restarted.snapshot(), FOLD_AT_MS, history)
+    # A FRESH policy, as a restarted process would build: comparing one
+    # object against itself would be satisfied by a policy that ignored its
+    # arguments and returned its first answer forever (round-1 Major 2).
+    after = cash(basis="settlement_date").encumber(
+        restarted.snapshot(), FOLD_AT_MS, history
+    )
     assert after == before
     assert after.funds["USD"].committed == Decimal("600")
     assert after.funds["USD"].unsettled == Decimal("400")
@@ -889,7 +944,7 @@ def test_the_audit_acceptance_test_for_account_reality():
     beyond = proposal(pid="lead-3", qty="16", limit="100", instrument="AAA")
     assert policy.admit(inside, fold_view, FOLD_AT_MS, history) == ()
     refused = policy.admit(beyond, fold_view, FOLD_AT_MS, history)
-    assert refused and "of settled funds" in refused[0]
+    assert refused and "past the settled funds available" in refused[0]
 
     # The shares are as scarce as the cash: four were filled, and a fifth
     # would have to be borrowed.
@@ -908,3 +963,371 @@ def test_the_audit_acceptance_test_for_account_reality():
     )
     assert covered == ()
     assert naked and "borrowed" in naked[0]
+
+
+# ---------------------------------------------------------------------------
+# Round-1 Major 1 — the derived figure BINDS, through the guard chain
+# ---------------------------------------------------------------------------
+
+#: The two measures, by the reference a document writes. Restated rather
+#: than built from `__name__`: a rename must break a document, and a test
+#: that spelled the path from the class would hide that.
+FUNDS_MEASURE = "dskit.production.encumbrance:SettledFundsShortfall"
+UNITS_MEASURE = "dskit.production.encumbrance:UncommittedUnitsShortfall"
+
+#: The params a document writes for each core policy, for the sweeps that
+#: run over both.
+POLICY_PARAMS = {
+    "undeclared": {},
+    "cash": {"settlement_lag_ms": LAG_MS, "balance_basis": "trade_date"},
+}
+
+WINDOW = Window.from_params({})
+
+
+def limit_over(measure, name="funds"):
+    """A real `Limit` holding `measure` to a shortfall of at most zero."""
+    return Limit(
+        {"measure": measure, "bound": {"max": "0"}, "on_breach": "refuse"},
+        name=name,
+    )
+
+
+def guarded_state(state_view, history=None, basis="trade_date", strategy=None):
+    """A `TickState` whose account is a real accounting snapshot of `state_view`."""
+    strategy = strategy or accounting(
+        policy=selector(basis=basis), history=history if history is not None else FakeHistory()
+    )
+    marks = quotes_for(*sorted({position.instrument for position in state_view.positions}))
+    account = strategy.snapshot(
+        state_view, Boom("executor"), marks, T0, (), FakeCalendar()
+    )
+    return TickState(
+        view=state_view,
+        account=account,
+        feed_status="live",
+        feed_ages=(),
+        calendar=FakeCalendar(),
+    )
+
+
+def test_both_measures_resolve_from_the_registry_by_the_path_a_document_writes():
+    """`MEASURE_KINDS` lives in `guards.py`, which this module imports, so a
+    registration performed here would make the registry's contents depend on
+    import order. The documented `pkg.module:Class` route is the one a
+    document uses, so it is the one pinned."""
+    assert MEASURE_KINDS.resolve(FUNDS_MEASURE) is SettledFundsShortfall
+    assert MEASURE_KINDS.resolve(UNITS_MEASURE) is UncommittedUnitsShortfall
+    assert FUNDS_MEASURE not in MEASURE_KINDS.kinds()
+    assert UNITS_MEASURE not in MEASURE_KINDS.kinds()
+
+
+def test_the_guard_chain_refuses_the_second_lead_that_reaches_past_the_first():
+    """Round-1 Major 1, as a regression. Deriving `available` made it visible;
+    a `Limit` over it is what makes it BINDING. The first lead's order is in
+    the fold by the time the second is measured — every leg re-snapshots — so
+    the second is held to what is left, not to the untouched balance."""
+    guard = limit_over(FUNDS_MEASURE)
+    scarce = view(balances={USD: Decimal("100")})
+    first = guard.check(proposal(qty="10", limit="10"), guarded_state(scarce))
+    assert first.verdict == "allow"
+
+    after_first = view(
+        balances={USD: Decimal("100")},
+        working=(order(ref="lead-1", qty="10", limit="10"),),
+    )
+    second = guard.check(
+        proposal(qty="10", limit="10", pid="cand-2"), guarded_state(after_first)
+    )
+    assert second.verdict == "refuse"
+    assert second.value == Decimal("100")
+
+
+def test_the_funds_guard_admits_a_proposal_that_spends_exactly_what_is_free():
+    """`Bound` is inclusive, so a shortfall of exactly zero is not a breach —
+    the refusal must bite at one unit more, or it would be unusable."""
+    guard = limit_over(FUNDS_MEASURE)
+    left = view(balances={USD: Decimal("100")}, working=(order(ref="w", qty="4", limit="10"),))
+    exact = guard.check(proposal(qty="6", limit="10"), guarded_state(left))
+    over = guard.check(proposal(qty="7", limit="10", pid="cand-2"), guarded_state(left))
+    assert (exact.verdict, exact.value) == ("allow", Decimal("0"))
+    assert (over.verdict, over.value) == ("refuse", Decimal("10"))
+
+
+def test_the_units_guard_refuses_a_sell_beyond_the_uncommitted_position():
+    """The shares are as scarce as the cash: ten held, six already promised to
+    a working sell, so a further six reaches two the account does not have."""
+    guard = limit_over(UNITS_MEASURE, name="units")
+    committed = view(
+        positions=(position(qty="10"),),
+        working=(order(ref="lead-1", side="sell", qty="6"),),
+    )
+    naked = guard.check(proposal(side="sell", qty="6"), guarded_state(committed))
+    covered = guard.check(
+        proposal(side="sell", qty="4", pid="cand-2"), guarded_state(committed)
+    )
+    assert (naked.verdict, naked.value) == ("refuse", Decimal("2"))
+    assert (covered.verdict, covered.value) == ("allow", Decimal("0"))
+
+
+def test_a_sell_reaches_no_cash_and_a_buy_reaches_no_held_unit():
+    """Each measure answers about ONE resource. A side table decides which
+    proposals touch it, so neither guard refuses a proposal it has nothing to
+    say about."""
+    held = view(positions=(position(qty="10"),), balances={USD: Decimal("1")})
+    state = guarded_state(held)
+    assert SettledFundsShortfall().value(
+        proposal(side="sell", qty="4"), state, WINDOW, "*", True
+    ) == Decimal("0")
+    assert UncommittedUnitsShortfall().value(
+        proposal(side="buy", qty="99", limit="10"), state, WINDOW, "*", True
+    ) == Decimal("0")
+
+
+def test_the_funds_measure_is_only_as_strong_as_the_available_it_reads():
+    """Stated rather than hidden: the measure reads `state.account.balances`,
+    so under `PaperAccounting` — where `available` IS `total` — it holds a
+    proposal to the whole balance and admits the over-commit that
+    `EncumberedAccounting` refuses. That is the difference between a figure
+    that is reported and one that is derived."""
+    guard = limit_over(FUNDS_MEASURE)
+    after_first = view(
+        balances={USD: Decimal("100")},
+        working=(order(ref="lead-1", qty="10", limit="10"),),
+    )
+    second = proposal(qty="10", limit="10", pid="cand-2")
+    assert guard.check(second, guarded_state(after_first, strategy=paper())).verdict == "allow"
+    assert guard.check(second, guarded_state(after_first)).verdict == "refuse"
+
+
+def test_the_measures_refuse_rather_than_guess_what_they_cannot_measure():
+    """A `Limit` turns a measure that cannot answer into a refusal with the
+    reason recorded, which is the right outcome — but only if the measure
+    raises instead of inventing a number."""
+    guard = limit_over(FUNDS_MEASURE)
+    spanning = guarded_state(view(), strategy=paper())
+    market = guard.check(proposal(limit=None), spanning)
+    assert market.verdict == "refuse"
+    assert market.value is None
+    assert "declares no limit" in market.reason
+
+
+def test_every_resource_the_book_derives_has_something_that_binds_it():
+    """The completeness half of round-1 Major 1: a figure nothing reads is
+    computable, not enforced. `funds` and `inventory` are the two resources
+    the book derives and each has a `Measure` a `Limit` holds it to.
+    `unsized_refs` deliberately has none — a `Measure` reads
+    `state.account` and never `state.view` (§5.8.1), and the pending client
+    refs live on the view, so that refusal stays `admit`'s."""
+    assert {field.name for field in dataclasses.fields(Encumbrance)} == {
+        "funds",
+        "inventory",
+        "unsized_refs",
+    }
+    assert MEASURE_KINDS.resolve(FUNDS_MEASURE).kind == "settled_funds_shortfall"
+    assert MEASURE_KINDS.resolve(UNITS_MEASURE).kind == "uncommitted_units_shortfall"
+
+
+def test_the_guard_chain_and_admit_never_disagree_about_one_proposal():
+    """The two entry points share the shortfall rules, so a proposal the guard
+    refuses is one `admit` refuses and the other way round. Two copies of the
+    comparison would drift the first time one was tuned."""
+    guard, units = limit_over(FUNDS_MEASURE), limit_over(UNITS_MEASURE, name="units")
+    policy = cash()
+    cases = (
+        (view(balances={USD: Decimal("100")}), proposal(qty="10", limit="10")),
+        (view(balances={USD: Decimal("99")}), proposal(qty="10", limit="10")),
+        (view(positions=(position(qty="3"),)), proposal(side="sell", qty="4")),
+        (view(positions=(position(qty="10"),)), proposal(side="sell", qty="4")),
+    )
+    for state_view, candidate in cases:
+        refused_by_admit = bool(policy.admit(candidate, state_view, T0, FakeHistory()))
+        state = guarded_state(state_view)
+        verdicts = {
+            guard.check(candidate, state).verdict,
+            units.check(candidate, state).verdict,
+        }
+        assert refused_by_admit == ("refuse" in verdicts), (state_view, candidate.id)
+
+
+# ---------------------------------------------------------------------------
+# Round-1 Major 2 — the "nothing is stored" invariant, actually pinned
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", CORE_POLICIES)
+def test_one_policy_instance_answers_from_its_arguments_not_from_memory(name):
+    """`compose.py` builds the accounting object — and therefore its policy —
+    ONCE per serve process, not once per tick. A policy that remembered an
+    answer would freeze `available` at the first tick's value for the process
+    lifetime and silently permit unlimited over-commitment afterwards. So the
+    same instance must answer a DIFFERENT fold differently, and must come back
+    to the first answer when handed the first fold again."""
+    policy = ENCUMBRANCE_POLICIES[name](POLICY_PARAMS[name])
+    empty = view()
+    busy = view(working=(order(qty="4", limit="10"),), balances={USD: Decimal("500")})
+
+    first = policy.encumber(empty, T0, FakeHistory())
+    second = policy.encumber(busy, T0, FakeHistory())
+    assert second != first
+    assert second.funds[USD].total == Decimal("500")
+    assert policy.encumber(empty, T0, FakeHistory()) == first
+
+
+@pytest.mark.parametrize("name", CORE_POLICIES)
+def test_two_independent_instances_of_one_policy_agree(name):
+    """The other half: statelessness is worth nothing if two instances built
+    from the same params disagree."""
+    busy = view(working=(order(qty="4", limit="10"),))
+    left = ENCUMBRANCE_POLICIES[name](POLICY_PARAMS[name])
+    right = ENCUMBRANCE_POLICIES[name](POLICY_PARAMS[name])
+    assert left.encumber(busy, T0, FakeHistory()) == right.encumber(busy, T0, FakeHistory())
+
+
+def test_one_instance_settles_what_was_pending_when_asked_at_a_later_instant():
+    """Time is an argument, not a property of the policy. A memoised answer
+    would keep reporting yesterday's unsettled proceeds forever."""
+    policy = cash()
+    history = FakeHistory((fill_body("f-1", "sell", "10", "10", T0),))
+    early = policy.encumber(view(), T0 + HOUR, history)
+    late = policy.encumber(view(), T0 + LAG_MS, history)
+    assert early.funds[USD].unsettled == Decimal("100")
+    assert late.funds[USD].unsettled == Decimal("0")
+
+
+def test_one_instance_follows_a_moving_history():
+    """The third argument, pinned the same way: the fill history moves under a
+    serve process, and the book has to move with it."""
+    policy = cash()
+    quiet = policy.encumber(view(), T0, FakeHistory())
+    noisy = policy.encumber(
+        view(), T0, FakeHistory((fill_body("f-1", "sell", "10", "10", T0 - MINUTE),))
+    )
+    assert quiet.funds[USD].unsettled == Decimal("0")
+    assert noisy.funds[USD].unsettled == Decimal("100")
+
+
+def test_balances_and_admit_are_stateless_on_one_instance_too():
+    """`encumber` is not the only public answer. Both of the methods a caller
+    actually uses run through it, so both are pinned on one instance in an
+    order where a remembered answer would pass the second case wrongly."""
+    policy = cash()
+    rich = view(balances={USD: Decimal("1000")})
+    poor = view(balances={USD: Decimal("10")})
+    wanted = proposal(qty="10", limit="10")
+    assert policy.admit(wanted, rich, T0, FakeHistory()) == ()
+    assert policy.admit(wanted, poor, T0, FakeHistory())
+    assert only(policy.balances(rich, T0, FakeHistory())).available == Decimal("1000")
+    assert only(policy.balances(poor, T0, FakeHistory())).available == Decimal("10")
+
+
+def test_one_measure_instance_answers_from_the_state_it_is_handed():
+    """A `Limit` builds its measure once, at configuration, and reuses it for
+    every proposal of every tick — the same freezing hazard one layer up, and
+    both measures carry it."""
+    funds = SettledFundsShortfall()
+    rich = guarded_state(view(balances={USD: Decimal("1000")}))
+    poor = guarded_state(view(balances={USD: Decimal("10")}))
+    wanted = proposal(qty="10", limit="10")
+    assert funds.value(wanted, rich, WINDOW, "*", True) == Decimal("-900")
+    assert funds.value(wanted, poor, WINDOW, "*", True) == Decimal("90")
+    assert funds.value(wanted, rich, WINDOW, "*", True) == Decimal("-900")
+
+    units = UncommittedUnitsShortfall()
+    deep = guarded_state(view(positions=(position(qty="10"),)))
+    thin = guarded_state(view(positions=(position(qty="1"),)))
+    sell = proposal(side="sell", qty="4")
+    assert units.value(sell, deep, WINDOW, "*", True) == Decimal("-6")
+    assert units.value(sell, thin, WINDOW, "*", True) == Decimal("3")
+    assert units.value(sell, deep, WINDOW, "*", True) == Decimal("-6")
+
+
+@pytest.mark.parametrize("name", CORE_POLICIES)
+def test_a_policy_grows_no_attribute_across_a_call(name):
+    """The mechanical half of the same invariant, and the one that does not
+    depend on this suite having picked a fold where a remembered answer would
+    be visibly wrong: a policy that stored ANYTHING across a call is caught
+    here, whatever it stored and whatever it did with it."""
+    policy = ENCUMBRANCE_POLICIES[name](POLICY_PARAMS[name])
+    before = dict(vars(policy))
+    policy.encumber(view(working=(order(),), positions=(position(),)), T0, FakeHistory())
+    policy.balances(view(), T0, FakeHistory())
+    assert vars(policy) == before
+
+
+@pytest.mark.parametrize(
+    "measure_cls", (SettledFundsShortfall, UncommittedUnitsShortfall),
+    ids=lambda cls: cls.kind,
+)
+def test_a_measure_grows_no_attribute_across_a_call(measure_cls):
+    """And the same for the two measures, which a `Limit` holds for the life of
+    the process."""
+    measure = measure_cls()
+    before = dict(vars(measure))
+    state = guarded_state(view(positions=(position(qty="10"),)))
+    measure.value(proposal(qty="1", limit="1"), state, WINDOW, "*", True)
+    measure.value(proposal(side="sell", qty="1"), state, WINDOW, "*", True)
+    assert vars(measure) == before
+
+
+def test_one_accounting_instance_answers_from_the_fold_it_is_handed():
+    """And one layer up again: `compose.py` builds ONE
+    `EncumberedAccounting` per process, so its snapshots must move too."""
+    strategy = accounting()
+    empty = only(
+        strategy.snapshot(view(), Boom("executor"), NO_QUOTES, T0, (), FakeCalendar()).balances
+    )
+    busy = only(
+        strategy.snapshot(
+            view(working=(order(qty="4", limit="10"),)),
+            Boom("executor"),
+            NO_QUOTES,
+            T0,
+            (),
+            FakeCalendar(),
+        ).balances
+    )
+    assert empty.available == Decimal("1000")
+    assert busy.available == Decimal("960")
+
+
+# ---------------------------------------------------------------------------
+# Round-1 Minor 4 and Nit 5
+# ---------------------------------------------------------------------------
+
+
+def test_a_lag_wider_than_the_clocks_reading_still_asks_for_a_real_instant():
+    """`at_ms - settlement_lag_ms` underflows early in a `TestClock`-driven
+    run, whose default start is 0. The collaborator refuses a negative bound,
+    and letting its refusal escape would surface an encumbrance bug as
+    somebody else's error."""
+    history = FakeHistory()
+    policy = CashSettlement({"settlement_lag_ms": 50_000, "balance_basis": "trade_date"})
+    policy.encumber(view(), 1_000, history)
+    assert history.calls == [0]
+
+
+def test_the_history_double_refuses_a_negative_bound_like_the_real_one():
+    """The gate above is worth what the double catches: a fake that accepted a
+    negative `since_ms` is why round 1 shipped the underflow."""
+    with pytest.raises(ProductionError, match="since_ms must be an int"):
+        FakeHistory().fills(-1)
+
+
+def test_an_over_committed_account_reports_a_negative_available_and_is_read_conservatively():
+    """No floor. An account that has committed more than it holds is a fact an
+    operator has to see, and flooring at zero would report it as merely empty.
+    What matters is that every reader stays conservative under it — so both
+    the admission check and the guard measure are asserted on the same book."""
+    history = FakeHistory((fill_body("f-1", "sell", "50", "10", T0 - MINUTE),))
+    over = view(balances={USD: Decimal("100")})
+    row = cash().encumber(over, T0, history).funds[USD]
+    assert (row.total, row.unsettled, row.available) == (
+        Decimal("100"),
+        Decimal("500"),
+        Decimal("-400"),
+    )
+    tiny = proposal(qty="1", limit="1")
+    assert cash().admit(tiny, over, T0, history)
+    guard = limit_over(FUNDS_MEASURE)
+    assert guard.check(tiny, guarded_state(over, history=history)).verdict == "refuse"

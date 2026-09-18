@@ -35,6 +35,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from dskit.production.accounting import Accounting, PaperAccounting
+from dskit.production.encumbrance import EncumberedAccounting
 from dskit.production.alerts import DEFAULT_MAX_SILENCE_S, AlertRouter
 from dskit.production.arming import (
     ApprovalVerifier,
@@ -2289,3 +2290,63 @@ def test_a_schedule_subclass_cannot_mint_replay_cash():
 
     with pytest.raises(ProductionError, match="RecurringCashFlowSchedule"):
         ReplayCashFlowComposer(forged)
+
+
+# ---------------------------------------------------------------------------
+# ADR-0162 — which rungs can reach the encumbered accounting strategy
+# ---------------------------------------------------------------------------
+
+#: The accounting strategy that derives `available`, by the reference a
+#: document writes. It is NOT in `ACCOUNTING_KINDS`: registering it would
+#: give the simulated rungs a core kind their row forbids, so it is reached
+#: the way every other child class is, by path.
+ENCUMBERED_ACCOUNTING = "dskit.production.encumbrance:EncumberedAccounting"
+
+#: One declared policy, so the strategy has something to derive with.
+ENCUMBRANCE_SELECTOR = {
+    "uses": "cash",
+    "params": {"settlement_lag_ms": 86_400_000, "balance_basis": "trade_date"},
+}
+
+
+@pytest.mark.parametrize("rung", LIVE_RUNGS)
+def test_a_live_rung_composes_the_encumbered_accounting_named_by_path(
+    serve_document, tmp_path, composer, rung
+):
+    """ADR-0162's `available` is only reachable where the rung admits a
+    non-core accounting class. A live row sets `accounting` to None, so a
+    `pkg.module:Class` reference is exactly what it wants — and the strategy's
+    own `_PARAMS` carry the declared encumbrance policy through the same
+    `params` block every other selector uses. Pinned so a later `RUNG_TABLE`
+    or `_check_family` edit cannot silently close the path."""
+    document = document_at(
+        serve_document,
+        rung,
+        tmp_path,
+        {"accounting.uses": ENCUMBERED_ACCOUNTING, "accounting.params": {"encumbrance": ENCUMBRANCE_SELECTOR}},
+    )
+    bundles = composer.build(document)
+    assert isinstance(bundles[4].accounting, EncumberedAccounting)
+
+
+@pytest.mark.parametrize("rung", SIMULATED_RUNGS)
+def test_a_simulated_rung_refuses_the_encumbered_accounting_by_name(
+    serve_document, tmp_path, composer, rung
+):
+    """The other half, and the one that matters more: §5.13.1 makes the
+    simulated rows name `paper` and NO other, so a shadow or paper document
+    reaching for the derived figure is refused at construction rather than
+    quietly composed. A later edit that over-permitted the path would fail
+    here."""
+    document = document_at(
+        serve_document,
+        rung,
+        tmp_path,
+        {"accounting.uses": ENCUMBERED_ACCOUNTING, "accounting.params": {"encumbrance": ENCUMBRANCE_SELECTOR}},
+    )
+    with pytest.raises(ProductionError) as excinfo:
+        composer.build(document)
+    assert any(
+        "accounting.uses" in problem and "incompatible combination" in problem
+        for problem in excinfo.value.problems
+    )

@@ -16522,6 +16522,23 @@ absent.
    with an identical body. The import arrow points `encumbrance -> accounting`
    and never back.
 
+6. **Deriving `available` makes it visible; a guard is what makes it
+   binding.** Two `Measure` subclasses live in the same module —
+   `SettledFundsShortfall`, which reads `AccountState.balances`, and
+   `UncommittedUnitsShortfall`, which reads its positions and working orders
+   — and a `Limit` over either, bounded at `{"max": "0"}`, refuses a proposal
+   that reaches past what is free. They run inside the guard chain's recorded
+   barriers, and because every leg re-snapshots the account (§5.8.1's fresh
+   fold) the second lead of a tick measures against what the first already
+   holds. Both are referenced by `pkg.module:Class` rather than registered:
+   `MEASURE_KINDS` lives in `guards.py`, which this module imports, and a
+   registration performed by a lazily imported module would make the
+   registry's contents depend on import order. Neither is scalable —
+   shrinking an order to fit the cash is an execution decision this package
+   has no mandate to invent — so `on_breach` is `refuse`, `hold` or `pause`.
+   The shortfall rules have ONE owner, shared with `admit`, so a guard chain
+   and a direct caller can never disagree about whether a proposal fits.
+
 **Identities and transitions.** An encumbrance has no id and no lifecycle of
 its own: it is a pure function of `(StateView, at_ms, history)`. Its
 transitions are the order and fill transitions the fold already owns. A working
@@ -16532,12 +16549,20 @@ obligation through the fill history, never as free cash. `unknown` is
 deliberately not terminal, so an uncertain remainder stays encumbered — §5.0's
 "the absence of certainty, not an end", applied to money.
 
-**Restart.** Nothing is held in memory. `StateView` is rebuilt by
-`SeriesState`/`Recovery` from the durable snapshot plus the chain, and the
-fills come from the chain through `LedgerHistory`; re-deriving at the same
-`at_ms` over the same chain therefore reproduces the same encumbrance, which is
-what "survives restart" means here. No parallel store is introduced, and there
-is no in-memory reservation that a crash could lose or double-count.
+**Restart, and the statelessness it rests on.** Nothing is held in memory.
+`StateView` is rebuilt by `SeriesState`/`Recovery` from the durable snapshot
+plus the chain, and the fills come from the chain through `LedgerHistory`;
+re-deriving at the same `at_ms` over the same chain therefore reproduces the
+same encumbrance, which is what "survives restart" means here. No parallel
+store is introduced, and there is no in-memory reservation that a crash could
+lose or double-count. The load-bearing half is that every policy answers from
+its arguments ALONE: `compose.py` builds the accounting object, and therefore
+its policy, once per serve process rather than once per tick, so a policy that
+remembered an answer would freeze `available` at the first tick's value for the
+process lifetime and silently permit unlimited over-commitment afterwards. That
+is a contract of the seam, not a property of one implementation, so it is
+asserted by handing ONE instance different folds, different instants and
+different histories and requiring different answers.
 
 **Compatibility.** `PaperAccounting` keeps `available == total` exactly, for
 every existing document, because the extracted hook's body is unchanged and no
@@ -16558,15 +16583,37 @@ multi-currency attribution: an order carries no currency, so a balance set
 spanning currencies refuses, exactly as `PaperAccounting.value` already does.
 No inventory settlement — only cash settles, and units committed to a working
 sell are the only inventory encumbrance. No document key, no rung-table row and
-no `ACCOUNTING_KINDS` registration in this slice; wiring any of them is a
-separate decision that would move document identity. No child is wired. A
+no `ACCOUNTING_KINDS` registration; wiring any of them is a separate decision
+that would move document identity, and registering the strategy as a core kind
+would hand the simulated rungs a kind their row forbids. Reachability is
+therefore the ordinary child-class one and is pinned by test: a `live` or
+`live_limited` document reaches the strategy as
+`dskit.production.encumbrance:EncumberedAccounting`, and a `shadow` or `paper`
+document naming it is REFUSED at construction, because §5.13.1's row admits
+`paper` and no other. No child is wired. A
 proposal whose size the fold cannot see — a `StateView.pending` client ref,
 whose intent has landed but whose `order_event` has not, and whose quantity the
 view does not carry — makes `admit` refuse rather than under-encumber.
 
-**Consequences.** Both children (equities EQ-05, pmquant PM-04) wrap ONE seam
-instead of writing two. The audit's acceptance test becomes expressible against
-core alone: two leads against one scarce balance, a partial fill whose
-remainder is `unknown`, a restart, and the two refusals (unavailable borrow,
-insufficient settled funds). Nothing here establishes broker conformance, and
-this package asserts no settlement period, margin rate or borrow rule.
+**Consequences, stated as enforced versus merely available.** ENFORCED by a
+running `ServeLoop`, once a document declares the limits: a proposal reaching
+past the account's available funds, and a sell reaching past the instrument's
+uncommitted units. Both run through `GuardChain`, so a breach takes a recorded
+verdict on the chain like every other guard finding, and the fresh fold per leg
+is what stops two concurrent leads spending one balance twice. AVAILABLE but
+not enforced by the loop: `EncumbrancePolicy.admit`, which answers for a whole
+slate in one call and is what a child's proposer or optimizer consults before
+it emits; the borrow hook, which `admit` reaches and a guard does not, because
+a `Measure` answers from the account snapshot alone; and the refusal for an
+intent the fold cannot size, which lives with `admit` for the same reason —
+`StateView.pending` is on the view, and §5.8.1 keeps a measure off the view.
+A document that declares neither limit gets the derived figure on its balances
+and no protection from it; that is a configuration choice, and the two limits
+are what a readiness checklist should require.
+
+Both children (equities EQ-05, pmquant PM-04) wrap ONE seam instead of writing
+two. The audit's acceptance test is exercised against core alone: two leads
+against one scarce balance, a partial fill whose remainder is `unknown`, a
+restart, and the two refusals (unavailable borrow, insufficient settled funds).
+Nothing here establishes broker conformance, and this package asserts no
+settlement period, margin rate or borrow rule.
