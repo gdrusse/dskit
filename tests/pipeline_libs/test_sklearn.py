@@ -10,6 +10,7 @@ itself keeps planning there.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import pathlib
@@ -1746,6 +1747,41 @@ def test_the_model_id_moves_when_any_part_of_the_state_moves():
     assert node.segment_model_id(base) != node.segment_model_id(moved)
 
 
+def test_the_model_id_moves_when_any_list_in_the_state_is_REORDERED():
+    """Moving a VALUE is not the only way to move a state: in all three of
+    its lists the ORDER is meaning, and reordering one leaves the multiset
+    alone.
+
+    A digest that canonicalised any of them -- "stabilise the id so an
+    equivalent re-fit keeps it" is a tempting refactor, and exactly the one
+    this refuses -- would hand the SAME id to two segmentations that assign
+    the same row differently. Every emitted row carries this id, and
+    ``state_outputs`` publishes it as a port precisely so a row can be
+    traced to the projection that produced it.
+
+    The fixture above cannot see that: its lists are already sorted, so
+    sorting them is the identity.
+    """
+    node = _state_node()
+    base = {
+        "schema": SEGMENT_SCHEMA,
+        "algorithm": "kmeans",
+        "features": ["f1", "f2", "f0"],
+        "centers": [[9.0, 8.0, 7.0], [0.0, 1.0, 2.0]],
+        "center_labels": [5, 3],
+    }
+    base_id = node.segment_model_id(base)
+    # Each is a PERMUTATION of the base's list, so any canonicalising
+    # digest collides the two, whichever direction it canonicalises in.
+    for field, reordered in (
+        ("features", ["f1", "f0", "f2"]),
+        ("centers", [[0.0, 1.0, 2.0], [9.0, 8.0, 7.0]]),
+        ("center_labels", [3, 5]),
+    ):
+        assert sorted(map(repr, base[field])) == sorted(map(repr, reordered))
+        assert node.segment_model_id({**base, field: reordered}) != base_id, field
+
+
 @pytest.mark.parametrize("split", ["val", "cal", "test", None])
 def test_fit_repeats_the_train_gate_for_a_caller_that_skipped_the_first(split):
     """The SECOND gate (§3.1). ``validate_train_inputs`` refuses first, but a
@@ -2125,41 +2161,57 @@ def test_assignment_agrees_with_the_library_it_extracted_from(algorithm):
 #: separate the declared order from all of them at once.
 _ROTATED_FEATURES = ["f1", "f2", "f0"]
 
-#: Two clouds whose three axes carry different ranges, so ANY permutation
-#: of them moves rows across the boundary rather than merely relabelling.
+#: Two clouds whose three axes carry different ranges AND whose ``f0`` and
+#: ``f2`` run opposite ways between the clouds, so swapping just those two
+#: -- the hardest permutation to see, and the one an earlier version of
+#: this fixture was blind to -- moves rows across the boundary rather than
+#: merely relabelling them.
+#: ``f3`` is carried so the same rows serve the four-name case; a name the
+#: document does not declare is simply not read.
 _ROTATED_ROWS = [
-    {"f0": 0.0, "f1": 4.0, "f2": 20.0},
-    {"f0": 0.2, "f1": 4.6, "f2": 21.0},
-    {"f0": 9.0, "f1": 0.4, "f2": 30.0},
-    {"f0": 8.8, "f1": 1.0, "f2": 31.0},
+    {"f0": 20.0, "f1": 4.0, "f2": 0.0, "f3": 7.0},
+    {"f0": 21.0, "f1": 4.6, "f2": 1.0, "f3": 6.5},
+    {"f0": 0.0, "f1": 0.4, "f2": 30.0, "f3": 40.0},
+    {"f0": 1.0, "f1": 1.0, "f2": 31.0, "f3": 41.0},
 ]
 
 
 @pytest.mark.parametrize("algorithm", ["kmeans", "minibatch_kmeans", "birch"])
-def test_a_rotated_feature_order_reaches_fit_state_and_apply_intact(algorithm):
+@pytest.mark.parametrize(
+    "names",
+    [["f1", "f2", "f0"], ["f1", "f3", "f0", "f2"]],
+    ids=["three-names", "four-names"],
+)
+def test_a_rotated_feature_order_reaches_fit_state_and_apply_intact(
+    algorithm, names
+):
     """The declared order is carried verbatim through all THREE sites.
 
     ``fit`` builds its design matrix in that order, the state records that
-    order, and ``apply_state`` reads coordinates back in it. Each site is
-    a separate chance to normalise the names behind the caller, and a
-    normalisation at any one of them measures distance on the wrong axes
-    while the other two still agree with each other.
+    order, and ``apply_state`` reads coordinates back in it. Each site is a
+    separate chance to normalise the names behind the caller.
+
+    The CENTERS are compared, not merely the labels: clustering is
+    equivariant under permuting the columns, so a fit-site permutation can
+    hand back the very same memberships while the stored geometry is
+    transposed -- the labels alone cannot see it, and the centers can.
+
+    Run at four names as well as three, because a normalisation can be
+    gated on arity, and because the apply-side probe below fits nothing.
     """
     sklearn_cluster = pytest.importorskip("sklearn.cluster")
 
     node = _segment_node(
-        features=_ROTATED_FEATURES, algorithm=algorithm,
+        features=names, algorithm=algorithm,
         algorithm_params={"n_clusters": 2},
         seed=_DROP if algorithm == "birch" else 17,
     )
     state = node.fit(_ROTATED_ROWS, node.params)
 
     # The WRITE site: verbatim, not canonicalised.
-    assert state["features"] == _ROTATED_FEATURES
+    assert state["features"] == names
 
-    # The FIT and APPLY sites, against the library's own answer on the
-    # same design matrix the node should have built.
-    matrix = [[row[name] for name in _ROTATED_FEATURES] for row in _ROTATED_ROWS]
+    matrix = [[row[name] for name in names] for row in _ROTATED_ROWS]
     kwargs = {"n_clusters": 2}
     if algorithm != "birch":
         kwargs["random_state"] = 17
@@ -2167,39 +2219,56 @@ def test_a_rotated_feature_order_reaches_fit_state_and_apply_intact(algorithm):
         sklearn_cluster, _SEGMENT_PATHS[algorithm].rpartition(".")[2]
     )(**kwargs).fit(matrix)
 
+    # The FIT site: the geometry the library extracted from the design
+    # matrix the node should have built, coordinate for coordinate.
+    extracted = (reference.subcluster_centers_ if algorithm == "birch"
+                 else reference.cluster_centers_)
+    assert state["centers"] == [
+        [float(value) for value in center] for center in extracted
+    ]
+
+    # The APPLY site, against the library's own answer.
     assert [
         row["segment"]
         for row in node.apply_state(state, _ROTATED_ROWS, node.params)
     ] == [int(label) for label in reference.predict(matrix)]
 
 
-def test_no_permutation_of_the_declared_names_reads_the_same_point():
-    """Six centers, one sitting exactly on each permutation of the row's
-    three values.
+@pytest.mark.parametrize(
+    "names",
+    [["f1", "f2", "f0"], ["f1", "f3", "f0", "f2"]],
+    ids=["three-names", "four-names"],
+)
+def test_no_permutation_of_the_declared_names_reads_the_same_point(names):
+    """One center sitting on each permutation of the row's values.
 
-    The point therefore lands ON the center belonging to whichever order
-    was used, and all six orders answer a different label -- so ONE
-    assertion catches every wrong order at once: ascending, descending,
-    the reverse, and both partial swaps. A hand-picked geometry only
-    separates the one or two permutations it happened to be chosen for,
-    which is how a partial permutation slipped past the fixture above.
+    The point therefore lands exactly ON the center belonging to whichever
+    order was used, and every order answers a different label -- so ONE
+    assertion catches every wrong order at once: ascending, descending, the
+    reverse, and both partial swaps. A hand-picked geometry only separates
+    the permutations it was chosen for, which is how a partial swap slipped
+    past the cloud fixture above.
+
+    Run at three names AND at four, because a normalisation can be gated on
+    arity; and the labels are deliberately not the center indices, so
+    answering the index instead of the stored label fails here too.
     """
     node = _segment_node()
+    row = {name: float(index + 1) for index, name in enumerate(sorted(names))}
+    centers = [list(p) for p in itertools.permutations(sorted(row.values()))]
+    labels = [10 + index for index in range(len(centers))]
     state = {
         "schema": SEGMENT_SCHEMA,
         "algorithm": "kmeans",
-        "features": _ROTATED_FEATURES,
-        "centers": [
-            [1.0, 2.0, 3.0], [1.0, 3.0, 2.0], [2.0, 1.0, 3.0],
-            [2.0, 3.0, 1.0], [3.0, 1.0, 2.0], [3.0, 2.0, 1.0],
-        ],
-        "center_labels": [0, 1, 2, 3, 4, 5],
+        "features": names,
+        "centers": centers,
+        "center_labels": labels,
     }
-    # With f0=1, f1=2, f2=3 the declared ["f1", "f2", "f0"] reads
-    # (2, 3, 1), which IS centers[3]. Every other order reads a different
-    # permutation and so sits on a different center.
-    row = [{"f0": 1.0, "f1": 2.0, "f2": 3.0}]
-    assert node.apply_state(state, row, node.params)[0]["segment"] == 3
+    declared = [row[name] for name in names]
+    expected = labels[centers.index(declared)]
+    assert expected != centers.index(declared)      # the label is doing work
+
+    assert node.apply_state(state, [row], node.params)[0]["segment"] == expected
 
 
 def test_an_exact_tie_goes_to_the_lowest_center_index():
