@@ -16492,6 +16492,16 @@ last family found a SECOND false claim review had not named — a swallowing
 mixin, unlike a swallowing intermediate, is never refused and costs nothing —
 so limits 1 and 2 below are rewritten rather than patched.*
 
+*Corrected again 2026-09-18 after round-4 review found 1 Major: round-4's own
+rewrite of limit 1 substituted a subclass-only illustration for round-3's
+direct `FinalRefit.<name> = ...` shape, which is strictly narrower AND is the
+shape the shipped document wires. A rewrite is not a correction unless it
+covers every case the original did; verifying that needs the round-over-round
+sentence comparison, not a re-read. Every round-4 rewrite was diffed against
+round-3 on that basis, which also recovered "intercept attribute access on the
+class itself" in limit 4 and "fails closed ... for the shipped configuration"
+in the class docstring.*
+
 **Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
 three missing pieces; ADR-0119 built two of the generic halves
 (`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
@@ -16631,12 +16641,19 @@ withdrawn.
 
 Six limits, disclosed rather than papered over:
 
-1. Post-hoc assignment on a SUBCLASS. `class S(FinalRefit): pass` has an
-   empty body and passes the check; `S._channel_problems = ...` afterwards is
-   never seen. **This costs nothing — no repository file is edited** — because
-   `uses: "module:ClassName"` supplies the subclass. Round-3 wrote that this
-   path "forces an edit to trusted source, a different threat class"; round-4
-   review disproved it and that claim is withdrawn.
+1. Post-hoc assignment, in either of two reachable shapes. **Directly on the
+   class** — `FinalRefit._release_identity = ...` after import — which is the
+   shape the SHIPPED document reaches, because `run-final-refit.json` wires
+   `uses: "intraday_equities.final_model:FinalRefit"` and `uses:` resolution
+   is an import plus a `getattr` with no re-check of the resolved class's
+   members: no subclass is needed and the check never runs at all. Or **on a
+   subclass** — `class S(FinalRefit): pass` has an empty body and passes the
+   check, and `S._channel_problems = ...` afterwards is never seen. Either
+   shape **costs nothing — no repository file is edited**. Round-3 wrote that
+   this path "forces an edit to trusted source, a different threat class";
+   round-4 review disproved that, and round-4's own rewrite then narrowed the
+   bullet to the subclass shape alone, which round-5 review caught. Both
+   shapes are named here now, and a test executes the direct one.
 2. A base EARLIER IN THE MRO whose own `__init_subclass__` does not call
    `super()`: the check then never runs at all. An intermediate that DERIVES
    from `FinalRefit` is refused, because `__init_subclass__` is itself sealed
@@ -16648,7 +16665,8 @@ Six limits, disclosed rather than papered over:
 3. Per-instance shadowing — `node.run = ...` — because an instance is not a
    class.
 4. A custom metaclass, which can build the class from an empty namespace and
-   inject the overrides afterwards, or doctor `__mro__`.
+   inject the overrides afterwards, doctor `__mro__`, or intercept attribute
+   access on the class itself.
 5. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
    hash-chains `nodes/*.json` to `resolved.json` or to each other, and this
    entry does not change that. Anyone with write access to a run directory

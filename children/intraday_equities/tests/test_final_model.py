@@ -10,6 +10,8 @@ whole gate is synthetic-tests-only (the master plan's own ruling).
 
 from __future__ import annotations
 
+import contextlib
+
 from unittest.mock import patch
 
 import pytest
@@ -1598,12 +1600,21 @@ def test_the_seal_discloses_the_limits_it_does_not_cover():
         "metaclass",
         "per-instance",
         "no repository file is edited",
+        # Round-4 rewrote the post-hoc bullet as a subclass-only illustration
+        # and dropped the direct shape round 3 had named — the shape the
+        # SHIPPED config actually wires. Both are pinned here now.
+        "``FinalRefit.<name> = ...``",
+        "no subclass is needed",
+        "intercept attribute access on the class itself",
     ):
         assert phrase in disclosure, phrase
 
     contract = " ".join(final_model.FinalRefit.__doc__.split())
     assert "not an authority boundary" in contract
     assert "cost nothing" in contract
+    # Round 3 stated this and round 4's rewrite dropped it; it is true and it
+    # is the half of the accounting a reader needs beside the limits.
+    assert "for the shipped configuration" in contract
     # Round-3 wrote these in the class docstring and round-4 review disproved
     # them: a post-hoc override on a SUBCLASS edits no repository file, so it
     # is not "an edit to trusted source" and not "a different threat class".
@@ -1702,3 +1713,64 @@ def test_post_hoc_assignment_on_a_subclass_is_an_uncovered_path(tmp_path):
 
     contract = " ".join(final_model.FinalRefit.__doc__.split())
     assert "cost nothing" in contract
+
+
+@contextlib.contextmanager
+def _restored(owner, name):
+    """Put ``owner.name`` back even if the body raises — it is shared module state."""
+    missing = object()
+    original = vars(owner).get(name, missing)
+    try:
+        yield
+    finally:
+        if original is missing:
+            delattr(owner, name)
+        else:
+            setattr(owner, name, original)
+
+
+def test_post_hoc_assignment_directly_on_final_refit_is_an_uncovered_path():
+    """This bypass WORKS, needs no subclass, and is the SHIPPED wiring's shape.
+
+    ``configs/run-final-refit.json`` declares
+    ``uses: "intraday_equities.final_model:FinalRefit"`` — the class itself,
+    not a subclass — and the document's ``uses:`` resolution is an import
+    plus a ``getattr`` with no re-check of the resolved class's members. So
+    assigning onto ``FinalRefit`` directly never reaches
+    ``__init_subclass__`` at all. Round-3's docstring named this shape;
+    round-4's rewrite replaced it with a subclass-only illustration, which
+    is strictly narrower. Pinned here so the enumeration cannot lose it
+    again. Nothing here executes a release.
+    """
+    original = vars(final_model.FinalRefit)["_release_identity"]
+    payload = {"release_channel": "production", "deployment_eligible": True}
+
+    with _restored(final_model.FinalRefit, "_release_identity"):
+        final_model.FinalRefit._release_identity = classmethod(
+            lambda cls, channel, rows_sha256: dict(payload)
+        )
+        assert final_model.FinalRefit._release_identity("production", "x") == payload
+
+    # The shared class is exactly as it was, by identity — the seal compares
+    # identity, so a merely-equal restore would not be a restore.
+    assert vars(final_model.FinalRefit)["_release_identity"] is original
+
+    disclosure = " ".join(
+        final_model.FinalRefit.__init_subclass__.__doc__.split()
+    )
+    assert "``FinalRefit.<name> = ...``" in disclosure
+    assert "no subclass is needed" in disclosure
+
+
+def test_the_shipped_config_wires_the_class_itself_not_a_subclass():
+    """Why the direct shape is the one that matters, asserted rather than assumed."""
+    import json
+    import pathlib
+
+    raw = json.loads(
+        (_configs_dir() / "run-final-refit.json").read_text(encoding="utf-8")
+    )
+    assert raw["pipeline"]["refit"]["uses"] == (
+        "intraday_equities.final_model:FinalRefit"
+    )
+    assert pathlib.Path(final_model.__file__).name == "final_model.py"

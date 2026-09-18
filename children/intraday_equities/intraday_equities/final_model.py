@@ -146,7 +146,8 @@ class FinalRefit(Node):
     relabelled without failing :func:`load_bundle`.
 
     **What this is NOT: a root of trust, or evidence of authorization.**
-    Every refusal here is an IN-PROCESS check, and the seal on
+    Every refusal here is an IN-PROCESS check. It fails closed for every
+    ordinary caller and for the shipped configuration, but the seal on
     :data:`_FINAL_METHODS` is an accident-and-drift guard, **not an
     authority boundary**. ``__init_subclass__``'s own docstring is the ONE
     place listing the resolution paths that reach past it; this paragraph
@@ -254,10 +255,16 @@ class FinalRefit(Node):
         **no repository file is edited** — because ``uses:
         "module:ClassName"`` supplies the subclass, not this module:
 
-        * post-hoc assignment on a subclass. ``class S(FinalRefit): pass``
-          has an empty body and passes this check; ``S._channel_problems =
-          ...`` afterwards is never seen, because the check fires at class
-          definition only.
+        * post-hoc assignment, in either of two reachable shapes. Directly
+          on this class — ``FinalRefit.<name> = ...`` after import — which
+          is the shape the SHIPPED document reaches: ``run-final-refit.json``
+          wires ``uses: "intraday_equities.final_model:FinalRefit"``, and a
+          document's ``uses:`` is resolved by import plus ``getattr`` with
+          no re-check of the resolved class's members, so no subclass is
+          needed and this never runs. Or on a subclass — ``class
+          S(FinalRefit): pass`` has an empty body and passes this check, and
+          ``S._channel_problems = ...`` afterwards is never seen. Either
+          shape, because the check fires at class definition only.
         * a base EARLIER IN THE MRO whose own ``__init_subclass__`` does
           not call ``super()`` — this then never runs at all. An
           intermediate that DERIVES from ``FinalRefit`` is refused, because
@@ -266,8 +273,8 @@ class FinalRefit(Node):
         * per-instance shadowing (``node.run = ...``), because an instance
           is not a class.
         * a custom metaclass, which can build the class from an empty
-          namespace and inject the overrides afterwards, or doctor
-          ``__mro__``.
+          namespace and inject the overrides afterwards, doctor ``__mro__``,
+          or intercept attribute access on the class itself.
 
         The guarantee claimed is against an ordinary caller wiring the wrong
         class and against a future edit quietly dropping a refusal, never
