@@ -42,6 +42,7 @@ import pytest
 
 import dskit.onboarding.acquire as acquire_mod
 import dskit.onboarding.observations as observations_mod
+from dskit.pipeline.libs.observations import ObservationRows
 from dskit.production.base import ProductionError, canonical_hash
 from dskit.production.clock import ManualTime, ReplayClock, TestClock
 from dskit.production.feed import (
@@ -811,6 +812,44 @@ class TestFreshnessLadder:
                 for age in (0, 2 * DAY_MS, 30 * DAY_MS)}
         assert seen <= set(FEED_STATUSES)
         assert seen == {"live", "stale", "dead"}
+
+    def test_a_vintage_bound_feed_cannot_see_a_record_acquired_after_the_bound(
+        self, tmp_path, entry_params, clock, monkeypatch
+    ):
+        """MAJOR-2 pin (ADR-0154 review). Before the fix, `_latest_by_key`
+        built its `scan_stream` call from `digest_recipe` alone, which
+        never carried `as_of_acquisition_ms` -- so a vintage-bound feed
+        could report `live` on the strength of a record its own entry
+        would never emit. Real wall time is never read: the first
+        acquisition lands ON the vintage (inclusive), the second, well
+        after it, revises every instrument's newest row to an event time
+        that would read `live` if the bound did not hold.
+        """
+        stamps = iter(["2026-01-10T00:00:00+00:00", "2026-03-01T00:00:00+00:00"])
+        monkeypatch.setattr(acquire_mod, "utc_now", lambda: next(stamps))
+        root = build_onboarding_root(str(tmp_path / "vintage-bound"))
+        registry = root.registry()
+        vintage = iso_ms("2026-01-10")
+        contract = ObservationRows.serving_contract(
+            dict(entry_params, root=root.root, as_of_acquisition_ms=vintage), {}
+        )
+        spec = bound_spec(contract, acquire_mod.find_active_source(registry, SOURCE))
+        feed = feed_for(root, registry, contract, spec, clock, params={"pull": "store"})
+
+        fresh_ts = "2026-02-15"
+        grown = source_rows() + [
+            {"ts": fresh_ts, "instrument": key, "value": 9.0,
+             "side": "buy", "qty": 1, "confidence": 0.5}
+            for key in UNIVERSE
+        ]
+        write_source_files(data_dir_of(root), grown)
+        acquire_mod.run_acquisition(root, registry, SOURCE, STREAM, "live")
+
+        # Unbounded, the fresh row would make this `live` (age 0). Bound
+        # at the vintage, the second acquisition never happened as far as
+        # this feed is concerned, so the ladder falls back to the first
+        # acquisition's watermark -- 30-odd days stale, well past `dead`.
+        assert feed.pull(iso_ms(fresh_ts)).status == "dead"
 
 
 # --------------------------------------------------------------------------
