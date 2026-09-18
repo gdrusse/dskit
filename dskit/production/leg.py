@@ -69,6 +69,7 @@ from dskit.production.records import (
     SafetyEpoch,
     SimulatedPermit,
 )
+from dskit.production.feed import required_at
 from dskit.production.redact import get_logger, redact
 from dskit.production.vocab import (
     AUTHORITY_ROLES,
@@ -1266,7 +1267,7 @@ class LegPipeline:
     def _gate_coverage(self, at_ms, view, account):
         """Re-check exact required-key coverage and the provenance the proposal claims."""
         batch, proposal = self.bindings.entry_batch, self.bindings.proposal
-        required = tuple(self.release.feed_spec["required_keys"])
+        required = required_at(self.release.feed_spec, at_ms)
         missing = [key for key in required if key not in batch.watermarks_by_key]
         if missing:
             return False, f"required key(s) absent from the batch: {sorted(missing)}"

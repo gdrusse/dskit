@@ -93,7 +93,7 @@ from dskit.production.ledger import Checkpoint, ServeRoot, ledger_class
 from dskit.production.loop import JOURNAL_NOTES, JOURNAL_STEP, ServeLoop
 from dskit.production.policy import TransitionPolicy
 from dskit.production.readiness import checklist_digest
-from dskit.production.records import ReductionPlan
+from dskit.production.records import ReductionPlan, UniverseMembership
 from dskit.production.reconcile import LedgerHistory
 from dskit.production.redact import get_logger, redact, resolve_secrets
 from dskit.production.report import (
@@ -228,10 +228,38 @@ def _proof(path):
         raise ProductionError([f"cannot read proof {str(path)!r}: {exc}"]) from exc
 
 
-def _universe(document):
-    """Return ``serving.required_universe`` as a key list, reading the file when it names one."""
+def _declared_universe(document):
+    """Return ``serving.required_universe`` as one membership, reading the file when it names one.
+
+    The path form still names a JSON list, and that list is read by the
+    SAME owner as an inline one, so a file may spell either form and
+    neither gets a second parser.
+
+    The WHOLE membership is what ``plan`` binds into the release, never
+    one instant's answer: baking today's composition into a release is
+    the survivorship bias ADR-0153 closes. The as-of resolution happens
+    where a tick's own instant exists —
+    :meth:`~dskit.production.feed.FeedSpec.members_at`.
+
+    Parameters
+    ----------
+    document : ServeDocument
+
+    Returns
+    -------
+    UniverseMembership
+        Whole-run under either legacy form; effective-dated when the
+        document declared ``{key, from_ms, to_ms}`` windows.
+
+    Raises
+    ------
+    ProductionError
+        An unreadable file, or a malformed universe in it.
+    """
     declared = document.serving.required_universe
-    return list(_read_json(declared)) if isinstance(declared, str) else list(declared)
+    if isinstance(declared, str):
+        return UniverseMembership.declared(_read_json(declared))
+    return declared
 
 
 def _adapter_entry(name):
@@ -536,7 +564,7 @@ class Plan(DocumentVerb):
             classes=self._classes(the_plan, document),
             adapter=_adapter_entry(document.serving.adapter),
             feed_spec=FeedSpec.from_contract(
-                contract, _universe(document), digest, version
+                contract, _declared_universe(document), digest, version
             ).to_obj(),
             source_config={"hash": digest, "version": version},
             execution_scope=document.coordination.scope,

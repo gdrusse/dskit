@@ -74,9 +74,14 @@ from dskit.production.base import (
     reject_unknown_params,
 )
 from dskit.production.clock import ManualTime
-from dskit.production.records import EntryBatch, FeedResult, InputWatermark
+from dskit.production.records import (
+    EntryBatch,
+    FeedResult,
+    InputWatermark,
+    UniverseMembership,
+)
 from dskit.production.redact import get_logger
-from dskit.production.release import FEED_SPEC_KEYS
+from dskit.production.release import FEED_SPEC_KEYS, FEED_SPEC_OPTIONAL_KEYS
 from dskit.production.resilience import Retry
 from dskit.production.vocab import FEED_STATUSES, LINK_STATES, PULL_MODES
 
@@ -95,6 +100,7 @@ __all__ = [
     "StreamFeed",
     "StreamTransport",
     "active_source_identity",
+    "required_at",
     "snapshot_entry",
 ]
 
@@ -169,6 +175,15 @@ class FeedSpec:
     validated at construction; the two mappings are deep copies, so a
     contract's later mutation cannot reach a spec.
 
+    ``required_keys`` is every key that is EVER a member, which is what
+    the arming allowlist narrows against and what ``required_keys_digest``
+    digests. WHEN each one is a member lives in ``required_membership``,
+    and :meth:`members_at` is what a tick's coverage is judged against
+    (ADR-0153) — never the declared set, or a walk-forward would price
+    year 1 against today's composition. A universe declared either legacy
+    way is whole-run, so :meth:`to_obj` leaves the field out entirely and
+    a release minted before ADR-0153 renders byte-for-byte as it did.
+
     Parameters
     ----------
     source_binding : dict
@@ -180,12 +195,15 @@ class FeedSpec:
     digest_recipe : dict
         How a per-key snapshot is digested.
     required_keys : tuple of str
-        The universe every tick must cover exactly — sorted, unique.
+        Every key that is ever a member — sorted, unique.
     required_keys_digest : str
         ``canonical_hash(list(required_keys))``.
     source_config_hash, source_config_version : str
         The ACTIVE source alias's identity at ``plan``
         (:func:`active_source_identity`).
+    required_membership : UniverseMembership
+        When each key is a member. Built from ``required_keys`` as
+        whole-run when the caller gives none.
 
     Examples
     --------
@@ -204,6 +222,7 @@ class FeedSpec:
     required_keys_digest: str
     source_config_hash: str
     source_config_version: str
+    required_membership: UniverseMembership = None
 
     def __post_init__(self):
         """Validate every field, accumulating, then freeze copies of the mappings."""
@@ -230,24 +249,44 @@ class FeedSpec:
             _check_str(problems, name, getattr(self, name))
         if keys and self.required_keys_digest != canonical_hash(list(keys)):
             problems.append("required_keys_digest is not the canonical hash of required_keys")
+        membership = self._membership(problems, keys)
         if problems:
             raise ProductionError([f"FeedSpec: {p}" for p in problems])
         object.__setattr__(self, "entity_key_fields", entity)
         object.__setattr__(self, "required_keys", keys)
+        object.__setattr__(self, "required_membership", membership)
         for name in ("source_binding", "digest_recipe"):
             object.__setattr__(self, name, copy.deepcopy(getattr(self, name)))
 
+    def _membership(self, problems, keys):
+        """Settle the as-of dimension: the declared one, or whole-run over ``keys``."""
+        declared = self.required_membership
+        if declared is None:
+            return UniverseMembership.whole_run(keys) if keys else None
+        if not isinstance(declared, UniverseMembership):
+            problems.append(
+                f"required_membership must be a UniverseMembership, got {declared!r}"
+            )
+            return None
+        if declared.keys != keys:
+            problems.append(
+                f"required_membership names {list(declared.keys)}, which is not the "
+                f"required_keys {list(keys)} it must account for"
+            )
+        return declared
+
     @classmethod
-    def from_contract(cls, contract, required_keys, source_config_hash, source_config_version):
+    def from_contract(cls, contract, universe, source_config_hash, source_config_version):
         """Bind an entry class's contract to the document's universe and the source identity.
 
         Parameters
         ----------
         contract : ServingContract
             The entry class's pure ``serving_contract`` answer.
-        required_keys : list of str
-            ``document.serving.required_universe``, in any order; sorted
-            and digested here.
+        universe : list of str or UniverseMembership
+            ``document.serving.required_universe`` resolved: a flat key
+            list in any order (sorted and digested here, whole-run), or
+            the membership an effective-dated document declared.
         source_config_hash, source_config_version : str
             What :func:`active_source_identity` answered at ``plan``.
 
@@ -263,11 +302,15 @@ class FeedSpec:
         """
         if not isinstance(contract, ServingContract):
             raise ProductionError([f"FeedSpec.from_contract expects a ServingContract, got {contract!r}"])
+        membership = universe if isinstance(universe, UniverseMembership) else None
         problems = []
-        keys = _universe_problems(problems, required_keys)
+        keys = _universe_problems(
+            problems, membership.keys if membership is not None else universe
+        )
         if problems:
             raise ProductionError([f"FeedSpec: {p}" for p in problems])
         return cls(
+            required_membership=membership,
             source_binding=copy.deepcopy(contract.source_binding),
             entity_key_fields=tuple(contract.entity_key_fields),
             event_time_field=contract.event_time_field,
@@ -278,19 +321,49 @@ class FeedSpec:
             source_config_version=source_config_version,
         )
 
+    def members_at(self, at_ms):
+        """Return the keys a tick at one instant must cover EXACTLY (ADR-0153).
+
+        Parameters
+        ----------
+        at_ms : int or None
+            The tick's own instant, epoch ms. None asks for "the whole
+            run", which only a whole-run universe can answer.
+
+        Returns
+        -------
+        tuple of str
+            The member keys at ``at_ms``, sorted.
+
+        Raises
+        ------
+        ProductionError
+            An effective-dated universe asked with no instant, or an
+            instant that is not an epoch-millisecond int.
+        """
+        return self.required_membership.members_at(at_ms)
+
     def to_obj(self):
         """Return the spec as the manifest carries it: a JSON-ready dict in field order.
 
         Returns
         -------
         dict
-            Exactly the eight keys; tuples as lists, mappings deep-copied.
+            The eight :data:`~dskit.production.release.FEED_SPEC_KEYS`,
+            tuples as lists and mappings deep-copied, plus
+            ``required_membership`` ONLY when the universe is
+            effective-dated — a whole-run universe has nothing to add, so
+            a release minted before ADR-0153 renders unchanged.
         """
-        return {
+        obj = {
             f.name: copy.deepcopy(list(value) if isinstance(value, tuple) else value)
             for f in fields(self)
+            if f.name in FEED_SPEC_KEYS
             for value in (getattr(self, f.name),)
         }
+        if not self.required_membership.whole_run_only:
+            obj["required_membership"] = self.required_membership.to_obj()
+        return obj
 
     @classmethod
     def from_obj(cls, obj):
@@ -299,7 +372,8 @@ class FeedSpec:
         Parameters
         ----------
         obj : dict
-            Exactly the eight keys.
+            Exactly the eight keys, plus ``required_membership`` when the
+            universe is effective-dated.
 
         Returns
         -------
@@ -314,7 +388,9 @@ class FeedSpec:
         if not isinstance(obj, dict):
             raise ProductionError([f"FeedSpec.from_obj expects a dict, got {obj!r}"])
         problems = []
-        _check_unknown(problems, obj, FEED_SPEC_KEYS, where="FeedSpec")
+        _check_unknown(
+            problems, obj, FEED_SPEC_KEYS + FEED_SPEC_OPTIONAL_KEYS, where="FeedSpec"
+        )
         missing = [name for name in FEED_SPEC_KEYS if name not in obj]
         if missing:
             problems.append(f"FeedSpec: missing key(s) {missing}")
@@ -324,6 +400,10 @@ class FeedSpec:
         for name in ("entity_key_fields", "required_keys"):
             if isinstance(values[name], list):
                 values[name] = tuple(values[name])
+        if "required_membership" in values:
+            values["required_membership"] = UniverseMembership.from_obj(
+                values["required_membership"]
+            )
         return cls(**values)
 
 
@@ -425,7 +505,42 @@ def _rows_by_key(rows, contract):
     return by_key
 
 
-def snapshot_entry(contract, spec, entry_outputs, source_config_hash):
+def required_at(feed_spec, at_ms):
+    """Return the keys a release's ``feed_spec`` mapping requires at one instant.
+
+    The one reader of ADR-0153's optional binding for code holding the
+    manifest's plain mapping rather than a :class:`FeedSpec`, so no caller
+    re-derives the as-of rule or learns the optional key's name.
+
+    Parameters
+    ----------
+    feed_spec : dict
+        ``ReleaseManifest.feed_spec`` — the eight §5.2 fields, plus
+        ``required_membership`` when the universe is effective-dated.
+    at_ms : int or None
+        The instant to resolve at, epoch ms.
+
+    Returns
+    -------
+    tuple of str
+        The member keys at ``at_ms``, sorted.
+
+    Raises
+    ------
+    ProductionError
+        A malformed membership, an effective-dated universe asked with no
+        instant, or an instant that is not an epoch-millisecond int.
+    """
+    declared = feed_spec.get("required_membership")
+    membership = (
+        UniverseMembership.whole_run(feed_spec["required_keys"])
+        if declared is None
+        else UniverseMembership.from_obj(declared)
+    )
+    return membership.members_at(at_ms)
+
+
+def snapshot_entry(contract, spec, entry_outputs, source_config_hash, at_ms=None):
     """Describe the entry's exact outputs as the frozen batch descendants receive.
 
     Parameters
@@ -439,16 +554,22 @@ def snapshot_entry(contract, spec, entry_outputs, source_config_hash):
         one list-valued port is the row stream.
     source_config_hash : str
         The source identity the pull verified.
+    at_ms : int or None
+        The tick's OWN instant, epoch ms. The universe is resolved at it
+        (ADR-0153), so a key that had not listed yet is neither demanded
+        nor accepted. None means "the whole run" and is legal only under
+        a whole-run universe — an effective-dated one refuses rather than
+        silently falling back to today's composition.
 
     Returns
     -------
     EntryBatch
         ``outputs`` (the same outputs), one
-        :class:`~dskit.production.records.InputWatermark` per required
-        key (its latest event time and the digest of its rows under the
-        contract's recipe), ``data_asof_ms`` = the OLDEST watermark,
-        ``coverage_digest`` over the watermarks, ``inputs_digest`` =
-        ``canonical_hash(entry_outputs)``.
+        :class:`~dskit.production.records.InputWatermark` per key
+        required AT ``at_ms`` (its latest event time and the digest of
+        its rows under the contract's recipe), ``data_asof_ms`` = the
+        OLDEST watermark, ``coverage_digest`` over the watermarks,
+        ``inputs_digest`` = ``canonical_hash(entry_outputs)``.
 
     Raises
     ------
@@ -456,7 +577,8 @@ def snapshot_entry(contract, spec, entry_outputs, source_config_hash):
         A spec that disagrees with the contract; outputs without exactly
         one row stream; a non-mapping row, a row missing an entity key
         field or carrying a malformed event time; a required key with no
-        row (named) or a row outside the universe (named); an unknown
+        row (named) or a row outside the universe resolved at ``at_ms``
+        (named); an effective-dated universe with no instant; an unknown
         digest recipe; outputs canonical JSON cannot hold.
     """
     problems = []
@@ -476,7 +598,12 @@ def snapshot_entry(contract, spec, entry_outputs, source_config_hash):
             [f"unknown digest recipe {spec.digest_recipe!r} — known: {sorted(_DIGESTS)}"]
         )
     by_key = _rows_by_key(_row_stream(entry_outputs), contract)
-    required = spec.required_keys
+    required = spec.members_at(at_ms)
+    if not required:
+        raise ProductionError(
+            [f"the universe is empty at {at_ms!r} — no key had listed yet, so this tick "
+             f"decides over nothing"]
+        )
     missing = [key for key in required if key not in by_key]
     extra = sorted(key for key in by_key if key not in required)
     if missing:
@@ -496,7 +623,7 @@ def snapshot_entry(contract, spec, entry_outputs, source_config_hash):
     return EntryBatch(
         outputs=entry_outputs,
         watermarks_by_key=watermarks,
-        required_keys_digest=spec.required_keys_digest,
+        required_keys_digest=canonical_hash(list(required)),
         coverage_digest=canonical_hash({key: watermarks[key].to_obj() for key in required}),
         data_asof_ms=min(w.latest_asof_ms for w in watermarks.values()),
         inputs_digest=canonical_hash(entry_outputs),

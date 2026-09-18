@@ -13167,8 +13167,23 @@ resolved under the owner's 2026-09-17 ruling, and the two tests are NOT alike:
 
 *(Number taken at commit time; see ADR-0150's note on the skipped numbers.)*
 
-**Status:** PROPOSED, awaiting owner approval. Owner ruled it IN SCOPE with
-"ADR now, build now" (2026-09-17). Not implemented.
+**Status:** APPROVED by the owner 2026-09-17 ("ADR now, build now") and
+IMPLEMENTED. `tests/production` is **6516 passed / 0 failed** (111 skipped,
+optional-dependency gated). Twelve new refusals were each probed by disabling
+the guard behind a never-taken branch: **FAILED** with it disabled, **PASSED**
+restored -- covering `UniverseInterval`/`UniverseMembership` validation in
+`records.py`, the sentinel
+`test_feed.py::test_a_tick_before_a_listing_refuses_the_unlisted_key` and its
+delisting and empty-universe siblings, and the shared `from_obj` int-coercion
+and missing-key checks it also relies on. Both legacy-form identity digests --
+the `ServeDocument` hash and the `FeedSpec` manifest hash -- were independently
+recomputed against the pre-ADR base commit (3a3d76f) and match byte for byte;
+see the literals pinned in `test_document.py::
+test_a_legacy_universe_keeps_the_identity_it_had_before_adr_0153` and
+`test_feed.py::test_a_flat_specs_manifest_bytes_are_what_they_were_before_adr_0153`.
+The `PHASE_SIGNATURES` pin in `test_loop.py` and the phase list in
+docs/new_package_proposals/production.md were updated for the new `at_ms`
+parameter the coverage phase gained.
 
 **Context.** `serving.required_universe` accepts a path to a JSON key list or
 an inline list of key strings (`document.py:374`, `_Universe`), and

@@ -71,7 +71,7 @@ from dskit.production.base import (
     _check_str,
     _check_unknown,
 )
-from dskit.production.records import ExecutionScope
+from dskit.production.records import ExecutionScope, UniverseMembership
 from dskit.production.release import parse_iso_duration
 from dskit.production.vocab import (
     ESCALATION_LEVELS,
@@ -372,17 +372,38 @@ class _Nullable(_Shape):
 
 
 class _Universe(_Shape):
-    """``serving.required_universe``: a path to a JSON key list, or the list inline (§5.2)."""
+    """``serving.required_universe``: a path, the key list inline, or membership windows (§5.2).
+
+    ADR-0153 gave the universe an as-of dimension. The third form is a
+    list of ``{key, from_ms, to_ms}`` windows saying WHEN each key is a
+    member, so a walk-forward prices every tick against the composition
+    of its own instant instead of today's. The two older forms are
+    unchanged and mean "a member for the whole run" — which is why no
+    document that keeps one moves its identity hash. Both list forms are
+    read by their one owner,
+    :class:`~dskit.production.records.UniverseMembership`, so the
+    resolution rule is written once and the view is one type.
+    """
 
     def check(self, problems, where, value):
-        """Accept a non-empty path string or a list of key strings."""
+        """Accept a non-empty path string, or a declared list in either list form."""
         if isinstance(value, list):
-            return _KEY_LIST.check(problems, where, value)
+            return self._declared(problems, where, value)
         if not isinstance(value, str) or not value:
             problems.append(
-                f"{where} must be a path to a JSON key list or an inline list of keys, got {value!r}"
+                f"{where} must be a path to a JSON key list, an inline list of keys, or a list "
+                f"of {{key, from_ms, to_ms}} membership windows, got {value!r}"
             )
         return value
+
+    @staticmethod
+    def _declared(problems, where, value):
+        """Read a declared list through its one owner, accumulating under this path."""
+        try:
+            return UniverseMembership.declared(value)
+        except ProductionError as exc:
+            problems.extend(f"{where}: {p}" for p in exc.problems)
+            return None
 
 
 class _Record(_Shape):
