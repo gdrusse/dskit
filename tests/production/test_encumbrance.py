@@ -145,15 +145,25 @@ class FakeHistory:
         self.calls = []
 
     def fills(self, since_ms):
-        # `reconcile.LedgerHistory.fills` refuses a bound that is not a
-        # non-negative int. A double that accepted one would hide an
-        # underflow in its caller, which is exactly what it did in round 1.
-        # Restated deliberately rather than imported: a double that read its
-        # rule from the thing it stands in for would assert nothing.
-        if isinstance(since_ms, bool) or not isinstance(since_ms, int) or since_ms < 0:
+        # `reconcile.LedgerHistory.fills` checks its bound with
+        # `pipeline.node.check_int_param`, which refuses a bool, COERCES an
+        # integral float, and only then range-checks. So `470.0` is accepted
+        # there and must be accepted here: a double stricter than its subject
+        # declares impossible a call the real collaborator would take
+        # (round-2 Minor 2). Restated deliberately rather than imported — a
+        # double that read its rule from the thing it stands in for would
+        # assert nothing.
+        bound = since_ms
+        if isinstance(bound, float) and bound.is_integer():
+            bound = int(bound)
+        if isinstance(bound, bool) or not isinstance(bound, int) or bound < 0:
             raise ProductionError([f"since_ms must be an int >= 0, got {since_ms!r}"])
-        self.calls.append(since_ms)
-        return tuple(f for f in self._fills if f["ts_ms"] >= since_ms)
+        self.calls.append(bound)
+        return tuple(f for f in self._fills if f["ts_ms"] >= bound)
+
+    def set_fills(self, fills):
+        """Change what the source reports WITHOUT changing its identity."""
+        self._fills = tuple(fills)
 
     def cash_flows(self, since_ms):
         return ()
@@ -1134,15 +1144,36 @@ def test_the_guard_chain_and_admit_never_disagree_about_one_proposal():
     comparison would drift the first time one was tuned."""
     guard, units = limit_over(FUNDS_MEASURE), limit_over(UNITS_MEASURE, name="units")
     policy = cash()
-    cases = (
-        (view(balances={USD: Decimal("100")}), proposal(qty="10", limit="10")),
-        (view(balances={USD: Decimal("99")}), proposal(qty="10", limit="10")),
-        (view(positions=(position(qty="3"),)), proposal(side="sell", qty="4")),
-        (view(positions=(position(qty="10"),)), proposal(side="sell", qty="4")),
+    quiet = FakeHistory()
+    # 1000 total, 40 held by a working buy and 500 sitting in an unsettled
+    # sale, leaves 460. A 500 proposal fits the TOTAL and not what is free, so
+    # this is the row where reading the wrong field flips the verdict —
+    # round 2 found every earlier row had `committed == unsettled == 0`, which
+    # made the two fields indistinguishable and the claim unobservable.
+    encumbered = view(
+        balances={USD: Decimal("1000")}, working=(order(ref="w-1", qty="4", limit="10"),)
     )
-    for state_view, candidate in cases:
-        refused_by_admit = bool(policy.admit(candidate, state_view, T0, FakeHistory()))
-        state = guarded_state(state_view)
+    selling = FakeHistory((fill_body("f-1", "sell", "50", "10", T0 - MINUTE),))
+    # Ten held with six promised to a working sell leaves four: a sell of five
+    # is covered by the POSITION and not by what is uncommitted, which is the
+    # same trap one resource over.
+    promised = view(
+        positions=(position(qty="10"),),
+        working=(order(ref="s-1", side="sell", qty="6"),),
+    )
+    cases = (
+        (view(balances={USD: Decimal("100")}), proposal(qty="10", limit="10"), quiet),
+        (view(balances={USD: Decimal("99")}), proposal(qty="10", limit="10"), quiet),
+        (encumbered, proposal(qty="50", limit="10"), selling),
+        (encumbered, proposal(qty="46", limit="10"), selling),
+        (view(positions=(position(qty="3"),)), proposal(side="sell", qty="4"), quiet),
+        (view(positions=(position(qty="10"),)), proposal(side="sell", qty="4"), quiet),
+        (promised, proposal(side="sell", qty="5"), quiet),
+        (promised, proposal(side="sell", qty="4"), quiet),
+    )
+    for state_view, candidate, history in cases:
+        refused_by_admit = bool(policy.admit(candidate, state_view, T0, history))
+        state = guarded_state(state_view, history=history)
         verdicts = {
             guard.check(candidate, state).verdict,
             units.check(candidate, state).verdict,
@@ -1331,3 +1362,234 @@ def test_an_over_committed_account_reports_a_negative_available_and_is_read_cons
     assert cash().admit(tiny, over, T0, history)
     guard = limit_over(FUNDS_MEASURE)
     assert guard.check(tiny, guarded_state(over, history=history)).verdict == "refuse"
+
+
+# ---------------------------------------------------------------------------
+# Round-2 Major — statelessness pinned BEHAVIOURALLY, not structurally
+# ---------------------------------------------------------------------------
+
+
+def moving_view(balances=None, working=None, positions=None, pending=None):
+    """A real `StateView` over the caller's LIVE containers.
+
+    `SeriesState.snapshot` wraps COPIES, so a view taken from the real fold
+    never moves — but `id()` is reused the moment one is collected, and a
+    cache keyed on an identity then hands the next tick the previous tick's
+    answer. This builder is how that is expressed deterministically: ONE
+    object whose contents change when the caller mutates what it was built
+    over. Every identity a cache could key on stays fixed; only the fold
+    moves.
+    """
+    balances = {USD: Decimal("1000")} if balances is None else balances
+    working = {} if working is None else working
+    positions = [] if positions is None else positions
+    pending = [] if pending is None else pending
+    return StateView(
+        positions=positions,
+        working=MappingProxyType(working),
+        pending=pending,
+        balances=MappingProxyType(balances),
+        decision_history=(),
+        breaker="active",
+        arming=None,
+        readiness=None,
+        guard_holds=MappingProxyType({}),
+        reduction=None,
+        pending_control=MappingProxyType({}),
+        risk_version=records.RiskVersion(
+            economic_seq=41, executor_token=None, accounting_tokens=None
+        ),
+        head_seq=41,
+        head_hash="a" * 64,
+    )
+
+
+class MovingTickState:
+    """One `state` identity whose account changes underneath.
+
+    `Measure.value` reads `state.account` and nothing else — §5.8.1 bars it
+    from `state.view` — so this is a faithful stand-in, and it is the only way
+    to say "the same address now carries a different account", which is what
+    `id()` reuse does to a cache between two ticks.
+    """
+
+    def __init__(self, account):
+        self.account = account
+
+
+@pytest.mark.parametrize("name", CORE_POLICIES)
+def test_the_book_tracks_a_fold_that_moves_under_one_held_identity(name):
+    """Round-2 Major, as a regression.
+
+    `vars(instance)` pins catch caching ON the object and nothing else: a
+    module-level dict keyed `(id(self), at_ms, id(state_view), id(history))`
+    survived every statelessness test this file had. So the pin has to be
+    behavioural. Here the policy, the view, the history AND the instant all
+    keep their identities while the fold moves underneath — every component
+    of that key is unchanged — so any identity-keyed cache returns the first
+    answer and fails.
+    """
+    policy = ENCUMBRANCE_POLICIES[name](POLICY_PARAMS[name])
+    balances, working, positions = {USD: Decimal("1000")}, {}, []
+    state_view = moving_view(balances=balances, working=working, positions=positions)
+    history = FakeHistory()
+
+    empty = policy.encumber(state_view, T0, history)
+    assert empty.funds[USD].total == Decimal("1000")
+    assert dict(empty.inventory) == {}
+
+    positions.append(position(qty="10"))
+    buy = order(ref="w-1", qty="4", limit="10")
+    working[buy.client_ref] = buy
+    balances[USD] = Decimal("900")
+
+    moved = policy.encumber(state_view, T0, history)
+    assert moved.funds[USD].total == Decimal("900")
+    assert moved.inventory[INS1].held == Decimal("10")
+
+
+def test_the_committed_and_unsettled_figures_track_a_moving_fold_and_history():
+    """The two figures only `CashSettlement` derives, under the same held
+    identities — including a history object that reports new fills without
+    becoming a new object."""
+    policy = cash()
+    balances, working = {USD: Decimal("1000")}, {}
+    state_view = moving_view(balances=balances, working=working)
+    history = FakeHistory()
+
+    before = policy.encumber(state_view, T0, history)
+    buy = order(ref="w-1", qty="4", limit="10")
+    working[buy.client_ref] = buy
+    history.set_fills((fill_body("f-1", "sell", "10", "10", T0 - MINUTE),))
+    after = policy.encumber(state_view, T0, history)
+
+    assert (before.funds[USD].committed, before.funds[USD].unsettled) == (
+        Decimal("0"),
+        Decimal("0"),
+    )
+    assert (after.funds[USD].committed, after.funds[USD].unsettled) == (
+        Decimal("40"),
+        Decimal("100"),
+    )
+
+
+def test_an_unsized_intent_appearing_under_one_identity_is_seen():
+    """`unsized_refs` is read from the same view, so it carries the same
+    hazard: a cached book would keep admitting after an intent landed."""
+    policy = cash()
+    pending = []
+    state_view = moving_view(pending=pending)
+    history = FakeHistory()
+    assert policy.admit(proposal(qty="1", limit="1"), state_view, T0, history) == ()
+    pending.append("ref-9")
+    problems = policy.admit(proposal(qty="1", limit="1"), state_view, T0, history)
+    assert problems and "ref-9" in problems[0]
+
+
+def test_admit_and_balances_track_a_fold_that_moves_under_one_held_identity():
+    """The two methods a caller actually uses, at fixed identity."""
+    policy = cash()
+    balances, working = {USD: Decimal("100")}, {}
+    state_view = moving_view(balances=balances, working=working)
+    history = FakeHistory()
+    wanted = proposal(qty="10", limit="10")
+
+    assert policy.admit(wanted, state_view, T0, history) == ()
+    assert only(policy.balances(state_view, T0, history)).available == Decimal("100")
+
+    lead = order(ref="lead-1", qty="10", limit="10")
+    working[lead.client_ref] = lead
+
+    assert policy.admit(wanted, state_view, T0, history)
+    assert only(policy.balances(state_view, T0, history)).available == Decimal("0")
+
+
+def test_the_snapshot_tracks_a_fold_that_moves_under_one_held_identity():
+    """`compose.py` builds ONE `EncumberedAccounting` per serve PROCESS, so
+    the same freezing hazard reaches the `AccountState` a permit binds."""
+    history = FakeHistory()
+    strategy = accounting(history=history)
+    balances, working = {USD: Decimal("1000")}, {}
+    state_view = moving_view(balances=balances, working=working)
+
+    first = only(
+        strategy.snapshot(
+            state_view, Boom("executor"), NO_QUOTES, T0, (), FakeCalendar()
+        ).balances
+    )
+    buy = order(ref="w-1", qty="4", limit="10")
+    working[buy.client_ref] = buy
+    second = only(
+        strategy.snapshot(
+            state_view, Boom("executor"), NO_QUOTES, T0, (), FakeCalendar()
+        ).balances
+    )
+    assert first.available == Decimal("1000")
+    assert second.available == Decimal("960")
+
+
+def test_each_measure_tracks_an_account_that_moves_under_one_held_identity():
+    """A `Limit` builds its measure once and holds it for the process, and the
+    `state` it is handed is an ordinary object whose address is reused."""
+    funds, units = SettledFundsShortfall(), UncommittedUnitsShortfall()
+    wanted = proposal(qty="10", limit="10")
+    sell = proposal(side="sell", qty="4")
+
+    state = MovingTickState(guarded_state(view(balances={USD: Decimal("1000")})).account)
+    assert funds.value(wanted, state, WINDOW, "*", True) == Decimal("-900")
+    state.account = guarded_state(view(balances={USD: Decimal("10")})).account
+    assert funds.value(wanted, state, WINDOW, "*", True) == Decimal("90")
+
+    stock = MovingTickState(guarded_state(view(positions=(position(qty="10"),))).account)
+    assert units.value(sell, stock, WINDOW, "*", True) == Decimal("-6")
+    stock.account = guarded_state(view(positions=(position(qty="1"),))).account
+    assert units.value(sell, stock, WINDOW, "*", True) == Decimal("3")
+
+
+# ---------------------------------------------------------------------------
+# Round-2 family sweep — claims that could only be observed passing
+# ---------------------------------------------------------------------------
+
+
+def test_the_balance_a_caller_reads_is_the_row_the_book_derived():
+    """`available = total - committed - unsettled` is claimed to have ONE
+    owner. A second subtraction inside `balances` would be invisible while
+    `committed` and `unsettled` are both zero, so the agreement is asserted on
+    a fold where both are nonzero and the three numbers are all distinct."""
+    history = FakeHistory((fill_body("f-1", "sell", "50", "10", T0 - MINUTE),))
+    encumbered = view(
+        balances={USD: Decimal("1000")}, working=(order(ref="w-1", qty="4", limit="10"),)
+    )
+    row = cash().encumber(encumbered, T0, history).funds[USD]
+    balance = only(cash().balances(encumbered, T0, history))
+    assert (row.total, row.committed, row.unsettled, row.available) == (
+        Decimal("1000"),
+        Decimal("40"),
+        Decimal("500"),
+        Decimal("460"),
+    )
+    assert (balance.total, balance.available) == (row.total, row.available)
+
+
+@pytest.mark.parametrize("measure", (FUNDS_MEASURE, UNITS_MEASURE))
+def test_neither_measure_may_be_amended(measure):
+    """Both are documented as not scalable — shrinking an order to fit the
+    cash is an execution decision this package has no mandate to invent. That
+    claim was only observable by reading the class attribute, so it is
+    asserted where it bites: `Limit` refuses `on_breach: amend` for a measure
+    that cannot be reduced."""
+    with pytest.raises(ProductionError, match="needs a scalable measure"):
+        Limit(
+            {"measure": measure, "bound": {"max": "0"}, "on_breach": "amend"},
+            name="amending",
+        )
+
+
+def test_the_history_double_accepts_an_integral_float_like_the_real_one():
+    """Round-2 Minor 2. `check_int_param` coerces an integral float before
+    range-checking, so `LedgerHistory` accepts `470.0`; a double that refused
+    it would declare impossible a call the real collaborator would take."""
+    assert FakeHistory().fills(470.0) == ()
+    for refused in (470.5, True, -1, -1.0):
+        with pytest.raises(ProductionError, match="since_ms must be an int"):
+            FakeHistory().fills(refused)

@@ -209,8 +209,17 @@ _UNITS = pin_members(
 
 
 def _held_units(positions, instrument):
-    """Return the units the fold says are held in ``instrument`` — the ONE owner."""
-    return sum((position.qty for position in positions if position.instrument == instrument), _ZERO)
+    """Return the units the fold says are held in ``instrument`` — the ONE owner.
+
+    SUMS the matching rows rather than taking one. That is equivalent to
+    picking a single row only because ``PositionBook.positions()`` is keyed
+    by instrument and cannot emit a duplicate; the sum is the safe reading
+    if a future source ever can, and is written this way so the dependency
+    is stated rather than silently load-bearing.
+    """
+    return sum(
+        (position.qty for position in positions if position.instrument == instrument), _ZERO
+    )
 
 
 def _committed_units(working_orders, instrument):

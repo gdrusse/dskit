@@ -16600,16 +16600,30 @@ running `ServeLoop`, once a document declares the limits: a proposal reaching
 past the account's available funds, and a sell reaching past the instrument's
 uncommitted units. Both run through `GuardChain`, so a breach takes a recorded
 verdict on the chain like every other guard finding, and the fresh fold per leg
-is what stops two concurrent leads spending one balance twice. AVAILABLE but
-not enforced by the loop: `EncumbrancePolicy.admit`, which answers for a whole
-slate in one call and is what a child's proposer or optimizer consults before
-it emits; the borrow hook, which `admit` reaches and a guard does not, because
-a `Measure` answers from the account snapshot alone; and the refusal for an
-intent the fold cannot size, which lives with `admit` for the same reason —
-`StateView.pending` is on the view, and §5.8.1 keeps a measure off the view.
-A document that declares neither limit gets the derived figure on its balances
-and no protection from it; that is a configuration choice, and the two limits
-are what a readiness checklist should require.
+is what stops two concurrent leads spending one balance twice.
+
+NOT enforced by those limits, and the gap an operator has to know about: an
+outstanding intent the fold cannot size. A client ref that has an `intent` and
+no `order_event` yet sits in `StateView.pending`, which carries refs and not
+quantities, so its commitment is unknown. `EncumbrancePolicy.admit` refuses
+outright while any is outstanding; a `Limit` over either measure returns
+`allow`, because §5.8.1 gives a `Measure` `state.account` and bars it from
+`state.view`. A loop enforcing ONLY the two limits therefore has ZERO
+protection against an unsized intent — the two entry points genuinely disagree
+on that one input, and they disagree by design rather than by defect. This is
+INHERITED from the pre-existing `Measure`/`state.view` split, not introduced
+here; closing it would mean either putting the pending refs on the account
+snapshot or letting a measure read the view, and both are contract changes
+outside this decision.
+
+AVAILABLE but not enforced by the loop: `EncumbrancePolicy.admit` itself,
+which answers for a whole slate in one call and is what a child's proposer or
+optimizer consults before it emits; and the borrow hook, which `admit` reaches
+and a guard does not, for the same snapshot-only reason — a margin child that
+can locate stock raises the bound its limit carries instead. A document that
+declares neither limit gets the derived figure on its balances and no
+protection from it; that is a configuration choice, and the two limits are what
+a readiness checklist should require.
 
 Both children (equities EQ-05, pmquant PM-04) wrap ONE seam instead of writing
 two. The audit's acceptance test is exercised against core alone: two leads
