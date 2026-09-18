@@ -1,5 +1,35 @@
 # Re-entry
 
+## Current wrap: the uncertainty layer is complete — all four modules merged (2026-09-17)
+
+The uncertainty layer's four generic modules are now all on `main`:
+`false_signal.py` (ADR-0152), `mean_interval.py` (ADR-0151),
+`outcome_interval.py` (ADR-0155), and `uncertainty_set.py` (ADR-0156).
+This wrap finishes the last two.
+
+**ADR-0155 `outcome_interval.py`** (branch `codex/return-uncertainty-20260917`,
+`a3d281c`) closed a re-review 0C/3M: `_finite_ok` absorbs `OverflowError` from
+`math.isfinite` on huge ints so every documented `ValueError` holds; `n_scenarios`
+is bounded to `[MIN_SCENARIOS, MAX_SCENARIOS]`; and `TwoSidedBlockConformalInterval`
+got an alpha/2-per-tail regression plus a measured-coverage test. Minors: freeze
+tests cover all six fields, `tail_loss == 0.0` at `achieved_level == 1.0` is
+documented and pinned, `_frozen_tree`'s cycle/custom-object gap disclosed, and the
+`WEIGHTS_SUM_TOLERANCE` scan pattern hoisted.
+
+**ADR-0156 `uncertainty_set.py`** (branch `codex/uncertainty-sets-20260917`,
+`1974c65`) is the honesty pass the owner ruled: the `RealizationSet` weighting
+acknowledgement gate is ADVISORY, not load-bearing. The three deliberate bypasses
+(`rs._weights`/`rs._draws`, `object.__setattr__` relabel, `dataclasses.replace`
+with re-supplied arrays) are documented and pinned as known behaviour; the
+overclaiming test class was renamed; `_frozen_tree` gained a cycle guard with a
+pinning test. No fourth gate-closing patch was authorized (Python has no private).
+
+Both lanes ran targeted tests (644 passed across the four modules) and ruff clean;
+a mutation probe over the changed and unchanged code confirmed each finding is
+pinned. The merges produced only the three expected benign doc conflicts
+(`decision-log.md`, `pipeline/CLAUDE.md`, `pipeline/README.md`), resolved
+keep-both with no duplicate ADR heading; zero `.py` conflicts.
+
 ## Current wrap: P18 breadth cohort — 108 new assets pulled and gated (2026-09-17)
 
 Branch `deepseek/p18-breadth-cohort-20260917` (based on `origin/main`).
