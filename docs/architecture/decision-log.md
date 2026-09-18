@@ -13285,7 +13285,7 @@ exist. This closes the gap forward; it does not re-open those results.
 *(Number taken at commit time. 0149, 0151, 0152, 0155 and 0156 are held by
 unmerged branches; this skips them rather than adding a collision.)*
 
-**Status:** PROPOSED (v4), awaiting owner approval. NOT implemented.
+**Status:** APPROVED (v4; independent skeptic review returned CLEAN, 0 Critical/0 Major). Both RED gates built and run on `claude/adr0157-gates` (tests-only; see the dated bullet below for results). The `derivation-root` reserve kind itself remains NOT implemented -- this pass built gates only, per task scope.
 
 - **v1 BLOCKED** (0C/1M): the `signed_id` formula bound ONE parent, copying a
   precedent whose authority kind genuinely has one, while two of F3's three
@@ -13307,6 +13307,50 @@ unmerged branches; this skips them rather than adding a collision.)*
   race test v3 quoted verbatim. `tests/production/test_ledger.py:1685`/`:1723`
   and `tests/production_libs/test_sqlite.py:429` are three more. v4 adopts the
   real transplant and retracts the claim.
+
+- **Gates built and run** (2026-09-17,
+  `tests/pipeline/test_captured_authorization.py`, branch
+  `claude/adr0157-gates`). **Gate 1 (race) came back GREEN, not RED**:
+  `test_adr157_derivation_root_two_parent_race_has_one_cross_process_winner`
+  races two forked processes over one `derivation-root` two-parent identity
+  (both real `_REPLAY_TAPE_INPUTS` ports, `document.py:766`) and gets
+  exactly one `reserved`/one `spent`;
+  `test_adr157_derivation_root_identity_binds_port_not_just_pair` confirms a
+  role-swap changes the identity while reordering the same roles does not.
+  Both pass today because `reserve_uses.kind` carries no CHECK constraint,
+  so the `(kind, signed_id)` primary key already fences a brand new kind
+  with zero new code -- this validates the v1->v2 correction but is not
+  itself an open defect. Recorded as a divergence from this ADR's own "both
+  must be RED first" text rather than silently reconciled.
+- **Gate 2 (liveness) came back RED**, `xfail(strict=True,
+  raises=ValueError)` -- the first use of `xfail` in this repo (`tests/`
+  grepped clean beforehand; no existing convention for a recorded-open-defect
+  test was found, so this is a new pattern, flagged for owner awareness
+  rather than assumed accepted).
+  `test_adr157_p4_authority_crash_after_commit_strands_the_intent` forks a
+  real process into the EXISTING, shipped `_development_dynamic_p4_broker`
+  (`trust.py:9900-10018`, per the reviewer's finding, not unbuilt
+  `derivation-root` code) and calls `os._exit(17)` immediately after its
+  real `RESERVED -> ISSUED` commit (`:9981-9982`), before any construction
+  (`:9991`). **OBSERVED**, not inferred: the parent reopens the reserve and
+  finds `reserve_uses` stuck at `state='ISSUED'` for that row, with no
+  authority ever constructed; retrying the identical call against the same
+  issuer raises `ValueError("dynamic P4 authority already constructed for
+  this graph")` (`:9986`), because the retry recomputes the same
+  deterministic `signed_id` and collides with the crashed attempt's own
+  committed row.
+- **Gap 1's recorded answer**: stranding after a post-commit crash is real
+  and, in the code that exists today, permanent. No existing mechanism
+  reaches it: quarantine only runs from an in-process `except Exception:`
+  (`_p4_dynamic_authority_quarantine`), which a real `os._exit` never
+  triggers; `reserve_meta.generation`/`reserve_revoked` do not touch
+  `reserve_uses` (Gap 4); there is no `attempt` dimension and no
+  `RESERVED -> QUARANTINED -> retry` path (as this ADR already named). That
+  is the observation. The inference -- whether that stranding is an
+  acceptable, scoped limitation (development-broker scope only, per this
+  ADR's own Scope paragraph) or whether it justifies reintroducing v3's
+  "abandoned vs in-flight" ambiguity via an `attempt` dimension -- is an
+  OWNER DECISION this gate supplies evidence for, not one it makes.
 
 Deliberately
 NOT a fourth patch to ADR-0148, which stays **STOPPED / DO NOT IMPLEMENT**.
