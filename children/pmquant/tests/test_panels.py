@@ -19,6 +19,7 @@ from pmquant.ladder.panels import (
     ITEM_KEYS,
     PANEL_KEYS,
     TAIL_GROUPS,
+    TOKEN_REVISION,
     EventPanel,
     MarketVocab,
     TokenFeaturizer,
@@ -118,8 +119,8 @@ def test_build_panels_orders_rungs_canonically_and_labels_them():
     assert panel.ladder_type is LadderType.PARTITION
     assert panel.close_ts_ms == close
     assert panel.source_f == 0.0
-    # dur_h: the earliest observed epoch is close - 0.9h
-    assert panel.dur_h == pytest.approx(0.9)
+    # dur_h: the earliest observed epoch is close - 0.9h, at every lead
+    assert panel.dur_h.tolist() == pytest.approx([0.9] * len(FRACS))
     assert built.vocab.series == ("KXA",)
     assert panel.market_id == 0
 
@@ -130,11 +131,15 @@ def test_threshold_classification_and_strike_geometry():
     panel = built.panels[0]
     assert panel.ladder_type is LadderType.UPPER_THRESHOLD
     assert panel.contracts == contracts
-    # strikes 50, 60: z = (sv - mean)/std with population std 5 -> [-1, 1];
-    # gaps [10], gmed 10 -> gap_z = [10/10 - 1, 0] = [0, 0]
-    assert panel.strike_z.tolist() == pytest.approx([-1.0, 1.0])
-    assert panel.gap_z.tolist() == pytest.approx([0.0, 0.0])
+    # both rungs are listed at every lead, so every step's geometry is the
+    # whole ladder's: strikes 50, 60 -> z = (sv - mean)/std, population std 5
+    # -> [-1, 1]; gaps [10], gmed 10 -> gap_z = [10/10 - 1, 0] = [0, 0]
+    assert panel.strike_z.shape == (len(FRACS), 2)
+    for step in range(len(FRACS)):
+        assert panel.strike_z[step].tolist() == pytest.approx([-1.0, 1.0])
+        assert panel.gap_z[step].tolist() == pytest.approx([0.0, 0.0])
     assert panel.strike_z.dtype == np.float32
+    assert panel.listed.tolist() == [[True, True]] * len(FRACS)
 
 
 def test_strike_geometry_is_zero_without_two_finite_strikes():
@@ -145,8 +150,8 @@ def test_strike_geometry_is_zero_without_two_finite_strikes():
     ]
     records = [lead_record("KXA", "E", r["ticker"], f, close) for r in rows for f in FRACS]
     built = build(records, rows, {"A": True, "B": False})
-    assert built.panels[0].strike_z.tolist() == [0.0, 0.0]
-    assert built.panels[0].gap_z.tolist() == [0.0, 0.0]
+    assert built.panels[0].strike_z.tolist() == [[0.0, 0.0]] * len(FRACS)
+    assert built.panels[0].gap_z.tolist() == [[0.0, 0.0]] * len(FRACS)
 
 
 def test_unsettled_events_are_skipped_and_counted():
@@ -358,7 +363,8 @@ def test_items_carry_every_key_and_visible_is_the_running_or():
     assert item["market_id"] == 0 and item["contracts"] == contracts
     assert item["series"] == "KXA" and item["event"] == "KXA-1"
     assert item["close_ts_ms"] == close and item["lead_fracs"] == FRACS
-    assert item["featurizer"] == (5, ()) and item["vocab"] == {"KXA": 0}
+    assert item["featurizer"] == (5, (), TOKEN_REVISION)
+    assert item["vocab"] == {"KXA": 0}
     assert item["asks"][1].tolist() == pytest.approx([0.45, 0.45])
     assert math.isnan(item["asks"][0, 1]) and item["ask_sz"][0, 1] == 0.0
     assert item["ask_sz"][1].tolist() == pytest.approx([12.0, 12.0])
@@ -391,16 +397,380 @@ def test_collate_pads_the_contract_axis():
     assert batch["is_partition"].tolist() == [False, False]
     assert batch["eligible"].tolist() == [True, True]
     assert set(batch) == {
-        "feats", "seen", "visible", "y", "market_id", "is_partition", "st_code",
-        "contract_mask", "eligible", "featurizer",
+        "feats", "seen", "visible", "listed", "y", "market_id", "is_partition",
+        "st_code", "contract_mask", "eligible", "featurizer",
     }
-    assert batch["featurizer"] == (5, ())
+    # the padded rung is never listed either — padding invents no outcome
+    assert batch["listed"].tolist() == [
+        [[True, True, False]] * 3, [[True, True, True]] * 3,
+    ]
+    assert batch["featurizer"] == (5, (), TOKEN_REVISION)
     # the padded rung is unseen and never visible
     assert not batch["seen"][0, :, 2].any() and not batch["visible"][0, :, 2].any()
     with pytest.raises(ValueError, match="empty"):
         collate_items([])
     # one layout per batch: the ablated item is refused beside the plain one
     ablated = build_panel_items(built.panels, TokenFeaturizer(drop="context"), GRID, eligible=())
-    assert ablated[0]["featurizer"] == (5, ("context",))
+    assert ablated[0]["featurizer"] == (5, ("context",), TOKEN_REVISION)
     with pytest.raises(ValueError, match="layout"):
         collate_items(items + ablated[:1])
+
+
+# --- point-in-time rung membership (PM-02) ------------------------------------
+
+
+def listed_later_event(close_ms=100 * HOUR_MS, late_strike=70.0, late_fracs=(0.5, 0.1),
+                       late_close_delta_ms=0, late_type="greater"):
+    """Two rungs listed 24h out plus one listed AFTER the first lead epoch.
+
+    The late rung is quoted only at steps 1 and 2 — nothing observed it at
+    step 0 because it did not exist there. ``late_close_delta_ms`` moves
+    the late rung's OWN close and ``late_type`` its strike type: both are
+    whole-set inputs an earlier lead must not be able to feel, so the
+    acceptance test varies them rather than only the strike. Returns the
+    records, the markets rows, the outcomes, the early tickers and the
+    late ticker.
+    """
+    series, event = "KXA", "KXA-1"
+    early = [f"{event}-T50", f"{event}-T60"]
+    late = f"{event}-T{int(late_strike)}"
+    records = [lead_record(series, event, c, f, close_ms) for c in early for f in FRACS]
+    records += [lead_record(series, event, late, f, close_ms) for f in late_fracs]
+    markets = [
+        market_row(early[0], event, series, "greater", 50.0, None, close_ms),
+        market_row(early[1], event, series, "greater", 60.0, None, close_ms),
+        {
+            **market_row(
+                late, event, series, late_type, late_strike,
+                None if late_type == "greater" else late_strike + 10.0,
+                close_ms + late_close_delta_ms,
+            ),
+            # listed between step 0 (close - 0.9h) and step 1 (close - 0.5h)
+            "open_ms": int(close_ms - 0.7 * HOUR_MS),
+        },
+    ]
+    outcomes = {early[0]: True, early[1]: False, late: False}
+    return records, markets, outcomes, early, late
+
+
+@pytest.mark.parametrize(
+    "late_strike, late_close_delta_ms",
+    [(55.0, 0), (70.0, 0), (70.0, 5 * HOUR_MS)],
+)
+def test_a_rung_listed_after_a_decision_epoch_leaves_that_epochs_features_identical(
+    late_strike, late_close_delta_ms,
+):
+    """The acceptance test the audit names: list a new rung after an earlier
+    decision and every earlier feature row must be BYTE-identical — whatever
+    the late rung declares, including a close of its own."""
+    close = 100 * HOUR_MS
+    records, markets, outcomes, early, late = listed_later_event(
+        close, late_strike, late_close_delta_ms=late_close_delta_ms
+    )
+    before = [r for r in records if r.contract != late]
+    rows_before = [row for row in markets if row["ticker"] != late]
+    outcomes_before = {c: outcomes[c] for c in early}
+
+    panel_a = build(before, rows_before, outcomes_before).panels[0]
+    panel_b = build(records, markets, outcomes).panels[0]
+    feats_a, _ = TokenFeaturizer().encode(panel_a, GRID)
+    feats_b, _ = TokenFeaturizer().encode(panel_b, GRID)
+
+    assert panel_a.contracts == early
+    assert late in panel_b.contracts and len(panel_b.contracts) == 3
+    for r, ticker in enumerate(early):
+        assert feats_b[0, panel_b.contracts.index(ticker)].tolist() == (
+            feats_a[0, r].tolist()
+        ), f"lead 0 features moved for {ticker} when {late} was listed later"
+
+
+def test_the_panel_declares_which_rungs_were_listed_at_each_lead():
+    records, markets, outcomes, early, late = listed_later_event()
+    panel = build(records, markets, outcomes).panels[0]
+    assert panel.contracts == early + [late]
+    assert panel.listed.tolist() == [
+        [True, True, False],
+        [True, True, True],
+        [True, True, True],
+    ]
+
+
+def test_a_rung_not_yet_listed_has_an_all_zero_token():
+    records, markets, outcomes, _early, _late = listed_later_event()
+    panel = build(records, markets, outcomes).panels[0]
+    feats, seen = TokenFeaturizer().encode(panel, GRID)
+    assert feats[0, 2].tolist() == [0.0] * TokenFeaturizer().n_features
+    assert not seen[0, 2]
+    assert feats[1, 2].any()
+
+
+def test_the_tail_counts_only_the_rungs_listed_at_that_lead():
+    records, markets, outcomes, _early, _late = listed_later_event()
+    panel = build(records, markets, outcomes).panels[0]
+    feats, _ = TokenFeaturizer().encode(panel, GRID)
+    names = list(EXPECTED_NAMES)
+    n_col, z_col = names.index("log_n_contracts"), names.index("strike_z")
+    pos_col = names.index("rung_pos")
+    # step 0: only the two early rungs are listed -> strikes [50, 60]
+    assert feats[0, :2, n_col].tolist() == pytest.approx([math.log1p(2)] * 2)
+    assert feats[0, :2, z_col].tolist() == pytest.approx([-1.0, 1.0])
+    assert feats[0, :2, pos_col].tolist() == pytest.approx([0.0, 1.0])
+    # step 1: all three -> strikes [50, 60, 70], mean 60, std sqrt(200/3)
+    sd = math.sqrt(200.0 / 3.0)
+    assert feats[1, :, n_col].tolist() == pytest.approx([math.log1p(3)] * 3)
+    assert feats[1, :, z_col].tolist() == pytest.approx(
+        [-10.0 / sd, 0.0, 10.0 / sd], rel=1e-6
+    )
+    assert feats[1, :, pos_col].tolist() == pytest.approx([0.0, 0.5, 1.0])
+
+
+def test_a_markets_row_without_a_listing_instant_refuses():
+    """Fail-closed: absent membership information REFUSES, it never falls
+    back to the eventual rung set."""
+    records, markets, outcomes, _ = threshold_event()
+    stripped = [dict(row) for row in markets]
+    stripped[1].pop("open_ms")
+    with pytest.raises(ValueError, match="open_ms"):
+        build(records, stripped, outcomes)
+    blank = [dict(row) for row in markets]
+    blank[1]["open_ms"] = None
+    with pytest.raises(ValueError, match="open_ms"):
+        build(records, blank, outcomes)
+
+
+def test_a_rung_observed_before_its_declared_listing_refuses():
+    """A book read before the row says the contract existed is a broken
+    membership declaration, not a rung to quietly admit."""
+    records, markets, outcomes, _ = threshold_event()
+    late = [dict(row) for row in markets]
+    late[1]["open_ms"] = 100 * HOUR_MS  # after every lead epoch
+    with pytest.raises(ValueError, match="listed"):
+        build(records, late, outcomes)
+
+
+def partition_with_an_unquoted_outcome(close_ms=100 * HOUR_MS):
+    """A three-bracket partition whose middle outcome is listed but never quoted."""
+    series, event = "KXP", "KXP-1"
+    rows = [
+        market_row(f"{event}-B{lo}", event, series, "between", float(lo), float(lo + 10),
+                   close_ms)
+        for lo in (40, 50, 60)
+    ]
+    records = []
+    for row in rows:
+        unquoted = row["ticker"].endswith("B50")
+        for f in FRACS:
+            records.append(
+                lead_record(series, event, row["ticker"], f, close_ms,
+                            yes=() if unquoted else YES_BIDS,
+                            no=() if unquoted else NO_BIDS)
+            )
+    outcomes = {rows[0]["ticker"]: False, rows[1]["ticker"]: True,
+                rows[2]["ticker"]: False}
+    return records, rows, outcomes
+
+
+def test_a_partition_keeps_a_listed_but_unquoted_outcome_in_its_denominator():
+    records, rows, outcomes = partition_with_an_unquoted_outcome()
+    built = build(records, rows, outcomes)
+    panel = built.panels[0]
+    assert panel.ladder_type is LadderType.PARTITION
+    items = build_panel_items([panel], TokenFeaturizer(), GRID, eligible={"KXP"})
+    item = items[0]
+    # the unquoted bracket is never SEEN, but it is always LISTED
+    assert item["seen"][:, 1].tolist() == [False, False, False]
+    assert item["visible"][:, 1].tolist() == [False, False, False]
+    assert item["listed"][:, 1].tolist() == [True, True, True]
+    batch = collate_items(items)
+    assert batch["listed"].tolist() == [[[True, True, True]] * 3]
+
+
+def test_a_listed_but_unquoted_partition_outcome_keeps_the_others_from_inflating():
+    """Normalizing a partition over the QUOTED rungs only renormalizes every
+    other outcome upward — the settlement-contract defect PM-02 names. The
+    denominator is the LISTED set, so the unquoted bracket keeps its mass."""
+    from pmquant.models import q_from_logits
+
+    records, rows, outcomes = partition_with_an_unquoted_outcome()
+    built = build(records, rows, outcomes)
+    items = build_panel_items(built.panels, TokenFeaturizer(), GRID, eligible={"KXP"})
+    batch = collate_items(items)
+    assert batch["is_partition"].tolist() == [True]
+
+    logit = torch.zeros(1, len(FRACS), 3)
+    listed = batch["listed"] & batch["contract_mask"][:, None, :]
+    q = q_from_logits(logit, listed, batch["is_partition"])
+    # three equal logits over three LISTED outcomes: 1/3 each, and the two
+    # QUOTED ones together hold 2/3 — they do not absorb the unquoted third.
+    assert q[0, 0, 1].item() == pytest.approx(1 / 3)
+    assert q[0, 0, [0, 2]].sum().item() == pytest.approx(2 / 3)
+    # the quoted-only denominator is what inflates them to 1.0
+    quoted = batch["visible"] & batch["contract_mask"][:, None, :]
+    inflated = q_from_logits(logit, quoted, batch["is_partition"])
+    assert inflated[0, 0, [0, 2]].sum().item() == pytest.approx(1.0)
+
+
+def test_encoding_a_panel_on_another_grid_refuses():
+    """Membership was resolved at THIS grid's instants; another grid's steps
+    are not the instants anything was resolved at."""
+    records, markets, outcomes, _ = threshold_event()
+    panel = build(records, markets, outcomes).panels[0]
+    other = LeadGrid((0.9, 0.7, 0.5, 0.1))
+    with pytest.raises(ValueError, match="BUILT with"):
+        TokenFeaturizer().encode(panel, other)
+
+
+def test_a_lead_resolves_the_duration_from_the_close_it_could_know():
+    """dur_h is per-lead: the span from the first book observed by that lead
+    to the close of the rungs LISTED by then. A rung listed later cannot
+    stretch an earlier lead's clock."""
+    close = 100 * HOUR_MS
+    records, markets, outcomes, early, late = listed_later_event(
+        close, 70.0, late_close_delta_ms=5 * HOUR_MS
+    )
+    panel = build(records, markets, outcomes).panels[0]
+    # step 0 knows only the two early rungs, which close at `close`
+    assert panel.dur_h[0] == pytest.approx(0.9)
+    # steps 1 and 2 know the late rung too, and its close is 5h further out
+    assert panel.dur_h[1] == pytest.approx(5.9)
+    assert panel.dur_h[2] == pytest.approx(5.9)
+    feats, _ = TokenFeaturizer().encode(panel, GRID)
+    col = list(EXPECTED_NAMES).index("dur_h")
+    assert feats[0, :2, col].tolist() == pytest.approx([math.log1p(0.9)] * 2)
+    assert feats[1, :, col].tolist() == pytest.approx([math.log1p(5.9)] * 3)
+    # the split cut keeps the whole-event close: a block is not a per-lead call
+    assert panel.close_ts_ms == close + 5 * HOUR_MS
+
+
+def under_over_event(series="KXA", event="KXA-1", close_ms=100 * HOUR_MS):
+    """The ordinary binary market: `less` under 50 and `greater` over 50 — its
+    exact partition-completing mirror — listed 0.7h apart."""
+    under, over = f"{event}-LESS50", f"{event}-GREATER50"
+    records = [lead_record(series, event, under, f, close_ms) for f in FRACS]
+    records += [lead_record(series, event, over, f, close_ms) for f in (0.5, 0.1)]
+    markets = [
+        market_row(under, event, series, "less", None, 50.0, close_ms),
+        {
+            **market_row(over, event, series, "greater", 50.0, None, close_ms),
+            "open_ms": int(close_ms - 0.7 * HOUR_MS),
+        },
+    ]
+    return records, markets, {under: True, over: False}
+
+
+def test_a_late_rung_that_would_change_the_settlement_law_is_skipped_and_counted():
+    """Two `greater` rungs read as an upper threshold; a `between` rung listed
+    later would make the whole panel a partition, retroactively changing the
+    law applied to leads that could not have known it. The event is
+    DISQUALIFIED — skipped and counted, exactly like an unsettled one."""
+    records, markets, outcomes, _early, _late = listed_later_event(
+        late_strike=55.0, late_type="between"
+    )
+    built = build(records, markets, outcomes)
+    assert built.panels == []
+    assert built.counts["n_skipped_unstable_law"] == 1
+    assert built.counts["n_events_seen"] == 1 and built.counts["n_panels"] == 0
+
+
+def test_an_under_over_pair_listed_minutes_apart_never_kills_the_family():
+    """An ordinary under/over market whose two legs listed minutes apart is a
+    modeling ambiguity, not a malformed record: it is skipped and counted, and
+    an independent healthy event in the same build still comes back."""
+    close = 100 * HOUR_MS
+    r_pair, m_pair, o_pair = under_over_event(close_ms=close)
+    r_ok, m_ok, o_ok, _contracts = threshold_event(
+        series="KXB", event="KXB-1", close_ms=close
+    )
+    built = build(r_pair + r_ok, m_pair + m_ok, {**o_pair, **o_ok})
+    assert built.counts["n_skipped_unstable_law"] == 1
+    assert [p.event for p in built.panels] == ["KXB-1"]
+    assert built.counts["n_events_seen"] == 2 and built.counts["n_panels"] == 1
+
+
+def test_a_between_anchored_partition_admits_a_late_tail():
+    """The ADMIT direction, so the guard cannot widen unnoticed: `between`
+    anywhere already reads PARTITION, so a `less` tail listed later changes no
+    law and the event is modelled normally."""
+    close = 100 * HOUR_MS
+    series, event = "KXA", "KXA-1"
+    brackets = [f"{event}-B{lo}" for lo in (50, 60)]
+    tail = f"{event}-L50"
+    records = [lead_record(series, event, c, f, close) for c in brackets for f in FRACS]
+    records += [lead_record(series, event, tail, f, close) for f in (0.5, 0.1)]
+    markets = [
+        market_row(brackets[0], event, series, "between", 50.0, 60.0, close),
+        market_row(brackets[1], event, series, "between", 60.0, 70.0, close),
+        {
+            **market_row(tail, event, series, "less", None, 50.0, close),
+            "open_ms": int(close - 0.7 * HOUR_MS),
+        },
+    ]
+    outcomes = {brackets[0]: True, brackets[1]: False, tail: False}
+    built = build(records, markets, outcomes)
+    assert built.counts["n_skipped_unstable_law"] == 0
+    assert len(built.panels) == 1
+    panel = built.panels[0]
+    assert panel.ladder_type is LadderType.PARTITION
+    late_rung = panel.contracts.index(tail)
+    assert not panel.listed[0][late_rung]
+    assert panel.listed[1].all() and panel.listed[2].all()
+
+
+def test_an_all_greater_ladder_admits_a_late_greater_rung():
+    """The other ADMIT case: a rung that does not move the classification is
+    modelled, so only the genuinely ambiguous event is disqualified."""
+    records, markets, outcomes, _early, _late = listed_later_event(late_strike=70.0)
+    built = build(records, markets, outcomes)
+    assert built.counts["n_skipped_unstable_law"] == 0
+    assert built.panels[0].ladder_type is LadderType.UPPER_THRESHOLD
+
+
+def test_a_lead_nothing_was_read_at_carries_the_last_membership_it_resolved():
+    close = 100 * HOUR_MS
+    records, markets, outcomes, _contracts = threshold_event()
+    records = [r for r in records if r.lead_frac != 0.5]  # step 1 goes dark
+    panel = build(records, markets, outcomes).panels[0]
+    assert panel.lead_epoch_ms == (
+        int(close - 0.9 * HOUR_MS),
+        int(close - 0.9 * HOUR_MS),  # carried forward, not None and not step 2's
+        int(close - 0.1 * HOUR_MS),
+    )
+    assert panel.listed.tolist() == [[True, True]] * 3
+    feats, seen = TokenFeaturizer().encode(panel, GRID)
+    assert not seen[1].any()
+    col = list(EXPECTED_NAMES).index("log_n_contracts")
+    assert feats[1, :, col].tolist() == pytest.approx([math.log1p(2)] * 2)
+
+
+def test_a_book_at_exactly_the_listing_instant_is_admitted():
+    """The membership window is half-open at its START: `from_ms <= at_ms`.
+    One millisecond either side of that boundary is a different answer."""
+    close = 100 * HOUR_MS
+    records, markets, outcomes, _contracts = threshold_event()
+    rows = [dict(row) for row in markets]
+    rows[1]["open_ms"] = int(close - 0.9 * HOUR_MS)  # exactly its first book
+    panel = build(records, rows, outcomes).panels[0]
+    assert panel.listed[0].tolist() == [True, True]
+    rows[1]["open_ms"] += 1
+    with pytest.raises(ValueError, match="listed"):
+        build(records, rows, outcomes)
+
+
+def test_the_layout_identity_carries_the_token_revision():
+    """A checkpoint trained before point-in-time membership indexes the SAME
+    41 columns under different semantics — and under a different partition
+    denominator. The identity must not match, so it fails closed."""
+    fz = TokenFeaturizer()
+    assert len(fz.identity) == 3
+    assert fz.identity[:2] == (DEFAULT_K_LVL, ())
+    assert fz.identity != (DEFAULT_K_LVL, ())  # the pre-PM-02 spelling
+    assert TokenFeaturizer(drop="context").identity[2] == fz.identity[2]
+    # the revision IS this column list under point-in-time semantics: moving
+    # one without the other is exactly what this pin exists to catch
+    assert TOKEN_REVISION == 2
+    assert fz.feature_names() == EXPECTED_NAMES
+    # and it is CAPTURED, so a restored artifact CAN disagree with today's code
+    assert TokenFeaturizer(revision=1).identity == (DEFAULT_K_LVL, (), 1)
+    for bad in (0, -1, 1.5, True, "2"):
+        with pytest.raises(ValueError, match="revision"):
+            TokenFeaturizer(revision=bad)

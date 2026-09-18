@@ -19,7 +19,12 @@ torch = pytest.importorskip("torch")
 from dskit.pipeline.libs.torch import DeclaredPredict, DeclaredTrain
 from dskit.pipeline.node import NodeContext
 
-from pmquant.ladder.panels import PANEL_KEYS, TokenFeaturizer, collate_items
+from pmquant.ladder.panels import (
+    PANEL_KEYS,
+    TOKEN_REVISION,
+    TokenFeaturizer,
+    collate_items,
+)
 from pmquant.ladder.protocols import LEAD_ROUND_DP, STRIKE_CODES, lead_key
 from pmquant.models import (
     SERVING_SUFFIX,
@@ -40,14 +45,16 @@ ADAPTER_REF = "pmquant.models:LadderPanelAdapter"
 MODULE_REF = "pmquant.models:LadderQhatModule"
 MODULE_PARAMS = {"d_model": 16, "n_time_layers": 1, "k_lvl": 5}
 #: The frozen recipe's layout identity and the fixture's vocab — RESTATED.
-IDENTITY = (5, ())
+IDENTITY = (5, (), TOKEN_REVISION)
 VOCAB = {"KXA": 0, "KXB": 1}
 
 
 def make_item(rng, *, C, series, event, market_id=0, partition=False, eligible=True,
-              y=None, unseen=(), vocab=VOCAB, identity=IDENTITY):
+              y=None, unseen=(), unlisted=(), vocab=VOCAB, identity=IDENTITY):
     """One hand-built panel item over T=3 leads: random tokens, full visibility
-    except the ``(step, rung)`` cells named in ``unseen``."""
+    except the ``(step, rung)`` cells named in ``unseen``, and every rung
+    LISTED except the ``(step, rung)`` cells named in ``unlisted`` — listing
+    and quoting are separate facts, which is the whole point of PM-02."""
     T = len(FRACS)
     feats = rng.normal(size=(T, C, F)).astype(np.float32) * 0.1
     feats[..., NAMES.index("yes_touch")] = rng.uniform(0.05, 0.95, size=(T, C))
@@ -55,6 +62,9 @@ def make_item(rng, *, C, series, event, market_id=0, partition=False, eligible=T
     seen = np.ones((T, C), dtype=bool)
     for k, r in unseen:
         seen[k, r] = False
+    listed = np.ones((T, C), dtype=bool)
+    for k, r in unlisted:
+        listed[k, r] = False
     if y is None:
         y = np.zeros(C, dtype=np.float32)
         y[0] = 1.0
@@ -63,6 +73,7 @@ def make_item(rng, *, C, series, event, market_id=0, partition=False, eligible=T
         "feats": feats,
         "seen": seen,
         "visible": np.logical_or.accumulate(seen, axis=0),
+        "listed": listed,
         "y": np.asarray(y, dtype=np.float32),
         "market_id": market_id,
         "is_partition": partition,
@@ -155,19 +166,20 @@ def test_two_tailed_ladders_run_each_tail_on_its_own_contiguous_run():
     assert (greater[..., 1:] <= greater[..., :-1] + 1e-6).all()
 
 
-def test_q_from_logits_sums_to_one_over_visible_rungs_for_partitions():
+def test_q_from_logits_sums_to_one_over_the_listed_rungs_for_partitions():
     logit = torch.tensor([[[2.0, -1.0, 0.5, 3.0]]])
-    visible = torch.tensor([[[True, True, True, False]]])
-    q = q_from_logits(logit, visible, torch.tensor([True]))
+    listed = torch.tensor([[[True, True, True, False]]])
+    q = q_from_logits(logit, listed, torch.tensor([True]))
     assert q[0, 0, 3].item() == pytest.approx(0.0, abs=1e-6)
     assert q[0, 0, :3].sum().item() == pytest.approx(1.0)
-    q_thr = q_from_logits(logit, visible, torch.tensor([False]))
+    q_thr = q_from_logits(logit, listed, torch.tensor([False]))
     assert torch.allclose(q_thr, torch.sigmoid(logit))
 
 
 def batch_for_loss(partition):
     return {
         "visible": torch.tensor([[[True, True, True]] * 2]),
+        "listed": torch.tensor([[[True, True, True]] * 2]),
         "contract_mask": torch.tensor([[True, True, True]]),
         "y": torch.tensor([[0.0, 1.0, 0.0]]),
         "is_partition": torch.tensor([partition]),
@@ -193,13 +205,29 @@ def test_head_loss_is_event_equal_and_restated_for_a_threshold_batch():
     assert head_loss(logit, b).item() == pytest.approx(expected.item())
 
 
-def test_head_loss_partition_skips_steps_where_the_winner_is_unlisted():
+def test_head_loss_partition_skips_steps_where_the_winner_is_not_yet_quoted():
     b = batch_for_loss(True)
     b["visible"] = torch.tensor([[[True, False, True], [True, True, True]]])
     logit = torch.tensor([[[5.0, 5.0, 5.0], [0.0, 2.0, 0.0]]])
     # only step 1 counts: -log_softmax([0,2,0])[1]
     expected = -torch.log_softmax(torch.tensor([0.0, 2.0, 0.0]), -1)[1]
     assert head_loss(logit, b).item() == pytest.approx(expected.item())
+
+
+def test_head_loss_normalizes_a_partition_over_the_listed_rungs_not_the_quoted_ones():
+    """An outcome the venue listed but nobody quoted still competes for the
+    winner's probability mass; dropping it from the denominator would train
+    the quoted rungs toward an inflated q."""
+    b = batch_for_loss(True)
+    b["visible"] = torch.tensor([[[True, True, False]] * 2])
+    logit = torch.tensor([[[0.0, 2.0, 0.0]] * 2])
+    over_listed = -torch.log_softmax(torch.tensor([0.0, 2.0, 0.0]), -1)[1]
+    over_quoted = -torch.log_softmax(torch.tensor([0.0, 2.0]), -1)[1]
+    assert head_loss(logit, b).item() == pytest.approx(over_listed.item())
+    assert head_loss(logit, b).item() > over_quoted.item()
+    # unlist the third rung and the denominator legitimately shrinks to two
+    b["listed"] = torch.tensor([[[True, True, False]] * 2])
+    assert head_loss(logit, b).item() == pytest.approx(over_quoted.item())
 
 
 @pytest.mark.parametrize("y", [[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
@@ -260,13 +288,22 @@ def test_module_refuses_a_batch_featurized_under_another_layout():
     mismatch instead of naming an ablation its tokens never got."""
     torch.manual_seed(0)
     rng = np.random.default_rng(0)
-    dropped = [make_item(rng, C=2, series="KXA", event="KXA-1", identity=(5, ("context",)))]
+    dropped = [
+        make_item(rng, C=2, series="KXA", event="KXA-1",
+                  identity=(5, ("context",), TOKEN_REVISION))
+    ]
     plain = LadderQhatModule(n_markets=2, n_leads=3, **MODULE_PARAMS)
     with pytest.raises(ValueError, match="drop"):
         plain(collate_items(dropped))
+    # and the revision is the same gate: a batch featurized before the
+    # columns changed meaning names the SAME k_lvl and the SAME drop
+    stale = [make_item(rng, C=2, series="KXA", event="KXA-1", identity=(5, ()))]
+    assert tuple(stale[0]["featurizer"]) != plain.featurizer.identity
+    with pytest.raises(ValueError, match="revision"):
+        plain(collate_items(stale))
     ablated = LadderQhatModule(n_markets=2, n_leads=3, drop=["context"], **MODULE_PARAMS)
     assert ablated(collate_items(dropped)).shape == (1, 3, 2)
-    assert ablated.featurizer.identity == (5, ("context",))
+    assert ablated.featurizer.identity == (5, ("context",), TOKEN_REVISION)
     with pytest.raises(ValueError, match="layout"):
         collate_items(dropped + make_items()[:1])
 
@@ -291,7 +328,9 @@ def test_prepare_keeps_panel_items_counts_the_rest_and_refuses_none_usable():
 def test_module_params_are_implied_by_the_data():
     adapter = LadderPanelAdapter({})
     prepared = adapter.prepare(make_items(), {}, where="rows")
-    assert adapter.module_params(prepared, {}) == {"n_markets": 2, "n_leads": 3}
+    assert adapter.module_params(prepared, {}) == {
+        "n_markets": 2, "n_leads": 3, "token_revision": TOKEN_REVISION,
+    }
     # the WHOLE vocab sizes the embedding, not the markets train happens to hold
     rng = np.random.default_rng(1)
     only_a = [make_item(rng, C=2, series="KXA", event="KXA-9", vocab={"KXA": 0, "KXB": 1, "KXC": 2})]
@@ -354,7 +393,9 @@ def test_event_logloss_equals_an_independent_restatement():
     batch = collate_items(items)
     with torch.no_grad():
         vis = batch["visible"] & batch["contract_mask"][:, None, :]
-        q = q_from_logits(module(batch), vis, batch["is_partition"]).numpy()
+        # scored on the QUOTED cells, normalized over the LISTED ones
+        lis = batch["listed"] & batch["contract_mask"][:, None, :]
+        q = q_from_logits(module(batch), lis, batch["is_partition"]).numpy()
     per_event = []
     for i, item in enumerate(items):
         cells = []
@@ -425,6 +466,7 @@ def test_save_and_load_state_round_trip_and_refusals(tmp_path):
     payload = json.loads(text)
     assert payload["lead_key_dp"] == LEAD_ROUND_DP
     assert payload["vocab"] == VOCAB  # the vocab travels with the artifact
+    assert payload["token_revision"] == TOKEN_REVISION  # and so does what they meant
     assert payload["cells"] == sorted(payload["cells"])
     assert {(c, lead) for c, lead, _ in payload["cells"]} == set(table)
 
@@ -463,6 +505,9 @@ def test_save_and_load_state_round_trip_and_refusals(tmp_path):
 
     forge({"lead_key_dp": LEAD_ROUND_DP, "vocab": VOCAB, "cells": []}, "empty")
     forge({"lead_key_dp": LEAD_ROUND_DP, "cells": payload["cells"]}, "no market vocab")
+    # a table that records no revision at all is as unusable as a wrong one
+    forge({"lead_key_dp": LEAD_ROUND_DP, "vocab": VOCAB, "cells": payload["cells"]},
+          "records token revision None")
 
 
 # --- through the pack ---------------------------------------------------------
@@ -476,7 +521,9 @@ def test_the_declared_seam_fits_persists_and_restores(tmp_path):
     assert out["metrics"]["epochs_run"] == 1
     assert math.isfinite(out["metrics"]["final_logloss"])  # beliefs fed the pack's metrics
     sidecar = json.load(open(os.path.splitext(out["artifact_path"])[0] + ".json"))
-    assert sidecar["data_params"] == {"n_markets": 2, "n_leads": 3}
+    assert sidecar["data_params"] == {
+        "n_markets": 2, "n_leads": 3, "token_revision": TOKEN_REVISION,
+    }
     assert sidecar["adapter_state"]["serving_table"]["cells"] > 0
     probe = {"contract": "KXA-1-R0", "lead_frac": 0.9}
     expected = out["signal"].predict(probe)
@@ -494,3 +541,59 @@ def test_the_declared_seam_fits_persists_and_restores(tmp_path):
     # adapter_params are default-deny: the vocab is data, never a knob
     problems = DeclaredTrain.validate_params(params(adapter_params={"n_markets": 5}))
     assert any("n_markets" in p for p in problems)
+
+
+def test_a_checkpoint_fit_under_an_older_token_revision_refuses_new_panels(monkeypatch):
+    """train -> upgrade -> load. The revision must travel INSIDE the artifact's
+    module_params: if both sides re-read the installed global, old weights and
+    new code always agree and the mechanism protects nothing."""
+    import pmquant.ladder.panels as panels_mod
+
+    rng = np.random.default_rng(0)
+    monkeypatch.setattr(panels_mod, "TOKEN_REVISION", 1)
+    old_items = [make_item(rng, C=2, series="KXA", event="KXA-1", identity=(5, (), 1))]
+    adapter = LadderPanelAdapter({})
+    prepared = adapter.prepare(old_items, {}, where="rows")
+    persisted = {**MODULE_PARAMS, **adapter.module_params(prepared, {})}
+    assert "token_revision" in persisted, (
+        "the artifact's module_params record no token revision, so a restored "
+        "module re-reads whatever global happens to be installed"
+    )
+    assert persisted["token_revision"] == 1
+
+    # the code is upgraded and the panels are rebuilt under the new semantics
+    monkeypatch.setattr(panels_mod, "TOKEN_REVISION", 2)
+    restored = LadderQhatModule(**persisted)
+    assert restored.featurizer.identity == (5, (), 1)
+    fresh = collate_items(
+        [make_item(rng, C=2, series="KXA", event="KXA-1", identity=(5, (), 2))]
+    )
+    with pytest.raises(ValueError, match="revision"):
+        restored(fresh)
+
+
+def test_the_serving_table_records_the_revision_its_beliefs_were_computed_under(
+    tmp_path, monkeypatch
+):
+    """The second load path: a q table is a set of beliefs read off features.
+    Restoring it under code where those features mean something else is not a
+    stale artifact, it is a wrong one."""
+    import pmquant.ladder.panels as panels_mod
+
+    torch.manual_seed(0)
+    monkeypatch.setattr(panels_mod, "TOKEN_REVISION", 1)
+    adapter = LadderPanelAdapter({})
+    items = [make_item(np.random.default_rng(0), C=2, series="KXA", event="KXA-1",
+                       identity=(5, (), 1))]
+    prepared = adapter.prepare(items, {}, where="rows")
+    module = LadderQhatModule(n_markets=2, n_leads=3, token_revision=1, **MODULE_PARAMS)
+    adapter.fitted(module, prepared, None)
+    prefix = str(tmp_path / "model")
+    recorded = adapter.save_state(prefix)
+    with open(f"{prefix}{SERVING_SUFFIX}", encoding="utf-8") as fh:
+        assert json.load(fh)["token_revision"] == 1
+    assert LadderPanelAdapter({}).load_state(prefix, recorded)
+
+    monkeypatch.setattr(panels_mod, "TOKEN_REVISION", 2)
+    with pytest.raises(ValueError, match="revision"):
+        LadderPanelAdapter({}).load_state(prefix, recorded)
