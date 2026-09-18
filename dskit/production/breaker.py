@@ -106,6 +106,12 @@ _UNRESOLVED = "unknown"
 _OUTCOME_NONE, _OUTCOME_SUBMITTED = "none", "submitted"
 _OUTCOME_FAILED, _OUTCOME_PARTIAL, _OUTCOME_UNKNOWN = "failed", "partial", "unknown"
 
+#: The two outcomes that report the orders the halt knew about as dealt
+#: with. A sweep that answered for nothing about a ref the fold still holds
+#: working has not earned either: `cancel_outcome` reads only the acks it
+#: was handed, so the coverage check is the fold's half of the judgement.
+_COVERED_OUTCOMES = (_OUTCOME_SUBMITTED, _OUTCOME_PARTIAL)
+
 
 pin_members("breaker.py's CAUSE_TARGETS values", CAUSE_TARGETS.values(), BREAKER_STATES)
 pin_members("breaker.py's CAUSE_TARGETS keys", CAUSE_TARGETS, TRANSITION_CAUSES, exact=True)
@@ -509,9 +515,23 @@ class Breaker:
                        len(view.working))
         else:
             acks, outcome = self._cancel_all(trip_id)
+            outcome = self._covered(view, acks, outcome, trip_id)
         body = {"trip_id": trip_id, "outcome": outcome, "acks": [ack.to_obj() for ack in acks]}
         self._ledger.append({"kind": _CANCEL_OUTCOME, "id": f"{_CANCEL_OUTCOME}:{trip_id}", "body": body})
         self._ledger.barrier()
+
+    def _covered(self, view, acks, outcome, trip_id):
+        """Refuse a successful-looking outcome for a sweep that missed a working order."""
+        missed = sorted(set(view.working) - {ack.client_ref for ack in acks})
+        if not missed:
+            return outcome
+        if outcome not in _COVERED_OUTCOMES:
+            return outcome
+        _LOG.error(
+            "halt %s: the sweep answered for nothing about %d working order(s): %s",
+            trip_id, len(missed), missed,
+        )
+        return _OUTCOME_UNKNOWN
 
     def _cancel_all(self, trip_id):
         """Call the executor once; a raise is ``failed``, a malformed answer ``unknown``."""

@@ -371,15 +371,19 @@ class _Rung:
 
     A ``None`` in ``executor``, ``accounting``, ``approval`` or
     ``coordination`` means "no core kind is admissible here": the document
-    must name a child class by path. A string means the opposite — that
-    exact core kind and no other, which is what makes "paper can never
-    select a ``LiveExecutor``" a fact about the table rather than a
-    promise about ``bundles_for``.
+    must name a child class by path. A tuple means the opposite — those
+    core kinds and no others, which is what makes "paper can never select a
+    ``LiveExecutor``" a fact about the table rather than a promise about
+    ``bundles_for``. Most families admit exactly one; ``paper`` admits two
+    executors, because ``paper`` and ``paper-arrival`` are one venue family
+    differing only in how they model transport (ADR-0161), while ``shadow``
+    admits neither of them — a rung that decides and declines may not
+    select a venue that books fills.
 
     Parameters
     ----------
-    executor, accounting, approval, coordination : str or None
-        The one admissible core kind, or ``None`` for "a child class only".
+    executor, accounting, approval, coordination : tuple of str, or None
+        The admissible core kinds, or ``None`` for "a child class only".
     replayable : bool
         Whether a recorded series of this rung can be replayed from the
         chain alone. §6 records every venue answer as a DIGEST, never as
@@ -397,30 +401,30 @@ class _Rung:
     ::
 
         row = RUNG_TABLE["paper"]
-        row.executor                  # 'paper'
+        row.executor                  # ('paper', 'paper-arrival')
         row.authority["reduction"]    # SimulatedAuthority
         row.replayable                # True
     """
 
-    executor: str | None
-    accounting: str | None
+    executor: tuple | None
+    accounting: tuple | None
     authority: dict
-    approval: str | None
-    coordination: str | None
+    approval: tuple | None
+    coordination: tuple | None
     build: _Build
     replayable: bool
 
 
-def _simulated(executor):
+def _simulated(executors):
     """One simulated rung's row: core kinds throughout, nothing live."""
     return _Rung(
-        executor=executor,
-        accounting="paper",
+        executor=executors,
+        accounting=("paper",),
         authority=MappingProxyType(
             {"model": SimulatedAuthority, "reduction": SimulatedAuthority}
         ),
-        approval="deny-all",
-        coordination="process",
+        approval=("deny-all",),
+        coordination=("process",),
         build=_SimulatedBuild(),
         replayable=True,
     )
@@ -447,8 +451,8 @@ def _live():
 RUNG_TABLE = pin_members(
     "compose.py's RUNG_TABLE",
     {
-        "shadow": _simulated("shadow"),
-        "paper": _simulated("paper"),
+        "shadow": _simulated(("shadow",)),
+        "paper": _simulated(("paper", "paper-arrival")),
         "live_limited": _live(),
         "live": _live(),
     },
@@ -735,9 +739,9 @@ def _check_family(problems, where, uses, admitted, rung):
                 f"{where}: rung {rung!r} admits no core kind here — {uses!r} is one of "
                 f"{sorted(_core_kinds(where))}; name a child class as pkg.module:Class (D9)"
             )
-    elif uses != admitted:
+    elif uses not in admitted:
         problems.append(
-            f"{where}: rung {rung!r} selects {admitted!r}, and the document names {uses!r} "
+            f"{where}: rung {rung!r} admits {sorted(admitted)}, and the document names {uses!r} "
             "— an incompatible combination refuses at construction (§5.13.1)"
         )
 

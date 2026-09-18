@@ -19,6 +19,7 @@ the ledger and recovery fakes, `test_reconcile.py` for the reconciler, and
 because a second copy of a fake drifts from the one it was copied from.
 """
 
+import dataclasses
 from decimal import Decimal
 
 import pytest
@@ -27,6 +28,13 @@ from dskit.production.executor import ArrivalPaperExecutor, PaperExecutor
 from dskit.production.state import Recovery, SeriesState
 from dskit.production.vocab import TERMINAL_STATUSES
 from dskit.production.clock import TestClock
+from tests.production.test_breaker import (
+    halt,
+    make_breaker,
+    order_event_body as breaker_order_event_body,
+    outcome_of,
+)
+from tests.production.test_breaker import intent_body as breaker_intent_body
 from tests.production.test_executor import (
     ARRIVAL_MS,
     ARRIVAL_ASK,
@@ -35,15 +43,19 @@ from tests.production.test_executor import (
     INSTRUMENT,
     NOW_MS,
     TRANSPORT_PARAMS,
+    book_at,
     order_at,
     simulated,
     tick_state,
 )
 from tests.production.test_reconcile import (
     SCOPE,
+    fold,
     make_reconciler,
     seed_pending,
 )
+from tests.production.test_reconcile import intent_body as reconcile_intent_body
+from tests.production.test_reconcile import order_event_body as reconcile_order_event_body
 from tests.production.test_state import (
     FakeClock,
     FakeIdSource,
@@ -154,8 +166,80 @@ def test_the_order_still_lands_after_the_restart_queried_it():
     clock.advance(ARRIVAL_MS)
     venue.on_quote(BOOK_AT_ARRIVAL)
     landed = venue.order(REF)
+    assert landed is not None
     assert (landed.status, landed.avg_price) == ("filled", ARRIVAL_ASK)
     assert (venue.sends, venue.cancels) == (1, 0)
+
+
+def test_a_query_after_a_long_outage_never_fabricates_a_fill():
+    """The restart case as it actually happens: downtime longer than the
+    order's latency, and no quote since the crash. A read that landed
+    transport would price the order against the last PRE-CRASH book and
+    `Recovery` would append that fill to the chain as fact, though no quote
+    ever said the market was still there. `pending` is the only honest
+    answer, and it is the one the fold already knows how to carry."""
+    ledger, state, venue, clock = crashed_after_send()
+    clock.advance(10 * ARRIVAL_MS)
+    Recovery(ledger, state, FakeIdSource(), venue).run(FakeClock(NOW_MS + 10 * ARRIVAL_MS))
+    assert [body["status"] for body in order_events(ledger)] == ["pending"]
+    assert venue.fills(0) == ((), None)
+    assert (venue.sends, venue.cancels) == (1, 0)
+
+
+@pytest.mark.parametrize("downtime", (0, ARRIVAL_MS - 1, ARRIVAL_MS, 10 * ARRIVAL_MS))
+def test_two_restarts_of_different_duration_record_the_same_ledger(downtime):
+    """The determinism the replay-parity claim rests on: how long the process
+    was down is not part of the tape, so it must not be part of what the
+    chain says happened."""
+    def restart(after_ms):
+        ledger, state, venue, clock = crashed_after_send()
+        clock.advance(after_ms)
+        Recovery(ledger, state, FakeIdSource(), venue).run(FakeClock(NOW_MS + after_ms))
+        return [
+            {key: value for key, value in body.items() if key != "recv_at_ms"}
+            for body in order_events(ledger)
+        ]
+
+    assert restart(downtime) == restart(0)
+
+
+# ---------------------------------------------------------------------------
+# A halt reaches an order in transport, and says so truthfully
+# ---------------------------------------------------------------------------
+
+
+def halting_series(tmp_path):
+    """A breaker over one resting order and one still in transport."""
+    clock = TestClock(start_ms=NOW_MS)
+    venue = ArrivalPaperExecutor({"latency_ms": {"submit": 100, "cancel": 5}}, clock=clock)
+    venue.on_quote(BOOK_AT_DECISION)
+    venue.submit(order_at("resting", limit="99.00"), simulated("resting"), tick_state())
+    clock.advance(100)
+    venue.on_quote(dataclasses.replace(BOOK_AT_DECISION, asof_ms=NOW_MS + 100))
+    venue.submit(order_at("transport", limit="99.50"), simulated("transport"),
+                 tick_state())
+    breaker, ledger, state, _clock, _policy, _root = make_breaker(tmp_path, executor=venue)
+    for ref, status in (("resting", "open"), ("transport", "pending")):
+        ledger.append({"kind": "intent", "id": f"intent-{ref}", "body": breaker_intent_body(ref)})
+        ledger.append({"kind": "order_event", "id": f"oe-{ref}",
+                       "body": breaker_order_event_body(ref, status)})
+    return venue, clock, breaker, ledger, state
+
+
+def test_a_halt_that_reports_submitted_leaves_nothing_able_to_fill(tmp_path):
+    """The whole path, not the primitive: halt -> `cancel_working` ->
+    `executor.cancel_all` -> `cancel_outcome`. `submitted` is the fully
+    successful signal, so an order that survives a `submitted` halt and goes
+    on to fill is the kill switch reporting all-clear over a live position."""
+    venue, clock, breaker, ledger, state = halting_series(tmp_path)
+    assert set(state.snapshot().working) == {"resting", "transport"}
+    halt(breaker)
+    assert outcome_of(ledger) == "submitted"
+    clock.advance(200)
+    venue.on_quote(book_at(NOW_MS + 300, "98.50"))
+    assert venue.fills(0) == ((), None)
+    assert venue.order("transport").status == "cancelled"
+    assert venue.order("resting").status == "cancelled"
 
 
 def test_a_venue_that_cannot_say_leaves_the_outcome_unknown():
@@ -192,6 +276,25 @@ def test_a_pending_ref_still_in_transport_is_resolved_rather_than_broken():
     venue.submit(order_at(REF), simulated(REF), tick_state())
     report = reconciler.run(state.snapshot(), venue, SCOPE)
     assert report.breaks == ()
+
+
+def test_an_acked_order_still_in_transport_is_not_missing_at_the_venue():
+    """The SECOND member of the halt sweep's defect family, found by auditing
+    every generic consumer of `open_orders()`. Once the `pending` ack folds
+    as an `order_event` the ref leaves `StateView.pending` and enters
+    `working`, and `Reconciler._orders` then compares `working` against
+    `executor.open_orders()`. A venue that kept transport off that answer
+    reported `missing_at_venue` — an economic break whose configured
+    `on_mismatch` may halt the series — over an order nothing is wrong with.
+    Answering the base contract is what fixes both consumers at once."""
+    reconciler, ledger, state, clock = make_reconciler()
+    fold(ledger, "intent", reconcile_intent_body(REF, instrument=INSTRUMENT, limit=None))
+    fold(ledger, "order_event", reconcile_order_event_body(REF, "pending"))
+    venue = ArrivalPaperExecutor(TRANSPORT_PARAMS, clock=clock, scope=SCOPE)
+    venue.submit(order_at(REF), simulated(REF), tick_state())
+    view = state.snapshot()
+    assert (set(view.working), view.pending) == ({REF}, ())
+    assert reconciler.run(view, venue, SCOPE).breaks == ()
 
 
 # ---------------------------------------------------------------------------

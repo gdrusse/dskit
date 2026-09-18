@@ -60,6 +60,7 @@ from dskit.production.bundles import (
 from dskit.production.cadence import FixedInterval, Overrun
 from dskit.production.sessions import AlwaysOpen
 from dskit.production.clock import TestClock
+from dskit.production.executor import EXECUTOR_KINDS
 from dskit.production.compose import (
     AuthorityTable,
     RUNG_TABLE,
@@ -78,6 +79,7 @@ from dskit.production.coordination import Lease, LeasePermit, ProcessLease
 from dskit.production.decider import Decider, IntentRows
 from dskit.production.document import ServeDocument
 from dskit.production.executor import (
+    ArrivalPaperExecutor,
     Capabilities,
     LiveExecutor,
     PaperExecutor,
@@ -120,7 +122,12 @@ SILENCE_FIELDS = tuple(f.name for f in dataclasses.fields(Silence))
 
 #: The core executor kind each simulated rung selects, and the class it
 #: must resolve to. Restated, for the same reason.
-EXPECTED_EXECUTOR = {"shadow": ("shadow", ShadowExecutor), "paper": ("paper", PaperExecutor)}
+#: Which core executor kinds each simulated rung admits, restated here
+#: rather than imported. `shadow` admits exactly one, because a shadow rung
+#: that could select a venue which books fills would stop being shadow;
+#: `paper` admits the paper family, whose members differ only in how they
+#: model transport (ADR-0161).
+EXPECTED_EXECUTOR = {"shadow": ("shadow",), "paper": ("paper", "paper-arrival")}
 
 #: How a live document names its four child collaborators.
 CHILD_EXECUTOR = "tests.production.test_compose:ChildExecutor"
@@ -470,10 +477,10 @@ def test_a_simulated_rung_selects_its_own_executor_paper_accounting_deny_all_and
     what makes "paper can never select a `LiveExecutor`" structural rather
     than a convention `bundles_for` has to remember."""
     row = RUNG_TABLE[rung]
-    assert row.executor == EXPECTED_EXECUTOR[rung][0]
-    assert row.accounting == "paper"
-    assert row.approval == "deny-all"
-    assert row.coordination == "process"
+    assert row.executor == EXPECTED_EXECUTOR[rung]
+    assert row.accounting == ("paper",)
+    assert row.approval == ("deny-all",)
+    assert row.coordination == ("process",)
 
 
 @pytest.mark.parametrize("rung", SIMULATED_RUNGS)
@@ -514,7 +521,11 @@ def test_no_simulated_rung_can_reach_a_live_class_through_the_table():
         row = RUNG_TABLE[rung]
         assert LiveAuthority not in row.authority.values()
         assert ReductionAuthority not in row.authority.values()
-        assert row.executor in ("shadow", "paper")
+        assert set(row.executor) <= {"shadow", "paper", "paper-arrival"}
+        assert not [
+            kind for kind in row.executor
+            if issubclass(EXECUTOR_KINDS.resolve(kind), LiveExecutor)
+        ]
 
 
 # ==========================================================================
@@ -714,6 +725,68 @@ def test_a_paper_document_naming_a_live_executor_class_refuses(
     test that would fail if the table were consulted only for the
     authority."""
     document = document_at(serve_document, "paper", tmp_path, {"execution.uses": CHILD_EXECUTOR})
+    with pytest.raises(ProductionError) as excinfo:
+        composer.build(document)
+    assert any("execution" in problem for problem in excinfo.value.problems)
+
+
+def test_a_paper_document_can_select_the_arrival_venue(
+    serve_document, tmp_path, composer
+):
+    """ADR-0161's reachability claim, driven through the real path — the rung
+    row, then `_resolved_families` — rather than through the bare registry. A
+    seam a document cannot name closes no gap at all."""
+    document = document_at(
+        serve_document, "paper", tmp_path, {"execution.uses": "paper-arrival"}
+    )
+    bundles = composer.build(document)
+    assert isinstance(bundles[4].executor, ArrivalPaperExecutor)
+    assert isinstance(bundles[4].accounting, PaperAccounting)
+
+
+def test_a_simulated_rung_still_admits_no_class_reference_at_all(
+    serve_document, tmp_path, composer
+):
+    """D9's other half, unchanged and worth re-pinning here: a simulated rung
+    admits core KINDS and nothing else, so naming the arrival venue by path
+    refuses exactly as naming `PaperExecutor` by path always did. That is why
+    the venue had to be registered rather than documented as reachable by
+    reference — the registry is the only door a simulated rung opens."""
+    document = document_at(
+        serve_document,
+        "paper",
+        tmp_path,
+        {"execution.uses": "dskit.production.executor:ArrivalPaperExecutor"},
+    )
+    with pytest.raises(ProductionError) as excinfo:
+        composer.build(document)
+    assert any("execution" in problem for problem in excinfo.value.problems)
+
+
+def test_a_shadow_document_naming_the_arrival_venue_refuses(
+    serve_document, tmp_path, composer
+):
+    """The other direction, which matters more: `shadow` DECIDES AND DECLINES.
+    A shadow document that could select a venue which books fills and holds
+    inventory would make the weakest rung the one that trades, so the paper
+    family stays inadmissible at shadow exactly as `paper` itself is."""
+    document = document_at(
+        serve_document, "shadow", tmp_path, {"execution.uses": "paper-arrival"}
+    )
+    with pytest.raises(ProductionError) as excinfo:
+        composer.build(document)
+    assert any("execution" in problem for problem in excinfo.value.problems)
+
+
+@pytest.mark.parametrize("rung", LIVE_RUNGS)
+def test_a_live_document_naming_the_arrival_venue_refuses(
+    serve_document, tmp_path, composer, rung
+):
+    """A live rung admits no core kind at all, and the arrival venue is not a
+    `LiveExecutor` — so both halves of `_check_live_executor` refuse it."""
+    document = document_at(
+        serve_document, rung, tmp_path, {"execution.uses": "paper-arrival"}
+    )
     with pytest.raises(ProductionError) as excinfo:
         composer.build(document)
     assert any("execution" in problem for problem in excinfo.value.problems)

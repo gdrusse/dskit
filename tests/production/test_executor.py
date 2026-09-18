@@ -287,13 +287,15 @@ def bomb(*args, **kwargs):
 # ---------------------------------------------------------------------------
 
 
-def test_executor_kinds_holds_exactly_the_three_core_executors():
+def test_executor_kinds_holds_exactly_the_four_simulated_core_executors():
     """D14: "Core ships shadow, paper and recorded execution/accounting, plus
     the ABSTRACT `LiveExecutor` wrapper; every concrete venue subclass is a
     child." A registered `live` would let a document name a class that cannot
     be constructed — and would put the one class that spends money behind the
-    same open doorway as a calendar."""
-    assert EXECUTOR_KINDS.kinds() == ("paper", "recorded", "shadow")
+    same open doorway as a calendar. ADR-0161 adds a FOURTH simulated kind
+    beside `paper`, and the property D14 is actually about — core registers
+    nothing that can reach a socket — is asserted rather than counted."""
+    assert EXECUTOR_KINDS.kinds() == ("paper", "paper-arrival", "recorded", "shadow")
     assert isinstance(EXECUTOR_KINDS, Registry)
     assert EXECUTOR_KINDS.family == "executor"
     assert EXECUTOR_KINDS.abc is Executor
@@ -1186,6 +1188,15 @@ def order_at(ref="ref-1", *, limit=None, tif="gtc", qty="10"):
     )
 
 
+def book_at(at_ms, ask):
+    """A well-formed book one cent wide at ``ask``, published at ``at_ms``."""
+    ask = Decimal(ask)
+    return Quote(
+        instrument=INSTRUMENT, bid=ask - Decimal("0.05"), ask=ask,
+        mid=ask - Decimal("0.025"), asof_ms=at_ms,
+    )
+
+
 def reach_the_limit(at_ms, ask="100.00"):
     """A later book whose ask has come back to the audit's limit price."""
     return Quote(
@@ -1254,14 +1265,20 @@ def test_an_order_in_transport_is_pending_and_resolvable_by_reference():
     assert (inflight.filled_qty, inflight.remaining_qty) == (Decimal("0"), Decimal("10"))
 
 
-def test_an_order_in_transport_is_not_open_at_the_venue():
-    """`open_orders` is the VENUE's book, which `Reconciler` compares against
-    the fold's `working`. An order the venue has not received belongs in
-    neither, or reconciliation invents a break out of transport."""
+def test_an_order_in_transport_is_one_of_this_venues_open_orders():
+    """`Executor.open_orders` promises "the non-terminal `OrderState`s this
+    executor owns", and an order in transport is both. Its two generic
+    consumers depend on that being true: `cancel_all` sweeps this answer and
+    is the halt's ONLY cancellation path, and `Reconciler._orders` compares
+    it against the fold's `working`, where a ref the fold holds and this verb
+    omits reads as `missing_at_venue`. The order is self-describing —
+    `pending`, no venue ref — so a caller wanting the book alone can say so."""
     venue = arrival()
     venue.submit(order_at("p"), simulated("p"), tick_state())
-    assert venue.open_orders() == ()
-    assert venue.cancel_all() == ()
+    (only,) = venue.open_orders()
+    assert (only.client_ref, only.status, only.venue_ref) == ("p", "pending", None)
+    assert only.status not in TERMINAL_STATUSES
+    assert [ack.client_ref for ack in venue.cancel_all()] == ["p"]
 
 
 def test_a_quote_arriving_before_the_order_cannot_fill_it():
@@ -1332,6 +1349,7 @@ def test_a_fill_delivered_before_the_cancel_acknowledgment_is_retained():
     mid_race = venue.order("c")
     assert (mid_race.status, mid_race.filled_qty) == ("pending_cancel", Decimal("4.0"))
     clock.advance(ARRIVAL_MS)
+    venue.on_quote(reach_the_limit(NOW_MS + 2 * ARRIVAL_MS + ARRIVAL_MS // 2))
     settled = venue.order("c")
     assert settled.status == "cancelled"
     assert (settled.filled_qty, settled.remaining_qty) == (Decimal("4.0"), Decimal("6.0"))
@@ -1372,21 +1390,24 @@ def test_a_cancel_chases_an_order_whose_own_submit_has_not_landed():
     assert venue.order("p").status == "cancelled"
 
 
-def test_a_cancel_that_overtakes_its_own_order_is_refused_and_the_order_lands():
-    """The race the other way, which only a venue with real transport can
-    have: a cancel that reaches the venue before the order it names has
-    nothing to cancel, so the request is lost and the order arrives as sent.
-    Reporting it cancelled would be a position the fold does not hold."""
+def test_a_cancel_never_lands_before_the_order_it_chases():
+    """A cancel carrying less latency than its own order would overtake it and
+    find nothing at the venue. Dropping it there would make an ACCEPTED
+    cancel request a lie — and would leave the halt's kill switch unable to
+    stop an order in transport, which is the one thing it exists to do. The
+    venue queues it behind the order instead, and the ack says when it will
+    actually land."""
     clock = TestClock(start_ms=NOW_MS)
     venue = arrival({"latency_ms": {"submit": 4 * ARRIVAL_MS, "cancel": 1}}, clock=clock)
     venue.submit(order_at("p", limit=LIMIT_BETWEEN), simulated("p"), tick_state())
-    venue.cancel("p")
-    clock.advance(1)
-    assert venue.order("p").status == "pending"
+    ack = venue.cancel("p")
+    assert (ack.status, ack.ts_ms) == ("pending_cancel", NOW_MS + 4 * ARRIVAL_MS)
+    assert venue.transport()[0].cancel_requested_ms == NOW_MS
     clock.advance(4 * ARRIVAL_MS)
-    venue.on_quote(BOOK_AT_ARRIVAL)
+    venue.on_quote(dataclasses.replace(BOOK_AT_ARRIVAL, asof_ms=NOW_MS + 4 * ARRIVAL_MS))
     landed = venue.order("p")
-    assert (landed.status, landed.filled_qty) == ("open", Decimal("0"))
+    assert (landed.status, landed.filled_qty) == ("cancelled", Decimal("0"))
+    assert venue.fills(0) == ((), None)
 
 
 def test_a_cancel_for_a_reference_this_venue_was_never_sent_is_unknown():
@@ -1410,6 +1431,7 @@ def test_a_quote_older_than_the_standing_book_is_refused_and_counted():
     venue.on_quote(BOOK_AT_DECISION)
     venue.submit(order_at("o", tif="ioc"), simulated("o"), tick_state())
     clock.advance(ARRIVAL_MS)
+    venue.on_quote(dataclasses.replace(BOOK_AT_ARRIVAL, asof_ms=NOW_MS + 2 * ARRIVAL_MS))
     assert venue.order("o").avg_price == ARRIVAL_ASK
     assert dict(venue.stream_gaps()) == {INSTRUMENT: 1}
 
@@ -1470,7 +1492,7 @@ def test_the_transport_evidence_retains_every_instant_the_venue_owns():
     clock.advance(1)
     venue.on_quote(reach_the_limit(NOW_MS + ARRIVAL_MS + 1))
     clock.advance(ARRIVAL_MS)
-    venue.order("e")
+    venue.on_quote(reach_the_limit(NOW_MS + 2 * ARRIVAL_MS + 1))
     record = venue.transport()[0]
     assert record.client_ref == "e"
     assert (record.sent_ms, record.arrival_ms) == (NOW_MS, NOW_MS + ARRIVAL_MS)
@@ -1507,8 +1529,21 @@ def test_an_offset_nobody_observed_is_none_rather_than_zero():
 # -- the compatibility guarantee --------------------------------------------
 
 
+#: The session the parity script's `day` order lives in. Declared by two of
+#: the five param sets, so `day` is a capability there and `unsupported_tif`
+#: in the other three — both are answers the two classes must agree on.
+PARITY_SESSION_END = NOW_MS + 1_500
+
+
 def compatibility_script(cls, params):
-    """Drive one venue through every verb and return every answer it gave."""
+    """Drive one venue through every verb and return every answer it gave.
+
+    The script must be able to SEE a difference, so it deliberately reaches
+    the paths a fill-and-forget script never does: an order that rests and
+    then partially fills, a `size_cap` and a `queue_frac` that bite, a cancel
+    of a partially filled order, a `day` order that expires at the declared
+    session end, and an abstaining proposal the capability gate refuses.
+    """
     clock = TestClock(start_ms=NOW_MS)
     venue = cls(params, clock=clock)
     answers = [venue.capabilities(), venue.execution_scope(), venue.venue_time_ms()]
@@ -1516,32 +1551,57 @@ def compatibility_script(cls, params):
     answers.append(venue.submit(intent("a"), simulated("a"), tick_state()))
     answers.append(venue.submit(intent("a"), simulated("a"), tick_state()))
     answers.append(venue.submit(intent("x"), "raw-ordinary-authority", tick_state()))
-    rests = intent("b", proposal=proposal(limit="0.30", tif="gtc"))
-    answers.append(venue.submit(rests, simulated("b"), tick_state()))
+    for ref in ("b", "p"):
+        rests = intent(ref, proposal=proposal(limit="0.30", tif="gtc"))
+        answers.append(venue.submit(rests, simulated(ref), tick_state()))
+    day = intent("d", proposal=proposal(limit="0.20", tif="day", expires_ms=NOW_MS + 90_000))
+    answers.append(venue.submit(day, simulated("d"), tick_state()))
     answers += [venue.order("a"), venue.order("b"), venue.open_orders(), venue.fills(0)]
     clock.advance(1_000)
-    venue.on_quote(Quote(instrument=INSTRUMENT, bid=Decimal("0.28"), ask=Decimal("0.30"),
-                         mid=Decimal("0.29"), asof_ms=NOW_MS + 1_000))
-    answers += [venue.order("b"), venue.fills(0), venue.cancel("b"), venue.cancel("b")]
+    venue.on_quote(Quote(instrument=INSTRUMENT, bid=Decimal("0.26"), ask=Decimal("0.28"),
+                         mid=Decimal("0.27"), asof_ms=NOW_MS + 1_000))
+    answers += [venue.order("b"), venue.order("p"), venue.fills(0)]
+    answers += [venue.cancel("p"), venue.cancel("b"), venue.cancel("b")]
     answers += [venue.cancel("never-sent"), venue.balances(), venue.open_orders()]
     answers.append(venue.submit(intent("z", proposal=proposal(side="none")), simulated("z"),
                                 tick_state()))
     answers.append(venue.order("z"))
     clock.advance(1_000)
-    answers += [venue.cancel_all(), venue.fills(0), venue.venue_time_ms()]
+    venue.on_quote(Quote(instrument=INSTRUMENT, bid=Decimal("0.26"), ask=Decimal("0.28"),
+                         mid=Decimal("0.27"), asof_ms=NOW_MS + 2_000))
+    answers += [venue.order("d"), venue.cancel_all(), venue.fills(0), venue.venue_time_ms()]
     return tuple(answers)
 
 
-@pytest.mark.parametrize(
-    "params",
-    (
-        {},
-        {"latency_ms": {"submit": 0, "cancel": 0}},
-        {"fill_rule": "mid", "resting_rule": "through", "seed": 3, "queue_frac": 0.25},
-        {"fees": {"kind": "bps", "bps": 5}, "slippage": {"bps": 10}, "partial_fills": False},
-        PAPER_PARAMS | {"latency_ms": {"submit": 0, "cancel": 0}},
-    ),
+#: Five param sets chosen so no two collapse onto one path: the defaults,
+#: explicit zeros, a partial-fill set with queue position and a session end,
+#: an all-or-nothing set with fees, slippage and a quote-size cap, and the
+#: suite's own `PAPER_PARAMS` with its latency zeroed.
+COMPATIBILITY_PARAMS = (
+    {},
+    {"latency_ms": {"submit": 0, "cancel": 0}},
+    {
+        "fill_rule": "mid",
+        "resting_rule": "through",
+        "seed": 3,
+        "queue_frac": 0.25,
+        "size_cap": {"kind": "frac", "frac": 0.5},
+        "session_end_ms": PARITY_SESSION_END,
+    },
+    {
+        "fees": {"kind": "bps", "bps": 5},
+        "slippage": {"bps": 10},
+        "partial_fills": False,
+        "p_fill_on_touch": 0.5,
+        "seed": 11,
+        "size_cap": {"kind": "quote_size", "quote_size": "6"},
+    },
+    PAPER_PARAMS | {"latency_ms": {"submit": 0, "cancel": 0},
+                    "session_end_ms": PARITY_SESSION_END},
 )
+
+
+@pytest.mark.parametrize("params", COMPATIBILITY_PARAMS)
 def test_zero_latency_transport_answers_exactly_what_the_paper_venue_answers(params):
     """The compatibility guarantee, as evidence rather than as prose: with no
     declared latency the arrival queue is drained inside the same call at the
@@ -1553,10 +1613,45 @@ def test_zero_latency_transport_answers_exactly_what_the_paper_venue_answers(par
     )
 
 
+def test_the_parity_harness_reaches_what_a_fill_and_forget_script_never_does():
+    """A harness blind to partial fills cannot prove a seam whose hardest case
+    IS a partial fill under a cancel in flight. The script must reach a
+    partial fill, a partially filled order that is then cancelled, a `day`
+    expiry and a refused `day`. The five sets must also reach four distinct
+    outcomes — four and not five, because the first two are deliberately the
+    same behaviour written two ways (absent knobs against explicit zeros),
+    which is itself a compatibility case worth asserting."""
+    runs = [compatibility_script(PaperExecutor, params) for params in COMPATIBILITY_PARAMS]
+    orders = [a for run in runs for a in run if isinstance(a, OrderState)]
+    partial = [o for o in orders if Decimal("0") < o.filled_qty < o.qty]
+    assert partial, "no param set reaches a partial fill"
+    assert [o for o in partial if o.status == "cancelled"], "no partial fill is then cancelled"
+    assert [o for o in orders if o.status == "expired"], "no `day` order expires"
+    assert [
+        a for run in runs for a in run
+        if isinstance(a, Ack) and a.reason == "unsupported_tif"
+    ], "no param set refuses `day`"
+    distinct = []
+    for run in runs:
+        if all(run != seen for seen in distinct):
+            distinct.append(run)
+    assert len(distinct) == 4, "the param sets collapse onto fewer paths than declared"
+
+
+@pytest.mark.parametrize("params", COMPATIBILITY_PARAMS)
+def test_the_compatibility_script_sees_a_single_changed_field(params):
+    """The negative control, isolated to ONE field: a venue that shifts only
+    the acknowledgement stamp by a millisecond, at zero latency, must fail
+    every parity case. Comparing under a declared latency instead would prove
+    only that several fields diverge at once."""
+    assert compatibility_script(_OneMillisecondLate, params) != compatibility_script(
+        PaperExecutor, params
+    )
+
+
 def test_the_compatibility_script_would_see_a_changed_answer():
-    """A parity assertion is worth what its script exercises: a venue with a
-    declared latency must NOT compare equal, or the test above would pass
-    against a class that does nothing."""
+    """The coarse control kept beside the fine one: a venue carrying a
+    declared latency must not compare equal either."""
     assert compatibility_script(ArrivalPaperExecutor, TRANSPORT_PARAMS) != compatibility_script(
         PaperExecutor, TRANSPORT_PARAMS
     )
@@ -1571,14 +1666,221 @@ def test_the_arrival_venue_declares_the_paper_venues_knobs_and_no_others():
     assert ArrivalPaperExecutor.validate_params({"fil_rule": "touch"})
 
 
-def test_the_registry_still_holds_three_kinds_and_the_arrival_venue_is_named_by_reference():
-    """D14's three registered kinds do not move. A document opts in the way a
-    child's venue opts in — by `pkg.module:Class`, which is a graded field, so
-    opting in is a new release hash rather than a changed default."""
-    assert EXECUTOR_KINDS.kinds() == ("paper", "recorded", "shadow")
-    reference = "dskit.production.executor:ArrivalPaperExecutor"
-    assert EXECUTOR_KINDS.resolve(reference) is ArrivalPaperExecutor
-    assert reference not in EXECUTOR_KINDS
+def test_the_arrival_venue_is_a_registered_kind_a_document_can_select():
+    """A seam no rung can reach is inert, so `EXECUTOR_KINDS` gains a FOURTH
+    kind — the contract literal this work deliberately moves (ADR-0161). The
+    reference form keeps working for a child that prefers it. What did NOT
+    move: no registered kind is a `LiveExecutor`, so the one doorway that
+    spends money stays closed to every document."""
+    assert EXECUTOR_KINDS.kinds() == ("paper", "paper-arrival", "recorded", "shadow")
+    assert EXECUTOR_KINDS.resolve("paper-arrival") is ArrivalPaperExecutor
+    assert EXECUTOR_KINDS.resolve(
+        "dskit.production.executor:ArrivalPaperExecutor"
+    ) is ArrivalPaperExecutor
+    assert not [
+        kind for kind in EXECUTOR_KINDS.kinds()
+        if issubclass(EXECUTOR_KINDS.resolve(kind), LiveExecutor)
+    ]
+
+
+# -- the halt's sweep reaches what is still in transport ---------------------
+
+
+def one_resting_and_one_in_transport(transport_limit="99.50"):
+    """One order resting at the venue and one still on its way to it.
+
+    Both limits sit BELOW the standing ask, so neither trades on arrival and
+    the question the sweep answers is whether a later book can reach them.
+    """
+    clock = TestClock(start_ms=NOW_MS)
+    venue = arrival({"latency_ms": {"submit": 100, "cancel": 5}}, clock=clock)
+    venue.submit(order_at("resting", limit="99.00"), simulated("resting"), tick_state())
+    clock.advance(100)
+    venue.on_quote(dataclasses.replace(BOOK_AT_DECISION, asof_ms=NOW_MS + 100))
+    venue.submit(order_at("transport", limit=transport_limit), simulated("transport"),
+                 tick_state())
+    return venue, clock
+
+
+def test_cancel_all_sweeps_every_order_this_venue_holds_including_those_in_transport():
+    """`Executor.cancel_all` is the halt's only cancellation path, and its
+    generic body sweeps `open_orders()` — which assumes every non-terminal
+    order is open AT the venue. This class is the first to break that
+    assumption, so it owes the override; without it a halt reports a clean
+    sweep while an order survives it."""
+    venue, _clock = one_resting_and_one_in_transport()
+    assert (venue.order("resting").status, venue.order("transport").status) == (
+        "open", "pending",
+    )
+    acks = venue.cancel_all()
+    assert [(ack.client_ref, ack.status) for ack in acks] == [
+        ("resting", "pending_cancel"),
+        ("transport", "pending_cancel"),
+    ]
+
+
+def test_the_swept_order_in_transport_can_no_longer_fill():
+    """The consequence the sweep exists for: after the sweep, a book that
+    would have reached both limits reaches neither."""
+    venue, clock = one_resting_and_one_in_transport()
+    venue.cancel_all()
+    clock.advance(200)
+    venue.on_quote(book_at(NOW_MS + 300, "98.50"))
+    assert venue.fills(0) == ((), None)
+    assert venue.order("transport").status == "cancelled"
+    assert venue.order("resting").status == "cancelled"
+
+
+def test_a_swept_order_that_is_marketable_on_arrival_still_takes_once():
+    """The bound the sweep actually gives, stated rather than overclaimed. A
+    venue cannot process a cancel for an order it has not received, so an
+    order already marketable the instant it lands takes once at that instant —
+    no simulation of transport can undo that, and claiming otherwise would be
+    a promise no venue keeps. What the sweep DOES guarantee is that nothing
+    survives it: the remainder is cancelled at the same instant, and no later
+    book can reach what is left."""
+    venue, clock = one_resting_and_one_in_transport(transport_limit=str(LIMIT_BETWEEN))
+    venue.cancel_all()
+    clock.advance(200)
+    venue.on_quote(book_at(NOW_MS + 300, "98.50"))
+    taken = venue.order("transport")
+    assert (taken.status, taken.filled_qty) == ("filled", Decimal("10"))
+    assert [fill.ts_ms for fill in venue.fills(0)[0]] == [NOW_MS + 200]
+    assert venue.order("resting").status == "cancelled"
+
+
+def test_every_generic_consumer_of_open_orders_is_served_by_the_base_body():
+    """The family sweep, pinned. Two generic bodies fan out over
+    `open_orders()` — `Executor.cancel_all` here and `Reconciler._orders` —
+    and both assume it holds every non-terminal order. The correction was to
+    make that assumption TRUE again rather than to override each consumer, so
+    neither is overridden: `cancel_all` is inherited unchanged, and a future
+    consumer inherits the same guarantee. The remaining concrete verbs answer
+    from nothing (`positions`, `settlements`, `events`) or from the injected
+    clock (`venue_time_ms`), so none of them can miss a state."""
+    fanning = [
+        name for name in CONCRETE_ON_EXECUTOR
+        if "open_orders" in inspect.getsource(getattr(Executor, name))
+    ]
+    assert fanning == ["cancel_all"]
+    assert "cancel_all" not in vars(ArrivalPaperExecutor)
+    assert not [
+        name for name in ("positions", "settlements", "events", "venue_time_ms")
+        if name in vars(ArrivalPaperExecutor)
+    ]
+
+
+# -- a read never commits ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "read",
+    (
+        lambda venue: venue.order("q"),
+        lambda venue: venue.open_orders(),
+        lambda venue: venue.fills(0),
+        lambda venue: venue.transport(),
+    ),
+    ids=("order", "open_orders", "fills", "transport"),
+)
+def test_no_read_verb_lands_a_message_in_transport(read):
+    """A query must not be able to change what happened. Landing on a read
+    would make an order's fill a function of when somebody happened to ask
+    rather than of the tape — `Recovery.run` queries every pending ref, and
+    two restarts of different duration would then record different ledgers.
+    Only being TOLD about an instant advances this venue: a quote, a submit
+    or a cancel."""
+    clock = TestClock(start_ms=NOW_MS)
+    venue = arrival(clock=clock)
+    venue.submit(order_at("q"), simulated("q"), tick_state())
+    clock.advance(10 * ARRIVAL_MS)
+    read(venue)
+    assert venue.order("q").status == "pending"
+    assert venue.fills(0) == ((), None)
+    assert venue.transport()[0].acked_ms is None
+
+
+#: The verbs that MAY advance this venue: each tells it about an instant the
+#: caller is at. Everything else public is a read, and the sweep below refuses
+#: to pass until every one of them is covered — so a new verb is either
+#: declared a write here or proven not to commit.
+ARRIVAL_WRITE_VERBS = ("submit", "cancel", "cancel_all", "on_quote")
+
+#: Every public read verb and the arguments it takes.
+ARRIVAL_READ_VERBS = {
+    "balances": (),
+    "capabilities": (),
+    "check": ({"params": {}},),
+    "events": (),
+    "execution_scope": (),
+    "fills": (0,),
+    "open_orders": (),
+    "order": ("q",),
+    "positions": (),
+    "settlements": (0,),
+    "stream_gaps": (),
+    "transport": (),
+    "venue_time_ms": (),
+}
+
+
+def test_every_public_read_verb_leaves_the_venue_exactly_as_it_found_it():
+    """The read-purity family sweep, done by enumeration rather than by hand.
+    Four verbs used to land transport as a side effect of answering; the rule
+    is wider than those four, so the check is over the whole public surface
+    minus the declared writes. A verb that is neither fails the partition, and
+    a read that committed would change the snapshot."""
+    clock = TestClock(start_ms=NOW_MS)
+    venue = arrival(clock=clock)
+    venue.submit(order_at("q", limit=LIMIT_BETWEEN), simulated("q"), tick_state())
+    clock.advance(10 * ARRIVAL_MS)
+    public = {
+        name for name in dir(venue)
+        if not name.startswith("_") and callable(getattr(venue, name))
+    } - set(ARRIVAL_WRITE_VERBS) - {"spec", "validate_params"}
+    assert public == set(ARRIVAL_READ_VERBS), "a public verb is neither a write nor a read here"
+    def snapshot():
+        return (venue.order("q"), venue.open_orders(), venue.fills(0), venue.transport(),
+                dict(venue.stream_gaps()))
+
+    before = snapshot()
+    for name, args in ARRIVAL_READ_VERBS.items():
+        getattr(venue, name)(*args)
+    assert snapshot() == before
+    assert venue.order("q").status == "pending"
+
+
+def test_an_arrival_waits_for_the_market_event_that_covers_it():
+    """The other half: the venue is not frozen, it is tape-driven. The order
+    lands the moment a quote covers its arrival — and against the book that
+    STOOD at that arrival, not the later one whose publication finally
+    released it. Pricing it at the later book would be the look-ahead the
+    displacement rule exists to stop."""
+    clock = TestClock(start_ms=NOW_MS)
+    venue = arrival(clock=clock)
+    venue.submit(order_at("q"), simulated("q"), tick_state())
+    clock.advance(10 * ARRIVAL_MS)
+    assert venue.order("q").status == "pending"
+    venue.on_quote(dataclasses.replace(BOOK_AT_ARRIVAL, asof_ms=NOW_MS + 10 * ARRIVAL_MS))
+    assert venue.order("q").avg_price == DECISION_ASK
+
+
+def test_reading_at_any_instant_cannot_change_the_answer():
+    """The invariant rather than one scenario: for one tape, whatever a caller
+    asks and whenever, the venue ends in the same state. A read that landed
+    messages would make these three runs differ."""
+    def run(read_at):
+        clock = TestClock(start_ms=NOW_MS)
+        venue = arrival(clock=clock)
+        venue.submit(order_at("q", limit=LIMIT_BETWEEN), simulated("q"), tick_state())
+        for step in read_at:
+            clock.set(NOW_MS + step)
+            venue.order("q")
+        clock.set(NOW_MS + 500)
+        venue.on_quote(dataclasses.replace(BOOK_AT_ARRIVAL, asof_ms=NOW_MS + 500))
+        return venue.order("q"), venue.fills(0), venue.transport()
+
+    assert run(()) == run((1, 49, 50, 51, 400)) == run((499,))
 
 
 def test_the_in_flight_statuses_are_the_ones_the_fold_already_understands():
@@ -1592,6 +1894,22 @@ def test_the_in_flight_statuses_are_the_ones_the_fold_already_understands():
         assert status in STATUSES
         assert status not in TERMINAL_STATUSES
         assert status in _EVENT_BY_STATUS
+
+
+class _OneMillisecondLate(ArrivalPaperExecutor):
+    """A venue differing from its base in exactly one field of one answer."""
+
+    def submit(self, intent, permit, state):
+        ack = super().submit(intent, permit, state)
+        return dataclasses.replace(ack, ts_ms=ack.ts_ms + 1)
+
+
+def test_the_arrival_venue_refuses_anything_but_a_quote_too():
+    """The subclass takes the same market refusal from the one helper that
+    owns it — a second venue that accepted a dict would make the refusal a
+    property of `PaperExecutor` rather than of the seam."""
+    with pytest.raises(ProductionError):
+        arrival().on_quote({"instrument": INSTRUMENT, "bid": "0.4"})
 
 
 def test_the_arrival_venue_reads_no_wall_clock(monkeypatch):

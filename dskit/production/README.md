@@ -265,18 +265,30 @@ like every other sink.
 **Arrival-time execution** (ADR-0161) — `ArrivalPaperExecutor` is
 `PaperExecutor` with its `latency_ms` read as a SCHEDULE rather than a stamp.
 A submit sent at `t` lands at `t + latency_ms.submit` and consumes the book of
-that later instant; until then it is `pending` and held apart from the book. A
-cancel lands at `t + latency_ms.cancel`, and in between the order is
-`pending_cancel` and still working — a fill delivered before the cancel
-acknowledgement is retained and only the remainder is cancelled. A quote older
-than the one standing is refused and counted (`stream_gaps`), and
+that later instant; until then it is `pending` and held off the book, so
+nothing can fill an order the venue has not received. A cancel lands at
+`t + latency_ms.cancel` but never before the order it names, and in between
+the order is `pending_cancel` and still working — a fill delivered before the
+cancel acknowledgement is retained and only the remainder is cancelled. A
+quote older than the one standing is refused and counted (`stream_gaps`), and
 `TransportEvidence` retains the send, acknowledgement, fills, cancel request
 and terminal acknowledgement, plus the clock offset of the book each order
-priced against. It is not registered: name it by
-`dskit.production.executor:ArrivalPaperExecutor`, the way a child names its
-own venue, so `EXECUTOR_KINDS` stays D14's three and `paper` is byte-identical
-to what it always was. Ordering realism is the first gate; measured fill and
-markout agreement is a later, separate one.
+priced against.
+
+Two rules keep it honest. **A read never commits**: `order`, `open_orders`,
+`fills` and `transport` land nothing, so only a quote, a submit or a cancel
+advances the venue and what an order did is a function of the tape rather than
+of when somebody asked — which is what lets `Recovery.run` query a ref after
+any outage. And **`open_orders` answers the base contract**, every non-terminal
+order this venue OWNS, transport included, so `cancel_all` (the halt's only
+cancellation path) and `Reconciler`'s comparison against the fold both stay
+correct without knowing this class exists.
+
+Select it with `"execution": {"uses": "paper-arrival"}` at the `paper` rung;
+`shadow` admits it no more than it admits `paper`, and a live rung admits no
+core kind at all. `paper` itself is byte-identical to what it always was.
+Ordering realism is the first gate; measured fill and markout agreement is a
+later, separate one.
 
 **Push sources** — `websocket` is the same `Feed` seam with the rows still
 arriving through your connector: one supervised daemon worker owns the socket,

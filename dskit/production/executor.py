@@ -1853,10 +1853,20 @@ class ArrivalPaperExecutor(PaperExecutor):
     fold, ``leg.py``'s event table, ``StateView.pending``, ``Reconciler``
     and ``Recovery`` already understand.
 
+    ``open_orders`` answers the base contract — every non-terminal order
+    this venue OWNS, transport included — so the halt's ``cancel_all`` sweep
+    and ``Reconciler``'s comparison against the fold both stay correct
+    without knowing this class exists.
+
     A simulated venue has no thread, so time advances inside it only when
-    it is asked something: ``on_quote``, ``submit``, ``cancel``, ``order``,
-    ``open_orders`` and ``fills`` each land what transport owes before
-    answering. ``on_quote`` uses the quote's OWN publication instant:
+    it is TOLD about an instant — by ``on_quote``, ``submit`` or ``cancel``.
+    A READ never lands anything: ``order``, ``open_orders``, ``fills`` and
+    ``transport`` answer from what has already happened. A query that could
+    make an order arrive would make its fill a function of when somebody
+    happened to ask rather than of the tape — and ``Recovery.run`` queries
+    every pending ref, so a long outage would otherwise price an order
+    against the last pre-crash book and append that fill to the chain as
+    fact. ``on_quote`` uses the quote's OWN publication instant:
     messages that landed strictly before ``asof_ms`` are delivered against
     the book that stands, then the quote is published, then the rest are
     delivered against it — which is what stops an arrival from seeing a
@@ -1867,7 +1877,10 @@ class ArrivalPaperExecutor(PaperExecutor):
     With ``latency_ms = {submit: 0, cancel: 0}`` every message is queued and
     landed inside the same call at the same instant, so this venue answers
     exactly what ``PaperExecutor`` answers — the degeneration is by
-    construction, not by a branch.
+    construction, not by a branch. It is registered as ``paper-arrival`` and
+    admitted by the ``paper`` rung beside ``paper`` itself; ``shadow`` admits
+    neither, because a rung that decides and declines may not select a venue
+    that books fills.
 
     **What passing this proves.** That the seam ORDERS send, arrival, fill
     and cancel correctly against a book it is GIVEN. It proves nothing about
@@ -2108,25 +2121,39 @@ class ArrivalPaperExecutor(PaperExecutor):
         Returns
         -------
         Ack
-            Stamped at the cancel's arrival, and ``pending_cancel`` while
-            the request is in transport — the order is still working and
-            may still fill. A cancel for an order whose own submit has not
-            landed CHASES it rather than refusing it, because a terminal
-            refusal would report the end of an order that is still on its
-            way. ``rejected``/``unknown_ref`` is kept for a reference this
-            venue has never been sent at all.
+            Stamped at the instant the request lands, and ``pending_cancel``
+            until it does — the order is still working and may still fill.
+            A cancel for an order whose own submit has not landed CHASES it
+            rather than refusing it, because a terminal refusal would report
+            the end of an order that is still on its way.
+            ``rejected``/``unknown_ref`` is kept for a reference this venue
+            has never been sent at all.
         """
         sent_ms = self._clock.now_ms()
-        arrival_ms = sent_ms + self._latency["cancel"]
+        requested_ms = sent_ms + self._latency["cancel"]
         self._land(sent_ms)
         held = self._held(ref)
         if held is None:
-            return empty_ack(ref, arrival_ms, _REJECTED, "unknown_ref")
+            return empty_ack(ref, requested_ms, _REJECTED, "unknown_ref")
         if held.status in TERMINAL_STATUSES:
-            return dataclasses.replace(_ack_of(held), ts_ms=arrival_ms)
+            return dataclasses.replace(_ack_of(held), ts_ms=requested_ms)
+        arrival_ms = self._cancel_arrival(ref, requested_ms)
         self._request_cancel(ref, sent_ms, arrival_ms)
         self._land(sent_ms)
         return dataclasses.replace(_ack_of(self._held(ref)), ts_ms=arrival_ms)
+
+    def _cancel_arrival(self, ref, requested_ms):
+        """Return when a cancel lands: never before the order it names reaches the venue.
+
+        A cancel carrying less latency than its own order would otherwise
+        overtake it and find nothing to cancel. Dropping it there would make
+        an ACCEPTED cancel request a lie, and would leave the halt's kill
+        switch unable to stop an order in transport — the one thing it
+        exists to do. The venue queues it behind the order instead, which is
+        also the tie the arrival queue already breaks by send order.
+        """
+        chasing = self._inflight.get(ref)
+        return requested_ms if chasing is None else max(requested_ms, chasing.ts_ms)
 
     def _request_cancel(self, ref, sent_ms, arrival_ms):
         """Mark one order as cancelling — booked or still in transport — and queue the request."""
@@ -2141,11 +2168,6 @@ class ArrivalPaperExecutor(PaperExecutor):
     def _land_cancel(self, ref, now_ms):
         """Deliver one cancel: what is still working is cancelled, every fill already made stands."""
         self._cancelling.pop(ref, None)
-        if ref in self._inflight:
-            # The cancel overtook its own order. The venue has nothing to
-            # cancel, so the request is refused and the order lands as sent.
-            self._restate_inflight(ref, _PENDING, now_ms)
-            return
         working = self._book.get(ref)
         if working is None or working.order.status in TERMINAL_STATUSES:
             return
@@ -2175,22 +2197,36 @@ class ArrivalPaperExecutor(PaperExecutor):
             The answer a recovering process needs: a reference whose submit
             has not landed resolves to ``pending`` rather than to None, so
             an ambiguous outcome is settled by asking rather than resending.
+            Asking never lands it — an order arrives because the market
+            moved, not because somebody looked.
         """
-        self._land(self._clock.now_ms())
         return self._held(ref)
 
     def open_orders(self):
-        """Return the VENUE's working orders; one still in transport is not open at the venue.
+        """Return every non-terminal order this venue owns, in transport included.
+
+        The base contract is "the non-terminal ``OrderState``s this executor
+        owns", and an order in transport is both — so it belongs here, and
+        the two generic consumers of this verb then need no special case.
+        ``Executor.cancel_all`` sweeps this answer, which is the halt's only
+        cancellation path; ``Reconciler._orders`` compares it against the
+        fold's ``working``, where a ref the fold holds and this verb omits
+        reads as ``missing_at_venue`` — an economic break that can halt a
+        series over nothing but transport. Answering the contract is what
+        keeps both correct without either knowing this class exists.
 
         Returns
         -------
         tuple of OrderState
+            The venue's book first, oldest first, then what is still on its
+            way, in send order. An order in transport carries
+            ``status="pending"`` and ``venue_ref=None``, so a caller that
+            wants the book alone can say so.
         """
-        self._land(self._clock.now_ms())
-        return super().open_orders()
+        return super().open_orders() + tuple(self._inflight.values())
 
     def fills(self, since_ms, cursor=None):
-        """Return every fill at or after ``since_ms``, landing what transport owes first.
+        """Return every fill at or after ``since_ms``; reading never makes a new one.
 
         Parameters
         ----------
@@ -2203,7 +2239,6 @@ class ArrivalPaperExecutor(PaperExecutor):
         tuple
             ``(fills, None)``.
         """
-        self._land(self._clock.now_ms())
         return super().fills(since_ms, cursor)
 
     # -- the evidence the venue itself owns --------------------------------
@@ -2211,14 +2246,14 @@ class ArrivalPaperExecutor(PaperExecutor):
     def transport(self):
         """Return one :class:`TransportEvidence` per order sent, in send order.
 
-        Lands what transport owes first, like every other read here, so the
-        evidence describes the same instant the order verbs would answer for.
+        A read like the others, and like the others it lands nothing: the
+        evidence describes what the venue has been told, not what it would
+        be told if time were allowed to pass inside a query.
 
         Returns
         -------
         tuple of TransportEvidence
         """
-        self._land(self._clock.now_ms())
         return tuple(self._evidence.values())
 
     def stream_gaps(self):
@@ -2605,6 +2640,7 @@ class LiveExecutor(SubmittingExecutor):
 
 EXECUTOR_KINDS = Registry("executor", Executor)
 EXECUTOR_KINDS.register("paper", PaperExecutor)
+EXECUTOR_KINDS.register("paper-arrival", ArrivalPaperExecutor)
 EXECUTOR_KINDS.register("recorded", RecordedExecutor)
 EXECUTOR_KINDS.register("shadow", ShadowExecutor)
 
