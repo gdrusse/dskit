@@ -465,6 +465,24 @@ def test_each_episode_gets_a_fresh_environment_seeded_from_its_index(
     ]
 
 
+def test_each_episode_record_carries_its_own_index(tmp_path, lab):
+    """The per-episode IDENTITY, separated from the constant it equals in
+    the contract's worked example.
+
+    Every other assertion on ``episode`` runs a single episode, where the
+    live counter, the constant ``0``, a reversed numbering and any other
+    function fixing 0 are all the same thing -- the same argument the step
+    test makes one level down, never applied up here. The ordered record is
+    this kind's whole deliverable: anything that joins, indexes or
+    de-duplicates on ``episode`` collapses every rollout onto one if these
+    are not distinct and in order.
+    """
+    _node, outputs = evaluate(tmp_path, n_episodes=3, seed=17)
+    assert [episode["episode"] for episode in record(outputs)["episodes"]] == [
+        0, 1, 2,
+    ]
+
+
 def test_every_environment_is_closed_exactly_once(tmp_path, lab):
     evaluate(tmp_path, n_episodes=3)
     assert [env.closed for env in lab.envs] == [1, 1, 1]
