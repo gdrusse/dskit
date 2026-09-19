@@ -582,6 +582,55 @@ class TestTheFiveRefusals:
         )
         assert env.problems(_demand(), AttestedOutcomeBand) == []
 
+    def test_coverage_exactly_at_the_declared_floor_is_admitted(self):
+        """The floor is INCLUSIVE, and that is a decision, not an accident.
+
+        Self-review by mutation: relaxing ``measured < min`` to ``measured <=
+        min`` left all 174 tests green, so nothing said whether a producer
+        measuring EXACTLY the declared minimum is covered or not. It is —
+        ``min_measured_coverage`` is a floor the evidence must reach, not one
+        it must clear — and a run whose measurement lands on the number is the
+        case an operator is most likely to meet.
+        """
+        demand = _demand()
+        env = AttestedOutcomeBand(
+            _band(),
+            _attestation(coverage=CoverageEvidence(
+                target=0.95, measured=demand.min_measured_coverage,
+                evidence_id="ev-floor", n_units=40)),
+        )
+        assert env.problems(demand, AttestedOutcomeBand) == []
+        below = AttestedOutcomeBand(
+            _band(),
+            _attestation(coverage=CoverageEvidence(
+                target=0.95, measured=demand.min_measured_coverage - 0.01,
+                evidence_id="ev-under", n_units=40)),
+        )
+        assert [p.split(":")[0] for p in below.problems(demand, AttestedOutcomeBand)] == [
+            "uncalibrated"
+        ]
+
+    def test_evidence_known_exactly_at_the_decision_instant_is_admitted(self):
+        """The post_decision boundary is INCLUSIVE at the instant itself.
+
+        Self-review by mutation: tightening ``known_at_ms > decision_ts_ms`` to
+        ``>=`` left all 174 tests green. Evidence known AT the decision stamp
+        existed when the decision was taken; only evidence known AFTER it is a
+        look-ahead. One millisecond either side is pinned so the rule cannot
+        drift by one.
+        """
+        demand = _demand()
+        at_the_instant = AttestedOutcomeBand(
+            _band(), _attestation(known_at_ms=demand.decision_ts_ms)
+        )
+        assert at_the_instant.problems(demand, AttestedOutcomeBand) == []
+        one_later = AttestedOutcomeBand(
+            _band(), _attestation(known_at_ms=demand.decision_ts_ms + 1)
+        )
+        assert [
+            p.split(":")[0] for p in one_later.problems(demand, AttestedOutcomeBand)
+        ] == ["post_decision"]
+
     def test_uncalibrated_by_absent_evidence(self):
         env = AttestedOutcomeBand(_band(), _attestation(coverage=None))
         problems = env.problems(_demand(), AttestedOutcomeBand)
@@ -1009,6 +1058,68 @@ class TestUseTimeVerification:
         with pytest.raises(ValueError, match="not a registered intake"):
             admit_uncertainty(env, _demand(), AttestedMeanConfidence)
 
+    def test_a_virtual_registration_between_two_REGISTERED_members_still_refuses(self):
+        """The ``__mro__`` rule itself, pinned where it is observable.
+
+        ``test_a_virtual_registration_cannot_forge_family_membership`` refuses
+        via round 4's registered-demand screen, because the forged family is
+        UNREGISTERED — so that test never exercises the ``__mro__`` choice at
+        all. Swapping ``expected in cls.__mro__`` for ``issubclass(cls,
+        expected)`` in ``_answering`` left all 172 tests green (self-review by
+        mutation). The difference is only visible when BOTH classes are
+        registered: ``register()`` then makes ``issubclass`` true while
+        ``__mro__`` stays honest, and only the honest one refuses.
+        """
+        demanded, _ = _probe_member({"estimand": classmethod(lambda cls: "demanded")})
+        answering, artifact = _probe_member(
+            {"estimand": classmethod(lambda cls: "answering")}
+        )
+        forget_demanded = register_uncertainty_intake("tests_demanded", demanded)
+        try:
+            forget_answering = register_uncertainty_intake("tests_answering", answering)
+            try:
+                env = answering(artifact, _attestation(producer=MEAN_PRODUCER))
+                demanded.register(answering)          # the forgery
+                assert issubclass(answering, demanded)
+                assert demanded not in answering.__mro__
+                problems = admission_problems(env, _demand(), demanded)
+                assert problems, "a virtual subclass must not answer for the real one"
+                assert [p.split(":")[0] for p in problems] == ["wrong_unit"], problems
+                # THE REASON, not merely a refusal. Under ``issubclass`` the
+                # forged member is selected as answering, `_question_problems`
+                # returns nothing, and whatever refuses next refuses for some
+                # OTHER reason — which a bare "problems is non-empty" assertion
+                # would have accepted. Asserting the estimand-mismatch text is
+                # what makes this row bite.
+                assert "but this decision requires" in problems[0], problems
+            finally:
+                _abc._reset_registry(demanded)
+                forget_answering()
+        finally:
+            forget_demanded()
+
+    def test_a_stale_undo_cannot_remove_the_member_that_replaced_it(self):
+        """``forget`` removes its own registration, or nothing.
+
+        The docstring promises it "removes the entry only while it is still
+        the one in place", and that rests on one ``is`` comparison. Relaxing it
+        to ``if name in store`` left all 172 tests green (self-review by
+        mutation), while a REPLAYED stale undo silently deleted whichever
+        member had since taken the name — an unregistration nobody asked for,
+        through the sanctioned API.
+        """
+        first, _ = _probe_member({"estimand": classmethod(lambda cls: "first")})
+        second, _ = _probe_member({"estimand": classmethod(lambda cls: "second")})
+        forget_first = register_uncertainty_intake("tests_one_slot", first)
+        forget_first()
+        assert "tests_one_slot" not in UNCERTAINTY_INTAKES
+        forget_second = register_uncertainty_intake("tests_one_slot", second)
+        try:
+            forget_first()                       # the stale undo, replayed
+            assert UNCERTAINTY_INTAKES["tests_one_slot"] is second
+        finally:
+            forget_second()
+
     def test_a_virtual_registration_cannot_forge_family_membership(self):
         # CRITICAL 2. `ABCMeta.register()` flips isinstance without creating
         # a class, so `__init_subclass__` never runs. The rule asks the
@@ -1329,12 +1440,19 @@ class TestTheRegistryIsAuthoritativeForTheDemandToo:
         assert "not a registered intake" in problems[0]
 
     def test_an_abstract_class_cannot_be_registered(self):
-        # Sweep (a): a registered intake is asked for the declarations the
-        # screens run on, and an abstract one answers each with None.
-        _refuses_registration(
-            "tests_abstract", ProbabilityUpperBound, match="abstract"
-        )
-        assert "tests_abstract" not in UNCERTAINTY_INTAKES
+        """Refused for being ABSTRACT, not for some later gate tripping first.
+
+        Self-review by mutation: with the abstract check deleted, this test
+        still passed — the registry key was ``tests_abstract`` and the match
+        was ``"abstract"``, so the assertion was satisfied by the NAME I chose
+        while the refusal actually came from the candidate type-check further
+        down ("None is not a type"). The key no longer carries the word and the
+        assertion reads the reason.
+        """
+        refusal = _refuses_registration("tests_unfinished", ProbabilityUpperBound)
+        assert "it is abstract" in str(refusal), refusal
+        assert "unimplemented" in str(refusal), refusal
+        assert "tests_unfinished" not in UNCERTAINTY_INTAKES
 
     def test_the_authority_is_the_demanded_class_never_the_envelopes(self):
         # The shipped members declare different artifact types, so an

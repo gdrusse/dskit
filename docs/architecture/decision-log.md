@@ -17502,6 +17502,50 @@ reproduce under the second lens's independently designed set — it scored 17 of
 18, and the survivor is the Major above.** The claim was wrong because the
 harness mutated each guard whole and never each half.
 
+### Self-review sweep, 2026-09-19 — five gaps found before a lens had to
+
+Not a review round. Between review passes the module was swept with eleven
+broad production-code mutations of the kind the second lens used on the sibling
+branch. Five survived, and all five are now closed.
+
+**Two boundary rules were unstated.** Relaxing `coverage.measured < min` to
+`<=`, and tightening `known_at_ms > decision_ts_ms` to `>=`, each left all 174
+tests green — so nothing said whether a producer measuring EXACTLY the declared
+floor is covered, or whether evidence known AT the decision instant is a
+look-ahead. Both are now decided and pinned one millisecond either side: the
+floor is INCLUSIVE (it is a floor the evidence must reach, not clear), and
+evidence known at the instant existed when the decision was taken. This is the
+same family as the settlement boundary ADR-0162 spent a round on.
+
+**`forget()`'s identity re-check was unpinned.** Relaxing `store.get(name) is
+cls` to `name in store` left every test green, while a REPLAYED stale undo
+silently removed whichever member had since taken the name — an unregistration
+nobody asked for, through the sanctioned API. The docstring already promised
+"only while it is still the one in place"; now a test says so.
+
+**The abstract-registration test passed for the wrong reason.** With the
+abstract check deleted the test still passed, because the registry key was
+`tests_abstract` and the assertion was `match="abstract"` — satisfied by the
+NAME, while the refusal actually came from the round-8 candidate type-check
+("None is not a type"). The key no longer carries the word and the assertion
+reads the reason.
+
+**The `__mro__`-not-`issubclass` rule had no test that could see it.**
+`test_a_virtual_registration_cannot_forge_family_membership` refuses through
+round 4's registered-demand screen, because the forged family is UNREGISTERED,
+so it never exercises the `__mro__` choice. The distinction is only observable
+when BOTH classes are registered. A test now does that — and its first version
+asserted only that SOMETHING refused, which the mutation satisfied by refusing
+for a different reason; it asserts the estimand-mismatch text now.
+
+**Two harness defects, recorded because they produced false readings.** A
+mutation anchored on a string that also appears in a COMMENT replaced the
+comment and was scored a survivor while the code was untouched. The sweep now
+refuses any anchor that is not unique, so an inert mutation cannot be counted
+again. (The earlier same-byte-length `__pycache__` trap is already recorded.)
+
+Eleven mutations, eleven killed.
+
 ### What remains unpinned, and why — ADR-0165's residual list
 
 Stated plainly because an accurate residual list is worth more than a clean
