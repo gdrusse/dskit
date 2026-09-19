@@ -2014,8 +2014,13 @@ def _probe_metaclass_injects_the_guard_beside_its_payload():
     assert refused is False and cls is not None
     # The injected guard is INERT: `_unsealed_problems` is a module-level
     # function, so it is not a sealed member and nothing resolves it through
-    # the class. The payload is all that is left to see.
+    # the class. Both halves are pinned, so deleting EITHER payload line fails
+    # here. The first assertion proves the guard is really there AND compliant
+    # — it resolves through the class and would report the class clean if the
+    # gate ever consulted it. The second proves the gate does not: it is
+    # module-level and still sees the payload the guard hides.
     assert "_unsealed_problems" not in final_model.FinalRefit._FINAL_METHODS
+    assert cls._unsealed_problems() == [], "the injected guard was not applied"
     assert final_model._sealed_violations(cls) == ["_channel_problems"]
     assert final_model._unsealed_problems(cls), "the module-level guard was fooled"
     return False, _reaches(cls)
@@ -2051,7 +2056,15 @@ def _probe_metaclass_injects_after_class_creation():
             cls._channel_problems = classmethod(lambda c, params: [])
             return cls
 
-    return _outcome({}, metaclass=Injecting)
+    cls, refused = _define({}, metaclass=Injecting)
+    # Round-11 review: while the metaclass rule refused any sealed name at all,
+    # `super().__new__` refused this class for DEFINING `__new__`, so the
+    # payload line above never ran and this row tested nothing it names —
+    # deleting it left the suite green. The payload must reach the class again,
+    # or this assertion fails: the violation is what the payload leaves behind.
+    assert refused is False and cls is not None
+    assert final_model._sealed_violations(cls) == ["_channel_problems"]
+    return False, _reaches(cls)
 
 
 def _probe_unsealed_node_hook():
@@ -2114,6 +2127,31 @@ def _probe_metaclass_data_descriptor():
             return lambda params: []
 
         def __set__(self, obj, value):
+            raise AttributeError
+
+    class Shadowing(type(final_model.FinalRefit)):
+        validate_params = Answer()
+
+    return _outcome({}, metaclass=Shadowing)
+
+
+def _probe_metaclass_delete_only_data_descriptor():
+    """A data descriptor by __delete__ alone: __set__ is absent.
+
+    The guard reads ``__set__ or __delete__`` because that is what the
+    interpreter's ``type.__getattribute__`` reads, and a descriptor that
+    defines only ``__delete__`` still wins class-level lookup. The probe above
+    exercises the ``__set__`` half; this one exercises the ``__delete__`` half,
+    so dropping either side of the ``or`` fails (round-12 review: the whole
+    guard was driven, and only the ``__set__`` half was actually probed).
+    """
+    class Answer:
+        """A data descriptor by __delete__ alone."""
+
+        def __get__(self, obj, owner=None):
+            return lambda params: []
+
+        def __delete__(self, obj):
             raise AttributeError
 
     class Shadowing(type(final_model.FinalRefit)):
@@ -2250,6 +2288,8 @@ GATE_PROBES = {
         _probe_metaclass_interception,
     "refuses_a_metaclass_that_supplies_a_sealed_name_as_a_data_descriptor":
         _probe_metaclass_data_descriptor,
+    "refuses_a_metaclass_supplying_a_delete_only_data_descriptor":
+        _probe_metaclass_delete_only_data_descriptor,
     "refuses_a_metaclass_whose_own_metaclass_rigs_equality":
         _probe_metaclass_with_rigged_equality,
     "refuses_a_metaclass_supplying_a_class_that_is_itself_a_data_descriptor":
@@ -2292,6 +2332,15 @@ def test_a_sealed_name_the_class_does_not_carry_is_shadowable_by_anything():
         assert final_model._wins_class_level_lookup(
             name, plain, final_model.FinalRefit
         ), f"{name} is carried nowhere on the MRO, so a metaclass answers it"
+    # The second clause, isolated from the interceptor coincidence. The only
+    # uncarried SEALED name is `__getattr__`, and it is also an interceptor, so
+    # the loop above could pass on the interceptor clause alone and the second
+    # clause would still be pinned by nothing (round-12 review). A synthetic
+    # name that is NEITHER an interceptor NOR carried anywhere on the MRO can
+    # only be answered by the second clause, so this pins the clause itself.
+    assert final_model._wins_class_level_lookup(
+        "a_name_final_refit_does_not_carry", plain, final_model.FinalRefit
+    )
     # …and a plain function under a name the MRO DOES carry still loses.
     assert not final_model._wins_class_level_lookup(
         "run", plain, final_model.FinalRefit
@@ -2301,7 +2350,7 @@ def test_a_sealed_name_the_class_does_not_carry_is_shadowable_by_anything():
 def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
     declared = {name for name, _, _, _ in final_model.GATE_FACTS}
     assert set(GATE_PROBES) == declared
-    assert len(final_model.GATE_FACTS) == len(declared) == 24
+    assert len(final_model.GATE_FACTS) == len(declared) == 25
     # Every declared reach is a subset of the named entry points, in the
     # order they are named there — so a reach can never be a free-form string.
     points = final_model.RELEASE_ENTRY_POINTS
@@ -2635,7 +2684,7 @@ _PINNED_MODULE_PROSE = {
     'constants:FinalRefit.validate_inputs.start': 'd5b70d0b70708d14',
     'constants:FinalRefit.validate_params': '832bf207a4480e54',
     'constants:FinalRefit.validate_params.seed': '366ecbf4e2adf7ba',
-    'constants:GATE_FACTS': '62dd984485785962',
+    'constants:GATE_FACTS': 'd0fac7cf2e13e890',
     'constants:HEADS': 'd7a3abf5e90e956b',
     'constants:HPO_LEDGER_OUTPUT': 'bdf0d7f6bf97df66',
     'constants:LOCKBOX_START_MS': '3485b2af67cc2e77',
@@ -2744,6 +2793,7 @@ _PINNED_MODULE_PROSE = {
     'note:_UNRESOLVED#1': 'f62d95a53bd582c1',
     'note:def _epoch_ms(date_str):#1': '9333c1a81c62da1b',
 }
+
 
 
 def test_every_piece_of_prose_in_the_module_is_pinned_by_digest():

@@ -1109,6 +1109,10 @@ GATE_FACTS = (
      True, (),
      "a metaclass carrying validate_params as an object with __get__ and "
      "__set__, which type.__getattribute__ prefers over the whole class MRO"),
+    ("refuses_a_metaclass_supplying_a_delete_only_data_descriptor", True, (),
+     "a metaclass carrying validate_params as an object with __get__ and "
+     "__delete__ but no __set__, which type.__getattribute__ still prefers "
+     "over the whole class MRO"),
     ("refuses_a_metaclass_whose_own_metaclass_rigs_equality", True, (),
      "a metaclass supplying a sealed name whose own metaclass answers True "
      "to every ==, so a baseline comparison by equality would skip it"),

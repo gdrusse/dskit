@@ -17077,3 +17077,60 @@ because the argument holds only while that stays true of
 
 Round-12 sweep: seven mutations over the two clauses and the guard's argument
 — five killed, two the equivalence above. 152 tests.
+
+### Round 13 correction — four holes in the round-11/12 evidence, all closed
+
+Rounds 11 and 12 were UNREVIEWED (the review pass was cut short by a session
+rate limit). Round 13 is that review, and it found that three of the round-11
+claims and one of the round-12 claims rested on evidence that did not pin what
+it said it did. All four are closed here, and one of them corrects the
+round-12 sweep's own reading.
+
+**1. `refuses_a_metaclass_that_injects_after_class_creation` tested nothing it
+named.** Its probe was the one `__new__` row still written as a bare
+`_outcome({}, metaclass=Injecting)` with no assertion that the payload ran, and
+its declared `(False, ())` is exactly what a CLEAN subclass measures — so
+deleting the payload line `cls._channel_problems = classmethod(...)` left the
+whole suite green. The other two `__new__` rows carried an explicit
+`_sealed_violations(cls) == [...]` and were pinned; this one was not. It now
+asserts `refused is False` and `_sealed_violations(cls) == ["_channel_problems"]`.
+
+**2. The guard half of `injects_the_guard_beside_its_payload` was invisible.**
+The row's whole point is that injecting a compliant `_unsealed_problems` beside
+the payload is inert, but deleting the guard line alone left the suite green:
+the row only ever proved the `_channel_problems` payload was seen, which the
+`injects_after_class_creation` row already proves. It now asserts both halves —
+`cls._unsealed_problems() == []` proves the guard is really applied and would
+report the class clean, and `final_model._unsealed_problems(cls)` proves the
+module-level gate still sees the payload the guard hides.
+
+**3. The `__delete__` half of the data-descriptor guard was pinned by nothing.**
+Both data-descriptor probes bound a descriptor with `__set__`, so `__set__ or
+__delete__` was driven only on its first half: mutating the guard to read
+`__set__` alone survived the suite (with the prose pin's digests re-derived, so
+the survival is behaviour, not a source-edit artefact). A descriptor that
+defines `__delete__` and no `__set__` still wins class-level lookup, so this
+was a false clearance, not a false refusal. A twenty-fifth fact,
+`refuses_a_metaclass_supplying_a_delete_only_data_descriptor`, is now declared
+and probed.
+
+**4. The round-12 second clause was pinned only by a coincidence.** The direct
+assertion that was meant to hold the "metaclass wins a name the class's MRO
+carries nowhere" clause used `__getattr__` — the ONE uncarried sealed name —
+and `__getattr__` is also in `_LOOKUP_INTERCEPTORS`, so the interceptor clause
+answered it and the second clause could be deleted with nothing failing (again
+with the prose digests re-derived). The clause itself is now pinned directly
+with a synthetic name that is neither an interceptor nor carried anywhere on
+the MRO, so no other clause can satisfy the assertion.
+
+Two measurement corrections to the sweeps themselves, recorded for the next
+reviewer: a mutation to `final_model.py` was being scored "killed" by the prose
+digest pin firing on the source edit, not by any behaviour test — every source
+mutation in the round-11/12 sweeps must be re-scored with the digests
+re-derived, which is what the four items above did. And the sweep that claimed
+"both halves of every compound guard driven separately" had driven the
+`__set__ or __delete__` guard whole.
+
+Round-13 sweep: the four payload/clause deletions above are now all killed, as
+are the `__set__`/`__delete__` halves separately. 153 tests; the probe table is
+twenty-five rows.
