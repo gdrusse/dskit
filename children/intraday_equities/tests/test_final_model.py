@@ -2275,7 +2275,14 @@ def _module_prose():
             block.append(line.strip()[2:].strip())
         elif started:
             subject = next((text.strip() for text in lines[index:] if text.strip()), "")
-            out[f"note:{subject.split('=')[0].strip()[:48]}"] = " ".join(block)
+            # The line number is in the key ON PURPOSE. Keying by subject alone
+            # COLLIDES when a name is documented twice, and the second block
+            # then silently overwrites the first — which is exactly how a
+            # load-bearing note went unpinned in the sibling module this
+            # mechanism was copied to. This module has no collision today; the
+            # key shape is what keeps that from mattering.
+            label = subject.split("=")[0].strip()[:48]
+            out[f"note:{label}@{index}"] = " ".join(block)
             block, started = [], False
     return out
 
@@ -2336,24 +2343,24 @@ _PINNED_MODULE_PROSE = {
     "doc:simplicity_key": "7a83d56eb8a48535",
     "doc:squared_error_improvement": "4d0251906dc9e959",
     "module": "f33b5c04eb088a9a",
-    "note:BUNDLE_FILENAME": "1e8632eddc800713",
-    "note:DEFAULT_INVENTORY_SEED": "dd96ec24fb430a07",
-    "note:ESTIMATOR_PATH": "31e07da49514114f",
-    "note:EVIDENCE_FIELDS": "14f0404e5e37120a",
-    "note:FIXTURE_CHANNEL": "3c8484d55a451840",
-    "note:FROZEN_CANDIDATE_COUNT": "df64999508c56f91",
-    "note:GATE_FACTS": "454b6b2dda59a80e",
-    "note:HEADS": "7c63130588c65cdc",
-    "note:RELEASE_ENTRY_POINTS": "b8f09bd9b69b151b",
-    "note:WIRE_LABEL_FIELD": "86460874f6af4aa8",
-    "note:_DEFAULT_HPO_CONFIG": "8225e9a5c01b2b36",
-    "note:_DEFAULT_LEAN_MASK_CONFIG": "78b48bf039114649",
-    "note:_FINAL_METHODS": "69eca47ca66426e2",
-    "note:_PENDING": "02e5e133366ecbd2",
-    "note:_PRODUCER_PREFIX": "95291bc1fe7976ef",
-    "note:_REAL_MRO": "f54826c85575c6dc",
-    "note:_UNRESOLVED": "f62d95a53bd582c1",
-    "note:def _epoch_ms(date_str):": "9333c1a81c62da1b",
+    "note:BUNDLE_FILENAME@950": "1e8632eddc800713",
+    "note:DEFAULT_INVENTORY_SEED@970": "dd96ec24fb430a07",
+    "note:ESTIMATOR_PATH@946": "31e07da49514114f",
+    "note:EVIDENCE_FIELDS@985": "14f0404e5e37120a",
+    "note:FIXTURE_CHANNEL@832": "3c8484d55a451840",
+    "note:FROZEN_CANDIDATE_COUNT@974": "df64999508c56f91",
+    "note:GATE_FACTS@875": "454b6b2dda59a80e",
+    "note:HEADS@820": "7c63130588c65cdc",
+    "note:RELEASE_ENTRY_POINTS@841": "b8f09bd9b69b151b",
+    "note:WIRE_LABEL_FIELD@932": "86460874f6af4aa8",
+    "note:_DEFAULT_HPO_CONFIG@1010": "8225e9a5c01b2b36",
+    "note:_DEFAULT_LEAN_MASK_CONFIG@998": "78b48bf039114649",
+    "note:_FINAL_METHODS@316": "69eca47ca66426e2",
+    "note:_PENDING@953": "02e5e133366ecbd2",
+    "note:_PRODUCER_PREFIX@937": "95291bc1fe7976ef",
+    "note:_REAL_MRO@97": "f54826c85575c6dc",
+    "note:_UNRESOLVED@90": "f62d95a53bd582c1",
+    "note:def _epoch_ms(date_str):@1025": "9333c1a81c62da1b",
 }
 
 
@@ -2393,7 +2400,9 @@ def test_the_prose_pin_covers_every_docstring_the_module_defines():
     assert "doc:FinalRefit.run" in prose
     assert "doc:_resolved_through_the_mro" in prose
     assert "doc:_unsealed_problems" in prose
-    assert any(key.startswith("note:") for key in prose), "no #: note was captured"
+    notes = [key for key in prose if key.startswith("note:")]
+    assert notes, "no #: note was captured"
+    assert len(set(notes)) == len(notes), "two #: blocks share a key; one is unpinned"
     independent = sum(
         1 for node in ast.walk(ast.parse(inspect.getsource(final_model)))
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
