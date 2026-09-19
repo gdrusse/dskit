@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import _abc
 import contextlib
+import hashlib
 import gc
 import inspect
 from unittest import mock
@@ -23,6 +24,23 @@ import types
 def _boom(*_args, **_kwargs):
     """A hook with an ordinary coding bug in it."""
     raise RuntimeError("hook exploded")
+
+
+def test_the_refusal_helper_undoes_a_registration_that_stops_refusing():
+    """The cleanup path, EXERCISED rather than merely written.
+
+    ``_refuses_registration``'s ``finally`` only matters on the day a guard
+    regresses, so it is the one line in this file that would otherwise never
+    run — and an unrun cleanup path is exactly how five negative-registration
+    tests came to leave a SHIPPED name rebound for the rest of the process
+    (round-6 review). Driving it needs a registration that SUCCEEDS: the
+    ``pytest.raises`` then fails the assertion, and the entry must be gone
+    anyway.
+    """
+    fresh, _ = _probe_member({"estimand": classmethod(lambda cls: "helper_probe")})
+    with pytest.raises(pytest.fail.Exception):
+        _refuses_registration("tests_helper_probe", fresh)
+    assert "tests_helper_probe" not in UNCERTAINTY_INTAKES
 
 
 def _probe_member(overrides):
@@ -83,6 +101,63 @@ from dskit.pipeline.uncertainty_intake import (
     register_uncertainty_intake,
     uncertainty_intake,
 )
+
+
+def _refuses_registration(name, cls, match=None):
+    """Assert registering ``name`` refuses, and UNDO it if it ever stops refusing.
+
+    A bare ``with pytest.raises(...): register_uncertainty_intake(...)`` leaves
+    the entry in place on the day the guard regresses — and one of these rebinds
+    a SHIPPED name, so the regression's blast radius becomes execution-order
+    dependent and every later "+N extra failures" count is noise (round-6
+    review). The undo is in a ``finally``, so it runs even when ``pytest.raises``
+    itself fails the test.
+
+    Parameters
+    ----------
+    name : str
+        The registry key the registration must be refused for.
+    cls : type
+        The member being offered.
+    match : str, optional
+        A regex the refusal must match (default ``None``, any refusal).
+
+    Returns
+    -------
+    ValueError
+        The refusal, for a caller that wants to assert more about it.
+    """
+    undo = []
+    try:
+        with pytest.raises(ValueError, match=match) as caught:
+            undo.append(register_uncertainty_intake(name, cls))
+    finally:
+        for forget in undo:
+            forget()
+    return caught.value
+
+
+
+@pytest.fixture(autouse=True)
+def _the_registry_is_left_exactly_as_it_was():
+    """No test may change the shipped registry, whatever it asserts on the way.
+
+    Round-6 review found five negative-registration tests with no cleanup path
+    for the day their guard regresses — one of them rebinding a SHIPPED name,
+    which then corrupts every test that runs after it in the same process and
+    makes any "+N extra failures" measurement order-dependent noise. The
+    per-test undo is the fix; this is the net that says so out loud.
+    """
+    before = dict(UNCERTAINTY_INTAKES)
+    yield
+    after = dict(UNCERTAINTY_INTAKES)
+    assert after == before, (
+        "this test changed the registry and did not put it back: "
+        f"added={sorted(set(after) - set(before))} "
+        f"removed={sorted(set(before) - set(after))} "
+        f"rebound={sorted(k for k in set(after) & set(before) if after[k] is not before[k])}"
+    )
+
 
 BAND_PRODUCER = class_ref(BlockConformalInterval)
 MEAN_PRODUCER = class_ref(ClusterBootstrapInterval)
@@ -616,8 +691,9 @@ class TestTheRegistry:
             uncertainty_intake("nope")
 
     def test_a_name_cannot_be_rebound_to_a_different_class(self):
-        with pytest.raises(ValueError, match="already registered"):
-            register_uncertainty_intake("outcome_band", AttestedMeanConfidence)
+        _refuses_registration(
+            "outcome_band", AttestedMeanConfidence, match="already registered"
+        )
 
     def test_re_registering_the_same_class_is_idempotent(self):
         register_uncertainty_intake("outcome_band", AttestedOutcomeBand)
@@ -628,8 +704,7 @@ class TestTheRegistry:
         [("", AttestedOutcomeBand), ("x", object), ("x", "AttestedOutcomeBand")],
     )
     def test_an_unusable_registration_refuses(self, name, cls):
-        with pytest.raises(ValueError):
-            register_uncertainty_intake(name, cls)
+        _refuses_registration(name, cls)
 
     def test_a_second_member_for_one_artifact_type_is_refused(self):
         # Round-1 review: the ambiguity screen EXEMPTED a member declaring
@@ -656,8 +731,7 @@ class TestTheRegistry:
             def artifact_producer(cls, artifact):
                 return None
 
-        with pytest.raises(ValueError, match="already claims"):
-            register_uncertainty_intake("tests_twin", _Twin)
+        _refuses_registration("tests_twin", _Twin, match="already claims")
         assert "tests_twin" not in UNCERTAINTY_INTAKES
 
 
@@ -1210,8 +1284,9 @@ class TestTheRegistryIsAuthoritativeForTheDemandToo:
     def test_an_abstract_class_cannot_be_registered(self):
         # Sweep (a): a registered intake is asked for the declarations the
         # screens run on, and an abstract one answers each with None.
-        with pytest.raises(ValueError, match="abstract"):
-            register_uncertainty_intake("tests_abstract", ProbabilityUpperBound)
+        _refuses_registration(
+            "tests_abstract", ProbabilityUpperBound, match="abstract"
+        )
         assert "tests_abstract" not in UNCERTAINTY_INTAKES
 
     def test_the_authority_is_the_demanded_class_never_the_envelopes(self):
@@ -1343,52 +1418,96 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         assert "_store_through_closure_cells" not in source
         assert "UNCERTAINTY_INTAKES" in source
 
-    #: The only claims ``_sealed_registry``'s docstring is allowed to make.
-    #: EACH ONE CARRIES ITS OWN POLARITY WORD, which is what makes pinning it
-    #: polarity-sensitive. The round-5 pin was ``"introspection" in doc`` — a
-    #: token with no polarity — so inverting the sentence around it to claim
-    #: the route was CLOSED left the assertion green (round-6 review).
-    _PINNED_CEILING_CLAIMS = (
-        "Any route\n    that reaches a live Python object reaches this store.",
-        "that is not a complete list",
-        "no importable name offers\n    an unvalidated write",
-        "no ordinary attribute access on the view\n    does either",
-    )
+    #: Every ceiling-bearing paragraph of the two docstrings that state it,
+    #: pinned by sha256 of its whitespace-normalised text, plus the source
+    #: ``#:`` comment above ``UNCERTAINTY_INTAKES``, which is not a runtime
+    #: string and so was scanned by nothing at all.
+    #:
+    #: A SUBSTRING PIN WAS TRIED TWICE AND DEFEATED TWICE. Round 5 asserted
+    #: ``"introspection" in doc`` — a token with no polarity — so the sentence
+    #: around it could be inverted. Round 6 pinned substrings that each carry
+    #: their own polarity word, and round-6 review defeated THAT with a
+    #: DOUBLE NEGATION: wrap "no importable name offers an unvalidated write"
+    #: in "it is not the case that ..." and the substring, and every banned
+    #: token, survive untouched while the claim is reversed. Natural-language
+    #: negation wraps anything. A digest does not care what a sentence says.
+    #:
+    #: THE HONEST SCOPE, smaller than it sounds: this detects CHANGE, not
+    #: falsehood. When it fails, a reviewer reads the new paragraph, decides
+    #: whether it is TRUE, and updates the digest in the same commit. What it
+    #: makes impossible is a ceiling claim moving with nobody looking — which
+    #: is what happened in three consecutive rounds, in three different places.
+    _PINNED_CEILING_PROSE = {
+        "registry:0": "e414f6c46fbcd365",
+        "registry:1": "0b10cff794f18088",
+        "registry:2": "3d1b5139fdb322dd",
+        "registry:3": "83ef080d73ef1dbd",
+        "registry:4": "b460feca042aea93",
+        "registry:5": "3c6f57670ff6bfb9",
+        "registry:6": "c6f301987e91aaee",
+        "writer:0": "72cec45a148c8f94",
+        "writer:1": "e5ddaac1e9fab86f",
+        "writer:2": "b31bf847b522b00e",
+        "writer:3": "e6f3fdc75328b3ed",
+        "writer:4": "daaba7ddaef6a641",
+        "writer:5": "cd08e5cef01d3cbe",
+        "writer:6": "7b9f8de32c3a7a7d",
+        "writer:7": "357a9d013e1f7df9",
+    }
 
-    #: A sentence narrowing or widening the ceiling needs one of these, in
-    #: EITHER polarity. The docstring is written to contain none of them
-    #: outside the pinned claims above.
-    _CEILING_OUTCOME_TOKENS = (
-        "impossible", "unreachable", "cannot", "can't", "prevent", "protect",
-        "the only", "sole", "guarantee", "secure", "tamper-proof", "sealed against",
-    )
+    @staticmethod
+    def _paragraphs(doc):
+        """Whitespace-normalised, blank-line-separated paragraphs."""
+        return [" ".join(part.split()) for part in doc.split("\n\n") if part.strip()]
 
-    def test_the_ceiling_is_stated_as_a_rule_and_states_nothing_else(self):
-        """The disclosure cannot be inverted while this test stays green.
+    @staticmethod
+    def _digest(text):
+        """First 16 hex of sha256 over the whitespace-normalised text."""
+        return hashlib.sha256(" ".join(text.split()).encode()).hexdigest()[:16]
 
-        Round-6 Major: the previous pin asserted a polarity-free substring, so
-        the docstring could be rewritten to claim the store was CLOSED and the
-        test still passed. Every claim pinned here contains its own polarity
-        word, so inverting one DELETES the pinned substring.
-
-        The honest limit: an editor determined to contradict a pinned claim can
-        write around it in words this list does not hold. This detects DRIFT.
-        """
-        doc = importlib.import_module(
-            "dskit.pipeline.uncertainty_intake"
-        )._sealed_registry.__doc__
-        remainder = doc
-        for claim in self._PINNED_CEILING_CLAIMS:
-            assert claim in doc, f"pinned claim is gone or reworded: {claim!r}"
-            remainder = remainder.replace(claim, " ")
-        leaked = sorted(t for t in self._CEILING_OUTCOME_TOKENS if t in remainder.lower())
-        assert not leaked, (
-            f"the ceiling docstring narrows or widens its claim outside the "
-            f"pinned ones: {leaked}"
+    def test_every_ceiling_claim_in_prose_is_pinned_by_digest(self):
+        """No paragraph stating this ceiling changes without this test failing."""
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        observed = {}
+        for label, doc in (
+            ("registry", module._sealed_registry.__doc__),
+            ("writer", module.register_uncertainty_intake.__doc__),
+        ):
+            for index, paragraph in enumerate(self._paragraphs(doc)):
+                observed[f"{label}:{index}"] = self._digest(paragraph)
+        pinned = self._PINNED_CEILING_PROSE
+        added = sorted(set(observed) - set(pinned))
+        removed = sorted(set(pinned) - set(observed))
+        changed = sorted(
+            key for key in set(observed) & set(pinned) if observed[key] != pinned[key]
         )
-        # Both executed routes must be named, so dropping one from the tests
-        # without dropping it from the prose is caught here.
-        assert "__closure__" in doc and "gc.get_referents" in doc
+        assert not (added or removed or changed), (
+            "ceiling prose moved. Read the new text, decide whether it is TRUE, "
+            f"then update _PINNED_CEILING_PROSE in the same commit. added={added} "
+            f"removed={removed} changed={changed}"
+        )
+
+    def test_the_source_comment_stating_the_ceiling_is_pinned_too(self):
+        """The ``#:`` block above UNCERTAINTY_INTAKES is prose no runtime string holds.
+
+        Round-6 review: nothing scanned it, and it stated the ceiling. It is
+        read from the SOURCE here because that is the only place it exists.
+        """
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        source = inspect.getsource(module)
+        marker = "UNCERTAINTY_INTAKES, _register_intake = _sealed_registry()"
+        before = source[: source.index(marker)]
+        block = []
+        for line in reversed(before.rstrip().splitlines()):
+            if not line.startswith("#:"):
+                break
+            block.append(line)
+        block = "\n".join(reversed(block))
+        assert block, "the #: block above the registry is gone"
+        assert self._digest(block) == "f0775df103baa94b", (
+            "the #: comment stating the ceiling moved. Read it, decide whether "
+            "it is TRUE, then update this digest in the same commit."
+        )
 
     @staticmethod
     def _set_abstract(reg):
@@ -1463,30 +1582,43 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
         assert UNCERTAINTY_INTAKES["outcome_band"] is AttestedOutcomeBand
 
+    #: One row per misbehaving hook: ``(id, hook, body, expect)``. The id lives
+    #: IN the row, not in a second list beside it — a separate ``ids=[...]``
+    #: is a value in two places with nothing pinning them, and it silently
+    #: mislabelled these cases while this very round was being written: a
+    #: mutation was reported as killing ``registered_producers-str`` when it
+    #: actually killed the new ``artifact_type-raises`` case four rows away.
+    #: An id that names the wrong test is evidence that lies.
+    _MISBEHAVING_HOOKS = (
+        ("artifact_type-None", "artifact_type",
+         classmethod(lambda cls: None), "is not a type"),
+        ("estimand-empty", "estimand",
+         classmethod(lambda cls: ""), "is not a non-empty string"),
+        ("excluded_types-list", "excluded_types",
+         classmethod(lambda cls: [object]), "not a tuple of types"),
+        ("registered_producers-str", "registered_producers",
+         classmethod(lambda cls: "nope"), "not a tuple of classes"),
+        ("artifact_type-raises", "artifact_type",
+         classmethod(_boom), "raised RuntimeError"),
+        ("estimand-raises", "estimand", classmethod(_boom), "raised RuntimeError"),
+        ("registered_producers-raises", "registered_producers",
+         classmethod(_boom), "raised RuntimeError"),
+        ("excluded_types-raises", "excluded_types",
+         classmethod(_boom), "raised RuntimeError"),
+    )
+
+    def test_every_misbehaving_hook_case_is_labelled_with_its_own_hook(self):
+        """An id that names a different hook makes every mutation report a lie."""
+        for ident, hook, _, _ in self._MISBEHAVING_HOOKS:
+            assert ident.startswith(f"{hook}-"), (ident, hook)
+        assert len({row[0] for row in self._MISBEHAVING_HOOKS}) == len(
+            self._MISBEHAVING_HOOKS
+        )
+
     @pytest.mark.parametrize(
         "hook,body,expect",
-        [
-            ("artifact_type", classmethod(lambda cls: None), "is not a type"),
-            ("estimand", classmethod(lambda cls: ""), "is not a non-empty string"),
-            ("excluded_types", classmethod(lambda cls: [object]), "not a tuple of types"),
-            (
-                "registered_producers",
-                classmethod(lambda cls: "nope"),
-                "not a tuple of classes",
-            ),
-            ("estimand", classmethod(_boom), "raised RuntimeError"),
-            ("registered_producers", classmethod(_boom), "raised RuntimeError"),
-            ("excluded_types", classmethod(_boom), "raised RuntimeError"),
-        ],
-        ids=[
-            "artifact_type-None",
-            "estimand-empty",
-            "excluded_types-list",
-            "registered_producers-str",
-            "estimand-raises",
-            "registered_producers-raises",
-            "excluded_types-raises",
-        ],
+        [row[1:] for row in _MISBEHAVING_HOOKS],
+        ids=[row[0] for row in _MISBEHAVING_HOOKS],
     )
     def test_a_misbehaving_hook_is_a_coded_refusal_not_a_crash(self, hook, body, expect):
         """Round-5 Major: three of five hooks were screened, and only for shape.
@@ -1509,6 +1641,28 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         finally:
             forget()
 
+    def test_a_raising_estimand_on_the_WRONG_member_is_a_coded_refusal(self):
+        """The sixth site: the estimand read that only builds a message.
+
+        ``_question_problems`` reaches ``_ask(mine, "estimand")`` only when the
+        envelope's class IS registered but does NOT answer the demand — the
+        branch whose whole job is to say which question it answers instead. A
+        raise there used to propagate uncaught out of ``admission_problems``,
+        which is the crash-instead-of-refusal this module exists to prevent,
+        at a branch nothing reached in a test (round-6 review).
+        """
+        member, artifact = _probe_member({})
+        forget = register_uncertainty_intake("tests_wrong_member", member)
+        try:
+            env = member(artifact, _attestation(producer=MEAN_PRODUCER))
+            member.estimand = classmethod(_boom)
+            problems = admission_problems(env, _demand(), AttestedOutcomeBand)
+            assert problems, "a misbehaving hook must refuse, not admit"
+            assert any("estimand() raised RuntimeError" in p for p in problems), problems
+            assert all(p.startswith("wrong_unit") for p in problems), problems
+        finally:
+            forget()
+
     def test_a_raising_artifact_producer_is_a_coded_refusal(self):
         # The fifth hook, which `_declaration_problems` never reached: the
         # `evidence["estimator"]`-instead-of-`.get` bug the shipped members
@@ -1524,19 +1678,20 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         finally:
             forget()
 
-    def test_one_members_broken_artifact_type_does_not_crash_anothers_envelope(self):
-        """The ambiguity sweep asks EVERY other registered member; one may be broken.
+    def test_an_unreadable_peer_is_a_conflict_not_a_clearance_at_construction(self):
+        """Round-6 CRITICAL: the ambiguity sweep failed OPEN on an unreadable peer.
 
-        ``AttestedUncertainty.__init__`` loops over the whole registry calling
-        ``other.artifact_type()`` to refuse an artifact two members both claim.
-        That call is another member's code, so it can raise for the same
-        ordinary reasons ``_ask`` exists to absorb — and a raise there kills
-        the construction of an UNRELATED member's envelope, at a risk gate,
-        instead of producing a refusal.
+        ``__init__`` loops over the whole registry asking every other member
+        for its artifact type, to refuse an artifact two members both claim.
+        A peer's hook is that peer's code, so it can raise — and the sweep read
+        ``_ask``'s coded refusal as "this peer said nothing" and moved on. The
+        result was not a crash, which is what round 5 pinned; it was a SILENT
+        ADMISSION of exactly the ambiguity the sweep exists to refuse.
 
-        Round-6 review: replacing ``_ask(other, "artifact_type")`` with a bare
-        ``other.artifact_type()`` at this site left all 151 tests green. Both
-        sites are pinned now; this is the use-time one.
+        The rule now: a member that will not say what it claims cannot be shown
+        not to claim this, so it is a conflict. Still a REFUSAL and not a crash
+        — the hook's own coded ``wrong_unit`` text is carried inside the
+        message, which is what round 5's Major actually required.
         """
         broken, _ = _probe_member({})
         forget_broken = register_uncertainty_intake("tests_broken_other", broken)
@@ -1544,32 +1699,90 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
             # Registration screens the hook, so the incumbent breaks AFTER it:
             # the registry holds LIVE references, which this module documents.
             broken.artifact_type = classmethod(_boom)
-            env = AttestedOutcomeBand(_band(), _attestation())
-            assert isinstance(env, AttestedOutcomeBand)
-            assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
+            with pytest.raises(ValueError) as caught:
+                AttestedOutcomeBand(_band(), _attestation())
+            message = str(caught.value)
+            assert "tests_broken_other" in message
+            assert "artifact_type() raised RuntimeError" in message, message
+            assert "never a clearance" in message
         finally:
             forget_broken()
 
-    def test_one_members_broken_artifact_type_does_not_crash_a_registration(self):
-        """The same call, on the REGISTRATION path's uniqueness sweep.
+    def test_an_unreadable_peer_is_a_conflict_not_a_clearance_at_registration(self):
+        """The same rule on the REGISTRATION path's uniqueness sweep.
 
-        ``register`` asks every already-registered member for its artifact
-        type to refuse a second claimant. A broken incumbent must not make the
-        registry unwritable — replacing ``_ask`` with a bare call at this site
-        also left all 151 tests green (round-6 review).
+        With the peer readable this raises on the ambiguity itself; with the
+        peer unreadable it used to SUCCEED, which is how a second member came
+        to claim an artifact type another member already claimed.
         """
         broken, _ = _probe_member({})
         forget_broken = register_uncertainty_intake("tests_broken_incumbent", broken)
         try:
             broken.artifact_type = classmethod(_boom)
             fresh, _ = _probe_member({"estimand": classmethod(lambda cls: "fresh")})
-            forget_fresh = register_uncertainty_intake("tests_fresh_member", fresh)
-            try:
-                assert UNCERTAINTY_INTAKES["tests_fresh_member"] is fresh
-            finally:
-                forget_fresh()
+            refusal = _refuses_registration("tests_fresh_member", fresh)
+            assert "tests_broken_incumbent" in str(refusal)
+            assert "tests_fresh_member" not in UNCERTAINTY_INTAKES
         finally:
             forget_broken()
+
+    @pytest.mark.parametrize(
+        "hook,how",
+        [(classmethod(_boom), "raises"), (classmethod(lambda cls: None), "answers None")],
+        ids=["peer-raises", "peer-returns-a-non-type"],
+    )
+    def test_a_peer_that_will_not_say_what_it_claims_blocks_a_registration(self, hook, how):
+        """Unreadable has TWO shapes, and only one of them is a raise.
+
+        A peer whose ``artifact_type()`` answers something that is not a type
+        is just as unreadable as one that raises — ``other_wanted is wanted``
+        can never match it, so it silently clears every claimant. Found by
+        mutation: refusing on the raise alone left this half unpinned, which is
+        the same shape as the Critical it was written to fix.
+        """
+        peer, _ = _probe_member({})
+        forget_peer = register_uncertainty_intake("tests_mute_peer", peer)
+        try:
+            peer.artifact_type = hook
+            fresh, _ = _probe_member({"estimand": classmethod(lambda cls: "fresh")})
+            refusal = _refuses_registration("tests_after_mute_peer", fresh)
+            assert "tests_mute_peer" in str(refusal), how
+            assert "tests_after_mute_peer" not in UNCERTAINTY_INTAKES
+        finally:
+            forget_peer()
+
+    def test_a_broken_peer_cannot_let_two_members_claim_one_artifact_type(self):
+        """The Critical, end to end, as the reviewer demonstrated it.
+
+        Two members declaring the SAME concrete artifact type — which
+        `_probe_member` alone cannot express, because it builds a fresh
+        artifact class per call, and that is why the two tests above could not
+        have caught this. With the incumbent healthy the second registration is
+        refused; with its hook broken it used to register, an envelope of the
+        second member used to construct, and `admission_problems` used to
+        return NO problems for an artifact answering two questions at once —
+        at the gate `nodes_capital` sizes real capital from.
+        """
+        class Shared:
+            method = MEAN_PRODUCER
+
+        def claimant(estimand):
+            member, _ = _probe_member({
+                "artifact_type": classmethod(lambda cls: Shared),
+                "estimand": classmethod(lambda cls: estimand),
+            })
+            return member
+
+        first, second = claimant("first"), claimant("second")
+        forget_first = register_uncertainty_intake("tests_claim_first", first)
+        try:
+            _refuses_registration("tests_claim_second", second, match="already claims")
+            first.artifact_type = classmethod(_boom)
+            refusal = _refuses_registration("tests_claim_second", second)
+            assert "tests_claim_first" in str(refusal)
+            assert "tests_claim_second" not in UNCERTAINTY_INTAKES
+        finally:
+            forget_first()
 
     def test_a_raising_artifact_type_refuses_registration_as_ValueError(self):
         member, _artifact = _probe_member({"artifact_type": classmethod(_boom)})

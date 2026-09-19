@@ -17267,6 +17267,145 @@ commit the revert battery as a `tools/` script so the table is regenerated
 rather than typed.** No new file was created for it, per the repository's
 ask-before-writing rule.
 
+### Correction round 7, 2026-09-19 — the sweep failed OPEN, and the table failed again
+
+Review of candidate `9978b0b` returned **1 Critical, 4 Major, 1 Minor**. The
+Critical is a real behavioural defect, not an evidence defect — the first in
+this entry for three rounds — and round 6's own regression tests pinned the
+WRONG BEHAVIOUR while believing they closed the gap.
+
+**Critical — an unreadable peer was read as a clearance.** Both artifact-type
+sweeps — `register`'s uniqueness sweep and `AttestedUncertainty.__init__`'s
+ambiguity sweep — ask every OTHER registered member what it claims. Round 6
+routed those calls through `_ask` so a peer's raise could not kill the run, and
+then treated the resulting coded refusal as "this peer said nothing" and moved
+on. The outcome was not the crash round 5 was worried about. It was a SILENT
+ADMISSION of exactly the ambiguity the sweep exists to refuse:
+
+```python
+A, B = member("qA"), member("qB")         # both declare the SAME artifact type
+register_uncertainty_intake("probe_A", A)
+register_uncertainty_intake("probe_B", B) # -> ValueError: 'probe_A' already claims it
+A.artifact_type = classmethod(boom)       # ordinary attribute mutation
+register_uncertainty_intake("probe_B", B) # -> SUCCEEDS                *** observed ***
+admission_problems(B(SharedArtifact(), attestation), demand, B)  # -> []  *** observed ***
+```
+
+That last line is the gate `children/intraday_equities/.../nodes_capital.py`
+sizes real capital from, and the state it needs is one this entry's own
+docstring already says is reachable: the registry holds LIVE references, so a
+member's hook can start raising after it was registered. No introspection, no
+metaclass — ordinary Python, and therefore squarely inside what this module
+claims to defend.
+
+*Correction.* **An unreadable peer is a conflict, never a clearance.** Both
+sweeps now refuse, naming the peer and carrying the hook's own coded
+`wrong_unit` text inside the message — still a refusal and not a crash, which
+is what round 5's Major actually required. Uniqueness cannot be shown against a
+member that will not say what it claims, so it is not shown. Three regression
+tests: one per sweep, plus the reviewer's end-to-end case with two members
+declaring ONE concrete artifact type — which round 6's tests could not express,
+because their helper builds a fresh artifact class per call, so the two members
+in them could never actually collide. That is why "does not crash" passed while
+the admission was wide open.
+
+**Major — the ceiling was corrected in two places out of three.**
+`register_uncertainty_intake`'s docstring — the PUBLIC one, the one `help()`
+shows — still carried "one stated ceiling: function-object introspection
+reaches the store", fourteen hundred lines from the paragraph round 6 had
+corrected for saying exactly that. CLAUDE.md's own named defect: a claim in two
+places with nothing pinning them.
+
+**Major — the polarity pin was defeated by DOUBLE NEGATION.** Round 6's rule —
+"a required-substring assertion is polarity-blind unless the polarity word is
+inside the pinned substring" — is true against deleting the negation and false
+against adding one. Wrap `no importable name offers an unvalidated write` in
+`it is not the case that ...` and the substring, and every banned token,
+survive untouched while the claim is reversed. Natural-language negation wraps
+anything.
+
+*Correction, and it is the same one ADR-0166 reached independently.* **A digest,
+not a substring and not a denylist.** Every paragraph of both ceiling docstrings
+is pinned by sha256, and so is the `#:` source comment above
+`UNCERTAINTY_INTAKES` — which is not a runtime string and was therefore scanned
+by nothing at all. THE HONEST SCOPE, smaller than it sounds: this detects
+CHANGE, not falsehood. When it fails a reviewer reads the new paragraph, decides
+whether it is true, and updates the digest in the same commit. What it makes
+impossible is a ceiling claim moving with nobody looking, which has now happened
+in three consecutive rounds in three different places.
+
+**Major — two more audit rows do not reproduce, and THE TWO LENSES DISAGREED
+WITH EACH OTHER, which settles what is wrong with the table.** Both reviewers
+re-measured `| R2 | registration uniqueness | +97 |` and `| R6 | registry store
+is closure-local | +52 |`, independently, each building what they judged a
+faithful minimal revert. Neither reproduced the published number, and neither
+reproduced the other:
+
+| row | published | lens A measured | lens B measured |
+|---|---|---|---|
+| R2 uniqueness | +97 | +1 (name check) / +74 (artifact-type loop) | +18 (artifact-type loop) / +19 (both) |
+| R6 closure-local | +52 | +4 (store → module dict) | +1 (add an importable alias) / +17 (also drop `forget`) |
+
+Two careful reviewers reverting "the same fix" produced four different numbers,
+because **the row names a GUARANTEE and a number, and never the revert that
+connects them.** That is the defect, and it is not fixed by measuring harder.
+Round 6 corrected R4 and disclosed that it had not re-measured the rest; the
+disclosure was correct and is not enough. **A table of numbers nobody can
+regenerate is worse than no table**, because it reads as evidence.
+
+*What the table is now.* Only rows with a RECORDED REVERT RECIPE carry an
+authoritative number, and each is reproduced by at least two independent
+measurements that agree:
+
+| row | recorded revert | extra failures |
+|---|---|---|
+| R4 | delete the `if not any(cls is expected ...)` block from `_question_problems` | **+5** (round 6, lens A and lens B all agree, with the same five test names) |
+| R2 `unknown_producer` | drop the `_producer_problems(...)` term from `admission_problems`'s return expression | **+11** (lens A and lens B agree) |
+
+Every other row carries round-5's number with NO recorded recipe. Those numbers
+are **withdrawn as evidence** — kept in place above as history, since rewriting
+an old verdict is not allowed here, but they are not offered as coverage. The
+selection for both rows above is round 5's own stated one: the four affected
+test files, against the candidate's own baseline.
+
+**THE STANDING RECOMMENDATION, FOR THE OWNER.** This is the third consecutive
+round in which a committed audit number failed to reproduce, and the cause is
+the same every time: the battery is a throwaway script, so the recipe lives in
+prose and the number cannot be regenerated. Commit the battery as a `tools/`
+script that emits the table. No file was created for it here, per the
+repository's ask-before-writing-files rule.
+
+**Major — two MORE `_ask` sites had no test for their raise path.** Round 6
+said "two sites, now both pinned". There were four. `_declarations`' own
+four-hook loop reads `artifact_type` (a FIFTH site, on the `admission_problems`
+path), and `_question_problems` reads `estimand` on the wrong-member branch
+whose only job is to build the message naming what that member answers.
+Bypassing `_ask` at either left all 156 tests green. Both are pinned now, and
+the parametrized hook table gained an `artifact_type-raises` case beside its
+three siblings, which had one each.
+
+**Major — five negative-registration tests had no cleanup path.** Each was a
+bare `with pytest.raises(...): register_uncertainty_intake(...)`, so on the day
+its guard regresses the entry STAYS — and one of them rebinds a shipped name,
+`outcome_band`. Every later test in that process then runs against a corrupted
+registry, which makes any "+N extra failures" count order-dependent noise and
+is part of why the numbers above disagree. `_refuses_registration` now owns
+that shape with the undo in a `finally`, an autouse fixture asserts no test
+leaves the registry changed, and a test DRIVES the cleanup path by registering
+something that succeeds — because an unrun cleanup path is how this happened.
+
+*While writing this round the same defect family bit the fix itself.* The new
+`artifact_type-raises` case was added to the parametrize list and its id to the
+`ids=[...]` list beside it, at different positions — so a mutation was reported
+as killing `registered_producers-str` when it had actually killed the new case
+four rows away. An id that names the wrong test is evidence that lies. The two
+lists are now one list carrying its own ids, and a test asserts every id starts
+with the hook it labels.
+
+**Minor, confirmed as disclosed.** Synonyms outside the banned list still pass
+the vocabulary check. The digest above makes that check redundant for the
+paragraphs it covers; it is kept only for text the digests do not reach.
+
 ### What remains unpinned, and why — ADR-0165's residual list
 
 Stated plainly because an accurate residual list is worth more than a clean

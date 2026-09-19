@@ -275,7 +275,16 @@ def _sealed_registry():
             if other_name == name or other is cls:
                 continue
             other_wanted, other_refusal = _ask(other, "artifact_type")
-            if not other_refusal and other_wanted is wanted:
+            if other_refusal or not isinstance(other_wanted, type):
+                raise ValueError(
+                    f"{name!r} may not register {cls.__name__} while {other_name!r} "
+                    f"is registered and its own artifact_type() cannot be read "
+                    f"({other_refusal[0] if other_refusal else other_wanted!r} is "
+                    "not a type) — uniqueness cannot be shown against a member "
+                    "that will not say what it claims, and an unreadable peer is "
+                    "a conflict, never a clearance"
+                )
+            if other_wanted is wanted:
                 raise ValueError(
                     f"{name!r} claims artifact type "
                     f"{getattr(wanted, '__name__', wanted)}, which {other_name!r} "
@@ -705,7 +714,13 @@ class AttestedUncertainty(ABC):
                 continue
             other_wanted, refusal = _ask(other, "artifact_type")
             if refusal or not isinstance(other_wanted, type):
-                continue
+                raise ValueError(
+                    f"{type(self).__name__}: {name!r} is a registered intake whose "
+                    f"own artifact_type() cannot be read "
+                    f"({refusal[0] if refusal else other_wanted!r} is not a type), "
+                    "so this artifact cannot be shown to answer only one question "
+                    "— an unreadable peer is a conflict, never a clearance"
+                )
             if isinstance(artifact, other_wanted):
                 raise ValueError(
                     f"{type(self).__name__}: {type(artifact).__name__} is ALSO a "
@@ -1678,9 +1693,14 @@ def register_uncertainty_intake(name, cls, doc=""):
     The ONE writer of :data:`UNCERTAINTY_INTAKES`. That is now mechanical
     rather than conventional — the store is a closure local of
     :func:`_sealed_registry`, so no importable name offers an unvalidated
-    write — with one stated ceiling: function-object introspection reaches
-    the store, the same capability as the hostile-metaclass boundary this
-    module declines to defend against.
+    write, and no ordinary attribute access on the view does either.
+
+    The ceiling is a RULE and this docstring does not restate it: read
+    :func:`_sealed_registry`. Round-6 review found this paragraph still
+    carrying the discredited single-route wording fourteen hundred lines
+    from the one that had been corrected, which is CLAUDE.md's own named
+    defect — a claim in two places with nothing pinning them. Both are
+    pinned by digest now.
 
     Parameters
     ----------
@@ -1705,8 +1725,10 @@ def register_uncertainty_intake(name, cls, doc=""):
         On an empty ``name``, a ``cls`` that is not an
         :class:`AttestedUncertainty` subclass, a ``cls`` that is still
         abstract, a ``cls`` whose ``artifact_type()`` raises, a name
-        already bound to a DIFFERENT class, or an ``artifact_type``
-        another member already claims.
+        already bound to a DIFFERENT class, an ``artifact_type`` another
+        member already claims, or an already-registered member whose own
+        ``artifact_type()`` cannot be read — uniqueness cannot be shown
+        against a member that will not say what it claims.
 
     Examples
     --------
