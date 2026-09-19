@@ -211,15 +211,24 @@ def _sealed_registry():
     single-underscore module attribute is one underscore wide, and that a
     rebinding through it repointed a real capital-sizing estimand while
     every test in the sealing class still passed. The validation therefore
-    lives INSIDE the closure, so the only name that can write is one that
-    screens.
+    lives INSIDE the closure rather than beside it, so a write through the
+    front door is screened by construction.
 
-    **The honest ceiling.** Function-object introspection
-    (``<writer>.__closure__[0].cell_contents``) still reaches the store.
-    That is the same capability as the hostile metaclass this module
-    already declines to defend against, and it is stated here rather than
-    described as impossible. What IS true, and is what changed: no
-    importable name offers an unvalidated write.
+    **The honest ceiling, stated as a rule and not as a list.** Any route
+    that reaches a live Python object reaches this store. Closure cells
+    (``<writer>.__closure__[0].cell_contents``) and garbage-collector
+    referents (``gc.get_referents(UNCERTAINTY_INTAKES)[0]``, which hands
+    back the proxied dict itself and needs no closure at all) are two, the
+    tests execute both, and that is not a complete list. Round-6 review
+    found the second one precisely because the previous wording named the
+    first as *the* remaining route, and naming one route invites the
+    reading that the others are closed. They are not: this is the same
+    capability as the hostile metaclass this module already declines to
+    defend against, and no enumeration closes an open set.
+
+    What IS true, and is the whole of the claim: no importable name offers
+    an unvalidated write, and no ordinary attribute access on the view
+    does either.
 
     Returns
     -------
@@ -291,8 +300,9 @@ def _sealed_registry():
 #: state a refusal depends on, and it is written ONLY through
 #: :func:`register_uncertainty_intake`: the store is a closure local, not a
 #: module attribute, so no importable name offers an unvalidated write.
-#: Function-object introspection still reaches it — see
-#: :func:`_sealed_registry` — and that is disclosed rather than denied.
+#: Object introspection of any kind still reaches it — see
+#: :func:`_sealed_registry` for the rule and the two routes the tests
+#: execute — and that is disclosed rather than denied.
 #:
 #: It holds CLASSES, because a member is an object with hooks, and it holds
 #: LIVE references rather than a snapshot: editing a registered class's

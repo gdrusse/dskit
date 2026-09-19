@@ -17095,13 +17095,12 @@ not in dispute.
 validation inside the closure, so there is no module attribute to import and no
 importable name that writes without screening. Unregistration is the callable
 `register_uncertainty_intake` RETURNS, so no name in the module can remove an
-intake its caller did not add. **The honest ceiling, stated in the code and
-pinned by a test:** `_register_intake.__closure__[0].cell_contents` still
-reaches the store. That is function-object introspection — the same capability
-as the hostile metaclass this module already declines to defend against — and
-`test_the_honest_ceiling_is_function_introspection_and_is_stated` asserts both
-that it works and that the docstring says so, so the prose cannot drift back
-into claiming impossibility.
+intake its caller did not add. **The honest ceiling, stated as a RULE:** any
+route that reaches a live Python object reaches this store. Round-6 review
+proved why the rule replaced the previous single-route wording — see the
+correction note at the head of this entry — and the tests now execute two
+structurally different routes and assert the docstring states the rule rather
+than naming one route as the last one.
 
 **Major — three of five hooks were screened, and only for shape.**
 `artifact_producer()` and `estimand()` were called bare; `registered_producers()`,
@@ -17162,7 +17161,7 @@ unreachable. **The row stands: equivalent mutant, +0.**
 | R6 | registry store is closure-local | covered | +52 |
 | R6 | hook raises become coded refusals | covered | +8 |
 | R6 | hook answer SHAPES are screened | covered | +4 |
-| R4 | demand must be a registered intake | covered | +2 |
+| R4 | demand must be a registered intake | covered | +5 |
 | R4 | authority is the demanded class | **equivalent mutant** | +0 |
 | R4 | registry refuses an abstract member | covered | +4 |
 | R3 | `artifact_of` reads the slot | covered | +2 |
@@ -17186,6 +17185,87 @@ Nineteen covered, one equivalent.
 `([],)` would have passed with a freely mutable inner list; it now recurses
 through tuples, frozensets and mapping proxies, and `frozenset` is no longer
 false-flagged as mutable.
+
+### Correction round 6, 2026-09-19 — the ceiling was one route wide, and the table was wrong again
+
+Review of candidate `c2a3014` returned **1 Critical, 3 Major**. All four are
+about the EVIDENCE, not the machinery, which is the standing pattern in this
+family and the reason every round now mutation-tests its own fix.
+
+**Critical — the disclosed ceiling named one route and implied the rest were
+closed.** The store is reachable with no closure involved at all:
+
+```python
+import gc
+from dskit.pipeline.uncertainty_intake import UNCERTAINTY_INTAKES
+store = gc.get_referents(UNCERTAINTY_INTAKES)[0]   # the proxied dict itself
+store["forged"] = object()                          # unvalidated write, observed
+```
+
+`gc.get_referents` on a `mappingproxy` hands back the dict it proxies. Round 5
+had written that "function-object introspection (`<writer>.__closure__[0].
+cell_contents`) still reaches the store" — true, and the only route named, and
+a reader takes a named exception for an exhaustive one. The capability is the
+same class the module already declines to defend against, so nothing here is a
+new hole; the DEFECT IS THE DISCLOSURE.
+
+*Correction.* The ceiling is now stated as a RULE — *any route that reaches a
+live Python object reaches this store* — with closure cells and gc referents
+given as two examples and explicitly *not a complete list*. The claim is
+bounded positively instead: no importable name offers an unvalidated write, and
+no ordinary attribute access on the view does either. Two structurally
+different routes are EXECUTED by tests that write a sentinel through each and
+read it back on the PUBLIC view, so reaching a copy cannot pass for reaching
+the store, and a third test asserts the two routes are not one route named
+twice.
+
+**Major — the pin on that disclosure was polarity-blind.** The old
+`test_the_honest_ceiling_is_function_introspection_and_is_stated` ended with
+`assert "introspection" in doc.lower()`. Invert the surrounding sentence to
+claim the route is CLOSED and the assertion still holds, because the pinned
+token carries no polarity. **The general rule this family kept missing, now
+stated once: a required-substring assertion is polarity-blind unless THE
+POLARITY WORD IS INSIDE THE PINNED SUBSTRING.** `"introspection" in doc` cannot
+see an inversion; `"no importable name offers an unvalidated write" in doc`
+can, because negating it deletes the substring. Four claims are pinned that
+way, and a banned-vocabulary check refuses any narrowing or widening elsewhere
+in the docstring — which immediately caught a real one: "the only name that can
+write is one that screens" was false given the ceiling above, and is reworded.
+
+**Major — `artifact_type`'s use-time raise path was untested, at TWO sites.**
+`_ask` exists because a hook raise at a risk gate kills the run instead of
+refusing. Four of five hooks each had a dedicated test. `artifact_type` had one
+for its own class and for registration, but none for the two loops that ask
+EVERY OTHER REGISTERED MEMBER: the envelope constructor's ambiguity sweep and
+`register`'s uniqueness sweep. Replacing `_ask(other, "artifact_type")` with a
+bare `other.artifact_type()` at either site left all 151 tests green. The
+scenario is reachable exactly as this module documents: the registry holds LIVE
+references, so a member whose hook is edited after registration makes an
+unrelated member's envelope construction raise. Two regression tests now pin
+the two sites; each kills its own site and only its own.
+
+**Major — a committed audit row did not reproduce, again.** `| R4 | demand must
+be a registered intake | covered | +2 |` re-measures at **+5** under a revert
+that is valid Python and no larger than the fix — round 5's own method rule,
+applied to round 5's own table. The faithful revert deletes the
+`if not any(cls is expected for cls in _registered_classes()): return [...]`
+block from `_question_problems` and nothing else; the five extra failures are
+`test_a_bases_rebinding_cannot_satisfy_the_closed_family`, both
+`test_a_demand_the_registry_does_not_name_is_refused` cases,
+`test_a_virtual_registration_cannot_forge_family_membership` and one more. The
+row is corrected in place. Measured under round 5's own stated selection — the
+four affected test files — so the number is directly comparable to the one it
+replaces.
+
+**What this round does NOT establish, stated because the table has now been
+wrong in three consecutive rounds.** Only R4 was re-measured here. The other
+nineteen rows carry round-5's numbers, and the battery that produced them is a
+throwaway script rather than a committed artifact, so no one can re-run the
+table without rebuilding the reverts from this prose. **That is the residual,
+and the proposal that follows it is for the owner, not a decision taken here:
+commit the revert battery as a `tools/` script so the table is regenerated
+rather than typed.** No new file was created for it, per the repository's
+ask-before-writing rule.
 
 ### What remains unpinned, and why — ADR-0165's residual list
 

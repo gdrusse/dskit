@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import _abc
 import contextlib
+import gc
+import inspect
+from unittest import mock
 import importlib
 import random
 import types
@@ -1268,25 +1271,124 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
     def test_the_public_registry_is_a_read_only_view(self):
         assert isinstance(UNCERTAINTY_INTAKES, types.MappingProxyType)
 
-    def test_the_honest_ceiling_is_function_introspection_and_is_stated(self):
-        """The remaining route, pinned rather than claimed away.
+    @staticmethod
+    def _store_through_closure_cells(module):
+        """The store, reached through the writer's closure cells."""
+        for cell in module._register_intake.__closure__ or ():
+            contents = cell.cell_contents
+            if isinstance(contents, dict) and contents.keys() == UNCERTAINTY_INTAKES.keys():
+                return contents
+        return None
 
-        ``_sealed_registry``'s docstring says function-object introspection
-        still reaches the store. This asserts that it does — so the
-        docstring cannot drift into claiming impossibility — and that it
-        takes reaching into ``__closure__``, which is the same capability
-        as the hostile-metaclass boundary this module already declines to
-        defend against.
+    @staticmethod
+    def _store_through_gc_referents(module):
+        """The store, reached as the proxied dict of the public view itself."""
+        for referent in gc.get_referents(UNCERTAINTY_INTAKES):
+            if isinstance(referent, dict) and referent.keys() == UNCERTAINTY_INTAKES.keys():
+                return referent
+        return None
+
+    #: Structurally DIFFERENT routes to the store, not one route named twice:
+    #: the first goes through the writer function object, the second through
+    #: the public view and touches no closure at all. Round-6 review found the
+    #: second while the module named only the first, which is the whole reason
+    #: the ceiling is now stated as a rule.
+    _CEILING_ROUTES = ("_store_through_closure_cells", "_store_through_gc_referents")
+
+    @pytest.mark.parametrize("route", _CEILING_ROUTES)
+    def test_every_disclosed_route_really_reaches_the_store(self, route):
+        """Each route reaches the LIVE store, proven by writing through it.
+
+        Reaching a dict that merely compares equal proves nothing — round-4
+        review of a sibling branch found a pin asserting ``A is A``. So each
+        route writes a sentinel and the PUBLIC view is read back; the write is
+        undone in a ``finally``.
         """
         module = importlib.import_module("dskit.pipeline.uncertainty_intake")
-        cells = [
-            cell.cell_contents
-            for cell in (module._register_intake.__closure__ or ())
-            if isinstance(cell.cell_contents, dict)
-        ]
-        assert cells, "the store should still be reachable through __closure__"
-        assert any(cell.keys() == UNCERTAINTY_INTAKES.keys() for cell in cells)
-        assert "introspection" in module._sealed_registry.__doc__.lower()
+        store = getattr(self, route)(module)
+        assert store is not None, f"{route} no longer reaches the store"
+        assert "ceiling_probe" not in UNCERTAINTY_INTAKES
+        try:
+            store["ceiling_probe"] = AttestedOutcomeBand
+            assert UNCERTAINTY_INTAKES["ceiling_probe"] is AttestedOutcomeBand, (
+                f"{route} reached a COPY, not the live store"
+            )
+        finally:
+            store.pop("ceiling_probe", None)
+        assert "ceiling_probe" not in UNCERTAINTY_INTAKES
+
+    def test_the_two_routes_are_not_the_same_route_named_twice(self):
+        """Independence, checked by BEHAVIOUR and not only by reading the source.
+
+        A source scan alone is weak: a delegating call that never spells
+        ``__closure__`` passes it. So the gc route is exercised with the
+        closure route replaced by a stub that finds nothing — if it were
+        delegating, it would find nothing too.
+        """
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        cls = type(self)
+        assert (
+            cls._store_through_closure_cells(module)
+            is cls._store_through_gc_referents(module)
+        ), "both routes must reach the one live store"
+        with mock.patch.object(
+            cls, "_store_through_closure_cells", staticmethod(lambda module: None)
+        ):
+            assert cls._store_through_closure_cells(module) is None
+            assert cls._store_through_gc_referents(module) is not None, (
+                "the gc route reaches the store only VIA the closure route"
+            )
+        source = inspect.getsource(cls._store_through_gc_referents)
+        assert "__closure__" not in source
+        assert "_store_through_closure_cells" not in source
+        assert "UNCERTAINTY_INTAKES" in source
+
+    #: The only claims ``_sealed_registry``'s docstring is allowed to make.
+    #: EACH ONE CARRIES ITS OWN POLARITY WORD, which is what makes pinning it
+    #: polarity-sensitive. The round-5 pin was ``"introspection" in doc`` — a
+    #: token with no polarity — so inverting the sentence around it to claim
+    #: the route was CLOSED left the assertion green (round-6 review).
+    _PINNED_CEILING_CLAIMS = (
+        "Any route\n    that reaches a live Python object reaches this store.",
+        "that is not a complete list",
+        "no importable name offers\n    an unvalidated write",
+        "no ordinary attribute access on the view\n    does either",
+    )
+
+    #: A sentence narrowing or widening the ceiling needs one of these, in
+    #: EITHER polarity. The docstring is written to contain none of them
+    #: outside the pinned claims above.
+    _CEILING_OUTCOME_TOKENS = (
+        "impossible", "unreachable", "cannot", "can't", "prevent", "protect",
+        "the only", "sole", "guarantee", "secure", "tamper-proof", "sealed against",
+    )
+
+    def test_the_ceiling_is_stated_as_a_rule_and_states_nothing_else(self):
+        """The disclosure cannot be inverted while this test stays green.
+
+        Round-6 Major: the previous pin asserted a polarity-free substring, so
+        the docstring could be rewritten to claim the store was CLOSED and the
+        test still passed. Every claim pinned here contains its own polarity
+        word, so inverting one DELETES the pinned substring.
+
+        The honest limit: an editor determined to contradict a pinned claim can
+        write around it in words this list does not hold. This detects DRIFT.
+        """
+        doc = importlib.import_module(
+            "dskit.pipeline.uncertainty_intake"
+        )._sealed_registry.__doc__
+        remainder = doc
+        for claim in self._PINNED_CEILING_CLAIMS:
+            assert claim in doc, f"pinned claim is gone or reworded: {claim!r}"
+            remainder = remainder.replace(claim, " ")
+        leaked = sorted(t for t in self._CEILING_OUTCOME_TOKENS if t in remainder.lower())
+        assert not leaked, (
+            f"the ceiling docstring narrows or widens its claim outside the "
+            f"pinned ones: {leaked}"
+        )
+        # Both executed routes must be named, so dropping one from the tests
+        # without dropping it from the prose is caught here.
+        assert "__closure__" in doc and "gc.get_referents" in doc
 
     @staticmethod
     def _set_abstract(reg):
@@ -1421,6 +1523,53 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
             assert any("artifact_producer() raised" in p for p in problems), problems
         finally:
             forget()
+
+    def test_one_members_broken_artifact_type_does_not_crash_anothers_envelope(self):
+        """The ambiguity sweep asks EVERY other registered member; one may be broken.
+
+        ``AttestedUncertainty.__init__`` loops over the whole registry calling
+        ``other.artifact_type()`` to refuse an artifact two members both claim.
+        That call is another member's code, so it can raise for the same
+        ordinary reasons ``_ask`` exists to absorb — and a raise there kills
+        the construction of an UNRELATED member's envelope, at a risk gate,
+        instead of producing a refusal.
+
+        Round-6 review: replacing ``_ask(other, "artifact_type")`` with a bare
+        ``other.artifact_type()`` at this site left all 151 tests green. Both
+        sites are pinned now; this is the use-time one.
+        """
+        broken, _ = _probe_member({})
+        forget_broken = register_uncertainty_intake("tests_broken_other", broken)
+        try:
+            # Registration screens the hook, so the incumbent breaks AFTER it:
+            # the registry holds LIVE references, which this module documents.
+            broken.artifact_type = classmethod(_boom)
+            env = AttestedOutcomeBand(_band(), _attestation())
+            assert isinstance(env, AttestedOutcomeBand)
+            assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
+        finally:
+            forget_broken()
+
+    def test_one_members_broken_artifact_type_does_not_crash_a_registration(self):
+        """The same call, on the REGISTRATION path's uniqueness sweep.
+
+        ``register`` asks every already-registered member for its artifact
+        type to refuse a second claimant. A broken incumbent must not make the
+        registry unwritable — replacing ``_ask`` with a bare call at this site
+        also left all 151 tests green (round-6 review).
+        """
+        broken, _ = _probe_member({})
+        forget_broken = register_uncertainty_intake("tests_broken_incumbent", broken)
+        try:
+            broken.artifact_type = classmethod(_boom)
+            fresh, _ = _probe_member({"estimand": classmethod(lambda cls: "fresh")})
+            forget_fresh = register_uncertainty_intake("tests_fresh_member", fresh)
+            try:
+                assert UNCERTAINTY_INTAKES["tests_fresh_member"] is fresh
+            finally:
+                forget_fresh()
+        finally:
+            forget_broken()
 
     def test_a_raising_artifact_type_refuses_registration_as_ValueError(self):
         member, _artifact = _probe_member({"artifact_type": classmethod(_boom)})
