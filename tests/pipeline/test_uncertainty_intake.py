@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import _abc
 import ast
+import collections
 import contextlib
 import hashlib
 import gc
@@ -303,6 +304,14 @@ def _band():
     return BlockConformalInterval().calibrate(residuals, coverage=0.6, window_blocks=2)
 
 
+def _handbuilt_forgery():
+    """A band that was never fitted — the payload the round-10 attack handed back."""
+    forged = _band()
+    object.__setattr__(forged, "lower_offset", {"EVIL": -99.0})
+    object.__setattr__(forged, "upper_offset", {"EVIL": 99.0})
+    return forged
+
+
 def _rate(names=("alpha",)):
     """A REAL fitted false-signal estimate over a 40-signal synthetic family."""
     rng = random.Random(7)
@@ -355,6 +364,18 @@ class TestCoverageEvidenceRecordsRatherThanMeasures:
         with pytest.raises(ValueError):
             _coverage(**overrides)
 
+    def test_one_unit_is_the_legal_minimum_and_is_admitted(self):
+        """The `n_units >= 1` boundary, INCLUSIVE, which the docstring states.
+
+        Round-11 review: relaxing `n_units < 1` to `<= 1` survived all 176
+        tests — nothing said whether a record measured over exactly one unit
+        is legal. It is: the docstring says "``n_units`` below 1" is what
+        refuses, so one unit is the minimum, not the first refusal.
+        """
+        assert _coverage(n_units=1).n_units == 1
+        with pytest.raises(ValueError):
+            _coverage(n_units=0)
+
     def test_a_measurement_below_its_own_target_is_a_legal_record(self):
         # An artifact that FELL SHORT is a real artifact. Refusing it is the
         # consumer's floor's job, not this value's.
@@ -369,6 +390,13 @@ class TestTheAttestationScreensItsOwnShape:
             {"model_identity": ""},
             {"producer": ""},
             {"producer": None},
+            # NON-STRING BUT TRUTHY. Round-11 review: every row above tests
+            # EMPTINESS, so dropping the `isinstance(value, str)` half of
+            # `_check_text` survived the whole suite — and that half is the one
+            # a wrong TYPE has to get past.
+            {"artifact_id": 7},
+            {"model_identity": ["m"]},
+            {"producer": {"module": "x"}},
             {"calibration_end_ms": -1},
             {"calibration_end_ms": 1.5},
             {"known_at_ms": True},
@@ -385,6 +413,19 @@ class TestTheAttestationScreensItsOwnShape:
             _attestation(
                 calibration_end_ms=DECISION_TS, known_at_ms=DECISION_TS - 1
             )
+
+    def test_a_window_ending_exactly_when_the_artifact_became_knowable_is_legal(self):
+        """The `calibration_end_ms <= known_at_ms` boundary, INCLUSIVE.
+
+        Round-11 review: tightening `>` to `>=` survived all 176 tests. A
+        window that ends at the instant the artifact became knowable covers no
+        time the artifact predates — it ends exactly where the artifact
+        begins — so it is legal, and one millisecond past it is not.
+        """
+        together = _attestation(
+            calibration_end_ms=DECISION_TS, known_at_ms=DECISION_TS
+        )
+        assert together.calibration_end_ms == together.known_at_ms
 
     def test_no_coverage_is_an_honest_record_not_a_missing_field(self):
         assert _attestation(coverage=None).coverage is None
@@ -419,11 +460,38 @@ class TestTheDemandHasNoDefaults:
             {"max_calibration_age_ms": -1},
             {"model_identity": ""},
             {"decision_ts_ms": -5},
+            # A BOOL IS AN INT in Python, and `True` is a perfectly ordinary
+            # epoch of 1ms. Round-11 review: deleting the bool exclusion from
+            # `_check_stamp` left every DecisionDemand field silently
+            # admitting `True` — the consumer's own policy object, the trust
+            # root's central input. `known_at_ms=True` above LOOKED like
+            # coverage and was proven to pass for an unrelated ordering
+            # reason, so each field says so for itself now.
+            {"decision_ts_ms": True},
+            {"max_calibration_age_ms": True},
+            {"model_identity": 7},
         ],
     )
     def test_an_unusable_policy_refuses(self, overrides):
         with pytest.raises(ValueError):
             _demand(**overrides)
+
+    @pytest.mark.parametrize("field", ["calibration_end_ms", "known_at_ms"])
+    def test_a_boolean_stamp_is_refused_FOR_BEING_A_BOOLEAN(self, field):
+        """The message, not just the refusal — round-11 review's exact finding.
+
+        `{"known_at_ms": True}` in the attestation's own list refuses today,
+        but through `calibration_end_ms > known_at_ms`: an ordering
+        coincidence with the fixture's default, not the bool exclusion.
+        Deleting that exclusion left the row green. Both stamps are asserted
+        against the message the exclusion itself produces.
+        """
+        # Both stamps at zero first, so the ordering rule cannot be what
+        # answers; only the field under test is then made a bool.
+        stamps = {"calibration_end_ms": 0, "known_at_ms": 0, field: True}
+        with pytest.raises(ValueError, match="integer epoch-ms") as raised:
+            _attestation(**stamps)
+        assert field in str(raised.value)
 
 
 class TestTheEstimandIsTheArtifactsType:
@@ -630,6 +698,49 @@ class TestTheFiveRefusals:
         assert [
             p.split(":")[0] for p in one_later.problems(demand, AttestedOutcomeBand)
         ] == ["post_decision"]
+
+    def test_a_calibration_window_ending_exactly_at_the_decision_is_admitted(self):
+        """The THIRD boundary in ``_timing_problems``, six lines from the second.
+
+        Round-10 review: relaxing ``calibration_end_ms > decision_ts_ms`` to
+        ``>=`` left all 176 tests green. Round 9's own self-review had named
+        and fixed the two boundaries around it — ``measured < min`` and
+        ``known_at_ms > decision_ts_ms`` — and missed this one, which is the
+        same rule about the same stamp in the same function. A window that
+        ENDS at the decision instant used data that existed when the decision
+        was taken; only a window reaching past it is a look-ahead.
+
+        ``known_at_ms`` moves with it because ``UncertaintyAttestation``
+        refuses a window ending after the artifact became knowable, so the two
+        stamps cannot be varied apart: a calibration window past the decision
+        ALWAYS drags ``known_at_ms`` past it too, and both rules answer. The
+        messages are therefore asserted by name rather than by count, so this
+        row proves the calibration rule and not only its neighbour.
+
+        The demand's ``max_calibration_age_ms`` admits an age of zero, so the
+        stale screen cannot be what answers the admitted case either.
+        """
+        demand = _demand()
+        assert demand.max_calibration_age_ms >= 0
+        at_the_instant = AttestedOutcomeBand(
+            _band(),
+            _attestation(
+                calibration_end_ms=demand.decision_ts_ms,
+                known_at_ms=demand.decision_ts_ms,
+            ),
+        )
+        assert at_the_instant.problems(demand, AttestedOutcomeBand) == []
+        one_later = AttestedOutcomeBand(
+            _band(),
+            _attestation(
+                calibration_end_ms=demand.decision_ts_ms + 1,
+                known_at_ms=demand.decision_ts_ms + 1,
+            ),
+        )
+        problems = one_later.problems(demand, AttestedOutcomeBand)
+        assert [p.split(":")[0] for p in problems] == ["post_decision", "post_decision"]
+        assert any("calibration_end_ms" in p for p in problems), problems
+        assert any("known_at_ms" in p for p in problems), problems
 
     def test_uncalibrated_by_absent_evidence(self):
         env = AttestedOutcomeBand(_band(), _attestation(coverage=None))
@@ -1343,6 +1454,70 @@ class TestTheAccessorsReadTheScreenedValues:
         assert artifact_of(env) is env.artifact
         assert attestation_of(env) is env.attestation
 
+    @staticmethod
+    @contextlib.contextmanager
+    def _descriptors_over_the_slot_names_themselves():
+        """Redefine ``_artifact``/``_attestation`` — the SLOT names — then restore.
+
+        ``_lying_descriptors`` above redefines the PUBLIC properties, which is
+        a different name from the one the slot uses, so
+        ``object.__getattribute__`` read past them. This shadows the slot name
+        itself, and a data descriptor found on the type under the name being
+        read wins over the instance dict — in ``object.__getattribute__`` too.
+        Two ordinary assignments, no subclass, no metaclass, no edit to the
+        module.
+        """
+        AttestedOutcomeBand._artifact = property(lambda self: _handbuilt_forgery())
+        AttestedOutcomeBand._attestation = property(
+            lambda self: _attestation(artifact_id="FORGED")
+        )
+        try:
+            yield
+        finally:
+            del AttestedOutcomeBand._artifact
+            del AttestedOutcomeBand._attestation
+
+    def test_a_descriptor_over_the_SLOT_NAME_cannot_forge_what_is_admitted(self):
+        """Round-10 Critical. The whole trust root turned on this.
+
+        `_raw` used ``object.__getattribute__``, which runs the FULL descriptor
+        protocol: only a redefinition under a DIFFERENT name was bypassed.
+        Under the slot's own name the forgery was total and silent —
+        ``admission_problems`` reported clean, ``admit_uncertainty`` returned
+        the envelope, and ``attestation_of`` handed a consumer a fabricated
+        stamp, process-wide for every envelope of the class. The child sizes
+        capital off exactly these two accessors.
+        """
+        attested = _attestation()
+        band = _band()
+        env = AttestedOutcomeBand(band, attested)
+        with self._descriptors_over_the_slot_names_themselves():
+            assert env._attestation.artifact_id == "FORGED", "the attack is live"
+            assert env._artifact.lower_offset == {"EVIL": -99.0}, "and so is this half"
+            assert attestation_of(env) is attested
+            assert artifact_of(env) is band
+            assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
+            assert admit_uncertainty(env, _demand(), AttestedOutcomeBand) is env
+        assert attestation_of(env) is attested
+
+    def test_a_hostile_getattribute_cannot_forge_what_is_admitted_either(self):
+        """The other half of the same primitive, and it had no test at all.
+
+        Replacing ``_raw``'s reader with a plain ``getattr`` left all 176 tests
+        green (round-10 review), so the one descriptor-protocol defence it had
+        earned was free to be refactored away. Nothing on the type participates
+        now, so both shapes are pinned by the same two lines.
+        """
+        attested = _attestation()
+        env = AttestedOutcomeBand(_band(), attested)
+        AttestedOutcomeBand.__getattribute__ = lambda self, name: "LIE"
+        try:
+            assert env._attestation == "LIE", "the attack is live"
+            assert attestation_of(env) is attested
+        finally:
+            del AttestedOutcomeBand.__getattribute__
+        assert attestation_of(env) is attested
+
     def test_the_accessors_are_total_on_a_stripped_instance(self):
         env = AttestedOutcomeBand(_band(), _attestation())
         del env._artifact
@@ -1585,14 +1760,25 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
 
     @staticmethod
     def _module_prose():
-        """Every docstring and every ``#:`` note in the module, keyed by owner.
+        """Every docstring, ``#:`` note and string literal in the module, by owner.
 
         NOTHING CLASSIFIES and nothing is left out. Round 7 pinned two
         docstrings and one comment; round-8 review put a false ceiling claim in
         the MODULE docstring, in ``admission_problems.__doc__``, and in the
         ``#:`` block above ``CLOSED_FAMILIES`` — three places nothing read —
         and all 164 tests stayed green. A pin whose SCOPE is chosen is a pin
-        with a place to write around it.
+        with a place to write around it. Round 10 removed the last chosen
+        scope: a string literal is neither a docstring nor a comment, so the
+        sibling module's declaration table was free prose for a whole round,
+        and the same hole was open here.
+
+        Returns
+        -------
+        dict
+            ``"module"``; ``"doc:<dotted>"`` for every docstring at any depth;
+            ``"note:<subject>#n"`` per ``#:`` block, ``n`` distinguishing
+            repeats of one subject; and ``"strings:<owner>"`` carrying every
+            non-docstring string constant an owner encloses, in source order.
         """
         module = importlib.import_module("dskit.pipeline.uncertainty_intake")
         source = inspect.getsource(module)
@@ -1612,24 +1798,102 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
                     walk(child, f"{name}.")
 
         walk(tree, "")
-        lines = source.splitlines()
-        block, started = [], False
+        out.update(TestTheRegistryIsWriteOnlyThroughItsFrontDoor._string_constants(tree))
+        out.update(
+            TestTheRegistryIsWriteOnlyThroughItsFrontDoor._note_blocks(source.splitlines())
+        )
+        return out
+
+    @staticmethod
+    def _assigned_name(node):
+        """The single plain name a statement assigns to, or None."""
+        targets = getattr(node, "targets", None) or (
+            [node.target] if isinstance(node, ast.AnnAssign) else []
+        )
+        if len(targets) == 1 and isinstance(targets[0], ast.Name):
+            return targets[0].id
+        return None
+
+    @staticmethod
+    def _string_constants(tree):
+        """``{"strings:<owner>": joined text}`` for every non-docstring literal."""
+        buckets = {}
+        named_of = TestTheRegistryIsWriteOnlyThroughItsFrontDoor._assigned_name
+
+        def descend(node, owner):
+            docstring = None
+            if isinstance(
+                node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                body = node.body
+                if (
+                    body
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)
+                ):
+                    # The STATEMENT, not its value: the loop below iterates
+                    # statements, so comparing against the Constant matches
+                    # nothing and every docstring is collected twice.
+                    docstring = body[0]
+            for child in ast.iter_child_nodes(node):
+                if child is docstring:
+                    continue
+                if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                    buckets.setdefault(owner, []).append(child.value)
+                    continue
+                if isinstance(
+                    child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
+                    descend(child, f"{owner}.{child.name}" if owner else child.name)
+                    continue
+                named = (
+                    named_of(child)
+                    if isinstance(child, (ast.Assign, ast.AnnAssign))
+                    else None
+                )
+                descend(
+                    child, f"{owner}.{named}" if owner and named else (named or owner)
+                )
+
+        descend(tree, "")
+        return {
+            f"strings:{owner or '<module>'}": "\x00".join(texts)
+            for owner, texts in buckets.items()
+        }
+
+    @staticmethod
+    def _note_blocks(lines):
+        """``{"note:<subject>#n": joined text}`` for every ``#:`` comment block."""
+        out, block, subjects = {}, [], collections.Counter()
+
+        def flush(index):
+            subject = next((text.strip() for text in lines[index:] if text.strip()), "")
+            # The ordinal is in the key ON PURPOSE. Keying by subject alone
+            # COLLIDES when a name is documented twice — this module assigns
+            # CLOSED_FAMILIES in two places, each with its own ``#:`` block,
+            # and the second silently overwrote the first, so the very note
+            # carrying "drift protection, not a boundary" was not pinned at
+            # all. Round 9 used the LINE NUMBER, which collides with nothing
+            # but moves every key below any insertion: a one-line edit
+            # reported dozens of moved digests, and a pin nobody can read is a
+            # pin people regenerate without reading (round-10 review). An
+            # ordinal per subject is stable and just as unique.
+            label = subject.split("=")[0].strip()[:48]
+            subjects[label] += 1
+            out[f"note:{label}#{subjects[label]}"] = " ".join(block)
+
         for index, line in enumerate(lines):
             if line.lstrip().startswith("#:"):
-                started = True
                 block.append(line.strip()[2:].strip())
-            elif started:
-                subject = next((text.strip() for text in lines[index:] if text.strip()), "")
-                # The line number is in the key ON PURPOSE. Keying by subject
-                # alone COLLIDES when a name is documented twice — this module
-                # assigns CLOSED_FAMILIES in two places, each with its own
-                # ``#:`` block, and the second silently overwrote the first, so
-                # the very note carrying "drift protection, not a boundary" was
-                # not pinned at all. Found by mutation, after the reach test
-                # had already passed on nothing but the key's existence.
-                label = subject.split("=")[0].strip()[:48]
-                out[f"note:{label}@{index}"] = " ".join(block)
-                block, started = [], False
+            elif block:
+                flush(index)
+                block = []
+        if block:
+            # A block running to the END OF FILE never meets a following line,
+            # so a scanner that only emits inside the loop drops it, and prose
+            # appended at EOF is pinned by nothing (round-10 review).
+            flush(len(lines))
         return out
 
     @staticmethod
@@ -1651,72 +1915,126 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
     #: docstring edit in this module needs a digest update, and that is the
     #: cost of a module whose prose has been wrong four rounds running.
     _PINNED_MODULE_PROSE = {
-        "doc:AttestedFalseSignalRate": "1f14651ef2417cf5",
-        "doc:AttestedFalseSignalRate.artifact_producer": "d9e08ab82df75b5b",
-        "doc:AttestedFalseSignalRate.artifact_type": "66df7f8b64dca19b",
-        "doc:AttestedFalseSignalRate.estimand": "e7d01bd6fc21c420",
-        "doc:AttestedFalseSignalRate.excluded_types": "8cdf1764f3158f8a",
-        "doc:AttestedFalseSignalRate.registered_producers": "71c29cd72f3a324f",
-        "doc:AttestedMeanConfidence": "2c1edfba70ac308d",
-        "doc:AttestedMeanConfidence.artifact_producer": "49732ddd807c1b57",
-        "doc:AttestedMeanConfidence.artifact_type": "1623fb3c3daef0b4",
-        "doc:AttestedMeanConfidence.estimand": "df0a831234194da8",
-        "doc:AttestedMeanConfidence.excluded_types": "48596e210b69d867",
-        "doc:AttestedMeanConfidence.registered_producers": "ec3c3d7d3d3e2745",
-        "doc:AttestedOutcomeBand": "2302287b8b197240",
-        "doc:AttestedOutcomeBand.artifact_producer": "53b5c2972d6fa909",
-        "doc:AttestedOutcomeBand.artifact_type": "38eb84e828b9d8a1",
-        "doc:AttestedOutcomeBand.estimand": "ec2ec7c575b4ac79",
-        "doc:AttestedOutcomeBand.excluded_types": "c942a643adbac72e",
-        "doc:AttestedOutcomeBand.registered_producers": "953b066c22ace2fb",
-        "doc:AttestedUncertainty": "bb38cc3300582493",
-        "doc:AttestedUncertainty.__init_subclass__": "de23728b5f28e384",
-        "doc:AttestedUncertainty.admit": "cb64ab4b57be3d40",
-        "doc:AttestedUncertainty.artifact": "7df8c12b6a5f2399",
-        "doc:AttestedUncertainty.artifact_producer": "bebd83e9f375d968",
-        "doc:AttestedUncertainty.artifact_type": "71b79018d8513e63",
-        "doc:AttestedUncertainty.attestation": "c5b514760c5ea9ff",
-        "doc:AttestedUncertainty.estimand": "1b665d3dbb9bb2b6",
-        "doc:AttestedUncertainty.excluded_types": "391a36a11f0c36fe",
-        "doc:AttestedUncertainty.problems": "120ca5c7a77043d9",
-        "doc:AttestedUncertainty.registered_producers": "3b7bfb859835772f",
-        "doc:CoverageEvidence": "e1792884d9e8890b",
-        "doc:CoverageEvidence.__post_init__": "b49cc3e776d4501f",
-        "doc:DecisionDemand": "fa5fc22a2d44941f",
-        "doc:DecisionDemand.__post_init__": "1265443abfc3ce2b",
-        "doc:ProbabilityUpperBound": "e34ca5b5e35504e9",
-        "doc:UncertaintyAttestation": "3a547b353c1311b2",
-        "doc:UncertaintyAttestation.__post_init__": "21c1bb17309da959",
-        "doc:_answering": "4fd21c349bfceab3",
-        "doc:_artifact_problems": "28137696869ce46e",
-        "doc:_ask": "f03a5e6403b6dd64",
-        "doc:_check_open_unit": "30d3e7d0490d7b28",
-        "doc:_check_stamp": "2eae1d723921c3ec",
-        "doc:_check_text": "efc17946ee1a7f27",
-        "doc:_coverage_problems": "59f3b7acad93aad2",
-        "doc:_declarations": "4c16d768ac0c812b",
-        "doc:_identity_problems": "b22ad2f8bde664c6",
-        "doc:_producer_problems": "8c854b83b6b5fc3d",
-        "doc:_question_problems": "b0b4b9bf1425d5bd",
-        "doc:_raw": "1f95cb0f3fb6b5d5",
-        "doc:_registered_classes": "b85c4bd73a64c1ef",
-        "doc:_sealed_registry": "2ee38cb8078d4c49",
-        "doc:_sealed_registry.register": "5a03bc840541e945",
-        "doc:_sealed_registry.register.forget": "394343b9283b6bec",
-        "doc:_timing_problems": "6d91c692db2704cf",
-        "doc:admission_problems": "19afd8d295f61e1d",
-        "doc:admit_uncertainty": "c61e8001098b2346",
-        "doc:artifact_of": "8ff1040b8b8fdd0d",
-        "doc:attestation_of": "e50d2fe2d1b81166",
-        "doc:register_uncertainty_intake": "c0116dbf01e1479b",
-        "doc:uncertainty_intake": "7e6951e8bccce5f2",
-        "module": "dd17688469567daa",
-        "note:CLOSED_FAMILIES@1425": "991d1f583e217540",
-        "note:CLOSED_FAMILIES@206": "1e2ad777643dbf5d",
-        "note:REFUSAL_REASONS@186": "30a119c86f1cd445",
-        "note:UNCERTAINTY_INTAKES, _register_intake@334": "279b5c5c34652ddc",
-        "note:_FINAL_METHODS@631": "fdca5d5ee9a15038",
-        "note:_HOOKS@642": "4ac957da937c3172",
+        'doc:AttestedFalseSignalRate': '1f14651ef2417cf5',
+        'doc:AttestedFalseSignalRate.artifact_producer': 'd9e08ab82df75b5b',
+        'doc:AttestedFalseSignalRate.artifact_type': '66df7f8b64dca19b',
+        'doc:AttestedFalseSignalRate.estimand': 'e7d01bd6fc21c420',
+        'doc:AttestedFalseSignalRate.excluded_types': '8cdf1764f3158f8a',
+        'doc:AttestedFalseSignalRate.registered_producers': '71c29cd72f3a324f',
+        'doc:AttestedMeanConfidence': '2c1edfba70ac308d',
+        'doc:AttestedMeanConfidence.artifact_producer': '49732ddd807c1b57',
+        'doc:AttestedMeanConfidence.artifact_type': '1623fb3c3daef0b4',
+        'doc:AttestedMeanConfidence.estimand': 'df0a831234194da8',
+        'doc:AttestedMeanConfidence.excluded_types': '48596e210b69d867',
+        'doc:AttestedMeanConfidence.registered_producers': 'ec3c3d7d3d3e2745',
+        'doc:AttestedOutcomeBand': '2302287b8b197240',
+        'doc:AttestedOutcomeBand.artifact_producer': '53b5c2972d6fa909',
+        'doc:AttestedOutcomeBand.artifact_type': '38eb84e828b9d8a1',
+        'doc:AttestedOutcomeBand.estimand': 'ec2ec7c575b4ac79',
+        'doc:AttestedOutcomeBand.excluded_types': 'c942a643adbac72e',
+        'doc:AttestedOutcomeBand.registered_producers': '953b066c22ace2fb',
+        'doc:AttestedUncertainty': 'bb38cc3300582493',
+        'doc:AttestedUncertainty.__init_subclass__': 'de23728b5f28e384',
+        'doc:AttestedUncertainty.admit': 'cb64ab4b57be3d40',
+        'doc:AttestedUncertainty.artifact': '7df8c12b6a5f2399',
+        'doc:AttestedUncertainty.artifact_producer': 'bebd83e9f375d968',
+        'doc:AttestedUncertainty.artifact_type': '71b79018d8513e63',
+        'doc:AttestedUncertainty.attestation': 'c5b514760c5ea9ff',
+        'doc:AttestedUncertainty.estimand': '1b665d3dbb9bb2b6',
+        'doc:AttestedUncertainty.excluded_types': '391a36a11f0c36fe',
+        'doc:AttestedUncertainty.problems': '120ca5c7a77043d9',
+        'doc:AttestedUncertainty.registered_producers': '3b7bfb859835772f',
+        'doc:CoverageEvidence': 'e1792884d9e8890b',
+        'doc:CoverageEvidence.__post_init__': 'b49cc3e776d4501f',
+        'doc:DecisionDemand': 'fa5fc22a2d44941f',
+        'doc:DecisionDemand.__post_init__': '1265443abfc3ce2b',
+        'doc:ProbabilityUpperBound': 'e34ca5b5e35504e9',
+        'doc:UncertaintyAttestation': '3a547b353c1311b2',
+        'doc:UncertaintyAttestation.__post_init__': '21c1bb17309da959',
+        'doc:_answering': '4fd21c349bfceab3',
+        'doc:_artifact_problems': '28137696869ce46e',
+        'doc:_ask': 'f03a5e6403b6dd64',
+        'doc:_check_open_unit': '30d3e7d0490d7b28',
+        'doc:_check_stamp': '2eae1d723921c3ec',
+        'doc:_check_text': 'efc17946ee1a7f27',
+        'doc:_coverage_problems': '59f3b7acad93aad2',
+        'doc:_declarations': '4c16d768ac0c812b',
+        'doc:_identity_problems': 'b22ad2f8bde664c6',
+        'doc:_is_a_tuple_of_types': '5e5eae7d3976d5bd',
+        'doc:_is_a_type': '4df71ed2a283f982',
+        'doc:_is_nonempty_text': 'de197cba907cc7d9',
+        'doc:_producer_problems': '8c854b83b6b5fc3d',
+        'doc:_question_problems': 'b0b4b9bf1425d5bd',
+        'doc:_raw': '7ce33ee5e4322a1b',
+        'doc:_registered_classes': 'b85c4bd73a64c1ef',
+        'doc:_sealed_registry': '2ee38cb8078d4c49',
+        'doc:_sealed_registry.register': '5a03bc840541e945',
+        'doc:_sealed_registry.register.forget': '394343b9283b6bec',
+        'doc:_shape_problem': '467182cb0cde34a1',
+        'doc:_timing_problems': '6d91c692db2704cf',
+        'doc:admission_problems': '19afd8d295f61e1d',
+        'doc:admit_uncertainty': 'c61e8001098b2346',
+        'doc:artifact_of': '8ff1040b8b8fdd0d',
+        'doc:attestation_of': 'e50d2fe2d1b81166',
+        'doc:register_uncertainty_intake': 'c0116dbf01e1479b',
+        'doc:uncertainty_intake': '7e6951e8bccce5f2',
+        'module': 'dd17688469567daa',
+        'note:CLOSED_FAMILIES#1': '1e2ad777643dbf5d',
+        'note:CLOSED_FAMILIES#2': '991d1f583e217540',
+        'note:HOOK_SHAPES#1': 'f8f08a6546bed41d',
+        'note:REFUSAL_REASONS#1': '30a119c86f1cd445',
+        'note:UNCERTAINTY_INTAKES, _register_intake#1': '279b5c5c34652ddc',
+        'note:_FINAL_METHODS#1': 'fdca5d5ee9a15038',
+        'note:_HOOKS#1': '4ac957da937c3172',
+        'note:_REAL_INSTANCE_DICT#1': '92be33912621af8d',
+        'strings:<module>': '9d1a31167c491b08',
+        'strings:AttestedFalseSignalRate.artifact_producer.evidence': 'ee8250fb76e094b3',
+        'strings:AttestedFalseSignalRate.artifact_producer.value': '9e9d1d18fef11867',
+        'strings:AttestedFalseSignalRate.estimand': '7cbc6e80bbf878c0',
+        'strings:AttestedFalseSignalRate.registered_producers': '84cdb981037648c4',
+        'strings:AttestedMeanConfidence.artifact_producer': '5b7e6bf2dc4a32a6',
+        'strings:AttestedMeanConfidence.estimand': 'eb3510d2e9f3d4be',
+        'strings:AttestedMeanConfidence.registered_producers': '84cdb981037648c4',
+        'strings:AttestedOutcomeBand.artifact_producer.provenance': '96d815328a42cb4e',
+        'strings:AttestedOutcomeBand.artifact_producer.value': '2da4837e4646bf77',
+        'strings:AttestedOutcomeBand.estimand': '6b352f1f91206ac2',
+        'strings:AttestedOutcomeBand.registered_producers': '84cdb981037648c4',
+        'strings:AttestedUncertainty._FINAL_METHODS': 'e916ca5bd8a9b984',
+        'strings:AttestedUncertainty._HOOKS': 'beb9f53be698ea60',
+        'strings:AttestedUncertainty.__init__': '5824877a7088fd9b',
+        'strings:AttestedUncertainty.__init__.shape': '514d8361d1551dca',
+        'strings:AttestedUncertainty.__init_subclass__': '9aa5a0cef5b7638d',
+        'strings:CoverageEvidence.__post_init__': '4ab4436d747f81a0',
+        'strings:DecisionDemand.__post_init__': '4a0ea84b3ccdf48e',
+        'strings:HOOK_SHAPES': 'd6e73ccbe75a5e75',
+        'strings:REFUSAL_REASONS': '4bcfda79a17b9352',
+        'strings:UncertaintyAttestation.__post_init__': '85e8f1ef5f767a14',
+        'strings:_REAL_INSTANCE_DICT': '92eb897dbef811d4',
+        'strings:__all__': '89cb128949da7768',
+        'strings:_artifact_problems': 'd4061c06109a7f8c',
+        'strings:_artifact_problems.wanted': 'ca9066873bf335f3',
+        'strings:_ask': '0a0f63e476ec298f',
+        'strings:_check_open_unit': '4704f15d48a31cb8',
+        'strings:_check_stamp': '72809e0caa0262b2',
+        'strings:_check_text': '3e57775728fc8c25',
+        'strings:_coverage_problems': '1a0e20bdc51131d5',
+        'strings:_declarations': 'dea99ea645ec954f',
+        'strings:_identity_problems': '754165e436c4443e',
+        'strings:_producer_problems': '9f7b009dda4526b1',
+        'strings:_producer_problems.known': 'cd14f4034ca2bb6a',
+        'strings:_question_problems': 'e367f50ee01c454b',
+        'strings:_sealed_registry.register': 'ea3fabe01f482e2e',
+        'strings:_sealed_registry.register.detail': '6f49ee1220f4c78e',
+        'strings:_shape_problem': 'd89152334e844b24',
+        'strings:_timing_problems': 'b64ba1fb94101d77',
+        'strings:admission_problems': '7c98041db745d397',
+        'strings:admission_problems.artifact': 'db092579c82a65ac',
+        'strings:admission_problems.attestation': 'c640e0b78bdecdee',
+        'strings:admit_uncertainty': 'a887dc36acd61b11',
+        'strings:artifact_of': 'db092579c82a65ac',
+        'strings:attestation_of': 'c640e0b78bdecdee',
+        'strings:register_uncertainty_intake': 'e3b0c44298fc1c14',
+        'strings:uncertainty_intake': 'c4af93e3565d4052',
     }
 
     def test_every_piece_of_prose_in_the_module_is_pinned_by_digest(self):
@@ -1743,22 +2061,114 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         independent AST walk.
         """
         prose = self._module_prose()
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        tree = ast.parse(inspect.getsource(module))
         assert "module" in prose
         assert "doc:admission_problems" in prose
+        assert "doc:_raw" in prose
         notes = [k for k in prose if k.startswith("note:")]
-        closed = [k for k in notes if k.startswith("note:CLOSED_FAMILIES@")]
+        closed = [k for k in notes if k.startswith("note:CLOSED_FAMILIES#")]
         assert len(closed) == 2, (
             f"both CLOSED_FAMILIES notes must be pinned separately, got {closed}"
         )
         # No two blocks may share a key, or one is silently unpinned.
         assert len(set(notes)) == len(notes)
-        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
         independent = sum(
-            1 for node in ast.walk(ast.parse(inspect.getsource(module)))
+            1 for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
             and ast.get_docstring(node)
         )
         assert sum(1 for k in prose if k.startswith("doc:")) == independent
+        # …and the literals are TOTAL, not a sample. Round-10 review found the
+        # sibling module's declaration table unpinned for a whole round because
+        # a string constant is neither a docstring nor a comment.
+        docstrings = {
+            id(node.body[0].value)
+            for node in ast.walk(tree)
+            if isinstance(
+                node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+            and node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        }
+        every_literal = [
+            node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        ]
+        collected = [
+            text
+            for key in prose if key.startswith("strings:")
+            for text in prose[key].split("\x00")
+        ]
+        assert sorted(collected) == sorted(every_literal)
+
+    def test_a_note_block_at_the_end_of_the_file_is_still_captured(self):
+        """A ``#:`` block with no following line is prose too.
+
+        The scanner emitted a block only when a non-comment line followed, so
+        documentation appended at EOF was pinned by nothing (round-10 review).
+        Asserted on synthetic lines, so it keeps holding whatever this module's
+        last line becomes.
+        """
+        assert self._note_blocks(["#: mid-file", "SOMETHING = 1"]) == {
+            "note:SOMETHING#1": "mid-file"
+        }
+        assert self._note_blocks(["X = 1", "#: the tail"]) == {"note:#1": "the tail"}
+        twice = self._note_blocks(["#: first", "SAME = 1", "#: second", "SAME = 2"])
+        assert twice == {"note:SAME#1": "first", "note:SAME#2": "second"}
+
+    def test_the_live_docstrings_are_the_ones_the_pin_digested(self):
+        """``__doc__`` is writable; the pin reads source. They must not diverge.
+
+        A module that appends to a docstring after defining it publishes prose
+        no source-reading pin can see. Every docstring reachable on the live
+        module is compared with the one parsed out of the source.
+        """
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        source = self._module_prose()
+        live = {}
+        if module.__doc__:
+            live["module"] = inspect.cleandoc(module.__doc__)
+
+        def visit(owner, prefix, seen):
+            for name, value in vars(owner).items():
+                target = value
+                if isinstance(target, (classmethod, staticmethod)):
+                    target = target.__func__
+                if isinstance(target, property):
+                    target = target.fget
+                if not (inspect.isclass(target) or inspect.isfunction(target)):
+                    continue
+                if getattr(target, "__module__", None) != module.__name__:
+                    continue
+                if id(target) in seen:
+                    continue
+                seen.add(id(target))
+                # Keyed by __qualname__ with the closure marker stripped, NOT
+                # by the name it is bound to: `_register_intake` is defined
+                # inside `_sealed_registry` and exported under another name, so
+                # the binding name and the source path genuinely differ.
+                dotted = target.__qualname__.replace(".<locals>", "")
+                if target.__doc__:
+                    live[f"doc:{dotted}"] = inspect.cleandoc(target.__doc__)
+                if inspect.isclass(target):
+                    visit(target, f"{dotted}.", seen)
+
+        visit(module, "", set())
+        assert live and "module" in live
+        missing = sorted(set(live) - set(source))
+        assert not missing, (
+            f"live docstrings the source pin never saw: {missing} — __doc__ was "
+            "written at run time"
+        )
+        differing = sorted(key for key in live if live[key] != source[key])
+        assert not differing, (
+            f"live __doc__ differs from the source the pin digests: {differing}"
+        )
 
     @staticmethod
     def _set_abstract(reg):
@@ -1845,10 +2255,24 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
          classmethod(lambda cls: None), "is not a type"),
         ("estimand-empty", "estimand",
          classmethod(lambda cls: ""), "is not a non-empty string"),
+        # NON-STRING BUT TRUTHY, the half the empty case cannot reach: drop
+        # `isinstance(value, str)` from the estimand rule and only this row
+        # notices (round-11 sweep).
+        ("estimand-nonstring", "estimand",
+         classmethod(lambda cls: 7), "is not a non-empty string"),
         ("excluded_types-list", "excluded_types",
          classmethod(lambda cls: [object]), "not a tuple of types"),
         ("registered_producers-str", "registered_producers",
          classmethod(lambda cls: "nope"), "not a tuple of classes"),
+        # RIGHT CONTAINER, WRONG ELEMENT. Round-11 review: every row above
+        # tests the outer type only, so dropping `all(isinstance(i, type) ...)`
+        # from either shape rule survived the whole suite — and that half is
+        # the one standing between a typo'd declaration and a TypeError inside
+        # `isinstance` at a risk gate.
+        ("excluded_types-nontype-element", "excluded_types",
+         classmethod(lambda cls: (42,)), "not a tuple of types"),
+        ("registered_producers-nontype-element", "registered_producers",
+         classmethod(lambda cls: ("dskit.pipeline.x:Y",)), "not a tuple of classes"),
         ("artifact_type-raises", "artifact_type",
          classmethod(_boom), "raised RuntimeError"),
         ("estimand-raises", "estimand", classmethod(_boom), "raised RuntimeError"),
@@ -2148,8 +2572,107 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         # A raise there is not at the capital gate, but it should still name
         # the member rather than escape as a bare RuntimeError.
         member, artifact = _probe_member({hook: classmethod(_boom)})
-        with pytest.raises(ValueError, match=hook):
+        with pytest.raises(ValueError, match=hook) as raised:
             member(artifact, _attestation(producer=MEAN_PRODUCER))
+        # …and it must be the HOOK'S OWN failure that surfaced. Round-11
+        # review: for `artifact_type` and `excluded_types`, deleting the raise
+        # that carries the hook's exception text fell through to a shape
+        # refusal that happens to name the same hook, so a `match=hook` test
+        # could not tell the two apart. The exception class is only in the
+        # first message.
+        assert "raised RuntimeError" in str(raised.value), str(raised.value)
+
+    @pytest.mark.parametrize(
+        "hook,answer",
+        [
+            ("artifact_type", classmethod(lambda cls: None)),
+            ("excluded_types", classmethod(lambda cls: [object])),
+            ("excluded_types", classmethod(lambda cls: (42,))),
+        ],
+        ids=["artifact_type-None", "excluded_types-list", "excluded_types-nontype"],
+    )
+    def test_a_misshapen_hook_answer_REFUSES_at_construction_rather_than_crashing(
+        self, hook, answer
+    ):
+        """Round-11 Major: `(42,)` crashed inside `isinstance`, it did not refuse.
+
+        `__init__`'s early screen checked only that `excluded_types` returned a
+        TUPLE. `_declarations`, the use-time rule, checked the elements too —
+        the same rule written twice, and the two had already drifted. Both now
+        read `HOOK_SHAPES`, so a project registering its own intake with a
+        plausible typo gets the refusal this module's own design promises
+        ("an unhandled exception at a risk gate is worse than a refusal")
+        rather than an opaque TypeError.
+        """
+        member, artifact = _probe_member({hook: answer})
+        with pytest.raises(ValueError, match="which is not"):
+            member(artifact, _attestation(producer=MEAN_PRODUCER))
+
+    def test_one_class_may_answer_to_a_SECOND_name(self):
+        """`or other is cls` is what makes an alias legal, and it was unpinned.
+
+        Round-11 review: dropping the right half of
+        ``other_name == name or other is cls`` survived the whole suite,
+        because no test ever registered a shipped class under a second name —
+        so a supported-looking behaviour rested on a clause nothing exercised.
+        The claim is `name`'s docstring: "unique unless it already maps to
+        ``cls``".
+        """
+        member = UNCERTAINTY_INTAKES["outcome_band"]
+        forget = register_uncertainty_intake("tests_alias_for_outcome_band", member)
+        try:
+            assert UNCERTAINTY_INTAKES["tests_alias_for_outcome_band"] is member
+            assert UNCERTAINTY_INTAKES["outcome_band"] is member
+        finally:
+            forget()
+        assert "tests_alias_for_outcome_band" not in UNCERTAINTY_INTAKES
+
+    def test_the_fallback_docstring_is_only_a_FALLBACK(self):
+        """`doc=` fills an undocumented member and never overwrites a documented one.
+
+        Round-11 review: both halves of ``cls.__doc__ = cls.__doc__ or doc``
+        survived — the convenience was entirely untested in either direction.
+        Documentation only; recorded because an untested branch is how a
+        documented class silently loses its docstring.
+        """
+        documented = UNCERTAINTY_INTAKES["outcome_band"]
+        its_own = documented.__doc__
+        forget = register_uncertainty_intake(
+            "tests_doc_probe", documented, doc="a fallback nobody should see"
+        )
+        try:
+            assert documented.__doc__ is its_own
+        finally:
+            forget()
+
+        bare, _ = _probe_member({})
+        bare.__doc__ = None
+        forget = register_uncertainty_intake("tests_bare_probe", bare, doc="supplied")
+        try:
+            assert bare.__doc__ == "supplied"
+        finally:
+            forget()
+
+    def test_the_two_screens_read_ONE_shape_rule(self):
+        """The construction screen and the use-time rule cannot drift apart again.
+
+        They were the same rule written twice and had already diverged. This
+        asserts the table is the only place either reads, and that it covers
+        every hook whose ANSWER has a shape (`artifact_producer` takes an
+        argument and is screened per artifact, not per declaration).
+        """
+        from dskit.pipeline import uncertainty_intake as module
+
+        assert set(module.HOOK_SHAPES) == {
+            "estimand", "artifact_type", "excluded_types", "registered_producers",
+        }
+        assert set(module.HOOK_SHAPES) < set(module.AttestedUncertainty._HOOKS)
+        source = inspect.getsource(module)
+        body = source[source.index("class AttestedUncertainty"):]
+        constructor = body[body.index("    def __init__("):]
+        constructor = constructor[:constructor.index("\n    @")]
+        assert "_shape_problem" in constructor
+        assert "isinstance(excluded_types, tuple)" not in constructor
 
     def test_no_other_module_level_state_the_screens_trust_is_mutable(self):
         # Sweep: everything else this module exports that a screen reads is

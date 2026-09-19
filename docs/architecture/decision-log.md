@@ -17373,7 +17373,14 @@ round in which a committed audit number failed to reproduce, and the cause is
 the same every time: the battery is a throwaway script, so the recipe lives in
 prose and the number cannot be regenerated. Commit the battery as a `tools/`
 script that emits the table. No file was created for it here, per the
-repository's ask-before-writing-files rule.
+repository's ask-before-writing-files rule. (Round-10 review measured a
+footgun in that recommendation and round 10 removed its cause: while `#:`
+notes were keyed by absolute line, any block DELETION shifted every later key
+and added `test_every_piece_of_prose_in_the_module_is_pinned_by_digest` to the
+count, so a naive battery overcounted by one per row. Its two recorded rows
+reproduce exactly when the same logical revert is made line-count-neutrally,
+and the ordinal keys now in place mean a deleting battery reproduces them
+too.)
 
 **Major — two MORE `_ask` sites had no test for their raise path.** Round 6
 said "two sites, now both pinned"; counting the two named here, four of the
@@ -17595,3 +17602,171 @@ does not cross, or a limit of what was measured.
 8. **The equivalent mutant** in the table has, by construction, no test that
    fails when it is reverted. That is what "equivalent" means, and the proof
    above is what stands in for coverage.
+
+### Round 10 correction — the reader that ran the descriptor protocol it was meant to escape
+
+Two independent fresh-context lenses on `5c787ef`. The first returned 1 Critical
+and 1 Major; both are closed here, with its two Minors.
+
+**CRITICAL — a class-level descriptor over the SLOT NAME forged an admission,
+silently and process-wide.** `_raw` read `object.__getattribute__(envelope,
+name)` under the docstring claim "past any redefined descriptor", and
+`admission_problems` claimed "the artifact and attestation are re-read from the
+instance at every call … so a value swapped in after construction is refused on
+the next call". Both were false. `object.__getattribute__` runs the FULL
+descriptor protocol: a data descriptor on the type, under the name being read,
+wins over the instance slot. Only a redefinition under a DIFFERENT name — which
+is what `TestTheAccessorsReadTheScreenedValues` had always used — was bypassed.
+
+The reproducer needs no subclass, no metaclass, no `ABCMeta.register`, no
+`__bases__` rebinding and no edit to this file. Two assignments on an
+already-registered, already-shipped class:
+
+```python
+AttestedOutcomeBand._artifact = property(lambda self: forged_band)
+AttestedOutcomeBand._attestation = property(lambda self: forged_stamp)
+admission_problems(envelope, demand, AttestedOutcomeBand)   # -> []
+admit_uncertainty(envelope, demand, AttestedOutcomeBand) is envelope   # True
+attestation_of(envelope).artifact_id   # -> the forged id
+```
+
+`children/intraday_equities/nodes_capital.py` reads the admitted artifact
+through `artifact_of`/`attestation_of`, so the same two lines against
+`AttestedFalseSignalRate` would have sized capital against fabricated `pi_hat`
+and `pi_widened` for every envelope of that class while the seam kept reporting
+a clean admission. This was the trust root, not a bypass around it.
+
+The fix takes nothing on the type: `_REAL_INSTANCE_DICT` is
+`AttestedUncertainty.__dict__["__dict__"].__get__`, bound once at import, and
+`_raw` reads the instance dict through it. The same idiom as
+`final_model._REAL_MRO`, and for the same reason — a class may define, redefine
+or shadow any NAME, but it cannot reach inside a reference this module took
+before any member existed. Two regression rows pin it: a descriptor over the
+slot names themselves, and a hostile `__getattribute__` on the class. The
+second closes the first lens's MINOR-2, which measured that replacing the
+reader with a plain `getattr` left all 176 tests green — the one defence `_raw`
+had earned was free to be refactored away.
+
+**MAJOR — the third boundary in `_timing_problems`, six lines from the second.**
+Relaxing `calibration_end_ms > decision_ts_ms` to `>=` left all 176 tests green.
+Round 9's own self-review had named and fixed the two boundaries around it
+(`measured < min` and `known_at_ms > decision_ts_ms`) and missed this one, which
+is the same rule about the same stamp in the same function — the third
+occurrence of a defect class this entry had already named twice. A window
+ending AT the decision instant used data that existed when the decision was
+taken; only one reaching past it is a look-ahead. `UncertaintyAttestation`
+refuses a window ending after the artifact became knowable, so the two stamps
+cannot be varied apart — the new row asserts the messages BY NAME rather than by
+count, so it proves the calibration rule and not only its neighbour.
+
+**MINOR — the prose pin's own keys were the churn.** `#:` notes were keyed by
+absolute source line, so any line-count-changing edit reported every later note
+as moved, and the lens measured its own revert battery overcounting by one per
+row for exactly that reason. Keys are now `<label>#<ordinal>`, which collides
+with nothing (the two `CLOSED_FAMILIES` blocks stay separate, still asserted)
+and moves for nothing. Ported from the sibling module's round-10 fix along with
+its other two: a `#:` block running to END OF FILE is now flushed, and every
+non-docstring STRING LITERAL is pinned under `strings:<owner>` — a string
+constant is neither a docstring nor a comment, and the sibling's declaration
+table was free prose for a whole round through that hole. A totality assertion
+against an independent AST count holds the `strings:` buckets honest, and a
+live-object walk asserts every reachable `__doc__` equals the source the pin
+digests, keyed by `__qualname__` because `_register_intake` is defined inside
+`_sealed_registry` and exported under another name.
+
+**Equivalent mutants, stated rather than contrived around.** Widening `_raw`'s
+`except TypeError` to `except Exception` survives: `_REAL_INSTANCE_DICT` raises
+`TypeError` for a non-instance and returns a real `dict` otherwise (an instance
+`__dict__` cannot be rebound to a non-dict), so `.get` cannot raise and no other
+exception is reachable. The first lens independently re-derived the three
+equivalences round 8 and round 9 recorded, and found no undeclared ones.
+
+Round-10 sweep: fifteen mutations over the accessor primitive, the three timing
+boundaries, both admission terms and the prose machinery — fourteen killed, one
+the equivalent above. 181 tests in `tests/pipeline/test_uncertainty_intake.py`.
+
+### Round 11 correction — one shape rule, three unpinned boundaries, and a demo that refused itself
+
+The second lens on `5c787ef` returned 1 Critical and 10 Major. Every one is
+closed or recorded here, and one of its attributions is corrected.
+
+**The Critical's substance stands; its attribution does not.** The shipped
+`run-mio-demo.json` carried a `bundle_artifact_sha256` that no longer matched
+what `SyntheticMioSource` emits, so `EquityKellyMIO.validate_inputs` returned a
+hash mismatch and the ONE document whose stated purpose is "this proves the
+refusal machinery runs" refused itself before demonstrating anything — and for
+the wrong reason. The lens called the failing test mis-filed as pre-existing;
+it is not. `test_mio_demo_source_emits_a_release_matched_nonproduction_cap`
+fails at base `842d226` too, checked directly on a detached worktree, so it is
+not this branch's regression. It IS this branch's to fix: the branch edited
+that pin once when the `uncertainty` port was added, and the bundle moved
+again afterwards without a re-sync. CLAUDE.md's own named defect, a value in
+two places with nothing pinning them. The pin is re-synced, the test carries
+the regeneration command in its failure message, and the child's known-failure
+count drops from 33 to 32.
+
+**Major — the shape rule was written twice and had already drifted.**
+`__init__`'s early screen checked only that `excluded_types` returned a TUPLE;
+`_declarations`, the use-time rule, checked its elements too. A member
+answering `(42,)` therefore crashed inside `isinstance` with a `TypeError` at a
+risk gate, against this module's own repeated promise that an unhandled
+exception there is worse than a refusal — and a project registering its own
+intake with a plausible typo is the supported use case that hits it. There is
+one owner now, `HOOK_SHAPES`, read by both, with a test asserting the
+constructor no longer spells the rule itself. The `all(isinstance(i, type))`
+half was separately unpinned in `_declarations` (every misbehaving-hook row
+tested the outer container only); two rows with the right container and a
+wrong ELEMENT close it.
+
+**Major — three more boundary-inclusivity gaps, the defect class this entry
+has now named four times.** `n_units < 1`, `calibration_end_ms >
+known_at_ms`, and `calibration_end_ms > decision_ts_ms` all survived
+relaxation. One unit is the legal minimum the docstring states; a window
+ending at the instant the artifact became knowable covers no time the artifact
+predates; a window ending at the decision instant is not a look-ahead. The
+third could not be varied alone — `UncertaintyAttestation` refuses a window
+ending after the artifact became knowable, so it drags `known_at_ms` past the
+decision too — so that row asserts the two messages BY NAME rather than by
+count.
+
+**Major — the bool exclusion was unpinned on the trust root's own input.** A
+bool IS an int in Python and `True` is an ordinary epoch of 1 ms. Deleting the
+exclusion from `_check_stamp` left every `DecisionDemand` stamp silently
+admitting it, and the attestation row that LOOKED like coverage
+(`{"known_at_ms": True}`) was proven to refuse for an unrelated ordering
+coincidence with the fixture's default. Each stamp now says so for itself,
+against the message the exclusion produces, with both stamps zeroed first so
+the ordering rule cannot be what answers.
+
+**Major — the "must be a STRING" half of two rules.** Every "unusable" row
+tested EMPTINESS, never a truthy value of the wrong type, so dropping
+`isinstance(value, str)` from `_check_text` or from the estimand shape
+survived. Both are pinned.
+
+**Major — the raise that carries a hook's own exception text.** For
+`artifact_type` and `excluded_types`, deleting it fell through to a shape
+refusal naming the same hook, so a `match=hook` assertion could not tell the
+hook's real failure from a generic fallback. The exception class appears only
+in the first message, and is now asserted.
+
+**Major — two supported behaviours resting on unexercised clauses.**
+`or other is cls` is what lets one class answer to a second name, and nothing
+ever registered a shipped class under an alias. `cls.__doc__ = cls.__doc__ or
+doc` is a fallback, and neither half was tested in either direction. Both are
+pinned; the second is documentation only and recorded as such.
+
+**Recorded, not fixed.** The `artifact_producer` `isinstance(..., Mapping)`
+guards in two members are exercised-but-safe: every call on the real rule path
+goes through `_ask`, which catches and codes any crash. They are only exposed
+if `artifact_producer` is called directly and unprotected.
+
+**Nit, and it mattered.** The child's integration test asserted through
+`.problems()`, the convenience METHOD resolved through the envelope's own
+class, rather than `admission_problems`, the FUNCTION `nodes_capital.py`
+actually calls and the one this module tells a consumer sizing capital to use.
+A test of the path the child does not take.
+
+Round-11 sweep: nineteen mutations over the accessor primitive, the shared
+shape rule, all four boundaries, both stamp and text exclusions, the registry's
+alias and doc clauses, the demo pin and the prose machinery — all nineteen
+killed. 200 tests in `tests/pipeline/test_uncertainty_intake.py`.

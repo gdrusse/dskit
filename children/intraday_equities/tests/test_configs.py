@@ -117,7 +117,22 @@ def test_mio_demo_source_emits_a_release_matched_nonproduction_cap():
     assert pins["cap_producer_document_sha256"] == caps.producer["document_sha256"]
     assert pins["cap_producer_node"] == caps.producer["node"]
     assert pins["cap_evidence_sha256"] == caps.evidence["sha256"]
-    assert pins["bundle_artifact_sha256"] == ForecastBundle.digest(out["bundle"])
+    # THE PIN, and it drifted once already: the `uncertainty` port changed what
+    # the source emits, the document's hash was updated for that round, and a
+    # later round changed the bundle again without re-syncing — so the ONE
+    # document whose stated purpose is "this proves the refusal machinery runs"
+    # refused itself on a stale hash instead (round-11 review; the failure was
+    # present at base 842d226 too, so it was not this branch's regression, but
+    # this branch edited the pin and owns it). Regenerate with:
+    #   python -c "import sys; sys.path.insert(0, 'children/intraday_equities');
+    #   from intraday_equities.testing import SyntheticMioSource;
+    #   from intraday_equities.forecast_bundle import ForecastBundle;
+    #   print(ForecastBundle.digest(SyntheticMioSource('source', {'seed': 0}).run(None, {})['bundle']))"
+    assert pins["bundle_artifact_sha256"] == ForecastBundle.digest(out["bundle"]), (
+        "run-mio-demo.json's bundle_artifact_sha256 no longer matches what "
+        "SyntheticMioSource emits, so the demo document refuses itself before "
+        "it can demonstrate anything. Regenerate it, in this commit."
+    )
     assert pins["bundle_producer_document_sha256"] == out["bundle"][0]["producer"]["document_sha256"]
     assert pins["bundle_producer_node"] == out["bundle"][0]["producer"]["node"]
     assert pins["bundle_model_manifest_sha256"] == out["bundle"][0]["model_manifest_sha256"]
@@ -145,6 +160,7 @@ def test_mio_demo_source_emits_admissible_attested_uncertainty():
         AttestedFalseSignalRate,
         AttestedOutcomeBand,
         DecisionDemand,
+        admission_problems,
     )
 
     raw = _raw("run-mio-demo.json")
@@ -176,8 +192,12 @@ def test_mio_demo_source_emits_admissible_attested_uncertainty():
         max_calibration_age_ms=pins["uncertainty_max_calibration_age_ms"],
         min_measured_coverage=pins["uncertainty_min_coverage"],
     )
-    assert port["false_signal"].problems(demand, AttestedFalseSignalRate) == []
-    assert port["outcome"].problems(demand, AttestedOutcomeBand) == []
+    # `admission_problems`, never `.problems()`: the function is what
+    # `nodes_capital.py` calls and what the module tells a consumer sizing
+    # capital to use, and the method is resolved through the envelope's own
+    # class. Asserting through the method tests a path the child does not take.
+    assert admission_problems(port["false_signal"], demand, AttestedFalseSignalRate) == []
+    assert admission_problems(port["outcome"], demand, AttestedOutcomeBand) == []
 
     # Every row names these artifacts, and its rates ARE the fitted ones.
     rates = port["false_signal"].artifact

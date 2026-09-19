@@ -684,11 +684,9 @@ class AttestedUncertainty(ABC):
         wanted, refusal = _ask(type(self), "artifact_type")
         if refusal:
             raise ValueError(f"{type(self).__name__}: {refusal[0]}")
-        if not isinstance(wanted, type):
-            raise ValueError(
-                f"{type(self).__name__}.artifact_type() returned {wanted!r}, "
-                "which is not a type"
-            )
+        shape = _shape_problem(type(self), "artifact_type", wanted)
+        if shape:
+            raise ValueError(f"{type(self).__name__}: {shape}")
         estimand, refusal = _ask(type(self), "estimand")
         if refusal:
             raise ValueError(f"{type(self).__name__}: {refusal[0]}")
@@ -701,11 +699,9 @@ class AttestedUncertainty(ABC):
         excluded_types, refusal = _ask(type(self), "excluded_types")
         if refusal:
             raise ValueError(f"{type(self).__name__}: {refusal[0]}")
-        if not isinstance(excluded_types, tuple):
-            raise ValueError(
-                f"{type(self).__name__}.excluded_types() returned "
-                f"{excluded_types!r}, which is not a tuple of types"
-            )
+        shape = _shape_problem(type(self), "excluded_types", excluded_types)
+        if shape:
+            raise ValueError(f"{type(self).__name__}: {shape}")
         for excluded in excluded_types:
             if isinstance(artifact, excluded):
                 raise ValueError(
@@ -890,12 +886,102 @@ class AttestedUncertainty(ABC):
         return admit_uncertainty(self, demand, expected)
 
 
-def _raw(envelope, name):
-    """Read an envelope's own slot past any redefined descriptor."""
-    try:
-        return object.__getattribute__(envelope, name)
-    except AttributeError:
+def _is_nonempty_text(value):
+    """Return whether ``value`` is a non-empty string."""
+    return isinstance(value, str) and bool(value)
+
+
+def _is_a_type(value):
+    """Return whether ``value`` is a class."""
+    return isinstance(value, type)
+
+
+def _is_a_tuple_of_types(value):
+    """Return whether ``value`` is a tuple whose every element is a class."""
+    return isinstance(value, tuple) and all(isinstance(item, type) for item in value)
+
+
+#: Hook name -> (the shape its answer must have, the phrase a refusal uses).
+#: ONE OWNER. ``__init__``'s early screen and :func:`_declarations`' use-time
+#: screen both read this, so they cannot drift apart. Round-11 review found
+#: them already apart: ``__init__`` checked only that ``excluded_types``
+#: returned a TUPLE, never that its elements were types, so a member answering
+#: ``(42,)`` crashed inside ``isinstance`` with a TypeError instead of
+#: refusing — at a risk gate, where the module's own rule is that an unhandled
+#: exception is worse than a refusal.
+HOOK_SHAPES = MappingProxyType(
+    {
+        "estimand": (_is_nonempty_text, "a non-empty string"),
+        "artifact_type": (_is_a_type, "a type"),
+        "excluded_types": (_is_a_tuple_of_types, "a tuple of types"),
+        "registered_producers": (_is_a_tuple_of_types, "a tuple of classes"),
+    }
+)
+
+
+def _shape_problem(authority, hook, value):
+    """Return the refusal for a hook answer of the wrong shape, or None."""
+    ok, shape = HOOK_SHAPES[hook]
+    if ok(value):
         return None
+    # No reason code: `__init__` RAISES this, and the coded vocabulary in
+    # :data:`REFUSAL_REASONS` belongs to the use-time rule's returned problems.
+    return f"{authority.__name__}.{hook}() returned {value!r}, which is not {shape}"
+
+
+def _raw(envelope, name):
+    """Read an envelope's own slot, past every descriptor its class can carry.
+
+    Parameters
+    ----------
+    envelope : object
+        The value under suspicion. Anything that is not an
+        :class:`AttestedUncertainty` instance reads as ``None``.
+    name : str
+        The slot name, ``"_artifact"`` or ``"_attestation"``.
+
+    Returns
+    -------
+    object or None
+        What the INSTANCE stores under ``name``, or ``None`` when it stores
+        nothing there.
+
+    Notes
+    -----
+    ``object.__getattribute__`` is not enough, and round-10 review proved it
+    with two ordinary assignments on an already-registered class::
+
+        AttestedOutcomeBand._artifact = property(lambda self: forged_band)
+        AttestedOutcomeBand._attestation = property(lambda self: forged_stamp)
+        admission_problems(envelope, demand, AttestedOutcomeBand)
+        # -> []   a forged artifact admitted clean, process-wide
+
+    ``object.__getattribute__`` runs the FULL descriptor protocol: a data
+    descriptor on the type under the name being read wins over the instance
+    slot, so redefining the slot's own name was never bypassed — only a
+    redefinition under a DIFFERENT name was. No subclass, no metaclass and no
+    edit to this file is needed, and every claim `admission_problems` makes
+    about re-reading from the instance was false for that shape.
+
+    So nothing on the type participates: the instance ``__dict__`` is read
+    through :data:`_REAL_INSTANCE_DICT`, ``AttestedUncertainty``'s own
+    descriptor for it, bound once at import. A class attribute can shadow a
+    NAME; it cannot reach inside the reference this module already holds.
+    """
+    try:
+        return _REAL_INSTANCE_DICT(envelope).get(name)
+    except TypeError:
+        return None
+
+
+#: ``AttestedUncertainty``'s own instance-``__dict__`` descriptor, bound once.
+#: Reading through it is what makes :func:`_raw` unhijackable: a class may
+#: define, redefine or shadow any NAME, but it cannot reach inside a reference
+#: this module took before any member existed. The same idiom as
+#: ``final_model._REAL_MRO``, and it is bound HERE rather than beside `_raw`
+#: because the class it comes from is defined above and nothing below may
+#: rebind it.
+_REAL_INSTANCE_DICT = AttestedUncertainty.__dict__["__dict__"].__get__
 
 
 def _registered_classes():
@@ -1115,22 +1201,13 @@ def _declarations(authority):
     """
     out = []
     values = {}
-    for hook, key, ok, shape in (
-        ("estimand", "estimand", lambda v: isinstance(v, str) and v, "a non-empty string"),
-        ("artifact_type", "wanted", lambda v: isinstance(v, type), "a type"),
-        (
-            "excluded_types",
-            "excluded",
-            lambda v: isinstance(v, tuple) and all(isinstance(i, type) for i in v),
-            "a tuple of types",
-        ),
-        (
-            "registered_producers",
-            "producers",
-            lambda v: isinstance(v, tuple) and all(isinstance(i, type) for i in v),
-            "a tuple of classes",
-        ),
+    for hook, key in (
+        ("estimand", "estimand"),
+        ("artifact_type", "wanted"),
+        ("excluded_types", "excluded"),
+        ("registered_producers", "producers"),
     ):
+        ok, shape = HOOK_SHAPES[hook]
         value, refusal = _ask(authority, hook)
         if refusal:
             out.extend(refusal)
