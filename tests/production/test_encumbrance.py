@@ -2023,8 +2023,10 @@ DEPENDENCIES = (
      lambda rig: _set(rig.orders[0], side="sell"), Rig),
     ("order.instrument", "inventory",
      lambda rig: _set(rig.orders[0], instrument=INS2), Rig),
-    ("view.positions", "inventory",
+    ("view.positions.qty", "inventory",
      lambda rig: move_view(rig.view, positions=(position(qty="2"),)), Rig),
+    ("view.positions.instrument", "inventory",
+     lambda rig: move_view(rig.view, positions=(position(instrument=INS2, qty="10"),)), Rig),
     ("view.pending", "unsized",
      lambda rig: move_view(rig.view, pending=("ref-9",), economic=False), Rig),
     ("fill.qty", "available",
@@ -2162,13 +2164,16 @@ def test_the_dependency_table_names_every_field_read():
     exercised = {row[0] for row in DEPENDENCIES}
     prefixes = {records.Fill: "fill", records.OrderState: "order",
                 records.Position: "view.positions", records.Proposal: "proposal"}
+    # NO per-type escape clause. The first version let every `Position` field
+    # pass because the table held a bare ``view.positions`` row, so the record
+    # whose fields the inventory book is BUILT from was the one record checked
+    # least. Found by self-review before a lens had to; the rows are named by
+    # field now, like every other record's.
     for record_type, prefix in prefixes.items():
         declared = NOT_READ[record_type]
         for field in dataclasses.fields(record_type):
             row = f"{prefix}.{field.name}"
             covered = row in exercised or field.name in declared
-            if record_type is records.Position:
-                covered = covered or "view.positions" in exercised
             assert covered, (
                 f"{record_type.__name__}.{field.name} is neither exercised by a "
                 f"DEPENDENCIES row named {row!r} nor declared unread in NOT_READ"
