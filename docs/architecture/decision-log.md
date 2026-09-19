@@ -16961,3 +16961,87 @@ attempt text now.
 
 One count in this entry was stale and is corrected above: the probe table is
 twenty-two rows, not seventeen.
+
+### Round 11 correction — the blunt rule cost more than it bought
+
+Two independent lenses on `50ea3e9`: 0 Critical, 5 Major between them. All
+closed.
+
+**The round-10 metaclass rule was too blunt, and it broke three declared
+attempts while being so.** It refused ANY sealed name a non-baseline metaclass
+carried, on the argument that classifying the object is one more thing to
+defeat. Measured, that cost:
+
+1. It refused an ordinary registering metaclass — one whose `__init__` records
+   the class it just built — while telling its author, untruthfully, that
+   `__init__` "answers class-level lookup ahead of the MRO". A plain function
+   is a NON-data descriptor and the class's own MRO wins; the message asserted
+   a mechanism false for most of the 29 sealed names, most of the time.
+2. It refused three declared attempts at `super().__new__` for merely defining
+   `__new__`, so the payload line in each probe never ran. Deleting that line
+   from any of the three left the suite green: three rows of `GATE_FACTS` had
+   stopped testing what they name, and one
+   (`refuses_a_metaclass_that_injects_after_class_creation`) had lost its
+   unique evidence with nothing standing in for it.
+
+So the shadowing question is asked, and it is not this module's classifier —
+it is the LANGUAGE's, read the way the interpreter reads it.
+`_wins_class_level_lookup` returns True for a data descriptor (its type
+defines `__set__` or `__delete__`, looked up through `_resolved_through_the_mro`,
+the same real MRO dicts `_PyType_Lookup` reads inside `type.__getattribute__`)
+and for the two names that answer every class-level lookup regardless,
+`__getattr__` and `__getattribute__`. An attacker supplies `type(obj)` but not
+what that lookup reads, so an object can neither claim to shadow nor hide that
+it does. The three `__new__` rows measure what they name again and are back to
+`refuses=False`; the `__getattribute__` interception row stays `refuses=True`.
+
+The round-11 sweep found the one reading that still differed: taking the
+carrier as `supplied if isinstance(supplied, type) else type(supplied)`
+survived everything, because no probe bound a sealed name to a CLASS. The two
+readings disagree exactly there — `__set__` lives on the payload's METACLASS —
+so `refuses_a_metaclass_supplying_a_class_that_is_itself_a_data_descriptor` is
+now declared and probed.
+
+**The totality assertion shared a blind spot with the thing it audited.** Both
+`_string_constants` and the "independent" AST walk that checks it filtered on
+`isinstance(value, str)`, so a `bytes` literal was invisible to both and the
+assertion passed over a surface neither could see — the same shape as every
+earlier round's false completeness claim, in the check added to prevent them.
+The fix is not a wider filter but NO filter: `constants:<owner>` now carries
+the `repr` of every non-docstring `ast.Constant`, whatever its type, and the
+oracle has nothing left to share.
+
+**The live-vs-source docstring check was one-directional.** Deleting the
+classmethod unwrap from `_runtime_prose` left the suite green while the walk
+silently stopped finding six docstrings — `__init_subclass__`'s among them,
+the one carrying the seal's four pinned claims. A check that asks only "did
+live find anything source did not" cannot see a live walk that found LESS, and
+a member it stops reaching is exempt from the source pin forever. The two key
+sets must now be EQUAL, and the walk's unwrapping is exercised on a SYNTHETIC
+module carrying a classmethod, a staticmethod, a property and a plain
+function, so its reach no longer depends on what `final_model.py` happens to
+contain. The dormant `property` branch was a survivor until that test existed.
+
+**Two more attempts declared.** `cls.__class__ = EvilMeta` on an
+already-defined subclass is the metaclass twin of
+`refuses_post_hoc_assignment_on_a_subclass`; measured, it reaches
+`validate_params` and is refused at `run`, because the descriptor answers in
+place of the member that would have re-taken the verdict. Writing its probe
+required `_reaches` to stop ASSERTING that every gate a class can produce
+appears in `validate_params`' output: that crashed rather than measured on the
+one attempt that replaces `validate_params` outright. A gate the class can
+produce that `validate_params` does not report is a gate no entry point
+consults, which is the definition of reaching it. The suite-drift that assert
+guarded is caught better now — a `validate_params` that stopped calling a gate
+makes the PRISTINE class measure as reaching, and its control test fails.
+
+**Minor.** A plain `#` comment in the suite said `GATE_FACTS` was
+"twenty-one sentences" when it was twenty-two — a stale count in the one prose
+site no pin reaches, which is this file's own defect class one level down. The
+count is gone from the comment rather than corrected; it is asserted executably
+instead.
+
+Round-11 sweep: nineteen mutations over the shadowing rule, the metaclass
+scan, the reach measurement, the runtime walk's four unwrapping branches and
+the constant pin — both halves of every compound guard driven separately — all
+nineteen killed. 151 tests; the probe table is twenty-four rows.

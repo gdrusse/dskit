@@ -15,6 +15,7 @@ import collections
 import contextlib
 import hashlib
 import inspect
+import types
 
 from unittest.mock import patch
 
@@ -1800,13 +1801,16 @@ def _reaches(cls, instance=None):
     reached = []
     gates = _release_gate_problems(cls)
     problems = cls.validate_params(dict(PRODUCTION_PARAMS))
-    # Faithfulness control: every gate the class WOULD report must actually
-    # appear in `validate_params`' output. If it stops calling one, this fires
-    # rather than silently measuring a gate no entry point consults.
-    assert all(gate in problems for gate in gates), (
-        "validate_params no longer reports a release gate it can produce"
-    )
-    if not gates:
+    # A gate the class CAN produce that `validate_params` does not report is a
+    # gate no entry point consults, so the attempt has reached the entry point
+    # — the same answer as producing no gate at all. This was an ASSERT until
+    # round 11, which crashed instead of measuring on the one attempt that
+    # replaces `validate_params` outright, and would have kept that attempt out
+    # of the table. The suite-drift it guarded against is caught better by
+    # `test_the_reach_measurement_answers_nothing_for_the_unattacked_class`:
+    # a `validate_params` that stopped calling a gate makes the PRISTINE class
+    # measure as reaching, and that control fails.
+    if not gates or any(gate not in problems for gate in gates):
         reached.append("validate_params")
     node = instance
     if node is None:
@@ -2000,22 +2004,21 @@ def _probe_metaclass_injects_the_guard_beside_its_payload():
             cls._channel_problems = classmethod(lambda c, params: [])
             return cls
 
-    # The injected guard is INERT whatever happens below: `_unsealed_problems`
-    # is a module-level function, so it is not a sealed member and nothing
-    # resolves it through the class.
+    cls, refused = _define({}, metaclass=Injecting)
+    # Round-11 review: while the metaclass rule refused any sealed name at all,
+    # `super().__new__` refused this class for DEFINING `__new__`, so the two
+    # payload lines above never ran and this row tested nothing it names —
+    # deleting them left it green. The rule now asks whether the supplied
+    # object actually wins class-level lookup, a plain `__new__` does not, and
+    # the payload reaches the class again.
+    assert refused is False and cls is not None
+    # The injected guard is INERT: `_unsealed_problems` is a module-level
+    # function, so it is not a sealed member and nothing resolves it through
+    # the class. The payload is all that is left to see.
     assert "_unsealed_problems" not in final_model.FinalRefit._FINAL_METHODS
-    # Round 10 moved the refusal EARLIER — a metaclass defining __new__ carries
-    # a sealed name, which the metaclass rule refuses outright. The consult-time
-    # verdict this row used to rest on is asserted here on the same payload
-    # reached the plain way, so widening the definition-time rule did not
-    # quietly retire that evidence.
-    class PlainSubclass(final_model.FinalRefit):
-        pass
-
-    PlainSubclass._channel_problems = classmethod(lambda c, params: [])
-    assert final_model._sealed_violations(PlainSubclass) == ["_channel_problems"]
-    assert final_model._unsealed_problems(PlainSubclass), "the guard was fooled"
-    return _outcome({}, metaclass=Injecting)
+    assert final_model._sealed_violations(cls) == ["_channel_problems"]
+    assert final_model._unsealed_problems(cls), "the module-level guard was fooled"
+    return False, _reaches(cls)
 
 
 def _probe_substituted_channel_resolver():
@@ -2032,17 +2035,13 @@ def _probe_substituted_channel_resolver():
             cls._channel = lambda self: "production"
             return cls
 
-    # As above: the metaclass is refused at definition from round 10 on, so the
-    # round-7 evidence — that `_reaches` measures through the SUBSTITUTED
-    # `_channel` rather than through a hardcoded `FinalRefit._channel` — is
-    # taken on the same substitution made the plain way.
-    class PlainSubclass(final_model.FinalRefit):
-        pass
-
-    PlainSubclass._channel = lambda self: "production"
-    assert final_model._sealed_violations(PlainSubclass) == ["_channel"]
-    assert _reaches(PlainSubclass) == (), "a substituted _channel opened a gate"
-    return _outcome({}, metaclass=Injecting)
+    cls, refused = _define({}, metaclass=Injecting)
+    # Round-11 review, as above: the payload line never ran while a metaclass
+    # defining `__new__` was refused outright, so this row stopped measuring
+    # the substitution it names. It measures it again.
+    assert refused is False and cls is not None
+    assert final_model._sealed_violations(cls) == ["_channel"]
+    return False, _reaches(cls)
 
 
 def _probe_metaclass_injects_after_class_creation():
@@ -2157,6 +2156,59 @@ def _probe_metaclass_with_rigged_equality():
     return _outcome({}, metaclass=Shadowing)
 
 
+def _probe_metaclass_supplying_a_class_whose_metaclass_makes_it_a_descriptor():
+    """A sealed name bound to a CLASS that shadows because ITS metaclass says so.
+
+    Round-11 sweep: reading the carrier as ``supplied if isinstance(supplied,
+    type) else type(supplied)`` survived everything, because no probe ever
+    bound a sealed name to a class. The two readings disagree exactly here —
+    ``__set__`` lives on the payload's METACLASS, so the wrong reading looks
+    for it in the payload's own MRO, does not find it, and clears a name that
+    really does win class-level lookup.
+    """
+    class DescriptorMeta(type):
+        def __get__(cls, obj, owner=None):
+            return lambda params: []
+
+        def __set__(cls, obj, value):
+            raise AttributeError
+
+    class Payload(metaclass=DescriptorMeta):
+        pass
+
+    class Shadowing(type(final_model.FinalRefit)):
+        validate_params = Payload
+
+    return _outcome({}, metaclass=Shadowing)
+
+
+def _probe_metaclass_swapped_after_definition():
+    """The metaclass rule's own post-hoc shape: ``cls.__class__ = EvilMeta``.
+
+    Every other metaclass row is present when the class is built, so the
+    definition-time hook sees it. This one is not: an empty-bodied subclass
+    passes the hook, and the metaclass carrying the sealed name is assigned
+    afterwards — the metaclass twin of
+    ``refuses_post_hoc_assignment_on_a_subclass``. Declared because the
+    round-10/11 rule would otherwise be pinned only in the shape the hook
+    happens to catch.
+    """
+    class Answer:
+        def __get__(self, obj, owner=None):
+            return lambda params: []
+
+        def __set__(self, obj, value):
+            raise AttributeError
+
+    class Later(type(final_model.FinalRefit)):
+        validate_params = Answer()
+
+    cls, refused = _define({})
+    assert refused is False and cls is not None
+    cls.__class__ = Later
+    return False, _reaches(cls)
+
+
 def _probe_shipped_config_refuses_to_plan():
     from dskit.pipeline.document import load_document
     from dskit.pipeline.node import ConfigError
@@ -2200,6 +2252,10 @@ GATE_PROBES = {
         _probe_metaclass_data_descriptor,
     "refuses_a_metaclass_whose_own_metaclass_rigs_equality":
         _probe_metaclass_with_rigged_equality,
+    "refuses_a_metaclass_supplying_a_class_that_is_itself_a_data_descriptor":
+        _probe_metaclass_supplying_a_class_whose_metaclass_makes_it_a_descriptor,
+    "refuses_a_metaclass_swapped_in_after_the_class_is_defined":
+        _probe_metaclass_swapped_after_definition,
     "shipped_configuration_refuses_to_plan": _probe_shipped_config_refuses_to_plan,
 }
 
@@ -2207,7 +2263,7 @@ GATE_PROBES = {
 def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
     declared = {name for name, _, _, _ in final_model.GATE_FACTS}
     assert set(GATE_PROBES) == declared
-    assert len(final_model.GATE_FACTS) == len(declared) == 22
+    assert len(final_model.GATE_FACTS) == len(declared) == 24
     # Every declared reach is a subset of the named entry points, in the
     # order they are named there — so a reach can never be a free-form string.
     points = final_model.RELEASE_ENTRY_POINTS
@@ -2322,12 +2378,12 @@ def _module_prose():
         ``{key: text}``. ``"module"``; ``"doc:<dotted name>"`` for every
         module, class and function docstring at any depth; ``"note:<subject>#n"``
         for each ``#:`` comment block, ``n`` distinguishing repeats of one
-        subject; and ``"strings:<owner>"`` carrying every non-docstring string
-        constant an owner encloses, joined in source order.
+        subject; and ``"constants:<owner>"`` carrying the ``repr`` of every
+        non-docstring literal an owner encloses, joined in source order.
 
     Notes
     -----
-    The ``strings:`` owner is the nearest enclosing class, function or
+    The ``constants:`` owner is the nearest enclosing class, function or
     ASSIGNED NAME, so ``GATE_FACTS``' twenty rows are one key that no edit
     elsewhere moves. Keying each literal by line and column instead would
     make every insertion above it report hundreds of changes, and a pin
@@ -2365,32 +2421,45 @@ def _assigned_name(node):
     return None
 
 
+def _docstring_statement(node):
+    """The statement holding ``node``'s docstring, or None."""
+    if not isinstance(
+        node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    ):
+        return None
+    body = node.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        # The STATEMENT, not its value: the loop below iterates statements, so
+        # comparing against the Constant never matched and every docstring was
+        # collected a second time as an ordinary literal.
+        return body[0]
+    return None
+
+
 def _string_constants(tree):
-    """``{"strings:<owner>": joined text}`` for every non-docstring string literal."""
+    """``{"constants:<owner>": joined repr}`` for every non-docstring literal.
+
+    EVERY ``ast.Constant``, not every string one. Round 11 found the type
+    filter on both sides of the totality assertion at once: a ``bytes``
+    literal was invisible to this function AND to the independent walk that
+    checks it, so the two agreed on a surface neither could see. The fix is
+    not a wider filter — it is no filter. A literal is pinned whatever it is
+    for, and the oracle has nothing left to share a blind spot with.
+    """
     buckets = {}
 
     def descend(node, owner):
-        docstring = None
-        if isinstance(
-            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ):
-            body = node.body
-            if (
-                body
-                and isinstance(body[0], ast.Expr)
-                and isinstance(body[0].value, ast.Constant)
-                and isinstance(body[0].value.value, str)
-            ):
-                # The STATEMENT, not its value: the loop below iterates
-                # statements, so comparing against the Constant never matched
-                # and every docstring was collected a second time as an
-                # ordinary literal.
-                docstring = body[0]
+        docstring = _docstring_statement(node)
         for child in ast.iter_child_nodes(node):
             if child is docstring:
                 continue
-            if isinstance(child, ast.Constant) and isinstance(child.value, str):
-                buckets.setdefault(owner, []).append(child.value)
+            if isinstance(child, ast.Constant):
+                buckets.setdefault(owner, []).append(repr(child.value))
                 continue
             if isinstance(
                 child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
@@ -2406,7 +2475,7 @@ def _string_constants(tree):
 
     descend(tree, "")
     return {
-        f"strings:{owner or '<module>'}": "\x00".join(texts)
+        f"constants:{owner or '<module>'}": "\x00".join(texts)
         for owner, texts in buckets.items()
     }
 
@@ -2463,6 +2532,122 @@ def _digest(text):
 #: edit in this module needs a digest update — and it is the cost of a file
 #: whose prose has been wrong four rounds running.
 _PINNED_MODULE_PROSE = {
+    'constants:BUNDLE_FILENAME': '4aea89e0f88a57ad',
+    'constants:DEFAULT_INVENTORY_SEED': '5feceb66ffc86f38',
+    'constants:EMBARGO_END_MS': 'e5fe7a8a0319a2c5',
+    'constants:EMBARGO_START_MS': 'd35a5de67f4a5615',
+    'constants:ESTIMATOR_PATH': '3ff47f287f48a3a3',
+    'constants:EVIDENCE_FIELDS': '4f0fefbd298ecbfc',
+    'constants:FIXTURE_CHANNEL': '77d4e4fe0b5c9e73',
+    'constants:FROZEN_CANDIDATE_COUNT': 'c2356069e9d1e79c',
+    'constants:FinalRefit._FINAL_METHODS': '81a33309eb34591c',
+    'constants:FinalRefit._PARAMS': '353c064591439819',
+    'constants:FinalRefit.__init_subclass__': '128e88c0caf5ab47',
+    'constants:FinalRefit._attestation': 'd17e304e38914b3e',
+    'constants:FinalRefit._channel': '59e560dce77e6f10',
+    'constants:FinalRefit._channel_problems': '2c3bf36a1599cda3',
+    'constants:FinalRefit._channel_problems.channel': 'b923f9619a03fa40',
+    'constants:FinalRefit._channel_problems.pinned': 'dabceb4401cdd3f1',
+    'constants:FinalRefit._channel_problems.problems': '4aece890c1e3c488',
+    'constants:FinalRefit._estimator_params': 'c09fdb35d0d235cc',
+    'constants:FinalRefit._estimator_params.params': 'd86604c5fdf67aa6',
+    'constants:FinalRefit._hpo_template': '077067ace77d51f2',
+    'constants:FinalRefit._hpo_template.matches': 'fd78e94186205b94',
+    'constants:FinalRefit._hpo_template.templates': '8d3f2668f8b894ca',
+    'constants:FinalRefit._identity_problems': 'e0e67765cc036908',
+    'constants:FinalRefit._identity_problems.digest': '06cadad76bc180e8',
+    'constants:FinalRefit._identity_problems.expected': 'e725a27f83d54281',
+    'constants:FinalRefit._identity_problems.fields': 'f5ddb3d426810f1b',
+    'constants:FinalRefit._identity_problems.rows': 'e1686bec9058bab8',
+    'constants:FinalRefit._lean_drop': 'cc6452a7321d04fe',
+    'constants:FinalRefit._lean_drop.drop': '61e1af26f63f92a5',
+    'constants:FinalRefit._release_identity': 'd1da6a7b18949587',
+    'constants:FinalRefit._release_identity.identity': '320efffe762d958b',
+    'constants:FinalRefit._row_identities': '3e092d72a5c01ca1',
+    'constants:FinalRefit._row_identities.pinned': 'c2d2706b50d2f6a4',
+    'constants:FinalRefit._run_pin_problems': '930ab6b3fecd918d',
+    'constants:FinalRefit._run_pin_problems.evidence': '44e288ff35d977ad',
+    'constants:FinalRefit._run_pin_problems.run_dir': 'd17e304e38914b3e',
+    'constants:FinalRefit._schema_problems': '6a93e999a4a6840a',
+    'constants:FinalRefit._schema_problems.categories': '5d42d9e9761eb7bf',
+    'constants:FinalRefit._schema_problems.features': 'fbb4ccd844f5f09b',
+    'constants:FinalRefit._schema_problems.fixture': '08ad17d85d857265',
+    'constants:FinalRefit._verified_hpo_outputs': 'fdb6f168b15a2ff5',
+    'constants:FinalRefit._verified_hpo_outputs.document_hash': 'dabceb4401cdd3f1',
+    'constants:FinalRefit._winner_from_evidence': '3b7c0227573aedbd',
+    'constants:FinalRefit._winner_from_evidence.inventory': '00feb4e19e3425b3',
+    'constants:FinalRefit._winner_from_evidence.model': '8bd2e950f86ebd71',
+    'constants:FinalRefit._winner_from_evidence.ruled': '3378f131311498f6',
+    'constants:FinalRefit._winners': '4f2894548399cae9',
+    'constants:FinalRefit._winners.digest': '2650c651d1a1b006',
+    'constants:FinalRefit._winners.evidence': 'd17e304e38914b3e',
+    'constants:FinalRefit._winners.inventory_digest': 'dc937b59892604f5',
+    'constants:FinalRefit._winners.ledger': 'e0c8be2e1e7bd03d',
+    'constants:FinalRefit._winners.manifest_digests': '946524b6e06e0df6',
+    'constants:FinalRefit._winners.source_document': '9ca4f8a9aaf340c7',
+    'constants:FinalRefit._wire_problems': '8cff04d108129504',
+    'constants:FinalRefit._wire_problems.ts_ms': '253081dd263e948b',
+    'constants:FinalRefit.outputs': '7b55291b0339b653',
+    'constants:FinalRefit.role': '4f088242ee2d9ff4',
+    'constants:FinalRefit.run': 'f9aaf8827a412d12',
+    'constants:FinalRefit.run.feature_order': 'fbb4ccd844f5f09b',
+    'constants:FinalRefit.run.manifest': '3e7164afcdea9bed',
+    'constants:FinalRefit.validate_inputs': '3e0412bc2fd47995',
+    'constants:FinalRefit.validate_inputs.identity': '320efffe762d958b',
+    'constants:FinalRefit.validate_inputs.start': 'd5b70d0b70708d14',
+    'constants:FinalRefit.validate_params': '832bf207a4480e54',
+    'constants:FinalRefit.validate_params.seed': '366ecbf4e2adf7ba',
+    'constants:GATE_FACTS': '62dd984485785962',
+    'constants:HEADS': 'd7a3abf5e90e956b',
+    'constants:HPO_LEDGER_OUTPUT': 'bdf0d7f6bf97df66',
+    'constants:LOCKBOX_START_MS': '3485b2af67cc2e77',
+    'constants:PRODUCTION_CHANNEL': '55f2295cc846c9ed',
+    'constants:RELEASE_ENTRY_POINTS': '7e202d5283c862c1',
+    'constants:WIRE_LABEL_FIELD': '0690eccab0b647c5',
+    'constants:_DEFAULT_HPO_CONFIG': '0f1309523ab89619',
+    'constants:_DEFAULT_LEAN_MASK_CONFIG': '7059e3fab565b236',
+    'constants:_LOOKUP_INTERCEPTORS': 'b89c61f465ba32ce',
+    'constants:_PENDING': '67e3e24bae75aaa8',
+    'constants:_PRODUCER_PREFIX': '52511c515ea8db77',
+    'constants:_REAL_DICT': '3bf137a69eec50e9',
+    'constants:_REAL_MRO': 'dd2ceb4b3459e50c',
+    'constants:_WRAPPER_PATH': 'ceab284417f60b67',
+    'constants:__all__': 'fbdaddbb2c9c4909',
+    'constants:_epoch_ms': '83149f20476e52d1',
+    'constants:_is_sha256': 'c05217bb83828b48',
+    'constants:_unsealed_problems': '2fa2ca57110e0297',
+    'constants:_wins_class_level_lookup': '8b2384ca39f7bdd8',
+    'constants:boundary_flags': 'dc937b59892604f5',
+    'constants:boundary_flags.space': 'dc937b59892604f5',
+    'constants:cluster_scores_by_day': 'eb3d70115f87cfc8',
+    'constants:cluster_scores_by_day.missing': 'eab5d8567360b232',
+    'constants:final_hpo_document_identity': '907d087e6b289872',
+    'constants:final_hpo_document_identity.path': 'dc937b59892604f5',
+    'constants:hpo_space': '0059a0787ac05d9f',
+    'constants:hpo_space.matches': 'fd78e94186205b94',
+    'constants:hpo_space.model': '8bd2e950f86ebd71',
+    'constants:hpo_space.path': 'dc937b59892604f5',
+    'constants:hpo_space.space': 'd1066122281b62fb',
+    'constants:hpo_space.template': '5feceb66ffc86f38',
+    'constants:hpo_space.templates': '8d3f2668f8b894ca',
+    'constants:lean_feature_drop': 'db9fe9e77ebe15d5',
+    'constants:lean_feature_drop.drop': '790b0bf652a462e1',
+    'constants:lean_feature_drop.matches': '8159d89693b83b82',
+    'constants:lean_feature_drop.model': '8bd2e950f86ebd71',
+    'constants:lean_feature_drop.path': 'dc937b59892604f5',
+    'constants:lean_feature_drop.template': '5feceb66ffc86f38',
+    'constants:lean_feature_drop.templates': 'ba32e23886863b34',
+    'constants:permitted_for_refit': '60a33e6cf5151f2d',
+    'constants:refit_heads': '78dd6dcd08344ce5',
+    'constants:refit_heads.categorical_feature': 'dc937b59892604f5',
+    'constants:refit_heads.ts_ms': '253081dd263e948b',
+    'constants:run_lead_selection': '037854259879db00',
+    'constants:run_lead_selection.diagnostics': '08c3aaabaeb54ce2',
+    'constants:run_lead_selection.passthrough': '6fd30de537e25e3e',
+    'constants:run_lead_selection.selection': '3378f131311498f6',
+    'constants:simplicity_key': 'c0e2a35e7d206be4',
+    'constants:simplicity_key.overrides': 'b9ee4893ce521d81',
+    'constants:squared_error_improvement': '8b39f25d2e4d7116',
     'doc:FinalRefit': 'be619cfde428dfb0',
     'doc:FinalRefit.__init_subclass__': '8be58a89d702665e',
     'doc:FinalRefit._attestation': 'c60c3dd2b09323d7',
@@ -2484,10 +2669,11 @@ _PINNED_MODULE_PROSE = {
     'doc:SealRefused': 'a6aaa8b83de3177d',
     'doc:_epoch_ms': '9775f2736675746a',
     'doc:_is_sha256': '69a8a4877d33b696',
-    'doc:_metaclass_supplied': '5fcaa102bb61f44c',
+    'doc:_metaclass_supplied': 'a09c4290733bbd9a',
     'doc:_resolved_through_the_mro': '3ef6b33a113e80e8',
     'doc:_sealed_violations': '07d207aa4015d069',
     'doc:_unsealed_problems': 'aff0d483ebef4f1f',
+    'doc:_wins_class_level_lookup': 'cd602974174546ba',
     'doc:boundary_flags': 'ab4c1bbb11748a13',
     'doc:build_candidate_inventory': 'd69c10a2fca8ff1b',
     'doc:cluster_scores_by_day': 'b1ec5cc1794f0f0b',
@@ -2513,112 +2699,12 @@ _PINNED_MODULE_PROSE = {
     'note:_DEFAULT_HPO_CONFIG#1': '8225e9a5c01b2b36',
     'note:_DEFAULT_LEAN_MASK_CONFIG#1': '78b48bf039114649',
     'note:_FINAL_METHODS#1': '69eca47ca66426e2',
+    'note:_LOOKUP_INTERCEPTORS#1': 'ceb785904dc6e599',
     'note:_PENDING#1': '02e5e133366ecbd2',
     'note:_PRODUCER_PREFIX#1': '95291bc1fe7976ef',
     'note:_REAL_MRO#1': 'f54826c85575c6dc',
     'note:_UNRESOLVED#1': 'f62d95a53bd582c1',
     'note:def _epoch_ms(date_str):#1': '9333c1a81c62da1b',
-    'strings:BUNDLE_FILENAME': '9c2a46e6ca96a4a8',
-    'strings:EMBARGO_END_MS': '77b5daf5632ba0dc',
-    'strings:EMBARGO_START_MS': 'add9297f59733b5c',
-    'strings:ESTIMATOR_PATH': 'da806789df93eeb3',
-    'strings:EVIDENCE_FIELDS': '07bb2180a75962b1',
-    'strings:FIXTURE_CHANNEL': 'f16d05ec6b29248d',
-    'strings:FinalRefit._FINAL_METHODS': '6c735851875cf5c1',
-    'strings:FinalRefit._PARAMS': '240151dc79007818',
-    'strings:FinalRefit.__init_subclass__': 'ec6b2d24b0aeab93',
-    'strings:FinalRefit._attestation': 'c5d4b7ddda534a07',
-    'strings:FinalRefit._channel': '021acaddef4d2beb',
-    'strings:FinalRefit._channel_problems': '802b2e4eb67d4bf1',
-    'strings:FinalRefit._channel_problems.channel': '23a2b96c3efd3ce3',
-    'strings:FinalRefit._channel_problems.pinned': '76ce676279ae63cc',
-    'strings:FinalRefit._channel_problems.problems': '9df168a08747153a',
-    'strings:FinalRefit._estimator_params': 'e332a8a311d8505d',
-    'strings:FinalRefit._estimator_params.params': '4776dec9b3dbbe2c',
-    'strings:FinalRefit._hpo_template': 'e619bcddff39d68e',
-    'strings:FinalRefit._hpo_template.matches': '17cf50b52e3fd610',
-    'strings:FinalRefit._hpo_template.templates': '4c09ae90e075dc47',
-    'strings:FinalRefit._identity_problems': '632e15b5504d9c74',
-    'strings:FinalRefit._identity_problems.digest': '5d5b09f6dcb2d53a',
-    'strings:FinalRefit._identity_problems.expected': '9e64e2891831842e',
-    'strings:FinalRefit._identity_problems.fields': '065a9c506d99fa75',
-    'strings:FinalRefit._identity_problems.rows': 'bc51e9e65d79e1c9',
-    'strings:FinalRefit._lean_drop': '857ce97ae39bb1cd',
-    'strings:FinalRefit._lean_drop.drop': 'f38fdebae1f18dcd',
-    'strings:FinalRefit._release_identity': '7d94d575beb99ea7',
-    'strings:FinalRefit._release_identity.identity': 'de91f0ab6907c5fc',
-    'strings:FinalRefit._row_identities': '4d69b6f77c1bca44',
-    'strings:FinalRefit._row_identities.pinned': 'bb539736d052e26d',
-    'strings:FinalRefit._run_pin_problems': '569a8eaadf5906e6',
-    'strings:FinalRefit._run_pin_problems.evidence': 'fe0a8387f5a02383',
-    'strings:FinalRefit._run_pin_problems.run_dir': 'c5d4b7ddda534a07',
-    'strings:FinalRefit._schema_problems': '4922b888870239ef',
-    'strings:FinalRefit._schema_problems.categories': '1ac02274bfb261bb',
-    'strings:FinalRefit._schema_problems.features': 'd3ed05091c3b6644',
-    'strings:FinalRefit._schema_problems.fixture': 'b2326f4d146f354e',
-    'strings:FinalRefit._verified_hpo_outputs': 'cebb5320325544e0',
-    'strings:FinalRefit._verified_hpo_outputs.document_hash': '76ce676279ae63cc',
-    'strings:FinalRefit._winner_from_evidence': '36aa3322403e20f4',
-    'strings:FinalRefit._winner_from_evidence.inventory': 'f91ffff4f5b3878d',
-    'strings:FinalRefit._winner_from_evidence.model': '9372c470eeadd5ec',
-    'strings:FinalRefit._winner_from_evidence.ruled': '9baf3a40312f3984',
-    'strings:FinalRefit._winners': '429e32a698cb8434',
-    'strings:FinalRefit._winners.digest': '59400ddb76f2ec17',
-    'strings:FinalRefit._winners.evidence': 'c5d4b7ddda534a07',
-    'strings:FinalRefit._winners.ledger': 'fe14010b4fe83303',
-    'strings:FinalRefit._winners.manifest_digests': '5d5b09f6dcb2d53a',
-    'strings:FinalRefit._winners.source_document': '0a3f413dda9c818c',
-    'strings:FinalRefit._wire_problems': 'bf416b9402b96aa4',
-    'strings:FinalRefit._wire_problems.ts_ms': '0420022655c388bd',
-    'strings:FinalRefit.outputs': 'd8f4b0b98e28a37f',
-    'strings:FinalRefit.role': '116f54c41d0405db',
-    'strings:FinalRefit.run': 'a89b8af1098fc7b8',
-    'strings:FinalRefit.run.feature_order': 'd3ed05091c3b6644',
-    'strings:FinalRefit.run.manifest': 'bb768668727a57f5',
-    'strings:FinalRefit.validate_inputs': 'a7b14e6555919d11',
-    'strings:FinalRefit.validate_inputs.identity': 'de91f0ab6907c5fc',
-    'strings:FinalRefit.validate_inputs.start': '95a7e358db11eac5',
-    'strings:FinalRefit.validate_params': '3f325675f52131a7',
-    'strings:FinalRefit.validate_params.seed': '19b25856e1c150ca',
-    'strings:GATE_FACTS': '50f1e0e55cc963f8',
-    'strings:HEADS': '740273e77400ed06',
-    'strings:HPO_LEDGER_OUTPUT': 'fa4de7a0fc070316',
-    'strings:LOCKBOX_START_MS': '7cd45c1acf8a9ce6',
-    'strings:PRODUCTION_CHANNEL': 'ab8e18ef4ebebedd',
-    'strings:RELEASE_ENTRY_POINTS': 'e10a8582ba0abdda',
-    'strings:WIRE_LABEL_FIELD': '9f2e6d33a3717ee8',
-    'strings:_DEFAULT_HPO_CONFIG': '003cef0454bdf9b3',
-    'strings:_DEFAULT_LEAN_MASK_CONFIG': '9847b8c3145a50e5',
-    'strings:_PENDING': '332011b91ccd9887',
-    'strings:_PRODUCER_PREFIX': 'bb582462fda42a72',
-    'strings:_REAL_DICT': '92eb897dbef811d4',
-    'strings:_REAL_MRO': 'a9c495d34b02acf3',
-    'strings:_WRAPPER_PATH': 'bb08cf402333c68e',
-    'strings:__all__': 'e963285f44ac3d42',
-    'strings:_epoch_ms': 'c504c6fbdff94568',
-    'strings:_is_sha256': '9f9f5111f7b27a78',
-    'strings:_unsealed_problems': '4fcea31d94c1700f',
-    'strings:cluster_scores_by_day': 'edc788e7c7efa671',
-    'strings:cluster_scores_by_day.missing': '593aad8709739865',
-    'strings:final_hpo_document_identity': 'fdf598c2b4b0491c',
-    'strings:hpo_space': '0cbb6fd8f1c22f4f',
-    'strings:hpo_space.matches': '17cf50b52e3fd610',
-    'strings:hpo_space.model': '9372c470eeadd5ec',
-    'strings:hpo_space.space': '2dcdbaeac2679bf5',
-    'strings:hpo_space.templates': '4c09ae90e075dc47',
-    'strings:lean_feature_drop': '1734e0c89d7f0d92',
-    'strings:lean_feature_drop.drop': '5ef0b9983eb85b9f',
-    'strings:lean_feature_drop.matches': 'c57632b97805b4fe',
-    'strings:lean_feature_drop.model': '9372c470eeadd5ec',
-    'strings:lean_feature_drop.templates': '5fcfe3712d1bf28c',
-    'strings:refit_heads': 'f37da38192fc4bb1',
-    'strings:refit_heads.ts_ms': '0420022655c388bd',
-    'strings:run_lead_selection': 'fe101d5af92884d3',
-    'strings:run_lead_selection.diagnostics': 'fd2db9d04633a2e1',
-    'strings:run_lead_selection.passthrough': '074e57723e1b1661',
-    'strings:run_lead_selection.selection': '9baf3a40312f3984',
-    'strings:simplicity_key': '7a6a65e7449ed993',
-    'strings:simplicity_key.overrides': 'ab2dd33e1ecd86a9',
 }
 
 
@@ -2643,7 +2729,7 @@ def test_every_piece_of_prose_in_the_module_is_pinned_by_digest():
     )
 
 
-def _runtime_prose():
+def _runtime_prose(module=None):
     """``{"module"|"doc:<dotted>": cleaned __doc__}`` read from the LIVE objects.
 
     The pin above reads source text. ``__doc__`` is an ordinary writable
@@ -2653,9 +2739,10 @@ def _runtime_prose():
     (round-10 review). This walks the module object instead, and the test
     below asserts the two agree everywhere they overlap.
     """
+    module = final_model if module is None else module
     out = {}
-    if final_model.__doc__:
-        out["module"] = inspect.cleandoc(final_model.__doc__)
+    if module.__doc__:
+        out["module"] = inspect.cleandoc(module.__doc__)
 
     def visit(owner, prefix, seen):
         for name, value in vars(owner).items():
@@ -2666,7 +2753,7 @@ def _runtime_prose():
                 target = target.fget
             if not (inspect.isclass(target) or inspect.isfunction(target)):
                 continue
-            if getattr(target, "__module__", None) != final_model.__name__:
+            if getattr(target, "__module__", None) != module.__name__:
                 continue
             if id(target) in seen:
                 continue
@@ -2677,8 +2764,63 @@ def _runtime_prose():
             if inspect.isclass(target):
                 visit(target, f"{dotted}.", seen)
 
-    visit(final_model, "", set())
+    visit(module, "", set())
     return out
+
+
+def test_the_runtime_walk_reaches_every_way_a_docstring_can_be_attached():
+    """The walk's unwrapping, exercised directly rather than by what the module has.
+
+    Round-11 review deleted the ``property`` unwrap and the suite stayed green
+    — ``final_model.py`` has no property today, so the branch was dormant, and
+    "no test covers it because nothing uses it" is how a member becomes exempt
+    the day someone adds one. The four shapes are asserted on a synthetic
+    module instead, so the walk's reach does not depend on what this module
+    happens to contain.
+    """
+    synthetic = types.ModuleType("synthetic")
+    synthetic.__doc__ = "the synthetic module"
+
+    class Carrier:
+        """the class"""
+
+        @classmethod
+        def a_classmethod(cls):
+            """the classmethod"""
+
+        @staticmethod
+        def a_staticmethod():
+            """the staticmethod"""
+
+        @property
+        def a_property(self):
+            """the property"""
+
+        def a_method(self):
+            """the method"""
+
+    def a_function():
+        """the function"""
+
+    for value in (Carrier, a_function):
+        value.__module__ = "synthetic"
+    for member in ("a_classmethod", "a_staticmethod", "a_property", "a_method"):
+        unwrapped = inspect.unwrap(vars(Carrier)[member])
+        target = getattr(unwrapped, "__func__", getattr(unwrapped, "fget", unwrapped))
+        target.__module__ = "synthetic"
+    synthetic.Carrier = Carrier
+    synthetic.a_function = a_function
+
+    found = _runtime_prose(synthetic)
+    assert found == {
+        "module": "the synthetic module",
+        "doc:Carrier": "the class",
+        "doc:Carrier.a_classmethod": "the classmethod",
+        "doc:Carrier.a_staticmethod": "the staticmethod",
+        "doc:Carrier.a_property": "the property",
+        "doc:Carrier.a_method": "the method",
+        "doc:a_function": "the function",
+    }
 
 
 def test_the_live_docstrings_are_the_ones_the_pin_digested():
@@ -2693,10 +2835,28 @@ def test_the_live_docstrings_are_the_ones_the_pin_digested():
     live = _runtime_prose()
     assert live, "the runtime walk found no docstring at all"
     assert "module" in live and "doc:FinalRefit" in live
-    missing = sorted(set(live) - set(source))
-    assert not missing, (
-        f"live docstrings the source pin never saw: {missing} — __doc__ was "
+    unseen = sorted(set(live) - set(source))
+    assert not unseen, (
+        f"live docstrings the source pin never saw: {unseen} — __doc__ was "
         "written at run time"
+    )
+    # BOTH directions. Round-11 review deleted the classmethod unwrap from
+    # `_runtime_prose` and the suite stayed green: the walk silently stopped
+    # finding six docstrings — `__init_subclass__`'s among them, the one
+    # carrying the seal's four pinned claims — and a check that only asks
+    # "did live find anything source did not" cannot see a live walk that
+    # found LESS. A member this walk stops reaching is a member exempt from
+    # the source pin forever. So the two sets must be EQUAL. A docstring on a
+    # function nested inside a method would fail here, because `vars()` cannot
+    # reach a closure: that is a deliberate refusal, not an oversight — add it
+    # and decide what should happen, rather than inheriting an exemption.
+    unreached = sorted(
+        key for key in source if key.startswith("doc:") and key not in live
+    )
+    assert not unreached, (
+        f"the live walk never reached: {unreached} — these docstrings are "
+        "exempt from the runtime comparison, so a __doc__ written at run time "
+        "over any of them would go unseen"
     )
     differing = sorted(key for key in live if live[key] != source[key])
     assert not differing, (
@@ -2730,36 +2890,38 @@ def test_the_prose_pin_covers_every_docstring_the_module_defines():
         and ast.get_docstring(node)
     )
     assert sum(1 for key in prose if key.startswith("doc:")) == independent
-    # GATE_FACTS is twenty-one sentences of PROSE inside a tuple. Round 8
+    # Every GATE_FACTS row's `attempt` is PROSE inside a tuple. Round 8
     # pinned them, round 9's rewrite dropped the category while claiming wider
     # coverage, and round-10 review caught the regression: every ``attempt``
     # could be reworded freely for one whole round. The key is named here so
-    # the same silent drop fails instead.
-    assert "strings:GATE_FACTS" in prose
+    # the same silent drop fails instead. The row COUNT is deliberately not
+    # written out — round-11 review found the number this comment used to
+    # carry already stale, in the one prose site no pin reaches (a plain `#`
+    # comment), which is the same defect one level down. The count is asserted
+    # executably in `test_the_probe_table_covers_every_declared_fact_and_nothing_else`.
+    assert "constants:GATE_FACTS" in prose
     for _, _, _, attempt in final_model.GATE_FACTS:
-        assert attempt in prose["strings:GATE_FACTS"]
-    # …and the ``strings:`` buckets are TOTAL, not a sample: every string
-    # constant the module holds that is not a docstring is inside exactly one.
+        assert repr(attempt) in prose["constants:GATE_FACTS"]
+    # …and the ``constants:`` buckets are TOTAL, not a sample: every literal
+    # the module holds that is not a docstring is inside exactly one. NO TYPE
+    # FILTER on either side. Round-11 review found the previous pair sharing
+    # one — both said `isinstance(value, str)`, so a `bytes` literal was
+    # invisible to the collector AND to the walk that was supposed to be
+    # independent of it, and the assertion passed over a surface neither could
+    # see. An oracle built from the thing it checks asserts nothing.
     docstrings = {
-        id(node.body[0].value)
+        id(statement.value)
         for node in ast.walk(tree)
-        if isinstance(
-            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        )
-        and node.body
-        and isinstance(node.body[0], ast.Expr)
-        and isinstance(node.body[0].value, ast.Constant)
-        and isinstance(node.body[0].value.value, str)
+        for statement in [_docstring_statement(node)]
+        if statement is not None
     }
     every_literal = [
-        node.value for node in ast.walk(tree)
-        if isinstance(node, ast.Constant)
-        and isinstance(node.value, str)
-        and id(node) not in docstrings
+        repr(node.value) for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and id(node) not in docstrings
     ]
     collected = [
         text
-        for key in prose if key.startswith("strings:")
+        for key in prose if key.startswith("constants:")
         for text in prose[key].split("\x00")
     ]
     assert sorted(collected) == sorted(every_literal)

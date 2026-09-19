@@ -191,6 +191,60 @@ def _sealed_violations(subclass):
     ]
 
 
+#: The two names whose presence on a metaclass answers EVERY class-level
+#: lookup it is asked, sealed or not. Neither is a descriptor question, so
+#: :func:`_wins_class_level_lookup` decides them by name; both are in
+#: :data:`FinalRefit._FINAL_METHODS`, so both reach it.
+_LOOKUP_INTERCEPTORS = ("__getattr__", "__getattribute__")
+
+
+def _wins_class_level_lookup(name, supplied):
+    """Whether a metaclass carrying ``supplied`` under ``name`` beats the class's MRO.
+
+    Parameters
+    ----------
+    name : str
+        The sealed name the metaclass carries.
+    supplied : object
+        What it carries under that name.
+
+    Returns
+    -------
+    bool
+        True when class-level lookup reaches it instead of the class's own.
+
+    Notes
+    -----
+    Two language rules, and nothing this module invented.
+
+    ``type.__getattribute__`` prefers a metaclass attribute over the class's
+    own MRO in exactly one case: the attribute is a DATA descriptor, meaning
+    its type defines ``__set__`` or ``__delete__``. Every sealed name is
+    carried by ``FinalRefit``'s own MRO, so a NON-data descriptor on the
+    metaclass always loses and is not a finding — which is why a metaclass
+    ``__new__`` or ``__init__``, both plain functions, passes.
+
+    The exception is :data:`_LOOKUP_INTERCEPTORS`, which do not compete under
+    their own name: a metaclass ``__getattribute__`` answers every class-level
+    lookup the class is given, and a metaclass ``__getattr__`` answers every
+    one that would otherwise fail.
+
+    The descriptor test goes through :func:`_resolved_through_the_mro`, so it
+    reads ``type(supplied)``'s real MRO dicts — the same slots
+    ``_PyType_Lookup`` reads when the interpreter asks this question inside
+    ``type.__getattribute__``. A ``__set__`` invented by a ``__getattr__`` or
+    by a metaclass is visible to neither, so an object can neither claim to
+    shadow nor hide that it does.
+    """
+    if name in _LOOKUP_INTERCEPTORS:
+        return True
+    carrier = type(supplied)
+    return (
+        _resolved_through_the_mro(carrier, "__set__") is not _UNRESOLVED
+        or _resolved_through_the_mro(carrier, "__delete__") is not _UNRESOLVED
+    )
+
+
 def _metaclass_supplied(cls):
     """Sealed names ``cls``'s metaclass supplies that ``FinalRefit``'s does not.
 
@@ -218,18 +272,28 @@ def _metaclass_supplied(cls):
     ``object.__getattribute__`` never consults the metaclass — which is exactly
     why the measured reach was class-level only.
 
-    NOTHING HERE ASKS WHETHER THE OBJECT IS A DATA DESCRIPTOR. Answering that
-    means reading ``type(obj)`` for ``__set__``/``__delete__``, and the
-    attacker supplies ``type(obj)`` too; every round of this module that
-    shipped a classifier had the classifier defeated rather than the fix. The
-    rule is the total one: a metaclass outside the baseline may not carry a
-    sealed name at all. It refuses MORE than lookup would shadow — a metaclass
-    ``__new__`` shadows nothing, because a plain function is a non-data
-    descriptor — and that asymmetry is deliberate. A wrong refusal is a loud
-    failure at class definition; a wrong clearance ships a model. The baseline
-    is ``type(FinalRefit)``'s own MRO, so ``ABCMeta``, ``type`` and ``object``
-    supplying ``__init__``, ``__new__`` and ``__setattr__`` are not findings,
-    and a metaclass that adds no sealed name is not one either.
+    Round 10 refused ANY sealed name a non-baseline metaclass carried, on the
+    argument that classifying the object is one more thing to defeat. Round-11
+    review measured what that cost, and it was too much twice over. It refused
+    an ordinary registering metaclass — one whose ``__init__`` records the
+    class it just built — while telling its author, untruthfully, that
+    ``__init__`` "answers class-level lookup ahead of the MRO": a plain
+    function is a NON-data descriptor and the class's own MRO wins. And it
+    refused three declared attempts at ``super().__new__`` for merely defining
+    ``__new__``, so their payload line never ran and three rows of
+    :data:`GATE_FACTS` stopped testing what they name.
+
+    So the shadowing question is asked — and it is not this module's
+    classifier, it is the LANGUAGE's, read the way the interpreter reads it.
+    :func:`_wins_class_level_lookup` walks ``type(obj)``'s real MRO through
+    ``type``'s own descriptors, which is exactly what ``_PyType_Lookup`` does
+    for ``__set__``/``__delete__`` inside ``type.__getattribute__``. An
+    attacker supplies ``type(obj)``, but not what that lookup reads, and
+    cannot make a non-shadowing object shadow.
+
+    The baseline is ``type(FinalRefit)``'s own MRO, so ``ABCMeta``, ``type``
+    and ``object`` are never findings, and a metaclass that adds no sealed
+    name is not one either.
 
     Patching a baseline entry itself — assigning onto ``ABCMeta`` — is the
     already-declared trusted-name tier, the same tier as replacing this
@@ -242,7 +306,9 @@ def _metaclass_supplied(cls):
             continue
         contents = _REAL_DICT(entry)
         supplied += [
-            name for name in FinalRefit._FINAL_METHODS if name in contents
+            name
+            for name in FinalRefit._FINAL_METHODS
+            if name in contents and _wins_class_level_lookup(name, contents[name])
         ]
     return sorted(set(supplied))
 
@@ -992,10 +1058,10 @@ GATE_FACTS = (
     ("refuses_a_metaclass_that_rotates_the_class_out_of_its_own_mro", False, (),
      "a metaclass whose mro() puts the new class AFTER FinalRefit, so that "
      "type.__new__'s super(cls, cls).__init_subclass__ lookup finds nothing"),
-    ("refuses_a_metaclass_that_injects_the_guard_beside_its_payload", True, (),
+    ("refuses_a_metaclass_that_injects_the_guard_beside_its_payload", False, (),
      "a metaclass __new__ that assigns a compliant _unsealed_problems beside "
      "the sealed member it is really after"),
-    ("refuses_a_substituted_channel_resolver", True, (),
+    ("refuses_a_substituted_channel_resolver", False, (),
      "a metaclass __new__ that assigns _channel itself, the member run() "
      "resolves through the instance"),
     ("refuses_a_subclass_overriding_an_unsealed_node_hook", False, (),
@@ -1010,7 +1076,7 @@ GATE_FACTS = (
     ("refuses_post_hoc_assignment_on_a_subclass", False, (),
      "assigning a sealed member onto an empty-bodied subclass after it is "
      "defined, which the definition-time check has already passed"),
-    ("refuses_a_metaclass_that_injects_after_class_creation", True, (),
+    ("refuses_a_metaclass_that_injects_after_class_creation", False, (),
      "a metaclass __new__ that builds the class from an empty namespace and "
      "assigns a sealed member onto it before returning it"),
     ("refuses_per_instance_shadowing", False, ("run",),
@@ -1024,6 +1090,17 @@ GATE_FACTS = (
     ("refuses_a_metaclass_whose_own_metaclass_rigs_equality", True, (),
      "a metaclass supplying a sealed name whose own metaclass answers True "
      "to every ==, so a baseline comparison by equality would skip it"),
+    ("refuses_a_metaclass_supplying_a_class_that_is_itself_a_data_descriptor",
+     True, (),
+     "a metaclass binding validate_params to a CLASS whose own metaclass "
+     "defines __get__ and __set__, so the descriptor protocol lives one "
+     "level further out than the payload"),
+    ("refuses_a_metaclass_swapped_in_after_the_class_is_defined", False,
+     ("validate_params",),
+     "assigning a new metaclass onto an already-defined subclass with "
+     "cls.__class__ = ..., which the definition-time hook has already passed "
+     "and whose descriptor then answers in place of the member that would "
+     "re-take the verdict"),
     ("shipped_configuration_refuses_to_plan", True, (),
      "loading configs/run-final-refit.json and planning it"),
 )
