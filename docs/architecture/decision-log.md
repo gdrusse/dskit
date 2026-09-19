@@ -17134,3 +17134,52 @@ re-derived, which is what the four items above did. And the sweep that claimed
 Round-13 sweep: the four payload/clause deletions above are now all killed, as
 are the `__set__`/`__delete__` halves separately. 153 tests; the probe table is
 twenty-five rows.
+
+### Round 13 (second lens) — a winner-swap, two decorative payloads, and a message polarity
+
+The tests-and-integration lens (Lens B, with its own independent mutation sweep)
+returned 0 Critical, 1 Major and 6 Minor. The Major is closed, five of the six
+Minors are closed, and one is accepted scope.
+
+**Major — a winner-swap in `refit_heads` shipped a wrong model with a lying
+identity stamp.** `test_refit_heads_fits_each_head_on_only_its_own_winner`
+proved `coef_[h01] != coef_[h02]` (sensitivity) and that `identities[head]
+["winner"] == winners[head]` — but the identity dict is built from the SAME
+input dict that a winner-swap mutates, so both held while h01 was fitted with
+h02's `alpha=5.0`. The test now fits a reference `Ridge(alpha=winners[head]
+["alpha"])` on each head's OWN rows and asserts the fitted coefficients equal it
+BY VALUE, so a swapped or substituted winner is contradicted outright.
+
+**Minor — two probes' distinguishing payloads were decorative.** Deleting the
+`__getattribute__` interception body from
+`refuses_a_metaclass_that_intercepts_class_attribute_access`, and deleting the
+`__dict__` shadow from `refuses_a_metaclass_that_shadows_the_class_dict`, each
+left the suite green — the first because the interceptor rule refuses on the
+NAME alone, the second because the body override alone still refuses. Each now
+carries a control that the payload is real (the interception actually answers
+the sealed name on a class the metaclass may build; the shadow actually makes
+`getattr_static` report `FinalRefit`'s member while the seal reads through it),
+so deleting the payload fails the control.
+
+**Minor — the metaclass refusal message carried no polarity pin.** The
+"may not override" verdict is behaviourally pinned; the "may not take a
+metaclass supplying …" verdict was held only by the prose digest, which cannot
+see a polarity inversion. `test_a_metaclass_supplying_a_sealed_name_refuses_
+with_the_right_verdict` now asserts the phrase, so inverting "may not" to "may
+accept" fails a test, not just the digest.
+
+**Minor — the second clause's single synthetic-name assertion was deletable.**
+`test_the_shadowing_rule_matches_type_getattribute` now pins the full truth
+table of `_wins_class_level_lookup` — interceptor clause, second clause, and
+both data-descriptor halves — each on its own row, so each `return` branch has
+an independent witness and deleting one is not enough.
+
+**Accepted scope, not fixed.** The two remaining Minors are the disclosed
+limitation this entry has stated since round 5: the prose pin detects CHANGE,
+not falsehood. Contradicting a pinned docstring AROUND its pinned substrings,
+or stating a false outcome in a `GATE_FACTS` `attempt` sentence, survives ONLY
+after the digests are re-derived — which is the documented cost and the point
+of the pin (it forces a human to read the new text). It cannot be made
+executable; free-text prose is not data, and `GATE_FACTS` is.
+
+155 tests; the probe table is twenty-five rows.

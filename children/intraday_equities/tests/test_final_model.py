@@ -726,6 +726,9 @@ def test_refit_heads_requires_exactly_the_ten_declared_heads():
 
 def test_refit_heads_fits_each_head_on_only_its_own_winner(monkeypatch):
     pytest.importorskip("sklearn")
+    import numpy as np
+    from sklearn.linear_model import Ridge
+
     rows = _all_heads_rows()
     winners = dict(_all_heads_winners())
     winners["h01"] = {"alpha": 1e-6}
@@ -736,9 +739,31 @@ def test_refit_heads_fits_each_head_on_only_its_own_winner(monkeypatch):
         estimator_path="sklearn.linear_model.Ridge", seed=0,
     )
     assert set(estimators) == set(HEADS) == set(identities)
-    # Different alpha -> different fitted coefficients on the same rows.
-    assert list(estimators["h01"]._model.coef_) != list(estimators["h02"]._model.coef_)
+
+    def reference_coef(head):
+        """A Ridge fit with THIS head's own winner on THIS head's own rows.
+
+        ``estimators[head]._model.coef_ != estimators[other]._model.coef_``
+        proved only that the two heads differ (sensitivity), not that each head
+        got its OWN winner: a winner-swap fits h01 with h02's alpha and the
+        inequality still holds while ``identities`` — built from the same input
+        dict — still reports the intended winner. A reference fit pins the
+        VALUE, so a swapped or substituted winner is contradicted outright.
+        """
+        matrix = np.array(
+            [[row[name] for name in FEATURE_ORDER] for row in rows[head]],
+            dtype=float,
+        )
+        targets = np.array([row["label"] for row in rows[head]], dtype=float)
+        keep = [i for i, name in enumerate(FEATURE_ORDER) if name != "vol_5m"]
+        return list(
+            Ridge(alpha=winners[head]["alpha"], random_state=0)
+            .fit(matrix[:, keep], targets)
+            .coef_
+        )
+
     for head in HEADS:
+        assert list(estimators[head]._model.coef_) == reference_coef(head)
         assert identities[head]["winner"] == winners[head]
         assert identities[head]["n_rows"] == len(rows[head])
         assert identities[head]["seed"] == 0
@@ -1450,6 +1475,34 @@ def test_a_subclass_may_not_override_any_sealed_member(name):
         type("Sneaky", (final_model.FinalRefit,), {name: lambda *a, **k: []})
 
 
+def test_a_metaclass_supplying_a_sealed_name_refuses_with_the_right_verdict():
+    """The metaclass refusal message carries its own polarity, like the violation one.
+
+    `test_a_subclass_may_not_override_any_sealed_member` pins the "may not
+    override" verdict behaviourally; the metaclass verdict ("may not take a
+    metaclass supplying …") was pinned only by the prose digest — a change
+    detector that cannot see a polarity inversion. Asserting the phrase here
+    means inverting "may not" to "may accept" fails this test, not just the
+    digest (round-13 review).
+    """
+    class Answer:
+        """A data descriptor: __set__ makes it win class-level lookup outright."""
+
+        def __get__(self, obj, owner=None):
+            return lambda params: []
+
+        def __set__(self, obj, value):
+            raise AttributeError
+
+    class Shadowing(type(final_model.FinalRefit)):
+        validate_params = Answer()
+
+    with pytest.raises(
+        final_model.SealRefused, match="may not take a metaclass supplying"
+    ):
+        Shadowing("Attempt", (final_model.FinalRefit,), {})
+
+
 def test_the_round_one_production_stamp_exploit_is_refused_at_class_definition(tmp_path):
     """The reviewer's exact class, verbatim in shape."""
     with pytest.raises(TypeError, match="_channel_problems"):
@@ -1935,6 +1988,20 @@ def _probe_metaclass_shadows_the_class_dict():
     class Shadowing(type(final_model.FinalRefit)):
         __dict__ = property(lambda cls: {})
 
+    # Control: the shadow is the round-7 shape — getattr_static reads THROUGH
+    # the shadowed entry and reports FinalRefit's own member while the seal,
+    # which reads type's real __dict__ slot, still sees the live override.
+    # Deleting `__dict__ = property(...)` above makes the two readings agree
+    # and this control fails, so the shadow is load-bearing rather than
+    # decorative (round-13 review).
+    import inspect
+
+    carrier = Shadowing("Carrier", (final_model.FinalRefit,), {})
+    carrier._channel_problems = classmethod(lambda cls, params: [])
+    theirs = inspect.getattr_static(carrier, "_channel_problems")
+    mine = final_model._resolved_through_the_mro(carrier, "_channel_problems")
+    assert mine is not theirs, "getattr_static no longer skips; this row is stale"
+
     # Control: the metaclass ALONE must be accepted, so a refusal below is
     # attributable to the override and not to the metaclass.
     innocent, refused_innocent = _define({}, metaclass=Shadowing)
@@ -2113,6 +2180,14 @@ def _probe_metaclass_interception():
             if name == "_channel_problems":
                 return lambda params: []
             return super().__getattribute__(name)
+
+    # Control: the interception is REAL, not decorative. On a plain class the
+    # metaclass is allowed to build, the body answers the sealed name — so
+    # deleting the body above raises AttributeError here and the row fails.
+    class Probe(metaclass=Intercepting):
+        pass
+
+    assert Probe._channel_problems(None) == []
 
     # The body is empty, so the MRO walk finds nothing; the metaclass rule is
     # what bites, and it bites on __getattribute__ being a sealed name at all.
@@ -2345,6 +2420,54 @@ def test_a_sealed_name_the_class_does_not_carry_is_shadowable_by_anything():
     assert not final_model._wins_class_level_lookup(
         "run", plain, final_model.FinalRefit
     )
+
+
+def test_the_shadowing_rule_matches_type_getattribute():
+    """The full truth table of `_wins_class_level_lookup`, clause by clause.
+
+    The second clause (metaclass wins a name the class's MRO carries nowhere)
+    has no attack that demonstrates it today, so it cannot be pinned by a
+    probe; the single synthetic-name assertion beside it was deletable. This
+    table pins every clause on its own row, so each of the three `return`
+    branches of the function has an independent witness and deleting any one
+    is no longer enough (round-13 review).
+    """
+    uncarried = "a_name_final_refit_does_not_carry"
+
+    def plain(cls_or_self, *args, **kwargs):
+        return None
+
+    class WithSet:
+        def __get__(self, obj, owner=None):
+            return lambda params: []
+
+        def __set__(self, obj, value):
+            raise AttributeError
+
+    class WithDelete:
+        def __get__(self, obj, owner=None):
+            return lambda params: []
+
+        def __delete__(self, obj):
+            raise AttributeError
+
+    cases = [
+        # interceptor clause — both names answer every class-level lookup.
+        ("__getattr__", plain, True),
+        ("__getattribute__", plain, True),
+        # second clause — carried NOWHERE on the MRO, whatever kind of object.
+        (uncarried, plain, True),
+        (uncarried, WithSet(), True),
+        # data-descriptor clause — each half, on a name the MRO DOES carry.
+        ("run", WithSet(), True),
+        ("run", WithDelete(), True),
+        # a plain non-data descriptor under a carried name loses.
+        ("run", plain, False),
+    ]
+    for name, supplied, expected in cases:
+        assert final_model._wins_class_level_lookup(
+            name, supplied, final_model.FinalRefit
+        ) is expected, (name, supplied)
 
 
 def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
