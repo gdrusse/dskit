@@ -40,10 +40,13 @@ here and the executor is a fake whose every attribute raises.
 
 import dataclasses
 import inspect
+import random
 from decimal import Decimal
 from types import MappingProxyType
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from dskit.production import records, vocab
 from dskit.production.accounting import PaperAccounting
@@ -2579,3 +2582,143 @@ def test_the_dependency_table_names_every_field_read():
             f"NOT_READ[{record_type.__name__}] claims {both} unread while "
             "DEPENDENCIES exercises them — a field belongs to exactly one table"
         )
+
+
+# ---------------------------------------------------------------------------
+# Properties, not axes — the strategy this seam was asked for
+# ---------------------------------------------------------------------------
+#
+# Eight rounds of hand-written rows each closed one layer and left the next
+# exposed, because each row names ONE input and asserts ONE reading. The two
+# properties below are not rows: they hold for EVERY state a generator can
+# build, and between them they kill the whole family of aggregation defects at
+# once rather than one rig per aggregation.
+#
+#   PARTITION INVARIANCE. Splitting one working order, or one held position,
+#   into two halves that add up to it changes nothing a caller can read. A
+#   `sum` has this property; `max`, `first`, `last` and `next` do not.
+#
+#   PERMUTATION INVARIANCE. The order rows arrive in changes nothing. A `sum`
+#   has this property; `first`, `last` and any early-return scan do not.
+#
+# Neither names an input, so neither goes stale when an input is added: a new
+# field that breaks either one fails here without anyone writing a row for it.
+
+_WHOLE_QTYS = st.lists(
+    st.integers(min_value=2, max_value=40), min_size=1, max_size=4
+)
+_LIMITS = st.lists(st.integers(min_value=1, max_value=30), min_size=1, max_size=4)
+_SIDES = st.lists(st.sampled_from(("buy", "sell")), min_size=1, max_size=4)
+_INSTRUMENTS = st.lists(st.sampled_from((INS1, INS2)), min_size=1, max_size=4)
+
+
+def _readings(orders, positions, balance="10000"):
+    """Every caller-facing figure for one fold, compared by VALUE.
+
+    `Decimal`s, never their `str`: ``Decimal("0.5") + Decimal("0.5")`` prints
+    ``"1.0"`` where the undivided row prints ``"1"``, so a string comparison
+    fails a law that holds. `Decimal.__eq__` is numeric, so a figure that
+    really moved still fails.
+    """
+    working = {order.client_ref: order for order in orders}
+    view = _gate_view({USD: Decimal(balance)}, working, tuple(positions))
+    accounting = _gate_accounting(FakeHistory(()))
+    book = accounting.encumbrance(view, GATE_AT_MS)
+    return (
+        book.funds[USD].available,
+        book.funds[USD].committed,
+        tuple(sorted(
+            (key, row.available, row.held, row.committed)
+            for key, row in book.inventory.items()
+        )),
+    )
+
+
+def _orders_from(sides, qtys, limits, instruments):
+    """One working order per drawn tuple, refs distinct so the dict keeps them all."""
+    rows = zip(sides, qtys, limits, instruments)
+    return [
+        order(ref=f"w-{index}", side=side, qty=str(qty), limit=str(limit),
+              instrument=instrument)
+        for index, (side, qty, limit, instrument) in enumerate(rows)
+    ]
+
+
+@settings(max_examples=150, deadline=None)
+@given(
+    sides=_SIDES, qtys=_WHOLE_QTYS, limits=_LIMITS, instruments=_INSTRUMENTS,
+    split=st.integers(min_value=0, max_value=3),
+)
+def test_splitting_one_working_order_in_half_changes_no_reading(
+    sides, qtys, limits, instruments, split
+):
+    """PARTITION INVARIANCE over working orders.
+
+    A commitment is a total, so one order for 10 and two orders for 5 must
+    encumber the same thing. `max`, `first` and `last` all disagree the moment
+    a key carries two rows, which is the round-7 Major stated as a law instead
+    of as a rig.
+    """
+    width = min(len(sides), len(qtys), len(limits), len(instruments))
+    whole = _orders_from(sides[:width], qtys[:width], limits[:width],
+                         instruments[:width])
+    index = split % width
+    victim = whole[index]
+    half = victim.qty / 2
+    pieces = [
+        order(ref=f"{victim.client_ref}-a", side=victim.side, qty=str(half),
+              limit=str(victim.limit), instrument=victim.instrument),
+        order(ref=f"{victim.client_ref}-b", side=victim.side, qty=str(half),
+              limit=str(victim.limit), instrument=victim.instrument),
+    ]
+    divided = whole[:index] + pieces + whole[index + 1:]
+    assert _readings(whole, ()) == _readings(divided, ())
+
+
+@settings(max_examples=150, deadline=None)
+@given(
+    sides=_SIDES, qtys=_WHOLE_QTYS, limits=_LIMITS, instruments=_INSTRUMENTS,
+    seed=st.integers(min_value=0, max_value=2**16),
+)
+def test_the_order_the_fold_lists_its_rows_in_changes_no_reading(
+    sides, qtys, limits, instruments, seed
+):
+    """PERMUTATION INVARIANCE over working orders and held positions.
+
+    Nothing a caller reads may depend on which row the fold emitted first.
+    `first`- and `last`-wins aggregations, and any scan that returns early,
+    all fail this for every state carrying two rows on one key.
+    """
+    width = min(len(sides), len(qtys), len(limits), len(instruments))
+    rows = _orders_from(sides[:width], qtys[:width], limits[:width],
+                        instruments[:width])
+    held = [position(instrument=INS1, qty="10"), position(instrument=INS1, qty="4"),
+            position(instrument=INS2, qty="7")]
+    shuffled, held_shuffled = list(rows), list(held)
+    random.Random(seed).shuffle(shuffled)
+    random.Random(seed + 1).shuffle(held_shuffled)
+    assert _readings(rows, held) == _readings(shuffled, held_shuffled)
+
+
+@settings(max_examples=150, deadline=None)
+@given(
+    sides=_SIDES, qtys=_WHOLE_QTYS, limits=_LIMITS, instruments=_INSTRUMENTS,
+    held=st.integers(min_value=0, max_value=40),
+)
+def test_splitting_one_held_position_in_half_changes_no_reading(
+    sides, qtys, limits, instruments, held
+):
+    """PARTITION INVARIANCE over held positions.
+
+    `_held_units` SUMS its matching rows deliberately, against a source that
+    cannot duplicate today. The law says what the deliberate choice IS, so a
+    future source that can duplicate is read the way this function already
+    promises to read it.
+    """
+    width = min(len(sides), len(qtys), len(limits), len(instruments))
+    rows = _orders_from(sides[:width], qtys[:width], limits[:width],
+                        instruments[:width])
+    whole = [position(instrument=INS1, qty=str(held))]
+    halves = [position(instrument=INS1, qty=str(Decimal(held) / 2)),
+              position(instrument=INS1, qty=str(Decimal(held) / 2))]
+    assert _readings(rows, whole) == _readings(rows, halves)

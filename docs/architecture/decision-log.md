@@ -16917,3 +16917,31 @@ same claim in this entry: see the corrected paragraph above.
 Round-8 sweep: twelve mutations over the two aggregations, the two balance
 guards, the instrument filters and the commitment basis — all twelve killed.
 208 tests in `tests/production/test_encumbrance.py`.
+
+### Round 9 — laws, not a seventh axis
+
+The standing instruction for this seam was that eight rounds of hand-written
+rows had each closed one layer and left the next exposed, and that it needed a
+different verification strategy rather than another axis. Three properties,
+generated over by hypothesis against the real fold:
+
+- **Partition invariance over working orders.** Splitting one order into two
+  halves that add up to it changes nothing a caller reads.
+- **Partition invariance over held positions.** Same, for a position row.
+- **Permutation invariance.** The order the fold lists its rows in changes
+  nothing.
+
+A `sum` has all three. `max`, `first`, `last` and any early-returning scan have
+none of them. Measured: with the three laws run ALONE — every hand-written row
+deselected — all seven aggregation mutations die (`_committed_units`,
+`_committed_cash` and `_held_units` × sum→max, sum→last, sum→first). Round 8
+needed one purpose-built rig per aggregation to kill three of those; the laws
+kill all seven and did not have to name a single input to do it, so a field
+added later that breaks either law fails here without anyone writing a row.
+
+They are compared by VALUE, never by `str`: `Decimal("0.5") + Decimal("0.5")`
+prints `"1.0"` where the undivided row prints `"1"`, and a string comparison
+fails a law that holds. `Decimal.__eq__` is numeric, so a figure that really
+moved still fails. This was found by the laws themselves on their first run.
+
+211 tests; `tests/production` + `tests/production_libs` 6874 passed.
