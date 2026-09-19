@@ -2153,7 +2153,10 @@ def _probe_unsealed_node_hook():
         {"serving_effect": classmethod(lambda cls, params, evidence: None)}
     )
     assert refused is False and cls is not None
-    assert cls.serving_effect is not final_model.FinalRefit.serving_effect
+    assert (
+        cls.serving_effect.__func__
+        is not final_model.FinalRefit.serving_effect.__func__
+    )
     return False, _reaches(cls)
 
 
