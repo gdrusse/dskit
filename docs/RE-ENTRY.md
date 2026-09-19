@@ -1,5 +1,112 @@
 # Re-entry
 
+## Current wrap: production-audit P0 slice, 3 of 6 landed (2026-09-19)
+
+Branch `claude/production-gaps-20260918` @ `a25c225`, pushed. Base `842d226`.
+Six topics drawn from the two production-research audits' P0 registers, each built
+in its own worktree under `~/wt/pg-*`, each reviewed by two independent fresh-context
+skeptic lenses per candidate (correctness/authority + tests/integration, the latter
+with mandatory mutation testing). **65 lenses and one adjudication; 20 Critical and
+49 Major found.**
+
+### Merged and pushed (two clean lenses each)
+
+- **PM-02 point-in-time rung membership** (3 rounds, `3849318`). Rung geometry, rank,
+  count and duration resolve over contracts listed at each lead epoch, not the eventual
+  panel. An unstable settlement law is skipped and counted, never fatal. The featurizer
+  revision is persisted in the trained artifact so a stale checkpoint refuses.
+  Reused ADR-0153's `UniverseInterval`; stayed tier 3, consumed no ADR number.
+  Child suite 383 passed / 30 skipped.
+- **PM-01 exact fee accounting** (3 rounds, `3c765a4`). Reported outlay, scenario wealth,
+  budget and event-cap checks bill the venue's encoded exact fee against the solver's
+  chosen fills, refusing or re-tightening when the exact bill breaks a ceiling; the MIO
+  keeps its linear cost only inside the objective. `walk_book` takes the caller's policy,
+  so the sizer's reserve and the fill path's bill are one number. Config identity hashes
+  verified unmoved at every round. Child suite 437 passed / 30 skipped.
+- **EQ-04/PM-05 arrival-time execution** (2 rounds, `9b960d8`, ADR-0161). Submits arrive
+  on a later book; orders are `pending` in transport and visible to the fold, Recovery and
+  Reconciler; cancels chase rather than overtake. Two defects surfaced in review: the
+  halt's `cancel_all` could report `submitted` while an order survived and later filled,
+  and `Reconciler._orders` raised a blocking `missing_at_venue` break over nothing but
+  transport — both traced to `open_orders()` violating its own base contract, fixed there
+  rather than per consumer. Reads no longer commit, so `Recovery.run` cannot record a fill
+  at a stale pre-crash quote. Selectable as `paper-arrival` at the `paper` rung.
+  `tests/production` 6615 passed / 114 skipped (base 6523/111).
+
+### Open, branches pushed, every finding has a reproducer
+
+- **EQ-05/PM-04 funds encumbrance** — `claude/pg-f2-cash-20260918` @ `1d0746c`, 5 rounds,
+  **0 Critical / 4 Major**. (1) `EncumberedAccounting._balances`/`.encumbrance`/`.admit`
+  reach `history` only via `self._history`, invisible in their signatures, so a
+  signature-keyed cache silently ADMITS a proposal it must refuse — on the path `loop.py`
+  and `leg.py` actually call, invisible to all 6790 tests. (2) A content key omitting a
+  fill's `ts_ms` survives everything, and `_unsettled`'s boundary is
+  `fill.ts_ms + lag <= at_ms`. (3) An order's `limit` is covered only accidentally.
+  (4) The counters harness is unfaithful: `state.py:1181-1183` moves `head_seq`/`head_hash`
+  UNCONDITIONALLY while only `economic_seq` is conditional, so `advance()` freezes a
+  combination no real fold produces.
+- **EQ-02 uncertainty to capital** — `claude/pg-e1-uncert-20260918` @ `c2a3014`, 6 rounds,
+  **1 Critical / 3 Major**. (C) `gc.get_referents(UNCERTAINTY_INTAKES)` reaches the
+  closure-local store without touching `__closure__`; same capability class as the ceiling
+  the module discloses, so the defect is that the disclosure names one introspection route
+  and implies the rest are closed. (M1) `artifact_type`'s use-time raise path is untested —
+  bypassing `_ask` for that one hook alone leaves 392 tests passing, while the other four
+  hooks each break a dedicated test. (M2) `test_the_honest_ceiling_is_function_introspection_and_is_stated`
+  is polarity-blind: inverting the docstring to claim the route is fully CLOSED still passes,
+  because the prose half is `assert "introspection" in doc.lower()`. The one test whose job
+  is to stop that drift does not do it. (M3) the re-measured row `R4 | demand must be a
+  registered intake | +2` is actually +5 under a same-size, valid revert.
+  ADR-0165 carries a 20-row revert-audit table and a method rule found the hard way:
+  **a revert must be valid Python AND no larger than the fix** — three earlier rows had
+  measured mutations larger than the fixes they claimed to measure, and M3 shows the table
+  still has not converged under its own new rule.
+- **EQ-01 FinalRefit provenance** — `claude/pg-e2-refit-20260918` @ `5b57e2a`, 6 rounds,
+  **0 Critical / 2 Major**. `__mro__`-doctoring is a TOTAL bypass (reaches `validate_params`
+  and `run()`), has no `GATE_FACTS` entry, and round 6 removed it from the docstring's
+  mechanism list. One outcome-asserting sentence at `final_model.py:249-252` passes when
+  inverted. ADR-0166 now states plainly that the seal **is not an authority boundary and
+  cannot become one**, with the trust root named as ADR-0122's out-of-Python launcher,
+  which is unbuilt.
+
+### Owner decisions waiting
+
+- **A3 vs ADR-0122.** The restored full quote reads *"Release trust must therefore begin
+  outside Python, and release model members must be non-pickle data."* The bundle
+  `FinalRefit` writes is joblib, which is pickle.
+- **ADR-0122 ordered vs ADR-0166 unordered row identity** — EQ-01's contract requires a
+  re-materialised row set to identify as the same rows.
+- **pmquant settlement law** — three options written up in `children/pmquant/CLAUDE.md`
+  under "Open owner decision"; skip-and-count ships today.
+- **ADR-0122's heading still reads "Proposed"** while its Status is `accepted (2026-09-12)`.
+
+### Known, unfixed, deliberately out of scope
+
+The `if name in vars(cls): raise` / `__init_subclass__` idiom appears ~30 more times
+(`dskit/pipeline/trust.py` ×24, plus `false_signal.py`, `mean_interval.py`,
+`outcome_interval.py`, `uncertainty_set.py`). Every one has the MRO and `__getattribute__`
+holes EQ-01 and EQ-01's sibling spent rounds closing, and only `uncertainty_set.py`
+carries the honest disclaimer.
+
+Also: `children/intraday_equities/tests/test_configs.py` has 5 pre-existing failures at
+base `842d226` (cohort restatement, mlflow experiment, tracking installs, split-adjusted
+store, P16 feature mask), and ~27 more folder-wide that pass individually — order
+pollution, not logic. Untouched.
+
+### The lesson worth carrying
+
+Across all six topics the implementations were rarely wrong; **the evidence was.** A
+fixture clamping two fields to one value so the test distinguishing them could not. A pin
+asserting `A is A`. A `vars()` check blind to module scope. A disclosure that passed when
+inverted. An audit row measuring a mutation larger than the fix. A harness freezing
+counters the real fold moves. Mandatory mutation testing earned its keep on every topic,
+and the tests/integration lens outperformed the correctness lens on almost every round.
+
+For EQ-05/PM-04 specifically: five rounds of hand-written axes each closed one layer and
+left the next exposed. That seam needs a different verification strategy — property-based
+testing against the real fold, or committing the mutation harness as a gate — not a sixth
+hand-written axis.
+
+
 ## Current wrap: project production-machinery audits (2026-09-18)
 
 Moved the unchanged Quantitative Modeling 101 PDF and its LaTeX/Markdown companions
