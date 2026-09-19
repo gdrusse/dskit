@@ -164,6 +164,55 @@ def _sealed_violations(subclass):
     ]
 
 
+def _unsealed_problems(cls):
+    """Return the seal's verdict on ``cls``, taken WHEN THE GATE IS CONSULTED.
+
+    Returns
+    -------
+    list of str
+        One problem naming every sealed member ``cls`` resolves elsewhere,
+        or empty.
+
+    Notes
+    -----
+    A MODULE-LEVEL FUNCTION, not a method, and that is the whole of round 9's
+    first fix. Round 8 asked ``cls._unsealed_problems()`` — resolved through
+    the very class under suspicion — so the three mechanisms it had just closed
+    could simply inject a compliant ``_unsealed_problems`` ALONGSIDE their real
+    payload and the guard reported itself clean. Asking a compromised class
+    whether it is compromised is not a check. Round-8 review demonstrated it on
+    all four timing-evading shapes. A module-level call cannot be intercepted
+    by the class it is asked about; replacing this NAME is the already-declared
+    trusted-name tier, not a new one.
+
+    ``__init_subclass__`` is invoked by ``type.__new__`` as
+    ``super(cls, cls).__init_subclass__(...)``, so it runs only if ``cls``
+    sits ahead of ``FinalRefit`` in ``cls.__mro__`` — and it runs BEFORE a
+    metaclass ``__new__`` returns. A metaclass therefore decides whether
+    the definition-time hook fires at all, and round-7 review demonstrated
+    both halves: an ``mro()`` that rotates ``cls`` to the end skips the
+    hook silently, and a ``__new__`` that assigns after ``super().__new__``
+    lands after it. In BOTH cases :func:`_sealed_violations` still returns
+    the violation — the check was right and its TIMING was wrong. So it is
+    taken again here, from ``validate_params`` and from ``run``, which are
+    the two places the gate is actually consulted.
+
+    This closes the class of attempt that skips the definition-time hook.
+    It does not make the seal an authority boundary: a caller who replaces
+    ``run`` or ``validate_params`` outright is not using this gate at all,
+    which is ADR-0122's ``uses:`` problem and not this one's.
+    :data:`GATE_FACTS` carries the executed outcome for every attempt.
+    """
+    violations = _sealed_violations(cls)
+    if not violations:
+        return []
+    return [
+        f"{cls.__name__} resolves {', '.join(violations)} to something other "
+        "than FinalRefit's own — the release gate every refusal here goes "
+        "through is not the one this class is running (ADR-0166)"
+    ]
+
+
 class FinalRefit(Node):
     """One frozen-winner refit over an attested completed run and ten labelled wires (ADR-0166, completing ADR-0116).
 
@@ -285,7 +334,6 @@ class FinalRefit(Node):
         "__setattr__",
         "_run_pin_problems",
         "_schema_problems",
-        "_unsealed_problems",
         "_verified_hpo_outputs",
         "_winner_from_evidence",
         "_winners",
@@ -353,50 +401,11 @@ class FinalRefit(Node):
     )
 
     @classmethod
-    def _unsealed_problems(cls):
-        """Return the seal's verdict on ``cls``, taken WHEN THE GATE IS CONSULTED.
-
-        Returns
-        -------
-        list of str
-            One problem naming every sealed member ``cls`` resolves elsewhere,
-            or empty.
-
-        Notes
-        -----
-        ``__init_subclass__`` is invoked by ``type.__new__`` as
-        ``super(cls, cls).__init_subclass__(...)``, so it runs only if ``cls``
-        sits ahead of ``FinalRefit`` in ``cls.__mro__`` — and it runs BEFORE a
-        metaclass ``__new__`` returns. A metaclass therefore decides whether
-        the definition-time hook fires at all, and round-7 review demonstrated
-        both halves: an ``mro()`` that rotates ``cls`` to the end skips the
-        hook silently, and a ``__new__`` that assigns after ``super().__new__``
-        lands after it. In BOTH cases :func:`_sealed_violations` still returns
-        the violation — the check was right and its TIMING was wrong. So it is
-        taken again here, from ``validate_params`` and from ``run``, which are
-        the two places the gate is actually consulted.
-
-        This closes the class of attempt that skips the definition-time hook.
-        It does not make the seal an authority boundary: a caller who replaces
-        ``run`` or ``validate_params`` outright is not using this gate at all,
-        which is ADR-0122's ``uses:`` problem and not this one's.
-        :data:`GATE_FACTS` carries the executed outcome for every attempt.
-        """
-        violations = _sealed_violations(cls)
-        if not violations:
-            return []
-        return [
-            f"{cls.__name__} resolves {', '.join(violations)} to something other "
-            "than FinalRefit's own — the release gate every refusal here goes "
-            "through is not the one this class is running (ADR-0166)"
-        ]
-
-    @classmethod
     def validate_params(cls, params):
         """Return problems with the release channel, run pins, bundle schema knobs and refit identity."""
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
-        problems += cls._unsealed_problems()
+        problems += _unsealed_problems(cls)
         problems += cls._channel_problems(params)
         problems += cls._run_pin_problems(params)
         problems += cls._schema_problems(params)
@@ -753,7 +762,7 @@ class FinalRefit(Node):
         """Refit the ten frozen winners once over attested rows, write one bundle, and prove it replays."""
         from dskit.pipeline.libs.sklearn import load_bundle, write_bundle
 
-        unsealed = type(self)._unsealed_problems()
+        unsealed = _unsealed_problems(type(self))
         if unsealed:
             raise ValueError(f"FinalRefit: {unsealed[0]}")
         channel = self._channel()
@@ -887,6 +896,9 @@ GATE_FACTS = (
     ("refuses_a_metaclass_that_rotates_the_class_out_of_its_own_mro", False, (),
      "a metaclass whose mro() puts the new class AFTER FinalRefit, so that "
      "type.__new__'s super(cls, cls).__init_subclass__ lookup finds nothing"),
+    ("refuses_a_metaclass_that_injects_the_guard_beside_its_payload", False, (),
+     "a metaclass __new__ that assigns a compliant _unsealed_problems beside "
+     "the sealed member it is really after"),
     ("refuses_a_substituted_channel_resolver", False, (),
      "a metaclass __new__ that assigns _channel itself, the member run() "
      "resolves through the instance"),

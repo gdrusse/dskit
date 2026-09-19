@@ -16579,6 +16579,48 @@ reaching `run`, which it briefly did. 19 facts; 44 mutations, 44 killed,
 including all five prose attacks the lenses used and both halves of the
 use-time check.*
 
+*Corrected again 2026-09-19 after round-8 review returned 0 Critical, 3 Major —
+and both of round 8's changed approaches turned out to have the SAME defect in
+a new place: each one was still decided by something the attacker could reach.*
+
+*(a) The use-time guard was asked THROUGH THE CLASS it guards.*
+`cls._unsealed_problems()` resolves like any other member, so the three
+mechanisms round 8 had just closed could inject a compliant
+`_unsealed_problems` ALONGSIDE their real payload and the class reported itself
+clean at both entry points. Asking a compromised class whether it is
+compromised is not a check. FIXED: `_unsealed_problems` is a MODULE-LEVEL
+function now and is not a sealed member at all — nothing resolves it through
+the class, so injecting the name is inert. Replacing the module name is the
+already-declared trusted-name tier, not a new one. Round-8 review's own
+19-row independent re-measurement matched all 19 declared values, so the
+declarations were right; only this one resolution was wrong.*
+
+*(b) The digest's CLASSIFIER was unpinned, and its surface was two attributes
+wide.* Round 8 pinned the paragraphs a `_GATE_WORDS` list judged to be about
+the gate. Review broke that two ways: trim one word from the list, drop the
+matching digest, rewrite the paragraph — 144 tests still passed, and the
+paragraph it unpinned was the ADR-0122 disclaimer, the single most
+load-bearing sentence in the class docstring. And the module docstring, every
+other method's docstring, and every `#:` comment were never scanned at all, so
+a bald false completeness claim was free in any of them. FIXED BY DELETING THE
+CLASSIFIER: every docstring in the module at any nesting depth, plus every
+`#:` note, is pinned — 53 entries, nothing decides what counts. A test asserts
+the pin's own reach against an independent AST walk, so a `_module_prose` that
+quietly stopped walking would fail rather than shrink the surface silently.*
+
+*THE PATTERN, worth naming because it took four rounds to see: each round's fix
+introduced a new DECIDER — a substring, a vocabulary, a classifier, a guard
+method — and review defeated the decider rather than the fix. Round 9 removes
+the decider in both cases instead of improving it. The honest scope is
+unchanged and is stated in the tests: the prose pin detects CHANGE, not
+falsehood, and the seal is still not an authority boundary.*
+
+*20 facts; 44 mutations, 44 killed, including all four places round-8 review
+put a false claim and the guard-through-the-class attack. Minor fixed: a test
+docstring still said a post-hoc subclass bypass "WORKS", which round 8's own
+declaration had contradicted. Nit fixed: `_PINNED_SEAL_CLAIMS` now has a
+length pin.*
+
 **Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
 three missing pieces; ADR-0119 built two of the generic halves
 (`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
