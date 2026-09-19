@@ -16502,6 +16502,15 @@ round-3 on that basis, which also recovered "intercept attribute access on the
 class itself" in limit 4 and "fails closed ... for the shipped configuration"
 in the class docstring.*
 
+*Corrected again 2026-09-18 after round-5 review found 1 Major: the disclosure
+pins were polarity-blind, so an inverted claim shipped green. Replaced with
+`GATE_FACTS` above. This is the sixth and final review round; the residual
+list the owner asked for is in the delivery report, and its headline item is
+that free-text prose in this entry and in the module docstrings remains
+unexecutable — measured by inserting two false sentences beside the true
+declaration, which still passed 132 tests. What changed is that prose no
+longer carries the authority, not that prose became trustworthy.*
+
 **Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
 three missing pieces; ADR-0119 built two of the generic halves
 (`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
@@ -16639,6 +16648,25 @@ wording here ("fails closed for ... the documented `uses:` subclassing seam",
 "the chain cannot be broken at depth") was falsified by review and is
 withdrawn.
 
+**The authoritative statement is `final_model.GATE_FACTS`, and it is
+executed.** Round-5 review proved prose cannot carry this: it inverted three
+sentences in the module — "a custom metaclass CANNOT ...", "It fails OPEN, not
+closed" — keeping every substring the disclosure test checked, and the whole
+116-test suite stayed green, because a substring assertion cannot see polarity.
+So the polarity moved into data. `GATE_FACTS` is a tuple of
+`(name, refuses, attempt)`: the attempt describes only what is TRIED, and
+`refuses` is the outcome. `tests/test_final_model.py` holds one probe per
+name, performs each attempt for real, and asserts the observed outcome equals
+the declared boolean — all fourteen. Flipping any one of them fails exactly
+one test; flipping all fourteen fails fourteen (verified). The class and
+`__init_subclass__` docstrings now CITE that tuple instead of restating
+outcomes, and a test asserts they cite it.
+
+The numbered list below is a NARRATIVE summary for a reader who is not in the
+code, kept because it carries the round-by-round corrections. It is not
+executable. Where it and `GATE_FACTS` could ever disagree, `GATE_FACTS` is
+what the code does.
+
 Six limits, disclosed rather than papered over:
 
 1. Post-hoc assignment, in either of two reachable shapes. **Directly on the
@@ -16666,7 +16694,14 @@ Six limits, disclosed rather than papered over:
    class.
 4. A custom metaclass, which can build the class from an empty namespace and
    inject the overrides afterwards, doctor `__mro__`, or intercept attribute
-   access on the class itself.
+   access on the class itself. Measured, not assumed: a metaclass
+   `__getattribute__` reaches every CLASS-level lookup, including
+   `validate_params`' own `cls._channel_problems(...)` call, so the
+   production-channel refusal disappears from validation — while an
+   empty-bodied subclass passes the seal outright, because
+   `inspect.getattr_static` bypasses `__getattribute__` by construction. It
+   does NOT reach `run()`'s instance-level `self._channel()`, which still
+   refuses. A partial bypass, stated as one.
 5. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
    hash-chains `nodes/*.json` to `resolved.json` or to each other, and this
    entry does not change that. Anyone with write access to a run directory

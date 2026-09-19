@@ -1588,36 +1588,15 @@ def test_nothing_executable_can_hide_in_the_class_metadata_allowlist():
     )
 
 
-def test_the_seal_discloses_the_limits_it_does_not_cover():
-    """One owner for the limits, and the class docstring may not contradict it."""
+def test_the_seal_is_declared_as_an_accident_guard_not_a_boundary():
+    """The one claim that is not per-attempt, kept because it frames the rest."""
     disclosure = " ".join(
         final_model.FinalRefit.__init_subclass__.__doc__.split()
     )
-    for phrase in (
-        "not an authority boundary",
-        "does not call ``super()``",
-        "post-hoc",
-        "metaclass",
-        "per-instance",
-        "no repository file is edited",
-        # Round-4 rewrote the post-hoc bullet as a subclass-only illustration
-        # and dropped the direct shape round 3 had named — the shape the
-        # SHIPPED config actually wires. Both are pinned here now.
-        "``FinalRefit.<name> = ...``",
-        "no subclass is needed",
-        "intercept attribute access on the class itself",
-    ):
-        assert phrase in disclosure, phrase
-
+    assert "not an authority boundary" in disclosure
+    # Round-3's claims, disproved in round 4: a post-hoc override edits no
+    # repository file, so it is neither of these.
     contract = " ".join(final_model.FinalRefit.__doc__.split())
-    assert "not an authority boundary" in contract
-    assert "cost nothing" in contract
-    # Round 3 stated this and round 4's rewrite dropped it; it is true and it
-    # is the half of the accounting a reader needs beside the limits.
-    assert "for the shipped configuration" in contract
-    # Round-3 wrote these in the class docstring and round-4 review disproved
-    # them: a post-hoc override on a SUBCLASS edits no repository file, so it
-    # is not "an edit to trusted source" and not "a different threat class".
     assert "forces an edit to trusted source" not in contract
     assert "different threat class" not in contract
 
@@ -1652,11 +1631,6 @@ def test_a_swallowing_mixin_is_an_uncovered_path_the_docstring_discloses():
     # What the seal WOULD have reported had it run at all.
     assert final_model._sealed_violations(Evil) == ["__init_subclass__", "_channel_problems"]
 
-    disclosure = " ".join(
-        final_model.FinalRefit.__init_subclass__.__doc__.split()
-    )
-    assert "does not call ``super()``" in disclosure
-    assert "no repository file is edited" in disclosure
 
 
 def test_a_rigged_equality_object_cannot_pass_for_a_sealed_member():
@@ -1711,8 +1685,6 @@ def test_post_hoc_assignment_on_a_subclass_is_an_uncovered_path(tmp_path):
     Sneaky._channel_problems = classmethod(lambda cls, params: [])
     assert Sneaky._channel_problems({}) == []
 
-    contract = " ".join(final_model.FinalRefit.__doc__.split())
-    assert "cost nothing" in contract
 
 
 @contextlib.contextmanager
@@ -1755,22 +1727,218 @@ def test_post_hoc_assignment_directly_on_final_refit_is_an_uncovered_path():
     # identity, so a merely-equal restore would not be a restore.
     assert vars(final_model.FinalRefit)["_release_identity"] is original
 
-    disclosure = " ".join(
-        final_model.FinalRefit.__init_subclass__.__doc__.split()
-    )
-    assert "``FinalRefit.<name> = ...``" in disclosure
-    assert "no subclass is needed" in disclosure
 
 
 def test_the_shipped_config_wires_the_class_itself_not_a_subclass():
     """Why the direct shape is the one that matters, asserted rather than assumed."""
     import json
-    import pathlib
 
     raw = json.loads(
         (_configs_dir() / "run-final-refit.json").read_text(encoding="utf-8")
     )
-    assert raw["pipeline"]["refit"]["uses"] == (
-        "intraday_equities.final_model:FinalRefit"
+    module, _, attribute = raw["pipeline"]["refit"]["uses"].partition(":")
+    assert module == final_model.__name__
+    assert getattr(final_model, attribute) is final_model.FinalRefit
+
+
+# ---------------------------------------------------------------------------
+# 9. every disclosed fact is EXECUTED, not grepped
+#
+# Round-5 review inverted three sentences in final_model.py — "a custom
+# metaclass CANNOT ...", "It fails OPEN, not closed" — keeping the substrings
+# the old disclosure test checked, and the whole file stayed green. A
+# substring cannot see polarity. So the polarity now lives in
+# `final_model.GATE_FACTS` as a boolean, and every entry has a probe here that
+# performs the attempt for real. The probes are written against the gate's
+# behaviour, never against GATE_FACTS' own summaries.
+# ---------------------------------------------------------------------------
+
+PRODUCTION_PARAMS = {
+    "release_channel": "production",
+    "hpo_document_sha256": "d" * 64,
+}
+STAMP = {"release_channel": "production", "deployment_eligible": True}
+
+
+def _refused_at_definition(namespace, bases=None):
+    """Whether defining a class with this namespace raises the seal's TypeError."""
+    try:
+        type("Attempt", bases or (final_model.FinalRefit,), dict(namespace))
+    except TypeError as exc:
+        return "may not override" in str(exc)
+    return False
+
+
+def _probe_override_in_body():
+    return _refused_at_definition({"run": lambda self, ctx, inputs: {}})
+
+
+def _probe_override_from_a_mixin():
+    class EvilMixin:
+        @classmethod
+        def _channel_problems(cls, params):
+            return []
+
+    return _refused_at_definition({}, (EvilMixin, final_model.FinalRefit))
+
+
+def _probe_override_at_depth():
+    class Mid(final_model.FinalRefit):
+        pass
+
+    class Mid2(Mid):
+        pass
+
+    return _refused_at_definition({"_release_identity": lambda *a: STAMP}, (Mid2,))
+
+
+def _probe_override_of_an_inherited_hook():
+    return _refused_at_definition(
+        {"__getattribute__": lambda self, name: object.__getattribute__(self, name)}
     )
-    assert pathlib.Path(final_model.__file__).name == "final_model.py"
+
+
+def _probe_rigged_equality():
+    class FakeEqual:
+        def __call__(self, *args, **kwargs):
+            return dict(STAMP)
+
+        def __eq__(self, other):
+            return True
+
+        def __hash__(self):
+            return 0
+
+    return _refused_at_definition({"_release_identity": FakeEqual()})
+
+
+def _probe_shrunk_sealed_list():
+    return _refused_at_definition(
+        {"_FINAL_METHODS": (), "_channel_problems": classmethod(lambda cls, p: [])}
+    )
+
+
+def _probe_replaced_init_subclass():
+    return _refused_at_definition(
+        {"__init_subclass__": classmethod(lambda cls, **kw: None)}
+    )
+
+
+def _probe_unsealed_node_hook():
+    return _refused_at_definition(
+        {"serving_effect": classmethod(lambda cls, params, evidence: None)}
+    )
+
+
+def _probe_swallowing_mixin():
+    class SwallowMixin:
+        def __init_subclass__(cls, **kwargs):
+            pass
+
+    class Evil(SwallowMixin, final_model.FinalRefit):
+        @classmethod
+        def _channel_problems(cls, params):
+            return []
+
+    return Evil._channel_problems(PRODUCTION_PARAMS) != []
+
+
+def _probe_post_hoc_on_this_class():
+    with _restored(final_model.FinalRefit, "_channel_problems"):
+        final_model.FinalRefit._channel_problems = classmethod(lambda cls, p: [])
+        return final_model.FinalRefit._channel_problems(PRODUCTION_PARAMS) != []
+
+
+def _probe_post_hoc_on_a_subclass():
+    class Sneaky(final_model.FinalRefit):
+        pass
+
+    Sneaky._channel_problems = classmethod(lambda cls, p: [])
+    return Sneaky._channel_problems(PRODUCTION_PARAMS) != []
+
+
+def _probe_per_instance_shadowing():
+    instance = object.__new__(final_model.FinalRefit)
+    instance._release_identity = lambda channel, rows_sha256: dict(STAMP)
+    return instance._release_identity("production", "x") != STAMP
+
+
+def _probe_metaclass_interception():
+    class Intercepting(type(final_model.FinalRefit)):
+        def __getattribute__(cls, name):
+            if name == "_channel_problems":
+                return lambda params: []
+            return super().__getattribute__(name)
+
+    class Evil(final_model.FinalRefit, metaclass=Intercepting):
+        pass
+
+    # The empty body passes the seal outright; the interception is what bites.
+    assert final_model._sealed_violations(Evil) == []
+    return Evil._channel_problems(PRODUCTION_PARAMS) != []
+
+
+def _probe_shipped_config_refuses_to_plan():
+    from dskit.pipeline.document import load_document
+    from dskit.pipeline.node import ConfigError
+    from dskit.pipeline.stages import plan_stages
+
+    try:
+        plan_stages(load_document(str(_configs_dir() / "run-final-refit.json")))
+    except ConfigError:
+        return True
+    return False
+
+
+#: One probe per declared fact, keyed by the same name. Each performs the
+#: attempt and returns whether the gate REFUSED it.
+GATE_PROBES = {
+    "refuses_an_override_in_the_subclass_body": _probe_override_in_body,
+    "refuses_an_override_from_a_mixin_in_the_mro": _probe_override_from_a_mixin,
+    "refuses_an_override_at_any_subclass_depth": _probe_override_at_depth,
+    "refuses_an_override_of_an_inherited_hook": _probe_override_of_an_inherited_hook,
+    "refuses_an_object_whose_equality_is_rigged": _probe_rigged_equality,
+    "refuses_a_subclass_that_shrinks_the_sealed_list": _probe_shrunk_sealed_list,
+    "refuses_a_subclass_that_replaces_init_subclass": _probe_replaced_init_subclass,
+    "refuses_a_subclass_overriding_an_unsealed_node_hook": _probe_unsealed_node_hook,
+    "refuses_a_mixin_whose_init_subclass_swallows_the_hook": _probe_swallowing_mixin,
+    "refuses_post_hoc_assignment_on_this_class": _probe_post_hoc_on_this_class,
+    "refuses_post_hoc_assignment_on_a_subclass": _probe_post_hoc_on_a_subclass,
+    "refuses_per_instance_shadowing": _probe_per_instance_shadowing,
+    "refuses_a_metaclass_that_intercepts_class_attribute_access":
+        _probe_metaclass_interception,
+    "shipped_configuration_refuses_to_plan": _probe_shipped_config_refuses_to_plan,
+}
+
+
+def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
+    declared = {name for name, _, _ in final_model.GATE_FACTS}
+    assert set(GATE_PROBES) == declared
+    assert len(final_model.GATE_FACTS) == len(declared) == 14
+
+
+@pytest.mark.parametrize(
+    "name,refuses,attempt",
+    final_model.GATE_FACTS,
+    ids=[name for name, _, _ in final_model.GATE_FACTS],
+)
+def test_every_declared_gate_fact_matches_what_actually_happens(name, refuses, attempt):
+    """Flip a boolean in GATE_FACTS and this contradicts an executed outcome."""
+    observed = GATE_PROBES[name]()
+    assert observed is refuses, (
+        f"{name}: declared refuses={refuses}, observed {observed} while "
+        f"attempting {attempt}"
+    )
+
+
+def test_the_declaration_is_where_the_polarity_lives():
+    """The prose cites the data; it does not restate the outcomes."""
+    for doc in (
+        final_model.FinalRefit.__doc__,
+        final_model.FinalRefit.__init_subclass__.__doc__,
+    ):
+        assert "GATE_FACTS" in doc
+    # Every summary describes the ATTEMPT only. The outcome is the boolean.
+    for name, _, attempt in final_model.GATE_FACTS:
+        assert attempt and not attempt.startswith(("the gate", "refused", "allowed"))
+        assert name.startswith(("refuses_", "shipped_"))

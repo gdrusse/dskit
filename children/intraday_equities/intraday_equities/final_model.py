@@ -65,6 +65,7 @@ __all__ = [
     "ESTIMATOR_PATH",
     "EVIDENCE_FIELDS",
     "FIXTURE_CHANNEL",
+    "GATE_FACTS",
     "FinalRefit",
     "HEADS",
     "HPO_LEDGER_OUTPUT",
@@ -146,16 +147,17 @@ class FinalRefit(Node):
     relabelled without failing :func:`load_bundle`.
 
     **What this is NOT: a root of trust, or evidence of authorization.**
-    Every refusal here is an IN-PROCESS check. It fails closed for every
-    ordinary caller and for the shipped configuration, but the seal on
+    Every refusal here is an IN-PROCESS check, and the seal on
     :data:`_FINAL_METHODS` is an accident-and-drift guard, **not an
-    authority boundary**. ``__init_subclass__``'s own docstring is the ONE
-    place listing the resolution paths that reach past it; this paragraph
-    points at it rather than restating it, because a restatement is how one
-    of the two copies came to be false. Two of those paths cost nothing —
-    no repository file is edited, since ``uses:`` supplies the class — so
-    the seal buys ordinary-caller safety and drift detection, never defence
-    against a caller who wants past it.
+    authority boundary**. :data:`GATE_FACTS` is the ONE authoritative
+    statement of what this gate stops and what it does not — declared as
+    data, with a probe per entry that performs the attempt and asserts the
+    declared outcome. This paragraph cites it and does not restate it: a
+    restatement is how one copy came to be false in round 4, and an
+    inverted restatement is how three came to be false in round 5.
+    Several declared entries are reachable bypasses that edit no repository
+    file, so the seal buys ordinary-caller safety and drift detection,
+    never defence against a caller who wants past it.
 
     The run directory this node reads is UNAUTHENTICATED (ADR-0119's
     disclosed gap: nothing hash-chains ``nodes/*.json`` to
@@ -251,30 +253,26 @@ class FinalRefit(Node):
         ``cls.__dict__`` saw none of those (round-2 review, 2026-09-18).
 
         This is an accident-and-drift guard, **not an authority boundary**.
-        Four resolution paths reach past it. The first two cost NOTHING —
-        **no repository file is edited** — because ``uses:
-        "module:ClassName"`` supplies the subclass, not this module:
+        What it does and does not reach is declared as DATA in
+        :data:`GATE_FACTS`, not asserted in this paragraph: each entry there
+        names one attempt on the gate and carries the boolean saying whether
+        the gate stops it, and the test suite performs every attempt for
+        real and asserts the observed outcome equals that boolean. Read that
+        tuple. A sentence here can be inverted and still read plausibly —
+        round-5 review did exactly that to three of them without a single
+        test failing — so the polarity lives in a boolean a probe executes,
+        and the mechanisms are described below without restating it.
 
-        * post-hoc assignment, in either of two reachable shapes. Directly
-          on this class — ``FinalRefit.<name> = ...`` after import — which
-          is the shape the SHIPPED document reaches: ``run-final-refit.json``
-          wires ``uses: "intraday_equities.final_model:FinalRefit"``, and a
-          document's ``uses:`` is resolved by import plus ``getattr`` with
-          no re-check of the resolved class's members, so no subclass is
-          needed and this never runs. Or on a subclass — ``class
-          S(FinalRefit): pass`` has an empty body and passes this check, and
-          ``S._channel_problems = ...`` afterwards is never seen. Either
-          shape, because the check fires at class definition only.
-        * a base EARLIER IN THE MRO whose own ``__init_subclass__`` does
-          not call ``super()`` — this then never runs at all. An
-          intermediate that DERIVES from ``FinalRefit`` is refused, because
-          ``__init_subclass__`` is itself sealed; a plain mixin derives from
-          nothing, is not a subclass, and so cannot be reached that way.
-        * per-instance shadowing (``node.run = ...``), because an instance
-          is not a class.
-        * a custom metaclass, which can build the class from an empty
-          namespace and inject the overrides afterwards, doctor ``__mro__``,
-          or intercept attribute access on the class itself.
+        The mechanisms behind the entries: an override supplied in a
+        subclass body, by a mixin earlier in the MRO, at any depth, or for
+        an inherited hook such as ``__getattribute__``; a sealed member
+        supplied as an object with a rigged ``__eq__``; a subclass body that
+        shrinks ``_FINAL_METHODS`` or replaces ``__init_subclass__``; a
+        subclass overriding an UNSEALED ``Node`` hook; a mixin whose own
+        ``__init_subclass__`` does not call ``super()``; assignment to a
+        sealed name after class creation, on this class or on a subclass;
+        shadowing on one instance; and a metaclass intercepting class
+        attribute access.
 
         The guarantee claimed is against an ordinary caller wiring the wrong
         class and against a future edit quietly dropping a refusal, never
@@ -738,6 +736,61 @@ HEADS = tuple(f"h{i:02d}" for i in range(1, 11))
 FIXTURE_CHANNEL = "fixture"
 PRODUCTION_CHANNEL = "production"
 RELEASE_CHANNELS = (FIXTURE_CHANNEL, PRODUCTION_CHANNEL)
+
+#: Every fact this gate discloses about itself, as DATA the test suite
+#: EXECUTES rather than prose it greps. Each entry is
+#: ``(name, refuses, attempt)``: ``name`` identifies one attempt on the gate,
+#: ``refuses`` is whether the gate actually stops it, and ``attempt``
+#: describes only WHAT IS TRIED — never the outcome, which is ``refuses``
+#: alone. ``tests/test_final_model.py`` holds one probe per name, performs
+#: the attempt for real, and asserts the observed outcome equals ``refuses``,
+#: so flipping a boolean here contradicts an executed fact.
+#:
+#: This replaces a prose limits list. Round-5 review inverted three sentences
+#: in this module — "a custom metaclass CANNOT ...", "It fails OPEN, not
+#: closed" — and the whole 116-test suite stayed green, because a substring
+#: assertion cannot see polarity. Read this tuple, not a paragraph.
+#:
+#: Every ``refuses=False`` entry is a real, reachable bypass, and none of
+#: them edits a repository file: the probes run from the test suite and
+#: reach the gate through the same import-and-``getattr`` that a document's
+#: ``uses:`` performs.
+GATE_FACTS = (
+    ("refuses_an_override_in_the_subclass_body", True,
+     "a direct subclass whose body supplies a sealed member"),
+    ("refuses_an_override_from_a_mixin_in_the_mro", True,
+     "a mixin earlier in the MRO supplying a sealed member"),
+    ("refuses_an_override_at_any_subclass_depth", True,
+     "a grandchild of an intermediate subclass supplying a sealed member"),
+    ("refuses_an_override_of_an_inherited_hook", True,
+     "a subclass supplying __getattribute__, which vars(cls) cannot surface"),
+    ("refuses_an_object_whose_equality_is_rigged", True,
+     "a sealed member supplied as an object whose __eq__ answers True"),
+    ("refuses_a_subclass_that_shrinks_the_sealed_list", True,
+     "a subclass body supplying _FINAL_METHODS = () beside an override"),
+    ("refuses_a_subclass_that_replaces_init_subclass", True,
+     "a subclass supplying its own __init_subclass__"),
+    ("refuses_a_subclass_overriding_an_unsealed_node_hook", False,
+     "a subclass supplying Node.serving_effect, which the gate never "
+     "resolves through — sealing it would be over-reach"),
+    ("refuses_a_mixin_whose_init_subclass_swallows_the_hook", False,
+     "a mixin earlier in the MRO defining __init_subclass__ without calling "
+     "super(): a mixin derives from nothing, so sealing cannot reach it"),
+    ("refuses_post_hoc_assignment_on_this_class", False,
+     "assigning a sealed member onto FinalRefit itself after import — the "
+     "shape run-final-refit.json wires, needing no subclass at all"),
+    ("refuses_post_hoc_assignment_on_a_subclass", False,
+     "assigning a sealed member onto an empty-bodied subclass after it is "
+     "defined, which the definition-time check has already passed"),
+    ("refuses_per_instance_shadowing", False,
+     "assigning a sealed member onto one constructed instance"),
+    ("refuses_a_metaclass_that_intercepts_class_attribute_access", False,
+     "a metaclass __getattribute__ answering class-level lookups; it reaches "
+     "validate_params' own cls._channel_problems call, and does NOT reach "
+     "run()'s instance-level self._channel()"),
+    ("shipped_configuration_refuses_to_plan", True,
+     "loading configs/run-final-refit.json and planning it"),
+)
 
 #: The field every labelled wire row carries, naming the head that wire
 #: belongs to. It is ordinary row CONTENT — it moves the wire's
