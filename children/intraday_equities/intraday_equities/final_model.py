@@ -61,6 +61,7 @@ from dskit.pipeline.stats import cluster_bootstrap_t
 
 __all__ = [
     "BUNDLE_FILENAME",
+    "SealRefused",
     "ESTIMATOR_PATH",
     "EVIDENCE_FIELDS",
     "FIXTURE_CHANNEL",
@@ -84,6 +85,32 @@ __all__ = [
     "simplicity_key",
     "squared_error_improvement",
 ]
+
+
+class SealRefused(TypeError):
+    """Raised by :meth:`FinalRefit.__init_subclass__`, and by nothing else.
+
+    Examples
+    --------
+    Distinguish the seal's refusal from Python's own::
+
+        try:
+            build_the_subclass()
+        except SealRefused as refusal:
+            handled = str(refusal)
+        # -> only the seal lands here; a metaclass conflict does not
+
+    Notes
+    -----
+    A ``TypeError`` subclass because ``__init_subclass__`` must raise one for
+    class creation to fail cleanly, and a DISTINCT type because the test suite
+    has to tell a seal refusal from a refusal Python issued for its own reasons
+    (a metaclass conflict, a layout conflict, a bad base). It matched on a
+    substring of the message until round 10, which made the wording of a
+    refusal load-bearing for the audit's own evidence: rewording a message
+    turned every probe's answer into "Python refused it", and the probes would
+    have gone on passing. The type cannot be reworded.
+    """
 
 
 #: "this name resolves to nothing at all" — distinct from resolving to
@@ -164,6 +191,62 @@ def _sealed_violations(subclass):
     ]
 
 
+def _metaclass_supplied(cls):
+    """Sealed names ``cls``'s metaclass supplies that ``FinalRefit``'s does not.
+
+    Parameters
+    ----------
+    cls : type
+        The class to check.
+
+    Returns
+    -------
+    list of str
+        Every name in ``FinalRefit._FINAL_METHODS`` carried by some entry of
+        ``type(cls)``'s real MRO that is not already an entry of
+        ``type(FinalRefit)``'s, sorted and deduplicated.
+
+    Notes
+    -----
+    :func:`_sealed_violations` walks ``cls.__mro__``. Class-level lookup does
+    not: ``type.__getattribute__`` consults ``type(cls).__mro__`` FIRST, and a
+    **data descriptor** found there wins outright over anything the class's own
+    MRO carries. So a metaclass defining ``validate_params`` as an object with
+    ``__get__`` and ``__set__`` answers ``Subclass.validate_params`` while the
+    MRO walk still reads ``FinalRefit``'s own and reports no violation
+    (round-10 review, 2026-09-19). The instance path is unaffected —
+    ``object.__getattribute__`` never consults the metaclass — which is exactly
+    why the measured reach was class-level only.
+
+    NOTHING HERE ASKS WHETHER THE OBJECT IS A DATA DESCRIPTOR. Answering that
+    means reading ``type(obj)`` for ``__set__``/``__delete__``, and the
+    attacker supplies ``type(obj)`` too; every round of this module that
+    shipped a classifier had the classifier defeated rather than the fix. The
+    rule is the total one: a metaclass outside the baseline may not carry a
+    sealed name at all. It refuses MORE than lookup would shadow — a metaclass
+    ``__new__`` shadows nothing, because a plain function is a non-data
+    descriptor — and that asymmetry is deliberate. A wrong refusal is a loud
+    failure at class definition; a wrong clearance ships a model. The baseline
+    is ``type(FinalRefit)``'s own MRO, so ``ABCMeta``, ``type`` and ``object``
+    supplying ``__init__``, ``__new__`` and ``__setattr__`` are not findings,
+    and a metaclass that adds no sealed name is not one either.
+
+    Patching a baseline entry itself — assigning onto ``ABCMeta`` — is the
+    already-declared trusted-name tier, the same tier as replacing this
+    function's own name, and is not covered here.
+    """
+    baseline = _REAL_MRO(type(FinalRefit))
+    supplied = []
+    for entry in _REAL_MRO(type(cls)):
+        if any(entry is known for known in baseline):
+            continue
+        contents = _REAL_DICT(entry)
+        supplied += [
+            name for name in FinalRefit._FINAL_METHODS if name in contents
+        ]
+    return sorted(set(supplied))
+
+
 def _unsealed_problems(cls):
     """Return the seal's verdict on ``cls``, taken WHEN THE GATE IS CONSULTED.
 
@@ -203,14 +286,24 @@ def _unsealed_problems(cls):
     which is ADR-0122's ``uses:`` problem and not this one's.
     :data:`GATE_FACTS` carries the executed outcome for every attempt.
     """
+    problems = []
     violations = _sealed_violations(cls)
-    if not violations:
-        return []
-    return [
-        f"{cls.__name__} resolves {', '.join(violations)} to something other "
-        "than FinalRefit's own — the release gate every refusal here goes "
-        "through is not the one this class is running (ADR-0166)"
-    ]
+    if violations:
+        problems.append(
+            f"{cls.__name__} may not override {', '.join(violations)} — it "
+            "resolves them to something other than FinalRefit's own, so the "
+            "release gate every refusal here goes through is not the one "
+            "this class is running"
+        )
+    supplied = _metaclass_supplied(cls)
+    if supplied:
+        problems.append(
+            f"{cls.__name__} may not take a metaclass supplying "
+            f"{', '.join(supplied)} — {type(cls).__name__} answers "
+            "class-level lookup ahead of the MRO the seal walks, so a "
+            "sealed name may not appear there at all"
+        )
+    return problems
 
 
 class FinalRefit(Node):
@@ -354,7 +447,11 @@ class FinalRefit(Node):
         ``__mro__``, reading each entry's real ``__dict__`` through
         ``type``'s own descriptors so no metaclass participates in either —
         and compared by IDENTITY with what ``FinalRefit`` itself resolves it
-        to.
+        to. The hook takes :func:`_unsealed_problems`, the SAME verdict
+        ``validate_params`` and ``run`` take, so definition time and consult
+        time cannot disagree about what a violation is; that verdict also
+        covers :func:`_metaclass_supplied`, because class-level lookup
+        consults the metaclass ahead of the MRO this walk reads.
 
         Scope lives in :data:`GATE_FACTS`, and this docstring states none of
         it. Each entry there names one attempt, carries the boolean for
@@ -375,14 +472,13 @@ class FinalRefit(Node):
         ADR-0122's out-of-Python launcher, which is not built.
         """
         super().__init_subclass__(**kwargs)
-        violations = _sealed_violations(cls)
-        if violations:
-            raise TypeError(
-                f"{cls.__name__} may not override {', '.join(violations)} — part "
-                "of the release gate every refusal in FinalRefit resolves to, and "
-                "a subclass that replaces it can stamp a release nothing earned. "
-                "This is an accident guard checked at class definition, not a "
-                "root of trust (ADR-0166)"
+        problems = _unsealed_problems(cls)
+        if problems:
+            raise SealRefused(
+                "; ".join(problems)
+                + ". A subclass that replaces part of the release gate can "
+                "stamp a release nothing earned. This is an accident guard "
+                "checked at class definition, not a root of trust (ADR-0166)"
             )
 
     role = "train"
@@ -896,10 +992,10 @@ GATE_FACTS = (
     ("refuses_a_metaclass_that_rotates_the_class_out_of_its_own_mro", False, (),
      "a metaclass whose mro() puts the new class AFTER FinalRefit, so that "
      "type.__new__'s super(cls, cls).__init_subclass__ lookup finds nothing"),
-    ("refuses_a_metaclass_that_injects_the_guard_beside_its_payload", False, (),
+    ("refuses_a_metaclass_that_injects_the_guard_beside_its_payload", True, (),
      "a metaclass __new__ that assigns a compliant _unsealed_problems beside "
      "the sealed member it is really after"),
-    ("refuses_a_substituted_channel_resolver", False, (),
+    ("refuses_a_substituted_channel_resolver", True, (),
      "a metaclass __new__ that assigns _channel itself, the member run() "
      "resolves through the instance"),
     ("refuses_a_subclass_overriding_an_unsealed_node_hook", False, (),
@@ -914,14 +1010,20 @@ GATE_FACTS = (
     ("refuses_post_hoc_assignment_on_a_subclass", False, (),
      "assigning a sealed member onto an empty-bodied subclass after it is "
      "defined, which the definition-time check has already passed"),
-    ("refuses_a_metaclass_that_injects_after_class_creation", False, (),
+    ("refuses_a_metaclass_that_injects_after_class_creation", True, (),
      "a metaclass __new__ that builds the class from an empty namespace and "
      "assigns a sealed member onto it before returning it"),
     ("refuses_per_instance_shadowing", False, ("run",),
      "assigning a sealed member onto one constructed instance"),
-    ("refuses_a_metaclass_that_intercepts_class_attribute_access", False,
-     ("validate_params",),
+    ("refuses_a_metaclass_that_intercepts_class_attribute_access", True, (),
      "a metaclass __getattribute__ answering class-level lookups"),
+    ("refuses_a_metaclass_that_supplies_a_sealed_name_as_a_data_descriptor",
+     True, (),
+     "a metaclass carrying validate_params as an object with __get__ and "
+     "__set__, which type.__getattribute__ prefers over the whole class MRO"),
+    ("refuses_a_metaclass_whose_own_metaclass_rigs_equality", True, (),
+     "a metaclass supplying a sealed name whose own metaclass answers True "
+     "to every ==, so a baseline comparison by equality would skip it"),
     ("shipped_configuration_refuses_to_plan", True, (),
      "loading configs/run-final-refit.json and planning it"),
 )

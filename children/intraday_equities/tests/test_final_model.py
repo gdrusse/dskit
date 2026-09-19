@@ -11,6 +11,7 @@ whole gate is synthetic-tests-only (the master plan's own ruling).
 from __future__ import annotations
 
 import ast
+import collections
 import contextlib
 import hashlib
 import inspect
@@ -1444,7 +1445,7 @@ def test_every_name_final_refit_defines_is_sealed():
 
 @pytest.mark.parametrize("name", sorted(SEALED_NAMES))
 def test_a_subclass_may_not_override_any_sealed_member(name):
-    with pytest.raises(TypeError, match="may not override"):
+    with pytest.raises(final_model.SealRefused, match="may not override"):
         type("Sneaky", (final_model.FinalRefit,), {name: lambda *a, **k: []})
 
 
@@ -1523,7 +1524,7 @@ def test_a_subclass_at_any_depth_is_refused():
     class Mid(final_model.FinalRefit):
         pass
 
-    with pytest.raises(TypeError, match="may not override run"):
+    with pytest.raises(final_model.SealRefused, match="may not override run"):
         class Grandchild(Mid):
             def run(self, ctx, inputs):
                 return {}
@@ -1849,16 +1850,20 @@ def _define(namespace, bases=None, metaclass=None):
     A probe that "passes" because Python rejected the construction for its
     own reasons is exactly the fake evidence this audit keeps finding, so a
     TypeError that is not the seal's is re-raised rather than counted.
+
+    The two are told apart BY TYPE, never by the message. Matching a substring
+    made every probe's answer depend on the wording of a refusal: reword it and
+    each attempt silently became "Python refused it", with the whole table
+    still green (round-10 review, 2026-09-19). ``SealRefused`` is raised at one
+    site and by nothing else, so there is no phrase to keep in step.
     """
     builder = metaclass or type
     try:
         cls = builder("Attempt", bases or (final_model.FinalRefit,), dict(namespace))
-    except TypeError as exc:
-        if "may not override" not in str(exc):
-            raise AssertionError(
-                f"refused by Python, not by the seal: {exc}"
-            ) from exc
+    except final_model.SealRefused:
         return None, True
+    except TypeError as exc:
+        raise AssertionError(f"refused by Python, not by the seal: {exc}") from exc
     return cls, False
 
 
@@ -1995,16 +2000,22 @@ def _probe_metaclass_injects_the_guard_beside_its_payload():
             cls._channel_problems = classmethod(lambda c, params: [])
             return cls
 
-    cls, refused = _define({}, metaclass=Injecting)
-    assert refused is False and cls is not None
-    # The injected guard is now INERT: `_unsealed_problems` is a module-level
-    # function, so it is not a sealed member and nothing resolves it through
-    # the class. The payload is all that is left to see, and the entry points
-    # see it.
+    # The injected guard is INERT whatever happens below: `_unsealed_problems`
+    # is a module-level function, so it is not a sealed member and nothing
+    # resolves it through the class.
     assert "_unsealed_problems" not in final_model.FinalRefit._FINAL_METHODS
-    assert final_model._sealed_violations(cls) == ["_channel_problems"]
-    assert final_model._unsealed_problems(cls), "the module-level guard was fooled"
-    return False, _reaches(cls)
+    # Round 10 moved the refusal EARLIER — a metaclass defining __new__ carries
+    # a sealed name, which the metaclass rule refuses outright. The consult-time
+    # verdict this row used to rest on is asserted here on the same payload
+    # reached the plain way, so widening the definition-time rule did not
+    # quietly retire that evidence.
+    class PlainSubclass(final_model.FinalRefit):
+        pass
+
+    PlainSubclass._channel_problems = classmethod(lambda c, params: [])
+    assert final_model._sealed_violations(PlainSubclass) == ["_channel_problems"]
+    assert final_model._unsealed_problems(PlainSubclass), "the guard was fooled"
+    return _outcome({}, metaclass=Injecting)
 
 
 def _probe_substituted_channel_resolver():
@@ -2021,10 +2032,17 @@ def _probe_substituted_channel_resolver():
             cls._channel = lambda self: "production"
             return cls
 
-    cls, refused = _define({}, metaclass=Injecting)
-    assert refused is False and cls is not None
-    assert final_model._sealed_violations(cls) == ["_channel"]
-    return False, _reaches(cls)
+    # As above: the metaclass is refused at definition from round 10 on, so the
+    # round-7 evidence — that `_reaches` measures through the SUBSTITUTED
+    # `_channel` rather than through a hardcoded `FinalRefit._channel` — is
+    # taken on the same substitution made the plain way.
+    class PlainSubclass(final_model.FinalRefit):
+        pass
+
+    PlainSubclass._channel = lambda self: "production"
+    assert final_model._sealed_violations(PlainSubclass) == ["_channel"]
+    assert _reaches(PlainSubclass) == (), "a substituted _channel opened a gate"
+    return _outcome({}, metaclass=Injecting)
 
 
 def _probe_metaclass_injects_after_class_creation():
@@ -2084,12 +2102,59 @@ def _probe_metaclass_interception():
                 return lambda params: []
             return super().__getattribute__(name)
 
-    class Evil(final_model.FinalRefit, metaclass=Intercepting):
-        pass
+    # The body is empty, so the MRO walk finds nothing; the metaclass rule is
+    # what bites, and it bites on __getattribute__ being a sealed name at all.
+    return _outcome({}, metaclass=Intercepting)
 
-    # The empty body passes the seal outright; the interception is what bites.
-    assert final_model._sealed_violations(Evil) == []
-    return False, _reaches(Evil)
+
+def _probe_metaclass_data_descriptor():
+    class Answer:
+        """A data descriptor: __set__ makes it win class-level lookup outright."""
+
+        def __get__(self, obj, owner=None):
+            return lambda params: []
+
+        def __set__(self, obj, value):
+            raise AttributeError
+
+    class Shadowing(type(final_model.FinalRefit)):
+        validate_params = Answer()
+
+    return _outcome({}, metaclass=Shadowing)
+
+
+def _probe_metaclass_with_rigged_equality():
+    """The rigged-equality attack one level up, on the METACLASS baseline.
+
+    `_sealed_violations` compares members by identity because an object whose
+    `__eq__` answers True passes for any of them. `_metaclass_supplied`
+    compares METACLASSES against the baseline, and the same trick works there:
+    a meta-metaclass whose `__eq__` returns True makes the attacking metaclass
+    compare equal to `ABCMeta`, so a baseline test written with `==` skips it
+    and the sealed name it carries goes unseen. Round-10 sweep: `is` -> `==`
+    survived every other test in this file.
+    """
+    class RiggedEquality(type):
+        def __eq__(cls, other):
+            return True
+
+        def __hash__(cls):
+            return 0
+
+    class Answer:
+        def __get__(self, obj, owner=None):
+            return lambda params: []
+
+        def __set__(self, obj, value):
+            raise AttributeError
+
+    class Shadowing(type(final_model.FinalRefit), metaclass=RiggedEquality):
+        validate_params = Answer()
+
+    # The rigging is live: this is what an `==` baseline would have believed.
+    # E721 is silenced because `==` between types IS the defect being shown.
+    assert Shadowing == type(final_model.FinalRefit)   # noqa: E721
+    return _outcome({}, metaclass=Shadowing)
 
 
 def _probe_shipped_config_refuses_to_plan():
@@ -2131,6 +2196,10 @@ GATE_PROBES = {
     "refuses_per_instance_shadowing": _probe_per_instance_shadowing,
     "refuses_a_metaclass_that_intercepts_class_attribute_access":
         _probe_metaclass_interception,
+    "refuses_a_metaclass_that_supplies_a_sealed_name_as_a_data_descriptor":
+        _probe_metaclass_data_descriptor,
+    "refuses_a_metaclass_whose_own_metaclass_rigs_equality":
+        _probe_metaclass_with_rigged_equality,
     "shipped_configuration_refuses_to_plan": _probe_shipped_config_refuses_to_plan,
 }
 
@@ -2138,7 +2207,7 @@ GATE_PROBES = {
 def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
     declared = {name for name, _, _, _ in final_model.GATE_FACTS}
     assert set(GATE_PROBES) == declared
-    assert len(final_model.GATE_FACTS) == len(declared) == 20
+    assert len(final_model.GATE_FACTS) == len(declared) == 22
     # Every declared reach is a subset of the named entry points, in the
     # order they are named there — so a reach can never be a free-form string.
     points = final_model.RELEASE_ENTRY_POINTS
@@ -2231,7 +2300,7 @@ def test_every_declared_gate_fact_matches_what_actually_happens(
 
 
 def _module_prose():
-    """Every docstring and every ``#:`` note in ``final_model.py``, keyed by owner.
+    """Every docstring, every ``#:`` note and every string literal in ``final_model.py``.
 
     NOTHING CLASSIFIES. Round 8 pinned only the paragraphs a ``_GATE_WORDS``
     list judged to be about the gate, and round-8 review broke that twice: trim
@@ -2239,16 +2308,30 @@ def _module_prose():
     paragraph is silently unpinned; and three whole categories of prose — the
     module docstring, every other method's docstring, and ``#:`` comments —
     were never read at all, so a bald false completeness claim was free there.
-    A classifier that decides what to protect is one more thing to move. So
-    nothing decides: every piece of prose in the module is pinned.
+    Round 9 answered with "every docstring and every note", and round-10 review
+    found the next unread category by the same move: :data:`GATE_FACTS` is a
+    table of PROSE (each row's ``attempt`` sentence), and a string literal is
+    neither a docstring nor a comment, so all twenty could be rewritten freely
+    — a REGRESSION, since the round-8 pin had carried them under ``attempt:``
+    keys. So the category is gone as a concept: every string constant in the
+    module is pinned, whatever it is for.
 
     Returns
     -------
     dict
-        ``{key: text}`` — ``"module"``, ``"doc:<dotted name>"`` for every
-        module, class and function docstring, and ``"note:<subject>"`` for
-        every ``#:`` comment block, keyed by what it documents rather than by
-        a line number, so unrelated edits do not shift the keys.
+        ``{key: text}``. ``"module"``; ``"doc:<dotted name>"`` for every
+        module, class and function docstring at any depth; ``"note:<subject>#n"``
+        for each ``#:`` comment block, ``n`` distinguishing repeats of one
+        subject; and ``"strings:<owner>"`` carrying every non-docstring string
+        constant an owner encloses, joined in source order.
+
+    Notes
+    -----
+    The ``strings:`` owner is the nearest enclosing class, function or
+    ASSIGNED NAME, so ``GATE_FACTS``' twenty rows are one key that no edit
+    elsewhere moves. Keying each literal by line and column instead would
+    make every insertion above it report hundreds of changes, and a pin
+    nobody can read is a pin people regenerate without reading.
     """
     source = inspect.getsource(final_model)
     tree = ast.parse(source)
@@ -2267,23 +2350,95 @@ def _module_prose():
                 walk(child, f"{name}.")
 
     walk(tree, "")
-    lines = source.splitlines()
-    block, started = [], False
+    out.update(_string_constants(tree))
+    out.update(_note_blocks(source.splitlines()))
+    return out
+
+
+def _assigned_name(node):
+    """The single plain name a statement assigns to, or None."""
+    targets = getattr(node, "targets", None) or (
+        [node.target] if isinstance(node, ast.AnnAssign) else []
+    )
+    if len(targets) == 1 and isinstance(targets[0], ast.Name):
+        return targets[0].id
+    return None
+
+
+def _string_constants(tree):
+    """``{"strings:<owner>": joined text}`` for every non-docstring string literal."""
+    buckets = {}
+
+    def descend(node, owner):
+        docstring = None
+        if isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
+            body = node.body
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                # The STATEMENT, not its value: the loop below iterates
+                # statements, so comparing against the Constant never matched
+                # and every docstring was collected a second time as an
+                # ordinary literal.
+                docstring = body[0]
+        for child in ast.iter_child_nodes(node):
+            if child is docstring:
+                continue
+            if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                buckets.setdefault(owner, []).append(child.value)
+                continue
+            if isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                descend(child, f"{owner}.{child.name}" if owner else child.name)
+                continue
+            named = (
+                _assigned_name(child)
+                if isinstance(child, (ast.Assign, ast.AnnAssign))
+                else None
+            )
+            descend(child, f"{owner}.{named}" if owner and named else (named or owner))
+
+    descend(tree, "")
+    return {
+        f"strings:{owner or '<module>'}": "\x00".join(texts)
+        for owner, texts in buckets.items()
+    }
+
+
+def _note_blocks(lines):
+    """``{"note:<subject>#n": joined text}`` for every ``#:`` comment block."""
+    out, block, subjects = {}, [], collections.Counter()
+
+    def flush(index):
+        subject = next((text.strip() for text in lines[index:] if text.strip()), "")
+        # The ordinal is in the key ON PURPOSE. Keying by subject alone
+        # COLLIDES when a name is documented twice, and the second block then
+        # silently overwrites the first — which is exactly how a load-bearing
+        # note went unpinned in the sibling module this mechanism was copied
+        # to. Round 9 used the line number, which collides with nothing but
+        # moves every key below any insertion; an ordinal per subject is
+        # stable and just as unique.
+        label = subject.split("=")[0].strip()[:48]
+        subjects[label] += 1
+        out[f"note:{label}#{subjects[label]}"] = " ".join(block)
+
     for index, line in enumerate(lines):
         if line.lstrip().startswith("#:"):
-            started = True
             block.append(line.strip()[2:].strip())
-        elif started:
-            subject = next((text.strip() for text in lines[index:] if text.strip()), "")
-            # The line number is in the key ON PURPOSE. Keying by subject alone
-            # COLLIDES when a name is documented twice, and the second block
-            # then silently overwrites the first — which is exactly how a
-            # load-bearing note went unpinned in the sibling module this
-            # mechanism was copied to. This module has no collision today; the
-            # key shape is what keeps that from mattering.
-            label = subject.split("=")[0].strip()[:48]
-            out[f"note:{label}@{index}"] = " ".join(block)
-            block, started = [], False
+        elif block:
+            flush(index)
+            block = []
+    if block:
+        # A block that runs to the END OF FILE never meets a following line,
+        # so a scanner that only emits inside the loop drops it — and prose
+        # appended at EOF is then pinned by nothing (round-10 review).
+        flush(len(lines))
     return out
 
 
@@ -2308,59 +2463,162 @@ def _digest(text):
 #: edit in this module needs a digest update — and it is the cost of a file
 #: whose prose has been wrong four rounds running.
 _PINNED_MODULE_PROSE = {
-    "doc:FinalRefit": "be619cfde428dfb0",
-    "doc:FinalRefit.__init_subclass__": "c1b77aaa9a835ef4",
-    "doc:FinalRefit._attestation": "c60c3dd2b09323d7",
-    "doc:FinalRefit._channel": "3165214ce0642edb",
-    "doc:FinalRefit._channel_problems": "1c2d0d907212a621",
-    "doc:FinalRefit._estimator_params": "8b8854548858ccc6",
-    "doc:FinalRefit._identity_problems": "8c5edf7bca0312bb",
-    "doc:FinalRefit._lean_drop": "027a323085b013fc",
-    "doc:FinalRefit._release_identity": "61345971e5adfb3d",
-    "doc:FinalRefit._row_identities": "344ae2cdb83a72b8",
-    "doc:FinalRefit._run_pin_problems": "ddf84a8de8206188",
-    "doc:FinalRefit._schema_problems": "7edb6ffb9b6d8ad5",
-    "doc:FinalRefit._verified_hpo_outputs": "e2834ebb3f26e340",
-    "doc:FinalRefit._winner_from_evidence": "74f70cc3d2cc12af",
-    "doc:FinalRefit._wire_problems": "151e3430202de377",
-    "doc:FinalRefit.run": "2a1de82cc12f94c0",
-    "doc:FinalRefit.validate_inputs": "4e057f59846b0464",
-    "doc:FinalRefit.validate_params": "60749320f3fa55d4",
-    "doc:_epoch_ms": "9775f2736675746a",
-    "doc:_is_sha256": "69a8a4877d33b696",
-    "doc:_resolved_through_the_mro": "3ef6b33a113e80e8",
-    "doc:_sealed_violations": "07d207aa4015d069",
-    "doc:_unsealed_problems": "aff0d483ebef4f1f",
-    "doc:boundary_flags": "ab4c1bbb11748a13",
-    "doc:build_candidate_inventory": "d69c10a2fca8ff1b",
-    "doc:cluster_scores_by_day": "b1ec5cc1794f0f0b",
-    "doc:final_hpo_document_identity": "df13456fb8e3f933",
-    "doc:hpo_space": "1db3ec460b038999",
-    "doc:lean_feature_drop": "e3a1d5be4da169fc",
-    "doc:permitted_for_refit": "94a9e5c874036a23",
-    "doc:refit_heads": "2c83bbf9c8af5d6e",
-    "doc:run_lead_selection": "c4a144976ac96c58",
-    "doc:simplicity_key": "7a83d56eb8a48535",
-    "doc:squared_error_improvement": "4d0251906dc9e959",
-    "module": "f33b5c04eb088a9a",
-    "note:BUNDLE_FILENAME@950": "1e8632eddc800713",
-    "note:DEFAULT_INVENTORY_SEED@970": "dd96ec24fb430a07",
-    "note:ESTIMATOR_PATH@946": "31e07da49514114f",
-    "note:EVIDENCE_FIELDS@985": "14f0404e5e37120a",
-    "note:FIXTURE_CHANNEL@832": "3c8484d55a451840",
-    "note:FROZEN_CANDIDATE_COUNT@974": "df64999508c56f91",
-    "note:GATE_FACTS@875": "454b6b2dda59a80e",
-    "note:HEADS@820": "7c63130588c65cdc",
-    "note:RELEASE_ENTRY_POINTS@841": "b8f09bd9b69b151b",
-    "note:WIRE_LABEL_FIELD@932": "86460874f6af4aa8",
-    "note:_DEFAULT_HPO_CONFIG@1010": "8225e9a5c01b2b36",
-    "note:_DEFAULT_LEAN_MASK_CONFIG@998": "78b48bf039114649",
-    "note:_FINAL_METHODS@316": "69eca47ca66426e2",
-    "note:_PENDING@953": "02e5e133366ecbd2",
-    "note:_PRODUCER_PREFIX@937": "95291bc1fe7976ef",
-    "note:_REAL_MRO@97": "f54826c85575c6dc",
-    "note:_UNRESOLVED@90": "f62d95a53bd582c1",
-    "note:def _epoch_ms(date_str):@1025": "9333c1a81c62da1b",
+    'doc:FinalRefit': 'be619cfde428dfb0',
+    'doc:FinalRefit.__init_subclass__': '8be58a89d702665e',
+    'doc:FinalRefit._attestation': 'c60c3dd2b09323d7',
+    'doc:FinalRefit._channel': '3165214ce0642edb',
+    'doc:FinalRefit._channel_problems': '1c2d0d907212a621',
+    'doc:FinalRefit._estimator_params': '8b8854548858ccc6',
+    'doc:FinalRefit._identity_problems': '8c5edf7bca0312bb',
+    'doc:FinalRefit._lean_drop': '027a323085b013fc',
+    'doc:FinalRefit._release_identity': '61345971e5adfb3d',
+    'doc:FinalRefit._row_identities': '344ae2cdb83a72b8',
+    'doc:FinalRefit._run_pin_problems': 'ddf84a8de8206188',
+    'doc:FinalRefit._schema_problems': '7edb6ffb9b6d8ad5',
+    'doc:FinalRefit._verified_hpo_outputs': 'e2834ebb3f26e340',
+    'doc:FinalRefit._winner_from_evidence': '74f70cc3d2cc12af',
+    'doc:FinalRefit._wire_problems': '151e3430202de377',
+    'doc:FinalRefit.run': '2a1de82cc12f94c0',
+    'doc:FinalRefit.validate_inputs': '4e057f59846b0464',
+    'doc:FinalRefit.validate_params': '60749320f3fa55d4',
+    'doc:SealRefused': 'a6aaa8b83de3177d',
+    'doc:_epoch_ms': '9775f2736675746a',
+    'doc:_is_sha256': '69a8a4877d33b696',
+    'doc:_metaclass_supplied': '5fcaa102bb61f44c',
+    'doc:_resolved_through_the_mro': '3ef6b33a113e80e8',
+    'doc:_sealed_violations': '07d207aa4015d069',
+    'doc:_unsealed_problems': 'aff0d483ebef4f1f',
+    'doc:boundary_flags': 'ab4c1bbb11748a13',
+    'doc:build_candidate_inventory': 'd69c10a2fca8ff1b',
+    'doc:cluster_scores_by_day': 'b1ec5cc1794f0f0b',
+    'doc:final_hpo_document_identity': 'df13456fb8e3f933',
+    'doc:hpo_space': '1db3ec460b038999',
+    'doc:lean_feature_drop': 'e3a1d5be4da169fc',
+    'doc:permitted_for_refit': '94a9e5c874036a23',
+    'doc:refit_heads': '2c83bbf9c8af5d6e',
+    'doc:run_lead_selection': 'c4a144976ac96c58',
+    'doc:simplicity_key': '7a83d56eb8a48535',
+    'doc:squared_error_improvement': '4d0251906dc9e959',
+    'module': 'f33b5c04eb088a9a',
+    'note:BUNDLE_FILENAME#1': '1e8632eddc800713',
+    'note:DEFAULT_INVENTORY_SEED#1': 'dd96ec24fb430a07',
+    'note:ESTIMATOR_PATH#1': '31e07da49514114f',
+    'note:EVIDENCE_FIELDS#1': '14f0404e5e37120a',
+    'note:FIXTURE_CHANNEL#1': '3c8484d55a451840',
+    'note:FROZEN_CANDIDATE_COUNT#1': 'df64999508c56f91',
+    'note:GATE_FACTS#1': '454b6b2dda59a80e',
+    'note:HEADS#1': '7c63130588c65cdc',
+    'note:RELEASE_ENTRY_POINTS#1': 'b8f09bd9b69b151b',
+    'note:WIRE_LABEL_FIELD#1': '86460874f6af4aa8',
+    'note:_DEFAULT_HPO_CONFIG#1': '8225e9a5c01b2b36',
+    'note:_DEFAULT_LEAN_MASK_CONFIG#1': '78b48bf039114649',
+    'note:_FINAL_METHODS#1': '69eca47ca66426e2',
+    'note:_PENDING#1': '02e5e133366ecbd2',
+    'note:_PRODUCER_PREFIX#1': '95291bc1fe7976ef',
+    'note:_REAL_MRO#1': 'f54826c85575c6dc',
+    'note:_UNRESOLVED#1': 'f62d95a53bd582c1',
+    'note:def _epoch_ms(date_str):#1': '9333c1a81c62da1b',
+    'strings:BUNDLE_FILENAME': '9c2a46e6ca96a4a8',
+    'strings:EMBARGO_END_MS': '77b5daf5632ba0dc',
+    'strings:EMBARGO_START_MS': 'add9297f59733b5c',
+    'strings:ESTIMATOR_PATH': 'da806789df93eeb3',
+    'strings:EVIDENCE_FIELDS': '07bb2180a75962b1',
+    'strings:FIXTURE_CHANNEL': 'f16d05ec6b29248d',
+    'strings:FinalRefit._FINAL_METHODS': '6c735851875cf5c1',
+    'strings:FinalRefit._PARAMS': '240151dc79007818',
+    'strings:FinalRefit.__init_subclass__': 'ec6b2d24b0aeab93',
+    'strings:FinalRefit._attestation': 'c5d4b7ddda534a07',
+    'strings:FinalRefit._channel': '021acaddef4d2beb',
+    'strings:FinalRefit._channel_problems': '802b2e4eb67d4bf1',
+    'strings:FinalRefit._channel_problems.channel': '23a2b96c3efd3ce3',
+    'strings:FinalRefit._channel_problems.pinned': '76ce676279ae63cc',
+    'strings:FinalRefit._channel_problems.problems': '9df168a08747153a',
+    'strings:FinalRefit._estimator_params': 'e332a8a311d8505d',
+    'strings:FinalRefit._estimator_params.params': '4776dec9b3dbbe2c',
+    'strings:FinalRefit._hpo_template': 'e619bcddff39d68e',
+    'strings:FinalRefit._hpo_template.matches': '17cf50b52e3fd610',
+    'strings:FinalRefit._hpo_template.templates': '4c09ae90e075dc47',
+    'strings:FinalRefit._identity_problems': '632e15b5504d9c74',
+    'strings:FinalRefit._identity_problems.digest': '5d5b09f6dcb2d53a',
+    'strings:FinalRefit._identity_problems.expected': '9e64e2891831842e',
+    'strings:FinalRefit._identity_problems.fields': '065a9c506d99fa75',
+    'strings:FinalRefit._identity_problems.rows': 'bc51e9e65d79e1c9',
+    'strings:FinalRefit._lean_drop': '857ce97ae39bb1cd',
+    'strings:FinalRefit._lean_drop.drop': 'f38fdebae1f18dcd',
+    'strings:FinalRefit._release_identity': '7d94d575beb99ea7',
+    'strings:FinalRefit._release_identity.identity': 'de91f0ab6907c5fc',
+    'strings:FinalRefit._row_identities': '4d69b6f77c1bca44',
+    'strings:FinalRefit._row_identities.pinned': 'bb539736d052e26d',
+    'strings:FinalRefit._run_pin_problems': '569a8eaadf5906e6',
+    'strings:FinalRefit._run_pin_problems.evidence': 'fe0a8387f5a02383',
+    'strings:FinalRefit._run_pin_problems.run_dir': 'c5d4b7ddda534a07',
+    'strings:FinalRefit._schema_problems': '4922b888870239ef',
+    'strings:FinalRefit._schema_problems.categories': '1ac02274bfb261bb',
+    'strings:FinalRefit._schema_problems.features': 'd3ed05091c3b6644',
+    'strings:FinalRefit._schema_problems.fixture': 'b2326f4d146f354e',
+    'strings:FinalRefit._verified_hpo_outputs': 'cebb5320325544e0',
+    'strings:FinalRefit._verified_hpo_outputs.document_hash': '76ce676279ae63cc',
+    'strings:FinalRefit._winner_from_evidence': '36aa3322403e20f4',
+    'strings:FinalRefit._winner_from_evidence.inventory': 'f91ffff4f5b3878d',
+    'strings:FinalRefit._winner_from_evidence.model': '9372c470eeadd5ec',
+    'strings:FinalRefit._winner_from_evidence.ruled': '9baf3a40312f3984',
+    'strings:FinalRefit._winners': '429e32a698cb8434',
+    'strings:FinalRefit._winners.digest': '59400ddb76f2ec17',
+    'strings:FinalRefit._winners.evidence': 'c5d4b7ddda534a07',
+    'strings:FinalRefit._winners.ledger': 'fe14010b4fe83303',
+    'strings:FinalRefit._winners.manifest_digests': '5d5b09f6dcb2d53a',
+    'strings:FinalRefit._winners.source_document': '0a3f413dda9c818c',
+    'strings:FinalRefit._wire_problems': 'bf416b9402b96aa4',
+    'strings:FinalRefit._wire_problems.ts_ms': '0420022655c388bd',
+    'strings:FinalRefit.outputs': 'd8f4b0b98e28a37f',
+    'strings:FinalRefit.role': '116f54c41d0405db',
+    'strings:FinalRefit.run': 'a89b8af1098fc7b8',
+    'strings:FinalRefit.run.feature_order': 'd3ed05091c3b6644',
+    'strings:FinalRefit.run.manifest': 'bb768668727a57f5',
+    'strings:FinalRefit.validate_inputs': 'a7b14e6555919d11',
+    'strings:FinalRefit.validate_inputs.identity': 'de91f0ab6907c5fc',
+    'strings:FinalRefit.validate_inputs.start': '95a7e358db11eac5',
+    'strings:FinalRefit.validate_params': '3f325675f52131a7',
+    'strings:FinalRefit.validate_params.seed': '19b25856e1c150ca',
+    'strings:GATE_FACTS': '50f1e0e55cc963f8',
+    'strings:HEADS': '740273e77400ed06',
+    'strings:HPO_LEDGER_OUTPUT': 'fa4de7a0fc070316',
+    'strings:LOCKBOX_START_MS': '7cd45c1acf8a9ce6',
+    'strings:PRODUCTION_CHANNEL': 'ab8e18ef4ebebedd',
+    'strings:RELEASE_ENTRY_POINTS': 'e10a8582ba0abdda',
+    'strings:WIRE_LABEL_FIELD': '9f2e6d33a3717ee8',
+    'strings:_DEFAULT_HPO_CONFIG': '003cef0454bdf9b3',
+    'strings:_DEFAULT_LEAN_MASK_CONFIG': '9847b8c3145a50e5',
+    'strings:_PENDING': '332011b91ccd9887',
+    'strings:_PRODUCER_PREFIX': 'bb582462fda42a72',
+    'strings:_REAL_DICT': '92eb897dbef811d4',
+    'strings:_REAL_MRO': 'a9c495d34b02acf3',
+    'strings:_WRAPPER_PATH': 'bb08cf402333c68e',
+    'strings:__all__': 'e963285f44ac3d42',
+    'strings:_epoch_ms': 'c504c6fbdff94568',
+    'strings:_is_sha256': '9f9f5111f7b27a78',
+    'strings:_unsealed_problems': '4fcea31d94c1700f',
+    'strings:cluster_scores_by_day': 'edc788e7c7efa671',
+    'strings:cluster_scores_by_day.missing': '593aad8709739865',
+    'strings:final_hpo_document_identity': 'fdf598c2b4b0491c',
+    'strings:hpo_space': '0cbb6fd8f1c22f4f',
+    'strings:hpo_space.matches': '17cf50b52e3fd610',
+    'strings:hpo_space.model': '9372c470eeadd5ec',
+    'strings:hpo_space.space': '2dcdbaeac2679bf5',
+    'strings:hpo_space.templates': '4c09ae90e075dc47',
+    'strings:lean_feature_drop': '1734e0c89d7f0d92',
+    'strings:lean_feature_drop.drop': '5ef0b9983eb85b9f',
+    'strings:lean_feature_drop.matches': 'c57632b97805b4fe',
+    'strings:lean_feature_drop.model': '9372c470eeadd5ec',
+    'strings:lean_feature_drop.templates': '5fcfe3712d1bf28c',
+    'strings:refit_heads': 'f37da38192fc4bb1',
+    'strings:refit_heads.ts_ms': '0420022655c388bd',
+    'strings:run_lead_selection': 'fe101d5af92884d3',
+    'strings:run_lead_selection.diagnostics': 'fd2db9d04633a2e1',
+    'strings:run_lead_selection.passthrough': '074e57723e1b1661',
+    'strings:run_lead_selection.selection': '9baf3a40312f3984',
+    'strings:simplicity_key': '7a6a65e7449ed993',
+    'strings:simplicity_key.overrides': 'ab2dd33e1ecd86a9',
 }
 
 
@@ -2385,6 +2643,67 @@ def test_every_piece_of_prose_in_the_module_is_pinned_by_digest():
     )
 
 
+def _runtime_prose():
+    """``{"module"|"doc:<dotted>": cleaned __doc__}`` read from the LIVE objects.
+
+    The pin above reads source text. ``__doc__`` is an ordinary writable
+    attribute, so ``FinalRefit.run.__doc__ += "..."`` or a reassignment
+    anywhere below the definition changes what a reader, a help() call and
+    any doc build actually see while the source the pin digests is untouched
+    (round-10 review). This walks the module object instead, and the test
+    below asserts the two agree everywhere they overlap.
+    """
+    out = {}
+    if final_model.__doc__:
+        out["module"] = inspect.cleandoc(final_model.__doc__)
+
+    def visit(owner, prefix, seen):
+        for name, value in vars(owner).items():
+            target = value
+            if isinstance(target, (classmethod, staticmethod)):
+                target = target.__func__
+            if isinstance(target, property):
+                target = target.fget
+            if not (inspect.isclass(target) or inspect.isfunction(target)):
+                continue
+            if getattr(target, "__module__", None) != final_model.__name__:
+                continue
+            if id(target) in seen:
+                continue
+            seen.add(id(target))
+            dotted = f"{prefix}{name}"
+            if target.__doc__:
+                out[f"doc:{dotted}"] = inspect.cleandoc(target.__doc__)
+            if inspect.isclass(target):
+                visit(target, f"{dotted}.", seen)
+
+    visit(final_model, "", set())
+    return out
+
+
+def test_the_live_docstrings_are_the_ones_the_pin_digested():
+    """``__doc__`` is writable; the pin reads source. They must not diverge.
+
+    A module that appends to a docstring after defining it publishes prose no
+    source-reading pin can see. Every docstring reachable on the live module
+    is compared with the one parsed out of the source, so that edit fails
+    here even though the source text it digests never moved.
+    """
+    source = _module_prose()
+    live = _runtime_prose()
+    assert live, "the runtime walk found no docstring at all"
+    assert "module" in live and "doc:FinalRefit" in live
+    missing = sorted(set(live) - set(source))
+    assert not missing, (
+        f"live docstrings the source pin never saw: {missing} — __doc__ was "
+        "written at run time"
+    )
+    differing = sorted(key for key in live if live[key] != source[key])
+    assert not differing, (
+        f"live __doc__ differs from the source the pin digests: {differing}"
+    )
+
+
 def test_the_prose_pin_covers_every_docstring_the_module_defines():
     """The pin's REACH, asserted rather than assumed.
 
@@ -2394,21 +2713,72 @@ def test_the_prose_pin_covers_every_docstring_the_module_defines():
     unscanned are each asserted present by name.
     """
     prose = _module_prose()
+    tree = ast.parse(inspect.getsource(final_model))
     assert "module" in prose
     assert "doc:FinalRefit" in prose
     assert "doc:FinalRefit.__init_subclass__" in prose
     assert "doc:FinalRefit.run" in prose
     assert "doc:_resolved_through_the_mro" in prose
     assert "doc:_unsealed_problems" in prose
+    assert "doc:_metaclass_supplied" in prose
     notes = [key for key in prose if key.startswith("note:")]
     assert notes, "no #: note was captured"
     assert len(set(notes)) == len(notes), "two #: blocks share a key; one is unpinned"
     independent = sum(
-        1 for node in ast.walk(ast.parse(inspect.getsource(final_model)))
+        1 for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
         and ast.get_docstring(node)
     )
     assert sum(1 for key in prose if key.startswith("doc:")) == independent
+    # GATE_FACTS is twenty-one sentences of PROSE inside a tuple. Round 8
+    # pinned them, round 9's rewrite dropped the category while claiming wider
+    # coverage, and round-10 review caught the regression: every ``attempt``
+    # could be reworded freely for one whole round. The key is named here so
+    # the same silent drop fails instead.
+    assert "strings:GATE_FACTS" in prose
+    for _, _, _, attempt in final_model.GATE_FACTS:
+        assert attempt in prose["strings:GATE_FACTS"]
+    # …and the ``strings:`` buckets are TOTAL, not a sample: every string
+    # constant the module holds that is not a docstring is inside exactly one.
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        )
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+    every_literal = [
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in docstrings
+    ]
+    collected = [
+        text
+        for key in prose if key.startswith("strings:")
+        for text in prose[key].split("\x00")
+    ]
+    assert sorted(collected) == sorted(every_literal)
+
+
+def test_a_note_block_at_the_end_of_the_file_is_still_captured():
+    """A ``#:`` block with no following line is prose too.
+
+    The scanner emitted a block only when a non-comment line followed it, so
+    documentation appended at EOF was pinned by nothing and could say anything
+    (round-10 review). Asserted on synthetic lines rather than on the module,
+    so it keeps holding whatever ``final_model.py``'s last line becomes.
+    """
+    assert _note_blocks(["#: mid-file", "SOMETHING = 1"]) == {
+        "note:SOMETHING#1": "mid-file"
+    }
+    assert _note_blocks(["X = 1", "#: the tail"]) == {"note:#1": "the tail"}
+    twice = _note_blocks(["#: first", "SAME = 1", "#: second", "SAME = 2"])
+    assert twice == {"note:SAME#1": "first", "note:SAME#2": "second"}
 
 
 #: The four claims the seal's docstring rests on, kept beside the digests
@@ -2441,9 +2811,12 @@ def test_the_declaration_is_where_the_polarity_lives():
         final_model.FinalRefit.__init_subclass__.__doc__,
     ):
         assert "GATE_FACTS" in doc
-    # Every summary describes the ATTEMPT only. Both outcomes are fields.
+    # Every row names an ATTEMPT and carries both outcomes as fields. The
+    # attempt TEXT is held by the ``strings:GATE_FACTS`` digest, not by a
+    # banned-prefix list: round 10 dropped that list, which forbade three
+    # openings and read as if it forbade stating an outcome in prose.
     for name, _, _, attempt in final_model.GATE_FACTS:
-        assert attempt and not attempt.startswith(("the gate", "refused", "allowed"))
+        assert attempt
         assert name.startswith(("refuses_", "shipped_"))
     # The class docstring's one summarising sentence is true by construction
     # only while some declared attempt actually opens an entry point.

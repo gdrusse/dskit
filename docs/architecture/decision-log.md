@@ -16770,16 +16770,16 @@ halts class creation, and `reach` is the tuple of `RELEASE_ENTRY_POINTS`
 (`validate_params`, `run`) the attempt actually opens on the production
 channel. `tests/test_final_model.py` holds one probe per name, performs each
 attempt for real, and asserts BOTH observed fields against what is declared —
-all seventeen. A probe refused by Python rather than by the seal raises rather
-than counting as a refusal, and a control test proves the reach measurement
-distinguishes the two entry points instead of always answering `()`. Verified
-by mutation: thirty mutations of this slice — every boolean flipped, every
-non-trivial reach widened or narrowed, the hardening reverted, the identity
-comparison relaxed, each pinned docstring claim inverted, a false claim
-smuggled in, and both test-side measurements broken — kill thirty tests. The
-class and `__init_subclass__` docstrings CITE the tuple instead of restating
-it, and a test refuses any outcome vocabulary in the seal's docstring outside
-its four pinned claims.
+all TWENTY-TWO as of round 10. A probe refused by Python rather than by the
+seal raises rather than counting as a refusal — told apart BY EXCEPTION TYPE
+(`SealRefused`) since round 10, never by a substring of the message — and a
+control test proves the reach measurement distinguishes the two entry points
+instead of always answering `()`. Verified by mutation in every round; the
+round-10 sweep runs eighteen mutations over the seal, the metaclass rule and
+the prose machinery, and all eighteen are killed. The class and
+`__init_subclass__` docstrings CITE the tuple instead of restating it, and the
+tuple's own `attempt` sentences are digest-pinned with the rest of the module's
+prose.
 
 The numbered list below is a NARRATIVE summary for a reader who is not in the
 code, kept because it carries the round-by-round corrections. It is not
@@ -16880,3 +16880,84 @@ its launch root is unimplemented;
 2026-09-14 closeout packet A4 propose; and the closeout packet's native
 LightGBM text artifact (A3) would replace the joblib bundle this uses, which
 is a conflict for a later owner ruling, not one this entry resolves.
+
+### Round 10 correction — the metaclass answers class-level lookup, and prose lives in string literals too
+
+Two independent fresh-context lenses on `1af4f15` returned 0 Critical and four
+distinct Major findings. All four are closed here.
+
+**1. A metaclass data descriptor shadowed a sealed name invisibly.**
+`_resolved_through_the_mro` walks `cls.__mro__`. Class-level attribute access
+does not: `type.__getattribute__` consults `type(cls).__mro__` FIRST, and a
+data descriptor found there wins outright. A metaclass carrying
+`validate_params = <object with __get__ and __set__>` therefore answered
+`Subclass.validate_params` while the seal read `FinalRefit`'s own and reported
+no violation. Measured reach: `("validate_params",)`; the instance path was
+unaffected, because `object.__getattribute__` never consults the metaclass.
+
+The fix is `_metaclass_supplied`, and it does NOT ask whether an object is a
+data descriptor — answering that means reading `type(obj)`, which the attacker
+also supplies, and every round of this module that shipped a classifier had the
+classifier defeated rather than the fix. The rule is total: a metaclass outside
+`type(FinalRefit)`'s own MRO may not carry a sealed name at all. It refuses
+MORE than lookup would shadow (a metaclass `__new__` shadows nothing, because a
+plain function is a non-data descriptor) and that asymmetry is deliberate — a
+wrong refusal is a loud failure at class definition, a wrong clearance ships a
+model. The baseline is `ABCMeta`'s MRO, so `__init__`, `__new__` and
+`__setattr__` arriving from `type` and `object` are not findings.
+
+The definition-time hook now takes `_unsealed_problems`, the SAME verdict
+`validate_params` and `run` take, so the three sites cannot disagree about what
+a violation is. Four declared facts moved as a result — measured, not
+asserted: `refuses_a_metaclass_that_injects_the_guard_beside_its_payload`,
+`refuses_a_substituted_channel_resolver`,
+`refuses_a_metaclass_that_injects_after_class_creation` and
+`refuses_a_metaclass_that_intercepts_class_attribute_access` all went from
+`refuses=False` to `refuses=True`. The two probes that rested on a consult-time
+verdict now take that verdict on the same payload reached the plain way, so
+widening the definition-time rule did not quietly retire their evidence.
+
+The round-10 mutation sweep then found one survivor of its own: relaxing the
+baseline comparison from `is` to `==`. Not an equivalent mutant — a
+meta-metaclass whose `__eq__` answers `True` makes the attacking metaclass
+compare equal to `ABCMeta`, so an `==` baseline skips it. That is the
+rigged-equality attack `_sealed_violations` already declares, one level up, and
+it is now declared and probed as
+`refuses_a_metaclass_whose_own_metaclass_rigs_equality`.
+
+**2. The `attempt` sentences lost their pin — a regression, not a gap.**
+`bd80f00` carried `attempt:<name>` keys in `_PINNED_GATE_PROSE`. Round 9's
+`_module_prose` rewrite replaced that with "every docstring and every `#:`
+note" and dropped the category while claiming WIDER coverage. A string literal
+is neither, so all twenty `attempt` sentences could be rewritten freely for a
+whole round — in the one table this ADR calls authoritative. The fix removes
+the category as a concept: `_module_prose` now also emits `strings:<owner>`,
+carrying every non-docstring string constant the module holds, owner being the
+nearest enclosing class, function or assigned name. `GATE_FACTS` is one key
+that no edit elsewhere moves, and a test asserts each row's `attempt` is inside
+it and that the `strings:` buckets are TOTAL against an independent AST count.
+That last assertion immediately caught a bug in the collector itself: it
+compared each statement against the docstring's VALUE rather than the statement,
+so every docstring was being collected a second time.
+
+**3. A `#:` block at the end of the file was never emitted.** The scanner
+flushed only when a non-comment line followed, so documentation appended at EOF
+was pinned by nothing. Flushed after the loop, and asserted on synthetic lines
+rather than on the module, so it keeps holding whatever the last line becomes.
+The note key also moved from `<label>@<line>` to `<label>#<ordinal>`: the line
+number collides with nothing but moves every key below any insertion, and a pin
+nobody can read is a pin people regenerate without reading.
+
+**4. `__doc__` is writable; the pin reads source.** `FinalRefit.run.__doc__ +=
+"..."` publishes prose no source-reading pin can see. A new test walks the LIVE
+module object and asserts every reachable docstring equals the one parsed out of
+the source.
+
+Also closed: the seal's refusal messages are now inside the digest pin (they
+are string literals); and `test_the_declaration_is_where_the_polarity_lives`
+dropped its banned-prefix list, which forbade three openings while reading as
+if it forbade stating an outcome in prose — the digest pin is what holds the
+attempt text now.
+
+One count in this entry was stale and is corrected above: the probe table is
+twenty-two rows, not seventeen.
