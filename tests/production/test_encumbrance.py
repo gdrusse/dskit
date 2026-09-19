@@ -1408,19 +1408,61 @@ def moving_view(balances=None, working=None, positions=(), pending=()):
     )
 
 
-def move_view(state_view, positions=None, pending=None):
+def move_view(state_view, positions=None, pending=None, economic=True):
     """Rebind a view's TUPLE members: the same object, a later fold.
 
     The mapping members move by mutating the dicts their proxies were built
     over; these two cannot, because a tuple is a tuple. Rebinding them
     through `object.__setattr__` keeps both the declared type and the
     object's identity, which is the pair the hazard needs.
+
+    `economic` advances the counters, which is what :func:`advance` is for;
+    pass False for a move the real fold would not count.
     """
     if positions is not None:
         object.__setattr__(state_view, "positions", tuple(positions))
     if pending is not None:
         object.__setattr__(state_view, "pending", tuple(pending))
+    return advance(state_view) if economic else state_view
+
+
+def advance(state_view, by=1):
+    """Advance the fold's own version counters on the SAME view object.
+
+    §5.8.1: `economic_seq` moves on `order_event`, `fill` and `cash_flow` and
+    NOT on an `intent`, which is pending rather than economic. A harness that
+    left every counter at one value would never show a cache keyed on them
+    being RIGHT, and one that advanced them on every move would never show it
+    being WRONG — so callers advance exactly where the real fold would, and
+    the unsized-intent test deliberately does not.
+    """
+    head_seq = state_view.head_seq + by
+    object.__setattr__(state_view, "head_seq", head_seq)
+    object.__setattr__(state_view, "head_hash", f"{head_seq:064x}")
+    object.__setattr__(
+        state_view,
+        "risk_version",
+        records.RiskVersion(
+            economic_seq=state_view.risk_version.economic_seq + by,
+            executor_token=None,
+            accounting_tokens=None,
+        ),
+    )
     return state_view
+
+
+def move_account(account, balances=None, positions=None):
+    """Rebind an `AccountState`'s members on the SAME object.
+
+    `MovingTickState` swaps a whole account, which changes
+    `id(state.account)` — so a cache keyed on THAT identity would invalidate
+    correctly and never go stale. This holds it fixed too.
+    """
+    if balances is not None:
+        object.__setattr__(account, "balances", tuple(balances))
+    if positions is not None:
+        object.__setattr__(account, "positions", tuple(positions))
+    return account
 
 
 class MovingTickState:
@@ -1461,6 +1503,7 @@ def test_the_book_tracks_a_fold_that_moves_under_one_held_identity(name):
     buy = order(ref="w-1", qty="4", limit="10")
     working[buy.client_ref] = buy
     balances[USD] = Decimal("900")
+    advance(state_view)
 
     moved = policy.encumber(state_view, T0, history)
     assert moved.funds[USD].total == Decimal("900")
@@ -1480,6 +1523,7 @@ def test_the_committed_and_unsettled_figures_track_a_moving_fold_and_history():
     buy = order(ref="w-1", qty="4", limit="10")
     working[buy.client_ref] = buy
     history.set_fills((fill_body("f-1", "sell", "10", "10", T0 - MINUTE),))
+    advance(state_view, by=2)
     after = policy.encumber(state_view, T0, history)
 
     assert (before.funds[USD].committed, before.funds[USD].unsettled) == (
@@ -1499,7 +1543,9 @@ def test_an_unsized_intent_appearing_under_one_identity_is_seen():
     state_view = moving_view()
     history = FakeHistory()
     assert policy.admit(proposal(qty="1", limit="1"), state_view, T0, history) == ()
-    move_view(state_view, pending=("ref-9",))
+    # NOT economic: §5.8.1 keeps `economic_seq` still for an intent, which is
+    # exactly when a cache keyed on the counters goes stale.
+    move_view(state_view, pending=("ref-9",), economic=False)
     problems = policy.admit(proposal(qty="1", limit="1"), state_view, T0, history)
     assert problems and "ref-9" in problems[0]
 
@@ -1517,6 +1563,7 @@ def test_admit_and_balances_track_a_fold_that_moves_under_one_held_identity():
 
     lead = order(ref="lead-1", qty="10", limit="10")
     working[lead.client_ref] = lead
+    advance(state_view)
 
     smaller = proposal(qty="5", limit="10", pid="cand-2")
     assert policy.admit(wanted, state_view, T0, history)
@@ -1528,6 +1575,7 @@ def test_admit_and_balances_track_a_fold_that_moves_under_one_held_identity():
     # invalidate either (round-3 Major). The SAME proposal that was refused
     # a line ago is admitted now, which no stale answer can reproduce.
     object.__setattr__(lead, "limit", Decimal("5"))
+    advance(state_view)
     assert only(policy.balances(state_view, T0, history)).available == Decimal("50")
     assert policy.admit(smaller, state_view, T0, history) == ()
 
@@ -1547,12 +1595,14 @@ def test_the_snapshot_tracks_a_fold_that_moves_under_one_held_identity():
     )
     buy = order(ref="w-1", qty="4", limit="10")
     working[buy.client_ref] = buy
+    advance(state_view)
     second = only(
         strategy.snapshot(
             state_view, Boom("executor"), NO_QUOTES, T0, (), FakeCalendar()
         ).balances
     )
     balances[USD] = Decimal("500")
+    advance(state_view)
     third = only(
         strategy.snapshot(
             state_view, Boom("executor"), NO_QUOTES, T0, (), FakeCalendar()
@@ -1573,13 +1623,22 @@ def test_each_measure_tracks_an_account_that_moves_under_one_held_identity():
 
     state = MovingTickState(guarded_state(view(balances={USD: Decimal("1000")})).account)
     assert funds.value(wanted, state, WINDOW, "*", True) == Decimal("-900")
+    # First the whole account is swapped, then the SAME account is moved in
+    # place — so neither `id(state)` nor `id(state.account)` can serve as a
+    # key that never goes stale.
     state.account = guarded_state(view(balances={USD: Decimal("10")})).account
     assert funds.value(wanted, state, WINDOW, "*", True) == Decimal("90")
+    move_account(
+        state.account, balances=guarded_state(view(balances={USD: Decimal("500")})).account.balances
+    )
+    assert funds.value(wanted, state, WINDOW, "*", True) == Decimal("-400")
 
     stock = MovingTickState(guarded_state(view(positions=(position(qty="10"),))).account)
     assert units.value(sell, stock, WINDOW, "*", True) == Decimal("-6")
     stock.account = guarded_state(view(positions=(position(qty="1"),))).account
     assert units.value(sell, stock, WINDOW, "*", True) == Decimal("3")
+    move_account(stock.account, positions=(position(qty="6"),))
+    assert units.value(sell, stock, WINDOW, "*", True) == Decimal("-2")
 
 
 # ---------------------------------------------------------------------------
@@ -1631,12 +1690,15 @@ def test_the_history_double_accepts_an_integral_float_like_the_real_one():
             FakeHistory().fills(refused)
 
 
-#: What each core policy's `committed` reads before and after the value-only
-#: move below: 4 units at 10, then the same order at a limit of 20. The null
-#: object encumbers nothing either way, which is itself the thing to pin.
-VALUE_ONLY_COMMITTED = {
-    "undeclared": (Decimal("0"), Decimal("0")),
-    "cash": (Decimal("40"), Decimal("80")),
+#: What each core policy's `available` reads before and after the value-only
+#: move below — 1000 with a 4-at-10 buy outstanding, then 999 with the same
+#: order at a limit of 20. Both numbers move for both policies, so neither
+#: half of the pair can hold while a cached answer is being returned. (An
+#: assertion on `committed` would be decorative for the null object, which
+#: answers zero unconditionally.)
+VALUE_ONLY_AVAILABLE = {
+    "undeclared": (Decimal("1000"), Decimal("999")),
+    "cash": (Decimal("960"), Decimal("919")),
 }
 
 
@@ -1672,6 +1734,7 @@ def test_the_book_tracks_a_fold_that_moves_in_value_only(name):
     # "the same address now holds a different order".
     object.__setattr__(buy, "limit", Decimal("20"))
     balances[USD] = Decimal("999")
+    advance(state_view)
 
     after = policy.encumber(state_view, T0, history)
 
@@ -1680,8 +1743,59 @@ def test_the_book_tracks_a_fold_that_moves_in_value_only(name):
         Decimal("1000"),
         Decimal("999"),
     )
-    assert (before.funds[USD].committed, after.funds[USD].committed) == (
-        VALUE_ONLY_COMMITTED[name]
+    assert (before.funds[USD].available, after.funds[USD].available) == (
+        VALUE_ONLY_AVAILABLE[name]
+    )
+
+
+def test_the_book_tracks_a_history_whose_CONTENT_moves_under_one_held_identity():
+    """Round-4 Major (a), as a regression.
+
+    `encumber` takes THREE arguments and this family only ever moved one of
+    them on its own. A cache thorough on the fold and identity-only on the
+    history — `(id(self), at_ms, id(history), <content hash of the view>)` —
+    passed all ten moving tests, because the single test that moved history
+    content always moved a container shape along with it.
+
+    Here the view is untouched, the instant is untouched, and the history
+    keeps its identity while its CONTENT moves. A stale answer disagrees with
+    the truth by exactly the size of an unsettled fill, which is the
+    over-commitment this whole decision exists to prevent.
+    """
+    policy = cash()
+    state_view = moving_view()
+    history = FakeHistory()
+
+    quiet = policy.encumber(state_view, T0, history)
+    history.set_fills((fill_body("f-1", "sell", "10", "10", T0 - MINUTE),))
+    noisy = policy.encumber(state_view, T0, history)
+
+    assert (quiet.funds[USD].unsettled, quiet.funds[USD].available) == (
+        Decimal("0"),
+        Decimal("1000"),
+    )
+    assert (noisy.funds[USD].unsettled, noisy.funds[USD].available) == (
+        Decimal("100"),
+        Decimal("900"),
+    )
+
+
+def test_a_history_that_moves_without_changing_its_fill_count_is_seen():
+    """A fill COUNT is the obvious half-fix to the test above, so the axis is
+    pinned with the count held at one: the same fill id, at the same instant,
+    for twice the size."""
+    policy = cash()
+    state_view = moving_view()
+    history = FakeHistory((fill_body("f-1", "sell", "10", "10", T0 - MINUTE),))
+
+    small = policy.encumber(state_view, T0, history)
+    history.set_fills((fill_body("f-1", "sell", "20", "10", T0 - MINUTE),))
+    large = policy.encumber(state_view, T0, history)
+
+    assert len(history.fills(T0 - LAG_MS)) == 1
+    assert (small.funds[USD].unsettled, large.funds[USD].unsettled) == (
+        Decimal("100"),
+        Decimal("200"),
     )
 
 

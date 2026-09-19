@@ -16564,6 +16564,41 @@ is a contract of the seam, not a property of one implementation, so it is
 asserted by handing ONE instance different folds, different instants and
 different histories and requiring different answers.
 
+**The statelessness audit, and where its boundary actually is.** `encumber`
+takes THREE arguments — the fold, the instant and the history — so a cache can
+be keyed on any of them, and a claim about what the tests catch is worth
+nothing unless it was measured. Each row below is a cache installed in
+`CashSettlement.encumber`, run against `tests/production/test_encumbrance.py`,
+and reverted; `family` counts failures under `-k "moving or moves"` and `file`
+counts them over the whole file. Measured at this decision's candidate, and a
+RECORD of an audit rather than a live gate — a later change can move these
+numbers without anything failing.
+
+| cache key | family f/p | file f/p | caught by |
+|---|---|---|---|
+| `(id(self), at_ms, id(state_view), id(history))` | 8/4 | 9/79 | the whole moving-fold family |
+| shape digest over the four container lengths | 6/6 | 8/80 | the value-only members |
+| key sets plus per-element `id()` of orders and positions | 6/6 | 9/79 | the value-only members |
+| `(id(self), at_ms, economic_seq, head_seq, head_hash)` | 4/8 | 11/77 | the unsized-intent member — an `intent` is not economic, so the counters stand still while the fold moves |
+| `(economic_seq, head_seq)` alone | 9/3 | 36/52 | almost everything |
+| `(id(self), at_ms // 1000, id(state_view), id(history))` | 8/4 | 9/79 | the whole moving-fold family |
+| `(id(self), at_ms, id(balances proxy), id(working proxy))` | 8/4 | 9/79 | the whole moving-fold family |
+| content hash of BALANCES only, history by identity | 6/6 | 9/79 | the working-order and history members |
+| full content hash of the VIEW, history by identity | 2/10 | 2/86 | the two history-content members |
+| content hash of ALL THREE arguments | 0/12 | 1/87 | **NOT CAUGHT** |
+
+The last row is the boundary, and it is narrower than it first looks: the
+uncoverable case is a content hash over all three arguments, NOT over the fold.
+A cache thorough on the fold but identity-only on the history was invisible to
+every moving-fold test until this decision added a history-content axis,
+because the one test that moved history content had always moved a container
+shape with it. Its single remaining `file` failure is an artifact of the
+mutant, which calls `history.fills` a second time to build its own key and so
+trips the "asked once" test; it is not a stale answer. A cache keyed on the
+values of all three arguments cannot return an answer that disagrees with the
+values, so there is nothing left to catch — that, and nothing weaker, is what
+"no test can see this" means here.
+
 **Compatibility.** `PaperAccounting` keeps `available == total` exactly, for
 every existing document, because the extracted hook's body is unchanged and no
 existing document names the new class. The new behaviour is reached only by
@@ -16619,9 +16654,13 @@ on that one input, and they disagree by design rather than by defect. This is
 INHERITED from the pre-existing `Measure`/`state.view` split, not introduced
 here. What is missing is the DECISION to close it, not the authority: `pending`
 is not one of `vocab.ECONOMIC_ATTRS`, and Measures already read
-`state.view.decision_history` and `guard_holds`, so a measure over the pending
-refs is already in contract and would need no new permission — only an owner
-choosing what bound to hold them to.
+`state.view.decision_history` — `DecisionCount`, `IdenticalCount` and
+`DirectionChanges` each reach it through `guards.py`'s module-level `_history`
+helper. (`guard_holds` is read only by `Limit.value` and `GuardChain`, which
+are the `Guard` family rather than Measures, so the precedent rests on
+`decision_history` alone.) A measure over the pending refs is therefore already
+in contract and would need no new permission — only an owner choosing what
+bound to hold them to.
 
 AVAILABLE but not enforced by the loop: `EncumbrancePolicy.admit` itself,
 which answers for a whole slate in one call and is what a child's proposer or
