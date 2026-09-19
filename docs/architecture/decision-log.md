@@ -17376,7 +17376,8 @@ script that emits the table. No file was created for it here, per the
 repository's ask-before-writing-files rule.
 
 **Major — two MORE `_ask` sites had no test for their raise path.** Round 6
-said "two sites, now both pinned". There were four. `_declarations`' own
+said "two sites, now both pinned"; counting the two named here, four of the
+module's `_ask` sites needed a raise-path test and only two had one. `_declarations`' own
 four-hook loop reads `artifact_type` (a FIFTH site, on the `admission_problems`
 path), and `_question_problems` reads `estimand` on the wrong-member branch
 whose only job is to build the message naming what that member answers.
@@ -17405,6 +17406,101 @@ with the hook it labels.
 **Minor, confirmed as disclosed.** Synonyms outside the banned list still pass
 the vocabulary check. The digest above makes that check redundant for the
 paragraphs it covers; it is kept only for text the digests do not reach.
+
+### Correction round 8, 2026-09-19 — the rule was applied to peers and not to self
+
+Round-7 review returned **0 Critical, 3 Major, 1 Minor, 1 Nit**, and it
+independently confirmed all eight round-7 claims by mutation and re-derived
+both surviving audit numbers (R4 **+5**, R2-`unknown_producer` **+11**) exactly.
+The machinery was right. Three things around it were not.
+
+**Major — the fail-closed rule was added for every PEER and not for the
+CANDIDATE, at its twin call site, seven lines apart.** `register` checked only
+that `_ask` had caught a raise for the class being registered; it never checked
+that the answer was a TYPE. So a member whose `artifact_type()` merely forgot
+its `return` — the ordinary bug `_ask` exists for — registered cleanly through
+the sanctioned front door. And then round 7's own peer sweep, doing exactly
+what it was built to do, refused **every other member's construction and every
+later registration**, naming the bad entry. `UNCERTAINTY_INTAKES` is
+process-wide, so one missing `return` took the module out for every consumer
+sharing the interpreter, including capital sizing for unrelated instruments.
+It fails SAFE — nothing is wrongly admitted — which is why it is Major and not
+Critical. *Correction:* the candidate is held to the same rule as its peers,
+and a member that will not say what it claims is not registrable, for exactly
+the reason it is not a clearance.
+
+**Major — the digest pinned two docstrings and one comment, and the module has
+more prose than that.** Review put a false ceiling claim in the MODULE
+docstring, in `admission_problems.__doc__`, and in the `#:` block above
+`CLOSED_FAMILIES` — and all 164 tests stayed green in each case. *Correction,
+and it is the same one ADR-0166 reached:* every docstring at any nesting depth
+and every `#:` note is pinned, 66 entries, nothing chooses the scope.
+
+*While writing that fix it lost a note, and the mutation harness caught it.*
+Keying a `#:` block by its subject COLLIDES when a name is documented twice —
+`CLOSED_FAMILIES` is assigned twice, each with its own block — and the second
+silently displaced the first, so the note carrying "drift protection, not a
+boundary" was pinned by nothing. The reach test had passed, because it asserted
+the key existed rather than that both blocks were present. Keys carry the line
+now, and a collision fails instead of shrinking the pinned set. The same key
+shape was swept into ADR-0166's copy of this mechanism, which had no collision
+but the same latent shape.
+
+**Major (latent) — the isolation fixture could not see what it was built to
+see.** It compared `dict(UNCERTAINTY_INTAKES)`, which notices a name rebound to
+a different CLASS and nothing else. Mutating a shipped member's hook and never
+restoring it passed the fixture silently and was caught only by whichever
+unrelated later test happened to overlap — and the registry holding LIVE
+references is this module's own stated threat model. No test leaks that way
+today. *Correction:* the snapshot reads each member's hook ANSWERS as well as
+the mapping, and because reverting that widening breaks nothing unless
+something actually leaks, the reach is pinned by a test that mutates a hook and
+asserts the snapshot moves.
+
+**Minor — the seal's stated bar was higher than the real one.** The
+`CLOSED_FAMILIES` note named a hostile metaclass as the way past
+`__init_subclass__`; clearing `_FINAL_METHODS` by ordinary attribute assignment
+on the importable class does it with no metaclass at all. The safety net is
+unaffected — `admission_problems` never consults `.problems()`, and review
+confirmed a rogue subclass is still refused — so this is a documentation
+precision fix, and the note now names the lower bar.
+
+**Nit.** Round-7 prose said "There were four" while naming two; reworded.
+
+**Major (second lens) — one half of a two-half guard was never driven.**
+`if refusal or not isinstance(other_wanted, type)` has two independent halves.
+The REGISTRATION sweep tested both; the CONSTRUCTION sweep tested only the
+raise, so narrowing it to `if refusal:` passed all 164 tests. The untested half
+is not decoration: a peer answering `()` raises nothing AND is a legal second
+argument to `isinstance`, so without it `isinstance(artifact, ())` is simply
+False and the artifact is admitted SILENTLY — the round-6 Critical, reachable
+again by a one-condition narrowing. A peer answering `None` crashes at the risk
+gate instead, which is round-5's Major. Both shapes are parametrised at the
+site that was one-sided.
+
+**Minor (second lens) — the "end to end" test was not.**
+`test_a_broken_peer_cannot_let_two_members_claim_one_artifact_type` was
+described as reproducing the Critical end to end and never constructed
+anything, so reverting the construction sweep alone left it green. It now
+constructs the never-registered second member and asserts the refusal, which is
+the path that case actually runs.
+
+**Three surviving mutants, recorded as EQUIVALENT rather than argued away.**
+Dropping `refusal or` from any of the three guards kills no test, and the
+reason is structural: `_ask` answers `(None, [message])` on a raise, and `None`
+is not a type, so the non-type half already covers every raise. The `refusal or`
+half is what carries the hook's coded text into the refusal MESSAGE, not what
+decides. `test_the_two_halves_of_the_unreadable_guard_overlap_by_construction`
+pins that, so a future reader does not read three surviving mutants as three
+coverage gaps.
+
+26 mutations, 26 killed (plus the three equivalent mutants above, excluded by
+that rule rather than by preference), including all three prose locations
+review wrote in, the candidate check, the construction sweep's non-type half,
+the snapshot's reach, and the key collision. **Round 8's own "18 of 18" did not
+reproduce under the second lens's independently designed set — it scored 17 of
+18, and the survivor is the Major above.** The claim was wrong because the
+harness mutated each guard whole and never each half.
 
 ### What remains unpinned, and why — ADR-0165's residual list
 

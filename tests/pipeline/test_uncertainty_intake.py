@@ -11,6 +11,7 @@ measurement at all must not reach a decision.
 from __future__ import annotations
 
 import _abc
+import ast
 import contextlib
 import hashlib
 import gc
@@ -41,6 +42,28 @@ def test_the_refusal_helper_undoes_a_registration_that_stops_refusing():
     with pytest.raises(pytest.fail.Exception):
         _refuses_registration("tests_helper_probe", fresh)
     assert "tests_helper_probe" not in UNCERTAINTY_INTAKES
+
+
+def test_the_registry_snapshot_sees_a_hook_mutated_on_a_shipped_member():
+    """The fixture's REACH, exercised rather than assumed.
+
+    Round-8 review: the snapshot compared ``dict(UNCERTAINTY_INTAKES)``, which
+    sees a name rebound to a different CLASS and nothing else — so mutating a
+    shipped member's hook and never restoring it passed the fixture silently
+    and was caught only by whichever unrelated later test happened to overlap.
+    Reverting that widening breaks no test unless something actually leaks, so
+    the reach is pinned here directly instead.
+    """
+    before = _registry_state()
+    original = AttestedOutcomeBand.__dict__["artifact_type"]
+    AttestedOutcomeBand.artifact_type = classmethod(lambda cls: int)
+    try:
+        assert _registry_state() != before, (
+            "the snapshot cannot see a registered member's own hooks move"
+        )
+    finally:
+        AttestedOutcomeBand.artifact_type = original
+    assert _registry_state() == before
 
 
 def _probe_member(overrides):
@@ -83,6 +106,7 @@ from dskit.pipeline.outcome_interval import (
     TwoSidedBlockConformalInterval,
 )
 from dskit.pipeline.uncertainty_intake import (
+    _ask,
     CLOSED_FAMILIES,
     admission_problems,
     admit_uncertainty,
@@ -138,6 +162,29 @@ def _refuses_registration(name, cls, match=None):
 
 
 
+def _registry_state():
+    """The mapping AND each member's own hook answers.
+
+    Round-8 review: comparing `dict(UNCERTAINTY_INTAKES)` alone sees a name
+    rebound to a different CLASS and nothing else — so mutating a shipped
+    member's hook and never restoring it passed this fixture silently,
+    corrupting that class process-wide, and was caught only by whichever
+    unrelated later test happened to overlap. The registry holds LIVE
+    references, which is the module's own stated threat model, so the net
+    has to look at what those references now answer.
+    """
+    state = {}
+    for key, member in UNCERTAINTY_INTAKES.items():
+        hooks = []
+        for hook in ("artifact_type", "estimand", "excluded_types",
+                     "registered_producers"):
+            value, refusal = _ask(member, hook)
+            hooks.append((hook, repr(refusal[0] if refusal else value)))
+        state[key] = (member, tuple(hooks))
+    return state
+
+
+
 @pytest.fixture(autouse=True)
 def _the_registry_is_left_exactly_as_it_was():
     """No test may change the shipped registry, whatever it asserts on the way.
@@ -148,14 +195,14 @@ def _the_registry_is_left_exactly_as_it_was():
     makes any "+N extra failures" measurement order-dependent noise. The
     per-test undo is the fix; this is the net that says so out loud.
     """
-    before = dict(UNCERTAINTY_INTAKES)
+    before = _registry_state()
     yield
-    after = dict(UNCERTAINTY_INTAKES)
+    after = _registry_state()
     assert after == before, (
         "this test changed the registry and did not put it back: "
         f"added={sorted(set(after) - set(before))} "
         f"removed={sorted(set(before) - set(after))} "
-        f"rebound={sorted(k for k in set(after) & set(before) if after[k] is not before[k])}"
+        f"changed={sorted(k for k in set(after) & set(before) if after[k] != before[k])}"
     )
 
 
@@ -1418,96 +1465,182 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         assert "_store_through_closure_cells" not in source
         assert "UNCERTAINTY_INTAKES" in source
 
-    #: Every ceiling-bearing paragraph of the two docstrings that state it,
-    #: pinned by sha256 of its whitespace-normalised text, plus the source
-    #: ``#:`` comment above ``UNCERTAINTY_INTAKES``, which is not a runtime
-    #: string and so was scanned by nothing at all.
-    #:
-    #: A SUBSTRING PIN WAS TRIED TWICE AND DEFEATED TWICE. Round 5 asserted
-    #: ``"introspection" in doc`` — a token with no polarity — so the sentence
-    #: around it could be inverted. Round 6 pinned substrings that each carry
-    #: their own polarity word, and round-6 review defeated THAT with a
-    #: DOUBLE NEGATION: wrap "no importable name offers an unvalidated write"
-    #: in "it is not the case that ..." and the substring, and every banned
-    #: token, survive untouched while the claim is reversed. Natural-language
-    #: negation wraps anything. A digest does not care what a sentence says.
-    #:
-    #: THE HONEST SCOPE, smaller than it sounds: this detects CHANGE, not
-    #: falsehood. When it fails, a reviewer reads the new paragraph, decides
-    #: whether it is TRUE, and updates the digest in the same commit. What it
-    #: makes impossible is a ceiling claim moving with nobody looking — which
-    #: is what happened in three consecutive rounds, in three different places.
-    _PINNED_CEILING_PROSE = {
-        "registry:0": "e414f6c46fbcd365",
-        "registry:1": "0b10cff794f18088",
-        "registry:2": "3d1b5139fdb322dd",
-        "registry:3": "83ef080d73ef1dbd",
-        "registry:4": "b460feca042aea93",
-        "registry:5": "3c6f57670ff6bfb9",
-        "registry:6": "c6f301987e91aaee",
-        "writer:0": "72cec45a148c8f94",
-        "writer:1": "e5ddaac1e9fab86f",
-        "writer:2": "b31bf847b522b00e",
-        "writer:3": "e6f3fdc75328b3ed",
-        "writer:4": "daaba7ddaef6a641",
-        "writer:5": "cd08e5cef01d3cbe",
-        "writer:6": "7b9f8de32c3a7a7d",
-        "writer:7": "357a9d013e1f7df9",
-    }
-
     @staticmethod
-    def _paragraphs(doc):
-        """Whitespace-normalised, blank-line-separated paragraphs."""
-        return [" ".join(part.split()) for part in doc.split("\n\n") if part.strip()]
+    def _module_prose():
+        """Every docstring and every ``#:`` note in the module, keyed by owner.
+
+        NOTHING CLASSIFIES and nothing is left out. Round 7 pinned two
+        docstrings and one comment; round-8 review put a false ceiling claim in
+        the MODULE docstring, in ``admission_problems.__doc__``, and in the
+        ``#:`` block above ``CLOSED_FAMILIES`` — three places nothing read —
+        and all 164 tests stayed green. A pin whose SCOPE is chosen is a pin
+        with a place to write around it.
+        """
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        source = inspect.getsource(module)
+        tree = ast.parse(source)
+        out = {}
+        doc = ast.get_docstring(tree)
+        if doc:
+            out["module"] = doc
+
+        def walk(node, prefix):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    name = f"{prefix}{child.name}"
+                    child_doc = ast.get_docstring(child)
+                    if child_doc:
+                        out[f"doc:{name}"] = child_doc
+                    walk(child, f"{name}.")
+
+        walk(tree, "")
+        lines = source.splitlines()
+        block, started = [], False
+        for index, line in enumerate(lines):
+            if line.lstrip().startswith("#:"):
+                started = True
+                block.append(line.strip()[2:].strip())
+            elif started:
+                subject = next((text.strip() for text in lines[index:] if text.strip()), "")
+                # The line number is in the key ON PURPOSE. Keying by subject
+                # alone COLLIDES when a name is documented twice — this module
+                # assigns CLOSED_FAMILIES in two places, each with its own
+                # ``#:`` block, and the second silently overwrote the first, so
+                # the very note carrying "drift protection, not a boundary" was
+                # not pinned at all. Found by mutation, after the reach test
+                # had already passed on nothing but the key's existence.
+                label = subject.split("=")[0].strip()[:48]
+                out[f"note:{label}@{index}"] = " ".join(block)
+                block, started = [], False
+        return out
 
     @staticmethod
     def _digest(text):
         """First 16 hex of sha256 over the whitespace-normalised text."""
         return hashlib.sha256(" ".join(text.split()).encode()).hexdigest()[:16]
 
-    def test_every_ceiling_claim_in_prose_is_pinned_by_digest(self):
-        """No paragraph stating this ceiling changes without this test failing."""
-        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
-        observed = {}
-        for label, doc in (
-            ("registry", module._sealed_registry.__doc__),
-            ("writer", module.register_uncertainty_intake.__doc__),
-        ):
-            for index, paragraph in enumerate(self._paragraphs(doc)):
-                observed[f"{label}:{index}"] = self._digest(paragraph)
-        pinned = self._PINNED_CEILING_PROSE
+    #: Every piece of prose in ``uncertainty_intake.py``, pinned by digest.
+    #:
+    #: FOUR ROUNDS shipped a false claim this module's own pin could not see:
+    #: a polarity-free substring (round 5), a double negation wrapped around a
+    #: polarity-bearing one (round 6), and then three places the round-7 digest
+    #: simply did not read (round 8). Each answer was a better-chosen scope,
+    #: and each scope had an outside. There is no outside here.
+    #:
+    #: HONEST SCOPE, narrower than it sounds: this detects CHANGE, not
+    #: falsehood. When it fails, read the new text, decide whether it is TRUE,
+    #: and update the digest in the same commit. The cost is that every
+    #: docstring edit in this module needs a digest update, and that is the
+    #: cost of a module whose prose has been wrong four rounds running.
+    _PINNED_MODULE_PROSE = {
+        "doc:AttestedFalseSignalRate": "1f14651ef2417cf5",
+        "doc:AttestedFalseSignalRate.artifact_producer": "d9e08ab82df75b5b",
+        "doc:AttestedFalseSignalRate.artifact_type": "66df7f8b64dca19b",
+        "doc:AttestedFalseSignalRate.estimand": "e7d01bd6fc21c420",
+        "doc:AttestedFalseSignalRate.excluded_types": "8cdf1764f3158f8a",
+        "doc:AttestedFalseSignalRate.registered_producers": "71c29cd72f3a324f",
+        "doc:AttestedMeanConfidence": "2c1edfba70ac308d",
+        "doc:AttestedMeanConfidence.artifact_producer": "49732ddd807c1b57",
+        "doc:AttestedMeanConfidence.artifact_type": "1623fb3c3daef0b4",
+        "doc:AttestedMeanConfidence.estimand": "df0a831234194da8",
+        "doc:AttestedMeanConfidence.excluded_types": "48596e210b69d867",
+        "doc:AttestedMeanConfidence.registered_producers": "ec3c3d7d3d3e2745",
+        "doc:AttestedOutcomeBand": "2302287b8b197240",
+        "doc:AttestedOutcomeBand.artifact_producer": "53b5c2972d6fa909",
+        "doc:AttestedOutcomeBand.artifact_type": "38eb84e828b9d8a1",
+        "doc:AttestedOutcomeBand.estimand": "ec2ec7c575b4ac79",
+        "doc:AttestedOutcomeBand.excluded_types": "c942a643adbac72e",
+        "doc:AttestedOutcomeBand.registered_producers": "953b066c22ace2fb",
+        "doc:AttestedUncertainty": "bb38cc3300582493",
+        "doc:AttestedUncertainty.__init_subclass__": "de23728b5f28e384",
+        "doc:AttestedUncertainty.admit": "cb64ab4b57be3d40",
+        "doc:AttestedUncertainty.artifact": "7df8c12b6a5f2399",
+        "doc:AttestedUncertainty.artifact_producer": "bebd83e9f375d968",
+        "doc:AttestedUncertainty.artifact_type": "71b79018d8513e63",
+        "doc:AttestedUncertainty.attestation": "c5b514760c5ea9ff",
+        "doc:AttestedUncertainty.estimand": "1b665d3dbb9bb2b6",
+        "doc:AttestedUncertainty.excluded_types": "391a36a11f0c36fe",
+        "doc:AttestedUncertainty.problems": "120ca5c7a77043d9",
+        "doc:AttestedUncertainty.registered_producers": "3b7bfb859835772f",
+        "doc:CoverageEvidence": "e1792884d9e8890b",
+        "doc:CoverageEvidence.__post_init__": "b49cc3e776d4501f",
+        "doc:DecisionDemand": "fa5fc22a2d44941f",
+        "doc:DecisionDemand.__post_init__": "1265443abfc3ce2b",
+        "doc:ProbabilityUpperBound": "e34ca5b5e35504e9",
+        "doc:UncertaintyAttestation": "3a547b353c1311b2",
+        "doc:UncertaintyAttestation.__post_init__": "21c1bb17309da959",
+        "doc:_answering": "4fd21c349bfceab3",
+        "doc:_artifact_problems": "28137696869ce46e",
+        "doc:_ask": "f03a5e6403b6dd64",
+        "doc:_check_open_unit": "30d3e7d0490d7b28",
+        "doc:_check_stamp": "2eae1d723921c3ec",
+        "doc:_check_text": "efc17946ee1a7f27",
+        "doc:_coverage_problems": "59f3b7acad93aad2",
+        "doc:_declarations": "4c16d768ac0c812b",
+        "doc:_identity_problems": "b22ad2f8bde664c6",
+        "doc:_producer_problems": "8c854b83b6b5fc3d",
+        "doc:_question_problems": "b0b4b9bf1425d5bd",
+        "doc:_raw": "1f95cb0f3fb6b5d5",
+        "doc:_registered_classes": "b85c4bd73a64c1ef",
+        "doc:_sealed_registry": "2ee38cb8078d4c49",
+        "doc:_sealed_registry.register": "5a03bc840541e945",
+        "doc:_sealed_registry.register.forget": "394343b9283b6bec",
+        "doc:_timing_problems": "6d91c692db2704cf",
+        "doc:admission_problems": "19afd8d295f61e1d",
+        "doc:admit_uncertainty": "c61e8001098b2346",
+        "doc:artifact_of": "8ff1040b8b8fdd0d",
+        "doc:attestation_of": "e50d2fe2d1b81166",
+        "doc:register_uncertainty_intake": "c0116dbf01e1479b",
+        "doc:uncertainty_intake": "7e6951e8bccce5f2",
+        "module": "dd17688469567daa",
+        "note:CLOSED_FAMILIES@1425": "991d1f583e217540",
+        "note:CLOSED_FAMILIES@206": "1e2ad777643dbf5d",
+        "note:REFUSAL_REASONS@186": "30a119c86f1cd445",
+        "note:UNCERTAINTY_INTAKES, _register_intake@334": "279b5c5c34652ddc",
+        "note:_FINAL_METHODS@631": "fdca5d5ee9a15038",
+        "note:_HOOKS@642": "4ac957da937c3172",
+    }
+
+    def test_every_piece_of_prose_in_the_module_is_pinned_by_digest(self):
+        """No prose in this module changes without this test failing."""
+        observed = {k: self._digest(v) for k, v in self._module_prose().items()}
+        pinned = self._PINNED_MODULE_PROSE
         added = sorted(set(observed) - set(pinned))
         removed = sorted(set(pinned) - set(observed))
         changed = sorted(
-            key for key in set(observed) & set(pinned) if observed[key] != pinned[key]
+            k for k in set(observed) & set(pinned) if observed[k] != pinned[k]
         )
         assert not (added or removed or changed), (
-            "ceiling prose moved. Read the new text, decide whether it is TRUE, "
-            f"then update _PINNED_CEILING_PROSE in the same commit. added={added} "
-            f"removed={removed} changed={changed}"
+            "prose moved in uncertainty_intake.py. Read the new text, decide "
+            "whether it is TRUE, then update _PINNED_MODULE_PROSE in the same "
+            f"commit. added={added} removed={removed} changed={changed}"
         )
 
-    def test_the_source_comment_stating_the_ceiling_is_pinned_too(self):
-        """The ``#:`` block above UNCERTAINTY_INTAKES is prose no runtime string holds.
+    def test_the_prose_pin_reaches_the_three_places_round_8_review_wrote_in(self):
+        """The pin's REACH, asserted rather than assumed.
 
-        Round-6 review: nothing scanned it, and it stated the ceiling. It is
-        read from the SOURCE here because that is the only place it exists.
+        A `_module_prose` that quietly stopped walking would make the test
+        above pass over a shrinking surface. The three locations round-8 review
+        used are named here, and the docstring count is checked against an
+        independent AST walk.
         """
-        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
-        source = inspect.getsource(module)
-        marker = "UNCERTAINTY_INTAKES, _register_intake = _sealed_registry()"
-        before = source[: source.index(marker)]
-        block = []
-        for line in reversed(before.rstrip().splitlines()):
-            if not line.startswith("#:"):
-                break
-            block.append(line)
-        block = "\n".join(reversed(block))
-        assert block, "the #: block above the registry is gone"
-        assert self._digest(block) == "f0775df103baa94b", (
-            "the #: comment stating the ceiling moved. Read it, decide whether "
-            "it is TRUE, then update this digest in the same commit."
+        prose = self._module_prose()
+        assert "module" in prose
+        assert "doc:admission_problems" in prose
+        notes = [k for k in prose if k.startswith("note:")]
+        closed = [k for k in notes if k.startswith("note:CLOSED_FAMILIES@")]
+        assert len(closed) == 2, (
+            f"both CLOSED_FAMILIES notes must be pinned separately, got {closed}"
         )
+        # No two blocks may share a key, or one is silently unpinned.
+        assert len(set(notes)) == len(notes)
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        independent = sum(
+            1 for node in ast.walk(ast.parse(inspect.getsource(module)))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and ast.get_docstring(node)
+        )
+        assert sum(1 for k in prose if k.startswith("doc:")) == independent
 
     @staticmethod
     def _set_abstract(reg):
@@ -1678,6 +1811,59 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         finally:
             forget()
 
+    @pytest.mark.parametrize(
+        "hook,how",
+        [(classmethod(_boom), "raises"),
+         (classmethod(lambda cls: ()), "answers an empty tuple"),
+         (classmethod(lambda cls: None), "answers None")],
+        ids=["peer-raises", "peer-returns-an-empty-tuple", "peer-returns-None"],
+    )
+    def test_an_unreadable_peer_blocks_construction_in_every_shape(self, hook, how):
+        """Round-8 review, Major: only the RAISE half of this guard was driven.
+
+        ``if refusal or not isinstance(other_wanted, type)`` has two
+        independent halves, and the construction sweep only ever tested the
+        first — so narrowing it to ``if refusal:`` passed all 164 tests. The
+        second half is not decoration: a peer answering ``()`` raises nothing
+        AND is a legal second argument to ``isinstance``, so without it
+        ``isinstance(artifact, ())`` is simply False and the artifact is
+        admitted SILENTLY — the round-6 Critical, reachable again through a
+        one-condition narrowing. A peer answering ``None`` instead crashes at
+        the risk gate, which is round-5's Major. Both shapes are driven here,
+        at the site that was one-sided.
+        """
+        broken, _ = _probe_member({})
+        forget_broken = register_uncertainty_intake("tests_mute_at_construction", broken)
+        try:
+            broken.artifact_type = hook
+            with pytest.raises(ValueError) as caught:
+                AttestedOutcomeBand(_band(), _attestation())
+            assert "tests_mute_at_construction" in str(caught.value), how
+            assert "never a clearance" in str(caught.value), how
+        finally:
+            forget_broken()
+
+    def test_the_two_halves_of_the_unreadable_guard_overlap_by_construction(self):
+        """Why dropping ``refusal or`` from any of the three guards kills nothing.
+
+        Round-8 review scored three mutations as surviving — the RAISE half of
+        each guard. They are EQUIVALENT MUTANTS, and this is the reason, pinned
+        rather than argued: :func:`_ask` answers ``(None, [message])`` when a
+        hook raises, and ``None`` is not a type, so the non-type half already
+        covers every raise. The ``refusal or`` half is what carries the hook's
+        own coded text into the refusal MESSAGE, which the tests above assert;
+        it is not what decides. Stated here so a future reader does not read
+        three surviving mutants as three coverage gaps.
+        """
+        member, _ = _probe_member({"artifact_type": classmethod(_boom)})
+        value, refusal = _ask(member, "artifact_type")
+        assert refusal and "raised RuntimeError" in refusal[0]
+        assert value is None and not isinstance(value, type)
+        # ... so a guard written with only the non-type half sees the raise too.
+        quiet, _ = _probe_member({"artifact_type": classmethod(lambda cls: None)})
+        quiet_value, quiet_refusal = _ask(quiet, "artifact_type")
+        assert quiet_refusal == [] and not isinstance(quiet_value, type)
+
     def test_an_unreadable_peer_is_a_conflict_not_a_clearance_at_construction(self):
         """Round-6 CRITICAL: the ambiguity sweep failed OPEN on an unreadable peer.
 
@@ -1751,6 +1937,46 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         finally:
             forget_peer()
 
+    @pytest.mark.parametrize(
+        "hook,how",
+        [(classmethod(lambda cls: None), "answers None"),
+         (classmethod(lambda cls: "a string"), "answers a non-type")],
+        ids=["candidate-returns-None", "candidate-returns-a-non-type"],
+    )
+    def test_a_candidate_that_will_not_say_what_it_claims_is_not_registrable(self, hook, how):
+        """Round-8 CRITICAL-adjacent: the peer rule was missing at its twin site.
+
+        Round 7 refused an UNREADABLE PEER but never applied the same rule to
+        the CANDIDATE, so a member whose ``artifact_type()`` merely forgot its
+        ``return`` registered cleanly — and then the peer sweep refused every
+        OTHER member's construction and every later registration, naming it.
+        One missing ``return``, through the sanctioned front door, took the
+        module out for the whole process. The check belongs at both sites or
+        neither.
+        """
+        member, _ = _probe_member({"artifact_type": hook})
+        refusal = _refuses_registration("tests_mute_candidate", member)
+        assert "is not a type" in str(refusal), how
+        assert "tests_mute_candidate" not in UNCERTAINTY_INTAKES
+
+    def test_one_bad_member_cannot_take_the_whole_module_out(self):
+        """The consequence, end to end, as the reviewer demonstrated it.
+
+        With the candidate check missing, this sequence left every shipped
+        member unconstructible for the rest of the process.
+        """
+        member, _ = _probe_member({"artifact_type": classmethod(lambda cls: None)})
+        _refuses_registration("tests_module_killer", member)
+        # The shipped members still work, which is the whole point.
+        env = AttestedOutcomeBand(_band(), _attestation())
+        assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
+        healthy, _ = _probe_member({"estimand": classmethod(lambda cls: "healthy")})
+        forget = register_uncertainty_intake("tests_still_open", healthy)
+        try:
+            assert UNCERTAINTY_INTAKES["tests_still_open"] is healthy
+        finally:
+            forget()
+
     def test_a_broken_peer_cannot_let_two_members_claim_one_artifact_type(self):
         """The Critical, end to end, as the reviewer demonstrated it.
 
@@ -1781,6 +2007,12 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
             refusal = _refuses_registration("tests_claim_second", second)
             assert "tests_claim_first" in str(refusal)
             assert "tests_claim_second" not in UNCERTAINTY_INTAKES
+            # END TO END, which round 8 claimed and did not do (round-8 review,
+            # Minor): the second member is never registered, so the path that
+            # must refuse is CONSTRUCTION — reverting the construction sweep
+            # alone used to leave this test green.
+            with pytest.raises(ValueError, match="never a clearance"):
+                second(Shared(), _attestation(producer=MEAN_PRODUCER))
         finally:
             forget_first()
 

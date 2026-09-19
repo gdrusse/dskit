@@ -197,7 +197,10 @@ REFUSAL_REASONS = (
 #: one at class-definition time. A family is closed when membership would
 #: ASSERT a guarantee no member has earned. **This is drift protection, not
 #: a boundary**: ``ABCMeta.register`` forges ``isinstance`` without creating
-#: a class, and a hostile metaclass escapes the hook entirely, so what
+#: a class; clearing ``_FINAL_METHODS`` by ordinary attribute assignment on
+#: the importable class defeats the seal with no metaclass at all, which is a
+#: LOWER bar than the hostile metaclass this note used to name (round-8
+#: review); and a hostile metaclass escapes the hook entirely. So what
 #: actually answers "may this artifact inform this demand" is
 #: :func:`admission_problems` reading :data:`UNCERTAINTY_INTAKES`. Assigned
 #: below, once its members exist.
@@ -268,8 +271,18 @@ def _sealed_registry():
                 f"{existing.__name__}"
             )
         wanted, refusal = _ask(cls, "artifact_type")
-        if refusal:
-            raise ValueError(f"{name!r} may not register {cls.__name__}: {refusal[0]}")
+        if refusal or not isinstance(wanted, type):
+            # The SAME rule the peer sweep below applies, at its twin call
+            # site. Round-7 added it for every OTHER member and not for the
+            # candidate, so a member whose artifact_type() merely FORGOT ITS
+            # RETURN — the ordinary bug `_ask` exists for — registered
+            # cleanly, and then the peer sweep refused every other member's
+            # construction and every later registration, naming it. One
+            # missing `return` took the module out for the whole process
+            # (round-8 review). A member that will not say what it claims is
+            # not registrable, for exactly the reason it is not a clearance.
+            detail = refusal[0] if refusal else f"{wanted!r} is not a type"
+            raise ValueError(f"{name!r} may not register {cls.__name__}: {detail}")
         for other_name in sorted(store):
             other = store[other_name]
             if other_name == name or other is cls:
