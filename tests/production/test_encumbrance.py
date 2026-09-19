@@ -2035,6 +2035,29 @@ def test_the_units_book_is_scoped_to_its_instrument():
     assert rig.inventory() == ((INS1, "10"), (INS2, "1"))
 
 
+def test_two_position_rows_in_one_instrument_are_added_not_chosen_between():
+    """``_held_units`` SUMS its matching rows, and that is a deliberate choice.
+
+    Round-7 sweep, survivor: replacing the sum with "take the first match"
+    survived all 143 tests, because no rig ever carried two rows for one
+    instrument. The docstring says the sum is equivalent to picking one only
+    BECAUSE ``PositionBook.positions()`` is keyed by instrument today, and is
+    written as a sum so a source that can duplicate is read safely. That is a
+    dependency on another component's shape, so it is pinned here rather than
+    left as prose: hand the book two rows for INS1 and the answer is their
+    total. First-match would say 10, last-match 4, max 10; the sum says 14.
+    """
+    rig = Rig(positions=(position(instrument=INS1, qty="10"),
+                         position(instrument=INS1, qty="4")))
+    assert rig.inventory() == ((INS1, "14"),)
+    # And it BINDS: a sell of 14 is exactly covered, 15 is not.
+    _set(rig.proposal, side="sell", instrument=INS1, qty=Decimal("14"),
+         limit=Decimal("10"))
+    assert rig.admits() == ()
+    _set(rig.proposal, qty=Decimal("15"))
+    assert rig.admits()
+
+
 def test_a_sell_cannot_borrow_units_held_in_another_instrument():
     """The consequence the numbers above prevent, stated as an admission.
 
@@ -2050,6 +2073,152 @@ def test_a_sell_cannot_borrow_units_held_in_another_instrument():
     assert any("INS2" in problem for problem in problems), problems
     _set(rig.proposal, qty=Decimal("1"))
     assert rig.admits() == (), "exactly the uncommitted unit must still admit"
+
+
+def _two_orders_per_key_rig():
+    """Two live working orders on ONE instrument and ONE currency, hand-derived.
+
+    Round-7 review, Major: every rig above held at most one order per key, and
+    ``sum``, ``max``, ``first`` and ``last`` are all the same function over a
+    one-element sequence. So ``_committed_units``' sum could become a max and
+    ``_committed_cash``' sum could become last-wins with all 136 tests still
+    green — and last-wins is the dangerous one, because it UNDERSTATES what is
+    committed and therefore OVERSTATES buying power at an admission.
+
+    The numbers, derived here and not read back from the code:
+
+    ==============  =========================  ==================
+    resource        the working orders          the right answer
+    ==============  =========================  ==================
+    USD cash        buy 10 @ 10 = 100,          1000 - 160 = 840
+                    buy 3 @ 20 = 60
+    INS1 units      sell 3, sell 2, held 10     10 - 5 = 5
+    ==============  =========================  ==================
+
+    What each wrong aggregation would say instead — every one of them distinct
+    from the right answer, which is what makes the assertions below bite:
+
+    ==============  ========  =========  =========  =========
+    resource        sum       max        first      last
+    ==============  ========  =========  =========  =========
+    USD available   **840**   900        900        940
+    INS1 available  **5**     7          7          8
+    ==============  ========  =========  =========  =========
+
+    The history is EMPTY on purpose: an unsettled fill would put a third term
+    into the cash arithmetic, and a value pinned through two moving parts does
+    not say which one is wrong.
+    """
+    rig = Rig(positions=(position(instrument=INS1, qty="10"),),
+              working_order=order(ref="b-1", side="buy", qty="10", limit="10",
+                                  instrument=INS2))
+    rig.history = FakeHistory(())
+    rig.accounting = _gate_accounting(rig.history)
+    for extra in (order(ref="b-2", side="buy", qty="3", limit="20", instrument=INS2),
+                  order(ref="s-1", side="sell", qty="3", limit="10", instrument=INS1),
+                  order(ref="s-2", side="sell", qty="2", limit="10", instrument=INS1)):
+        rig.orders.append(extra)
+        rig.working[extra.client_ref] = extra
+    return rig
+
+
+def test_two_working_buys_in_one_currency_are_both_committed():
+    """The committed cash is their SUM, with the number written out."""
+    rig = _two_orders_per_key_rig()
+    assert str(rig.available()) == "840"
+
+
+def test_two_working_sells_in_one_instrument_are_both_committed():
+    """The committed units are their SUM, with the number written out.
+
+    INS2 carries the two buys and no held position, so it is a row holding
+    nothing — stated here because a buy committing units would move it.
+    """
+    rig = _two_orders_per_key_rig()
+    assert rig.inventory() == ((INS1, "5"), (INS2, "0"))
+
+
+def test_a_buy_may_not_spend_what_a_second_working_buy_already_holds():
+    """The consequence the cash number prevents, stated as an admission.
+
+    Exactly 840 admits, one more than 840 refuses, and 900 — which last-wins
+    aggregation would have believed was affordable — refuses.
+    """
+    rig = _two_orders_per_key_rig()
+    _set(rig.proposal, side="buy", instrument=INS2, qty=Decimal("84"),
+         limit=Decimal("10"))
+    assert rig.admits() == (), "a buy landing exactly on available must admit"
+    _set(rig.proposal, qty=Decimal("85"))
+    assert rig.admits(), "a buy one unit past available must refuse"
+    _set(rig.proposal, qty=Decimal("90"))
+    assert rig.admits(), "last-wins would have admitted this; the sum refuses it"
+
+
+def test_a_sell_may_not_promise_what_a_second_working_sell_already_promised():
+    """The consequence the units number prevents, stated as an admission.
+
+    Exactly 5 admits, 6 refuses, and 7 — which max aggregation would have
+    believed was uncommitted — refuses.
+    """
+    rig = _two_orders_per_key_rig()
+    _set(rig.proposal, side="sell", instrument=INS1, qty=Decimal("5"),
+         limit=Decimal("10"))
+    assert rig.admits() == (), "a sell landing exactly on the free units must admit"
+    _set(rig.proposal, qty=Decimal("6"))
+    assert rig.admits(), "a sell one unit past the free units must refuse"
+    _set(rig.proposal, qty=Decimal("7"))
+    assert rig.admits(), "max would have admitted this; the sum refuses it"
+
+
+@pytest.mark.parametrize("read", ("available", "reported_available"))
+def test_a_second_currency_in_the_view_is_refused_before_anything_is_derived(read):
+    """``EncumberedAccounting`` will not build a book over two pots at all.
+
+    This is ``_one_currency``, which sits EARLIER than ``_sole_balance``: with
+    the shipped accounting the second row never reaches the book, which is why
+    the row below has to reach the measure a different way.
+    """
+    rig = _two_orders_per_key_rig()
+    rig.balances[EUR] = Decimal("500")
+    with pytest.raises(ProductionError) as raised:
+        getattr(rig, read)()
+    assert "EUR" in str(raised.value) and "USD" in str(raised.value)
+
+
+def test_a_measure_handed_two_balances_refuses_rather_than_funding_from_the_first():
+    """``_sole_balance`` refuses a set it cannot attribute. Round-7 sweep survivor.
+
+    Relaxing ``len(rows) != 1`` to ``len(rows) < 1`` survived all 136 tests,
+    because nothing built a second balance row anywhere it was READ. Through
+    ``EncumberedAccounting`` nothing can: ``_one_currency`` refuses first. But
+    ``SettledFundsShortfall`` is a ``Measure`` over whatever ``TickState`` the
+    guard chain is handed, and the account in it is not required to have come
+    from this policy — a strategy that permits several pots hands it straight
+    through. So the account is built here instead of derived, which is the
+    shape that reaches the helper.
+
+    Funding a proposal out of row zero would spend 1000 USD or 500 EUR
+    depending only on which the fold emitted first, and a proposal carries no
+    currency to say which was meant.
+    """
+    rig = _two_orders_per_key_rig()
+    state = guarded_state(rig.view)
+    two_pots = dataclasses.replace(
+        state.account,
+        balances=(
+            records.Balance(currency=USD, total=Decimal("1000"),
+                            available=Decimal("1000"), native=None),
+            records.Balance(currency=EUR, total=Decimal("500"),
+                            available=Decimal("500"), native=None),
+        ),
+    )
+    handed = dataclasses.replace(state, account=two_pots)
+    with pytest.raises(ProductionError) as raised:
+        SettledFundsShortfall().value(
+            proposal(side="buy", qty="1", limit="1"), handed, WINDOW, "*", True
+        )
+    assert "exactly one pot must be in play" in str(raised.value)
+    assert "EUR" in str(raised.value) and "USD" in str(raised.value)
 
 
 def _sell_rig():
@@ -2098,7 +2267,7 @@ DEPENDENCIES = (
      lambda rig: _set(rig.orders[0], limit=Decimal("20")), Rig),
     ("order.remaining_qty", ("available", "reported_available", "admits"),
      lambda rig: _set(rig.orders[0], remaining_qty=Decimal("20")), Rig),
-    ("order.side", ("available", "reported_available"),
+    ("order.side", ("available", "reported_available", "inventory"),
      lambda rig: _set(rig.orders[0], side="sell"), Rig),
     ("order.instrument", ("inventory",),
      lambda rig: _set(rig.orders[0], instrument=INS2), Rig),
@@ -2128,8 +2297,10 @@ DEPENDENCIES = (
     # `effective_fills` already drops a reversed fill from its output, so the
     # list membership carries the change. The row still proves status is
     # load-bearing END TO END; it does not prove a status-blind key is unsafe
-    # at every placement. A key built BEFORE `effective_fills` would be, and
-    # is not covered here.
+    # at that one placement. Round-7 review corrected the sentence that used
+    # to follow: a key built BEFORE `effective_fills` and omitting `status`
+    # IS covered — built and run, it fails this row at both entry points plus
+    # two more, because the pre-filter fill list differs only in `status`.
     ("fill.status", ("available", "reported_available"),
      lambda rig: rig.history.set_fills((fill_body(
          "f-1", "sell", "10", "10", GATE_FILL_TS, status="reversed"),)), Rig),
@@ -2182,6 +2353,38 @@ for _row in DEPENDENCIES:
                 "an inventory, pending or proposal input does not move the "
                 "cash book",
             )
+
+
+@pytest.mark.parametrize(
+    "name,point", sorted(_NOT_MOVED), ids=lambda v: v if isinstance(v, str) else str(v)
+)
+def test_every_excused_cell_is_excused_TRUTHFULLY(name, point):
+    """Each excuse in ``_NOT_MOVED`` is EXECUTED, not just spelled.
+
+    Round-7 review, Minor: the matrix above checks that every cell is either
+    asserted or excused, and that the two sets are disjoint — pure FORM. An
+    excuse that was simply wrong ("this input does not move that answer" when
+    it does) would pass it and hide a real dependency behind a sentence. So
+    every excused cell now performs its row's move and asserts the reading
+    really is unchanged. An excuse that turns out to be false fails here, and
+    the cell belongs in ``DEPENDENCIES`` instead.
+
+    The excuses that say a move RAISES available are still answered exactly:
+    the rig sits on the admission boundary, so more room admits, and ``admits``
+    reads ``()`` on both sides.
+    """
+    rows = {row[0]: row for row in DEPENDENCIES}
+    if name not in rows:
+        pytest.skip(f"{name} carries no move of its own")
+    _, _, move, make_rig = rows[name]
+    rig = make_rig()
+    before = getattr(rig, point)()
+    move(rig)
+    assert getattr(rig, point)() == before, (
+        f"{name} x {point} is excused as not moving {point}, but it does: "
+        f"{before!r} -> {getattr(rig, point)()!r}. Move the cell into "
+        "DEPENDENCIES and assert the new value."
+    )
 
 
 def test_every_entry_point_by_input_cell_is_answered():

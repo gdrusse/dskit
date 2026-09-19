@@ -16788,7 +16788,7 @@ every cell that is deliberately not asserted. A cell is in one table or the
 other; there is no third place. So a new row cannot be added without saying
 what it does at every entry point, and the thin column is asserted to be thin
 no longer. Measured: all three caches that survived the old gate now fail it —
-10, 13 and 13 tests. `_balances` went from 1 row to 12.
+10, 13 and 13 tests. `_balances` went from 1 row to 13.
 
 *The gate found an error in its own table while being written.* `fill.fee` was
 declared to move `admit`; it does not. A larger fee on a SELL reduces its
@@ -16838,9 +16838,14 @@ mutations now die.
 on the OUTPUT of `effective_fills` and omitting `status` survives the
 `fill.status` row, because `effective_fills` already drops a reversed fill from
 its output, so list membership carries the change. The row proves status is
-load-bearing end to end; it does NOT prove a status-blind key is safe at every
-placement, and a key built BEFORE `effective_fills` would likely not be. Stated
-in the table beside the row rather than papered over.
+load-bearing end to end; it does NOT prove a status-blind key is safe at that
+one placement. Stated in the table beside the row rather than papered over.
+(Round 8 corrected the sentence that used to end this paragraph, which
+speculated that a key built BEFORE `effective_fills` "would likely not be"
+covered. Built and run, such a key fails the `fill.status` row at BOTH entry
+points plus two more, because the pre-filter fill list differs only in
+`status`. The speculation was written into the code comment as well and is
+corrected there too.)
 
 **Nit (second lens).** The completeness check walked the four record types and
 not `StateView` itself, so a future read of `breaker` or `reduction` inside the
@@ -16851,3 +16856,64 @@ escape clause used, so they are declared rather than omitted.
 **Nit.** `Rig.identities()` did not include the order records, so a future row
 using `dataclasses.replace` instead of `_set` would swap a record without the
 identity guard noticing. Added.
+
+### Round 8 correction — an aggregation over one element is every aggregation
+
+Two independent fresh-context lenses on `909269d`; the second was clean on
+Critical and Major. All findings are closed here.
+
+**Major (first lens) — same-key aggregation was SENSED but never value-pinned.**
+Every rig held at most one working order per key, and `sum`, `max`, `first` and
+`last` are the same function over a one-element sequence. So `_committed_units`'
+sum could become a max and `_committed_cash`' sum could become last-wins with
+all 136 tests green. Last-wins is the dangerous one: it UNDERSTATES what is
+committed, so it OVERSTATES buying power and admits a buy the account cannot
+fund.
+
+`_two_orders_per_key_rig` now holds two working buys in one currency (100 + 60
+against 1000, so available is 840) and two working sells in one instrument
+(3 + 2 against 10 held, so 5 are free), with the arithmetic derived in the
+docstring and every wrong aggregation's answer tabulated beside it — 900, 900
+and 940 for cash, 7, 7 and 8 for units, all distinct from the right answer,
+which is what makes the assertions bite. Its history is EMPTY on purpose: a
+value pinned through two moving parts does not say which one is wrong. Four
+admission rows state the consequence at the boundary — exactly 840 admits, 850
+refuses, and 900 (which last-wins would have called affordable) refuses.
+
+**The round-7 sweep's own survivor, closed.** `_sole_balance`'s `len(rows) != 1`
+relaxed to `< 1` survived everything, because nothing built a second balance row
+anywhere it was READ. Through `EncumberedAccounting` nothing can — `_one_currency`
+refuses a multi-currency view before the book is derived. But
+`SettledFundsShortfall` is a `Measure` over whatever `TickState` the guard chain
+is handed, and that account need not have come from this policy. The account is
+therefore built directly in the new row, which is the shape that reaches the
+helper.
+
+**A second survivor, and why it is not an equivalent mutant.** `_held_units`'
+sum replaced by first-match survived all 143 tests. The function's own docstring
+says the sum is equivalent to picking one only BECAUSE `PositionBook.positions()`
+is keyed by instrument today, and is written as a sum so a source that can
+duplicate is read safely. That is a dependency on another component's shape
+stated in prose and pinned by nothing. It is pinned now: two rows for one
+instrument total 14, first-match would say 10, and a sell of 14 is exactly
+covered while 15 is not.
+
+**Minor (first lens) — an excuse table that was form-checked, not truth-checked.**
+`test_every_entry_point_by_input_cell_is_answered` proved every cell of
+ENTRY POINTS x INPUTS is either asserted or excused and that the two sets are
+disjoint. Pure form: an excuse that was simply WRONG passed it, hiding a real
+dependency behind a sentence. Every excused cell now performs its row's move and
+asserts the reading really is unchanged. **It found a false excuse on its first
+run**: `order.side` x `inventory` was excused as "funds and proposal inputs do
+not move the units book", but a working buy becoming a sell commits units it
+never held, moving INS1 from 0 available to -10. That cell is now an asserted
+dependency.
+
+**Minor (first lens) — a claim in the table that was empirically false**, and the
+same claim in this entry: see the corrected paragraph above.
+
+**Nit (first lens).** `_balances` went from 1 row to 13, not 12. Corrected above.
+
+Round-8 sweep: twelve mutations over the two aggregations, the two balance
+guards, the instrument filters and the commitment basis — all twelve killed.
+208 tests in `tests/production/test_encumbrance.py`.
