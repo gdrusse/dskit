@@ -11,6 +11,7 @@ whole gate is synthetic-tests-only (the master plan's own ruling).
 from __future__ import annotations
 
 import contextlib
+import hashlib
 
 from unittest.mock import patch
 
@@ -1392,6 +1393,7 @@ SEALED_NAMES = (
     "__setattr__",
     "_run_pin_problems",
     "_schema_problems",
+    "_unsealed_problems",
     "_verified_hpo_outputs",
     "_winner_from_evidence",
     "_winners",
@@ -1771,21 +1773,64 @@ _BASELINE_CHANNEL_PROBLEMS = tuple(
 )
 
 
+def _release_gate_problems(cls):
+    """What `validate_params` contributes as RELEASE gates, for this class.
+
+    Two now, not one: the production-channel refusal and the use-time seal
+    re-check. A measurement that watched only the first would report
+    "validate_params reached" for a class the seal stops there — which is the
+    wrong answer in the safe direction, and still the wrong answer.
+    """
+    return list(cls._channel_problems(dict(PRODUCTION_PARAMS))) + list(
+        cls._unsealed_problems()
+    )
+
+
 def _reaches(cls, instance=None):
     """Which RELEASE_ENTRY_POINTS a production release can enter under this attempt."""
     reached = []
+    gates = _release_gate_problems(cls)
     problems = cls.validate_params(dict(PRODUCTION_PARAMS))
-    if not any(problem in problems for problem in _BASELINE_CHANNEL_PROBLEMS):
+    # Faithfulness control: every gate the class WOULD report must actually
+    # appear in `validate_params`' output. If it stops calling one, this fires
+    # rather than silently measuring a gate no entry point consults.
+    assert all(gate in problems for gate in gates), (
+        "validate_params no longer reports a release gate it can produce"
+    )
+    if not gates:
         reached.append("validate_params")
     node = instance
     if node is None:
         node = object.__new__(cls)
         node.params = dict(PRODUCTION_PARAMS)
+    # `run` ITSELF is called, with inputs it must refuse anyway. Anything
+    # narrower is a re-implementation of run's gate sequence, and round-7
+    # review killed two such: this line once hardcoded
+    # `FinalRefit._channel(node)`, so an attempt that substituted `_channel`
+    # itself measured as reaching nothing; and a later version asked
+    # `_unsealed_problems` directly, so DELETING that check from `run` changed
+    # no measurement at all. The only faithful question is what `run` does.
+    #
+    # `run` refuses in order: the seal re-check, then the channel, then the
+    # wires. So the attempt has "reached run" when the refusal it gets is
+    # NEITHER release gate — the wires refusal means both gates are behind it.
+    # The markers `run`'s two gates produce. The channel one comes from the
+    # PRISTINE class, captured at import: derived from the ATTACKED class it is
+    # whatever the attack says it is, and the metaclass-interception row
+    # briefly measured as reaching `run` for exactly that reason — the
+    # interception emptied the expected text, so no refusal matched it.
+    markers = list(_BASELINE_CHANNEL_PROBLEMS) + list(
+        type(node)._unsealed_problems()
+    )
     try:
-        final_model.FinalRefit._channel(node)
-    except ValueError:
-        pass
+        node.run(None, {})
+    except ValueError as exc:
+        blocked = any(marker in str(exc) for marker in markers)
+    except Exception:                       # noqa: BLE001 — past the gates
+        blocked = False
     else:
+        blocked = False
+    if not blocked:
         reached.append("run")
     return tuple(reached)
 
@@ -1899,6 +1944,52 @@ def _probe_metaclass_doctors_the_mro():
     return _outcome({}, (Hidden, final_model.FinalRefit), Doctoring)
 
 
+def _probe_metaclass_rotates_the_class_out_of_its_own_mro():
+    """The shape that skips __init_subclass__ ENTIRELY (round-7 review).
+
+    `type.__new__` invokes the hook as `super(cls, cls).__init_subclass__`,
+    which searches `cls.__mro__` AFTER `cls`. Rotate `cls` to the end and the
+    search window no longer holds `FinalRefit`, so the hook never runs — no
+    exception, no refusal. `_sealed_violations` still sees the override; only
+    its timing was wrong, which is what the use-time re-check answers.
+    """
+    class Hidden:
+        @classmethod
+        def _channel_problems(cls, params):
+            return []
+
+    class Rotating(type(final_model.FinalRefit)):
+        def mro(cls):
+            order = list(type(final_model.FinalRefit).mro(cls))
+            return order[1:] + order[:1]
+
+    cls, refused = _define({}, (Hidden, final_model.FinalRefit), Rotating)
+    assert refused is False and cls is not None
+    # The definition-time hook did NOT fire, and the violation was there to see.
+    assert final_model._sealed_violations(cls) == ["_channel_problems"]
+    return False, _reaches(cls)
+
+
+def _probe_substituted_channel_resolver():
+    """`_channel` ITSELF substituted — the member `run` resolves, not the one it calls.
+
+    Round-7 review: `_reaches` used to hardcode `FinalRefit._channel(node)`, so
+    this attempt measured as reaching nothing while a real `run` would have
+    taken the substitute. Every other row attacks `_channel_problems`, which
+    the real `_channel` calls dynamically, so the hardcoding was invisible.
+    """
+    class Injecting(type(final_model.FinalRefit)):
+        def __new__(mcls, name, bases, namespace, **kwargs):
+            cls = super().__new__(mcls, name, bases, namespace, **kwargs)
+            cls._channel = lambda self: "production"
+            return cls
+
+    cls, refused = _define({}, metaclass=Injecting)
+    assert refused is False and cls is not None
+    assert final_model._sealed_violations(cls) == ["_channel"]
+    return False, _reaches(cls)
+
+
 def _probe_metaclass_injects_after_class_creation():
     class Injecting(type(final_model.FinalRefit)):
         def __new__(mcls, name, bases, namespace, **kwargs):
@@ -1989,6 +2080,9 @@ GATE_PROBES = {
     "refuses_a_metaclass_that_shadows_the_class_dict":
         _probe_metaclass_shadows_the_class_dict,
     "refuses_a_metaclass_that_doctors_the_mro": _probe_metaclass_doctors_the_mro,
+    "refuses_a_metaclass_that_rotates_the_class_out_of_its_own_mro":
+        _probe_metaclass_rotates_the_class_out_of_its_own_mro,
+    "refuses_a_substituted_channel_resolver": _probe_substituted_channel_resolver,
     "refuses_a_subclass_overriding_an_unsealed_node_hook": _probe_unsealed_node_hook,
     "refuses_a_mixin_whose_init_subclass_swallows_the_hook": _probe_swallowing_mixin,
     "refuses_post_hoc_assignment_on_this_class": _probe_post_hoc_on_this_class,
@@ -2005,7 +2099,7 @@ GATE_PROBES = {
 def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
     declared = {name for name, _, _, _ in final_model.GATE_FACTS}
     assert set(GATE_PROBES) == declared
-    assert len(final_model.GATE_FACTS) == len(declared) == 17
+    assert len(final_model.GATE_FACTS) == len(declared) == 19
     # Every declared reach is a subset of the named entry points, in the
     # order they are named there — so a reach can never be a free-form string.
     points = final_model.RELEASE_ENTRY_POINTS
@@ -2016,8 +2110,8 @@ def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
 def test_the_reach_measurement_answers_nothing_for_the_unattacked_class():
     """The control every ``reach=()`` fact rests on.
 
-    A ``_reaches`` that always answered ``()`` would make all eight
-    ``refuses=True`` facts pass while measuring nothing. So: the baseline
+    A ``_reaches`` that always answered ``()`` would make every ``reach=()``
+    fact pass while measuring nothing. So: the baseline
     marker must be non-empty, the pristine class must reach NEITHER entry
     point, and an unsealed instance shadow must reach exactly one — proving
     the measurement distinguishes the two.
@@ -2069,9 +2163,12 @@ def test_the_seal_sees_the_override_that_getattr_static_skips():
     ) is not final_model._resolved_through_the_mro(
         final_model.FinalRefit, "_channel_problems"
     )
-    # And the override is live on BOTH paths, which is what made it a total
-    # bypass rather than the partial one round 6 declared for a metaclass.
-    assert _reaches(carrier) == final_model.RELEASE_ENTRY_POINTS
+    # The override is live on both paths — that is what made it a TOTAL bypass
+    # before round 7 — and it is the USE-TIME re-check that now stops it, at
+    # both entry points, rather than the definition-time hook this carrier
+    # was built to walk past.
+    assert carrier._unsealed_problems()
+    assert _reaches(carrier) == ()
 
 
 @pytest.mark.parametrize(
@@ -2094,12 +2191,83 @@ def test_every_declared_gate_fact_matches_what_actually_happens(
     )
 
 
-#: The only sentences the seal's docstring is allowed to make a claim in.
-#: Each one CARRIES ITS OWN POLARITY WORD, which is what makes pinning it
-#: polarity-sensitive: invert "not an authority boundary" and the pinned
-#: substring is gone, so the ``in doc`` assertion fails. The round-6 pin
-#: asserted ``"introspection" in doc`` — a token with no polarity — and the
-#: sentence around it could be inverted while the assertion held.
+#: A paragraph of prose makes a GATE claim if it names the gate. A word list
+#: is the wrong tool for the CLAIM (round-7 review defeated one five ways out
+#: of five, twice independently) but it is the right tool for the SUBJECT: a
+#: sentence about what this seal does or does not stop has to name it.
+_GATE_WORDS = (
+    "seal", "gate", "GATE_FACTS", "_FINAL_METHODS", "__init_subclass__",
+    "subclass", "metaclass", "boundary", "bypass", "override", "drift",
+    "authority", "root of trust", "mro",
+)
+
+
+def _paragraphs(doc):
+    """Whitespace-normalised, blank-line-separated paragraphs."""
+    return [" ".join(part.split()) for part in doc.split("\n\n") if part.strip()]
+
+
+def _names_the_gate(paragraph):
+    """Whether this paragraph is making a claim about the seal."""
+    low = paragraph.lower()
+    return any(word.lower() in low for word in _GATE_WORDS)
+
+
+def _digest(text):
+    """First 16 hex of sha256 over the whitespace-normalised text."""
+    return hashlib.sha256(" ".join(text.split()).encode()).hexdigest()[:16]
+
+
+#: EVERY paragraph of the seal's docstring, every GATE-NAMING paragraph of the
+#: class docstring, and every ``attempt`` string, pinned by digest.
+#:
+#: This replaces a banned-vocabulary check, and the reason is the round-7
+#: convergence checkpoint. Rounds 4, 5, 6 and 7 each found a false claim in
+#: this module's prose that the round's own pin could not see: two inverted
+#: sentences, three more, one surviving clause, and then FIVE adversarial
+#: variants at once — a claim in the CLASS docstring (never scanned), a claim
+#: in an ``attempt`` string (never scanned), a claim in words the list did not
+#: hold, and a negation written AROUND a pinned substring. A denylist is a
+#: finite list mistaken for a completeness proof. A digest is not a list.
+#:
+#: THE HONEST SCOPE, which is different from the old one and smaller than it
+#: sounds: this detects CHANGE, not falsehood. When it fails, a reviewer reads
+#: the new paragraph and decides whether it is true, then updates the digest in
+#: the same commit. What it makes impossible is a gate claim changing with
+#: nobody looking — which is what happened four rounds running.
+_PINNED_GATE_PROSE = {
+    "seal:0": "25366efad597363e",
+    "seal:1": "b71ff241f7cd7988",
+    "seal:2": "fda7cede7601ba18",
+    "seal:3": "c3ecf924b38ca43d",
+    "class:2": "b7f01ec76c0b4428",
+    "class:4": "8bf55dc55eb4f5c1",
+    "class:5": "1d7791580ed8cb25",
+    "attempt:refuses_an_override_in_the_subclass_body": "ca903955a6c272cb",
+    "attempt:refuses_an_override_from_a_mixin_in_the_mro": "9147fd781dcf52a1",
+    "attempt:refuses_an_override_at_any_subclass_depth": "c661ddcbe79ea67e",
+    "attempt:refuses_an_override_of_an_inherited_hook": "3b8e83019c234f8e",
+    "attempt:refuses_an_object_whose_equality_is_rigged": "f32d6e6a0284f458",
+    "attempt:refuses_a_subclass_that_shrinks_the_sealed_list": "6e9130a48a4a8b10",
+    "attempt:refuses_a_subclass_that_replaces_init_subclass": "9368d6a467681d48",
+    "attempt:refuses_a_metaclass_that_shadows_the_class_dict": "6981862ecc1ea0c8",
+    "attempt:refuses_a_metaclass_that_doctors_the_mro": "f796eac3135d4300",
+    "attempt:refuses_a_metaclass_that_rotates_the_class_out_of_its_own_mro": "d9f841f2231be7eb",
+    "attempt:refuses_a_substituted_channel_resolver": "26e9334975a86e83",
+    "attempt:refuses_a_subclass_overriding_an_unsealed_node_hook": "e1dd9b970c4d0dc1",
+    "attempt:refuses_a_mixin_whose_init_subclass_swallows_the_hook": "27c81e3d1dee9b21",
+    "attempt:refuses_post_hoc_assignment_on_this_class": "7d7452de5165db1d",
+    "attempt:refuses_post_hoc_assignment_on_a_subclass": "ad8481508a64dfda",
+    "attempt:refuses_a_metaclass_that_injects_after_class_creation": "4649c01c79a9070e",
+    "attempt:refuses_per_instance_shadowing": "9f4aef4e51ef2c01",
+    "attempt:refuses_a_metaclass_that_intercepts_class_attribute_access": "82e6eb66a1d1cab6",
+    "attempt:shipped_configuration_refuses_to_plan": "7822b71aa50c6b98",
+}
+
+#: The four claims the seal's docstring is allowed to rest on, kept BESIDE the
+#: digests because a digest failure says "this changed" and these say WHICH
+#: claims matter. Each carries its own polarity word, so inverting one deletes
+#: the pinned substring as well as moving the digest.
 _PINNED_SEAL_CLAIMS = (
     "Refuse a subclass that resolves a sealed member to anything but this "
     "class's own.",
@@ -2109,40 +2277,87 @@ _PINNED_SEAL_CLAIMS = (
     "ADR-0122's out-of-Python launcher, which is not built.",
 )
 
-#: A sentence stating what this gate does or does not halt needs one of these,
-#: in EITHER polarity — which is why banning them catches an inversion where a
-#: substring assertion cannot. The seal's docstring is written to contain none
-#: of them outside the pinned claims above.
-_OUTCOME_TOKENS = (
-    "refus", "allow", "permit", "block", "defend", "prevent", "protect",
-    "cannot", "can't", "bypass", "guarantee", "safe", "reaches", "stops",
+#: Vocabulary that never legitimately appears in the class docstring's
+#: NON-gate paragraphs, which the digests do not cover. A completeness or
+#: safety claim needs one of these; the node's own refusals need none.
+#: ``cannot be`` was tried and withdrawn: "a written bundle cannot be
+#: relabelled without failing :func:`load_bundle`" is a true, specific claim
+#: about a hash, and banning the phrase that carries it would push the
+#: sentence into vaguer wording rather than catching a false one.
+_COMPLETENESS_TOKENS = (
+    "guarantee", "immune", "airtight", "impossible", "every route", "fully",
+    "tamper", "safe", "prevent", "protect", "no metaclass",
+    "all routes", "watertight", "complete trust",
 )
 
 
-def test_the_seal_docstring_makes_no_claim_outside_its_pinned_ones():
-    """The seal's docstring cites the data and asserts nothing of its own.
+def test_every_gate_claim_in_prose_is_pinned_by_digest():
+    """No paragraph about this seal changes without this test failing.
 
-    Round-7 review's second Major: one surviving clause in this docstring
-    named four mechanisms and their common outcome, and negating that
-    outcome left every test green. The fix is not a better substring — it is
-    that the docstring now carries no outcome vocabulary at all outside four
-    pinned sentences, each of which holds its own polarity word.
+    Round-7 checkpoint. Both lenses independently defeated the previous
+    banned-vocabulary pin, and between them five ways: two of the five put the
+    false claim somewhere the check never looked at all. So the check no longer
+    decides what a sentence MEANS — it decides whether the set of gate
+    paragraphs is byte-for-byte the reviewed set, across BOTH docstrings and
+    every ``attempt`` string.
+    """
+    observed = {}
+    for index, paragraph in enumerate(
+        _paragraphs(final_model.FinalRefit.__init_subclass__.__doc__)
+    ):
+        observed[f"seal:{index}"] = _digest(paragraph)
+    for index, paragraph in enumerate(_paragraphs(final_model.FinalRefit.__doc__)):
+        if _names_the_gate(paragraph):
+            observed[f"class:{index}"] = _digest(paragraph)
+    for name, _, _, attempt in final_model.GATE_FACTS:
+        observed[f"attempt:{name}"] = _digest(attempt)
 
-    The honest limit: an editor determined to contradict a pinned claim can
-    write around it in words this list does not hold. This detects DRIFT, in
-    the same scope as the gate it documents.
+    added = sorted(set(observed) - set(_PINNED_GATE_PROSE))
+    removed = sorted(set(_PINNED_GATE_PROSE) - set(observed))
+    changed = sorted(
+        key for key in set(observed) & set(_PINNED_GATE_PROSE)
+        if observed[key] != _PINNED_GATE_PROSE[key]
+    )
+    assert not (added or removed or changed), (
+        "gate prose moved. Read the new text, decide whether it is TRUE, then "
+        f"update _PINNED_GATE_PROSE in the same commit. added={added} "
+        f"removed={removed} changed={changed}"
+    )
+
+
+def test_the_class_docstrings_other_paragraphs_claim_no_completeness():
+    """The paragraphs the digests do not cover may still not claim safety.
+
+    A gate claim names the gate and is pinned above. A COMPLETENESS claim can
+    avoid naming it — "this node is safe against every route" — so the
+    paragraphs outside the pinned set are checked against the vocabulary such
+    a claim needs. The node's own refusals need none of it.
+    """
+    loose = [
+        paragraph
+        for paragraph in _paragraphs(final_model.FinalRefit.__doc__)
+        if not _names_the_gate(paragraph)
+    ]
+    assert loose, "every paragraph named the gate; this test is measuring nothing"
+    for paragraph in loose:
+        leaked = sorted(t for t in _COMPLETENESS_TOKENS if t in paragraph.lower())
+        assert not leaked, (
+            f"a class-docstring paragraph outside the pinned gate set claims "
+            f"{leaked}: {paragraph[:120]!r}"
+        )
+
+
+def test_the_seal_docstring_still_rests_on_its_four_pinned_claims():
+    """The digests say WHAT changed; these say which claims are load-bearing.
+
+    Each pinned claim holds its own polarity word, so an inversion deletes the
+    substring. That property is why these are worth keeping beside a digest
+    that would catch the edit anyway: the failure names the claim.
     """
     doc = final_model.FinalRefit.__init_subclass__.__doc__
     assert "GATE_FACTS" in doc
-    remainder = doc
     for claim in _PINNED_SEAL_CLAIMS:
         assert claim in doc, f"pinned claim is gone or reworded: {claim!r}"
-        remainder = remainder.replace(claim, " ")
-    leaked = sorted(t for t in _OUTCOME_TOKENS if t in remainder.lower())
-    assert not leaked, (
-        f"the seal docstring states an outcome outside its pinned claims: "
-        f"{leaked} — the outcome belongs in a GATE_FACTS field a probe runs"
-    )
 
 
 def test_the_declaration_is_where_the_polarity_lives():

@@ -285,6 +285,7 @@ class FinalRefit(Node):
         "__setattr__",
         "_run_pin_problems",
         "_schema_problems",
+        "_unsealed_problems",
         "_verified_hpo_outputs",
         "_winner_from_evidence",
         "_winners",
@@ -352,10 +353,50 @@ class FinalRefit(Node):
     )
 
     @classmethod
+    def _unsealed_problems(cls):
+        """Return the seal's verdict on ``cls``, taken WHEN THE GATE IS CONSULTED.
+
+        Returns
+        -------
+        list of str
+            One problem naming every sealed member ``cls`` resolves elsewhere,
+            or empty.
+
+        Notes
+        -----
+        ``__init_subclass__`` is invoked by ``type.__new__`` as
+        ``super(cls, cls).__init_subclass__(...)``, so it runs only if ``cls``
+        sits ahead of ``FinalRefit`` in ``cls.__mro__`` — and it runs BEFORE a
+        metaclass ``__new__`` returns. A metaclass therefore decides whether
+        the definition-time hook fires at all, and round-7 review demonstrated
+        both halves: an ``mro()`` that rotates ``cls`` to the end skips the
+        hook silently, and a ``__new__`` that assigns after ``super().__new__``
+        lands after it. In BOTH cases :func:`_sealed_violations` still returns
+        the violation — the check was right and its TIMING was wrong. So it is
+        taken again here, from ``validate_params`` and from ``run``, which are
+        the two places the gate is actually consulted.
+
+        This closes the class of attempt that skips the definition-time hook.
+        It does not make the seal an authority boundary: a caller who replaces
+        ``run`` or ``validate_params`` outright is not using this gate at all,
+        which is ADR-0122's ``uses:`` problem and not this one's.
+        :data:`GATE_FACTS` carries the executed outcome for every attempt.
+        """
+        violations = _sealed_violations(cls)
+        if not violations:
+            return []
+        return [
+            f"{cls.__name__} resolves {', '.join(violations)} to something other "
+            "than FinalRefit's own — the release gate every refusal here goes "
+            "through is not the one this class is running (ADR-0166)"
+        ]
+
+    @classmethod
     def validate_params(cls, params):
         """Return problems with the release channel, run pins, bundle schema knobs and refit identity."""
         problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
+        problems += cls._unsealed_problems()
         problems += cls._channel_problems(params)
         problems += cls._run_pin_problems(params)
         problems += cls._schema_problems(params)
@@ -712,6 +753,9 @@ class FinalRefit(Node):
         """Refit the ten frozen winners once over attested rows, write one bundle, and prove it replays."""
         from dskit.pipeline.libs.sklearn import load_bundle, write_bundle
 
+        unsealed = type(self)._unsealed_problems()
+        if unsealed:
+            raise ValueError(f"FinalRefit: {unsealed[0]}")
         channel = self._channel()
         problems = self.validate_inputs(inputs)
         if problems:
@@ -840,21 +884,25 @@ GATE_FACTS = (
      "also supplies __dict__"),
     ("refuses_a_metaclass_that_doctors_the_mro", False, (),
      "a metaclass whose mro() drops a base that supplies a sealed member"),
+    ("refuses_a_metaclass_that_rotates_the_class_out_of_its_own_mro", False, (),
+     "a metaclass whose mro() puts the new class AFTER FinalRefit, so that "
+     "type.__new__'s super(cls, cls).__init_subclass__ lookup finds nothing"),
+    ("refuses_a_substituted_channel_resolver", False, (),
+     "a metaclass __new__ that assigns _channel itself, the member run() "
+     "resolves through the instance"),
     ("refuses_a_subclass_overriding_an_unsealed_node_hook", False, (),
      "a subclass supplying Node.serving_effect, which the gate never "
      "resolves through — sealing it would be over-reach"),
-    ("refuses_a_mixin_whose_init_subclass_swallows_the_hook", False,
-     RELEASE_ENTRY_POINTS,
+    ("refuses_a_mixin_whose_init_subclass_swallows_the_hook", False, (),
      "a mixin earlier in the MRO defining __init_subclass__ without calling "
      "super(): a mixin derives from nothing, so sealing cannot reach it"),
     ("refuses_post_hoc_assignment_on_this_class", False, RELEASE_ENTRY_POINTS,
      "assigning a sealed member onto FinalRefit itself after import — the "
      "shape run-final-refit.json wires, needing no subclass at all"),
-    ("refuses_post_hoc_assignment_on_a_subclass", False, RELEASE_ENTRY_POINTS,
+    ("refuses_post_hoc_assignment_on_a_subclass", False, (),
      "assigning a sealed member onto an empty-bodied subclass after it is "
      "defined, which the definition-time check has already passed"),
-    ("refuses_a_metaclass_that_injects_after_class_creation", False,
-     RELEASE_ENTRY_POINTS,
+    ("refuses_a_metaclass_that_injects_after_class_creation", False, (),
      "a metaclass __new__ that builds the class from an empty namespace and "
      "assigns a sealed member onto it before returning it"),
     ("refuses_per_instance_shadowing", False, ("run",),

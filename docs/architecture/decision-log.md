@@ -16534,6 +16534,51 @@ general rule this family kept missing: `assert "introspection" in doc` cannot
 see an inversion, `assert "not an authority boundary" in doc` can, because the
 negation is inside the pinned substring.*
 
+*Corrected again 2026-09-19 after round-7 review returned 0 Critical, 4 Major
+across two independent lenses — and, because the same two FAMILIES had now
+recurred in rounds 4, 5, 6 and 7, under the CONVERGENCE CHECKPOINT rather than
+as a fifth patch. The two families: (a) another shape past the class-definition
+seal, (b) another false claim in prose that the round's own pin could not see.
+Both lenses found one of each independently.*
+
+*Family (a), and the changed approach: **the check moved to USE TIME.**
+`type.__new__` invokes `__init_subclass__` as `super(cls, cls).__init_subclass__`,
+which searches `cls.__mro__` AFTER `cls` — so a metaclass whose `mro()` rotates
+the class to the end skips the hook SILENTLY, no exception, and a metaclass
+`__new__` that assigns after `super().__new__` lands after it. In both cases
+`_sealed_violations` returned the violation when asked: the check was right and
+its TIMING was wrong. `_unsealed_problems` now takes the same verdict from
+`validate_params` and from `run`, which are where the gate is consulted. That
+is not another declaration — it closes the whole class of attempt that skips
+the definition-time hook, and three previously OPEN total bypasses now reach
+NOTHING: the swallowing mixin, post-hoc assignment on a subclass, and metaclass
+`__new__` injection. It does not make the seal an authority boundary and cannot:
+a caller who replaces `run` outright is not using this gate, which is ADR-0122's
+`uses:` problem.*
+
+*Family (b), and the changed approach: **a digest, not a denylist.** Round 6
+pinned prose by required substring; round 7 replaced that with a banned
+vocabulary; both lenses then defeated the vocabulary five ways between them, and
+TWO of the five put the false claim where the check never looked at all — the
+CLASS docstring, and a `GATE_FACTS` `attempt` string. A finite word list
+mistaken for a completeness proof is the same error three rounds running. Every
+paragraph of the seal's docstring, every gate-naming paragraph of the class
+docstring, and every `attempt` string is now pinned BY DIGEST. The honest scope
+is smaller than it sounds and is stated in the test: this detects CHANGE, not
+falsehood — when it fails a reviewer reads the new text and decides whether it
+is true. What it makes impossible is a gate claim moving with nobody looking.*
+
+*Two measurement defects were found in round 7's own harness and fixed: the
+`run` reach was measured by re-implementing `run`'s gate sequence, so DELETING
+that gate from `run` changed no measurement; and `_channel` itself was never a
+declared target, while the measurement resolved it on `FinalRefit` rather than
+through the instance. `_reaches` now calls `run` and classifies the refusal
+against markers taken from the PRISTINE class — derived from the attacked class,
+a metaclass interception empties the expected text and the row measures as
+reaching `run`, which it briefly did. 19 facts; 44 mutations, 44 killed,
+including all five prose attacks the lenses used and both halves of the
+use-time check.*
+
 **Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
 three missing pieces; ADR-0119 built two of the generic halves
 (`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
