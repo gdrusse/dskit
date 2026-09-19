@@ -16484,8 +16484,8 @@ absent.
 **Decision.**
 
 1. A new tier-1 module `dskit/production/encumbrance.py` holds one structural
-   ABC, `EncumbrancePolicy`, with three `@abstractmethod` hooks —
-   `encumber(state_view, at_ms, history)`, `fill_horizon_ms()` and
+   ABC, `EncumbrancePolicy`, with two `@abstractmethod` hooks —
+   `encumber(state_view, at_ms, history)` and
    `borrow(instrument, qty, state_view, at_ms)` — plus two concrete
    base-owned methods: `balances(...)`, the ONE owner of
    `available = total - committed - unsettled`, and `admit(...)`, the ONE
@@ -16688,7 +16688,11 @@ one level up.
 
 **Major — a cache keyed on every argument the method DECLARES.** `loop.py` and
 `leg.py` hold an `EncumberedAccounting` and call
-`accounting.admit(proposal, state_view, at_ms)`. `history` is a constructor
+`accounting.admit(proposal, state_view, at_ms)` — a claim round-6 review
+showed is FALSE and which is corrected in round 7 below; the shape of the
+cache defect is unchanged, but `loop.py` and `leg.py` reach the accounting
+object through `.snapshot()`, `.classify()` and `.value()`, never `.admit()`.
+`history` is a constructor
 collaborator reached through `self._history` and appears in no signature on
 that path, so:
 
@@ -16755,3 +16759,95 @@ reads. A margin policy reading a field `NOT_READ` currently excuses would need
 its own rows, and the completeness check would demand them. The gate also says
 nothing about whether the two limits are DECLARED by any document; that is
 still the configuration choice the Consequences section above describes.
+
+### Correction round 7, 2026-09-19 — the space is ENTRY POINTS x INPUTS
+
+Round-6 review returned **0 Critical, 2 Major, 1 Minor, 3 Nit**, and it
+independently re-derived "11 mutations, 11 killed" and confirmed the
+dependency table complete against every field the policy reads. The strategy
+change was right and the table was right. **The COVERAGE was lopsided**, and
+that is the finding.
+
+**Major — one row deep on `_balances`.** Each row named ONE entry point, and
+the result was 13 rows through `encumbrance`, 4 through `admit`, and exactly
+ONE through `_balances`. So a cache on `_balances` keyed on the working-order
+KEY SET rather than their field VALUES survived all 6776 tests — and
+`_balances` is the hook `PaperAccounting.snapshot` calls to build the balances
+that `SettledFundsShortfall` reads, which is dskit's OWN live guard path. In
+operation a working order's `remaining_qty` is rewritten in place under the
+same `client_ref` on every partial fill, so that cache would keep reporting a
+stale `available` across a leg's re-checks within one tick: a reported
+`available` that overstates buying power, which is this module's own
+definition of Critical. The same shape on `admit`, where all four rows were
+`proposal.*`: a cache omitting `state_view.pending`, or `state_view.balances`,
+also survived.
+
+*Correction.* A row now names EVERY entry point its move must change, the test
+parametrises over the cross product, and `_NOT_MOVED` carries a REASON for
+every cell that is deliberately not asserted. A cell is in one table or the
+other; there is no third place. So a new row cannot be added without saying
+what it does at every entry point, and the thin column is asserted to be thin
+no longer. Measured: all three caches that survived the old gate now fail it —
+10, 13 and 13 tests. `_balances` went from 1 row to 12.
+
+*The gate found an error in its own table while being written.* `fill.fee` was
+declared to move `admit`; it does not. A larger fee on a SELL reduces its
+proceeds, so it LOWERS unsettled and RAISES available, and a rig that admits
+exactly still admits with more room. That cell is excused now, with the
+reason, and the episode is the argument for the matrix: the old table could
+not have asked the question.
+
+**Minor — this entry stated a call graph that does not exist.** Round 6 wrote
+that "`loop.py` and `leg.py` hold an `EncumberedAccounting` and call
+`accounting.admit(...)`". They do not: they reach it through `.snapshot()`,
+`.classify()` and `.value()`. This entry's own earlier Consequences section
+had it right — `admit` is "what a child's proposer or optimizer consults" —
+and the two disagreed for a round. Corrected in place above. The defect the
+round fixed is unchanged in shape and is, if anything, more serious than the
+prose said: the live path runs through `_balances`, the column that was one
+row deep.
+
+**Nit, pre-existing and outside the round-6 diff, found by reading this entry
+against the code:** §1 named three `@abstractmethod` hooks including
+`fill_horizon_ms()`. No such hook exists anywhere in the repository; the
+tested set is `{encumber, borrow}`. Six rounds did not catch it. Corrected.
+
+**Major (second lens) — the gate proved SENSITIVITY, not CORRECTNESS.** Every
+row asserted `before != after`. That shows the named component is SENSED; it
+says nothing about the answer being RIGHT. Drop the `instrument ==` filter from
+`_held_units` and `_committed_units` — so units are summed across every
+instrument — and all 6776 tests pass. The reason is structural: the rig held
+ONE position and ONE working order, and with 0 or 1 live positions "sum
+filtered by instrument" and "sum everything" are indistinguishable. An
+instrument-blind sum still MOVES when an instrument changes, so each row's own
+assertion was satisfied by the WRONG new answer.
+
+The consequence is this module's own Critical bar: a per-instrument `available`
+inflated by units held elsewhere, and `UncommittedUnitsShortfall` — which
+reaches these same two functions independently — admitting a naked sell.
+
+*Correction.* A rig holding TWO instruments at once, and rows that assert the
+VALUE. Written out by hand rather than read back from the code: INS1 holds 10
+with only a working BUY against it, which commits no units, so 10 are
+available; INS2 holds 4 with a working SELL of 3, so 1 is. An instrument-blind
+sum reports 14 for both. A second test states the consequence as an admission:
+a sell of 4 on INS2 must refuse, and exactly 1 must still admit. Both
+mutations now die.
+
+**Minor (second lens), recorded as a LIMIT rather than fixed.** A cache keyed
+on the OUTPUT of `effective_fills` and omitting `status` survives the
+`fill.status` row, because `effective_fills` already drops a reversed fill from
+its output, so list membership carries the change. The row proves status is
+load-bearing end to end; it does NOT prove a status-blind key is safe at every
+placement, and a key built BEFORE `effective_fills` would likely not be. Stated
+in the table beside the row rather than papered over.
+
+**Nit (second lens).** The completeness check walked the four record types and
+not `StateView` itself, so a future read of `breaker` or `reduction` inside the
+policy would be caught by nothing. All ten remaining view fields are declared
+unread with reasons now — "not a plausible input" is the reasoning the Position
+escape clause used, so they are declared rather than omitted.
+
+**Nit.** `Rig.identities()` did not include the order records, so a future row
+using `dataclasses.replace` instead of `_set` would swap a record without the
+identity guard noticing. Added.

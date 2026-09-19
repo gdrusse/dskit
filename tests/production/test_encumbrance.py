@@ -1877,7 +1877,10 @@ def test_a_held_position_that_moves_in_value_only_is_seen():
 # cache on `EncumberedAccounting.admit` keyed on `(id(self), id(proposal),
 # id(state_view), at_ms)` — every argument the method DECLARES — passed all
 # 6617 production tests, because `history` is reached through `self._history`
-# and appears in no signature. `loop.py` and `leg.py` call exactly that method.
+# and appears in no signature. `loop.py` and `leg.py` reach the accounting object through
+# `.snapshot()`, which calls `_balances` -- NOT through `.admit()`, which this
+# comment used to claim and which has no caller in dskit at all (round-6
+# review). That makes `_balances` the live path, not the side one.
 #
 # So the axis list is the wrong artefact. What follows enumerates the INPUT
 # SPACE instead: every component the derived book's answer depends on, moved
@@ -1956,8 +1959,16 @@ class Rig:
         self.proposal = proposal(side="buy", qty="80", limit="10")
 
     def identities(self):
+        """Every object a move must NOT replace, including the order records.
+
+        Round-6 review, Nit: the order objects were absent, so a future row
+        using ``dataclasses.replace`` instead of ``_set`` would swap the record
+        and the identity guard would not notice — which is precisely the
+        identity-keyed-cache miss the guard exists to rule out.
+        """
         return (id(self.accounting), id(self.view), id(self.history),
-                id(self.proposal), id(self.balances), id(self.working))
+                id(self.proposal), id(self.balances), id(self.working),
+                tuple(id(o) for o in self.orders))
 
     # --- the three caller-facing entry points -----------------------------
     def available(self):
@@ -1988,6 +1999,59 @@ def _set(record, **fields):
     return record
 
 
+def _two_instrument_rig():
+    """A rig holding two instruments live at once, with hand-derived answers.
+
+    Round-6 review, Major: every row ran against ONE position and ONE working
+    order, so ``_held_units``/``_committed_units`` could drop their
+    ``instrument ==`` filter and sum across everything — and all 6776 tests
+    still passed. With 0 or 1 live positions "sum filtered by instrument" and
+    "sum everything" are indistinguishable BY CONSTRUCTION.
+
+    The deeper point, which is the one worth keeping: ``before != after``
+    proves the answer was SENSED, not that it was COMPUTED CORRECTLY. An
+    instrument-blind sum still moves when an instrument changes, so the row's
+    own assertion was satisfied by the WRONG new answer. Correctness needs the
+    value, so the rows below carry one.
+    """
+    rig = Rig(positions=(position(instrument=INS1, qty="10"),
+                         position(instrument=INS2, qty="4")))
+    rig.orders.append(order(ref="w-2", side="sell", qty="3", limit="10",
+                            instrument=INS2))
+    rig.working[rig.orders[-1].client_ref] = rig.orders[-1]
+    return rig
+
+
+def test_the_units_book_is_scoped_to_its_instrument():
+    """Held and committed units are per-instrument, with the numbers written out.
+
+    Derived by hand, not read back from the code: INS1 holds 10 units and its
+    only working order is a BUY, which commits no units, so 10 are available.
+    INS2 holds 4 and carries a working SELL of 3, so 1 is available. An
+    instrument-blind sum would report 14 held for both, and 14 - 3 = 11
+    available on INS1 — enough to admit a naked sell.
+    """
+    rig = _two_instrument_rig()
+    assert rig.inventory() == ((INS1, "10"), (INS2, "1"))
+
+
+def test_a_sell_cannot_borrow_units_held_in_another_instrument():
+    """The consequence the numbers above prevent, stated as an admission.
+
+    INS2 has ONE uncommitted unit. A sell of 4 must refuse, and it must refuse
+    for the units reason — under an instrument-blind sum it would see 11 and
+    admit.
+    """
+    rig = _two_instrument_rig()
+    _set(rig.proposal, side="sell", instrument=INS2, qty=Decimal("4"),
+         limit=Decimal("10"))
+    problems = rig.admits()
+    assert problems, "a sell of 4 against 1 uncommitted unit must refuse"
+    assert any("INS2" in problem for problem in problems), problems
+    _set(rig.proposal, qty=Decimal("1"))
+    assert rig.admits() == (), "exactly the uncommitted unit must still admit"
+
+
 def _sell_rig():
     """The rig a SELL proposal is judged against: units, not cash.
 
@@ -2002,71 +2066,155 @@ def _sell_rig():
     return rig
 
 
+#: The caller-facing reads, and which `Rig` method takes each one. These are
+#: the three methods `loop.py`/`leg.py` and a child reach the derived book
+#: through, so a gate that covers the INPUTS but not the ENTRY POINTS is only
+#: as strong as its thinnest column.
+ENTRY_POINT_READS = ("available", "reported_available", "inventory", "unsized", "admits")
+
 #: One row per input the answer depends on:
-#: ``(name, read, move, make_rig)``. ``read`` names the Rig method that takes
-#: the answer at a caller-facing entry point; ``move`` changes EXACTLY one
-#: component; ``make_rig`` builds the scenario in which that component is
-#: load-bearing.
+#: ``(name, reads, move, make_rig)``. ``reads`` is EVERY entry point whose
+#: answer that move must change; ``move`` changes exactly one component;
+#: ``make_rig`` builds the scenario in which it is load-bearing.
+#:
+#: ROUND-6 REVIEW, MAJOR: the first version gave each row ONE read, and the
+#: result was lopsided — 13 rows through `encumbrance`, 4 through `admit`, and
+#: exactly ONE through `_balances`. So a cache on `_balances` keyed on the
+#: working-order KEY SET rather than their field VALUES survived all 6776
+#: tests, and `_balances` is the hook `PaperAccounting.snapshot` calls to build
+#: the balances `SettledFundsShortfall` reads — dskit's own live guard path. A
+#: cache omitting `state_view.pending`, or `state_view.balances`, survived on
+#: `admit` the same way. The table enumerated INPUTS; the space is ENTRY
+#: POINTS x INPUTS, and `_NOT_MOVED` below makes every cell of it answered.
 DEPENDENCIES = (
-    ("at_ms", "available",
+    ("at_ms", ("available", "reported_available"),
      lambda rig: setattr(rig, "at_ms", rig.at_ms + 1), Rig),
-    ("view.balances", "available",
+    ("view.balances", ("available", "reported_available", "admits"),
      lambda rig: rig.balances.__setitem__(USD, Decimal("900")), Rig),
-    ("view.working.count", "available",
+    ("view.working.count", ("available", "reported_available", "admits"),
      lambda rig: rig.working.__setitem__("w-2", order(ref="w-2", side="buy",
                                                       qty="5", limit="10")), Rig),
-    ("order.limit", "available",
+    ("order.limit", ("available", "reported_available", "admits"),
      lambda rig: _set(rig.orders[0], limit=Decimal("20")), Rig),
-    ("order.remaining_qty", "available",
+    ("order.remaining_qty", ("available", "reported_available", "admits"),
      lambda rig: _set(rig.orders[0], remaining_qty=Decimal("20")), Rig),
-    ("order.side", "available",
+    ("order.side", ("available", "reported_available"),
      lambda rig: _set(rig.orders[0], side="sell"), Rig),
-    ("order.instrument", "inventory",
+    ("order.instrument", ("inventory",),
      lambda rig: _set(rig.orders[0], instrument=INS2), Rig),
-    ("view.positions.qty", "inventory",
+    ("view.positions.qty", ("inventory",),
      lambda rig: move_view(rig.view, positions=(position(qty="2"),)), Rig),
-    ("view.positions.instrument", "inventory",
+    ("view.positions.instrument", ("inventory",),
      lambda rig: move_view(rig.view, positions=(position(instrument=INS2, qty="10"),)), Rig),
-    ("view.pending", "unsized",
+    ("view.pending", ("unsized", "admits"),
      lambda rig: move_view(rig.view, pending=("ref-9",), economic=False), Rig),
-    ("fill.qty", "available",
+    ("fill.qty", ("available", "reported_available", "admits"),
      lambda rig: rig.history.set_fills((fill_body(
          "f-1", "sell", "20", "10", GATE_FILL_TS),)), Rig),
-    ("fill.price", "available",
+    ("fill.price", ("available", "reported_available", "admits"),
      lambda rig: rig.history.set_fills((fill_body(
          "f-1", "sell", "10", "20", GATE_FILL_TS),)), Rig),
-    ("fill.fee", "available",
+    ("fill.fee", ("available", "reported_available"),
      lambda rig: rig.history.set_fills((fill_body(
          "f-1", "sell", "10", "10", GATE_FILL_TS, fee="5"),)), Rig),
-    ("fill.ts_ms", "available",
+    ("fill.ts_ms", ("available", "reported_available"),
      lambda rig: rig.history.set_fills((fill_body(
          "f-1", "sell", "10", "10", GATE_FILL_TS - 1),)), Rig),
-    ("fill.side", "available",
+    ("fill.side", ("available", "reported_available"),
      lambda rig: rig.history.set_fills((fill_body(
          "f-1", "buy", "10", "10", GATE_FILL_TS),)), Rig),
-    ("fill.status", "available",
+    # HONEST LIMIT (round-6 review, Minor): a cache keyed on the OUTPUT of
+    # `effective_fills` and omitting `status` survives this row, because
+    # `effective_fills` already drops a reversed fill from its output, so the
+    # list membership carries the change. The row still proves status is
+    # load-bearing END TO END; it does not prove a status-blind key is unsafe
+    # at every placement. A key built BEFORE `effective_fills` would be, and
+    # is not covered here.
+    ("fill.status", ("available", "reported_available"),
      lambda rig: rig.history.set_fills((fill_body(
          "f-1", "sell", "10", "10", GATE_FILL_TS, status="reversed"),)), Rig),
-    ("fill.fill_id", "available",
+    ("fill.fill_id", ("available", "reported_available"),
      lambda rig: rig.history.set_fills((
          fill_body("f-1", "sell", "10", "10", GATE_FILL_TS),
          fill_body("f-1", "sell", "10", "10", GATE_FILL_TS, status="reversed"),
      )), Rig),
-    ("balances reported by _balances", "reported_available",
-     lambda rig: rig.balances.__setitem__(USD, Decimal("900")), Rig),
-    ("proposal.qty", "admits",
+    ("proposal.qty", ("admits",),
      lambda rig: _set(rig.proposal, qty=Decimal("90")), Rig),
-    ("proposal.limit", "admits",
+    ("proposal.limit", ("admits",),
      lambda rig: _set(rig.proposal, limit=Decimal("20")), Rig),
-    ("proposal.side", "admits",
+    ("proposal.side", ("admits",),
      lambda rig: _set(rig.proposal, side="sell"), Rig),
-    ("proposal.instrument", "admits",
+    ("proposal.instrument", ("admits",),
      lambda rig: _set(rig.proposal, instrument=INS2), _sell_rig),
 )
 
+#: Every (input, entry point) cell the table deliberately does NOT assert, with
+#: the reason. A cell is in `reads` or here; there is no third place, which is
+#: what makes the coverage check below mean something. The reasons are the
+#: shape of the computation, not an excuse: `available` is
+#: ``total - committed - unsettled`` and `inventory` is units, so an input to
+#: one is genuinely not an input to the other.
+_NOT_MOVED = {
+    ("at_ms", "admits"): "moving the instant SETTLES a fill, which RAISES "
+        "available; the rig admits exactly, so more room still admits",
+    ("order.side", "admits"): "a buy becoming a sell releases its cash, which "
+        "raises available; the rig admits exactly, so more room still admits",
+    ("fill.ts_ms", "admits"): "settling the fill raises available, as above",
+    ("fill.side", "admits"): "a sell becoming a buy stops counting as "
+        "unsettled under trade_date basis, raising available",
+    ("fill.fee", "admits"): "a sell's fee reduces its PROCEEDS, so a larger "
+        "fee lowers unsettled and RAISES available; the rig admits exactly, so "
+        "more room still admits (found by this gate, not by inspection)",
+    ("fill.status", "admits"): "a reversed fill stops counting, raising available",
+    ("fill.fill_id", "admits"): "the reversal pairs off, raising available",
+}
+for _row in DEPENDENCIES:
+    for _point in ENTRY_POINT_READS:
+        if _point in ("inventory", "unsized") and _point not in _row[1]:
+            _NOT_MOVED.setdefault(
+                (_row[0], _point),
+                "funds and proposal inputs do not move the units book or the "
+                "unsized-ref list; those are different computations",
+            )
+        if _point in ("available", "reported_available", "admits") and _point not in _row[1]:
+            _NOT_MOVED.setdefault(
+                (_row[0], _point),
+                "an inventory, pending or proposal input does not move the "
+                "cash book",
+            )
+
+
+def test_every_entry_point_by_input_cell_is_answered():
+    """The coverage claim, as a MATRIX and not a list.
+
+    Round-6 review: the table enumerated inputs and let each row pick one entry
+    point, so `_balances` had a single row and a cache confined to it survived
+    the whole suite. Every cell of ENTRY_POINTS x INPUTS is now either asserted
+    by a row or excused here WITH A REASON, and the two are disjoint — so a new
+    row cannot be added without saying what it does at every entry point.
+    """
+    for name, reads, _, _ in DEPENDENCIES:
+        assert reads, f"{name} asserts nothing"
+        for point in reads:
+            assert point in ENTRY_POINT_READS, (name, point)
+            assert (name, point) not in _NOT_MOVED, (
+                f"{name} x {point} is both asserted and excused"
+            )
+        for point in ENTRY_POINT_READS:
+            if point not in reads:
+                assert (name, point) in _NOT_MOVED, (
+                    f"{name} x {point} is neither asserted nor excused"
+                )
+    # And the thin column that started this: `_balances` is now exercised by
+    # every funds input, not by one.
+    through_balances = {n for n, reads, _, _ in DEPENDENCIES if "reported_available" in reads}
+    assert len(through_balances) >= 10, sorted(through_balances)
+
 
 @pytest.mark.parametrize(
-    "name,read,move,make_rig", DEPENDENCIES, ids=[row[0] for row in DEPENDENCIES]
+    "name,read,move,make_rig",
+    [(n, point, move, rig) for n, reads, move, rig in DEPENDENCIES for point in reads],
+    ids=[f"{n}-{point}" for n, reads, _, _ in DEPENDENCIES for point in reads],
 )
 def test_every_input_the_book_depends_on_moves_the_answer_at_the_real_entry_point(
     name, read, move, make_rig
@@ -2150,6 +2298,43 @@ NOT_READ = {
         "quote_digest": "evidence provenance", "extra": "carrier for adapters",
     },
 }
+
+
+#: `StateView`'s own fields. The completeness check walked the four RECORD
+#: types and not the view itself (round-6 review, Nit), so a future read of
+#: `breaker` or `reduction` inside the policy would be caught by nothing here.
+#: None is a plausible cash or units input today, and the three version fields
+#: are pinned separately by the counters test — but "not plausible" is the
+#: reasoning the escape clause used, so they are declared rather than omitted.
+_VIEW_NOT_READ = {
+    "breaker": "a halt state; the policy derives a book, it does not gate on one",
+    "arming": "an authorization state, read by the arming family",
+    "readiness": "a checklist state, read by readiness",
+    "guard_holds": "read by Limit and GuardChain, which are Guards not Measures",
+    "reduction": "a reduce-only mode, enforced above this seam",
+    "pending_control": "in-flight control requests, not an amount",
+    "decision_history": "read by the decision-count measures",
+    "risk_version": "fold versioning; pinned by the counters test",
+    "head_seq": "fold versioning; pinned by the counters test",
+    "head_hash": "fold versioning; pinned by the counters test",
+}
+
+
+def test_the_view_fields_are_declared_too():
+    """Every `StateView` field is exercised by a row or declared unread."""
+    exercised = {row[0] for row in DEPENDENCIES}
+    for field in dataclasses.fields(StateView):
+        row = f"view.{field.name}"
+        touched = any(name == row or name.startswith(f"{row}.") for name in exercised)
+        assert touched or field.name in _VIEW_NOT_READ, (
+            f"StateView.{field.name} is neither exercised by a row nor declared "
+            "unread in _VIEW_NOT_READ"
+        )
+        assert not (touched and field.name in _VIEW_NOT_READ), (
+            f"StateView.{field.name} is both exercised and declared unread"
+        )
+    stray = sorted(set(_VIEW_NOT_READ) - {f.name for f in dataclasses.fields(StateView)})
+    assert not stray, f"_VIEW_NOT_READ names absent fields: {stray}"
 
 
 def test_the_dependency_table_names_every_field_read():
