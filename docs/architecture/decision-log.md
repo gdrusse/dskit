@@ -16511,6 +16511,29 @@ unexecutable — measured by inserting two false sentences beside the true
 declaration, which still passed 132 tests. What changed is that prose no
 longer carries the authority, not that prose became trustworthy.*
 
+*Corrected again 2026-09-19 after round-6 review found 2 Major, both in the
+round-6 fix itself. (1) Round 6 moved the polarity into a boolean but left the
+REACH in prose — "does NOT reach `run()`'s instance-level `self._channel()`" —
+and prose was wrong about it, because round 6 had also dropped `__mro__`
+doctoring from the mechanism list while never probing the family. Measured:
+a subclass whose metaclass supplies `__dict__` was invisible to
+`inspect.getattr_static`, which SKIPS such a class rather than trusting it, so
+the seal read `FinalRefit`'s own member for every sealed name while Python
+resolved the subclass's live override on BOTH paths — a total bypass, not a
+partial one. A metaclass `__new__` that injects after class creation is a
+second total bypass. FIXED at the resolution rather than declared around:
+`_resolved_through_the_mro` reads the class's real `__mro__` and each entry's
+real `__dict__` through `type`'s own descriptors, so no metaclass participates
+in what the seal reads, and the `__dict__`-shadowing attempt is now refused.
+`GATE_FACTS` gained a `reach` field so the remaining ones state WHERE they land
+as executed data. (2) One clause in `__init_subclass__`'s docstring still named
+four mechanisms and their common outcome, and negating that outcome left all
+132 tests green. The docstring now carries no outcome vocabulary outside four
+pinned sentences, EACH OF WHICH CONTAINS ITS OWN POLARITY WORD — which is the
+general rule this family kept missing: `assert "introspection" in doc` cannot
+see an inversion, `assert "not an authority boundary" in doc` can, because the
+negation is inside the pinned substring.*
+
 **Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
 three missing pieces; ADR-0119 built two of the generic halves
 (`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
@@ -16653,14 +16676,23 @@ executed.** Round-5 review proved prose cannot carry this: it inverted three
 sentences in the module — "a custom metaclass CANNOT ...", "It fails OPEN, not
 closed" — keeping every substring the disclosure test checked, and the whole
 116-test suite stayed green, because a substring assertion cannot see polarity.
-So the polarity moved into data. `GATE_FACTS` is a tuple of
-`(name, refuses, attempt)`: the attempt describes only what is TRIED, and
-`refuses` is the outcome. `tests/test_final_model.py` holds one probe per
-name, performs each attempt for real, and asserts the observed outcome equals
-the declared boolean — all fourteen. Flipping any one of them fails exactly
-one test; flipping all fourteen fails fourteen (verified). The class and
-`__init_subclass__` docstrings now CITE that tuple instead of restating
-outcomes, and a test asserts they cite it.
+So the polarity moved into data, and after round 6 so did the
+REACH. `GATE_FACTS` is a tuple of `(name, refuses, reach, attempt)`: the
+attempt describes only what is TRIED, `refuses` is whether the seal itself
+halts class creation, and `reach` is the tuple of `RELEASE_ENTRY_POINTS`
+(`validate_params`, `run`) the attempt actually opens on the production
+channel. `tests/test_final_model.py` holds one probe per name, performs each
+attempt for real, and asserts BOTH observed fields against what is declared —
+all seventeen. A probe refused by Python rather than by the seal raises rather
+than counting as a refusal, and a control test proves the reach measurement
+distinguishes the two entry points instead of always answering `()`. Verified
+by mutation: thirty mutations of this slice — every boolean flipped, every
+non-trivial reach widened or narrowed, the hardening reverted, the identity
+comparison relaxed, each pinned docstring claim inverted, a false claim
+smuggled in, and both test-side measurements broken — kill thirty tests. The
+class and `__init_subclass__` docstrings CITE the tuple instead of restating
+it, and a test refuses any outcome vocabulary in the seal's docstring outside
+its four pinned claims.
 
 The numbered list below is a NARRATIVE summary for a reader who is not in the
 code, kept because it carries the round-by-round corrections. It is not
@@ -16692,16 +16724,26 @@ Six limits, disclosed rather than papered over:
    every user of it in this repo shares it.
 3. Per-instance shadowing — `node.run = ...` — because an instance is not a
    class.
-4. A custom metaclass, which can build the class from an empty namespace and
-   inject the overrides afterwards, doctor `__mro__`, or intercept attribute
-   access on the class itself. Measured, not assumed: a metaclass
-   `__getattribute__` reaches every CLASS-level lookup, including
-   `validate_params`' own `cls._channel_problems(...)` call, so the
-   production-channel refusal disappears from validation — while an
-   empty-bodied subclass passes the seal outright, because
-   `inspect.getattr_static` bypasses `__getattribute__` by construction. It
-   does NOT reach `run()`'s instance-level `self._channel()`, which still
-   refuses. A partial bypass, stated as one.
+4. A custom metaclass. Four shapes were probed rather than enumerated from
+   the armchair, and they do NOT behave alike — which is why `reach` is a
+   field and this bullet is a summary of it. A metaclass `__getattribute__`
+   answers every CLASS-level lookup, including `validate_params`' own
+   `cls._channel_problems(...)`, so the production-channel refusal disappears
+   from validation; it does not answer `run()`'s instance-level
+   `self._channel()`. Partial. A metaclass `__new__` that builds the class
+   from an empty namespace and assigns a sealed member before returning it
+   opens both, because `__init_subclass__` has already run inside
+   `type.__new__`. Total, and the same shape as limit 1. A metaclass whose
+   `mro()` drops a base carrying an override opens neither: the seal and
+   Python now walk the same structure, so a member the seal cannot see is one
+   Python does not resolve either. And a metaclass supplying `__dict__` was
+   TOTAL until round 7 — `inspect.getattr_static` skips a class whose
+   metaclass shadows `__dict__` rather than trusting what it would return, so
+   the seal read `FinalRefit`'s own member for every sealed name — and is now
+   refused, because the seal reads `type`'s real `__mro__` and `__dict__`
+   slots instead. That last one is a fix, not a disclosure, and it does not
+   change the paragraph above: an enumeration still cannot close an open set,
+   and limits 1-3 remain open at no cost.
 5. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
    hash-chains `nodes/*.json` to `resolved.json` or to each other, and this
    entry does not change that. Anyone with write access to a run directory

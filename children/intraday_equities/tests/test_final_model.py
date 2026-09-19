@@ -1759,18 +1759,64 @@ PRODUCTION_PARAMS = {
 }
 STAMP = {"release_channel": "production", "deployment_eligible": True}
 
+#: What FinalRefit itself reports for a production-channel release, captured
+#: at import BEFORE any probe patches anything. An attempt has "reached"
+#: ``validate_params`` when none of these survive there. Derived from the
+#: class rather than typed as a literal, so rewording a refusal moves the
+#: marker with it instead of silently turning every probe's answer into
+#: "reached" — the control below asserts the marker is non-empty and that the
+#: unattacked class reaches nothing.
+_BASELINE_CHANNEL_PROBLEMS = tuple(
+    final_model.FinalRefit._channel_problems(PRODUCTION_PARAMS)
+)
 
-def _refused_at_definition(namespace, bases=None):
-    """Whether defining a class with this namespace raises the seal's TypeError."""
+
+def _reaches(cls, instance=None):
+    """Which RELEASE_ENTRY_POINTS a production release can enter under this attempt."""
+    reached = []
+    problems = cls.validate_params(dict(PRODUCTION_PARAMS))
+    if not any(problem in problems for problem in _BASELINE_CHANNEL_PROBLEMS):
+        reached.append("validate_params")
+    node = instance
+    if node is None:
+        node = object.__new__(cls)
+        node.params = dict(PRODUCTION_PARAMS)
     try:
-        type("Attempt", bases or (final_model.FinalRefit,), dict(namespace))
+        final_model.FinalRefit._channel(node)
+    except ValueError:
+        pass
+    else:
+        reached.append("run")
+    return tuple(reached)
+
+
+def _define(namespace, bases=None, metaclass=None):
+    """(the class or None, whether THE SEAL refused it) for this class definition.
+
+    A probe that "passes" because Python rejected the construction for its
+    own reasons is exactly the fake evidence this audit keeps finding, so a
+    TypeError that is not the seal's is re-raised rather than counted.
+    """
+    builder = metaclass or type
+    try:
+        cls = builder("Attempt", bases or (final_model.FinalRefit,), dict(namespace))
     except TypeError as exc:
-        return "may not override" in str(exc)
-    return False
+        if "may not override" not in str(exc):
+            raise AssertionError(
+                f"refused by Python, not by the seal: {exc}"
+            ) from exc
+        return None, True
+    return cls, False
+
+
+def _outcome(namespace, bases=None, metaclass=None):
+    """(refused by the seal, entry points reached) for one class-definition attempt."""
+    cls, refused = _define(namespace, bases, metaclass)
+    return refused, () if refused else _reaches(cls)
 
 
 def _probe_override_in_body():
-    return _refused_at_definition({"run": lambda self, ctx, inputs: {}})
+    return _outcome({"run": lambda self, ctx, inputs: {}})
 
 
 def _probe_override_from_a_mixin():
@@ -1779,7 +1825,7 @@ def _probe_override_from_a_mixin():
         def _channel_problems(cls, params):
             return []
 
-    return _refused_at_definition({}, (EvilMixin, final_model.FinalRefit))
+    return _outcome({}, (EvilMixin, final_model.FinalRefit))
 
 
 def _probe_override_at_depth():
@@ -1789,11 +1835,11 @@ def _probe_override_at_depth():
     class Mid2(Mid):
         pass
 
-    return _refused_at_definition({"_release_identity": lambda *a: STAMP}, (Mid2,))
+    return _outcome({"_release_identity": lambda *a: STAMP}, (Mid2,))
 
 
 def _probe_override_of_an_inherited_hook():
-    return _refused_at_definition(
+    return _outcome(
         {"__getattribute__": lambda self, name: object.__getattribute__(self, name)}
     )
 
@@ -1809,23 +1855,62 @@ def _probe_rigged_equality():
         def __hash__(self):
             return 0
 
-    return _refused_at_definition({"_release_identity": FakeEqual()})
+    return _outcome({"_release_identity": FakeEqual()})
 
 
 def _probe_shrunk_sealed_list():
-    return _refused_at_definition(
+    return _outcome(
         {"_FINAL_METHODS": (), "_channel_problems": classmethod(lambda cls, p: [])}
     )
 
 
 def _probe_replaced_init_subclass():
-    return _refused_at_definition(
-        {"__init_subclass__": classmethod(lambda cls, **kw: None)}
+    return _outcome({"__init_subclass__": classmethod(lambda cls, **kw: None)})
+
+
+def _probe_metaclass_shadows_the_class_dict():
+    """A metaclass supplying __dict__ hides a live override from getattr_static."""
+    class Shadowing(type(final_model.FinalRefit)):
+        __dict__ = property(lambda cls: {})
+
+    # Control: the metaclass ALONE must be accepted, so a refusal below is
+    # attributable to the override and not to the metaclass.
+    innocent, refused_innocent = _define({}, metaclass=Shadowing)
+    assert refused_innocent is False and innocent is not None
+    return _outcome(
+        {"_channel_problems": classmethod(lambda cls, p: [])}, metaclass=Shadowing
     )
 
 
+def _probe_metaclass_doctors_the_mro():
+    class Hidden:
+        @classmethod
+        def _channel_problems(cls, params):
+            return []
+
+    class Doctoring(type(final_model.FinalRefit)):
+        def mro(cls):
+            return [
+                entry
+                for entry in type(final_model.FinalRefit).mro(cls)
+                if entry is not Hidden
+            ]
+
+    return _outcome({}, (Hidden, final_model.FinalRefit), Doctoring)
+
+
+def _probe_metaclass_injects_after_class_creation():
+    class Injecting(type(final_model.FinalRefit)):
+        def __new__(mcls, name, bases, namespace, **kwargs):
+            cls = super().__new__(mcls, name, bases, namespace, **kwargs)
+            cls._channel_problems = classmethod(lambda c, params: [])
+            return cls
+
+    return _outcome({}, metaclass=Injecting)
+
+
 def _probe_unsealed_node_hook():
-    return _refused_at_definition(
+    return _outcome(
         {"serving_effect": classmethod(lambda cls, params, evidence: None)}
     )
 
@@ -1840,13 +1925,13 @@ def _probe_swallowing_mixin():
         def _channel_problems(cls, params):
             return []
 
-    return Evil._channel_problems(PRODUCTION_PARAMS) != []
+    return False, _reaches(Evil)
 
 
 def _probe_post_hoc_on_this_class():
     with _restored(final_model.FinalRefit, "_channel_problems"):
         final_model.FinalRefit._channel_problems = classmethod(lambda cls, p: [])
-        return final_model.FinalRefit._channel_problems(PRODUCTION_PARAMS) != []
+        return False, _reaches(final_model.FinalRefit)
 
 
 def _probe_post_hoc_on_a_subclass():
@@ -1854,13 +1939,14 @@ def _probe_post_hoc_on_a_subclass():
         pass
 
     Sneaky._channel_problems = classmethod(lambda cls, p: [])
-    return Sneaky._channel_problems(PRODUCTION_PARAMS) != []
+    return False, _reaches(Sneaky)
 
 
 def _probe_per_instance_shadowing():
     instance = object.__new__(final_model.FinalRefit)
-    instance._release_identity = lambda channel, rows_sha256: dict(STAMP)
-    return instance._release_identity("production", "x") != STAMP
+    instance.params = dict(PRODUCTION_PARAMS)
+    instance._channel_problems = lambda params: []
+    return False, _reaches(final_model.FinalRefit, instance=instance)
 
 
 def _probe_metaclass_interception():
@@ -1875,7 +1961,7 @@ def _probe_metaclass_interception():
 
     # The empty body passes the seal outright; the interception is what bites.
     assert final_model._sealed_violations(Evil) == []
-    return Evil._channel_problems(PRODUCTION_PARAMS) != []
+    return False, _reaches(Evil)
 
 
 def _probe_shipped_config_refuses_to_plan():
@@ -1886,12 +1972,12 @@ def _probe_shipped_config_refuses_to_plan():
     try:
         plan_stages(load_document(str(_configs_dir() / "run-final-refit.json")))
     except ConfigError:
-        return True
-    return False
+        return True, ()
+    return False, ()
 
 
 #: One probe per declared fact, keyed by the same name. Each performs the
-#: attempt and returns whether the gate REFUSED it.
+#: attempt and returns ``(refused by the seal, entry points reached)``.
 GATE_PROBES = {
     "refuses_an_override_in_the_subclass_body": _probe_override_in_body,
     "refuses_an_override_from_a_mixin_in_the_mro": _probe_override_from_a_mixin,
@@ -1900,10 +1986,15 @@ GATE_PROBES = {
     "refuses_an_object_whose_equality_is_rigged": _probe_rigged_equality,
     "refuses_a_subclass_that_shrinks_the_sealed_list": _probe_shrunk_sealed_list,
     "refuses_a_subclass_that_replaces_init_subclass": _probe_replaced_init_subclass,
+    "refuses_a_metaclass_that_shadows_the_class_dict":
+        _probe_metaclass_shadows_the_class_dict,
+    "refuses_a_metaclass_that_doctors_the_mro": _probe_metaclass_doctors_the_mro,
     "refuses_a_subclass_overriding_an_unsealed_node_hook": _probe_unsealed_node_hook,
     "refuses_a_mixin_whose_init_subclass_swallows_the_hook": _probe_swallowing_mixin,
     "refuses_post_hoc_assignment_on_this_class": _probe_post_hoc_on_this_class,
     "refuses_post_hoc_assignment_on_a_subclass": _probe_post_hoc_on_a_subclass,
+    "refuses_a_metaclass_that_injects_after_class_creation":
+        _probe_metaclass_injects_after_class_creation,
     "refuses_per_instance_shadowing": _probe_per_instance_shadowing,
     "refuses_a_metaclass_that_intercepts_class_attribute_access":
         _probe_metaclass_interception,
@@ -1912,22 +2003,145 @@ GATE_PROBES = {
 
 
 def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
-    declared = {name for name, _, _ in final_model.GATE_FACTS}
+    declared = {name for name, _, _, _ in final_model.GATE_FACTS}
     assert set(GATE_PROBES) == declared
-    assert len(final_model.GATE_FACTS) == len(declared) == 14
+    assert len(final_model.GATE_FACTS) == len(declared) == 17
+    # Every declared reach is a subset of the named entry points, in the
+    # order they are named there — so a reach can never be a free-form string.
+    points = final_model.RELEASE_ENTRY_POINTS
+    for _, _, reach, _ in final_model.GATE_FACTS:
+        assert tuple(reach) == tuple(p for p in points if p in reach)
+
+
+def test_the_reach_measurement_answers_nothing_for_the_unattacked_class():
+    """The control every ``reach=()`` fact rests on.
+
+    A ``_reaches`` that always answered ``()`` would make all eight
+    ``refuses=True`` facts pass while measuring nothing. So: the baseline
+    marker must be non-empty, the pristine class must reach NEITHER entry
+    point, and an unsealed instance shadow must reach exactly one — proving
+    the measurement distinguishes the two.
+    """
+    assert _BASELINE_CHANNEL_PROBLEMS
+    assert _reaches(final_model.FinalRefit) == ()
+    opened = object.__new__(final_model.FinalRefit)
+    opened.params = dict(PRODUCTION_PARAMS)
+    opened._channel_problems = lambda params: []
+    assert _reaches(final_model.FinalRefit, instance=opened) == ("run",)
+
+
+def test_a_definition_python_itself_rejects_is_never_counted_as_a_refusal():
+    """A probe that "passes" because Python rejected the construction is fake evidence.
+
+    ``_define`` re-raises any TypeError that is not the seal's, so an attempt
+    that never reaches the seal can never be recorded as refused BY it. Pinned
+    with a base order Python rejects on its own: ``Node`` is already behind
+    ``FinalRefit``, so naming it first has no consistent linearization.
+    """
+    from dskit.pipeline.node import Node
+
+    with pytest.raises(AssertionError, match="refused by Python, not by the seal"):
+        _define({}, (Node, final_model.FinalRefit))
+
+
+def test_the_seal_sees_the_override_that_getattr_static_skips():
+    """Why the seal reads type's real slots instead of inspect.getattr_static.
+
+    ``getattr_static`` SKIPS any MRO entry whose metaclass shadows
+    ``__dict__`` rather than trusting what it would return, so it reported
+    FinalRefit's own member for a class carrying a live override — the
+    round-7 Major. This pins the difference in both directions at once.
+    """
+    import inspect
+
+    class Shadowing(type(final_model.FinalRefit)):
+        __dict__ = property(lambda cls: {})
+
+    carrier = Shadowing("Carrier", (final_model.FinalRefit,), {})
+    carrier._channel_problems = classmethod(lambda cls, params: [])
+
+    mine = inspect.getattr_static(carrier, "_channel_problems", None)
+    theirs = inspect.getattr_static(final_model.FinalRefit, "_channel_problems")
+    assert mine is theirs, "getattr_static no longer skips; this test is stale"
+
+    assert final_model._resolved_through_the_mro(
+        carrier, "_channel_problems"
+    ) is not final_model._resolved_through_the_mro(
+        final_model.FinalRefit, "_channel_problems"
+    )
+    # And the override is live on BOTH paths, which is what made it a total
+    # bypass rather than the partial one round 6 declared for a metaclass.
+    assert _reaches(carrier) == final_model.RELEASE_ENTRY_POINTS
 
 
 @pytest.mark.parametrize(
-    "name,refuses,attempt",
+    "name,refuses,reach,attempt",
     final_model.GATE_FACTS,
-    ids=[name for name, _, _ in final_model.GATE_FACTS],
+    ids=[name for name, _, _, _ in final_model.GATE_FACTS],
 )
-def test_every_declared_gate_fact_matches_what_actually_happens(name, refuses, attempt):
-    """Flip a boolean in GATE_FACTS and this contradicts an executed outcome."""
-    observed = GATE_PROBES[name]()
-    assert observed is refuses, (
-        f"{name}: declared refuses={refuses}, observed {observed} while "
-        f"attempting {attempt}"
+def test_every_declared_gate_fact_matches_what_actually_happens(
+    name, refuses, reach, attempt
+):
+    """Change either field in GATE_FACTS and this contradicts an executed outcome."""
+    observed_refuses, observed_reach = GATE_PROBES[name]()
+    assert observed_refuses is refuses, (
+        f"{name}: declared refuses={refuses}, observed {observed_refuses} "
+        f"while attempting {attempt}"
+    )
+    assert observed_reach == tuple(reach), (
+        f"{name}: declared reach={tuple(reach)}, observed {observed_reach} "
+        f"while attempting {attempt}"
+    )
+
+
+#: The only sentences the seal's docstring is allowed to make a claim in.
+#: Each one CARRIES ITS OWN POLARITY WORD, which is what makes pinning it
+#: polarity-sensitive: invert "not an authority boundary" and the pinned
+#: substring is gone, so the ``in doc`` assertion fails. The round-6 pin
+#: asserted ``"introspection" in doc`` — a token with no polarity — and the
+#: sentence around it could be inverted while the assertion held.
+_PINNED_SEAL_CLAIMS = (
+    "Refuse a subclass that resolves a sealed member to anything but this "
+    "class's own.",
+    "Scope lives in :data:`GATE_FACTS`, and this docstring states none of\n"
+    "        it.",
+    "it is **not an authority\n        boundary**",
+    "ADR-0122's out-of-Python launcher, which is not built.",
+)
+
+#: A sentence stating what this gate does or does not halt needs one of these,
+#: in EITHER polarity — which is why banning them catches an inversion where a
+#: substring assertion cannot. The seal's docstring is written to contain none
+#: of them outside the pinned claims above.
+_OUTCOME_TOKENS = (
+    "refus", "allow", "permit", "block", "defend", "prevent", "protect",
+    "cannot", "can't", "bypass", "guarantee", "safe", "reaches", "stops",
+)
+
+
+def test_the_seal_docstring_makes_no_claim_outside_its_pinned_ones():
+    """The seal's docstring cites the data and asserts nothing of its own.
+
+    Round-7 review's second Major: one surviving clause in this docstring
+    named four mechanisms and their common outcome, and negating that
+    outcome left every test green. The fix is not a better substring — it is
+    that the docstring now carries no outcome vocabulary at all outside four
+    pinned sentences, each of which holds its own polarity word.
+
+    The honest limit: an editor determined to contradict a pinned claim can
+    write around it in words this list does not hold. This detects DRIFT, in
+    the same scope as the gate it documents.
+    """
+    doc = final_model.FinalRefit.__init_subclass__.__doc__
+    assert "GATE_FACTS" in doc
+    remainder = doc
+    for claim in _PINNED_SEAL_CLAIMS:
+        assert claim in doc, f"pinned claim is gone or reworded: {claim!r}"
+        remainder = remainder.replace(claim, " ")
+    leaked = sorted(t for t in _OUTCOME_TOKENS if t in remainder.lower())
+    assert not leaked, (
+        f"the seal docstring states an outcome outside its pinned claims: "
+        f"{leaked} — the outcome belongs in a GATE_FACTS field a probe runs"
     )
 
 
@@ -1938,7 +2152,10 @@ def test_the_declaration_is_where_the_polarity_lives():
         final_model.FinalRefit.__init_subclass__.__doc__,
     ):
         assert "GATE_FACTS" in doc
-    # Every summary describes the ATTEMPT only. The outcome is the boolean.
-    for name, _, attempt in final_model.GATE_FACTS:
+    # Every summary describes the ATTEMPT only. Both outcomes are fields.
+    for name, _, _, attempt in final_model.GATE_FACTS:
         assert attempt and not attempt.startswith(("the gate", "refused", "allowed"))
         assert name.startswith(("refuses_", "shipped_"))
+    # The class docstring's one summarising sentence is true by construction
+    # only while some declared attempt actually opens an entry point.
+    assert any(reach for _, _, reach, _ in final_model.GATE_FACTS)
