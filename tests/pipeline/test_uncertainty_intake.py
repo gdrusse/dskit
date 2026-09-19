@@ -39,6 +39,7 @@ from dskit.pipeline.outcome_interval import (
 )
 from dskit.pipeline.uncertainty_intake import (
     CLOSED_FAMILIES,
+    _INTAKES,
     admission_problems,
     admit_uncertainty,
     artifact_of,
@@ -355,7 +356,7 @@ class TestTheEstimandIsTheArtifactsType:
             with pytest.raises(ValueError, match="two questions at once"):
                 AttestedOutcomeBand(ambiguous, _attestation())
         finally:
-            UNCERTAINTY_INTAKES.pop("tests_other_subject", None)
+            _INTAKES.pop("tests_other_subject", None)  # read-only in public
 
 
 class TestTheTemplateIsFinalAndTheHooksAreAbstract:
@@ -1166,7 +1167,7 @@ class TestTheRegistryIsAuthoritativeForTheDemandToo:
             # It also cannot answer a demand it does not really answer.
             assert admission_problems(rogue, _demand(), AttestedMeanConfidence)
         finally:
-            UNCERTAINTY_INTAKES.pop("tests_fresh_rogue", None)
+            _INTAKES.pop("tests_fresh_rogue", None)  # read-only in public
 
     @pytest.mark.parametrize(
         "expected", [AttestedUncertainty, ProbabilityUpperBound]
@@ -1203,3 +1204,124 @@ class TestTheRegistryIsAuthoritativeForTheDemandToo:
                     assert problems == []
                 else:
                     assert problems and problems[0].startswith("wrong_unit")
+
+
+class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
+    """Round-4 review: every validation lived in `register_uncertainty_intake`.
+
+    The registry is the one piece of state every screen trusts, and it was
+    a bare exported dict, so ``dict.__setitem__`` skipped the abstract-member
+    refusal, the name-collision refusal and the ``artifact_type`` conflict
+    refusal. No metaclass or MRO knowledge needed — just item assignment.
+    """
+
+    def test_the_public_registry_is_a_read_only_view(self):
+        assert isinstance(UNCERTAINTY_INTAKES, types.MappingProxyType)
+        assert UNCERTAINTY_INTAKES.keys() == _INTAKES.keys()
+
+    @staticmethod
+    def _set_abstract(reg):
+        reg["evil"] = ProbabilityUpperBound
+
+    @staticmethod
+    def _rebind_existing(reg):
+        reg["false_signal_rate"] = AttestedMeanConfidence
+
+    @staticmethod
+    def _delete_existing(reg):
+        del reg["outcome_band"]
+
+    @pytest.mark.parametrize(
+        "mutate",
+        ["_set_abstract", "_rebind_existing", "_delete_existing"],
+    )
+    def test_writing_to_it_directly_raises(self, mutate):
+        # REPRODUCER 1 and 2 both begin here, and both now stop here.
+        # mappingproxy answers item assignment with TypeError and a missing
+        # mutator attribute with AttributeError; either is a refusal.
+        with pytest.raises((TypeError, AttributeError)):
+            getattr(self, mutate)(UNCERTAINTY_INTAKES)
+        assert sorted(UNCERTAINTY_INTAKES) == [
+            "false_signal_rate",
+            "mean_confidence",
+            "outcome_band",
+        ]
+
+    @pytest.mark.parametrize("method", ["clear", "pop", "popitem", "update", "setdefault"])
+    def test_it_exposes_no_mutating_method(self, method):
+        assert not hasattr(UNCERTAINTY_INTAKES, method)
+
+    def test_the_front_door_still_works_and_the_view_sees_it(self):
+        class _Subject:
+            pass
+
+        class _Member(AttestedUncertainty):
+            @classmethod
+            def artifact_type(cls):
+                return _Subject
+
+            @classmethod
+            def estimand(cls):
+                return "round_five_probe"
+
+            @classmethod
+            def excluded_types(cls):
+                return ()
+
+            @classmethod
+            def registered_producers(cls):
+                return ()
+
+            @classmethod
+            def artifact_producer(cls, artifact):
+                return None
+
+        register_uncertainty_intake("tests_round_five", _Member)
+        try:
+            assert UNCERTAINTY_INTAKES["tests_round_five"] is _Member
+            assert uncertainty_intake("tests_round_five") is _Member
+            assert _Member in _registered()
+        finally:
+            _INTAKES.pop("tests_round_five", None)
+        assert "tests_round_five" not in UNCERTAINTY_INTAKES
+
+    def test_every_screen_reads_the_same_view(self):
+        # A member registered through the front door is immediately visible
+        # to the rule; a name absent from the view is refused by it.
+        env = AttestedOutcomeBand(_band(), _attestation())
+        assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
+        assert UNCERTAINTY_INTAKES["outcome_band"] is AttestedOutcomeBand
+
+    def test_an_unusable_declaration_is_a_coded_refusal_not_a_crash(self):
+        """The round-4 uncaught TypeError, now a named refusal.
+
+        Reachable only past the registry's front door, which is why the
+        registry is sealed AND this check exists: an unhandled exception at
+        a risk gate is worse than a refusal, whatever produced it.
+        """
+        env = AttestedFalseSignalRate(_rate(), _attestation(producer=RATE_PRODUCER))
+        _INTAKES["tests_abstract_member"] = ProbabilityUpperBound
+        original = AttestedFalseSignalRate.__bases__
+        try:
+            AttestedFalseSignalRate.__bases__ = (ProbabilityUpperBound,)
+            problems = admission_problems(env, _demand(), ProbabilityUpperBound)
+            assert problems, "an abstract authority must refuse, not admit"
+            assert all(p.startswith("wrong_unit") for p in problems), problems
+            assert any("is not a type" in p for p in problems), problems
+        finally:
+            AttestedFalseSignalRate.__bases__ = original
+            _INTAKES.pop("tests_abstract_member", None)
+
+    def test_no_other_module_level_state_the_screens_trust_is_mutable(self):
+        # Sweep: everything else this module exports that a screen reads is
+        # an immutable tuple. A rebinding of the module global itself needs
+        # the same capability as the disclosed hostile-metaclass boundary.
+        import dskit.pipeline.uncertainty_intake as module
+
+        for name in module.__all__:
+            value = getattr(module, name)
+            if isinstance(value, (type, types.FunctionType)):
+                continue
+            assert isinstance(
+                value, (tuple, types.MappingProxyType)
+            ), f"{name} is mutable public state: {type(value).__name__}"

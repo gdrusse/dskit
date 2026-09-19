@@ -16973,3 +16973,104 @@ Both files were verified byte-identical after the battery.
 
 Nothing about what is ESTABLISHED changed this round: still no coverage
 evidence for any artifact, still no provenance, still not a root of trust.
+
+### Correction round 4, 2026-09-18 — sealing the trust root itself, and the audit table
+
+Review of candidate `5817e8d` returned **0 Critical, 1 Major**, with the
+tests/integration lens CLEAN for the first time on this work: it hand-reverted
+eleven prior fixes and found every one genuinely covered, and independently
+confirmed the equivalent mutant disclosed in the previous round is genuinely
+equivalent (a class is always first in its own MRO, so once `expected` passes
+the registered screen it is provably in `answering`). The correctness lens
+confirmed no over-refusal: every registered member still admits its own fitted
+artifact, the child's real `REQUIRED_INTAKES` pair works, a concrete class
+inheriting an abstract mixin and supplying the remaining hooks still registers,
+and `run-mio-demo.json` still completes.
+
+**Major — the registry this design calls the trust root was an unprotected
+exported plain dict.** Every validation added in rounds 2-4 lives in
+`register_uncertainty_intake`; `dict.__setitem__` skips all of it.
+
+1. `UNCERTAINTY_INTAKES["evil"] = ProbabilityUpperBound` succeeded silently,
+   although the front door refuses exactly that as abstract. Combined with the
+   `__bases__` rebinding — newly effective, because step 1 satisfies the
+   demand-registered screen — `admission_problems` raised an **uncaught**
+   `TypeError: isinstance() arg 2 must be a type`, because the abstract
+   `artifact_type()` stub returns `None`. A crash, not a coded refusal.
+2. `UNCERTAINTY_INTAKES["false_signal_rate"] = AttestedMeanConfidence`
+   succeeded silently, and a correctly attested `AttestedFalseSignalRate`
+   envelope that had admitted cleanly moments earlier was then refused as "not
+   a registered intake", while `nodes_capital` still demands that same class.
+
+Neither admits bad data — one crashes, one fails closed on good data — which is
+why it is Major. But it is a missing protection on the one piece of state every
+screen trusts, it is MORE accessible than anything rounds 2 and 3 litigated (no
+metaclass, no MRO knowledge, just item assignment), and it defeats round 4's own
+abstract-member hardening for anyone not using the front door.
+
+*Correction.* The registry is now a module-private `_INTAKES` dict behind a
+read-only `MappingProxyType` exported as `UNCERTAINTY_INTAKES`, the idiom this
+package already uses for frozen mappings (`false_signal.FalseSignalEstimate`,
+`kinds_search`). `register_uncertainty_intake` is the only writer. Verified:
+direct `__setitem__`, a rebinding of an existing name and `__delitem__` all
+raise; the front door still works and the view sees it immediately; every
+screen reads the view; and both reproducers now fail AT the mutation instead of
+downstream. Separately, and kept even with the registry sealed, an unusable
+declaration from a registered intake (`artifact_type()` not a type,
+`excluded_types()`/`registered_producers()` not tuples of types) is now a
+`wrong_unit` refusal rather than an `isinstance` crash — an unhandled exception
+at a risk gate is worse than a refusal, whatever produced it.
+
+*Mutable-state sweep.* `UNCERTAINTY_INTAKES` was the only mutable this module
+exported; `REFUSAL_REASONS` and `CLOSED_FAMILIES` are tuples.
+`test_no_other_module_level_state_the_screens_trust_is_mutable` walks
+`__all__` and asserts every non-class, non-function export is a tuple or a
+mapping proxy, so a future mutable export fails rather than being noticed in a
+fifth review. Rebinding a module global, and editing a registered class's hooks
+after registration, both need the same capability as the hostile-metaclass
+boundary this module already declines to defend against; the registry docstring
+says so explicitly rather than implying the registry holds a snapshot.
+
+**Minor (disclosure, not a defect): the coverage audit is now persisted.** The
+previous round narrated "15 of 17" and a reviewer had to reconstruct it. The
+battery reverts each fix over a temporary file backup (never `git checkout`),
+runs the four affected test files, and reports failures above the 5
+order-dependent `test_configs.py` failures that exist at base `842d226`. Both
+touched files are verified byte-identical afterwards.
+
+| round | fix reverted | verdict | extra failures |
+|---|---|---|---|
+| R5 | registry is a read-only view | covered | +97 |
+| R5 | unusable declarations are a coded refusal | covered | +1 |
+| R4 | demand must be a registered intake | covered | +2 |
+| R4 | authority is the demanded class | **equivalent mutant** | +0 |
+| R4 | registry refuses an abstract member | covered | +92 |
+| R3 | `artifact_of` reads the slot | covered | +2 |
+| R3 | `attestation_of` reads the slot | covered | +1 |
+| R3 | `__mro__` not `issubclass` | covered | +2 |
+| R3 | envelope identity by `type()` | covered | +2 |
+| R3 | artifact re-read at use time | covered | +4 |
+| R3 | child fail-closed ordering | covered | +17 |
+| R3 | child calls the function | covered | +1 |
+| R2 | `CLOSED_FAMILIES` refusal | covered | +2 |
+| R2 | `_FINAL_METHODS` seal | covered | +9 |
+| R2 | registration uniqueness | covered | +97 |
+| R2 | `unknown_producer` screen | covered | +10 |
+| R2 | `excluded_types` diamond refusal | covered | +1 |
+| R2 | same-`artifact_type` exemption deleted | covered | +2 |
+| R2 | HFDR coefficient field | covered | +1 |
+
+Eighteen of nineteen are covered. The one that is not is the equivalent mutant
+the correctness lens independently confirmed, kept in the table rather than
+dropped from it. `SyntheticMioSource` fitting the registered estimators is not
+one-line revertible and is not in the battery; it is covered behaviourally by
+`test_mio_demo_source_emits_admissible_attested_uncertainty`.
+
+**Nit, fixed.** The module docstring described the pre-round-4 mechanism —
+asking which registered intakes have `expected` in their `__mro__`, without
+mentioning that `expected` being unregistered is checked first and
+independently. It now states both questions in order, and says which one makes
+a `__bases__` rebinding and an `ABCMeta.register` irrelevant.
+
+Nothing about what is ESTABLISHED changed: still no coverage evidence for any
+artifact, still no provenance, still not a root of trust.

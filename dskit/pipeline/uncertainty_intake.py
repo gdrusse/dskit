@@ -64,13 +64,18 @@ ships ``pi_widened``, which is a widened POINT ESTIMATE: ADR-0152's
 measurement puts its attainment of the true local fdr at 0.53–0.82
 against a 0.95 nominal, and that module renamed the field rather than
 repair a claim it could not make. :class:`ProbabilityUpperBound` is the
-family such a bound would belong to, and **no registered intake answers
+family such a bound would belong to, and **the registry does not name
 it**. That is the load-bearing statement, and it is answered from
 :data:`UNCERTAINTY_INTAKES` rather than from any class's claim about
-itself: :func:`admission_problems` asks which REGISTERED intakes have
-``expected`` in their real ``__mro__``, gets none, and refuses every
-artifact that exists. Adding a member means editing THIS module and
-registering it, plus an ADR carrying the measurement that earns the claim.
+itself. :func:`admission_problems` asks TWO registry questions, in order:
+is ``expected`` itself a registered intake — which this family is not, so
+the demand is refused there and then, before any authority is chosen or
+any artifact is read — and only then, which registered intakes have
+``expected`` in their real ``__mro__``. The first question is what makes a
+``__bases__`` rebinding or an ``ABCMeta.register`` irrelevant; neither
+puts a class into the registry. Adding a member means editing THIS module
+and registering it through :func:`register_uncertainty_intake`, plus an
+ADR carrying the measurement that earns the claim.
 
 ``CLOSED_FAMILIES`` and ``__init_subclass__`` still refuse an ordinary
 subclass, and that is worth having — but it is accident-and-drift
@@ -142,6 +147,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 from .false_signal import FALSE_SIGNAL_ESTIMATORS, FalseSignalEstimate
 from .mean_interval import (
@@ -197,13 +203,27 @@ REFUSAL_REASONS = (
 #: below, once its members exist.
 CLOSED_FAMILIES = ()
 
-#: Registered intake members, ``name -> class``. Mirrors the sibling
-#: registries (``register_false_signal_estimator``,
-#: ``register_mean_interval_estimator``, ``register_calibrator``) and holds
-#: CLASSES, because a member is an object with hooks. It is also what the
-#: conflation screen reads: an artifact that satisfies TWO members' declared
-#: types is ambiguous and is refused rather than silently assigned to one.
-UNCERTAINTY_INTAKES = {}
+#: The registry, written ONLY through :func:`register_uncertainty_intake`.
+#: Every screen in this module reads it, so it is the one piece of state a
+#: refusal depends on — and a bare dict would let ``__setitem__`` skip the
+#: abstract-member refusal, the name-collision refusal and the
+#: ``artifact_type`` conflict refusal that function applies. Round-4 review
+#: demonstrated both halves of that: ``UNCERTAINTY_INTAKES["evil"] =
+#: ProbabilityUpperBound`` made an abstract class "registered" and turned a
+#: later demand into an uncaught ``TypeError``, and rebinding an existing
+#: name silently refused a correctly attested envelope. It is therefore a
+#: read-only ``MappingProxyType`` over :data:`_INTAKES`.
+#:
+#: It holds CLASSES, because a member is an object with hooks, and it holds
+#: LIVE references rather than a snapshot: editing a registered class's
+#: hooks afterwards changes what the screens check immediately. Closing
+#: that needs the same capability as the hostile-metaclass boundary this
+#: module already declines to defend against, so it is disclosed, not
+#: defended.
+_INTAKES = {}
+
+#: The public, READ-ONLY view of :data:`_INTAKES`.
+UNCERTAINTY_INTAKES = MappingProxyType(_INTAKES)
 
 
 def _check_stamp(value, name):
@@ -875,6 +895,35 @@ def _question_problems(envelope, expected, answering):
     ]
 
 
+def _declaration_problems(authority):
+    """Screen wrong_unit when a registered intake's own declarations are unusable."""
+    out = []
+    wanted = authority.artifact_type()
+    if not isinstance(wanted, type):
+        out.append(
+            f"wrong_unit: {authority.__name__}.artifact_type() returned {wanted!r}, "
+            "which is not a type, so no artifact can be checked against it — a "
+            "registered intake that cannot say what it accepts refuses everything"
+        )
+    excluded = authority.excluded_types()
+    if not isinstance(excluded, tuple) or any(
+        not isinstance(item, type) for item in excluded
+    ):
+        out.append(
+            f"wrong_unit: {authority.__name__}.excluded_types() returned "
+            f"{excluded!r}, which is not a tuple of types"
+        )
+    producers = authority.registered_producers()
+    if not isinstance(producers, tuple) or any(
+        not isinstance(item, type) for item in producers
+    ):
+        out.append(
+            f"wrong_unit: {authority.__name__}.registered_producers() returned "
+            f"{producers!r}, which is not a tuple of classes"
+        )
+    return out
+
+
 def _artifact_problems(authority, artifact):
     """Screen wrong_unit on the LIVE artifact, against the authority's declared types."""
     wanted = authority.artifact_type()
@@ -983,6 +1032,14 @@ def admission_problems(envelope, demand, expected):
     # choice, so nothing here reads a declaration made by the envelope's
     # class about itself.
     authority = expected
+    # A registered intake whose own declarations are unusable is a coded
+    # refusal, not an ``isinstance`` crash. Reachable today only by writing
+    # to the registry past its front door, which the read-only view now
+    # refuses; kept because an unhandled exception at a risk gate is worse
+    # than a refusal, and one line buys the difference.
+    declarations = _declaration_problems(authority)
+    if declarations:
+        return declarations
     artifact = _raw(envelope, "_artifact")
     attestation = _raw(envelope, "_attestation")
     if not isinstance(attestation, UncertaintyAttestation):
@@ -1436,7 +1493,9 @@ def register_uncertainty_intake(name, cls, doc=""):
     Returns
     -------
     None
-        Registration is a side effect on :data:`UNCERTAINTY_INTAKES`.
+        Registration is a side effect on the registry. It is the ONLY way
+        in: :data:`UNCERTAINTY_INTAKES` is a read-only view, so a direct
+        ``__setitem__`` raises rather than skipping the screens below.
 
     Raises
     ------
@@ -1481,7 +1540,7 @@ def register_uncertainty_intake(name, cls, doc=""):
                 "already claims — one artifact type answers one question, and two members "
                 "claiming it would make every such artifact ambiguous"
             )
-    UNCERTAINTY_INTAKES[name] = cls
+    _INTAKES[name] = cls
     if doc:
         cls.__doc__ = cls.__doc__ or doc
 
