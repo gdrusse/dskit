@@ -198,8 +198,8 @@ def _sealed_violations(subclass):
 _LOOKUP_INTERCEPTORS = ("__getattr__", "__getattribute__")
 
 
-def _wins_class_level_lookup(name, supplied):
-    """Whether a metaclass carrying ``supplied`` under ``name`` beats the class's MRO.
+def _wins_class_level_lookup(name, supplied, cls):
+    """Whether a metaclass carrying ``supplied`` under ``name`` beats ``cls``'s MRO.
 
     Parameters
     ----------
@@ -207,6 +207,8 @@ def _wins_class_level_lookup(name, supplied):
         The sealed name the metaclass carries.
     supplied : object
         What it carries under that name.
+    cls : type
+        The class whose own MRO the metaclass entry is competing with.
 
     Returns
     -------
@@ -218,11 +220,28 @@ def _wins_class_level_lookup(name, supplied):
     Two language rules, and nothing this module invented.
 
     ``type.__getattribute__`` prefers a metaclass attribute over the class's
-    own MRO in exactly one case: the attribute is a DATA descriptor, meaning
-    its type defines ``__set__`` or ``__delete__``. Every sealed name is
-    carried by ``FinalRefit``'s own MRO, so a NON-data descriptor on the
-    metaclass always loses and is not a finding — which is why a metaclass
-    ``__new__`` or ``__init__``, both plain functions, passes.
+    own MRO when the attribute is a DATA descriptor, meaning its type defines
+    ``__set__`` or ``__delete__`` — so a NON-data descriptor on the metaclass
+    loses to a name the class's MRO carries, and is not a finding. That is why
+    a metaclass ``__new__`` or ``__init__``, both plain functions, passes.
+
+    It also prefers the metaclass attribute when the class's MRO carries the
+    name NOWHERE, whatever kind of object it is, and that is the second
+    clause. Round 11 shipped without it and was right only by coincidence:
+    ``__getattr__`` is the one sealed name ``FinalRefit`` does not define, and
+    it happened to be in :data:`_LOOKUP_INTERCEPTORS` already. Adding a sealed
+    name this class does not carry would have reopened the hole silently.
+
+    ``cls``, NOT ``FinalRefit``, because the rule being modelled is about the
+    class under suspicion. Passing ``FinalRefit`` instead is an EQUIVALENT
+    MUTANT and the round-12 sweep reports it as a survivor; the proof, so the
+    next reviewer does not have to re-derive it: this verdict only decides an
+    outcome when :func:`_sealed_violations` is empty, and that function returns
+    exactly the sealed names ``cls`` resolves differently from ``FinalRefit``.
+    Empty therefore MEANS the two resolutions agree on every sealed name, so
+    the two readings cannot disagree at the only moment either is load-bearing.
+    The argument holds only while that stays true of ``_sealed_violations``,
+    which is why ``cls`` is passed rather than the constant.
 
     The exception is :data:`_LOOKUP_INTERCEPTORS`, which do not compete under
     their own name: a metaclass ``__getattribute__`` answers every class-level
@@ -237,6 +256,8 @@ def _wins_class_level_lookup(name, supplied):
     shadow nor hide that it does.
     """
     if name in _LOOKUP_INTERCEPTORS:
+        return True
+    if _resolved_through_the_mro(cls, name) is _UNRESOLVED:
         return True
     carrier = type(supplied)
     return (
@@ -308,7 +329,8 @@ def _metaclass_supplied(cls):
         supplied += [
             name
             for name in FinalRefit._FINAL_METHODS
-            if name in contents and _wins_class_level_lookup(name, contents[name])
+            if name in contents
+            and _wins_class_level_lookup(name, contents[name], cls)
         ]
     return sorted(set(supplied))
 

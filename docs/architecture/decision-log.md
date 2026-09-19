@@ -17045,3 +17045,35 @@ Round-11 sweep: nineteen mutations over the shadowing rule, the metaclass
 scan, the reach measurement, the runtime walk's four unwrapping branches and
 the constant pin — both halves of every compound guard driven separately — all
 nineteen killed. 151 tests; the probe table is twenty-four rows.
+
+### Round 12 — the second clause of the shadowing rule, and one proven equivalence
+
+Found by auditing round 11's own fix; no lens reached this branch afterwards
+(the review pass was cut short by a session rate limit, so rounds 11 and 12
+are UNREVIEWED and this entry says so).
+
+Round 11 asked whether a metaclass entry is a data descriptor, which is one
+half of ``type.__getattribute__``'s rule. The other half is that a metaclass
+attribute wins whenever the class's own MRO carries the name NOWHERE, whatever
+kind of object it is. Round 11 was right only by coincidence: ``__getattr__``
+is the single sealed name ``FinalRefit`` does not define, and it was already in
+``_LOOKUP_INTERCEPTORS``. Adding a sealed name this class does not carry would
+have reopened the hole with nothing failing.
+
+The clause is asserted directly rather than through a probe, because no ATTACK
+demonstrates it today for exactly that reason — and the coincidence itself is
+asserted, so the test fails the day the uncarried-name list stops being
+``["__getattr__"]``.
+
+**One proven equivalent mutant, recorded so the next reviewer need not
+re-derive it.** Passing ``FinalRefit`` where ``_wins_class_level_lookup`` takes
+``cls`` survives the suite. The proof: this verdict only decides an outcome
+when ``_sealed_violations`` is empty, and that function returns exactly the
+sealed names ``cls`` resolves differently from ``FinalRefit`` — so empty MEANS
+the two resolutions agree on every sealed name, and the two readings cannot
+disagree at the only moment either is load-bearing. ``cls`` is passed anyway,
+because the argument holds only while that stays true of
+``_sealed_violations``.
+
+Round-12 sweep: seven mutations over the two clauses and the guard's argument
+— five killed, two the equivalence above. 152 tests.

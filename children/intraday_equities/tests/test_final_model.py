@@ -2260,6 +2260,44 @@ GATE_PROBES = {
 }
 
 
+def test_a_sealed_name_the_class_does_not_carry_is_shadowable_by_anything():
+    """The second clause of the shadowing rule, asserted where an attack cannot reach it.
+
+    ``type.__getattribute__`` prefers a metaclass attribute whenever the
+    class's own MRO carries the name NOWHERE — whatever kind of object it is,
+    data descriptor or not. Round 11 shipped the data-descriptor clause alone
+    and was right only by coincidence: ``__getattr__`` is the one sealed name
+    ``FinalRefit`` does not define, and it was already in
+    ``_LOOKUP_INTERCEPTORS``. Adding a sealed name this class does not carry
+    would have reopened the hole with nothing failing.
+
+    There is no ATTACK that demonstrates this today, for exactly that reason,
+    so the rule is asserted directly rather than through a probe — and the
+    coincidence itself is asserted, so it fails the day it stops holding.
+    """
+    uncarried = [
+        name for name in final_model.FinalRefit._FINAL_METHODS
+        if final_model._resolved_through_the_mro(final_model.FinalRefit, name)
+        is final_model._UNRESOLVED
+    ]
+    assert uncarried == ["__getattr__"], (
+        f"a sealed name this class does not carry appeared: {uncarried}. The "
+        "second clause covers it; this list is the record of which names need it."
+    )
+
+    def plain(cls_or_self, *args, **kwargs):
+        return None
+
+    for name in uncarried:
+        assert final_model._wins_class_level_lookup(
+            name, plain, final_model.FinalRefit
+        ), f"{name} is carried nowhere on the MRO, so a metaclass answers it"
+    # …and a plain function under a name the MRO DOES carry still loses.
+    assert not final_model._wins_class_level_lookup(
+        "run", plain, final_model.FinalRefit
+    )
+
+
 def test_the_probe_table_covers_every_declared_fact_and_nothing_else():
     declared = {name for name, _, _, _ in final_model.GATE_FACTS}
     assert set(GATE_PROBES) == declared
@@ -2616,7 +2654,7 @@ _PINNED_MODULE_PROSE = {
     'constants:_epoch_ms': '83149f20476e52d1',
     'constants:_is_sha256': 'c05217bb83828b48',
     'constants:_unsealed_problems': '2fa2ca57110e0297',
-    'constants:_wins_class_level_lookup': '8b2384ca39f7bdd8',
+    'constants:_wins_class_level_lookup': 'e5e8e1ad3cf8d6f6',
     'constants:boundary_flags': 'dc937b59892604f5',
     'constants:boundary_flags.space': 'dc937b59892604f5',
     'constants:cluster_scores_by_day': 'eb3d70115f87cfc8',
@@ -2673,7 +2711,7 @@ _PINNED_MODULE_PROSE = {
     'doc:_resolved_through_the_mro': '3ef6b33a113e80e8',
     'doc:_sealed_violations': '07d207aa4015d069',
     'doc:_unsealed_problems': 'aff0d483ebef4f1f',
-    'doc:_wins_class_level_lookup': 'cd602974174546ba',
+    'doc:_wins_class_level_lookup': 'ab05ac6736369802',
     'doc:boundary_flags': 'ab4c1bbb11748a13',
     'doc:build_candidate_inventory': 'd69c10a2fca8ff1b',
     'doc:cluster_scores_by_day': 'b1ec5cc1794f0f0b',
