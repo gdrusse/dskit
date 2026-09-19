@@ -16945,3 +16945,32 @@ fails a law that holds. `Decimal.__eq__` is numeric, so a figure that really
 moved still fails. This was found by the laws themselves on their first run.
 
 211 tests; `tests/production` + `tests/production_libs` 6874 passed.
+
+### Round 10 — the laws widened, and they found a defect in shipped prose
+
+The three round-9 laws read only the derived book. A law that held for the
+figures while `admit` disagreed would be a law about the wrong thing, so
+`_readings` now takes all FOUR caller-facing reads: the funds row, the
+inventory book, `unsized_refs`, `admit` over a held-constant buy and sell, and
+`_balances` as `PaperAccounting.snapshot` reaches it.
+
+Widened, the partition law failed on the first run, and on something no figure
+comparison could have shown: `UncommittedUnitsShortfall`'s refusal renders its
+shortfall as `{qty}`, and `Decimal` keeps its scale — so the SAME shortfall
+prints "9 units" when the fold held one working order and "9.0 units" when it
+held two that add up to the same thing. An operator reading two renderings of
+one number has to wonder which is right, and which one they get depends on
+nothing but how the fold happened to split its rows. `_amount` is the one owner
+of that rendering now, used at all three sites that put a `Decimal` into an
+operator-facing message.
+
+The sweep then found the half the laws cannot reach: dropping `normalize()`
+dies to the partition law, but dropping the `"f"` format spec survives it,
+because no generated fold produces a figure large enough for
+`Decimal.normalize` to answer in exponent notation. A hundred is not an unusual
+shortfall and "1E+2 units cannot be found" is not a message anyone should be
+handed, so `_amount` is pinned BY VALUE over seven hand-written cases as well.
+That is the honest division: a law covers the family, a value pin covers what
+the generator's range cannot reach, and neither pretends to be the other.
+
+218 tests.

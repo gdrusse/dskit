@@ -103,6 +103,32 @@ _SELECTOR_KEYS = ("uses", "params", "notes")
 # ---------------------------------------------------------------------------
 
 
+def _amount(value):
+    """Return a Decimal rendered the same way whatever arithmetic produced it.
+
+    Parameters
+    ----------
+    value : Decimal
+        A quantity or a cash figure bound for an operator-facing message.
+
+    Returns
+    -------
+    str
+        Plain decimal notation with no trailing zeros and no exponent.
+
+    Notes
+    -----
+    ``Decimal`` keeps its scale, so the SAME shortfall prints "9" when the
+    fold held one working order and "9.0" when it held two that add up to the
+    same thing. Round-9's partition law caught it: splitting an order changed
+    a refusal's TEXT while changing nothing about the refusal. An operator
+    reading two renderings of one number has to wonder which is right.
+    ``normalize`` alone would answer "1E+2" for a hundred, so the format spec
+    is what keeps it plain.
+    """
+    return format(value.normalize(), "f")
+
+
 def _sole_balance(problems, rows, subject):
     """Return the one balance-like row, appending why there is not exactly one.
 
@@ -554,7 +580,7 @@ class EncumbrancePolicy(ABC):
         shortfall = _funds_shortfall(problems, proposal, row.available)
         if shortfall is not None and shortfall > _ZERO:
             problems.append(
-                f"{subject} reaches {shortfall} {row.currency} past the settled funds "
+                f"{subject} reaches {_amount(shortfall)} {row.currency} past the settled funds "
                 f"available: {row.total} total, less {row.committed} committed and "
                 f"{row.unsettled} unsettled, leaves {row.available}"
             )
@@ -684,7 +710,7 @@ class UndeclaredSettlement(EncumbrancePolicy):
             One refusal, naming the instrument.
         """
         return (
-            f"{instrument}: no borrow stance is declared, so {qty} units cannot be found",
+            f"{instrument}: no borrow stance is declared, so {_amount(qty)} units cannot be found",
         )
 
 
@@ -875,7 +901,7 @@ class CashSettlement(EncumbrancePolicy):
             One refusal, naming the instrument and the shortfall.
         """
         return (
-            f"{instrument}: {qty} units beyond the uncommitted position would have to be "
+            f"{instrument}: {_amount(qty)} units beyond the uncommitted position would have to be "
             "borrowed, and borrow, locate and short sales are not modelled here",
         )
 

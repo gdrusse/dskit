@@ -61,6 +61,7 @@ from dskit.production.encumbrance import (
     SettledFundsShortfall,
     UncommittedUnitsShortfall,
     UndeclaredSettlement,
+    _amount,
 )
 from dskit.production.guards import MEASURE_KINDS, Limit, Window
 from dskit.production.state import SeriesState, StateView, TickState
@@ -2624,6 +2625,10 @@ def _readings(orders, positions, balance="10000"):
     view = _gate_view({USD: Decimal(balance)}, working, tuple(positions))
     accounting = _gate_accounting(FakeHistory(()))
     book = accounting.encumbrance(view, GATE_AT_MS)
+    # All FOUR caller-facing reads, not just the book. A law that held for the
+    # derived figures while `admit` disagreed would be a law about the wrong
+    # thing, and `_balances` is the read `PaperAccounting.snapshot` takes — the
+    # thin column round 6 had to widen because one row was all it had.
     return (
         book.funds[USD].available,
         book.funds[USD].committed,
@@ -2631,7 +2636,22 @@ def _readings(orders, positions, balance="10000"):
             (key, row.available, row.held, row.committed)
             for key, row in book.inventory.items()
         )),
+        book.unsized_refs,
+        tuple(sorted(accounting.admit(p, view, GATE_AT_MS)
+                     for p in _LAW_PROPOSALS)),
+        tuple((b.currency, b.total, b.available)
+              for b in accounting._balances(view, GATE_AT_MS)),
     )
+
+
+#: The proposals every law judges the fold against, held constant while the
+#: fold is split or permuted: one buy and one sell, each sized to straddle
+#: plausible boundaries so a wrong aggregation changes a verdict and not only
+#: a number.
+_LAW_PROPOSALS = (
+    proposal(side="buy", qty="80", limit="10", instrument=INS1),
+    proposal(side="sell", qty="6", limit="10", instrument=INS1, pid="cand-2"),
+)
 
 
 def _orders_from(sides, qtys, limits, instruments):
@@ -2643,6 +2663,29 @@ def _orders_from(sides, qtys, limits, instruments):
         for index, (side, qty, limit, instrument) in enumerate(rows)
     ]
 
+
+@pytest.mark.parametrize(
+    "value,rendered",
+    [
+        ("9", "9"),
+        ("9.0", "9"),          # what `Decimal(4.5) + Decimal(4.5)` produces
+        ("0.50", "0.5"),
+        ("100", "100"),        # `normalize()` alone answers "1E+2" here
+        ("1E+2", "100"),
+        ("0", "0"),
+        ("-12.500", "-12.5"),
+    ],
+)
+def test_one_number_has_one_rendering_in_an_operator_facing_message(value, rendered):
+    """`_amount`, pinned by VALUE — the laws cannot reach the exponent case.
+
+    Round-9 sweep: dropping `normalize()` dies to the partition law, but
+    dropping the `"f"` format spec survives it, because no generated fold
+    produces a figure large enough for `Decimal.normalize` to answer in
+    exponent notation. A hundred is not an unusual shortfall, and "1E+2 units
+    cannot be found" is not a message anyone should be handed.
+    """
+    assert _amount(Decimal(value)) == rendered
 
 @settings(max_examples=150, deadline=None)
 @given(
