@@ -17183,3 +17183,37 @@ of the pin (it forces a human to read the new text). It cannot be made
 executable; free-text prose is not data, and `GATE_FACTS` is.
 
 155 tests; the probe table is twenty-five rows.
+
+### Round 13 (third pass) — a coef-invisible recipe, an over-refusal, and four more decorative payloads
+
+The second lens's re-review returned 0 Critical, 0 Major and 6 Minor. All six
+are closed.
+
+**1. A winner-substitution with a coefficient-invisible recipe survived the
+value-pin.** The Major's reference fit pinned coefficients, but `solver=
+"cholesky"` fits the same numbers on a six-row set, so it shipped while the
+identity stamp still recorded the input winner. `test_refit_heads_fits_each_head
+_on_only_its_own_winner` now also asserts `estimators[head]._model.get_params()`
+equals the reference model's — the RECIPE is pinned, not just the result.
+
+**2. `_wins_class_level_lookup` over-refused a `__set__`/`__delete__` object with
+no `__get__`.** `type.__getattribute__` consults `__get__` first: an object
+carrying `__set__` without `__get__` is not a descriptor at all and the class's
+own MRO wins, but the guard read the two halves without the `__get__` gate and
+refused it. Safe direction (no false clearance) but unfaithful; the guard now
+requires `__get__` AND (`__set__` or `__delete__`), matching the interpreter, and
+the truth-table test gains the two diverging rows so the fidelity is pinned.
+
+**3. Four probes whose declared `(refuses, reach)` equalled a CLEAN class.**
+`refuses_a_subclass_overriding_an_unsealed_node_hook`,
+`refuses_a_mixin_whose_init_subclass_swallows_the_hook`,
+`refuses_post_hoc_assignment_on_a_subclass` and
+`refuses_an_object_whose_equality_is_rigged` each carried a payload that could
+be deleted with the suite green — the same "decorative payload" family the
+first pass fixed for two other rows. Each now carries a control that pins its
+payload: the unsealed hook is asserted absent from `_FINAL_METHODS` and present
+on the built class, the swallowed mixin and the post-hoc assignment assert their
+override appears in `_sealed_violations`, and the rigged `__eq__` is asserted
+live before the refusal is measured.
+
+155 tests; the probe table is twenty-five rows.

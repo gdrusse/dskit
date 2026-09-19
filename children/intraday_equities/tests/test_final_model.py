@@ -740,15 +740,15 @@ def test_refit_heads_fits_each_head_on_only_its_own_winner(monkeypatch):
     )
     assert set(estimators) == set(HEADS) == set(identities)
 
-    def reference_coef(head):
-        """A Ridge fit with THIS head's own winner on THIS head's own rows.
+    def reference_model(head):
+        """A Ridge with THIS head's own winner, on THIS head's own rows.
 
         ``estimators[head]._model.coef_ != estimators[other]._model.coef_``
         proved only that the two heads differ (sensitivity), not that each head
         got its OWN winner: a winner-swap fits h01 with h02's alpha and the
         inequality still holds while ``identities`` — built from the same input
         dict — still reports the intended winner. A reference fit pins the
-        VALUE, so a swapped or substituted winner is contradicted outright.
+        VALUE, so a swapped winner is contradicted outright.
         """
         matrix = np.array(
             [[row[name] for name in FEATURE_ORDER] for row in rows[head]],
@@ -756,14 +756,18 @@ def test_refit_heads_fits_each_head_on_only_its_own_winner(monkeypatch):
         )
         targets = np.array([row["label"] for row in rows[head]], dtype=float)
         keep = [i for i, name in enumerate(FEATURE_ORDER) if name != "vol_5m"]
-        return list(
-            Ridge(alpha=winners[head]["alpha"], random_state=0)
-            .fit(matrix[:, keep], targets)
-            .coef_
+        return Ridge(alpha=winners[head]["alpha"], random_state=0).fit(
+            matrix[:, keep], targets
         )
 
     for head in HEADS:
-        assert list(estimators[head]._model.coef_) == reference_coef(head)
+        reference = reference_model(head)
+        assert list(estimators[head]._model.coef_) == list(reference.coef_)
+        # Pin the RECIPE too, not just the result: a coefficient-invisible
+        # substitution (e.g. solver="cholesky") fits the same numbers on a
+        # 6-row set while the identity stamp still records the input winner.
+        # The estimator's own parameters must equal the reference's exactly.
+        assert estimators[head]._model.get_params() == reference.get_params()
         assert identities[head]["winner"] == winners[head]
         assert identities[head]["n_rows"] == len(rows[head])
         assert identities[head]["seed"] == 0
@@ -1970,7 +1974,13 @@ def _probe_rigged_equality():
         def __hash__(self):
             return 0
 
-    return _outcome({"_release_identity": FakeEqual()})
+    forged = FakeEqual()
+    # Control: the rigging is live — this object compares equal to anything, so
+    # an `==`/`!=` seal would clear it. Deleting __eq__ above makes this control
+    # fail and the row would stop guarding the `is not` identity rule (round-13).
+    assert forged == object(), "the rigged __eq__ is not live"
+
+    return _outcome({"_release_identity": forged})
 
 
 def _probe_shrunk_sealed_list():
@@ -2135,9 +2145,16 @@ def _probe_metaclass_injects_after_class_creation():
 
 
 def _probe_unsealed_node_hook():
-    return _outcome(
+    # The row's claim is that the gate does NOT seal a Node hook it never
+    # resolves through. Pin the premise so deleting the override does not
+    # silently turn this into a clean-class row (round-13 review).
+    assert "serving_effect" not in final_model.FinalRefit._FINAL_METHODS
+    cls, refused = _define(
         {"serving_effect": classmethod(lambda cls, params, evidence: None)}
     )
+    assert refused is False and cls is not None
+    assert cls.serving_effect is not final_model.FinalRefit.serving_effect
+    return False, _reaches(cls)
 
 
 def _probe_swallowing_mixin():
@@ -2150,6 +2167,10 @@ def _probe_swallowing_mixin():
         def _channel_problems(cls, params):
             return []
 
+    # The mixin swallowed the hook, so the override was NOT refused at
+    # definition time — but it is still there to see at use time. Pin both
+    # halves so deleting the override does not leave a clean class (round-13).
+    assert "_channel_problems" in final_model._sealed_violations(Evil)
     return False, _reaches(Evil)
 
 
@@ -2164,6 +2185,9 @@ def _probe_post_hoc_on_a_subclass():
         pass
 
     Sneaky._channel_problems = classmethod(lambda cls, p: [])
+    # The assignment is the payload: pin that it landed, so deleting it does
+    # not leave a clean class measuring the same `()` (round-13 review).
+    assert final_model._sealed_violations(Sneaky) == ["_channel_problems"]
     return False, _reaches(Sneaky)
 
 
@@ -2451,6 +2475,16 @@ def test_the_shadowing_rule_matches_type_getattribute():
         def __delete__(self, obj):
             raise AttributeError
 
+    class SetOnlyNoGet:
+        """`__set__` without `__get__` is not a descriptor at all, so it loses."""
+
+        def __set__(self, obj, value):
+            raise AttributeError
+
+    class DeleteOnlyNoGet:
+        def __delete__(self, obj):
+            raise AttributeError
+
     cases = [
         # interceptor clause — both names answer every class-level lookup.
         ("__getattr__", plain, True),
@@ -2461,6 +2495,10 @@ def test_the_shadowing_rule_matches_type_getattribute():
         # data-descriptor clause — each half, on a name the MRO DOES carry.
         ("run", WithSet(), True),
         ("run", WithDelete(), True),
+        # a data descriptor must first BE a descriptor: __set__/__delete__
+        # without __get__ does not shadow, and the seal must not refuse it.
+        ("run", SetOnlyNoGet(), False),
+        ("run", DeleteOnlyNoGet(), False),
         # a plain non-data descriptor under a carried name loses.
         ("run", plain, False),
     ]
@@ -2826,7 +2864,7 @@ _PINNED_MODULE_PROSE = {
     'constants:_epoch_ms': '83149f20476e52d1',
     'constants:_is_sha256': 'c05217bb83828b48',
     'constants:_unsealed_problems': '2fa2ca57110e0297',
-    'constants:_wins_class_level_lookup': 'e5e8e1ad3cf8d6f6',
+    'constants:_wins_class_level_lookup': '2d9373a3952b4e24',
     'constants:boundary_flags': 'dc937b59892604f5',
     'constants:boundary_flags.space': 'dc937b59892604f5',
     'constants:cluster_scores_by_day': 'eb3d70115f87cfc8',
@@ -2916,6 +2954,7 @@ _PINNED_MODULE_PROSE = {
     'note:_UNRESOLVED#1': 'f62d95a53bd582c1',
     'note:def _epoch_ms(date_str):#1': '9333c1a81c62da1b',
 }
+
 
 
 

@@ -260,9 +260,18 @@ def _wins_class_level_lookup(name, supplied, cls):
     if _resolved_through_the_mro(cls, name) is _UNRESOLVED:
         return True
     carrier = type(supplied)
+    # A data descriptor that wins class-level lookup must first BE a descriptor
+    # (its type defines __get__) and then be a DATA one (__set__ or __delete__).
+    # `type.__getattribute__` consults `__get__` on the type first; an object
+    # carrying `__set__`/`__delete__` without `__get__` is not a descriptor at
+    # all, and the class's own MRO wins — so reading the two halves without the
+    # `__get__` gate over-refuses (round-13 review).
     return (
-        _resolved_through_the_mro(carrier, "__set__") is not _UNRESOLVED
-        or _resolved_through_the_mro(carrier, "__delete__") is not _UNRESOLVED
+        _resolved_through_the_mro(carrier, "__get__") is not _UNRESOLVED
+        and (
+            _resolved_through_the_mro(carrier, "__set__") is not _UNRESOLVED
+            or _resolved_through_the_mro(carrier, "__delete__") is not _UNRESOLVED
+        )
     )
 
 
