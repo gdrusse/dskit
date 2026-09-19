@@ -16677,3 +16677,81 @@ against one scarce balance, a partial fill whose remainder is `unknown`, a
 restart, and the two refusals (unavailable borrow, insufficient settled funds).
 Nothing here establishes broker conformance, and this package asserts no
 settlement period, margin rate or borrow rule.
+
+### Correction round 6, 2026-09-19 — enumerate the INPUTS, not the defences
+
+Round-5 review returned **0 Critical, 4 Major**, and the shape of the register
+is the finding: five rounds each added one hand-written statelessness axis,
+each closed one layer, and each left the next exposed. The fourth round's axis
+was thorough on the POLICY seam, where `history` is an argument. The defect was
+one level up.
+
+**Major — a cache keyed on every argument the method DECLARES.** `loop.py` and
+`leg.py` hold an `EncumberedAccounting` and call
+`accounting.admit(proposal, state_view, at_ms)`. `history` is a constructor
+collaborator reached through `self._history` and appears in no signature on
+that path, so:
+
+```python
+key = (id(self), id(proposal), id(state_view), at_ms)     # every declared input
+```
+
+silently ADMITS a proposal it must refuse once the fold moves, and it passed
+all **6617** production tests. Same shape for `.encumbrance` and `._balances`.
+
+**Major — a content key over every fill field except `ts_ms`.** `_unsettled`'s
+boundary is `fill.ts_ms + lag <= at_ms`, so `ts_ms` decides whether a fill's
+cash counts at all — and the only test that moved history CONTENT moved `qty`,
+`id` or the fill count alongside it. A key over `fill_id`, `side`, `qty`,
+`price`, `fee` and `instrument`, asking history exactly once, also passed all
+6617. (A first attempt at this reproducer asked history twice and was killed by
+the "asked once" test instead — killed for the wrong reason, which is the same
+defect family in the harness.)
+
+**Major — a working buy's `limit` was covered only accidentally.**
+
+**Major — the counters harness was unfaithful.** `SeriesState._fold` assigns
+`head_seq`/`head_hash` for EVERY record it takes and increments `economic_seq`
+only for an economic one. The harness moved all three together and froze all
+three for a "non-economic" move — a combination no real fold produces, so a
+cache keyed on `head_seq` alone was credited with a miss it would never have.
+
+**THE STRATEGY CHANGE, which is the substance of this round.** A sixth axis
+would have closed the accounting layer and left the seventh. So the artefact
+changed: instead of enumerating the DEFENCES, the suite now enumerates the
+INPUT SPACE. `DEPENDENCIES` carries one row per component the derived book's
+answer depends on — the instant, each view member, each working-order field,
+each fill field, each proposal field — and each row moves exactly that
+component, through the CALLER-FACING entry point, with every object identity
+asserted unchanged. A cache keyed on any proper subset of those inputs fails
+whichever row names the omitted one, **whichever subset an implementer picks,
+without that cache having been written down anywhere.**
+
+Two things make it more than a longer list:
+
+* `test_the_dependency_table_names_every_field_read` checks the table against
+  `dataclasses.fields` of `Fill`, `OrderState`, `Position` and `Proposal`.
+  Every field is either exercised by a row or declared unread in `NOT_READ`
+  WITH A REASON, and the two tables must be DISJOINT — mutation found that the
+  first version was an `OR` either side satisfied, so `NOT_READ` could retire a
+  live dependency. `ts_ms`, the round-5 Major, is exactly the field an
+  unchecked table loses.
+* `test_the_harness_moves_the_counters_the_way_the_real_fold_does` measures the
+  fold's own rule on a real `SeriesState`, folding a real `intent` and a real
+  `order_event`, rather than restating §5.8.1 beside the harness.
+
+**Measured, not asserted.** Every cache above, installed on the real path, is
+now killed by the gate: the three declared-argument caches (6, 15 and 2
+failures), the `ts_ms`-blind content key (77), a view-content key with history
+by identity (11), and a key over the fold counters (13). Reverting the `limit`
+valuation kills 5; reverting either half of the counters fix kills the harness
+pin. One row failed when first written — `proposal.instrument` moves no answer
+for a BUY, because `admit` routes a buy to the cash judge — so rows carry a rig
+per row rather than one shared scenario that quietly cannot exercise half of
+them. That failure is kept as the reason the table is shaped this way.
+
+**What this does NOT establish.** The gate covers the inputs the CASH policy
+reads. A margin policy reading a field `NOT_READ` currently excuses would need
+its own rows, and the completeness check would demand them. The gate also says
+nothing about whether the two limits are DECLARED by any document; that is
+still the configuration choice the Consequences section above describes.

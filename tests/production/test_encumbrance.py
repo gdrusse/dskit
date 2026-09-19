@@ -1416,38 +1416,43 @@ def move_view(state_view, positions=None, pending=None, economic=True):
     through `object.__setattr__` keeps both the declared type and the
     object's identity, which is the pair the hazard needs.
 
-    `economic` advances the counters, which is what :func:`advance` is for;
-    pass False for a move the real fold would not count.
+    `economic` says whether the record the real fold took was an ECONOMIC one;
+    either way the head moves, because the real fold moves it for every record
+    it takes. See :func:`advance`.
     """
     if positions is not None:
         object.__setattr__(state_view, "positions", tuple(positions))
     if pending is not None:
         object.__setattr__(state_view, "pending", tuple(pending))
-    return advance(state_view) if economic else state_view
+    return advance(state_view, economic=economic)
 
 
-def advance(state_view, by=1):
-    """Advance the fold's own version counters on the SAME view object.
+def advance(state_view, by=1, economic=True):
+    """Advance the fold's version counters on the SAME view object, as the fold does.
 
-    §5.8.1: `economic_seq` moves on `order_event`, `fill` and `cash_flow` and
-    NOT on an `intent`, which is pending rather than economic. A harness that
-    left every counter at one value would never show a cache keyed on them
-    being RIGHT, and one that advanced them on every move would never show it
-    being WRONG — so callers advance exactly where the real fold would, and
-    the unsized-intent test deliberately does not.
+    `SeriesState._fold` moves `head_seq` and `head_hash` UNCONDITIONALLY for
+    every record it takes, and moves `economic_seq` only when that record is
+    an economic one — §5.8.1: `order_event`, `fill` and `cash_flow` are, an
+    `intent` is pending rather than economic. Round-5 review found this
+    harness freezing ALL THREE for a non-economic move, which is a combination
+    no real fold produces: a test asserting against it asserts against a state
+    that cannot occur. `test_the_harness_moves_the_counters_the_way_the_real_fold_does`
+    pins this against a real `SeriesState`, folding a real record of each kind,
+    rather than restating §5.8.1 here.
     """
     head_seq = state_view.head_seq + by
     object.__setattr__(state_view, "head_seq", head_seq)
     object.__setattr__(state_view, "head_hash", f"{head_seq:064x}")
-    object.__setattr__(
-        state_view,
-        "risk_version",
-        records.RiskVersion(
-            economic_seq=state_view.risk_version.economic_seq + by,
-            executor_token=None,
-            accounting_tokens=None,
-        ),
-    )
+    if economic:
+        object.__setattr__(
+            state_view,
+            "risk_version",
+            records.RiskVersion(
+                economic_seq=state_view.risk_version.economic_seq + by,
+                executor_token=None,
+                accounting_tokens=None,
+            ),
+        )
     return state_view
 
 
@@ -1476,6 +1481,55 @@ class MovingTickState:
 
     def __init__(self, account):
         self.account = account
+
+
+def test_the_harness_moves_the_counters_the_way_the_real_fold_does():
+    """The harness's `advance` must be faithful, or every test above it is.
+
+    Round-5 review: `advance` moved `head_seq`, `head_hash` AND `economic_seq`
+    together, and `move_view(..., economic=False)` moved NONE of them. The real
+    fold has no such state — `SeriesState._fold` assigns the head for EVERY
+    record it takes and increments `economic_seq` only for an economic one — so
+    a "non-economic move" with a frozen head is a combination no fold produces,
+    and a cache keyed on `head_seq` alone was being credited with a miss it
+    would never have.
+
+    Measured against a real `SeriesState` folding real records, never by
+    restating §5.8.1 here: a rule read back from its own subject asserts
+    nothing, but a rule OBSERVED on the subject is what the harness must match.
+    """
+    state = SeriesState(SERIES_ID)
+    chain = Chain()
+    fold(state, chain, "tick_start", {"tick_id": "T1", "tick_at_ms": FOLD_BASE_MS})
+
+    def counters():
+        view = state.snapshot()
+        return view.head_seq, view.head_hash, view.risk_version.economic_seq
+
+    # A non-economic record: the head moves, the economic counter does not.
+    before = counters()
+    fold(state, chain, "intent", intent_body())
+    after_intent = counters()
+    assert after_intent[0] != before[0] and after_intent[1] != before[1]
+    assert after_intent[2] == before[2]
+
+    # An economic record: all three move.
+    fold(state, chain, "order_event", order_event_body())
+    after_event = counters()
+    assert after_event[0] != after_intent[0] and after_event[1] != after_intent[1]
+    assert after_event[2] != after_intent[2]
+
+    # The harness reproduces BOTH relationships on its own view object.
+    harness = moving_view()
+    start = (harness.head_seq, harness.head_hash, harness.risk_version.economic_seq)
+    advance(harness, economic=False)
+    noneconomic = (harness.head_seq, harness.head_hash, harness.risk_version.economic_seq)
+    assert noneconomic[0] != start[0] and noneconomic[1] != start[1]
+    assert noneconomic[2] == start[2]
+    advance(harness, economic=True)
+    economic = (harness.head_seq, harness.head_hash, harness.risk_version.economic_seq)
+    assert economic[0] != noneconomic[0] and economic[1] != noneconomic[1]
+    assert economic[2] != noneconomic[2]
 
 
 @pytest.mark.parametrize("name", CORE_POLICIES)
@@ -1813,3 +1867,322 @@ def test_a_held_position_that_moves_in_value_only_is_seen():
         Decimal("10"),
         Decimal("2"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Round-5 Major — enumerate the INPUTS, not the defences
+#
+# Five rounds wrote one hand-written statelessness axis per layer, and each
+# closed one layer and left the next exposed. Round 5 found the next one: a
+# cache on `EncumberedAccounting.admit` keyed on `(id(self), id(proposal),
+# id(state_view), at_ms)` — every argument the method DECLARES — passed all
+# 6617 production tests, because `history` is reached through `self._history`
+# and appears in no signature. `loop.py` and `leg.py` call exactly that method.
+#
+# So the axis list is the wrong artefact. What follows enumerates the INPUT
+# SPACE instead: every component the derived book's answer depends on, moved
+# ONE AT A TIME through the caller-facing entry points, with every object
+# identity held fixed. A cache keyed on any proper subset of these fails at
+# least one case, whichever subset an implementer picks, without anyone having
+# written that cache down. `test_the_dependency_table_names_every_field_read`
+# then refuses a record field that is neither in the table nor declared unread,
+# so a field added to `Fill`, `OrderState`, `Position` or `Proposal` cannot
+# enter the money path without a row here.
+# ---------------------------------------------------------------------------
+
+#: The settlement lag every rig below declares.
+GATE_LAG = LAG_MS
+
+#: The instant every rig is judged at, and a fill stamped ONE MILLISECOND
+#: short of settled at it: `_unsettled` skips a fill once
+#: `ts_ms + lag <= at_ms`, so this fill counts and one millisecond earlier
+#: does not. That boundary is what makes `ts_ms` load-bearing, and a content
+#: key over every other fill field passed the whole suite without it.
+GATE_AT_MS = T0
+GATE_FILL_TS = GATE_AT_MS - GATE_LAG + 1
+
+
+def _gate_history(**overrides):
+    """A history whose single unsettled sell can be moved field by field."""
+    body = dict(
+        fill_id="f-1", side="sell", qty="10", price="10",
+        ts_ms=GATE_FILL_TS, fee="0", instrument=INS1, status="final",
+    )
+    body.update(overrides)
+    return FakeHistory((fill_body(**body),))
+
+
+def _gate_accounting(history):
+    """A real `EncumberedAccounting` — the object `loop.py` and `leg.py` hold.
+
+    Its `history` is a constructor collaborator reached through
+    `self._history`, which is the whole point: the three entry points below
+    take it in no signature.
+    """
+    return EncumberedAccounting(
+        {"encumbrance": {"uses": "cash", "params": {
+            "settlement_lag_ms": GATE_LAG, "balance_basis": "trade_date"}}},
+        clock=FakeClock(GATE_AT_MS),
+        history=history,
+        max_valuation_age_ms=MAX_VALUATION_AGE_MS,
+    )
+
+
+def _gate_view(balances, working, positions=(), pending=()):
+    """A view whose mapping members stay LIVE over the dicts handed in."""
+    return moving_view(
+        balances=balances, working=working, positions=positions, pending=pending
+    )
+
+
+class Rig:
+    """One scenario, and the caller-facing reads taken against it.
+
+    Every mutable the moves reach — the balances dict, the working dict, the
+    view, the history, the accounting object — is held on this rig, so a move
+    changes CONTENT while every identity stays exactly where it was. The
+    identities are asserted unchanged after the move.
+    """
+
+    def __init__(self, positions=(), pending=(), working_order=None, **fill):
+        self.balances = {USD: Decimal("1000")}
+        self.orders = [order(ref="w-1", side="buy", qty="10", limit="10")
+                       if working_order is None else working_order]
+        self.working = {o.client_ref: o for o in self.orders}
+        self.history = _gate_history(**fill)
+        self.view = _gate_view(self.balances, self.working, positions, pending)
+        self.accounting = _gate_accounting(self.history)
+        self.at_ms = GATE_AT_MS
+        self.proposal = proposal(side="buy", qty="80", limit="10")
+
+    def identities(self):
+        return (id(self.accounting), id(self.view), id(self.history),
+                id(self.proposal), id(self.balances), id(self.working))
+
+    # --- the three caller-facing entry points -----------------------------
+    def available(self):
+        return self.accounting.encumbrance(self.view, self.at_ms).funds[USD].available
+
+    def inventory(self):
+        book = self.accounting.encumbrance(self.view, self.at_ms)
+        return tuple(sorted((k, str(v.available)) for k, v in book.inventory.items()))
+
+    def unsized(self):
+        return self.accounting.encumbrance(self.view, self.at_ms).unsized_refs
+
+    def admits(self):
+        return self.accounting.admit(self.proposal, self.view, self.at_ms)
+
+    def reported_available(self):
+        """`_balances` as `PaperAccounting.snapshot` reaches it."""
+        return tuple(
+            (b.currency, str(b.available))
+            for b in self.accounting._balances(self.view, self.at_ms)
+        )
+
+
+def _set(record, **fields):
+    """Rebind fields on a frozen record IN PLACE — same object, new content."""
+    for name, value in fields.items():
+        object.__setattr__(record, name, value)
+    return record
+
+
+def _sell_rig():
+    """The rig a SELL proposal is judged against: units, not cash.
+
+    `admit` routes a buy to the cash judge and a sell to the inventory one, so
+    the instrument a buy names changes no answer — it is only ever priced. The
+    row that moves `proposal.instrument` therefore needs the side whose judge
+    reads it, which is exactly why the table carries a rig per row rather than
+    one shared scenario that quietly cannot exercise half of it.
+    """
+    rig = Rig(positions=(position(instrument=INS1, qty="10"),))
+    _set(rig.proposal, side="sell", qty=Decimal("10"), limit=Decimal("10"))
+    return rig
+
+
+#: One row per input the answer depends on:
+#: ``(name, read, move, make_rig)``. ``read`` names the Rig method that takes
+#: the answer at a caller-facing entry point; ``move`` changes EXACTLY one
+#: component; ``make_rig`` builds the scenario in which that component is
+#: load-bearing.
+DEPENDENCIES = (
+    ("at_ms", "available",
+     lambda rig: setattr(rig, "at_ms", rig.at_ms + 1), Rig),
+    ("view.balances", "available",
+     lambda rig: rig.balances.__setitem__(USD, Decimal("900")), Rig),
+    ("view.working.count", "available",
+     lambda rig: rig.working.__setitem__("w-2", order(ref="w-2", side="buy",
+                                                      qty="5", limit="10")), Rig),
+    ("order.limit", "available",
+     lambda rig: _set(rig.orders[0], limit=Decimal("20")), Rig),
+    ("order.remaining_qty", "available",
+     lambda rig: _set(rig.orders[0], remaining_qty=Decimal("20")), Rig),
+    ("order.side", "available",
+     lambda rig: _set(rig.orders[0], side="sell"), Rig),
+    ("order.instrument", "inventory",
+     lambda rig: _set(rig.orders[0], instrument=INS2), Rig),
+    ("view.positions", "inventory",
+     lambda rig: move_view(rig.view, positions=(position(qty="2"),)), Rig),
+    ("view.pending", "unsized",
+     lambda rig: move_view(rig.view, pending=("ref-9",), economic=False), Rig),
+    ("fill.qty", "available",
+     lambda rig: rig.history.set_fills((fill_body(
+         "f-1", "sell", "20", "10", GATE_FILL_TS),)), Rig),
+    ("fill.price", "available",
+     lambda rig: rig.history.set_fills((fill_body(
+         "f-1", "sell", "10", "20", GATE_FILL_TS),)), Rig),
+    ("fill.fee", "available",
+     lambda rig: rig.history.set_fills((fill_body(
+         "f-1", "sell", "10", "10", GATE_FILL_TS, fee="5"),)), Rig),
+    ("fill.ts_ms", "available",
+     lambda rig: rig.history.set_fills((fill_body(
+         "f-1", "sell", "10", "10", GATE_FILL_TS - 1),)), Rig),
+    ("fill.side", "available",
+     lambda rig: rig.history.set_fills((fill_body(
+         "f-1", "buy", "10", "10", GATE_FILL_TS),)), Rig),
+    ("fill.status", "available",
+     lambda rig: rig.history.set_fills((fill_body(
+         "f-1", "sell", "10", "10", GATE_FILL_TS, status="reversed"),)), Rig),
+    ("fill.fill_id", "available",
+     lambda rig: rig.history.set_fills((
+         fill_body("f-1", "sell", "10", "10", GATE_FILL_TS),
+         fill_body("f-1", "sell", "10", "10", GATE_FILL_TS, status="reversed"),
+     )), Rig),
+    ("balances reported by _balances", "reported_available",
+     lambda rig: rig.balances.__setitem__(USD, Decimal("900")), Rig),
+    ("proposal.qty", "admits",
+     lambda rig: _set(rig.proposal, qty=Decimal("90")), Rig),
+    ("proposal.limit", "admits",
+     lambda rig: _set(rig.proposal, limit=Decimal("20")), Rig),
+    ("proposal.side", "admits",
+     lambda rig: _set(rig.proposal, side="sell"), Rig),
+    ("proposal.instrument", "admits",
+     lambda rig: _set(rig.proposal, instrument=INS2), _sell_rig),
+)
+
+
+@pytest.mark.parametrize(
+    "name,read,move,make_rig", DEPENDENCIES, ids=[row[0] for row in DEPENDENCIES]
+)
+def test_every_input_the_book_depends_on_moves_the_answer_at_the_real_entry_point(
+    name, read, move, make_rig
+):
+    """Move one input; the caller-facing answer must move with it.
+
+    This is the gate. `history` is reached through `self._history` and is in
+    no signature here, the view and the proposal keep their identities, and the
+    instant is an `int` — so a cache keyed on ANY proper subset of these inputs
+    returns the first answer and fails whichever row names the omitted one. No
+    cache is written down anywhere; the space is covered by construction.
+    """
+    rig = make_rig()
+    before_ids = rig.identities()
+    before = getattr(rig, read)()
+    move(rig)
+    assert rig.identities() == before_ids, (
+        f"{name}: the move changed an object IDENTITY, so this row would pass "
+        "for an identity-keyed cache too"
+    )
+    after = getattr(rig, read)()
+    assert before != after, (
+        f"{name}: moving it left the answer at `{read}` unchanged ({before!r}) "
+        "— either it is not an input, or the entry point is not reading it"
+    )
+
+
+def test_the_baseline_proposal_sits_exactly_on_the_admission_boundary():
+    """The control the `admits` rows rest on.
+
+    If the rig admitted with room to spare, a row could move an input and
+    still admit, and the assertion above would be measuring nothing. So the
+    baseline admits EXACTLY, and one unit more refuses.
+    """
+    rig = Rig()
+    assert rig.available() == Decimal("800")
+    assert rig.admits() == ()
+    _set(rig.proposal, qty=Decimal("81"))
+    assert rig.admits() != ()
+
+
+#: Record fields the cash policy genuinely does not read, each with the reason.
+#: A field lands here or in `DEPENDENCIES`; there is no third place, which is
+#: what makes the completeness check below mean something.
+NOT_READ = {
+    records.Fill: {
+        "venue_ref": "venue bookkeeping; the policy keys on fill_id",
+        "client_ref": "links a fill to an intent, not to a balance",
+        "fee_currency": "single-currency rig; the fee is netted in its own currency",
+        "liquidity": "a venue attribution tag, not an amount",
+        "instrument": "cash settlement nets by currency, never by instrument",
+        "native": "the raw venue payload, deliberately unread",
+    },
+    records.OrderState: {
+        "venue_ref": "venue bookkeeping", "status": "holding vs terminal is "
+        "decided by the fold before the view is built",
+        "ts_ms": "ordering only", "filled_qty": "`remaining_qty` is the "
+        "outstanding figure and is read directly",
+        "avg_price": "an execution fact; a working order is valued at its limit",
+        "fee": "billed on the fill, not reserved on the order",
+        "reason": "message text", "native": "raw venue payload",
+        "qty": "`remaining_qty` is what is still outstanding",
+        "tif": "expiry is the fold's business", "created_ms": "ordering only",
+        "updated_ms": "ordering only",
+        "client_ref": "names the order in a message; the working map is keyed by it",
+    },
+    records.Position: {
+        "avg_cost": "a cost basis, not an availability",
+        "source": "provenance tag", "native": "raw venue payload",
+    },
+    records.Proposal: {
+        "id": "names the candidate in a message",
+        "notional": "this policy sizes on qty x limit",
+        "tif": "not an amount", "expires_ms": "not an amount",
+        "reference_price": "a quote, not the committed price",
+        "exposure": "a lead's own figure", "direction": "a lead's own figure",
+        "confidence": "a lead's own figure", "prediction": "a lead's own figure",
+        "baseline": "a lead's own figure", "expected_value": "a lead's own figure",
+        "inputs_asof_ms": "evidence provenance", "inputs_digest": "evidence provenance",
+        "coverage_digest": "evidence provenance", "quote_asof_ms": "evidence provenance",
+        "quote_digest": "evidence provenance", "extra": "carrier for adapters",
+    },
+}
+
+
+def test_the_dependency_table_names_every_field_read():
+    """A field added to a money record cannot enter without a row above.
+
+    A pinning test that omits a knob is worse than none (CLAUDE.md), and the
+    round-5 Major was precisely an omitted knob: `ts_ms`. So the table is
+    checked against `dataclasses.fields` of the four record types the policy
+    reads, and every field is either exercised by a `DEPENDENCIES` row or
+    declared unread WITH A REASON.
+    """
+    exercised = {row[0] for row in DEPENDENCIES}
+    prefixes = {records.Fill: "fill", records.OrderState: "order",
+                records.Position: "view.positions", records.Proposal: "proposal"}
+    for record_type, prefix in prefixes.items():
+        declared = NOT_READ[record_type]
+        for field in dataclasses.fields(record_type):
+            row = f"{prefix}.{field.name}"
+            covered = row in exercised or field.name in declared
+            if record_type is records.Position:
+                covered = covered or "view.positions" in exercised
+            assert covered, (
+                f"{record_type.__name__}.{field.name} is neither exercised by a "
+                f"DEPENDENCIES row named {row!r} nor declared unread in NOT_READ"
+            )
+        stray = sorted(set(declared) - {f.name for f in dataclasses.fields(record_type)})
+        assert not stray, f"NOT_READ[{record_type.__name__}] names absent fields: {stray}"
+        # The two sets must be DISJOINT. Without this the check is an OR that
+        # either side satisfies, so `NOT_READ` could claim a field is unread
+        # while a row exercises it — which is how a real dependency gets
+        # retired by an edit to the wrong table (found by mutation).
+        both = sorted(
+            name for name in declared if f"{prefix}.{name}" in exercised
+        )
+        assert not both, (
+            f"NOT_READ[{record_type.__name__}] claims {both} unread while "
+            "DEPENDENCIES exercises them — a field belongs to exactly one table"
+        )
