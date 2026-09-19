@@ -203,27 +203,104 @@ REFUSAL_REASONS = (
 #: below, once its members exist.
 CLOSED_FAMILIES = ()
 
-#: The registry, written ONLY through :func:`register_uncertainty_intake`.
-#: Every screen in this module reads it, so it is the one piece of state a
-#: refusal depends on — and a bare dict would let ``__setitem__`` skip the
-#: abstract-member refusal, the name-collision refusal and the
-#: ``artifact_type`` conflict refusal that function applies. Round-4 review
-#: demonstrated both halves of that: ``UNCERTAINTY_INTAKES["evil"] =
-#: ProbabilityUpperBound`` made an abstract class "registered" and turned a
-#: later demand into an uncaught ``TypeError``, and rebinding an existing
-#: name silently refused a correctly attested envelope. It is therefore a
-#: read-only ``MappingProxyType`` over :data:`_INTAKES`.
+def _sealed_registry():
+    """Build the registry: its store, its read-only view, its one writer.
+
+    The store is a LOCAL of this function. No module-level name holds it,
+    so there is no private dict to import — round-5 review showed that a
+    single-underscore module attribute is one underscore wide, and that a
+    rebinding through it repointed a real capital-sizing estimand while
+    every test in the sealing class still passed. The validation therefore
+    lives INSIDE the closure, so the only name that can write is one that
+    screens.
+
+    **The honest ceiling.** Function-object introspection
+    (``<writer>.__closure__[0].cell_contents``) still reaches the store.
+    That is the same capability as the hostile metaclass this module
+    already declines to defend against, and it is stated here rather than
+    described as impossible. What IS true, and is what changed: no
+    importable name offers an unvalidated write.
+
+    Returns
+    -------
+    tuple
+        ``(view, register)`` — a ``MappingProxyType`` over the store, and
+        the validating writer :func:`register_uncertainty_intake` wraps.
+
+    Examples
+    --------
+    Built once, at import::
+
+        view, register = _sealed_registry()
+        type(view).__name__
+        # -> 'mappingproxy'
+    """
+    store = {}
+
+    def register(name, cls, doc=""):
+        """Validate one intake, record it, and give back its undo."""
+        _check_text(name, "name")
+        if not (
+            isinstance(cls, type) and AttestedUncertainty in getattr(cls, "__mro__", ())
+        ):
+            raise ValueError(
+                f"{name!r} must be an AttestedUncertainty subclass, got {cls!r}"
+            )
+        if getattr(cls, "__abstractmethods__", ()):
+            raise ValueError(
+                f"{name!r} may not register {cls.__name__}: it is abstract "
+                f"({sorted(cls.__abstractmethods__)} unimplemented), and every "
+                "registered intake is asked for the declarations the screens run on"
+            )
+        existing = store.get(name)
+        if existing is not None and existing is not cls:
+            raise ValueError(
+                f"uncertainty intake {name!r} is already registered to "
+                f"{existing.__name__}"
+            )
+        wanted, refusal = _ask(cls, "artifact_type")
+        if refusal:
+            raise ValueError(f"{name!r} may not register {cls.__name__}: {refusal[0]}")
+        for other_name in sorted(store):
+            other = store[other_name]
+            if other_name == name or other is cls:
+                continue
+            other_wanted, other_refusal = _ask(other, "artifact_type")
+            if not other_refusal and other_wanted is wanted:
+                raise ValueError(
+                    f"{name!r} claims artifact type "
+                    f"{getattr(wanted, '__name__', wanted)}, which {other_name!r} "
+                    "already claims — one artifact type answers one question, and two "
+                    "members claiming it would make every such artifact ambiguous"
+                )
+        store[name] = cls
+        if doc:
+            cls.__doc__ = cls.__doc__ or doc
+
+        def forget():
+            """Undo THIS registration, if it is still the one in place."""
+            if store.get(name) is cls:
+                del store[name]
+
+        return forget
+
+    return MappingProxyType(store), register
+
+
+#: The registry, read-only. Every screen reads it, so it is the one piece of
+#: state a refusal depends on, and it is written ONLY through
+#: :func:`register_uncertainty_intake`: the store is a closure local, not a
+#: module attribute, so no importable name offers an unvalidated write.
+#: Function-object introspection still reaches it — see
+#: :func:`_sealed_registry` — and that is disclosed rather than denied.
 #:
 #: It holds CLASSES, because a member is an object with hooks, and it holds
 #: LIVE references rather than a snapshot: editing a registered class's
-#: hooks afterwards changes what the screens check immediately. Closing
-#: that needs the same capability as the hostile-metaclass boundary this
-#: module already declines to defend against, so it is disclosed, not
-#: defended.
-_INTAKES = {}
-
-#: The public, READ-ONLY view of :data:`_INTAKES`.
-UNCERTAINTY_INTAKES = MappingProxyType(_INTAKES)
+#: hooks after registration changes what the screens read immediately.
+#: Closing that needs the same capability as the ceiling above, so instead
+#: every hook answer is treated as untrusted at the point of use — see
+#: :func:`_ask`.
+UNCERTAINTY_INTAKES, _register_intake = _sealed_registry()
 
 
 def _check_stamp(value, name):
@@ -572,14 +649,32 @@ class AttestedUncertainty(ABC):
                 f"{type(self).__name__}: attestation must be an UncertaintyAttestation, "
                 f"got {type(attestation).__name__}"
             )
-        wanted = type(self).artifact_type()
+        wanted, refusal = _ask(type(self), "artifact_type")
+        if refusal:
+            raise ValueError(f"{type(self).__name__}: {refusal[0]}")
+        if not isinstance(wanted, type):
+            raise ValueError(
+                f"{type(self).__name__}.artifact_type() returned {wanted!r}, "
+                "which is not a type"
+            )
+        estimand, refusal = _ask(type(self), "estimand")
+        if refusal:
+            raise ValueError(f"{type(self).__name__}: {refusal[0]}")
         if not isinstance(artifact, wanted):
             raise ValueError(
-                f"{type(self).__name__} answers {type(self).estimand()!r} and accepts only "
+                f"{type(self).__name__} answers {estimand!r} and accepts only "
                 f"{wanted.__name__}, got {type(artifact).__name__} — the estimand is the "
                 "artifact's TYPE, not a label a caller supplies"
             )
-        for excluded in type(self).excluded_types():
+        excluded_types, refusal = _ask(type(self), "excluded_types")
+        if refusal:
+            raise ValueError(f"{type(self).__name__}: {refusal[0]}")
+        if not isinstance(excluded_types, tuple):
+            raise ValueError(
+                f"{type(self).__name__}.excluded_types() returned "
+                f"{excluded_types!r}, which is not a tuple of types"
+            )
+        for excluded in excluded_types:
             if isinstance(artifact, excluded):
                 raise ValueError(
                     f"{type(self).__name__}: {type(artifact).__name__} is ALSO a "
@@ -598,10 +693,13 @@ class AttestedUncertainty(ABC):
         for name, other in sorted(UNCERTAINTY_INTAKES.items()):
             if other is type(self):
                 continue
-            if isinstance(artifact, other.artifact_type()):
+            other_wanted, refusal = _ask(other, "artifact_type")
+            if refusal or not isinstance(other_wanted, type):
+                continue
+            if isinstance(artifact, other_wanted):
                 raise ValueError(
                     f"{type(self).__name__}: {type(artifact).__name__} is ALSO a "
-                    f"{other.artifact_type().__name__}, which {name!r} claims — an "
+                    f"{other_wanted.__name__}, which {name!r} claims — an "
                     "artifact that answers two questions at once is refused, never "
                     "assigned to one of them"
                 )
@@ -829,19 +927,27 @@ def _coverage_problems(attestation, demand):
     return []
 
 
-def _producer_problems(authority, artifact, attestation):
+def _producer_problems(authority, declarations, artifact, attestation):
     """Screen unknown_producer: attestation and artifact agree on a producer we know."""
     attested = attestation.producer
-    known = sorted(class_ref(cls) for cls in authority.registered_producers())
+    known = sorted(class_ref(cls) for cls in declarations["producers"])
     out = []
     if attested not in known:
         out.append(
             f"unknown_producer: the attestation names producer {attested!r}, which is "
-            f"not a registered {authority.estimand()!r} producer ({known}) — this "
+            f"not a registered {declarations['estimand']!r} producer ({known}) — this "
             "compares strings against an open registry and imports nothing, so it "
             "establishes that the producer is one this package knows, never that it ran"
         )
-    reported = authority.artifact_producer(artifact)
+    # `known` is read from a SIBLING module's registry (false_signal,
+    # mean_interval, outcome_interval). Those are open by their own ADRs'
+    # design and are not this module's to seal: anyone who can register a
+    # producer there can make it "known" here. That is the same honesty the
+    # message below carries — "an open registry" — and it is the reason the
+    # screen claims acquaintance, never provenance.
+    reported, refusal = _ask(authority, "artifact_producer", artifact)
+    if refusal:
+        return out + refusal
     if reported is None:
         out.append(
             "unknown_producer: the artifact records no producer of its own, so nothing "
@@ -881,8 +987,11 @@ def _question_problems(envelope, expected, answering):
         (cls for cls in _registered_classes() if cls is type(envelope)), None
     )
     if mine is not None:
+        estimand, refusal = _ask(mine, "estimand")
+        if refusal:
+            return refusal
         return [
-            f"wrong_unit: {mine.__name__} answers {mine.estimand()!r}, but this "
+            f"wrong_unit: {mine.__name__} answers {estimand!r}, but this "
             f"decision requires {expected.__name__} — uncertainty about an expected "
             "effect, about a realized outcome and about a false-signal rate are "
             "different questions with different answers"
@@ -895,47 +1004,122 @@ def _question_problems(envelope, expected, answering):
     ]
 
 
-def _declaration_problems(authority):
-    """Screen wrong_unit when a registered intake's own declarations are unusable."""
-    out = []
-    wanted = authority.artifact_type()
-    if not isinstance(wanted, type):
-        out.append(
-            f"wrong_unit: {authority.__name__}.artifact_type() returned {wanted!r}, "
-            "which is not a type, so no artifact can be checked against it — a "
-            "registered intake that cannot say what it accepts refuses everything"
-        )
-    excluded = authority.excluded_types()
-    if not isinstance(excluded, tuple) or any(
-        not isinstance(item, type) for item in excluded
-    ):
-        out.append(
-            f"wrong_unit: {authority.__name__}.excluded_types() returned "
-            f"{excluded!r}, which is not a tuple of types"
-        )
-    producers = authority.registered_producers()
-    if not isinstance(producers, tuple) or any(
-        not isinstance(item, type) for item in producers
-    ):
-        out.append(
-            f"wrong_unit: {authority.__name__}.registered_producers() returned "
-            f"{producers!r}, which is not a tuple of classes"
-        )
-    return out
+def _ask(authority, hook, *args):
+    """Call one hook of an intake, turning a RAISE into a coded refusal.
+
+    Every hook is supplied by whoever registered the member, through the
+    sanctioned extension point, and an ordinary coding bug in one — an
+    ``evidence["estimator"]`` where the shipped members write ``.get`` —
+    used to propagate out of :func:`admission_problems`, through
+    ``nodes_capital.validate_inputs`` and ``driver.run_node``, killing the
+    whole run instead of producing an itemized refusal. An unhandled
+    exception at a risk gate is worse than a refusal, so **every** hook
+    call on the use-time path goes through here.
+
+    Parameters
+    ----------
+    authority : type
+        The intake whose hook is being called.
+    hook : str
+        The hook's name.
+    *args
+        Arguments for it.
+
+    Returns
+    -------
+    tuple
+        ``(value, problems)``. On success ``problems`` is empty; on a raise
+        it holds one ``wrong_unit`` message and ``value`` is ``None``.
+
+    Examples
+    --------
+    Read a member's estimand without trusting it not to explode::
+
+        estimand, problems = _ask(AttestedOutcomeBand, "estimand")
+        # -> ('realized_outcome', [])
+    """
+    try:
+        return getattr(authority, hook)(*args), []
+    except Exception as exc:  # noqa: BLE001 — any raise is the member's bug
+        return None, [
+            f"wrong_unit: {getattr(authority, '__name__', authority)}.{hook}() raised "
+            f"{type(exc).__name__}: {exc} — an intake whose own declarations cannot be "
+            "read refuses everything, because an unhandled exception at a risk gate is "
+            "worse than a refusal"
+        ]
 
 
-def _artifact_problems(authority, artifact):
-    """Screen wrong_unit on the LIVE artifact, against the authority's declared types."""
-    wanted = authority.artifact_type()
+def _declarations(authority):
+    """Read and screen all four class-level hooks ONCE, guarded.
+
+    The fifth hook, ``artifact_producer``, takes the artifact and is read
+    the same way at its own call site.
+
+    Parameters
+    ----------
+    authority : type
+        The registered intake the demand named.
+
+    Returns
+    -------
+    tuple
+        ``(declarations, problems)``. ``declarations`` maps ``estimand`` /
+        ``wanted`` / ``excluded`` / ``producers`` to the hooks' answers and
+        is empty when ``problems`` is not.
+
+    Examples
+    --------
+    What a shipped member declares::
+
+        declarations, problems = _declarations(AttestedOutcomeBand)
+        declarations["estimand"]
+        # -> 'realized_outcome'
+    """
     out = []
+    values = {}
+    for hook, key, ok, shape in (
+        ("estimand", "estimand", lambda v: isinstance(v, str) and v, "a non-empty string"),
+        ("artifact_type", "wanted", lambda v: isinstance(v, type), "a type"),
+        (
+            "excluded_types",
+            "excluded",
+            lambda v: isinstance(v, tuple) and all(isinstance(i, type) for i in v),
+            "a tuple of types",
+        ),
+        (
+            "registered_producers",
+            "producers",
+            lambda v: isinstance(v, tuple) and all(isinstance(i, type) for i in v),
+            "a tuple of classes",
+        ),
+    ):
+        value, refusal = _ask(authority, hook)
+        if refusal:
+            out.extend(refusal)
+            continue
+        if not ok(value):
+            out.append(
+                f"wrong_unit: {authority.__name__}.{hook}() returned {value!r}, which "
+                f"is not {shape} — an intake that cannot say what it accepts refuses "
+                "everything"
+            )
+            continue
+        values[key] = value
+    return ({} if out else values), out
+
+
+def _artifact_problems(authority, declarations, artifact):
+    """Screen wrong_unit on the LIVE artifact, against the declared types."""
+    out = []
+    wanted = declarations["wanted"]
     if not isinstance(artifact, wanted):
         out.append(
-            f"wrong_unit: {authority.__name__} answers {authority.estimand()!r} over "
-            f"{wanted.__name__}, and this envelope carries a "
+            f"wrong_unit: {authority.__name__} answers {declarations['estimand']!r} "
+            f"over {wanted.__name__}, and this envelope carries a "
             f"{type(artifact).__name__} — re-read at use time, so an artifact swapped "
             "in after construction is caught here rather than trusted"
         )
-    for excluded in authority.excluded_types():
+    for excluded in declarations["excluded"]:
         if isinstance(artifact, excluded):
             out.append(
                 f"wrong_unit: {type(artifact).__name__} is ALSO a {excluded.__name__}, "
@@ -1032,14 +1216,14 @@ def admission_problems(envelope, demand, expected):
     # choice, so nothing here reads a declaration made by the envelope's
     # class about itself.
     authority = expected
-    # A registered intake whose own declarations are unusable is a coded
-    # refusal, not an ``isinstance`` crash. Reachable today only by writing
-    # to the registry past its front door, which the read-only view now
-    # refuses; kept because an unhandled exception at a risk gate is worse
-    # than a refusal, and one line buys the difference.
-    declarations = _declaration_problems(authority)
-    if declarations:
-        return declarations
+    # Every hook answer is read ONCE, here, and treated as untrusted: a
+    # registered intake whose declarations are unusable — or whose hooks
+    # RAISE, which an ordinary coding bug in the sanctioned extension point
+    # produces — is a coded refusal, never an exception escaping into
+    # ``validate_inputs`` and ``driver.run_node``.
+    declarations, problems = _declarations(authority)
+    if problems:
+        return problems
     artifact = _raw(envelope, "_artifact")
     attestation = _raw(envelope, "_attestation")
     if not isinstance(attestation, UncertaintyAttestation):
@@ -1048,11 +1232,11 @@ def admission_problems(envelope, demand, expected):
             f"(got {type(attestation).__name__}), so there is no provenance to screen"
         ]
     return (
-        _artifact_problems(authority, artifact)
+        _artifact_problems(authority, declarations, artifact)
         + _identity_problems(attestation, demand)
         + _timing_problems(attestation, demand)
         + _coverage_problems(attestation, demand)
-        + _producer_problems(authority, artifact, attestation)
+        + _producer_problems(authority, declarations, artifact, attestation)
     )
 
 
@@ -1481,6 +1665,13 @@ class AttestedFalseSignalRate(AttestedUncertainty):
 def register_uncertainty_intake(name, cls, doc=""):
     """Register one intake member under ``name``.
 
+    The ONE writer of :data:`UNCERTAINTY_INTAKES`. That is now mechanical
+    rather than conventional — the store is a closure local of
+    :func:`_sealed_registry`, so no importable name offers an unvalidated
+    write — with one stated ceiling: function-object introspection reaches
+    the store, the same capability as the hostile-metaclass boundary this
+    module declines to defend against.
+
     Parameters
     ----------
     name : str
@@ -1492,57 +1683,31 @@ def register_uncertainty_intake(name, cls, doc=""):
 
     Returns
     -------
-    None
-        Registration is a side effect on the registry. It is the ONLY way
-        in: :data:`UNCERTAINTY_INTAKES` is a read-only view, so a direct
-        ``__setitem__`` raises rather than skipping the screens below.
+    callable
+        A zero-argument undo for THIS registration, which removes the entry
+        only while it is still the one in place. It is returned rather than
+        offered as a module-level ``unregister`` so that no name in this
+        module can remove an intake the caller did not register.
 
     Raises
     ------
     ValueError
         On an empty ``name``, a ``cls`` that is not an
         :class:`AttestedUncertainty` subclass, a ``cls`` that is still
-        abstract, a name already bound to a DIFFERENT class, or an
-        ``artifact_type`` another member already claims.
+        abstract, a ``cls`` whose ``artifact_type()`` raises, a name
+        already bound to a DIFFERENT class, or an ``artifact_type``
+        another member already claims.
 
     Examples
     --------
-    Register a project's own member::
+    Register a project's own member and take its undo::
 
-        register_uncertainty_intake("my_band", MyBand, doc="a project's own band")
+        forget = register_uncertainty_intake("my_band", MyBand, doc="a band")
         UNCERTAINTY_INTAKES["my_band"] is MyBand
         # -> True
+        forget()
     """
-    _check_text(name, "name")
-    if not (isinstance(cls, type) and AttestedUncertainty in getattr(cls, "__mro__", ())):
-        raise ValueError(f"{name!r} must be an AttestedUncertainty subclass, got {cls!r}")
-    if getattr(cls, "__abstractmethods__", ()):
-        # A demand is satisfiable only if the registry names it, so a
-        # registered class is asked for its artifact type, its exclusions
-        # and its producers. An abstract member answers each of those with
-        # ``None``, which would make the screens meaningless rather than
-        # strict; registering one is refused instead.
-        raise ValueError(
-            f"{name!r} may not register {cls.__name__}: it is abstract "
-            f"({sorted(cls.__abstractmethods__)} unimplemented), and every "
-            "registered intake is asked for the declarations the screens run on"
-        )
-    existing = UNCERTAINTY_INTAKES.get(name)
-    if existing is not None and existing is not cls:
-        raise ValueError(
-            f"uncertainty intake {name!r} is already registered to {existing.__name__}"
-        )
-    wanted = cls.artifact_type()
-    for other_name, other in sorted(UNCERTAINTY_INTAKES.items()):
-        if other_name != name and other is not cls and other.artifact_type() is wanted:
-            raise ValueError(
-                f"{name!r} claims artifact type {wanted.__name__}, which {other_name!r} "
-                "already claims — one artifact type answers one question, and two members "
-                "claiming it would make every such artifact ambiguous"
-            )
-    _INTAKES[name] = cls
-    if doc:
-        cls.__doc__ = cls.__doc__ or doc
+    return _register_intake(name, cls, doc)
 
 
 def uncertainty_intake(name):

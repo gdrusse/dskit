@@ -12,8 +12,32 @@ from __future__ import annotations
 
 import _abc
 import contextlib
+import importlib
 import random
 import types
+
+
+def _boom(*_args, **_kwargs):
+    """A hook with an ordinary coding bug in it."""
+    raise RuntimeError("hook exploded")
+
+
+def _probe_member(overrides):
+    """A registrable member with one hook replaced, plus an artifact for it."""
+
+    class _ProbeArtifact:
+        method = "dskit.pipeline.mean_interval:ClusterBootstrapInterval"
+
+    body = {
+        "artifact_type": classmethod(lambda cls: _ProbeArtifact),
+        "estimand": classmethod(lambda cls: "probe"),
+        "excluded_types": classmethod(lambda cls: ()),
+        "registered_producers": classmethod(lambda cls: ()),
+        "artifact_producer": classmethod(lambda cls, artifact: artifact.method),
+    }
+    body.update(overrides)
+    member = type("_ProbeMember", (AttestedUncertainty,), body)
+    return member, _ProbeArtifact()
 
 import pytest
 
@@ -39,7 +63,6 @@ from dskit.pipeline.outcome_interval import (
 )
 from dskit.pipeline.uncertainty_intake import (
     CLOSED_FAMILIES,
-    _INTAKES,
     admission_problems,
     admit_uncertainty,
     artifact_of,
@@ -338,7 +361,7 @@ class TestTheEstimandIsTheArtifactsType:
             def artifact_producer(cls, artifact):
                 return None
 
-        register_uncertainty_intake("tests_other_subject", _OtherIntake)
+        forget = register_uncertainty_intake("tests_other_subject", _OtherIntake)
         try:
             band = _band()
             ambiguous = _Ambiguous(
@@ -356,7 +379,7 @@ class TestTheEstimandIsTheArtifactsType:
             with pytest.raises(ValueError, match="two questions at once"):
                 AttestedOutcomeBand(ambiguous, _attestation())
         finally:
-            _INTAKES.pop("tests_other_subject", None)  # read-only in public
+            forget()
 
 
 class TestTheTemplateIsFinalAndTheHooksAreAbstract:
@@ -1154,7 +1177,7 @@ class TestTheRegistryIsAuthoritativeForTheDemandToo:
             def artifact_producer(cls, artifact):
                 return artifact.evidence.get("estimator")
 
-        register_uncertainty_intake("tests_fresh_rogue", FreshRogue)
+        forget = register_uncertainty_intake("tests_fresh_rogue", FreshRogue)
         try:
             rogue = FreshRogue(_RogueArtifact(), _attestation(producer=RATE_PRODUCER))
             assert admission_problems(rogue, _demand(), ProbabilityUpperBound)
@@ -1167,7 +1190,7 @@ class TestTheRegistryIsAuthoritativeForTheDemandToo:
             # It also cannot answer a demand it does not really answer.
             assert admission_problems(rogue, _demand(), AttestedMeanConfidence)
         finally:
-            _INTAKES.pop("tests_fresh_rogue", None)  # read-only in public
+            forget()
 
     @pytest.mark.parametrize(
         "expected", [AttestedUncertainty, ProbabilityUpperBound]
@@ -1215,9 +1238,55 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
     refusal. No metaclass or MRO knowledge needed — just item assignment.
     """
 
+    def test_there_is_no_private_dict_to_import(self):
+        """Round-5's Critical: the seal used to be one underscore wide.
+
+        ``_INTAKES`` was a module attribute, so ``_INTAKES["outcome_band"]
+        = Evil`` silently repointed a real capital-sizing estimand past
+        every screen, and the whole sealing class still passed because it
+        only ever mutated through the public name. The store is now a
+        closure local of ``_sealed_registry``.
+        """
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        assert not hasattr(module, "_INTAKES")
+        mutable = sorted(
+            name
+            for name, value in vars(module).items()
+            if isinstance(value, dict) and not name.startswith("__")
+        )
+        # The only module-level dicts are the three SIBLING registries this
+        # module imports for the producer screen. They belong to
+        # false_signal / mean_interval / outcome_interval, are open by
+        # those ADRs' design, and are not this module's to seal — which is
+        # exactly why the unknown_producer message says "an open registry".
+        assert mutable == [
+            "CALIBRATORS",
+            "FALSE_SIGNAL_ESTIMATORS",
+            "MEAN_INTERVAL_ESTIMATORS",
+        ], mutable
+
     def test_the_public_registry_is_a_read_only_view(self):
         assert isinstance(UNCERTAINTY_INTAKES, types.MappingProxyType)
-        assert UNCERTAINTY_INTAKES.keys() == _INTAKES.keys()
+
+    def test_the_honest_ceiling_is_function_introspection_and_is_stated(self):
+        """The remaining route, pinned rather than claimed away.
+
+        ``_sealed_registry``'s docstring says function-object introspection
+        still reaches the store. This asserts that it does — so the
+        docstring cannot drift into claiming impossibility — and that it
+        takes reaching into ``__closure__``, which is the same capability
+        as the hostile-metaclass boundary this module already declines to
+        defend against.
+        """
+        module = importlib.import_module("dskit.pipeline.uncertainty_intake")
+        cells = [
+            cell.cell_contents
+            for cell in (module._register_intake.__closure__ or ())
+            if isinstance(cell.cell_contents, dict)
+        ]
+        assert cells, "the store should still be reachable through __closure__"
+        assert any(cell.keys() == UNCERTAINTY_INTAKES.keys() for cell in cells)
+        assert "introspection" in module._sealed_registry.__doc__.lower()
 
     @staticmethod
     def _set_abstract(reg):
@@ -1276,13 +1345,13 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
             def artifact_producer(cls, artifact):
                 return None
 
-        register_uncertainty_intake("tests_round_five", _Member)
+        forget = register_uncertainty_intake("tests_round_five", _Member)
         try:
             assert UNCERTAINTY_INTAKES["tests_round_five"] is _Member
             assert uncertainty_intake("tests_round_five") is _Member
             assert _Member in _registered()
         finally:
-            _INTAKES.pop("tests_round_five", None)
+            forget()
         assert "tests_round_five" not in UNCERTAINTY_INTAKES
 
     def test_every_screen_reads_the_same_view(self):
@@ -1292,25 +1361,83 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         assert admission_problems(env, _demand(), AttestedOutcomeBand) == []
         assert UNCERTAINTY_INTAKES["outcome_band"] is AttestedOutcomeBand
 
-    def test_an_unusable_declaration_is_a_coded_refusal_not_a_crash(self):
-        """The round-4 uncaught TypeError, now a named refusal.
+    @pytest.mark.parametrize(
+        "hook,body,expect",
+        [
+            ("artifact_type", classmethod(lambda cls: None), "is not a type"),
+            ("estimand", classmethod(lambda cls: ""), "is not a non-empty string"),
+            ("excluded_types", classmethod(lambda cls: [object]), "not a tuple of types"),
+            (
+                "registered_producers",
+                classmethod(lambda cls: "nope"),
+                "not a tuple of classes",
+            ),
+            ("estimand", classmethod(_boom), "raised RuntimeError"),
+            ("registered_producers", classmethod(_boom), "raised RuntimeError"),
+            ("excluded_types", classmethod(_boom), "raised RuntimeError"),
+        ],
+        ids=[
+            "artifact_type-None",
+            "estimand-empty",
+            "excluded_types-list",
+            "registered_producers-str",
+            "estimand-raises",
+            "registered_producers-raises",
+            "excluded_types-raises",
+        ],
+    )
+    def test_a_misbehaving_hook_is_a_coded_refusal_not_a_crash(self, hook, body, expect):
+        """Round-5 Major: three of five hooks were screened, and only for shape.
 
-        Reachable only past the registry's front door, which is why the
-        registry is sealed AND this check exists: an unhandled exception at
-        a risk gate is worse than a refusal, whatever produced it.
+        Each of these registers cleanly through the REAL front door — an
+        ordinary coding bug in the sanctioned extension point — and used to
+        propagate out of ``admission_problems`` into ``validate_inputs``
+        and ``driver.run_node``, killing the run instead of naming the
+        problem.
         """
-        env = AttestedFalseSignalRate(_rate(), _attestation(producer=RATE_PRODUCER))
-        _INTAKES["tests_abstract_member"] = ProbabilityUpperBound
-        original = AttestedFalseSignalRate.__bases__
+        member, artifact = _probe_member({})
+        forget = register_uncertainty_intake("tests_bad_hook", member)
         try:
-            AttestedFalseSignalRate.__bases__ = (ProbabilityUpperBound,)
-            problems = admission_problems(env, _demand(), ProbabilityUpperBound)
-            assert problems, "an abstract authority must refuse, not admit"
+            env = member(artifact, _attestation(producer=MEAN_PRODUCER))
+            setattr(member, hook, body)
+            problems = admission_problems(env, _demand(), member)
+            assert problems, "a misbehaving hook must refuse, not admit"
             assert all(p.startswith("wrong_unit") for p in problems), problems
-            assert any("is not a type" in p for p in problems), problems
+            assert any(expect in p for p in problems), problems
         finally:
-            AttestedFalseSignalRate.__bases__ = original
-            _INTAKES.pop("tests_abstract_member", None)
+            forget()
+
+    def test_a_raising_artifact_producer_is_a_coded_refusal(self):
+        # The fifth hook, which `_declaration_problems` never reached: the
+        # `evidence["estimator"]`-instead-of-`.get` bug the shipped members
+        # are careful to avoid.
+        member, artifact = _probe_member(
+            {"artifact_producer": classmethod(lambda cls, a: a.evidence["estimator"])}
+        )
+        forget = register_uncertainty_intake("tests_bad_producer", member)
+        try:
+            env = member(artifact, _attestation(producer=MEAN_PRODUCER))
+            problems = admission_problems(env, _demand(), member)
+            assert any("artifact_producer() raised" in p for p in problems), problems
+        finally:
+            forget()
+
+    def test_a_raising_artifact_type_refuses_registration_as_ValueError(self):
+        member, _artifact = _probe_member({"artifact_type": classmethod(_boom)})
+        with pytest.raises(ValueError, match="artifact_type"):
+            register_uncertainty_intake("tests_raising_type", member)
+        assert "tests_raising_type" not in UNCERTAINTY_INTAKES
+
+    @pytest.mark.parametrize(
+        "hook", ["artifact_type", "estimand", "excluded_types"]
+    )
+    def test_a_broken_hook_also_refuses_at_construction(self, hook):
+        # The constructor reads three hooks for its early accident screen.
+        # A raise there is not at the capital gate, but it should still name
+        # the member rather than escape as a bare RuntimeError.
+        member, artifact = _probe_member({hook: classmethod(_boom)})
+        with pytest.raises(ValueError, match=hook):
+            member(artifact, _attestation(producer=MEAN_PRODUCER))
 
     def test_no_other_module_level_state_the_screens_trust_is_mutable(self):
         # Sweep: everything else this module exports that a screen reads is
@@ -1318,10 +1445,21 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         # the same capability as the disclosed hostile-metaclass boundary.
         import dskit.pipeline.uncertainty_intake as module
 
-        for name in module.__all__:
-            value = getattr(module, name)
+        def immutable(value, where):
+            # Recurse: `([],)` is a tuple whose inner list is freely
+            # mutable, so checking only the outer container would have
+            # made the exhaustiveness claim structurally incomplete.
             if isinstance(value, (type, types.FunctionType)):
-                continue
+                return
             assert isinstance(
-                value, (tuple, types.MappingProxyType)
-            ), f"{name} is mutable public state: {type(value).__name__}"
+                value, (tuple, frozenset, types.MappingProxyType, str, bytes, int, float, bool)
+            ), f"{where} is mutable public state: {type(value).__name__}"
+            if isinstance(value, (tuple, frozenset)):
+                for index, item in enumerate(value):
+                    immutable(item, f"{where}[{index}]")
+            elif isinstance(value, types.MappingProxyType):
+                for key, item in value.items():
+                    immutable(item, f"{where}[{key!r}]")
+
+        for name in module.__all__:
+            immutable(getattr(module, name), name)

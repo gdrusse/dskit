@@ -17043,14 +17043,14 @@ touched files are verified byte-identical afterwards.
 | R5 | registry is a read-only view | covered | +97 |
 | R5 | unusable declarations are a coded refusal | covered | +1 |
 | R4 | demand must be a registered intake | covered | +2 |
-| R4 | authority is the demanded class | **equivalent mutant** | +0 |
+| R4 | authority is the demanded class | **equivalent mutant** (settled, round 5) | +0 |
 | R4 | registry refuses an abstract member | covered | +92 |
 | R3 | `artifact_of` reads the slot | covered | +2 |
 | R3 | `attestation_of` reads the slot | covered | +1 |
 | R3 | `__mro__` not `issubclass` | covered | +2 |
 | R3 | envelope identity by `type()` | covered | +2 |
 | R3 | artifact re-read at use time | covered | +4 |
-| R3 | child fail-closed ordering | covered | +17 |
+| R3 | child fail-closed ordering | covered | +5 (was published as +17; see round 5) |
 | R3 | child calls the function | covered | +1 |
 | R2 | `CLOSED_FAMILIES` refusal | covered | +2 |
 | R2 | `_FINAL_METHODS` seal | covered | +9 |
@@ -17074,3 +17074,165 @@ a `__bases__` rebinding and an `ABCMeta.register` irrelevant.
 
 Nothing about what is ESTABLISHED changed: still no coverage evidence for any
 artifact, still no provenance, still not a root of trust.
+
+### Correction round 5, 2026-09-18 — the seal was one underscore wide; hooks are untrusted; the table is re-measured
+
+Review of candidate `a8c2af9` returned **1 Critical, 2 Major**. This is the
+last round; what follows ends with an honest residual list rather than a clean
+bill.
+
+**Critical — a module-private dict is not a seal.** Round 4 put the registry
+behind a `MappingProxyType`, and `_INTAKES` remained importable:
+`_INTAKES["outcome_band"] = Evil` silently repointed a real capital-sizing
+estimand past the abstractness, name-collision and `artifact_type`-collision
+screens, while the entire `TestTheRegistryIsWriteOnlyThroughItsFrontDoor` class
+passed — it only ever mutated through the public name. The docstring's
+"the ONLY way in" was literally false. The two lenses split on severity
+(Critical versus inside the adjudicated in-process boundary); the overclaim was
+not in dispute.
+
+*Correction.* The store is now a **local of `_sealed_registry()`**, with the
+validation inside the closure, so there is no module attribute to import and no
+importable name that writes without screening. Unregistration is the callable
+`register_uncertainty_intake` RETURNS, so no name in the module can remove an
+intake its caller did not add. **The honest ceiling, stated in the code and
+pinned by a test:** `_register_intake.__closure__[0].cell_contents` still
+reaches the store. That is function-object introspection — the same capability
+as the hostile metaclass this module already declines to defend against — and
+`test_the_honest_ceiling_is_function_introspection_and_is_stated` asserts both
+that it works and that the docstring says so, so the prose cannot drift back
+into claiming impossibility.
+
+**Major — three of five hooks were screened, and only for shape.**
+`artifact_producer()` and `estimand()` were called bare; `registered_producers()`,
+`estimand()` and `artifact_producer()` RAISING propagated out of
+`admission_problems`, through `nodes_capital.validate_inputs` and
+`driver.run_node` — no `try/except` anywhere between — killing a whole
+`dskit.pipeline run` instead of producing an itemized refusal. Reachable
+through the SANCTIONED extension point with an ordinary coding bug: an
+`evidence["estimator"]` where the shipped members write `.get`.
+
+*Correction.* `_ask(authority, hook, *args)` is now the only way a hook is
+called on the use-time path, turning any raise into a `wrong_unit` refusal
+naming the hook and the exception. `_declarations(authority)` reads all four
+class-level hooks ONCE, guarded, and screens each answer's shape; the fifth is
+read the same way at its call site. The constructor's own early screens are
+guarded too, so a broken hook there raises a `ValueError` naming the member
+rather than a bare `RuntimeError`. `register_uncertainty_intake` guards
+`artifact_type()` so a raise becomes the documented `ValueError`.
+
+**Major — a committed audit row did not reproduce, and the method was at
+fault.** The published `| R3 | child fail-closed ordering | covered | +17 |`
+re-measures at **+5**. The cause is not the code but the revert: the fix adds
+`if problems: return problems` before the domain bindings, and the faithful
+revert keeps `return problems + self._binding_problems(...)`. The revert used
+in round 3 replaced the condition with `if False:`, which ALSO discarded the
+accumulated refusals — a strictly larger mutation than the fix it claimed to
+measure. Both are now measured: faithful **+5**, larger **+17**. The row above
+is corrected in place. Two other rows had reverts that were not valid Python
+and produced meaningless counts; they are re-measured too. **The method rule
+this adds: a revert must be valid Python AND no larger than the fix.**
+
+**The disputed row, settled.** The two lenses reached opposite conclusions on
+`| R4 | authority is the demanded class |`. Measured against the REAL module,
+not a re-implementation:
+
+* line-reverting only the `authority` change → **+0**;
+* the `__bases__`-poisoning scenario (`AttestedFalseSignalRate.__bases__ =
+  (AttestedMeanConfidence,)`, both registered) → **REFUSED with 3 problems,
+  identically in the shipped and reverted forms**;
+* instrumenting the branch: `answering == [AttestedFalseSignalRate,
+  AttestedMeanConfidence]` and `any(cls is expected for cls in answering)` is
+  **True**, so the conditional selects `authority = expected` — the same value
+  the unconditional form computes.
+
+*Why the experiments differed.* The bypass was produced by a re-implementation
+of `admission_problems` built from the module's internals, which necessarily
+dropped round 4's registered-demand screen — the very screen that makes the
+guard always-true. *The proof:* `_answering(expected)` selects registered
+classes with `expected in cls.__mro__`; round 4 refuses unless `expected` is
+itself registered; a class is always first in its own `__mro__`; therefore a
+registered `expected` is always in `answering` and the `else` branch is
+unreachable. **The row stands: equivalent mutant, +0.**
+
+**The re-measured table, against this candidate.**
+
+| round | fix reverted | verdict | extra failures |
+|---|---|---|---|
+| R6 | registry store is closure-local | covered | +52 |
+| R6 | hook raises become coded refusals | covered | +8 |
+| R6 | hook answer SHAPES are screened | covered | +4 |
+| R4 | demand must be a registered intake | covered | +2 |
+| R4 | authority is the demanded class | **equivalent mutant** | +0 |
+| R4 | registry refuses an abstract member | covered | +4 |
+| R3 | `artifact_of` reads the slot | covered | +2 |
+| R3 | `attestation_of` reads the slot | covered | +1 |
+| R3 | `__mro__` not `issubclass` | covered | +1 |
+| R3 | envelope identity by `type()` | covered | +2 |
+| R3 | artifact re-read at use time | covered | +4 |
+| R3 | child fail-closed ordering | covered | +5 |
+| R3 | child calls the function | covered | +1 |
+| R2 | `CLOSED_FAMILIES` refusal | covered | +2 |
+| R2 | `_FINAL_METHODS` seal | covered | +9 |
+| R2 | registration uniqueness | covered | +97 |
+| R2 | `unknown_producer` screen | covered | +11 |
+| R2 | `excluded_types` diamond refusal | covered | +1 |
+| R2 | same-`artifact_type` exemption deleted | covered | +2 |
+| R2 | HFDR coefficient field | covered | +1 |
+
+Nineteen covered, one equivalent.
+
+**Minor/Nit, fixed.** The `__all__` walker checked only the outer container, so
+`([],)` would have passed with a freely mutable inner list; it now recurses
+through tuples, frozensets and mapping proxies, and `frozenset` is no longer
+false-flagged as mutable.
+
+### What remains unpinned, and why — ADR-0165's residual list
+
+Stated plainly because an accurate residual list is worth more than a clean
+bill. Nothing below is a defect being deferred; each is a boundary this design
+does not cross, or a limit of what was measured.
+
+1. **No coverage evidence for any artifact.** This module measures nothing.
+   `CoverageEvidence` records what a producer attests, and the demo's attested
+   number was never measured — its evidence id is literally
+   `synthetic-demo-no-measurement-was-performed`. The audit's "Required
+   evidence" section is unmet in full.
+2. **No provenance.** The `unknown_producer` screen establishes that an
+   artifact and its attestation agree on a producer the package has
+   REGISTERED. Nothing imports the named module, re-runs an estimator or
+   verifies a signature, and a hand-built artifact naming a registered
+   producer is admitted — pinned, deliberately, by
+   `test_what_this_does_NOT_establish_is_pinned`.
+3. **Not a root of trust.** ADR-0122's Correction settles why. Concretely: a
+   hostile metaclass can still make an envelope's `problems()` METHOD return
+   `[]` (the module FUNCTION refuses it, and the test asserts both halves);
+   `_register_intake.__closure__` reaches the store; a caller can decline to
+   call this module at all.
+4. **The three producer registries are not this module's to seal.**
+   `FALSE_SIGNAL_ESTIMATORS`, `MEAN_INTERVAL_ESTIMATORS` and `CALIBRATORS`
+   belong to the sibling modules and are open by ADR-0151/0152/0155's design.
+   Anyone who can register a producer there makes it "known" here. That is why
+   the screen's own message says "an open registry", and it is why the claim
+   is acquaintance rather than provenance.
+5. **The registry holds live class references, not a snapshot.** Editing a
+   registered member's hooks after registration changes what the screens read
+   immediately. Mitigated rather than closed: every hook answer is re-read and
+   re-screened at use time, so a mutated hook produces a refusal rather than a
+   crash or a silent admission.
+6. **Suspected but not demonstrated.** The same `__init_subclass__`/registry
+   idiom appears roughly thirty times elsewhere in this repository. The
+   bypasses litigated here — `ABCMeta.register`, `__bases__` rebinding, a
+   reattaching metaclass, a module-private dict — are properties of the idiom,
+   not of this module, so other users of it are probably open the same ways.
+   That was explicitly out of scope for this work and is not evidence about
+   any specific site; it is a lead, stated because omitting it would make this
+   list look better than it is.
+7. **The order-dependent failures in `children/intraday_equities/tests/`**
+   (5 in `test_configs.py` in the four-file battery; ~27 across the whole
+   folder) are pre-existing at base `842d226`, reproduce there, and were never
+   touched. They are not this work's, and they do mean the child folder has no
+   clean whole-folder run to compare against.
+8. **The equivalent mutant** in the table has, by construction, no test that
+   fails when it is reverted. That is what "equivalent" means, and the proof
+   above is what stands in for coverage.
