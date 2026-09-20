@@ -22,6 +22,8 @@ import importlib
 import random
 import types
 
+import pytest
+
 
 def _boom(*_args, **_kwargs):
     """A hook with an ordinary coding bug in it."""
@@ -45,25 +47,36 @@ def test_the_refusal_helper_undoes_a_registration_that_stops_refusing():
     assert "tests_helper_probe" not in UNCERTAINTY_INTAKES
 
 
-def test_the_registry_snapshot_sees_a_hook_mutated_on_a_shipped_member():
+@pytest.mark.parametrize(
+    "hook, replacement",
+    [
+        ("artifact_type", classmethod(lambda cls: int)),
+        ("estimand", classmethod(lambda cls: "mutated_estimand")),
+        ("excluded_types", classmethod(lambda cls: (int,))),
+        ("registered_producers", classmethod(lambda cls: (int,))),
+    ],
+)
+def test_the_registry_snapshot_sees_a_hook_mutated_on_a_shipped_member(hook, replacement):
     """The fixture's REACH, exercised rather than assumed.
 
     Round-8 review: the snapshot compared ``dict(UNCERTAINTY_INTAKES)``, which
     sees a name rebound to a different CLASS and nothing else — so mutating a
     shipped member's hook and never restoring it passed the fixture silently
     and was caught only by whichever unrelated later test happened to overlap.
-    Reverting that widening breaks no test unless something actually leaks, so
-    the reach is pinned here directly instead.
+    Round-12 review: the reach was pinned on ONE hook (``artifact_type``), so
+    the fixture's sensitivity to the other three could be deleted with the
+    suite green. Each of the four hooks is now mutated here, and any of them
+    slipping the net fails its row.
     """
     before = _registry_state()
-    original = AttestedOutcomeBand.__dict__["artifact_type"]
-    AttestedOutcomeBand.artifact_type = classmethod(lambda cls: int)
+    original = AttestedOutcomeBand.__dict__[hook]
+    setattr(AttestedOutcomeBand, hook, replacement)
     try:
         assert _registry_state() != before, (
-            "the snapshot cannot see a registered member's own hooks move"
+            f"the snapshot cannot see a registered member's {hook} move"
         )
     finally:
-        AttestedOutcomeBand.artifact_type = original
+        setattr(AttestedOutcomeBand, hook, original)
     assert _registry_state() == before
 
 
@@ -1777,8 +1790,10 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         dict
             ``"module"``; ``"doc:<dotted>"`` for every docstring at any depth;
             ``"note:<subject>#n"`` per ``#:`` block, ``n`` distinguishing
-            repeats of one subject; and ``"strings:<owner>"`` carrying every
-            non-docstring string constant an owner encloses, in source order.
+            repeats of one subject; and ``"strings:<owner>"`` carrying the
+            ``repr`` of every non-docstring literal an owner encloses, in
+            source order — whatever the literal's type, so a ``bytes`` or
+            numeric constant is pinned exactly like a string one.
         """
         module = importlib.import_module("dskit.pipeline.uncertainty_intake")
         source = inspect.getsource(module)
@@ -1816,7 +1831,16 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
 
     @staticmethod
     def _string_constants(tree):
-        """``{"strings:<owner>": joined text}`` for every non-docstring literal."""
+        """``{"strings:<owner>": joined repr}`` for every non-docstring literal.
+
+        EVERY ``ast.Constant``, not every string one. Round-12 review found the
+        type filter on both sides of the totality assertion at once: a
+        ``bytes`` literal was invisible to this function AND to the independent
+        walk that checks it, so the two agreed on a surface neither could see.
+        The fix is not a wider filter — it is no filter. A literal is pinned
+        whatever it is for, and the oracle has nothing left to share a blind
+        spot with.
+        """
         buckets = {}
         named_of = TestTheRegistryIsWriteOnlyThroughItsFrontDoor._assigned_name
 
@@ -1839,8 +1863,8 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
             for child in ast.iter_child_nodes(node):
                 if child is docstring:
                     continue
-                if isinstance(child, ast.Constant) and isinstance(child.value, str):
-                    buckets.setdefault(owner, []).append(child.value)
+                if isinstance(child, ast.Constant):
+                    buckets.setdefault(owner, []).append(repr(child.value))
                     continue
                 if isinstance(
                     child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
@@ -1987,55 +2011,64 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         'note:_FINAL_METHODS#1': 'fdca5d5ee9a15038',
         'note:_HOOKS#1': '4ac957da937c3172',
         'note:_REAL_INSTANCE_DICT#1': '92be33912621af8d',
-        'strings:<module>': '9d1a31167c491b08',
-        'strings:AttestedFalseSignalRate.artifact_producer.evidence': 'ee8250fb76e094b3',
-        'strings:AttestedFalseSignalRate.artifact_producer.value': '9e9d1d18fef11867',
-        'strings:AttestedFalseSignalRate.estimand': '7cbc6e80bbf878c0',
-        'strings:AttestedFalseSignalRate.registered_producers': '84cdb981037648c4',
-        'strings:AttestedMeanConfidence.artifact_producer': '5b7e6bf2dc4a32a6',
-        'strings:AttestedMeanConfidence.estimand': 'eb3510d2e9f3d4be',
-        'strings:AttestedMeanConfidence.registered_producers': '84cdb981037648c4',
-        'strings:AttestedOutcomeBand.artifact_producer.provenance': '96d815328a42cb4e',
-        'strings:AttestedOutcomeBand.artifact_producer.value': '2da4837e4646bf77',
-        'strings:AttestedOutcomeBand.estimand': '6b352f1f91206ac2',
-        'strings:AttestedOutcomeBand.registered_producers': '84cdb981037648c4',
-        'strings:AttestedUncertainty._FINAL_METHODS': 'e916ca5bd8a9b984',
-        'strings:AttestedUncertainty._HOOKS': 'beb9f53be698ea60',
-        'strings:AttestedUncertainty.__init__': '5824877a7088fd9b',
-        'strings:AttestedUncertainty.__init__.shape': '514d8361d1551dca',
-        'strings:AttestedUncertainty.__init_subclass__': '9aa5a0cef5b7638d',
-        'strings:CoverageEvidence.__post_init__': '4ab4436d747f81a0',
-        'strings:DecisionDemand.__post_init__': '4a0ea84b3ccdf48e',
-        'strings:HOOK_SHAPES': 'd6e73ccbe75a5e75',
-        'strings:REFUSAL_REASONS': '4bcfda79a17b9352',
-        'strings:UncertaintyAttestation.__post_init__': '85e8f1ef5f767a14',
-        'strings:_REAL_INSTANCE_DICT': '92eb897dbef811d4',
-        'strings:__all__': '89cb128949da7768',
-        'strings:_artifact_problems': 'd4061c06109a7f8c',
-        'strings:_artifact_problems.wanted': 'ca9066873bf335f3',
-        'strings:_ask': '0a0f63e476ec298f',
-        'strings:_check_open_unit': '4704f15d48a31cb8',
-        'strings:_check_stamp': '72809e0caa0262b2',
-        'strings:_check_text': '3e57775728fc8c25',
-        'strings:_coverage_problems': '1a0e20bdc51131d5',
-        'strings:_declarations': 'dea99ea645ec954f',
-        'strings:_identity_problems': '754165e436c4443e',
-        'strings:_producer_problems': '9f7b009dda4526b1',
-        'strings:_producer_problems.known': 'cd14f4034ca2bb6a',
-        'strings:_question_problems': 'e367f50ee01c454b',
-        'strings:_sealed_registry.register': 'ea3fabe01f482e2e',
-        'strings:_sealed_registry.register.detail': '6f49ee1220f4c78e',
-        'strings:_shape_problem': 'd89152334e844b24',
-        'strings:_timing_problems': 'b64ba1fb94101d77',
-        'strings:admission_problems': '7c98041db745d397',
-        'strings:admission_problems.artifact': 'db092579c82a65ac',
-        'strings:admission_problems.attestation': 'c640e0b78bdecdee',
-        'strings:admit_uncertainty': 'a887dc36acd61b11',
-        'strings:artifact_of': 'db092579c82a65ac',
-        'strings:attestation_of': 'c640e0b78bdecdee',
-        'strings:register_uncertainty_intake': 'e3b0c44298fc1c14',
-        'strings:uncertainty_intake': 'c4af93e3565d4052',
+        'strings:<module>': '1c72368c2ef2945f',
+        'strings:AttestedFalseSignalRate.artifact_producer': 'e15cc3b90425e88e',
+        'strings:AttestedFalseSignalRate.artifact_producer.evidence': '140a42631f8500bb',
+        'strings:AttestedFalseSignalRate.artifact_producer.value': '7751b49ce90543ac',
+        'strings:AttestedFalseSignalRate.estimand': 'c0fbdda334ea8e49',
+        'strings:AttestedFalseSignalRate.registered_producers': 'b9398c9307df8eef',
+        'strings:AttestedMeanConfidence.artifact_producer': 'a6d8b47bf701c2d2',
+        'strings:AttestedMeanConfidence.estimand': '04015cdf93290963',
+        'strings:AttestedMeanConfidence.registered_producers': 'b9398c9307df8eef',
+        'strings:AttestedOutcomeBand.artifact_producer': 'e15cc3b90425e88e',
+        'strings:AttestedOutcomeBand.artifact_producer.provenance': '9c0fde8bb91cff71',
+        'strings:AttestedOutcomeBand.artifact_producer.value': 'd581777666dd2460',
+        'strings:AttestedOutcomeBand.estimand': '6745c4755ab8bb90',
+        'strings:AttestedOutcomeBand.registered_producers': 'b9398c9307df8eef',
+        'strings:AttestedUncertainty._FINAL_METHODS': '85f7566a4910b4cb',
+        'strings:AttestedUncertainty._HOOKS': 'd6bcb7698ce623db',
+        'strings:AttestedUncertainty.__init__': 'f65e7bea6cffc1f2',
+        'strings:AttestedUncertainty.__init__.shape': '5b64a7817b14dafe',
+        'strings:AttestedUncertainty.__init_subclass__': 'fba54cdacb3f4c0f',
+        'strings:CoverageEvidence': '3cbc87c7681f34db',
+        'strings:CoverageEvidence.__post_init__': '1d82e0f184734438',
+        'strings:DecisionDemand': '3cbc87c7681f34db',
+        'strings:DecisionDemand.__post_init__': 'ed76f0be6f082b65',
+        'strings:HOOK_SHAPES': 'e83ba09e7281d053',
+        'strings:REFUSAL_REASONS': '2037a308971a2c03',
+        'strings:UncertaintyAttestation': '3cbc87c7681f34db',
+        'strings:UncertaintyAttestation.__post_init__': '27ac0edd974043e0',
+        'strings:UncertaintyAttestation.coverage': 'dc937b59892604f5',
+        'strings:_REAL_INSTANCE_DICT': '3bf137a69eec50e9',
+        'strings:__all__': '308beaa17eab3146',
+        'strings:_artifact_problems': 'b5158c0d21aa3002',
+        'strings:_artifact_problems.wanted': '8169dca4451cdcbb',
+        'strings:_ask': '80be032267742d8b',
+        'strings:_check_open_unit': 'c5340a16d62ad030',
+        'strings:_check_stamp': '9b1da95c476ce2c3',
+        'strings:_check_text': 'ca30d193abc1c1c6',
+        'strings:_coverage_problems': '7c9a95b906fc88f0',
+        'strings:_declarations': '9b0436a08fc8cbd2',
+        'strings:_identity_problems': '9954cf7f01131e6e',
+        'strings:_producer_problems': 'f658db2bb5195aab',
+        'strings:_producer_problems.known': '293d6de7e8a90677',
+        'strings:_question_problems': 'a0f65265dd7c8868',
+        'strings:_question_problems.mine': 'dc937b59892604f5',
+        'strings:_raw': 'dc937b59892604f5',
+        'strings:_sealed_registry.register': '34913a17cf6c7c9d',
+        'strings:_sealed_registry.register.detail': '04431e7ebd2835a9',
+        'strings:_shape_problem': 'decb126461c7b1d6',
+        'strings:_timing_problems': 'ef788ca6f960218d',
+        'strings:admission_problems': '35da120a3f378dd8',
+        'strings:admission_problems.artifact': '3764706bf3d66f5b',
+        'strings:admission_problems.attestation': 'a943fec9e0c5d4d1',
+        'strings:admit_uncertainty': '4f9e46f123d1b124',
+        'strings:artifact_of': '3764706bf3d66f5b',
+        'strings:attestation_of': 'a943fec9e0c5d4d1',
+        'strings:register_uncertainty_intake': '6f49cdbd80e1b95d',
+        'strings:uncertainty_intake': '81b1f6523e0ce817',
     }
+
 
     def test_every_piece_of_prose_in_the_module_is_pinned_by_digest(self):
         """No prose in this module changes without this test failing."""
@@ -2081,7 +2114,12 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         assert sum(1 for k in prose if k.startswith("doc:")) == independent
         # …and the literals are TOTAL, not a sample. Round-10 review found the
         # sibling module's declaration table unpinned for a whole round because
-        # a string constant is neither a docstring nor a comment.
+        # a string constant is neither a docstring nor a comment. NO TYPE FILTER
+        # on either side: round-12 review found this pair sharing one — both
+        # said `isinstance(..., str)`, so a `bytes` literal was invisible to the
+        # collector AND to this "independent" walk, and the assertion passed
+        # over a surface neither could see. An oracle built from the thing it
+        # checks asserts nothing.
         docstrings = {
             id(node.body[0].value)
             for node in ast.walk(tree)
@@ -2094,9 +2132,8 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
             and isinstance(node.body[0].value.value, str)
         }
         every_literal = [
-            node.value for node in ast.walk(tree)
+            repr(node.value) for node in ast.walk(tree)
             if isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
             and id(node) not in docstrings
         ]
         collected = [
@@ -2164,6 +2201,29 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         assert not missing, (
             f"live docstrings the source pin never saw: {missing} — __doc__ was "
             "written at run time"
+        )
+        # BOTH directions. Round-12 review wiped a source docstring's live
+        # `__doc__` to None and the suite stayed green: the walk skips a
+        # target whose `__doc__` is falsy, so it silently stopped reaching
+        # that member, and a check that only asks "did live find anything
+        # source did not" cannot see a live walk that found LESS. A member
+        # this walk stops reaching is exempt from the source pin forever.
+        #
+        # One docstring is genuinely unreachable by `vars()`: `forget`, the
+        # undo closure returned by `register_uncertainty_intake` is defined
+        # inside `register` inside `_sealed_registry`, so nothing on the
+        # module holds it as an attribute. Its docstring is pinned by the
+        # SOURCE digest alone, and a runtime rewrite of a caller-held closure
+        # is the already-declared trusted-reference tier. The coincidence is
+        # asserted, so the day a SECOND docstring becomes unreachable this
+        # fails and someone must decide what should happen.
+        unreached = sorted(
+            key for key in source if key.startswith("doc:") and key not in live
+        )
+        assert unreached == ["doc:_sealed_registry.register.forget"], (
+            f"the live walk never reached: {unreached} — these docstrings are "
+            "exempt from the runtime comparison, so a __doc__ written at run "
+            "time over any of them would go unseen"
         )
         differing = sorted(key for key in live if live[key] != source[key])
         assert not differing, (
@@ -2671,8 +2731,22 @@ class TestTheRegistryIsWriteOnlyThroughItsFrontDoor:
         body = source[source.index("class AttestedUncertainty"):]
         constructor = body[body.index("    def __init__("):]
         constructor = constructor[:constructor.index("\n    @")]
-        assert "_shape_problem" in constructor
-        assert "isinstance(excluded_types, tuple)" not in constructor
+        # Each shape-checked hook is delegated to _shape_problem AT ITS OWN CALL
+        # SITE. A bare "_shape_problem appears somewhere in __init__" check was
+        # defeated by re-implementing one hook's rule inline while leaving the
+        # other on _shape_problem (round-12 review), so the two hooks are pinned
+        # separately. An inline reimplementation of either deletes its call.
+        for hook in ("artifact_type", "excluded_types"):
+            assert f'_shape_problem(type(self), "{hook}"' in constructor, (
+                f"__init__ no longer delegates the {hook} shape to _shape_problem"
+            )
+        # The use-time screen reads the SAME table, keyed by hook — so it must
+        # not spell a shape rule of its own. Pin the read itself.
+        declarations = source[source.index("def _declarations("):]
+        declarations = declarations[:declarations.index("def _artifact_problems(")]
+        assert "HOOK_SHAPES[hook]" in declarations, (
+            "_declarations no longer reads HOOK_SHAPES — the two screens can drift"
+        )
 
     def test_no_other_module_level_state_the_screens_trust_is_mutable(self):
         # Sweep: everything else this module exports that a screen reads is
