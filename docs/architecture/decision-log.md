@@ -18750,3 +18750,589 @@ the specific "records no producer of its own" verdict with the suite green.
 `test_an_artifact_that_records_NO_producer_of_its_own_is_refused_by_name`
 registers a member whose `artifact_producer` returns `None` and pins the
 message. 204 tests.
+
+---
+
+## ADR-0162 — the funds-and-inventory encumbrance seam (`dskit/production/encumbrance.py`)
+
+**Status:** accepted 2026-09-18 under the owner's standing pre-approval of
+tier-1/tier-2 additions for this work (the production-research audit's gaps
+EQ-05 and PM-04, which are one requirement stated twice). Skeptic Phase 0
+applies: this crosses an accounting contract and reads persistent state, so
+actors, authority, identities, transitions, compatibility and non-goals are
+frozen below before RED.
+
+**Context.** `Balance` (`records.py`) already carries `total` and `available`,
+and `PaperAccounting.snapshot` already builds one per folded currency — but it
+writes `available=total` unconditionally. Nothing in the package derives
+`available` from what is outstanding. `Accounting.classify` computes signed
+exposure to LABEL a proposal's risk effect; `guards.Exposure`/`ExposureAfter`
+value working orders for a LIMIT check; `cashflows.py` schedules EXTERNAL
+deposits and withdrawals on a calendar. None of the three is a cash reservation
+ledger, and `"buying_power"` exists only as an uncomputed metrics label, as an
+externally supplied child input, and as a solver bound — never as something
+derived from committed funds.
+
+The word "reserve" is already spoken for four times in this tree:
+`arming.ReductionRights.reserve` (a single-use authorization right),
+`ledger.reserve_once` (an idempotent id claim), `resilience.RateLimiter`'s
+`reserved` cancel lane, and ADR-0157's authorization reserve (the onboarding
+admission ledger). None of them is brokerage cash. This decision therefore uses
+**encumbrance** throughout — a claim held against the account's own resources
+by something not yet finished. The noun is new to the repository, so no reader
+has to disambiguate it from the four.
+
+**Actors and authority.** The fold (`SeriesState`) remains the sole owner of
+positions, working orders and balances; the encumbrance seam DERIVES and never
+books. The injected history collaborator (`reconcile.LedgerHistory`) remains
+the sole source of fills. The seam mints no record kind, takes no lock and
+writes nothing, so it adds no authority and cannot corrupt the chain. The
+settlement period, the balance basis, margin, borrow and locate are owner and
+venue facts: the package holds none of them, and refuses when one is needed and
+absent.
+
+**Decision.**
+
+1. A new tier-1 module `dskit/production/encumbrance.py` holds one structural
+   ABC, `EncumbrancePolicy`, with two `@abstractmethod` hooks —
+   `encumber(state_view, at_ms, history)` and
+   `borrow(instrument, qty, state_view, at_ms)` — plus two concrete
+   base-owned methods: `balances(...)`, the ONE owner of
+   `available = total - committed - unsettled`, and `admit(...)`, the ONE
+   owner of "may this proposal be committed".
+
+2. `EncumbrancePolicy` is a seam with a TABLE, not a §4.3 registry — the
+   `readiness.Evidence`, `report.ReportEmitter` and `metrics.EventAdapter`
+   precedent. No document key selects an encumbrance policy in this slice, and
+   a registry would add a §4.3 family nothing selects (and a twenty-fifth row
+   to the pin `test_oop.py` holds). `ENCUMBRANCE_POLICIES` maps the two core
+   names to their classes and is what `_PARAMS` resolves against.
+
+3. Two core policies. `UndeclaredSettlement` is the null object: it encumbers
+   nothing, so `balances` returns `available == total` through the SAME
+   arithmetic rather than through a special case, and it touches no history.
+   Its `admit` REFUSES — an account with no declared convention may report the
+   legacy figure but may never authorize a commitment against it.
+   `CashSettlement` is the real one: it requires `settlement_lag_ms` and
+   `balance_basis`, neither with a default, and refuses at construction when
+   either is absent.
+
+4. `BALANCE_BASES = ("trade_date", "settlement_date")` joins `vocab.py`, where
+   every closed set lives. Whether the balance a series folds already reflects
+   a fill at trade time is a venue and operations fact this package cannot
+   know: `SeriesState` moves `balances` only on `cash_flow`, yet a
+   reconciliation `adjustment` can sync folded cash to venue cash. Guessing
+   either way is the invented formula this ADR refuses to write, so the basis
+   is declared and dispatched through a table keyed by the vocabulary.
+
+5. `EncumberedAccounting(PaperAccounting)` lives in the new module, declares
+   `_PARAMS = ("encumbrance",)`, resolves its policy from the table and
+   overrides ONE new hook, `PaperAccounting._balances(state_view, at_ms)`.
+   `accounting.py`'s only change is extracting that hook out of `snapshot`
+   with an identical body. The import arrow points `encumbrance -> accounting`
+   and never back.
+
+6. **Deriving `available` makes it visible; a guard is what makes it
+   binding.** Two `Measure` subclasses live in the same module —
+   `SettledFundsShortfall`, which reads `AccountState.balances`, and
+   `UncommittedUnitsShortfall`, which reads its positions and working orders
+   — and a `Limit` over either, bounded at `{"max": "0"}`, refuses a proposal
+   that reaches past what is free. They run inside the guard chain's recorded
+   barriers, and because every leg re-snapshots the account (§5.8.1's fresh
+   fold) the second lead of a tick measures against what the first already
+   holds. Both are referenced by `pkg.module:Class` rather than registered:
+   `MEASURE_KINDS` lives in `guards.py`, which this module imports, and a
+   registration performed by a lazily imported module would make the
+   registry's contents depend on import order. Neither is scalable —
+   shrinking an order to fit the cash is an execution decision this package
+   has no mandate to invent — so `on_breach` is `refuse`, `hold` or `pause`.
+   The shortfall rules have ONE owner, shared with `admit`, so a guard chain
+   and a direct caller can never disagree about whether a proposal fits.
+
+**Identities and transitions.** An encumbrance has no id and no lifecycle of
+its own: it is a pure function of `(StateView, at_ms, history)`. Its
+transitions are the order and fill transitions the fold already owns. A working
+order — `pending`, `open`, `partial`, `pending_cancel` or `unknown` — holds its
+commitment; only a `TERMINAL_STATUSES` member releases it; and the FILLED
+portion of a partial leaves `remaining_qty` and reappears as a settlement
+obligation through the fill history, never as free cash. `unknown` is
+deliberately not terminal, so an uncertain remainder stays encumbered — §5.0's
+"the absence of certainty, not an end", applied to money.
+
+**Restart, and the statelessness it rests on.** Nothing is held in memory.
+`StateView` is rebuilt by `SeriesState`/`Recovery` from the durable snapshot
+plus the chain, and the fills come from the chain through `LedgerHistory`;
+re-deriving at the same `at_ms` over the same chain therefore reproduces the
+same encumbrance, which is what "survives restart" means here. No parallel
+store is introduced, and there is no in-memory reservation that a crash could
+lose or double-count. The load-bearing half is that every policy answers from
+its arguments ALONE: `compose.py` builds the accounting object, and therefore
+its policy, once per serve process rather than once per tick, so a policy that
+remembered an answer would freeze `available` at the first tick's value for the
+process lifetime and silently permit unlimited over-commitment afterwards. That
+is a contract of the seam, not a property of one implementation, so it is
+asserted by handing ONE instance different folds, different instants and
+different histories and requiring different answers.
+
+**The statelessness audit, and where its boundary actually is.** `encumber`
+takes THREE arguments — the fold, the instant and the history — so a cache can
+be keyed on any of them, and a claim about what the tests catch is worth
+nothing unless it was measured. Each row below is a cache installed in
+`CashSettlement.encumber`, run against `tests/production/test_encumbrance.py`,
+and reverted; `family` counts failures under `-k "moving or moves"` and `file`
+counts them over the whole file. Measured at this decision's candidate, and a
+RECORD of an audit rather than a live gate — a later change can move these
+numbers without anything failing.
+
+| cache key | family f/p | file f/p | caught by |
+|---|---|---|---|
+| `(id(self), at_ms, id(state_view), id(history))` | 8/4 | 9/79 | the whole moving-fold family |
+| shape digest over the four container lengths | 6/6 | 8/80 | the value-only members |
+| key sets plus per-element `id()` of orders and positions | 6/6 | 9/79 | the value-only members |
+| `(id(self), at_ms, economic_seq, head_seq, head_hash)` | 4/8 | 11/77 | the unsized-intent member — an `intent` is not economic, so the counters stand still while the fold moves |
+| `(economic_seq, head_seq)` alone | 9/3 | 36/52 | almost everything |
+| `(id(self), at_ms // 1000, id(state_view), id(history))` | 8/4 | 9/79 | the whole moving-fold family |
+| `(id(self), at_ms, id(balances proxy), id(working proxy))` | 8/4 | 9/79 | the whole moving-fold family |
+| content hash of BALANCES only, history by identity | 6/6 | 9/79 | the working-order and history members |
+| full content hash of the VIEW, history by identity | 2/10 | 2/86 | the two history-content members |
+| content hash of ALL THREE arguments | 0/12 | 1/87 | **NOT CAUGHT** |
+
+The last row is the boundary, and it is narrower than it first looks: the
+uncoverable case is a content hash over all three arguments, NOT over the fold.
+A cache thorough on the fold but identity-only on the history was invisible to
+every moving-fold test until this decision added a history-content axis,
+because the one test that moved history content had always moved a container
+shape with it. Its single remaining `file` failure is an artifact of the
+mutant, which calls `history.fills` a second time to build its own key and so
+trips the "asked once" test; it is not a stale answer. A cache keyed on the
+values of all three arguments cannot return an answer that disagrees with the
+values, so there is nothing left to catch — that, and nothing weaker, is what
+"no test can see this" means here.
+
+**Compatibility.** `PaperAccounting` keeps `available == total` exactly, for
+every existing document, because the extracted hook's body is unchanged and no
+existing document names the new class. The new behaviour is reached only by
+explicitly selecting `EncumberedAccounting` and declaring a policy; `_PARAMS`
+grows from `()` to `("encumbrance",)` on the SUBCLASS only, which loosens
+nothing on the base and refuses nothing a base document used to allow. A silent
+change to `available` under every existing document was rejected for exactly
+this reason: an operator reading a narrower `available` that no document asked
+for is a behaviour change nobody approved.
+
+**Non-goals.** No margin, borrow, locate or short-sale modelling beyond the
+`borrow` refusal hook, which core answers with a refusal naming the instrument.
+No corporate actions and no cash distributions. No fee or slippage estimate
+inside a commitment — a commitment is `remaining_qty * limit`, and a market
+order with no declared price REFUSES rather than being valued by a guess. No
+multi-currency attribution: an order carries no currency, so a balance set
+spanning currencies refuses, exactly as `PaperAccounting.value` already does.
+No inventory settlement — only cash settles, and units committed to a working
+sell are the only inventory encumbrance. No document key, no rung-table row and
+no `ACCOUNTING_KINDS` registration; wiring any of them is a separate decision
+that would move document identity, and registering the strategy as a core kind
+would hand the simulated rungs a kind their row forbids. Reachability is
+therefore the ordinary child-class one and is pinned by test: a `live` or
+`live_limited` document reaches the strategy as
+`dskit.production.encumbrance:EncumberedAccounting`, and a `shadow` or `paper`
+document naming it is REFUSED at construction, because §5.13.1's row admits
+`paper` and no other. No child is wired. A
+proposal whose size the fold cannot see — a `StateView.pending` client ref,
+whose intent has landed but whose `order_event` has not, and whose quantity the
+view does not carry — makes `admit` refuse rather than under-encumber. And one
+pin's REACH is worth stating: the AST check that a `Measure` reads no economic
+attribute off `state.view` scans `guards.py` only, so the two measures this
+decision adds comply by inspection rather than by that gate. Widening the scan
+is systemic work, the same shape as `test_oop.py`'s instantiation scan not
+seeing a bare-table seam, and belongs to whoever widens it — not here.
+
+**Consequences, stated as enforced versus merely available.** ENFORCED by a
+running `ServeLoop`, once a document declares the limits: a proposal reaching
+past the account's available funds, and a sell reaching past the instrument's
+uncommitted units. Both run through `GuardChain`, so a breach takes a recorded
+verdict on the chain like every other guard finding, and the fresh fold per leg
+is what stops two concurrent leads spending one balance twice.
+
+NOT enforced by those limits, and the gap an operator has to know about: an
+outstanding intent the fold cannot size. A client ref that has an `intent` and
+no `order_event` yet sits in `StateView.pending`, which carries refs and not
+quantities, so its commitment is unknown. `EncumbrancePolicy.admit` refuses
+outright while any is outstanding; a `Limit` over either measure returns
+`allow`, because §5.8.1 gives a `Measure` `state.account` and bars it from
+`state.view`. A loop enforcing ONLY the two limits therefore has ZERO
+protection against an unsized intent — the two entry points genuinely disagree
+on that one input, and they disagree by design rather than by defect. This is
+INHERITED from the pre-existing `Measure`/`state.view` split, not introduced
+here. What is missing is the DECISION to close it, not the authority: `pending`
+is not one of `vocab.ECONOMIC_ATTRS`, and Measures already read
+`state.view.decision_history` — `DecisionCount`, `IdenticalCount` and
+`DirectionChanges` each reach it through `guards.py`'s module-level `_history`
+helper. (`guard_holds` is read only by `Limit.value` and `GuardChain`, which
+are the `Guard` family rather than Measures, so the precedent rests on
+`decision_history` alone.) A measure over the pending refs is therefore already
+in contract and would need no new permission — only an owner choosing what
+bound to hold them to.
+
+AVAILABLE but not enforced by the loop: `EncumbrancePolicy.admit` itself,
+which answers for a whole slate in one call and is what a child's proposer or
+optimizer consults before it emits; and the borrow hook, which `admit` reaches
+and a guard does not, for the same snapshot-only reason — a margin child that
+can locate stock raises the bound its limit carries instead. A document that
+declares neither limit gets the derived figure on its balances and no
+protection from it; that is a configuration choice, and the two limits are what
+a readiness checklist should require.
+
+Both children (equities EQ-05, pmquant PM-04) wrap ONE seam instead of writing
+two. The audit's acceptance test is exercised against core alone: two leads
+against one scarce balance, a partial fill whose remainder is `unknown`, a
+restart, and the two refusals (unavailable borrow, insufficient settled funds).
+Nothing here establishes broker conformance, and this package asserts no
+settlement period, margin rate or borrow rule.
+
+### Correction round 6, 2026-09-19 — enumerate the INPUTS, not the defences
+
+Round-5 review returned **0 Critical, 4 Major**, and the shape of the register
+is the finding: five rounds each added one hand-written statelessness axis,
+each closed one layer, and each left the next exposed. The fourth round's axis
+was thorough on the POLICY seam, where `history` is an argument. The defect was
+one level up.
+
+**Major — a cache keyed on every argument the method DECLARES.** `loop.py` and
+`leg.py` hold an `EncumberedAccounting` and call
+`accounting.admit(proposal, state_view, at_ms)` — a claim round-6 review
+showed is FALSE and which is corrected in round 7 below; the shape of the
+cache defect is unchanged, but `loop.py` and `leg.py` reach the accounting
+object through `.snapshot()`, `.classify()` and `.value()`, never `.admit()`.
+`history` is a constructor
+collaborator reached through `self._history` and appears in no signature on
+that path, so:
+
+```python
+key = (id(self), id(proposal), id(state_view), at_ms)     # every declared input
+```
+
+silently ADMITS a proposal it must refuse once the fold moves, and it passed
+all **6617** production tests. Same shape for `.encumbrance` and `._balances`.
+
+**Major — a content key over every fill field except `ts_ms`.** `_unsettled`'s
+boundary is `fill.ts_ms + lag <= at_ms`, so `ts_ms` decides whether a fill's
+cash counts at all — and the only test that moved history CONTENT moved `qty`,
+`id` or the fill count alongside it. A key over `fill_id`, `side`, `qty`,
+`price`, `fee` and `instrument`, asking history exactly once, also passed all
+6617. (A first attempt at this reproducer asked history twice and was killed by
+the "asked once" test instead — killed for the wrong reason, which is the same
+defect family in the harness.)
+
+**Major — a working buy's `limit` was covered only accidentally.**
+
+**Major — the counters harness was unfaithful.** `SeriesState._fold` assigns
+`head_seq`/`head_hash` for EVERY record it takes and increments `economic_seq`
+only for an economic one. The harness moved all three together and froze all
+three for a "non-economic" move — a combination no real fold produces, so a
+cache keyed on `head_seq` alone was credited with a miss it would never have.
+
+**THE STRATEGY CHANGE, which is the substance of this round.** A sixth axis
+would have closed the accounting layer and left the seventh. So the artefact
+changed: instead of enumerating the DEFENCES, the suite now enumerates the
+INPUT SPACE. `DEPENDENCIES` carries one row per component the derived book's
+answer depends on — the instant, each view member, each working-order field,
+each fill field, each proposal field — and each row moves exactly that
+component, through the CALLER-FACING entry point, with every object identity
+asserted unchanged. A cache keyed on any proper subset of those inputs fails
+whichever row names the omitted one, **whichever subset an implementer picks,
+without that cache having been written down anywhere.**
+
+Two things make it more than a longer list:
+
+* `test_the_dependency_table_names_every_field_read` checks the table against
+  `dataclasses.fields` of `Fill`, `OrderState`, `Position` and `Proposal`.
+  Every field is either exercised by a row or declared unread in `NOT_READ`
+  WITH A REASON, and the two tables must be DISJOINT — mutation found that the
+  first version was an `OR` either side satisfied, so `NOT_READ` could retire a
+  live dependency. `ts_ms`, the round-5 Major, is exactly the field an
+  unchecked table loses.
+* `test_the_harness_moves_the_counters_the_way_the_real_fold_does` measures the
+  fold's own rule on a real `SeriesState`, folding a real `intent` and a real
+  `order_event`, rather than restating §5.8.1 beside the harness.
+
+**Measured, not asserted.** Every cache above, installed on the real path, is
+now killed by the gate: the three declared-argument caches (6, 15 and 2
+failures), the `ts_ms`-blind content key (77), a view-content key with history
+by identity (11), and a key over the fold counters (13). Reverting the `limit`
+valuation kills 5; reverting either half of the counters fix kills the harness
+pin. One row failed when first written — `proposal.instrument` moves no answer
+for a BUY, because `admit` routes a buy to the cash judge — so rows carry a rig
+per row rather than one shared scenario that quietly cannot exercise half of
+them. That failure is kept as the reason the table is shaped this way.
+
+**What this does NOT establish.** The gate covers the inputs the CASH policy
+reads. A margin policy reading a field `NOT_READ` currently excuses would need
+its own rows, and the completeness check would demand them. The gate also says
+nothing about whether the two limits are DECLARED by any document; that is
+still the configuration choice the Consequences section above describes.
+
+### Correction round 7, 2026-09-19 — the space is ENTRY POINTS x INPUTS
+
+Round-6 review returned **0 Critical, 2 Major, 1 Minor, 3 Nit**, and it
+independently re-derived "11 mutations, 11 killed" and confirmed the
+dependency table complete against every field the policy reads. The strategy
+change was right and the table was right. **The COVERAGE was lopsided**, and
+that is the finding.
+
+**Major — one row deep on `_balances`.** Each row named ONE entry point, and
+the result was 13 rows through `encumbrance`, 4 through `admit`, and exactly
+ONE through `_balances`. So a cache on `_balances` keyed on the working-order
+KEY SET rather than their field VALUES survived all 6776 tests — and
+`_balances` is the hook `PaperAccounting.snapshot` calls to build the balances
+that `SettledFundsShortfall` reads, which is dskit's OWN live guard path. In
+operation a working order's `remaining_qty` is rewritten in place under the
+same `client_ref` on every partial fill, so that cache would keep reporting a
+stale `available` across a leg's re-checks within one tick: a reported
+`available` that overstates buying power, which is this module's own
+definition of Critical. The same shape on `admit`, where all four rows were
+`proposal.*`: a cache omitting `state_view.pending`, or `state_view.balances`,
+also survived.
+
+*Correction.* A row now names EVERY entry point its move must change, the test
+parametrises over the cross product, and `_NOT_MOVED` carries a REASON for
+every cell that is deliberately not asserted. A cell is in one table or the
+other; there is no third place. So a new row cannot be added without saying
+what it does at every entry point, and the thin column is asserted to be thin
+no longer. Measured: all three caches that survived the old gate now fail it —
+10, 13 and 13 tests. `_balances` went from 1 row to 13.
+
+*The gate found an error in its own table while being written.* `fill.fee` was
+declared to move `admit`; it does not. A larger fee on a SELL reduces its
+proceeds, so it LOWERS unsettled and RAISES available, and a rig that admits
+exactly still admits with more room. That cell is excused now, with the
+reason, and the episode is the argument for the matrix: the old table could
+not have asked the question.
+
+**Minor — this entry stated a call graph that does not exist.** Round 6 wrote
+that "`loop.py` and `leg.py` hold an `EncumberedAccounting` and call
+`accounting.admit(...)`". They do not: they reach it through `.snapshot()`,
+`.classify()` and `.value()`. This entry's own earlier Consequences section
+had it right — `admit` is "what a child's proposer or optimizer consults" —
+and the two disagreed for a round. Corrected in place above. The defect the
+round fixed is unchanged in shape and is, if anything, more serious than the
+prose said: the live path runs through `_balances`, the column that was one
+row deep.
+
+**Nit, pre-existing and outside the round-6 diff, found by reading this entry
+against the code:** §1 named three `@abstractmethod` hooks including
+`fill_horizon_ms()`. No such hook exists anywhere in the repository; the
+tested set is `{encumber, borrow}`. Six rounds did not catch it. Corrected.
+
+**Major (second lens) — the gate proved SENSITIVITY, not CORRECTNESS.** Every
+row asserted `before != after`. That shows the named component is SENSED; it
+says nothing about the answer being RIGHT. Drop the `instrument ==` filter from
+`_held_units` and `_committed_units` — so units are summed across every
+instrument — and all 6776 tests pass. The reason is structural: the rig held
+ONE position and ONE working order, and with 0 or 1 live positions "sum
+filtered by instrument" and "sum everything" are indistinguishable. An
+instrument-blind sum still MOVES when an instrument changes, so each row's own
+assertion was satisfied by the WRONG new answer.
+
+The consequence is this module's own Critical bar: a per-instrument `available`
+inflated by units held elsewhere, and `UncommittedUnitsShortfall` — which
+reaches these same two functions independently — admitting a naked sell.
+
+*Correction.* A rig holding TWO instruments at once, and rows that assert the
+VALUE. Written out by hand rather than read back from the code: INS1 holds 10
+with only a working BUY against it, which commits no units, so 10 are
+available; INS2 holds 4 with a working SELL of 3, so 1 is. An instrument-blind
+sum reports 14 for both. A second test states the consequence as an admission:
+a sell of 4 on INS2 must refuse, and exactly 1 must still admit. Both
+mutations now die.
+
+**Minor (second lens), recorded as a LIMIT rather than fixed.** A cache keyed
+on the OUTPUT of `effective_fills` and omitting `status` survives the
+`fill.status` row, because `effective_fills` already drops a reversed fill from
+its output, so list membership carries the change. The row proves status is
+load-bearing end to end; it does NOT prove a status-blind key is safe at that
+one placement. Stated in the table beside the row rather than papered over.
+(Round 8 corrected the sentence that used to end this paragraph, which
+speculated that a key built BEFORE `effective_fills` "would likely not be"
+covered. Built and run, such a key fails the `fill.status` row at BOTH entry
+points plus two more, because the pre-filter fill list differs only in
+`status`. The speculation was written into the code comment as well and is
+corrected there too.)
+
+**Nit (second lens).** The completeness check walked the four record types and
+not `StateView` itself, so a future read of `breaker` or `reduction` inside the
+policy would be caught by nothing. All ten remaining view fields are declared
+unread with reasons now — "not a plausible input" is the reasoning the Position
+escape clause used, so they are declared rather than omitted.
+
+**Nit.** `Rig.identities()` did not include the order records, so a future row
+using `dataclasses.replace` instead of `_set` would swap a record without the
+identity guard noticing. Added.
+
+### Round 8 correction — an aggregation over one element is every aggregation
+
+Two independent fresh-context lenses on `909269d`; the second was clean on
+Critical and Major. All findings are closed here.
+
+**Major (first lens) — same-key aggregation was SENSED but never value-pinned.**
+Every rig held at most one working order per key, and `sum`, `max`, `first` and
+`last` are the same function over a one-element sequence. So `_committed_units`'
+sum could become a max and `_committed_cash`' sum could become last-wins with
+all 136 tests green. Last-wins is the dangerous one: it UNDERSTATES what is
+committed, so it OVERSTATES buying power and admits a buy the account cannot
+fund.
+
+`_two_orders_per_key_rig` now holds two working buys in one currency (100 + 60
+against 1000, so available is 840) and two working sells in one instrument
+(3 + 2 against 10 held, so 5 are free), with the arithmetic derived in the
+docstring and every wrong aggregation's answer tabulated beside it — 900, 900
+and 940 for cash, 7, 7 and 8 for units, all distinct from the right answer,
+which is what makes the assertions bite. Its history is EMPTY on purpose: a
+value pinned through two moving parts does not say which one is wrong. Four
+admission rows state the consequence at the boundary — exactly 840 admits, 850
+refuses, and 900 (which last-wins would have called affordable) refuses.
+
+**The round-7 sweep's own survivor, closed.** `_sole_balance`'s `len(rows) != 1`
+relaxed to `< 1` survived everything, because nothing built a second balance row
+anywhere it was READ. Through `EncumberedAccounting` nothing can — `_one_currency`
+refuses a multi-currency view before the book is derived. But
+`SettledFundsShortfall` is a `Measure` over whatever `TickState` the guard chain
+is handed, and that account need not have come from this policy. The account is
+therefore built directly in the new row, which is the shape that reaches the
+helper.
+
+**A second survivor, and why it is not an equivalent mutant.** `_held_units`'
+sum replaced by first-match survived all 143 tests. The function's own docstring
+says the sum is equivalent to picking one only BECAUSE `PositionBook.positions()`
+is keyed by instrument today, and is written as a sum so a source that can
+duplicate is read safely. That is a dependency on another component's shape
+stated in prose and pinned by nothing. It is pinned now: two rows for one
+instrument total 14, first-match would say 10, and a sell of 14 is exactly
+covered while 15 is not.
+
+**Minor (first lens) — an excuse table that was form-checked, not truth-checked.**
+`test_every_entry_point_by_input_cell_is_answered` proved every cell of
+ENTRY POINTS x INPUTS is either asserted or excused and that the two sets are
+disjoint. Pure form: an excuse that was simply WRONG passed it, hiding a real
+dependency behind a sentence. Every excused cell now performs its row's move and
+asserts the reading really is unchanged. **It found a false excuse on its first
+run**: `order.side` x `inventory` was excused as "funds and proposal inputs do
+not move the units book", but a working buy becoming a sell commits units it
+never held, moving INS1 from 0 available to -10. That cell is now an asserted
+dependency.
+
+**Minor (first lens) — a claim in the table that was empirically false**, and the
+same claim in this entry: see the corrected paragraph above.
+
+**Nit (first lens).** `_balances` went from 1 row to 13, not 12. Corrected above.
+
+Round-8 sweep: twelve mutations over the two aggregations, the two balance
+guards, the instrument filters and the commitment basis — all twelve killed.
+208 tests in `tests/production/test_encumbrance.py`.
+
+### Round 9 — laws, not a seventh axis
+
+The standing instruction for this seam was that eight rounds of hand-written
+rows had each closed one layer and left the next exposed, and that it needed a
+different verification strategy rather than another axis. Three properties,
+generated over by hypothesis against the real fold:
+
+- **Partition invariance over working orders.** Splitting one order into two
+  halves that add up to it changes nothing a caller reads.
+- **Partition invariance over held positions.** Same, for a position row.
+- **Permutation invariance.** The order the fold lists its rows in changes
+  nothing.
+
+A `sum` has all three. `max`, `first`, `last` and any early-returning scan have
+none of them. Measured: with the three laws run ALONE — every hand-written row
+deselected — all seven aggregation mutations die (`_committed_units`,
+`_committed_cash` and `_held_units` × sum→max, sum→last, sum→first). Round 8
+needed one purpose-built rig per aggregation to kill three of those; the laws
+kill all seven and did not have to name a single input to do it, so a field
+added later that breaks either law fails here without anyone writing a row.
+
+They are compared by VALUE, never by `str`: `Decimal("0.5") + Decimal("0.5")`
+prints `"1.0"` where the undivided row prints `"1"`, and a string comparison
+fails a law that holds. `Decimal.__eq__` is numeric, so a figure that really
+moved still fails. This was found by the laws themselves on their first run.
+
+211 tests; `tests/production` + `tests/production_libs` 6874 passed.
+
+### Round 10 — the laws widened, and they found a defect in shipped prose
+
+The three round-9 laws read only the derived book. A law that held for the
+figures while `admit` disagreed would be a law about the wrong thing, so
+`_readings` now takes all FOUR caller-facing reads: the funds row, the
+inventory book, `unsized_refs`, `admit` over a held-constant buy and sell, and
+`_balances` as `PaperAccounting.snapshot` reaches it.
+
+Widened, the partition law failed on the first run, and on something no figure
+comparison could have shown: `UncommittedUnitsShortfall`'s refusal renders its
+shortfall as `{qty}`, and `Decimal` keeps its scale — so the SAME shortfall
+prints "9 units" when the fold held one working order and "9.0 units" when it
+held two that add up to the same thing. An operator reading two renderings of
+one number has to wonder which is right, and which one they get depends on
+nothing but how the fold happened to split its rows. `_amount` is the one owner
+of that rendering now, used at all three sites that put a `Decimal` into an
+operator-facing message.
+
+The sweep then found the half the laws cannot reach: dropping `normalize()`
+dies to the partition law, but dropping the `"f"` format spec survives it,
+because no generated fold produces a figure large enough for
+`Decimal.normalize` to answer in exponent notation. A hundred is not an unusual
+shortfall and "1E+2 units cannot be found" is not a message anyone should be
+handed, so `_amount` is pinned BY VALUE over seven hand-written cases as well.
+That is the honest division: a law covers the family, a value pin covers what
+the generator's range cannot reach, and neither pretends to be the other.
+
+218 tests.
+
+### Round 12 correction — a partial sell nobody built, a vacuous buy, and a scale leak
+
+Rounds 9 and 10 were UNREVIEWED (the review pass was cut short by a session
+rate limit). Round 12 is that review: two independent lenses returned
+0 Critical, 1 Major and 2 Minor. All three are closed, and closing one of them
+surfaced a fourth defect that is fixed here too.
+
+**Major — `_order_units` read `remaining_qty`, and nothing pinned it.**
+`_order_units` correctly returns `remaining_qty`, but every partial-fill row in
+the suite was a BUY (the cash side), and the laws build no partial fills — so a
+mutation to `qty` (the original size) survived the whole suite, the laws, and
+`tests/production` + `production_libs` (6920 passed) while over-committing a
+partially-filled sell and understating the free units. `test_a_partially_filled_
+sell_commits_only_what_remains_to_fill` now hands the book a sell filled 4 of 10
+and pins committed=6, available=4, and the admission boundary.
+
+**Minor — the buy proposal's `admit` read was vacuous.** The law's buy was
+80 @ 10 = 800 against a 10000 balance; the generator's committed cash is small
+(median ~22, p90 ~624, measured), so available never fell below ~8269 and the
+buy never refused — exactly one distinct verdict across every fold shape. It is
+now 98 @ 100 = 9800, which refuses the moment a fold commits more than 200 and
+admits otherwise, so both halves of the `admit` column vary.
+
+**Minor — instrument-scoping is law-invisible, and that is stated, not fixed.**
+Partition and permutation preserve per-instrument multisets, so an
+instrument-blind sum is invariant under them; the scoping is pinned by the
+hand-written `_two_instrument_rig` rows and was never claimed by the laws. The
+laws kill the AGGREGATION family; they do not claim to kill scoping.
+
+**The fourth defect the straddle exposed.** Making the buy refuse showed the
+cash refusal message put `row.total`, `row.committed`, `row.unsettled` and
+`row.available` into operator-facing prose WITHOUT `_amount`, so a split fold
+printed "less 209 committed … leaves 9791" against "less 209.0 … leaves 9791.0"
+— the same scale leak round 10 fixed on the shortfall, one field over. All four
+are now rendered through `_amount`. The partition law pins the three figures
+that VARY under a split (`shortfall`, `committed`, `available`); `total` is
+always the folded balance and `unsettled` is always zero under the laws' empty
+history, so a second-lens re-review found those two still un-pinned and
+`test_the_cash_refusal_renders_every_figure_through_amount` now pins the whole
+message BY VALUE against a scaled balance and a fractional sell fill.
+
+A third pass found three more unpinned branches, all in the base seam rather
+than the laws, and closed them: `_shortfall`'s `qty is None` guard (deleting it
+turned the documented "declares no qty to fund" refusal into a `TypeError` out
+of `admit` and both guard-chain measures); `UndeclaredSettlement`'s inventory
+`available = position.qty` (mutated to `_ZERO`, every held unit read as free —
+no suite read reads the undeclared book's inventory); and the undeclared
+policy's currency-order `sorted(...)` over a multi-currency fold (nothing else
+can reach two currencies). Each is now pinned by value.
+
+223 tests.

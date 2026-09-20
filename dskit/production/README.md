@@ -340,6 +340,9 @@ dskit/production/
 ├── executor.py        Executor / SubmittingExecutor; Shadow, Paper, ArrivalPaper,
 │                      Recorded, Live; TransportEvidence
 ├── accounting.py      Accounting ABC; PaperAccounting; RecordedAccounting
+├── encumbrance.py     EncumbrancePolicy ABC + the two-policy table; UndeclaredSettlement
+│                      (the null object, available == total); CashSettlement; EncumberedAccounting;
+│                      SettledFundsShortfall + UncommittedUnitsShortfall (the measures that BIND it)
 ├── coordination.py    Lease ABC; ProcessLease; LeasePermit; fencing tokens
 ├── policy.py          ActionPolicy; TransitionPolicy; the composed rule sets
 ├── verifier.py        SubmissionVerifier — the final verify-and-call gate
