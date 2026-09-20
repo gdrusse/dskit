@@ -17016,4 +17016,13 @@ history, so a second-lens re-review found those two still un-pinned and
 `test_the_cash_refusal_renders_every_figure_through_amount` now pins the whole
 message BY VALUE against a scaled balance and a fractional sell fill.
 
-220 tests.
+A third pass found three more unpinned branches, all in the base seam rather
+than the laws, and closed them: `_shortfall`'s `qty is None` guard (deleting it
+turned the documented "declares no qty to fund" refusal into a `TypeError` out
+of `admit` and both guard-chain measures); `UndeclaredSettlement`'s inventory
+`available = position.qty` (mutated to `_ZERO`, every held unit read as free —
+no suite read reads the undeclared book's inventory); and the undeclared
+policy's currency-order `sorted(...)` over a multi-currency fold (nothing else
+can reach two currencies). Each is now pinned by value.
+
+223 tests.
