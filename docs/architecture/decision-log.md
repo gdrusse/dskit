@@ -17009,6 +17009,11 @@ cash refusal message put `row.total`, `row.committed`, `row.unsettled` and
 `row.available` into operator-facing prose WITHOUT `_amount`, so a split fold
 printed "less 209 committed … leaves 9791" against "less 209.0 … leaves 9791.0"
 — the same scale leak round 10 fixed on the shortfall, one field over. All four
-are now rendered through `_amount`, and the partition law pins it.
+are now rendered through `_amount`. The partition law pins the three figures
+that VARY under a split (`shortfall`, `committed`, `available`); `total` is
+always the folded balance and `unsettled` is always zero under the laws' empty
+history, so a second-lens re-review found those two still un-pinned and
+`test_the_cash_refusal_renders_every_figure_through_amount` now pins the whole
+message BY VALUE against a scaled balance and a fractional sell fill.
 
-219 tests.
+220 tests.

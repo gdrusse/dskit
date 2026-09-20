@@ -488,6 +488,32 @@ def test_two_leads_cannot_both_commit_the_same_scarce_cash():
     assert "past the settled funds available" in second[0]
 
 
+def test_the_cash_refusal_renders_every_figure_through_amount():
+    """The cash refusal message, pinned BY VALUE, not by substring.
+
+    Round-12 review: the partition law pins the three figures that VARY with a
+    split (`shortfall`, `committed`, `available`), but `total` is always the
+    folded balance and `unsettled` is always zero under `FakeHistory(())`, so a
+    mutation rendering either raw — or naming the wrong field in `leaves` —
+    survived the whole suite. A scaled balance and a fractional sell fill put
+    scale into every figure, and the exact message pins all five: `_amount`
+    collapses `100.0` to `100` and `25.0` to `25`, and the `leaves` field is
+    the available, not the committed.
+    """
+    history = FakeHistory((fill_body("f-1", "sell", "2.5", "10", GATE_FILL_TS),))
+    scarce = view(
+        balances={USD: Decimal("100.0")},
+        working=(order(ref="lead-1", qty="20", limit="10"),),
+    )
+    refused = cash().admit(
+        proposal(qty="5", limit="10", pid="cand-2"), scarce, T0, history
+    )
+    assert refused == (
+        "proposal 'cand-2' reaches 175 USD past the settled funds available: "
+        "100 total, less 200 committed and 25 unsettled, leaves -125",
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. Inventory is reserved for outstanding sells
 # ---------------------------------------------------------------------------
