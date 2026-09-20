@@ -117,7 +117,22 @@ def test_mio_demo_source_emits_a_release_matched_nonproduction_cap():
     assert pins["cap_producer_document_sha256"] == caps.producer["document_sha256"]
     assert pins["cap_producer_node"] == caps.producer["node"]
     assert pins["cap_evidence_sha256"] == caps.evidence["sha256"]
-    assert pins["bundle_artifact_sha256"] == ForecastBundle.digest(out["bundle"])
+    # THE PIN, and it drifted once already: the `uncertainty` port changed what
+    # the source emits, the document's hash was updated for that round, and a
+    # later round changed the bundle again without re-syncing — so the ONE
+    # document whose stated purpose is "this proves the refusal machinery runs"
+    # refused itself on a stale hash instead (round-11 review; the failure was
+    # present at base 842d226 too, so it was not this branch's regression, but
+    # this branch edited the pin and owns it). Regenerate with:
+    #   python -c "import sys; sys.path.insert(0, 'children/intraday_equities');
+    #   from intraday_equities.testing import SyntheticMioSource;
+    #   from intraday_equities.forecast_bundle import ForecastBundle;
+    #   print(ForecastBundle.digest(SyntheticMioSource('source', {'seed': 0}).run(None, {})['bundle']))"
+    assert pins["bundle_artifact_sha256"] == ForecastBundle.digest(out["bundle"]), (
+        "run-mio-demo.json's bundle_artifact_sha256 no longer matches what "
+        "SyntheticMioSource emits, so the demo document refuses itself before "
+        "it can demonstrate anything. Regenerate it, in this commit."
+    )
     assert pins["bundle_producer_document_sha256"] == out["bundle"][0]["producer"]["document_sha256"]
     assert pins["bundle_producer_node"] == out["bundle"][0]["producer"]["node"]
     assert pins["bundle_model_manifest_sha256"] == out["bundle"][0]["model_manifest_sha256"]
@@ -127,6 +142,78 @@ def test_mio_demo_source_emits_a_release_matched_nonproduction_cap():
     assert caps.deployment_eligible is False
     assert caps.model_release_id == out["bundle"][0]["model_release_id"]
     assert all(caps.allows(row["entity"], row["lead"]) for row in out["bundle"])
+
+
+def test_mio_demo_source_emits_admissible_attested_uncertainty():
+    """The demo's artifacts pass the same intake screens capital applies.
+
+    Round-1 review's Minor: `cap` and `bundle` were asserted here and the
+    `uncertainty` port was not, so nothing held the shipped artifacts to
+    the contract the node enforces. It also pins the round-2 correction —
+    both artifacts are produced by the REGISTERED estimators rather than
+    assembled by hand.
+    """
+    from dskit.pipeline.false_signal import GrenanderLocalFdr
+    from dskit.pipeline.node import class_ref
+    from dskit.pipeline.outcome_interval import BlockConformalInterval
+    from dskit.pipeline.uncertainty_intake import (
+        AttestedFalseSignalRate,
+        AttestedOutcomeBand,
+        DecisionDemand,
+        admission_problems,
+    )
+
+    raw = _raw("run-mio-demo.json")
+    pins = raw["pipeline"]["size"]["params"]
+    out = SyntheticMioSource("source", {"seed": 0}).run(None, {})
+    port = out["uncertainty"]
+    assert sorted(port) == ["false_signal", "outcome"]
+    assert isinstance(port["false_signal"], AttestedFalseSignalRate)
+    assert isinstance(port["outcome"], AttestedOutcomeBand)
+
+    # Produced by the registered estimators, and saying so consistently.
+    assert port["false_signal"].attestation.producer == class_ref(GrenanderLocalFdr)
+    assert port["outcome"].attestation.producer == class_ref(BlockConformalInterval)
+    for slot, member in (
+        ("false_signal", AttestedFalseSignalRate),
+        ("outcome", AttestedOutcomeBand),
+    ):
+        assert (
+            member.artifact_producer(port[slot].artifact)
+            == port[slot].attestation.producer
+        )
+
+    # Admissible at the tick the bundle declares, under the document's own
+    # declared intake policy — the same screens EquityKellyMIO applies.
+    decision_ts = out["bundle"][0]["decision_ts"]
+    demand = DecisionDemand(
+        decision_ts_ms=decision_ts,
+        model_identity=out["bundle"][0]["model_release_id"],
+        max_calibration_age_ms=pins["uncertainty_max_calibration_age_ms"],
+        min_measured_coverage=pins["uncertainty_min_coverage"],
+    )
+    # `admission_problems`, never `.problems()`: the function is what
+    # `nodes_capital.py` calls and what the module tells a consumer sizing
+    # capital to use, and the method is resolved through the envelope's own
+    # class. Asserting through the method tests a path the child does not take.
+    assert admission_problems(port["false_signal"], demand, AttestedFalseSignalRate) == []
+    assert admission_problems(port["outcome"], demand, AttestedOutcomeBand) == []
+
+    # Every row names these artifacts, and its rates ARE the fitted ones.
+    rates = port["false_signal"].artifact
+    for row in out["bundle"]:
+        assert row["uncertainty"] == {
+            "false_signal": port["false_signal"].attestation.artifact_id,
+            "outcome": port["outcome"].attestation.artifact_id,
+        }
+        assert row["pi_hat"] == rates.pi_hat[row["entity"]]
+        assert row["pi_widened"] == rates.pi_widened[row["entity"]]
+        assert row["entity"] in port["outcome"].artifact.lower_offset
+
+    # The attested coverage is a DECLARED demo number; its evidence id says
+    # so, and passing the producer screen does not make it a measurement.
+    coverage = port["outcome"].attestation.coverage
+    assert coverage.evidence_id == "synthetic-demo-no-measurement-was-performed"
 
 
 def test_action_documents_differ_only_in_cadence():

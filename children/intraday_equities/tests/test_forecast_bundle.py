@@ -46,6 +46,12 @@ BUNDLE_PRODUCER = {
     "node": "forecast",
     "output": "bundle",
 }
+#: The calibration artifacts every assembled row names. Identities only —
+#: the artifacts themselves are admitted at the capital boundary.
+UNCERTAINTY_IDS = {
+    "false_signal": "fs-calibration-0001",
+    "outcome": "outcome-calibration-0001",
+}
 
 
 def _input_row(entity, **overrides):
@@ -59,7 +65,7 @@ def _input_row(entity, **overrides):
         "sigma_t": 0.0012,
         "beta_t": 1.1,
         "pi_hat": 0.10,
-        "pi_upper": 0.20,
+        "pi_widened": 0.20,
         "weights": list(WEIGHTS),
         "scenarios": list(SCENARIOS),
         "label": default_label_contract(),
@@ -70,7 +76,7 @@ def _input_row(entity, **overrides):
             "price": ASOF_MS - 61_000,
             "yhat": ASOF_MS - 61_000,
             "pi_hat": ASOF_MS - 500_000,
-            "pi_upper": ASOF_MS - 500_000,
+            "pi_widened": ASOF_MS - 500_000,
             "scenarios": ASOF_MS - 61_000,
         },
     }
@@ -86,6 +92,7 @@ def _bundle(rows=None):
         [_input_row("AAPL"), _input_row("MSFT")] if rows is None else rows,
         producer=BUNDLE_PRODUCER,
         model_manifest_sha256=MODEL_MANIFEST_SHA256,
+        uncertainty=dict(UNCERTAINTY_IDS),
     )
 
 
@@ -185,10 +192,10 @@ class TestForecastBundleAssembly:
             )
             assert weighted_mean == pytest.approx((1.0 - 0.10) * out["mu_gross"])
 
-    def test_pi_hat_and_pi_upper_remain_distinct_outputs(self):
+    def test_pi_hat_and_pi_widened_remain_distinct_outputs(self):
         out = _bundle().rows[0]
         assert out["pi_hat"] == 0.10
-        assert out["pi_upper"] == 0.20
+        assert out["pi_widened"] == 0.20
 
     def test_output_rows_carry_the_shared_tick_identity(self):
         bundle = _bundle()
@@ -204,7 +211,7 @@ class TestForecastBundleAssembly:
 
     def test_the_point_in_time_audit_trail_is_carried(self):
         bundle = _bundle()
-        assert bundle.rows[0]["known_at"]["pi_upper"] == ASOF_MS - 500_000
+        assert bundle.rows[0]["known_at"]["pi_widened"] == ASOF_MS - 500_000
 
     def test_output_rows_bind_label_manifest_and_producer_provenance(self):
         out = _bundle().rows[0]
@@ -212,10 +219,10 @@ class TestForecastBundleAssembly:
         assert out["model_manifest_sha256"] == MODEL_MANIFEST_SHA256
         assert out["producer"] == BUNDLE_PRODUCER
 
-    def test_price_pi_upper_and_entity_pass_through(self):
+    def test_price_pi_widened_and_entity_pass_through(self):
         out = _bundle().rows[0]
         assert out["price"] == 190.0
-        assert out["pi_upper"] == 0.20
+        assert out["pi_widened"] == 0.20
         assert out["entity"] == "AAPL"
 
     def test_the_label_unit_inputs_are_consumed_not_passed_through(self):
@@ -258,7 +265,7 @@ class TestPointInTimeAvailability:
 
     @pytest.mark.parametrize(
         "key",
-        ["sigma", "beta", "reference", "price", "yhat", "pi_hat", "pi_upper", "scenarios"],
+        ["sigma", "beta", "reference", "price", "yhat", "pi_hat", "pi_widened", "scenarios"],
     )
     def test_a_dependency_known_after_the_decision_refuses(self, key):
         bad_known = dict(_input_row("AAPL")["known_at"], **{key: ASOF_MS + 1})
@@ -268,7 +275,7 @@ class TestPointInTimeAvailability:
 
     @pytest.mark.parametrize(
         "key",
-        ["sigma", "beta", "reference", "price", "yhat", "pi_hat", "pi_upper", "scenarios"],
+        ["sigma", "beta", "reference", "price", "yhat", "pi_hat", "pi_widened", "scenarios"],
     )
     def test_a_missing_availability_stamp_refuses(self, key):
         bad_known = {
@@ -380,8 +387,8 @@ class TestOneJointScenarioSetPerTick:
 
     def test_a_missing_required_field_refuses_by_name(self):
         bad = _input_row("AAPL")
-        del bad["pi_upper"]
-        with pytest.raises(ValueError, match="pi_upper"):
+        del bad["pi_widened"]
+        with pytest.raises(ValueError, match="pi_widened"):
             _bundle([bad])
 
     def test_a_lead_outside_the_ten_head_vocabulary_refuses(self):
@@ -396,13 +403,13 @@ class TestOneJointScenarioSetPerTick:
         with pytest.raises(ValueError, match="price"):
             _bundle([_input_row("AAPL", price=0.0)])
 
-    def test_a_pi_upper_outside_unit_interval_refuses(self):
-        with pytest.raises(ValueError, match="pi_upper"):
-            _bundle([_input_row("AAPL", pi_upper=1.5)])
+    def test_a_pi_widened_outside_unit_interval_refuses(self):
+        with pytest.raises(ValueError, match="pi_widened"):
+            _bundle([_input_row("AAPL", pi_widened=1.5)])
 
-    def test_pi_hat_above_pi_upper_refuses(self):
+    def test_pi_hat_above_pi_widened_refuses(self):
         with pytest.raises(ValueError, match="pi_hat"):
-            _bundle([_input_row("AAPL", pi_hat=0.3, pi_upper=0.2)])
+            _bundle([_input_row("AAPL", pi_hat=0.3, pi_widened=0.2)])
 
     def test_fractional_decision_epoch_refuses(self):
         with pytest.raises(ValueError, match="decision_ts"):
@@ -576,3 +583,108 @@ class TestConfirmedCaps:
 
         problems = ConfirmedCaps.problems(_cap_artifact(deployment_eligible="yes"))
         assert any("deployment_eligible" in p for p in problems)
+
+
+# ---------------------------------------------------------------------------
+# EQ-02: the withdrawn upper-bound name, and the calibration identities.
+# ---------------------------------------------------------------------------
+
+
+class TestTheWithdrawnUpperBoundNameIsRefused:
+    """`pi_upper` was withdrawn (ADR-0152) and cannot re-enter by any spelling."""
+
+    def test_a_row_carrying_pi_upper_instead_refuses_with_the_reason_named(self):
+        bad = _input_row("AAPL")
+        bad["pi_upper"] = bad.pop("pi_widened")
+        with pytest.raises(ValueError) as err:
+            _bundle([bad])
+        message = str(err.value)
+        assert "pi_upper" in message and "WITHDRAWN" in message
+        assert "pi_widened" in message
+
+    def test_a_row_smuggling_pi_upper_alongside_pi_widened_still_refuses(self):
+        # The alias/rename attack: keep the valid field so the schema looks
+        # complete, and add the withdrawn name beside it.
+        with pytest.raises(ValueError, match="WITHDRAWN"):
+            _bundle([_input_row("AAPL", pi_upper=0.99)])
+
+    def test_a_known_at_stamp_named_pi_upper_refuses(self):
+        bad = _input_row("AAPL")
+        bad["known_at"] = dict(bad["known_at"])
+        bad["known_at"]["pi_upper"] = bad["known_at"].pop("pi_widened")
+        with pytest.raises(ValueError) as err:
+            _bundle([bad])
+        assert "WITHDRAWN" in str(err.value)
+
+    def test_no_withdrawn_name_is_also_an_accepted_name(self):
+        # The screen and the vocabularies must not disagree: a future edit
+        # that re-admits `pi_upper` as a real field while this mapping still
+        # calls it withdrawn would make the refusal unreachable.
+        from intraday_equities.forecast_bundle import (
+            KNOWN_AT_FIELDS as known_at_fields,
+        )
+        from intraday_equities.forecast_bundle import (
+            WITHDRAWN_FIELD_ALIASES as withdrawn,
+        )
+        from intraday_equities.forecast_bundle import _INPUT_FIELDS
+        from intraday_equities.nodes_capital import BUNDLE_FIELDS
+
+        assert set(withdrawn) & set(_INPUT_FIELDS) == set()
+        assert set(withdrawn) & set(known_at_fields) == set()
+        assert set(withdrawn) & set(BUNDLE_FIELDS) == set()
+        assert set(withdrawn.values()) <= set(_INPUT_FIELDS) | set(known_at_fields)
+
+    def test_the_assembled_row_reports_the_widened_rate_under_its_own_name(self):
+        out = _bundle().rows[0]
+        assert out["pi_widened"] == 0.20
+        assert "pi_upper" not in out
+
+
+class TestTheCalibrationIdentitiesAreRequired:
+    """A bundle names the artifacts its numbers came from, or it refuses."""
+
+    def test_a_bundle_without_the_identities_refuses(self):
+        from intraday_equities.forecast_bundle import ForecastBundle
+
+        with pytest.raises(ValueError, match="uncertainty"):
+            ForecastBundle(
+                RELEASE,
+                [_input_row("AAPL")],
+                producer=BUNDLE_PRODUCER,
+                model_manifest_sha256=MODEL_MANIFEST_SHA256,
+            )
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            {},
+            {"false_signal": "fs-1"},
+            {"false_signal": "fs-1", "outcome": "o-1", "extra": "x"},
+            {"false_signal": "fs-1", "outcome": ""},
+            {"false_signal": 7, "outcome": "o-1"},
+        ],
+    )
+    def test_a_malformed_identity_map_refuses(self, value):
+        from intraday_equities.forecast_bundle import ForecastBundle
+
+        with pytest.raises(ValueError, match="uncertainty"):
+            ForecastBundle(
+                RELEASE,
+                [_input_row("AAPL")],
+                producer=BUNDLE_PRODUCER,
+                model_manifest_sha256=MODEL_MANIFEST_SHA256,
+                uncertainty=value,
+            )
+
+    def test_every_assembled_row_carries_the_identities(self):
+        for row in _bundle().rows:
+            assert row["uncertainty"] == UNCERTAINTY_IDS
+
+    def test_naming_an_identity_is_not_evidence_that_it_is_calibrated(self):
+        # Pins the honest reading of this contract: the bundle accepts ANY
+        # non-empty identity string. What refuses an unattested artifact is
+        # the capital boundary's intake seam, not this class.
+        rows = _bundle(
+            [_input_row("AAPL")],
+        ).rows
+        assert rows[0]["uncertainty"]["outcome"] == UNCERTAINTY_IDS["outcome"]

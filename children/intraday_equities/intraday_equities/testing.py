@@ -10,7 +10,15 @@ import math
 from datetime import timedelta, timezone
 
 from dskit.onboarding import parse_utc
-from dskit.pipeline.node import Node
+from dskit.pipeline.false_signal import GrenanderLocalFdr, SignalEvidence
+from dskit.pipeline.node import Node, class_ref
+from dskit.pipeline.outcome_interval import BlockConformalInterval, BlockResiduals
+from dskit.pipeline.uncertainty_intake import (
+    AttestedFalseSignalRate,
+    AttestedOutcomeBand,
+    CoverageEvidence,
+    UncertaintyAttestation,
+)
 
 from .connectors import AlpacaBars, SchwabBars
 from .final_model import HEADS
@@ -303,6 +311,19 @@ class SyntheticMioSource(Node):
     ``deployment_eligible=false`` and is usable only with the demo's
     ``deployment_mode=false`` plus exact artifact/producer/evidence pins.
 
+    It also emits the two attested uncertainty artifacts the capital step
+    now requires, and BOTH are produced by the registered estimators
+    (``GrenanderLocalFdr`` on a synthetic scramble family,
+    ``BlockConformalInterval`` on synthetic residual blocks) rather than
+    assembled by hand — round-1 review found the reference implementation
+    shipping on the unguarded path, which is the one path a reference
+    implementation must not take. **Their attested coverage is still a
+    declared demo number that nothing measured** — the evidence id spells
+    that out (``synthetic-demo-no-measurement-was-performed``), and
+    passing the producer screen does not change it. They exist to exercise
+    the intake seam, and they are exactly the kind of artifact a real run
+    must replace before any number here means anything.
+
     Parameters
     ----------
     params : dict
@@ -319,7 +340,7 @@ class SyntheticMioSource(Node):
     """
 
     role = "data"
-    outputs = ("scores", "bundle", "portfolio", "cap")
+    outputs = ("scores", "bundle", "portfolio", "cap", "uncertainty")
 
     #: Three names with a clear, deterministic positive edge — enough to
     #: prove the whole gate-then-size loop end to end without needing real
@@ -327,11 +348,40 @@ class SyntheticMioSource(Node):
     _NAMES = ("AAPL", "MSFT", "XOM")
     _N_CLUSTERS = 8
     _N_SCENARIOS = 64
+    #: How many of each name's scenario residuals become the demo's
+    #: calibration panel, as four contiguous two-row blocks.
+    _N_CALIBRATION_ROWS = 8
     _PRICES = {"AAPL": 190.0, "MSFT": 410.0, "XOM": 110.0}
     _MU = {"AAPL": 0.006, "MSFT": 0.004, "XOM": 0.002}
     _SIGMA = {"AAPL": 0.012, "MSFT": 0.010, "XOM": 0.008}
-    _PI_HAT = {"AAPL": 0.08, "MSFT": 0.12, "XOM": 0.18}
-    _PI_UPPER = {"AAPL": 0.15, "MSFT": 0.20, "XOM": 0.25}
+    #: The synthetic signal family the REGISTERED false-signal estimator is
+    #: fitted on. Round-1 review's finding was that this source assembled a
+    #: ``FalseSignalEstimate`` by hand — the reference implementation
+    #: shipping on the unguarded path — so it now calls
+    #: ``GrenanderLocalFdr`` like any other caller and reads the three
+    #: names' rates off the result. A family this size is a DEMO choice:
+    #: ADR-0152 records that local-fdr estimation is an ``m ~ 10,000``
+    #: technique and that at small ``m`` the widened reading pins at 1.0,
+    #: which is why the demo family is 40 rather than 3.
+    _FAMILY_STRONG = 20
+    _FAMILY_NULL = 20
+    _SCRAMBLE_DRAWS = 999
+    #: Identities for the two synthetic calibration artifacts this source
+    #: emits beside the bundle. They exist so the demo exercises the
+    #: capital step's attested-uncertainty seam end to end.
+    _FALSE_SIGNAL_ID = "synthetic-mio-demo-false-signal"
+    _OUTCOME_ID = "synthetic-mio-demo-outcome-band"
+    #: The block-conformal coverage the demo band is calibrated at, and the
+    #: coverage its attestation CLAIMS was measured. Both are illustrative
+    #: demo numbers. **Nothing measured them**, and passing dskit's
+    #: producer screen does not change that: naming a registered estimator
+    #: establishes that the producer is one the package knows, never that
+    #: the attested coverage was ever computed. The evidence id below says
+    #: so in words, so a reader who follows the provenance finds a
+    #: statement that no measurement exists rather than a missing report.
+    _DEMO_COVERAGE_TARGET = 0.6
+    _DEMO_ATTESTED_COVERAGE = 0.94
+    _DEMO_COVERAGE_EVIDENCE_ID = "synthetic-demo-no-measurement-was-performed"
     _RELEASE_ID = "synthetic-mio-demo-release"
     _LEAD = 3
     _CAP_PRODUCER_DOCUMENT_SHA256 = "c" * 64
@@ -373,7 +423,9 @@ class SyntheticMioSource(Node):
         -------
         dict
             ``scores`` (the stat_test's food), plus ``bundle``,
-            ``portfolio``, and a deterministic nonproduction ``cap``
+            ``portfolio``, a deterministic nonproduction ``cap``, and
+            ``uncertainty`` — two attested artifacts whose declared
+            coverage was NOT measured (see the class docstring)
             (EquityKellyMIO's inputs).
         """
         import numpy as np
@@ -382,23 +434,25 @@ class SyntheticMioSource(Node):
         rng = np.random.default_rng(seed)
         weights = [1.0 / self._N_SCENARIOS] * self._N_SCENARIOS
 
-        scores, bundle_inputs = {}, []
+        rates = self._false_signal_rates(seed)
+        scores, bundle_inputs, panel = {}, [], {}
         for i, name in enumerate(self._NAMES):
             scores[name] = {
                 f"c{c}": 0.02 + 0.001 * ((seed + i + c) % 5) for c in range(self._N_CLUSTERS)
             }
             simple_draws = rng.normal(
-                (1.0 - self._PI_HAT[name]) * self._MU[name],
+                (1.0 - rates.pi_hat[name]) * self._MU[name],
                 self._SIGMA[name],
                 self._N_SCENARIOS,
             )
-            target_mean = (1.0 - self._PI_HAT[name]) * self._MU[name]
+            target_mean = (1.0 - rates.pi_hat[name]) * self._MU[name]
             observed_mean = float(sum(weights[j] * simple_draws[j] for j in range(self._N_SCENARIOS)))
             simple_draws = simple_draws - observed_mean + target_mean
             label_sigma = self._SIGMA[name]
             scale = label_sigma * math.sqrt(self._LEAD)
             yhat = math.log1p(self._MU[name]) / scale
             residuals = [math.log1p(float(value)) / scale - yhat for value in simple_draws]
+            panel[name] = residuals[: self._N_CALIBRATION_ROWS]
             known_at = self._ASOF_MS - 2000
             bundle_inputs.append(
                 {
@@ -409,8 +463,8 @@ class SyntheticMioSource(Node):
                     "yhat": yhat,
                     "sigma_t": label_sigma,
                     "beta_t": 1.0,
-                    "pi_hat": self._PI_HAT[name],
-                    "pi_upper": self._PI_UPPER[name],
+                    "pi_hat": rates.pi_hat[name],
+                    "pi_widened": rates.pi_widened[name],
                     "weights": weights,
                     "scenarios": residuals,
                     "label": default_label_contract(),
@@ -418,7 +472,7 @@ class SyntheticMioSource(Node):
                         field: known_at
                         for field in (
                             "sigma", "beta", "reference", "price", "yhat",
-                            "pi_hat", "pi_upper", "scenarios",
+                            "pi_hat", "pi_widened", "scenarios",
                         )
                     },
                 }
@@ -433,6 +487,10 @@ class SyntheticMioSource(Node):
                 "output": "bundle",
             },
             model_manifest_sha256=self._MODEL_MANIFEST_SHA256,
+            uncertainty={
+                "false_signal": self._FALSE_SIGNAL_ID,
+                "outcome": self._OUTCOME_ID,
+            },
         ).rows
 
         portfolio = {
@@ -471,4 +529,74 @@ class SyntheticMioSource(Node):
             "bundle": bundle,
             "portfolio": portfolio,
             "cap": cap,
+            "uncertainty": self._uncertainty(panel, rates),
+        }
+
+    def _false_signal_rates(self, seed):
+        """Fit the REGISTERED estimator on a synthetic scramble family."""
+        import numpy as np
+
+        rng = np.random.default_rng(seed + 10_000)
+        evidence = {}
+        for index, name in enumerate(self._NAMES):
+            evidence[name] = SignalEvidence(
+                statistic=3.0 + 0.5 * index,
+                null_draws=[float(v) for v in rng.normal(0.0, 1.0, self._SCRAMBLE_DRAWS)],
+            )
+        for index in range(self._FAMILY_STRONG - len(self._NAMES)):
+            evidence[f"s{index}"] = SignalEvidence(
+                statistic=2.5 + float(rng.random()),
+                null_draws=[float(v) for v in rng.normal(0.0, 1.0, self._SCRAMBLE_DRAWS)],
+            )
+        for index in range(self._FAMILY_NULL):
+            evidence[f"n{index}"] = SignalEvidence(
+                statistic=float(rng.normal(0.0, 1.0)),
+                null_draws=[float(v) for v in rng.normal(0.0, 1.0, self._SCRAMBLE_DRAWS)],
+            )
+        # Every draw here is independent BY CONSTRUCTION, so declaring the
+        # full family size as the independent-unit count is honest for this
+        # synthetic source and would not be for a real overlapping panel.
+        return GrenanderLocalFdr().estimate(evidence, independent_units=len(evidence))
+
+    def _attestation(self, artifact_id, producer):
+        """Build one synthetic attestation; its coverage was declared, never measured."""
+        return UncertaintyAttestation(
+            artifact_id=artifact_id,
+            model_identity=self._RELEASE_ID,
+            calibration_end_ms=self._ASOF_MS - 120_000,
+            known_at_ms=self._ASOF_MS - 60_000,
+            producer=producer,
+            coverage=CoverageEvidence(
+                target=0.95,
+                measured=self._DEMO_ATTESTED_COVERAGE,
+                evidence_id=self._DEMO_COVERAGE_EVIDENCE_ID,
+                n_units=self._N_CLUSTERS,
+            ),
+        )
+
+    def _uncertainty(self, panel, rates):
+        """Build the demo's two attested artifacts, keyed by the capital node's slots."""
+        rows = [
+            tuple(panel[name][r] for name in self._NAMES)
+            for r in range(self._N_CALIBRATION_ROWS)
+        ]
+        blocks = [f"b{r // 2 + 1}" for r in range(self._N_CALIBRATION_ROWS)]
+        band = BlockConformalInterval().calibrate(
+            BlockResiduals(names=tuple(self._NAMES), rows=rows, blocks=blocks),
+            coverage=self._DEMO_COVERAGE_TARGET,
+            window_blocks=2,
+        )
+        return {
+            "false_signal": AttestedFalseSignalRate(
+                rates,
+                self._attestation(
+                    self._FALSE_SIGNAL_ID, class_ref(GrenanderLocalFdr)
+                ),
+            ),
+            "outcome": AttestedOutcomeBand(
+                band,
+                self._attestation(
+                    self._OUTCOME_ID, class_ref(BlockConformalInterval)
+                ),
+            ),
         }

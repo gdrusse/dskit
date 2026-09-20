@@ -94,6 +94,30 @@ Agent orientation — see README.md for operator commands.
   project's field names onto the generic event catalogue and returns the
   per-lead decay profile as artifact DATA; the metric registry refuses either
   as a label. Nothing here sets a threshold — plan §11 item 7 is open.
+- `pi_upper` was WITHDRAWN and is refused by name at both the bundle and
+  the capital boundary (ADR-0152/ADR-0165). The number is `pi_widened`, a
+  widened POINT ESTIMATE; the ADR-0088 HFDR row is fed it unchanged and
+  `run`'s evidence records that the row is NOT a chance constraint. A
+  genuine bound would be a `uncertainty_intake.ProbabilityUpperBound`
+  member; no registered intake answers that family, and capital asks the
+  dskit REGISTRY through `admission_problems` rather than asking the
+  envelope's class what it is. The field source is pinned behaviourally
+  (`test_the_hfdr_row_reads_the_widened_field_not_the_point_estimate`) —
+  a round-1 review swapped it to `pi_hat` and 127 tests stayed green.
+- Capital never sizes against uncertainty it cannot attest. Every bundle
+  names its calibration artifacts and `EquityKellyMIO` takes a required
+  `uncertainty` port of `uncertainty_intake` envelopes, admitted against
+  ONE decision timestamp; stale / wrong-unit / post-decision /
+  uncalibrated / foreign-model / unknown-producer refuses. The seam
+  MEASURES NOTHING and is NOT a root of trust (a hostile metaclass can
+  still defeat an envelope's `problems()` METHOD, which is why capital
+  calls the module FUNCTION) — it screens what a producer attests, and
+  the two knobs it screens against
+  (`uncertainty_max_calibration_age_ms`, `uncertainty_min_coverage`) are
+  required owner decisions with no default. An admitted artifact is not
+  evidence that a calibrated estimator produced it; the producer screen
+  narrows "any object of the right shape" to "one naming a producer the
+  package has registered", and no further.
 
 ## Machine knobs
 

@@ -750,6 +750,18 @@ dskit/pipeline/
 ├── uncertainty_set.py budgeted uncertainty sets: the BudgetedUncertaintySet
 │                      doorway + probability / mean / outcome members;
 │                      worst_case, protection, counterpart, realizations
+├── uncertainty_intake.py  the gate an uncertainty artifact passes to reach a
+│                      decision (ADR-0165): UncertaintyAttestation +
+│                      CoverageEvidence + DecisionDemand, and the
+│                      AttestedUncertainty family whose members bind ONE
+│                      artifact class to ONE estimand. Six refusals —
+│                      foreign_model / post_decision / stale / uncalibrated /
+│                      unknown_producer / wrong_unit, applied by the module
+│                      functions admission_problems / admit_uncertainty from
+│                      REGISTRY truth at use time. ProbabilityUpperBound is
+│                      the bound-bearing family and no registered intake
+│                      answers it. Screens fail closed for an ordinary
+│                      caller; they are not a root of trust
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

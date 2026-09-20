@@ -22,7 +22,8 @@
         "bundle": "$source.bundle",
         "portfolio": "$source.portfolio",
         "survivors": "$edge_test.survivors",
-        "cap": "$source.cap"
+        "cap": "$source.cap",
+        "uncertainty": "$source.uncertainty"
       },
       "params": {
         "risk_aversion_gamma": 2.0,
@@ -40,7 +41,7 @@
         "band_bps": 10.0,
         "max_position_notional": 5000.0,
         "bundle_max_staleness_ms": 5000,
-        "bundle_artifact_sha256": "40e1025b06a09b49b3feddf674b31b5eff36e7269fd04cb009fd2e3a63111bb4",
+        "bundle_artifact_sha256": "461ea5546c25bb021e981083872a602f1f4c80fe179f3801bcc86e2b094191c4",
         "bundle_producer_document_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         "bundle_producer_node": "source",
         "bundle_model_manifest_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
@@ -50,10 +51,12 @@
         "cap_producer_node": "source",
         "cap_evidence_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
         "deployment_mode": false,
+        "uncertainty_max_calibration_age_ms": 600000,
+        "uncertainty_min_coverage": 0.9,
         "solver": "appsi_highs",
         "solver_options": {}
       },
-      "notes": "role capital. The survivors wire is structural: un-gated capital refuses to plan. Every risk knob here is the plan's own illustrative reference value (docs/plans/2026-09-intraday-equities-mio.md §4/§12) — an owner decision for any real run, never a code default (ScenarioUtilitySolve/EquityKellyMIO refuse to construct without one)."
+      "notes": "role capital. The survivors wire is structural: un-gated capital refuses to plan. Every risk knob here is the plan's own illustrative reference value (docs/plans/2026-09-intraday-equities-mio.md §4/§12) — an owner decision for any real run, never a code default (ScenarioUtilitySolve/EquityKellyMIO refuse to construct without one). The uncertainty wire is structural too: capital never sizes against uncertainty it cannot attest, so $source.uncertainty must carry one dskit.pipeline.uncertainty_intake envelope per estimand (false_signal, outcome) and each is admitted against the bundle's own decision timestamp and release identity. uncertainty_max_calibration_age_ms (600000 = 10 minutes) and uncertainty_min_coverage (0.9) are the two owner-only intake knobs; both are ILLUSTRATIVE DEMO VALUES chosen so the synthetic source's artifacts pass, not thresholds anybody calibrated. The demo artifacts' attested coverage was never measured — their evidence id is literally synthetic-demo-no-measurement-was-performed — so this document proves the refusal machinery runs, and proves nothing at all about coverage."
     }
   }
 }
