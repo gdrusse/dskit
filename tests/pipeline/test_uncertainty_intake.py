@@ -1087,6 +1087,29 @@ class TestProducerVerification:
             for p in env.problems(_demand(), AttestedMeanConfidence)
         )
 
+    def test_an_artifact_that_records_NO_producer_of_its_own_is_refused_by_name(self):
+        """The `reported is None` branch, pinned by its message.
+
+        An artifact whose self-report is absent (not merely a disagreement)
+        must be refused with the specific "records no producer of its own"
+        verdict. Dropping the branch leaves the generic disagreement message,
+        which a `startswith("unknown_producer")` assertion cannot tell apart —
+        and no shipped artifact records a missing producer, so nothing else
+        exercised it (round-12 review).
+        """
+        member, artifact = _probe_member(
+            {"artifact_producer": classmethod(lambda cls, artifact: None)}
+        )
+        forget = register_uncertainty_intake("tests_no_producer", member)
+        try:
+            env = member(artifact, _attestation(producer=MEAN_PRODUCER))
+            problems = admission_problems(env, _demand(), member)
+            assert any(
+                "records no producer of its own" in p for p in problems
+            ), problems
+        finally:
+            forget()
+
     def test_each_member_reads_its_own_artifacts_self_report(self):
         assert AttestedMeanConfidence.artifact_producer(_confidence()) == MEAN_PRODUCER
         assert AttestedOutcomeBand.artifact_producer(_band()) == BAND_PRODUCER
