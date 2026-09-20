@@ -17810,4 +17810,12 @@ of `estimand`/`excluded_types`/`registered_producers` could be deleted green.
 The reach test is now parametrized over all four hooks.
 
 Round-12 sweep: the inline-shape-rule mutation, the bytes-literal, the
-docstring wipe and the shrunk registry net are all killed. 203 tests.
+docstring wipe and the shrunk registry net are all killed.
+
+The second lens's re-review found one more Minor and closed it here: the
+`reported is None` branch of `_producer_problems` was unpinned — no test built
+an artifact whose self-report is absent, so mutating `is None` to `== ''` lost
+the specific "records no producer of its own" verdict with the suite green.
+`test_an_artifact_that_records_NO_producer_of_its_own_is_refused_by_name`
+registers a member whose `artifact_producer` returns `None` and pins the
+message. 204 tests.
