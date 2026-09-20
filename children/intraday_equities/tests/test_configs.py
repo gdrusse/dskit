@@ -1178,6 +1178,28 @@ def test_run_final_refit_is_pending_ten_real_hpo_evidence_pins():
     assert "inputs" not in refit
     assert "ten labelled input wires" in raw["notes"]
     assert "Filling these placeholders cannot make this document executable" in raw["notes"]
+    # The production channel is the one this document declares, and the one
+    # FinalRefit refuses outright: no real final-model release exists.
+    assert refit["params"]["release_channel"] == "production"
+    rows = refit["params"]["refit_identity"]["rows"]
+    assert tuple(rows) == tuple(f"h{i:02d}" for i in range(1, 11))
+    assert all(value == "PENDING-ROW-IDENTITY" for value in rows.values())
+
+
+def test_run_final_refit_pins_the_shipped_final_hpo_document_identity():
+    """The refit's pin and the HPO document's own identity are ONE fact.
+
+    Two places state it — this document's ``hpo_document_sha256`` and
+    ``run-final-hpo.json`` itself — so the agreement is pinned here AND
+    refused at runtime by ``FinalRefit`` on the production channel.
+    """
+    from intraday_equities.final_model import final_hpo_document_identity
+
+    pinned = _raw("run-final-refit.json")["pipeline"]["refit"]["params"][
+        "hpo_document_sha256"
+    ]
+    assert pinned == load_document(_path("run-final-hpo.json")).hash
+    assert pinned == final_hpo_document_identity(_path("run-final-hpo.json"))
 
 
 def test_run_final_refit_refuses_to_plan_while_pins_are_pending():

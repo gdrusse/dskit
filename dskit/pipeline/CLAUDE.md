@@ -347,11 +347,26 @@ on it without breaking its rulings.
   hashes the DECODED CONTENT, sorted by name — never the manifests' own
   paths or digests — so it changes when the underlying data changes even
   if a path does not, and a manifest whose digest does not match its file
-  raises before it can enter the combined identity. All of this is
+  raises before it can enter the combined identity.
+- **Attested values and row-set identity** (ADR-0166) —
+  `RunAttestation.attested_output(key, output, document_hash)` answers WHAT
+  a completed, document-bound node recorded for one output, and returns
+  `None` unless `carry.json` carries an equal value under the same node and
+  name. It composes evidence the driver already writes; it does not
+  authenticate it, and the ADR-0119 residual gap above is unchanged.
+  `row_set_identity(rows)` is the module-level, order-INDEPENDENT sha256
+  over one materialized row set's own content — reach for it, not
+  `CandidateInventory.digest` or `observations.stream_digest`, whenever
+  re-materializing the same rows in another order must identify as the same
+  rows. Both are additive and wired into no generic node. All of this is
   read-only and additive to `run_document`'s own lifecycle (the one
-  write-side change is the new `document_hash` field on each node record);
-  none of it is wired into any node — building that wiring (`FinalRefit`,
-  or any other consumer) is separate, unauthorized work.
+  write-side change is the new `document_hash` field on each node record).
+  No GENERIC node consumes it; the one consumer is the child adapter
+  `intraday_equities.final_model.FinalRefit`, which composes
+  `attested_output` and `row_set_identity` under ADR-0166. (The earlier
+  wording here — "none of it is wired into any node ... separate,
+  unauthorized work" — was written in the same commit that did the wiring
+  and was false on arrival.)
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there
@@ -639,7 +654,8 @@ dskit/pipeline/
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
 │                      (ADR-0056); run_walk_forward (ADR-0027);
-│                      RunAttestation + content_identity (ADR-0119)
+│                      RunAttestation + content_identity (ADR-0119);
+│                      attested_output + row_set_identity (ADR-0166)
 ├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
 ├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)

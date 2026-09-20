@@ -18,16 +18,23 @@ multi-head bundle artifact — is IMPORTED, never re-derived: this file
 calls into :mod:`dskit.pipeline.kinds_search`, :mod:`dskit.pipeline.stats`
 and :mod:`dskit.pipeline.libs.sklearn`.
 
-**No pipeline execution and no real data here.** The assembly helpers are
+**No market data and no real release here.** The assembly helpers are
 plain, directly-callable Python APIs exercised with synthetic rows and a
 synthetic ``evaluate`` callback.  ``FinalRefit`` is wired by
-``configs/run-final-refit.json`` only as a fail-closed pipeline contract: its
-config is PENDING and the node unconditionally refuses validation and runtime
-until the driver owns immutable completed-run provenance, content-derived
-identities for the materialized refit rows, and ten labelled input wires.
-Filling the current evidence placeholders cannot enable a refit or bundle
-write.  Nothing here reads market data, fits a real model against real
-history, or loads a real P16 artifact.
+``configs/run-final-refit.json``, whose pins are still PENDING, so the
+shipped document still refuses to plan.  The node itself now owns the
+complete ADR-0166 contract — an immutable completed-run attestation,
+content-derived identities for the materialized refit rows, and ten
+labelled input wires — and it can execute ONLY on the ``fixture`` release
+channel: over synthetic rows, bound to a document that is deliberately not
+the shipped final-HPO one, stamping ``deployment_eligible: false`` into
+every head's hashed bundle training identity.  The ``production`` channel
+refuses outright, because a real final-model release needs the signed
+run-output attestation contract ADR-0122 specifies and nothing builds
+yet.  Synthetic helper
+assembly is not a completed real final-model release.  Nothing here reads
+market data, fits a real model against real history, or loads a real P16
+artifact.
 """
 
 from __future__ import annotations
@@ -42,19 +49,34 @@ from dskit.pipeline.kinds_search import (
     OneStandardErrorSelector,
     TrialLedger,
 )
-from dskit.pipeline.driver import resolve_json_artifact
+from dskit.pipeline.driver import (
+    RunAttestation,
+    resolve_json_artifact,
+    row_set_identity,
+)
 from dskit.pipeline.document import load_document
 from dskit.pipeline.libs.sklearn import ColumnSubsetEstimator
-from dskit.pipeline.node import Node, reject_unknown_params
+from dskit.pipeline.node import ConfigError, Node, reject_unknown_params
 from dskit.pipeline.stats import cluster_bootstrap_t
 
 __all__ = [
+    "BUNDLE_FILENAME",
+    "SealRefused",
+    "ESTIMATOR_PATH",
     "EVIDENCE_FIELDS",
+    "FIXTURE_CHANNEL",
+    "GATE_FACTS",
     "FinalRefit",
     "HEADS",
+    "HPO_LEDGER_OUTPUT",
+    "PRODUCTION_CHANNEL",
+    "RELEASE_CHANNELS",
+    "RELEASE_ENTRY_POINTS",
+    "WIRE_LABEL_FIELD",
     "boundary_flags",
     "build_candidate_inventory",
     "cluster_scores_by_day",
+    "final_hpo_document_identity",
     "hpo_space",
     "lean_feature_drop",
     "permitted_for_refit",
@@ -65,20 +87,501 @@ __all__ = [
 ]
 
 
-class FinalRefit(Node):
-    """Non-executable contract for a future attested final refit.
+class SealRefused(TypeError):
+    """Raised by :meth:`FinalRefit.__init_subclass__`, and by nothing else.
 
-    The current driver has neither an immutable completed-run manifest nor
-    content-derived identities for its materialized input rows.  Mutable
-    ``result.json``/node/carry sidecars and config-supplied source/cache hashes
-    cannot prove ADR-0116 provenance.  Validation therefore fails closed even
-    after placeholders are filled.  Keep the assembly helpers below for the
-    future owner that supplies both trustworthy contracts.
+    Examples
+    --------
+    Distinguish the seal's refusal from Python's own::
+
+        try:
+            build_the_subclass()
+        except SealRefused as refusal:
+            handled = str(refusal)
+        # -> only the seal lands here; a metaclass conflict does not
+
+    Notes
+    -----
+    A ``TypeError`` subclass because ``__init_subclass__`` must raise one for
+    class creation to fail cleanly, and a DISTINCT type because the test suite
+    has to tell a seal refusal from a refusal Python issued for its own reasons
+    (a metaclass conflict, a layout conflict, a bad base). It matched on a
+    substring of the message until round 10, which made the wording of a
+    refusal load-bearing for the audit's own evidence: rewording a message
+    turned every probe's answer into "Python refused it", and the probes would
+    have gone on passing. The type cannot be reworded.
     """
+
+
+#: "this name resolves to nothing at all" — distinct from resolving to
+#: ``None``, which a subclass could supply deliberately.
+_UNRESOLVED = object()
+
+
+#: ``type``'s own accessors for the two structures the seal reads, bound once.
+#: A metaclass can supply anything it likes for ``__mro__`` and ``__dict__``,
+#: but these descriptors answer from the type's real slots and no metaclass
+#: participates, so what the seal reads is what Python resolves through.
+_REAL_MRO = type.__dict__["__mro__"].__get__
+_REAL_DICT = type.__dict__["__dict__"].__get__
+
+
+def _resolved_through_the_mro(cls, name):
+    """Return what ``cls`` resolves ``name`` to, read from ``type``'s real slots.
+
+    Parameters
+    ----------
+    cls : type
+        The class to resolve through.
+    name : str
+        The attribute name.
+
+    Returns
+    -------
+    object
+        The first ``name`` found walking ``cls``'s real ``__mro__``, or
+        :data:`_UNRESOLVED` when no entry carries it. No descriptor is
+        invoked, so a ``property`` or ``classmethod`` is returned as the
+        object it is rather than as what it would produce.
+
+    Notes
+    -----
+    This replaces :func:`inspect.getattr_static`, which SKIPS any MRO entry
+    whose metaclass shadows ``__dict__`` rather than trusting what it would
+    return. A subclass whose metaclass supplied ``__dict__ = property(...)``
+    was therefore skipped whole: the seal read ``FinalRefit``'s own member
+    for every sealed name and found no violation, while Python resolved the
+    subclass's live override on both the class-level and the instance-level
+    path (round-7 review, 2026-09-19). ``GATE_FACTS`` carries the executed
+    outcome for that attempt, and for every other.
+    """
+    for entry in _REAL_MRO(cls):
+        contents = _REAL_DICT(entry)
+        if name in contents:
+            return contents[name]
+    return _UNRESOLVED
+
+
+def _sealed_violations(subclass):
+    """Sealed names ``subclass`` resolves to something other than FinalRefit's own.
+
+    Parameters
+    ----------
+    subclass : type
+        The class to check.
+
+    Returns
+    -------
+    list of str
+        Every name in ``FinalRefit._FINAL_METHODS`` that ``subclass``
+        resolves to a different object than ``FinalRefit`` does.
+
+    Notes
+    -----
+    The comparison is ``is not`` — IDENTITY, never ``!=``. An object whose
+    ``__eq__`` returns ``True`` for anything would otherwise pass for a
+    sealed member while behaving as the attacker wrote it, so relaxing this
+    one token to ``!=`` reopens every sealed name at once (round-4 review).
+    """
+    return [
+        name
+        for name in FinalRefit._FINAL_METHODS
+        if _resolved_through_the_mro(subclass, name)
+        is not _resolved_through_the_mro(FinalRefit, name)
+    ]
+
+
+#: The two names whose presence on a metaclass answers EVERY class-level
+#: lookup it is asked, sealed or not. Neither is a descriptor question, so
+#: :func:`_wins_class_level_lookup` decides them by name; both are in
+#: :data:`FinalRefit._FINAL_METHODS`, so both reach it.
+_LOOKUP_INTERCEPTORS = ("__getattr__", "__getattribute__")
+
+
+def _wins_class_level_lookup(name, supplied, cls):
+    """Whether a metaclass carrying ``supplied`` under ``name`` beats ``cls``'s MRO.
+
+    Parameters
+    ----------
+    name : str
+        The sealed name the metaclass carries.
+    supplied : object
+        What it carries under that name.
+    cls : type
+        The class whose own MRO the metaclass entry is competing with.
+
+    Returns
+    -------
+    bool
+        True when class-level lookup reaches it instead of the class's own.
+
+    Notes
+    -----
+    Two language rules, and nothing this module invented.
+
+    ``type.__getattribute__`` prefers a metaclass attribute over the class's
+    own MRO when the attribute is a DATA descriptor, meaning its type defines
+    ``__set__`` or ``__delete__`` — so a NON-data descriptor on the metaclass
+    loses to a name the class's MRO carries, and is not a finding. That is why
+    a metaclass ``__new__`` or ``__init__``, both plain functions, passes.
+
+    It also prefers the metaclass attribute when the class's MRO carries the
+    name NOWHERE, whatever kind of object it is, and that is the second
+    clause. Round 11 shipped without it and was right only by coincidence:
+    ``__getattr__`` is the one sealed name ``FinalRefit`` does not define, and
+    it happened to be in :data:`_LOOKUP_INTERCEPTORS` already. Adding a sealed
+    name this class does not carry would have reopened the hole silently.
+
+    ``cls``, NOT ``FinalRefit``, because the rule being modelled is about the
+    class under suspicion. Passing ``FinalRefit`` instead is an EQUIVALENT
+    MUTANT and the round-12 sweep reports it as a survivor; the proof, so the
+    next reviewer does not have to re-derive it: this verdict only decides an
+    outcome when :func:`_sealed_violations` is empty, and that function returns
+    exactly the sealed names ``cls`` resolves differently from ``FinalRefit``.
+    Empty therefore MEANS the two resolutions agree on every sealed name, so
+    the two readings cannot disagree at the only moment either is load-bearing.
+    The argument holds only while that stays true of ``_sealed_violations``,
+    which is why ``cls`` is passed rather than the constant.
+
+    The exception is :data:`_LOOKUP_INTERCEPTORS`, which do not compete under
+    their own name: a metaclass ``__getattribute__`` answers every class-level
+    lookup the class is given, and a metaclass ``__getattr__`` answers every
+    one that would otherwise fail.
+
+    The descriptor test goes through :func:`_resolved_through_the_mro`, so it
+    reads ``type(supplied)``'s real MRO dicts — the same slots
+    ``_PyType_Lookup`` reads when the interpreter asks this question inside
+    ``type.__getattribute__``. A ``__set__`` invented by a ``__getattr__`` or
+    by a metaclass is visible to neither, so an object can neither claim to
+    shadow nor hide that it does.
+    """
+    if name in _LOOKUP_INTERCEPTORS:
+        return True
+    if _resolved_through_the_mro(cls, name) is _UNRESOLVED:
+        return True
+    carrier = type(supplied)
+    # A data descriptor that wins class-level lookup must first BE a descriptor
+    # (its type defines __get__) and then be a DATA one (__set__ or __delete__).
+    # `type.__getattribute__` consults `__get__` on the type first; an object
+    # carrying `__set__`/`__delete__` without `__get__` is not a descriptor at
+    # all, and the class's own MRO wins — so reading the two halves without the
+    # `__get__` gate over-refuses (round-13 review).
+    return (
+        _resolved_through_the_mro(carrier, "__get__") is not _UNRESOLVED
+        and (
+            _resolved_through_the_mro(carrier, "__set__") is not _UNRESOLVED
+            or _resolved_through_the_mro(carrier, "__delete__") is not _UNRESOLVED
+        )
+    )
+
+
+def _metaclass_supplied(cls):
+    """Sealed names ``cls``'s metaclass supplies that ``FinalRefit``'s does not.
+
+    Parameters
+    ----------
+    cls : type
+        The class to check.
+
+    Returns
+    -------
+    list of str
+        Every name in ``FinalRefit._FINAL_METHODS`` carried by some entry of
+        ``type(cls)``'s real MRO that is not already an entry of
+        ``type(FinalRefit)``'s, sorted and deduplicated.
+
+    Notes
+    -----
+    :func:`_sealed_violations` walks ``cls.__mro__``. Class-level lookup does
+    not: ``type.__getattribute__`` consults ``type(cls).__mro__`` FIRST, and a
+    **data descriptor** found there wins outright over anything the class's own
+    MRO carries. So a metaclass defining ``validate_params`` as an object with
+    ``__get__`` and ``__set__`` answers ``Subclass.validate_params`` while the
+    MRO walk still reads ``FinalRefit``'s own and reports no violation
+    (round-10 review, 2026-09-19). The instance path is unaffected —
+    ``object.__getattribute__`` never consults the metaclass — which is exactly
+    why the measured reach was class-level only.
+
+    Round 10 refused ANY sealed name a non-baseline metaclass carried, on the
+    argument that classifying the object is one more thing to defeat. Round-11
+    review measured what that cost, and it was too much twice over. It refused
+    an ordinary registering metaclass — one whose ``__init__`` records the
+    class it just built — while telling its author, untruthfully, that
+    ``__init__`` "answers class-level lookup ahead of the MRO": a plain
+    function is a NON-data descriptor and the class's own MRO wins. And it
+    refused three declared attempts at ``super().__new__`` for merely defining
+    ``__new__``, so their payload line never ran and three rows of
+    :data:`GATE_FACTS` stopped testing what they name.
+
+    So the shadowing question is asked — and it is not this module's
+    classifier, it is the LANGUAGE's, read the way the interpreter reads it.
+    :func:`_wins_class_level_lookup` walks ``type(obj)``'s real MRO through
+    ``type``'s own descriptors, which is exactly what ``_PyType_Lookup`` does
+    for ``__set__``/``__delete__`` inside ``type.__getattribute__``. An
+    attacker supplies ``type(obj)``, but not what that lookup reads, and
+    cannot make a non-shadowing object shadow.
+
+    The baseline is ``type(FinalRefit)``'s own MRO, so ``ABCMeta``, ``type``
+    and ``object`` are never findings, and a metaclass that adds no sealed
+    name is not one either.
+
+    Patching a baseline entry itself — assigning onto ``ABCMeta`` — is the
+    already-declared trusted-name tier, the same tier as replacing this
+    function's own name, and is not covered here.
+    """
+    baseline = _REAL_MRO(type(FinalRefit))
+    supplied = []
+    for entry in _REAL_MRO(type(cls)):
+        if any(entry is known for known in baseline):
+            continue
+        contents = _REAL_DICT(entry)
+        supplied += [
+            name
+            for name in FinalRefit._FINAL_METHODS
+            if name in contents
+            and _wins_class_level_lookup(name, contents[name], cls)
+        ]
+    return sorted(set(supplied))
+
+
+def _unsealed_problems(cls):
+    """Return the seal's verdict on ``cls``, taken WHEN THE GATE IS CONSULTED.
+
+    Returns
+    -------
+    list of str
+        One problem naming every sealed member ``cls`` resolves elsewhere,
+        or empty.
+
+    Notes
+    -----
+    A MODULE-LEVEL FUNCTION, not a method, and that is the whole of round 9's
+    first fix. Round 8 asked ``cls._unsealed_problems()`` — resolved through
+    the very class under suspicion — so the three mechanisms it had just closed
+    could simply inject a compliant ``_unsealed_problems`` ALONGSIDE their real
+    payload and the guard reported itself clean. Asking a compromised class
+    whether it is compromised is not a check. Round-8 review demonstrated it on
+    all four timing-evading shapes. A module-level call cannot be intercepted
+    by the class it is asked about; replacing this NAME is the already-declared
+    trusted-name tier, not a new one.
+
+    ``__init_subclass__`` is invoked by ``type.__new__`` as
+    ``super(cls, cls).__init_subclass__(...)``, so it runs only if ``cls``
+    sits ahead of ``FinalRefit`` in ``cls.__mro__`` — and it runs BEFORE a
+    metaclass ``__new__`` returns. A metaclass therefore decides whether
+    the definition-time hook fires at all, and round-7 review demonstrated
+    both halves: an ``mro()`` that rotates ``cls`` to the end skips the
+    hook silently, and a ``__new__`` that assigns after ``super().__new__``
+    lands after it. In BOTH cases :func:`_sealed_violations` still returns
+    the violation — the check was right and its TIMING was wrong. So it is
+    taken again here, from ``validate_params`` and from ``run``, which are
+    the two places the gate is actually consulted.
+
+    This closes the class of attempt that skips the definition-time hook.
+    It does not make the seal an authority boundary: a caller who replaces
+    ``run`` or ``validate_params`` outright is not using this gate at all,
+    which is ADR-0122's ``uses:`` problem and not this one's.
+    :data:`GATE_FACTS` carries the executed outcome for every attempt.
+    """
+    problems = []
+    violations = _sealed_violations(cls)
+    if violations:
+        problems.append(
+            f"{cls.__name__} may not override {', '.join(violations)} — it "
+            "resolves them to something other than FinalRefit's own, so the "
+            "release gate every refusal here goes through is not the one "
+            "this class is running"
+        )
+    supplied = _metaclass_supplied(cls)
+    if supplied:
+        problems.append(
+            f"{cls.__name__} may not take a metaclass supplying "
+            f"{', '.join(supplied)} — {type(cls).__name__} answers "
+            "class-level lookup ahead of the MRO the seal walks, so a "
+            "sealed name may not appear there at all"
+        )
+    return problems
+
+
+class FinalRefit(Node):
+    """One frozen-winner refit over an attested completed run and ten labelled wires (ADR-0166, completing ADR-0116).
+
+    Binds three things before it fits anything, and refuses when any of
+    them is absent, incomplete or substituted:
+
+    1. **An immutable completed upstream run.** The pinned final-HPO
+       document identity must be reproduced by the run directory's own
+       ``config.json``, its ``resolved.json`` must bind the same
+       identity, the run must have reached a clean terminal ``"ran"``
+       state, and each ``scan_hNN`` node must have recorded the pinned
+       evidence under a record stamped with that same document identity
+       AND corroborated by that run's carry
+       (:meth:`~dskit.pipeline.driver.RunAttestation.attested_output`).
+       Every artifact is re-read and re-digested from bytes at every
+       call, so a run mutated after binding refuses.
+    2. **Content-derived identities for the materialized refit rows.**
+       Each wire's identity is
+       :func:`~dskit.pipeline.driver.row_set_identity` over the rows'
+       own JSON content — never their order, their producer's name, a
+       path, or a label supplied beside them — and must equal the
+       identity ``refit_identity.rows`` pins for that head.
+    3. **Ten labelled input wires.** :data:`HEADS` is the only authority
+       for the labels. Every row on a port carries its own
+       :data:`WIRE_LABEL_FIELD`, and a missing, extra, empty, swapped or
+       mislabelled wire refuses by name before any fit begins.
+
+    **The production channel is closed.** Only :data:`FIXTURE_CHANNEL`
+    can execute, and a fixture may never claim the shipped final-HPO
+    document identity, so a fixture run and a real final-model release
+    are runs of different documents. :data:`PRODUCTION_CHANNEL` refuses
+    outright, because a real release needs the signed run-output
+    attestation contract ADR-0122 specifies and nothing builds yet.
+    Every head's hashed
+    bundle training identity carries the channel and
+    ``deployment_eligible: false``, and ``write_bundle``'s content hash
+    covers ``training_identities``, so a written bundle cannot be
+    relabelled without failing :func:`load_bundle`.
+
+    **What this is NOT: a root of trust, or evidence of authorization.**
+    Every refusal here is an IN-PROCESS check, and the seal on
+    :data:`_FINAL_METHODS` is an accident-and-drift guard, **not an
+    authority boundary**. :data:`GATE_FACTS` is the ONE authoritative
+    statement of what this gate halts and where each attempt lands —
+    declared as data, with a probe per entry that performs the attempt and
+    asserts both declared fields. This paragraph cites it and does not
+    restate it: a restatement is how one copy came to be false in round 4,
+    three in round 5, and one more in round 6 that round 7 found. At least
+    one declared entry opens a release entry point, and none of them edits a
+    repository file, so the seal buys ordinary-caller safety and drift
+    detection, never defence against a caller who wants past it.
+
+    The run directory this node reads is UNAUTHENTICATED (ADR-0119's
+    disclosed gap: nothing hash-chains ``nodes/*.json`` to
+    ``resolved.json``), so anyone with write access to it can fabricate the
+    evidence. A bundle's stamp records what the writing process believed,
+    never that anyone authorized it. ADR-0122 — accepted 2026-09-12, and
+    NOT built — states the rule this class obeys rather than contradicts:
+    a Python resolver cannot be a root of trust, and release trust must
+    begin outside Python.
+
+    Parameters
+    ----------
+    params : dict
+        ``release_channel`` (one of :data:`RELEASE_CHANNELS`, required),
+        ``hpo_run_dir`` (str, required), ``hpo_document_sha256`` (str,
+        required), ``hpo_evidence`` (dict keyed by exactly
+        :data:`HEADS`, required), ``feature_order`` (list of str,
+        required), ``categorical_feature`` (list of int, required),
+        ``categorical_encoding`` (dict, required), ``predict_fixture``
+        (list, required), ``refit_identity`` (dict, required), ``seed``
+        (int >= 0, default 0).
+
+    Examples
+    --------
+    Construct the node against an already attested fixture release::
+
+        node = FinalRefit("refit", {
+            "release_channel": FIXTURE_CHANNEL,
+            "hpo_run_dir": run_dir, "hpo_document_sha256": document.hash,
+            "hpo_evidence": manifests, "feature_order": ["f0", "f1"],
+            "categorical_feature": [], "categorical_encoding": {},
+            "predict_fixture": [[0.0, 1.0]], "refit_identity": identity,
+        })
+        node.run(ctx, wires)["manifest"]["heads"]
+        # -> ['h01', 'h02', 'h03', 'h04', 'h05', 'h06', 'h07', 'h08', 'h09', 'h10']
+    """
+
+    #: Every name this class defines, plus the inherited hooks its release
+    #: gate resolves through — including ``__getattribute__``, which a
+    #: ``vars(cls)`` check could never surface. ``__init_subclass__``
+    #: refuses a subclass that resolves any of them to something other than
+    #: this class's own, because ``uses: "module:ClassName"`` accepts ANY
+    #: class: a subclass overriding ``_channel_problems`` once constructed
+    #: on the production channel and, with ``_release_identity`` also
+    #: replaced, stamped ``deployment_eligible: True`` (round-1 and round-2
+    #: reviews, 2026-09-18). The list is restated independently by
+    #: ``tests/test_final_model.py``, and a test refuses any member of this
+    #: class absent from it — an unsealed hook added later fails there, not
+    #: in review. Read ``__init_subclass__``'s own docstring for what this
+    #: does NOT cover; it is an accident guard, not an authority boundary.
+    _FINAL_METHODS = (
+        "__getattr__",
+        "__getattribute__",
+        "__init__",
+        "__init_subclass__",
+        "__new__",
+        "_FINAL_METHODS",
+        "_PARAMS",
+        "_attestation",
+        "_channel",
+        "_channel_problems",
+        "_estimator_params",
+        "_hpo_template",
+        "_identity_problems",
+        "_lean_drop",
+        "_release_identity",
+        "_row_identities",
+        "__setattr__",
+        "_run_pin_problems",
+        "_schema_problems",
+        "_verified_hpo_outputs",
+        "_winner_from_evidence",
+        "_winners",
+        "_wire_problems",
+        "artifact_dir",
+        "outputs",
+        "role",
+        "run",
+        "validate_inputs",
+        "validate_params",
+    )
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse a subclass that resolves a sealed member to anything but this class's own.
+
+        Each name in :data:`_FINAL_METHODS` is resolved by
+        :func:`_resolved_through_the_mro` — a walk of the class's real
+        ``__mro__``, reading each entry's real ``__dict__`` through
+        ``type``'s own descriptors so no metaclass participates in either —
+        and compared by IDENTITY with what ``FinalRefit`` itself resolves it
+        to. The hook takes :func:`_unsealed_problems`, the SAME verdict
+        ``validate_params`` and ``run`` take, so definition time and consult
+        time cannot disagree about what a violation is; that verdict also
+        covers :func:`_metaclass_supplied`, because class-level lookup
+        consults the metaclass ahead of the MRO this walk reads.
+
+        Scope lives in :data:`GATE_FACTS`, and this docstring states none of
+        it. Each entry there names one attempt, carries the boolean for
+        whether class creation is halted and the tuple of
+        :data:`RELEASE_ENTRY_POINTS` the attempt opens, and has a probe in
+        ``tests/test_final_model.py`` that performs the attempt for real and
+        asserts both fields against what is observed. Prose is the wrong
+        home for either: round-5 review inverted three sentences here with
+        no test failing, and round-7 review found a fourth that had survived
+        round 6 — one clause naming four mechanisms and their common outcome,
+        which read exactly as plausibly with that outcome negated. A
+        sentence carries no polarity a suite can see; a field beside a probe
+        does.
+
+        This is an accident-and-drift guard, and it is **not an authority
+        boundary** — the same scope :mod:`dskit.pipeline.uncertainty_set`
+        states for this idiom. The trust root for a real release is
+        ADR-0122's out-of-Python launcher, which is not built.
+        """
+        super().__init_subclass__(**kwargs)
+        problems = _unsealed_problems(cls)
+        if problems:
+            raise SealRefused(
+                "; ".join(problems)
+                + ". A subclass that replaces part of the release gate can "
+                "stamp a release nothing earned. This is an accident guard "
+                "checked at class definition, not a root of trust (ADR-0166)"
+            )
 
     role = "train"
     outputs = ("bundle_path", "manifest")
     _PARAMS = (
+        "release_channel",
         "hpo_run_dir",
         "hpo_document_sha256",
         "hpo_evidence",
@@ -92,29 +595,87 @@ class FinalRefit(Node):
 
     @classmethod
     def validate_params(cls, params):
-        """Return problems with evidence pins and bundle schema knobs."""
-        problems = [
-            "FinalRefit is non-executable: no trustworthy run attestation or "
-            "content-derived input identity contract is available"
-        ]
+        """Return problems with the release channel, run pins, bundle schema knobs and refit identity."""
+        problems = []
         reject_unknown_params(problems, params, cls._PARAMS)
+        problems += _unsealed_problems(cls)
+        problems += cls._channel_problems(params)
+        problems += cls._run_pin_problems(params)
+        problems += cls._schema_problems(params)
+        problems += cls._identity_problems(params.get("refit_identity"))
+        seed = params.get("seed", 0)
+        if type(seed) is not int or seed < 0:
+            problems.append("seed must be a nonnegative integer")
+        return problems
+
+    @classmethod
+    def _channel_problems(cls, params):
+        """Return the one gate that keeps a real release closed and a fixture unable to claim one."""
+        channel = params.get("release_channel")
+        if channel not in RELEASE_CHANNELS:
+            return [
+                f"release_channel must be one of {list(RELEASE_CHANNELS)!r}, "
+                f"got {channel!r} — a release that does not say which channel "
+                "it belongs to is not a release"
+            ]
+        try:
+            shipped = final_hpo_document_identity()
+        except ValueError as exc:
+            return [f"the shipped final-HPO document is unreadable ({exc})"]
+        pinned = params.get("hpo_document_sha256")
+        if channel == PRODUCTION_CHANNEL:
+            problems = [
+                "FinalRefit is non-executable on the production channel: a real "
+                "final-model release requires the signed run-output attestation "
+                "contract ADR-0122 accepted on 2026-09-12 and not built (issuer, "
+                "key authority, trusted clock, runtime identity, and an "
+                "out-of-Python launch root). Driver run attestation alone does not "
+                "authorize one, and no placeholder here can supply it"
+            ]
+            if pinned != shipped:
+                problems.append(
+                    "hpo_document_sha256 must be the shipped configs/"
+                    f"run-final-hpo.json identity {shipped!r} on the production "
+                    f"channel, got {pinned!r}"
+                )
+            return problems
+        if pinned == shipped:
+            return [
+                "a fixture release may not claim the shipped final-HPO document "
+                f"identity {shipped!r}: synthetic assembly is not a completed "
+                "real final-model release, and the two must stay distinguishable"
+            ]
+        return []
+
+    @classmethod
+    def _run_pin_problems(cls, params):
+        """Problems with the pins naming the completed upstream run and its ten evidence artifacts."""
+        problems = []
         run_dir = params.get("hpo_run_dir")
         if not isinstance(run_dir, str) or not run_dir:
             problems.append("hpo_run_dir must be a non-empty path")
-        elif "PENDING" in run_dir.upper():
-            problems.append("hpo_run_dir is pending a real final-HPO run")
-        document_digest = params.get("hpo_document_sha256")
-        if (
-            not isinstance(document_digest, str)
-            or len(document_digest) != 64
-            or any(char not in "0123456789abcdef" for char in document_digest)
-        ):
+        elif _PENDING in run_dir.upper():
+            problems.append(
+                "FinalRefit is non-executable: hpo_run_dir is pending a real "
+                "final-HPO run"
+            )
+        if not _is_sha256(params.get("hpo_document_sha256")):
             problems.append("hpo_document_sha256 must be a lowercase sha256 digest")
         evidence = params.get("hpo_evidence")
         if not isinstance(evidence, dict) or set(evidence) != set(HEADS):
             problems.append(f"hpo_evidence must be keyed by exactly {list(HEADS)!r}")
-        elif any(not isinstance(value, dict) for value in evidence.values()):
-            problems.append("hpo_evidence pins are pending real JSON-artifact manifests")
+        elif any(not isinstance(value, dict) or not value for value in evidence.values()):
+            problems.append(
+                "FinalRefit is non-executable: every hpo_evidence pin must be a "
+                "completed-run JSON-artifact manifest (the attestation the driver "
+                "verifies), not a placeholder"
+            )
+        return problems
+
+    @classmethod
+    def _schema_problems(cls, params):
+        """Problems with the bundle schema knobs every head shares."""
+        problems = []
         features = params.get("feature_order")
         if (
             not isinstance(features, list)
@@ -126,65 +687,138 @@ class FinalRefit(Node):
         categories = params.get("categorical_feature")
         if not isinstance(categories, list) or any(type(i) is not int for i in categories):
             problems.append("categorical_feature must be a list of integer indices")
-        encoding = params.get("categorical_encoding")
-        if not isinstance(encoding, dict):
+        if not isinstance(params.get("categorical_encoding"), dict):
             problems.append("categorical_encoding must be a mapping")
         fixture = params.get("predict_fixture")
         if not isinstance(fixture, list) or not fixture:
             problems.append("predict_fixture must be a non-empty list")
-        identity = params.get("refit_identity")
-        identity_fields = {
-            "source", "cache", "train_start_ms", "refit_end_ms",
+        return problems
+
+    @classmethod
+    def _identity_problems(cls, identity):
+        """Problems with the refit identity: data/cache pins, the locked calendar, and ten content-derived row pins."""
+        fields = {
+            "source", "cache", "rows", "train_start_ms", "refit_end_ms",
             "embargo_start_ms", "embargo_end_ms",
         }
-        if not isinstance(identity, dict) or set(identity) != identity_fields:
-            problems.append(f"refit_identity must carry exactly {sorted(identity_fields)!r}")
-        else:
-            for field in ("source", "cache"):
-                value = identity[field]
-                digest = value.get("sha256") if isinstance(value, dict) else None
-                if (not isinstance(value, dict) or not value or type(digest) is not str
-                        or len(digest) != 64
-                        or any(char not in "0123456789abcdef" for char in digest)):
-                    problems.append(f"refit_identity.{field} must be a non-empty identity with sha256")
-            if type(identity["train_start_ms"]) is not int or identity["train_start_ms"] < 0:
-                problems.append("refit_identity.train_start_ms must be a nonnegative integer")
-            expected = {
-                "refit_end_ms": LOCKBOX_START_MS,
-                "embargo_start_ms": EMBARGO_START_MS,
-                "embargo_end_ms": EMBARGO_END_MS,
-            }
-            for field, value in expected.items():
-                if identity[field] != value:
-                    problems.append(f"refit_identity.{field} must equal {value}")
-        seed = params.get("seed", 0)
-        if type(seed) is not int or seed < 0:
-            problems.append("seed must be a nonnegative integer")
+        if not isinstance(identity, dict) or set(identity) != fields:
+            return [f"refit_identity must carry exactly {sorted(fields)!r}"]
+        problems = []
+        for field in ("source", "cache"):
+            value = identity[field]
+            digest = value.get("sha256") if isinstance(value, dict) else None
+            if not isinstance(value, dict) or not value or not _is_sha256(digest):
+                problems.append(
+                    f"refit_identity.{field} must be a non-empty identity with sha256"
+                )
+        rows = identity["rows"]
+        if not isinstance(rows, dict) or set(rows) != set(HEADS):
+            problems.append(
+                f"refit_identity.rows must pin one content-derived row identity "
+                f"per head, keyed by exactly {list(HEADS)!r}"
+            )
+        elif not all(_is_sha256(value) for value in rows.values()):
+            problems.append(
+                "FinalRefit is non-executable: every refit_identity.rows pin must "
+                "be the lowercase sha256 that row set's own CONTENT produces "
+                "(dskit.pipeline.driver.row_set_identity), not a placeholder"
+            )
+        elif len(set(rows.values())) != len(HEADS):
+            problems.append(
+                "refit_identity.rows pins two heads to the same materialized row "
+                "set — ten wires, ten row sets"
+            )
+        if type(identity["train_start_ms"]) is not int or identity["train_start_ms"] < 0:
+            problems.append("refit_identity.train_start_ms must be a nonnegative integer")
+        expected = {
+            "refit_end_ms": LOCKBOX_START_MS,
+            "embargo_start_ms": EMBARGO_START_MS,
+            "embargo_end_ms": EMBARGO_END_MS,
+        }
+        for field, value in expected.items():
+            if identity[field] != value:
+                problems.append(f"refit_identity.{field} must equal {value}")
         return problems
 
     def validate_inputs(self, inputs):
-        """Require exactly one labelled-row stream for every frozen head."""
+        """Require exactly ten wires, each LABELLED with its own head and inside the permitted window."""
         if not isinstance(inputs, dict) or set(inputs) != set(HEADS):
             return [f"inputs must be keyed by exactly {list(HEADS)!r}"]
-        problems = [f"{head} must be a list of labelled rows"
-                    for head in HEADS if not isinstance(inputs[head], list)]
         identity = self.params.get("refit_identity")
-        if isinstance(identity, dict) and type(identity.get("train_start_ms")) is int:
-            start = identity["train_start_ms"]
-            for head in HEADS:
-                if isinstance(inputs[head], list) and any(
-                    not isinstance(row, Mapping) or type(row.get("ts_ms")) is not int
-                    or row["ts_ms"] < start for row in inputs[head]
-                ):
-                    problems.append(f"{head} contains a row before refit_identity.train_start_ms")
+        start = identity.get("train_start_ms") if isinstance(identity, dict) else None
+        problems = []
+        for head in HEADS:
+            problems += self._wire_problems(head, inputs[head], start)
         return problems
 
+    def _wire_problems(self, head, rows, start):
+        """Problems with one labelled wire: shape, its own label, and its rows' instants."""
+        if not isinstance(rows, list) or not rows:
+            return [f"{head} must be a non-empty list of labelled rows"]
+        for index, row in enumerate(rows):
+            if not isinstance(row, Mapping):
+                return [f"{head} row {index} is not a mapping"]
+            label = row.get(WIRE_LABEL_FIELD)
+            if label != head:
+                return [
+                    f"{head} is wired to rows labelled {label!r}: a wire is bound "
+                    f"by its {WIRE_LABEL_FIELD!r} label, so a swapped, duplicated "
+                    "or mislabelled producer refuses rather than being refitted "
+                    "under the wrong head"
+                ]
+            ts_ms = row.get("ts_ms")
+            if type(ts_ms) is not int:
+                return [f"{head} row {index} carries no integer ts_ms"]
+            if start is not None and ts_ms < start:
+                return [f"{head} contains a row before refit_identity.train_start_ms"]
+            if not permitted_for_refit(ts_ms):
+                return [
+                    f"{head} contains a row at {ts_ms} — outside the permitted "
+                    "pre-lockbox, post-embargo window"
+                ]
+        return []
+
+    def _channel(self):
+        """Return this release's channel, refusing the still-closed production one at every entry point."""
+        problems = self._channel_problems(self.params)
+        if problems:
+            raise ValueError(f"FinalRefit: {problems[0]}")
+        return self.params["release_channel"]
+
+    def _attestation(self):
+        """Return the read-only, fail-closed evidence reader over the pinned run directory."""
+        return RunAttestation(self.params["hpo_run_dir"])
+
     def _verified_hpo_outputs(self):
-        """Refuse mutable sidecars until the driver owns a run attestation."""
-        raise ValueError(
-            "FinalRefit: no trustworthy run attestation binds the HPO document, "
-            "run, node outputs, and carry"
-        )
+        """Return the ten pinned evidence manifests, each re-earned from the completed run's own record and carry."""
+        document_hash = self.params["hpo_document_sha256"]
+        attestation = self._attestation()
+        if not attestation.completed() or not attestation.binds_document_identity(
+            document_hash
+        ):
+            raise ValueError(
+                "FinalRefit: no trustworthy run attestation binds the HPO document, "
+                "run, node outputs, and carry"
+            )
+        outputs = {}
+        for head in HEADS:
+            node_key = f"{_PRODUCER_PREFIX}{head}"
+            attested = attestation.attested_output(
+                node_key, HPO_LEDGER_OUTPUT, document_hash
+            )
+            if attested is None:
+                raise ValueError(
+                    f"FinalRefit: no trustworthy run attestation binds {node_key}'s "
+                    f"producer record and carry to the pinned HPO document"
+                )
+            if attested != self.params["hpo_evidence"][head]:
+                raise ValueError(
+                    f"FinalRefit: {head}'s pinned evidence is not what {node_key} "
+                    "recorded in that completed run — a substituted manifest is "
+                    "not attested evidence"
+                )
+            outputs[head] = attested
+        return outputs
 
     def _winner_from_evidence(self, head, evidence):
         """Rebuild the frozen inventory, ledger, and 1-SE ruling."""
@@ -222,6 +856,10 @@ class FinalRefit(Node):
         return matches[0]
 
     def _winners(self):
+        # The attestation comes FIRST: a run directory whose own config.json
+        # no longer reproduces the identity its resolved.json claims must
+        # refuse as an unattested run, not as a mismatched pin.
+        attested = self._verified_hpo_outputs()
         source_document = load_document(
             os.path.join(self.params["hpo_run_dir"], "config.json")
         )
@@ -230,7 +868,6 @@ class FinalRefit(Node):
         self._hpo_document = source_document.to_obj()
         winners = {}
         inventory_digest = None
-        attested = self._verified_hpo_outputs()
         manifest_digests = [attested[head].get("sha256") for head in HEADS]
         if len(set(manifest_digests)) != len(HEADS):
             raise ValueError("FinalRefit: every head requires a distinct evidence manifest")
@@ -244,7 +881,7 @@ class FinalRefit(Node):
                 "ledger", "selection",
             }:
                 raise ValueError(f"FinalRefit: {head} evidence has the wrong shape")
-            if evidence["producer_key"] != f"scan_{head}":
+            if evidence["producer_key"] != f"{_PRODUCER_PREFIX}{head}":
                 raise ValueError(f"FinalRefit: {head} evidence has the wrong producer")
             if evidence["feature_order"] != self.params["feature_order"]:
                 raise ValueError(f"FinalRefit: {head} feature order differs from the pin")
@@ -259,24 +896,286 @@ class FinalRefit(Node):
             winners[head] = dict(self._winner_from_evidence(head, evidence))
         return winners
 
-    def _base_params(self):
+    def _estimator_params(self):
+        """Return the bound document's own shared estimator constructor params."""
         params = dict(self._hpo_template()["model"]["estimator_params"])
-        if params.pop("estimator", None) != "lightgbm.LGBMRegressor":
+        if params.pop("estimator", None) != ESTIMATOR_PATH:
             raise ValueError("FinalRefit: pinned HPO document has the wrong estimator")
         params.pop("drop", None)
         return params
 
+    def _lean_drop(self):
+        """Return the bound document's own column mask, read from the run it attested and never restated here."""
+        drop = self._hpo_template()["model"]["estimator_params"].get("drop")
+        if not isinstance(drop, list) or not drop or any(
+            not isinstance(name, str) or not name for name in drop
+        ):
+            raise ValueError(
+                "FinalRefit: pinned HPO document declares no column mask to refit under"
+            )
+        return list(drop)
+
+    def _row_identities(self, inputs):
+        """Each wire's CONTENT-derived identity, checked against its pin and against its nine siblings."""
+        pinned = self.params["refit_identity"]["rows"]
+        identities = {}
+        for head in HEADS:
+            identity = row_set_identity(list(inputs[head]))
+            if identity != pinned[head]:
+                raise ValueError(
+                    f"FinalRefit: {head}'s materialized rows identify as "
+                    f"{identity} but refit_identity.rows pins {pinned[head]} — "
+                    "the rows supplied are not the rows this release binds"
+                )
+            identities[head] = identity
+        if len(set(identities.values())) != len(HEADS):
+            raise ValueError(
+                "FinalRefit: two wires carry the identical materialized row set — "
+                "ten wires, ten row sets"
+            )
+        return identities
+
+    def _release_identity(self, channel, rows_sha256):
+        """Return the bound window, data and channel facts every head's HASHED bundle training identity carries (ADR-0116)."""
+        identity = self.params["refit_identity"]
+        return {
+            "release_channel": channel,
+            "deployment_eligible": False,
+            "rows_sha256": rows_sha256,
+            "source": identity["source"],
+            "cache": identity["cache"],
+            "train_start_ms": identity["train_start_ms"],
+            "refit_end_ms": identity["refit_end_ms"],
+            "embargo_start_ms": identity["embargo_start_ms"],
+            "embargo_end_ms": identity["embargo_end_ms"],
+            "hpo_document_sha256": self.params["hpo_document_sha256"],
+        }
+
     def run(self, ctx, inputs):
-        """Fail closed until run and input attestations have upstream owners."""
-        raise ValueError(
-            "FinalRefit is non-executable: trustworthy run and content-derived "
-            "input attestations are unavailable"
+        """Refit the ten frozen winners once over attested rows, write one bundle, and prove it replays."""
+        from dskit.pipeline.libs.sklearn import load_bundle, write_bundle
+
+        unsealed = _unsealed_problems(type(self))
+        if unsealed:
+            raise ValueError(f"FinalRefit: {unsealed[0]}")
+        channel = self._channel()
+        problems = self.validate_inputs(inputs)
+        if problems:
+            raise ValueError(f"FinalRefit: {'; '.join(problems)}")
+        winners = self._winners()
+        identities = self._row_identities(inputs)
+        shared = self._estimator_params()
+        drop = self._lean_drop()
+        feature_order = list(self.params["feature_order"])
+        # One constructor recipe per head: the document's shared estimator
+        # params under that head's OWN frozen winner, and nothing else.
+        merged = {head: {**shared, **winners[head]} for head in HEADS}
+        estimators, training_identities = refit_heads(
+            {head: list(inputs[head]) for head in HEADS},
+            merged,
+            feature_order=feature_order,
+            lean_drop=drop,
+            estimator_path=ESTIMATOR_PATH,
+            seed=self.params.get("seed", 0),
+            categorical_feature=self.params["categorical_feature"],
         )
+        surviving = [name for name in feature_order if name not in set(drop)]
+        for head in HEADS:
+            training_identities[head].update(
+                self._release_identity(channel, identities[head])
+            )
+        path = os.path.join(self.artifact_dir(ctx), BUNDLE_FILENAME)
+        manifest = write_bundle(
+            path,
+            list(HEADS),
+            estimators,
+            head_params={
+                head: {"estimator": _WRAPPER_PATH, "estimator_params": dict(merged[head])}
+                for head in HEADS
+            },
+            feature_order=feature_order,
+            surviving_features={head: list(surviving) for head in HEADS},
+            categorical_encoding=dict(self.params["categorical_encoding"]),
+            training_identities=training_identities,
+            predict_fixture=[list(row) for row in self.params["predict_fixture"]],
+        )
+        replayed = load_bundle(path)
+        if replayed.manifest["predict_checksum"] != manifest["predict_checksum"]:
+            raise ValueError(
+                "FinalRefit: the written bundle does not replay to the beliefs it "
+                "was written with"
+            )
+        return {"bundle_path": path, "manifest": manifest}
+
 
 #: The ten independent LightGBM lead heads (ADR-0114 §2): one per direct
 #: lead h=1..10, sharing feature schema, category rules, search space and
 #: release identity — never trees or weights.
 HEADS = tuple(f"h{i:02d}" for i in range(1, 11))
+
+#: The two release channels. ``"fixture"`` is the only one that can
+#: execute: it proves the machinery on deterministic synthetic rows and
+#: may never claim the shipped final-HPO document identity.
+#: ``"production"`` — a real final-model release — refuses outright,
+#: because it needs the signed run-output attestation contract ADR-0122
+#: accepted and nothing builds yet. Synthetic helper assembly is not a
+#: completed real
+#: final-model release, and the two stay distinguishable by the document
+#: they are bound to AND by the channel stamped into every head's hashed
+#: bundle training identity.
+FIXTURE_CHANNEL = "fixture"
+PRODUCTION_CHANNEL = "production"
+RELEASE_CHANNELS = (FIXTURE_CHANNEL, PRODUCTION_CHANNEL)
+
+#: The two entry points a release channel is decided at, named once so
+#: :data:`GATE_FACTS` can declare WHERE an attempt lands rather than describe
+#: it: ``validate_params`` resolves ``_channel_problems`` on the CLASS, and
+#: ``run`` resolves ``_channel`` on the INSTANCE. The distinction is not
+#: academic — two declared attempts open one of them and not the other.
+RELEASE_ENTRY_POINTS = ("validate_params", "run")
+
+#: Every fact this gate discloses about itself, as DATA the test suite
+#: EXECUTES rather than prose it greps. Each entry is
+#: ``(name, refuses, reach, attempt)``:
+#:
+#: * ``name`` identifies one attempt on the gate.
+#: * ``refuses`` is whether class creation is halted by the seal itself —
+#:   never by Python rejecting the construction for its own reasons, which
+#:   the probes assert against separately.
+#: * ``reach`` is the tuple of :data:`RELEASE_ENTRY_POINTS` the attempt
+#:   actually opens on the production channel, in that order, and ``()``
+#:   when it opens neither.
+#: * ``attempt`` describes only WHAT IS TRIED — never what follows, which is
+#:   ``refuses`` and ``reach`` alone.
+#:
+#: ``tests/test_final_model.py`` holds one probe per name, performs the
+#: attempt for real, and asserts the observed refusal AND the observed reach
+#: equal what is declared here, so changing either field contradicts an
+#: executed fact.
+#:
+#: This replaces a prose limits list. Round-5 review inverted three sentences
+#: in this module — "a custom metaclass CANNOT ...", "It fails OPEN, not
+#: closed" — and the whole 116-test suite stayed green, because a substring
+#: assertion cannot see polarity. Round-7 review then found the same defect
+#: twice more, which is why ``reach`` is a field and not a sentence: round 6
+#: moved the polarity into a boolean but left "does NOT reach run()" in
+#: prose, and prose was wrong about it for a metaclass attempt it had
+#: dropped from the list entirely. Read this tuple, not a paragraph.
+#:
+#: Every ``refuses=False`` entry is a real, reachable attempt, and none of
+#: them edits a repository file: the probes run from the test suite and
+#: reach the gate through the same import-and-``getattr`` that a document's
+#: ``uses:`` performs.
+GATE_FACTS = (
+    ("refuses_an_override_in_the_subclass_body", True, (),
+     "a direct subclass whose body supplies a sealed member"),
+    ("refuses_an_override_from_a_mixin_in_the_mro", True, (),
+     "a mixin earlier in the MRO supplying a sealed member"),
+    ("refuses_an_override_at_any_subclass_depth", True, (),
+     "a grandchild of an intermediate subclass supplying a sealed member"),
+    ("refuses_an_override_of_an_inherited_hook", True, (),
+     "a subclass supplying __getattribute__, which vars(cls) cannot surface"),
+    ("refuses_an_object_whose_equality_is_rigged", True, (),
+     "a sealed member supplied as an object whose __eq__ answers True"),
+    ("refuses_a_subclass_that_shrinks_the_sealed_list", True, (),
+     "a subclass body supplying _FINAL_METHODS = () beside an override"),
+    ("refuses_a_subclass_that_replaces_init_subclass", True, (),
+     "a subclass supplying its own __init_subclass__"),
+    ("refuses_a_metaclass_that_shadows_the_class_dict", True, (),
+     "a subclass supplying a sealed member in its own body, whose metaclass "
+     "also supplies __dict__"),
+    ("refuses_a_metaclass_that_doctors_the_mro", False, (),
+     "a metaclass whose mro() drops a base that supplies a sealed member"),
+    ("refuses_a_metaclass_that_rotates_the_class_out_of_its_own_mro", False, (),
+     "a metaclass whose mro() puts the new class AFTER FinalRefit, so that "
+     "type.__new__'s super(cls, cls).__init_subclass__ lookup finds nothing"),
+    ("refuses_a_metaclass_that_injects_the_guard_beside_its_payload", False, (),
+     "a metaclass __new__ that assigns a compliant _unsealed_problems beside "
+     "the sealed member it is really after"),
+    ("refuses_a_substituted_channel_resolver", False, (),
+     "a metaclass __new__ that assigns _channel itself, the member run() "
+     "resolves through the instance"),
+    ("refuses_a_subclass_overriding_an_unsealed_node_hook", False, (),
+     "a subclass supplying Node.serving_effect, which the gate never "
+     "resolves through — sealing it would be over-reach"),
+    ("refuses_a_mixin_whose_init_subclass_swallows_the_hook", False, (),
+     "a mixin earlier in the MRO defining __init_subclass__ without calling "
+     "super(): a mixin derives from nothing, so sealing cannot reach it"),
+    ("refuses_post_hoc_assignment_on_this_class", False, RELEASE_ENTRY_POINTS,
+     "assigning a sealed member onto FinalRefit itself after import — the "
+     "shape run-final-refit.json wires, needing no subclass at all"),
+    ("refuses_post_hoc_assignment_on_a_subclass", False, (),
+     "assigning a sealed member onto an empty-bodied subclass after it is "
+     "defined, which the definition-time check has already passed"),
+    ("refuses_a_metaclass_that_injects_after_class_creation", False, (),
+     "a metaclass __new__ that builds the class from an empty namespace and "
+     "assigns a sealed member onto it before returning it"),
+    ("refuses_per_instance_shadowing", False, ("run",),
+     "assigning a sealed member onto one constructed instance"),
+    ("refuses_a_metaclass_that_intercepts_class_attribute_access", True, (),
+     "a metaclass __getattribute__ answering class-level lookups"),
+    ("refuses_a_metaclass_that_supplies_a_sealed_name_as_a_data_descriptor",
+     True, (),
+     "a metaclass carrying validate_params as an object with __get__ and "
+     "__set__, which type.__getattribute__ prefers over the whole class MRO"),
+    ("refuses_a_metaclass_supplying_a_delete_only_data_descriptor", True, (),
+     "a metaclass carrying validate_params as an object with __get__ and "
+     "__delete__ but no __set__, which type.__getattribute__ still prefers "
+     "over the whole class MRO"),
+    ("refuses_a_metaclass_whose_own_metaclass_rigs_equality", True, (),
+     "a metaclass supplying a sealed name whose own metaclass answers True "
+     "to every ==, so a baseline comparison by equality would skip it"),
+    ("refuses_a_metaclass_supplying_a_class_that_is_itself_a_data_descriptor",
+     True, (),
+     "a metaclass binding validate_params to a CLASS whose own metaclass "
+     "defines __get__ and __set__, so the descriptor protocol lives one "
+     "level further out than the payload"),
+    ("refuses_a_metaclass_swapped_in_after_the_class_is_defined", False,
+     ("validate_params",),
+     "assigning a new metaclass onto an already-defined subclass with "
+     "cls.__class__ = ..., which the definition-time hook has already passed "
+     "and whose descriptor then answers in place of the member that would "
+     "re-take the verdict"),
+    ("shipped_configuration_refuses_to_plan", True, (),
+     "loading configs/run-final-refit.json and planning it"),
+)
+
+#: The field every labelled wire row carries, naming the head that wire
+#: belongs to. It is ordinary row CONTENT — it moves the wire's
+#: content-derived identity like any other field — and never a
+#: caller-supplied identity of its own.
+WIRE_LABEL_FIELD = "head"
+
+#: The producer node key prefix a head's evidence must have been recorded
+#: under, and the output name it must have been recorded as: the
+#: ``scan_h01``..``scan_h10`` search nodes of the attested final-HPO run.
+_PRODUCER_PREFIX = "scan_"
+HPO_LEDGER_OUTPUT = "hpo_ledger"
+
+#: The one estimator this build refits, named once: ``_estimator_params``
+#: checks the pinned document declares it and :func:`refit_heads` is
+#: constructed with it, so the two can never drift apart. ``_WRAPPER_PATH``
+#: is what :func:`refit_heads` actually persists (it always wraps the
+#: estimator to enforce the column mask), which is the class the bundle
+#: manifest must declare or ``load_bundle`` refuses it as relabelled.
+ESTIMATOR_PATH = "lightgbm.LGBMRegressor"
+_WRAPPER_PATH = "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator"
+
+#: The one bundle filename a refit writes into its own artifact directory.
+BUNDLE_FILENAME = "final-model.joblib"
+
+#: The marker a config placeholder carries until a real run fills it.
+_PENDING = "PENDING"
+
+
+def _is_sha256(value):
+    """Whether the value is a lowercase 64-character hex digest."""
+    return (
+        type(value) is str
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
 
 #: The one seed :func:`build_candidate_inventory` defaults to — matches
 #: the ``hpo_seed`` already declared beside this grid in
@@ -522,6 +1421,50 @@ def hpo_space(config_path=None) -> dict:
             "not a non-empty mapping of dimension -> non-empty value list"
         )
     return {name: list(values) for name, values in space.items()}
+
+
+def final_hpo_document_identity(config_path=None) -> str:
+    """Return the shipped final-HPO document's identity hash, read from the document itself rather than restated.
+
+    The runtime pin behind the fixture/production split: a production
+    release must BE this document's refit, and a fixture release may
+    never claim to be. Reading it here means the identity lives in one
+    place — ``configs/run-final-hpo.json`` — instead of being copied into
+    a constant that drifts the day that document changes.
+
+    Parameters
+    ----------
+    config_path : str, optional
+        Override path to the config (default: the shipped
+        ``configs/run-final-hpo.json`` beside this package).
+
+    Returns
+    -------
+    str
+        The document's lowercase sha256 identity hash — the same
+        :attr:`dskit.pipeline.document.PipelineDocument.hash` the pipeline
+        names run directories by.
+
+    Raises
+    ------
+    ValueError
+        The config is missing, unreadable, or is not a loadable pipeline
+        document.
+
+    Examples
+    --------
+    Read the shipped identity::
+
+        len(final_hpo_document_identity())
+        # -> 64
+    """
+    path = _DEFAULT_HPO_CONFIG if config_path is None else config_path
+    try:
+        return load_document(path).hash
+    except (OSError, ConfigError, ValueError, TypeError) as exc:
+        raise ValueError(
+            f"final_hpo_document_identity: cannot read {path!r} ({exc})"
+        ) from exc
 
 
 def build_candidate_inventory(
@@ -828,7 +1771,7 @@ def refit_heads(
     *,
     feature_order,
     lean_drop,
-    estimator_path="lightgbm.LGBMRegressor",
+    estimator_path=ESTIMATOR_PATH,
     seed=0,
     categorical_feature=(),
 ):

@@ -16596,3 +16596,778 @@ A venue that answers a pending ref is what makes "an unknown outcome is
 resolved by querying, never by resending" true for an order still in transport.
 The terminal acknowledgment of a landed cancel reaches the fold through the
 existing reconcile/query path, not through a second return value from `cancel`.
+---
+
+## ADR-0166 — Wiring `FinalRefit` to an attested run, content-derived row identities and ten labelled wires
+
+*(Number reserved for this work packet. 0122 is already taken by the
+PROPOSED attested ten-head release entry, which this ADR does NOT implement;
+0161-0165 are held by parallel lanes. Ids are cited from prose, never
+reclaimed.)*
+
+**Status:** accepted 2026-09-18 under the owner's pre-approval of tier-1/
+tier-2 additions for gap EQ-01 of
+`children/intraday_equities/docs/explanations/production-research-audit.tex`
+("finish the immutable completed-run/ten-wire FinalRefit contract and prove
+real frozen-bundle replay"). Completes ADR-0116's conditional future path and
+consumes ADR-0119's driver capabilities. It authorizes no real HPO, refit,
+market replay, backtest, lockbox read, paper/live action or deployment, and
+it does not accept ADR-0122.
+
+*Corrected 2026-09-18 after round-1 independent review found 1 Critical and
+1 Major. The Critical: `uses: "module:ClassName"` accepts ANY class, so a
+subclass overriding `_channel_problems` constructed on the production channel
+and, with `_release_identity` also overridden, wrote a bundle stamped
+`production` / `deployment_eligible: True` over fabricated evidence, with no
+edit to dskit or to `final_model.py`. Fixed by sealing the gate and — the
+half that matters more — by deleting this entry's false claim that no code
+path could emit one. The Major: the closed-vocabulary test read its expected
+vocabulary from the module under test, so narrowing the gate to `if not
+channel` let `"staging"` through with a green suite. Both corrections are
+below.*
+
+*Corrected again 2026-09-18 after round-2 review found 2 Critical and 2 Major
+and the coordinator invoked `skeptic-review.md`'s convergence checkpoint. The
+Critical pair reached past the round-1 seal through a mixin earlier in the MRO
+and through a `__getattribute__` hijack `vars(cls)` cannot surface; the Major
+pair were test defects (a "grandchild" test that built a direct child, and an
+unpinned `ignored` allowlist). The checkpoint's changed approach is not a third
+seal patch: resolve the seal through the MRO, which is what enumeration CAN do
+correctly, and delete the claim that the enumeration is a boundary. There is no
+third bypass to hunt because nothing is claimed that a bypass would falsify.*
+
+*Corrected again 2026-09-18 after round-3 review found 3 Major, all of them a
+test that could not express what it claimed or a sentence that was not true: the
+seal's `is not` was pinned by nothing (an `!=` mutation passed 110/110 and a
+rigged-`__eq__` object then walks through), the `FinalRefit._FINAL_METHODS` read
+was pinned only by an unrelated `TypeError`, and the class docstring still
+carried a cost claim this entry had already corrected elsewhere. Sweeping that
+last family found a SECOND false claim review had not named — a swallowing
+mixin, unlike a swallowing intermediate, is never refused and costs nothing —
+so limits 1 and 2 below are rewritten rather than patched.*
+
+*Corrected again 2026-09-18 after round-4 review found 1 Major: round-4's own
+rewrite of limit 1 substituted a subclass-only illustration for round-3's
+direct `FinalRefit.<name> = ...` shape, which is strictly narrower AND is the
+shape the shipped document wires. A rewrite is not a correction unless it
+covers every case the original did; verifying that needs the round-over-round
+sentence comparison, not a re-read. Every round-4 rewrite was diffed against
+round-3 on that basis, which also recovered "intercept attribute access on the
+class itself" in limit 4 and "fails closed ... for the shipped configuration"
+in the class docstring.*
+
+*Corrected again 2026-09-18 after round-5 review found 1 Major: the disclosure
+pins were polarity-blind, so an inverted claim shipped green. Replaced with
+`GATE_FACTS` above. This is the sixth and final review round; the residual
+list the owner asked for is in the delivery report, and its headline item is
+that free-text prose in this entry and in the module docstrings remains
+unexecutable — measured by inserting two false sentences beside the true
+declaration, which still passed 132 tests. What changed is that prose no
+longer carries the authority, not that prose became trustworthy.*
+
+*Corrected again 2026-09-19 after round-6 review found 2 Major, both in the
+round-6 fix itself. (1) Round 6 moved the polarity into a boolean but left the
+REACH in prose — "does NOT reach `run()`'s instance-level `self._channel()`" —
+and prose was wrong about it, because round 6 had also dropped `__mro__`
+doctoring from the mechanism list while never probing the family. Measured:
+a subclass whose metaclass supplies `__dict__` was invisible to
+`inspect.getattr_static`, which SKIPS such a class rather than trusting it, so
+the seal read `FinalRefit`'s own member for every sealed name while Python
+resolved the subclass's live override on BOTH paths — a total bypass, not a
+partial one. A metaclass `__new__` that injects after class creation is a
+second total bypass. FIXED at the resolution rather than declared around:
+`_resolved_through_the_mro` reads the class's real `__mro__` and each entry's
+real `__dict__` through `type`'s own descriptors, so no metaclass participates
+in what the seal reads, and the `__dict__`-shadowing attempt is now refused.
+`GATE_FACTS` gained a `reach` field so the remaining ones state WHERE they land
+as executed data. (2) One clause in `__init_subclass__`'s docstring still named
+four mechanisms and their common outcome, and negating that outcome left all
+132 tests green. The docstring now carries no outcome vocabulary outside four
+pinned sentences, EACH OF WHICH CONTAINS ITS OWN POLARITY WORD — which is the
+general rule this family kept missing: `assert "introspection" in doc` cannot
+see an inversion, `assert "not an authority boundary" in doc` can, because the
+negation is inside the pinned substring.*
+
+*Corrected again 2026-09-19 after round-7 review returned 0 Critical, 4 Major
+across two independent lenses — and, because the same two FAMILIES had now
+recurred in rounds 4, 5, 6 and 7, under the CONVERGENCE CHECKPOINT rather than
+as a fifth patch. The two families: (a) another shape past the class-definition
+seal, (b) another false claim in prose that the round's own pin could not see.
+Both lenses found one of each independently.*
+
+*Family (a), and the changed approach: **the check moved to USE TIME.**
+`type.__new__` invokes `__init_subclass__` as `super(cls, cls).__init_subclass__`,
+which searches `cls.__mro__` AFTER `cls` — so a metaclass whose `mro()` rotates
+the class to the end skips the hook SILENTLY, no exception, and a metaclass
+`__new__` that assigns after `super().__new__` lands after it. In both cases
+`_sealed_violations` returned the violation when asked: the check was right and
+its TIMING was wrong. `_unsealed_problems` now takes the same verdict from
+`validate_params` and from `run`, which are where the gate is consulted. That
+is not another declaration — it closes the whole class of attempt that skips
+the definition-time hook, and three previously OPEN total bypasses now reach
+NOTHING: the swallowing mixin, post-hoc assignment on a subclass, and metaclass
+`__new__` injection. It does not make the seal an authority boundary and cannot:
+a caller who replaces `run` outright is not using this gate, which is ADR-0122's
+`uses:` problem.*
+
+*Family (b), and the changed approach: **a digest, not a denylist.** Round 6
+pinned prose by required substring; round 7 replaced that with a banned
+vocabulary; both lenses then defeated the vocabulary five ways between them, and
+TWO of the five put the false claim where the check never looked at all — the
+CLASS docstring, and a `GATE_FACTS` `attempt` string. A finite word list
+mistaken for a completeness proof is the same error three rounds running. Every
+paragraph of the seal's docstring, every gate-naming paragraph of the class
+docstring, and every `attempt` string is now pinned BY DIGEST. The honest scope
+is smaller than it sounds and is stated in the test: this detects CHANGE, not
+falsehood — when it fails a reviewer reads the new text and decides whether it
+is true. What it makes impossible is a gate claim moving with nobody looking.*
+
+*Two measurement defects were found in round 7's own harness and fixed: the
+`run` reach was measured by re-implementing `run`'s gate sequence, so DELETING
+that gate from `run` changed no measurement; and `_channel` itself was never a
+declared target, while the measurement resolved it on `FinalRefit` rather than
+through the instance. `_reaches` now calls `run` and classifies the refusal
+against markers taken from the PRISTINE class — derived from the attacked class,
+a metaclass interception empties the expected text and the row measures as
+reaching `run`, which it briefly did. 19 facts; 44 mutations, 44 killed,
+including all five prose attacks the lenses used and both halves of the
+use-time check.*
+
+*Corrected again 2026-09-19 after round-8 review returned 0 Critical, 3 Major —
+and both of round 8's changed approaches turned out to have the SAME defect in
+a new place: each one was still decided by something the attacker could reach.*
+
+*(a) The use-time guard was asked THROUGH THE CLASS it guards.*
+`cls._unsealed_problems()` resolves like any other member, so the three
+mechanisms round 8 had just closed could inject a compliant
+`_unsealed_problems` ALONGSIDE their real payload and the class reported itself
+clean at both entry points. Asking a compromised class whether it is
+compromised is not a check. FIXED: `_unsealed_problems` is a MODULE-LEVEL
+function now and is not a sealed member at all — nothing resolves it through
+the class, so injecting the name is inert. Replacing the module name is the
+already-declared trusted-name tier, not a new one. Round-8 review's own
+19-row independent re-measurement matched all 19 declared values, so the
+declarations were right; only this one resolution was wrong.*
+
+*(b) The digest's CLASSIFIER was unpinned, and its surface was two attributes
+wide.* Round 8 pinned the paragraphs a `_GATE_WORDS` list judged to be about
+the gate. Review broke that two ways: trim one word from the list, drop the
+matching digest, rewrite the paragraph — 144 tests still passed, and the
+paragraph it unpinned was the ADR-0122 disclaimer, the single most
+load-bearing sentence in the class docstring. And the module docstring, every
+other method's docstring, and every `#:` comment were never scanned at all, so
+a bald false completeness claim was free in any of them. FIXED BY DELETING THE
+CLASSIFIER: every docstring in the module at any nesting depth, plus every
+`#:` note, is pinned — 53 entries, nothing decides what counts. A test asserts
+the pin's own reach against an independent AST walk, so a `_module_prose` that
+quietly stopped walking would fail rather than shrink the surface silently.*
+
+*THE PATTERN, worth naming because it took four rounds to see: each round's fix
+introduced a new DECIDER — a substring, a vocabulary, a classifier, a guard
+method — and review defeated the decider rather than the fix. Round 9 removes
+the decider in both cases instead of improving it. The honest scope is
+unchanged and is stated in the tests: the prose pin detects CHANGE, not
+falsehood, and the seal is still not an authority boundary.*
+
+*20 facts; 44 mutations, 44 killed, including all four places round-8 review
+put a false claim and the guard-through-the-class attack. Minor fixed: a test
+docstring still said a post-hoc subclass bypass "WORKS", which round 8's own
+declaration had contradicted. Nit fixed: `_PINNED_SEAL_CLAIMS` now has a
+length pin.*
+
+**Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
+three missing pieces; ADR-0119 built two of the generic halves
+(`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
+input wires, and the refit-identity's own source/cache/window-derived hash"
+and "wiring `FinalRefit` to any of this" unbuilt. Inventory for this entry
+read `dskit/pipeline/driver.py`, `node.py`, `document.py`,
+`libs/sklearn.py`'s `write_bundle`/`load_bundle`,
+`dskit/production/{release,bundles,ledger,verifier,ids}.py`,
+`dskit/pipeline/{trust,release_rotation,program_calendar}.py`,
+`dskit/onboarding/{base,snapshot,observations}.py` and ADR-0090/0091/0098/
+0112/0114/0116/0119/0122/0157. Two gaps survived that sweep:
+
+- Nothing returns the VALUE a completed, document-bound node recorded.
+  `node_output_for_document` returns a boolean, so a consumer had to read
+  `nodes/*.json` itself — run-directory layout knowledge a child must not own.
+- Every content digest in the repo is ORDER-DEPENDENT where it matters here.
+  `observations.stream_digest` hashes a snapshot in list order,
+  `CandidateInventory.digest` hashes an ordered tuple, `content_identity` is
+  order-independent across manifest NAMES but not within one artifact's rows,
+  and `production.base.canonical_hash` treats a list as ordered. None can say
+  "these are the same rows, re-materialized in another order".
+
+Everything else was reused unchanged: `resolve_json_artifact`,
+`RunAttestation`, `PipelineDocument.hash`, `CandidateInventory`,
+`TrialLedger`, `OneStandardErrorSelector`, `write_bundle`/`load_bundle`,
+`ColumnSubsetEstimator` and the child's own `refit_heads`.
+
+**Decision.** Two tier-1 additions to `dskit/pipeline/driver.py`, which
+already owns `resolve_json_artifact`, `_canonical_hash` and the RECORD-phase
+writers both read; a sibling module would restate that private recipe and
+run-dir layout.
+
+1. `RunAttestation.attested_output(node_key, output_name, document_hash)` —
+   the value `node_key` recorded for `output_name`, returned only when
+   `node_output_for_document` holds AND the run's own `carry.json` carries an
+   equal value under the same node and name. `None` on anything else, so an
+   unreadable run never looks different from one that did not happen. This is
+   exactly the corroboration ADR-0116 asked each consumer to make, owned once.
+   It composes evidence the driver already writes; it does not authenticate
+   it, and ADR-0119's disclosed node-record chaining gap is unchanged.
+
+2. `row_set_identity(rows)` — one sha256 over the canonical JSON of the
+   SORTED list of per-row canonical digests. Content-derived and
+   order-INDEPENDENT: position, filename, producer name and any label
+   supplied beside the rows are not arguments at all, so only the rows' own
+   JSON content can move it. Rows are a MULTISET, not a set. `NaN`, a
+   non-JSON type or a non-list raises, matching `content_identity`'s
+   fail-loud contract. (ADR-0122 proposes an ORDERED row-identity digest;
+   that entry is not accepted, and EQ-01's contract requires a re-materialized
+   set to identify as the same rows, so this one is order-independent.)
+
+Child-side (tier 3, `children/intraday_equities/intraday_equities/
+final_model.py`), `FinalRefit` becomes the orchestration node ADR-0116
+described and nothing more:
+
+- **Immutable completed-run provenance.** `_verified_hpo_outputs` attests the
+  run completed and binds the pinned document identity, then takes each
+  head's `hpo_ledger` through `attested_output` and refuses a manifest that
+  is not what `scan_hNN` recorded. Every artifact is re-read and re-digested
+  from bytes on every call, so a run mutated after binding refuses. The
+  attestation runs BEFORE the document pin is compared, so a run whose
+  `config.json` was swapped refuses as unattested, not as a mismatched pin.
+- **Content-derived materialized-row identities.** Each wire's identity is
+  `row_set_identity` over the delivered rows and must equal the sha256
+  `refit_identity.rows` pins for that head. The pin is an expectation; the
+  identity is always recomputed from content. The ten identities must differ.
+- **Ten labelled input wires.** `HEADS` is the only authority. Every row
+  carries `WIRE_LABEL_FIELD` naming its own head — ordinary content, which
+  moves the wire's identity like any other field — so a missing, extra,
+  empty, swapped, duplicated or mislabelled wire refuses by name before any
+  fit. `run` re-checks `validate_inputs` itself, so the refusal holds at
+  every entry point, not only through the driver.
+- **The bound release identity reaches the bundle.** Every head's HASHED
+  `training_identities` entry carries source, cache, that head's row
+  identity, the training-window start, the exclusive lockbox boundary, the
+  exact embargo interval, the bound HPO document identity, the release
+  channel and `deployment_eligible: false` — ADR-0116's requirement that
+  identical fitted bytes over different data/cache/cuts cannot attest as the
+  same release.
+- **Fixture and production are different releases, structurally.** A
+  `release_channel` param admits `"fixture"` or `"production"`. A fixture may
+  never claim the shipped `configs/run-final-hpo.json` identity (read from
+  that document, never restated). `"production"` — a real final-model
+  release — refuses OUTRIGHT, at construction and again inside `run`: it
+  needs the signed run-output attestation contract ADR-0122 accepted on
+  2026-09-12, whose out-of-Python launch root NOTHING BUILDS YET.
+  Because `write_bundle`'s content hash covers `training_identities`, a
+  written bundle cannot be relabelled afterwards without failing
+  `load_bundle`.
+- **The gate has an accident guard, not an authority boundary.** Every
+  refusal above is a method and `uses: "module:ClassName"` accepts any
+  class, so `FinalRefit._FINAL_METHODS` names the twenty-nine members the
+  gate resolves through — the twenty-three this class defines, the
+  inherited `__init__`, `__new__` and `artifact_dir`, and the three
+  attribute-resolution hooks `__getattribute__`, `__getattr__` and
+  `__setattr__` — and `__init_subclass__` raises `TypeError` for a subclass
+  that resolves any of them to something other than this class's own.
+  Resolution is THROUGH THE MRO (`inspect.getattr_static`), not against
+  `cls.__dict__`: round-2 review reached past a `__dict__` check with a
+  mixin earlier in the MRO and with a `__getattribute__` hijack that
+  `vars(cls)` can never surface, and both are now refused, at any depth of
+  subclassing. The list is restated independently in
+  `tests/test_final_model.py`; one test refuses any member of the class
+  absent from it, another refuses anything CALLABLE hiding in that
+  test's own metadata allowlist — round-2 proved an unpinned allowlist is an
+  escape hatch a rushed author widens to turn a red suite green. This is the
+  `production/leg.py` and `production/loop.py` idiom widened from one name
+  to the whole gate, and it carries the same honest scope
+  `pipeline/uncertainty_set.py` already states for it.
+
+`configs/run-final-refit.json` declares `release_channel: "production"` and
+`refit_identity.rows`, and every pin stays PENDING. It still refuses to plan,
+in two categories — channel closure and pending pins — which `validate_params`
+reports as nine distinct problems.
+
+Adding those two graded fields moved the document's identity hash from
+`ed5709fbbbf56bc4dbdb3954ec8e81d5649b7605b936b30bd65eca18e2f3afd1` to
+`b0fe47c3456101cc2ce072df11d07df1e53e38db310a160be4a949e054593fd1`. That move
+is benign and is recorded here rather than left silent: this document has
+never planned successfully at either commit, no run directory exists under
+`children/intraday_equities/pipeline_runs`, and no stored artifact, `$prev`
+series or release is keyed to the old hash. Nothing is orphaned.
+
+**Threat model, and what this entry is NOT.** Everything above is an
+IN-PROCESS check. **It is not an authority boundary and it cannot become
+one.** Two review rounds each found a new way past the previous round's
+class-definition seal, and the reason is structural rather than a missing
+case: `__init_subclass__` can only inspect names, while Python resolves
+attributes through the whole MRO, through `__getattribute__`, through the
+metaclass and through instance dictionaries. An enumeration cannot close an
+open set. What the check earns is real but bounded — it stops an ordinary
+caller wiring the wrong class, and it stops a future edit quietly dropping a
+refusal — and this entry claims exactly that and nothing more. The earlier
+wording here ("fails closed for ... the documented `uses:` subclassing seam",
+"the chain cannot be broken at depth") was falsified by review and is
+withdrawn.
+
+**The authoritative statement is `final_model.GATE_FACTS`, and it is
+executed.** Round-5 review proved prose cannot carry this: it inverted three
+sentences in the module — "a custom metaclass CANNOT ...", "It fails OPEN, not
+closed" — keeping every substring the disclosure test checked, and the whole
+116-test suite stayed green, because a substring assertion cannot see polarity.
+So the polarity moved into data, and after round 6 so did the
+REACH. `GATE_FACTS` is a tuple of `(name, refuses, reach, attempt)`: the
+attempt describes only what is TRIED, `refuses` is whether the seal itself
+halts class creation, and `reach` is the tuple of `RELEASE_ENTRY_POINTS`
+(`validate_params`, `run`) the attempt actually opens on the production
+channel. `tests/test_final_model.py` holds one probe per name, performs each
+attempt for real, and asserts BOTH observed fields against what is declared —
+all TWENTY-TWO as of round 10. A probe refused by Python rather than by the
+seal raises rather than counting as a refusal — told apart BY EXCEPTION TYPE
+(`SealRefused`) since round 10, never by a substring of the message — and a
+control test proves the reach measurement distinguishes the two entry points
+instead of always answering `()`. Verified by mutation in every round; the
+round-10 sweep runs eighteen mutations over the seal, the metaclass rule and
+the prose machinery, and all eighteen are killed. The class and
+`__init_subclass__` docstrings CITE the tuple instead of restating it, and the
+tuple's own `attempt` sentences are digest-pinned with the rest of the module's
+prose.
+
+The numbered list below is a NARRATIVE summary for a reader who is not in the
+code, kept because it carries the round-by-round corrections. It is not
+executable. Where it and `GATE_FACTS` could ever disagree, `GATE_FACTS` is
+what the code does.
+
+Six limits, disclosed rather than papered over:
+
+1. Post-hoc assignment, in either of two reachable shapes. **Directly on the
+   class** — `FinalRefit._release_identity = ...` after import — which is the
+   shape the SHIPPED document reaches, because `run-final-refit.json` wires
+   `uses: "intraday_equities.final_model:FinalRefit"` and `uses:` resolution
+   is an import plus a `getattr` with no re-check of the resolved class's
+   members: no subclass is needed and the check never runs at all. Or **on a
+   subclass** — `class S(FinalRefit): pass` has an empty body and passes the
+   check, and `S._channel_problems = ...` afterwards is never seen. Either
+   shape **costs nothing — no repository file is edited**. Round-3 wrote that
+   this path "forces an edit to trusted source, a different threat class";
+   round-4 review disproved that, and round-4's own rewrite then narrowed the
+   bullet to the subclass shape alone, which round-5 review caught. Both
+   shapes are named here now, and a test executes the direct one.
+2. A base EARLIER IN THE MRO whose own `__init_subclass__` does not call
+   `super()`: the check then never runs at all. An intermediate that DERIVES
+   from `FinalRefit` is refused, because `__init_subclass__` is itself sealed
+   — but a plain mixin derives from nothing, is not a subclass, and cannot be
+   refused that way, so **this also costs nothing**. Verified:
+   `class Evil(SwallowMixin, FinalRefit)` is created with overrides in place.
+   `pipeline/uncertainty_set.py` states the same limit for the same idiom;
+   every user of it in this repo shares it.
+3. Per-instance shadowing — `node.run = ...` — because an instance is not a
+   class.
+4. A custom metaclass. Four shapes were probed rather than enumerated from
+   the armchair, and they do NOT behave alike — which is why `reach` is a
+   field and this bullet is a summary of it. A metaclass `__getattribute__`
+   answers every CLASS-level lookup, including `validate_params`' own
+   `cls._channel_problems(...)`, so the production-channel refusal disappears
+   from validation; it does not answer `run()`'s instance-level
+   `self._channel()`. Partial. A metaclass `__new__` that builds the class
+   from an empty namespace and assigns a sealed member before returning it
+   opens both, because `__init_subclass__` has already run inside
+   `type.__new__`. Total, and the same shape as limit 1. A metaclass whose
+   `mro()` drops a base carrying an override opens neither: the seal and
+   Python now walk the same structure, so a member the seal cannot see is one
+   Python does not resolve either. And a metaclass supplying `__dict__` was
+   TOTAL until round 7 — `inspect.getattr_static` skips a class whose
+   metaclass shadows `__dict__` rather than trusting what it would return, so
+   the seal read `FinalRefit`'s own member for every sealed name — and is now
+   refused, because the seal reads `type`'s real `__mro__` and `__dict__`
+   slots instead. That last one is a fix, not a disclosure, and it does not
+   change the paragraph above: an enumeration still cannot close an open set,
+   and limits 1-3 remain open at no cost.
+5. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
+   hash-chains `nodes/*.json` to `resolved.json` or to each other, and this
+   entry does not change that. Anyone with write access to a run directory
+   can fabricate the records, the carry and the evidence artifacts together
+   and satisfy every check here. Before this slice that gap had no payload
+   to reach, because `FinalRefit.run` raised unconditionally; this slice is
+   the first to give it a high-value target, and that is stated plainly.
+6. A bundle's `release_channel` / `deployment_eligible` stamp records what
+   the writing process believed. It is never, by itself, evidence that
+   anyone authorized the release, and no consumer should read it as one.
+
+**Where the trust root actually is, and that it does not exist yet.**
+ADR-0122's Correction states the rule this entry obeys rather than
+contradicts: "A Python `PreImportResolver` cannot be a root of trust", and
+"Release trust must therefore begin outside Python, and release model
+members must be non-pickle data." ADR-0122 is ACCEPTED (2026-09-12) — its
+title still reads "Proposed", which is stale — and its out-of-Python launch
+root is NOT BUILT: no `PreImportResolver`, launch profile or launcher exists
+anywhere in `dskit/`. Until it does, no bundle stamp this entry produces is
+evidence of authorization, and nothing here is offered as a substitute for
+that launcher. The second half of that quotation also bears on this entry's
+disclosed A3 conflict: the bundle written here is joblib, which is pickle,
+which ADR-0122 rules out for release model members.
+
+**Scope.** `dskit/pipeline/driver.py`, `dskit/pipeline/{README.md,CLAUDE.md}`,
+`tests/pipeline/test_driver.py`,
+`children/intraday_equities/intraday_equities/final_model.py`,
+`children/intraday_equities/configs/run-final-refit.json`,
+`children/intraday_equities/{CLAUDE.md,AGENTS.md}`,
+`children/intraday_equities/tests/{test_final_model.py,test_configs.py}`,
+`dskit/pipeline/AGENTS.md`, and this entry. No market data, HPO, refit, replay or `path.csv` edit.
+
+**Consequences.** The EQ-01 machinery is complete and exercised end to end:
+an attested fixture release refits ten frozen winners once, writes one
+bundle, and `load_bundle` replays it to the identical content hash and
+prediction checksum, while an incomplete run, a record bound to another
+document, evidence absent from the producer record or carry, a mutated
+artifact, rows whose content is not what the release pins, a swapped,
+duplicated or mislabelled wire, and a row outside the permitted window each
+refuse. **No real final-model release was produced.** The production channel
+is closed, the fixture channel is synthetic by construction, and every bundle
+it writes is stamped `deployment_eligible: false` — but "closed" means this
+process refuses, not that the artifact is trustworthy: read the threat model
+above before treating any stamp as authorization. ADR-0122 is accepted but
+its launch root is unimplemented;
+`FinalRefit` remains a `Node`, not the `TrainableNode` that entry and the
+2026-09-14 closeout packet A4 propose; and the closeout packet's native
+LightGBM text artifact (A3) would replace the joblib bundle this uses, which
+is a conflict for a later owner ruling, not one this entry resolves.
+
+### Round 10 correction — the metaclass answers class-level lookup, and prose lives in string literals too
+
+Two independent fresh-context lenses on `1af4f15` returned 0 Critical and four
+distinct Major findings. All four are closed here.
+
+**1. A metaclass data descriptor shadowed a sealed name invisibly.**
+`_resolved_through_the_mro` walks `cls.__mro__`. Class-level attribute access
+does not: `type.__getattribute__` consults `type(cls).__mro__` FIRST, and a
+data descriptor found there wins outright. A metaclass carrying
+`validate_params = <object with __get__ and __set__>` therefore answered
+`Subclass.validate_params` while the seal read `FinalRefit`'s own and reported
+no violation. Measured reach: `("validate_params",)`; the instance path was
+unaffected, because `object.__getattribute__` never consults the metaclass.
+
+The fix is `_metaclass_supplied`, and it does NOT ask whether an object is a
+data descriptor — answering that means reading `type(obj)`, which the attacker
+also supplies, and every round of this module that shipped a classifier had the
+classifier defeated rather than the fix. The rule is total: a metaclass outside
+`type(FinalRefit)`'s own MRO may not carry a sealed name at all. It refuses
+MORE than lookup would shadow (a metaclass `__new__` shadows nothing, because a
+plain function is a non-data descriptor) and that asymmetry is deliberate — a
+wrong refusal is a loud failure at class definition, a wrong clearance ships a
+model. The baseline is `ABCMeta`'s MRO, so `__init__`, `__new__` and
+`__setattr__` arriving from `type` and `object` are not findings.
+
+The definition-time hook now takes `_unsealed_problems`, the SAME verdict
+`validate_params` and `run` take, so the three sites cannot disagree about what
+a violation is. Four declared facts moved as a result — measured, not
+asserted: `refuses_a_metaclass_that_injects_the_guard_beside_its_payload`,
+`refuses_a_substituted_channel_resolver`,
+`refuses_a_metaclass_that_injects_after_class_creation` and
+`refuses_a_metaclass_that_intercepts_class_attribute_access` all went from
+`refuses=False` to `refuses=True`. The two probes that rested on a consult-time
+verdict now take that verdict on the same payload reached the plain way, so
+widening the definition-time rule did not quietly retire their evidence.
+
+The round-10 mutation sweep then found one survivor of its own: relaxing the
+baseline comparison from `is` to `==`. Not an equivalent mutant — a
+meta-metaclass whose `__eq__` answers `True` makes the attacking metaclass
+compare equal to `ABCMeta`, so an `==` baseline skips it. That is the
+rigged-equality attack `_sealed_violations` already declares, one level up, and
+it is now declared and probed as
+`refuses_a_metaclass_whose_own_metaclass_rigs_equality`.
+
+**2. The `attempt` sentences lost their pin — a regression, not a gap.**
+`bd80f00` carried `attempt:<name>` keys in `_PINNED_GATE_PROSE`. Round 9's
+`_module_prose` rewrite replaced that with "every docstring and every `#:`
+note" and dropped the category while claiming WIDER coverage. A string literal
+is neither, so all twenty `attempt` sentences could be rewritten freely for a
+whole round — in the one table this ADR calls authoritative. The fix removes
+the category as a concept: `_module_prose` now also emits `strings:<owner>`,
+carrying every non-docstring string constant the module holds, owner being the
+nearest enclosing class, function or assigned name. `GATE_FACTS` is one key
+that no edit elsewhere moves, and a test asserts each row's `attempt` is inside
+it and that the `strings:` buckets are TOTAL against an independent AST count.
+That last assertion immediately caught a bug in the collector itself: it
+compared each statement against the docstring's VALUE rather than the statement,
+so every docstring was being collected a second time.
+
+**3. A `#:` block at the end of the file was never emitted.** The scanner
+flushed only when a non-comment line followed, so documentation appended at EOF
+was pinned by nothing. Flushed after the loop, and asserted on synthetic lines
+rather than on the module, so it keeps holding whatever the last line becomes.
+The note key also moved from `<label>@<line>` to `<label>#<ordinal>`: the line
+number collides with nothing but moves every key below any insertion, and a pin
+nobody can read is a pin people regenerate without reading.
+
+**4. `__doc__` is writable; the pin reads source.** `FinalRefit.run.__doc__ +=
+"..."` publishes prose no source-reading pin can see. A new test walks the LIVE
+module object and asserts every reachable docstring equals the one parsed out of
+the source.
+
+Also closed: the seal's refusal messages are now inside the digest pin (they
+are string literals); and `test_the_declaration_is_where_the_polarity_lives`
+dropped its banned-prefix list, which forbade three openings while reading as
+if it forbade stating an outcome in prose — the digest pin is what holds the
+attempt text now.
+
+One count in this entry was stale and is corrected above: the probe table is
+twenty-two rows, not seventeen.
+
+### Round 11 correction — the blunt rule cost more than it bought
+
+Two independent lenses on `50ea3e9`: 0 Critical, 5 Major between them. All
+closed.
+
+**The round-10 metaclass rule was too blunt, and it broke three declared
+attempts while being so.** It refused ANY sealed name a non-baseline metaclass
+carried, on the argument that classifying the object is one more thing to
+defeat. Measured, that cost:
+
+1. It refused an ordinary registering metaclass — one whose `__init__` records
+   the class it just built — while telling its author, untruthfully, that
+   `__init__` "answers class-level lookup ahead of the MRO". A plain function
+   is a NON-data descriptor and the class's own MRO wins; the message asserted
+   a mechanism false for most of the 29 sealed names, most of the time.
+2. It refused three declared attempts at `super().__new__` for merely defining
+   `__new__`, so the payload line in each probe never ran. Deleting that line
+   from any of the three left the suite green: three rows of `GATE_FACTS` had
+   stopped testing what they name, and one
+   (`refuses_a_metaclass_that_injects_after_class_creation`) had lost its
+   unique evidence with nothing standing in for it.
+
+So the shadowing question is asked, and it is not this module's classifier —
+it is the LANGUAGE's, read the way the interpreter reads it.
+`_wins_class_level_lookup` returns True for a data descriptor (its type
+defines `__set__` or `__delete__`, looked up through `_resolved_through_the_mro`,
+the same real MRO dicts `_PyType_Lookup` reads inside `type.__getattribute__`)
+and for the two names that answer every class-level lookup regardless,
+`__getattr__` and `__getattribute__`. An attacker supplies `type(obj)` but not
+what that lookup reads, so an object can neither claim to shadow nor hide that
+it does. The three `__new__` rows measure what they name again and are back to
+`refuses=False`; the `__getattribute__` interception row stays `refuses=True`.
+
+The round-11 sweep found the one reading that still differed: taking the
+carrier as `supplied if isinstance(supplied, type) else type(supplied)`
+survived everything, because no probe bound a sealed name to a CLASS. The two
+readings disagree exactly there — `__set__` lives on the payload's METACLASS —
+so `refuses_a_metaclass_supplying_a_class_that_is_itself_a_data_descriptor` is
+now declared and probed.
+
+**The totality assertion shared a blind spot with the thing it audited.** Both
+`_string_constants` and the "independent" AST walk that checks it filtered on
+`isinstance(value, str)`, so a `bytes` literal was invisible to both and the
+assertion passed over a surface neither could see — the same shape as every
+earlier round's false completeness claim, in the check added to prevent them.
+The fix is not a wider filter but NO filter: `constants:<owner>` now carries
+the `repr` of every non-docstring `ast.Constant`, whatever its type, and the
+oracle has nothing left to share.
+
+**The live-vs-source docstring check was one-directional.** Deleting the
+classmethod unwrap from `_runtime_prose` left the suite green while the walk
+silently stopped finding six docstrings — `__init_subclass__`'s among them,
+the one carrying the seal's four pinned claims. A check that asks only "did
+live find anything source did not" cannot see a live walk that found LESS, and
+a member it stops reaching is exempt from the source pin forever. The two key
+sets must now be EQUAL, and the walk's unwrapping is exercised on a SYNTHETIC
+module carrying a classmethod, a staticmethod, a property and a plain
+function, so its reach no longer depends on what `final_model.py` happens to
+contain. The dormant `property` branch was a survivor until that test existed.
+
+**Two more attempts declared.** `cls.__class__ = EvilMeta` on an
+already-defined subclass is the metaclass twin of
+`refuses_post_hoc_assignment_on_a_subclass`; measured, it reaches
+`validate_params` and is refused at `run`, because the descriptor answers in
+place of the member that would have re-taken the verdict. Writing its probe
+required `_reaches` to stop ASSERTING that every gate a class can produce
+appears in `validate_params`' output: that crashed rather than measured on the
+one attempt that replaces `validate_params` outright. A gate the class can
+produce that `validate_params` does not report is a gate no entry point
+consults, which is the definition of reaching it. The suite-drift that assert
+guarded is caught better now — a `validate_params` that stopped calling a gate
+makes the PRISTINE class measure as reaching, and its control test fails.
+
+**Minor.** A plain `#` comment in the suite said `GATE_FACTS` was
+"twenty-one sentences" when it was twenty-two — a stale count in the one prose
+site no pin reaches, which is this file's own defect class one level down. The
+count is gone from the comment rather than corrected; it is asserted executably
+instead.
+
+Round-11 sweep: nineteen mutations over the shadowing rule, the metaclass
+scan, the reach measurement, the runtime walk's four unwrapping branches and
+the constant pin — both halves of every compound guard driven separately — all
+nineteen killed. 151 tests; the probe table is twenty-four rows.
+
+### Round 12 — the second clause of the shadowing rule, and one proven equivalence
+
+Found by auditing round 11's own fix; no lens reached this branch afterwards
+(the review pass was cut short by a session rate limit, so rounds 11 and 12
+are UNREVIEWED and this entry says so).
+
+Round 11 asked whether a metaclass entry is a data descriptor, which is one
+half of ``type.__getattribute__``'s rule. The other half is that a metaclass
+attribute wins whenever the class's own MRO carries the name NOWHERE, whatever
+kind of object it is. Round 11 was right only by coincidence: ``__getattr__``
+is the single sealed name ``FinalRefit`` does not define, and it was already in
+``_LOOKUP_INTERCEPTORS``. Adding a sealed name this class does not carry would
+have reopened the hole with nothing failing.
+
+The clause is asserted directly rather than through a probe, because no ATTACK
+demonstrates it today for exactly that reason — and the coincidence itself is
+asserted, so the test fails the day the uncarried-name list stops being
+``["__getattr__"]``.
+
+**One proven equivalent mutant, recorded so the next reviewer need not
+re-derive it.** Passing ``FinalRefit`` where ``_wins_class_level_lookup`` takes
+``cls`` survives the suite. The proof: this verdict only decides an outcome
+when ``_sealed_violations`` is empty, and that function returns exactly the
+sealed names ``cls`` resolves differently from ``FinalRefit`` — so empty MEANS
+the two resolutions agree on every sealed name, and the two readings cannot
+disagree at the only moment either is load-bearing. ``cls`` is passed anyway,
+because the argument holds only while that stays true of
+``_sealed_violations``.
+
+Round-12 sweep: seven mutations over the two clauses and the guard's argument
+— five killed, two the equivalence above. 152 tests.
+
+### Round 13 correction — four holes in the round-11/12 evidence, all closed
+
+Rounds 11 and 12 were UNREVIEWED (the review pass was cut short by a session
+rate limit). Round 13 is that review, and it found that three of the round-11
+claims and one of the round-12 claims rested on evidence that did not pin what
+it said it did. All four are closed here, and one of them corrects the
+round-12 sweep's own reading.
+
+**1. `refuses_a_metaclass_that_injects_after_class_creation` tested nothing it
+named.** Its probe was the one `__new__` row still written as a bare
+`_outcome({}, metaclass=Injecting)` with no assertion that the payload ran, and
+its declared `(False, ())` is exactly what a CLEAN subclass measures — so
+deleting the payload line `cls._channel_problems = classmethod(...)` left the
+whole suite green. The other two `__new__` rows carried an explicit
+`_sealed_violations(cls) == [...]` and were pinned; this one was not. It now
+asserts `refused is False` and `_sealed_violations(cls) == ["_channel_problems"]`.
+
+**2. The guard half of `injects_the_guard_beside_its_payload` was invisible.**
+The row's whole point is that injecting a compliant `_unsealed_problems` beside
+the payload is inert, but deleting the guard line alone left the suite green:
+the row only ever proved the `_channel_problems` payload was seen, which the
+`injects_after_class_creation` row already proves. It now asserts both halves —
+`cls._unsealed_problems() == []` proves the guard is really applied and would
+report the class clean, and `final_model._unsealed_problems(cls)` proves the
+module-level gate still sees the payload the guard hides.
+
+**3. The `__delete__` half of the data-descriptor guard was pinned by nothing.**
+Both data-descriptor probes bound a descriptor with `__set__`, so `__set__ or
+__delete__` was driven only on its first half: mutating the guard to read
+`__set__` alone survived the suite (with the prose pin's digests re-derived, so
+the survival is behaviour, not a source-edit artefact). A descriptor that
+defines `__delete__` and no `__set__` still wins class-level lookup, so this
+was a false clearance, not a false refusal. A twenty-fifth fact,
+`refuses_a_metaclass_supplying_a_delete_only_data_descriptor`, is now declared
+and probed.
+
+**4. The round-12 second clause was pinned only by a coincidence.** The direct
+assertion that was meant to hold the "metaclass wins a name the class's MRO
+carries nowhere" clause used `__getattr__` — the ONE uncarried sealed name —
+and `__getattr__` is also in `_LOOKUP_INTERCEPTORS`, so the interceptor clause
+answered it and the second clause could be deleted with nothing failing (again
+with the prose digests re-derived). The clause itself is now pinned directly
+with a synthetic name that is neither an interceptor nor carried anywhere on
+the MRO, so no other clause can satisfy the assertion.
+
+Two measurement corrections to the sweeps themselves, recorded for the next
+reviewer: a mutation to `final_model.py` was being scored "killed" by the prose
+digest pin firing on the source edit, not by any behaviour test — every source
+mutation in the round-11/12 sweeps must be re-scored with the digests
+re-derived, which is what the four items above did. And the sweep that claimed
+"both halves of every compound guard driven separately" had driven the
+`__set__ or __delete__` guard whole.
+
+Round-13 sweep: the four payload/clause deletions above are now all killed, as
+are the `__set__`/`__delete__` halves separately. 153 tests; the probe table is
+twenty-five rows.
+
+### Round 13 (second lens) — a winner-swap, two decorative payloads, and a message polarity
+
+The tests-and-integration lens (Lens B, with its own independent mutation sweep)
+returned 0 Critical, 1 Major and 6 Minor. The Major is closed, five of the six
+Minors are closed, and one is accepted scope.
+
+**Major — a winner-swap in `refit_heads` shipped a wrong model with a lying
+identity stamp.** `test_refit_heads_fits_each_head_on_only_its_own_winner`
+proved `coef_[h01] != coef_[h02]` (sensitivity) and that `identities[head]
+["winner"] == winners[head]` — but the identity dict is built from the SAME
+input dict that a winner-swap mutates, so both held while h01 was fitted with
+h02's `alpha=5.0`. The test now fits a reference `Ridge(alpha=winners[head]
+["alpha"])` on each head's OWN rows and asserts the fitted coefficients equal it
+BY VALUE, so a swapped or substituted winner is contradicted outright.
+
+**Minor — two probes' distinguishing payloads were decorative.** Deleting the
+`__getattribute__` interception body from
+`refuses_a_metaclass_that_intercepts_class_attribute_access`, and deleting the
+`__dict__` shadow from `refuses_a_metaclass_that_shadows_the_class_dict`, each
+left the suite green — the first because the interceptor rule refuses on the
+NAME alone, the second because the body override alone still refuses. Each now
+carries a control that the payload is real (the interception actually answers
+the sealed name on a class the metaclass may build; the shadow actually makes
+`getattr_static` report `FinalRefit`'s member while the seal reads through it),
+so deleting the payload fails the control.
+
+**Minor — the metaclass refusal message carried no polarity pin.** The
+"may not override" verdict is behaviourally pinned; the "may not take a
+metaclass supplying …" verdict was held only by the prose digest, which cannot
+see a polarity inversion. `test_a_metaclass_supplying_a_sealed_name_refuses_
+with_the_right_verdict` now asserts the phrase, so inverting "may not" to "may
+accept" fails a test, not just the digest.
+
+**Minor — the second clause's single synthetic-name assertion was deletable.**
+`test_the_shadowing_rule_matches_type_getattribute` now pins the full truth
+table of `_wins_class_level_lookup` — interceptor clause, second clause, and
+both data-descriptor halves — each on its own row, so each `return` branch has
+an independent witness and deleting one is not enough.
+
+**Accepted scope, not fixed.** The two remaining Minors are the disclosed
+limitation this entry has stated since round 5: the prose pin detects CHANGE,
+not falsehood. Contradicting a pinned docstring AROUND its pinned substrings,
+or stating a false outcome in a `GATE_FACTS` `attempt` sentence, survives ONLY
+after the digests are re-derived — which is the documented cost and the point
+of the pin (it forces a human to read the new text). It cannot be made
+executable; free-text prose is not data, and `GATE_FACTS` is.
+
+155 tests; the probe table is twenty-five rows.
+
+### Round 13 (third pass) — a coef-invisible recipe, an over-refusal, and four more decorative payloads
+
+The second lens's re-review returned 0 Critical, 0 Major and 6 Minor. All six
+are closed.
+
+**1. A winner-substitution with a coefficient-invisible recipe survived the
+value-pin.** The Major's reference fit pinned coefficients, but `solver=
+"cholesky"` fits the same numbers on a six-row set, so it shipped while the
+identity stamp still recorded the input winner. `test_refit_heads_fits_each_head
+_on_only_its_own_winner` now also asserts `estimators[head]._model.get_params()`
+equals the reference model's — the RECIPE is pinned, not just the result.
+
+**2. `_wins_class_level_lookup` over-refused a `__set__`/`__delete__` object with
+no `__get__`.** `type.__getattribute__` consults `__get__` first: an object
+carrying `__set__` without `__get__` is not a descriptor at all and the class's
+own MRO wins, but the guard read the two halves without the `__get__` gate and
+refused it. Safe direction (no false clearance) but unfaithful; the guard now
+requires `__get__` AND (`__set__` or `__delete__`), matching the interpreter, and
+the truth-table test gains the two diverging rows so the fidelity is pinned.
+
+**3. Four probes whose declared `(refuses, reach)` equalled a CLEAN class.**
+`refuses_a_subclass_overriding_an_unsealed_node_hook`,
+`refuses_a_mixin_whose_init_subclass_swallows_the_hook`,
+`refuses_post_hoc_assignment_on_a_subclass` and
+`refuses_an_object_whose_equality_is_rigged` each carried a payload that could
+be deleted with the suite green — the same "decorative payload" family the
+first pass fixed for two other rows. Each now carries a control that pins its
+payload: the unsealed hook is asserted absent from `_FINAL_METHODS` and present
+on the built class, the swallowed mixin and the post-hoc assignment assert their
+override appears in `_sealed_violations`, and the rigged `__eq__` is asserted
+live before the refusal is measured.
+
+155 tests; the probe table is twenty-five rows.
