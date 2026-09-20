@@ -2166,12 +2166,32 @@ def test_a_sell_may_not_promise_what_a_second_working_sell_already_promised():
     """
     rig = _two_orders_per_key_rig()
     _set(rig.proposal, side="sell", instrument=INS1, qty=Decimal("5"),
-         limit=Decimal("10"))
+          limit=Decimal("10"))
     assert rig.admits() == (), "a sell landing exactly on the free units must admit"
     _set(rig.proposal, qty=Decimal("6"))
     assert rig.admits(), "a sell one unit past the free units must refuse"
     _set(rig.proposal, qty=Decimal("7"))
     assert rig.admits(), "max would have admitted this; the sum refuses it"
+
+
+def test_a_partially_filled_sell_commits_only_what_remains_to_fill():
+    """`_order_units` reads `remaining_qty`, not the original `qty`.
+
+    Round-12 review: `_order_units` correctly returns `remaining_qty`, but no
+    test built a partially-filled SELL — every partial-fill row was a buy, and
+    the laws build no partial fills either — so a mutation to `qty` (the
+    original size) survived the whole suite. A sell filled 4 of 10 must commit
+    the remaining 6, not the original 10.
+    """
+    rig = Rig(positions=(position(instrument=INS1, qty="10"),),
+              working_order=order(ref="s-1", side="sell", qty="10", filled="4",
+                                  limit="10", instrument=INS1))
+    assert rig.inventory() == ((INS1, "4"),)  # 10 held - 6 remaining = 4
+    _set(rig.proposal, side="sell", instrument=INS1, qty=Decimal("4"),
+          limit=Decimal("10"))
+    assert rig.admits() == (), "a sell of the 4 free units must admit"
+    _set(rig.proposal, qty=Decimal("5"))
+    assert rig.admits(), "a sell of 5 must refuse: only 4 are free, not 0"
 
 
 @pytest.mark.parametrize("read", ("available", "reported_available"))
@@ -2647,9 +2667,13 @@ def _readings(orders, positions, balance="10000"):
 #: The proposals every law judges the fold against, held constant while the
 #: fold is split or permuted: one buy and one sell, each sized to straddle
 #: plausible boundaries so a wrong aggregation changes a verdict and not only
-#: a number.
+#: a number. The buy commits 98 @ 100 = 9800 cash; the generator's committed
+#: cash is small (median ~22, p90 ~624, measured) against the 10000 balance,
+#: so 9800 refuses the moment a fold commits more than 200 and admits otherwise
+#: — round-12 review measured a buy of 80 @ 10 = 800 (never refused, because no
+#: fold commits 9200) and found its `admit` read contributed nothing.
 _LAW_PROPOSALS = (
-    proposal(side="buy", qty="80", limit="10", instrument=INS1),
+    proposal(side="buy", qty="98", limit="100", instrument=INS1),
     proposal(side="sell", qty="6", limit="10", instrument=INS1, pid="cand-2"),
 )
 

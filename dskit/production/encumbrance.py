@@ -581,8 +581,8 @@ class EncumbrancePolicy(ABC):
         if shortfall is not None and shortfall > _ZERO:
             problems.append(
                 f"{subject} reaches {_amount(shortfall)} {row.currency} past the settled funds "
-                f"available: {row.total} total, less {row.committed} committed and "
-                f"{row.unsettled} unsettled, leaves {row.available}"
+                f"available: {_amount(row.total)} total, less {_amount(row.committed)} committed "
+                f"and {_amount(row.unsettled)} unsettled, leaves {_amount(row.available)}"
             )
         return problems
 
