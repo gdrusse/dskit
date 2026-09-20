@@ -16974,3 +16974,41 @@ That is the honest division: a law covers the family, a value pin covers what
 the generator's range cannot reach, and neither pretends to be the other.
 
 218 tests.
+
+### Round 12 correction — a partial sell nobody built, a vacuous buy, and a scale leak
+
+Rounds 9 and 10 were UNREVIEWED (the review pass was cut short by a session
+rate limit). Round 12 is that review: two independent lenses returned
+0 Critical, 1 Major and 2 Minor. All three are closed, and closing one of them
+surfaced a fourth defect that is fixed here too.
+
+**Major — `_order_units` read `remaining_qty`, and nothing pinned it.**
+`_order_units` correctly returns `remaining_qty`, but every partial-fill row in
+the suite was a BUY (the cash side), and the laws build no partial fills — so a
+mutation to `qty` (the original size) survived the whole suite, the laws, and
+`tests/production` + `production_libs` (6920 passed) while over-committing a
+partially-filled sell and understating the free units. `test_a_partially_filled_
+sell_commits_only_what_remains_to_fill` now hands the book a sell filled 4 of 10
+and pins committed=6, available=4, and the admission boundary.
+
+**Minor — the buy proposal's `admit` read was vacuous.** The law's buy was
+80 @ 10 = 800 against a 10000 balance; the generator's committed cash is small
+(median ~22, p90 ~624, measured), so available never fell below ~8269 and the
+buy never refused — exactly one distinct verdict across every fold shape. It is
+now 98 @ 100 = 9800, which refuses the moment a fold commits more than 200 and
+admits otherwise, so both halves of the `admit` column vary.
+
+**Minor — instrument-scoping is law-invisible, and that is stated, not fixed.**
+Partition and permutation preserve per-instrument multisets, so an
+instrument-blind sum is invariant under them; the scoping is pinned by the
+hand-written `_two_instrument_rig` rows and was never claimed by the laws. The
+laws kill the AGGREGATION family; they do not claim to kill scoping.
+
+**The fourth defect the straddle exposed.** Making the buy refuse showed the
+cash refusal message put `row.total`, `row.committed`, `row.unsettled` and
+`row.available` into operator-facing prose WITHOUT `_amount`, so a split fold
+printed "less 209 committed … leaves 9791" against "less 209.0 … leaves 9791.0"
+— the same scale leak round 10 fixed on the shortfall, one field over. All four
+are now rendered through `_amount`, and the partition law pins it.
+
+219 tests.
