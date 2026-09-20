@@ -17770,3 +17770,44 @@ Round-11 sweep: nineteen mutations over the accessor primitive, the shared
 shape rule, all four boundaries, both stamp and text exclusions, the registry's
 alias and doc clauses, the demo pin and the prose machinery — all nineteen
 killed. 200 tests in `tests/pipeline/test_uncertainty_intake.py`.
+
+### Round 12 correction — a defeatable source-text decider and the same type filter E2 fixed
+
+Round 11 was UNREVIEWED (the review pass was cut short by a session rate limit).
+Round 12 is that review: two independent lenses returned 0 Critical, 2 Major
+and 2 Minor, and all four are closed here.
+
+**1. The ONE-shape-rule invariant was enforced only by a defeatable
+source-text grep.** `test_the_two_screens_read_ONE_shape_rule` asserted
+`"_shape_problem" in constructor` and `"isinstance(excluded_types, tuple)" not
+in constructor`. An inline re-implementation of `excluded_types`' rule
+(`type(excluded_types) is tuple and all(isinstance(...))`) in `__init__` — with
+the byte-identical message — left all 200 tests green: `_shape_problem` still
+appears (the `artifact_type` screen keeps it) and the literal is dodged. The
+test now pins each shape-checked hook AT ITS OWN CALL SITE
+(`_shape_problem(type(self), "artifact_type"` and `... "excluded_types"`) and
+pins that `_declarations` reads `HOOK_SHAPES[hook]`, so a drift in either
+screen, for either hook, fails.
+
+**2. The prose pin shared the exact type filter E2's round 11 removed.**
+`_string_constants` and the "independent" totality oracle both filtered
+`isinstance(..., str)`, so a `bytes` literal was invisible to both — the same
+blind-spot-in-the-check-that-prevents-blind-spots, one sibling behind. Both are
+now filterless: `strings:<owner>` carries the `repr` of every non-docstring
+`ast.Constant`, whatever its type, and the oracle has nothing left to share.
+
+**3. The live-vs-source docstring check was one-directional.** The live walk
+skips a target whose `__doc__` is falsy, so a source docstring whose live
+`__doc__` was wiped to `None` vanished from both `missing` and `differing`.
+The check now walks BOTH directions and allows exactly the one documented
+unreachable closure (`forget`, defined inside `register` inside
+`_sealed_registry` and never held as an attribute), so a second unreachable
+docstring fails.
+
+**4. The registry-snapshot's reach was pinned on one hook.** The autouse
+fixture's sensitivity was exercised only through `artifact_type`, so its reads
+of `estimand`/`excluded_types`/`registered_producers` could be deleted green.
+The reach test is now parametrized over all four hooks.
+
+Round-12 sweep: the inline-shape-rule mutation, the bytes-literal, the
+docstring wipe and the shrunk registry net are all killed. 203 tests.
