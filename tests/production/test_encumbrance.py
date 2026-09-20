@@ -735,6 +735,19 @@ def test_a_market_buy_proposal_is_refused_for_having_no_declared_price():
     assert problems and "declares no limit" in problems[0]
 
 
+def test_a_proposal_that_declares_no_qty_is_refused_not_crashed():
+    """`_shortfall`'s qty-None guard, pinned by value.
+
+    Round-12 review: deleting `if proposal.qty is None:` survived the whole
+    suite and `tests/production`+`production_libs`, turning the documented
+    "declares no qty to fund" refusal into a `TypeError` out of `admit` and
+    the guard chain's `SettledFundsShortfall`/`UncommittedUnitsShortfall`.
+    The refusal must be a recorded problem, not an unhandled exception.
+    """
+    refused = cash().admit(proposal(qty=None, limit="10"), view(), T0, FakeHistory())
+    assert refused == ("proposal 'cand-1' declares no qty to fund",)
+
+
 def test_a_sideless_proposal_commits_nothing():
     """`none` is the abstaining side; it reaches no resource."""
     assert cash().admit(proposal(side="none", qty="0"), view(), T0, FakeHistory()) == ()
@@ -801,6 +814,37 @@ def test_the_undeclared_policy_never_asks_for_a_fill():
     """A policy that encumbers nothing has nothing to settle, so touching the
     history would be a cost paid for no answer."""
     UndeclaredSettlement({}).encumber(view(working=(order(),)), T0, Boom("history"))
+
+
+def test_the_undeclared_book_reports_every_held_unit_free():
+    """The null object's inventory: ``available`` IS ``held``, per instrument.
+
+    Round-12 review: ``UndeclaredSettlement``'s inventory ``available=position.
+    qty`` was pinned by nothing — every ``.inventory`` read in the suite is on
+    a ``CashSettlement`` book — so a mutation to ``_ZERO`` survived 220 + 6922
+    tests while silently understating every instrument's free units to zero.
+    """
+    book = UndeclaredSettlement({}).encumber(
+        view(positions=(position(instrument=INS1, qty="10"),
+                        position(instrument=INS2, qty="4"))),
+        T0, FakeHistory(),
+    )
+    assert tuple(sorted((k, str(v.available)) for k, v in book.inventory.items())) == (
+        (INS1, "10"), (INS2, "4")
+    )
+
+
+def test_the_undeclared_book_lists_balances_in_currency_order():
+    """``balances`` is "in currency order, one per currency the fold carries".
+
+    Round-12 review: the ``sorted(...)`` over a multi-currency fold was pinned
+    by nothing (``CashSettlement`` cannot reach two currencies, so its twin
+    line is equivalent; the undeclared policy CAN). Dropping ``sorted`` makes
+    the order depend on dict-insertion order instead.
+    """
+    multi = view(balances={USD: Decimal("1000"), "EUR": Decimal("500")})
+    balances = UndeclaredSettlement({}).balances(multi, T0, FakeHistory())
+    assert [b.currency for b in balances] == ["EUR", "USD"]
 
 
 def test_the_undeclared_policy_refuses_to_authorise_a_commitment():
