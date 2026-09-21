@@ -5984,7 +5984,16 @@ class NoInformationScan(Node):
             )
             label_sd = float(tr_y.std()) if tr_y.size else 0.0
             metrics["label_sd"] = label_sd
-            if fit["train_yhat_sd"] <= _DEGENERATE_YHAT_REL * label_sd:
+            # A REAL asset whose model collapses to the mean is a failure:
+            # read it as one. A SCRAMBLE null (ADR-0074) collapsing is the
+            # null doing its job — scrambled labels carry no signal, so a
+            # degenerate fold scores val_ic=0 and is a valid "did not beat"
+            # draw, not a reason to abort the whole gate-3 audit. Only the
+            # real walk raises.
+            if (
+                fit["train_yhat_sd"] <= _DEGENERATE_YHAT_REL * label_sd
+                and scramble is None
+            ):
                 raise ValueError(
                     "degenerate forecast: yhat is constant on train "
                     f"(sd={fit['train_yhat_sd']:.3g}, label sd={label_sd:.3g}, "
