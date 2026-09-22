@@ -1,0 +1,5 @@
+{
+  "path": "./fixtures",
+  "effective_field": "effective_at",
+  "notes": "Only original synthetic JSONL. Use a fresh onboarding root; cursor resumption is not revision capture."
+}
