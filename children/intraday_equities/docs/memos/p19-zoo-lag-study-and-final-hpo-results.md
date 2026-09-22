@@ -44,6 +44,8 @@ The final score is one December–February validation period after architecture 
 
 ## Reproducibility and handoff
 
+- Fixed zoo: `configs/run-p19-eligible-fixed-model-zoo.json`, identity `0fba2af38a864dcc89bbd5aa4798ad01cdbc778a317fc0f196c0d4c14cbe9ce7`; summary `pipeline_runs/p19-shared-feature-fixed-model-zoo-walkforward-2026-02-28-0fba2af3`.
+- Eligibility sources: P12 digest `098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0`, P18 onward digest `c5c41c06dfebf26beedaee9079dd1362d98c7a0d0659a399ab30a2c1f0e0605b`, and P18 first-half digest `49e5a3dc9e7b9bfaf3ea2891f721b53b96bdb44bddbe89fc93b05fe643c0ae62`; together they yield exactly 91 names and 547 stock/horizon cells.
 - Lag config: `configs/run-p19-lightgbm-lag-feature-study.json`, identity `8480ed65485bd3994d501247f7cabcd9578c5e84f198a5b2c83ff814694cb1eb`; summary directory `pipeline_runs/p19-lightgbm-lag-feature-study-walkforward-2026-02-28-8480ed65`.
 - HPO config: `configs/run-p19-final-hpo.json`, identity `3186ff8ad272a4ddd662f20a854f4bbec7664385a24610fc0e60f77b31f6c5ae`; run directory `pipeline_runs/p19-final-hpo-2026-02-28-ae703bac`.
 - HPO command: `python -m dskit.pipeline run configs/run-p19-final-hpo.json --asof 2026-02-28 --adapter intraday_equities`.
