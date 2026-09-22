@@ -145,6 +145,89 @@ class EmpiricalSelectRegressor:
         return prediction.ravel() if hasattr(prediction, "ravel") else prediction
 
 
+class CategoricalRidgeRegressor:
+    """Ridge over standardized tabular features plus one-hot symbols.
+
+    The pooled design carries ``symbol_code`` as a native categorical for
+    LightGBM and the embedding MLP.  This control keeps that identity nominal
+    rather than treating integer codes as an ordered numeric feature.
+    """
+
+    def __init__(
+        self,
+        alpha=1.0,
+        fit_intercept=True,
+        max_iter=2000,
+        tol=1e-4,
+    ):
+        self.alpha = alpha
+        self.fit_intercept = fit_intercept
+        self.max_iter = max_iter
+        self.tol = tol
+        self._model = None
+
+    def fit(self, x, y, categorical_feature=None, feature_names=None):
+        """Fit train-only scaling, one-hot encoding, and sparse LSQR Ridge."""
+        import numpy as np
+        from sklearn.compose import ColumnTransformer
+        from sklearn.linear_model import Ridge
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+        matrix = np.asarray(x)
+        target = np.asarray(y, dtype=np.float64).reshape(-1)
+        if matrix.ndim != 2 or matrix.shape[0] != target.size or not target.size:
+            raise ValueError("X and y must contain the same non-empty row count")
+        categorical = list(categorical_feature or [])
+        if not categorical and feature_names is not None:
+            categorical = [
+                index
+                for index, name in enumerate(feature_names)
+                if name == "symbol_code"
+            ]
+        if len(categorical) != 1 or isinstance(categorical[0], bool):
+            raise ValueError("exactly one categorical feature index is required")
+        category_index = int(categorical[0])
+        if category_index < 0 or category_index >= matrix.shape[1]:
+            raise ValueError("categorical feature index is outside the matrix")
+        continuous = [
+            index for index in range(matrix.shape[1]) if index != category_index
+        ]
+        transform = ColumnTransformer(
+            [
+                ("continuous", StandardScaler(), continuous),
+                (
+                    "symbol",
+                    OneHotEncoder(handle_unknown="ignore"),
+                    [category_index],
+                ),
+            ],
+            sparse_threshold=1.0,
+        )
+        self._model = Pipeline(
+            [
+                ("transform", transform),
+                (
+                    "ridge",
+                    Ridge(
+                        alpha=float(self.alpha),
+                        fit_intercept=bool(self.fit_intercept),
+                        solver="lsqr",
+                        max_iter=int(self.max_iter),
+                        tol=float(self.tol),
+                    ),
+                ),
+            ]
+        ).fit(matrix, target)
+        return self
+
+    def predict(self, x):
+        """Return one forecast per row, refusing inference before fit."""
+        if self._model is None:
+            raise RuntimeError("CategoricalRidgeRegressor: predict before fit")
+        return self._model.predict(x)
+
+
 class StandardizedSelectRegressor:
     """Leakage-safe sklearn pipeline with train-only empirical selection."""
 
@@ -275,7 +358,7 @@ def _read_pinned_json(source_path, declared, digest, label):
     return path, value
 
 
-def _gate3_rows(artifact):
+def _gate3_rows(artifact, expected_count=25):
     outputs = artifact.get("outputs") if isinstance(artifact, dict) else None
     if not isinstance(outputs, dict):
         raise ValueError("Gate-3 artifact has no outputs object")
@@ -297,9 +380,10 @@ def _gate3_rows(artifact):
             raise ValueError(f"duplicate Gate-3 family {key!r}")
         seen.add(key)
         eligible.append({"asset": row["asset"], "horizon": horizon})
-    if len(eligible) != 25:
+    if expected_count is not None and len(eligible) != expected_count:
         raise ValueError(
-            f"locked Gate-3 result must contain 25 passers, got {len(eligible)}"
+            "locked Gate-3 result must contain "
+            f"{expected_count} passers, got {len(eligible)}"
         )
     return sorted(eligible, key=lambda row: (row["asset"], row["horizon"]))
 
@@ -332,7 +416,11 @@ def _template_problems(template, index):
     if unknown:
         problems.append(f"{where} has unknown field(s) {unknown}")
     required = _TEMPLATE_FIELDS - {
-        "prerequisite", "kronos", "sequence", "feature_source", "notes"
+        "prerequisite",
+        "kronos",
+        "sequence",
+        "feature_source",
+        "notes",
     }
     for field in sorted(required):
         if field not in template:
@@ -343,7 +431,9 @@ def _template_problems(template, index):
     if not isinstance(template.get("enabled"), bool):
         problems.append(f"{where}.enabled must be boolean")
     if template.get("feature_source", "tabular") not in (
-        "tabular", "kronos", "sequence"
+        "tabular",
+        "kronos",
+        "sequence",
     ):
         problems.append(f"{where}.feature_source must be tabular, kronos, or sequence")
     kronos = template.get("kronos")
@@ -354,7 +444,9 @@ def _template_problems(template, index):
             )
         else:
             for field in _KRONOS_FIELDS - {
-                "score_period_ms", "batch_size", "feature_names"
+                "score_period_ms",
+                "batch_size",
+                "feature_names",
             }:
                 if not _string(kronos[field]):
                     problems.append(f"{where}.kronos.{field} must be a string")
@@ -369,9 +461,7 @@ def _template_problems(template, index):
                 or any(not _string(name) for name in names)
                 or len(names) != len(set(names))
             ):
-                problems.append(
-                    f"{where}.kronos.feature_names must be unique strings"
-                )
+                problems.append(f"{where}.kronos.feature_names must be unique strings")
     elif kronos is not None:
         problems.append(f"{where}.kronos is only valid for feature_source=kronos")
     sequence = template.get("sequence")
@@ -870,9 +960,7 @@ class KronosFusionRows(Node):
         for symbol in features:
             feature = features[symbol]
             embedding = embeddings[symbol]
-            name_to_index = {
-                name: index for index, name in enumerate(feature["names"])
-            }
+            name_to_index = {name: index for index, name in enumerate(feature["names"])}
             missing = [name for name in side_names if name not in name_to_index]
             if missing:
                 raise ValueError(f"{symbol} is missing side features {missing}")
@@ -893,9 +981,7 @@ class KronosFusionRows(Node):
                     "asof_ms": embedding_ms,
                     "close": np.asarray(feature["close"])[at],
                     "names": list(embedding["names"]) + side_names,
-                    "X": np.column_stack([hidden, side]).astype(
-                        np.float32, copy=False
-                    ),
+                    "X": np.column_stack([hidden, side]).astype(np.float32, copy=False),
                 }
             )
         cls._cached_key = key
@@ -970,9 +1056,7 @@ class SequenceFusionRows(Node):
         for symbol in features:
             feature = features[symbol]
             sequence = sequences[symbol]
-            name_to_index = {
-                name: index for index, name in enumerate(feature["names"])
-            }
+            name_to_index = {name: index for index, name in enumerate(feature["names"])}
             missing = [name for name in side_names if name not in name_to_index]
             if missing:
                 raise ValueError(f"{symbol} is missing side features {missing}")
@@ -1057,9 +1141,7 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
                 "uses": "filter",
                 "inputs": {"records": f"${feature_key}.klines"},
                 "params": {
-                    "where": [
-                        {"field": "symbol", "op": "in", "value": group_assets}
-                    ]
+                    "where": [{"field": "symbol", "op": "in", "value": group_assets}]
                 },
             }
             kline_inputs[group] = f"${kline_key}.records"
@@ -1069,9 +1151,7 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
                 "uses": "filter",
                 "inputs": {"records": f"${feature_key}.sequences"},
                 "params": {
-                    "where": [
-                        {"field": "symbol", "op": "in", "value": group_assets}
-                    ]
+                    "where": [{"field": "symbol", "op": "in", "value": group_assets}]
                 },
             }
             sequence_inputs[group] = f"${sequence_key}.records"
@@ -1198,6 +1278,8 @@ def _pooled_document(source, template, eligible, caches, candidate_id):
 _POOLED_PARAMS = (
     "gate3_artifact",
     "gate3_sha256",
+    "gate3_artifacts",
+    "expected_eligible_count",
     "cache_groups",
     "templates",
     "path_protocol",
@@ -1247,9 +1329,51 @@ class PooledGate3ZooCandidates(Stage):
         """Return every malformed provenance, template, and protocol field."""
         problems = []
         reject_unknown_params(problems, params, _POOLED_PARAMS)
-        for field in ("gate3_artifact", "gate3_sha256"):
-            if not _string(params.get(field)):
-                problems.append(f"{field} must be a non-empty string")
+        single = (
+            params.get("gate3_artifact") is not None
+            or params.get("gate3_sha256") is not None
+        )
+        many = params.get("gate3_artifacts") is not None
+        if single == many:
+            problems.append(
+                "declare exactly one of gate3_artifact/gate3_sha256 or gate3_artifacts"
+            )
+        if single:
+            for field in ("gate3_artifact", "gate3_sha256"):
+                if not _string(params.get(field)):
+                    problems.append(f"{field} must be a non-empty string")
+        if many:
+            artifacts = params.get("gate3_artifacts")
+            if not isinstance(artifacts, list) or not artifacts:
+                problems.append("gate3_artifacts must be a non-empty list")
+            else:
+                paths = []
+                for index, artifact in enumerate(artifacts):
+                    if not isinstance(artifact, dict) or set(artifact) != {
+                        "path",
+                        "sha256",
+                    }:
+                        problems.append(
+                            f"gate3_artifacts[{index}] must contain exactly path and sha256"
+                        )
+                        continue
+                    if not _string(artifact["path"]):
+                        problems.append(f"gate3_artifacts[{index}].path is invalid")
+                    artifact_digest = artifact["sha256"]
+                    if (
+                        not _string(artifact_digest)
+                        or len(artifact_digest) != 64
+                        or any(
+                            char not in "0123456789abcdef" for char in artifact_digest
+                        )
+                    ):
+                        problems.append(f"gate3_artifacts[{index}].sha256 is invalid")
+                    paths.append(artifact["path"])
+                if len(paths) != len(set(paths)):
+                    problems.append("gate3_artifacts paths must be unique")
+        expected = params.get("expected_eligible_count", 25)
+        if not isinstance(expected, int) or isinstance(expected, bool) or expected < 1:
+            problems.append("expected_eligible_count must be a positive integer")
         groups = params.get("cache_groups")
         if (
             not isinstance(groups, list)
@@ -1319,13 +1443,38 @@ class PooledGate3ZooCandidates(Stage):
             An absent or incomplete cache group, an asset that belongs to
             none or several of them, or a first group missing the residual.
         """
-        gate3_path, gate3 = _read_pinned_json(
-            ctx.source_path,
-            self.params["gate3_artifact"],
-            self.params["gate3_sha256"],
-            "Gate-3 artifact",
-        )
-        eligible = _gate3_rows(gate3)
+        declarations = self.params.get("gate3_artifacts")
+        if declarations is None:
+            declarations = [
+                {
+                    "path": self.params["gate3_artifact"],
+                    "sha256": self.params["gate3_sha256"],
+                }
+            ]
+        gate3_sources = []
+        eligible = []
+        for index, declaration in enumerate(declarations):
+            gate3_path, gate3 = _read_pinned_json(
+                ctx.source_path,
+                declaration["path"],
+                declaration["sha256"],
+                f"Gate-3 artifact {index + 1}",
+            )
+            gate3_sources.append({"path": gate3_path, "sha256": declaration["sha256"]})
+            eligible.extend(_gate3_rows(gate3, expected_count=None))
+        assets = [row["asset"] for row in eligible]
+        if len(assets) != len(set(assets)):
+            duplicates = sorted(
+                asset for asset in set(assets) if assets.count(asset) > 1
+            )
+            raise ValueError(f"duplicate Gate-3 assets across artifacts: {duplicates}")
+        expected = self.params.get("expected_eligible_count", 25)
+        if len(eligible) != expected:
+            raise ValueError(
+                f"locked Gate-3 result must contain {expected} passers, "
+                f"got {len(eligible)}"
+            )
+        eligible.sort(key=lambda row: (row["asset"], row["horizon"]))
         groups = self.params["cache_groups"]
         caches = {}
         for group in groups:
@@ -1347,14 +1496,16 @@ class PooledGate3ZooCandidates(Stage):
                     f"pooled asset {asset!r} belongs to {len(membership)} selected caches"
                 )
         if residual not in caches[groups[0]]["symbols"]:
-            raise ValueError("the first pooled cache does not contain the residual reference")
+            raise ValueError(
+                "the first pooled cache does not contain the residual reference"
+            )
         horizon = max(row["horizon"] for row in eligible)
         weights = _pooled_horizon_weights(eligible)
-        return gate3_path, eligible, caches, horizon, weights
+        return gate3_sources, eligible, caches, horizon, weights
 
     def run(self, ctx, inputs):
         """Pin eligibility and write one candidate document per template."""
-        gate3_path, eligible, caches, horizon, weights = self.resolve(ctx, inputs)
+        gate3_sources, eligible, caches, horizon, weights = self.resolve(ctx, inputs)
         candidates = []
         root = os.path.join(ctx.artifact_dir, "candidate-documents")
         for template in self.params["templates"]:
@@ -1377,8 +1528,7 @@ class PooledGate3ZooCandidates(Stage):
             "candidates": candidates,
             "eligibility": eligible,
             "provenance": {
-                "gate3_artifact": gate3_path,
-                "gate3_sha256": self.params["gate3_sha256"],
+                "gate3_artifacts": gate3_sources,
                 "caches": [
                     {
                         "group": group,
@@ -1451,7 +1601,7 @@ class FinalistCandidate(PooledGate3ZooCandidates):
 
     def run(self, ctx, inputs):
         """Write the selected candidate's finalist document, and only it."""
-        gate3_path, eligible, caches, horizon, weights = self.resolve(ctx, inputs)
+        gate3_sources, eligible, caches, horizon, weights = self.resolve(ctx, inputs)
         chosen = inputs["selection"]["candidate"]
         recipes = {
             f"{template['id']}-pooled-h{horizon:02d}": template
@@ -1476,8 +1626,7 @@ class FinalistCandidate(PooledGate3ZooCandidates):
             "candidate": {**metadata, "path": path},
             "eligibility": eligible,
             "provenance": {
-                "gate3_artifact": gate3_path,
-                "gate3_sha256": self.params["gate3_sha256"],
+                "gate3_artifacts": gate3_sources,
                 "selected_by": inputs["selection"].get("decision_metric"),
                 "selection_direction": inputs["selection"].get("select"),
                 "declared_recipes": sorted(recipes),

@@ -1,0 +1,46 @@
+You are the sole primary implementer continuing the DSKIT F5a integration remainder (Packets 6, 7, 8). Packet 5 is already closed and merged. Work autonomously within the bounds below; stop only for a genuinely required owner/architecture decision not resolvable from accepted ADRs.
+Environment (mandatory)
+- Work in WSL2. Interpreter: /home/russell/dskit/.venv/bin/python. Run from the task worktree as cwd with PYTHONPATH=$PWD.
+- Task worktree: /home/russell/wt/f5a-remainder-20260915, branch codex/f5a-remainder-p6 (already pushed to origin). To run: wsl.exe -e bash -lc 'cd /home/russell/wt/f5a-remainder-20260915 && PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest ...'.
+- Do NOT touch the dirty main checkout at /home/russell/dskit (it is on a stale wrap-tft-rf-runs branch).
+- Preserve origin/cursor/r5-f5a-private-plan-0f39@c48919944588a2b29ba047e4cb551050a1ff9868 — never bulk-merge or delete it.
+Read these first (in order)
+1. docs/skills/implementation-workflow.md, docs/skills/test-drive-development.md, docs/skills/skeptic-review.md, docs/skills/wrap.md (the shared workflow; .cursor/rules/dskit-workflow.mdc points at them).
+2. docs/RE-ENTRY.md — top section is the current handoff.
+3. docs/evidence/closeout/0095-f5a-remainder-contract-pack.json (shared contract pack) and 0096-f5a-remainder-delta-matrices.json (thin per-packet deltas).
+4. docs/architecture/decision-log.md ADR-0123 (line ~8050, "Captured ports and enforced multi-run stages"), ADR-0125 (8317), ADR-0126 (8953, single-surface threat model).
+5. The governing proposal (read-only, do not merge): git show origin/docs/f5a-deepseek-proposal-20260915:docs/memos/2026-09-15-deepseek-f5a-remainder-proposal.md.
+What is already DONE (do not redo)
+- Gate 0 shared contract pack + owner gates: 0095–0098.
+- Owner decisions recorded: 0099 (Packet 5 cross-owner parser approval — you ARE authorized to edit dskit/pipeline/document.py for the bounded captured-artifact grammar), 0100 (Packet 8 durable owner = existing on-disk dskit/production/ledger.py ChainLedger/JsonlLedger seam).
+- Packet 5 closed and merged to origin/main@0ec6671 (branch purged). $captured_artifact descriptor grammar in dskit/pipeline/document.py via a full-document positional sweep (CAPTURED_KEY, CAPTURED_DESCRIPTOR_KEYS, _contains_captured_ref, _captured_descriptor_shape_errors, _captured_position_errors). 37 tests in tests/pipeline/test_captured_artifact_grammar.py. Review exit 0110; two clean final lenses; focused suite 1855 passed; sentinel green.
+- Evidence files 0095–0113 exist. Next unused number is 0114.
+Reviewer model
+The owner originally said "you don't have to use Terra; use DeepSeek". You are now running GLM 5.3. Use GLM 5.3 (and GLM 5.3 subagents) for all Phase 0 skeptics and the two fresh final lenses, unless the owner says otherwise. Record the reviewer model in each evidence file.
+RESUME POINT — Packet 6 (descriptor/receipt equality + restart linkage)
+Phase 0 matrix 0111-f5a-p6-phase0-equality-matrix.json is written; two skeptic rounds recorded (0112, 0113). Exactly ONE outstanding Major blocks RED:
+- P6-RR-001 (from 0113): freeze_consumer_document in dskit/pipeline/trust.py checks purpose only against the caller-controlled descriptor (trust.py:1217), and its published-equality block (trust.py:1220-1229) omits purpose, so an equal root_ref/snapshot_version/document_sha256/node/output-but-different-purpose substitution is admitted through the v1 lifecycle.
+- Fix in the matrix 0111: record the purpose binding and add an "equal-everything-but-purpose" case to equal_looking_different_binding.
+- The actual code fix belongs in RED→GREEN (add descriptor.get("purpose") == published.descriptor["purpose"] right after the published lookup in freeze_consumer_document).
+Packet 6 steps
+1. Patch 0111 to record P6-RR-001 correction. Get a fresh GLM 5.3 Phase 0 skeptic verdict (clean = zero Critical/Major) before RED.
+2. Write meaningful RED tests for the substitution families in 0111 (descriptor↔published incl. purpose, derived port, capture port, producer-session, session↔stream, member manifest, receipt-chain structural linkage, purpose identity, one-consumption, cross-broker handle substitution). Do NOT test signature forgery under _DEV_KEY (ADR-0126-deferred). Watch them fail.
+3. Implement the smallest generic correction (GREEN). Keep Packet 4 + v1 paths green.
+4. Two fresh sequential GLM 5.3 final lenses (correctness/authority, then tests/integration). Batch corrections by defect family; after 3 failed correction cycles or a repeated boundary failure, write a convergence checkpoint and change approach before more patches.
+5. Merge to main (fetch first, --no-ff), push, verify remote, purge the contained branch, /wrap (update docs/RE-ENTRY.md).
+Then Packets 7 and 8 (same loop per packet)
+- Packet 7 (replay-tape descriptors): require exactly the top-level tape_manifest + tape_data descriptors with outer/parent/policy/count/order bindings; test missing/extra/duplicate/aliased/nested/swapped/equal-port-different-capture before planning or root creation. This is replay-ops lane — implement only the locally decidable grammar/binding slice in forecast-capital paths; record any F3/replay dependency instead of fabricating a placeholder. Do NOT create a parallel tape engine or run a market replay.
+- Packet 8 (durable consume-once, closes F5A-R23): the owner already chose option A (0100) — reuse dskit/production/ledger.py ChainLedger/JsonlLedger as the authoritative durable store, keyed by an admission-derived idempotency key, replacing the publicly-reachable _spend kwdefault tuple in dskit/production/verifier.py (HistoricalStudyVerifier.capture, verifier.py:820 reads type(self).__init__.__kwdefaults__["_spend"][:2]). Note the purity boundary: dskit/pipeline/trust.py cannot import dskit.production; the durable spend state lives production-side. Prove concurrent calls, write-then-raise, clone/replay, process restart, second-process contention, partial persistence, recovery, exact consume-once. Honest label: closes F5A-R23 at the development boundary (state no longer publicly reachable, durable across restart in-process); does NOT claim the OS-owned external-broker deployment boundary.
+Hard constraints (never violate)
+- Synthetic fixtures only. No real data/replay, training, HPO/refit, full backtest, paper/live activity, deployment, environment changes, or unjustified full suite.
+- Never more than one subagent active. Reviewers are always fresh/independent (not you).
+- Do not invent a second writer/planner/ledger/tape engine. Preserve the Packet 4 sole-writer authority and accepted v1 + Packets 2–5 behavior.
+- Only claim whole-F5a closure or unblock F3/F5b after Packets 5–8 AND F5A-R23 are truthfully closed with two clean final lenses each.
+- Commit at every checkpoint (evidence file, RED, GREEN, each review verdict).
+- Report elapsed time by category (design, implementation, tests, review, corrections, integration) at each wrap.
+Verification commands (use these)
+- Focused (Packet 6): PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m pytest -q tests/pipeline/test_trust.py tests/pipeline/test_captured_authorization.py tests/production/test_capture_lifecycle.py tests/production/test_captured_authorization.py tests/production/test_adr0125_preflight.py tests/pipeline/test_captured_artifact_grammar.py
+- Sentinel: tests/production/test_capture_lifecycle.py::test_private_plan_precedes_capture
+- PYTHONPATH=$PWD /home/russell/dskit/.venv/bin/python -m ruff check <changed files>
+- git diff --check
+Start by fetching origin, confirming the worktree is at codex/f5a-remainder-p6 on top of 0ec6671, reading docs/RE-ENTRY.md, then applying the P6-RR-001 matrix correction.

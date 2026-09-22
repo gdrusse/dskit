@@ -1,0 +1,183 @@
+{
+  "name": "p19-expanded-pooled-model-zoo",
+  "notes": "Owner-authorized compact pooled zoo over all 91 names and 547 direct asset-horizon cells that passed the locked P12/P18 Gate 1 and Gate 3 studies. Compares the selected lean LightGBM incumbent with pooled embedding-MLP and one-hot Ridge controls on the unchanged 20-fold development calendar. FICO is excluded because its real Gate-1 walk collapsed and never passed.",
+  "pipeline": {
+    "universe": {"uses": "intraday_equities-universe", "params": {"path": "configs/universe-p19-expanded-pooled.json"}},
+    "source_a": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "source_c": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split-c", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "source_d": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split-d", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "source_e": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split-e", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "source_f": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split-f", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "source_g": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split-g", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "source_h": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split-h", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "source_i": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split-i", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "source_j": {"uses": "intraday_equities-bars", "params": {"root": "./ob", "source": "alpaca-sip-split-j", "universe": "configs/universe-p19-expanded-pooled.json", "start_ms": 1514764800000, "sessions": ["rth"], "shared_fields": ["symbol", "ts"]}},
+    "pooled": {
+      "uses": "concat",
+      "inputs": {"a": "$source_a.records", "c": "$source_c.records", "d": "$source_d.records", "e": "$source_e.records", "f": "$source_f.records", "g": "$source_g.records", "h": "$source_h.records", "i": "$source_i.records", "j": "$source_j.records"},
+      "params": {"shape": "records", "provenance_waiver": "Each immutable MarketRecord carries its source; source symbol namespaces are disjoint and each memory group is bounded by its declared universe.", "key": "symbol", "consume_inputs": true}
+    },
+    "features": {
+      "uses": "intraday_equities-session-features",
+      "inputs": {"records": "$pooled.merged", "spec": "$universe.spec"},
+      "params": {
+        "lookback": 20,
+        "layout": "columns",
+        "dtype": "float32",
+        "cache_dir": "./pipeline_cache/p18-features-f32-v5",
+        "momentum_horizons": [
+          {"width": 3, "tag": "3m", "cross_session": false},
+          {"width": 120, "tag": "2h", "cross_session": true},
+          {"width": 180, "tag": "3h", "cross_session": true},
+          {"width": 780, "tag": "2s", "cross_session": true},
+          {"width": 1950, "tag": "1w", "cross_session": true}
+        ]
+      }
+    },
+    "scan": {
+      "uses": "intraday_equities-no-information-scan",
+      "inputs": {"records": "$features.records", "bars": "$features.tape", "spec": "$universe.spec"},
+      "params": {
+        "split": "val",
+        "train_end_ms": "$splits.train_end_ms",
+        "train_start_ms": "$splits.train_start_ms",
+        "val_start_ms": "$splits.val_start_ms",
+        "val_end_ms": "$splits.val_end_ms",
+        "label_scale": "vol",
+        "label_residual": "SPY",
+        "label_residual_self": "raw",
+        "fit_symbols": [
+          "LLY", "QQQ", "XLF", "XLE", "XLK", "BAC", "SMH", "IWM", "XBI", "FCX", "DAL", "NRG", "MET", "MSTR", "NOW", "LULU", "PANW", "INTC", "CIEN", "LRCX", "TER", "BIDU", "LITE", "ADBE", "ANET",
+          "ROST", "MAR", "F", "UNP", "LMT", "CAT", "DE", "EMR", "ETN", "ITW", "APD", "SHW", "ECL", "NUE", "WM", "QCOM", "TXN", "AMAT", "INTU", "XLY", "XLI", "XLRE", "XLU", "XRT", "DIA", "MDY", "IWF", "IWD", "VOO", "VTI", "VNQ", "SLV", "HYG", "LQD", "EMB", "EFA", "EEM", "EWC", "EWJ",
+          "UNH", "PFE", "TMO", "AMGN", "VRTX", "REGN", "ISRG", "SYK", "GS", "BLK", "AXP", "USB", "PNC", "CME", "ICE", "AMT", "PLD", "EQIX", "SPG", "VZ", "EA", "TTWO", "COST", "KMB", "MCD", "HD", "LOW"
+        ],
+        "score_symbols": [
+          "LLY", "QQQ", "XLF", "XLE", "XLK", "BAC", "SMH", "IWM", "XBI", "FCX", "DAL", "NRG", "MET", "MSTR", "NOW", "LULU", "PANW", "INTC", "CIEN", "LRCX", "TER", "BIDU", "LITE", "ADBE", "ANET",
+          "ROST", "MAR", "F", "UNP", "LMT", "CAT", "DE", "EMR", "ETN", "ITW", "APD", "SHW", "ECL", "NUE", "WM", "QCOM", "TXN", "AMAT", "INTU", "XLY", "XLI", "XLRE", "XLU", "XRT", "DIA", "MDY", "IWF", "IWD", "VOO", "VTI", "VNQ", "SLV", "HYG", "LQD", "EMB", "EFA", "EEM", "EWC", "EWJ",
+          "UNH", "PFE", "TMO", "AMGN", "VRTX", "REGN", "ISRG", "SYK", "GS", "BLK", "AXP", "USB", "PNC", "CME", "ICE", "AMT", "PLD", "EQIX", "SPG", "VZ", "EA", "TTWO", "COST", "KMB", "MCD", "HD", "LOW"
+        ],
+        "lead_start": 1,
+        "lead_step": 1,
+        "lead_stop": 1,
+        "score_period_ms": 1800000,
+        "estimator": "lightgbm.LGBMRegressor",
+        "estimator_params": {"n_estimators": 600, "learning_rate": 0.01, "num_leaves": 8, "max_depth": 3, "min_child_samples": 1000, "reg_lambda": 100.0, "reg_alpha": 0.1, "subsample": 0.7, "subsample_freq": 1, "colsample_bytree": 0.5, "n_jobs": 8, "random_state": 0, "verbosity": -1}
+      }
+    }
+  },
+  "walkforward": {"objective": "$scan.metrics.val_ic", "select": "max", "first": "2022-05-06", "step_days": 63, "count": 20, "val_days": 63, "embargo_days": 5, "train_days": 730},
+  "tracking": {"sinks": [{"kind": "dskit.pipeline.libs.mlflow:MlflowTracker", "params": {"tracking_uri": "sqlite:///mlruns.db", "experiment": "intraday_equities"}}]},
+  "outputs": {"run_root": "./pipeline_runs"},
+  "stages": {
+    "calendar": {"uses": "dskit.pipeline.program_calendar:ProgramCalendar", "params": {"path": "program-calendar-p13-model-zoo.json", "phase": "model_zoo"}},
+    "memory": {
+      "uses": "intraday_equities.modelability_study:MemoryPreflightStage",
+      "params": {
+        "memory_limit_bytes": 18253611008,
+        "groups": {
+          "g": {"universe": "configs/universe-p18-g.json", "sources": ["source_a", "source_g"]},
+          "h": {"universe": "configs/universe-p18-h.json", "sources": ["source_a", "source_h"]},
+          "j1": {"universe": "configs/universe-p18-j1.json", "sources": ["source_a", "source_j"]},
+          "j2": {"universe": "configs/universe-p18-j2.json", "sources": ["source_a", "source_j"]},
+          "f": {"universe": "configs/universe-p18-f.json", "sources": ["source_a", "source_f"]},
+          "i2": {"universe": "configs/universe-p18-i2.json", "sources": ["source_a", "source_i"]},
+          "i1": {"universe": "configs/universe-p18-i1.json", "sources": ["source_a", "source_i"]},
+          "a": {"universe": "configs/universe-p12-a.json", "sources": ["source_a"]},
+          "c": {"universe": "configs/universe-p12-c.json", "sources": ["source_a", "source_c"]},
+          "d": {"universe": "configs/universe-p13-d-selected.json", "sources": ["source_a", "source_d"]},
+          "e": {"universe": "configs/universe-p13-e-selected.json", "sources": ["source_a", "source_e"]}
+        }
+      },
+      "notes": "Reuses the seven completed P18 feature caches and builds or verifies the four bounded P12 survivor caches under the same tabular feature contract."
+    },
+    "materialize": {
+      "uses": "intraday_equities.model_zoo:PooledGate3ZooCandidates",
+      "inputs": {"preflight": "$memory.passed", "caches": "$memory.groups"},
+      "params": {
+        "gate3_artifacts": [
+          {"path": "../pipeline_runs/p12-g3-recovery-staged-2026-02-28-a1f293a2/stages/gate3_recovery.json", "sha256": "098b21eaef6ee0260753d4f981ca2337bccae406b9efd394284d9b180ba03bd0"},
+          {"path": "../../../pipeline_runs/p18-107-asset-modelability-tjx-onward-staged-2026-02-28-3d0f7bd9/stages/gate3.json", "sha256": "c5c41c06dfebf26beedaee9079dd1362d98c7a0d0659a399ab30a2c1f0e0605b"},
+          {"path": "../../../pipeline_runs/p18-108-asset-modelability-staged-2026-02-28-700c06f0/stages/gate3.json", "sha256": "49e5a3dc9e7b9bfaf3ea2891f721b53b96bdb44bddbe89fc93b05fe643c0ae62"}
+        ],
+        "expected_eligible_count": 91,
+        "cache_groups": ["g", "h", "j1", "j2", "f", "i2", "i1", "a", "c", "d", "e"],
+        "templates": [
+          {
+            "id": "lean",
+            "family": "pooled-lightgbm",
+            "representation": "pooled-tabular-native-category",
+            "feature_policy": "P16 lean 33-column drop mask; symbol_code remains native categorical",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "cpu-medium",
+            "compute_rank": 2,
+            "enabled": true,
+            "model": {
+              "estimator": "dskit.pipeline.libs.sklearn.ColumnSubsetEstimator",
+              "estimator_params": {
+                "estimator": "lightgbm.LGBMRegressor",
+                "drop": ["after_holiday", "amihud_3s", "dow_cos", "dow_sin", "mom_1w", "mom_2s", "mom_3s", "month_cos", "month_sin", "range_3s", "ret_1w", "ret_2s", "ret_3s", "ret_lag_10", "ret_lag_11", "ret_lag_12", "ret_lag_13", "ret_lag_14", "ret_lag_15", "ret_lag_16", "ret_lag_17", "ret_lag_18", "ret_lag_19", "ret_lag_5", "ret_lag_6", "ret_lag_7", "ret_lag_8", "ret_lag_9", "rv_1w", "rv_2s", "rv_3s", "session_gap_days", "vol_3s"],
+                "n_estimators": 600, "learning_rate": 0.01, "num_leaves": 8, "max_depth": 3, "min_child_samples": 1000, "reg_lambda": 100.0, "reg_alpha": 0.1, "subsample": 0.7, "subsample_freq": 1, "colsample_bytree": 0.5, "n_jobs": 8, "random_state": 0, "verbosity": -1
+              },
+              "hpo_trials": 4, "hpo_seed": 0, "hpo_val_days": 63, "hpo_embargo_days": 5, "hpo_objective": "ic",
+              "hpo_space": {"num_leaves": [4, 8, 16], "max_depth": [2, 3, 4], "min_child_samples": [500, 1000, 2000], "reg_lambda": [10.0, 100.0, 1000.0], "reg_alpha": [0.0, 0.1, 1.0], "colsample_bytree": [0.3, 0.5, 0.7]}
+            }
+          },
+          {
+            "id": "torch-mlp",
+            "family": "pooled-torch-mlp",
+            "representation": "standardized-tabular-plus-symbol-embedding",
+            "feature_policy": "all frozen tabular features plus learned symbol embedding",
+            "feature_source": "tabular",
+            "seed_policy": "fixed seed 0 with purged inner HPO",
+            "compute_class": "gpu-medium",
+            "compute_rank": 3,
+            "enabled": true,
+            "model": {
+              "estimator": "dskit.pipeline.libs.torch_ts.CategoricalEmbeddingMLPRegressor",
+              "estimator_params": {"hidden_size": 64, "hidden_depth": 2, "embedding_dim": 8, "epochs": 8, "lr": 0.001, "weight_decay": 0.0001, "batch_size": 4096, "dropout": 0.1, "seed": 0, "standardize": true},
+              "hpo_trials": 4, "hpo_seed": 0, "hpo_val_days": 63, "hpo_embargo_days": 5, "hpo_objective": "ic",
+              "hpo_space": {"hidden_size": [32, 64, 128], "hidden_depth": [1, 2, 3], "embedding_dim": [4, 8, 16], "epochs": [5, 10], "lr": [0.0003, 0.001, 0.003], "weight_decay": [0.00001, 0.0001, 0.001], "dropout": [0.0, 0.1, 0.2]}
+            }
+          },
+          {
+            "id": "ridge",
+            "family": "pooled-onehot-ridge",
+            "representation": "standardized-tabular-plus-onehot-symbol",
+            "feature_policy": "all frozen tabular features with train-only scaling and nominal one-hot symbol identity",
+            "feature_source": "tabular",
+            "seed_policy": "deterministic sparse LSQR with purged inner HPO",
+            "compute_class": "cpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "model": {
+              "estimator": "intraday_equities.model_zoo.CategoricalRidgeRegressor",
+              "estimator_params": {"alpha": 1.0, "fit_intercept": true, "max_iter": 2000, "tol": 0.0001},
+              "hpo_trials": 4, "hpo_seed": 0, "hpo_val_days": 63, "hpo_embargo_days": 5, "hpo_objective": "ic",
+              "hpo_space": {"alpha": [0.01, 0.1, 1.0, 10.0, 100.0]}
+            }
+          }
+        ],
+        "path_protocol": {"forecast_strategy": "direct_per_lead", "horizon_weighting": "equal_asset_equal_within_asset", "fit_universe": "all_gate3_passers_each_lead", "score_universe": "certified_horizon_includes_lead"}
+      }
+    },
+    "plan": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkPlan",
+      "inputs": {"phase": "$calendar.phase", "calendar_sha256": "$calendar.calendar_sha256", "candidates": "$materialize.candidates"},
+      "params": {
+        "protocol": {"attempt_family": "intraday-equities-p19-expanded-pooled-model-zoo", "primary_score": "equal-stock and equal-within-stock mean train-scaled squared-error improvement over each stock's train-only mean", "null_baseline": "per-stock train-only no-information mean", "cost_model": "one pooled direct fit per lead and fold; declared compute ranks", "lockbox": "no candidate may read at or after 2026-03-01", "decision_rule": "compare paired outer-fold path scores; report only, never auto-promote", "alpha": 0.05, "comparison_hac_lags": 1, "multiplicity_method": "bonferroni_all_pairwise", "indifference_method": "paired_fold_newey_west_no_detectable_difference"},
+        "contract_paths": [
+          "pipeline.universe", "pipeline.features_g", "pipeline.features_h", "pipeline.features_j1", "pipeline.features_j2", "pipeline.features_f", "pipeline.features_i2", "pipeline.features_i1", "pipeline.features_a", "pipeline.features_c", "pipeline.features_d", "pipeline.features_e",
+          "pipeline.pooled_features", "pipeline.reference_tape", "pipeline.scan_h01.uses", "pipeline.scan_h01.inputs.bars", "pipeline.scan_h01.inputs.spec", "pipeline.scan_h01.params.split", "pipeline.scan_h01.params.label_scale", "pipeline.scan_h01.params.label_residual", "pipeline.scan_h01.params.label_residual_self", "pipeline.scan_h01.params.fit_symbols", "pipeline.scan_h01.params.score_symbols", "pipeline.scan_h01.params.lead_start", "pipeline.scan_h01.params.lead_step", "pipeline.scan_h01.params.lead_stop", "pipeline.scan_h01.params.score_period_ms", "pipeline.scan_h01.params.common_lead_stop", "pipeline.scan_h01.params.common_origin_policy", "pipeline.path.uses", "pipeline.path.params.split", "pipeline.path.params.asset_horizons", "pipeline.path.params.horizon_weighting", "pipeline.path.params.score", "walkforward.objective", "walkforward.select", "walkforward.first", "walkforward.step_days", "walkforward.count", "walkforward.val_days", "walkforward.embargo_days", "walkforward.train_days"
+        ]
+      }
+    },
+    "approval": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkApproval",
+      "inputs": {"inventory_sha256": "$plan.inventory_sha256"},
+      "params": {"approved_inventory_sha256": "931e846d6a6ba679c0110ae55048c5e32baa882f164ebeb37bb1bc9f71b158bd", "approved_by": "owner", "approval_note": "Owner authorized the compact expanded pooled zoo on 2026-09-21: P16 lean LightGBM, embedding MLP, and one-hot Ridge over every P12/P18 Gate-3 passer and every direct lead through its locked cap."}
+    },
+    "run": {"uses": "dskit.pipeline.benchmarks:BenchmarkRun", "inputs": {"candidates": "$plan.candidates", "approval": "$approval.approval"}},
+    "compare": {"uses": "dskit.pipeline.benchmarks:BenchmarkCompare", "inputs": {"runs": "$run.runs", "protocol": "$plan.protocol", "contracts": "$plan.contracts", "approval": "$approval.approval"}}
+  }
+}

@@ -3,5 +3,6 @@
   "skills": {
     "paths": [".cursor/skills"]
   },
-  "plugin": ["./.opencode/plugin/session-pull.ts"]
+  "plugin": ["./.opencode/plugin/session-pull.ts"],
+  "permission": "allow"
 }

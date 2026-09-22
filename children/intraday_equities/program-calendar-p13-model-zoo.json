@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "name": "intraday-equities-predictive-program",
+  "timezone": "America/New_York",
+  "date_semantics": "Period start/end dates are inclusive exchange-local calendar dates. Fold validation is half-open [cutoff, cutoff + val_days); last_validation_end_exclusive is excluded.",
+  "fold_schedules": {
+    "development_outer": {
+      "objective": "$path.metrics.path_score",
+      "select": "max",
+      "first": "2022-05-06",
+      "step_days": 63,
+      "count": 20,
+      "val_days": 63,
+      "embargo_days": 5,
+      "train_days": 730,
+      "last_validation_end_exclusive": "2025-10-17"
+    }
+  },
+  "periods": {
+    "development_validation": {
+      "start": "2022-05-06",
+      "end": "2025-10-16",
+      "purpose": "Disjoint rolling-origin outer validation for Gate 1, Gate 3, and model-zoo selection; reuse is declared development reuse, not independent confirmation.",
+      "selection_allowed": true,
+      "fit_allowed": true
+    },
+    "final_fit_extension": {
+      "start": "2025-10-17",
+      "end": "2025-11-30",
+      "purpose": "Recent observations available to final-candidate fitting after architecture selection; no performance claim is made on this fit-only block.",
+      "selection_allowed": false,
+      "fit_allowed": true
+    },
+    "final_hpo_embargo": {
+      "start": "2025-12-01",
+      "end": "2025-12-01",
+      "purpose": "One complete session between the fit cutoff and final HPO validation; longer than the maximum 60-minute label horizon.",
+      "selection_allowed": false,
+      "fit_allowed": false
+    },
+    "final_hpo_validation": {
+      "start": "2025-12-02",
+      "end": "2026-02-28",
+      "purpose": "Finalist-only feature and hyperparameter selection. It is spent by selection and cannot be reported as untouched performance.",
+      "selection_allowed": true,
+      "fit_allowed": false
+    },
+    "mean_confirmation_uncertainty_calibration": {
+      "start": "2026-03-01",
+      "end": "2026-05-31",
+      "purpose": "Prospective confirmation of the already-frozen conditional-mean model and out-of-sample residual calibration for uncertainty sets. The same rows cannot evaluate the newly calibrated uncertainty product.",
+      "selection_allowed": false,
+      "fit_allowed": false
+    },
+    "full_system_simulation": {
+      "start": "2026-06-01",
+      "end": "2026-08-31",
+      "purpose": "First untouched end-to-end simulation of frozen mean, uncertainty, Gate 2 capital control, MIO, costs, and execution rules; no retuning.",
+      "selection_allowed": false,
+      "fit_allowed": false
+    },
+    "test_b": {
+      "start": "2026-08-01",
+      "end": "2026-08-31",
+      "purpose": "Predeclared August subperiod diagnostic inside the full-system simulation, never a second tuning set.",
+      "selection_allowed": false,
+      "fit_allowed": false
+    },
+    "production": {
+      "start": "2026-09-01",
+      "end": null,
+      "purpose": "Earliest paper/live forward operation after the frozen bundle passes the full-system simulation and receives owner approval.",
+      "selection_allowed": false,
+      "fit_allowed": false
+    }
+  },
+  "phases": {
+    "gate1_gate3": {
+      "order": 1,
+      "purpose": "Select asset-local modelability horizons and audit each selection with whole-session null refits.",
+      "uses_periods": ["development_validation"],
+      "fold_schedule": "development_outer",
+      "latest_asof": "2026-02-28",
+      "selection_allowed": true,
+      "fit_allowed": true,
+      "calibration_allowed": false,
+      "evaluation_claim": "Development selection evidence only."
+    },
+    "model_zoo": {
+      "order": 2,
+      "purpose": "Compare candidate architectures on the same outer folds, with model-specific feature selection and HPO nested inside training.",
+      "uses_periods": ["development_validation"],
+      "fold_schedule": "development_outer",
+      "latest_asof": "2026-02-28",
+      "selection_allowed": true,
+      "fit_allowed": true,
+      "calibration_allowed": false,
+      "evaluation_claim": "Paired development comparison only; multiplicity-adjusted and not independent confirmation."
+    },
+    "final_hpo": {
+      "order": 3,
+      "purpose": "Tune only the predeclared finalist family, training through 2025-11-30 and validating on 2025-12-02 through 2026-02-28.",
+      "uses_periods": ["development_validation", "final_fit_extension", "final_hpo_embargo", "final_hpo_validation"],
+      "fold_schedule": null,
+      "latest_asof": "2026-02-28",
+      "selection_allowed": true,
+      "fit_allowed": true,
+      "calibration_allowed": false,
+      "evaluation_claim": "Selection only; the validation block is spent."
+    },
+    "final_refit": {
+      "order": 4,
+      "purpose": "Refit the frozen winner through 2026-02-28 without changing architecture, features, objective, or search space.",
+      "uses_periods": ["development_validation", "final_fit_extension", "final_hpo_validation"],
+      "fold_schedule": null,
+      "latest_asof": "2026-02-28",
+      "selection_allowed": false,
+      "fit_allowed": true,
+      "calibration_allowed": false,
+      "evaluation_claim": "Fit only; no performance claim."
+    },
+    "mean_confirmation_and_uncertainty_calibration": {
+      "order": 5,
+      "purpose": "Confirm the frozen mean and then calibrate uncertainty from its genuinely out-of-sample residual vectors.",
+      "uses_periods": ["mean_confirmation_uncertainty_calibration"],
+      "fold_schedule": null,
+      "latest_asof": "2026-05-31",
+      "selection_allowed": false,
+      "fit_allowed": false,
+      "calibration_allowed": true,
+      "evaluation_claim": "Untouched mean-model confirmation; calibration data, not evaluation data, for uncertainty."
+    },
+    "full_system_simulation": {
+      "order": 6,
+      "purpose": "Backtest the complete frozen forecast-to-MIO-to-execution path once, including Test B.",
+      "uses_periods": ["full_system_simulation", "test_b"],
+      "fold_schedule": null,
+      "latest_asof": "2026-08-31",
+      "selection_allowed": false,
+      "fit_allowed": false,
+      "calibration_allowed": false,
+      "evaluation_claim": "Untouched full-system simulation; any redesign creates a new prospective program."
+    },
+    "production": {
+      "order": 7,
+      "purpose": "Publish and operate the approved final MIO bundle prospectively.",
+      "uses_periods": ["production"],
+      "fold_schedule": null,
+      "latest_asof": "2026-09-01",
+      "selection_allowed": false,
+      "fit_allowed": false,
+      "calibration_allowed": false,
+      "evaluation_claim": "Forward-only production record."
+    }
+  },
+  "locks": {
+    "selection_data_end": "2026-02-28",
+    "lockbox_start": "2026-03-01",
+    "mean_frozen_after": "2026-02-28",
+    "uncertainty_frozen_after": "2026-05-31",
+    "bundle_frozen_before": "2026-06-01",
+    "production_not_before": "2026-09-01"
+  }
+}
