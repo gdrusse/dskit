@@ -138,7 +138,8 @@ When a child earns its own repo: copy `children/<project>/` out as the new
 repo's root, `pip install -e .` there, run its tests, delete the directory
 here. Nothing inside changes — that was the point.
 
-Incubating today: `intraday_equities` (US-equity intraday bars),
+Incubating today: `index_options` (offline, synthetic-only cash-index option
+diagnostics; no trading or real-data adapter), `intraday_equities` (US-equity intraday bars),
 `intraday_poc`, and `pmquant` (prediction-market ladders — Kalshi and
 Polymarket; its `configs/run-e2e.json` runs the stat test, the
 transformer and the Kelly MIO in one document). Worked sketches of the

@@ -1,0 +1,69 @@
+{
+  "name": "synthetic-index-options",
+  "notes": "Apply to each acquired snapshot: only that stream is present. Demo checks nonzero stream counts separately; these field rules do not prove completeness. No certification or hidden read gate; wrappers validate winning rows independently.",
+  "rules": [
+    {
+      "id": "contracts-synthetic",
+      "target": "contracts",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "provenance",
+        "values": [
+          "synthetic"
+        ]
+      },
+      "severity": "error"
+    },
+    {
+      "id": "contracts-time",
+      "target": "contracts",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "effective_at"
+      },
+      "severity": "error"
+    },
+    {
+      "id": "quotes-synthetic",
+      "target": "quotes",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "provenance",
+        "values": [
+          "synthetic"
+        ]
+      },
+      "severity": "error"
+    },
+    {
+      "id": "quotes-time",
+      "target": "quotes",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "effective_at"
+      },
+      "severity": "error"
+    },
+    {
+      "id": "settlements-synthetic",
+      "target": "settlements",
+      "rule": "accepted_values",
+      "kwargs": {
+        "field": "provenance",
+        "values": [
+          "synthetic"
+        ]
+      },
+      "severity": "error"
+    },
+    {
+      "id": "settlements-time",
+      "target": "settlements",
+      "rule": "not_null",
+      "kwargs": {
+        "field": "effective_at"
+      },
+      "severity": "error"
+    }
+  ]
+}

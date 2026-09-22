@@ -1,0 +1,80 @@
+{
+  "name": "index-options-synthetic-condor",
+  "notes": "Ex-post arithmetic only. Settlement is an outcome, never a forecast feature. No serving or trading.",
+  "pipeline": {
+    "contracts": {
+      "uses": "index_options.observations:ContractRows",
+      "params": {
+        "root": "./ob",
+        "source": "index-fixture"
+      },
+      "notes": "Contract metadata through the existing acquired-observation reader."
+    },
+    "quotes": {
+      "uses": "index_options.observations:QuoteRows",
+      "params": {
+        "root": "./ob",
+        "source": "index-fixture"
+      }
+    },
+    "settlements": {
+      "uses": "index_options.observations:SettlementRows",
+      "params": {
+        "root": "./ob",
+        "source": "index-fixture"
+      }
+    },
+    "diagnostic": {
+      "uses": "index_options.nodes:CondorPayoffDiagnostic",
+      "inputs": {
+        "contracts": "$contracts.records",
+        "quotes": "$quotes.records",
+        "settlements": "$settlements.records"
+      },
+      "params": {
+        "corpus_id": "condor-demo-v1",
+        "legs": [
+          {
+            "contract_id": "p480",
+            "contract_version": "v1",
+            "quote_at": "2026-01-16T20:45:00Z",
+            "quote_version": "v1",
+            "quantity": 1
+          },
+          {
+            "contract_id": "p485",
+            "contract_version": "v1",
+            "quote_at": "2026-01-16T20:45:00Z",
+            "quote_version": "v1",
+            "quantity": -1
+          },
+          {
+            "contract_id": "c515",
+            "contract_version": "v1",
+            "quote_at": "2026-01-16T20:45:00Z",
+            "quote_version": "v1",
+            "quantity": -1
+          },
+          {
+            "contract_id": "c520",
+            "contract_version": "v1",
+            "quote_at": "2026-01-16T20:45:00Z",
+            "quote_version": "v1",
+            "quantity": 1
+          }
+        ],
+        "settlement": {
+          "settlement_id": "SYNTH-PM-20260220",
+          "expiry": "2026-02-20",
+          "row_version": "center"
+        },
+        "count": 1,
+        "fees_usd": "8.00"
+      },
+      "notes": "Four exact version references; short legs at bid, long at ask. USD fees are total, not per leg."
+    }
+  },
+  "outputs": {
+    "run_root": "./pipeline_runs"
+  }
+}

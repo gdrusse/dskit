@@ -19336,3 +19336,64 @@ policy's currency-order `sorted(...)` over a multi-currency fold (nothing else
 can reach two currencies). Each is now pinned by value.
 
 223 tests.
+
+## ADR-0167 — Proposed offline index-options child scaffold
+
+**Status:** S0 implementation approved by Russell on 2026-09-22 in the follow-up
+request to build the child after the two clean S0-v3 design reviews.
+Approval covers the 30-file synthetic-only manifest, not real-data acquisition,
+experiments, paper/live trading, or deployment.
+**Owner:** Russell. **Base:** `4ca0d4e47f41cfcdded9679707bdec9a47b07806`.
+
+**Context.** The owner requested an index-options child, reuse of the framework,
+data-source investigation, and independent skeptic review. The research aim is
+instrument-aware ML and constrained spread allocation, not another intraday
+stock predictor. Profitability has not been demonstrated.
+
+**Decision proposed.** Approve only the synthetic, offline S0 contract and exact
+30-file child manifest in
+[the implementation proposal](../children_design_proposals/index_options_scaffold.md).
+Create `children/index_options`, three narrowed `ObservationRows` subclasses,
+index-specific contract/condor rules, and a forbidden-for-serving ex-post payoff
+Node. Reuse LocalFilesConnector, onboarding validation/snapshots, the pipeline,
+JsonArtifact and journal initialization. No new connector, reader, trainer,
+solver or production mechanism is authorized. The manifest is authoritative;
+any additional file or shared behavioral change requires amended approval.
+
+**Trust, identity and transitions.** Configuration and synthetic rows are
+validated; imported repository code is trusted. Corpus/version/contract and
+settlement identities are explicit. Source fixtures are frozen and ingested
+into fresh temporary state; local-file incremental cursors are not promised to
+capture backdated revisions. Readers adopt the parent's winning-row semantics:
+identical at-least-once repeats are allowed and conflicting winning-acquisition
+ties refuse. Domain checks cover winning/selected rows, not discarded history;
+the onboarding suite is separate evidence, not an unimplemented read gate.
+Event, knowledge and acquisition times are separate. The only progression is
+domain-validated synthetic inputs to an ex-post
+report; it never grants strategy, experiment or trading eligibility. Missing or
+unsupported terms refuse, with no completed success artifact. Multipliers must
+be strictly positive, non-boolean integers through every child facade.
+Existing generic failure metadata and journaling retain their own semantics;
+isolation tests must enable recording and assert actual expected actions,
+not pass because pytest disabled journal hooks.
+
+**Ownership and compatibility.** Domain meaning stays in the child; reusable
+mechanisms remain in core/library packs. No root dependencies or existing-child
+behavior change. CLI-initialized empty journal files are allowed; owner Path
+promotion is not. Shared production and backtester gates are not closed by this
+ADR. A gap discovered during implementation stops this packet for a separately
+approved generic design, rather than being copied into the child.
+
+**Alternatives.** Copying an intraday child imports irrelevant market/serving
+assumptions. Building a broker/optimizer first hides unresolved data and money
+semantics. A docs-only concept cannot exercise framework integration. The
+bounded synthetic child supplies that integration without claiming market
+readiness; real data, ML and optimization remain separately approved stages.
+
+**Consequences and gate.** S0 is useful software infrastructure but establishes
+neither a usable historical corpus nor a profitable strategy. The proposal's
+I1–I7 matrix and
+[Phase 0 review record](../children_design_proposals/index_options_scaffold_review.md)
+control design evidence. Required next transition: explicit owner approval of
+this ADR and file manifest, then TDD and two fresh independent code-review
+lenses before delivery. Favorable design review is not owner approval.
