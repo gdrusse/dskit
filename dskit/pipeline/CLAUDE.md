@@ -77,6 +77,17 @@ on it without breaking its rulings.
   `fingerprint()` at resolve and `run()` at execute see one snapshot;
   `scan_stream` is imported inside the scan, never at module top.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
+- **Uncertainty sets** — `register_uncertainty_set`
+  (`uncertainty_set.py`); `probability`/`mean`/`outcome` ship. Subclass
+  `BudgetedUncertaintySet` and supply three declaration hooks
+  (`worst_case_sense`, `component_bounds`, `coefficient_domain`); the four
+  templates (`worst_case`, `protection`, `counterpart`, `realizations`) are
+  final and `__init_subclass__` refuses a subclass that replaces one. Nominal
+  values, BOTH deviation halves and the budget are arguments with no defaults,
+  and a half the geometry can never read must be passed as zero. The budget is
+  tuned by rolling validation — no interval identifies it. `realizations()`
+  weights are a uniform CONVENTION over the points emitted, never an estimated
+  measure; `worst_case`/`counterpart` are the exact doorway.
 - **Corrections** — `register_correction` (`stats.py`);
   `bh`/`bonferroni`/`none`/`weighted-bh` ship. `needs_weights` metadata
   gates the stat_test `weights` input port (plan-time mirror in
@@ -148,6 +159,25 @@ on it without breaking its rulings.
   INDEPENDENT-UNIT count, never `n - 1`. `stats.student_t_sf` was made
   public for that inversion, remains the only Student tail, and enforces
   its own `df > 0` precondition.
+- **Realized-outcome uncertainty** — `outcome_interval.py` (ADR-0155) is a
+  plain value API, not a node kind. `BlockResiduals` REFUSES to exist
+  without explicit block labels: the dependence statement is an argument
+  and never a default, because the only available default is the
+  too-narrow answer. It is `attempts.py`'s session doctrine in argument
+  form, so `utc_day`'s integer day index is an accepted block id where
+  `records.cluster_ok` would take only a string — a deliberate, documented
+  widening, not a second opinion. `OutcomeCalibrator.calibrate` and
+  `.scenarios` are FINAL (`__init_subclass__` raises); a member supplies
+  `achievable_level` / `offsets` / `draw_blocks` and the templates SCREEN
+  each answer (a level below the requested coverage, a missing component,
+  an inverted or non-finite bound, an unknown block, a short draw). The
+  conformal correction counts BLOCKS, not rows, and RAISES when the
+  coverage is unachievable rather than clamping. Scenarios are COPIED
+  rows of whole blocks, so the joint cross-component vector survives by
+  construction. Coverage is claimed as APPROXIMATE under weak dependence
+  and is measured by `@pytest.mark.slow` tests, never asserted in prose.
+  `MAX_SCENARIOS` mirrors `libs/pyomo.HARD_N_SCENARIOS_CEILING` (tier 1
+  cannot import tier 2) and the two are pinned to agree.
 - **Split policies** — `register_split_policy` (`split_policy.py`);
   `record` / `event-open` / `event-close` ship. An event policy needs a
   data node implementing `event_bounds()`, and the driver refuses when
@@ -168,6 +198,13 @@ on it without breaking its rulings.
   scaler's `features` does): under `mode="load"` a document may restate
   what a state is and never misdescribe it, and a knob `apply_state`
   never reads is where train/serve skew hides. Override
+  `sidecar_problems(payload)` (ADR-0160) when a restore must be refused on
+  a fact the base does not own: the base compares `fit_split` only when the
+  DOCUMENT declared one, and ADR-0040 lets a load omit it, so a member whose
+  state is meaningful from exactly one split has nowhere else to say so. It
+  is asked UNCONDITIONALLY in `_sidecar` and defaults to `[]` — every
+  pre-ADR-0160 member keeps that default, pinned in `test_fitted.py` and
+  `test_selector.py` on their existing fixtures. Override
   `row_problems(rows)` for the member's own INPUT shape: it is asked on
   both doorways — this node's stream and the second stream an
   `apply-transform` wires its carrier to — so the sibling half cannot
@@ -202,7 +239,14 @@ on it without breaking its rulings.
   signature is the family's and does not change. Two packs ship members:
   `sklearn-select` (any selector by import path — `get_support` is the
   whole requirement) and `torch-importance` (input-gradient sensitivity
-  over a wired `signal`). ADR-0044 made a member's own knobs searchable,
+  over a wired `signal`). The family's other sklearn member,
+  `sklearn-segment` (ADR-0160), is NOT a selector: it is a plain
+  `FittedTransform` whose catalog is deliberately CLOSED
+  (`kmeans`/`minibatch_kmeans`/`birch`) because it persists EXTRACTED
+  centers and labels as JSON instead of a pickled model, and only those
+  three are known to expose them. It carries no
+  `serving_load_audited` licence — ADR-0160 adds no production authority —
+  so `serving_effect` answers `forbidden`. ADR-0044 made a member's own knobs searchable,
   so owner flow 2 (a space over `select.n` / `select.selector`) plans
   and runs; the family's three leakage knobs still refuse.
 - **Fold execution** — `BoundedFoldRunner` (`folds.py`, ADR-0093). Subclass
@@ -609,6 +653,8 @@ dskit/pipeline/
 │                      with the <5-name usability refusal (ADR-0068, `ordering` verb)
 ├── attempts.py        AttemptRegistry + session-block max_bar + tier-2 seam
 │                      (ADR-0069, `bar` verb)
+├── outcome_interval.py block-conformal predictive intervals + joint scenario sets
+│                      over dependent residual vectors (ADR-0155)
 ├── split_policy.py    split policies (record/event-open/event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
@@ -633,6 +679,8 @@ dskit/pipeline/
 ├── mean_interval.py   MeanEvidence + MeanIntervalEstimator: mean, dependence-
 │                      aware SE, two-sided bounds; dependence never defaulted;
 │                      ConfidenceInterval only where coverage was measured
+├── uncertainty_set.py budgeted uncertainty sets: worst case over a set,
+│                      robust counterpart, weighted realizations
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets

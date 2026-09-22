@@ -21,6 +21,12 @@ torch = ["torch>=2.0"]
 transformers = ["transformers>=4.30", "torch>=2.0"]
 optuna = ["optuna>=3.0"]
 pyomo = ["pyomo>=6.7", "highspy>=1.7"]
+# The sb3 pack (dskit/pipeline/libs/sb3.py). Both bounds are upper-bounded
+# on purpose: the pack reads Gymnasium's reset/step return SHAPES and
+# stable-baselines3's predict signature directly, so a major or minor
+# release that moves either is a break this pack must see before a user
+# does. stable-baselines3 carries torch itself.
+rl = ["gymnasium>=1.3,<1.4", "stable-baselines3>=2.9,<2.10"]
 # No pack of its own: LightGBM ships an sklearn-compatible estimator API, so
 # "lightgbm.LGBMRegressor" resolves straight through the SklearnFit doorway.
 # A wrapper class here would add nothing but a place to drift. xgboost and
@@ -78,6 +84,8 @@ all = [
     "optuna>=3.0",
     "pyomo>=6.7",
     "highspy>=1.7",
+    "gymnasium>=1.3,<1.4",
+    "stable-baselines3>=2.9,<2.10",
     "lightgbm>=4.0",
     "mlflow>=2.9",
     "pyarrow>=15",

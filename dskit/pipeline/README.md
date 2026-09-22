@@ -449,7 +449,7 @@ port and reads it with `wired(port)`.
 
 `libs/` packs register nothing by import; use their kinds via
 `register()`/`--adapter` or reference classes by import path:
-**sklearn** `sklearn-fit`/`sklearn-predict`/`sklearn-select` (the document names
+**sklearn** `sklearn-fit`/`sklearn-predict`/`sklearn-select`/`sklearn-segment` (the document names
 the estimator, and the SELECTOR the same way — `selector` plus the two arguments
 no JSON block can hold, `estimator` for a wrapper selector and `score_func` for a
 univariate one, each a dotted path; ADR-0042 —
@@ -464,7 +464,14 @@ JSON manifest for a caller-named, ORDERED mapping of many fitted estimators
 ("heads"), hash-verified the same S2-A way as the single-estimator artifact
 but over the whole manifest, plus a deterministic prediction-fixture
 checksum replayed at load so a restored head that does not reproduce
-write-time beliefs refuses even when the on-disk bytes are untouched);
+write-time beliefs refuses even when the on-disk bytes are untouched;
+`sklearn-segment` (ADR-0160) is the pack's one CLOSED catalog —
+`kmeans`/`minibatch_kmeans`/`birch`, not an arbitrary import path — because
+it persists EXTRACTED centers and labels as JSON rather than a pickled
+model, fits on `train` alone behind two literal-`"train"` gates, labels every
+row `segment` plus a canonical-state `segment_model_id`, and reports no
+cluster score, so nothing here supplies a search an objective to rank
+segmentations by);
 **torch** `torch-train`/`torch-predict` (DECLARED, ADR-0025: the document
 names the `nn.Module` class — no subclass, validated at plan time) +
 `torch-linear-train`/`torch-linear-predict` + `TorchTrain`/`TorchPredict`
@@ -475,9 +482,14 @@ net someone else fitted, wired in on the `signal` port, and trains nothing
 itself); **torch_ts** `torch-ts-train`/`torch-ts-predict` (ADR-0041: one
 pair over an `arch` registry — DLinear/NLinear/MLP/LSTM/GRU/attention/TCN/
 CNN1d/PatchTST — `torch.py` stays byte-identical);
-**sb3** `sb3-train`/`sb3-policy`/`sb3-eval`
+**sb3** `sb3-train`/`sb3-policy`/`sb3-eval`/`sb3-eval-episodes`
 (ADR-0028: the document names the RL algorithm AND the gymnasium env class;
-artifacts are hash-pinned); **matplotlib** `mpl-figure` + `FigureNode` base
+artifacts are hash-pinned. `sb3-eval` answers the two scalars a SEARCH wants
+via SB3's own `evaluate_policy`; `sb3-eval-episodes` (ADR-0160) rolls bounded
+episodes itself and keeps the ordered per-step record an AUDIT wants, as a
+`JsonArtifact` beside seven flat metrics — its `split` narrows to
+`val`/`test`, because persisted evidence of held-out performance is not a
+scalar a search may read from any split); **matplotlib** `mpl-figure` + `FigureNode` base
 (ADR-0029: declared line/scatter/bar/hist marks over a row stream → a PNG
 artifact); **transformers** `transformers-fit` (declared)
 + `transformers-tiny-fit`/`transformers-predict` + the pretrained doorway
@@ -683,6 +695,9 @@ dskit/pipeline/
 │                      per-timestamp cross-sectional IC + its usability guard (ADR-0068)
 ├── attempts.py        the many-attempts bar: AttemptRegistry, session-block
 │                      sign-flip max_bar, the tier-2 scramble seam (ADR-0069)
+├── outcome_interval.py REALIZED-outcome uncertainty: block-conformal predictive
+│                      intervals + joint scenario sets over dependent, time-ordered
+│                      out-of-fold residual vectors (ADR-0155)
 ├── split_policy.py    split-assignment policies (record / event-open / event-close) + EventBounds
 ├── kinds_flow.py      filter, event-grid, derive, concat, join, groupby — record-flow verbs
 ├── kinds_banking.py   event-bank, eligibility, banking-report — the ★BANKING
@@ -717,6 +732,9 @@ dskit/pipeline/
 │                      a member returns ConfidenceInterval only where its
 │                      coverage was MEASURED — WidenedInterval otherwise
 │                      (ADR-0151)
+├── uncertainty_set.py budgeted uncertainty sets: the BudgetedUncertaintySet
+│                      doorway + probability / mean / outcome members;
+│                      worst_case, protection, counterpart, realizations
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

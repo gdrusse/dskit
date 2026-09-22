@@ -2141,6 +2141,12 @@ def _execute_plan(document, the_plan, ctx, resolved, trackers):
         try:
             _run_one_node(attempt, key, spec, the_plan, ctx, run, resolved.instances)
             _persist_json_artifacts(ctx.run_dir, key, attempt.outputs)
+            # The winner pass REPLACED these nodes' outputs in place, and
+            # those outputs are what the records and `$prev` carry. Persist
+            # them too, or the run keeps the losing pass's evidence and
+            # records a bare type name where its manifest belongs.
+            for reran in attempt.winner_reran:
+                _persist_json_artifacts(ctx.run_dir, reran, run.node_outputs[reran])
         except Exception:  # noqa: BLE001 — recorded, then abort
             if attempt.seam is not None:
                 run.search_meta[key] = _search_record(

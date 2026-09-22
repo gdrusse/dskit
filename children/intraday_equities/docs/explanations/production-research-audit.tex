@@ -1,0 +1,210 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[margin=0.72in,headheight=14pt]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,microtype,amsmath,enumitem,xcolor,fancyhdr,hyperref,xurl}
+\definecolor{navy}{HTML}{14334A}
+\definecolor{teal}{HTML}{087F8C}
+\hypersetup{colorlinks=true,linkcolor=navy,urlcolor=teal}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{7pt}
+\setlength{\emergencystretch}{4em}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small\textcolor{navy}{PRODUCTION MACHINERY AUDIT}}
+\fancyhead[R]{\small Intraday equities}
+\fancyfoot[L]{\small Evidence as of 18 September 2026}\fancyfoot[R]{\thepage}
+\newcommand{\bl}[1]{\noindent\colorbox{navy}{\parbox{\dimexpr\linewidth-2\fboxsep}{\color{white}\textbf{Bottom line.} #1}}\par\medskip}
+\newcommand{\topic}[2]{\clearpage\section{#1}\bl{#2}}
+\newcommand{\sub}[1]{\par\textbf{\textcolor{teal}{#1}}\par}
+\begin{document}
+\thispagestyle{empty}
+{\Huge\bfseries\color{navy}Intraday equities\\[8pt] Research \& production}\\[12pt]
+{\Large Proposal, machinery inventory, and readiness gaps}\par\bigskip
+\bl{The research program is sketched and substantial generic machinery exists, but the final model provenance, calibrated uncertainty and realistic broker/account path are not yet a production-ready chain.}
+\sub{The question}
+Do we have the research contract and practical machinery needed to turn a model into safe, executable decisions? This audit prioritizes timing, fills, cash, settlement, recovery and monitoring over model-family selection.
+\sub{The answer in three layers}
+The shared toolkit supplies many reusable mechanisms. Child configuration and adapters determine which are actually used. Calibrated market evidence and operational drills determine whether they are trustworthy in production.
+\sub{Status}
+Documentation-only audit. No runtime changes, trading authorization, new risk limits or owner decisions. Findings marked open are proposed work, not approved implementation. P0 means a blocker to the stated readiness claim; P1 means necessary before stronger performance or scale claims, not optional forever.
+\sub{Reading map}
+Start with the research contract and shared machinery, then the latency analysis. Project-specific pages trace data, forecasts, money and operations. The gap register is the actionable backlog. The acceptance ladder describes how to close it; the evidence directory makes the audit reproducible.
+\vfill
+{\small Prepared for Russell. dskit baseline: \texttt{72b9b33}. Legacy pmquant baseline: \texttt{d12526e9}. No claim of proven profitability or live readiness.}
+\clearpage
+{\small\tableofcontents}
+\topic{How to read this audit}{A library feature is not a deployed control. Credit is earned separately for implementation, child wiring, and operational evidence.}
+\sub{Evidence levels}
+BUILT means source was inspected; WIRED means a child configuration or call path invokes it; TESTED means a named local check actually passed in this audit; DOCUMENTED means prior evidence was read, not reproduced; OPEN means a production acceptance artifact or integration was not found. These labels are not additive scores and do not imply live readiness.
+\sub{Scope and identities}
+Inspected 18 September 2026: dskit commit 72b9b33 (the base of this documentation worktree), both child source/config/test trees, generic pipeline and production code, and relevant library packs. The standalone pmquant checkout was inspected read-only at d12526e9fa7e746e3ee68c209ccd9e4de9b897bd; its capabilities are legacy inventory, not automatically dependencies of the child. No trading account, running deployment, current fee schedule, historical performance archive, or live broker conformance was certified.
+\sub{Research versus production}
+A research proposal specifies the hypothesis, information set, decision, benchmark, rejection rule, and capital policy. Production adds event-time causality, executable orders, accounting, recovery, and an operator who can stop the system. This document records existing decisions and proposes acceptance criteria; it does not approve new architecture, overwrite owner-only decisions, or authorize trading.
+\sub{Inspection method}
+Read package inventories, class parameter contracts and inherited seams, child declarations, representative implementations, and tests. Trace decision $\rightarrow$ sizing $\rightarrow$ order $\rightarrow$ fill $\rightarrow$ account $\rightarrow$ recovery. Search both registered kinds and import-path library packs. Negative findings are scoped to the inspected repositories: 'not found' is not a claim that no implementation exists anywhere.
+\sub{Verification boundary}
+Selected offline checks completed: 336 passed, 12 skipped in 68.81 seconds across tests/production/test\_executor.py, equity test\_replay.py and test\_forecast\_bundle.py, and pmquant test\_books.py and test\_fees.py. Skipped cases are not verification credit. Source inspection covers more machinery than this subset; no full suite, market-data acquisition, training, paper session, or live run was initiated. Adjacent Markdown records the command. Prior reports and synthetic checks are not live evidence.
+\topic{Research contract: what is settled and what is proposed}{Equities has a substantial written research program and reusable implementation. Its final deployment chain is deliberately incomplete.}
+\sub{Hypothesis and target [E1-E3]}
+Existing work asks whether causal one-minute equity features predict short-horizon, volatility-scaled returns after removing a contemporaneously estimated SPY exposure. The label is a log-return residual scaled by causal volatility and sqrt(h). This is predictive skill research, not directly an executable dollar-return forecast. Horizons h01-h10 and the final 24-combination HPO/one-standard-error selection design are documented.
+\sub{Instrument and decision [E4]}
+The developmental policy makes a decision at bar close and fills at the next bar's open, with a horizon measured from the fill. Same-lead overlaps refuse; different leads can coexist; same-tick exits precede entries. The current policy is market-only and long/short feasibility must be separately bound to the approved account. A selected universe is not evidence of point-in-time membership or borrow availability.
+\sub{Information set and units [E2]}
+The forecast boundary restores log-return scale with the same causal sigma used for labels, assumes zero expected SPY drift under the existing ruling, then uses expm1 for simple fractional returns. Bundle validation carries known-at timestamps, producer/model identities and label contracts. It validates supplied forecasts/uncertainty; it does not manufacture valid calibration evidence.
+\sub{Benchmark and validation}
+Existing forecast scoring uses squared-error improvement versus a training-mean baseline, not a claim that IC equals profit. Proposed economic comparison: cash/no-trade and simple risk-matched strategies using identical capital, execution and costs; passive exposure reported separately. Cluster by trading session and respect overlapping label horizons, purging/embargo and train-only transforms. Freeze the exact economic pass threshold and confirmation window before reading it.
+\sub{Search, sizing and stopping}
+Existing final-model proposal locks a bounded search and refresh framework; generic trial/attempt registries preserve searches. Capital machinery includes scenario utility, CVaR, position/cardinality/min-ticket constraints and HFDR/no-trade-band hooks. Owner-required caps and valid uncertainty remain prerequisites. Proposal: stop promotion when any provenance, calibration, execution-realism or risk-conformance gate fails; do not choose risk tolerances from a profitable backtest.
+\topic{Shared operational machinery: reuse, do not rebuild}{The toolkit has a credible control-plane foundation. Each child still needs a complete venue binding, policy configuration, and failure-drill evidence.}
+\sub{Order lifecycle and restart [S1-S3]}
+Executor defines submit/read/query/cancel semantics and capabilities; the live subclass is separately armed. The order-leg/state/ID machinery records lifecycle transitions and intent identities. Reconciliation compares ledger and venue domains and classifies breaks. JSONL hash chaining, torn-tail handling, state replay/checkpoints, and the SQLite WAL/FULL pack provide durability choices. These are mechanisms, not proof of exactly-once behavior across a real venue's timeout and duplicate-order semantics.
+\sub{Authority and coordination [S4]}
+Expiring maker-checker authorization, explicit live arming, release-bound identity, a circuit breaker, durable control inbox, and lease renewal are available. ProcessLease is not a substitute for a live-capable distributed fenced lease. Query/cancel/recovery remain possible without arming new trades. Neither audited child supplies a concrete LiveExecutor; the skeleton is a template, not an installed broker.
+\sub{Risk and money [S5]}
+Generic guards include quantity, notional, exposure-after-order, open-order counts, price deviation, input/feed age, bankroll fraction, PnL, drawdown, and consecutive losses. Accounting uses explicit valuation/position/cash interfaces and correction-aware evidence. Recurring cash-flow schedules and flow-adjusted performance tools exist. Broker buying power, unsettled proceeds, reservations, and settlement conventions still need the venue/account adapter and configured limits.
+\sub{Data and operators [S6-S8]}
+Replay/wall/test clocks, session calendars (including exchange-calendars pack), cadence overruns, supervised stream reconnects, rate limits/retries/breakers, staleness gates, drift/outcome monitors, alerts, deadman and health checks, and metrics packs are available. The child must supply transport, subscriptions, data-quality policy, thresholds, alert destination, escalation ownership and restart runbook. Merely importing a monitor does not page an operator.
+\sub{Artifact safety and upstream caveat [S9]}
+Immutable releases, frozen-run serving graphs, read-vintage/survivorship controls, and program-calendar/release-rotation tools are real reuse points. Re-entry records ADR-0157's unresolved crash gap between RESERVED $\rightarrow$ ISSUED and actual publication, plus a deliberate failing/xfail liveness gate. That upstream capture/derivation issue is distinct from order execution; do not advertise universal crash recovery while it remains unresolved.
+\topic{Latency is an economic event, not just a timestamp}{There is useful fill machinery, but the shared paper executor does not yet establish arrival-time price realism.}
+\sub{What the code does [S1]}
+PaperExecutor.submit computes now = clock.now\_ms() + submit latency, then immediately calls \_take against the currently stored quote. The latency test asserts the acknowledgment timestamp. cancel similarly applies a shifted timestamp while immediately terminalizing the order. Resting orders can march on quote updates, with partial-fill, touch-probability, queue-fraction and size-cap knobs. These are useful deterministic simulation controls.
+\sub{What that does not prove}
+It does not schedule a pending submit to arrive on a later book, consume depth at that later instant, or permit a fill while a cancel is in flight. A configured quote-size cap and queue fraction are not measured exchange queue position. Time-stamping a fill later cannot reproduce adverse selection from a price change during transport or inference.
+\sub{Illustrative acceptance test, not market evidence}
+At decision time the ask is 100.00. Before the configured 50 ms arrival the ask becomes 100.05. A market buy should execute against the arrival-time book; a limit buy at 100.02 should not fill at 100.05. Send a cancel, then deliver a valid fill before cancel acknowledgment: inventory must retain the fill and cancel only the remainder. Repeat with delayed/out-of-order messages and restart mid-flight.
+\sub{Required clock and evidence contract}
+Retain exchange event time, local receive time, feature cutoff, decision completion, send time, acknowledgment, each fill, cancel request and terminal acknowledgment. Model compute + serialization + transport + venue delay separately enough to diagnose slippage. Record clock offset and sequence gaps. Calibrate distributions from paper/live captures; stress tails and outages, not only a mean delay.
+\sub{Recommended ownership}
+Extend the generic executor/replay seams under an approved design for event-scheduled arrivals and in-flight state. Put venue-specific queue, tick/lot, order type and fee rules in the venue adapter. Keep child strategy policy declarative. Passing synthetic ordering tests is the first gate; measured fill/markout agreement is a later gate.
+\topic{Forecasts and uncertainty: machinery versus evidence}{The interfaces are stronger than the deployed statistical evidence. In particular, a widened false-signal estimate is not a certified upper bound.}
+\sub{Built [E2-E3, S9]}
+ForecastBundle and ConfirmedCaps enforce units and point-in-time identities. Generic false-signal, mean-interval, outcome-interval and budgeted-uncertainty-set modules now exist. This supersedes older plans saying every calibration mechanism is unbuilt. Multi-head bundle, candidate inventory, trial ledger and one-standard-error selection components also exist.
+\sub{Still blocked [E3]}
+FinalRefit is intentionally fail-closed in both validation and runtime. Filling config placeholders is insufficient: the driver still needs immutable completed-run provenance, content-derived materialized-row identities and ten labelled input wires. Synthetic helper assembly is not a completed real final-model release.
+\sub{Statistical distinction}
+The repository withdrew the 'pi\_upper' guarantee after coverage far below the stated target and renamed the output pi\_widened. Do not wire it into an HFDR constraint as if it were a valid probability upper bound. A class accepting a field named pi\_upper proves schema compliance, not coverage. Mean confidence uncertainty and realized-return uncertainty also answer different questions.
+\sub{Required evidence}
+For each entity/lead and declared time regime, produce causal calibration folds, effective independent sample counts, false-signal assessment, mean coverage, outcome coverage and synchronized cross-name/lead scenarios. Record calibration-window endpoints and artifact identity. Report failure and insufficient-data cells explicitly. Validate any robust counterpart under its actual coefficient assumptions.
+\sub{Acceptance test}
+Feed an apparently well-formed bundle whose uncertainty artifact is stale, wrong-unit, post-decision, uncalibrated or from a different model. Capital must refuse. Then exercise a fully attested ten-head release end to end, showing forecast scale, prices, scenarios, caps and surviving hypotheses agree on a single decision timestamp.
+\topic{Data and market-session reality}{Historical bar plumbing is present; bars alone cannot establish executable microstructure or a survivorship-free deployment universe.}
+\sub{Built [E5, S6, S9]}
+Child connectors wrap shared Alpaca bars/quote-minute and Schwab history packs. Generic onboarding/read seams provide snapshots and provenance; pipeline splits and fitted transforms provide causal research boundaries. Shared calendars support exchange schedules. These are substantive infrastructure assets.
+\sub{Needs explicit child evidence}
+Bind feature timestamps to when a bar/quote was actually received, not only its nominal exchange timestamp. Pin split/corporate-action adjustment basis, dividend treatment, symbol changes, delistings and historical membership. Map every feature to a known-at input; include revisions and vendors' late corrections. Confirm historical SIP/NBBO entitlement and production feed equivalence without assuming vendor labels imply parity.
+\sub{Session and gap handling [E4]}
+The replay supports a halt field and skip/queue policy and refuses absent required halt information. Its generated developmental serve document uses always-open with loose age limits, not a production exchange-session policy. Prove holiday/early-close/DST handling, pre/post-market exclusion or inclusion, auction behavior, halts and reopening, and a horizon crossing a session boundary.
+\sub{Missing-book policy}
+A missing bar is not automatically a halt or a zero return. Distinguish no trade, data loss, market closure and stale quote. For multi-name portfolios, define whether one stale name is quarantined or the entire basket stops. Preserve the expected universe denominator; do not measure availability only on names that survived ingestion.
+\sub{Acceptance tests}
+Inject a split, symbol change, early close, delayed bar correction and a missing quote into a small chronological fixture. No pre-receipt feature may change an earlier decision. Return units and held-share quantities must remain consistent through corporate actions. Require a documented policy for unpriceable held positions and inability to exit.
+\topic{Equity execution: useful developmental replay, not broker simulation}{Next-bar execution avoids a major look-ahead mistake, but the current policy explicitly excludes several unavoidable order realities.}
+\sub{Wired behavior [E4]}
+EquityReplay drives shared ServeLoop/ReplayFeed/PaperExecutor rather than a separate production engine. It queues decisions by bar index, prices at the configured open, expires lots by lead, applies overlap rules and records fills/refusals. This is meaningful reuse. DevelopmentReplay is explicitly deployment\_eligible=false.
+\sub{Current policy limitations}
+fill-policy.json sets partial\_fills=false, rejections='none', touch fill probability 1, submit/cancel latency 0 and a fixed spread assumption. FillPolicy validation currently requires no partial fills. This is more than an unused generic knob: supporting partial fills in this child requires a contract/state change, not simply flipping the JSON flag.
+\sub{Why next-bar open is not sufficient}
+A close-based decision requires data receipt and inference before an order can arrive. The next recorded open may precede arrival or represent an untradeable small print. One-minute data cannot reconstruct queue depletion or within-bar bid/ask evolution. Apply the arrival-time tests described earlier and compare with quote/trade captures.
+\sub{Orders and exits still needed}
+Demonstrate market/limit/IOC semantics appropriate to the account, lot and price rounding, rejected orders, venue outages, partial entry, partial exit, cancel-before-replace, timeout/unknown status, and an exit that cannot execute at horizon expiry. Never mark a forced exit as filled merely because the research holding period ended.
+\sub{Capacity and adverse selection}
+Estimate executable depth/participation, delay-conditioned slippage and impact, particularly at opens, halts and stressed spreads. The shared queue fraction is a heuristic, not venue calibration. Stress turnover/cost break-even and compare results under conservative fills, not only the nominal next-open path.
+\topic{Capital, costs and account constraints}{The equity optimizer has serious risk machinery, but it still needs an executable forecast publisher and account-aware cash/order bindings.}
+\sub{Built [E6, S5]}
+EquityKellyMIO subclasses the generic ScenarioUtilitySolve doorway: inventory transition, self-financing, scenario-utility approximation, CVaR, empty-gate handling and post-solve recomputation are shared. The child supplies equity costs, forecast-bundle validation, HFDR and no-trade-band constraints. Risk parameters are required rather than silently chosen.
+\sub{Cost realism [E4, E6]}
+The developmental spread and Schwab-labelled fee rates are explicitly illustrative, not current broker pins. The cost model deliberately uses an uncapped per-share TAF charge, which can overstate that component on large orders; this is not exact per-order billing. Verify applicable fees, spread convention (one-way versus round trip), slippage, commissions, rebates and order aggregation using the intended account and date.
+\sub{Unbuilt or not wired}
+The scoped capital implementation does not establish the full proposed opportunity-cost charge, unfunded-candidate counterfactual ledger, or a production calibration publisher. Generic robust uncertainty sets existing today do not prove the equity optimizer consumes all intended robust constraints. Trace each actual input and its calibration identity before claiming the proposal is complete.
+\sub{Account reality}
+Need a reconciled bridge from cash/positions/open orders to deployable wealth: reserve cash and inventory for outstanding orders, prevent reuse while an order is uncertain, distinguish settled funds from equity/buying power, model margin/borrow/locate and short-sale constraints if shorts are enabled, and reconcile corporate actions and cash distributions. These are adapter/account policies, not a new model choice.
+\sub{Acceptance test}
+Give two concurrent leads the same scarce cash or shares while one order is partially filled and its remainder uncertain. Aggregate exposure and reservations must stay within caps and survive restart. Reject unavailable borrow and insufficient settled funds under the selected account policy. Scheduled contributions affect research cash only at the declared instant; real trading credits only confirmed available deposits.
+\topic{Serving, monitoring and recovery: what is actually connected}{The child has a replay connection to production primitives, but its live.py entry is a paper-intent scaffold, not trained-model deployment.}
+\sub{Actual path [E7]}
+live.py creates paper-only intents from available latest windows and selects a first candidate; it does not load the fitted final ensemble, execute the intended portfolio optimizer or route live broker orders. Its presence must not be counted as model-serving readiness. Data connector credentials likewise do not imply trading authority or an order adapter.
+\sub{Development serve configuration [E4]}
+The generated replay document uses shadow rung, empty guards and monitors, always-open calendar, no start reconciliation, fsync='none', an in-memory alert sink and ProcessLease. Those choices are reasonable for a bounded developmental fixture; they are concrete reasons not to reuse that document as a production configuration.
+\sub{Missing child bindings}
+Supply the real frozen-run heads/proposer, a validated feed and quote transport, venue execution/accounting adapters, durable ledger policy, fenced coordination, startup and periodic reconciliation, configured risk guards, outcome publication and external alert routes. Exercise a release rotation with held positions and outstanding orders, not only a fresh empty process.
+\sub{Operator evidence}
+Define who responds to stale-feed, abnormal slippage, missing outcomes and reconciliation alarms. Prove cancel-all scope, safe halt versus risk reduction, recovery from credential expiry, manual broker trades, duplicate fills, fees/corrections and a machine crash. Record an audit trail for rearming; restart must not silently erase a halt.
+\sub{Financial reporting}
+Report realized and unrealized PnL with explicit marks and ages, fees, spread/slippage attribution, turnover, exposure, drawdown, capacity, rejected/skipped opportunities and stale held assets. External contributions must not become strategy profit. Reconcile daily totals to broker statements before trusting strategy charts.
+\topic{Prioritized equity gap register}{The next useful work is attestation and execution/account conformance, not another model-family selection.}
+\sub{P0 / before claiming a deployable strategy}
+EQ-01: finish the immutable completed-run/ten-wire FinalRefit contract and prove real frozen-bundle replay. EQ-02: replace invalid false-signal upper-bound claims with approved calibrated evidence and wire uncertainty/scenarios to capital. EQ-03: bind the real model $\rightarrow$ optimizer $\rightarrow$ venue/account path; live.py is not this path. Owners: pipeline provenance, statistical calibration, child/venue integration respectively.
+\sub{P0 / before any funded deployment}
+EQ-04: arrival-time execution, partial fills, rejects and cancel races; reuse/extend the shared executor instead of a parallel simulator. EQ-05: current fees, account funds/reservations, corporate actions and borrow if applicable. EQ-06: hardened serve config with real guards, durable state, startup reconciliation, fenced authority and tested external alerts. Each closes only with the acceptance evidence described on the preceding pages.
+\sub{P1 / before scaling or stronger performance claims}
+EQ-07: point-in-time universe and vendor-revision tests, true exchange calendar and halt/reopening coverage. EQ-08: measured latency/slippage/impact distributions and sensitivity analysis. EQ-09: out-of-sample risk/coverage monitoring, fair benchmarks, realistic cash-flow accounting and statement reconciliation. Existing generic mechanisms reduce implementation work but do not remove calibration work.
+\sub{Decision record to finish}
+Consolidate the approved research contract into one release-linked manifest: eligible assets/horizons, untouched evaluation slice, finite search budget, refresh policy, execution/cost version, cap artifact, operational stop rules and statistical monitoring rule. Resolve owner-only choices without silently editing path.csv. Keep confirmation data unread until its existing authorization gates are satisfied.
+\sub{Minimum next milestone}
+A small deterministic end-to-end fixture using an attested forecast bundle, scarce cash, delayed/partial execution and forced restart should either reconcile exactly or refuse safely. Only after that machinery passes should a separately authorized real-data shadow exercise establish the empirical parameters.
+\topic{Production acceptance ladder}{Promote only on evidence from the same child, venue, account policy and release; a green generic test suite is not a promotion certificate.}
+\sub{A. Reproducible research}
+Freeze hypothesis and family, data/feature vintage, split and search budget, cost/fill policy, sizing/risk numbers, code/artifact identities, and an untouched evaluation rule. Preserve rejected trials and no-trade results. A rerun must reproduce the decision ledger without silently changing data or parameters.
+\sub{B. Adversarial offline replay}
+Demonstrate future-price exclusion, latency and partial fills, stale/missing book refusal, rejects, cancel/fill races, duplicate events, insufficient/reserved cash, corrections, session boundaries and restart reconciliation. Compare cash, positions, fees and PnL with an independent small oracle. Kill the process at each external-write boundary.
+\sub{C. Shadow and paper conformance}
+Connect actual read-only feeds and then the approved paper venue. Measure end-to-end delay, decisions versus executable prices, fill ratio, depth depletion, markouts, account differences and operational uptime. Prove alert delivery, kill switch, lease fencing, credential expiry, rate-limit behavior and failover. Paper performance alone is not live profitability.
+\sub{D. Limited live, only after separate authorization}
+Require approved venue/account eligibility, reconciled opening balances, exact current fees and contract rules, signed release, bounded loss/notional/open-order limits, external monitoring and a rollback playbook. Numbers and promotion duration are owner choices, deliberately not invented here. Scale only against recorded capacity and slippage evidence.
+\sub{Stopping and invalidation}
+Operational stops must be immediate for unsafe state: stale inputs, broken reconciliation, expired authority, invalid artifact or exhausted risk budget. Statistical underperformance should follow the frozen monitoring rule; repeated discretionary peeking invalidates the evaluation. A new feature, fee regime, contract rule or execution policy may require a new evidence generation.
+\topic{Evidence directory}{Paths identify inspected evidence, not a claim that every associated test or production deployment was executed.}
+\sub{E1}
+{\small\path{children/intraday_equities/docs/plans/2026-09-08-final-model-replay-and-monitoring.md}}\par
+Research/final-model plan. Read together with current code: older missing-feature statements can be superseded.
+\sub{E2}
+{\small\path{children/intraday_equities/intraday_equities/forecast_bundle.py}}\par
+gross\_return, ForecastBundle, ConfirmedCaps; tests/test\_forecast\_bundle.py.
+\sub{E3}
+{\small\path{children/intraday_equities/intraday_equities/final_model.py}}\par
+FinalRefit fail-closed contract, HEADS, HPO helpers; configs/run-final-refit.json and run-final-hpo.json.
+\sub{E4}
+{\small\path{children/intraday_equities/intraday_equities/replay.py}}\par
+FillPolicy, EquityReplay, \_serve\_document, DevelopmentReplay; configs/fill-policy.json and run-development-replay.json; tests/test\_replay.py.
+\sub{E5}
+{\small\path{children/intraday_equities/intraday_equities/connectors.py}}\par
+Thin data wrappers; dskit/onboarding/libs/alpaca.py, alpaca\_quotes.py, schwab.py.
+\sub{E6}
+{\small\path{children/intraday_equities/intraday_equities/nodes_capital.py}}\par
+EquityKellyMIO and SchwabCostModel; dskit/pipeline/libs/pyomo.py (ScenarioUtilitySolve); docs/plans/2026-09-intraday-equities-mio.md.
+\topic{Evidence directory (continued)}{Paths identify inspected evidence, not a claim that every associated test or production deployment was executed.}
+\sub{E7}
+{\small\path{children/intraday_equities/intraday_equities/live.py}}\par
+paper\_intent/intents and paper-only dispatch; not a fitted-model live broker path.
+\sub{E8}
+{\small\path{children/intraday_equities/docs/decisioning/path.csv}}\par
+Owner decision inventory read only; locked choices are not operational test evidence.
+\sub{S1}
+{\small\path{dskit/production/executor.py}}\par
+PaperExecutor.submit/\_take/\_march/cancel and \_PARAMS; tests/production/test\_executor.py, especially test\_the\_ack\_is\_stamped\_from\_the\_injected\_clock\_plus\_the\_declared\_latency.
+\sub{S2}
+{\small\path{dskit/production/leg.py}}\par
+Order lifecycle; also state.py, ids.py and reconcile.py (LedgerHistory, Reconciler).
+\sub{S3}
+{\small\path{dskit/production/ledger.py}}\par
+Durable event log; libs/sqlite.py, state.py and control.py. Durability configuration matters.
+\sub{S4}
+{\small\path{dskit/production/arming.py}}\par
+Also coordination.py (Lease, ProcessLease), breaker.py, verifier.py and readiness.py.
+\topic{Evidence directory (continued)}{Paths identify inspected evidence, not a claim that every associated test or production deployment was executed.}
+\sub{S5}
+{\small\path{dskit/production/accounting.py}}\par
+Accounting/PaperAccounting/RecordedAccounting; guards.py; cashflows.py; report.py.
+\sub{S6}
+{\small\path{dskit/production/feed.py}}\par
+Also clock.py, cadence.py, sessions.py and libs/exchange\_calendars.py.
+\sub{S7}
+{\small\path{dskit/production/resilience.py}}\par
+Retry/breaker/limiter and transport safety.
+\sub{S8}
+{\small\path{dskit/production/monitors.py}}\par
+Also outcomes.py, alerts.py, health.py, metrics.py and libs/prometheus.py / opentelemetry.py.
+\sub{S9}
+{\small\path{dskit/production/README.md}}\par
+Package inventory and dependencies; release.py, compose.py. In dskit/pipeline: false\_signal.py, mean\_interval.py, outcome\_interval.py, uncertainty\_set.py, program\_calendar.py and release\_rotation.py. See docs/RE-ENTRY.md for the ADR-0157 caveat.
+\end{document}

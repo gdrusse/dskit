@@ -1,0 +1,1457 @@
+"""``sb3-eval-episodes`` (ADR-0160): the auditable per-episode evaluator.
+
+This module imports NEITHER Gymnasium NOR stable-baselines3, and has no
+``pytest.importorskip`` — deliberately, and unlike its sibling
+``test_sb3.py``, whose module-level skip and PPO fixture exist so
+``TestSb3Conformance`` can invoke ``model.learn``. Nothing here trains
+anything. The environments and the model are plain-Python stubs, so the
+whole file runs on a machine with neither library installed, exactly as
+the pack itself plans documents there.
+
+The subject is the EVIDENCE: a bounded manual episode loop whose ordered
+per-step record is a durable JSON artifact, and whose flat numeric
+aggregates are derived from that same record rather than from anything
+the environment asserted along the way.
+"""
+
+from __future__ import annotations
+
+import functools
+import hashlib
+import json
+import math
+import operator
+import os
+
+import pytest
+
+from dskit.pipeline.conformance import NodeProbe, conformance_suite
+from dskit.pipeline.driver import _persist_json_artifacts
+from dskit.pipeline.libs.sb3 import (
+    ARTIFACT_FORMAT,
+    EPISODE_SCHEMA,
+    NODE_KINDS,
+    Sb3Eval,
+    Sb3EvalEpisodes,
+    _Sb3Base,
+    register,
+)
+from dskit.pipeline.node import JsonArtifact, NodeContext, NodeKindRegistry
+from dskit.pipeline.split_policy import SPLIT_NAMES
+
+#: A valid param set every case below varies one knob of.
+PARAMS = {
+    "split": "val",
+    "env": "tests.pipeline_libs.test_sb3_eval_episodes:StubEnv",
+    "env_params": {"steps": 3},
+    "n_episodes": 3,
+    "max_episode_steps": 500,
+    "seed": 17,
+    "deterministic": True,
+}
+
+#: Removes a key rather than setting it, so "absent" and "declared but
+#: wrong" are both expressible.
+_DROP = object()
+
+
+def params(**overrides):
+    merged = {**PARAMS, **overrides}
+    return {k: v for k, v in merged.items() if v is not _DROP}
+
+
+class RunWouldRaise(Sb3EvalEpisodes):
+    """A concrete stand-in whose only purpose is to be constructible.
+
+    ``validate_inputs`` is an INSTANCE method (unlike the classmethod
+    ``validate_params``), so reaching it needs a live node — and
+    ``Sb3EvalEpisodes`` cannot be one until its own ``run`` exists. Only
+    ``run`` is supplied, and it raises: nothing in this section may
+    execute.
+    """
+
+    def run(self, ctx, inputs):
+        raise AssertionError("the validation slice never runs")
+
+
+# ---------------------------------------------------------------------------
+# The shape of the kind
+# ---------------------------------------------------------------------------
+
+
+def test_the_class_declares_its_role_and_its_two_outputs():
+    assert Sb3EvalEpisodes.role == "score"
+    assert Sb3EvalEpisodes.outputs == ("metrics", "episodes")
+
+
+def test_the_declared_knobs_are_exactly_these():
+    assert Sb3EvalEpisodes._PARAMS == (
+        "algo",
+        "artifact",
+        "deterministic",
+        "env",
+        "env_params",
+        "max_episode_steps",
+        "n_episodes",
+        "policy",
+        "seed",
+        "split",
+    )
+
+
+def test_the_sidecar_cross_check_is_the_evaluators_narrow_one():
+    """Measuring on a DIFFERENT environment is the whole point of an
+    eval, so ``env``/``env_params`` are exempt — only the model's own
+    identity must match the artifact, exactly as ``sb3-eval`` has it."""
+    assert Sb3EvalEpisodes._SIDECAR_CHECK == ("algo", "policy")
+    assert Sb3Eval._SIDECAR_CHECK == ("algo", "policy")
+
+
+def test_the_splits_this_kind_narrows_to_are_real_split_names():
+    from dskit.pipeline.libs.sb3 import EPISODE_SPLITS
+
+    assert set(EPISODE_SPLITS) < set(SPLIT_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# validate_params — the classmethod alone; nothing is constructed
+# ---------------------------------------------------------------------------
+
+
+def test_the_canonical_params_validate_clean():
+    assert Sb3EvalEpisodes.validate_params(params()) == []
+
+
+def test_the_optional_knobs_may_all_be_omitted():
+    assert Sb3EvalEpisodes.validate_params({
+        "split": "test", "max_episode_steps": 10,
+    }) == []
+
+
+@pytest.mark.parametrize(
+    ("override", "needle"),
+    [
+        ({"warm_start": True}, "warm_start"),
+        ({"n_eval_episodes": 3}, "n_eval_episodes"),
+        ({"algo": "not a name"}, "algo"),
+        ({"algo": 3}, "algo"),
+        ({"policy": ""}, "policy"),
+        ({"policy": 3}, "policy"),
+        ({"artifact": ""}, "artifact"),
+        ({"artifact": 3}, "artifact"),
+        ({"env": "no-ref"}, "env"),
+        ({"env": 3}, "env"),
+        ({"env_params": "wide"}, "env_params"),
+        ({"env_params": [1]}, "env_params"),
+        ({"env_params": {3: 1}}, "env_params"),
+        ({"env_params": {"": 1}}, "env_params"),
+        ({"n_episodes": 0}, "n_episodes"),
+        ({"n_episodes": True}, "n_episodes"),
+        ({"n_episodes": 10_001}, "n_episodes"),
+        ({"max_episode_steps": _DROP}, "max_episode_steps"),
+        ({"max_episode_steps": 0}, "max_episode_steps"),
+        ({"max_episode_steps": True}, "max_episode_steps"),
+        ({"max_episode_steps": 1_000_001}, "max_episode_steps"),
+        ({"seed": -1}, "seed"),
+        ({"seed": True}, "seed"),
+        ({"seed": 2 ** 32}, "seed"),
+        ({"deterministic": "yes"}, "deterministic"),
+        ({"deterministic": 1}, "deterministic"),
+    ],
+)
+def test_each_broken_knob_is_refused_by_name(override, needle):
+    problems = Sb3EvalEpisodes.validate_params(params(**override))
+    assert any(needle in p for p in problems), problems
+
+
+# -- the split narrowing, and the legacy kind it does NOT change ------------
+
+
+@pytest.mark.parametrize("split", ["val", "test"])
+def test_a_held_out_split_is_accepted(split):
+    assert Sb3EvalEpisodes.validate_params(params(split=split)) == []
+
+
+@pytest.mark.parametrize("split", ["train", "cal", _DROP, None, "holdout"])
+def test_every_other_split_is_refused(split):
+    """``episodes`` is durable, persisted evidence of a policy's HELD-OUT
+    performance, not a scalar a search may read from any split — evidence
+    fitted on ``train`` or drawn from ``cal``'s inner calibration band
+    would misrepresent itself as out-of-sample."""
+    problems = Sb3EvalEpisodes.validate_params(params(split=split))
+    assert any("split" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("split", sorted(SPLIT_NAMES))
+def test_the_legacy_evaluator_still_accepts_every_split_name(split):
+    """The narrowing is NEW, not a restatement: ``sb3-eval`` accepts all
+    four today and must keep doing so."""
+    assert Sb3Eval.validate_params({
+        "split": split, "n_episodes": 3, "seed": 17,
+    }) == []
+
+
+# -- the cross-param bounds ------------------------------------------------
+
+
+def test_the_trace_allocation_bound_is_a_plan_time_refusal():
+    """``n_episodes * max_episode_steps`` bounds how many step records a
+    run can allocate. Both knobs are plain literal ints with no
+    ``$``-reference support, so the check belongs where the whole
+    document can still be refused — not at execute, after the expensive
+    part."""
+    problems = Sb3EvalEpisodes.validate_params(
+        params(n_episodes=1_000, max_episode_steps=1_001)
+    )
+    assert any("1000000" in p.replace(",", "").replace("_", "")
+               for p in problems), problems
+
+
+def test_the_trace_allocation_bound_admits_its_own_ceiling():
+    assert Sb3EvalEpisodes.validate_params(
+        params(n_episodes=1_000, max_episode_steps=1_000)
+    ) == []
+
+
+def test_the_last_episodes_seed_must_stay_inside_the_32_bit_range():
+    """Episode ``i`` resets on ``seed + i``; the last one must still be a
+    seed the environment can be given."""
+    problems = Sb3EvalEpisodes.validate_params(
+        params(seed=2 ** 32 - 2, n_episodes=3, max_episode_steps=2)
+    )
+    assert any("seed" in p for p in problems), problems
+
+
+def test_the_last_episodes_seed_may_sit_exactly_on_the_ceiling():
+    assert Sb3EvalEpisodes.validate_params(
+        params(seed=2 ** 32 - 3, n_episodes=3, max_episode_steps=2)
+    ) == []
+
+
+# ---------------------------------------------------------------------------
+# validate_inputs — an instance method, so it needs the stand-in
+# ---------------------------------------------------------------------------
+
+
+def test_an_unwired_artifact_port_is_lawful():
+    """The reference may come from the document instead."""
+    assert RunWouldRaise("eval", params()).validate_inputs({}) == []
+
+
+def test_a_wired_artifact_port_is_accepted():
+    node = RunWouldRaise("eval", params())
+    assert node.validate_inputs({"artifact_path": "runs/x/model.zip"}) == []
+
+
+@pytest.mark.parametrize("wired", ["", 3, []])
+def test_a_wired_artifact_port_that_names_nothing_is_refused(wired):
+    node = RunWouldRaise("eval", params())
+    problems = node.validate_inputs({"artifact_path": wired})
+    assert any("artifact_path" in p for p in problems), problems
+
+
+# ---------------------------------------------------------------------------
+# Registration — in the same change that made the class concrete
+# ---------------------------------------------------------------------------
+
+
+def test_the_pack_registers_the_new_kind_beside_the_three_legacy_ones():
+    """``register()`` rejects an abstract class and ``test_sb3.py``'s
+    conformance suite parametrizes every registered kind, so the table
+    could only be widened once ``run`` existed — which is why this landed
+    in the same change, never before it."""
+    import dskit.pipeline.libs.sb3 as pack
+
+    assert NODE_KINDS == (
+        ("sb3-train", pack.Sb3Train),
+        ("sb3-policy", pack.Sb3Policy),
+        ("sb3-eval", Sb3Eval),
+        ("sb3-eval-episodes", Sb3EvalEpisodes),
+    )
+    assert "Sb3EvalEpisodes" in pack.__all__
+    assert "EPISODE_SCHEMA" in pack.__all__ and "EPISODE_SPLITS" in pack.__all__
+
+    registry = NodeKindRegistry()
+    register(registry)
+    register(registry)  # idempotent: a present name is skipped, never shadowed
+    assert registry.get("sb3-eval-episodes") == (Sb3EvalEpisodes, False)
+
+
+# ---------------------------------------------------------------------------
+# The stubbed world — plain Python, no Gymnasium and no stable-baselines3
+# ---------------------------------------------------------------------------
+
+#: What a well-behaved ``reset`` answers.
+OK_RESET = ("observation-0", {})
+
+
+def _answer(value):
+    """Return ``value``, or raise it when a fixture installed an exception."""
+    if isinstance(value, Exception):
+        raise value
+    return value
+
+
+def step(reward=0.5, *, terminated=False, truncated=False, info=None):
+    """One well-formed five-item ``step`` return."""
+    return ("observation", reward, terminated, truncated, {} if info is None else info)
+
+
+def ok_script(rewards=(0.25, 0.75)):
+    """A script that terminates on its last step."""
+    return [
+        step(reward, terminated=index == len(rewards) - 1)
+        for index, reward in enumerate(rewards)
+    ]
+
+
+class StubEnv:
+    """A plain-Python environment: the exact returns a fixture dictated.
+
+    ``script`` is what ``step`` answers in order and ``reset_value`` is
+    what ``reset`` answers — both handed in WHOLE, so a malformed shape is
+    expressible, which is what most of the fixtures below need. An
+    ``Exception`` in either position is raised instead of returned.
+    """
+
+    def __init__(self, script=None, reset_value=OK_RESET):
+        self.script = list(ok_script() if script is None else script)
+        self.reset_value = reset_value
+        self.seeds = []
+        self.actions = []
+        self.closed = 0
+        self.ref = None
+        self.env_params = None
+
+    def reset(self, *, seed=None):
+        self.seeds.append(seed)
+        return _answer(self.reset_value)
+
+    def step(self, action):
+        self.actions.append(action)
+        return _answer(self.script.pop(0) if self.script else step())
+
+    def close(self):
+        self.closed += 1
+
+
+class StubModel:
+    """A policy that answers one action and records how it was asked."""
+
+    def __init__(self, action="ACTION"):
+        self.action = action
+        self.calls = []
+
+    def predict(self, observation, deterministic=True):
+        self.calls.append((observation, deterministic))
+        return _answer(self.action), "policy-state"
+
+
+class Lab:
+    """The stubbed world: what was built, and what the policy answered."""
+
+    def __init__(self):
+        self.envs = []
+        self.model = StubModel()
+        self.factory = lambda index: StubEnv()
+        self.loads = []
+
+    def build_env(self, ref, env_params):
+        env = self.factory(len(self.envs))
+        env.ref, env.env_params = ref, env_params
+        self.envs.append(env)
+        return env
+
+    def load_model(self, zip_path, sidecar, *, env=None):
+        self.loads.append((zip_path, sidecar, env))
+        return self.model
+
+    def scripts(self, *scripts):
+        """Give episode ``i`` the ``i``-th script."""
+        self.factory = lambda index: StubEnv(scripts[index])
+
+
+@pytest.fixture(autouse=True)
+def lab(monkeypatch):
+    """Replace the two library-touching seams for every test in this file.
+
+    ``_load_model`` imports stable-baselines3 and ``_build_env`` imports
+    Gymnasium; neither is this file's subject — the episode LOOP is — and
+    neither may be imported here. Everything else on the restore path,
+    including ``_read_sidecar``'s hash verification, is exercised for real.
+    """
+    state = Lab()
+    monkeypatch.setattr(Sb3EvalEpisodes, "_build_env", state.build_env)
+    monkeypatch.setattr(Sb3EvalEpisodes, "_load_model", state.load_model)
+    return state
+
+
+STUB_ENV_REF = "tests.pipeline_libs.test_sb3_eval_episodes:StubEnv"
+
+
+#: What the ARTIFACT was trained with. Every value here differs from the
+#: matching one in :data:`PARAMS`, and that is the point: this node has two
+#: candidate sources for `env`, `env_params`, `algo` and `policy` — what the
+#: document declares and what the sidecar recorded — and a fixture whose two
+#: sources COINCIDE cannot tell them apart. With them equal, an
+#: implementation that always read the sidecar would measure a held-out
+#: policy on the environment it was TRAINED on, label the record with that
+#: same environment, and pass every test in this file.
+TRAINED = {
+    "algo": "DQN",
+    "policy": "CnnPolicy",
+    "env": "my_child.envs:TrainingEnv",
+    "env_params": {"steps": 3, "mode": "train"},
+}
+
+
+def artifact(tmp_path, sub="fixture", **overrides):
+    """A real on-disk ``model.zip`` + verified sidecar — no SB3 involved.
+
+    ``_read_sidecar`` checks existence, JSON shape, the required keys, the
+    format tag and the content hash over the zip bytes AND the sidecar.
+    Every one of those is answerable without the library, which is why
+    this file can exercise the whole verified restore path with neither
+    library installed.
+
+    Its trained values are deliberately DIFFERENT from what
+    :data:`PARAMS` declares — see :data:`TRAINED`.
+    """
+    directory = tmp_path / sub
+    directory.mkdir(parents=True, exist_ok=True)
+    zip_path = directory / "model.zip"
+    zip_path.write_bytes(b"opaque bytes; this file is never opened as a model")
+    sidecar = {
+        "format": ARTIFACT_FORMAT,
+        **TRAINED,
+        "seed": 7,
+        **overrides,
+    }
+    sidecar["state_hash"] = _Sb3Base._state_hash(str(zip_path), sidecar)
+    (directory / "model.json").write_text(json.dumps(sidecar), encoding="utf-8")
+    return str(zip_path), sidecar
+
+
+def ctx(tmp_path, sub="run"):
+    return NodeContext(name="t", asof="2026-01-01", run_dir=str(tmp_path / sub))
+
+
+def evaluate(tmp_path, **overrides):
+    """Run one node over the fixture artifact; answer ``(node, outputs)``."""
+    reference, _sidecar = artifact(tmp_path)
+    node = Sb3EvalEpisodes("eval", params(**overrides))
+    return node, node.run(ctx(tmp_path), {"artifact_path": reference})
+
+
+def record(outputs):
+    """The persisted evidence behind the ``episodes`` port."""
+    return outputs["episodes"].value
+
+
+# ---------------------------------------------------------------------------
+# The loop: fresh environments, recorded seeds, unpacked predictions
+# ---------------------------------------------------------------------------
+
+
+def test_each_episode_gets_a_fresh_environment_seeded_from_its_index(
+    tmp_path, lab
+):
+    _node, outputs = evaluate(tmp_path, n_episodes=3, seed=17)
+
+    assert len(lab.envs) == 3
+    assert [env.seeds for env in lab.envs] == [[17], [18], [19]]
+    assert [episode["seed"] for episode in record(outputs)["episodes"]] == [
+        17, 18, 19,
+    ]
+
+
+@pytest.mark.parametrize(
+    "count", [2, 5, 8], ids=["two-episodes", "the-default", "eight-episodes"]
+)
+def test_each_episode_record_carries_its_own_index(tmp_path, lab, count):
+    """The per-episode IDENTITY, separated from the constant it equals in
+    the contract's worked example.
+
+    Every other assertion on ``episode`` runs a single episode, where the
+    live counter, the constant ``0``, a reversed numbering and any other
+    function fixing 0 are all the same thing -- the same argument the step
+    test makes one level down, never applied up here. The ordered record is
+    this kind's whole deliverable: anything that joins, indexes or
+    de-duplicates on ``episode`` collapses every rollout onto one if these
+    are not distinct and in order.
+
+    Three counts, because a numbering can be right at some and wrong at
+    others: ``min(index, 2)`` matches identity at three episodes and
+    repeats the last id at four, ``min(index, 3)`` survives two and four
+    alike, and ``index % 4`` needs more than four to show itself. One of
+    the counts is ``DEFAULT_EPISODES`` -- a numbering that breaks at the
+    kind's OWN default should not need a bespoke document to be caught.
+
+    The seed is NOT this file's default 17, because ``index`` and
+    ``seed - 17`` coincide at that default, so a record numbered off the
+    seed would read as correct.
+    """
+    _node, outputs = evaluate(tmp_path, n_episodes=count, seed=5)
+    ids = [episode["episode"] for episode in record(outputs)["episodes"]]
+    assert ids == list(range(count))
+    # ints, not floats: the artifact is durable evidence and its digest,
+    # and a typed reader's column, both change under float(index).
+    assert all(
+        isinstance(value, int) and not isinstance(value, bool) for value in ids
+    ), ids
+
+
+def test_every_environment_is_closed_exactly_once(tmp_path, lab):
+    evaluate(tmp_path, n_episodes=3)
+    assert [env.closed for env in lab.envs] == [1, 1, 1]
+
+
+def test_a_declared_environment_beats_the_one_the_model_trained_on(
+    tmp_path, lab
+):
+    """The whole point of an eval: measuring on a DIFFERENT environment.
+
+    Both values must differ from the artifact's, or this asserts nothing
+    — an implementation that always read the sidecar would roll a
+    held-out policy on its TRAINING environment and pass.
+    """
+    evaluate(tmp_path, n_episodes=1, env=STUB_ENV_REF, env_params={"steps": 9})
+    assert lab.envs[0].ref == STUB_ENV_REF != TRAINED["env"]
+    assert lab.envs[0].env_params == {"steps": 9} != TRAINED["env_params"]
+
+
+def test_an_omitted_environment_defaults_to_the_one_the_model_trained_on(
+    tmp_path, lab
+):
+    """The other half of the same seam: ``env``/``env_params`` are exempt
+    from the sidecar cross-check, so they may be replaced OR default."""
+    evaluate(tmp_path, n_episodes=1, env=_DROP, env_params=_DROP)
+    assert lab.envs[0].ref == TRAINED["env"]
+    assert lab.envs[0].env_params == TRAINED["env_params"]
+
+
+def test_the_action_is_unpacked_from_the_models_two_item_predict(
+    tmp_path, lab
+):
+    lab.model = StubModel(action="THE-ACTION")
+    evaluate(tmp_path, n_episodes=1)
+
+    assert lab.envs[0].actions == ["THE-ACTION", "THE-ACTION"]
+    assert [call[0] for call in lab.model.calls] == ["observation-0", "observation"]
+
+
+@pytest.mark.parametrize("deterministic", [True, False])
+def test_the_deterministic_flag_reaches_predict(tmp_path, lab, deterministic):
+    evaluate(tmp_path, n_episodes=1, deterministic=deterministic)
+    assert all(call[1] is deterministic for call in lab.model.calls)
+
+
+# ---------------------------------------------------------------------------
+# How an episode ends, and what the aggregate counts
+# ---------------------------------------------------------------------------
+
+
+def test_an_episode_stops_on_terminated(tmp_path, lab):
+    lab.scripts([step(1.0, terminated=True), step(9.0)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=10)
+    episode = record(outputs)["episodes"][0]
+
+    assert episode["steps"] == 1
+    assert episode["reason"] == "terminated"
+    assert episode["return"] == 1.0
+
+
+def test_an_episode_stops_on_truncated(tmp_path, lab):
+    lab.scripts([step(1.0, truncated=True), step(9.0)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=10)
+    episode = record(outputs)["episodes"][0]
+
+    assert episode["steps"] == 1
+    assert episode["reason"] == "truncated"
+
+
+def test_an_episode_stops_at_the_step_cap(tmp_path, lab):
+    lab.scripts([step(1.0) for _ in range(20)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=3)
+    episode = record(outputs)["episodes"][0]
+
+    assert episode["steps"] == 3
+    assert episode["reason"] == "max_episode_steps"
+    assert lab.envs[0].actions == ["ACTION"] * 3
+
+
+def test_both_flags_true_reads_terminated_and_counts_once_as_terminated(
+    tmp_path, lab
+):
+    """ONE fixture, two claims. Reason precedence alone would pass an
+    implementation that summed the raw flags for the aggregate — the
+    per-episode ``reason`` still reads ``terminated`` while
+    ``truncated_episodes`` silently counted it too, breaking the
+    'exclusive' the three counts promise."""
+    lab.scripts([step(1.0, terminated=True, truncated=True)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=5)
+    episode = record(outputs)["episodes"][0]
+
+    assert episode["terminated"] is True and episode["truncated"] is True
+    assert episode["trace"][0]["terminated"] is True
+    assert episode["trace"][0]["truncated"] is True
+    assert episode["reason"] == "terminated"
+    assert outputs["metrics"]["terminated_episodes"] == 1
+    assert outputs["metrics"]["truncated_episodes"] == 0
+    assert outputs["metrics"]["max_episode_steps_episodes"] == 0
+
+
+def test_the_three_reason_counts_are_exclusive_and_sum_to_the_episodes(
+    tmp_path, lab
+):
+    lab.scripts(
+        [step(1.0, terminated=True)],
+        [step(1.0, truncated=True)],
+        [step(1.0) for _ in range(5)],
+    )
+    _node, outputs = evaluate(tmp_path, n_episodes=3, max_episode_steps=2)
+    metrics = outputs["metrics"]
+
+    assert (metrics["terminated_episodes"],
+            metrics["truncated_episodes"],
+            metrics["max_episode_steps_episodes"]) == (1, 1, 1)
+    assert sum((metrics["terminated_episodes"],
+                metrics["truncated_episodes"],
+                metrics["max_episode_steps_episodes"])) == metrics["n_episodes"]
+
+
+def test_the_aggregate_formulas_are_the_declared_ones(tmp_path, lab):
+    lab.scripts(
+        [step(0.4), step(0.6, terminated=True)],
+        [step(2.0, terminated=True)],
+        [step(3.0, terminated=True)],
+    )
+    _node, outputs = evaluate(tmp_path, n_episodes=3, max_episode_steps=5)
+    metrics = outputs["metrics"]
+
+    assert [e["return"] for e in record(outputs)["episodes"]] == [1.0, 2.0, 3.0]
+    assert metrics["mean_return"] == pytest.approx(2.0)
+    # POPULATION std: sqrt(((1-2)^2 + 0 + (3-2)^2) / 3)
+    assert metrics["std_return"] == pytest.approx(math.sqrt(2 / 3))
+    assert metrics["total_steps"] == 4
+
+
+# ---------------------------------------------------------------------------
+# The evidence: exact schemas, and nothing else
+# ---------------------------------------------------------------------------
+
+
+def test_a_step_record_carries_exactly_these_four_keys(tmp_path, lab):
+    lab.scripts([step(0.25, terminated=True)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1)
+    trace = record(outputs)["episodes"][0]["trace"]
+
+    assert trace == [
+        {"step": 1, "reward": 0.25, "terminated": True, "truncated": False}
+    ]
+
+
+def test_a_step_record_keeps_no_observation_action_or_info(tmp_path, lab):
+    """Any of the three may be huge, secret, or not JSON at all — the
+    child owns whatever richer audit evidence its domain needs."""
+    lab.scripts([step(1.0, terminated=True, info={"secret": object()})])
+    _node, outputs = evaluate(tmp_path, n_episodes=1)
+    assert set(record(outputs)["episodes"][0]["trace"][0]) == {
+        "step", "reward", "terminated", "truncated",
+    }
+
+
+def test_an_episode_record_carries_exactly_these_eight_keys(tmp_path, lab):
+    lab.scripts([step(1.5, terminated=True)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, seed=17)
+    assert record(outputs)["episodes"][0] == {
+        "episode": 0,
+        "seed": 17,
+        "steps": 1,
+        "return": 1.5,
+        "terminated": True,
+        "truncated": False,
+        "reason": "terminated",
+        "trace": [
+            {"step": 1, "reward": 1.5, "terminated": True, "truncated": False}
+        ],
+    }
+
+
+def test_the_episodes_port_is_a_json_artifact_with_exactly_four_keys(tmp_path):
+    _node, outputs = evaluate(tmp_path, n_episodes=1)
+    assert set(outputs) == {"metrics", "episodes"}
+    assert isinstance(outputs["episodes"], JsonArtifact)
+    assert set(record(outputs)) == {"schema", "environment", "episodes", "summary"}
+    # The LITERAL, not the constant: comparing the record against
+    # EPISODE_SCHEMA moves both sides together, so a silently renamed
+    # schema would still read as agreeing with itself. The tag is what a
+    # future reader dispatches on, so its value is the thing to pin.
+    assert record(outputs)["schema"] == "dskit.sb3-eval-episodes/v1"
+    assert EPISODE_SCHEMA == "dskit.sb3-eval-episodes/v1"
+
+
+def test_the_environment_block_carries_exactly_the_nine_provenance_facts(
+    tmp_path
+):
+    """All nine, each read from a source that DIFFERS from every other
+    candidate the code could have read instead.
+
+    That is what makes this an audit record rather than paperwork.
+    ``env``/``env_params`` are the DECLARED ones and differ from the
+    artifact's; ``algo``/``policy`` are the ARTIFACT's and differ from
+    this pack's own defaults; ``deterministic`` is ``False`` and so
+    differs from its default. With any of those coinciding, a line that
+    reported the wrong source would still read correctly here.
+    """
+    reference, sidecar = artifact(tmp_path)
+    node = Sb3EvalEpisodes(
+        "eval", params(n_episodes=2, seed=17, deterministic=False),
+    )
+    outputs = node.run(ctx(tmp_path), {"artifact_path": reference})
+
+    assert record(outputs)["environment"] == {
+        "env": STUB_ENV_REF,                    # declared, not TRAINED["env"]
+        "env_params": {"steps": 3},             # declared, not the trained pair
+        "artifact_path": reference,
+        "state_hash": sidecar["state_hash"],
+        "algo": "DQN",                          # the artifact's, not "PPO"
+        "policy": "CnnPolicy",                  # the artifact's, not "MlpPolicy"
+        "split": "val",
+        "deterministic": False,                 # declared, not the True default
+        "seed": 17,
+    }
+    # Each of those five really is the contested one.
+    assert STUB_ENV_REF != TRAINED["env"]
+    assert PARAMS["env_params"] != TRAINED["env_params"]
+    assert TRAINED["algo"] != "PPO" and TRAINED["policy"] != "MlpPolicy"
+
+
+def test_the_metrics_mirror_the_summary_and_are_flat_numbers(tmp_path):
+    _node, outputs = evaluate(tmp_path, n_episodes=2)
+    metrics = outputs["metrics"]
+
+    assert metrics == record(outputs)["summary"]
+    assert set(metrics) == {
+        "n_episodes",
+        "mean_return",
+        "std_return",
+        "total_steps",
+        "terminated_episodes",
+        "truncated_episodes",
+        "max_episode_steps_episodes",
+    }
+    assert all(isinstance(value, (int, float)) for value in metrics.values())
+    assert all(math.isfinite(value) for value in metrics.values())
+    # Provenance lives in the ARTIFACT alone: metrics are numbers a report
+    # summarizes, and a path is not one.
+    assert "artifact_path" not in metrics and "env" not in metrics
+
+
+def test_the_persisted_bytes_and_digest_are_the_drivers_canonical_ones(
+    tmp_path
+):
+    """The record goes through the ordinary JSON-artifact seam — no new
+    persistence path, no new format."""
+    _node, outputs = evaluate(tmp_path, n_episodes=2)
+    value = record(outputs)
+    run_dir = str(tmp_path / "persisted")
+    _persist_json_artifacts(run_dir, "eval", outputs)
+
+    expected = (json.dumps(
+        value, sort_keys=True, allow_nan=False, separators=(",", ":")
+    ) + "\n").encode("utf-8")
+    manifest = outputs["episodes"]
+    assert manifest["sha256"] == hashlib.sha256(expected).hexdigest()
+    assert manifest["bytes"] == len(expected)
+    assert manifest["media_type"] == "application/json"
+    with open(os.path.join(run_dir, manifest["path"]), "rb") as handle:
+        assert handle.read() == expected
+
+
+def test_the_node_writes_nothing_of_its_own(tmp_path):
+    """No artifact path beyond ``episodes``: this kind persists through
+    the JSON-artifact port and touches no directory itself.
+
+    The run dir is asserted directly rather than through ``artifact_dir``,
+    which CREATES the directory as a side effect of being asked — the
+    check would otherwise manufacture the very thing it looked for.
+    """
+    _node, outputs = evaluate(tmp_path, n_episodes=1)
+    assert set(outputs) == {"metrics", "episodes"}
+    assert not os.path.exists(str(tmp_path / "run"))
+
+
+# ---------------------------------------------------------------------------
+# The Gymnasium contract: one atomic fixture per condition
+# ---------------------------------------------------------------------------
+
+#: ``(id, reset value, script, fragment)``. Each breaks exactly ONE of the
+#: eight conditions §4.1 bundles — a compound "malformed reset/step"
+#: fixture would prove at most one of them.
+_BROKEN_CONTRACT = [
+    ("reset-is-not-a-2-tuple", "observation-only", None, "reset"),
+    ("reset-is-a-3-tuple", ("obs", {}, "extra"), None, "reset"),
+    ("reset-info-is-not-a-dict", ("obs", "notes"), None, "info"),
+    ("step-is-not-a-5-tuple", OK_RESET, [("obs", 1.0, False, False)], "step"),
+    ("reward-is-not-finite", OK_RESET, [("obs", float("nan"), True, False, {})],
+     "reward"),
+    ("reward-is-a-bool", OK_RESET, [("obs", True, True, False, {})], "reward"),
+    ("terminated-is-not-a-bool", OK_RESET, [("obs", 1.0, 1, False, {})],
+     "terminated"),
+    ("truncated-is-not-a-bool", OK_RESET, [("obs", 1.0, False, "no", {})],
+     "truncated"),
+    ("step-info-is-not-a-dict", OK_RESET, [("obs", 1.0, True, False, "notes")],
+     "info"),
+]
+_BROKEN_IDS = [case[0] for case in _BROKEN_CONTRACT]
+
+
+@pytest.mark.parametrize(
+    "_id,reset_value,script,fragment", _BROKEN_CONTRACT, ids=_BROKEN_IDS
+)
+def test_each_broken_gymnasium_contract_refuses_by_name(
+    tmp_path, lab, _id, reset_value, script, fragment
+):
+    lab.factory = lambda index: StubEnv(script, reset_value=reset_value)
+    with pytest.raises(ValueError, match=fragment):
+        evaluate(tmp_path, n_episodes=1, max_episode_steps=4)
+
+
+def test_a_reset_refusal_names_the_episode_and_no_step_number(tmp_path, lab):
+    """There is no step number yet, so inventing one would be a lie about
+    where the environment broke."""
+    lab.factory = lambda index: StubEnv(reset_value="observation-only")
+    with pytest.raises(ValueError) as caught:
+        evaluate(tmp_path, n_episodes=2, seed=17)
+    message = str(caught.value)
+    assert "episode 0" in message and "step" not in message
+
+
+def test_a_step_refusal_names_the_episode_and_the_step(tmp_path, lab):
+    lab.factory = lambda index: StubEnv(
+        [step(1.0), ("obs", 1.0, False, False)]
+    )
+    with pytest.raises(ValueError, match="episode 0 step 2"):
+        evaluate(tmp_path, n_episodes=1, max_episode_steps=4)
+
+
+def test_a_reward_that_is_not_a_number_at_all_refuses(tmp_path, lab):
+    """``float("1.5")`` succeeds, so a reward stream arriving as text
+    would launder silently without the explicit exclusion."""
+    lab.factory = lambda index: StubEnv([("obs", "1.5", True, False, {})])
+    with pytest.raises(ValueError, match="reward"):
+        evaluate(tmp_path, n_episodes=1)
+
+
+def test_a_broken_episode_fails_the_node_rather_than_reporting_a_partial(
+    tmp_path, lab
+):
+    """No partial aggregate is ever presented as a result."""
+    lab.factory = lambda index: (
+        StubEnv() if index == 0 else StubEnv(reset_value="broken")
+    )
+    with pytest.raises(ValueError, match="episode 1"):
+        evaluate(tmp_path, n_episodes=3)
+
+
+# -- the environment is closed on EVERY path ------------------------------
+
+
+def test_the_environment_closes_when_reset_raises(tmp_path, lab):
+    lab.factory = lambda index: StubEnv(reset_value=RuntimeError("reset blew up"))
+    with pytest.raises(RuntimeError):
+        evaluate(tmp_path, n_episodes=1)
+    assert [env.closed for env in lab.envs] == [1]
+
+
+def test_the_environment_closes_when_predict_raises(tmp_path, lab):
+    lab.model = StubModel(action=RuntimeError("predict blew up"))
+    with pytest.raises(RuntimeError):
+        evaluate(tmp_path, n_episodes=1)
+    assert [env.closed for env in lab.envs] == [1]
+
+
+def test_the_environment_closes_when_step_raises(tmp_path, lab):
+    lab.factory = lambda index: StubEnv([RuntimeError("step blew up")])
+    with pytest.raises(RuntimeError):
+        evaluate(tmp_path, n_episodes=1)
+    assert [env.closed for env in lab.envs] == [1]
+
+
+def test_the_environment_closes_when_a_shape_check_refuses(tmp_path, lab):
+    lab.factory = lambda index: StubEnv([("obs", 1.0, False, False)])
+    with pytest.raises(ValueError):
+        evaluate(tmp_path, n_episodes=1)
+    assert [env.closed for env in lab.envs] == [1]
+
+
+# ---------------------------------------------------------------------------
+# Resolved env_params must be EXACTLY JSON-safe, recursively
+# ---------------------------------------------------------------------------
+
+
+class _Sub(dict):
+    pass
+
+
+class _SubStr(str):
+    pass
+
+
+class _SubInt(int):
+    pass
+
+
+#: ``(id, env_params)``. Eight atomic cases: a compound fixture proves at
+#: most one of its branches, and an implementation that checks type but
+#: not emptiness (or descends into dicts but not lists) is caught by one
+#: of each pair and not the other.
+_UNSAFE_ENV_PARAMS = [
+    ("top-level-tuple", {"window": (1, 2)}),
+    ("top-level-bytes", {"blob": b"raw"}),
+    ("non-finite-float", {"scale": float("inf")}),
+    ("non-string-key", {3: "three"}),
+    ("empty-string-key", {"": 1}),
+    ("violation-nested-in-a-dict", {"outer": {"inner": (1, 2)}}),
+    ("violation-nested-in-a-list", {"outer": [1, (2, 3)]}),
+    ("builtin-subclass", {"outer": _Sub({"a": 1})}),
+    ("str-subclass", {"outer": _SubStr("x")}),
+    ("int-subclass", {"outer": _SubInt(3)}),
+]
+_UNSAFE_IDS = [case[0] for case in _UNSAFE_ENV_PARAMS]
+
+
+@pytest.mark.parametrize("_id,env_params", _UNSAFE_ENV_PARAMS, ids=_UNSAFE_IDS)
+def test_unsafe_resolved_env_params_refuse_before_the_environment_is_built(
+    tmp_path, lab, _id, env_params
+):
+    node = Sb3EvalEpisodes("eval", params(env_params=_DROP))
+    node.params["env_params"] = env_params  # past validate_params, as a caller could
+    reference, _sidecar = artifact(tmp_path)
+
+    with pytest.raises(ValueError, match="env_params"):
+        node.run(ctx(tmp_path), {"artifact_path": reference})
+    assert lab.envs == [], "the environment must not be built at all"
+
+
+def test_the_check_is_on_the_resolved_value_not_the_declared_one(
+    tmp_path, lab, monkeypatch
+):
+    """The document declares no ``env_params`` here, so the value under
+    test is the one the SIDECAR supplied.
+
+    A sidecar that reached this point through ``_read_sidecar`` cannot in
+    fact carry an unsafe value — its content hash is computed with
+    ``allow_nan=False`` over the sidecar's own JSON, so a non-finite
+    number never survives the write, and ``json.load`` produces only
+    exact built-ins otherwise. The refusal still belongs on the resolved
+    value rather than on ``params``: it is what keeps a future loader, or
+    a caller building this node directly, from reaching ``_build_env``
+    with something the evidence could not record.
+    """
+    node = Sb3EvalEpisodes("eval", params(env_params=_DROP))
+    reference, sidecar = artifact(tmp_path)
+    monkeypatch.setattr(
+        node, "_read_sidecar",
+        lambda ref: {**sidecar, "env_params": {"window": (1, 2)}},
+    )
+
+    with pytest.raises(ValueError, match="env_params"):
+        node.run(ctx(tmp_path), {"artifact_path": reference})
+    assert lab.envs == []
+
+
+def test_safe_nested_env_params_are_accepted(tmp_path, lab):
+    """The control: the same shapes, unbroken, ride through."""
+    safe = {"a": [1, 2.5, "x", True, None], "b": {"c": [{"d": 1}]}}
+    node = Sb3EvalEpisodes("eval", params(n_episodes=1, env_params=safe))
+    reference, _sidecar = artifact(tmp_path)
+
+    node.run(ctx(tmp_path), {"artifact_path": reference})
+    assert lab.envs[0].env_params == safe
+
+
+# ---------------------------------------------------------------------------
+# The pin, and the sidecar cross-check this kind inherits unchanged
+# ---------------------------------------------------------------------------
+
+
+def test_nothing_pinned_refuses_by_name(tmp_path):
+    node = Sb3EvalEpisodes("eval", params(n_episodes=1))
+    with pytest.raises(ValueError, match="artifact"):
+        node.run(ctx(tmp_path), {})
+
+
+def test_a_declared_artifact_param_is_a_lawful_pin(tmp_path, lab):
+    reference, _sidecar = artifact(tmp_path)
+    node = Sb3EvalEpisodes("eval", params(n_episodes=1, artifact=reference))
+    assert node.run(ctx(tmp_path), {})["metrics"]["n_episodes"] == 1
+
+
+@pytest.mark.parametrize("knob", ["algo", "policy"])
+def test_a_model_identity_that_contradicts_the_artifact_refuses(
+    tmp_path, knob
+):
+    contradiction = {"algo": "SAC", "policy": "MlpPolicy"}[knob]
+    assert contradiction != TRAINED[knob], "the fixture must disagree"
+    reference, _sidecar = artifact(tmp_path)
+    node = Sb3EvalEpisodes("eval", params(n_episodes=1, **{knob: contradiction}))
+    with pytest.raises(ValueError, match=knob):
+        node.run(ctx(tmp_path), {"artifact_path": reference})
+
+
+def test_a_tampered_artifact_refuses_through_the_packs_own_hash_check(
+    tmp_path
+):
+    """No new integrity story: the existing zip-plus-sidecar content hash
+    is what this kind restores through."""
+    reference, _sidecar = artifact(tmp_path)
+    with open(reference, "ab") as handle:
+        handle.write(b"tamper")
+    node = Sb3EvalEpisodes("eval", params(n_episodes=1))
+    with pytest.raises(ValueError, match="hash"):
+        node.run(ctx(tmp_path), {"artifact_path": reference})
+
+
+# ---------------------------------------------------------------------------
+# Conformance — this one kind, on stubs, with no training anywhere
+# ---------------------------------------------------------------------------
+
+EPISODE_NODE_KINDS = (("sb3-eval-episodes", Sb3EvalEpisodes),)
+
+EXPECTED_ROLES = {"sb3-eval-episodes": "score"}
+
+
+def probes(tmp_path):
+    reference, _sidecar = artifact(tmp_path)
+    return {
+        "sb3-eval-episodes": NodeProbe(
+            params=params(n_episodes=2, max_episode_steps=4),
+            required=("max_episode_steps", "split"),
+            inputs={"artifact_path": reference},
+            stream_ports=(),
+            runnable=True,
+            digest=lambda out: (
+                json.dumps(out["metrics"], sort_keys=True),
+                json.dumps(out["episodes"].value, sort_keys=True),
+            ),
+        ),
+    }
+
+
+TestSb3EvalEpisodesConformance = conformance_suite(
+    registry=EPISODE_NODE_KINDS,
+    module="dskit.pipeline.libs.sb3",
+    probes=probes,
+    expected_roles=EXPECTED_ROLES,
+    name="TestSb3EvalEpisodesConformance",
+)
+
+
+# ---------------------------------------------------------------------------
+# Review corrections
+# ---------------------------------------------------------------------------
+
+#: The three declared defaults, each pinned at RUN level. A default that no
+#: test asserts is a default a refactor moves silently, and all three land in
+#: durable evidence: `environment.seed`, `environment.deterministic`, and how
+#: many episode records the artifact carries.
+def test_an_omitted_n_episodes_rolls_the_declared_default(tmp_path, lab):
+    _node, outputs = evaluate(tmp_path, n_episodes=_DROP)
+    assert outputs["metrics"]["n_episodes"] == 5
+    assert len(lab.envs) == 5
+
+
+def test_an_omitted_seed_resets_from_the_declared_default(tmp_path, lab):
+    _node, outputs = evaluate(tmp_path, n_episodes=2, seed=_DROP)
+    assert [env.seeds for env in lab.envs] == [[0], [1]]
+    assert record(outputs)["environment"]["seed"] == 0
+
+
+def test_an_omitted_deterministic_asks_the_policy_for_its_modal_action(
+    tmp_path, lab
+):
+    _node, outputs = evaluate(tmp_path, n_episodes=1, deterministic=_DROP)
+    assert all(call[1] is True for call in lab.model.calls)
+    assert record(outputs)["environment"]["deterministic"] is True
+
+
+# -- a truth flag is never a reward, whichever library minted it ------------
+
+
+def test_a_numpy_bool_reward_is_refused_like_a_python_one(tmp_path, lab):
+    """``isinstance(np.True_, bool)`` is False, so the plain bool exclusion
+    misses exactly the scalar type this pack's own docstring says rewards
+    normally arrive as — and a flag stream would average as 1.0/0.0
+    returns into durable audit evidence."""
+    numpy = pytest.importorskip("numpy")
+    lab.scripts([("obs", numpy.True_, True, False, {})])
+    with pytest.raises(ValueError, match="reward"):
+        evaluate(tmp_path, n_episodes=1)
+
+
+def test_a_numpy_float_reward_is_accepted(tmp_path, lab):
+    """The other half: Gymnasium types a reward as ``SupportsFloat`` and a
+    numpy scalar is the ordinary shape, so the exclusion must not widen
+    into refusing real environments."""
+    numpy = pytest.importorskip("numpy")
+    lab.scripts([("obs", numpy.float32(1.5), True, False, {})])
+    _node, outputs = evaluate(tmp_path, n_episodes=1)
+    assert record(outputs)["episodes"][0]["return"] == 1.5
+
+
+def test_a_numpy_reward_is_converted_before_it_reaches_the_trace(
+    tmp_path, lab
+):
+    """Accepting the numpy scalar is half the job; the RECORD must hold a
+    builtin float.
+
+    ``return`` cannot show this -- it is an ``fsum`` output, so it is a
+    builtin float however the trace was written. The trace row is the only
+    place the raw value could survive, and the driver's JSON encoder, which
+    runs after every episode has already rolled, refuses numpy scalars: the
+    whole run's durable evidence is lost at persist time.
+    """
+    numpy = pytest.importorskip("numpy")
+    lab.scripts([step(numpy.float32(1.5), terminated=True)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1)
+
+    reward = record(outputs)["episodes"][0]["trace"][0]["reward"]
+    assert type(reward) is float
+    assert reward == 1.5
+    # and therefore the evidence actually persists
+    _persist_json_artifacts(str(tmp_path / "converted"), "eval", outputs)
+
+
+# -- the contract names math.fsum, so the fixtures must be able to tell ----
+
+def _naive_sum(values):
+    """Left-to-right accumulation with no compensation — what a hand-rolled
+    ``total += reward`` loop does, and the floor ``fsum`` has to beat."""
+    return functools.reduce(operator.add, values, 0.0)
+
+
+#: Three rewards whose exact total, ``2**53 + 1 + 1e-300``, sits just PAST
+#: the midpoint between the adjacent doubles ``2**53`` and ``2**53 + 2``, so
+#: only an exactly-rounded sum reaches the upper one; both cheaper sums drop
+#: the tiny term before the tie is broken and round back down to ``2**53``.
+#:
+#: The tie is what the fixture needs, because ``sum`` is NOT naive here:
+#: CPython 3.12 gave the builtin Neumaier compensation, so a fixture chosen
+#: only to defeat left-to-right accumulation (``1e16, 1.0, -1e16``, say) is
+#: summed IDENTICALLY by ``sum`` and ``fsum`` and cannot catch ``fsum`` being
+#: swapped for the builtin. Any fixture whose values sum alike either way
+#: cannot pin the numerical guarantee §4.1 actually names.
+_FSUM_REWARDS = (1.0, 9007199254740992.0, 1e-300)
+
+#: What §4.1 requires of the total, and what both cheaper sums give instead.
+_FSUM_EXACT_RETURN = 9007199254740994.0
+_FSUM_INEXACT_RETURN = 9007199254740992.0
+
+
+def test_the_fixture_can_tell_an_exact_sum_from_a_cheaper_one():
+    """The guard for the two tests below: if this fails they prove nothing,
+    because every candidate implementation agrees on the fixture."""
+    assert math.fsum(_FSUM_REWARDS) == _FSUM_EXACT_RETURN
+    assert _naive_sum(_FSUM_REWARDS) == _FSUM_INEXACT_RETURN
+    assert sum(_FSUM_REWARDS) == _FSUM_INEXACT_RETURN
+
+
+def test_an_episode_return_is_summed_exactly(tmp_path, lab):
+    lab.scripts([
+        step(_FSUM_REWARDS[0]), step(_FSUM_REWARDS[1]),
+        step(_FSUM_REWARDS[2], terminated=True),
+    ])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=5)
+    assert record(outputs)["episodes"][0]["return"] == _FSUM_EXACT_RETURN
+
+
+def test_the_mean_return_is_summed_exactly(tmp_path, lab):
+    lab.scripts(*([step(reward, terminated=True)] for reward in _FSUM_REWARDS))
+    _node, outputs = evaluate(tmp_path, n_episodes=3, max_episode_steps=5)
+    assert outputs["metrics"]["mean_return"] == _FSUM_EXACT_RETURN / 3
+
+
+# -- close, and the refusal it must not outrank ----------------------------
+
+
+def test_a_raising_close_does_not_replace_the_refusal_that_caused_it(
+    tmp_path, lab
+):
+    """The message explaining WHY the episode failed is the one worth
+    keeping; a bare ``finally`` leaves it reachable only through
+    ``__context__``."""
+    class ClosesBadly(StubEnv):
+        def close(self):
+            self.closed += 1
+            raise RuntimeError("close blew up")
+
+    lab.factory = lambda index: ClosesBadly([("obs", 1.0, False, False)])
+    with pytest.raises(ValueError, match="episode 0 step 1"):
+        evaluate(tmp_path, n_episodes=1)
+    assert lab.envs[0].closed == 1
+
+
+def test_a_raising_close_on_the_success_path_still_propagates(tmp_path, lab):
+    """Nothing else failed, so the close failure IS the failure."""
+    class ClosesBadly(StubEnv):
+        def close(self):
+            self.closed += 1
+            raise RuntimeError("close blew up")
+
+    lab.factory = lambda index: ClosesBadly()
+    with pytest.raises(RuntimeError, match="close blew up"):
+        evaluate(tmp_path, n_episodes=1)
+
+
+def test_a_predict_that_is_not_a_pair_refuses_by_name(tmp_path, lab):
+    """Every other refusal in this class identifies itself; a bare unpack
+    would say "not enough values to unpack" and name nothing."""
+    class OneValue:
+        def predict(self, observation, deterministic=True):
+            return "just-an-action"
+
+    lab.model = OneValue()
+    with pytest.raises(ValueError, match="episode 0 step 1: predict"):
+        evaluate(tmp_path, n_episodes=1)
+
+
+def test_unsafe_env_params_refuse_before_the_model_is_loaded_too(
+    tmp_path, lab
+):
+    """Ordering, pinned: the check sits above ``_load_model``, not merely
+    above ``_build_env``."""
+    node = Sb3EvalEpisodes("eval", params(env_params=_DROP))
+    node.params["env_params"] = {"window": (1, 2)}
+    reference, _sidecar = artifact(tmp_path)
+
+    with pytest.raises(ValueError, match="env_params"):
+        node.run(ctx(tmp_path), {"artifact_path": reference})
+    assert lab.envs == [] and lab.loads == []
+
+
+# ---------------------------------------------------------------------------
+# The document doorway — plan-time, with neither library imported
+# ---------------------------------------------------------------------------
+
+DAY = 24 * 60 * 60 * 1000
+
+
+_PLAN_WITH_LIBRARIES_BLOCKED = """
+import sys
+sys.path[:] = {path!r}
+for name in ("gymnasium", "stable_baselines3", "torch"):
+    sys.modules[name] = None   # `import name` now raises
+
+from dskit.pipeline.document import PipelineDocument
+from dskit.pipeline.libs.sb3 import register
+from dskit.pipeline.planner import plan
+
+register()
+DAY = 24 * 60 * 60 * 1000
+document = PipelineDocument.from_obj({{
+    "name": "rl-doc",
+    "splits": {{"kind": "time", "train_end_ms": 10 * DAY,
+               "val_end_ms": 20 * DAY, "test_end_ms": 30 * DAY}},
+    "pipeline": {{
+        "agent": {{"uses": "sb3-train", "params": {{
+            "algo": "PPO", "env": "my_child.envs:ReplayEnv",
+            "env_params": {{"scenario": "train"}},
+            "total_timesteps": 32, "seed": 7}}}},
+        "eval": {{"uses": "sb3-eval-episodes", "params": {{
+            "split": "val", "env": "my_child.envs:ReplayEnv",
+            "env_params": {{"scenario": "validation"}},
+            "n_episodes": 3, "max_episode_steps": 500, "seed": 17}},
+            "inputs": {{"artifact_path": "$agent.artifact_path"}}}},
+    }},
+}})
+assert plan(document).role_of("eval") == "score"
+print("PLANNED")
+"""
+
+
+def test_a_document_wiring_this_kind_plans_with_no_library_installed():
+    """The doorway a user reaches, and the doctrine the pack promises: a
+    document naming an RL algorithm and a Gymnasium env class PLANS on a
+    machine that has neither library, and fails only when a run path runs.
+
+    In a SUBPROCESS with both blocked, because that is the only honest
+    way — ``import_with_blocked``'s own docstring names the trap: in this
+    process the libraries are already imported by the time any test runs,
+    so an ``"x" not in sys.modules`` assertion is vacuous, and a sibling
+    test file that imports them for its own PPO fixture would break it
+    besides.
+    """
+    import subprocess
+    import sys
+
+    done = subprocess.run(
+        [sys.executable, "-c",
+         _PLAN_WITH_LIBRARIES_BLOCKED.format(path=list(sys.path))],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "PLANNED" in done.stdout
+
+
+@pytest.mark.parametrize("split", ["train", "cal"])
+def test_a_document_declaring_a_selection_split_refuses_at_plan(split):
+    """The narrowing reaches a DOCUMENT, not only a constructed node.
+
+    At ``plan``, not at ``from_obj``: the document grammar checks generic
+    shape and knows nothing about a kind's own knobs, so the refusal lands
+    where the planner asks the kind — which is still before anything runs.
+    """
+    from dskit.pipeline.base import ConfigError
+    from dskit.pipeline.document import PipelineDocument
+    from dskit.pipeline.libs.sb3 import register
+    from dskit.pipeline.planner import plan
+
+    register()
+    document = PipelineDocument.from_obj({
+        "name": "rl-doc",
+        "splits": {"kind": "time", "train_end_ms": 10 * DAY,
+                   "val_end_ms": 20 * DAY, "test_end_ms": 30 * DAY},
+        "pipeline": {
+            "eval": {"uses": "sb3-eval-episodes",
+                     "params": params(split=split, artifact="runs/x/model.zip")},
+        },
+    })
+    with pytest.raises(ConfigError, match="split"):
+        plan(document)
+
+
+# -- the outcome is read from the LAST step, and that position is pinned ---
+
+
+def test_a_multi_step_episode_reports_what_its_last_step_gave(tmp_path, lab):
+    """Where the per-episode outcome comes from, on episodes that do not
+    end on step 1.
+
+    Every other fixture here terminates or truncates immediately, where
+    ``trace[0] is trace[-1]`` — so none of them can tell the two apart.
+    That position is where ``terminated``, ``truncated``, ``reason`` and
+    all three exclusive counts are read from, into the durable artifact,
+    which is the whole reason ``episodes`` exists.
+    """
+    lab.scripts(
+        [step(0.1), step(0.2), step(0.3, terminated=True)],
+        [step(0.1), step(0.2, truncated=True)],
+        [step(0.1), step(0.2), step(0.3)],          # runs into the cap
+    )
+    _node, outputs = evaluate(tmp_path, n_episodes=3, max_episode_steps=3)
+    episodes = record(outputs)["episodes"]
+
+    assert [e["steps"] for e in episodes] == [3, 2, 3]
+    assert [e["reason"] for e in episodes] == [
+        "terminated", "truncated", "max_episode_steps",
+    ]
+    assert [(e["terminated"], e["truncated"]) for e in episodes] == [
+        (True, False), (False, True), (False, False),
+    ]
+    assert outputs["metrics"]["terminated_episodes"] == 1
+    assert outputs["metrics"]["truncated_episodes"] == 1
+    assert outputs["metrics"]["max_episode_steps_episodes"] == 1
+
+
+def test_step_numbers_count_from_one_and_restart_each_episode(tmp_path, lab):
+    """The step number is the trace's only ordinate -- the record carries no
+    timestamp and no observation, so it is the sole thing placing a reward
+    in the episode.
+
+    Every fixture that reads a trace ROW runs a single step, where the live
+    counter, the constant ``1``, and a counter that never resets all
+    coincide. Assert the sequence on episodes long enough to separate them.
+    """
+    lab.scripts(
+        [step(0.1), step(0.2), step(0.3, terminated=True)],
+        [step(0.4), step(0.5, terminated=True)],
+    )
+    _node, outputs = evaluate(tmp_path, n_episodes=2, max_episode_steps=5)
+    episodes = record(outputs)["episodes"]
+
+    assert [[row["step"] for row in e["trace"]] for e in episodes] == [
+        [1, 2, 3], [1, 2],
+    ]
+
+
+def test_both_flags_true_on_a_later_step_still_counts_once(tmp_path, lab):
+    """Reason precedence AND exclusive counting, off step 1 — so neither
+    claim rests on the degenerate one-step case."""
+    lab.scripts([step(0.1), step(0.2, terminated=True, truncated=True)])
+    _node, outputs = evaluate(tmp_path, n_episodes=1, max_episode_steps=4)
+    episode = record(outputs)["episodes"][0]
+
+    assert episode["steps"] == 2
+    assert episode["terminated"] is True and episode["truncated"] is True
+    assert episode["reason"] == "terminated"
+    assert outputs["metrics"]["terminated_episodes"] == 1
+    assert outputs["metrics"]["truncated_episodes"] == 0
+    assert outputs["metrics"]["max_episode_steps_episodes"] == 0
+
+
+# -- one pinned artifact, everywhere ---------------------------------------
+
+
+def test_a_declared_pin_and_a_wired_port_resolve_to_ONE_artifact(
+    tmp_path, lab
+):
+    """Both pin sources present AND disagreeing — the case no other
+    fixture creates, and the one where an incoherence is invisible.
+
+    ``pinned_artifact``'s documented order is node-level pin, then the
+    declared param, then the wired port. A ``score`` role has no
+    node-level pin at all (``Node.node_level_pin`` answers ``None``, and
+    only ``TrainableNode`` overrides it), so the declared param wins
+    here — and, note, a declared/wired DISAGREEMENT is resolved silently
+    rather than refused, for every pinning kind in this pack. That is
+    tier-1's behaviour and not this ADR's to change; what this test pins
+    is the consequence that matters for the evidence.
+
+    Which source wins matters less than that ONE file wins EVERYWHERE:
+    the sidecar that was hash-verified, the model that was restored, and
+    the ``artifact_path`` and ``state_hash`` the durable record attests
+    must all name the same file. Verifying one artifact and running
+    another would attest a model that never ran.
+    """
+    declared, declared_sidecar = artifact(
+        tmp_path, sub="declared", env="my_child.envs:EnvA",
+    )
+    wired, wired_sidecar = artifact(
+        tmp_path, sub="wired", env="my_child.envs:EnvB",
+    )
+    assert declared != wired
+    assert declared_sidecar["state_hash"] != wired_sidecar["state_hash"]
+
+    node = Sb3EvalEpisodes("eval", params(
+        n_episodes=1, artifact=declared, env=_DROP, env_params=_DROP,
+    ))
+    outputs = node.run(ctx(tmp_path), {"artifact_path": wired})
+    environment = record(outputs)["environment"]
+
+    # The record names the file the run actually used …
+    assert environment["artifact_path"] == declared
+    assert environment["state_hash"] == declared_sidecar["state_hash"]
+    # … the model was restored from that same file, not the other one …
+    assert [call[0] for call in lab.loads] == [declared]
+    # … and the environment defaulted from THAT artifact's sidecar, which
+    # is how we know the verified sidecar was that file's too.
+    assert lab.envs[0].ref == "my_child.envs:EnvA"
+
+
+@pytest.mark.parametrize("split", ["val", "test"])
+def test_the_record_states_the_split_it_actually_measured(tmp_path, split):
+    """Asserted at BOTH lawful values, not only at the fixture's.
+
+    With only ``"val"`` ever reaching a run, a hardcoded ``"val"`` in the
+    provenance block reads correctly and a ``test``-split evaluation is
+    labelled ``val`` in durable, hash-pinned audit evidence — the exact
+    misrepresentation the val/test narrowing exists to prevent. The log
+    line reads the param independently, so a regression in the record
+    alone leaves no other symptom.
+    """
+    reference, _sidecar = artifact(tmp_path)
+    node = Sb3EvalEpisodes("eval", params(n_episodes=1, split=split))
+    outputs = node.run(ctx(tmp_path), {"artifact_path": reference})
+    assert record(outputs)["environment"]["split"] == split

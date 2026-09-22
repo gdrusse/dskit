@@ -1630,6 +1630,146 @@ class HpoEvidenceSource(Node):
         return {"hpo_ledger": durable(payload)}
 
 
+class TunedEvidenceSource(Node):
+    """A tunable node whose durable evidence records the value it ran with.
+
+    The payload is derived from the tuned param, so the bytes on disk say
+    WHICH pass wrote them.
+    """
+
+    role = "train"
+    outputs = ("value", "episodes")
+
+    def run(self, ctx, inputs):
+        value = float(self.params["theta"])
+        durable = getattr(node_module, "JsonArtifact", lambda value: value)
+        return {"value": value, "episodes": durable({"by": "evid", "scored": value})}
+
+
+class EvidenceRelay(Node):
+    """A second re-executed node between the other two.
+
+    Three nodes, because at TWO "the first", "the first and the last" and
+    "all of them" are the same list -- and the shipped subgraphs are
+    longer: `["clip", "market", "qhat", "validate"]`.
+    """
+
+    role = "train"
+    outputs = ("value", "episodes")
+
+    def run(self, ctx, inputs):
+        value = float(inputs["value"])
+        durable = getattr(node_module, "JsonArtifact", lambda value: value)
+        return {"value": value, "episodes": durable({"by": "relay", "scored": value})}
+
+
+class EvidenceScore(Node):
+    """Scores what the tunable node produced; the search's objective.
+
+    It emits durable evidence of its OWN, because the only kind in the
+    library that produces a ``JsonArtifact`` -- ``sb3-eval-episodes`` -- is
+    a ``score`` node, and a search's objective target is a score node. So
+    the artifact-bearing node is always LAST in ``winner_reran``, never
+    first: ``["theta", "val"]``, ``["clip", "market", "qhat", "validate"]``.
+    A fixture that emitted evidence only from the tunable node would pin
+    the fix at the one position the motivating kind can never occupy.
+    """
+
+    role = "score"
+    outputs = ("metrics", "episodes")
+
+    def run(self, ctx, inputs):
+        value = float(inputs["value"])
+        durable = getattr(node_module, "JsonArtifact", lambda value: value)
+        return {
+            "metrics": {"loss": (value - 3.0) ** 2},
+            "episodes": durable({"by": "val", "scored": value}),
+        }
+
+
+def test_a_search_winners_json_artifact_is_persisted_not_the_losing_pass(tmp_path):
+    """The winner re-execution replaces a node's outputs IN PLACE, and
+    those outputs are what the records and ``$prev`` carry -- so its
+    durable artifacts must be written from that pass too.
+
+    Before this held, a run exited ``ran`` reporting the winner's metrics
+    while ``artifacts/json/`` held only the base pass's record -- the
+    configuration the search REJECTED -- and the node record carried a bare
+    ``{"type": "JsonArtifact"}`` where its manifest belongs, so a reader
+    could not even tell the bytes were stale. ``resolve_json_artifact``
+    refused the raw wrapper, so the documented seam returned nothing.
+    """
+    from dskit.pipeline.document import TimeSplitConfig
+    from dskit.pipeline.kinds_search import register as register_search
+
+    registry = NodeKindRegistry()
+    registry.register("tuned-evidence", TunedEvidenceSource)
+    registry.register("evidence-relay", EvidenceRelay)
+    registry.register("evidence-score", EvidenceScore)
+    register_search(registry)
+    document = PipelineDocument(
+        name="winner-evidence",
+        pipeline={
+            "evid": NodeSpec(uses="tuned-evidence", params={"theta": 10.0}),
+            "relay": NodeSpec(
+                uses="evidence-relay", inputs={"value": "$evid.value"}
+            ),
+            "val": NodeSpec(
+                uses="evidence-score",
+                inputs={"value": "$relay.value"},
+                params={"split": "val"},
+            ),
+            "search": NodeSpec(
+                uses="hpo-grid",
+                params={
+                    "space": {"evid.theta": [0.0, 3.0]},
+                    "objective": "$val.metrics.loss",
+                    "select": "min",
+                },
+            ),
+        },
+        splits=TimeSplitConfig(train_end_ms=1, val_end_ms=2, test_end_ms=3),
+        outputs=OutputsConfig(run_root=str(tmp_path)),
+    )
+
+    result = run_document(document, asof=ASOF, registry=registry, journal=False)
+
+    assert result.state == "ran"
+    assert result.outputs["search"]["best_params"] == {"evid.theta": 3.0}
+    # the winner pass really did replace the outputs
+    assert result.outputs["evid"]["value"] == 3.0
+
+    # BOTH re-executed nodes, so membership is pinned rather than the
+    # first element: the search re-ran ["evid", "val"], and the kind this
+    # fix exists for would sit at the END of such a list.
+    search_record = read_json(
+        result.run_dir, os.path.join("nodes", "04-search.json")
+    )
+    assert search_record["winner_reran"] == ["evid", "relay", "val"]
+    manifests = {}
+    for node_key, record_name in (
+        ("evid", "01-evid.json"),
+        ("relay", "02-relay.json"),
+        ("val", "03-val.json"),
+    ):
+        manifest = result.outputs[node_key]["episodes"]
+        assert set(manifest) == {"path", "sha256", "bytes", "media_type"}, node_key
+        # Each payload names its own node. Persistence is CONTENT-addressed,
+        # so identical payloads would share one manifest and every check
+        # below would be satisfied by some other node's artifact -- a driver
+        # stamping one node's manifest onto the rest would read as correct.
+        assert resolve_json_artifact(result.run_dir, manifest) == {
+            "by": node_key, "scored": 3.0,
+        }
+        record = read_json(result.run_dir, os.path.join("nodes", record_name))
+        assert record["outputs"]["episodes"]["sha256"] == manifest["sha256"], node_key
+        manifests[node_key] = manifest["sha256"]
+    assert len(set(manifests.values())) == 3, manifests
+    # and $prev binds it: a dropped manifest silently deletes the port here
+    carry = read_json(result.run_dir, "carry.json")
+    assert set(carry["val"]) == {"metrics", "episodes"}
+
+
 def test_explicit_json_artifact_survives_driver_recording_with_digest_manifest(tmp_path):
     registry = NodeKindRegistry()
     registry.register("hpo-evidence-src", HpoEvidenceSource)

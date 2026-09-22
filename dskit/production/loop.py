@@ -46,6 +46,7 @@ from dskit.production.base import ProductionError, canonical_hash, pin_members
 from dskit.production.compose import handlers_for
 from dskit.production.control import EXECUTING_PURPOSES, CommandProcessor
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
+from dskit.production.feed import required_at
 from dskit.production.health import SignalHandler
 from dskit.production.leg import LegBindings, LegPipeline, ReductionBinding
 from dskit.production.ledger import Checkpoint
@@ -329,7 +330,7 @@ def _phase_read_entry(tick, walk):
 
 def _phase_coverage(tick, walk):
     """Prove exact uniform coverage and take every key's age."""
-    walk.ages = tick.coverage(walk.batch)
+    walk.ages = tick.coverage(walk.batch, walk.tick_at_ms)
 
 
 def _phase_evaluate(tick, walk):
@@ -702,12 +703,16 @@ class Tick:
         """
         return self.data.decider.read_entry(tick_at_ms)
 
-    def coverage(self, batch):
+    def coverage(self, batch, at_ms=None):
         """Prove exact uniform coverage and take every required key's age (D6).
 
         Parameters
         ----------
         batch : EntryBatch
+        at_ms : int or None, optional
+            The tick's own instant, epoch ms: the universe is resolved AT
+            it, never taken as declared (ADR-0153). None means "the whole
+            run" and is legal only under a whole-run universe.
 
         Returns
         -------
@@ -720,9 +725,10 @@ class Tick:
         ------
         ProductionError
             On a missing, duplicate or extra key — one fresh instrument
-            must never hide a stale input.
+            must never hide a stale input — or on an effective-dated
+            universe asked with no instant.
         """
-        required = set(self.release.feed_spec["required_keys"])
+        required = set(required_at(self.release.feed_spec, at_ms))
         covered = set(batch.watermarks_by_key)
         problems = []
         if covered - required:

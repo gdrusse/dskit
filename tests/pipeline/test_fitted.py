@@ -773,6 +773,103 @@ class TestLoadMode:
             served.run(bare, {"rows": VAL_ROWS})
 
 
+class _WatchedScaler(Standardize):
+    """A member that records every sidecar payload the base showed it, and
+    refuses when the class attribute says to.
+
+    Defined at module level, not inside a test: the base refuses an
+    artifact whose recorded ``node_class`` is not this node's own, so the
+    same class must do the fitting and the restoring.
+    """
+
+    seen = []
+    refuse = None
+
+    def sidecar_problems(self, payload):
+        type(self).seen.append(payload)
+        return [type(self).refuse] if type(self).refuse else []
+
+
+class TestTheSidecarHook:
+    """``sidecar_problems`` (ADR-0160) — a member's veto over a RESTORE.
+
+    The base already owns the two facts it can check itself: which class
+    fitted the state, and — ONLY when the document declared one — which
+    split it saw. ADR-0040 lets a load omit ``fit_split`` entirely, so a
+    member whose state is only meaningful from one split has nowhere else
+    to say so.
+    """
+
+    def _fit(self, ctx, cls=Standardize):
+        node = cls("scaler", {"fit_split": "train", "features": ["x"]})
+        node.run(ctx, {"rows": TRAIN_ROWS + VAL_ROWS})
+        return os.path.join(node.artifact_dir(ctx), SIDECAR_NAME)
+
+    def _served(self, cls, sidecar, **extra):
+        return cls("scaler", {"features": ["x"], **extra},
+                   mode="load", artifact=sidecar)
+
+    def test_the_base_default_is_a_no_op(self):
+        node = Standardize("scaler", {"fit_split": "train", "features": ["x"]})
+        assert node.sidecar_problems({"fit_split": "val", "state": {}}) == []
+        assert FittedTransform.sidecar_problems(node, {}) == []
+
+    def test_every_existing_member_keeps_that_default(self):
+        """The compatibility pin: adding the call site changes nothing
+        observable for a member that does not override the hook."""
+        assert Standardize.sidecar_problems is FittedTransform.sidecar_problems
+
+    @pytest.mark.parametrize(
+        "extra", [{}, {"fit_split": "train"}],
+        ids=["document-undeclared", "document-declares-train"],
+    )
+    def test_the_hook_is_asked_on_every_restore(
+        self, split_ctx, monkeypatch, extra
+    ):
+        """UNCONDITIONALLY -- including when the document declared a
+        ``fit_split`` of its own.
+
+        The base compares its own declared split against the artifact's
+        just above the call site, and every load fixture in this repo
+        leaves that knob absent. With only the absent case, "asked always"
+        and "asked only when the document declared nothing" are the same
+        test, and a member's veto could be skipped for exactly the
+        documents that name a split.
+        """
+        monkeypatch.setattr(_WatchedScaler, "seen", [])
+        monkeypatch.setattr(_WatchedScaler, "refuse", None)
+        sidecar = self._fit(split_ctx, _WatchedScaler)
+        bare = NodeContext(name="f", asof=ASOF, run_dir=split_ctx.run_dir)
+
+        self._served(_WatchedScaler, sidecar, **extra).run(
+            bare, {"rows": VAL_ROWS}
+        )
+
+        assert len(_WatchedScaler.seen) == 1
+        assert _WatchedScaler.seen[0]["fit_split"] == "train"
+        assert "state" in _WatchedScaler.seen[0]
+
+    def test_a_member_that_refuses_stops_the_restore_in_its_own_words(
+        self, split_ctx, monkeypatch
+    ):
+        monkeypatch.setattr(_WatchedScaler, "seen", [])
+        monkeypatch.setattr(_WatchedScaler, "refuse", "this artifact is unfit")
+        sidecar = self._fit(split_ctx, _WatchedScaler)
+        bare = NodeContext(name="f", asof=ASOF, run_dir=split_ctx.run_dir)
+
+        with pytest.raises(ValueError, match="this artifact is unfit"):
+            self._served(_WatchedScaler, sidecar).run(bare, {"rows": VAL_ROWS})
+
+    def test_the_scaler_restores_exactly_as_it_did_before_the_hook_existed(
+        self, split_ctx
+    ):
+        sidecar = self._fit(split_ctx)
+        bare = NodeContext(name="f", asof=ASOF, run_dir=split_ctx.run_dir)
+        out = self._served(Standardize, sidecar).run(bare, {"rows": VAL_ROWS})
+        assert out["metrics"]["n_fit_rows"] == 0
+        assert out["rows"] and "x" in out["rows"][0]
+
+
 class TestApplyTransform:
     def test_a_second_stream_rides_through_the_wired_carrier(self, split_ctx):
         fitted = Standardize("scaler", {"fit_split": "train", "features": ["x"]})

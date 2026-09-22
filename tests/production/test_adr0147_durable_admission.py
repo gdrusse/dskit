@@ -66,7 +66,8 @@ def _durable(authority, root, *, clock=None):
     )
 
 
-def _capture(verifier, captures, admission_ref, runtime, *, bind=True):
+def _capture(verifier, captures, admission_ref, runtime, *, bind=True, transition_nonce=None):
+    """Drive one durable capture; `transition_nonce` overrides the v1 lifecycle nonce."""
     if bind:
         verifier.bind(**_PLAN)
     published, frozen, port = captures[0]
@@ -80,7 +81,7 @@ def _capture(verifier, captures, admission_ref, runtime, *, bind=True):
         consumer_run_identity=runtime["consumer_run_identity"],
         process_measurement_sha256=runtime["process_measurement_sha256"],
         runtime_sha256=runtime["runtime_sha256"],
-        transition_nonce=nonces[0],
+        transition_nonce=nonces[0] if transition_nonce is None else transition_nonce,
     )
 
 
@@ -293,7 +294,7 @@ def test_authority_only_verifier_permanently_refuses_capture_even_fully_bound(tm
     verifier = verifier_module.HistoricalStudyVerifier(broker)
     verifier.bind(**_PLAN)
     published, frozen, port = captures[0]
-    with pytest.raises(ValueError, match="ScopeIntent|CES|PEA|BVP|CAS"):
+    with pytest.raises(ValueError, match="no durable ledger"):
         verifier.capture(
             published,
             frozen,
@@ -309,7 +310,7 @@ def test_authority_only_verifier_permanently_refuses_capture_even_fully_bound(tm
 
 def test_durable_refuses_a_non_p4_authority(tmp_path):
     plain_broker = trust._development_broker()
-    with pytest.raises(TypeError, match="P4 authority"):
+    with pytest.raises(TypeError, match="a broker-issued P4 authority capability is required"):
         verifier_module.HistoricalStudyVerifier.durable(
             plain_broker, str(tmp_path / "root"), clock=_Clock()
         )

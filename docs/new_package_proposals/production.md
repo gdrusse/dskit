@@ -2956,8 +2956,9 @@ seam as an operator's proof.
   `self`, so the dataflow between phases is part of the contract:
   `gate(tick_at_ms) -> GateResult` · `verify_release() -> None` (refuses) ·
   `fetch(tick_at_ms) -> FeedResult` · `read_entry(tick_at_ms) -> EntryBatch` ·
-  `coverage(batch) -> tuple[FeedAge]` (refuses on any gap, and returns the
-  per-key ages — `clock.now_ms()` minus each `EntryBatch.watermarks_by_key`
+  `coverage(batch, at_ms) -> tuple[FeedAge]` (refuses on any gap against
+  the universe resolved AT `at_ms` rather than the declared one --
+  ADR-0153 -- and returns the per-key ages — `clock.now_ms()` minus each `EntryBatch.watermarks_by_key`
   entry — because `feed_age_ms` is a registered measure and nothing else
   computes them) · `evaluate(batch) -> (head_outputs, head_digest)` — the digest
   is returned, not reconstructed, because `head_outputs` never leaves the tick
@@ -4248,6 +4249,7 @@ sha256-canonical idiom.
 | `alert_ack` | [phase 2] one operator acknowledgement | `AlertAck.to_obj()` — `fingerprint`, `acknowledged_until_ms`, `by`, `reason` — plus `control_request_id`, `principal_digest`, `proof_digest`. An ack stops ESCALATION and nothing else: the alert keeps firing and keeps being recorded, because an ack means a human owns it, not that it is fixed. `id = alert_ack:<control_request_id>`, for the same reason |
 | `health` | transition | `from`, `to`, `cause`, `probe_evidence` |
 | `snapshot` | every N records | `at_seq`, `state_digest`, `state` — **every `StateView` member** (positions, working orders, pending refs, balances, decision history, breaker, arming, readiness, guard holds, reduction projection, pending control, risk version) **plus monitor state**, which §5.10 requires the snapshot to carry and which is not a `StateView` member — dropping it would reset every drift window on restart, and a monitor below `min_n` cannot alarm until it refills. `risk_version`'s `executor_token`/`accounting_tokens` are live session tokens re-acquired on restart, not restored. Since `Recovery` replays `SeriesState.apply` from the last snapshot forward and cannot restore a member the snapshot never carried. The non-`StateView` projections §5.8.1 lists ride here for the same reason, and `last_trip` carries exactly `{id, seq, recorded_at_ms, from, to, reason, acknowledged_trip_id, cancelled}` — `cancelled` says whether a `cancel_outcome` naming that trip has been folded, which is what makes "a halting `trip` with no later `cancel_outcome`" answerable from the fold alone rather than by a second walk of the ledger. `restore` is default-deny over those keys, so a snapshot written before `cancelled` existed refuses by name (`missing key(s) ['cancelled']`) instead of restoring a trip recovery would then re-sweep; `schema_version` stays `1` because the branch is unreleased and no such snapshot exists outside a working tree |
+| `admission_use` | one capture admission is spent | `schema` (`dskit.admission-use/v1`), `admission_ref` (the exact four-field `{kind, role, schema, sha256}` the P4 authority itself returned, never the raw caller argument), `binding_sha256` (over the consumer document digest and the bound ADR-0125 plan). Written by `ChainLedger.reserve_once` under the transition lock, so the `(kind, id)` insert IS the consume-once fence: a second spend of one admission loses the reservation rather than racing it. Non-economic; the fold validates it and records nothing derived, because the evidence IS the record. Added by ADR-0147, which is what makes `RECORD_KINDS` twenty-nine |
 
 ## 7. CLI — `python -m dskit.production`
 
@@ -4325,7 +4327,9 @@ dskit/production/
 │                      [phase 2] OUTCOME_SOURCES (settlement|label|operator), ATTRIBUTION_COMPONENTS (impact|opportunity|fees),
 │                      SILENCE_STATES (pending|active|expired), ESCALATION_LEVELS (primary|secondary|final),
 │                      SIGNER_ALGORITHMS (sha256|sha512); [phase 3] OTEL_PROTOCOLS (grpc|http/protobuf).
-│                      RECORD_KINDS gains cancel_outcome (phase 1) and silence, alert_ack (phase 2);
+│                      RECORD_KINDS gains cancel_outcome (phase 1), silence, alert_ack (phase 2) and
+│                      admission_use (ADR-0147) -- twenty-nine kinds; LEDGER_HEALTH_STATES
+│                      (opening|healthy|uncertain|closed|readonly) is ADR-0147's too, and lives in vocab.py;
 │                      GUARD_STATE_KINDS gains released (phase 2); APPROVAL_PURPOSES gains approve_hold, ack, silence (phase 2);
 │                      UNWAIVABLE_ITEMS moved here from readiness.py in phase 2 (§8 always placed it here), beside
 │                      [phase 2] READINESS_EVIDENCE (outcome_coverage|outcome_freshness|calibration_current, §5.13.4)

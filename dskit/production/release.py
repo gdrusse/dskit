@@ -64,6 +64,7 @@ __all__ = [
     "DOCUMENT_FILENAME",
     "Distribution",
     "FEED_SPEC_KEYS",
+    "FEED_SPEC_OPTIONAL_KEYS",
     "RELEASES_DIRNAME",
     "RELEASE_FILENAME",
     "RUNTIME_DRIFT",
@@ -97,6 +98,14 @@ FEED_SPEC_KEYS = (
     "source_config_hash",
     "source_config_version",
 )
+
+#: What a ``feed_spec`` may carry BESIDE the eight above, and only when
+#: the document asked for it (ADR-0153). A universe declared as
+#: ``{key, from_ms, to_ms}`` windows binds them here so every tick can
+#: resolve its own instant; a universe declared either legacy way means
+#: "a member for the whole run", has nothing to add, and the key is
+#: absent — so no release minted before ADR-0153 moves.
+FEED_SPEC_OPTIONAL_KEYS = ("required_membership",)
 
 #: The refusal reasons :func:`verify_release` records, as the plan spells
 #: them (``artifact_expired`` is the one §5.3.1 names literally).
@@ -571,6 +580,9 @@ _FEED_SPEC = {
     "source_config_hash": _check_str,
     "source_config_version": _check_str,
 }
+#: ADR-0153's optional binding, keyed from :data:`FEED_SPEC_OPTIONAL_KEYS`
+#: so the two never drift. ``feed.py`` owns its inner shape.
+_FEED_SPEC_OPTIONAL = {key: _check_dict for key in FEED_SPEC_OPTIONAL_KEYS}
 
 
 def _check_fixed(problems, where, value, spec, optional=None):
@@ -624,7 +636,9 @@ class ReleaseManifest:
     adapter : dict
         ``{"name": str, "digest": str}``.
     feed_spec : dict
-        §5.2's eight fields, :data:`FEED_SPEC_KEYS`.
+        §5.2's eight fields, :data:`FEED_SPEC_KEYS`, plus
+        :data:`FEED_SPEC_OPTIONAL_KEYS` when the document declared an
+        effective-dated universe (ADR-0153).
     source_config : dict
         ``{"hash": str, "version": str}`` of the onboarding source.
     execution_scope : ExecutionScope
@@ -697,7 +711,7 @@ class ReleaseManifest:
         _check_named(problems, "artifacts", self.artifacts, _ARTIFACT_ENTRY)
         _check_named(problems, "classes", self.classes, _CLASS_ENTRY, _CLASS_ENTRY_OPTIONAL)
         _check_fixed(problems, "adapter", self.adapter, _ADAPTER)
-        _check_fixed(problems, "feed_spec", self.feed_spec, _FEED_SPEC)
+        _check_fixed(problems, "feed_spec", self.feed_spec, _FEED_SPEC, _FEED_SPEC_OPTIONAL)
         _check_fixed(problems, "source_config", self.source_config, _SOURCE_CONFIG)
         if not isinstance(self.execution_scope, ExecutionScope):
             problems.append(

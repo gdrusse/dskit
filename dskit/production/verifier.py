@@ -69,11 +69,16 @@ from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
 from dskit.production.executor import empty_ack
 from dskit.production.guards import max_verdict
-from dskit.production.ledger import JsonlLedger, ServeRoot
+from dskit.production.ledger import LEDGER_KINDS, ServeRoot
 from dskit.production.records import ActPermit, EntryBatch, Intent, PolicyRequest, SafetyEpoch
 from dskit.production.redact import get_logger
 from dskit.production.release import parse_iso_duration, verify_release
-from dskit.production.state import SeriesState, TickState, _check_admission_use_body
+from dskit.production.state import (
+    SeriesState,
+    TickState,
+    check_admission_use_body,
+    replay_into_fold,
+)
 from dskit.production.vocab import (
     AUTHORITY_ROLES,
     LEG_ORIGINS,
@@ -680,6 +685,15 @@ _ADMISSION_SPEND_SERIES_ID = "admission-spend-v1"
 #: package's own zero-hash convention) is honest rather than invented.
 _ADMISSION_SPEND_RELEASE_HASH = GENESIS_HASH
 
+#: The §4.3 store kind the durable admission gate is specified against --
+#: fsync'd, hash-chained, append-only, idempotent-by-id, exclusively locked
+#: (ADR-0147 Decision point 6). Resolved through ``LEDGER_KINDS`` so this
+#: module names no family member (§5.15), and PINNED rather than following
+#: ``ledger.DEFAULT_LEDGER_KIND``, so moving the default store can never
+#: silently change this gate's durability. ``durable()`` refuses at runtime
+#: if what it resolves cannot ``reserve_once``, which pins the agreement.
+_ADMISSION_SPEND_LEDGER_KIND = "jsonl"
+
 
 def _plan_artifact_bound(value, name=None):
     """Return whether ``value`` is a bound plan artifact."""
@@ -827,9 +841,11 @@ class HistoricalStudyVerifier:
         Raises
         ------
         ValueError
-            When the verifier holds no ledger, when ScopeIntent, CES, PEA,
-            BVP, or CAS is not bound, or when that admission is already
-            spent.
+            When ScopeIntent, CES, PEA, BVP, or CAS is not bound (checked
+            first, and named as such); when the verifier holds no durable
+            ledger, which only ``durable()`` supplies (named separately, so
+            the two causes are never confused for one another); or when
+            that admission is already spent.
         """
         ledger = getattr(self, "_ledger", None)
         with self._capture_lock:
@@ -838,9 +854,20 @@ class HistoricalStudyVerifier:
                 for name in _REQUIRED_PLAN
                 if not _plan_artifact_bound(self._bound.get(name), name)
             ]
-            if ledger is None or missing:
+            # Two distinct causes, two distinct messages, plan gate FIRST.
+            # Collapsing them let an unbound-ledger verifier answer with the
+            # plan's wording, which made every test matching that wording --
+            # F5a's own `test_private_plan_precedes_capture` sentinel among
+            # them -- pass without the plan gate ever firing.
+            if missing:
                 raise ValueError(
                     "CAPTURED refuses before ScopeIntent, CES, PEA, BVP, and CAS are bound"
+                )
+            if ledger is None:
+                raise ValueError(
+                    "CAPTURED refuses on a verifier with no durable ledger -- "
+                    "HistoricalStudyVerifier.durable(...) is the only "
+                    "capture-capable shape"
                 )
             captures = ((published, frozen, port),)
             runtime_kwargs = {
@@ -869,7 +896,7 @@ class HistoricalStudyVerifier:
                 "admission_ref": validated_ref,
                 "binding_sha256": binding_sha256,
             }
-            _check_admission_use_body(body)
+            check_admission_use_body(body)
             created, _seq = ledger.reserve_once({"kind": "admission_use", "id": key, "body": body})
             if not created:
                 raise ValueError("CAPTURED refuses after consumed admission is spent")
@@ -926,9 +953,18 @@ class HistoricalStudyVerifier:
             raise TypeError("durable() constructs the base HistoricalStudyVerifier only")
         if not isinstance(authority, CapturedAuthorizationAuthority):
             raise TypeError("a broker-issued P4 authority capability is required")
+        store = LEDGER_KINDS.resolve(_ADMISSION_SPEND_LEDGER_KIND)
+        if not callable(getattr(store, "reserve_once", None)):
+            raise ProductionError(
+                [
+                    f"the {_ADMISSION_SPEND_LEDGER_KIND!r} store resolves to "
+                    f"{store.__name__}, which cannot reserve_once -- the durable "
+                    "admission gate has no consume-once primitive without it"
+                ]
+            )
         serve_root = ServeRoot(root, _ADMISSION_SPEND_SERIES_ID)
         state = SeriesState(_ADMISSION_SPEND_SERIES_ID)
-        ledger = JsonlLedger(
+        ledger = store(
             serve_root,
             f"durable-verifier-{uuid.uuid4()}",
             _ADMISSION_SPEND_RELEASE_HASH,
@@ -936,16 +972,16 @@ class HistoricalStudyVerifier:
             state=state,
         )
         # ADR-0147 Decision point 10: never trust a possibly-partial
-        # in-memory fold (JsonlLedger._open's own recovery walk rebuilds
-        # only the head/index/snapshot cadence, not the attached state) or
-        # the latest snapshot record as a resume point -- replay the WHOLE
-        # verified chain from genesis into this fresh SeriesState, one
-        # state.apply(envelope) per record in chain order, and refuse
-        # construction outright if the replayed fold's own derived head
-        # ever disagrees with the ledger's independently verified head.
+        # in-memory fold (the store's own recovery walk rebuilds only the
+        # head/index/snapshot cadence, not the attached state) or the latest
+        # snapshot record as a resume point -- replay the WHOLE verified
+        # chain, one state.apply(envelope) per record in chain order. The
+        # SeriesState above is FRESH, so its head is 0 and `replay_into_fold`
+        # therefore starts at genesis; the fold's own module owns that scan.
+        # Refuse construction outright if the replayed fold's own derived
+        # head ever disagrees with the ledger's independently verified head.
         try:
-            for envelope in ledger.scan():
-                state.apply(envelope)
+            replay_into_fold(ledger, state)
             if state.head() != ledger.head():
                 raise ProductionError(
                     [
