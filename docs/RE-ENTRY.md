@@ -1,5 +1,16 @@
 # Re-entry
 
+## Retail opportunity research (2026-09-22)
+
+Owner-requested [retail trading research](retail-trading-research.md), based on
+`2242abd`, ranks slow trend, low-turnover quality/momentum, a bounded SEC-event
+study, odd-lot tenders, and conditional crypto carry. Includes counterevidence,
+CEF alternatives, costs/access limits, falsification tests and a 90-day research
+agenda. Three specialist agents plus skeptical evidence checks; no new backtest
+or verified live-profit claim. Cross-project documentation only; child journals,
+owner Path, active runs and holdouts are unchanged. Next: choose one bounded
+experiment and resolve the account/data assumptions before implementation.
+
 ## Current wrap: production-audit P0 slice, 3 of 6 landed (2026-09-19)
 
 Branch `claude/production-gaps-20260918` @ `a25c225`, pushed. Base `842d226`.
