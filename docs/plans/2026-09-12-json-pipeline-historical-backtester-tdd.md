@@ -14,7 +14,81 @@ and ADR-0126 from accepted commit `97900efd66bfed44cc403c567c04c4e383c05c24`.
 The owner explicitly approved both on 2026-09-12; acceptance deltas passed Terra
 with 0 Critical, 0 Major, and 0 Minor findings. These approvals approve neither
 implementation nor any real execution. A plan/release/study identity includes all
-five commit identities; a substituted ADR text or commit refuses.
+six commit identities; a substituted ADR text or commit refuses.
+
+## ADR-0159 amendment — deferred V2 terminal projection
+
+**Status:** authoritative plan correction required by accepted ADR-0159
+(`ed75d1bd117cb8ba7b78e20d2e32beb6594af0c6`, 2026-09-12). This amends only replay-terminal semantics. It
+authorizes deterministic synthetic TDD only; it authorizes no capture, market
+replay, backtest, paper/live action, HPO, refit, release use, or lockbox read.
+
+ADR-0159 is the sixth accepted source pin in every plan/release/study identity;
+a substituted ADR text or commit refuses. Its exact V2 schemas,
+canonical-byte rules, authority envelopes, rooted-key rules, effect protocol,
+recovery rules, and focused-failure inventory are normative. This section
+supersedes every contrary R1--R3/I V1 requirement, including any requirement to
+freeze or expose a final `ReplayResult` or cursor before effects. No implicit
+migration is permitted: all V1 replay journals, permits, evidence, identities,
+paths, results, cursors, and state are inspect-only and cannot continue,
+migrate, replace, hand off, or share a V2 identity.
+
+### R1 — V2 bootstrap and frozen plan
+
+`ReplayRun` creates only `ReplayTransaction.v2`. It derives
+`BootstrapIdentity.v2`, header intent, exact predecessor/genesis and static
+result inputs; receives externally signed initial reservation and initial lease;
+then reads the selected head, constructs immutable effect slots, pre-plan broker
+policy, frozen verifier map, `ReplayResultIntent.v2`,
+`ResultProjectionSpec.v2`, and `FrozenReplayPlan.v2`. The V2 plan contains no
+terminal result or cursor. It may become FROZEN only through the ADR-0159
+one-file fenced durability protocol. A plan-bound lease elevation and broker
+authorization occur only after exact frozen-plan persistence.
+
+### R2 — effects precede terminal projection
+
+Only the frozen slot set may dispatch. Every crash after an attempt queries the
+frozen broker request before any identical resend; unknown, unavailable,
+contradictory, substituted, unsigned, stale, or non-byte-identical evidence
+refuses. After verified receipts and signed ACK evidence, derive and validate
+exactly one V2 cursor/result projection, receipt set, projection pair, bundle,
+candidate manifest, and immutable immediate-successor committed-head candidate;
+then verify the signed `ReplayCommitEvent.v2`, persist the `COMMITTED` journal
+snapshot, and perform the sole atomic series-state visibility replacement.
+Readers expose neither cursor nor result until both the exact `COMMITTED`
+snapshot and signed commit event verify and that replacement is visible.
+
+### R3 — lifecycle and recovery
+
+`startup`, each tape `tick`, and `shutdown` are independently frozen,
+lease-held V2 lifecycle transactions. Before FROZEN, recovery may restore and
+evaluate once. At or after FROZEN it may only validate the exact lineage and,
+after a durable externally authorized handoff, resume the frozen suffix or
+refuse. It never reconstructs plan content, derives a terminal projection early,
+or lets an old owner write. Live dispatch remains byte/order equivalent; only
+the broker-derived production runtime may select replay transaction mode.
+
+### I1/I2 — V2 integration acceptance
+
+I1 proves synthetic uninterrupted and crash/restart execution preserve the exact
+frozen plan, result intent, receipt and cursor sequence, terminal identity,
+economic ledger, account, metric, report, and final visible projection semantics.
+Recovery byte-preserves every payload already durable at the crash boundary,
+including its historical fence and lease lineage; it never rewrites or re-digests
+that evidence. If an authorized handoff occurs, only newly appended ownership
+evidence and terminal artifacts not already durable bind the strictly advanced
+fence and successor lease lineage required by ADR-0159. Operational journals may
+therefore differ only by that prescribed handoff evidence and its new dependent
+bindings, while all frozen and already-durable payload bytes remain identical.
+I2 proves every reordered ADR-0125 admission/capture chain, V1 replay journal,
+permit, authority, evidence, result, cursor, state, or pre-effect terminal/
+result/cursor exposure refuses before session, replay root, or consumer
+creation. Version-one document and tape schemas retained by this plan are not
+V1 replay-transaction state and remain valid under their own contracts.
+
+This correction itself requires the repository's clean plan-review process before
+implementation. R1--R3/I remain subject to the controlling DAG and all G0--G7
+runtime gates.
 
 ## P0 — gates, fidelity, and immutable review workflow
 

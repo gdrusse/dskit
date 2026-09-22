@@ -19397,3 +19397,116 @@ I1–I7 matrix and
 control design evidence. Required next transition: explicit owner approval of
 this ADR and file manifest, then TDD and two fresh independent code-review
 lenses before delivery. Favorable design review is not owner approval.
+
+## ADR-0168 — bounded F3 replay `CapturedPortSet`
+
+**Status:** PROPOSED — no implementation, RED, capture, replay, or backtest is
+authorized by this text. This is a narrow extraction of ADR-0148 decision point
+5 only; it does not revive ADR-0148, whose broader F3 contract remains stopped.
+After explicit owner approval, fresh Phase 0, RED-to-GREEN, and two clean final
+lenses, it authorizes deterministic synthetic TDD only. `deployment_eligible`
+is always `false`.
+
+**Context.** `ReplayRun`'s already-landed document grammar requires exactly
+`tape_manifest` and `tape_data`. A committed P4
+`CapturedAuthorizationAuthority.authorize_capture_set(...)` already returns
+one opaque `CapturedAuthorizationRecord` and one P4 `LaunchSession`; its record
+already provides `lifecycle_captured_receipt_sha256(stream,
+consumer_document_sha256)` and `read_member_bytes(session, published,
+consumer_document_sha256, relative_path)`. Those APIs are the only member and
+receipt source this ADR uses.
+
+`CapturedBindings` cannot represent this use: it owns one stream and its first
+`require` appends the legacy terminal `CONSUMED` transition. It, its factory,
+and legacy consumption semantics remain unchanged. `ReplayRun.run` continues
+to raise its current composed-tape-broker refusal; this ADR adds neither
+`ReplayRun._run_captured` nor any runnable replay route.
+
+### Decision
+
+1. **One opaque, replay-shaped P4 view.** Add final opaque
+   `CapturedPortSet` in `dskit.pipeline.trust`, exported only as a type, not as
+   a constructible capability. It is neither a mapping nor iterable, has no
+   record/session/publication/provider/path accessor, and inherits the existing
+   copy, deepcopy, pickle, and reconstruction refusals.
+
+2. **Sole factory and owner.** Add
+   `CapturedAuthorizationAuthority.captured_port_set(record, session, captures)`.
+   Only the exact broker-issued P4 authority that owns `record` may mint it.
+   `captures` is an exact built-in tuple of `(published, frozen, port)` triples.
+   Each `published` and `frozen` must be the identical live opaque handle used by
+   `authorize_capture_set`; each `port` is an exact built-in dictionary whose
+   canonical value must equal the committed signed port. Callers supply no
+   descriptors, roots, receipt digests, or input mapping. The factory reads the
+   committed batch through the existing
+   record-to-ledger association and byte-compares its signed ports and ordered
+   stream identities against those handles and values. No committed ledger
+   entry is claimed to retain the original tuple or port-dictionary identity;
+   an independently allocated but canonically equal port dictionary is accepted.
+
+   The factory refuses unless the committed batch is exactly one replay
+   consumer's two derived ports, with one frozen consumer document and exactly
+   the existing declared names `tape_manifest` and `tape_data`. It derives the
+   name-to-capture association by matching each exact live triple to the
+   committed signed port/stream at the same batch position and refuses missing,
+   extra, duplicate, aliased, reordered, substituted, cross-record,
+   cross-authority, wrong-session, non-committed session pin, non-replay, or
+   nonidentical publication/frozen handles. It performs no capture, authorization, publication,
+   lifecycle transition, member read, provider call, or ledger write.
+
+   Exactly one set may be minted for a committed record/session/capture batch.
+   A broker-private weak identity map interns that set; a repeat factory call
+   refuses rather than resetting local `require` bookkeeping. The underlying
+   record-wide P4 member-read budget is therefore shared and unchanged.
+
+3. **Consumption surface.** `CapturedPortSet.require(name)` accepts only the
+   two exact names and returns an unexported opaque per-input reader. Each name
+   may be required once per set; requiring one does not prevent requiring the
+   other in either order. The reader retains only its exact committed stream,
+   publication, frozen document, record, and session internally. It exposes:
+
+   - `read_member_bytes(relative_path)`, delegated only to the existing
+     record's exact session-bound P4 member-read API; therefore the existing
+     per-`(stream, relative_path)` one-way read rule remains the authority.
+   - `lifecycle_captured_receipt_sha256`, delegated only to the existing
+     committed-record receipt accessor for that exact stream/document.
+
+   No reader may select another declared input, publication, record, session,
+   document, or receipt. This ADR adds no composed tape, envelope parsing,
+   manifest/data comparison, or replay execution.
+
+4. **Finality is already broker-side.** P4 finality remains solely the atomic
+   successful `commit_p4_batch` inside `authorize_capture_set`, before this
+   factory can run. `CapturedPortSet.require` is local view bookkeeping plus
+   the existing one-way member read; it does not finalize, release, consume,
+   unconsume, revoke, or commit a broker transaction. This ADR intentionally
+   adds no `release()` method: the current P4 session has no corresponding
+   lifecycle-release transition, and a local teardown API must not be
+   described as broker finality. Existing in-memory `_p4_reads` restart
+   behavior is unchanged and no durability claim is made.
+
+5. **Compatibility and non-goals.** Do not edit `CapturedBindings`,
+   `captured_bindings`, `_consume_binding`, legacy `CONSUMED`, P4 admission
+   closure, `authorize_capture_set`, `commit_p4_batch`,
+   `CapturedAuthorizationRecord`'s existing accessors, document grammar,
+   `ReplayRun.run`, `production/bundles.py`, or any child code. No authority,
+   execution, terminal tape, tape composition, F3 closure, F5b closure, R1--R5,
+   real data, market replay, paper/live action, HPO, refit, release use,
+   lockbox read, or backtest follows.
+
+**Required Phase-0 matrix.** Direct construction, subclass, copy/deepcopy,
+pickle, fabricated/cross-authority record or session, and uncommitted records
+refuse without changing P4 audit. One/three/duplicate/aliased inputs,
+non-replay subjects, reordered triples, document/root/stream/port/receipt
+substitutions, and wrong, swapped, or non-committed-pin sessions refuse before a
+set exists. The exact valid pair factory succeeds once; `require` works in
+either input order, each name is required once, and neither reader can reach the
+other's publication. A repeat factory call refuses without creating a fresh
+view. Duplicate member reads retain P4's existing refusal and receipt values
+come only from the existing accessor. Factory and `require` success or refusal
+never read a member, call a provider, execute replay, alter P4 finality, or
+change existing `_p4_reads`. Once a reader's `read_member_bytes` is explicitly
+invoked, all existing P4 behavior remains authoritative, including provider
+access and a consumed read reservation on an integrity failure; this ADR
+neither strengthens nor weakens that contract. Legacy V1 behavior and messages
+remain byte-identical, and public `ReplayRun.run` remains fail-closed.

@@ -1,0 +1,39 @@
+{
+  "schema_version": "BacktestGapPhase0.v1",
+  "base_commit": "b66c3ab8c5beb891674bbfc7a5022d93a935ff33",
+  "deployment_eligible": false,
+  "plan_correction": {
+    "path": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md",
+    "blob": "b087b8248345c4fa848005b3e721b8568fe11914",
+    "accepted_source": "ADR-0159@ed75d1bd117cb8ba7b78e20d2e32beb6594af0c6",
+    "review_1": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "review_2": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "result": "clean; V2 plan conflict removed"
+  },
+  "bounded_adr": {
+    "id": "ADR-0168",
+    "path": "docs/architecture/decision-log.md",
+    "blob": "6855d644d8248aa4b1499a129832a05ebb8bdee4",
+    "scope": "F3 decision point 5 only: opaque replay CapturedPortSet over an already committed P4 batch",
+    "phase0_recheck": {"critical": 0, "major": 0, "minor": 0, "nit": 1},
+    "nit_disposition": "ADR-0168 orders the final fresh Phase 0 after approval; this preapproval recheck found no material issue but does not replace that gate.",
+    "result": "implementation remains blocked on explicit owner approval and the required post-approval fresh Phase 0"
+  },
+  "already_available": [
+    "recurring cash-flow schedule and fold",
+    "one-ledger accounting state",
+    "NAV, TWR and MWR performance reporting",
+    "cost-aware developmental fill replay"
+  ],
+  "remaining_sequence": [
+    "owner approval of ADR-0168 exact blob",
+    "fresh Phase 0 recheck of the approved unchanged ADR-0168 blob",
+    "ADR-0168 RED-GREEN and two final skeptic lenses",
+    "remaining bounded F3 derivation, v2 wire and writer slices to F3 ReviewExit",
+    "F5b and final release gates",
+    "R1-R5 V2 replay runtime",
+    "I1 synthetic integration",
+    "separately authorized historical study"
+  ],
+  "non_authority": "No code, capture, market data, lockbox, replay, backtest, paper/live action, HPO, refit or release use is authorized by this evidence."
+}
