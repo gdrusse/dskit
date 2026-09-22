@@ -11,6 +11,11 @@ or verified live-profit claim. Cross-project documentation only; child journals,
 owner Path, active runs and holdouts are unchanged. Next: choose one bounded
 experiment and resolve the account/data assumptions before implementation.
 
+Reviewed content candidate `12a0369`: independent bounded accuracy pass; one
+citation-title correction applied. Actual reviewer/task references and limits
+are retained in the report. Local file links and whitespace checked; no code or
+strategy tests run. Subsequent changes are citation/evidence-only.
+
 ## Current wrap: production-audit P0 slice, 3 of 6 landed (2026-09-19)
 
 Branch `claude/production-gaps-20260918` @ `a25c225`, pushed. Base `842d226`.

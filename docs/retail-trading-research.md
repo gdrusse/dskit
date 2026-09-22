@@ -557,7 +557,8 @@ institutional hosts of one paper are not counted as independent replications.
 12. **CEF acceptance risk:** [BlackRock final tender results, 2024](https://www.sec.gov/Archives/edgar/data/1320375/000119312524262813/d815856dex99a5iii.htm).
     Actual oversubscription/proration outcomes; arithmetic discounts overstate
     capture if the remaining position is ignored.
-13. **Option-anomaly counterevidence:** [RFS, 2025, volume 38, pages 1783 onward](https://academic.oup.com/rfs/article/38/6/1783/8010873).
+13. **Option-anomaly counterevidence:** [Goyal and Saretto, Can Equity Option Returns Be Explained by a Factor Model? IPCA Says Yes](https://doi.org/10.1093/rfs/hhae087).
+    Online December 2024; RFS 38(6), June 2025, pages 1783–1821.
     Common-risk and transaction-cost analysis challenges apparent option alpha.
     Findings depend on the tested strategies and risk model, not every option use.
 
@@ -590,3 +591,20 @@ modeling guide. It is not a research action of either active child; no child
 journal, owner Path, holdout, run or production approval is changed. The bounded
 delivery is this document plus a re-entry pointer, checked for accuracy, local
 links and whitespace. No code tests or trading experiments are claimed.
+
+### Review and verification record
+
+Independent reviewer `/root/retail_evidence_check` in originating task
+`01a0c6f2-8272-7850-948d-f646c4ade478` reviewed candidate `12a0369` in full.
+The final verdict was a bounded accuracy pass, with no consequential misleading
+claims, incorrect source scopes or demonstrably broken citation destinations
+found. The requested Goyal/Saretto citation-title correction was applied; the
+remaining post-review changes are this record and the re-entry evidence note.
+
+The review did not replicate backtests, establish account eligibility or audit
+the repository machinery. QMJ's DOI intermittently failed retrieval; the reviewer
+corroborated its destination and claim through publisher results and the authors'
+AQR page. The coordinator checked every report-local file link and the new
+re-entry link, inspected the named repository documentation at the recorded base,
+and ran `git diff --check`. This records a documentation accuracy check, not an
+economic validation or production approval.
