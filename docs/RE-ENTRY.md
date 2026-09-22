@@ -1,5 +1,47 @@
 # Re-entry
 
+## Index-options free-data feasibility paused (2026-09-22)
+
+Owner wants an ongoing free-only dataset, not trial credits or a paid dependency.
+After public-source diligence and Theta signup, the owner approved isolated WSL
+SDK setup, then requested `/wrap`; resume only when asked. No authenticated
+Theta request has run. Credential entry is awaiting owner confirmation; its
+contents were not inspected during wrap. No credentials or raw data enter Git.
+
+Local Ubuntu-24.04 setup (outside the repo/shared environment):
+
+- Python 3.12.3 environment:
+  `/home/russell/.local/share/dskit-data-probes/theta/.venv`.
+- Installed `thetadata==1.0.10` and `python-dotenv==1.2.3`; the latter repairs an
+  undeclared SDK import dependency. `ThetaClient` import and `pip check` passed.
+  No client was instantiated. Direct SDK access needs no Java terminal.
+- Private credential template:
+  `/home/russell/.config/dskit-data-probes/theta.env` (0600; parent 0700).
+  API key belongs only there, never in chat, logs, commands, or tracked files.
+  See [SDK setup](https://thetadata.net/docs/Python-Library/Getting-Started.html).
+
+Public evidence: the [Cboe EOD sample](https://datashop.cboe.com/download/sample/217)
+was fetched and inspected in memory only: 2023-08-25, 13,306 SPXW rows per sample
+variant, including 2,260 at 30-60 DTE; no XSP. Its ZIP SHA-256 is
+`981be1aafe6970e798d5be42f049e6c5b6e507f01cb1509ab513e9bc2e08da24`.
+This proves sample accessibility, not complete history or ongoing free access.
+
+Next bounded action: confirm the key was saved privately, then use the isolated
+SDK with the explicit `dotenv_path` above and suppressed credential logging.
+First establish free entitlement with minimal discovery/one-contract, one-day
+EOD access; only then consider the discussed narrow SPXW/XSP ~20-session probe.
+Check expired contracts, quote timestamps, bid/ask/sizes, omitted contracts,
+AM/PM settlement distinctions, licensing, and ongoing collection. Matching
+underlying index history and official settlement history remain unverified.
+The robust-dataset gate is OPEN; no paid endpoints/subscription, permanent
+adapter, child ingestion, model/backtest, or trading follows from this setup.
+
+Documentation-only wrap based on `3d6b392a29d7e56bf923578f2d54755b1c814415`:
+the S0 child tree below and framework tree
+`0fdb1f29c8766ba12d6c1120de9f27af2f795013` are unchanged. Existing code/tests,
+contracts, dependencies, review evidence and owner Path remain untouched.
+Accuracy, local-reference and whitespace checks only; no test suite rerun.
+
 ## Index-options S0 scaffold complete (2026-09-22)
 
 Owner-approved ADR-0167 and S0-v3 produced the standalone, 30-file
