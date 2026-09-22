@@ -1,5 +1,29 @@
 # Re-entry
 
+## Index-options S0 scaffold complete (2026-09-22)
+
+Owner-approved ADR-0167 and S0-v3 produced the standalone, 30-file
+`children/index_options` child: three thin observation wrappers and an exact
+synthetic condor cashflow diagnostic. Reuses existing acquisition, validation,
+pipeline/artifact and journal seams; no framework or existing-child changes.
+
+Locked code candidate `368fab2a3879289125b41c8ca8c4089ed79279da`, child tree
+`0a5873fbbb374d68999ecdf687759ae798be3a39`. Two fresh independent final lenses
+passed with 0 Critical/Major/Minor/Nit; all earlier findings corrected. Full
+reports, identities, RED/GREEN, mutation evidence and limits are retained in
+[the review record](children_design_proposals/index_options_scaffold_review.md).
+274 focused tests pass; foreign-cwd, root-helper new-child-only, standalone
+copy, wheel/temp install, exact README CLI demo, ruff and whitespace checks pass.
+No full framework/other-child suite ran. Empty checked-in journal initialized
+by CLI; no owner Path promotion or changes to existing runs/journals.
+
+Start with the [child runbook](../children/index_options/README.md) and
+[standalone project proposal](children_design_proposals/index_options_volatility.md).
+This is software correctness evidence only: no real data, ML/MIO, backtest,
+paper/live trading or profitability claim. Next: separately approve bounded
+S1 provider/sample diligence, licensing, clocks/settlement and adapter scope;
+do not start paid acquisition or experiments from this closeout.
+
 ## Retail opportunity research (2026-09-22)
 
 Owner-requested [retail trading research](retail-trading-research.md), based on

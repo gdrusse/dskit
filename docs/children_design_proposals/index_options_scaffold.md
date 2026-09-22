@@ -1,6 +1,6 @@
 # Index-options child: official scaffold proposal
 
-Status: **S0 implementation approved by Russell; build in progress.** Revision S0-v3,
+Status: **S0 synthetic-only scaffold implemented and reviewed.** Revision S0-v3,
 2026-09-22. Owner: Russell. Proposed child/package: `index_options`.
 Base and inventoried dependencies: DSKIT
 `4ca0d4e47f41cfcdded9679707bdec9a47b07806`.

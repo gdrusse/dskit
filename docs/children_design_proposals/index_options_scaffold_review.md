@@ -1,12 +1,12 @@
-# Index-options scaffold — Phase 0 skeptic review
+# Index-options scaffold — design and implementation review
 
-Status: **Phase 0 design review complete; awaiting owner approval**.
-Two fresh v3 lenses report zero Critical, Major, Minor or Nit findings.
-No implementation authorization is implied.
-Date: 2026-09-22. Scope: the proposed offline, synthetic-only `index_options`
-child. This is a design record, not an implementation/merge/deployment exit.
+Status: **S0 implementation review complete; two clean final lenses**.
+Owner approval, corrections and the final candidate lock are recorded below.
+Earlier stage statuses/verdicts are retained as historical evidence.
+Date: 2026-09-22. Scope: the approved offline, synthetic-only `index_options`
+child. Design and implementation closure do not grant deployment approval.
 
-## Identities and method
+## Phase 0 identities and method (historical)
 
 - Base/framework inventory: `4ca0d4e47f41cfcdded9679707bdec9a47b07806`.
 - Proposal: [index_options_scaffold.md](index_options_scaffold.md).
@@ -355,3 +355,76 @@ Review limits: no OS-level kill/torn-write/concurrent-acquisition crash matrix;
 no provider or market data, training, backtest, MIO, paper/live or deployment.
 The controlled interruption evidence is a generic framework behavior probe,
 not a child-owned resume mechanism or full crash-safety certification.
+
+## Final implementation lock — 368fab2, complete
+
+Both fresh independent final lenses completed sequentially on the exact
+correction candidate `368fab2a3879289125b41c8ca8c4089ed79279da`:
+
+- `/root/index_s0_final_correctness_r2`, GPT-6 Astra: **PASS,
+  0 Critical / 0 Major / 0 Minor / 0 Nit**. Full I1–I7 assigned review,
+  274 child tests passed (13.86 s), 38 independent offset/revision/
+  microsecond/Decimal-context checks passed, ruff and whitespace clean.
+- `/root/index_s0_final_integration_r2`, GPT-6 Astra: **PASS,
+  0 Critical / 0 Major / 0 Minor / 0 Nit**. Full I1–I7 review;
+  archived standalone 274 passed (14.07 s), foreign-cwd 274 passed
+  (17.87 s), actual new-child-only root helper passed (16.07 s).
+
+Their full reports are retained in the retrievable task transcripts above.
+Both verified these identities before and after their checks:
+
+- Child code/tests/config/docs tree:
+  `0a5873fbbb374d68999ecdf687759ae798be3a39`.
+- Framework tree:
+  `0fdb1f29c8766ba12d6c1120de9f27af2f795013`.
+- Substantive contract/matrix S0-v3, reviewed proposal SHA256:
+  `7b959604678f6def85b45a0833871d4783980d99bab27bd90181bad7495b2afa`.
+- Whole ADR file SHA256:
+  `91593da99f44b24d8e2af780ca6aec802361bca83c243506f3ea06f88ec5cc71`.
+
+The installed editable framework checkout is actually at `2242abd`, not the
+task's documentation-only base `4ca0d4e`; both and the candidate have the
+identical clean framework tree above. This clarifies the earlier abbreviated
+“framework at base revision” statement without changing a tested dependency.
+
+The final integration reviewer independently proved every corrected test
+family catches its intended regression in disposable git-archived copies:
+
+- R1 literal timestamp-selection revert: **30 failed / 14 passed**,
+  5.63 s, including public API/CLI ambiguity and valid-alias behavior.
+- R2 old artifact locator: **3 failed / 2 passed**, 3.97 s. The positive
+  controls detect real reports missed by the deliberately wrong directory.
+- R3 weakened capacity bound: **17 failed / 2 passed**, 1.71 s, covering
+  every leg, both size fields and public API.
+- R4 removed own-row clock equality: **8 failed / 1 passed**, 1.50 s,
+  covering both row families through projection/domain/direct/API.
+
+All failures were expected behavioral assertions, not broken imports, syntax
+or setup. R1–R4 are closed, as are prior design F1–F4/T1. **No deferred
+Minor/Nit backlog.** No further code changes or speculative review loop follow
+this lock.
+
+Author final-candidate checks: 274 tests passed from child root and foreign cwd;
+actual root helper passed for this child only; git-archived standalone child
+274 passed (9.62 s); corrected wheel built and installed only into a temporary
+--target directory; the exact README demonstration passed with all three suite
+results and USD 252. Ruff/whitespace checks passed. Shared environment,
+framework code, existing children, active runs and all owner Paths are unchanged.
+
+Delivery changes after this lock are evidence/re-entry and the proposal's
+status line only. The reviewed child tree, substantive proposal/matrix and
+ADR are unchanged; final Git comparison verifies that claim. Historical
+candidate verdicts are preserved rather than rewritten. The delivery commit
+binds these editorial records to the reviewed candidate.
+
+This closes **S0 software development only**. No real data, training, backtest,
+MIO, broker, paper/live, production-readiness or profitability approval is
+implied. External/data gates are intentionally not bypassed. No full framework
+or other-child suite was run. Remaining limits include OS-level crash/torn-write/
+concurrency testing and alternate Python versions.
+
+Next bounded action: separately approve S1 data feasibility, including provider
+sample/budget, exact PM series and expired-chain coverage, official settlement
+and availability/revision clocks, licensing/retention/two-machine rights, storage,
+and a bounded adapter manifest. Do not begin acquisition or experiments from
+this software-only closeout.
