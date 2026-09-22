@@ -269,3 +269,89 @@ USD 8 whole-outcome fees. Full root/other-child suites, market-data access,
 real replay, training, MIO, paper/live trading and profitability tests were
 intentionally not run. Next: immutable candidate and two fresh sequential
 independent implementation lenses; no readiness or push claim yet.
+
+## Implementation candidate 8d258e9 — reviewed, not clean
+
+Immutable candidate: `8d258e9215e44609f1da2d3f0790a5cc9479d30a`.
+Child tree: `790ac44b91f5c0a52b8172f4a0b7d9fa9dc9ba07`.
+Framework tree: `0fdb1f29c8766ba12d6c1120de9f27af2f795013`, equal to base.
+Approved proposal SHA256:
+`7b959604678f6def85b45a0833871d4783980d99bab27bd90181bad7495b2afa`.
+Whole ADR file SHA256:
+`91593da99f44b24d8e2af780ca6aec802361bca83c243506f3ea06f88ec5cc71`.
+
+Retained independent full reports (retrievable task transcripts), both GPT-6
+Astra, fresh contexts and sequential on identical candidate bytes:
+
+- `/root/index_s0_code_correctness_r1`: FAIL, 0 Critical / 1 Major /
+  1 Minor / 0 Nit. Child 204 passed; independent rational oracle: 750
+  scenarios and 5,250 monetary checks passed, including 100 shuffled-input
+  direct Node cases. R1 reproduced through domain/projection/direct/API/CLI;
+  R2 positive-control probe confirmed.
+- `/root/index_s0_code_integration_r1`: FAIL, 0 Critical / 1 Major /
+  3 Minor / 0 Nit. Child 204 passed in-root and foreign cwd; root helper
+  and graduated-copy helper passed. Independently reproduced R1/R2 and
+  demonstrated both R3/R4 guard mutants surviving all 204 tests.
+  Import audit observed no writes, network/process activity or registration.
+  Controlled KeyboardInterrupt before report: same-root retry refused without
+  changing files; fresh run-root succeeded with USD 252.
+
+### Findings and family-wide correction
+
+**R1 — Major, I3/I5 temporal reference identity.** nodes.py matched configured
+quote_at against effective_at as a literal string. A valid offset representation
+could fail, or two semantically identical instant/version rows with different
+timestamp spellings and ask prices could both be accepted selectively:
+the Z reference produced USD 252, an equivalent -05:00 reference USD 251.
+Actual direct/API/CLI reproducers succeeded with conflicting outcomes.
+Correction: compare quote instants using the existing domain parser, then
+require exactly one contract/version match. Parent history/revision-key
+deduplication remains unchanged. Distinct row versions remain selectable;
+multiple semantic matches, identical or conflicting, refuse.
+
+**R2 — Minor, I6 artifact evidence.** Negative tests searched
+artifacts/diagnostic, but the actual writer uses artifacts/json/<digest>.json.
+Other state/status/exit checks remained effective; no runtime artifact leak was
+proven. Correction: a shared test locator uses the real directory and positive
+API/CLI controls prove it detects the diagnostic file.
+
+**R3 — Minor, I4 count-dependent quote capacity.** Replacing size < count with
+size < 1 left all 204 tests green. With size 1/count 2 the mutant reports
+USD 512 while the candidate correctly refuses. Correction: independently test
+each leg and both size fields at count-1 refusal and count acceptance through
+domain/direct Node, plus a public API case. Runtime rule already correct.
+
+**R4 — Minor, I3 own-row time agreement.** Removing both _same_instant calls
+left all 204 tests green because previous negative examples also violated other
+rules. Changing only effective_at in either a quote or settlement let the
+mutant pass projections/domain/diagnostic. Correction: isolate effective-time
+mismatches in both row types through projection/domain/direct/API, plus
+equivalent-offset positive cases. Runtime rule already correct.
+
+No Phase 0 invalidation or contract/threat-model change. All four findings are
+addressed in the next candidate rather than carried as a deferred backlog.
+No previous clean lens is inherited across these code/test changes.
+
+### Correction evidence and remaining review gate
+
+First ran the new Node/integration regressions against the unchanged runtime
+and old artifact locator: `python -m pytest tests/test_nodes.py
+tests/test_integration.py -q --tb=short` — **32 failed, 67 passed**, 11.65 s.
+Failures were the intended alias selection/cardinality and positive artifact
+detection assertions, not import/setup errors. The size and own-clock cases
+were already green against correct runtime guards; no artificial RED was made.
+
+After the small selection fix and locator correction:
+`python -m pytest tests -q` — **274 passed**, 13.98 s.
+Ruff and diff whitespace checks passed. The 30-file manifest is unchanged.
+Fresh independent final lenses are required on the correction commit.
+
+Additional author check on 8d258e9: built and installed its wheel with --no-deps
+--target into a temporary directory, then executed README's exact demo bash
+block. All three snapshots passed their suites and the digest-checked report
+was USD 252. No shared environment install occurred.
+
+Review limits: no OS-level kill/torn-write/concurrent-acquisition crash matrix;
+no provider or market data, training, backtest, MIO, paper/live or deployment.
+The controlled interruption evidence is a generic framework behavior probe,
+not a child-owned resume mechanism or full crash-safety certification.

@@ -78,3 +78,59 @@ def test_ordinary_diagnostic_subclass_retains_validation_and_serving_refusal(row
     rows["contracts"][0]["multiplier"] = 0
     with pytest.raises(ValueError):
         ResearchDiagnostic("d", params).run(None, rows)
+
+_TIME_ALIASES = (
+    "2026-01-16T20:45:00Z", "2026-01-16T15:45:00-05:00", "2026-01-16T20:45:00+00:00",
+)
+
+
+@pytest.mark.parametrize("quote_at", _TIME_ALIASES)
+@pytest.mark.parametrize("effective_at", _TIME_ALIASES)
+@pytest.mark.parametrize("reference_at", _TIME_ALIASES)
+def test_quote_references_match_instants_not_spellings(rows, params, quote_at, effective_at, reference_at):
+    rows["quotes"][0].update(quote_at=quote_at, effective_at=effective_at)
+    params["legs"][0]["quote_at"] = reference_at
+    node = CondorPayoffDiagnostic("d", params)
+    assert node.validate_inputs(rows) == []
+    assert node.run(None, rows)["report"].value["net_pnl_usd"] == "252"
+
+
+@pytest.mark.parametrize("reference_at", _TIME_ALIASES)
+@pytest.mark.parametrize("ask", ["2.60", "2.61"])
+def test_alias_equivalent_selected_versions_are_ambiguous(rows, params, reference_at, ask):
+    rows["quotes"].append({
+        **rows["quotes"][0], "effective_at": _TIME_ALIASES[1], "ask": ask,
+    })
+    params["legs"][0]["quote_at"] = reference_at
+    node = CondorPayoffDiagnostic("d", params)
+    assert node.validate_inputs(rows)
+    with pytest.raises(ValueError, match="exactly one"):
+        node.run(None, rows)
+
+
+def test_distinct_quote_versions_at_equivalent_instants_remain_selectable(rows, params):
+    rows["quotes"].append({
+        **rows["quotes"][0], "effective_at": _TIME_ALIASES[1], "row_version": "v2", "ask": "2.61",
+    })
+    params["legs"][0].update(quote_at=_TIME_ALIASES[2], quote_version="v2")
+    assert CondorPayoffDiagnostic("d", params).run(None, rows)["report"].value["net_pnl_usd"] == "251"
+
+
+@pytest.mark.parametrize("leg", range(4))
+@pytest.mark.parametrize("field", ["bid_size", "ask_size"])
+def test_quote_size_is_checked_against_count_in_direct_node(rows, params, leg, field):
+    params["count"] = 2
+    rows["quotes"][leg][field] = 1
+    with pytest.raises(ValueError, match="sizes"):
+        CondorPayoffDiagnostic("d", params).run(None, rows)
+    rows["quotes"][leg][field] = 2
+    assert CondorPayoffDiagnostic("d", params).run(None, rows)["report"].value["net_pnl_usd"] == "512"
+
+
+@pytest.mark.parametrize("stream, effective", [
+    ("quotes", "2026-01-15T20:45:00Z"), ("settlements", "2026-02-19T21:00:00Z"),
+])
+def test_direct_node_refuses_isolated_effective_clock_mismatch(rows, params, stream, effective):
+    rows[stream][0]["effective_at"] = effective
+    with pytest.raises(ValueError, match="must equal effective_at"):
+        CondorPayoffDiagnostic("d", params).run(None, rows)

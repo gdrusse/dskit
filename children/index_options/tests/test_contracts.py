@@ -192,3 +192,26 @@ def test_decimal_precision_does_not_silently_round(rows):
         context.prec = 3
         report = position(rows, fees_usd="0").evaluate()
     assert report["net_pnl_usd"] == "259.9999999999999999999999999999999999"
+
+@pytest.mark.parametrize("leg", range(4))
+@pytest.mark.parametrize("field", ["bid_size", "ask_size"])
+def test_each_leg_size_covers_requested_count(rows, leg, field):
+    rows["quotes"][leg][field] = 1
+    with pytest.raises(ValueError, match="sizes"):
+        position(rows, count=2)
+    rows["quotes"][leg][field] = 2
+    assert position(rows, count=2).evaluate()["net_pnl_usd"] == "512"
+
+
+@pytest.mark.parametrize("stream, effective", [
+    ("quotes", "2026-01-15T20:45:00Z"), ("settlements", "2026-02-19T21:00:00Z"),
+])
+def test_own_effective_instant_mismatch_is_independently_rejected(rows, stream, effective):
+    rows[stream][0]["effective_at"] = effective
+    with pytest.raises(ValueError, match="must equal effective_at"):
+        position(rows)
+
+
+def test_settlement_equivalent_offset_is_valid(rows):
+    rows["settlements"][0]["effective_at"] = "2026-02-20T16:00:00-05:00"
+    assert position(rows).evaluate()["net_pnl_usd"] == "252"

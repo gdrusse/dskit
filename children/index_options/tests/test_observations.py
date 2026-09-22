@@ -185,3 +185,15 @@ def test_ordinary_subclass_inherits_domain_rules(rows, store_factory):
     rows["quotes"][0]["condition_valid"] = False
     with pytest.raises(ValueError):
         ResearchQuotes("q", store.node_params()).project(rows["quotes"])
+
+@pytest.mark.parametrize("cls, stream, wrong, equivalent", [
+    (QuoteRows, "quotes", "2026-01-15T20:45:00Z", "2026-01-16T15:45:00-05:00"),
+    (SettlementRows, "settlements", "2026-02-19T21:00:00Z", "2026-02-20T16:00:00-05:00"),
+])
+def test_projection_pins_own_clock_without_cross_leg_checks(rows, cls, stream, wrong, equivalent):
+    node = cls("rows", {"root": ".", "source": "index-fixture"})
+    rows[stream][0]["effective_at"] = wrong
+    with pytest.raises(ValueError, match="must equal effective_at"):
+        node.project(rows[stream])
+    rows[stream][0]["effective_at"] = equivalent
+    assert len(node.project(rows[stream])) == len(rows[stream])

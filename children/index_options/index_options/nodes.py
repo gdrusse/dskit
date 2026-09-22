@@ -128,9 +128,13 @@ class CondorPayoffDiagnostic(Node):
             contracts.append(self._select(rows["contracts"], {
                 "contract_id": leg["contract_id"], "row_version": leg["contract_version"],
             }))
-            quotes.append(self._select(rows["quotes"], {
+            quote_instant = _instant(leg["quote_at"], "quote_at")
+            at_instant = [
+                row for row in rows["quotes"]
+                if _instant(row["quote_at"], "quote_at") == quote_instant
+            ]
+            quotes.append(self._select(at_instant, {
                 "contract_id": leg["contract_id"], "row_version": leg["quote_version"],
-                "effective_at": leg["quote_at"],
             }))
         settlement = self._select(rows["settlements"], self.params["settlement"])
         return DefinedRiskCondor(
