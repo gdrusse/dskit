@@ -115,6 +115,7 @@ __all__ = [
     "content_identity",
     "is_summary",
     "resolve_json_artifact",
+    "row_set_identity",
     "run_document",
     "run_walk_forward",
     "winner_names",
@@ -1340,6 +1341,72 @@ class RunAttestation:
         )
 
 
+    def attested_output(self, node_key, output_name, document_hash):
+        """Return the VALUE ``node_key`` recorded for ``output_name``, corroborated by the run's own carry.
+
+        :meth:`node_output_for_document` answers whether a node completed
+        as part of the run that resolved a document; this answers what
+        that node actually produced, which is what a consumer pinning one
+        upstream artifact needs. It is deliberately stricter than reading
+        the record alone: the run's ``carry.json`` must carry the SAME
+        value under the same node and output name. A record and a carry
+        are written at different moments by different code paths, so
+        requiring both to name one value means a single edited sidecar no
+        longer decides what a downstream release is built from — the
+        corroboration ADR-0116 asks a consumer to make, owned here once
+        instead of restated by every consumer that needs it.
+
+        It does NOT close the residual gap ADR-0119 disclosed and left
+        open: nothing hash-chains ``nodes/*.json`` to ``resolved.json``,
+        so an editor with write access to the whole run directory can
+        still edit the record and the carry together. This composes the
+        evidence the driver already writes; it does not authenticate it.
+
+        Parameters
+        ----------
+        node_key : str
+            The node's key in the document that produced this run.
+        output_name : str
+            The name of the output, as the node's ``run`` returned it.
+        document_hash : str
+            The document identity the caller wants the output bound to.
+
+        Returns
+        -------
+        object or None
+            The recorded value when :meth:`node_output_for_document`
+            holds, the node's record carries ``output_name``, and
+            ``carry.json`` carries an equal value under the same node and
+            name. ``None`` on anything else — a missing, malformed or
+            unreadable record or carry included, so a run this method
+            cannot read never looks different from a run that never
+            happened. A recorded ``None`` is therefore indistinguishable
+            from no attestation, which is the safe direction: a consumer
+            fails closed either way.
+
+        Examples
+        --------
+        Take the one artifact manifest a completed search node produced::
+
+            attestation = RunAttestation(result.run_dir)
+            attestation.attested_output("scan_h01", "hpo_ledger", document.hash)
+            # -> {'path': 'artifacts/json/<sha256>.json', 'sha256': ..., ...}
+        """
+        if not self.node_output_for_document(node_key, document_hash):
+            return None
+        record = self._node_record(node_key)
+        outputs = record.get("outputs") if isinstance(record, dict) else None
+        if not isinstance(outputs, dict) or output_name not in outputs:
+            return None
+        carry = _read_run_json(self._run_dir, "carry.json")
+        carried = carry.get(node_key) if isinstance(carry, dict) else None
+        if not isinstance(carried, dict) or output_name not in carried:
+            return None
+        if carried[output_name] != outputs[output_name]:
+            return None
+        return outputs[output_name]
+
+
 def content_identity(run_dir, manifests):
     """sha256 over the VERIFIED, DECODED content of named JSON artifacts.
 
@@ -1385,6 +1452,83 @@ def content_identity(run_dir, manifests):
         for name, manifest in manifests.items()
     }
     return _canonical_hash(resolved)
+
+
+def row_set_identity(rows):
+    """sha256 over the CONTENT of one materialized row set, independent of row order.
+
+    The identity a caller needs when ONE materialized row set stands for
+    one labelled input wire, and the row-set sibling of
+    :func:`content_identity` (which combines several already-persisted
+    JSON artifacts by name). Nothing about WHERE the rows came from
+    reaches the digest: not their position in the list, not the file or
+    artifact they were read from, not a port name, and not any label the
+    caller attaches on the side — only the rows' own JSON content. So a
+    row set re-materialized in a different order, or read back from a
+    different path, identifies as the same rows, while a single changed
+    value does not.
+
+    Existing digests could not answer this.
+    ``CandidateInventory.digest`` and
+    :func:`dskit.onboarding.observations.stream_digest` both hash an
+    ORDERED sequence — correct for an inventory or a snapshot, whose
+    order IS part of the claim — and :func:`content_identity` is
+    order-independent only across manifest NAMES, not within one
+    artifact's rows.
+
+    Parameters
+    ----------
+    rows : list
+        The materialized rows. Each row must be JSON-serializable with
+        finite numbers; anything else has no canonical form, and a digest
+        some writers can produce and others cannot is not an identity.
+
+    Returns
+    -------
+    str
+        Hex sha256 over the canonical JSON of the SORTED list of
+        per-row canonical digests. Rows are a MULTISET, not a set: a row
+        repeated twice does not identify as the same set as one copy of
+        it.
+
+    Raises
+    ------
+    ValueError
+        ``rows`` is not a list, or a row has no canonical JSON form
+        (``NaN``/``Infinity``, a non-JSON type, or a self-referencing
+        structure). Fails LOUD rather than closed, matching
+        :func:`content_identity`: an identity computed over content
+        nobody could canonicalize is not evidence.
+
+    Examples
+    --------
+    Two materializations of the same rows in different orders::
+
+        first = row_set_identity([{"a": 1}, {"b": 2}])
+        first == row_set_identity([{"b": 2}, {"a": 1}])
+        # -> True
+    """
+    if not isinstance(rows, list):
+        raise ValueError(
+            f"row_set_identity: rows must be a list, got {type(rows).__name__}"
+        )
+    digests = []
+    for index, row in enumerate(rows):
+        try:
+            canon = json.dumps(
+                row,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ValueError(
+                f"row_set_identity: row {index} cannot be canonically "
+                f"serialized: {exc}"
+            ) from exc
+        digests.append(hashlib.sha256(canon.encode("ascii")).hexdigest())
+    return _canonical_hash(sorted(digests))
 
 
 def _json_text(value):

@@ -16,11 +16,31 @@ SPY-forecast model is authorized by that ruling, and none exists here.
 
 This module owns the child-specific half only: the unit conversion, the
 fail-closed assembly/validation of the ADR-0088/MIO bundle, and the pinned
-confirmed-cap artifact contract. It calibrates nothing — ``pi_upper`` and
-the joint scenario rows arrive from upstream evidence that §11 item 4 has
-not unruled, so this file VALIDATES caller-supplied values and never
-derives them. Generic calibration estimators, when a ruling ever authorizes
-them, graduate to ``dskit``; nothing here is generic.
+confirmed-cap artifact contract. It calibrates nothing — ``pi_hat``,
+``pi_widened`` and the joint scenario rows arrive from upstream evidence
+that §11 item 4 has not unruled, so this file VALIDATES caller-supplied
+values and never derives them. Generic calibration estimators graduated to
+``dskit`` (``false_signal``, ``mean_interval``, ``outcome_interval``,
+``uncertainty_set``); nothing here is generic.
+
+**``pi_upper`` was withdrawn and is refused by name.** ADR-0152 measured
+the widened false-signal reading's attainment of the true rate at 0.53–0.82
+against a 0.95 nominal and renamed it ``pi_widened``. An earlier version of
+this contract accepted a row field called ``pi_upper``, which proved schema
+compliance and nothing about coverage; the field is now
+:data:`WITHDRAWN_FIELD_ALIASES` and a row (or a ``known_at`` stamp) that
+carries it refuses with that reason named. The number itself still travels,
+under the name that says what it is, and the capital step's HFDR row
+records that it is being fed a widened POINT ESTIMATE rather than a
+probability upper bound.
+
+Every bundle also names the calibration artifacts its numbers came from
+(:data:`UNCERTAINTY_ARTIFACT_FIELDS`). The identities alone prove nothing —
+the capital step admits the artifacts themselves through
+``dskit.pipeline.uncertainty_intake`` (ADR-0165) and refuses one that is
+stale, wrong-unit, post-decision, uncalibrated or from a different model.
+Nothing in this file establishes that any of those artifacts is calibrated;
+it carries the identity a consumer checks.
 
 Nothing in this module reads market data or the March-May confirmation
 slice (``configs/run-mean-confirmation.json`` stays unreadable per plan
@@ -52,6 +72,8 @@ __all__ = [
     "ConfirmedCaps",
     "KNOWN_AT_FIELDS",
     "LABEL_CONTRACT_FIELDS",
+    "UNCERTAINTY_ARTIFACT_FIELDS",
+    "WITHDRAWN_FIELD_ALIASES",
     "ZERO_DRIFT",
     "default_label_contract",
     "gross_return",
@@ -99,9 +121,29 @@ KNOWN_AT_FIELDS = (
     "price",
     "yhat",
     "pi_hat",
-    "pi_upper",
+    "pi_widened",
     "scenarios",
 )
+
+#: Field names this contract WITHDREW, mapped to what replaced them. A row
+#: or a ``known_at`` map carrying one refuses with the withdrawal named,
+#: rather than falling through to the generic unknown-field message — the
+#: rename is a statistical retreat (ADR-0152), not a spelling change, and a
+#: caller who still spells it the old way is asserting a guarantee this
+#: release does not have. Also enforced at the capital boundary
+#: (``nodes_capital.BUNDLE_FIELDS``), because a bundle can reach that node
+#: without passing through this class.
+WITHDRAWN_FIELD_ALIASES = {
+    "pi_upper": "pi_widened",
+}
+
+#: The calibration artifacts a bundle must name, one identity per estimand.
+#: ``false_signal`` is the per-entity ``pi_hat``/``pi_widened`` source;
+#: ``outcome`` is the realized-return calibration behind the joint scenario
+#: rows. These are IDENTITIES only: the artifacts themselves are admitted
+#: at the capital boundary through ``dskit.pipeline.uncertainty_intake``,
+#: and nothing here checks that either one is calibrated.
+UNCERTAINTY_ARTIFACT_FIELDS = ("false_signal", "outcome")
 
 #: The exact field set an input row may carry — default-deny, so a caller
 #: cannot smuggle a precomputed gross value (``mu_gross``) or a
@@ -116,7 +158,7 @@ _INPUT_FIELDS = frozenset(
         "sigma_t",
         "beta_t",
         "pi_hat",
-        "pi_upper",
+        "pi_widened",
         "weights",
         "scenarios",
         "label",
@@ -219,13 +261,44 @@ def gross_return(yhat, sigma, lead):
     return simple_return
 
 
+def _uncertainty_problems(uncertainty):
+    """Problems with a bundle's calibration-artifact identities, empty when none."""
+    wanted = sorted(UNCERTAINTY_ARTIFACT_FIELDS)
+    # set, not sorted: a mapping with a non-string key would raise a bare
+    # TypeError out of sorted() instead of refusing by name.
+    if not isinstance(uncertainty, dict) or set(uncertainty) != set(wanted):
+        return [
+            f"uncertainty must carry exactly {wanted!r} — one calibration "
+            "artifact identity per estimand, so the capital step can demand "
+            f"the artifacts themselves, got {uncertainty!r}"
+        ]
+    problems = []
+    for field in wanted:
+        value = uncertainty[field]
+        if not isinstance(value, str) or not value:
+            problems.append(
+                f"uncertainty[{field!r}] must be a non-empty artifact identity, "
+                f"got {value!r}"
+            )
+    return problems
+
+
 def _row_problems(index, row, label_contract):
     """Problems with one input row, empty when none — everything by name."""
     where = f"row {index}"
     if not isinstance(row, dict):
         return [f"{where}: must be a mapping, got {type(row).__name__}"]
     problems = []
-    extra = sorted(set(row) - _INPUT_FIELDS)
+    for alias in sorted(set(row) & set(WITHDRAWN_FIELD_ALIASES)):
+        problems.append(
+            f"{where}: field {alias!r} was WITHDRAWN and renamed "
+            f"{WITHDRAWN_FIELD_ALIASES[alias]!r} (ADR-0152) — the number it "
+            "carried is a widened POINT ESTIMATE whose measured attainment of "
+            "the true rate is 0.53-0.82 against a 0.95 nominal, so a field of "
+            "that name asserts a probability upper bound no producer in this "
+            "release can supply"
+        )
+    extra = sorted(set(row) - _INPUT_FIELDS - set(WITHDRAWN_FIELD_ALIASES))
     if extra:
         problems.append(
             f"{where}: unknown input field(s) {extra} — an assembled row is "
@@ -271,19 +344,19 @@ def _row_problems(index, row, label_contract):
             f"{where} ({entity!r}): beta_t must be a finite number"
         )
     pi_hat = row["pi_hat"]
-    pi_upper = row["pi_upper"]
+    pi_widened = row["pi_widened"]
     if not number_ok(pi_hat) or not 0.0 <= pi_hat <= 1.0:
         problems.append(
             f"{where} ({entity!r}): pi_hat must be a finite number in [0, 1]"
         )
-    if not number_ok(pi_upper) or not 0.0 <= pi_upper <= 1.0:
+    if not number_ok(pi_widened) or not 0.0 <= pi_widened <= 1.0:
         problems.append(
-            f"{where} ({entity!r}): pi_upper must be a finite number in [0, 1]"
+            f"{where} ({entity!r}): pi_widened must be a finite number in [0, 1]"
         )
-    elif number_ok(pi_hat) and pi_hat > pi_upper:
+    elif number_ok(pi_hat) and pi_hat > pi_widened:
         problems.append(
             f"{where} ({entity!r}): pi_hat {pi_hat!r} must not exceed the "
-            f"conservative pi_upper {pi_upper!r}"
+            f"widened pi_widened {pi_widened!r}"
         )
     if row["label"] != label_contract:
         problems.append(
@@ -324,7 +397,16 @@ def _row_problems(index, row, label_contract):
             f"{list(KNOWN_AT_FIELDS)!r}"
         )
     else:
-        unknown = sorted(set(known_at) - set(KNOWN_AT_FIELDS))
+        for alias in sorted(set(known_at) & set(WITHDRAWN_FIELD_ALIASES)):
+            problems.append(
+                f"{where} ({entity!r}): known_at stamp {alias!r} was WITHDRAWN "
+                f"and renamed {WITHDRAWN_FIELD_ALIASES[alias]!r} (ADR-0152) — "
+                "stamping a field that no longer exists cannot make it "
+                "point-in-time"
+            )
+        unknown = sorted(
+            set(known_at) - set(KNOWN_AT_FIELDS) - set(WITHDRAWN_FIELD_ALIASES)
+        )
         if unknown:
             problems.append(
                 f"{where} ({entity!r}): unknown known_at key(s) {unknown} — "
@@ -379,14 +461,18 @@ class ForecastBundle:
         ``price`` (> 0), ``yhat`` (label units), ``sigma_t`` (the SAME
         causal trailing residual std the label used — above the pinned
         contract's ``vol_floor``), ``beta_t`` (finite), ``pi_hat``
-        (point false-signal prevalence in [0, 1]), ``pi_upper``
-        (conservative prevalence bound in [pi_hat, 1]), ``weights`` (non-empty, finite >= 0, summing to 1,
+        (point false-signal prevalence in [0, 1]), ``pi_widened``
+        (the WIDENED reading of that prevalence, in [pi_hat, 1] — a point
+        estimate, NOT a probability upper bound; see the module
+        docstring), ``weights`` (non-empty, finite >= 0, summing to 1,
         shared), ``scenarios`` (label-unit residuals, one per weight),
         ``label`` (the contract that produced ``sigma_t`` — must equal the
         pinned contract), and ``known_at`` (a map keyed EXACTLY by
         ``('sigma', 'beta', 'reference', 'price', 'yhat', 'pi_hat',
-        'pi_upper', 'scenarios')``, every stamp at or before
-        ``decision_ts``). All time values are integer epoch milliseconds.
+        'pi_widened', 'scenarios')``, every stamp at or before
+        ``decision_ts``). A row carrying any name in
+        :data:`WITHDRAWN_FIELD_ALIASES` refuses with the withdrawal named.
+        All time values are integer epoch milliseconds.
         An empty list is the empty gate and assembles to an empty bundle.
     producer : dict
         Exact producer identity: lowercase ``document_sha256``, non-empty
@@ -394,6 +480,14 @@ class ForecastBundle:
     model_manifest_sha256 : str
         Lowercase SHA-256 of the release manifest that binds label/model
         semantics.
+    uncertainty : dict
+        Exactly :data:`UNCERTAINTY_ARTIFACT_FIELDS`, each a non-empty
+        string naming the calibration artifact the tick's numbers came
+        from. Required and stamped onto every assembled row, so the
+        capital step can demand the artifacts THEMSELVES and refuse an
+        unattested one. Naming an identity is not evidence that the
+        artifact behind it is calibrated; it is what makes the artifact
+        checkable.
     label_contract : dict, optional
         The pinned label contract ``sigma_t`` was computed under (default
         :func:`default_label_contract` — the training label's own knobs,
@@ -414,18 +508,19 @@ class ForecastBundle:
             {
                 "entity": "AAPL", "decision_ts": 1_700_000_000_000, "lead": 3,
                 "price": 190.0, "yhat": 0.5, "sigma_t": 0.0012, "beta_t": 1.1,
-                "pi_hat": 0.1, "pi_upper": 0.2, "weights": [0.5, 0.5],
+                "pi_hat": 0.1, "pi_widened": 0.2, "weights": [0.5, 0.5],
                 "scenarios": [-0.4, 0.9],
                 "label": default_label_contract(),
                 "known_at": {"sigma": 1_699_999_939_000, "beta": 1_699_999_939_000,
                               "reference": 1_699_999_939_000, "price": 1_699_999_939_000,
                               "yhat": 1_699_999_939_000, "pi_hat": 1_699_999_500_000,
-                              "pi_upper": 1_699_999_500_000,
+                              "pi_widened": 1_699_999_500_000,
                               "scenarios": 1_699_999_939_000},
             },
         ], producer={"document_sha256": "a" * 64,
                      "node": "forecast", "output": "bundle"},
-           model_manifest_sha256="b" * 64)
+           model_manifest_sha256="b" * 64,
+           uncertainty={"false_signal": "fs-cal-1", "outcome": "outcome-cal-1"})
         bundle.rows[0]["mu_gross"] == math.expm1(0.5 * 0.0012 * 3 ** 0.5)
         # -> True
     """
@@ -437,6 +532,7 @@ class ForecastBundle:
         *,
         producer=None,
         model_manifest_sha256=None,
+        uncertainty=None,
         label_contract=None,
     ):
         self.release_id = release_id
@@ -467,6 +563,7 @@ class ForecastBundle:
                 problems.append("producer.output must be 'bundle'")
         if not is_sha256hex(model_manifest_sha256):
             problems.append("model_manifest_sha256 must be a lowercase SHA-256")
+        problems.extend(_uncertainty_problems(uncertainty))
         if not isinstance(rows, (list, tuple)):
             problems.append(
                 f"rows must be a materialized list of candidate rows, got "
@@ -509,6 +606,7 @@ class ForecastBundle:
         self.weights = list(shared["weights"]) if "weights" in shared else None
         self.producer = dict(producer)
         self.model_manifest_sha256 = model_manifest_sha256
+        self.uncertainty = dict(uncertainty)
         self.rows = [self._assemble(row) for row in rows]
 
     @classmethod
@@ -539,7 +637,7 @@ class ForecastBundle:
             "unit": BUNDLE_UNIT,
             "price": float(row["price"]),
             "pi_hat": float(row["pi_hat"]),
-            "pi_upper": float(row["pi_upper"]),
+            "pi_widened": float(row["pi_widened"]),
             "weights": list(row["weights"]),
             "scenarios": self._recentered_scenarios(row, mu_gross),
             "mu_gross": mu_gross,
@@ -547,6 +645,7 @@ class ForecastBundle:
             "label": dict(self.label_contract),
             "model_manifest_sha256": self.model_manifest_sha256,
             "producer": dict(self.producer),
+            "uncertainty": dict(self.uncertainty),
             "known_at": dict(row["known_at"]),
         }
 

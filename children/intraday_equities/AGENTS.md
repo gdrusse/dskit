@@ -72,14 +72,52 @@ Agent orientation — see README.md for operator commands.
   restates no model name and refuses a selection it has no recipe for. One
   fit, not a walk — the phase declares no fold schedule. Constructed and
   validated (`2db8e95a…`); it has NOT been run.
-- `configs/run-final-refit.json` is a non-executable contract. The driver has
-  no immutable completed-run attestation and no content-derived identity for
-  ten labelled input wires. Filling its pins cannot enable planning;
-  `final_model.FinalRefit` fails closed until those upstream contracts exist.
+- `configs/run-final-refit.json` is a non-executable contract, and stays one.
+  `final_model.FinalRefit` now owns the complete ADR-0166 contract — an
+  immutable completed-run attestation (`RunAttestation.attested_output`),
+  content-derived row identities (`row_set_identity`), and ten labelled
+  input wires keyed by `HEADS` — but it executes ONLY on the `fixture`
+  release channel, which may never claim the shipped `run-final-hpo.json`
+  identity and stamps `deployment_eligible: false` into every head's HASHED
+  bundle training identity. This document declares `release_channel:
+  "production"`, which refuses outright until the owner accepts the signed
+  run-output attestation contract ADR-0122 accepted but nothing builds
+  yet (its out-of-Python launch root does not exist); its pins are
+  PENDING besides. Filling them cannot enable planning. No real final-model
+  release exists. `FinalRefit._FINAL_METHODS` + `__init_subclass__` refuse a
+  subclass that replaces any part of that gate (`uses:` accepts any class).
+  None of it is a root of trust: two documented paths past the seal cost
+  nothing at all (`FinalRefit.__init_subclass__`'s docstring is the one place
+  that lists them), the run directory is unauthenticated (ADR-0119), and a
+  bundle stamp is not evidence of authorization. See ADR-0166's threat model.
 - Telemetry carries no symbol and no lead (ADR-0118). `metrics.py` maps this
   project's field names onto the generic event catalogue and returns the
   per-lead decay profile as artifact DATA; the metric registry refuses either
   as a label. Nothing here sets a threshold — plan §11 item 7 is open.
+- `pi_upper` was WITHDRAWN and is refused by name at both the bundle and
+  the capital boundary (ADR-0152/ADR-0165). The number is `pi_widened`, a
+  widened POINT ESTIMATE; the ADR-0088 HFDR row is fed it unchanged and
+  `run`'s evidence records that the row is NOT a chance constraint. A
+  genuine bound would be a `uncertainty_intake.ProbabilityUpperBound`
+  member; no registered intake answers that family, and capital asks the
+  dskit REGISTRY through `admission_problems` rather than asking the
+  envelope's class what it is. The field source is pinned behaviourally
+  (`test_the_hfdr_row_reads_the_widened_field_not_the_point_estimate`) —
+  a round-1 review swapped it to `pi_hat` and 127 tests stayed green.
+- Capital never sizes against uncertainty it cannot attest. Every bundle
+  names its calibration artifacts and `EquityKellyMIO` takes a required
+  `uncertainty` port of `uncertainty_intake` envelopes, admitted against
+  ONE decision timestamp; stale / wrong-unit / post-decision /
+  uncalibrated / foreign-model / unknown-producer refuses. The seam
+  MEASURES NOTHING and is NOT a root of trust (a hostile metaclass can
+  still defeat an envelope's `problems()` METHOD, which is why capital
+  calls the module FUNCTION) — it screens what a producer attests, and
+  the two knobs it screens against
+  (`uncertainty_max_calibration_age_ms`, `uncertainty_min_coverage`) are
+  required owner decisions with no default. An admitted artifact is not
+  evidence that a calibrated estimator produced it; the producer screen
+  narrows "any object of the right shape" to "one naming a producer the
+  package has registered", and no further.
 
 ## Machine knobs
 

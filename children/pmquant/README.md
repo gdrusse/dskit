@@ -111,7 +111,7 @@ verbs record themselves; research uses `python -m dskit.journal research --topic
 pmquant/
 ├── __init__.py          import = registration of every pmquant-* kind
 ├── books.py             ladders, DecisionEpochRecord, entry gate, walk_book
-├── fees.py              venue fee rounding, dated FeeBook, resolve_fee_rates
+├── fees.py              venue fee rounding, fill fee policies, dated FeeBook, resolve_fee_rates
 ├── mio.py               scenarios, payoffs, the tangent MILP, exact recompute
 ├── models.py            TokenEncoder, LawHead, LadderQhatModule, LadderPanelAdapter
 ├── nodes_data.py        pmquant-ladder-source / -settlement / -inventory

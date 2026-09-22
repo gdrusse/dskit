@@ -100,6 +100,7 @@ CLOSED_SET_NAMES = (
     "PROCESS_EVENTS",
     "ECONOMIC_ATTRS",
     "CASH_FLOW_KINDS",
+    "BALANCE_BASES",
     "READINESS_VERDICTS",
     "METRIC_NAMES",
     "METRIC_LABEL_VALUES",
@@ -291,6 +292,10 @@ EXPECTED_MEMBERS = {
     "PROCESS_EVENTS": ("start", "stop", "recovered"),
     "ECONOMIC_ATTRS": ("positions", "working", "balances"),
     "CASH_FLOW_KINDS": ("deposit", "withdrawal", "adjustment"),
+    # ADR-0162: which side of a fill is still unsettled depends on whether
+    # the folded balance already reflects it, which is a venue fact rather
+    # than something an encumbrance policy may assume.
+    "BALANCE_BASES": ("trade_date", "settlement_date"),
     "READINESS_VERDICTS": ("go", "no_go"),
     "MONEY_FIELDS": (
         "qty",

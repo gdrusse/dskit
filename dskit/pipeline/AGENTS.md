@@ -508,7 +508,9 @@ dskit/pipeline/
 ├── node.py            Node + TrainableNode ABCs, NodeContext, registry, register_node_kind
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
-│                      (ADR-0056); run_walk_forward (ADR-0027)
+│                      (ADR-0056); run_walk_forward (ADR-0027);
+│                      RunAttestation + content_identity (ADR-0119);
+│                      attested_output + row_set_identity (ADR-0166)
 ├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
 ├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)

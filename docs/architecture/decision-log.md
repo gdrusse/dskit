@@ -16442,3 +16442,2897 @@ No production authority is added and no `deployment_eligible` claim is made.
 `learn`, HPO, final refit, market replay, backtest, paper trading and lockbox
 access remain unauthorized and untouched; the SB3 episode suite constructs no
 SB3 or Gymnasium object at all.
+
+## ADR-0161 — arrival-time execution: transport as an object in the simulated venue
+
+**Status:** accepted 2026-09-18 under the owner's standing pre-approval of
+tier-1/tier-2 additions for the production-audit arrival slice (session
+`claude/pg-f1-arrival-20260918`). Closes the shared seam behind the equity
+audit's EQ-04 and the pmquant audit's PM-05; both children wrap it later, and
+no child is wired here.
+
+**Context.** `PaperExecutor.submit` computes `now = clock.now_ms() +
+latency_ms.submit` and then immediately calls `_take(intent, now)`, which
+prices against `self._quotes[instrument]` — whatever quote is stored at the
+moment of the call, not the one that will stand at `now`. `cancel` applies the
+same shifted stamp and terminalises the order in the same call, so no fill can
+ever be delivered while a cancel is in flight. The suite's only latency test
+asserts the acknowledgment stamp alone. Latency is therefore a timestamp label,
+never a gate on which book an order sees, and the audit is right that
+time-stamping a fill later cannot reproduce adverse selection during transport.
+
+The lifecycle vocabulary for the missing states already exists and is already
+wired: `vocab.STATUSES` carries `pending` and `pending_cancel`,
+`TERMINAL_STATUSES` excludes both, `leg._EVENT_BY_STATUS` maps them to `ack`
+and `status` under an `exact=True` pin, `SeriesState` folds an `order_event`
+by that status, `StateView.pending` is the fold's in-flight slot,
+`Reconciler._orders` resolves every pending ref through `executor.order(ref)`
+and `Recovery.run` queries the same verb and never resends. Nothing asynchronous
+has ever exercised that path: `executor.py` pins only eight of the eleven
+statuses, because a synchronous venue never reaches the other three.
+
+**Decision.** Add one concrete simulated venue, `ArrivalPaperExecutor`, as a
+subclass of `PaperExecutor` in `executor.py`, plus the transport objects it
+needs. No branch selects it; the serve document names the class.
+
+1. **Transport is an object, not a delay.** `_InFlight` is an ABC with one
+   `@abstractmethod`, `deliver(venue, now_ms)`. `_InFlightSubmit` prices the
+   order against the book it finds on arrival; `_InFlightCancel` applies to
+   whatever remains. `_ArrivalQueue` holds them ordered on
+   `(at_ms, send order)`, so ties at one instant keep send order. A venue has
+   no thread, so the queue is drained by the verbs that TELL it about an
+   instant — `on_quote`, `submit`, `cancel` — and by nothing else.
+2. **A read never commits.** `order`, `open_orders`, `fills` and `transport`
+   answer from what has already happened and land nothing. A query that could
+   make an order arrive would make its fill a function of when somebody
+   happened to ask rather than of the tape: `Recovery.run` queries every
+   pending ref, so after an outage longer than the latency it would price the
+   order against the last pre-crash book and append that fill to the chain as
+   fact, and two restarts of different duration would record different
+   ledgers. Uncontrolled non-determinism is not admissible in a package whose
+   replay-parity and no-wall-clock claims are load-bearing.
+3. **An arrival is priced by the book of its own instant.** `on_quote` lands
+   every message due *strictly before* the quote's `asof_ms` against the book
+   that stands, then publishes the quote, then lands the rest. A quote
+   published at `asof_ms` is in the book from `asof_ms` onward; an order that
+   arrived earlier must never see it. The two reaches reuse the module's
+   existing `_Reach(through=...)` strategy rather than a boolean flag.
+4. **In flight is `pending`; cancelling is `pending_cancel`.** Both come from
+   `vocab.STATUSES` — no new status is invented and `vocab.py` is unchanged.
+   `executor.py`'s own status pin widens from eight names to ten. An order in
+   transport is held apart from the BOOK, so `_march` can never fill something
+   the venue has not received — but it is still one of this venue's
+   `open_orders()`, because `Executor.open_orders` promises "the non-terminal
+   `OrderState`s this executor owns" and an order in transport is both. Two
+   generic bodies depend on that: `Executor.cancel_all`, which is the halt's
+   only cancellation path, and `Reconciler._orders`, where a ref the fold
+   holds `working` and the venue omits reads as `missing_at_venue` — an
+   economic break that can halt a series over nothing but transport. The
+   invariant is restored rather than patched per consumer, so neither is
+   overridden and a future consumer inherits the same guarantee.
+5. **A fill delivered before a cancel acknowledgment is retained.** A cancel
+   is marked at send time and applied at `sent + latency_ms.cancel`; between
+   those instants the order keeps marching and may fill. The landing cancel
+   only sets the status, so `filled_qty` stands and only the remainder is
+   cancelled. A fill during that window re-states `pending_cancel` rather than
+   erasing it.
+6. **A cancel for an order still in transport CHASES it, and never lands
+   before it.** §5.7's battery requires that a terminal cancel acknowledgement
+   mean a terminal order, so the tempting `rejected`/`unknown_ref` is wrong
+   here: it would report the end of an order still on its way. The request is
+   queued instead and the order reads `pending_cancel`. A cancel carrying less
+   latency than its own order would otherwise overtake it and find nothing at
+   the venue; dropping it there would make an ACCEPTED cancel request a lie
+   and would leave the halt's kill switch unable to stop an order in transport
+   — the one thing it exists to do — so the venue queues it behind the order
+   at `max(sent + cancel latency, the order's arrival)`. What the sweep can
+   NOT undo is a fill an order takes the instant it lands: no venue processes
+   a cancel for an order it has not received, so the guarantee is that nothing
+   SURVIVES the sweep, not that nothing trades. `unknown_ref` is kept for a
+   reference this venue was never sent at all.
+7. **What the venue's own `capabilities` decline never enters transport.**
+   §5.7's "capability gating precedes any I/O" is a local refusal, so an
+   unsupported time-in-force and a proposal naming no order are answered
+   terminally at the sender. The rule has one owner, `_gated`, which `_take`
+   reads too — the gate is not restated for the asynchronous path.
+8. **The book is monotone in exchange event time.** A quote older than the one
+   standing for its instrument is refused and counted as a stream gap, per
+   instrument. An arrival-time book that can move backwards is not one.
+9. **Evidence the executor owns.** `TransportEvidence` retains, per client
+   ref: send, scheduled arrival, acknowledgment, every fill instant, cancel
+   request, cancel arrival, terminal acknowledgment, and the publication and
+   local-receipt instants of the book the order priced against — whose
+   difference is the clock offset the venue can see. `stream_gaps()` reports
+   the out-of-order count per instrument. Feature cutoff and decision
+   completion are NOT here: they are upstream of the venue and belong to the
+   serve loop and the child.
+
+**Reachability, and the contract literals this moves.** A seam no document
+can name closes no gap, and `compose.RUNG_TABLE` admits a core KIND at a
+simulated rung and nothing else — so a class reference refuses at `shadow` and
+`paper` exactly as `PaperExecutor` by path always did, and the four rungs
+between them refused every spelling of this venue. Two literals therefore move
+deliberately, under the owner's pre-approval for this work. `EXECUTOR_KINDS`
+gains a fourth kind, `paper-arrival`; the D14 property that matters — core
+registers nothing that can reach a socket — is now asserted rather than
+counted. And `_Rung`'s four core-kind slots become TUPLES of admissible kinds:
+`paper` admits `("paper", "paper-arrival")`, because they are one venue family
+differing only in how they model transport, while `shadow` still admits
+`("shadow",)` alone — a rung that decides and declines may not select a venue
+that books fills — and the live rungs still admit none.
+
+**Compatibility.** `PaperExecutor`'s behaviour is unchanged for every existing
+document, and the guarantee is structural rather than conditional: there is no
+new knob whose default could be misread and `_PARAMS` is unmoved. Selecting
+the new venue is a change to a graded document field, and therefore a new
+release hash.
+Two extractions inside `PaperExecutor` give a rule one owner instead of two
+copies — `_orderable(proposal)` and `_quote_of(quote)`, the twin of the
+existing `_intent_of` — and are provably equivalent to the conditions they
+replace. With `latency_ms = {submit: 0, cancel: 0}` the arrival queue
+degenerates to the synchronous path BY CONSTRUCTION: the message is queued and
+landed inside the same call, at the same instant, so the acknowledgment and the
+book are the ones today produces. That degeneration is pinned by a test that
+runs the same script against both classes and compares every field.
+
+**Non-goals.** Measured latency, queue-position or slippage distributions (that
+is EQ-08, a later gate); a real venue adapter or any concrete `LiveExecutor`;
+child wiring; the replay-tape codec; the ADR-0157 liveness xfail. Passing these
+deterministic ordering tests is the FIRST gate — it establishes that the seam
+orders events correctly, and establishes nothing about agreement with a real
+venue's fills or markouts, which is a separate, separately authorized gate.
+
+**Consequences.** The fold's in-flight machinery becomes reachable: a ref in
+`StateView.pending` now resolves to a `pending` `OrderState` through
+`executor.order(ref)` instead of `None`, so `Recovery.run` records `pending`
+— for an order still in transport, whether recovery runs inside the latency
+window or long after it, because querying never lands it — and
+`Reconciler._orders` resolves it instead of raising.
+`breaker.cancel_working` additionally judges the sweep against the fold it was
+handed: a `view.working` ref no ack answered for downgrades `submitted` or
+`partial` to `unknown`, because `cancel_outcome` reads only the acks it was
+given and a halt that under-reports is worse than one that fails loudly.
+A venue that answers a pending ref is what makes "an unknown outcome is
+resolved by querying, never by resending" true for an order still in transport.
+The terminal acknowledgment of a landed cancel reaches the fold through the
+existing reconcile/query path, not through a second return value from `cancel`.
+---
+
+## ADR-0166 — Wiring `FinalRefit` to an attested run, content-derived row identities and ten labelled wires
+
+*(Number reserved for this work packet. 0122 is already taken by the
+PROPOSED attested ten-head release entry, which this ADR does NOT implement;
+0161-0165 are held by parallel lanes. Ids are cited from prose, never
+reclaimed.)*
+
+**Status:** accepted 2026-09-18 under the owner's pre-approval of tier-1/
+tier-2 additions for gap EQ-01 of
+`children/intraday_equities/docs/explanations/production-research-audit.tex`
+("finish the immutable completed-run/ten-wire FinalRefit contract and prove
+real frozen-bundle replay"). Completes ADR-0116's conditional future path and
+consumes ADR-0119's driver capabilities. It authorizes no real HPO, refit,
+market replay, backtest, lockbox read, paper/live action or deployment, and
+it does not accept ADR-0122.
+
+*Corrected 2026-09-18 after round-1 independent review found 1 Critical and
+1 Major. The Critical: `uses: "module:ClassName"` accepts ANY class, so a
+subclass overriding `_channel_problems` constructed on the production channel
+and, with `_release_identity` also overridden, wrote a bundle stamped
+`production` / `deployment_eligible: True` over fabricated evidence, with no
+edit to dskit or to `final_model.py`. Fixed by sealing the gate and — the
+half that matters more — by deleting this entry's false claim that no code
+path could emit one. The Major: the closed-vocabulary test read its expected
+vocabulary from the module under test, so narrowing the gate to `if not
+channel` let `"staging"` through with a green suite. Both corrections are
+below.*
+
+*Corrected again 2026-09-18 after round-2 review found 2 Critical and 2 Major
+and the coordinator invoked `skeptic-review.md`'s convergence checkpoint. The
+Critical pair reached past the round-1 seal through a mixin earlier in the MRO
+and through a `__getattribute__` hijack `vars(cls)` cannot surface; the Major
+pair were test defects (a "grandchild" test that built a direct child, and an
+unpinned `ignored` allowlist). The checkpoint's changed approach is not a third
+seal patch: resolve the seal through the MRO, which is what enumeration CAN do
+correctly, and delete the claim that the enumeration is a boundary. There is no
+third bypass to hunt because nothing is claimed that a bypass would falsify.*
+
+*Corrected again 2026-09-18 after round-3 review found 3 Major, all of them a
+test that could not express what it claimed or a sentence that was not true: the
+seal's `is not` was pinned by nothing (an `!=` mutation passed 110/110 and a
+rigged-`__eq__` object then walks through), the `FinalRefit._FINAL_METHODS` read
+was pinned only by an unrelated `TypeError`, and the class docstring still
+carried a cost claim this entry had already corrected elsewhere. Sweeping that
+last family found a SECOND false claim review had not named — a swallowing
+mixin, unlike a swallowing intermediate, is never refused and costs nothing —
+so limits 1 and 2 below are rewritten rather than patched.*
+
+*Corrected again 2026-09-18 after round-4 review found 1 Major: round-4's own
+rewrite of limit 1 substituted a subclass-only illustration for round-3's
+direct `FinalRefit.<name> = ...` shape, which is strictly narrower AND is the
+shape the shipped document wires. A rewrite is not a correction unless it
+covers every case the original did; verifying that needs the round-over-round
+sentence comparison, not a re-read. Every round-4 rewrite was diffed against
+round-3 on that basis, which also recovered "intercept attribute access on the
+class itself" in limit 4 and "fails closed ... for the shipped configuration"
+in the class docstring.*
+
+*Corrected again 2026-09-18 after round-5 review found 1 Major: the disclosure
+pins were polarity-blind, so an inverted claim shipped green. Replaced with
+`GATE_FACTS` above. This is the sixth and final review round; the residual
+list the owner asked for is in the delivery report, and its headline item is
+that free-text prose in this entry and in the module docstrings remains
+unexecutable — measured by inserting two false sentences beside the true
+declaration, which still passed 132 tests. What changed is that prose no
+longer carries the authority, not that prose became trustworthy.*
+
+*Corrected again 2026-09-19 after round-6 review found 2 Major, both in the
+round-6 fix itself. (1) Round 6 moved the polarity into a boolean but left the
+REACH in prose — "does NOT reach `run()`'s instance-level `self._channel()`" —
+and prose was wrong about it, because round 6 had also dropped `__mro__`
+doctoring from the mechanism list while never probing the family. Measured:
+a subclass whose metaclass supplies `__dict__` was invisible to
+`inspect.getattr_static`, which SKIPS such a class rather than trusting it, so
+the seal read `FinalRefit`'s own member for every sealed name while Python
+resolved the subclass's live override on BOTH paths — a total bypass, not a
+partial one. A metaclass `__new__` that injects after class creation is a
+second total bypass. FIXED at the resolution rather than declared around:
+`_resolved_through_the_mro` reads the class's real `__mro__` and each entry's
+real `__dict__` through `type`'s own descriptors, so no metaclass participates
+in what the seal reads, and the `__dict__`-shadowing attempt is now refused.
+`GATE_FACTS` gained a `reach` field so the remaining ones state WHERE they land
+as executed data. (2) One clause in `__init_subclass__`'s docstring still named
+four mechanisms and their common outcome, and negating that outcome left all
+132 tests green. The docstring now carries no outcome vocabulary outside four
+pinned sentences, EACH OF WHICH CONTAINS ITS OWN POLARITY WORD — which is the
+general rule this family kept missing: `assert "introspection" in doc` cannot
+see an inversion, `assert "not an authority boundary" in doc` can, because the
+negation is inside the pinned substring.*
+
+*Corrected again 2026-09-19 after round-7 review returned 0 Critical, 4 Major
+across two independent lenses — and, because the same two FAMILIES had now
+recurred in rounds 4, 5, 6 and 7, under the CONVERGENCE CHECKPOINT rather than
+as a fifth patch. The two families: (a) another shape past the class-definition
+seal, (b) another false claim in prose that the round's own pin could not see.
+Both lenses found one of each independently.*
+
+*Family (a), and the changed approach: **the check moved to USE TIME.**
+`type.__new__` invokes `__init_subclass__` as `super(cls, cls).__init_subclass__`,
+which searches `cls.__mro__` AFTER `cls` — so a metaclass whose `mro()` rotates
+the class to the end skips the hook SILENTLY, no exception, and a metaclass
+`__new__` that assigns after `super().__new__` lands after it. In both cases
+`_sealed_violations` returned the violation when asked: the check was right and
+its TIMING was wrong. `_unsealed_problems` now takes the same verdict from
+`validate_params` and from `run`, which are where the gate is consulted. That
+is not another declaration — it closes the whole class of attempt that skips
+the definition-time hook, and three previously OPEN total bypasses now reach
+NOTHING: the swallowing mixin, post-hoc assignment on a subclass, and metaclass
+`__new__` injection. It does not make the seal an authority boundary and cannot:
+a caller who replaces `run` outright is not using this gate, which is ADR-0122's
+`uses:` problem.*
+
+*Family (b), and the changed approach: **a digest, not a denylist.** Round 6
+pinned prose by required substring; round 7 replaced that with a banned
+vocabulary; both lenses then defeated the vocabulary five ways between them, and
+TWO of the five put the false claim where the check never looked at all — the
+CLASS docstring, and a `GATE_FACTS` `attempt` string. A finite word list
+mistaken for a completeness proof is the same error three rounds running. Every
+paragraph of the seal's docstring, every gate-naming paragraph of the class
+docstring, and every `attempt` string is now pinned BY DIGEST. The honest scope
+is smaller than it sounds and is stated in the test: this detects CHANGE, not
+falsehood — when it fails a reviewer reads the new text and decides whether it
+is true. What it makes impossible is a gate claim moving with nobody looking.*
+
+*Two measurement defects were found in round 7's own harness and fixed: the
+`run` reach was measured by re-implementing `run`'s gate sequence, so DELETING
+that gate from `run` changed no measurement; and `_channel` itself was never a
+declared target, while the measurement resolved it on `FinalRefit` rather than
+through the instance. `_reaches` now calls `run` and classifies the refusal
+against markers taken from the PRISTINE class — derived from the attacked class,
+a metaclass interception empties the expected text and the row measures as
+reaching `run`, which it briefly did. 19 facts; 44 mutations, 44 killed,
+including all five prose attacks the lenses used and both halves of the
+use-time check.*
+
+*Corrected again 2026-09-19 after round-8 review returned 0 Critical, 3 Major —
+and both of round 8's changed approaches turned out to have the SAME defect in
+a new place: each one was still decided by something the attacker could reach.*
+
+*(a) The use-time guard was asked THROUGH THE CLASS it guards.*
+`cls._unsealed_problems()` resolves like any other member, so the three
+mechanisms round 8 had just closed could inject a compliant
+`_unsealed_problems` ALONGSIDE their real payload and the class reported itself
+clean at both entry points. Asking a compromised class whether it is
+compromised is not a check. FIXED: `_unsealed_problems` is a MODULE-LEVEL
+function now and is not a sealed member at all — nothing resolves it through
+the class, so injecting the name is inert. Replacing the module name is the
+already-declared trusted-name tier, not a new one. Round-8 review's own
+19-row independent re-measurement matched all 19 declared values, so the
+declarations were right; only this one resolution was wrong.*
+
+*(b) The digest's CLASSIFIER was unpinned, and its surface was two attributes
+wide.* Round 8 pinned the paragraphs a `_GATE_WORDS` list judged to be about
+the gate. Review broke that two ways: trim one word from the list, drop the
+matching digest, rewrite the paragraph — 144 tests still passed, and the
+paragraph it unpinned was the ADR-0122 disclaimer, the single most
+load-bearing sentence in the class docstring. And the module docstring, every
+other method's docstring, and every `#:` comment were never scanned at all, so
+a bald false completeness claim was free in any of them. FIXED BY DELETING THE
+CLASSIFIER: every docstring in the module at any nesting depth, plus every
+`#:` note, is pinned — 53 entries, nothing decides what counts. A test asserts
+the pin's own reach against an independent AST walk, so a `_module_prose` that
+quietly stopped walking would fail rather than shrink the surface silently.*
+
+*THE PATTERN, worth naming because it took four rounds to see: each round's fix
+introduced a new DECIDER — a substring, a vocabulary, a classifier, a guard
+method — and review defeated the decider rather than the fix. Round 9 removes
+the decider in both cases instead of improving it. The honest scope is
+unchanged and is stated in the tests: the prose pin detects CHANGE, not
+falsehood, and the seal is still not an authority boundary.*
+
+*20 facts; 44 mutations, 44 killed, including all four places round-8 review
+put a false claim and the guard-through-the-class attack. Minor fixed: a test
+docstring still said a post-hoc subclass bypass "WORKS", which round 8's own
+declaration had contradicted. Nit fixed: `_PINNED_SEAL_CLAIMS` now has a
+length pin.*
+
+**Context.** ADR-0116 left `FinalRefit` unconditionally fail-closed and named
+three missing pieces; ADR-0119 built two of the generic halves
+(`RunAttestation`, `content_identity`) and explicitly left "the ten labelled
+input wires, and the refit-identity's own source/cache/window-derived hash"
+and "wiring `FinalRefit` to any of this" unbuilt. Inventory for this entry
+read `dskit/pipeline/driver.py`, `node.py`, `document.py`,
+`libs/sklearn.py`'s `write_bundle`/`load_bundle`,
+`dskit/production/{release,bundles,ledger,verifier,ids}.py`,
+`dskit/pipeline/{trust,release_rotation,program_calendar}.py`,
+`dskit/onboarding/{base,snapshot,observations}.py` and ADR-0090/0091/0098/
+0112/0114/0116/0119/0122/0157. Two gaps survived that sweep:
+
+- Nothing returns the VALUE a completed, document-bound node recorded.
+  `node_output_for_document` returns a boolean, so a consumer had to read
+  `nodes/*.json` itself — run-directory layout knowledge a child must not own.
+- Every content digest in the repo is ORDER-DEPENDENT where it matters here.
+  `observations.stream_digest` hashes a snapshot in list order,
+  `CandidateInventory.digest` hashes an ordered tuple, `content_identity` is
+  order-independent across manifest NAMES but not within one artifact's rows,
+  and `production.base.canonical_hash` treats a list as ordered. None can say
+  "these are the same rows, re-materialized in another order".
+
+Everything else was reused unchanged: `resolve_json_artifact`,
+`RunAttestation`, `PipelineDocument.hash`, `CandidateInventory`,
+`TrialLedger`, `OneStandardErrorSelector`, `write_bundle`/`load_bundle`,
+`ColumnSubsetEstimator` and the child's own `refit_heads`.
+
+**Decision.** Two tier-1 additions to `dskit/pipeline/driver.py`, which
+already owns `resolve_json_artifact`, `_canonical_hash` and the RECORD-phase
+writers both read; a sibling module would restate that private recipe and
+run-dir layout.
+
+1. `RunAttestation.attested_output(node_key, output_name, document_hash)` —
+   the value `node_key` recorded for `output_name`, returned only when
+   `node_output_for_document` holds AND the run's own `carry.json` carries an
+   equal value under the same node and name. `None` on anything else, so an
+   unreadable run never looks different from one that did not happen. This is
+   exactly the corroboration ADR-0116 asked each consumer to make, owned once.
+   It composes evidence the driver already writes; it does not authenticate
+   it, and ADR-0119's disclosed node-record chaining gap is unchanged.
+
+2. `row_set_identity(rows)` — one sha256 over the canonical JSON of the
+   SORTED list of per-row canonical digests. Content-derived and
+   order-INDEPENDENT: position, filename, producer name and any label
+   supplied beside the rows are not arguments at all, so only the rows' own
+   JSON content can move it. Rows are a MULTISET, not a set. `NaN`, a
+   non-JSON type or a non-list raises, matching `content_identity`'s
+   fail-loud contract. (ADR-0122 proposes an ORDERED row-identity digest;
+   that entry is not accepted, and EQ-01's contract requires a re-materialized
+   set to identify as the same rows, so this one is order-independent.)
+
+Child-side (tier 3, `children/intraday_equities/intraday_equities/
+final_model.py`), `FinalRefit` becomes the orchestration node ADR-0116
+described and nothing more:
+
+- **Immutable completed-run provenance.** `_verified_hpo_outputs` attests the
+  run completed and binds the pinned document identity, then takes each
+  head's `hpo_ledger` through `attested_output` and refuses a manifest that
+  is not what `scan_hNN` recorded. Every artifact is re-read and re-digested
+  from bytes on every call, so a run mutated after binding refuses. The
+  attestation runs BEFORE the document pin is compared, so a run whose
+  `config.json` was swapped refuses as unattested, not as a mismatched pin.
+- **Content-derived materialized-row identities.** Each wire's identity is
+  `row_set_identity` over the delivered rows and must equal the sha256
+  `refit_identity.rows` pins for that head. The pin is an expectation; the
+  identity is always recomputed from content. The ten identities must differ.
+- **Ten labelled input wires.** `HEADS` is the only authority. Every row
+  carries `WIRE_LABEL_FIELD` naming its own head — ordinary content, which
+  moves the wire's identity like any other field — so a missing, extra,
+  empty, swapped, duplicated or mislabelled wire refuses by name before any
+  fit. `run` re-checks `validate_inputs` itself, so the refusal holds at
+  every entry point, not only through the driver.
+- **The bound release identity reaches the bundle.** Every head's HASHED
+  `training_identities` entry carries source, cache, that head's row
+  identity, the training-window start, the exclusive lockbox boundary, the
+  exact embargo interval, the bound HPO document identity, the release
+  channel and `deployment_eligible: false` — ADR-0116's requirement that
+  identical fitted bytes over different data/cache/cuts cannot attest as the
+  same release.
+- **Fixture and production are different releases, structurally.** A
+  `release_channel` param admits `"fixture"` or `"production"`. A fixture may
+  never claim the shipped `configs/run-final-hpo.json` identity (read from
+  that document, never restated). `"production"` — a real final-model
+  release — refuses OUTRIGHT, at construction and again inside `run`: it
+  needs the signed run-output attestation contract ADR-0122 accepted on
+  2026-09-12, whose out-of-Python launch root NOTHING BUILDS YET.
+  Because `write_bundle`'s content hash covers `training_identities`, a
+  written bundle cannot be relabelled afterwards without failing
+  `load_bundle`.
+- **The gate has an accident guard, not an authority boundary.** Every
+  refusal above is a method and `uses: "module:ClassName"` accepts any
+  class, so `FinalRefit._FINAL_METHODS` names the twenty-nine members the
+  gate resolves through — the twenty-three this class defines, the
+  inherited `__init__`, `__new__` and `artifact_dir`, and the three
+  attribute-resolution hooks `__getattribute__`, `__getattr__` and
+  `__setattr__` — and `__init_subclass__` raises `TypeError` for a subclass
+  that resolves any of them to something other than this class's own.
+  Resolution is THROUGH THE MRO (`inspect.getattr_static`), not against
+  `cls.__dict__`: round-2 review reached past a `__dict__` check with a
+  mixin earlier in the MRO and with a `__getattribute__` hijack that
+  `vars(cls)` can never surface, and both are now refused, at any depth of
+  subclassing. The list is restated independently in
+  `tests/test_final_model.py`; one test refuses any member of the class
+  absent from it, another refuses anything CALLABLE hiding in that
+  test's own metadata allowlist — round-2 proved an unpinned allowlist is an
+  escape hatch a rushed author widens to turn a red suite green. This is the
+  `production/leg.py` and `production/loop.py` idiom widened from one name
+  to the whole gate, and it carries the same honest scope
+  `pipeline/uncertainty_set.py` already states for it.
+
+`configs/run-final-refit.json` declares `release_channel: "production"` and
+`refit_identity.rows`, and every pin stays PENDING. It still refuses to plan,
+in two categories — channel closure and pending pins — which `validate_params`
+reports as nine distinct problems.
+
+Adding those two graded fields moved the document's identity hash from
+`ed5709fbbbf56bc4dbdb3954ec8e81d5649b7605b936b30bd65eca18e2f3afd1` to
+`b0fe47c3456101cc2ce072df11d07df1e53e38db310a160be4a949e054593fd1`. That move
+is benign and is recorded here rather than left silent: this document has
+never planned successfully at either commit, no run directory exists under
+`children/intraday_equities/pipeline_runs`, and no stored artifact, `$prev`
+series or release is keyed to the old hash. Nothing is orphaned.
+
+**Threat model, and what this entry is NOT.** Everything above is an
+IN-PROCESS check. **It is not an authority boundary and it cannot become
+one.** Two review rounds each found a new way past the previous round's
+class-definition seal, and the reason is structural rather than a missing
+case: `__init_subclass__` can only inspect names, while Python resolves
+attributes through the whole MRO, through `__getattribute__`, through the
+metaclass and through instance dictionaries. An enumeration cannot close an
+open set. What the check earns is real but bounded — it stops an ordinary
+caller wiring the wrong class, and it stops a future edit quietly dropping a
+refusal — and this entry claims exactly that and nothing more. The earlier
+wording here ("fails closed for ... the documented `uses:` subclassing seam",
+"the chain cannot be broken at depth") was falsified by review and is
+withdrawn.
+
+**The authoritative statement is `final_model.GATE_FACTS`, and it is
+executed.** Round-5 review proved prose cannot carry this: it inverted three
+sentences in the module — "a custom metaclass CANNOT ...", "It fails OPEN, not
+closed" — keeping every substring the disclosure test checked, and the whole
+116-test suite stayed green, because a substring assertion cannot see polarity.
+So the polarity moved into data, and after round 6 so did the
+REACH. `GATE_FACTS` is a tuple of `(name, refuses, reach, attempt)`: the
+attempt describes only what is TRIED, `refuses` is whether the seal itself
+halts class creation, and `reach` is the tuple of `RELEASE_ENTRY_POINTS`
+(`validate_params`, `run`) the attempt actually opens on the production
+channel. `tests/test_final_model.py` holds one probe per name, performs each
+attempt for real, and asserts BOTH observed fields against what is declared —
+all TWENTY-TWO as of round 10. A probe refused by Python rather than by the
+seal raises rather than counting as a refusal — told apart BY EXCEPTION TYPE
+(`SealRefused`) since round 10, never by a substring of the message — and a
+control test proves the reach measurement distinguishes the two entry points
+instead of always answering `()`. Verified by mutation in every round; the
+round-10 sweep runs eighteen mutations over the seal, the metaclass rule and
+the prose machinery, and all eighteen are killed. The class and
+`__init_subclass__` docstrings CITE the tuple instead of restating it, and the
+tuple's own `attempt` sentences are digest-pinned with the rest of the module's
+prose.
+
+The numbered list below is a NARRATIVE summary for a reader who is not in the
+code, kept because it carries the round-by-round corrections. It is not
+executable. Where it and `GATE_FACTS` could ever disagree, `GATE_FACTS` is
+what the code does.
+
+Six limits, disclosed rather than papered over:
+
+1. Post-hoc assignment, in either of two reachable shapes. **Directly on the
+   class** — `FinalRefit._release_identity = ...` after import — which is the
+   shape the SHIPPED document reaches, because `run-final-refit.json` wires
+   `uses: "intraday_equities.final_model:FinalRefit"` and `uses:` resolution
+   is an import plus a `getattr` with no re-check of the resolved class's
+   members: no subclass is needed and the check never runs at all. Or **on a
+   subclass** — `class S(FinalRefit): pass` has an empty body and passes the
+   check, and `S._channel_problems = ...` afterwards is never seen. Either
+   shape **costs nothing — no repository file is edited**. Round-3 wrote that
+   this path "forces an edit to trusted source, a different threat class";
+   round-4 review disproved that, and round-4's own rewrite then narrowed the
+   bullet to the subclass shape alone, which round-5 review caught. Both
+   shapes are named here now, and a test executes the direct one.
+2. A base EARLIER IN THE MRO whose own `__init_subclass__` does not call
+   `super()`: the check then never runs at all. An intermediate that DERIVES
+   from `FinalRefit` is refused, because `__init_subclass__` is itself sealed
+   — but a plain mixin derives from nothing, is not a subclass, and cannot be
+   refused that way, so **this also costs nothing**. Verified:
+   `class Evil(SwallowMixin, FinalRefit)` is created with overrides in place.
+   `pipeline/uncertainty_set.py` states the same limit for the same idiom;
+   every user of it in this repo shares it.
+3. Per-instance shadowing — `node.run = ...` — because an instance is not a
+   class.
+4. A custom metaclass. Four shapes were probed rather than enumerated from
+   the armchair, and they do NOT behave alike — which is why `reach` is a
+   field and this bullet is a summary of it. A metaclass `__getattribute__`
+   answers every CLASS-level lookup, including `validate_params`' own
+   `cls._channel_problems(...)`, so the production-channel refusal disappears
+   from validation; it does not answer `run()`'s instance-level
+   `self._channel()`. Partial. A metaclass `__new__` that builds the class
+   from an empty namespace and assigns a sealed member before returning it
+   opens both, because `__init_subclass__` has already run inside
+   `type.__new__`. Total, and the same shape as limit 1. A metaclass whose
+   `mro()` drops a base carrying an override opens neither: the seal and
+   Python now walk the same structure, so a member the seal cannot see is one
+   Python does not resolve either. And a metaclass supplying `__dict__` was
+   TOTAL until round 7 — `inspect.getattr_static` skips a class whose
+   metaclass shadows `__dict__` rather than trusting what it would return, so
+   the seal read `FinalRefit`'s own member for every sealed name — and is now
+   refused, because the seal reads `type`'s real `__mro__` and `__dict__`
+   slots instead. That last one is a fix, not a disclosure, and it does not
+   change the paragraph above: an enumeration still cannot close an open set,
+   and limits 1-3 remain open at no cost.
+5. The run directory is UNAUTHENTICATED. ADR-0119 disclosed that nothing
+   hash-chains `nodes/*.json` to `resolved.json` or to each other, and this
+   entry does not change that. Anyone with write access to a run directory
+   can fabricate the records, the carry and the evidence artifacts together
+   and satisfy every check here. Before this slice that gap had no payload
+   to reach, because `FinalRefit.run` raised unconditionally; this slice is
+   the first to give it a high-value target, and that is stated plainly.
+6. A bundle's `release_channel` / `deployment_eligible` stamp records what
+   the writing process believed. It is never, by itself, evidence that
+   anyone authorized the release, and no consumer should read it as one.
+
+**Where the trust root actually is, and that it does not exist yet.**
+ADR-0122's Correction states the rule this entry obeys rather than
+contradicts: "A Python `PreImportResolver` cannot be a root of trust", and
+"Release trust must therefore begin outside Python, and release model
+members must be non-pickle data." ADR-0122 is ACCEPTED (2026-09-12) — its
+title still reads "Proposed", which is stale — and its out-of-Python launch
+root is NOT BUILT: no `PreImportResolver`, launch profile or launcher exists
+anywhere in `dskit/`. Until it does, no bundle stamp this entry produces is
+evidence of authorization, and nothing here is offered as a substitute for
+that launcher. The second half of that quotation also bears on this entry's
+disclosed A3 conflict: the bundle written here is joblib, which is pickle,
+which ADR-0122 rules out for release model members.
+
+**Scope.** `dskit/pipeline/driver.py`, `dskit/pipeline/{README.md,CLAUDE.md}`,
+`tests/pipeline/test_driver.py`,
+`children/intraday_equities/intraday_equities/final_model.py`,
+`children/intraday_equities/configs/run-final-refit.json`,
+`children/intraday_equities/{CLAUDE.md,AGENTS.md}`,
+`children/intraday_equities/tests/{test_final_model.py,test_configs.py}`,
+`dskit/pipeline/AGENTS.md`, and this entry. No market data, HPO, refit, replay or `path.csv` edit.
+
+**Consequences.** The EQ-01 machinery is complete and exercised end to end:
+an attested fixture release refits ten frozen winners once, writes one
+bundle, and `load_bundle` replays it to the identical content hash and
+prediction checksum, while an incomplete run, a record bound to another
+document, evidence absent from the producer record or carry, a mutated
+artifact, rows whose content is not what the release pins, a swapped,
+duplicated or mislabelled wire, and a row outside the permitted window each
+refuse. **No real final-model release was produced.** The production channel
+is closed, the fixture channel is synthetic by construction, and every bundle
+it writes is stamped `deployment_eligible: false` — but "closed" means this
+process refuses, not that the artifact is trustworthy: read the threat model
+above before treating any stamp as authorization. ADR-0122 is accepted but
+its launch root is unimplemented;
+`FinalRefit` remains a `Node`, not the `TrainableNode` that entry and the
+2026-09-14 closeout packet A4 propose; and the closeout packet's native
+LightGBM text artifact (A3) would replace the joblib bundle this uses, which
+is a conflict for a later owner ruling, not one this entry resolves.
+
+### Round 10 correction — the metaclass answers class-level lookup, and prose lives in string literals too
+
+Two independent fresh-context lenses on `1af4f15` returned 0 Critical and four
+distinct Major findings. All four are closed here.
+
+**1. A metaclass data descriptor shadowed a sealed name invisibly.**
+`_resolved_through_the_mro` walks `cls.__mro__`. Class-level attribute access
+does not: `type.__getattribute__` consults `type(cls).__mro__` FIRST, and a
+data descriptor found there wins outright. A metaclass carrying
+`validate_params = <object with __get__ and __set__>` therefore answered
+`Subclass.validate_params` while the seal read `FinalRefit`'s own and reported
+no violation. Measured reach: `("validate_params",)`; the instance path was
+unaffected, because `object.__getattribute__` never consults the metaclass.
+
+The fix is `_metaclass_supplied`, and it does NOT ask whether an object is a
+data descriptor — answering that means reading `type(obj)`, which the attacker
+also supplies, and every round of this module that shipped a classifier had the
+classifier defeated rather than the fix. The rule is total: a metaclass outside
+`type(FinalRefit)`'s own MRO may not carry a sealed name at all. It refuses
+MORE than lookup would shadow (a metaclass `__new__` shadows nothing, because a
+plain function is a non-data descriptor) and that asymmetry is deliberate — a
+wrong refusal is a loud failure at class definition, a wrong clearance ships a
+model. The baseline is `ABCMeta`'s MRO, so `__init__`, `__new__` and
+`__setattr__` arriving from `type` and `object` are not findings.
+
+The definition-time hook now takes `_unsealed_problems`, the SAME verdict
+`validate_params` and `run` take, so the three sites cannot disagree about what
+a violation is. Four declared facts moved as a result — measured, not
+asserted: `refuses_a_metaclass_that_injects_the_guard_beside_its_payload`,
+`refuses_a_substituted_channel_resolver`,
+`refuses_a_metaclass_that_injects_after_class_creation` and
+`refuses_a_metaclass_that_intercepts_class_attribute_access` all went from
+`refuses=False` to `refuses=True`. The two probes that rested on a consult-time
+verdict now take that verdict on the same payload reached the plain way, so
+widening the definition-time rule did not quietly retire their evidence.
+
+The round-10 mutation sweep then found one survivor of its own: relaxing the
+baseline comparison from `is` to `==`. Not an equivalent mutant — a
+meta-metaclass whose `__eq__` answers `True` makes the attacking metaclass
+compare equal to `ABCMeta`, so an `==` baseline skips it. That is the
+rigged-equality attack `_sealed_violations` already declares, one level up, and
+it is now declared and probed as
+`refuses_a_metaclass_whose_own_metaclass_rigs_equality`.
+
+**2. The `attempt` sentences lost their pin — a regression, not a gap.**
+`bd80f00` carried `attempt:<name>` keys in `_PINNED_GATE_PROSE`. Round 9's
+`_module_prose` rewrite replaced that with "every docstring and every `#:`
+note" and dropped the category while claiming WIDER coverage. A string literal
+is neither, so all twenty `attempt` sentences could be rewritten freely for a
+whole round — in the one table this ADR calls authoritative. The fix removes
+the category as a concept: `_module_prose` now also emits `strings:<owner>`,
+carrying every non-docstring string constant the module holds, owner being the
+nearest enclosing class, function or assigned name. `GATE_FACTS` is one key
+that no edit elsewhere moves, and a test asserts each row's `attempt` is inside
+it and that the `strings:` buckets are TOTAL against an independent AST count.
+That last assertion immediately caught a bug in the collector itself: it
+compared each statement against the docstring's VALUE rather than the statement,
+so every docstring was being collected a second time.
+
+**3. A `#:` block at the end of the file was never emitted.** The scanner
+flushed only when a non-comment line followed, so documentation appended at EOF
+was pinned by nothing. Flushed after the loop, and asserted on synthetic lines
+rather than on the module, so it keeps holding whatever the last line becomes.
+The note key also moved from `<label>@<line>` to `<label>#<ordinal>`: the line
+number collides with nothing but moves every key below any insertion, and a pin
+nobody can read is a pin people regenerate without reading.
+
+**4. `__doc__` is writable; the pin reads source.** `FinalRefit.run.__doc__ +=
+"..."` publishes prose no source-reading pin can see. A new test walks the LIVE
+module object and asserts every reachable docstring equals the one parsed out of
+the source.
+
+Also closed: the seal's refusal messages are now inside the digest pin (they
+are string literals); and `test_the_declaration_is_where_the_polarity_lives`
+dropped its banned-prefix list, which forbade three openings while reading as
+if it forbade stating an outcome in prose — the digest pin is what holds the
+attempt text now.
+
+One count in this entry was stale and is corrected above: the probe table is
+twenty-two rows, not seventeen.
+
+### Round 11 correction — the blunt rule cost more than it bought
+
+Two independent lenses on `50ea3e9`: 0 Critical, 5 Major between them. All
+closed.
+
+**The round-10 metaclass rule was too blunt, and it broke three declared
+attempts while being so.** It refused ANY sealed name a non-baseline metaclass
+carried, on the argument that classifying the object is one more thing to
+defeat. Measured, that cost:
+
+1. It refused an ordinary registering metaclass — one whose `__init__` records
+   the class it just built — while telling its author, untruthfully, that
+   `__init__` "answers class-level lookup ahead of the MRO". A plain function
+   is a NON-data descriptor and the class's own MRO wins; the message asserted
+   a mechanism false for most of the 29 sealed names, most of the time.
+2. It refused three declared attempts at `super().__new__` for merely defining
+   `__new__`, so the payload line in each probe never ran. Deleting that line
+   from any of the three left the suite green: three rows of `GATE_FACTS` had
+   stopped testing what they name, and one
+   (`refuses_a_metaclass_that_injects_after_class_creation`) had lost its
+   unique evidence with nothing standing in for it.
+
+So the shadowing question is asked, and it is not this module's classifier —
+it is the LANGUAGE's, read the way the interpreter reads it.
+`_wins_class_level_lookup` returns True for a data descriptor (its type
+defines `__set__` or `__delete__`, looked up through `_resolved_through_the_mro`,
+the same real MRO dicts `_PyType_Lookup` reads inside `type.__getattribute__`)
+and for the two names that answer every class-level lookup regardless,
+`__getattr__` and `__getattribute__`. An attacker supplies `type(obj)` but not
+what that lookup reads, so an object can neither claim to shadow nor hide that
+it does. The three `__new__` rows measure what they name again and are back to
+`refuses=False`; the `__getattribute__` interception row stays `refuses=True`.
+
+The round-11 sweep found the one reading that still differed: taking the
+carrier as `supplied if isinstance(supplied, type) else type(supplied)`
+survived everything, because no probe bound a sealed name to a CLASS. The two
+readings disagree exactly there — `__set__` lives on the payload's METACLASS —
+so `refuses_a_metaclass_supplying_a_class_that_is_itself_a_data_descriptor` is
+now declared and probed.
+
+**The totality assertion shared a blind spot with the thing it audited.** Both
+`_string_constants` and the "independent" AST walk that checks it filtered on
+`isinstance(value, str)`, so a `bytes` literal was invisible to both and the
+assertion passed over a surface neither could see — the same shape as every
+earlier round's false completeness claim, in the check added to prevent them.
+The fix is not a wider filter but NO filter: `constants:<owner>` now carries
+the `repr` of every non-docstring `ast.Constant`, whatever its type, and the
+oracle has nothing left to share.
+
+**The live-vs-source docstring check was one-directional.** Deleting the
+classmethod unwrap from `_runtime_prose` left the suite green while the walk
+silently stopped finding six docstrings — `__init_subclass__`'s among them,
+the one carrying the seal's four pinned claims. A check that asks only "did
+live find anything source did not" cannot see a live walk that found LESS, and
+a member it stops reaching is exempt from the source pin forever. The two key
+sets must now be EQUAL, and the walk's unwrapping is exercised on a SYNTHETIC
+module carrying a classmethod, a staticmethod, a property and a plain
+function, so its reach no longer depends on what `final_model.py` happens to
+contain. The dormant `property` branch was a survivor until that test existed.
+
+**Two more attempts declared.** `cls.__class__ = EvilMeta` on an
+already-defined subclass is the metaclass twin of
+`refuses_post_hoc_assignment_on_a_subclass`; measured, it reaches
+`validate_params` and is refused at `run`, because the descriptor answers in
+place of the member that would have re-taken the verdict. Writing its probe
+required `_reaches` to stop ASSERTING that every gate a class can produce
+appears in `validate_params`' output: that crashed rather than measured on the
+one attempt that replaces `validate_params` outright. A gate the class can
+produce that `validate_params` does not report is a gate no entry point
+consults, which is the definition of reaching it. The suite-drift that assert
+guarded is caught better now — a `validate_params` that stopped calling a gate
+makes the PRISTINE class measure as reaching, and its control test fails.
+
+**Minor.** A plain `#` comment in the suite said `GATE_FACTS` was
+"twenty-one sentences" when it was twenty-two — a stale count in the one prose
+site no pin reaches, which is this file's own defect class one level down. The
+count is gone from the comment rather than corrected; it is asserted executably
+instead.
+
+Round-11 sweep: nineteen mutations over the shadowing rule, the metaclass
+scan, the reach measurement, the runtime walk's four unwrapping branches and
+the constant pin — both halves of every compound guard driven separately — all
+nineteen killed. 151 tests; the probe table is twenty-four rows.
+
+### Round 12 — the second clause of the shadowing rule, and one proven equivalence
+
+Found by auditing round 11's own fix; no lens reached this branch afterwards
+(the review pass was cut short by a session rate limit, so rounds 11 and 12
+are UNREVIEWED and this entry says so).
+
+Round 11 asked whether a metaclass entry is a data descriptor, which is one
+half of ``type.__getattribute__``'s rule. The other half is that a metaclass
+attribute wins whenever the class's own MRO carries the name NOWHERE, whatever
+kind of object it is. Round 11 was right only by coincidence: ``__getattr__``
+is the single sealed name ``FinalRefit`` does not define, and it was already in
+``_LOOKUP_INTERCEPTORS``. Adding a sealed name this class does not carry would
+have reopened the hole with nothing failing.
+
+The clause is asserted directly rather than through a probe, because no ATTACK
+demonstrates it today for exactly that reason — and the coincidence itself is
+asserted, so the test fails the day the uncarried-name list stops being
+``["__getattr__"]``.
+
+**One proven equivalent mutant, recorded so the next reviewer need not
+re-derive it.** Passing ``FinalRefit`` where ``_wins_class_level_lookup`` takes
+``cls`` survives the suite. The proof: this verdict only decides an outcome
+when ``_sealed_violations`` is empty, and that function returns exactly the
+sealed names ``cls`` resolves differently from ``FinalRefit`` — so empty MEANS
+the two resolutions agree on every sealed name, and the two readings cannot
+disagree at the only moment either is load-bearing. ``cls`` is passed anyway,
+because the argument holds only while that stays true of
+``_sealed_violations``.
+
+Round-12 sweep: seven mutations over the two clauses and the guard's argument
+— five killed, two the equivalence above. 152 tests.
+
+### Round 13 correction — four holes in the round-11/12 evidence, all closed
+
+Rounds 11 and 12 were UNREVIEWED (the review pass was cut short by a session
+rate limit). Round 13 is that review, and it found that three of the round-11
+claims and one of the round-12 claims rested on evidence that did not pin what
+it said it did. All four are closed here, and one of them corrects the
+round-12 sweep's own reading.
+
+**1. `refuses_a_metaclass_that_injects_after_class_creation` tested nothing it
+named.** Its probe was the one `__new__` row still written as a bare
+`_outcome({}, metaclass=Injecting)` with no assertion that the payload ran, and
+its declared `(False, ())` is exactly what a CLEAN subclass measures — so
+deleting the payload line `cls._channel_problems = classmethod(...)` left the
+whole suite green. The other two `__new__` rows carried an explicit
+`_sealed_violations(cls) == [...]` and were pinned; this one was not. It now
+asserts `refused is False` and `_sealed_violations(cls) == ["_channel_problems"]`.
+
+**2. The guard half of `injects_the_guard_beside_its_payload` was invisible.**
+The row's whole point is that injecting a compliant `_unsealed_problems` beside
+the payload is inert, but deleting the guard line alone left the suite green:
+the row only ever proved the `_channel_problems` payload was seen, which the
+`injects_after_class_creation` row already proves. It now asserts both halves —
+`cls._unsealed_problems() == []` proves the guard is really applied and would
+report the class clean, and `final_model._unsealed_problems(cls)` proves the
+module-level gate still sees the payload the guard hides.
+
+**3. The `__delete__` half of the data-descriptor guard was pinned by nothing.**
+Both data-descriptor probes bound a descriptor with `__set__`, so `__set__ or
+__delete__` was driven only on its first half: mutating the guard to read
+`__set__` alone survived the suite (with the prose pin's digests re-derived, so
+the survival is behaviour, not a source-edit artefact). A descriptor that
+defines `__delete__` and no `__set__` still wins class-level lookup, so this
+was a false clearance, not a false refusal. A twenty-fifth fact,
+`refuses_a_metaclass_supplying_a_delete_only_data_descriptor`, is now declared
+and probed.
+
+**4. The round-12 second clause was pinned only by a coincidence.** The direct
+assertion that was meant to hold the "metaclass wins a name the class's MRO
+carries nowhere" clause used `__getattr__` — the ONE uncarried sealed name —
+and `__getattr__` is also in `_LOOKUP_INTERCEPTORS`, so the interceptor clause
+answered it and the second clause could be deleted with nothing failing (again
+with the prose digests re-derived). The clause itself is now pinned directly
+with a synthetic name that is neither an interceptor nor carried anywhere on
+the MRO, so no other clause can satisfy the assertion.
+
+Two measurement corrections to the sweeps themselves, recorded for the next
+reviewer: a mutation to `final_model.py` was being scored "killed" by the prose
+digest pin firing on the source edit, not by any behaviour test — every source
+mutation in the round-11/12 sweeps must be re-scored with the digests
+re-derived, which is what the four items above did. And the sweep that claimed
+"both halves of every compound guard driven separately" had driven the
+`__set__ or __delete__` guard whole.
+
+Round-13 sweep: the four payload/clause deletions above are now all killed, as
+are the `__set__`/`__delete__` halves separately. 153 tests; the probe table is
+twenty-five rows.
+
+### Round 13 (second lens) — a winner-swap, two decorative payloads, and a message polarity
+
+The tests-and-integration lens (Lens B, with its own independent mutation sweep)
+returned 0 Critical, 1 Major and 6 Minor. The Major is closed, five of the six
+Minors are closed, and one is accepted scope.
+
+**Major — a winner-swap in `refit_heads` shipped a wrong model with a lying
+identity stamp.** `test_refit_heads_fits_each_head_on_only_its_own_winner`
+proved `coef_[h01] != coef_[h02]` (sensitivity) and that `identities[head]
+["winner"] == winners[head]` — but the identity dict is built from the SAME
+input dict that a winner-swap mutates, so both held while h01 was fitted with
+h02's `alpha=5.0`. The test now fits a reference `Ridge(alpha=winners[head]
+["alpha"])` on each head's OWN rows and asserts the fitted coefficients equal it
+BY VALUE, so a swapped or substituted winner is contradicted outright.
+
+**Minor — two probes' distinguishing payloads were decorative.** Deleting the
+`__getattribute__` interception body from
+`refuses_a_metaclass_that_intercepts_class_attribute_access`, and deleting the
+`__dict__` shadow from `refuses_a_metaclass_that_shadows_the_class_dict`, each
+left the suite green — the first because the interceptor rule refuses on the
+NAME alone, the second because the body override alone still refuses. Each now
+carries a control that the payload is real (the interception actually answers
+the sealed name on a class the metaclass may build; the shadow actually makes
+`getattr_static` report `FinalRefit`'s member while the seal reads through it),
+so deleting the payload fails the control.
+
+**Minor — the metaclass refusal message carried no polarity pin.** The
+"may not override" verdict is behaviourally pinned; the "may not take a
+metaclass supplying …" verdict was held only by the prose digest, which cannot
+see a polarity inversion. `test_a_metaclass_supplying_a_sealed_name_refuses_
+with_the_right_verdict` now asserts the phrase, so inverting "may not" to "may
+accept" fails a test, not just the digest.
+
+**Minor — the second clause's single synthetic-name assertion was deletable.**
+`test_the_shadowing_rule_matches_type_getattribute` now pins the full truth
+table of `_wins_class_level_lookup` — interceptor clause, second clause, and
+both data-descriptor halves — each on its own row, so each `return` branch has
+an independent witness and deleting one is not enough.
+
+**Accepted scope, not fixed.** The two remaining Minors are the disclosed
+limitation this entry has stated since round 5: the prose pin detects CHANGE,
+not falsehood. Contradicting a pinned docstring AROUND its pinned substrings,
+or stating a false outcome in a `GATE_FACTS` `attempt` sentence, survives ONLY
+after the digests are re-derived — which is the documented cost and the point
+of the pin (it forces a human to read the new text). It cannot be made
+executable; free-text prose is not data, and `GATE_FACTS` is.
+
+155 tests; the probe table is twenty-five rows.
+
+### Round 13 (third pass) — a coef-invisible recipe, an over-refusal, and four more decorative payloads
+
+The second lens's re-review returned 0 Critical, 0 Major and 6 Minor. All six
+are closed.
+
+**1. A winner-substitution with a coefficient-invisible recipe survived the
+value-pin.** The Major's reference fit pinned coefficients, but `solver=
+"cholesky"` fits the same numbers on a six-row set, so it shipped while the
+identity stamp still recorded the input winner. `test_refit_heads_fits_each_head
+_on_only_its_own_winner` now also asserts `estimators[head]._model.get_params()`
+equals the reference model's — the RECIPE is pinned, not just the result.
+
+**2. `_wins_class_level_lookup` over-refused a `__set__`/`__delete__` object with
+no `__get__`.** `type.__getattribute__` consults `__get__` first: an object
+carrying `__set__` without `__get__` is not a descriptor at all and the class's
+own MRO wins, but the guard read the two halves without the `__get__` gate and
+refused it. Safe direction (no false clearance) but unfaithful; the guard now
+requires `__get__` AND (`__set__` or `__delete__`), matching the interpreter, and
+the truth-table test gains the two diverging rows so the fidelity is pinned.
+
+**3. Four probes whose declared `(refuses, reach)` equalled a CLEAN class.**
+`refuses_a_subclass_overriding_an_unsealed_node_hook`,
+`refuses_a_mixin_whose_init_subclass_swallows_the_hook`,
+`refuses_post_hoc_assignment_on_a_subclass` and
+`refuses_an_object_whose_equality_is_rigged` each carried a payload that could
+be deleted with the suite green — the same "decorative payload" family the
+first pass fixed for two other rows. Each now carries a control that pins its
+payload: the unsealed hook is asserted absent from `_FINAL_METHODS` and present
+on the built class, the swallowed mixin and the post-hoc assignment assert their
+override appears in `_sealed_violations`, and the rigged `__eq__` is asserted
+live before the refusal is measured.
+
+155 tests; the probe table is twenty-five rows.
+
+---
+
+## ADR-0165 — `uncertainty_intake.py`: whether an uncertainty artifact may inform THIS decision
+
+**Status:** accepted. **Number centrally reserved** for this lane by the task
+that commissioned it, not chosen by scanning the log — four collisions
+happened in one session because concurrent lanes scanned a moving target
+(the precedent ADR-0156 set). Base: `origin/main` at `842d226`.
+
+**Context.** `children/intraday_equities/docs/explanations/production-research-audit.tex`,
+topic "Forecasts and uncertainty: machinery versus evidence", records two
+findings and one acceptance test. The findings: the repository withdrew the
+`pi_upper` guarantee after measuring coverage far below the stated target and
+renamed the output `pi_widened`, so it must not be wired into an HFDR
+constraint as if it were a valid probability upper bound — "a class accepting
+a field named `pi_upper` proves schema compliance, not coverage" — and mean
+confidence uncertainty and realized-return uncertainty answer different
+questions. The acceptance test: *feed an apparently well-formed bundle whose
+uncertainty artifact is stale, wrong-unit, post-decision, uncalibrated or from
+a different model; capital must refuse.*
+
+Both findings are about the same missing thing. Three modules PRODUCE
+uncertainty — `mean_interval.py` (ADR-0151), `outcome_interval.py`
+(ADR-0155), `false_signal.py` (ADR-0152) — and `uncertainty_set.py`
+(ADR-0156) consumes plain numbers. **Nothing anywhere decides whether a
+particular artifact may be used at a particular decision.** Each producing
+ADR says in its own Consequences that it is not wired to any consumer, so
+nothing had yet had to answer the question.
+
+**Inventory (read before designing, not assumed).** All four modules and
+their ADRs were read in full.
+
+* `false_signal.FalseSignalEstimate` carries `pi_hat` and `pi_widened` and
+  NO `pi_upper`; ADR-0152 measured `P(pi_widened >= true local fdr)` at
+  0.53–0.82 against a 0.95 nominal, proved the knob cannot repair it, and
+  states the cause is the unpriced Grenander density error. **Reused as-is:
+  this ADR adds no second opinion about that number and no repair.**
+* `mean_interval` already carries its claim as a TYPE —
+  `ConfidenceInterval` (measured) versus `WidenedInterval` (a widening knob
+  only), with `result_class` abstract so a member must SAY which it earned.
+  **That device is the one this module generalizes**, rather than inventing
+  a parallel mechanism.
+* `outcome_interval.OutcomeIntervalResult` carries `realized_coverage`,
+  which its own docstring calls IN-SAMPLE and "not evidence of
+  out-of-sample coverage". **Deliberately NOT read as the attested
+  number** — the two are different quantities, and conflating them would be
+  this ADR committing the audit's own error.
+* `uncertainty_set` takes plain numbers and "inherits whatever that
+  deviation was worth, and no more". Unchanged and not imported.
+* Searched and absent on every ref: any attestation, freshness, identity or
+  admission machinery for an uncertainty artifact. `production/monitors.py`
+  has operational freshness for a serving loop, in a package `pipeline`
+  never imports and about a different subject.
+
+**Decision — tier 1, `dskit/pipeline/uncertainty_intake.py`.** Stdlib plus
+three sibling tier-1 modules; no library wrapped, so tier 2 is wrong, and
+nothing is domain-specific, so tier 3 is wrong. A project that never heard of
+equities has the same problem the moment it consumes a calibrated artifact at
+a decision: staffing under uncertain demand must not size against last
+quarter's calibration, or against a band fitted for a different model. It
+passes `tests/pipeline/test_purity.py` unchanged.
+
+* `CoverageEvidence(target, measured, evidence_id, n_units)` — what a
+  producer ATTESTS it measured. A record, not a measurement.
+* `UncertaintyAttestation(artifact_id, model_identity, calibration_end_ms,
+  known_at_ms, coverage)` — the provenance an artifact travels with.
+  `coverage` is `None` for an artifact whose producer measured nothing,
+  which is an honest record rather than a missing field.
+* `DecisionDemand(decision_ts_ms, model_identity, max_calibration_age_ms,
+  min_measured_coverage)` — what ONE decision requires. **No field has a
+  default.** How stale is too stale and how much coverage is enough are risk
+  choices, and a default would be this package making them for a caller.
+* `AttestedUncertainty` (ABC) — the doorway. `problems(demand, expected)` and
+  `admit(demand, expected)` are TEMPLATE methods `__init_subclass__` refuses
+  to let a member override (the `production/leg.py` idiom the sibling
+  doorways already use). Two `@abstractmethod` hooks, one job each:
+  `artifact_type()` and `estimand()`.
+* Members `AttestedMeanConfidence` (accepts only `ConfidenceInterval`),
+  `AttestedOutcomeBand` (`OutcomeIntervalResult`) and
+  `AttestedFalseSignalRate` (`FalseSignalEstimate`), plus the registry
+  `UNCERTAINTY_INTAKES` / `register_uncertainty_intake` /
+  `uncertainty_intake`, named for its subject like every sibling.
+
+**The estimand is a TYPE, never a string.** A member declares the artifact
+CLASS it accepts and the constructor refuses anything else, so the question an
+envelope answers is derived from the artifact rather than asserted by the
+caller; a consumer states what it needs by naming a class, and relabelling is
+a type error rather than a spelling change. `AttestedMeanConfidence` accepts
+`ConfidenceInterval` and not its `MeanIntervalResult` base, so a
+`WidenedInterval` is refused by its own type with no flag to flip. An artifact
+that satisfies TWO registered members' declared types is ambiguous and is
+refused, never assigned to one of them.
+
+**`ProbabilityUpperBound` is a family with nothing in it, on purpose.** A
+chance constraint needs `P(true rate <= reported rate) >= level`. A consumer
+that needs one names this class; every artifact in the package is refused with
+`wrong_unit`, because no member joins the family. A member joins only when a
+producer has MEASURED attainment of the bound and can attest it.
+
+> **Corrected 2026-09-18 — see the Correction round below.** As first written
+> this section claimed the retreat was "structural instead of advisory: no
+> rename, alias, schema shape or config flag can promote `pi_widened` into the
+> role, because the role is a type nothing inhabits." **That was false.** The
+> family was an ordinary abstract class and four lines subclassing it minted a
+> member. The round-2 response closed the family, and **the round-3 review then
+> showed that was still not enough**: `ABCMeta.register` forges the membership
+> without creating a class at all. The claim that survives both rounds is not
+> about subclassing — it is that **no registered intake answers this family**,
+> which `admission_problems` reads from the registry. See the second Correction
+> round.
+
+**Five refusals, closed set** (`REFUSAL_REASONS`, each opening its message):
+`foreign_model` (calibrated for another model), `post_decision` (the artifact
+became knowable after the decision, or its calibration window reaches past
+it), `stale` (the window ended further back than the consumer allows),
+`uncalibrated` (no `CoverageEvidence`, or an attested measurement below the
+consumer's declared floor) and `wrong_unit` (it answers a different question
+than the one asked). A sixth way to be unusable is a sixth screen here, not a
+free-form string invented at a call site.
+
+**What this module does NOT establish, stated plainly.** It measures nothing.
+It records what a producer attests and compares those recorded numbers with a
+consumer's declared policy. It cannot verify that the measurement happened,
+that it was honest, or that it transfers to the decision being made. **The
+presence of an attestation is not evidence of calibration**, and this ADR
+produces no coverage evidence for any artifact. What it produces is the
+refusal machinery: an artifact that is unattested, mis-attested or
+mis-addressed cannot reach a consumer that uses this seam.
+
+### The child wiring (`children/intraday_equities`, tier 3)
+
+`forecast_bundle.py` and `nodes_capital.py` are the audit's named consumer.
+
+* **`pi_upper` is refused by name.** `WITHDRAWN_FIELD_ALIASES` maps it to
+  `pi_widened`; a row, or a `known_at` stamp, carrying the withdrawn name
+  refuses with the withdrawal and its measured reason named — not with the
+  generic unknown-field message, because the rename is a statistical retreat
+  and a caller still spelling it the old way is asserting a guarantee the
+  release does not have. The screen exists at BOTH boundaries, because a
+  bundle can reach `EquityKellyMIO` without passing through
+  `ForecastBundle`. The alias-alongside-the-valid-field attack (a
+  schema-complete row with `pi_upper` added beside `pi_widened`) is refused
+  by the same screen and pinned by a test at each boundary.
+* **The HFDR row's reading is recorded, not assumed.** ADR-0088's
+  `sum_i (pi_i - q) * x_i <= 0` keeps exactly the numbers it had — this is a
+  rename, not a risk change — and `HFDR_COEFFICIENT_FIELD` names the one
+  field the constraint, the evidence record and the tests all read. `run`'s
+  `evidence` output now states `{"field": "pi_widened", "claim":
+  "widened_point_estimate", "chance_constraint": false}` at every decision,
+  so a reader never has to infer that the row is not a chance constraint at
+  level `1 - q`.
+* **A bundle names its calibration artifacts** (`UNCERTAINTY_ARTIFACT_FIELDS`
+  = `false_signal`, `outcome`), stamped on every assembled row, and
+  `EquityKellyMIO` gains a REQUIRED `uncertainty` input port carrying one
+  envelope per slot. Each is admitted against ONE `DecisionDemand` built from
+  the bundle's own shared `decision_ts` and `model_release_id`, so bundle,
+  cap, scenarios and both artifacts agree on a single decision timestamp or
+  the node refuses. Beyond the five generic screens the child adds its own
+  domain bindings: a row's declared identities must equal the admitted
+  artifacts', every row's entity must be covered by both artifacts, and a
+  row's `pi_hat`/`pi_widened` must EQUAL the admitted false-signal
+  artifact's — the number the capital program reads must be the number that
+  was attested.
+* **Two new required params**, default-deny in `_PARAMS` with no code-level
+  default: `uncertainty_max_calibration_age_ms` and
+  `uncertainty_min_coverage`. Both are owner risk decisions. The values in
+  `configs/run-mio-demo.json` are illustrative demo numbers chosen so the
+  synthetic source's artifacts pass, and its `notes` says so.
+* `intraday_equities.testing.SyntheticMioSource` emits the two artifacts so
+  the demo document exercises the seam end to end. **Their attested coverage
+  was never measured** — the evidence id is literally
+  `synthetic-demo-no-measurement-was-performed`, and the class docstring and
+  the config `notes` both say the document proves the refusal machinery runs
+  and proves nothing about coverage.
+
+**Rejected.**
+
+* *A boolean or string "kind" field on one envelope class.* That is the
+  spoofable label the audit's finding is about. The claim is a type.
+* *Letting `AttestedMeanConfidence` accept `MeanIntervalResult`.* The base
+  carries no claim, so accepting it would admit `WidenedInterval` too.
+* *Reading `OutcomeIntervalResult.realized_coverage` as the attested
+  coverage.* It is in-sample by its own contract; using it would manufacture
+  the evidence this ADR exists to require.
+* *Defaulting `max_calibration_age_ms` or `min_measured_coverage`.* Owner
+  risk decisions. Required config, no default, exactly as the sibling ADRs
+  treat `independent_units` and the dependence statement.
+* *Changing the HFDR coefficient to `pi_hat`.* That would make the
+  constraint materially less conservative — a risk change nobody authorized.
+  The number is unchanged; only its name and its recorded claim moved.
+* *Shipping a `ProbabilityUpperBound` member built from `pi_widened`.*
+  Explicitly refused: that is the audit's finding restated as code.
+* *A node kind.* The consumer is a child's capital node, not a document
+  port, the same reasoning ADR-0152 and ADR-0155 give. Additive later.
+
+**Consequences.** `dskit` gains the seam its three uncertainty producers were
+missing, and the child's capital step can no longer size against uncertainty
+it cannot attest. Nothing about the statistical quality of any artifact
+changed: `pi_widened` is the same number with the same measured shortfall, the
+HFDR row has the same coefficients, and no coverage was measured by this work.
+The demo document's artifacts are synthetic and self-declared uncalibrated. A
+real deployment still needs the audit's "Required evidence" section in full —
+causal calibration folds, effective independent sample counts, mean and
+outcome coverage per entity/lead and regime, and recorded calibration-window
+endpoints — and this ADR supplies none of it.
+
+### Correction round, 2026-09-18 — the seal was documented, not built; and shape is not provenance
+
+Two-lens review of candidate `7098571` returned **2 Critical, 1 Major**. Every
+one of them is the same defect class this ADR exists to name: a guarantee
+asserted in prose that nothing in the code held down.
+
+**Critical 1 — the closed family was not closed.** Four lines re-created the
+exact defect:
+
+```python
+class MyBoundFromWidened(ProbabilityUpperBound):
+    @classmethod
+    def artifact_type(cls): return FalseSignalEstimate
+    @classmethod
+    def estimand(cls): return "sneaky_bound"
+
+MyBoundFromWidened(fse, att).problems(demand, ProbabilityUpperBound)  # -> []
+```
+
+No registration needed, `admit()` succeeded, and `pi_widened` was handed over
+as a bound. Registering it did not trip the ambiguity screen either, because
+that screen EXEMPTED any member declaring an artifact type another member
+already claimed — precisely the attack's shape.
+
+*Correction, swept rather than patched.* The sweep asked "what else can a
+member override to defeat a refusal", not "how do I stop this one class":
+
+* `CLOSED_FAMILIES` + `__init_subclass__` refuse any subclass of a closed
+  family, whether direct, sideways through multiple inheritance, or a
+  grandchild. `ProbabilityUpperBound` is its one entry.
+* `_FINAL_METHODS` grew from `("problems", "admit")` to every name the doorway
+  defines: `__init__`, `__init_subclass__`, both accessors, and each of the
+  five individual screens. Overriding `_coverage_problems` and
+  `_timing_problems` returned `[]` for a stale, post-decision, uncalibrated
+  artifact on the reviewed candidate; that member is now refused at
+  class-definition time. The list is read off `AttestedUncertainty`
+  explicitly, never off `cls`, so a member cannot shrink it.
+* `_HOOKS` names what a member MUST supply, and
+  `test_the_two_tuples_cover_every_callable_the_doorway_defines` asserts the
+  two tuples between them cover every callable `AttestedUncertainty` declares
+  — the anti-drift pin, so a new method cannot be added without being
+  classified as sealed or as a hook.
+* Registration now refuses a second member for an artifact type another member
+  already claims, and the runtime ambiguity screen's same-`artifact_type`
+  exemption is gone.
+
+**Critical 2 — the type proves SHAPE, not provenance.** The three artifact
+types are plain frozen dataclasses whose docstrings say "built by X, never by
+hand" with nothing enforcing it, so a hand-built `ConfidenceInterval` naming
+`attacker.module:TotallyFakeEstimator` was admitted; so was
+`class Both(ConfidenceInterval, WidenedInterval)`, *while also being a
+`WidenedInterval`*. Worse, **this repository's own reference implementation
+shipped on the unguarded path**: `testing.SyntheticMioSource` assembled a
+`FalseSignalEstimate` by hand instead of calling `GrenanderLocalFdr`.
+
+*Correction, in two parts, because only one of them is achievable.*
+
+1. **Strengthen what can be strengthened.** `UncertaintyAttestation` gains a
+   required `producer`, and a sixth refusal reason `unknown_producer` screens
+   it two ways: the attested producer must be the `class_ref` of a class in
+   that estimand's own registry (`MEAN_INTERVAL_ESTIMATORS`, `CALIBRATORS`,
+   `FALSE_SIGNAL_ESTIMATORS`, read through the abstract
+   `registered_producers` hook), and the artifact's OWN self-report
+   (`method` / `provenance["block_rule"]` / `evidence["estimator"]`, read
+   through the abstract `artifact_producer` hook) must equal it. A new
+   abstract `excluded_types` hook refuses the diamond at construction:
+   `AttestedMeanConfidence.excluded_types() == (WidenedInterval,)`, stated by
+   the member rather than inherited by silence, for the reason ADR-0151 made
+   `result_class` abstract. `SyntheticMioSource` now fits the registered
+   `GrenanderLocalFdr` on a synthetic 40-signal scramble family and the
+   registered `BlockConformalInterval` on synthetic residual blocks, so the
+   reference implementation is on the guarded path.
+
+2. **Correct the language.** What the producer screen establishes is that an
+   artifact's attestation and its own self-report agree on a producer this
+   package has REGISTERED. It is a real narrowing of "any object of the right
+   shape" and **it is not provenance**: the registries are open by design, the
+   comparison is between strings, and nothing imports the named module,
+   re-runs an estimator or verifies a signature. `test_what_this_does_NOT_
+   establish_is_pinned` asserts that a hand-built artifact naming a registered
+   producer is still admitted, so the disclosure cannot drift away from the
+   behaviour. More generally, and now stated in the module docstring, in
+   `dskit/pipeline/CLAUDE.md`, and in the child's agent docs: **these are
+   in-process checks that fail closed for ordinary callers and for the shipped
+   configuration; they are not a root of trust.** ADR-0122's Correction
+   settles why — a Python resolver "cannot be a root of trust: Python has
+   already selected and started its interpreter, import machinery, bootstrap
+   modules, and possible import hooks before that resolver can run" — and this
+   module runs inside that same interpreter. **An admitted artifact is not
+   evidence that a calibrated estimator produced it**, and `CoverageEvidence`
+   RECORDS what a producer asserts and measures nothing.
+
+   Strictness beyond this was considered and is not added: the child's
+   `deployment_mode` already refuses outright (`no trusted real
+   confirmation-cap producer exists yet`), so there is no mode in which a
+   weaker check ships, and anything stronger needs the out-of-Python launch
+   root ADR-0122 describes rather than another in-process comparison.
+
+**Major — the HFDR coefficient's field source was unpinned.** Changing
+`pi_widened_i = float(row[HFDR_COEFFICIENT_FIELD])` to `float(row["pi_hat"])`
+left the whole capital suite green: **127 passed, 0 failed**, including the one
+test aimed at the constraint. The cause was the fixture, not the assertion —
+`_row()` set `pi_hat = min(pi_widened, 0.10)`, a name-independent clamp, so the
+two candidate fields were indistinguishable in exactly the test written to
+distinguish them. Same defect class as the `pi_upper` work this ADR is about:
+the number was right and nothing held it down.
+
+*Correction, swept.* `PI_HAT_BY_ENTITY` and `PI_WIDENED_BY_ENTITY` now vary
+independently (and a test asserts they do, so the pin cannot go quiet again),
+and `test_the_hfdr_row_reads_the_widened_field_not_the_point_estimate` gives
+every row a `pi_hat` below `hfdr_q` and a `pi_widened` far above it, so the two
+fields give opposite answers: the widened rate forces zero exposure, the point
+estimate funds names whose attested rate says refuse. The mutation now fails
+that test.
+
+The sweep then mutated **every** field or knob a constraint or objective
+coefficient in `instruments`/`domain_constraints` reads — eleven in total. Four
+survived the suite and three were real gaps, now closed by
+`TestTheDoorwayHooksReadTheDeclaredFields`, which asserts the doorway hooks'
+own declared outputs: `cost_buy` is the declared half-spread (zeroing it
+survived, because the same rate also reaches `cost_sell` and
+`exit_cost_per_share`, so a comparative solve still differed), and `payoffs()`
+emits the bundle's declared weights in order and its declared scenario matrix
+(reversing the weight vector survived because every fixture used uniform
+weights; the pin uses ascending ones). One survivor is left deliberately: a
+mandatory-exit name's HFDR coefficient, because that name's `x_max` is 0, so
+its `(pi_i - q) * x_i` term is identically zero whatever the coefficient — an
+equivalent mutant, disclosed rather than papered over with a test that cannot
+fail for the right reason.
+
+**Also corrected (Minor).** `test_configs.py` ran the demo source and asserted
+nothing about `out["uncertainty"]` while asserting `cap` and `bundle`;
+`test_mio_demo_source_emits_admissible_attested_uncertainty` now pins the port
+shape, both producers, the artifact/attestation agreement, admissibility under
+the document's own declared intake policy, and that every row's rates ARE the
+fitted ones.
+
+**What is still not established.** No coverage evidence for any artifact; no
+provenance; no root of trust. The demo's attested coverage remains a declared
+number that nothing measured — the evidence id is literally
+`synthetic-demo-no-measurement-was-performed`, and fitting the rates through a
+registered estimator does not change that. The audit's "Required evidence"
+section remains unmet in full.
+
+### Correction round 2, 2026-09-18 — the convergence checkpoint: stop sealing, verify at use time
+
+Review of candidate `189125b` returned **4 Critical, 1 Major**, and the owner's
+reviewer invoked `docs/skills/skeptic-review.md`'s convergence checkpoint: two
+correction cycles on one family, each finding new bypasses of the previous
+fix, with an explicit instruction not to write a third sealing patch. This
+section is the required concrete changed approach.
+
+**What the two failed cycles were.** Round 1 sealed `problems`/`admit` with
+`__init_subclass__`; defeated. Round 2 added `CLOSED_FAMILIES`, eleven sealed
+names and an anti-drift test; defeated four ways:
+
+1. **An ordinary subclass loosening two UNSEALED hooks.** `artifact_type` and
+   `excluded_types` are `@abstractmethod` hooks — a member MUST be able to
+   override them, so they can never be sealed. Widening `artifact_type` to the
+   shared `MeanIntervalResult` base and returning `()` from `excluded_types`
+   admitted a `WidenedInterval` as measured mean confidence; `problems()`
+   returned `[]` and `admit()` handed it over.
+2. **`abc.ABCMeta.register()`.** `ProbabilityUpperBound.register(
+   AttestedFalseSignalRate)` flips `isinstance` from False to True without
+   creating a class, so `__init_subclass__` never runs; `admit(demand,
+   ProbabilityUpperBound)` then handed `pi_widened` over as a probability upper
+   bound. Round 1's Critical, recreated through the standard library.
+3. **A metaclass reattaching sealed methods after `type.__new__`** — pop the
+   names out of the namespace so `__init_subclass__` sees a clean class, then
+   `setattr` them back. Every refusal neutralized at once.
+4. **`_artifact` is a plain mutable attribute.** Only the public `artifact`
+   property was sealed, so `env._artifact = a_WidenedInterval` succeeded
+   silently and `admit()` kept succeeding: the screens re-read `self._artifact`
+   but never re-ran the construction-time type checks.
+
+Findings 1 and 2 are structural. **Sealing cannot close this set**, and a third
+sealing patch finds a fifth hole.
+
+**The changed approach: stop trusting the class; verify at use time from
+registry-sourced truth.** Three of the four Criticals share one root — the
+envelope trusted an identity established at `__init__` and never re-checked —
+so the rule moved OUT of the class:
+
+* `admission_problems(envelope, demand, expected)` and
+  `admit_uncertainty(...)` are module-level FUNCTIONS and are the rule. The
+  same-named methods remain as convenience spellings that delegate. A method is
+  resolved through the instance's own class, which is the thing under
+  suspicion; a function is resolved through this module. `EquityKellyMIO` calls
+  the function.
+* **Which classes may answer a demand comes from `UNCERTAINTY_INTAKES`**, and
+  membership is tested as `expected in cls.__mro__` — real inheritance, never
+  `issubclass`, because that is exactly what `register()` forges. The envelope
+  must then BE one of those registered classes, by identity (`type()`, which
+  unlike `isinstance` does not consult `__class__`).
+* **The artifact and attestation are re-read from the instance at every call**
+  and re-checked against the types the ANSWERING class declares — not the types
+  the envelope's own class declares about itself.
+* **The five screens are no longer methods.** They are module functions taking
+  explicit values, so there is nothing on the class for a member to override.
+  `_FINAL_METHODS` shrank from eleven names to six accordingly.
+
+**What that closes, and what it does not.** Closed: finding 1 (an unregistered
+subclass's self-declaration is never read), finding 2 (`register()` can forge
+neither registry membership nor an `__mro__`), finding 4 (re-read at use time),
+and round 2's own `NoScreens` find (those names are not methods any more).
+Finding 3 is closed **for the function and not for the method**: a hostile
+metaclass can still make an envelope's `problems()` return `[]`, and
+`test_a_metaclass_reattaching_methods_defeats_the_METHOD_not_the_RULE` asserts
+both halves — the method is defeated, the function refuses — rather than
+pretending the method is safe.
+
+**Major — the deleted same-`artifact_type` exemption had no regression cover.**
+Restoring it left 4,674 + 236 tests green, and the safety comment justifying
+the deletion was itself unpinned and false for any class that never calls
+`register_uncertainty_intake` — the shape every fixture uses.
+`test_the_same_artifact_type_exemption_stays_deleted` now fails if it returns.
+
+**The language, corrected everywhere.** The module docstring, the
+`CLOSED_FAMILIES` comment, `ProbabilityUpperBound`, `AttestedFalseSignalRate`,
+`nodes_capital`'s module docstring, `dskit/pipeline/CLAUDE.md`,
+`dskit/pipeline/README.md` and both child orientation files said a project
+"cannot mint its own member" and "no caller can define one". Four reproducers
+say otherwise, so every one of those sentences is replaced. The load-bearing
+statement is now **"no registered intake answers this family"**, answered from
+the registry. `CLOSED_FAMILIES` and `_FINAL_METHODS` are described as
+accident-and-drift protection, which is what they genuinely are — the same
+honesty `dskit/pipeline/uncertainty_set.py` already applies to this idiom ("a
+class that overrides `__init_subclass__` itself and never calls `super()`
+escapes it, as it does for every user of the idiom"). ADR-0122's Correction is
+cited for why no in-process check can be a root of trust.
+
+**Minor, also fixed.** The `AttestedUncertainty` class docstring's `admit()`
+example still built an `UncertaintyAttestation` without `producer=` and would
+have raised `TypeError` verbatim; it now shows `admit_uncertainty`. The child's
+`test_every_declared_reason_is_reachable_from_this_boundary` is parametrized
+over `REFUSAL_REASONS`, so a REMOVED reason produced fewer cases rather than a
+failure; an explicit equality pin on the tuple sits beside it at both levels.
+
+**What is still not established** is unchanged and worth restating, because
+this round narrowed the threat model rather than widening the guarantee: no
+coverage evidence for any artifact, no provenance, no root of trust. What is
+built is refusal machinery that fails closed for every ordinary caller and for
+the shipped configuration.
+
+### Correction round 3, 2026-09-18 — the registry names the DEMAND too, and a coverage audit
+
+Review of candidate `c60123a` confirmed the checkpoint worked — a reviewer
+hand-wrote all five earlier attacks and the round-3 FUNCTION blocks all five,
+with no production call site using the method — and returned **1 Critical, 2
+Major** against what remained.
+
+**Critical — `__bases__` reassignment forges a REAL `__mro__`.**
+
+```python
+AttestedFalseSignalRate.__bases__ = (ProbabilityUpperBound,)   # one line, no metaclass
+admission_problems(env, demand, ProbabilityUpperBound)         # -> []   *** observed ***
+```
+
+`__init_subclass__` runs only inside `type.__new__`; rebinding `__bases__`
+recomputes the MRO through ordinary C3 linearization and never re-invokes it,
+so `CLOSED_FAMILIES` never sees it and `isinstance` is genuinely — not
+virtually — true. The reviewer then bounded it, and the bound is the fix: the
+swap FAILS against any REGISTERED demand, because `authority = expected`
+catches the artifact shape. It succeeded only for an UNREGISTERED family —
+today exactly `ProbabilityUpperBound`, the zero-member family this whole
+correction exists for — where the old
+`authority = expected if ... else type(envelope)` fallback let the subverted
+class adjudicate itself with its own otherwise-legitimate hooks.
+
+*Correction.* **The registry names what may be DEMANDED as well as what may
+answer.** `_question_problems` now refuses, before any authority is selected or
+any artifact is read, a demand naming a class the registry does not hold; and
+`authority` is `expected`, unconditionally, with no fallback. Verified after
+the fix: the `__bases__` swap against the closed family refuses; the same swap
+against a registered demand refuses on artifact shape; a freshly
+self-registered rogue refuses both before and after its own swap; the
+envelope's own legitimate demand still passes; and both positive controls still
+pass. A sweep of the module for anywhere else the envelope's class supplies an
+AUTHORITY found none — `type(envelope)` now appears at use time only for
+identity and for message text, and the constructor's own screens (which do read
+the class's declarations) are documented as an early convenience the rule does
+not depend on.
+
+Two adjacent hardenings came out of the same sweep. `register_uncertainty_
+intake` now refuses an ABSTRACT class: every registered intake is asked for the
+declarations the screens run on, and an abstract one answers each with `None`.
+And the Minor the reviewer raised is closed structurally rather than by a test
+alone — `expected` was only ever a registered leaf in tests, and a non-leaf
+demand (`AttestedUncertainty` itself) admitted a legitimate envelope of ANY
+estimand; it is now refused by the same rule, with a parametrized test over
+both non-leaf classes.
+
+**Major 1 — a duplicate fixture made a test pass by coincidence.**
+`tests/pipeline/test_uncertainty_intake.py` defined `_widened()` twice; the
+round-3 definition shadowed the file's own earlier one and changed `method`
+from `"tests.synthetic"` to `MEAN_PRODUCER`. The swap test's
+`all(p.startswith("wrong_unit"))` held only because that accidental equality
+silenced `unknown_producer`. The duplicate is deleted, `_widened(method=...)`
+makes the choice explicit, and the test is parametrized over BOTH cases,
+asserting what is actually invariant about a post-construction swap (the shape
+refusal naming the swap) rather than a reason set that depends on the fixture.
+
+**Major 2 — `artifact_of`/`attestation_of` had zero coverage.** Round 3's own
+"sweep found two more" fix: reverting both to `return envelope.artifact` /
+`return envelope.attestation` left 112 + 241 green, and neither name appeared
+in any test. `TestTheAccessorsReadTheScreenedValues` now makes the descriptor
+and the slot disagree — by rebinding the property on the live REGISTERED class
+inside a context manager, because an unregistered subclass is refused at
+construction and again at use time — and asserts the accessors return the slot.
+Reverting either body now fails.
+
+**The coverage audit the reviewer asked for, run before reporting.** Seventeen
+claimed fixes from rounds 2, 3 and 4 were reverted one at a time against the
+four affected test files, over a temporary backup rather than `git checkout`.
+**Fifteen are covered.** One — "R4: `authority` is the demanded class" — shows
+no extra failures and is an EQUIVALENT mutant, not a gap: with the new
+registered-demand screen in place `expected` is always registered, `expected`
+is therefore always in `answering`, and the two spellings compute the same
+value. It is recorded here rather than papered over with a test that cannot
+fail for the right reason. One more, `SyntheticMioSource` fitting the
+registered estimators, is not source-revertible in one line and is covered
+behaviourally by `test_mio_demo_source_emits_admissible_attested_uncertainty`.
+Both files were verified byte-identical after the battery.
+
+Nothing about what is ESTABLISHED changed this round: still no coverage
+evidence for any artifact, still no provenance, still not a root of trust.
+
+### Correction round 4, 2026-09-18 — sealing the trust root itself, and the audit table
+
+Review of candidate `5817e8d` returned **0 Critical, 1 Major**, with the
+tests/integration lens CLEAN for the first time on this work: it hand-reverted
+eleven prior fixes and found every one genuinely covered, and independently
+confirmed the equivalent mutant disclosed in the previous round is genuinely
+equivalent (a class is always first in its own MRO, so once `expected` passes
+the registered screen it is provably in `answering`). The correctness lens
+confirmed no over-refusal: every registered member still admits its own fitted
+artifact, the child's real `REQUIRED_INTAKES` pair works, a concrete class
+inheriting an abstract mixin and supplying the remaining hooks still registers,
+and `run-mio-demo.json` still completes.
+
+**Major — the registry this design calls the trust root was an unprotected
+exported plain dict.** Every validation added in rounds 2-4 lives in
+`register_uncertainty_intake`; `dict.__setitem__` skips all of it.
+
+1. `UNCERTAINTY_INTAKES["evil"] = ProbabilityUpperBound` succeeded silently,
+   although the front door refuses exactly that as abstract. Combined with the
+   `__bases__` rebinding — newly effective, because step 1 satisfies the
+   demand-registered screen — `admission_problems` raised an **uncaught**
+   `TypeError: isinstance() arg 2 must be a type`, because the abstract
+   `artifact_type()` stub returns `None`. A crash, not a coded refusal.
+2. `UNCERTAINTY_INTAKES["false_signal_rate"] = AttestedMeanConfidence`
+   succeeded silently, and a correctly attested `AttestedFalseSignalRate`
+   envelope that had admitted cleanly moments earlier was then refused as "not
+   a registered intake", while `nodes_capital` still demands that same class.
+
+Neither admits bad data — one crashes, one fails closed on good data — which is
+why it is Major. But it is a missing protection on the one piece of state every
+screen trusts, it is MORE accessible than anything rounds 2 and 3 litigated (no
+metaclass, no MRO knowledge, just item assignment), and it defeats round 4's own
+abstract-member hardening for anyone not using the front door.
+
+*Correction.* The registry is now a module-private `_INTAKES` dict behind a
+read-only `MappingProxyType` exported as `UNCERTAINTY_INTAKES`, the idiom this
+package already uses for frozen mappings (`false_signal.FalseSignalEstimate`,
+`kinds_search`). `register_uncertainty_intake` is the only writer. Verified:
+direct `__setitem__`, a rebinding of an existing name and `__delitem__` all
+raise; the front door still works and the view sees it immediately; every
+screen reads the view; and both reproducers now fail AT the mutation instead of
+downstream. Separately, and kept even with the registry sealed, an unusable
+declaration from a registered intake (`artifact_type()` not a type,
+`excluded_types()`/`registered_producers()` not tuples of types) is now a
+`wrong_unit` refusal rather than an `isinstance` crash — an unhandled exception
+at a risk gate is worse than a refusal, whatever produced it.
+
+*Mutable-state sweep.* `UNCERTAINTY_INTAKES` was the only mutable this module
+exported; `REFUSAL_REASONS` and `CLOSED_FAMILIES` are tuples.
+`test_no_other_module_level_state_the_screens_trust_is_mutable` walks
+`__all__` and asserts every non-class, non-function export is a tuple or a
+mapping proxy, so a future mutable export fails rather than being noticed in a
+fifth review. Rebinding a module global, and editing a registered class's hooks
+after registration, both need the same capability as the hostile-metaclass
+boundary this module already declines to defend against; the registry docstring
+says so explicitly rather than implying the registry holds a snapshot.
+
+**Minor (disclosure, not a defect): the coverage audit is now persisted.** The
+previous round narrated "15 of 17" and a reviewer had to reconstruct it. The
+battery reverts each fix over a temporary file backup (never `git checkout`),
+runs the four affected test files, and reports failures above the 5
+order-dependent `test_configs.py` failures that exist at base `842d226`. Both
+touched files are verified byte-identical afterwards.
+
+| round | fix reverted | verdict | extra failures |
+|---|---|---|---|
+| R5 | registry is a read-only view | covered | +97 |
+| R5 | unusable declarations are a coded refusal | covered | +1 |
+| R4 | demand must be a registered intake | covered | +2 |
+| R4 | authority is the demanded class | **equivalent mutant** (settled, round 5) | +0 |
+| R4 | registry refuses an abstract member | covered | +92 |
+| R3 | `artifact_of` reads the slot | covered | +2 |
+| R3 | `attestation_of` reads the slot | covered | +1 |
+| R3 | `__mro__` not `issubclass` | covered | +2 |
+| R3 | envelope identity by `type()` | covered | +2 |
+| R3 | artifact re-read at use time | covered | +4 |
+| R3 | child fail-closed ordering | covered | +5 (was published as +17; see round 5) |
+| R3 | child calls the function | covered | +1 |
+| R2 | `CLOSED_FAMILIES` refusal | covered | +2 |
+| R2 | `_FINAL_METHODS` seal | covered | +9 |
+| R2 | registration uniqueness | covered | +97 |
+| R2 | `unknown_producer` screen | covered | +10 |
+| R2 | `excluded_types` diamond refusal | covered | +1 |
+| R2 | same-`artifact_type` exemption deleted | covered | +2 |
+| R2 | HFDR coefficient field | covered | +1 |
+
+Eighteen of nineteen are covered. The one that is not is the equivalent mutant
+the correctness lens independently confirmed, kept in the table rather than
+dropped from it. `SyntheticMioSource` fitting the registered estimators is not
+one-line revertible and is not in the battery; it is covered behaviourally by
+`test_mio_demo_source_emits_admissible_attested_uncertainty`.
+
+**Nit, fixed.** The module docstring described the pre-round-4 mechanism —
+asking which registered intakes have `expected` in their `__mro__`, without
+mentioning that `expected` being unregistered is checked first and
+independently. It now states both questions in order, and says which one makes
+a `__bases__` rebinding and an `ABCMeta.register` irrelevant.
+
+Nothing about what is ESTABLISHED changed: still no coverage evidence for any
+artifact, still no provenance, still not a root of trust.
+
+### Correction round 5, 2026-09-18 — the seal was one underscore wide; hooks are untrusted; the table is re-measured
+
+Review of candidate `a8c2af9` returned **1 Critical, 2 Major**. This is the
+last round; what follows ends with an honest residual list rather than a clean
+bill.
+
+**Critical — a module-private dict is not a seal.** Round 4 put the registry
+behind a `MappingProxyType`, and `_INTAKES` remained importable:
+`_INTAKES["outcome_band"] = Evil` silently repointed a real capital-sizing
+estimand past the abstractness, name-collision and `artifact_type`-collision
+screens, while the entire `TestTheRegistryIsWriteOnlyThroughItsFrontDoor` class
+passed — it only ever mutated through the public name. The docstring's
+"the ONLY way in" was literally false. The two lenses split on severity
+(Critical versus inside the adjudicated in-process boundary); the overclaim was
+not in dispute.
+
+*Correction.* The store is now a **local of `_sealed_registry()`**, with the
+validation inside the closure, so there is no module attribute to import and no
+importable name that writes without screening. Unregistration is the callable
+`register_uncertainty_intake` RETURNS, so no name in the module can remove an
+intake its caller did not add. **The honest ceiling, stated as a RULE:** any
+route that reaches a live Python object reaches this store. Round-6 review
+proved why the rule replaced the previous single-route wording — see the
+correction note at the head of this entry — and the tests now execute two
+structurally different routes and assert the docstring states the rule rather
+than naming one route as the last one.
+
+**Major — three of five hooks were screened, and only for shape.**
+`artifact_producer()` and `estimand()` were called bare; `registered_producers()`,
+`estimand()` and `artifact_producer()` RAISING propagated out of
+`admission_problems`, through `nodes_capital.validate_inputs` and
+`driver.run_node` — no `try/except` anywhere between — killing a whole
+`dskit.pipeline run` instead of producing an itemized refusal. Reachable
+through the SANCTIONED extension point with an ordinary coding bug: an
+`evidence["estimator"]` where the shipped members write `.get`.
+
+*Correction.* `_ask(authority, hook, *args)` is now the only way a hook is
+called on the use-time path, turning any raise into a `wrong_unit` refusal
+naming the hook and the exception. `_declarations(authority)` reads all four
+class-level hooks ONCE, guarded, and screens each answer's shape; the fifth is
+read the same way at its call site. The constructor's own early screens are
+guarded too, so a broken hook there raises a `ValueError` naming the member
+rather than a bare `RuntimeError`. `register_uncertainty_intake` guards
+`artifact_type()` so a raise becomes the documented `ValueError`.
+
+**Major — a committed audit row did not reproduce, and the method was at
+fault.** The published `| R3 | child fail-closed ordering | covered | +17 |`
+re-measures at **+5**. The cause is not the code but the revert: the fix adds
+`if problems: return problems` before the domain bindings, and the faithful
+revert keeps `return problems + self._binding_problems(...)`. The revert used
+in round 3 replaced the condition with `if False:`, which ALSO discarded the
+accumulated refusals — a strictly larger mutation than the fix it claimed to
+measure. Both are now measured: faithful **+5**, larger **+17**. The row above
+is corrected in place. Two other rows had reverts that were not valid Python
+and produced meaningless counts; they are re-measured too. **The method rule
+this adds: a revert must be valid Python AND no larger than the fix.**
+
+**The disputed row, settled.** The two lenses reached opposite conclusions on
+`| R4 | authority is the demanded class |`. Measured against the REAL module,
+not a re-implementation:
+
+* line-reverting only the `authority` change → **+0**;
+* the `__bases__`-poisoning scenario (`AttestedFalseSignalRate.__bases__ =
+  (AttestedMeanConfidence,)`, both registered) → **REFUSED with 3 problems,
+  identically in the shipped and reverted forms**;
+* instrumenting the branch: `answering == [AttestedFalseSignalRate,
+  AttestedMeanConfidence]` and `any(cls is expected for cls in answering)` is
+  **True**, so the conditional selects `authority = expected` — the same value
+  the unconditional form computes.
+
+*Why the experiments differed.* The bypass was produced by a re-implementation
+of `admission_problems` built from the module's internals, which necessarily
+dropped round 4's registered-demand screen — the very screen that makes the
+guard always-true. *The proof:* `_answering(expected)` selects registered
+classes with `expected in cls.__mro__`; round 4 refuses unless `expected` is
+itself registered; a class is always first in its own `__mro__`; therefore a
+registered `expected` is always in `answering` and the `else` branch is
+unreachable. **The row stands: equivalent mutant, +0.**
+
+**The re-measured table, against this candidate.**
+
+| round | fix reverted | verdict | extra failures |
+|---|---|---|---|
+| R6 | registry store is closure-local | covered | +52 |
+| R6 | hook raises become coded refusals | covered | +8 |
+| R6 | hook answer SHAPES are screened | covered | +4 |
+| R4 | demand must be a registered intake | covered | +5 |
+| R4 | authority is the demanded class | **equivalent mutant** | +0 |
+| R4 | registry refuses an abstract member | covered | +4 |
+| R3 | `artifact_of` reads the slot | covered | +2 |
+| R3 | `attestation_of` reads the slot | covered | +1 |
+| R3 | `__mro__` not `issubclass` | covered | +1 |
+| R3 | envelope identity by `type()` | covered | +2 |
+| R3 | artifact re-read at use time | covered | +4 |
+| R3 | child fail-closed ordering | covered | +5 |
+| R3 | child calls the function | covered | +1 |
+| R2 | `CLOSED_FAMILIES` refusal | covered | +2 |
+| R2 | `_FINAL_METHODS` seal | covered | +9 |
+| R2 | registration uniqueness | covered | +97 |
+| R2 | `unknown_producer` screen | covered | +11 |
+| R2 | `excluded_types` diamond refusal | covered | +1 |
+| R2 | same-`artifact_type` exemption deleted | covered | +2 |
+| R2 | HFDR coefficient field | covered | +1 |
+
+Nineteen covered, one equivalent.
+
+**Minor/Nit, fixed.** The `__all__` walker checked only the outer container, so
+`([],)` would have passed with a freely mutable inner list; it now recurses
+through tuples, frozensets and mapping proxies, and `frozenset` is no longer
+false-flagged as mutable.
+
+### Correction round 6, 2026-09-19 — the ceiling was one route wide, and the table was wrong again
+
+Review of candidate `c2a3014` returned **1 Critical, 3 Major**. All four are
+about the EVIDENCE, not the machinery, which is the standing pattern in this
+family and the reason every round now mutation-tests its own fix.
+
+**Critical — the disclosed ceiling named one route and implied the rest were
+closed.** The store is reachable with no closure involved at all:
+
+```python
+import gc
+from dskit.pipeline.uncertainty_intake import UNCERTAINTY_INTAKES
+store = gc.get_referents(UNCERTAINTY_INTAKES)[0]   # the proxied dict itself
+store["forged"] = object()                          # unvalidated write, observed
+```
+
+`gc.get_referents` on a `mappingproxy` hands back the dict it proxies. Round 5
+had written that "function-object introspection (`<writer>.__closure__[0].
+cell_contents`) still reaches the store" — true, and the only route named, and
+a reader takes a named exception for an exhaustive one. The capability is the
+same class the module already declines to defend against, so nothing here is a
+new hole; the DEFECT IS THE DISCLOSURE.
+
+*Correction.* The ceiling is now stated as a RULE — *any route that reaches a
+live Python object reaches this store* — with closure cells and gc referents
+given as two examples and explicitly *not a complete list*. The claim is
+bounded positively instead: no importable name offers an unvalidated write, and
+no ordinary attribute access on the view does either. Two structurally
+different routes are EXECUTED by tests that write a sentinel through each and
+read it back on the PUBLIC view, so reaching a copy cannot pass for reaching
+the store, and a third test asserts the two routes are not one route named
+twice.
+
+**Major — the pin on that disclosure was polarity-blind.** The old
+`test_the_honest_ceiling_is_function_introspection_and_is_stated` ended with
+`assert "introspection" in doc.lower()`. Invert the surrounding sentence to
+claim the route is CLOSED and the assertion still holds, because the pinned
+token carries no polarity. **The general rule this family kept missing, now
+stated once: a required-substring assertion is polarity-blind unless THE
+POLARITY WORD IS INSIDE THE PINNED SUBSTRING.** `"introspection" in doc` cannot
+see an inversion; `"no importable name offers an unvalidated write" in doc`
+can, because negating it deletes the substring. Four claims are pinned that
+way, and a banned-vocabulary check refuses any narrowing or widening elsewhere
+in the docstring — which immediately caught a real one: "the only name that can
+write is one that screens" was false given the ceiling above, and is reworded.
+
+**Major — `artifact_type`'s use-time raise path was untested, at TWO sites.**
+`_ask` exists because a hook raise at a risk gate kills the run instead of
+refusing. Four of five hooks each had a dedicated test. `artifact_type` had one
+for its own class and for registration, but none for the two loops that ask
+EVERY OTHER REGISTERED MEMBER: the envelope constructor's ambiguity sweep and
+`register`'s uniqueness sweep. Replacing `_ask(other, "artifact_type")` with a
+bare `other.artifact_type()` at either site left all 151 tests green. The
+scenario is reachable exactly as this module documents: the registry holds LIVE
+references, so a member whose hook is edited after registration makes an
+unrelated member's envelope construction raise. Two regression tests now pin
+the two sites; each kills its own site and only its own.
+
+**Major — a committed audit row did not reproduce, again.** `| R4 | demand must
+be a registered intake | covered | +2 |` re-measures at **+5** under a revert
+that is valid Python and no larger than the fix — round 5's own method rule,
+applied to round 5's own table. The faithful revert deletes the
+`if not any(cls is expected for cls in _registered_classes()): return [...]`
+block from `_question_problems` and nothing else; the five extra failures are
+`test_a_bases_rebinding_cannot_satisfy_the_closed_family`, both
+`test_a_demand_the_registry_does_not_name_is_refused` cases,
+`test_a_virtual_registration_cannot_forge_family_membership` and one more. The
+row is corrected in place. Measured under round 5's own stated selection — the
+four affected test files — so the number is directly comparable to the one it
+replaces.
+
+**What this round does NOT establish, stated because the table has now been
+wrong in three consecutive rounds.** Only R4 was re-measured here. The other
+nineteen rows carry round-5's numbers, and the battery that produced them is a
+throwaway script rather than a committed artifact, so no one can re-run the
+table without rebuilding the reverts from this prose. **That is the residual,
+and the proposal that follows it is for the owner, not a decision taken here:
+commit the revert battery as a `tools/` script so the table is regenerated
+rather than typed.** No new file was created for it, per the repository's
+ask-before-writing rule.
+
+### Correction round 7, 2026-09-19 — the sweep failed OPEN, and the table failed again
+
+Review of candidate `9978b0b` returned **1 Critical, 4 Major, 1 Minor**. The
+Critical is a real behavioural defect, not an evidence defect — the first in
+this entry for three rounds — and round 6's own regression tests pinned the
+WRONG BEHAVIOUR while believing they closed the gap.
+
+**Critical — an unreadable peer was read as a clearance.** Both artifact-type
+sweeps — `register`'s uniqueness sweep and `AttestedUncertainty.__init__`'s
+ambiguity sweep — ask every OTHER registered member what it claims. Round 6
+routed those calls through `_ask` so a peer's raise could not kill the run, and
+then treated the resulting coded refusal as "this peer said nothing" and moved
+on. The outcome was not the crash round 5 was worried about. It was a SILENT
+ADMISSION of exactly the ambiguity the sweep exists to refuse:
+
+```python
+A, B = member("qA"), member("qB")         # both declare the SAME artifact type
+register_uncertainty_intake("probe_A", A)
+register_uncertainty_intake("probe_B", B) # -> ValueError: 'probe_A' already claims it
+A.artifact_type = classmethod(boom)       # ordinary attribute mutation
+register_uncertainty_intake("probe_B", B) # -> SUCCEEDS                *** observed ***
+admission_problems(B(SharedArtifact(), attestation), demand, B)  # -> []  *** observed ***
+```
+
+That last line is the gate `children/intraday_equities/.../nodes_capital.py`
+sizes real capital from, and the state it needs is one this entry's own
+docstring already says is reachable: the registry holds LIVE references, so a
+member's hook can start raising after it was registered. No introspection, no
+metaclass — ordinary Python, and therefore squarely inside what this module
+claims to defend.
+
+*Correction.* **An unreadable peer is a conflict, never a clearance.** Both
+sweeps now refuse, naming the peer and carrying the hook's own coded
+`wrong_unit` text inside the message — still a refusal and not a crash, which
+is what round 5's Major actually required. Uniqueness cannot be shown against a
+member that will not say what it claims, so it is not shown. Three regression
+tests: one per sweep, plus the reviewer's end-to-end case with two members
+declaring ONE concrete artifact type — which round 6's tests could not express,
+because their helper builds a fresh artifact class per call, so the two members
+in them could never actually collide. That is why "does not crash" passed while
+the admission was wide open.
+
+**Major — the ceiling was corrected in two places out of three.**
+`register_uncertainty_intake`'s docstring — the PUBLIC one, the one `help()`
+shows — still carried "one stated ceiling: function-object introspection
+reaches the store", fourteen hundred lines from the paragraph round 6 had
+corrected for saying exactly that. CLAUDE.md's own named defect: a claim in two
+places with nothing pinning them.
+
+**Major — the polarity pin was defeated by DOUBLE NEGATION.** Round 6's rule —
+"a required-substring assertion is polarity-blind unless the polarity word is
+inside the pinned substring" — is true against deleting the negation and false
+against adding one. Wrap `no importable name offers an unvalidated write` in
+`it is not the case that ...` and the substring, and every banned token,
+survive untouched while the claim is reversed. Natural-language negation wraps
+anything.
+
+*Correction, and it is the same one ADR-0166 reached independently.* **A digest,
+not a substring and not a denylist.** Every paragraph of both ceiling docstrings
+is pinned by sha256, and so is the `#:` source comment above
+`UNCERTAINTY_INTAKES` — which is not a runtime string and was therefore scanned
+by nothing at all. THE HONEST SCOPE, smaller than it sounds: this detects
+CHANGE, not falsehood. When it fails a reviewer reads the new paragraph, decides
+whether it is true, and updates the digest in the same commit. What it makes
+impossible is a ceiling claim moving with nobody looking, which has now happened
+in three consecutive rounds in three different places.
+
+**Major — two more audit rows do not reproduce, and THE TWO LENSES DISAGREED
+WITH EACH OTHER, which settles what is wrong with the table.** Both reviewers
+re-measured `| R2 | registration uniqueness | +97 |` and `| R6 | registry store
+is closure-local | +52 |`, independently, each building what they judged a
+faithful minimal revert. Neither reproduced the published number, and neither
+reproduced the other:
+
+| row | published | lens A measured | lens B measured |
+|---|---|---|---|
+| R2 uniqueness | +97 | +1 (name check) / +74 (artifact-type loop) | +18 (artifact-type loop) / +19 (both) |
+| R6 closure-local | +52 | +4 (store → module dict) | +1 (add an importable alias) / +17 (also drop `forget`) |
+
+Two careful reviewers reverting "the same fix" produced four different numbers,
+because **the row names a GUARANTEE and a number, and never the revert that
+connects them.** That is the defect, and it is not fixed by measuring harder.
+Round 6 corrected R4 and disclosed that it had not re-measured the rest; the
+disclosure was correct and is not enough. **A table of numbers nobody can
+regenerate is worse than no table**, because it reads as evidence.
+
+*What the table is now.* Only rows with a RECORDED REVERT RECIPE carry an
+authoritative number, and each is reproduced by at least two independent
+measurements that agree:
+
+| row | recorded revert | extra failures |
+|---|---|---|
+| R4 | delete the `if not any(cls is expected ...)` block from `_question_problems` | **+5** (round 6, lens A and lens B all agree, with the same five test names) |
+| R2 `unknown_producer` | drop the `_producer_problems(...)` term from `admission_problems`'s return expression | **+11** (lens A and lens B agree) |
+
+Every other row carries round-5's number with NO recorded recipe. Those numbers
+are **withdrawn as evidence** — kept in place above as history, since rewriting
+an old verdict is not allowed here, but they are not offered as coverage. The
+selection for both rows above is round 5's own stated one: the four affected
+test files, against the candidate's own baseline.
+
+**THE STANDING RECOMMENDATION, FOR THE OWNER.** This is the third consecutive
+round in which a committed audit number failed to reproduce, and the cause is
+the same every time: the battery is a throwaway script, so the recipe lives in
+prose and the number cannot be regenerated. Commit the battery as a `tools/`
+script that emits the table. No file was created for it here, per the
+repository's ask-before-writing-files rule. (Round-10 review measured a
+footgun in that recommendation and round 10 removed its cause: while `#:`
+notes were keyed by absolute line, any block DELETION shifted every later key
+and added `test_every_piece_of_prose_in_the_module_is_pinned_by_digest` to the
+count, so a naive battery overcounted by one per row. Its two recorded rows
+reproduce exactly when the same logical revert is made line-count-neutrally,
+and the ordinal keys now in place mean a deleting battery reproduces them
+too.)
+
+**Major — two MORE `_ask` sites had no test for their raise path.** Round 6
+said "two sites, now both pinned"; counting the two named here, four of the
+module's `_ask` sites needed a raise-path test and only two had one. `_declarations`' own
+four-hook loop reads `artifact_type` (a FIFTH site, on the `admission_problems`
+path), and `_question_problems` reads `estimand` on the wrong-member branch
+whose only job is to build the message naming what that member answers.
+Bypassing `_ask` at either left all 156 tests green. Both are pinned now, and
+the parametrized hook table gained an `artifact_type-raises` case beside its
+three siblings, which had one each.
+
+**Major — five negative-registration tests had no cleanup path.** Each was a
+bare `with pytest.raises(...): register_uncertainty_intake(...)`, so on the day
+its guard regresses the entry STAYS — and one of them rebinds a shipped name,
+`outcome_band`. Every later test in that process then runs against a corrupted
+registry, which makes any "+N extra failures" count order-dependent noise and
+is part of why the numbers above disagree. `_refuses_registration` now owns
+that shape with the undo in a `finally`, an autouse fixture asserts no test
+leaves the registry changed, and a test DRIVES the cleanup path by registering
+something that succeeds — because an unrun cleanup path is how this happened.
+
+*While writing this round the same defect family bit the fix itself.* The new
+`artifact_type-raises` case was added to the parametrize list and its id to the
+`ids=[...]` list beside it, at different positions — so a mutation was reported
+as killing `registered_producers-str` when it had actually killed the new case
+four rows away. An id that names the wrong test is evidence that lies. The two
+lists are now one list carrying its own ids, and a test asserts every id starts
+with the hook it labels.
+
+**Minor, confirmed as disclosed.** Synonyms outside the banned list still pass
+the vocabulary check. The digest above makes that check redundant for the
+paragraphs it covers; it is kept only for text the digests do not reach.
+
+### Correction round 8, 2026-09-19 — the rule was applied to peers and not to self
+
+Round-7 review returned **0 Critical, 3 Major, 1 Minor, 1 Nit**, and it
+independently confirmed all eight round-7 claims by mutation and re-derived
+both surviving audit numbers (R4 **+5**, R2-`unknown_producer` **+11**) exactly.
+The machinery was right. Three things around it were not.
+
+**Major — the fail-closed rule was added for every PEER and not for the
+CANDIDATE, at its twin call site, seven lines apart.** `register` checked only
+that `_ask` had caught a raise for the class being registered; it never checked
+that the answer was a TYPE. So a member whose `artifact_type()` merely forgot
+its `return` — the ordinary bug `_ask` exists for — registered cleanly through
+the sanctioned front door. And then round 7's own peer sweep, doing exactly
+what it was built to do, refused **every other member's construction and every
+later registration**, naming the bad entry. `UNCERTAINTY_INTAKES` is
+process-wide, so one missing `return` took the module out for every consumer
+sharing the interpreter, including capital sizing for unrelated instruments.
+It fails SAFE — nothing is wrongly admitted — which is why it is Major and not
+Critical. *Correction:* the candidate is held to the same rule as its peers,
+and a member that will not say what it claims is not registrable, for exactly
+the reason it is not a clearance.
+
+**Major — the digest pinned two docstrings and one comment, and the module has
+more prose than that.** Review put a false ceiling claim in the MODULE
+docstring, in `admission_problems.__doc__`, and in the `#:` block above
+`CLOSED_FAMILIES` — and all 164 tests stayed green in each case. *Correction,
+and it is the same one ADR-0166 reached:* every docstring at any nesting depth
+and every `#:` note is pinned, 66 entries, nothing chooses the scope.
+
+*While writing that fix it lost a note, and the mutation harness caught it.*
+Keying a `#:` block by its subject COLLIDES when a name is documented twice —
+`CLOSED_FAMILIES` is assigned twice, each with its own block — and the second
+silently displaced the first, so the note carrying "drift protection, not a
+boundary" was pinned by nothing. The reach test had passed, because it asserted
+the key existed rather than that both blocks were present. Keys carry the line
+now, and a collision fails instead of shrinking the pinned set. The same key
+shape was swept into ADR-0166's copy of this mechanism, which had no collision
+but the same latent shape.
+
+**Major (latent) — the isolation fixture could not see what it was built to
+see.** It compared `dict(UNCERTAINTY_INTAKES)`, which notices a name rebound to
+a different CLASS and nothing else. Mutating a shipped member's hook and never
+restoring it passed the fixture silently and was caught only by whichever
+unrelated later test happened to overlap — and the registry holding LIVE
+references is this module's own stated threat model. No test leaks that way
+today. *Correction:* the snapshot reads each member's hook ANSWERS as well as
+the mapping, and because reverting that widening breaks nothing unless
+something actually leaks, the reach is pinned by a test that mutates a hook and
+asserts the snapshot moves.
+
+**Minor — the seal's stated bar was higher than the real one.** The
+`CLOSED_FAMILIES` note named a hostile metaclass as the way past
+`__init_subclass__`; clearing `_FINAL_METHODS` by ordinary attribute assignment
+on the importable class does it with no metaclass at all. The safety net is
+unaffected — `admission_problems` never consults `.problems()`, and review
+confirmed a rogue subclass is still refused — so this is a documentation
+precision fix, and the note now names the lower bar.
+
+**Nit.** Round-7 prose said "There were four" while naming two; reworded.
+
+**Major (second lens) — one half of a two-half guard was never driven.**
+`if refusal or not isinstance(other_wanted, type)` has two independent halves.
+The REGISTRATION sweep tested both; the CONSTRUCTION sweep tested only the
+raise, so narrowing it to `if refusal:` passed all 164 tests. The untested half
+is not decoration: a peer answering `()` raises nothing AND is a legal second
+argument to `isinstance`, so without it `isinstance(artifact, ())` is simply
+False and the artifact is admitted SILENTLY — the round-6 Critical, reachable
+again by a one-condition narrowing. A peer answering `None` crashes at the risk
+gate instead, which is round-5's Major. Both shapes are parametrised at the
+site that was one-sided.
+
+**Minor (second lens) — the "end to end" test was not.**
+`test_a_broken_peer_cannot_let_two_members_claim_one_artifact_type` was
+described as reproducing the Critical end to end and never constructed
+anything, so reverting the construction sweep alone left it green. It now
+constructs the never-registered second member and asserts the refusal, which is
+the path that case actually runs.
+
+**Three surviving mutants, recorded as EQUIVALENT rather than argued away.**
+Dropping `refusal or` from any of the three guards kills no test, and the
+reason is structural: `_ask` answers `(None, [message])` on a raise, and `None`
+is not a type, so the non-type half already covers every raise. The `refusal or`
+half is what carries the hook's coded text into the refusal MESSAGE, not what
+decides. `test_the_two_halves_of_the_unreadable_guard_overlap_by_construction`
+pins that, so a future reader does not read three surviving mutants as three
+coverage gaps.
+
+26 mutations, 26 killed (plus the three equivalent mutants above, excluded by
+that rule rather than by preference), including all three prose locations
+review wrote in, the candidate check, the construction sweep's non-type half,
+the snapshot's reach, and the key collision. **Round 8's own "18 of 18" did not
+reproduce under the second lens's independently designed set — it scored 17 of
+18, and the survivor is the Major above.** The claim was wrong because the
+harness mutated each guard whole and never each half.
+
+### Self-review sweep, 2026-09-19 — five gaps found before a lens had to
+
+Not a review round. Between review passes the module was swept with eleven
+broad production-code mutations of the kind the second lens used on the sibling
+branch. Five survived, and all five are now closed.
+
+**Two boundary rules were unstated.** Relaxing `coverage.measured < min` to
+`<=`, and tightening `known_at_ms > decision_ts_ms` to `>=`, each left all 174
+tests green — so nothing said whether a producer measuring EXACTLY the declared
+floor is covered, or whether evidence known AT the decision instant is a
+look-ahead. Both are now decided and pinned one millisecond either side: the
+floor is INCLUSIVE (it is a floor the evidence must reach, not clear), and
+evidence known at the instant existed when the decision was taken. This is the
+same family as the settlement boundary ADR-0162 spent a round on.
+
+**`forget()`'s identity re-check was unpinned.** Relaxing `store.get(name) is
+cls` to `name in store` left every test green, while a REPLAYED stale undo
+silently removed whichever member had since taken the name — an unregistration
+nobody asked for, through the sanctioned API. The docstring already promised
+"only while it is still the one in place"; now a test says so.
+
+**The abstract-registration test passed for the wrong reason.** With the
+abstract check deleted the test still passed, because the registry key was
+`tests_abstract` and the assertion was `match="abstract"` — satisfied by the
+NAME, while the refusal actually came from the round-8 candidate type-check
+("None is not a type"). The key no longer carries the word and the assertion
+reads the reason.
+
+**The `__mro__`-not-`issubclass` rule had no test that could see it.**
+`test_a_virtual_registration_cannot_forge_family_membership` refuses through
+round 4's registered-demand screen, because the forged family is UNREGISTERED,
+so it never exercises the `__mro__` choice. The distinction is only observable
+when BOTH classes are registered. A test now does that — and its first version
+asserted only that SOMETHING refused, which the mutation satisfied by refusing
+for a different reason; it asserts the estimand-mismatch text now.
+
+**Two harness defects, recorded because they produced false readings.** A
+mutation anchored on a string that also appears in a COMMENT replaced the
+comment and was scored a survivor while the code was untouched. The sweep now
+refuses any anchor that is not unique, so an inert mutation cannot be counted
+again. (The earlier same-byte-length `__pycache__` trap is already recorded.)
+
+Eleven mutations, eleven killed.
+
+### What remains unpinned, and why — ADR-0165's residual list
+
+Stated plainly because an accurate residual list is worth more than a clean
+bill. Nothing below is a defect being deferred; each is a boundary this design
+does not cross, or a limit of what was measured.
+
+1. **No coverage evidence for any artifact.** This module measures nothing.
+   `CoverageEvidence` records what a producer attests, and the demo's attested
+   number was never measured — its evidence id is literally
+   `synthetic-demo-no-measurement-was-performed`. The audit's "Required
+   evidence" section is unmet in full.
+2. **No provenance.** The `unknown_producer` screen establishes that an
+   artifact and its attestation agree on a producer the package has
+   REGISTERED. Nothing imports the named module, re-runs an estimator or
+   verifies a signature, and a hand-built artifact naming a registered
+   producer is admitted — pinned, deliberately, by
+   `test_what_this_does_NOT_establish_is_pinned`.
+3. **Not a root of trust.** ADR-0122's Correction settles why. Concretely: a
+   hostile metaclass can still make an envelope's `problems()` METHOD return
+   `[]` (the module FUNCTION refuses it, and the test asserts both halves);
+   `_register_intake.__closure__` reaches the store; a caller can decline to
+   call this module at all.
+4. **The three producer registries are not this module's to seal.**
+   `FALSE_SIGNAL_ESTIMATORS`, `MEAN_INTERVAL_ESTIMATORS` and `CALIBRATORS`
+   belong to the sibling modules and are open by ADR-0151/0152/0155's design.
+   Anyone who can register a producer there makes it "known" here. That is why
+   the screen's own message says "an open registry", and it is why the claim
+   is acquaintance rather than provenance.
+5. **The registry holds live class references, not a snapshot.** Editing a
+   registered member's hooks after registration changes what the screens read
+   immediately. Mitigated rather than closed: every hook answer is re-read and
+   re-screened at use time, so a mutated hook produces a refusal rather than a
+   crash or a silent admission.
+6. **Suspected but not demonstrated.** The same `__init_subclass__`/registry
+   idiom appears roughly thirty times elsewhere in this repository. The
+   bypasses litigated here — `ABCMeta.register`, `__bases__` rebinding, a
+   reattaching metaclass, a module-private dict — are properties of the idiom,
+   not of this module, so other users of it are probably open the same ways.
+   That was explicitly out of scope for this work and is not evidence about
+   any specific site; it is a lead, stated because omitting it would make this
+   list look better than it is.
+7. **The order-dependent failures in `children/intraday_equities/tests/`**
+   (5 in `test_configs.py` in the four-file battery; ~27 across the whole
+   folder) are pre-existing at base `842d226`, reproduce there, and were never
+   touched. They are not this work's, and they do mean the child folder has no
+   clean whole-folder run to compare against.
+8. **The equivalent mutant** in the table has, by construction, no test that
+   fails when it is reverted. That is what "equivalent" means, and the proof
+   above is what stands in for coverage.
+
+### Round 10 correction — the reader that ran the descriptor protocol it was meant to escape
+
+Two independent fresh-context lenses on `5c787ef`. The first returned 1 Critical
+and 1 Major; both are closed here, with its two Minors.
+
+**CRITICAL — a class-level descriptor over the SLOT NAME forged an admission,
+silently and process-wide.** `_raw` read `object.__getattribute__(envelope,
+name)` under the docstring claim "past any redefined descriptor", and
+`admission_problems` claimed "the artifact and attestation are re-read from the
+instance at every call … so a value swapped in after construction is refused on
+the next call". Both were false. `object.__getattribute__` runs the FULL
+descriptor protocol: a data descriptor on the type, under the name being read,
+wins over the instance slot. Only a redefinition under a DIFFERENT name — which
+is what `TestTheAccessorsReadTheScreenedValues` had always used — was bypassed.
+
+The reproducer needs no subclass, no metaclass, no `ABCMeta.register`, no
+`__bases__` rebinding and no edit to this file. Two assignments on an
+already-registered, already-shipped class:
+
+```python
+AttestedOutcomeBand._artifact = property(lambda self: forged_band)
+AttestedOutcomeBand._attestation = property(lambda self: forged_stamp)
+admission_problems(envelope, demand, AttestedOutcomeBand)   # -> []
+admit_uncertainty(envelope, demand, AttestedOutcomeBand) is envelope   # True
+attestation_of(envelope).artifact_id   # -> the forged id
+```
+
+`children/intraday_equities/nodes_capital.py` reads the admitted artifact
+through `artifact_of`/`attestation_of`, so the same two lines against
+`AttestedFalseSignalRate` would have sized capital against fabricated `pi_hat`
+and `pi_widened` for every envelope of that class while the seam kept reporting
+a clean admission. This was the trust root, not a bypass around it.
+
+The fix takes nothing on the type: `_REAL_INSTANCE_DICT` is
+`AttestedUncertainty.__dict__["__dict__"].__get__`, bound once at import, and
+`_raw` reads the instance dict through it. The same idiom as
+`final_model._REAL_MRO`, and for the same reason — a class may define, redefine
+or shadow any NAME, but it cannot reach inside a reference this module took
+before any member existed. Two regression rows pin it: a descriptor over the
+slot names themselves, and a hostile `__getattribute__` on the class. The
+second closes the first lens's MINOR-2, which measured that replacing the
+reader with a plain `getattr` left all 176 tests green — the one defence `_raw`
+had earned was free to be refactored away.
+
+**MAJOR — the third boundary in `_timing_problems`, six lines from the second.**
+Relaxing `calibration_end_ms > decision_ts_ms` to `>=` left all 176 tests green.
+Round 9's own self-review had named and fixed the two boundaries around it
+(`measured < min` and `known_at_ms > decision_ts_ms`) and missed this one, which
+is the same rule about the same stamp in the same function — the third
+occurrence of a defect class this entry had already named twice. A window
+ending AT the decision instant used data that existed when the decision was
+taken; only one reaching past it is a look-ahead. `UncertaintyAttestation`
+refuses a window ending after the artifact became knowable, so the two stamps
+cannot be varied apart — the new row asserts the messages BY NAME rather than by
+count, so it proves the calibration rule and not only its neighbour.
+
+**MINOR — the prose pin's own keys were the churn.** `#:` notes were keyed by
+absolute source line, so any line-count-changing edit reported every later note
+as moved, and the lens measured its own revert battery overcounting by one per
+row for exactly that reason. Keys are now `<label>#<ordinal>`, which collides
+with nothing (the two `CLOSED_FAMILIES` blocks stay separate, still asserted)
+and moves for nothing. Ported from the sibling module's round-10 fix along with
+its other two: a `#:` block running to END OF FILE is now flushed, and every
+non-docstring STRING LITERAL is pinned under `strings:<owner>` — a string
+constant is neither a docstring nor a comment, and the sibling's declaration
+table was free prose for a whole round through that hole. A totality assertion
+against an independent AST count holds the `strings:` buckets honest, and a
+live-object walk asserts every reachable `__doc__` equals the source the pin
+digests, keyed by `__qualname__` because `_register_intake` is defined inside
+`_sealed_registry` and exported under another name.
+
+**Equivalent mutants, stated rather than contrived around.** Widening `_raw`'s
+`except TypeError` to `except Exception` survives: `_REAL_INSTANCE_DICT` raises
+`TypeError` for a non-instance and returns a real `dict` otherwise (an instance
+`__dict__` cannot be rebound to a non-dict), so `.get` cannot raise and no other
+exception is reachable. The first lens independently re-derived the three
+equivalences round 8 and round 9 recorded, and found no undeclared ones.
+
+Round-10 sweep: fifteen mutations over the accessor primitive, the three timing
+boundaries, both admission terms and the prose machinery — fourteen killed, one
+the equivalent above. 181 tests in `tests/pipeline/test_uncertainty_intake.py`.
+
+### Round 11 correction — one shape rule, three unpinned boundaries, and a demo that refused itself
+
+The second lens on `5c787ef` returned 1 Critical and 10 Major. Every one is
+closed or recorded here, and one of its attributions is corrected.
+
+**The Critical's substance stands; its attribution does not.** The shipped
+`run-mio-demo.json` carried a `bundle_artifact_sha256` that no longer matched
+what `SyntheticMioSource` emits, so `EquityKellyMIO.validate_inputs` returned a
+hash mismatch and the ONE document whose stated purpose is "this proves the
+refusal machinery runs" refused itself before demonstrating anything — and for
+the wrong reason. The lens called the failing test mis-filed as pre-existing;
+it is not. `test_mio_demo_source_emits_a_release_matched_nonproduction_cap`
+fails at base `842d226` too, checked directly on a detached worktree, so it is
+not this branch's regression. It IS this branch's to fix: the branch edited
+that pin once when the `uncertainty` port was added, and the bundle moved
+again afterwards without a re-sync. CLAUDE.md's own named defect, a value in
+two places with nothing pinning them. The pin is re-synced, the test carries
+the regeneration command in its failure message, and the child's known-failure
+count drops from 33 to 32.
+
+**Major — the shape rule was written twice and had already drifted.**
+`__init__`'s early screen checked only that `excluded_types` returned a TUPLE;
+`_declarations`, the use-time rule, checked its elements too. A member
+answering `(42,)` therefore crashed inside `isinstance` with a `TypeError` at a
+risk gate, against this module's own repeated promise that an unhandled
+exception there is worse than a refusal — and a project registering its own
+intake with a plausible typo is the supported use case that hits it. There is
+one owner now, `HOOK_SHAPES`, read by both, with a test asserting the
+constructor no longer spells the rule itself. The `all(isinstance(i, type))`
+half was separately unpinned in `_declarations` (every misbehaving-hook row
+tested the outer container only); two rows with the right container and a
+wrong ELEMENT close it.
+
+**Major — three more boundary-inclusivity gaps, the defect class this entry
+has now named four times.** `n_units < 1`, `calibration_end_ms >
+known_at_ms`, and `calibration_end_ms > decision_ts_ms` all survived
+relaxation. One unit is the legal minimum the docstring states; a window
+ending at the instant the artifact became knowable covers no time the artifact
+predates; a window ending at the decision instant is not a look-ahead. The
+third could not be varied alone — `UncertaintyAttestation` refuses a window
+ending after the artifact became knowable, so it drags `known_at_ms` past the
+decision too — so that row asserts the two messages BY NAME rather than by
+count.
+
+**Major — the bool exclusion was unpinned on the trust root's own input.** A
+bool IS an int in Python and `True` is an ordinary epoch of 1 ms. Deleting the
+exclusion from `_check_stamp` left every `DecisionDemand` stamp silently
+admitting it, and the attestation row that LOOKED like coverage
+(`{"known_at_ms": True}`) was proven to refuse for an unrelated ordering
+coincidence with the fixture's default. Each stamp now says so for itself,
+against the message the exclusion produces, with both stamps zeroed first so
+the ordering rule cannot be what answers.
+
+**Major — the "must be a STRING" half of two rules.** Every "unusable" row
+tested EMPTINESS, never a truthy value of the wrong type, so dropping
+`isinstance(value, str)` from `_check_text` or from the estimand shape
+survived. Both are pinned.
+
+**Major — the raise that carries a hook's own exception text.** For
+`artifact_type` and `excluded_types`, deleting it fell through to a shape
+refusal naming the same hook, so a `match=hook` assertion could not tell the
+hook's real failure from a generic fallback. The exception class appears only
+in the first message, and is now asserted.
+
+**Major — two supported behaviours resting on unexercised clauses.**
+`or other is cls` is what lets one class answer to a second name, and nothing
+ever registered a shipped class under an alias. `cls.__doc__ = cls.__doc__ or
+doc` is a fallback, and neither half was tested in either direction. Both are
+pinned; the second is documentation only and recorded as such.
+
+**Recorded, not fixed.** The `artifact_producer` `isinstance(..., Mapping)`
+guards in two members are exercised-but-safe: every call on the real rule path
+goes through `_ask`, which catches and codes any crash. They are only exposed
+if `artifact_producer` is called directly and unprotected.
+
+**Nit, and it mattered.** The child's integration test asserted through
+`.problems()`, the convenience METHOD resolved through the envelope's own
+class, rather than `admission_problems`, the FUNCTION `nodes_capital.py`
+actually calls and the one this module tells a consumer sizing capital to use.
+A test of the path the child does not take.
+
+Round-11 sweep: nineteen mutations over the accessor primitive, the shared
+shape rule, all four boundaries, both stamp and text exclusions, the registry's
+alias and doc clauses, the demo pin and the prose machinery — all nineteen
+killed. 200 tests in `tests/pipeline/test_uncertainty_intake.py`.
+
+### Round 12 correction — a defeatable source-text decider and the same type filter E2 fixed
+
+Round 11 was UNREVIEWED (the review pass was cut short by a session rate limit).
+Round 12 is that review: two independent lenses returned 0 Critical, 2 Major
+and 2 Minor, and all four are closed here.
+
+**1. The ONE-shape-rule invariant was enforced only by a defeatable
+source-text grep.** `test_the_two_screens_read_ONE_shape_rule` asserted
+`"_shape_problem" in constructor` and `"isinstance(excluded_types, tuple)" not
+in constructor`. An inline re-implementation of `excluded_types`' rule
+(`type(excluded_types) is tuple and all(isinstance(...))`) in `__init__` — with
+the byte-identical message — left all 200 tests green: `_shape_problem` still
+appears (the `artifact_type` screen keeps it) and the literal is dodged. The
+test now pins each shape-checked hook AT ITS OWN CALL SITE
+(`_shape_problem(type(self), "artifact_type"` and `... "excluded_types"`) and
+pins that `_declarations` reads `HOOK_SHAPES[hook]`, so a drift in either
+screen, for either hook, fails.
+
+**2. The prose pin shared the exact type filter E2's round 11 removed.**
+`_string_constants` and the "independent" totality oracle both filtered
+`isinstance(..., str)`, so a `bytes` literal was invisible to both — the same
+blind-spot-in-the-check-that-prevents-blind-spots, one sibling behind. Both are
+now filterless: `strings:<owner>` carries the `repr` of every non-docstring
+`ast.Constant`, whatever its type, and the oracle has nothing left to share.
+
+**3. The live-vs-source docstring check was one-directional.** The live walk
+skips a target whose `__doc__` is falsy, so a source docstring whose live
+`__doc__` was wiped to `None` vanished from both `missing` and `differing`.
+The check now walks BOTH directions and allows exactly the one documented
+unreachable closure (`forget`, defined inside `register` inside
+`_sealed_registry` and never held as an attribute), so a second unreachable
+docstring fails.
+
+**4. The registry-snapshot's reach was pinned on one hook.** The autouse
+fixture's sensitivity was exercised only through `artifact_type`, so its reads
+of `estimand`/`excluded_types`/`registered_producers` could be deleted green.
+The reach test is now parametrized over all four hooks.
+
+Round-12 sweep: the inline-shape-rule mutation, the bytes-literal, the
+docstring wipe and the shrunk registry net are all killed.
+
+The second lens's re-review found one more Minor and closed it here: the
+`reported is None` branch of `_producer_problems` was unpinned — no test built
+an artifact whose self-report is absent, so mutating `is None` to `== ''` lost
+the specific "records no producer of its own" verdict with the suite green.
+`test_an_artifact_that_records_NO_producer_of_its_own_is_refused_by_name`
+registers a member whose `artifact_producer` returns `None` and pins the
+message. 204 tests.
+
+---
+
+## ADR-0162 — the funds-and-inventory encumbrance seam (`dskit/production/encumbrance.py`)
+
+**Status:** accepted 2026-09-18 under the owner's standing pre-approval of
+tier-1/tier-2 additions for this work (the production-research audit's gaps
+EQ-05 and PM-04, which are one requirement stated twice). Skeptic Phase 0
+applies: this crosses an accounting contract and reads persistent state, so
+actors, authority, identities, transitions, compatibility and non-goals are
+frozen below before RED.
+
+**Context.** `Balance` (`records.py`) already carries `total` and `available`,
+and `PaperAccounting.snapshot` already builds one per folded currency — but it
+writes `available=total` unconditionally. Nothing in the package derives
+`available` from what is outstanding. `Accounting.classify` computes signed
+exposure to LABEL a proposal's risk effect; `guards.Exposure`/`ExposureAfter`
+value working orders for a LIMIT check; `cashflows.py` schedules EXTERNAL
+deposits and withdrawals on a calendar. None of the three is a cash reservation
+ledger, and `"buying_power"` exists only as an uncomputed metrics label, as an
+externally supplied child input, and as a solver bound — never as something
+derived from committed funds.
+
+The word "reserve" is already spoken for four times in this tree:
+`arming.ReductionRights.reserve` (a single-use authorization right),
+`ledger.reserve_once` (an idempotent id claim), `resilience.RateLimiter`'s
+`reserved` cancel lane, and ADR-0157's authorization reserve (the onboarding
+admission ledger). None of them is brokerage cash. This decision therefore uses
+**encumbrance** throughout — a claim held against the account's own resources
+by something not yet finished. The noun is new to the repository, so no reader
+has to disambiguate it from the four.
+
+**Actors and authority.** The fold (`SeriesState`) remains the sole owner of
+positions, working orders and balances; the encumbrance seam DERIVES and never
+books. The injected history collaborator (`reconcile.LedgerHistory`) remains
+the sole source of fills. The seam mints no record kind, takes no lock and
+writes nothing, so it adds no authority and cannot corrupt the chain. The
+settlement period, the balance basis, margin, borrow and locate are owner and
+venue facts: the package holds none of them, and refuses when one is needed and
+absent.
+
+**Decision.**
+
+1. A new tier-1 module `dskit/production/encumbrance.py` holds one structural
+   ABC, `EncumbrancePolicy`, with two `@abstractmethod` hooks —
+   `encumber(state_view, at_ms, history)` and
+   `borrow(instrument, qty, state_view, at_ms)` — plus two concrete
+   base-owned methods: `balances(...)`, the ONE owner of
+   `available = total - committed - unsettled`, and `admit(...)`, the ONE
+   owner of "may this proposal be committed".
+
+2. `EncumbrancePolicy` is a seam with a TABLE, not a §4.3 registry — the
+   `readiness.Evidence`, `report.ReportEmitter` and `metrics.EventAdapter`
+   precedent. No document key selects an encumbrance policy in this slice, and
+   a registry would add a §4.3 family nothing selects (and a twenty-fifth row
+   to the pin `test_oop.py` holds). `ENCUMBRANCE_POLICIES` maps the two core
+   names to their classes and is what `_PARAMS` resolves against.
+
+3. Two core policies. `UndeclaredSettlement` is the null object: it encumbers
+   nothing, so `balances` returns `available == total` through the SAME
+   arithmetic rather than through a special case, and it touches no history.
+   Its `admit` REFUSES — an account with no declared convention may report the
+   legacy figure but may never authorize a commitment against it.
+   `CashSettlement` is the real one: it requires `settlement_lag_ms` and
+   `balance_basis`, neither with a default, and refuses at construction when
+   either is absent.
+
+4. `BALANCE_BASES = ("trade_date", "settlement_date")` joins `vocab.py`, where
+   every closed set lives. Whether the balance a series folds already reflects
+   a fill at trade time is a venue and operations fact this package cannot
+   know: `SeriesState` moves `balances` only on `cash_flow`, yet a
+   reconciliation `adjustment` can sync folded cash to venue cash. Guessing
+   either way is the invented formula this ADR refuses to write, so the basis
+   is declared and dispatched through a table keyed by the vocabulary.
+
+5. `EncumberedAccounting(PaperAccounting)` lives in the new module, declares
+   `_PARAMS = ("encumbrance",)`, resolves its policy from the table and
+   overrides ONE new hook, `PaperAccounting._balances(state_view, at_ms)`.
+   `accounting.py`'s only change is extracting that hook out of `snapshot`
+   with an identical body. The import arrow points `encumbrance -> accounting`
+   and never back.
+
+6. **Deriving `available` makes it visible; a guard is what makes it
+   binding.** Two `Measure` subclasses live in the same module —
+   `SettledFundsShortfall`, which reads `AccountState.balances`, and
+   `UncommittedUnitsShortfall`, which reads its positions and working orders
+   — and a `Limit` over either, bounded at `{"max": "0"}`, refuses a proposal
+   that reaches past what is free. They run inside the guard chain's recorded
+   barriers, and because every leg re-snapshots the account (§5.8.1's fresh
+   fold) the second lead of a tick measures against what the first already
+   holds. Both are referenced by `pkg.module:Class` rather than registered:
+   `MEASURE_KINDS` lives in `guards.py`, which this module imports, and a
+   registration performed by a lazily imported module would make the
+   registry's contents depend on import order. Neither is scalable —
+   shrinking an order to fit the cash is an execution decision this package
+   has no mandate to invent — so `on_breach` is `refuse`, `hold` or `pause`.
+   The shortfall rules have ONE owner, shared with `admit`, so a guard chain
+   and a direct caller can never disagree about whether a proposal fits.
+
+**Identities and transitions.** An encumbrance has no id and no lifecycle of
+its own: it is a pure function of `(StateView, at_ms, history)`. Its
+transitions are the order and fill transitions the fold already owns. A working
+order — `pending`, `open`, `partial`, `pending_cancel` or `unknown` — holds its
+commitment; only a `TERMINAL_STATUSES` member releases it; and the FILLED
+portion of a partial leaves `remaining_qty` and reappears as a settlement
+obligation through the fill history, never as free cash. `unknown` is
+deliberately not terminal, so an uncertain remainder stays encumbered — §5.0's
+"the absence of certainty, not an end", applied to money.
+
+**Restart, and the statelessness it rests on.** Nothing is held in memory.
+`StateView` is rebuilt by `SeriesState`/`Recovery` from the durable snapshot
+plus the chain, and the fills come from the chain through `LedgerHistory`;
+re-deriving at the same `at_ms` over the same chain therefore reproduces the
+same encumbrance, which is what "survives restart" means here. No parallel
+store is introduced, and there is no in-memory reservation that a crash could
+lose or double-count. The load-bearing half is that every policy answers from
+its arguments ALONE: `compose.py` builds the accounting object, and therefore
+its policy, once per serve process rather than once per tick, so a policy that
+remembered an answer would freeze `available` at the first tick's value for the
+process lifetime and silently permit unlimited over-commitment afterwards. That
+is a contract of the seam, not a property of one implementation, so it is
+asserted by handing ONE instance different folds, different instants and
+different histories and requiring different answers.
+
+**The statelessness audit, and where its boundary actually is.** `encumber`
+takes THREE arguments — the fold, the instant and the history — so a cache can
+be keyed on any of them, and a claim about what the tests catch is worth
+nothing unless it was measured. Each row below is a cache installed in
+`CashSettlement.encumber`, run against `tests/production/test_encumbrance.py`,
+and reverted; `family` counts failures under `-k "moving or moves"` and `file`
+counts them over the whole file. Measured at this decision's candidate, and a
+RECORD of an audit rather than a live gate — a later change can move these
+numbers without anything failing.
+
+| cache key | family f/p | file f/p | caught by |
+|---|---|---|---|
+| `(id(self), at_ms, id(state_view), id(history))` | 8/4 | 9/79 | the whole moving-fold family |
+| shape digest over the four container lengths | 6/6 | 8/80 | the value-only members |
+| key sets plus per-element `id()` of orders and positions | 6/6 | 9/79 | the value-only members |
+| `(id(self), at_ms, economic_seq, head_seq, head_hash)` | 4/8 | 11/77 | the unsized-intent member — an `intent` is not economic, so the counters stand still while the fold moves |
+| `(economic_seq, head_seq)` alone | 9/3 | 36/52 | almost everything |
+| `(id(self), at_ms // 1000, id(state_view), id(history))` | 8/4 | 9/79 | the whole moving-fold family |
+| `(id(self), at_ms, id(balances proxy), id(working proxy))` | 8/4 | 9/79 | the whole moving-fold family |
+| content hash of BALANCES only, history by identity | 6/6 | 9/79 | the working-order and history members |
+| full content hash of the VIEW, history by identity | 2/10 | 2/86 | the two history-content members |
+| content hash of ALL THREE arguments | 0/12 | 1/87 | **NOT CAUGHT** |
+
+The last row is the boundary, and it is narrower than it first looks: the
+uncoverable case is a content hash over all three arguments, NOT over the fold.
+A cache thorough on the fold but identity-only on the history was invisible to
+every moving-fold test until this decision added a history-content axis,
+because the one test that moved history content had always moved a container
+shape with it. Its single remaining `file` failure is an artifact of the
+mutant, which calls `history.fills` a second time to build its own key and so
+trips the "asked once" test; it is not a stale answer. A cache keyed on the
+values of all three arguments cannot return an answer that disagrees with the
+values, so there is nothing left to catch — that, and nothing weaker, is what
+"no test can see this" means here.
+
+**Compatibility.** `PaperAccounting` keeps `available == total` exactly, for
+every existing document, because the extracted hook's body is unchanged and no
+existing document names the new class. The new behaviour is reached only by
+explicitly selecting `EncumberedAccounting` and declaring a policy; `_PARAMS`
+grows from `()` to `("encumbrance",)` on the SUBCLASS only, which loosens
+nothing on the base and refuses nothing a base document used to allow. A silent
+change to `available` under every existing document was rejected for exactly
+this reason: an operator reading a narrower `available` that no document asked
+for is a behaviour change nobody approved.
+
+**Non-goals.** No margin, borrow, locate or short-sale modelling beyond the
+`borrow` refusal hook, which core answers with a refusal naming the instrument.
+No corporate actions and no cash distributions. No fee or slippage estimate
+inside a commitment — a commitment is `remaining_qty * limit`, and a market
+order with no declared price REFUSES rather than being valued by a guess. No
+multi-currency attribution: an order carries no currency, so a balance set
+spanning currencies refuses, exactly as `PaperAccounting.value` already does.
+No inventory settlement — only cash settles, and units committed to a working
+sell are the only inventory encumbrance. No document key, no rung-table row and
+no `ACCOUNTING_KINDS` registration; wiring any of them is a separate decision
+that would move document identity, and registering the strategy as a core kind
+would hand the simulated rungs a kind their row forbids. Reachability is
+therefore the ordinary child-class one and is pinned by test: a `live` or
+`live_limited` document reaches the strategy as
+`dskit.production.encumbrance:EncumberedAccounting`, and a `shadow` or `paper`
+document naming it is REFUSED at construction, because §5.13.1's row admits
+`paper` and no other. No child is wired. A
+proposal whose size the fold cannot see — a `StateView.pending` client ref,
+whose intent has landed but whose `order_event` has not, and whose quantity the
+view does not carry — makes `admit` refuse rather than under-encumber. And one
+pin's REACH is worth stating: the AST check that a `Measure` reads no economic
+attribute off `state.view` scans `guards.py` only, so the two measures this
+decision adds comply by inspection rather than by that gate. Widening the scan
+is systemic work, the same shape as `test_oop.py`'s instantiation scan not
+seeing a bare-table seam, and belongs to whoever widens it — not here.
+
+**Consequences, stated as enforced versus merely available.** ENFORCED by a
+running `ServeLoop`, once a document declares the limits: a proposal reaching
+past the account's available funds, and a sell reaching past the instrument's
+uncommitted units. Both run through `GuardChain`, so a breach takes a recorded
+verdict on the chain like every other guard finding, and the fresh fold per leg
+is what stops two concurrent leads spending one balance twice.
+
+NOT enforced by those limits, and the gap an operator has to know about: an
+outstanding intent the fold cannot size. A client ref that has an `intent` and
+no `order_event` yet sits in `StateView.pending`, which carries refs and not
+quantities, so its commitment is unknown. `EncumbrancePolicy.admit` refuses
+outright while any is outstanding; a `Limit` over either measure returns
+`allow`, because §5.8.1 gives a `Measure` `state.account` and bars it from
+`state.view`. A loop enforcing ONLY the two limits therefore has ZERO
+protection against an unsized intent — the two entry points genuinely disagree
+on that one input, and they disagree by design rather than by defect. This is
+INHERITED from the pre-existing `Measure`/`state.view` split, not introduced
+here. What is missing is the DECISION to close it, not the authority: `pending`
+is not one of `vocab.ECONOMIC_ATTRS`, and Measures already read
+`state.view.decision_history` — `DecisionCount`, `IdenticalCount` and
+`DirectionChanges` each reach it through `guards.py`'s module-level `_history`
+helper. (`guard_holds` is read only by `Limit.value` and `GuardChain`, which
+are the `Guard` family rather than Measures, so the precedent rests on
+`decision_history` alone.) A measure over the pending refs is therefore already
+in contract and would need no new permission — only an owner choosing what
+bound to hold them to.
+
+AVAILABLE but not enforced by the loop: `EncumbrancePolicy.admit` itself,
+which answers for a whole slate in one call and is what a child's proposer or
+optimizer consults before it emits; and the borrow hook, which `admit` reaches
+and a guard does not, for the same snapshot-only reason — a margin child that
+can locate stock raises the bound its limit carries instead. A document that
+declares neither limit gets the derived figure on its balances and no
+protection from it; that is a configuration choice, and the two limits are what
+a readiness checklist should require.
+
+Both children (equities EQ-05, pmquant PM-04) wrap ONE seam instead of writing
+two. The audit's acceptance test is exercised against core alone: two leads
+against one scarce balance, a partial fill whose remainder is `unknown`, a
+restart, and the two refusals (unavailable borrow, insufficient settled funds).
+Nothing here establishes broker conformance, and this package asserts no
+settlement period, margin rate or borrow rule.
+
+### Correction round 6, 2026-09-19 — enumerate the INPUTS, not the defences
+
+Round-5 review returned **0 Critical, 4 Major**, and the shape of the register
+is the finding: five rounds each added one hand-written statelessness axis,
+each closed one layer, and each left the next exposed. The fourth round's axis
+was thorough on the POLICY seam, where `history` is an argument. The defect was
+one level up.
+
+**Major — a cache keyed on every argument the method DECLARES.** `loop.py` and
+`leg.py` hold an `EncumberedAccounting` and call
+`accounting.admit(proposal, state_view, at_ms)` — a claim round-6 review
+showed is FALSE and which is corrected in round 7 below; the shape of the
+cache defect is unchanged, but `loop.py` and `leg.py` reach the accounting
+object through `.snapshot()`, `.classify()` and `.value()`, never `.admit()`.
+`history` is a constructor
+collaborator reached through `self._history` and appears in no signature on
+that path, so:
+
+```python
+key = (id(self), id(proposal), id(state_view), at_ms)     # every declared input
+```
+
+silently ADMITS a proposal it must refuse once the fold moves, and it passed
+all **6617** production tests. Same shape for `.encumbrance` and `._balances`.
+
+**Major — a content key over every fill field except `ts_ms`.** `_unsettled`'s
+boundary is `fill.ts_ms + lag <= at_ms`, so `ts_ms` decides whether a fill's
+cash counts at all — and the only test that moved history CONTENT moved `qty`,
+`id` or the fill count alongside it. A key over `fill_id`, `side`, `qty`,
+`price`, `fee` and `instrument`, asking history exactly once, also passed all
+6617. (A first attempt at this reproducer asked history twice and was killed by
+the "asked once" test instead — killed for the wrong reason, which is the same
+defect family in the harness.)
+
+**Major — a working buy's `limit` was covered only accidentally.**
+
+**Major — the counters harness was unfaithful.** `SeriesState._fold` assigns
+`head_seq`/`head_hash` for EVERY record it takes and increments `economic_seq`
+only for an economic one. The harness moved all three together and froze all
+three for a "non-economic" move — a combination no real fold produces, so a
+cache keyed on `head_seq` alone was credited with a miss it would never have.
+
+**THE STRATEGY CHANGE, which is the substance of this round.** A sixth axis
+would have closed the accounting layer and left the seventh. So the artefact
+changed: instead of enumerating the DEFENCES, the suite now enumerates the
+INPUT SPACE. `DEPENDENCIES` carries one row per component the derived book's
+answer depends on — the instant, each view member, each working-order field,
+each fill field, each proposal field — and each row moves exactly that
+component, through the CALLER-FACING entry point, with every object identity
+asserted unchanged. A cache keyed on any proper subset of those inputs fails
+whichever row names the omitted one, **whichever subset an implementer picks,
+without that cache having been written down anywhere.**
+
+Two things make it more than a longer list:
+
+* `test_the_dependency_table_names_every_field_read` checks the table against
+  `dataclasses.fields` of `Fill`, `OrderState`, `Position` and `Proposal`.
+  Every field is either exercised by a row or declared unread in `NOT_READ`
+  WITH A REASON, and the two tables must be DISJOINT — mutation found that the
+  first version was an `OR` either side satisfied, so `NOT_READ` could retire a
+  live dependency. `ts_ms`, the round-5 Major, is exactly the field an
+  unchecked table loses.
+* `test_the_harness_moves_the_counters_the_way_the_real_fold_does` measures the
+  fold's own rule on a real `SeriesState`, folding a real `intent` and a real
+  `order_event`, rather than restating §5.8.1 beside the harness.
+
+**Measured, not asserted.** Every cache above, installed on the real path, is
+now killed by the gate: the three declared-argument caches (6, 15 and 2
+failures), the `ts_ms`-blind content key (77), a view-content key with history
+by identity (11), and a key over the fold counters (13). Reverting the `limit`
+valuation kills 5; reverting either half of the counters fix kills the harness
+pin. One row failed when first written — `proposal.instrument` moves no answer
+for a BUY, because `admit` routes a buy to the cash judge — so rows carry a rig
+per row rather than one shared scenario that quietly cannot exercise half of
+them. That failure is kept as the reason the table is shaped this way.
+
+**What this does NOT establish.** The gate covers the inputs the CASH policy
+reads. A margin policy reading a field `NOT_READ` currently excuses would need
+its own rows, and the completeness check would demand them. The gate also says
+nothing about whether the two limits are DECLARED by any document; that is
+still the configuration choice the Consequences section above describes.
+
+### Correction round 7, 2026-09-19 — the space is ENTRY POINTS x INPUTS
+
+Round-6 review returned **0 Critical, 2 Major, 1 Minor, 3 Nit**, and it
+independently re-derived "11 mutations, 11 killed" and confirmed the
+dependency table complete against every field the policy reads. The strategy
+change was right and the table was right. **The COVERAGE was lopsided**, and
+that is the finding.
+
+**Major — one row deep on `_balances`.** Each row named ONE entry point, and
+the result was 13 rows through `encumbrance`, 4 through `admit`, and exactly
+ONE through `_balances`. So a cache on `_balances` keyed on the working-order
+KEY SET rather than their field VALUES survived all 6776 tests — and
+`_balances` is the hook `PaperAccounting.snapshot` calls to build the balances
+that `SettledFundsShortfall` reads, which is dskit's OWN live guard path. In
+operation a working order's `remaining_qty` is rewritten in place under the
+same `client_ref` on every partial fill, so that cache would keep reporting a
+stale `available` across a leg's re-checks within one tick: a reported
+`available` that overstates buying power, which is this module's own
+definition of Critical. The same shape on `admit`, where all four rows were
+`proposal.*`: a cache omitting `state_view.pending`, or `state_view.balances`,
+also survived.
+
+*Correction.* A row now names EVERY entry point its move must change, the test
+parametrises over the cross product, and `_NOT_MOVED` carries a REASON for
+every cell that is deliberately not asserted. A cell is in one table or the
+other; there is no third place. So a new row cannot be added without saying
+what it does at every entry point, and the thin column is asserted to be thin
+no longer. Measured: all three caches that survived the old gate now fail it —
+10, 13 and 13 tests. `_balances` went from 1 row to 13.
+
+*The gate found an error in its own table while being written.* `fill.fee` was
+declared to move `admit`; it does not. A larger fee on a SELL reduces its
+proceeds, so it LOWERS unsettled and RAISES available, and a rig that admits
+exactly still admits with more room. That cell is excused now, with the
+reason, and the episode is the argument for the matrix: the old table could
+not have asked the question.
+
+**Minor — this entry stated a call graph that does not exist.** Round 6 wrote
+that "`loop.py` and `leg.py` hold an `EncumberedAccounting` and call
+`accounting.admit(...)`". They do not: they reach it through `.snapshot()`,
+`.classify()` and `.value()`. This entry's own earlier Consequences section
+had it right — `admit` is "what a child's proposer or optimizer consults" —
+and the two disagreed for a round. Corrected in place above. The defect the
+round fixed is unchanged in shape and is, if anything, more serious than the
+prose said: the live path runs through `_balances`, the column that was one
+row deep.
+
+**Nit, pre-existing and outside the round-6 diff, found by reading this entry
+against the code:** §1 named three `@abstractmethod` hooks including
+`fill_horizon_ms()`. No such hook exists anywhere in the repository; the
+tested set is `{encumber, borrow}`. Six rounds did not catch it. Corrected.
+
+**Major (second lens) — the gate proved SENSITIVITY, not CORRECTNESS.** Every
+row asserted `before != after`. That shows the named component is SENSED; it
+says nothing about the answer being RIGHT. Drop the `instrument ==` filter from
+`_held_units` and `_committed_units` — so units are summed across every
+instrument — and all 6776 tests pass. The reason is structural: the rig held
+ONE position and ONE working order, and with 0 or 1 live positions "sum
+filtered by instrument" and "sum everything" are indistinguishable. An
+instrument-blind sum still MOVES when an instrument changes, so each row's own
+assertion was satisfied by the WRONG new answer.
+
+The consequence is this module's own Critical bar: a per-instrument `available`
+inflated by units held elsewhere, and `UncommittedUnitsShortfall` — which
+reaches these same two functions independently — admitting a naked sell.
+
+*Correction.* A rig holding TWO instruments at once, and rows that assert the
+VALUE. Written out by hand rather than read back from the code: INS1 holds 10
+with only a working BUY against it, which commits no units, so 10 are
+available; INS2 holds 4 with a working SELL of 3, so 1 is. An instrument-blind
+sum reports 14 for both. A second test states the consequence as an admission:
+a sell of 4 on INS2 must refuse, and exactly 1 must still admit. Both
+mutations now die.
+
+**Minor (second lens), recorded as a LIMIT rather than fixed.** A cache keyed
+on the OUTPUT of `effective_fills` and omitting `status` survives the
+`fill.status` row, because `effective_fills` already drops a reversed fill from
+its output, so list membership carries the change. The row proves status is
+load-bearing end to end; it does NOT prove a status-blind key is safe at that
+one placement. Stated in the table beside the row rather than papered over.
+(Round 8 corrected the sentence that used to end this paragraph, which
+speculated that a key built BEFORE `effective_fills` "would likely not be"
+covered. Built and run, such a key fails the `fill.status` row at BOTH entry
+points plus two more, because the pre-filter fill list differs only in
+`status`. The speculation was written into the code comment as well and is
+corrected there too.)
+
+**Nit (second lens).** The completeness check walked the four record types and
+not `StateView` itself, so a future read of `breaker` or `reduction` inside the
+policy would be caught by nothing. All ten remaining view fields are declared
+unread with reasons now — "not a plausible input" is the reasoning the Position
+escape clause used, so they are declared rather than omitted.
+
+**Nit.** `Rig.identities()` did not include the order records, so a future row
+using `dataclasses.replace` instead of `_set` would swap a record without the
+identity guard noticing. Added.
+
+### Round 8 correction — an aggregation over one element is every aggregation
+
+Two independent fresh-context lenses on `909269d`; the second was clean on
+Critical and Major. All findings are closed here.
+
+**Major (first lens) — same-key aggregation was SENSED but never value-pinned.**
+Every rig held at most one working order per key, and `sum`, `max`, `first` and
+`last` are the same function over a one-element sequence. So `_committed_units`'
+sum could become a max and `_committed_cash`' sum could become last-wins with
+all 136 tests green. Last-wins is the dangerous one: it UNDERSTATES what is
+committed, so it OVERSTATES buying power and admits a buy the account cannot
+fund.
+
+`_two_orders_per_key_rig` now holds two working buys in one currency (100 + 60
+against 1000, so available is 840) and two working sells in one instrument
+(3 + 2 against 10 held, so 5 are free), with the arithmetic derived in the
+docstring and every wrong aggregation's answer tabulated beside it — 900, 900
+and 940 for cash, 7, 7 and 8 for units, all distinct from the right answer,
+which is what makes the assertions bite. Its history is EMPTY on purpose: a
+value pinned through two moving parts does not say which one is wrong. Four
+admission rows state the consequence at the boundary — exactly 840 admits, 850
+refuses, and 900 (which last-wins would have called affordable) refuses.
+
+**The round-7 sweep's own survivor, closed.** `_sole_balance`'s `len(rows) != 1`
+relaxed to `< 1` survived everything, because nothing built a second balance row
+anywhere it was READ. Through `EncumberedAccounting` nothing can — `_one_currency`
+refuses a multi-currency view before the book is derived. But
+`SettledFundsShortfall` is a `Measure` over whatever `TickState` the guard chain
+is handed, and that account need not have come from this policy. The account is
+therefore built directly in the new row, which is the shape that reaches the
+helper.
+
+**A second survivor, and why it is not an equivalent mutant.** `_held_units`'
+sum replaced by first-match survived all 143 tests. The function's own docstring
+says the sum is equivalent to picking one only BECAUSE `PositionBook.positions()`
+is keyed by instrument today, and is written as a sum so a source that can
+duplicate is read safely. That is a dependency on another component's shape
+stated in prose and pinned by nothing. It is pinned now: two rows for one
+instrument total 14, first-match would say 10, and a sell of 14 is exactly
+covered while 15 is not.
+
+**Minor (first lens) — an excuse table that was form-checked, not truth-checked.**
+`test_every_entry_point_by_input_cell_is_answered` proved every cell of
+ENTRY POINTS x INPUTS is either asserted or excused and that the two sets are
+disjoint. Pure form: an excuse that was simply WRONG passed it, hiding a real
+dependency behind a sentence. Every excused cell now performs its row's move and
+asserts the reading really is unchanged. **It found a false excuse on its first
+run**: `order.side` x `inventory` was excused as "funds and proposal inputs do
+not move the units book", but a working buy becoming a sell commits units it
+never held, moving INS1 from 0 available to -10. That cell is now an asserted
+dependency.
+
+**Minor (first lens) — a claim in the table that was empirically false**, and the
+same claim in this entry: see the corrected paragraph above.
+
+**Nit (first lens).** `_balances` went from 1 row to 13, not 12. Corrected above.
+
+Round-8 sweep: twelve mutations over the two aggregations, the two balance
+guards, the instrument filters and the commitment basis — all twelve killed.
+208 tests in `tests/production/test_encumbrance.py`.
+
+### Round 9 — laws, not a seventh axis
+
+The standing instruction for this seam was that eight rounds of hand-written
+rows had each closed one layer and left the next exposed, and that it needed a
+different verification strategy rather than another axis. Three properties,
+generated over by hypothesis against the real fold:
+
+- **Partition invariance over working orders.** Splitting one order into two
+  halves that add up to it changes nothing a caller reads.
+- **Partition invariance over held positions.** Same, for a position row.
+- **Permutation invariance.** The order the fold lists its rows in changes
+  nothing.
+
+A `sum` has all three. `max`, `first`, `last` and any early-returning scan have
+none of them. Measured: with the three laws run ALONE — every hand-written row
+deselected — all seven aggregation mutations die (`_committed_units`,
+`_committed_cash` and `_held_units` × sum→max, sum→last, sum→first). Round 8
+needed one purpose-built rig per aggregation to kill three of those; the laws
+kill all seven and did not have to name a single input to do it, so a field
+added later that breaks either law fails here without anyone writing a row.
+
+They are compared by VALUE, never by `str`: `Decimal("0.5") + Decimal("0.5")`
+prints `"1.0"` where the undivided row prints `"1"`, and a string comparison
+fails a law that holds. `Decimal.__eq__` is numeric, so a figure that really
+moved still fails. This was found by the laws themselves on their first run.
+
+211 tests; `tests/production` + `tests/production_libs` 6874 passed.
+
+### Round 10 — the laws widened, and they found a defect in shipped prose
+
+The three round-9 laws read only the derived book. A law that held for the
+figures while `admit` disagreed would be a law about the wrong thing, so
+`_readings` now takes all FOUR caller-facing reads: the funds row, the
+inventory book, `unsized_refs`, `admit` over a held-constant buy and sell, and
+`_balances` as `PaperAccounting.snapshot` reaches it.
+
+Widened, the partition law failed on the first run, and on something no figure
+comparison could have shown: `UncommittedUnitsShortfall`'s refusal renders its
+shortfall as `{qty}`, and `Decimal` keeps its scale — so the SAME shortfall
+prints "9 units" when the fold held one working order and "9.0 units" when it
+held two that add up to the same thing. An operator reading two renderings of
+one number has to wonder which is right, and which one they get depends on
+nothing but how the fold happened to split its rows. `_amount` is the one owner
+of that rendering now, used at all three sites that put a `Decimal` into an
+operator-facing message.
+
+The sweep then found the half the laws cannot reach: dropping `normalize()`
+dies to the partition law, but dropping the `"f"` format spec survives it,
+because no generated fold produces a figure large enough for
+`Decimal.normalize` to answer in exponent notation. A hundred is not an unusual
+shortfall and "1E+2 units cannot be found" is not a message anyone should be
+handed, so `_amount` is pinned BY VALUE over seven hand-written cases as well.
+That is the honest division: a law covers the family, a value pin covers what
+the generator's range cannot reach, and neither pretends to be the other.
+
+218 tests.
+
+### Round 12 correction — a partial sell nobody built, a vacuous buy, and a scale leak
+
+Rounds 9 and 10 were UNREVIEWED (the review pass was cut short by a session
+rate limit). Round 12 is that review: two independent lenses returned
+0 Critical, 1 Major and 2 Minor. All three are closed, and closing one of them
+surfaced a fourth defect that is fixed here too.
+
+**Major — `_order_units` read `remaining_qty`, and nothing pinned it.**
+`_order_units` correctly returns `remaining_qty`, but every partial-fill row in
+the suite was a BUY (the cash side), and the laws build no partial fills — so a
+mutation to `qty` (the original size) survived the whole suite, the laws, and
+`tests/production` + `production_libs` (6920 passed) while over-committing a
+partially-filled sell and understating the free units. `test_a_partially_filled_
+sell_commits_only_what_remains_to_fill` now hands the book a sell filled 4 of 10
+and pins committed=6, available=4, and the admission boundary.
+
+**Minor — the buy proposal's `admit` read was vacuous.** The law's buy was
+80 @ 10 = 800 against a 10000 balance; the generator's committed cash is small
+(median ~22, p90 ~624, measured), so available never fell below ~8269 and the
+buy never refused — exactly one distinct verdict across every fold shape. It is
+now 98 @ 100 = 9800, which refuses the moment a fold commits more than 200 and
+admits otherwise, so both halves of the `admit` column vary.
+
+**Minor — instrument-scoping is law-invisible, and that is stated, not fixed.**
+Partition and permutation preserve per-instrument multisets, so an
+instrument-blind sum is invariant under them; the scoping is pinned by the
+hand-written `_two_instrument_rig` rows and was never claimed by the laws. The
+laws kill the AGGREGATION family; they do not claim to kill scoping.
+
+**The fourth defect the straddle exposed.** Making the buy refuse showed the
+cash refusal message put `row.total`, `row.committed`, `row.unsettled` and
+`row.available` into operator-facing prose WITHOUT `_amount`, so a split fold
+printed "less 209 committed … leaves 9791" against "less 209.0 … leaves 9791.0"
+— the same scale leak round 10 fixed on the shortfall, one field over. All four
+are now rendered through `_amount`. The partition law pins the three figures
+that VARY under a split (`shortfall`, `committed`, `available`); `total` is
+always the folded balance and `unsettled` is always zero under the laws' empty
+history, so a second-lens re-review found those two still un-pinned and
+`test_the_cash_refusal_renders_every_figure_through_amount` now pins the whole
+message BY VALUE against a scaled balance and a fractional sell fill.
+
+A third pass found three more unpinned branches, all in the base seam rather
+than the laws, and closed them: `_shortfall`'s `qty is None` guard (deleting it
+turned the documented "declares no qty to fund" refusal into a `TypeError` out
+of `admit` and both guard-chain measures); `UndeclaredSettlement`'s inventory
+`available = position.qty` (mutated to `_ZERO`, every held unit read as free —
+no suite read reads the undeclared book's inventory); and the undeclared
+policy's currency-order `sorted(...)` over a multi-currency fold (nothing else
+can reach two currencies). Each is now pinned by value.
+
+223 tests.

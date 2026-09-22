@@ -262,6 +262,34 @@ to a decision) and subscribed by the composition root; `run` and `sqlite` are
 phase 2's reference and ledger. A failing exporter is swallowed and counted,
 like every other sink.
 
+**Arrival-time execution** (ADR-0161) — `ArrivalPaperExecutor` is
+`PaperExecutor` with its `latency_ms` read as a SCHEDULE rather than a stamp.
+A submit sent at `t` lands at `t + latency_ms.submit` and consumes the book of
+that later instant; until then it is `pending` and held off the book, so
+nothing can fill an order the venue has not received. A cancel lands at
+`t + latency_ms.cancel` but never before the order it names, and in between
+the order is `pending_cancel` and still working — a fill delivered before the
+cancel acknowledgement is retained and only the remainder is cancelled. A
+quote older than the one standing is refused and counted (`stream_gaps`), and
+`TransportEvidence` retains the send, acknowledgement, fills, cancel request
+and terminal acknowledgement, plus the clock offset of the book each order
+priced against.
+
+Two rules keep it honest. **A read never commits**: `order`, `open_orders`,
+`fills` and `transport` land nothing, so only a quote, a submit or a cancel
+advances the venue and what an order did is a function of the tape rather than
+of when somebody asked — which is what lets `Recovery.run` query a ref after
+any outage. And **`open_orders` answers the base contract**, every non-terminal
+order this venue OWNS, transport included, so `cancel_all` (the halt's only
+cancellation path) and `Reconciler`'s comparison against the fold both stay
+correct without knowing this class exists.
+
+Select it with `"execution": {"uses": "paper-arrival"}` at the `paper` rung;
+`shadow` admits it no more than it admits `paper`, and a live rung admits no
+core kind at all. `paper` itself is byte-identical to what it always was.
+Ordering realism is the first gate; measured fill and markout agreement is a
+later, separate one.
+
 **Push sources** — `websocket` is the same `Feed` seam with the rows still
 arriving through your connector: one supervised daemon worker owns the socket,
 hands what it receives to your `StreamTransport` and lands it with the same
@@ -309,8 +337,12 @@ dskit/production/
 │                      approve_hold, the early release of one); Limit; RangeGuard; Measure + registry
 ├── breaker.py         the breaker, its trips, the kill switch, cooling-off
 ├── arming.py          ApprovalVerifier ABC; maker-checker proofs; the arming fold
-├── executor.py        Executor / SubmittingExecutor; Shadow, Paper, Recorded, Live
+├── executor.py        Executor / SubmittingExecutor; Shadow, Paper, ArrivalPaper,
+│                      Recorded, Live; TransportEvidence
 ├── accounting.py      Accounting ABC; PaperAccounting; RecordedAccounting
+├── encumbrance.py     EncumbrancePolicy ABC + the two-policy table; UndeclaredSettlement
+│                      (the null object, available == total); CashSettlement; EncumberedAccounting;
+│                      SettledFundsShortfall + UncommittedUnitsShortfall (the measures that BIND it)
 ├── coordination.py    Lease ABC; ProcessLease; LeasePermit; fencing tokens
 ├── policy.py          ActionPolicy; TransitionPolicy; the composed rule sets
 ├── verifier.py        SubmissionVerifier — the final verify-and-call gate

@@ -11,7 +11,16 @@ audited on its own:
   rung_sort_key` order (load-bearing: the settlement head runs each
   threshold tail as one contiguous run), the settled label per rung, the
   ladder geometry, and the strike features. Events that cannot be
-  labelled or are too thin are SKIPPED AND COUNTED, never fabricated.
+  labelled, are too thin, or cannot name one settlement law across
+  every lead are SKIPPED AND COUNTED, never fabricated — one anomalous
+  event never costs the family the rest of its markets.
+  Rung membership is POINT-IN-TIME: each rung's markets row
+  declares the instant it was listed, and every lead resolves the set
+  that existed at its own decision instant through
+  :class:`~dskit.production.records.UniverseMembership` (ADR-0153). A
+  rung listed later is therefore absent from an earlier lead's geometry,
+  rank and count instead of leaking into them; a row with no listing
+  instant REFUSES rather than falling back to the eventual set.
 * :class:`TokenFeaturizer` turns one panel into ``feats (T, C, F)`` and
   ``seen (T, C)``. The 41-column order (at ``k_lvl`` 5) is FROZEN: a
   trained checkpoint's input layer is indexed by it, so reordering a
@@ -28,7 +37,8 @@ or after the insertion point, so a checkpoint is only meaningful against
 the vocab it was trained with — the vocab travels with the artifact
 (``n_markets`` in the sidecar, the ``vocab`` output of the panels node).
 
-Import cost: stdlib + :mod:`pmquant.books` + :mod:`pmquant.ladder.protocols`.
+Import cost: stdlib + :mod:`pmquant.books` + :mod:`pmquant.ladder.protocols`
++ :mod:`dskit.production.records` (tier-1, stdlib only).
 numpy and torch are imported strictly inside the functions that need
 them — a document naming the panels node must plan with neither installed.
 """
@@ -38,6 +48,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from dskit.production.records import UniverseInterval, UniverseMembership
+
 from pmquant.books import asks_from_bids
 from pmquant.ladder.protocols import STRIKE_CODES, LadderType, rung_sort_key, venue_of
 
@@ -45,6 +57,7 @@ __all__ = [
     "DEFAULT_K_LVL",
     "DEFAULT_MIN_CONTRACTS",
     "ITEM_KEYS",
+    "TOKEN_REVISION",
     "PANEL_KEYS",
     "SOURCE_VENUE",
     "TAIL_GROUPS",
@@ -58,6 +71,26 @@ __all__ = [
     "collate_items",
     "side_feature_names",
 ]
+
+#: The token layout's SEMANTIC revision, carried beside ``k_lvl`` and
+#: ``drop`` in :attr:`TokenFeaturizer.identity`. The 41 columns did not
+#: move at PM-02, but four of them changed MEANING — ``strike_z``,
+#: ``gap_z``, ``rung_pos`` and ``log_n_contracts`` now answer over the
+#: rungs LISTED at that lead rather than the event's eventual set — and a
+#: partition's probability denominator changed with them. A checkpoint
+#: trained under revision 1 would load clean and score silently wrong
+#: under this one, so the revision travels with the layout and refuses
+#: the pairing. BUMP IT whenever a column's MEANING or ORDER changes —
+#: ``k_lvl`` and ``drop`` only say how many columns there are and which
+#: are zeroed, never what they mean.
+#:
+#: This is the DEFAULT for a featurizer built here and now. It is
+#: CAPTURED at construction and persisted into the artifact
+#: (``LadderPanelAdapter.module_params``, and the serving table's own
+#: file), because a value both sides re-read from the installed module
+#: can never disagree with itself: old weights under new code would
+#: always match, which is precisely the pairing this refuses.
+TOKEN_REVISION = 2
 
 #: Book levels per executable side entering a token — the frozen recipe.
 DEFAULT_K_LVL = 5
@@ -103,6 +136,7 @@ PANEL_KEYS = (
     "feats",
     "seen",
     "visible",
+    "listed",
     "y",
     "market_id",
     "is_partition",
@@ -274,12 +308,27 @@ class EventPanel:
         ``(rung, step) -> epoch ms`` of that record.
     staleness : dict
         ``(rung, step) -> staleness ms`` (0 when the record carried none).
+    lead_epoch_ms : tuple
+        ``(T,)`` — each step's decision instant (the latest book instant
+        read at or before it), None at a step nothing has been read by.
+        This is the instant membership is resolved AT.
+    listed : numpy.ndarray
+        ``(T, C) bool`` — the rungs the venue had LISTED at each step's
+        decision instant. False before a rung exists, and True for a rung
+        that is listed but UNQUOTED: a modeled partition must carry its
+        missing outcomes or the quoted ones renormalize upward.
     strike_z : numpy.ndarray
-        ``(C,) float32`` per-rung strike z-score (zeros when undefined).
+        ``(T, C) float32`` per-rung strike z-score WITHIN that step's
+        listed set (zeros off it, and where undefined).
     gap_z : numpy.ndarray
-        ``(C,) float32`` normalized strike-gap deltas (zeros when undefined).
-    dur_h : float
-        Hours from the first observed epoch to the close, floored at 0.
+        ``(T, C) float32`` normalized strike-gap deltas within that
+        step's listed set (zeros off it, and where undefined).
+    dur_h : numpy.ndarray
+        ``(T,) float32`` — hours from the first book observed AT OR
+        BEFORE each lead to the close of the rungs LISTED by then,
+        floored at 0 and zero at a lead that has seen nothing. Per-lead
+        because a rung listed later may declare a close of its own, and
+        an earlier decision cannot feel it.
     source_f : float
         ``1.0`` for a :data:`SOURCE_VENUE` series, else ``0.0``.
 
@@ -292,6 +341,7 @@ class EventPanel:
         panel = built.panels[0]
         panel.contracts          # rung order
         panel.cells[(0, 0)]      # (yes_levels, no_levels) of rung 0 at step 0
+        panel.listed[0]          # the rungs listed at step 0's decision instant
     """
 
     series: str
@@ -305,9 +355,11 @@ class EventPanel:
     cells: dict
     epoch_ts: dict
     staleness: dict
+    lead_epoch_ms: tuple
+    listed: object
     strike_z: object
     gap_z: object
-    dur_h: float
+    dur_h: object
     source_f: float
 
     @property
@@ -328,8 +380,8 @@ class PanelBuild:
         Over the series of the panels built.
     counts : dict
         ``n_events_seen``, ``n_panels``, ``n_skipped_unsettled``,
-        ``n_skipped_min_contracts``, ``n_off_grid_rows``,
-        ``n_skipped_non_lead`` — every drop, counted.
+        ``n_skipped_min_contracts``, ``n_skipped_unstable_law``,
+        ``n_off_grid_rows``, ``n_skipped_non_lead`` — every drop, counted.
 
     Examples
     --------
@@ -382,6 +434,140 @@ def _strike_geometry(values):
         z = np.zeros(len(sv))
         gz = np.zeros(len(sv))
     return np.nan_to_num(z).astype(np.float32), np.nan_to_num(gz).astype(np.float32)
+
+
+def _listing_ms(series, event, ticker, row):
+    """Read one rung's declared listing instant, refusing an absent or unusable one."""
+    value = row.get("open_ms")
+    if value is None or not _finite(value) or value < 0 or int(value) != value:
+        raise ValueError(
+            f"event {event!r} ({series}): contract {ticker!r} carries no usable "
+            f"'open_ms' listing instant (got {value!r}) — point-in-time rung "
+            "membership cannot be resolved, and the EVENTUAL rung set is not a "
+            "safe default for it; wire the settlement store that stamps open_ms"
+        )
+    return int(value)
+
+
+def _listing_membership(series, event, rows):
+    """Declare WHICH rungs were listed WHEN, as one effective-dated membership."""
+    return UniverseMembership(
+        intervals=tuple(
+            UniverseInterval(
+                key=ticker,
+                from_ms=_listing_ms(series, event, ticker, row),
+                to_ms=None,
+            )
+            for ticker, row in rows
+        )
+    )
+
+
+def _lead_instants(epoch_ts, n_steps):
+    """Give each lead step the latest book instant read at or before it."""
+    latest = {}
+    for (_rung, step), ts in epoch_ts.items():
+        latest[step] = ts if step not in latest else max(latest[step], ts)
+    instants, running = [], None
+    for step in range(n_steps):
+        if step in latest:
+            running = latest[step] if running is None else max(running, latest[step])
+        instants.append(running)
+    return tuple(instants)
+
+
+def _refuse_books_before_listing(series, event, contracts, epoch_ts, membership):
+    """Refuse a book read before the row says its contract existed."""
+    windows = {window.key: window for window in membership.intervals}
+    for (rung, step), ts in sorted(epoch_ts.items()):
+        ticker = contracts[rung]
+        if not windows[ticker].holds(ts):
+            raise ValueError(
+                f"event {event!r} ({series}): contract {ticker!r} has a book at "
+                f"{ts} but its markets row says it was listed at "
+                f"{windows[ticker].from_ms} — a rung cannot be read before it is "
+                f"listed; step {step} cannot resolve a membership this declaration "
+                "contradicts"
+            )
+
+
+def _pit_durations(closes, listed, epoch_ts):
+    """Hours from the first book seen by each lead to the close it could know."""
+    import numpy as np
+
+    n_steps, n_rungs = listed.shape
+    earliest = {}
+    for (_rung, step), ts in epoch_ts.items():
+        earliest[step] = ts if step not in earliest else min(earliest[step], ts)
+    dur = np.zeros(n_steps, dtype=np.float32)
+    first = None
+    for step in range(n_steps):
+        if step in earliest:
+            first = earliest[step] if first is None else min(first, earliest[step])
+        members = [rung for rung in range(n_rungs) if listed[step, rung]]
+        if first is None or not members:
+            continue
+        known_close = max(closes[rung] for rung in members)
+        dur[step] = max(0.0, (known_close - first) / _MS_PER_HOUR)
+    return dur
+
+
+# OPEN OWNER DECISION — how to treat an event whose law is not stable.
+#
+# The law is inferred from the rungs' strike types, so an event can read
+# as one law at an early lead and another at settlement: the plainest
+# case is an under/over pair (`less` under X, `greater` over X) whose two
+# legs list minutes apart. At lead 0 only the `less` leg exists and the
+# event reads lower_threshold; it SETTLES as a partition. Three answers,
+# none of them free:
+#
+#   (a) admit it with a PER-LEAD law. Honest about what each lead knew,
+#       but `is_partition` must become (B, T) through LawHead,
+#       q_from_logits and head_loss — and head_loss's partition branch
+#       indexes WHOLE EVENTS (`logit[part]`) to keep its event-equal
+#       weighting, so that is a loss-structure change, not a reshape.
+#       It also trains a threshold head at lead 0 against an outcome
+#       that settles under partition semantics, which may simply be the
+#       wrong target rather than the causal one.
+#   (b) skip and count it — IMPLEMENTED HERE as the safe default. Costs
+#       coverage (every under/over pair with staggered legs), fabricates
+#       nothing, and is reversible.
+#   (c) refuse the build. Rejected: one anomalous event would cost the
+#       family every other market in the same call.
+#
+# The owner rules; until then this is (b). See children/pmquant/CLAUDE.md.
+def _law_is_stable(strike_types, listed, ladder_type):
+    """Say whether every lead's listed rungs read as the event's own law."""
+    n_steps, n_rungs = listed.shape
+    for step in range(n_steps):
+        members = [rung for rung in range(n_rungs) if listed[step, rung]]
+        if members and LadderType.classify(
+            [strike_types[rung] for rung in members]
+        ) is not ladder_type:
+            return False
+    return True
+
+
+def _pit_geometry(contracts, strike_values, instants, membership):
+    """Resolve each lead's listed rungs, then THAT set's own strike geometry."""
+    import numpy as np
+
+    n_steps, n_rungs = len(instants), len(contracts)
+    listed = np.zeros((n_steps, n_rungs), dtype=bool)
+    strike_z = np.zeros((n_steps, n_rungs), dtype=np.float32)
+    gap_z = np.zeros((n_steps, n_rungs), dtype=np.float32)
+    rung_of = {ticker: rung for rung, ticker in enumerate(contracts)}
+    for step, at_ms in enumerate(instants):
+        if at_ms is None:
+            continue
+        members = sorted(rung_of[key] for key in membership.members_at(at_ms))
+        if not members:
+            continue
+        listed[step, members] = True
+        z, gz = _strike_geometry([strike_values[rung] for rung in members])
+        strike_z[step, members] = z
+        gap_z[step, members] = gz
+    return listed, strike_z, gap_z
 
 
 def _native(record):
@@ -454,13 +640,18 @@ def _panel_of(series, event, natives, rows, outcomes, grid, counts):
     st_code = np.asarray(
         [STRIKE_CODES.get(st, between) for st in strike_types], dtype=np.int64
     )
-    strike_z, gap_z = _strike_geometry(
-        [
-            _strike_value(row.get("strike_type"), row.get("floor_strike"), row.get("cap_strike"))
-            for _, row in rows
-        ]
-    )
-    close_ts_ms = max(int(row["close_ms"]) for _, row in rows)
+    strike_values = [
+        _strike_value(row.get("strike_type"), row.get("floor_strike"), row.get("cap_strike"))
+        for _, row in rows
+    ]
+    membership = _listing_membership(series, event, rows)
+    closes = [int(row["close_ms"]) for _, row in rows]
+    ladder_type = LadderType.classify(strike_types)
+    # The split cut's key, deliberately whole-set: assigning an event to a
+    # block is a study-design call made outside the decision timeline, it
+    # must put ONE event in ONE block, and it never reaches a feature or a
+    # probability. Everything that DOES reach one is resolved per lead.
+    close_ts_ms = max(closes)
     rung_of = {ticker: r for r, ticker in enumerate(contracts)}
     cells, epoch_ts, staleness = {}, {}, {}
     for native in natives:
@@ -478,22 +669,31 @@ def _panel_of(series, event, natives, rows, outcomes, grid, counts):
         epoch_ts[key] = int(native.epoch_ts_ms)
         stale = native.staleness_ms
         staleness[key] = int(stale) if _finite(stale) else 0
-    first = min(epoch_ts.values()) if epoch_ts else close_ts_ms
+    _refuse_books_before_listing(series, event, contracts, epoch_ts, membership)
+    instants = _lead_instants(epoch_ts, len(grid.lead_fracs))
+    listed, strike_z, gap_z = _pit_geometry(
+        contracts, strike_values, instants, membership
+    )
+    if not _law_is_stable(strike_types, listed, ladder_type):
+        counts["n_skipped_unstable_law"] += 1
+        return None
     return EventPanel(
         series=series,
         event=event,
         market_id=-1,
         close_ts_ms=close_ts_ms,
-        ladder_type=LadderType.classify(strike_types),
+        ladder_type=ladder_type,
         contracts=contracts,
         y=np.asarray(y, dtype=np.float32),
         st_code=st_code,
         cells=cells,
         epoch_ts=epoch_ts,
         staleness=staleness,
+        lead_epoch_ms=instants,
+        listed=listed,
         strike_z=strike_z,
         gap_z=gap_z,
-        dur_h=max(0.0, (close_ts_ms - first) / _MS_PER_HOUR),
+        dur_h=_pit_durations(closes, listed, epoch_ts),
         source_f=1.0 if venue_of(series, default=None) == SOURCE_VENUE else 0.0,
     )
 
@@ -514,7 +714,11 @@ def build_panels(records, outcomes, markets, grid, *, min_contracts=DEFAULT_MIN_
     markets : iterable of dict
         Rows carrying ``ticker, event_ticker, series_ticker, strike_type,
         floor_strike, cap_strike, close_ms, open_ms``; strikes may be
-        ``None``/NaN. Every contract in ``records`` needs a row.
+        ``None``/NaN. Every contract in ``records`` needs a row, and
+        ``open_ms`` is the point-in-time membership declaration — the
+        instant the venue listed that rung. It is REQUIRED: without it a
+        lead cannot tell which rungs existed at its decision instant, and
+        the eventual rung set is not a safe default for that.
     grid : LeadGrid
         The lead axis; a record whose fraction is off-grid is skipped and
         counted.
@@ -531,14 +735,21 @@ def build_panels(records, outcomes, markets, grid, *, min_contracts=DEFAULT_MIN_
     Raises
     ------
     ValueError
-        On a contract without a markets row, a malformed markets row, or
-        two records for one contract at one lead.
+        On a contract without a markets row, a malformed markets row, a
+        row with no usable ``open_ms`` listing instant, a book read
+        before its contract was listed, or two records for one contract
+        at one lead. Every one of those is a CONTRADICTION between two
+        declarations. An event that is merely unmodellable — unsettled,
+        too thin, or unable to name one settlement law across every lead
+        — is skipped and counted instead, so one anomalous event never
+        costs the rest of the family.
     """
     counts = {
         "n_events_seen": 0,
         "n_panels": 0,
         "n_skipped_unsettled": 0,
         "n_skipped_min_contracts": 0,
+        "n_skipped_unstable_law": 0,
         "n_off_grid_rows": 0,
         "n_skipped_non_lead": 0,
     }
@@ -581,6 +792,11 @@ class TokenFeaturizer:
         Ablation groups (:data:`TAIL_GROUPS` names) whose tail columns are
         zeroed LAST, after every feature is computed. Unknown names refuse
         at construction.
+    revision : int or None
+        The token layout's semantic revision (int >= 1), CAPTURED here.
+        None takes :data:`TOKEN_REVISION` — what this installed code
+        means. An artifact restores its OWN recorded revision instead, so
+        a checkpoint fit under an older one refuses today's panels.
 
     Examples
     --------
@@ -591,9 +807,13 @@ class TokenFeaturizer:
         feats, seen = featurizer.encode(panel, LeadGrid())
     """
 
-    def __init__(self, k_lvl=DEFAULT_K_LVL, drop=()):
+    def __init__(self, k_lvl=DEFAULT_K_LVL, drop=(), revision=None):
         if isinstance(k_lvl, bool) or not isinstance(k_lvl, int) or k_lvl < 1:
             raise ValueError(f"k_lvl must be an int >= 1, got {k_lvl!r}")
+        revision = TOKEN_REVISION if revision is None else revision
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ValueError(f"revision must be an int >= 1, got {revision!r}")
+        self.revision = int(revision)
         drop = (drop,) if isinstance(drop, str) else tuple(drop or ())
         unknown = sorted(set(drop) - set(TAIL_GROUPS))
         if unknown:
@@ -627,8 +847,15 @@ class TokenFeaturizer:
 
     @property
     def identity(self):
-        """Give the layout identity ``(k_lvl, drop)`` — what a batch and a model must agree on."""
-        return (self.k_lvl, self.drop)
+        """Give the layout identity ``(k_lvl, drop, revision)`` — what a batch and a model must agree on.
+
+        The revision is what makes a stale checkpoint fail closed: the
+        column ORDER can be unchanged while the columns mean something
+        else. It is this featurizer's OWN captured revision, never the
+        installed :data:`TOKEN_REVISION`, so a restored artifact and
+        today's panels can actually disagree.
+        """
+        return (self.k_lvl, self.drop, self.revision)
 
     def feature_names(self):
         """Name every column, in frozen order.
@@ -694,13 +921,23 @@ class TokenFeaturizer:
         -------
         tuple
             ``(feats, seen)`` — ``feats (T, C, F) float32`` and
-            ``seen (T, C) bool`` (a real book on at least one side).
+            ``seen (T, C) bool`` (a real book on at least one side). A
+            rung NOT YET LISTED at a step is an all-zero token there, so
+            a rung listed later cannot move an earlier step's row.
             Visibility (the running OR of ``seen`` along time) is derived
             downstream, so featurization stays per-cell pure.
         """
         import numpy as np
 
         T, C = len(grid.lead_fracs), panel.n_contracts
+        listed = np.asarray(panel.listed)
+        if listed.shape != (T, C):
+            raise ValueError(
+                f"event {panel.event!r}: the panel resolved rung membership over "
+                f"{listed.shape} (steps, rungs) but this grid asks for {(T, C)} — a "
+                "panel is encoded on the grid it was BUILT with, or its features "
+                "answer at instants nothing was resolved at"
+            )
         base = self.tail_base
         feats = np.zeros((T, C, self.n_features), dtype=np.float32)
         seen = np.zeros((T, C), dtype=bool)
@@ -715,24 +952,28 @@ class TokenFeaturizer:
             if fy[0]:
                 a_yes[k, r] = fy[1]
         self._tail(feats, a_yes, panel, grid, base)
+        feats[~listed] = 0.0
         if self._drop_cols:
             feats[:, :, self._drop_cols] = 0.0
         return feats, seen
 
     @staticmethod
     def _tail(feats, a_yes, panel, grid, base):
-        """Fill the twelve tail columns in place."""
+        """Fill the twelve tail columns in place, over each lead's LISTED rungs."""
         import numpy as np
 
-        T, C = feats.shape[0], feats.shape[1]
-        for r in range(C):
-            feats[:, r, base + 0] = panel.strike_z[r]
-            feats[:, r, base + 1] = panel.gap_z[r]
-            feats[:, r, base + 2] = r / max(C - 1, 1)
-        feats[:, :, base + 3] = math.log1p(C)
+        T = feats.shape[0]
+        listed = np.asarray(panel.listed)
+        n_listed = listed.sum(axis=1)
+        rank = np.cumsum(listed, axis=1) - 1  # the rank WITHIN that step's set
+        span = np.maximum(n_listed - 1, 1).astype(np.float64)
+        feats[:, :, base + 0] = panel.strike_z
+        feats[:, :, base + 1] = panel.gap_z
+        feats[:, :, base + 2] = np.where(listed, rank / span[:, None], 0.0)
+        feats[:, :, base + 3] = np.where(listed, np.log1p(n_listed)[:, None], 0.0)
         for k in range(T):
             feats[k, :, base + 4] = grid.lead_fracs[k]
-        feats[:, :, base + 5] = math.log1p(panel.dur_h)
+        feats[:, :, base + 5] = np.log1p(np.asarray(panel.dur_h))[:, None]
         for k in range(T):
             pk = a_yes[k]
             fin = np.isfinite(pk)
@@ -743,7 +984,7 @@ class TokenFeaturizer:
             if s > 0:
                 pn = np.where(fin, pk, 0.0) / s
                 nz = pn[pn > 0]
-                feats[k, :, base + 7] = float((np.arange(C) * pn).sum() / max(C - 1, 1))
+                feats[k, :, base + 7] = float((rank[k] * pn).sum() / span[k])
                 feats[k, :, base + 8] = float(-(nz * np.log(nz)).sum() / math.log(max(len(nz), 2)))
         feats[:, :, base + 9] = panel.source_f
         for (r, k), ts in panel.epoch_ts.items():
@@ -771,7 +1012,10 @@ def build_panel_items(panels, featurizer, grid, eligible):
     list of dict
         One item per panel with exactly :data:`ITEM_KEYS`: ``feats (T, C,
         F) float32``, ``seen``/``visible (T, C) bool`` (``visible`` is the
-        running OR of ``seen`` along time), ``y (C,) float32``,
+        running OR of ``seen`` along time), ``listed (T, C) bool`` (the
+        rungs the venue had listed at each step's decision instant — the
+        denominator a partition normalizes over, so a listed but
+        unquoted outcome keeps its mass), ``y (C,) float32``,
         ``market_id`` (int), ``is_partition`` (bool), ``st_code (C,)
         int64``, ``eligible`` (bool), ``contracts`` (list), ``lead_fracs``
         (tuple), ``featurizer`` (the layout identity), ``vocab`` (the ONE
@@ -796,6 +1040,7 @@ def build_panel_items(panels, featurizer, grid, eligible):
                 "feats": feats,
                 "seen": seen,
                 "visible": np.logical_or.accumulate(seen, axis=0),
+                "listed": np.asarray(panel.listed),
                 "y": panel.y,
                 "market_id": int(panel.market_id),
                 "is_partition": panel.ladder_type is LadderType.PARTITION,
@@ -829,8 +1074,9 @@ def collate_items(items):
     Returns
     -------
     dict
-        ``feats (B, T, Cm, F) float32``, ``seen``/``visible (B, T, Cm)
-        bool``, ``y (B, Cm) float32``, ``market_id (B,) long``,
+        ``feats (B, T, Cm, F) float32``, ``seen``/``visible``/``listed
+        (B, T, Cm) bool`` (padded rungs are never listed), ``y (B, Cm)
+        float32``, ``market_id (B,) long``,
         ``is_partition (B,) bool``, ``st_code (B, Cm) long`` padded with
         the ``between`` code (the "neither tail" code the head ignores),
         ``contract_mask (B, Cm) bool``, ``eligible (B,) bool``, and
@@ -865,6 +1111,7 @@ def collate_items(items):
         "feats": torch.zeros(B, T, Cm, F, dtype=torch.float32),
         "seen": torch.zeros(B, T, Cm, dtype=torch.bool),
         "visible": torch.zeros(B, T, Cm, dtype=torch.bool),
+        "listed": torch.zeros(B, T, Cm, dtype=torch.bool),
         "y": torch.zeros(B, Cm, dtype=torch.float32),
         "contract_mask": torch.zeros(B, Cm, dtype=torch.bool),
         "st_code": torch.full((B, Cm), STRIKE_CODES["between"], dtype=torch.long),
@@ -877,6 +1124,7 @@ def collate_items(items):
         out["feats"][i, :, :c] = torch.as_tensor(item["feats"], dtype=torch.float32)
         out["seen"][i, :, :c] = torch.as_tensor(item["seen"], dtype=torch.bool)
         out["visible"][i, :, :c] = torch.as_tensor(item["visible"], dtype=torch.bool)
+        out["listed"][i, :, :c] = torch.as_tensor(item["listed"], dtype=torch.bool)
         out["y"][i, :c] = torch.as_tensor(item["y"], dtype=torch.float32)
         out["st_code"][i, :c] = torch.as_tensor(item["st_code"], dtype=torch.long)
         out["contract_mask"][i, :c] = True

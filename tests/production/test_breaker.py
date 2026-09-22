@@ -1030,6 +1030,33 @@ def test_a_halt_records_unknown_when_any_cancel_left_the_process_unresolved(tmp_
     assert outcome_of(ledger) == "unknown"
 
 
+def test_a_sweep_that_never_reached_a_working_order_cannot_report_submitted(tmp_path):
+    """`submitted` is the fully successful signal, and `cancel_outcome` reads
+    only the acks it was handed — so a venue whose `cancel_all` silently omits
+    a working order makes the halt report an all-clear over a live one. The
+    fold knows what was working; the outcome must be judged against it, and a
+    ref nobody attempted is an absence of certainty, not a success."""
+    executor = FakeExecutor(acks=(ack("cancelled", client_ref="ref-1"),))
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger, "ref-1")
+    open_a_working_order(ledger, "ref-2")
+    halt(breaker)
+    assert outcome_of(ledger) == "unknown"
+
+
+def test_a_sweep_that_reached_every_working_order_still_reports_submitted(tmp_path):
+    """The discriminating half: the coverage check must not turn every clean
+    halt into `unknown`."""
+    executor = FakeExecutor(
+        acks=(ack("cancelled", client_ref="ref-1"), ack("cancelled", client_ref="ref-2"))
+    )
+    breaker, ledger, _, _, _, _ = make_breaker(tmp_path, executor=executor)
+    open_a_working_order(ledger, "ref-1")
+    open_a_working_order(ledger, "ref-2")
+    halt(breaker)
+    assert outcome_of(ledger) == "submitted"
+
+
 def test_every_recorded_cancel_outcome_is_in_the_vocabulary(tmp_path):
     cases = ((), (ack("cancelled"),), (ack("rejected"),),
              (ack("cancelled"), ack("unknown", "ref-2")))

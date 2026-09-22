@@ -38,6 +38,7 @@ __all__ = [
     "AT_TIMES_RELATIVE",
     "AUTHORITY_EVENTS",
     "AUTHORITY_ROLES",
+    "BALANCE_BASES",
     "BREAKER_STATES",
     "BREAK_CLASSES",
     "BREAK_ORIGINS",
@@ -326,6 +327,13 @@ OUTCOME_SOURCES = ("settlement", "label", "operator")
 
 #: The ``cash_flow`` record's ``kind`` — the only kinds ``adopt`` can emit.
 CASH_FLOW_KINDS = ("deposit", "withdrawal", "adjustment")
+
+#: Whether the balance a series folds already reflects a fill at trade time
+#: (``trade_date``) or only once the venue has credited it
+#: (``settlement_date``). It decides WHICH side of a fill is still unsettled,
+#: so an encumbrance policy that assumed one would double-count the other
+#: (ADR-0162). A venue and operations fact: the package never picks one.
+BALANCE_BASES = ("trade_date", "settlement_date")
 
 #: The ``guard_state`` record's ``kind``. ``released`` is phase 2's
 #: (§5.5.1): ``approve-hold`` ends one hold before its ttl, and the fold

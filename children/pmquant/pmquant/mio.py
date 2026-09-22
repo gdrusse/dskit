@@ -20,17 +20,36 @@ Three modelling choices are load-bearing and stated once:
   deterministic solver answers exactly. The approximation never reaches a
   reported number: ``expected_log_growth``, ``outlay`` and ``wealth`` are
   RECOMPUTED exactly from the integer solution.
-* **Fees are exact at the gate and linear inside.** The venue's ceil or
-  grid rounding is not linear, so a level enters the program only if one
-  lot at its price still clears ``tau`` under the EXACT fee, and the
-  program then bills ``phi = rate · p · (1 − p)`` per lot plus one flat
-  :data:`ROUND_UP_CENT` per active side — the per-order round-up. After
-  the solve each position is re-billed at the exact fee on its VWAP and
-  ``fee_reconciled`` says whether the edge survived it.
-* **Post-solve assertions are assertions, not constraints.** Solvency in
-  every scenario, one side per contract, and the budget are checked on
-  the exact recompute and RAISE; a budget that does not bind is the
-  silent failure this child exists to refuse.
+* **Fees are exact at the gate, linear inside, and exact again on the
+  way out.** The venue's ceil or grid rounding is not linear, so a level
+  enters the program only if one lot at its price still clears ``tau``
+  under the EXACT fee, and the program then bills ``phi = rate · p ·
+  (1 − p)`` per lot plus one flat :data:`ROUND_UP_CENT` per active side —
+  the per-order round-up. That linearization is what makes the program
+  solvable and it never reaches a reported number: :func:`read_allocation`
+  re-bills every position through the declared
+  :class:`~pmquant.fees.FillFeePolicy` and the EXACT venue fee, and that
+  bill — not the approximation — is the reported ``outlay``, the scenario
+  ``wealth``, the ``expected_log_growth``, and what the budget and event
+  cap are checked against. The two differ by the Jensen gap
+  ``rate · n · Var(price)`` over a multi-level fill, which is why a
+  fee-reconciliation FLAG was never a budget safeguard.
+* **An exact bill that does not fit is refused, never reported.** When
+  the exact recompute breaks the budget or the event cap,
+  :func:`read_allocation` raises :class:`ExactFeeBudgetExceeded` and
+  :class:`ExactFeeResolution` decides what that means:
+  :data:`ON_EXCEEDED_REFUSE` (the fail-closed default) answers a
+  :data:`REFUSED_STATUS` allocation holding nothing, and
+  :data:`ON_EXCEEDED_RETIGHTEN` re-solves with the observed gap reserved
+  as :attr:`EventInputs.fee_allowance` and refuses if that still fails.
+* **Post-solve checks are checks, not constraints.** Solvency in every
+  scenario, one side per contract and no overfilled level are checked on
+  the exact recompute and RAISE as assertions — they are impossible
+  states, not outcomes. The budget and the cap are checked there too but
+  raise :class:`ExactFeeBudgetExceeded` instead, because an exact bill
+  that outgrew the linear one IS a reachable outcome and has an answer.
+  Either way a budget that does not bind is the silent failure this
+  child exists to refuse.
 
 Import cost: stdlib + dskit + :mod:`pmquant.books` / :mod:`pmquant.fees`.
 The node modules import this at plan time, so numpy and pyomo are
@@ -41,22 +60,29 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from dskit.pipeline.records import number_ok
 
 from .books import NET_EDGE_EPS, ContractInputs, entry_gate
-from .fees import trading_fee_for_series
+from .fees import DEFAULT_FILL_FEE_POLICY, fill_fee_policy, trading_fee_for_series
 from .ladder.protocols import LadderType
 
 __all__ = [
     "DEFAULT_DEPTH_HAIRCUT",
     "DEFAULT_MIN_LOT",
     "DEFAULT_N_TANGENTS",
+    "DEFAULT_ON_EXACT_FEE_EXCEEDED",
+    "DEFAULT_RETIGHTEN_ROUNDS",
     "DEFAULT_TAU",
     "EMPTY_STATUS",
     "LAW_SLACK_TOL",
+    "ON_EXACT_FEE_EXCEEDED",
+    "ON_EXCEEDED_REFUSE",
+    "ON_EXCEEDED_RETIGHTEN",
     "OPTIMAL_STATUS",
+    "REFUSED_STATUS",
+    "RETIGHTEN_MIN_STEP",
     "ROUND_UP_CENT",
     "SIDES",
     "TAILS",
@@ -64,6 +90,8 @@ __all__ = [
     "DegenerateScenarioLawError",
     "EventAllocation",
     "EventInputs",
+    "ExactFeeBudgetExceeded",
+    "ExactFeeResolution",
     "ScenarioSet",
     "SideBook",
     "empty_allocation",
@@ -71,6 +99,7 @@ __all__ = [
     "gated_sides",
     "mutually_exclusive_scenarios",
     "read_allocation",
+    "refused_allocation",
     "solve_event",
     "threshold_scenarios",
     "utility_at",
@@ -117,11 +146,96 @@ OPTIMAL_STATUS = "optimal"
 #: The status of an allocation that never woke the solver.
 EMPTY_STATUS = "empty"
 
+#: The status of an allocation withdrawn because its EXACT bill did not
+#: fit the budget the linear program solved under. It is a RESULT, not an
+#: error: the event deploys nothing and the batch carries on.
+REFUSED_STATUS = "refused-exact-fee"
+
+#: Withdraw the allocation — the fail-closed answer, and the default.
+ON_EXCEEDED_REFUSE = "refuse"
+
+#: Re-solve with the observed exact-vs-linear gap reserved out of the
+#: program's budget, then re-check exactly; refuse if it still overruns.
+ON_EXCEEDED_RETIGHTEN = "retighten"
+
+#: The closed vocabulary an ``on_exact_fee_exceeded`` knob is read against.
+ON_EXACT_FEE_EXCEEDED = (ON_EXCEEDED_REFUSE, ON_EXCEEDED_RETIGHTEN)
+
+#: What an event does when its exact bill overruns: fail closed. Reporting
+#: the approximation instead is the defect this constant exists to forbid.
+DEFAULT_ON_EXACT_FEE_EXCEEDED = ON_EXCEEDED_REFUSE
+
+#: How many tightened re-solves :data:`ON_EXCEEDED_RETIGHTEN` may attempt
+#: before it gives up and refuses. Each round reserves at least
+#: :data:`RETIGHTEN_MIN_STEP` more, so the loop always terminates.
+DEFAULT_RETIGHTEN_ROUNDS = 4
+
+#: The smallest extra headroom a retighten round reserves, in dollars. Its
+#: only job is STRICT PROGRESS — a round that reserved nothing would
+#: re-solve the identical program forever — so it is the coarsest quantum
+#: any venue here rounds to, one cent. It is not the venue's round-up
+#: (:data:`ROUND_UP_CENT`), which happens to share the value; the pinning
+#: test states both.
+RETIGHTEN_MIN_STEP = 0.01
+
 #: Tolerance on the post-solve budget and cap checks: a millionth of a
 #: dollar, four orders below a cent and above any solver feasibility
 #: tolerance — so a rounding hair never refuses an honest solve while an
 #: unbound budget still does.
 _OUTLAY_TOL = 1e-6
+
+
+class ExactFeeBudgetExceeded(ValueError):
+    """The EXACT bill for a solved fill set does not fit the budget or the cap.
+
+    The program bills a LINEAR fee (``phi`` per lot plus one flat cent per
+    side) because that is what makes it a MILP; the venue bills a convex
+    rounded fee on the fills. Over a multi-level fill the second is larger
+    by the Jensen gap ``rate · n · Var(price)``, so a solution the program
+    called feasible can be one the venue's own invoice does not fit. This
+    is that case, and it is caught by :class:`ExactFeeResolution` rather
+    than reported.
+
+    Parameters
+    ----------
+    event_id : str
+        The event whose allocation overran.
+    limit_name : str
+        Which ceiling broke — ``"deployable"`` or ``"event cap"``.
+    limit : float
+        That ceiling, in dollars.
+    exact_outlay : float
+        Premium plus the exact policy fees.
+    approx_outlay : float
+        What the program's linear cost billed for the same fills.
+    policy : str
+        The :class:`~pmquant.fees.FillFeePolicy` name that billed it.
+
+    Examples
+    --------
+    ::
+
+        try:
+            read_allocation(model, results)
+        except ExactFeeBudgetExceeded as exc:
+            exc.shortfall   # dollars the exact bill overran by
+    """
+
+    def __init__(self, event_id, limit_name, limit, exact_outlay, approx_outlay, policy):
+        self.event_id = event_id
+        self.limit_name = limit_name
+        self.limit = float(limit)
+        self.exact_outlay = float(exact_outlay)
+        self.approx_outlay = float(approx_outlay)
+        self.policy = policy
+        self.shortfall = float(exact_outlay) - float(limit)
+        super().__init__(
+            f"event {event_id!r}: the exact {policy!r} fee bill puts the outlay at "
+            f"{self.exact_outlay!r}, past the {limit_name} {self.limit!r} by "
+            f"{self.shortfall!r} — the program solved on the linear approximation "
+            f"{self.approx_outlay!r}, which fits. The approximation is never the "
+            "reported money, so this allocation is refused or re-solved, not billed"
+        )
 
 
 class DegenerateScenarioLawError(ValueError):
@@ -426,6 +540,22 @@ class EventInputs:
     event_cap : float or None
         A dollar ceiling on this event's outlay; ``None`` means the
         deployable is the only ceiling.
+    fee_policy : str
+        How the venue bills the SET of fills that builds one position —
+        a name from :data:`~pmquant.fees.FILL_FEE_POLICIES` (default
+        :data:`~pmquant.fees.DEFAULT_FILL_FEE_POLICY`, the order-level
+        rule ``walk_book`` charges).
+    on_exact_fee_exceeded : str
+        What an exact bill that does not fit means: ``"refuse"`` (default,
+        fail closed) or ``"retighten"``.
+    max_retighten_rounds : int
+        Tightened re-solves ``"retighten"`` may attempt (default
+        :data:`DEFAULT_RETIGHTEN_ROUNDS`); ignored when refusing.
+    fee_allowance : float
+        Dollars reserved out of the PROGRAM's budget and cap to cover the
+        exact-vs-linear fee gap. Zero on a first solve; the retighten
+        loop raises it. It never moves the reported budget or cap, which
+        stay ``deployable`` and :attr:`cap`.
 
     Examples
     --------
@@ -450,6 +580,10 @@ class EventInputs:
     depth_haircut: float = DEFAULT_DEPTH_HAIRCUT
     n_tangents: int = DEFAULT_N_TANGENTS
     event_cap: object = None
+    fee_policy: str = DEFAULT_FILL_FEE_POLICY
+    on_exact_fee_exceeded: str = DEFAULT_ON_EXACT_FEE_EXCEEDED
+    max_retighten_rounds: int = DEFAULT_RETIGHTEN_ROUNDS
+    fee_allowance: float = 0.0
 
     def __post_init__(self):
         """Refuse the first shape problem, loudly."""
@@ -495,6 +629,34 @@ class EventInputs:
             raise ValueError(f"event_cap must be a finite number > 0 or None, got {self.event_cap!r}")
         if not isinstance(self.series, str) or not self.series:
             raise ValueError(f"series must be a non-empty string, got {self.series!r}")
+        if not isinstance(self.fee_policy, str):
+            raise ValueError(
+                f"fee_policy must name a declared fill fee policy, got {self.fee_policy!r}"
+            )
+        fill_fee_policy(self.fee_policy)
+        if self.on_exact_fee_exceeded not in ON_EXACT_FEE_EXCEEDED:
+            raise ValueError(
+                f"on_exact_fee_exceeded must be one of {list(ON_EXACT_FEE_EXCEEDED)}, got "
+                f"{self.on_exact_fee_exceeded!r}"
+            )
+        if (
+            isinstance(self.max_retighten_rounds, bool)
+            or not isinstance(self.max_retighten_rounds, int)
+            or self.max_retighten_rounds < 0
+        ):
+            raise ValueError(
+                f"max_retighten_rounds must be an int >= 0, got {self.max_retighten_rounds!r}"
+            )
+        if not number_ok(self.fee_allowance) or self.fee_allowance < 0.0:
+            raise ValueError(
+                f"fee_allowance must be a finite number >= 0, got {self.fee_allowance!r}"
+            )
+        if self.fee_allowance >= min(float(self.deployable), self.cap):
+            raise ValueError(
+                f"fee_allowance {self.fee_allowance!r} reserves the whole budget "
+                f"(min(deployable, cap) = {min(float(self.deployable), self.cap)!r}) — "
+                "an event with no spendable dollar left is a refusal, not a program"
+            )
 
     @property
     def cap(self):
@@ -638,9 +800,11 @@ def event_program(inputs, sides=None):
     active; ``z`` binary event active; ``W[o]`` wealth per scenario in
     ``[w_lo, w_hi]``; ``t[o]`` the utility surrogate. Constraints:
     ``q ≤ fillable · z``; ``n = Σ q``; ``L · y ≤ n ≤ M · y``;
-    ``outlay = Σ (price + phi) · q + ROUND_UP_CENT · Σ y ≤ B`` and
-    ``≤ cap · z``; ``W[o] = W0 − outlay + Σ_k payoff_k[o] · n[k]``; and one
-    tangent row per scenario and knot, ``t[o] ≤ u(w_j) + u'(w_j)(W[o] − w_j)``.
+    ``outlay = Σ (price + phi) · q + ROUND_UP_CENT · Σ y ≤ B − allowance``
+    and ``≤ (cap − allowance) · z`` (:attr:`EventInputs.fee_allowance` is
+    the headroom a retighten round reserves for the exact fee);
+    ``W[o] = W0 − outlay + Σ_k payoff_k[o] · n[k]``; and one tangent row per
+    scenario and knot, ``t[o] ≤ u(w_j) + u'(w_j)(W[o] − w_j)``.
     Objective: maximize ``Σ_o weight_o · t[o]``.
 
     Parameters
@@ -717,8 +881,12 @@ def event_program(inputs, sides=None):
         )
         + sum(ROUND_UP_CENT * model.y[k] for k in side_ix)
     )
-    model.budget = pyo.Constraint(expr=model.outlay <= budget)
-    model.event_cap = pyo.Constraint(expr=model.outlay <= cap * model.z)
+    # The program spends the budget MINUS the reserved fee allowance; the
+    # reported money is still checked against the true budget and cap, so
+    # the allowance tightens what may be BOUGHT, never what is REPORTED.
+    allowance = float(inputs.fee_allowance)
+    model.budget = pyo.Constraint(expr=model.outlay <= budget - allowance)
+    model.event_cap = pyo.Constraint(expr=model.outlay <= (cap - allowance) * model.z)
     model.wealth = pyo.Constraint(
         omega_ix,
         rule=lambda m, o: m.W[o]
@@ -756,7 +924,11 @@ class EventAllocation:
     level_fills : dict
         ``(contract_id, side) -> ((price, lots), ...)`` cheapest first.
     outlay : float
-        ``Σ lots · (price + phi) + ROUND_UP_CENT`` per active side.
+        The money actually consumed: ``premium`` plus the EXACT venue fee
+        on every position's fills under the declared ``fee_policy``. This
+        is what the budget, the event cap, ``wealth`` and
+        ``expected_log_growth`` are computed from — never the program's
+        linear cost.
     wealth : numpy.ndarray
         ``(n_omega,)`` terminal wealth per scenario, all positive.
     expected_log_growth : float
@@ -764,12 +936,28 @@ class EventAllocation:
     entered : tuple
         The gated ``(contract_id, side)`` pairs, sorted — lots or not.
     status : str
-        The solver's termination (``"optimal"``) or :data:`EMPTY_STATUS`.
+        The solver's termination (``"optimal"``), :data:`EMPTY_STATUS`, or
+        :data:`REFUSED_STATUS`.
     fee_reconciled : dict
-        ``(contract_id, side) -> bool``: the position's edge survives the
-        EXACT fee on its total at VWAP.
+        ``(contract_id, side) -> bool``: the position's edge survives its
+        exact fee.
     objective : float
         The surrogate objective the solver maximized (diagnostic only).
+    premium : float
+        ``Σ lots · price`` over every fill — the bill before fees.
+    fees : dict
+        ``(contract_id, side) -> dollars``: the exact fee each position
+        was billed.
+    approx_outlay : float
+        What the program's LINEAR cost billed for the same fills
+        (``Σ lots · (price + phi) + ROUND_UP_CENT`` per active side).
+        Diagnostic: the distance to ``outlay`` is the Jensen gap the
+        approximation hid.
+    fee_policy : str
+        The :class:`~pmquant.fees.FillFeePolicy` name that billed it.
+    refusal : str or None
+        Why a :data:`REFUSED_STATUS` allocation holds nothing; ``None``
+        otherwise.
 
     Examples
     --------
@@ -789,6 +977,11 @@ class EventAllocation:
     status: str
     fee_reconciled: dict
     objective: float
+    premium: float = 0.0
+    fees: dict = field(default_factory=dict)
+    approx_outlay: float = 0.0
+    fee_policy: str = DEFAULT_FILL_FEE_POLICY
+    refusal: object = None
 
     @property
     def lots(self):
@@ -825,6 +1018,33 @@ def empty_allocation(inputs, entered=()):
         status=EMPTY_STATUS,
         fee_reconciled={},
         objective=0.0,
+        fee_policy=inputs.fee_policy,
+    )
+
+
+def refused_allocation(inputs, entered=(), reason=""):
+    """Withdraw an event whose EXACT bill would not fit, holding nothing.
+
+    Parameters
+    ----------
+    inputs : EventInputs
+        The event.
+    entered : iterable of tuple
+        The gated ``(contract_id, side)`` pairs — kept, because a refusal
+        must still say what was considered.
+    reason : str
+        Why, quoted from the :class:`ExactFeeBudgetExceeded` that caused it.
+
+    Returns
+    -------
+    EventAllocation
+        Zero positions, zero outlay, wealth ``W0`` everywhere, status
+        :data:`REFUSED_STATUS`, ``refusal`` carrying ``reason``.
+    """
+    return replace(
+        empty_allocation(inputs, entered=entered),
+        status=REFUSED_STATUS,
+        refusal=str(reason),
     )
 
 
@@ -844,8 +1064,41 @@ def _lots_of(variable, where):
     return lots
 
 
+def _check_exact_budget(inputs, outlay, approx_outlay, policy_name):
+    """Refuse an exact bill that breaks a ceiling, naming the TIGHTEST one it broke."""
+    broken = [
+        (limit, declared, name)
+        for declared, (name, limit) in enumerate(
+            (("deployable", float(inputs.deployable)), ("event cap", inputs.cap))
+        )
+        if outlay > limit + _OUTLAY_TOL
+    ]
+    if not broken:
+        return
+    # The SMALLEST broken ceiling is the binding one, so it carries the true
+    # shortfall. Reporting whichever was listed first would understate the
+    # overrun whenever the cap is tighter than the budget — and the retighten
+    # loop reserves exactly that shortfall, so it would under-reserve and
+    # spend rounds it did not need to. Two ceilings at the SAME dollar (the
+    # default shape, where ``cap`` is the deployable) carry the same
+    # shortfall, so the choice is arbitrary but must not be arbitrary-looking:
+    # the declaration index breaks the tie, naming ``deployable``.
+    limit, _declared, limit_name = min(broken)
+    raise ExactFeeBudgetExceeded(
+        inputs.event_id, limit_name, limit, outlay, approx_outlay, policy_name
+    )
+
+
 def read_allocation(model, results):
-    """Read the solved program back and recompute every reported number exactly.
+    """Read the solved program back and re-bill every reported number exactly.
+
+    The program solved on a LINEAR fee. Nothing here does: each position
+    is re-billed through the event's declared
+    :class:`~pmquant.fees.FillFeePolicy` on the fills the solver actually
+    chose, and that bill is the reported ``outlay`` — hence the scenario
+    wealth, the expected log growth, and the budget and cap checks. The
+    program's own linear cost is carried as ``approx_outlay`` for the
+    record and is never substituted for it.
 
     Parameters
     ----------
@@ -857,17 +1110,20 @@ def read_allocation(model, results):
     Returns
     -------
     EventAllocation
-        Positions, fills, exact outlay/wealth/growth, the gated set, the
-        per-side fee reconciliation.
+        Positions, fills, exact outlay/fees/wealth/growth, the gated set,
+        the per-side fee reconciliation.
 
     Raises
     ------
     RuntimeError
         When the termination is not :data:`OPTIMAL_STATUS`, or a variable
         carries no value.
+    ExactFeeBudgetExceeded
+        When the EXACT bill breaks the budget or the event cap — the case
+        the linear approximation used to let through.
     AssertionError
-        When the exact recompute breaks the budget or cap, leaves a
-        scenario insolvent, or holds both sides of one contract.
+        When the solution leaves a scenario insolvent, holds both sides of
+        one contract, or overfills a level.
     """
     import numpy as np
 
@@ -879,7 +1135,9 @@ def read_allocation(model, results):
         )
     meta = model._mio
     inputs, sides = meta["inputs"], meta["sides"]
-    positions, level_fills, outlay = {}, {}, 0.0
+    policy = fill_fee_policy(inputs.fee_policy)
+    positions, level_fills, fees = {}, {}, {}
+    premiums, premium, approx_outlay = {}, 0.0, 0.0
     for k, side in enumerate(sides):
         fills = []
         for i, (price, phi, fillable) in enumerate(side.levels):
@@ -888,20 +1146,19 @@ def read_allocation(model, results):
                 raise AssertionError(f"{side.key}: {lots} lots at {price} exceed fillable {fillable}")
             if lots:
                 fills.append((price, lots))
-                outlay += lots * (price + phi)
+                approx_outlay += lots * (price + phi)
         n = sum(lots for _price, lots in fills)
         if n:
-            outlay += ROUND_UP_CENT
+            approx_outlay += ROUND_UP_CENT
             positions[side.key] = n
             level_fills[side.key] = tuple(fills)
+            premiums[side.key] = sum(price * lots for price, lots in fills)
+            premium += premiums[side.key]
+            fees[side.key] = policy.fee_for(inputs.series, fills, side.fee_rate)
     if len({contract for contract, _side in positions}) != len(positions):
         raise AssertionError(f"both sides of one contract hold lots: {sorted(positions)}")
-    if outlay > inputs.deployable + _OUTLAY_TOL:
-        raise AssertionError(
-            f"budget violated: outlay {outlay!r} exceeds deployable {inputs.deployable!r}"
-        )
-    if outlay > inputs.cap + _OUTLAY_TOL:
-        raise AssertionError(f"event cap violated: outlay {outlay!r} exceeds cap {inputs.cap!r}")
+    outlay = premium + sum(fees.values())
+    _check_exact_budget(inputs, outlay, approx_outlay, policy.name)
     w0 = float(inputs.bankroll)
     wealth = np.full(inputs.scenarios.n_omega, w0 - outlay)
     by_key = {s.key: s for s in sides}
@@ -910,13 +1167,10 @@ def read_allocation(model, results):
     if not bool(np.all(wealth > 0.0)):
         raise AssertionError(f"insolvent in some scenario: wealth {wealth!r}")
     growth = float(np.sum(inputs.scenarios.weights * np.log(wealth / w0)))
-    reconciled = {}
-    for key, n in positions.items():
-        side = by_key[key]
-        premium = sum(price * lots for price, lots in level_fills[key])
-        vwap = premium / n
-        exact = trading_fee_for_series(inputs.series, n, vwap, side.fee_rate)
-        reconciled[key] = bool(n * side.rho - premium - exact > 0.0)
+    reconciled = {
+        key: bool(n * by_key[key].rho - premiums[key] - fees[key] > 0.0)
+        for key, n in positions.items()
+    }
     objective = model.objective()
     return EventAllocation(
         event_id=inputs.event_id,
@@ -929,11 +1183,110 @@ def read_allocation(model, results):
         status=status,
         fee_reconciled=reconciled,
         objective=float(objective) if objective is not None else 0.0,
+        premium=float(premium),
+        fees=fees,
+        approx_outlay=float(approx_outlay),
+        fee_policy=policy.name,
     )
 
 
+class ExactFeeResolution:
+    """What an event does when its EXACT bill overruns the budget it solved under.
+
+    The linear cost inside the program is what makes it a MILP, so the
+    overrun is structural, not a bug to tolerate: this object decides
+    between withdrawing the allocation and re-solving with headroom
+    reserved, and it NEVER has the option of reporting the approximation.
+    :meth:`refused` is the one hook a caller reshapes — the node returns
+    its own output mapping rather than an :class:`EventAllocation`.
+
+    Parameters
+    ----------
+    mode : str or None
+        A member of :data:`ON_EXACT_FEE_EXCEEDED`; ``None`` takes
+        :data:`DEFAULT_ON_EXACT_FEE_EXCEEDED`.
+    max_rounds : int or None
+        Tightened re-solves ``"retighten"`` may attempt; ``None`` takes
+        :data:`DEFAULT_RETIGHTEN_ROUNDS`.
+
+    Examples
+    --------
+    Re-solve up to four times before giving up::
+
+        resolution = ExactFeeResolution("retighten", 4)
+        alloc = resolution.resolve(inputs, solve_once, entered=[("KXA-1", "yes")])
+    """
+
+    __slots__ = ("mode", "max_rounds")
+
+    def __init__(self, mode=None, max_rounds=None):
+        self.mode = DEFAULT_ON_EXACT_FEE_EXCEEDED if mode is None else mode
+        if self.mode not in ON_EXACT_FEE_EXCEEDED:
+            raise ValueError(
+                f"mode must be one of {list(ON_EXACT_FEE_EXCEEDED)}, got {self.mode!r}"
+            )
+        rounds = DEFAULT_RETIGHTEN_ROUNDS if max_rounds is None else max_rounds
+        if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 0:
+            raise ValueError(f"max_rounds must be an int >= 0, got {max_rounds!r}")
+        self.max_rounds = rounds
+
+    def resolve(self, inputs, solve_once, entered=()):
+        """Solve, exactly re-bill, and refuse or re-solve until one fits.
+
+        Parameters
+        ----------
+        inputs : EventInputs
+            The event, with its own ``fee_allowance`` as the starting
+            headroom (normally zero).
+        solve_once : callable
+            ``solve_once(inputs)`` — builds, solves and reads ONE program,
+            raising :class:`ExactFeeBudgetExceeded` when the exact bill
+            does not fit. Whatever it returns is returned unchanged.
+        entered : iterable of tuple
+            The gated ``(contract_id, side)`` pairs, for the refusal.
+
+        Returns
+        -------
+        object
+            What ``solve_once`` returned on the first attempt that fit, or
+            :meth:`refused` when none did.
+        """
+        current, last = inputs, None
+        for attempt in range(self.max_rounds + 1):
+            try:
+                return solve_once(current)
+            except ExactFeeBudgetExceeded as exc:
+                last = exc
+                if self.mode != ON_EXCEEDED_RETIGHTEN or attempt == self.max_rounds:
+                    break
+                allowance = current.fee_allowance + max(exc.shortfall, RETIGHTEN_MIN_STEP)
+                if allowance >= min(float(inputs.deployable), inputs.cap):
+                    break
+                current = replace(current, fee_allowance=allowance)
+        return self.refused(inputs, entered, str(last))
+
+    def refused(self, inputs, entered, reason):
+        """Answer the refusal; a subclass reshapes it for its own caller.
+
+        Parameters
+        ----------
+        inputs : EventInputs
+            The event, with its ORIGINAL budget and cap.
+        entered : iterable of tuple
+            The gated pairs.
+        reason : str
+            The last :class:`ExactFeeBudgetExceeded` message.
+
+        Returns
+        -------
+        EventAllocation
+            A :data:`REFUSED_STATUS` allocation holding nothing.
+        """
+        return refused_allocation(inputs, entered=entered, reason=reason)
+
+
 def solve_event(inputs, solver):
-    """Gate, program, solve and read ONE event — or answer empty without a solve.
+    """Gate, program, solve, exactly re-bill and read ONE event.
 
     Parameters
     ----------
@@ -946,12 +1299,18 @@ def solve_event(inputs, solver):
     Returns
     -------
     EventAllocation
-        The allocation; an event with no gated fillable side never wakes
-        the solver.
+        The allocation. An event with no gated fillable side never wakes
+        the solver; one whose EXACT bill does not fit is refused or
+        re-solved by :class:`ExactFeeResolution`, never billed at the
+        program's linear approximation.
     """
     gated = gated_sides(inputs)
     if not any(s.levels for s in gated):
         return empty_allocation(inputs, entered=[s.key for s in gated])
-    model = event_program(inputs, gated)
-    results = solver.solve(model)
-    return read_allocation(model, results)
+
+    def solve_once(current):
+        model = event_program(current, gated)
+        return read_allocation(model, solver.solve(model))
+
+    resolution = ExactFeeResolution(inputs.on_exact_fee_exceeded, inputs.max_retighten_rounds)
+    return resolution.resolve(inputs, solve_once, entered=[s.key for s in gated])

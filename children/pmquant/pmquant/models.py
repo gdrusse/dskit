@@ -16,16 +16,18 @@ The model is the parent program's frozen v3 recipe, ported verbatim:
   step only once it has shown a book, so nothing ever attends to a strike
   listed later.
 * :class:`LawHead` — the settlement law BY CONSTRUCTION. A partition
-  ladder keeps raw per-rung logits (softmax over visible rungs happens in
-  :func:`q_from_logits` / :func:`head_loss`); a threshold ladder rebuilds
+  ladder keeps raw per-rung logits (the softmax over the rungs LISTED at
+  that step happens in :func:`q_from_logits` / :func:`head_loss` — the
+  listed set, not the quoted one, so an outcome nobody quoted keeps its
+  mass instead of inflating the others); a threshold ladder rebuilds
   its logits as monotone chains along each tail (``less`` non-decreasing,
   ``greater`` non-increasing in rung order), so a trained model cannot
   emit a ladder that violates its own settlement rule. Market adaptation
   is an affine ``(1 + s, b)`` pair of zero-initialized embeddings that
   weight decay shrinks toward the pooled head.
-* :func:`head_loss` — winner-NLL over visible rungs (partition) and BCE
-  on visible cells (threshold), EVENT-EQUAL weighted: one event is one
-  example whatever its rung or lead count.
+* :func:`head_loss` — winner-NLL normalized over the LISTED rungs
+  (partition) and BCE on visible cells (threshold), EVENT-EQUAL
+  weighted: one event is one example whatever its rung or lead count.
 
 The adapter's serving surface is a ``(contract, lead) -> q`` table built
 once by ``fitted`` and persisted beside ``model.pt`` — ``mode="load"``
@@ -55,7 +57,12 @@ import torch.nn as nn
 
 from dskit.pipeline.libs.torch import TorchAdapter, TorchBatches
 
-from pmquant.ladder.panels import DEFAULT_K_LVL, PANEL_KEYS, TokenFeaturizer, collate_items
+from pmquant.ladder.panels import (
+    DEFAULT_K_LVL,
+    PANEL_KEYS,
+    TokenFeaturizer,
+    collate_items,
+)
 from pmquant.ladder.protocols import LEAD_ROUND_DP, STRIKE_CODES, lead_key
 
 __all__ = [
@@ -294,26 +301,30 @@ class LawHead(nn.Module):
         return torch.where(is_partition[:, None, None].expand_as(raw), raw, out)
 
 
-def q_from_logits(logit, visible, is_partition):
+def q_from_logits(logit, listed, is_partition):
     """Turn logits into probabilities under each event's settlement law.
 
     Parameters
     ----------
     logit : torch.Tensor
         ``(B, T, C)``.
-    visible : torch.Tensor
-        ``(B, T, C)`` bool — the rungs a partition softmax runs over.
+    listed : torch.Tensor
+        ``(B, T, C)`` bool — the rungs a partition softmax runs over: the
+        panel's point-in-time LISTED set (``batch["listed"]``), not the
+        quoted one. An outcome the venue listed but nobody quoted can
+        still settle YES, so dropping it from the denominator
+        renormalizes every other outcome upward.
     is_partition : torch.Tensor
         ``(B,)`` bool.
 
     Returns
     -------
     torch.Tensor
-        ``(B, T, C)``: sigmoid for threshold events, softmax over visible
-        rungs for partition events.
+        ``(B, T, C)``: sigmoid for threshold events, softmax over the
+        listed rungs for partition events.
     """
     q_thr = torch.sigmoid(logit)
-    q_par = torch.softmax(logit.masked_fill(~visible, _MASK_FILL), -1)
+    q_par = torch.softmax(logit.masked_fill(~listed, _MASK_FILL), -1)
     return torch.where(is_partition[:, None, None].expand_as(logit), q_par, q_thr)
 
 
@@ -325,14 +336,16 @@ def head_loss(logit, batch):
     logit : torch.Tensor
         ``(B, T, C)`` from :class:`LawHead`.
     batch : dict
-        A collated batch carrying ``visible``, ``contract_mask``, ``y``
-        and ``is_partition``.
+        A collated batch carrying ``visible``, ``listed``,
+        ``contract_mask``, ``y`` and ``is_partition``.
 
     Returns
     -------
     torch.Tensor
-        A scalar: the partition branch (winner-NLL over visible rungs at
-        the steps where the winner is listed, event-mean then mean over
+        A scalar: the partition branch (winner-NLL over the rungs LISTED
+        at that step — the same denominator serving uses, so a listed but
+        unquoted outcome is not silently dropped — scored at the steps
+        where the winner has been quoted, event-mean then mean over
         events) plus the threshold branch (BCE-with-logits on visible
         cells, event-mean then mean), divided by the number of branches
         present. A partition event whose labels do not name EXACTLY ONE
@@ -343,9 +356,10 @@ def head_loss(logit, batch):
     """
     part = batch["is_partition"]
     vis = batch["visible"] & batch["contract_mask"][:, None, :]
+    lis = batch["listed"] & batch["contract_mask"][:, None, :]
     total, n = logit.new_zeros(()), 0
     if part.any():
-        lg = logit[part].masked_fill(~vis[part], _MASK_FILL)
+        lg = logit[part].masked_fill(~lis[part], _MASK_FILL)
         y_part = batch["y"][part]
         win = y_part.argmax(-1)
         one_winner = y_part.sum(-1) == 1
@@ -425,6 +439,13 @@ class LadderQhatModule(nn.Module):
         Transformer depth.
     wide_head : bool
         The deeper head trunk (E5b).
+    token_revision : int or None
+        The token layout's semantic revision the panels were built under,
+        supplied by the adapter from the DATA (``module_params``) and so
+        persisted with the artifact. None means "whatever this code
+        means" (:data:`~pmquant.ladder.panels.TOKEN_REVISION`), which is
+        correct for a fresh fit and WRONG for a restore — which is why
+        the adapter always names it.
 
     Examples
     --------
@@ -444,9 +465,12 @@ class LadderQhatModule(nn.Module):
         d_model=DEFAULT_D_MODEL,
         n_time_layers=DEFAULT_N_TIME_LAYERS,
         wide_head=False,
+        token_revision=None,
     ):
         super().__init__()
-        self.featurizer = TokenFeaturizer(int(k_lvl), drop=() if drop is None else drop)
+        self.featurizer = TokenFeaturizer(
+            int(k_lvl), drop=() if drop is None else drop, revision=token_revision
+        )
         self.enc = TokenEncoder(
             int(n_markets),
             self.featurizer.n_features,
@@ -474,13 +498,15 @@ class LadderQhatModule(nn.Module):
         ------
         ValueError
             When the batch's layout identity (``featurizer``: the panels
-            node's ``k_lvl``/``drop``) is not this module's — the artifact
-            would name an ablation its tokens never got.
+            node's ``k_lvl``/``drop`` and the token revision) is not this
+            module's — the artifact would name an ablation its tokens
+            never got, or read columns that have since changed meaning.
         """
         identity = tuple(batch["featurizer"])
         if identity != self.featurizer.identity:
             raise ValueError(
-                f"the batch was featurized as (k_lvl, drop) = {identity!r} but this "
+                f"the batch was featurized as (k_lvl, drop, revision) = {identity!r} "
+                f"but this "
                 f"module declares {self.featurizer.identity!r} — the panels node's "
                 "k_lvl/drop and the model's module_params must agree"
             )
@@ -531,6 +557,7 @@ class LadderPanelAdapter(TorchAdapter):
         super().__init__(params)
         self._serving = None
         self._vocab = None
+        self._token_revision = None
 
     # -- dataset -----------------------------------------------------------
 
@@ -630,12 +657,14 @@ class LadderPanelAdapter(TorchAdapter):
         Returns
         -------
         dict
-            ``{"n_markets": len(vocab), "n_leads": T}`` — the WHOLE vocab
-            the panels were indexed by, not the markets the train split
-            happens to hold, so a series first seen in val or test has an
-            embedding row; merged UNDER the document's ``module_params``
-            by the pack, so a declared value wins. ``{}`` for an empty
-            split.
+            ``{"n_markets": len(vocab), "n_leads": T, "token_revision":
+            r}`` — the WHOLE vocab the panels were indexed by, not the
+            markets the train split happens to hold, so a series first
+            seen in val or test has an embedding row; the revision read
+            off the ITEMS' own layout identity, so the artifact records
+            what its features meant rather than what a later install
+            means. Merged UNDER the document's ``module_params`` by the
+            pack, so a declared value wins. ``{}`` for an empty split.
         """
         items = batches.payload
         if not items:
@@ -643,6 +672,7 @@ class LadderPanelAdapter(TorchAdapter):
         return {
             "n_markets": len(items[0]["vocab"]),
             "n_leads": int(items[0]["feats"].shape[0]),
+            "token_revision": int(tuple(items[0]["featurizer"])[2]),
         }
 
     def select(self, batches, index):
@@ -729,7 +759,8 @@ class LadderPanelAdapter(TorchAdapter):
         try:
             with torch.no_grad():
                 visible = batch["visible"] & batch["contract_mask"][:, None, :]
-                q = q_from_logits(module(batch), visible, batch["is_partition"])
+                listed = batch["listed"] & batch["contract_mask"][:, None, :]
+                q = q_from_logits(module(batch), listed, batch["is_partition"])
         finally:
             module.train(training)
         where = visible.nonzero(as_tuple=False)
@@ -876,6 +907,7 @@ class LadderPanelAdapter(TorchAdapter):
         self._serving = table
         source = next(b for b in (train_batches, val_batches) if b is not None and len(b))
         self._vocab = {str(k): int(v) for k, v in source.payload[0]["vocab"].items()}
+        self._token_revision = int(module.featurizer.revision)
         return table
 
     def predict(self, module, record):
@@ -932,7 +964,8 @@ class LadderPanelAdapter(TorchAdapter):
             ``{"serving_table": {"file", "cells", "sha256"}}`` — recorded
             in the sidecar, hence under the artifact's content hash. The
             file also carries ``vocab``, the ``{series: market_id}`` map
-            the weights are indexed by.
+            the weights are indexed by, and ``token_revision``, what the
+            feature columns MEANT when these beliefs were read off them.
 
         Raises
         ------
@@ -940,7 +973,7 @@ class LadderPanelAdapter(TorchAdapter):
             When there is no table (or no vocab) to write.
         """
         table = self._serving
-        if not table or self._vocab is None:
+        if not table or self._vocab is None or self._token_revision is None:
             raise ValueError(
                 "refusing to write a ladder artifact with no serving table — it would "
                 "restore into a model that answers nothing"
@@ -949,6 +982,7 @@ class LadderPanelAdapter(TorchAdapter):
         text = json.dumps(
             {
                 "lead_key_dp": LEAD_ROUND_DP,
+                "token_revision": int(self._token_revision),
                 "vocab": dict(sorted(self._vocab.items())),
                 "cells": [[contract, lead, q] for (contract, lead), q in sorted(table.items())],
             },
@@ -984,7 +1018,10 @@ class LadderPanelAdapter(TorchAdapter):
         ------
         ValueError
             On a manifest with no serving-table entry, a missing file, a
-            sha256 mismatch, an empty table, or a file without the vocab.
+            sha256 mismatch, an empty table, a file without the vocab, or
+            a file whose ``token_revision`` is not the one this installed
+            code means — the beliefs were read off columns that no longer
+            say the same thing.
         """
         entry = (recorded or {}).get(SERVING_STATE_KEY)
         if not entry:
@@ -1020,6 +1057,15 @@ class LadderPanelAdapter(TorchAdapter):
                 f"the serving table {path!r} records no market vocab — without the "
                 "{series: market_id} map the weights were indexed by, a restored model "
                 "cannot tell a series from the one whose embedding it would borrow"
+            )
+        today = TokenFeaturizer().revision
+        if payload.get("token_revision") != today:
+            raise ValueError(
+                f"the serving table {path!r} records token revision "
+                f"{payload.get('token_revision')!r} but this code means {today} — "
+                "these beliefs were read off feature columns that no longer say the "
+                "same thing, so restoring them would serve numbers nothing here "
+                "computes; re-fit under the current layout"
             )
         self._serving = table
         self._vocab = {str(k): int(v) for k, v in vocab.items()}

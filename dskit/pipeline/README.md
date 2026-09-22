@@ -30,10 +30,18 @@ genuinely-completed run of a different one, passes all three): use
 `node_output_for_document(key, document_hash)` for the actual composed
 guarantee, which additionally requires the node's own record to carry that
 `document_hash`, stamped honestly at the moment it ran.
+`attested_output(key, output, document_hash)` goes one step further and
+returns WHAT that node recorded for one output, but only when the run's own
+`carry.json` carries the same value under the same node and name — a record
+and a carry are written at different moments, so requiring both means one
+edited sidecar no longer decides what a downstream release is built from.
 `content_identity(run_dir, manifests)` combines a NAMED set of JSON-artifact
 manifests into one sha256 over their verified, decoded content — never over
 their paths or digests alone — so it changes if the underlying data changes
-even when a manifest's path does not.
+even when a manifest's path does not. `row_set_identity(rows)` (ADR-0166) is
+its row-set sibling: one sha256 over the CONTENT of a single materialized row
+set, independent of row order, so a re-materialized set identifies as the
+same rows while one changed value does not.
 
 ## The 60-second path
 
@@ -112,8 +120,14 @@ legacy stage-list grammar (below).
   resolved pair for document A dropped over a genuinely-completed run of
   document B). `content_identity` combines a NAMED set of verified
   `JsonArtifact` manifests (resolved through `resolve_json_artifact`) into
-  one sha256 over their decoded content, not their paths. Read-only and
-  additive; not wired into any node. Residual gap: nothing hash-chains
+  one sha256 over their decoded content, not their paths.
+  `attested_output(key, output, document_hash)` (ADR-0166) returns the VALUE
+  a completed bound node recorded for one output, `None` unless the run's
+  own `carry.json` corroborates it with an equal value, and
+  `row_set_identity(rows)` (ADR-0166) is the order-independent,
+  content-derived identity of ONE materialized row set — the rule
+  `CandidateInventory.digest` and `observations.stream_digest` cannot supply,
+  because both hash an ORDERED sequence. Read-only and additive. Residual gap: nothing hash-chains
   `nodes/*.json` records to each other or to `resolved.json`, so a
   directly hand-edited node record (including its `document_hash` field)
   is indistinguishable from genuine — closing that needs a write-time
@@ -678,7 +692,8 @@ dskit/pipeline/
 ├── planner.py         document -> Plan: topo order, role rules, wire checks
 ├── driver.py          LOAD -> IMPORT -> PLAN -> RESOLVE -> EXECUTE -> RECORD; run dirs;
 │                      run_walk_forward (one derived run per fold + summary);
-│                      RunAttestation + content_identity (ADR-0119)
+│                      RunAttestation + content_identity (ADR-0119);
+│                      attested_output + row_set_identity (ADR-0166)
 ├── stages.py          journal-backed staged DAG execution and resume
 ├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
@@ -735,6 +750,18 @@ dskit/pipeline/
 ├── uncertainty_set.py budgeted uncertainty sets: the BudgetedUncertaintySet
 │                      doorway + probability / mean / outcome members;
 │                      worst_case, protection, counterpart, realizations
+├── uncertainty_intake.py  the gate an uncertainty artifact passes to reach a
+│                      decision (ADR-0165): UncertaintyAttestation +
+│                      CoverageEvidence + DecisionDemand, and the
+│                      AttestedUncertainty family whose members bind ONE
+│                      artifact class to ONE estimand. Six refusals —
+│                      foreign_model / post_decision / stale / uncalibrated /
+│                      unknown_producer / wrong_unit, applied by the module
+│                      functions admission_problems / admit_uncertainty from
+│                      REGISTRY truth at use time. ProbabilityUpperBound is
+│                      the bound-bearing family and no registered intake
+│                      answers it. Screens fail closed for an ordinary
+│                      caller; they are not a root of trust
 ├── records.py         MarketRecord envelope + binary / mark-to-market accounting
 ├── protocols.py       structural Protocols (DataSource, Tracker, ...)
 ├── env.py             env file + redacting Secrets façade

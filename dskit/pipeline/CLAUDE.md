@@ -77,6 +77,38 @@ on it without breaking its rulings.
   `fingerprint()` at resolve and `run()` at execute see one snapshot;
   `scan_stream` is imported inside the scan, never at module top.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
+- **Admitting an uncertainty artifact at a decision** —
+  `uncertainty_intake.py` (ADR-0165). The producing modules
+  (`false_signal`, `mean_interval`, `outcome_interval`) say what a number
+  IS; this one says whether it may be USED at the decision in front of
+  you. `AttestedUncertainty` binds one artifact CLASS to one estimand, so
+  "mean confidence" and "realized outcome" are different TYPES rather than
+  different strings, and a consumer states what it needs by naming a
+  class. `problems`/`admit` are templates `__init_subclass__` refuses to
+  let a member override; five screens, one per `REFUSAL_REASONS` code.
+  **The rule is `admission_problems`/`admit_uncertainty`, module
+  FUNCTIONS, not the same-named methods** — a method resolves through the
+  envelope's own class, which is the thing under suspicion, so a consumer
+  sizing capital calls the function. It answers from the REGISTRY: which
+  registered intakes have `expected` in their real `__mro__` (never
+  `issubclass`, which `ABCMeta.register` forges), whether this envelope IS
+  one of them by identity, and then re-reads the artifact and attestation
+  from the instance at every call so a post-construction swap is caught.
+  `ProbabilityUpperBound` is the family a genuine bound would join and **no
+  registered intake answers it**; that, not the subclass hook, is what
+  refuses every artifact. `CLOSED_FAMILIES` + `_FINAL_METHODS` remain as
+  accident-and-drift protection and are **not a boundary** — three review
+  rounds found a subclass, `ABCMeta.register`, a hook-widening subclass, a
+  reattaching metaclass and a mutated `_artifact`, and sealing closed none
+  of the structural ones. The module MEASURES NOTHING and is NOT a root of trust:
+  `CoverageEvidence` records what a producer attests, the floor it is
+  compared against (`DecisionDemand.min_measured_coverage`) is the
+  consumer's with no default, and the `unknown_producer` screen narrows
+  "any object of the right shape" to "one whose attestation and self-report
+  agree on a producer this package has registered" — real narrowing, not
+  provenance. An admitted artifact is not evidence that a calibrated
+  estimator produced it (ADR-0122's Correction: a Python check cannot be a
+  root of trust).
 - **Uncertainty sets** — `register_uncertainty_set`
   (`uncertainty_set.py`); `probability`/`mean`/`outcome` ship. Subclass
   `BudgetedUncertaintySet` and supply three declaration hooks
@@ -347,11 +379,26 @@ on it without breaking its rulings.
   hashes the DECODED CONTENT, sorted by name — never the manifests' own
   paths or digests — so it changes when the underlying data changes even
   if a path does not, and a manifest whose digest does not match its file
-  raises before it can enter the combined identity. All of this is
+  raises before it can enter the combined identity.
+- **Attested values and row-set identity** (ADR-0166) —
+  `RunAttestation.attested_output(key, output, document_hash)` answers WHAT
+  a completed, document-bound node recorded for one output, and returns
+  `None` unless `carry.json` carries an equal value under the same node and
+  name. It composes evidence the driver already writes; it does not
+  authenticate it, and the ADR-0119 residual gap above is unchanged.
+  `row_set_identity(rows)` is the module-level, order-INDEPENDENT sha256
+  over one materialized row set's own content — reach for it, not
+  `CandidateInventory.digest` or `observations.stream_digest`, whenever
+  re-materializing the same rows in another order must identify as the same
+  rows. Both are additive and wired into no generic node. All of this is
   read-only and additive to `run_document`'s own lifecycle (the one
-  write-side change is the new `document_hash` field on each node record);
-  none of it is wired into any node — building that wiring (`FinalRefit`,
-  or any other consumer) is separate, unauthorized work.
+  write-side change is the new `document_hash` field on each node record).
+  No GENERIC node consumes it; the one consumer is the child adapter
+  `intraday_equities.final_model.FinalRefit`, which composes
+  `attested_output` and `row_set_identity` under ADR-0166. (The earlier
+  wording here — "none of it is wired into any node ... separate,
+  unauthorized work" — was written in the same commit that did the wiring
+  and was false on arrival.)
 - **One name per shared vocabulary.** `node.class_ref(cls)` is the
   `module:QualName` an artifact sidecar RECORDS and load mode compares —
   three modules used to write that f-string out, and a divergence there
@@ -639,7 +686,8 @@ dskit/pipeline/
 ├── planner.py         document -> Plan; role rules live here
 ├── driver.py          run_document: LOAD..RECORD, $prev, journal hook
 │                      (ADR-0056); run_walk_forward (ADR-0027);
-│                      RunAttestation + content_identity (ADR-0119)
+│                      RunAttestation + content_identity (ADR-0119);
+│                      attested_output + row_set_identity (ADR-0166)
 ├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
 ├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
@@ -681,6 +729,11 @@ dskit/pipeline/
 │                      ConfidenceInterval only where coverage was measured
 ├── uncertainty_set.py budgeted uncertainty sets: worst case over a set,
 │                      robust counterpart, weighted realizations
+├── uncertainty_intake.py  whether an artifact may inform THIS decision:
+│                      attestation + demand, six refusals, admission_problems
+│                      answering from the REGISTRY at use time, and a
+│                      ProbabilityUpperBound family no intake answers
+│                      (ADR-0165)
 ├── records.py         MarketRecord + accounting seams
 ├── protocols.py       structural Protocols
 ├── env.py             env + redacting Secrets

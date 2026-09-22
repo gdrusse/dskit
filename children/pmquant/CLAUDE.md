@@ -101,6 +101,31 @@ Agent orientation — see README.md for what the child does and how to run it.
   is a thin subclass of `dskit.onboarding.leads.LeadGrid` supplying only
   the pmquant defaults; the mechanism stays in dskit.
 
+## Open owner decision — the unstable-settlement-law skip
+
+`ladder/panels.py` infers an event's settlement law from its rungs' strike
+types, so an event can read as one law at an early lead and another at
+settlement. The plainest case is an ordinary under/over market — `less`
+under X and `greater` over X — whose two legs list minutes apart: at lead 0
+only the `less` leg exists and the event reads `lower_threshold`, but it
+SETTLES as a partition. Three answers, none free:
+
+- **(a) admit it with a PER-LEAD law.** Honest about what each lead knew.
+  Cost: `is_partition` becomes `(B, T)` through `LawHead`, `q_from_logits`
+  and `head_loss` — and `head_loss`'s partition branch indexes WHOLE events
+  (`logit[part]`) to keep its event-equal weighting, so this is a
+  loss-structure change, not a reshape. It also trains a threshold head at
+  lead 0 against an outcome that settles under partition semantics, which
+  may be the wrong target rather than the causal one.
+- **(b) skip and count it — WHAT SHIPS TODAY**, as `n_skipped_unstable_law`
+  in the panels node's metrics. Costs coverage (every staggered under/over
+  pair), fabricates nothing, reversible.
+- **(c) refuse the build.** Rejected in review: one anomalous event would
+  cost the family every other market in the same call.
+
+Until the owner rules, (b) stands. Watch `n_skipped_unstable_law` — a run
+that drops many events is telling you this decision is now expensive.
+
 ## Layout
 
 ```

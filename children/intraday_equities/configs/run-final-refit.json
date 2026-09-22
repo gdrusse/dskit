@@ -1,10 +1,11 @@
 {
   "name": "final-refit",
-  "notes": "PENDING/non-executable Gate 2 contract. The current driver has no immutable attestation binding a completed HPO run to its node outputs/carry, and no content-derived source/cache/full-window identity producer or ten labelled input wires. Filling these placeholders cannot make this document executable: FinalRefit always refuses plan until those upstream contracts exist. No market row, HPO fit, refit, or bundle write is permitted.",
+  "notes": "PENDING/non-executable production-channel contract. The upstream driver contracts now exist (ADR-0166: RunAttestation.attested_output binds a COMPLETED immutable run's node record and carry to the pinned document, and row_set_identity derives each materialized row set's identity from its CONTENT), and FinalRefit owns the ten labelled input wires. This document still cannot run. It declares release_channel 'production', and FinalRefit refuses that channel outright because a real release needs the signed run-output attestation contract ADR-0122 accepted on 2026-09-12 and NOTHING BUILDS YET (its out-of-Python launch root does not exist in dskit); its pins are also still PENDING, because no completed final-HPO run exists and no producer materializes the ten labelled input wires. Filling these placeholders cannot make this document executable. No market row, HPO fit, refit, or bundle write is permitted.",
   "pipeline": {
     "refit": {
       "uses": "intraday_equities.final_model:FinalRefit",
       "params": {
+        "release_channel": "production",
         "hpo_run_dir": "PENDING-HPO-RUN",
         "hpo_document_sha256": "2db8e95a420614a91101535bb21d1ca4cd2cb6536bdb13791307754ae2805219",
         "hpo_evidence": {
@@ -23,17 +24,29 @@
         "categorical_feature": [],
         "categorical_encoding": {},
         "predict_fixture": [],
+        "seed": 0,
         "refit_identity": {
           "source": {},
           "cache": {},
+          "rows": {
+            "h01": "PENDING-ROW-IDENTITY",
+            "h02": "PENDING-ROW-IDENTITY",
+            "h03": "PENDING-ROW-IDENTITY",
+            "h04": "PENDING-ROW-IDENTITY",
+            "h05": "PENDING-ROW-IDENTITY",
+            "h06": "PENDING-ROW-IDENTITY",
+            "h07": "PENDING-ROW-IDENTITY",
+            "h08": "PENDING-ROW-IDENTITY",
+            "h09": "PENDING-ROW-IDENTITY",
+            "h10": "PENDING-ROW-IDENTITY"
+          },
           "train_start_ms": "PENDING",
           "refit_end_ms": 1772323200000,
           "embargo_start_ms": 1764547200000,
           "embargo_end_ms": 1764633600000
-        },
-        "seed": 0
+        }
       },
-      "notes": "Non-executable specification only. The intended node would consume exactly ten immutable, identity-bearing labelled-row wires (h01..h10), verify one driver-owned completed-run attestation, refit frozen winners once, and call write_bundle once. Those producer and attestation APIs do not exist; mutable sidecars and config hashes are explicitly insufficient. No search knob exists."
+      "notes": "Production-channel specification only. The intended node consumes exactly ten immutable, content-identity-bearing labelled-row wires (h01..h10), verifies one driver-owned completed-run attestation, refits the frozen winners once and calls write_bundle once. hpo_document_sha256 must equal the shipped configs/run-final-hpo.json identity on this channel, and refit_identity.rows must carry the sha256 that each wire's own CONTENT produces (dskit.pipeline.driver.row_set_identity) — a placeholder, a positional index, a producer name or a caller-supplied label refuses. No search knob exists."
     }
   },
   "splits": {
