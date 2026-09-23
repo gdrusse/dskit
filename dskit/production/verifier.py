@@ -179,6 +179,101 @@ _SUBMIT = pin_members("verifier.py's operation", ("submit",), OPERATIONS)[0]
 _AMEND_RANK = VERDICT_ORDER["amend"]
 
 
+def _build_verified_v2_projector():
+    """Close the ADR-0172 projector over its effective executable surface."""
+    import gc
+    import hashlib
+    import json
+    import math
+
+    from dskit.pipeline import trust as trust_module
+    from dskit.production import base as base_module
+    from dskit.production import bundles as bundles_module
+
+    consume = trust_module.consume_v2_projection_input
+    projector = bundles_module._project_v2_event_envelopes
+    canonical_encoder = bundles_module._canonical_bytes
+    parser = bundles_module._parse_event_envelope
+    validator = bundles_module._check_event_envelope
+    order_key = bundles_module._event_envelope_order_key
+    digest_checker = bundles_module.check_digest
+    production_error = bundles_module.ProductionError
+    base_plain = base_module._plain
+    base_json = base_module.json
+    base_math = base_module.math
+    base_decimal = base_module.Decimal
+    base_digest_pattern = base_module._HEX_DIGEST
+    json_dumps = json.dumps
+    json_loads = json.loads
+    sha256 = hashlib.sha256
+    get_referents = gc.get_referents
+    isfinite = math.isfinite
+    envelope_schema = bundles_module.CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA
+    envelope_fields = frozenset(bundles_module._EVENT_ENVELOPE_FIELDS)
+    authorization_schemas = tuple(sorted(
+        bundles_module.DATASET_AUTHORIZATION_EVENT_SCHEMAS.items()
+    ))
+    raw_fields = tuple(sorted(
+        (key, tuple(value))
+        for key, value in bundles_module.RAW_EVENT_FIELDS.items()
+    ))
+
+    def dispatch_ok():
+        """Return whether every effective Python-level dependency is intact."""
+        return (
+            trust_module.consume_v2_projection_input is consume
+            and bundles_module._project_v2_event_envelopes is projector
+            and bundles_module._canonical_bytes is canonical_encoder
+            and bundles_module._parse_event_envelope is parser
+            and bundles_module._check_event_envelope is validator
+            and bundles_module._event_envelope_order_key is order_key
+            and bundles_module.check_digest is digest_checker
+            and bundles_module.ProductionError is production_error
+            and base_module.canonical_bytes is canonical_encoder
+            and base_module._plain is base_plain
+            and base_module.json is base_json is json
+            and base_module.math is base_math is math
+            and base_module.Decimal is base_decimal
+            and base_module._HEX_DIGEST is base_digest_pattern
+            and bundles_module.json is json
+            and bundles_module.hashlib is hashlib
+            and bundles_module.gc is gc
+            and json.dumps is json_dumps
+            and json.loads is json_loads
+            and hashlib.sha256 is sha256
+            and gc.get_referents is get_referents
+            and math.isfinite is isfinite
+            and bundles_module.CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA
+            == envelope_schema
+            and frozenset(bundles_module._EVENT_ENVELOPE_FIELDS)
+            == envelope_fields
+            and tuple(sorted(
+                bundles_module.DATASET_AUTHORIZATION_EVENT_SCHEMAS.items()
+            )) == authorization_schemas
+            and tuple(sorted(
+                (key, tuple(value))
+                for key, value in bundles_module.RAW_EVENT_FIELDS.items()
+            )) == raw_fields
+        )
+
+    def project(value, /):
+        if not dispatch_ok():
+            raise ValueError("v2 projector executable dependency changed")
+        payload = consume(value)
+        if not dispatch_ok():
+            raise ValueError("v2 projector executable dependency changed")
+        result = projector(*payload)
+        if not dispatch_ok():
+            raise ValueError("v2 projector executable dependency changed")
+        return result
+
+    return project
+
+
+_project_verified_synthetic_v2_input = _build_verified_v2_projector()
+del _build_verified_v2_projector
+
+
 class _Refused(Exception):
     """Internal: one named refusal; a check raises it and the gate answers ``not_sent``."""
 

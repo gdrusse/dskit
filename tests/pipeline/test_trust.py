@@ -61,6 +61,8 @@ _PUBLIC_TYPES = {
     "TrustedRuntimeVerifier",
     "VerifiedCapture",
     "VerifiedExternalArtifactAnchor",
+    "VerifiedV2ProjectionInput",
+    "consume_v2_projection_input",
 }
 
 

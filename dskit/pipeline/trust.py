@@ -62,6 +62,8 @@ __all__ = [
     "TrustedRuntimeVerifier",
     "VerifiedCapture",
     "VerifiedExternalArtifactAnchor",
+    "VerifiedV2ProjectionInput",
+    "consume_v2_projection_input",
 ]
 
 _MAKE = object()
@@ -9513,6 +9515,220 @@ def _build_synthetic_v2_raw_publication():
 
 _build_synthetic_v2_raw_publication()
 del _build_synthetic_v2_raw_publication
+
+
+def _build_synthetic_v2_projection_input():
+    """Build the one-shot ADR-0172 payload bridge behind opaque capabilities."""
+    proof_type = NonAuthorizingRawRootProof
+    fixture_type = VerifiedSyntheticDatasetFixture
+    publisher_type = _SyntheticRawPublisher
+    roster_publisher_type = _SyntheticRosterPublisher
+    raw_verify = proof_type.verify
+    mapping_proxy = MappingProxyType
+    parser = _hs_parse_canonical
+    canonical_bytes = _hs_canonical_bytes
+    digest = _digest
+    refuse = _hs_refuse
+    v2_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+        "dskit.dataset-capture-authorization/v2"
+    ]
+    capability_token = object()
+    records = {}
+    registry_lock = RLock()
+
+    class VerifiedV2ProjectionInput:
+        """Opaque one-shot access to one freshly verified v2 projection payload.
+
+        Examples
+        --------
+        The trusted synthetic broker is the sole mint::
+
+            # _prepare_synthetic_v2_projection_input(raw_proof, raw_bytes)
+        """
+
+        __slots__ = ("__weakref__",)
+
+        def __new__(cls, token=None):
+            if cls is not VerifiedV2ProjectionInput or token is not capability_token:
+                raise TypeError("broker-issued v2 projection input required")
+            return object.__new__(cls)
+
+        def __init_subclass__(cls, **kwargs):
+            del cls, kwargs
+            raise TypeError("the verified v2 projection input is final")
+
+        def __setattr__(self, name, value):
+            del self, name, value
+            raise AttributeError("verified v2 projection input is frozen")
+
+        def __reduce__(self):
+            raise TypeError("verified v2 projection input cannot be serialized")
+
+        def __reduce_ex__(self, protocol):
+            del protocol
+            raise TypeError("verified v2 projection input cannot be serialized")
+
+    capability_type = VerifiedV2ProjectionInput
+
+    def payload(raw_proof, raw_proof_bytes):
+        """Reverify and derive immutable events/policy from retained originals."""
+        refuse(type(raw_proof) is proof_type, "exact raw-root proof required")
+        refuse(
+            type(raw_proof_bytes) is tuple
+            and len(raw_proof_bytes) == 12
+            and all(type(value) is bytes for value in raw_proof_bytes),
+            "exact twelve-byte raw proof tuple required",
+        )
+        refuse(proof_type.verify is raw_verify, "raw-root verifier dispatch changed")
+        facts = raw_verify(raw_proof, *raw_proof_bytes)
+        publisher = object.__getattribute__(raw_proof, "_publisher")
+        retained = object.__getattribute__(publisher, "_retained")
+        refuse(
+            type(publisher) is publisher_type
+            and type(retained) is tuple
+            and len(retained) == 8,
+            "exact retained raw publication required",
+        )
+        fixture, _published, _session, signed, roster = retained[:5]
+        output = retained[5:]
+        refuse(
+            type(fixture) is fixture_type
+            and type(signed) is tuple and len(signed) == 4
+            and type(roster) is tuple and len(roster) == 5
+            and (*signed, *roster, *output) == raw_proof_bytes
+            and fixture._event_schema == v2_event_schema
+            and facts["event_count"] == len(fixture._events),
+            "retained v2 raw proof originals changed",
+        )
+        raw_authorization = parser(signed[0])
+        roster_authorization = parser(roster[0])
+        manifest = parser(output[0])
+        roster_publisher = object.__getattribute__(publisher, "_roster_publisher")
+        refuse(
+            type(roster_publisher) is roster_publisher_type,
+            "exact retained roster publisher required",
+        )
+        roster_retained = roster_publisher._retained.get(
+            roster_authorization["bootstrap_id"]
+        )
+        refuse(
+            type(roster_retained) is tuple
+            and len(roster_retained) == 9
+            and (roster_retained[4], roster_retained[5], roster_retained[6],
+                 roster_retained[2], roster_retained[3]) == roster,
+            "retained roster originals changed",
+        )
+        roster_value = parser(roster_retained[1])
+        policy_value = roster_value.get("policy")
+        refuse(
+            type(policy_value) is dict
+            and set(policy_value) == {
+                "schema_version", "sources", "policy_sha256"
+            }
+            and policy_value["schema_version"]
+            == "dskit.source-rank-policy/v1",
+            "closed source-rank policy required",
+        )
+        sources = policy_value["sources"]
+        expected_sources = [
+            {"source_id": source_id, "rank": rank}
+            for rank, source_id in enumerate(roster_authorization["source_ids"])
+        ]
+        policy_body = {
+            "schema_version": policy_value["schema_version"],
+            "sources": sources,
+        }
+        policy_sha256 = digest(canonical_bytes(policy_body))
+        refuse(
+            sources == expected_sources
+            and policy_value["policy_sha256"] == policy_sha256
+            and raw_authorization["source_ids"]
+            == roster_authorization["source_ids"]
+            == roster_value["source_ids"]
+            and raw_authorization["scope"]
+            == roster_authorization["scope"]
+            == roster_value["scope"]
+            and raw_authorization["source_roster_policy_sha256"]
+            == roster_authorization["source_rank_policy_sha256"]
+            == manifest["source_roster_policy_sha256"]
+            == policy_sha256,
+            "v2 source-rank policy binding changed",
+        )
+        events = tuple(mapping_proxy(dict(event)) for event in fixture._events)
+        refuse(
+            events
+            and all(
+                type(event) is mapping_proxy
+                and event["source_id"] in raw_authorization["source_ids"]
+                for event in events
+            ),
+            "exact retained v2 events required",
+        )
+        policy = mapping_proxy({
+            "schema_version": policy_value["schema_version"],
+            "sources": tuple(
+                mapping_proxy(dict(source)) for source in sources
+            ),
+            "policy_sha256": policy_sha256,
+        })
+        payload_bytes = canonical_bytes({
+            "events": [dict(event) for event in events],
+            "source_rank_policy": {
+                "schema_version": policy["schema_version"],
+                "sources": [dict(source) for source in policy["sources"]],
+                "policy_sha256": policy["policy_sha256"],
+            },
+        })
+        return events, policy, payload_bytes
+
+    def prepare(raw_proof, raw_proof_bytes, /):
+        """Mint one one-shot capability after fresh ADR-0173 verification."""
+        events, policy, payload_bytes = payload(raw_proof, raw_proof_bytes)
+        capability = capability_type(capability_token)
+        key = id(capability)
+
+        def forget(reference):
+            with registry_lock:
+                record = records.get(key)
+                if record is not None and record[0] is reference:
+                    del records[key]
+
+        reference = weakref_ref(capability, forget)
+        with registry_lock:
+            refuse(key not in records, "v2 projection capability identity collision")
+            records[key] = (
+                reference, raw_proof, raw_proof_bytes, events, policy,
+                payload_bytes,
+            )
+        return capability
+
+    def consume(value, /):
+        """Spend one exact capability and return a freshly reverified payload."""
+        with registry_lock:
+            key = id(value)
+            record = records.get(key)
+            refuse(
+                type(value) is capability_type
+                and type(record) is tuple
+                and len(record) == 6
+                and record[0]() is value,
+                "v2 projection input missing or spent",
+            )
+            del records[key]
+        _reference, raw_proof, raw_proof_bytes, _events, _policy, expected = record
+        events, policy, observed = payload(raw_proof, raw_proof_bytes)
+        refuse(observed == expected, "v2 projection payload changed")
+        return events, policy
+
+    return capability_type, prepare, consume
+
+
+(
+    VerifiedV2ProjectionInput,
+    _prepare_synthetic_v2_projection_input,
+    consume_v2_projection_input,
+) = _build_synthetic_v2_projection_input()
+del _build_synthetic_v2_projection_input
 
 
 class _SyntheticRootPisIssuer:
