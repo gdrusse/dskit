@@ -8987,6 +8987,14 @@ def _build_synthetic_v2_raw_publication():
         )
         for name in ("__hash__", "__eq__")
     )
+    fixture_comparison_descriptors = tuple(
+        (
+            name,
+            name in fixture_type.__dict__,
+            fixture_type.__dict__.get(name),
+        )
+        for name in ("__hash__", "__eq__")
+    )
     fixture_authority_descriptors = tuple(
         (name, fixture_type.__dict__[name])
         for name in (
@@ -9037,12 +9045,16 @@ def _build_synthetic_v2_raw_publication():
         return True
 
     def has_exact_authority_descriptors():
-        for name, present, descriptor in publisher_comparison_descriptors:
-            if (
-                (name in publisher_type.__dict__) is not present
-                or publisher_type.__dict__.get(name) is not descriptor
-            ):
-                return False
+        for owner, descriptors in (
+            (publisher_type, publisher_comparison_descriptors),
+            (fixture_type, fixture_comparison_descriptors),
+        ):
+            for name, present, descriptor in descriptors:
+                if (
+                    (name in owner.__dict__) is not present
+                    or owner.__dict__.get(name) is not descriptor
+                ):
+                    return False
         for owner, descriptors in (
             (publisher_type, publisher_authority_descriptors),
             (fixture_type, fixture_authority_descriptors),
