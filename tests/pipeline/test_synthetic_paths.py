@@ -46,6 +46,12 @@ def test_day_zero_is_the_start_level_at_unconditional_variance():
         math.sqrt(d["omega"] / (1 - d["alpha"] - d["gamma"] / 2 - d["beta"])))
 
 
+def test_drift_moves_the_mean_return():
+    flat = _returns(SynthGjrPaths("m", {"n_days": 5000, "seed": 2, "mu": 0.0}).run(None, {})["records"])
+    up = _returns(SynthGjrPaths("m", {"n_days": 5000, "seed": 2, "mu": 0.002}).run(None, {})["records"])
+    assert statistics.fmean(up) - statistics.fmean(flat) == pytest.approx(0.002, rel=1e-9)
+
+
 def test_fingerprint_and_edge_cover_every_knob():
     node = SynthGjrPaths("m", {"n_days": 10})
     assert set(node.fingerprint()) == set(GJR_DEFAULTS) | {"kind"}
@@ -53,7 +59,7 @@ def test_fingerprint_and_edge_cover_every_knob():
 
 
 @pytest.mark.parametrize("bad", [
-    {"beta": 0.99}, {"nu": 2}, {"omega": 0}, {"n_days": 1}, {"alpha": -0.1},
+    {"beta": 0.99}, {"gamma": 0.18}, {"nu": 2}, {"omega": 0}, {"n_days": 1}, {"alpha": -0.1},
     {"s0": float("nan")}, {"instrument": ""}, {"typo": 1}, {"seed": True},
 ])
 def test_invalid_params_refuse(bad):

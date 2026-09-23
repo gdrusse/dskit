@@ -51,7 +51,8 @@ class SynthGjrPaths(Node):
     unit-variance Student-t with ``nu`` degrees of freedom. Each record
     carries ``close`` and ``cond_vol`` (``sigma_t``, known at ``t - 1``: the
     oracle scale a test can compare a forecast against). Day 0 is the
-    starting level at the unconditional variance: it draws no shock.
+    starting level and draws no shock; days 0 and 1 carry the
+    unconditional variance, and the recursion starts from day 1's shock.
 
     Parameters
     ----------
@@ -181,8 +182,9 @@ class SynthGjrPaths(Node):
         price, shock_prev, records = float(self.knob("s0")), 0.0, []
         name = self.knob("instrument")
         for day in range(self.knob("n_days")):
-            if day:
+            if day >= 2:  # day 1 has no prior shock: it stays at the unconditional variance
                 var = omega + (alpha + gamma * (shock_prev < 0)) * shock_prev ** 2 + beta * var
+            if day:
                 shock_prev = math.sqrt(var) * self.shock(rng)
                 price *= math.exp(self.knob("mu") + shock_prev)
             sigma = math.sqrt(var)

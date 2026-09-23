@@ -15,6 +15,7 @@ from dskit.pipeline.distribution_scores import (
     ScoreDistributions,
     ThresholdBrier,
     ThresholdWeightedCrps,
+    forecast_pair,
 )
 from dskit.pipeline.node import ConfigError, JsonArtifact
 
@@ -125,6 +126,11 @@ def test_berkowitz_accepts_calibrated_and_rejects_overdispersed_and_dependent():
 
 def test_ks_statistic_and_small_lambda_pvalue_are_exact():
     assert PitCalibration(2).evaluate([0.1, 0.2, 0.9])["statistic"] == pytest.approx(0.2 + 0.8 / 3)
+    # D- dominated: the two-sided statistic must see PITs piled high too
+    assert PitCalibration(2).evaluate([0.1, 0.8, 0.9])["statistic"] == pytest.approx(0.8 - 1 / 3)
+    rng = random.Random(4)
+    high = [0.5 + rng.random() * 0.5 for _ in range(500)]
+    assert PitCalibration(10).evaluate(high)["pvalue"] < 1e-6
     grid = [(i + 0.5) / 400 for i in range(400)]
     assert PitCalibration(10).evaluate(grid)["pvalue"] == pytest.approx(1.0, abs=1e-6)
     # Kolmogorov Q(lambda): each series branch against a tabulated value
@@ -137,7 +143,7 @@ def test_ks_statistic_and_small_lambda_pvalue_are_exact():
 
 def test_berkowitz_statistic_matches_an_independent_likelihood_ratio():
     from statistics import NormalDist
-    pits = [0.2, 0.7, 0.4, 0.9, 0.1, 0.55, 0.35, 0.8]
+    pits = [0.2, 0.7, 0.4, 0.9, 0.1, 0.55, 0.35, 0.65]  # first/last not mirrored
     z = [NormalDist().inv_cdf(u) for u in pits]
     x, y = z[:-1], z[1:]
     n = len(y)
@@ -148,6 +154,20 @@ def test_berkowitz_statistic_matches_an_independent_likelihood_ratio():
     l1 = sum(math.log(NormalDist(c + rho * a, math.sqrt(var)).pdf(b)) for a, b in zip(x, y))
     l0 = sum(math.log(NormalDist().pdf(b)) for b in y)
     assert BerkowitzTest().evaluate(pits)["statistic"] == pytest.approx(2 * (l1 - l0))
+
+
+def test_forecast_pair_owns_the_scorable_row_rule():
+    assert forecast_pair({"samples": [0.0], "outcome": 1}, "samples", "outcome")[0] is None
+    assert forecast_pair({"samples": [0.0], "outcome": float("nan")}, "samples", "outcome")[0] \
+        == "no_outcome"
+    assert forecast_pair({"samples": None, "outcome": 0.5}, "samples", "outcome")[0] \
+        == "no_forecast"
+    with pytest.raises(ValueError):
+        forecast_pair({"samples": [float("nan")], "outcome": 0.5}, "samples", "outcome")
+
+
+def test_brier_counts_a_tie_as_the_event():
+    assert ThresholdBrier([1.0]).score(SampleDistribution([1.0]), 1.0) == 0.0
 
 
 def test_berkowitz_chi2_tail_matches_known_quantile():

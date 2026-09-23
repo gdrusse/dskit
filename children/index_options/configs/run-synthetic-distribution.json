@@ -23,7 +23,7 @@
         "fields": ["close"], "horizon": 21,
         "carry_fields": ["instrument", "contract", "asof_ms", "group", "close", "rv_1", "rv_5", "rv_22"]
       },
-      "notes": "ln(S_{t+21}/S_t): ~30 calendar days of trading. Rows whose horizon runs past the data keep a null label and are forecast but not scored."
+      "notes": "ln(S_{t+21}/S_t): 21 steps; the synthetic path steps calendar days. On trading-day data 21 steps can exceed 30 calendar days, so re-check the embargo. Rows whose horizon runs past the data keep a null label and are forecast but not scored."
     },
     "model": {
       "uses": "dskit.pipeline.distribution_models:EmpiricalLocationScale",

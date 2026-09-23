@@ -19467,3 +19467,10 @@ GJR `gamma/2` stationarity term survive mutation; child test imports private
 is `omega + beta*v`; repeated field-name checks; config note on
 trading-day embargo. Unrelated suite failures (missing optuna/pyomo/sklearn/
 mlflow, a pyo3 crypto panic, a root-permission test) are environmental.
+
+**Backlog closed (2026-09-23, owner request).** All recorded Minors and the
+fixable Nits were addressed: exact CVaR tail count; `forecast_pair` is the
+one scorable-row rule both nodes import; two-sided KS, asymmetric Berkowitz,
+asymmetric condor, `fit_split`, `gamma/2`, Brier-tie and drift tests;
+`DEFAULT_SCALE_MULTIPLIER` exported; day 1 keeps the unconditional variance;
+config note on trading-day embargo. Repeated field-name checks remain (nit).

@@ -155,7 +155,8 @@ class CondorGeometry:
             The tail mean (lower is worse).
         """
         ordered = sorted(pnls)
-        tail = max(1, math.ceil((1 - self.cvar_alpha) * len(ordered)))
+        # round first: (1 - 0.95) * 200 is 10.000000000000009 in binary floating point
+        tail = max(1, math.ceil(round((1 - self.cvar_alpha) * len(ordered), 9)))
         return sum(ordered[:tail]) / tail
 
     def evaluate(self, draws_z, outcome_z, forward, scale):

@@ -52,6 +52,7 @@ __all__ = [
     "ScoringRule",
     "ThresholdBrier",
     "ThresholdWeightedCrps",
+    "forecast_pair",
     "row_in_split",
 ]
 
@@ -104,6 +105,39 @@ def row_in_split(ctx, row, split):
         )
     frame = SimpleNamespace(asof_ms=row.get("asof_ms"), cluster=cluster_of(row))
     return ctx.splits.split_of(frame) == split
+
+
+def forecast_pair(row, samples_field, outcome_field):
+    """Read one row's forecast and outcome, or say why it cannot be scored.
+
+    The one owner of "is this row scorable": every consumer of forecast
+    rows skips the same rows for the same reasons, so their counts and
+    their means describe one population.
+
+    Parameters
+    ----------
+    row : dict
+        A forecast row.
+    samples_field, outcome_field : str
+        Where the draws and the realized value live.
+
+    Returns
+    -------
+    tuple
+        ``(None, SampleDistribution, float)`` when scorable, else
+        ``("no_outcome" | "no_forecast", None, None)``.
+
+    Raises
+    ------
+    ValueError
+        When the row carries draws that are not finite numbers.
+    """
+    outcome = row.get(outcome_field)
+    if not number_ok(outcome):
+        return "no_outcome", None, None
+    if row.get(samples_field) is None:
+        return "no_forecast", None, None
+    return None, SampleDistribution(row[samples_field]), float(outcome)
 
 
 class SampleDistribution:
@@ -669,12 +703,12 @@ class ScoreDistributions(Node):
         for row in rows:
             if not row_in_split(ctx, row, self.params["split"]):
                 skipped["other_split"] += 1
-            elif not number_ok(row.get(outcome_field)):
-                skipped["no_outcome"] += 1
-            elif row.get(samples_field) is None:
-                skipped["no_forecast"] += 1
+                continue
+            reason, dist, y = forecast_pair(row, samples_field, outcome_field)
+            if reason:
+                skipped[reason] += 1
             else:
-                pairs.append((SampleDistribution(row[samples_field]), row[outcome_field]))
+                pairs.append((dist, y))
         return pairs, skipped
 
     def run(self, ctx, inputs):

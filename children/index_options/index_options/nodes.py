@@ -4,9 +4,11 @@ from dskit.pipeline.distribution_models import REFERENCE_SCALE_FIELD
 from dskit.pipeline.distribution_scores import (
     DEFAULT_OUTCOME_FIELD,
     DEFAULT_SAMPLES_FIELD,
+    forecast_pair,
     row_in_split,
 )
 from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
+from dskit.pipeline.records import number_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
 
 from .contracts import (
@@ -291,12 +293,12 @@ class CondorDistributionReport(Node):
         for row in rows:
             if not row_in_split(ctx, row, self.params["split"]):
                 continue
-            if not (row.get(samples) and row.get(REFERENCE_SCALE_FIELD)
-                    and row.get(forward_field) and row.get(outcome) is not None):
+            reason, dist, outcome_z = forecast_pair(row, samples, outcome)
+            forward, scale = row.get(forward_field), row.get(REFERENCE_SCALE_FIELD)
+            if reason or not (number_ok(forward) and number_ok(scale)):
                 unscored += 1
                 continue
-            entries.append(geometry.evaluate(row[samples], row[outcome],
-                                             row[forward_field], row[REFERENCE_SCALE_FIELD]))
+            entries.append(geometry.evaluate(dist.samples, outcome_z, forward, scale))
         return geometry, entries, unscored
 
     def run(self, ctx, inputs):

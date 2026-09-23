@@ -67,12 +67,13 @@ def test_synthetic_distribution_config_pins_its_agreements(child_root):
     """sqrt(horizon) scales daily vol to the label; the embargo covers the label's reach."""
     import math
 
-    from dskit.pipeline.synthetic_paths import _DAY_MS
-
     doc = json.loads((child_root / "configs/run-synthetic-distribution.json").read_text())
     horizon = doc["pipeline"]["labels"]["params"]["horizon"]
     model = doc["pipeline"]["model"]["params"]
     assert model["scale_multiplier"] == math.sqrt(horizon)
     assert model["scale_field"] in doc["pipeline"]["labels"]["params"]["carry_fields"]
     # the synthetic path steps one calendar day per row, so steps == days
-    assert doc["walkforward"]["embargo_days"] * 86_400_000 > horizon * _DAY_MS
+    assert doc["walkforward"]["embargo_days"] > horizon
+    assert model["fit_split"] == "train"
+    assert all(doc["pipeline"][k]["params"]["split"] != model["fit_split"]
+               for k in ("score", "condor"))

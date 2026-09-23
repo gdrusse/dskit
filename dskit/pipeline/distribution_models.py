@@ -31,7 +31,12 @@ from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import check_int_param
 from dskit.pipeline.records import number_ok
 
-__all__ = ["DEFAULT_N_SAMPLES", "EmpiricalLocationScale", "REFERENCE_SCALE_FIELD"]
+__all__ = [
+    "DEFAULT_N_SAMPLES",
+    "DEFAULT_SCALE_MULTIPLIER",
+    "EmpiricalLocationScale",
+    "REFERENCE_SCALE_FIELD",
+]
 
 #: Draws emitted per forecast row, unless a document says otherwise.
 DEFAULT_N_SAMPLES = 200

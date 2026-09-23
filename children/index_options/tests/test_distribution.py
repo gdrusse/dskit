@@ -60,6 +60,31 @@ def test_region_bounds_are_inclusive_at_the_strikes():
     assert out["p_full_credit"] == pytest.approx(0.5)
 
 
+def test_evaluate_prices_an_asymmetric_forecast_on_the_right_tail():
+    geometry = CondorGeometry(*GEOM)
+    draws = [-2.5, -1.5, 0.0, 0.0]
+    out = geometry.evaluate(draws, None, 100.0, 0.05)
+    k = geometry.strikes(100.0, 0.05)
+    narrower = min(k[1] - k[0], k[3] - k[2])
+    lo = 100.0 * math.exp(0.05 * -1.5)
+    pnls = [0.3 - (k[1] - k[0]) / narrower, 0.3 - (k[1] - lo) / narrower, 0.3, 0.3]
+    assert out["expected_pnl"] == pytest.approx(sum(pnls) / 4)
+    assert out["cvar"] == pytest.approx(pnls[0])
+
+
+def test_cvar_counts_the_tail_exactly_at_the_shipped_defaults():
+    geometry = CondorGeometry(GEOM[0], 0.3, 0.95)
+    assert geometry.cvar(list(range(200))) == pytest.approx(4.5)  # worst 10, not 11
+
+
+def test_report_node_skips_a_nan_outcome_like_the_scorer():
+    rows = _rows()
+    rows[11]["outcome"] = float("nan")
+    out = CondorDistributionReport("condor", dict(PARAMS)).run(
+        SimpleNamespace(splits=_Split()), {"forecasts": rows})
+    assert out["metrics"]["n"] == 9 and out["metrics"]["n_skipped_unscorable"] == 2
+
+
 def test_cvar_is_the_worst_tail_mean():
     geometry = CondorGeometry([-2.0, -1.0, 1.0, 2.0], 0.3, 0.8)
     assert geometry.cvar([5, 1, 2, 3, 4, -1, 0, 6, 7, 8]) == pytest.approx(-0.5)
