@@ -20855,10 +20855,16 @@ trading, no deployment.
 
 ---
 
-## ADR-0176 — a configured cash-flow schedule for the child's equity replay (PROPOSAL)
+## ADR-0176 — a configured cash-flow schedule for the child's equity replay
 
-**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW, REVISION 2
-(2026-09-23). Not approved. No implementation exists. Revision 1 received a
+**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED (2026-09-23), REVISION
+2. Not yet implemented. A fresh, independent design skeptic reviewed
+Revision 2 cold, independently verified all seven Revision 1 closure claims
+against the actual code, and confirmed every finding resolved: 0 Critical,
+0 Major, 3 Minor (editorial/precision only — an ambiguous instruction on
+which `ValueError`s to catch when re-raising with policy context, and two
+phrasing imprecisions with no correctness impact), GO for RED. Revision 1
+received a
 NO-GO: 2 Critical (the anchor-derivation step was prose, not a precise
 transformation, with no stated handling for a DST gap/fold; an empty tape's
 `start_ms() == 0` would silently anchor real-dollar cash flows at the 1970
@@ -20984,10 +20990,14 @@ occurrence — see Decision point 2.
    policy.initial_capital_amount + policy.daily_contribution_amount),))` —
    folding the one-time $1,000 seed into day one's contribution ($1,020 on
    day one, $20 every day after; `ReplaceCashFlow.apply` matches on exact
-   UTC instant equality against `occurrence.effective_at`, and
-   `anchor` is the SAME object passed as both the schedule's `anchor` and
-   the override's `occurrence_at`, so the match is by construction, not by
-   independently-derived instants that could drift apart), auditable via
+   UTC instant VALUE equality against `occurrence.effective_at` — the
+   schedule derives its own first occurrence from `anchor` internally
+   (`_occurrence(0)`, a fresh `datetime` with the same date/time/zone) and
+   compares it, after UTC normalization, against the override's
+   `occurrence_at`; the same `anchor` value is passed to both the schedule
+   and the override constructor calls, so the two sides are never
+   independently derived and cannot drift apart, even though the schedule's
+   internal occurrence object is not the identical Python object), auditable via
    the override's own `override_id` ("initial-capital-seed") and the
    record's `evidence.flow_id`, both of which `ReplayCashFlowComposer._record`
    already carries into the ledger body unedited. `ReplayCashFlowComposer`
