@@ -621,6 +621,41 @@ def test_publish_v2_refuses_replaced_preflight_derivation_before_any_effect(
     assert roster_publisher._reserve._connection.total_changes == before
 
 
+@pytest.mark.parametrize("method_name", ("__hash__", "__eq__"))
+def test_publish_v2_refuses_publisher_comparison_callback_before_effect(
+    tmp_path, monkeypatch, method_name,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    entry = raw_publisher.publish_v2
+    calls = []
+
+    def replacement(*_args):
+        calls.append(method_name)
+        return 7 if method_name == "__hash__" else True
+
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    monkeypatch.setattr(
+        trust._SyntheticRawPublisher,
+        method_name,
+        replacement,
+        raising=False,
+    )
+    with pytest.raises(ValueError, match="dispatch changed"):
+        entry(fixture, environment, *signed, *roster)
+    assert calls == []
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
+
+
 def test_captured_common_writer_refuses_v2_without_provisional_binding(
     tmp_path,
 ):
@@ -1023,6 +1058,37 @@ def test_v2_root_proof_refuses_deleted_private_binding_before_member_read(
     assert tuple(raw_publisher._broker._member_events) == before
 
 
+def test_v2_root_proof_seals_record_self_reference_before_member_read(
+    tmp_path,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    output = raw_publisher.publish_v2(
+        fixture, environment, *signed, *roster
+    )
+    authority = _binding_authority()
+    record = authority["records"][raw_publisher]
+    calls = []
+
+    def replacement_reference():
+        calls.append("called")
+        return raw_publisher
+
+    record[0] = replacement_reference
+    before = tuple(raw_publisher._broker._member_events)
+    with pytest.raises(ValueError, match="committed.*binding"):
+        raw_publisher.proof().verify(*signed, *roster, *output)
+    assert calls == []
+    assert tuple(raw_publisher._broker._member_events) == before
+
+
 def test_private_binding_entries_and_identity_anchor_expire_with_publisher(
     tmp_path,
 ):
@@ -1340,6 +1406,13 @@ def test_post_writer_return_fault_marks_binding_failed(tmp_path):
         raw_publisher.proof().verify(
             *signed, *roster, *raw_publisher._retained[5:]
         )
+    record[2] = authority["committed"]
+    before = tuple(raw_publisher._broker._member_events)
+    with pytest.raises(ValueError, match="committed.*binding"):
+        raw_publisher.proof().verify(
+            *signed, *roster, *raw_publisher._retained[5:]
+        )
+    assert tuple(raw_publisher._broker._member_events) == before
 
 
 def test_v2_root_proof_verifies_under_existing_writer_transaction(tmp_path):
