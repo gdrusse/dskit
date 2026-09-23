@@ -19924,9 +19924,12 @@ that its caller held a verified raw fixture or environment identity.
 
 ## ADR-0172 — one-shot verified synthetic v2 projection input
 
-**Status:** PROPOSAL — DO NOT IMPLEMENT. This is the next bounded dependency
-after implemented ADR-0171. It requires fresh Phase 0, owner approval,
-RED-to-GREEN, and two sequential fresh clean final lenses. It adds one
+**Status:** APPROVED FOR RED-TO-GREEN 2026-09-23 at
+`368111d3045d4aa1a649cd6f0dfb12b28ed0cb92`. Fresh Phase 0 was
+0C/0M/0m/0N and the owner's standing autonomous implementation approval
+applies. Evidence:
+`docs/evidence/closeout/0200-intraday-f3-v2-projection-bridge-phase0.json`.
+Two sequential fresh clean final lenses remain required. It adds one
 non-authorizing opaque bridge from already retained synthetic v2 roots to the
 pure projector; it performs no WORM write, publication, replay, or backtest.
 
