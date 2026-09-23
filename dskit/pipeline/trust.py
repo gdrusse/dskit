@@ -8984,6 +8984,15 @@ def _build_synthetic_v2_raw_publication():
         "dskit.dataset-capture-authorization/v1"
     ]
 
+    def has_exact_seal(record, environment_identity):
+        seal = binding_seals.get(id(record))
+        return (
+            type(seal) is tuple
+            and len(seal) == 2
+            and seal[0] is record
+            and seal[1] is environment_identity
+        )
+
     def v2_writer(self, proof, signed, roster):
         refuse(
             object_getattribute(proof, "_event_schema")
@@ -8998,8 +9007,7 @@ def _build_synthetic_v2_raw_publication():
             and len(record) == 3
             and anchors.get(self) is record
             and id(record) in record_identities
-            and binding_seals.get(id(record))
-            == (record, record[1])
+            and has_exact_seal(record, record[1])
             and record[0]() is self
             and type(record[1]) is environment_type
             and record[2] is provisional,
@@ -9237,8 +9245,7 @@ def _build_synthetic_v2_raw_publication():
                 records.get(self) is record
                 and anchors.get(self) is record
                 and id(record) in record_identities
-                and binding_seals.get(id(record))
-                == (record, environment_identity)
+                and has_exact_seal(record, environment_identity)
                 and record[0]() is self
                 and record[1] is environment_identity
                 and record[2] is provisional,
@@ -9250,8 +9257,7 @@ def _build_synthetic_v2_raw_publication():
                 records.get(self) is record
                 and anchors.get(self) is record
                 and id(record) in record_identities
-                and binding_seals.get(id(record))
-                == (record, environment_identity)
+                and has_exact_seal(record, environment_identity)
                 and record[0]() is self
                 and record[1] is environment_identity
                 and record[2] is provisional,
@@ -9263,8 +9269,7 @@ def _build_synthetic_v2_raw_publication():
                 records.get(self) is record
                 and anchors.get(self) is record
                 and id(record) in record_identities
-                and binding_seals.get(id(record))
-                == (record, environment_identity)
+                and has_exact_seal(record, environment_identity)
                 and record[2] is committed,
                 "synthetic v2 raw binding promotion failed",
             )
@@ -9323,8 +9328,7 @@ def _build_synthetic_v2_raw_publication():
             and len(record) == 3
             and anchors.get(publisher) is record
             and id(record) in record_identities
-            and binding_seals.get(id(record))
-            == (record, record[1])
+            and has_exact_seal(record, record[1])
             and record[0]() is publisher
             and type(record[1]) is environment_type
             and record[2] is committed,

@@ -310,6 +310,40 @@ def test_v2_root_proof_refuses_environment_identity_substitution(
     assert tuple(raw_publisher._broker._member_events) == before
 
 
+def test_v2_root_proof_seal_uses_environment_identity_not_equality(
+    tmp_path, monkeypatch,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    output = raw_publisher.publish_v2(
+        fixture, environment, *signed, *roster
+    )
+    authority = _binding_authority()
+    alternate = trust._synthetic_environment_identity()
+    equality_calls = []
+
+    def equal(_self, _other):
+        equality_calls.append("called")
+        return True
+
+    monkeypatch.setattr(
+        trust._SyntheticEnvironmentIdentity, "__eq__", equal, raising=False
+    )
+    authority["records"][raw_publisher][1] = alternate
+    before = tuple(raw_publisher._broker._member_events)
+    with pytest.raises(ValueError, match="committed.*binding"):
+        raw_publisher.proof().verify(*signed, *roster, *output)
+    assert equality_calls == []
+    assert tuple(raw_publisher._broker._member_events) == before
+
+
 def test_v2_root_proof_refuses_cross_publisher_record_rewire(tmp_path):
     first = _case(tmp_path / "first")
     second = _case(
