@@ -1,9 +1,13 @@
 """ADR-0172: one-shot verified synthetic v2 projection input."""
 
 import copy
+import gc
+import hashlib
 import inspect
 import json
 import pickle
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from types import MappingProxyType
 
 import pytest
@@ -13,7 +17,8 @@ from dskit.pipeline import trust
 from dskit.production import base
 from dskit.production import bundles
 from dskit.production import verifier as production_verifier
-from tests.pipeline.test_v2_raw_publication import _case
+from tests.pipeline.test_captured_authorization import _adr132_raw_case
+from tests.pipeline.test_v2_raw_publication import _case, _effect_snapshot
 
 
 def _policy(roster):
@@ -229,3 +234,232 @@ def test_genuine_v2_root_projects_once_to_exact_adr0171_bytes(tmp_path):
     )
     with pytest.raises(ValueError, match="spent"):
         production_verifier._project_verified_synthetic_v2_input(capability)
+
+
+@pytest.mark.parametrize("raw_proof", [None, object(), 0, ""])
+def test_prepare_refuses_every_nonexact_proof_type_without_mint(tmp_path, raw_proof):
+    """A caller-supplied or wrong-type proof mints nothing."""
+    _, _, raw_bytes, _ = _mint(tmp_path)
+    with pytest.raises(ValueError, match="raw-root proof"):
+        trust._prepare_synthetic_v2_projection_input(raw_proof, raw_bytes)
+
+
+def test_prepare_refuses_a_genuine_v1_proof_and_leaves_v1_unaffected(
+    tmp_path, monkeypatch,
+):
+    """A v1-schema proof cannot mint a v2 projection input; v1 stays byte-for-byte."""
+    v1_path = tmp_path / "v1"
+    v1_path.mkdir()
+    _path, roster_publisher, roster, signed, members = _adr132_raw_case(
+        v1_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    fixture = preflight.verify(*signed, *roster)
+    raw_publisher = trust._SyntheticRawPublisher(preflight)
+    v1_output = raw_publisher.publish(fixture, *signed, *roster)
+    v1_proof = raw_publisher.proof()
+    v1_bytes = (*signed, *roster, *v1_output)
+    with pytest.raises(ValueError, match="v2 raw proof"):
+        trust._prepare_synthetic_v2_projection_input(v1_proof, v1_bytes)
+    v1_facts_before = v1_proof.verify(*v1_bytes)
+    v1_facts_after = v1_proof.verify(*v1_bytes)
+    assert v1_facts_before == v1_facts_after
+
+
+def test_prepare_refuses_every_mutated_raw_byte_without_mint(tmp_path):
+    """A single flipped byte anywhere in the twelve-tuple mints nothing."""
+    _, proof, raw_bytes, _ = _mint(tmp_path)
+    for index in range(len(raw_bytes)):
+        tampered = list(raw_bytes)
+        tampered[index] = tampered[index] + b"\n"
+        with pytest.raises(ValueError):
+            trust._prepare_synthetic_v2_projection_input(proof, tuple(tampered))
+    assert trust.consume_v2_projection_input(
+        trust._prepare_synthetic_v2_projection_input(proof, raw_bytes)
+    )
+
+
+def test_retained_event_tamper_between_mint_and_consume_refuses_and_terminalizes(
+    tmp_path,
+):
+    """A hostile write through the retained event's backing dict is caught, and the spend is final."""
+    case, _, _, capability = _mint(tmp_path)
+    _, _, fixture, _, _, _, _ = case
+    backing = gc.get_referents(fixture._events[0])[0]
+    original = dict(backing)
+    backing["source_sequence"] = original["source_sequence"] + 1
+    with pytest.raises(ValueError):
+        trust.consume_v2_projection_input(capability)
+    backing.clear()
+    backing.update(original)
+    with pytest.raises(ValueError, match="spent"):
+        trust.consume_v2_projection_input(capability)
+
+
+def test_retained_event_tamper_before_prepare_refuses_without_mint(tmp_path):
+    """The same hostile write, applied before prepare, refuses at mint time."""
+    case = _case(tmp_path)
+    _, raw_publisher, fixture, environment, signed, roster, _ = case
+    output = raw_publisher.publish_v2(fixture, environment, *signed, *roster)
+    proof = raw_publisher.proof()
+    raw_bytes = (*signed, *roster, *output)
+    backing = gc.get_referents(fixture._events[0])[0]
+    original = dict(backing)
+    backing["source_sequence"] = original["source_sequence"] + 1
+    try:
+        with pytest.raises(ValueError):
+            trust._prepare_synthetic_v2_projection_input(proof, raw_bytes)
+    finally:
+        backing.clear()
+        backing.update(original)
+    assert trust.consume_v2_projection_input(
+        trust._prepare_synthetic_v2_projection_input(proof, raw_bytes)
+    )
+
+
+def test_concurrent_consume_of_one_capability_has_at_most_one_winner(tmp_path):
+    """Under contended concurrent consume, no capability ever yields two payloads."""
+    _, _, _, capability = _mint(tmp_path)
+    workers = 6
+    barrier = Barrier(workers)
+
+    def contender(_index):
+        barrier.wait(timeout=5)
+        try:
+            return trust.consume_v2_projection_input(capability)
+        except Exception:
+            return None
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = list(pool.map(contender, range(workers)))
+    winners = [result for result in results if result is not None]
+    assert len(winners) <= 1
+    with pytest.raises(ValueError, match="spent"):
+        trust.consume_v2_projection_input(capability)
+
+
+def test_prepare_and_consume_have_exactly_the_direct_raw_verify_effects(tmp_path):
+    """The bridge's only effect is the two existing raw-verify calls, nothing more."""
+    bridge_case = _case(tmp_path / "bridge")
+    bridge_roster_publisher, bridge_raw_publisher, bridge_fixture, environment, signed, roster, _ = (
+        bridge_case
+    )
+    bridge_output = bridge_raw_publisher.publish_v2(
+        bridge_fixture, environment, *signed, *roster
+    )
+    bridge_proof = bridge_raw_publisher.proof()
+    bridge_bytes = (*signed, *roster, *bridge_output)
+    bridge_before = _effect_snapshot(
+        bridge_roster_publisher, bridge_raw_publisher, bridge_fixture
+    )
+    capability = trust._prepare_synthetic_v2_projection_input(
+        bridge_proof, bridge_bytes
+    )
+    trust.consume_v2_projection_input(capability)
+    bridge_after = _effect_snapshot(
+        bridge_roster_publisher, bridge_raw_publisher, bridge_fixture
+    )
+
+    direct_case = _case(tmp_path / "direct")
+    direct_roster_publisher, direct_raw_publisher, direct_fixture, d_environment, d_signed, d_roster, _ = (
+        direct_case
+    )
+    direct_output = direct_raw_publisher.publish_v2(
+        direct_fixture, d_environment, *d_signed, *d_roster
+    )
+    direct_proof = direct_raw_publisher.proof()
+    direct_bytes = (*d_signed, *d_roster, *direct_output)
+    direct_before = _effect_snapshot(
+        direct_roster_publisher, direct_raw_publisher, direct_fixture
+    )
+    direct_proof.verify(*direct_bytes)
+    direct_proof.verify(*direct_bytes)
+    direct_after = _effect_snapshot(
+        direct_roster_publisher, direct_raw_publisher, direct_fixture
+    )
+
+    bridge_changed = tuple(
+        index for index in range(len(bridge_before))
+        if bridge_before[index] != bridge_after[index]
+    )
+    direct_changed = tuple(
+        index for index in range(len(direct_before))
+        if direct_before[index] != direct_after[index]
+    )
+    assert bridge_changed == direct_changed
+    for index in bridge_changed:
+        assert len(bridge_after[index]) - len(bridge_before[index]) == (
+            len(direct_after[index]) - len(direct_before[index])
+        )
+
+
+@pytest.mark.parametrize(
+    "target, replacement",
+    [
+        ("json_dumps", lambda *args, **kwargs: "tampered"),
+        ("sha256", lambda *args, **kwargs: hashlib.sha256(b"tampered")),
+        ("get_referents", lambda *args, **kwargs: []),
+    ],
+)
+def test_preconsume_stdlib_dependency_replacement_refuses_then_permits_retry(
+    tmp_path, target, replacement,
+):
+    """Every effective stdlib dependency the projector reaches is pinned, not just its own globals."""
+    _, _, _, capability = _mint(tmp_path)
+    if target == "json_dumps":
+        original = json.dumps
+        json.dumps = replacement
+    elif target == "sha256":
+        original = hashlib.sha256
+        hashlib.sha256 = replacement
+    else:
+        original = gc.get_referents
+        gc.get_referents = replacement
+    try:
+        with pytest.raises(ValueError, match="dependency changed"):
+            production_verifier._project_verified_synthetic_v2_input(capability)
+    finally:
+        if target == "json_dumps":
+            json.dumps = original
+        elif target == "sha256":
+            hashlib.sha256 = original
+        else:
+            gc.get_referents = original
+    assert production_verifier._project_verified_synthetic_v2_input(capability)
+
+
+def test_in_place_nested_helper_code_mutation_refuses_before_consume(tmp_path):
+    """The recursive walk reaches a helper the projector calls transitively, not only itself."""
+    _, _, _, capability = _mint(tmp_path)
+    original_code = base._plain.__code__
+
+    def forged(value, path):
+        del value, path
+        return "forged"
+
+    try:
+        base._plain.__code__ = forged.__code__
+        with pytest.raises(ValueError, match="dependency changed"):
+            production_verifier._project_verified_synthetic_v2_input(capability)
+    finally:
+        base._plain.__code__ = original_code
+    assert production_verifier._project_verified_synthetic_v2_input(capability)
+
+
+@pytest.mark.parametrize(
+    "attribute", ["DATASET_AUTHORIZATION_EVENT_SCHEMAS", "RAW_EVENT_FIELDS"]
+)
+def test_mutable_schema_table_replacement_refuses_before_consume(
+    tmp_path, monkeypatch, attribute,
+):
+    """A replaced schema-vocabulary table is caught like any other captured global."""
+    _, _, _, capability = _mint(tmp_path)
+    original = getattr(bundles, attribute)
+    replacement = MappingProxyType(dict(original))
+    monkeypatch.setattr(bundles, attribute, replacement)
+    with pytest.raises(ValueError, match="dependency changed"):
+        production_verifier._project_verified_synthetic_v2_input(capability)
+    monkeypatch.setattr(bundles, attribute, original)
+    assert production_verifier._project_verified_synthetic_v2_input(capability)
