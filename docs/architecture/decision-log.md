@@ -20423,8 +20423,21 @@ deployment.
 
 ## ADR-0174 — v2 captured-tape composition from a verified projection input (PROPOSAL)
 
-**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW (2026-09-23). Not
-approved. No implementation exists.
+**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW, REVISION 2
+(2026-09-23). Not approved. No implementation exists. Revision 1's design
+(reusing an externally-supplied P4 `record`/`session`/`published` capture
+triple for `data_capture_root`/`data_captured_receipt` alongside the
+independently-sourced ADR-0172 capability for the envelope bytes) received a
+NO-GO from an independent Phase-0 design skeptic: **Critical** — nothing
+bound the two inputs together, so a caller could supply a genuine but
+*unrelated* P4 capture (for document D, containing events F1/F2) together
+with a genuine but *unrelated* ADR-0172 capability (from raw root A,
+containing events E1/E2/E3) and receive a `CapturedReplayTape` whose
+`data_capture_root`/`data_captured_receipt` truthfully prove "D was
+captured" while `ordered_envelope_digests` are silently A's events, never
+D's. Both halves verify individually; nothing checks they agree. This
+revision closes that gap by removing the external P4 dependency entirely
+rather than patching it — see Decision point 1.
 
 **Context.** ADR-0172 closed with a private, one-shot
 `VerifiedV2ProjectionInput` and `_project_verified_synthetic_v2_input`
@@ -20436,62 +20449,66 @@ the v2 retained state before its current effects. ADR-0172 remains stopped
 until this slice closes" (ADR-0173 Decision point 5) — this is that slice.
 
 `compose_replay_tape` (`dskit.production.bundles`, ADR-0145/0146, docstring:
-"Bounded synthetic/test use only; not for real replay operations") already
-does everything needed downstream of envelope bytes: given a committed P4
-capture (`record`, `session`, `published`, `consumer_document_sha256` — the
-exact values one `authorize_capture_set` call returns) it computes
-`data_capture_root` from `published.sealed.digests`, reads
-`record.lifecycle_captured_receipt_sha256(stream, consumer_document_sha256)`,
-builds a `CapturedReplayTape` via the private `_build` factory, reparses it,
-and verifies it with `verify_causal_order`. What it does NOT do, and what
-this ADR does not touch, is skip the v1-only path it uses to GET
-`ordered_envelope_bytes` in the first place: it reads `dskit.raw-event/v1`
-WORM members one at a time via `record.read_member_bytes` and projects each
-into an envelope from caller-supplied per-event metadata. That derivation is
-exactly the job ADR-0172's `_project_verified_synthetic_v2_input` already
-does, purely, from a verified v2 root, with a reviewed recursive
-executable-dependency-closure guard — so a v2 caller has no reason to
-re-derive envelope bytes from raw WORM members at all.
+"Bounded synthetic/test use only; not for real replay operations") builds a
+`CapturedReplayTape` via `CapturedReplayTape._build`/`.parse` and
+`verify_causal_order` from a P4 capture's `data_capture_root`/
+`data_captured_receipt` plus `ordered_envelope_bytes` it derives itself by
+reading `dskit.raw-event/v1` WORM members one at a time via
+`record.read_member_bytes` and projecting each with caller-supplied
+per-event metadata. Its P4 binding is sound *because* the events it reads
+come from the files the P4 capture actually captured — the read itself is
+the binding. A v2 path that instead sources
+`ordered_envelope_bytes` from ADR-0172 (a wholly separate, nonauthorizing
+verification chain with no knowledge of any P4 capture) has no such
+built-in binding, which is exactly Revision 1's defect. `CapturedReplayTape`
+itself does not care where `data_capture_root`/`data_captured_receipt` come
+from — `_check_tape` only shape-checks them (confirmed by reading
+`CapturedReplayTape._build`) — so nothing requires them to be P4-sourced at
+all.
 
 ### Decision
 
-1. **One new function, bundles.py-adjacent, no branch added to the existing
-   one.** Add `_compose_v2_replay_tape(record, session, published,
-   consumer_document_sha256, capability, /)` to `dskit.production.verifier`
-   (not `bundles.py`, so the existing bundles -> verifier import direction is
-   never reversed; `verifier.py` already imports `bundles` at module level
-   and already holds the one legitimate cross-module reach into
-   `bundles`'s private v2 surface via ADR-0172's captured/pinned dependency
-   graph). `compose_replay_tape` itself is not edited, not branched inside,
-   and not deprecated — it remains the exact v1-member-reading composer it
-   is today. Positional-only, private, absent from every `__all__`, exactly
-   as ADR-0172's own bridge functions are.
+1. **Drop the P4 dependency; derive both binding fields from the same
+   verified v2 root the envelope bytes come from.** Add
+   `_compose_v2_replay_tape(raw_proof, raw_proof_bytes, capability, /)` to
+   `dskit.production.verifier`, positional-only, private, absent from every
+   `__all__` — no `record`/`session`/`published`/`consumer_document_sha256`
+   parameter exists. `raw_proof`/`raw_proof_bytes` are the exact same
+   shapes ADR-0172's own `_prepare_synthetic_v2_projection_input(raw_proof,
+   raw_proof_bytes)` already takes and validates (an exact
+   `NonAuthorizingRawRootProof` and its exact twelve-byte tuple, whose last
+   three elements — `raw_proof_bytes[9:12]` — are the `publish_v2` writer's
+   own `(manifest_bytes, basis_bytes, receipt_bytes)`, cryptographically
+   produced for and bound to that exact raw root at publication). `
+   data_capture_root` is `sha256(manifest_bytes).hexdigest()`;
+   `data_captured_receipt` is `sha256(receipt_bytes).hexdigest()`. Both are
+   therefore facts about the *same* verified root the envelope bytes are
+   about — there is no second, independent authority left to mix in, so
+   Revision 1's attack has no input pair to exploit.
 
-2. **The v2 path never reads a raw WORM member.** `_compose_v2_replay_tape`
-   calls the existing `_project_verified_synthetic_v2_input(capability)`
-   exactly once to obtain `ordered_envelope_bytes` (already causally
-   ordered, already reparse/re-encode verified, already one-shot-spent by
-   that call). No `record.read_member_bytes` call, no roster-fixture read,
-   no caller-supplied per-event metadata (`exchange_ms`/`receive_ms`/
-   `source_provenance_tag`/etc.) exists on this path — every one of those
-   fields is already inside the verified envelope bytes ADR-0172 produced.
+2. **The capability is proven to belong to the supplied root, not merely
+   asserted.** `_prepare_synthetic_v2_projection_input(raw_proof,
+   raw_proof_bytes)` mints one fresh second capability from the caller's
+   exact `(raw_proof, raw_proof_bytes)` — explicitly permitted by ADR-0172
+   Decision point 4 ("Preparing another capability from the same
+   still-fresh proof is allowed because this bridge is nonauthorizing and
+   projection is pure; each capability remains one-shot"). Both the fresh
+   second capability and the caller-supplied `capability` are consumed
+   (`consume_v2_projection_input`, unedited); their `(events, policy)`
+   results are required byte-/value-equal before either is used further. A
+   `capability` minted from any *other* root produces different events with
+   overwhelming probability and different policy bindings by construction
+   (ADR-0172's own payload derivation), so it refuses the equality check
+   rather than silently proceeding — closing exactly the gap Revision 1
+   left open, using only machinery ADR-0172 already reviewed and closed.
 
-3. **The P4 capture-binding half is reused byte-for-byte.** `record`,
-   `session`, and `published` are validated and read exactly as
-   `compose_replay_tape` already validates and reads them: the same
-   `published.sealed.prepared.stream_id` access, the same
-   `record.lifecycle_captured_receipt_sha256(stream,
-   consumer_document_sha256)` call, the same `canonical_hash([dict(item) for
-   item in published.sealed.digests])` computation for `data_capture_root`
-   (imported from `dskit.production.base`, never bundles.py's private
-   alias). This is copied, not imported as a shared private helper, only if
-   Phase-0 review finds no seam to share it through without letting
-   `verifier.py` reach a `bundles.py` name broader than ADR-0172 already
-   captures; graduating a shared `_p4_capture_binding_facts(record, session,
-   published, consumer_document_sha256)` helper into `bundles.py`'s `__all__`
-   for both composers to import is preferred if the matrix below can pin it
-   without widening either composer's authority. This decision point is
-   deliberately left open for the skeptic to weigh in on before RED.
+3. **`ordered_envelope_bytes` is the equality-checked payload, spent
+   exactly once per capability.** Both the caller-supplied `capability` and
+   the fresh second capability are spent (ADR-0172's one-shot rule,
+   unchanged, applied twice, to two independently-tracked capabilities).
+   Neither is retried after use. `_compose_v2_replay_tape` never mints a
+   third capability and never re-derives events outside these two
+   consumptions.
 
 4. **source_rank_policy_sha256 comes from the verified envelopes, not a
    second read.** Every returned envelope already carries its own
@@ -20502,44 +20519,70 @@ re-derive envelope bytes from raw WORM members at all.
    member read, and requires it identical across every envelope before use
    — a tape must not mix source-rank policies mid-tape.
 
-5. **Effects are exactly `compose_replay_tape`'s effects, plus nothing.**
-   The only observable effects are the ones `_project_verified_synthetic_v2_input`
-   already has (verifier-only, ADR-0172, none — pure) and the ones
-   `record.lifecycle_captured_receipt_sha256`/the P4 read already has for the
-   v1 composer today. No new WORM write, no new provider read, no new
-   lifecycle transition, no new SQL/reserve effect. `CapturedReplayTape.
-   _build`, `.parse`, and `verify_causal_order` are called unedited, exactly
-   as `compose_replay_tape` calls them.
+5. **Effects are bounded to two ADR-0172 capability life cycles, nothing
+   else.** No P4 authority, `record`, `session`, `published`, or WORM member
+   read exists on this path at all — not reused, not touched. The only
+   observable effects are exactly two mint+consume cycles' worth of
+   ADR-0172's own already-reviewed verifier-only effects (each is `raw_proof.
+   verify(...)` called twice, per ADR-0172's own accounting — see
+   `tests/pipeline/test_v2_projection_input.py`'s
+   `test_prepare_and_consume_have_exactly_the_direct_raw_verify_effects`).
+   No new WORM write, no new provider read, no new lifecycle transition, no
+   new SQL/reserve effect, no new registry. `CapturedReplayTape._build`,
+   `.parse`, and `verify_causal_order` are called unedited, exactly as
+   `compose_replay_tape` calls them — `compose_replay_tape` itself is not
+   edited, not branched inside, and not deprecated.
 
-6. **One-shot capability consumption is the only spend.** Calling
-   `_compose_v2_replay_tape` spends the supplied `VerifiedV2ProjectionInput`
-   capability (ADR-0172's existing one-shot rule, unchanged); a second call
-   with the same capability refuses exactly as `consume_v2_projection_input`
-   already refuses a spent capability. This function mints no new capability
-   type and adds no registry.
+6. **Nonauthorizing, explicitly.** This function produces the same class of
+   artifact ADR-0172 itself produces: a verified but nonauthorizing value.
+   It grants no P4 authority, no WORM-lifecycle authority, no replay or
+   trading authority, and makes no claim that any consumer document,
+   process, or run was ever authorized to see these events — it only proves
+   the envelope bytes and the capture-root/receipt fields are provably
+   facts about one single verified root. A future consumer that needs
+   genuine P4-style authorization over a v2 tape (or needs this tape bound
+   into a real WORM/lifecycle write) is a separately reviewed later slice,
+   exactly as ADR-0172's own non-goals already scope it.
 
 ### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
 
-Pin the exact signature, positional-only-ness, `__all__` absence. Prove a
-genuine committed P4 capture plus a genuine still-fresh ADR-0172 capability
-yields a `CapturedReplayTape` whose `verify_causal_order` passes and whose
+Pin the exact signature, positional-only-ness, `__all__` absence, and that no
+`record`/`session`/`published`/`consumer_document_sha256`-shaped parameter
+exists anywhere in the signature. Prove a genuine still-fresh ADR-0172
+capability plus its own `(raw_proof, raw_proof_bytes)` yields a
+`CapturedReplayTape` whose `verify_causal_order` passes, whose
+`data_capture_root`/`data_captured_receipt` are exactly `sha256` of
+`raw_proof_bytes[9]`/`raw_proof_bytes[11]`, and whose
 `ordered_envelope_digests`/`source_rank_policy_sha256` match the verified
-envelope bytes exactly. Refuse: a spent or forged capability; a v1-shaped or
-malformed `record`/`session`/`published` triple; a
-`consumer_document_sha256` that does not match the capture; envelopes whose
-`source_rank_policy_sha256` disagree across the tape; every
+envelope bytes exactly. **The Revision-1 attack must have an explicit
+reproducing test**: mint a capability from root A, supply a genuine
+`(raw_proof, raw_proof_bytes)` pair from unrelated root B, and require a
+refusal (not a silently-wrong tape) — and the converse (genuine root A
+`raw_proof`/`raw_proof_bytes` with a capability from unrelated root B).
+Refuse: a spent, forged, or already-consumed-elsewhere `capability`; a
+`raw_proof`/`raw_proof_bytes` pair that fails ADR-0172's own prepare
+checks (reuse those refusals, do not restate them); a
+`raw_proof_bytes[9:12]` mutated after mint but before this call (must be
+caught by the same re-verification `payload()` already performs); envelopes
+whose `source_rank_policy_sha256` disagree across the tape; every
 `verify_causal_order` violation family `compose_replay_tape`'s own tests
 already cover (duplicate `event_id`, forward/gapped correction chain,
-decreasing order key, length mismatch); double-composition from one
-capability (must refuse exactly as a double `consume_v2_projection_input`
-refuses). Prove no `record.read_member_bytes` call occurs on this path
-(spy/count), no roster-fixture read occurs, and no effect beyond the ones
-enumerated in Decision point 5 (before/after snapshot, same idiom
+decreasing order key, length mismatch); double-composition (a second
+`_compose_v2_replay_tape` call reusing either the original `capability` or
+the internally-minted second one must refuse exactly as a spent
+`consume_v2_projection_input` call refuses); partial failure ordering (the
+equality check in Decision point 2 fails *before* either capability's
+events/policy are used to build anything, so a failed composition never
+returns a partial or wrong tape). Prove no P4/WORM/provider/SQL/reserve
+effect exists at all on this path (before/after snapshot, same idiom
 `tests/pipeline/test_v2_raw_publication.py::_effect_snapshot` and
-`tests/pipeline/test_v2_projection_input.py`'s new structural-effect-parity
-test already established). Run the existing `compose_replay_tape` test
-suite unedited to prove it is untouched, plus ADR-0145/0146/0169…0173,
-trust, capture, and purity regressions.
+`tests/pipeline/test_v2_projection_input.py`'s structural-effect-parity
+test already established), and that the *only* effects are two capability
+life cycles' worth of ADR-0172's own bounded effects (count them: exactly
+four `raw_proof.verify(...)` calls total — two per capability). Run the
+existing `compose_replay_tape` test suite unedited to prove it is
+untouched, plus ADR-0145/0146/0169…0173, trust, capture, and purity
+regressions.
 
 ### Non-goals
 
