@@ -300,6 +300,55 @@ def test_adr169_v2_raw_closed_shape_refuses(tmp_path, mutation):
     ).fetchone() == ("RAW_READ_STARTED",)
 
 
+def test_adr169_v1_authority_refuses_exact_twelve_key_v2_member(
+    tmp_path, monkeypatch,
+):
+    event = {
+        "schema_version": "dskit.raw-event/v2",
+        "source_id": "src:A",
+        "event_id": "event-v2-a",
+        "source_sequence": 0,
+        "availability_ms": 500,
+        "payload_sha256": "a" * 64,
+        "exchange_ms": 490,
+        "receive_ms": 495,
+        "source_provenance_tag": "fixture",
+        "source_timezone_tag": "America/New_York",
+        "correction_position": 0,
+        "corrects_event_id": None,
+    }
+    _path, publisher, roster, signed, members = cases._adr132_raw_case(
+        tmp_path, monkeypatch, member_a=f4._json_bytes(event) + b"\n",
+    )
+    source = trust._SyntheticFixtureSource(members)
+    with pytest.raises(ValueError, match="closed raw event"):
+        trust._SyntheticRawPreflight(publisher, source).verify(
+            *signed, *roster,
+        )
+    assert source.read_names == ("fixture_A.ndjson",)
+
+
+def test_adr169_v2_authority_refuses_exact_six_key_v1_member(tmp_path):
+    _publisher, preflight, source, signed, roster = _v2_case(tmp_path)
+    event = {
+        "schema_version": "dskit.raw-event/v1",
+        "source_id": "src:A",
+        "event_id": "event-v1-a",
+        "source_sequence": 0,
+        "availability_ms": 500,
+        "payload_sha256": "a" * 64,
+    }
+    member = f4._json_bytes(event) + b"\n"
+    source._members["fixture_A.ndjson"] = member
+    fixture = json.loads(signed[3])
+    fixture["ordered_members"][0]["byte_length"] = len(member)
+    fixture["ordered_members"][0]["sha256"] = hashlib.sha256(member).hexdigest()
+    signed = (*signed[:3], cases._resign_synthetic_fixture_attestation(fixture))
+    with pytest.raises(ValueError, match="closed raw event"):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == ("fixture_A.ndjson",)
+
+
 def test_adr169_v2_tzdata_mismatch_refuses_before_member_read(tmp_path):
     _publisher, preflight, source, signed, roster = _v2_case(
         tmp_path,
@@ -413,8 +462,15 @@ def test_adr169_roster_authority_version_pairing_is_exact(auth_schema, event_sch
 
 @pytest.mark.parametrize(("field", "value"), [
     ("source_ids", ["src:A"]),
+    ("scope", {
+        "availability_start_ms": 0,
+        "availability_end_ms": 1000,
+        "source_provenance_sha256": "8" * 64,
+        "tzdata_version_sha256": TZDATA_SHA256,
+    }),
     ("license_digests", ["9" * 64]),
     ("media_type", "application/json"),
+    ("source_roster_root_sha256", "9" * 64),
     ("source_roster_publication_receipt_sha256", "9" * 64),
     ("source_roster_policy_sha256", "9" * 64),
     ("correction_bust_metadata_sha256", "9" * 64),
@@ -435,36 +491,57 @@ def test_adr169_v2_authority_substitutions_refuse_before_member_read(
     ).fetchone() == (0,)
 
 
-@pytest.mark.parametrize("grant_index", [1, 2])
+@pytest.mark.parametrize(("family", "grant_index"), [
+    ("dataset", 1), ("dataset", 2), ("roster", 1), ("roster", 2),
+])
 def test_adr169_v2_mutated_grant_refuses_before_read_or_spend(
-    tmp_path, grant_index,
+    tmp_path, family, grant_index,
 ):
     publisher, preflight, source, signed, roster = _v2_case(tmp_path)
-    changed = list(signed)
-    grant = json.loads(changed[grant_index])
+    changed_signed = list(signed)
+    changed_roster = list(roster)
+    target = changed_signed if family == "dataset" else changed_roster
+    grant = json.loads(target[grant_index])
     grant["signature"] = (
         ("0" if grant["signature"][0] != "0" else "1")
         + grant["signature"][1:]
     )
-    changed[grant_index] = f4._json_bytes(grant)
+    target[grant_index] = f4._json_bytes(grant)
     before = publisher._reserve._connection.total_changes
     with pytest.raises(ValueError):
-        preflight.verify(*changed, *roster)
+        preflight.verify(*changed_signed, *changed_roster)
     assert source.read_names == ()
     assert publisher._reserve._connection.total_changes == before
 
 
-@pytest.mark.parametrize("condition", ["expired", "revoked"])
-def test_adr169_v2_expiry_or_revocation_refuses_before_read_or_spend(
-    tmp_path, condition,
-):
+def test_adr169_v2_expiry_refuses_before_read_or_spend(tmp_path):
     publisher, preflight, source, signed, roster = _v2_case(tmp_path)
-    if condition == "expired":
-        publisher._reserve._advance_clock(900)
-    else:
-        publisher._reserve._revoke("G1")
+    publisher._reserve._advance_clock(900)
     before = publisher._reserve._connection.total_changes
     with pytest.raises(ValueError):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == ()
+    assert publisher._reserve._connection.total_changes == before
+    assert publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize(("family", "role"), [
+    ("dataset", "G1"), ("dataset", "G2"),
+    ("roster", "G1"), ("roster", "G2"),
+])
+def test_adr169_v2_each_grant_family_revocation_refuses_before_read_or_spend(
+    tmp_path, family, role,
+):
+    publisher, preflight, source, signed, roster = _v2_case(tmp_path)
+    key_id = (
+        "synthetic-" + role.lower() + "/" +
+        ("dataset-capture/v1" if family == "dataset" else "roster-bootstrap/v1")
+    )
+    publisher._reserve._revoke(key_id)
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="revocation|revoked"):
         preflight.verify(*signed, *roster)
     assert source.read_names == ()
     assert publisher._reserve._connection.total_changes == before
