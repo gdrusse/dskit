@@ -21504,8 +21504,53 @@ backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0178 — market-calendar-aware cash-flow contribution timing
 
-**Status:** PHASE-0 CLEAN (REVISION 2) — OWNER-AUTHORIZED FOR RED. Not
-yet implemented. A second independent design skeptic reviewed Revision 2
+**Status:** PROPOSED (REVISION 3) — AWAITING PHASE-0 REVIEW. Not yet
+implemented.
+
+**Revision 3 (self-found during RED preparation, before any code
+landed):** the opus builder, before writing a single test, probed
+Revision 2's Decision point 1.5 against a concrete counter-scenario and
+found it unsound — not merely imprecise, genuinely wrong. Two gaps:
+
+- **Gap A.** The ADR required running the existing 57-test suite
+  "unedited except for the three call-site updates," but ADR-0176's own
+  `test_the_cash_flow_window_advances_by_exactly_one_tick_each_call`
+  pins the window advancing on EVERY tick — which point 1.5 deliberately
+  stops doing on same-day ticks. That test must fail under any working
+  once-per-day gate, and Revision 2 never authorized editing it.
+- **Gap B (correctness, not merely a missing test-suite carve-out).**
+  Point 1.5's calendar-date gate assumed a day's FIRST tick always
+  arrives at or after that day's scheduled contribution instant (the
+  anchor's time-of-day, on that date). This is false whenever a later
+  day's session starts earlier in local time than the day the anchor was
+  taken from — pre-market data appearing on later days that the tape's
+  first bar didn't have, or a tape that happens to start mid-session.
+  Probed concretely: anchor Monday 10:00 ET (the tape's first bar,
+  atypically late), Tuesday and Wednesday each with bars at 09:30 and
+  10:30 ET. Tuesday's first tick (09:30) marks the date "checked" before
+  Tuesday's own 10:00 contribution instant has been reached, so it is
+  silently SKIPPED that day (deferred to whenever a later date's first
+  tick finally reaches it — here, Wednesday) — and if the deferred day
+  turns out to be the tape's LAST day with no later date to catch it up,
+  that day's contribution is never submitted at all, not merely late.
+  Reachable, not a corner case: any tape that starts mid-session or has
+  inconsistent pre-market coverage across days triggers it.
+
+Fixed by replacing point 1.5 entirely: gate on the next SCHEDULED
+FUNDING INSTANT (a precomputed, sorted list of exact epoch-ms values,
+one per trading date), not on calendar-date equality — see the rewritten
+Decision point 1.5 below. Hand-traced against the exact same Mon/Tue/Wed
+counter-scenario that broke Revision 2 (worked example inline in point
+1.5) to confirm all three days are now funded exactly once each, in the
+correct amount, with nothing lost regardless of anchor/tick time-of-day
+skew. Decision points 2-5 (the `SkipCashFlow`/`trading_dates` mechanism
+itself) were never in question — Gaps A and B are entirely about point
+1.5's gate, not about which days get skipped. This revision has NOT yet
+been reviewed; a second gate redesign after one already failed cold
+probing warrants a fresh Phase-0 round before RED, not a self-certified
+pass-through.
+
+Revision 2's independent design skeptic reviewed Revision 1's fixes
 cold (no knowledge of Revision 1's review) and hand-traced the
 once-per-day mechanism against a concrete multi-tick example, confirmed
 the partition property holds byte-for-byte, confirmed `None == date(...)`
@@ -21659,72 +21704,102 @@ backtest whose tape spans a weekend or holiday).
    construct ~150-200 additional target dates across a full year where
    Revision 1 left the inherited exposure unstated. No mitigation is
    proposed here; it is named so a future incident is traced to this ADR
-   rather than treated as new.
+   rather than treated as new. **Revision 3 addition:** while building
+   this same override list, `composer_for` ALSO collects, for every date
+   `d` that IS in `trading_dates` (the ones that do NOT get a
+   `SkipCashFlow`), that date's own occurrence instant as epoch-ms:
+   `int(anchor.replace(year=d.year, month=d.month,
+   day=d.day).timestamp() * 1000)`. Sorted ascending, this becomes
+   `funding_instants_ms` — the second element of `composer_for`'s return
+   value (see the revised signature/return below). No second walk, no
+   second derivation: the existing loop already visits every candidate
+   date exactly once and already knows, per date, whether it is skipped
+   or not — this just collects the "not skipped" branch's instant into a
+   second list alongside appending to `overrides` in the "skipped"
+   branch.
 
-1.5. **Call `due()` at most once per calendar day, not once per tick —
-   Revision 2, added to close the Major performance finding.** In
-   `_submit_due_cash_flows` (`replay.py`, ADR-0176 point 3.5): at the very
-   top, when `self._cash_flow_composer is not None`, compute
-   `current_date = datetime.fromtimestamp(tick_at_ms / 1000,
-   tz=timezone.utc).astimezone(self._cash_flow_policy.timezone).date()`;
-   when it equals `self._cash_flow_window_date` (a new instance attribute,
-   parallel to `self._cash_flow_window_ms`), return immediately —
-   skipping the `composer.due(...)` call entirely, without touching
-   `self._cash_flow_window_ms` (so the NEXT actual check's window still
-   starts exactly where the last one left off, preserving the partition
-   property byte-for-byte; this is a pure call-frequency reduction, never
-   a correctness change). Otherwise, proceed exactly as before, and only
-   AFTER `due()`/`append_many` succeed, set BOTH
-   `self._cash_flow_window_date = current_date` AND the existing
-   `self._cash_flow_window_ms = window_end_ms` together, at the end of
-   the method (Revision 2 Phase-0 Minor #2: mirror `window_ms`'s existing
-   success-only ordering rather than marking `window_date` consumed
-   before the work it gates has actually completed — currently inert,
-   since `_submit_due_cash_flows` has exactly one call site and nothing
-   retries a tick, but a latent same-day-skipped-forever asymmetry if
-   `due()` ever raised mid-call and something upstream retried the same
-   tick later). Sound because, after Decision points 1-2, every trading
-   day (every day with at least one tick) has exactly one scheduled
-   occurrence and every non-trading day has none — so checking once per
-   FIRST tick of a new calendar date is sufficient by construction; a
-   day's occurrence, once captured by that day's first check, needs no
-   further checking that same day.
-   `EquityReplay.__init__` gains `self._cash_flow_window_date = None`;
-   `_run_loop` sets it to `None` in both the composer-bound and
-   composer-absent branches (parallel to the existing three ADR-0176
-   attributes), guaranteeing the very first tick's date can never
-   spuriously match and skip its own check (`None == date(...)` is always
-   `False` in Python — `date.__eq__` returns `NotImplemented` for a
-   non-`date` operand, falling back to identity, never a `TypeError` —
-   confirmed by Phase-0 Revision 2's reviewer). **Revision 2 Phase-0
-   Nit, precision correction:** the win is call-frequency reduction
-   against a per-call cost that is roughly CONSTANT across the whole run,
-   not growing through the year as earlier framing implied —
-   `_recurrences`' own break condition depends on `last_target`, the
-   MAXIMUM target instant across every override in the schedule
-   (`dskit/production/cashflows.py:474-497`, unedited), and because
-   Decision point 2 builds `SkipCashFlow` overrides spanning the whole
-   tape up front, `last_target` sits near the tape's own last day for
-   every call from day one onward — so every `due()` call is already
-   walking close to the full occurrence range, at a roughly constant
-   cost per call, and it is the CALL COUNT reduction alone (not a
-   diminishing per-call cost) that delivers the win. Reduces `due()` call
-   frequency by roughly the tick-count-per-trading-day (~390× for
-   1-minute bars over a 6.5-hour session), which the Required Phase-0
-   matrix's new scale-test row (below) must demonstrate empirically
-   against the reviewer's own benchmark methodology, not merely assert.
+1.5. **Gate `due()` on the next unconsumed SCHEDULED FUNDING INSTANT, not
+   on calendar-date equality — Revision 3, replaces Revision 2's point
+   1.5 entirely (rejected by Phase-0 cold probing before RED, see the
+   Status block above).** `composer_for`'s signature becomes
+   `composer_for(self, series_id, start_ms, trading_dates)` returning a
+   2-tuple `(composer, funding_instants_ms)` (`funding_instants_ms` from
+   point 2's Revision 3 addition — a sorted tuple of epoch-ms values, one
+   per trading date from the anchor's date through the tape's last
+   trading date). `_run_loop`'s call site becomes `cash_flow_composer,
+   cash_flow_funding_instants = self._cash_flow_policy.composer_for(
+   series_id, tape.start_ms(), trading_dates)`. `EquityReplay.__init__`
+   gains `self._cash_flow_funding_instants = ()` and
+   `self._cash_flow_funding_index = 0`; `_run_loop` sets
+   `self._cash_flow_funding_instants = cash_flow_funding_instants` (or
+   `()` when no policy is configured) and
+   `self._cash_flow_funding_index = 0` in both branches, alongside the
+   existing three ADR-0176 attribute resets (replacing Revision 2's
+   `self._cash_flow_window_date`, which is dropped — no longer needed).
+
+   `_submit_due_cash_flows(tick_at_ms)` becomes: after the existing
+   `if self._cash_flow_composer is None: return` guard, read
+   `instants = self._cash_flow_funding_instants` and
+   `index = self._cash_flow_funding_index`; when `index >= len(instants)
+   or tick_at_ms < instants[index]`, return immediately without touching
+   `self._cash_flow_window_ms` or `self._cash_flow_funding_index` (this
+   tick has not yet reached the next instant this replay hasn't already
+   funded — the SAME "don't touch state on a skip" principle Revision 2
+   already established, just gated on the correct condition). Otherwise
+   proceed with the existing `due()`/`append_many`/balance-credit logic
+   unchanged, and only AFTER it succeeds, at the end of the method:
+   advance `index` past every funding instant now covered — `while index
+   < len(instants) and instants[index] < window_end_ms: index += 1` —
+   then set BOTH `self._cash_flow_funding_index = index` and the existing
+   `self._cash_flow_window_ms = window_end_ms` together (preserving
+   Revision 2's Minor #2 fix: state only advances after the gated work
+   actually completes).
+
+   **Worked trace against the exact scenario that broke Revision 2**
+   (anchor Monday 10:00 ET; Tuesday and Wednesday each have bars at 09:30
+   and 10:30 ET; `funding_instants = [Mon 10:00, Tue 10:00, Wed 10:00]`):
+   tick Mon 10:00 — `tick >= instants[0]` (equal) — `due()` captures
+   Monday's $1,020; index→1. Tick Tue 09:30 — `tick < instants[1]`
+   (Tue 10:00) — skip, no state change. Tick Tue 10:30 — `tick >=
+   instants[1]` — `due()` window is `[Mon 10:00+1ms, Tue 10:30+1ms)`,
+   which DOES contain Tuesday's 10:00 occurrence — captures Tuesday's
+   $20 correctly (later than the naive "first tick of the day" instant,
+   but not lost, and NAV correctly excludes it for the 09:30 tick, which
+   is economically correct — the money is not yet due at 09:30). index
+   advances past `instants[1]` only (not `instants[2]`, since Wed 10:00
+   is not yet `< Tue 10:30+1ms`) →2. Tick Wed 09:30 — `tick <
+   instants[2]` — skip. Tick Wed 10:30 — `tick >= instants[2]` — `due()`
+   window `[Tue 10:30+1ms, Wed 10:30+1ms)` contains Wednesday's 10:00
+   occurrence — captures Wednesday's $20. All three days funded exactly
+   once, in full, regardless of the anchor/tick time-of-day skew that
+   broke Revision 2 — including on the tape's LAST day, because the fix
+   gates on whether the SCHEDULED INSTANT has been reached by ANY tick,
+   not on whether "today" has already been marked checked.
+
+   **Call-count bound, corrected from Revision 2's exact-equality
+   claim.** In the common case (every trading day's first tick is at or
+   after that day's own funding instant — e.g. a market-open anchor with
+   ordinary intraday bars), `due()` fires exactly once per trading day,
+   `== len(trading_dates)`, matching Revision 2's original claim. In the
+   pathological case this revision fixes (a day's tick(s) never reach
+   that day's own instant), `due()` can fire on a LATER day's tick and
+   catch up multiple pending instants in one call — fewer total calls,
+   never more. The bound is therefore `<= len(trading_dates)`, and the
+   Required Phase-0 matrix's scale-test row (below) is corrected to
+   assert that inequality, not exact equality.
 
 3. **No change to `SkipCashFlow`, `RecurringCashFlowSchedule`,
    `ReplayCashFlowComposer`, or any other `dskit/production/*` code.**
-   This ADR is entirely `CashFlowPolicy.composer_for`'s own body, one new
-   computation at its sole call site in `_run_loop`, and (per Revision
-   2's point 1.5) `_submit_due_cash_flows`'s own calling frequency — all
-   `EquityReplay`-internal, child-owned code. `composer.due(...)`'s own
-   behavior and signature (ADR-0176) are unedited and unaware this is
-   happening — it still just gets called with a window and returns
-   whatever is due in it; a non-trading day's occurrence never appears in
-   its output at all once its `SkipCashFlow` is in place, and it is now
-   simply asked less often.
+   This ADR is entirely `CashFlowPolicy.composer_for`'s own body and
+   return shape, one new computation at its sole call site in `_run_loop`,
+   and (per Revision 3's point 1.5) `_submit_due_cash_flows`'s own gating
+   condition — all `EquityReplay`-internal, child-owned code.
+   `composer.due(...)`'s own behavior and signature (ADR-0176) are
+   unedited and unaware this is happening — it still just gets called
+   with a window and returns whatever is due in it; a non-trading day's
+   occurrence never appears in its output at all once its `SkipCashFlow`
+   is in place, and it is now asked less often, on a correctness-verified
+   schedule rather than a calendar-date proxy.
 
 4. **Union across all symbols, not per-symbol.** A day counts as trading
    iff ANY symbol in the tape has a bar that day — matching how `times`
@@ -21737,17 +21812,35 @@ backtest whose tape spans a weekend or holiday).
    capital_into_the_first_daily_occurrence`, `test_composer_for_refuses_
    an_empty_tape`, `test_composer_for_materializes_safely_across_a_dst_
    transition`, `children/intraday_equities/tests/test_replay.py`) to
-   pass a `trading_dates` argument — for the two that materialize a
-   dense window with no intentional gaps, passing every date in the
-   window (e.g. `frozenset(anchor.date() + timedelta(days=i) for i in
-   range(N))`) preserves their existing assertions unchanged, proving
-   this ADR does not silently alter ADR-0176's own already-reviewed
-   behavior for the all-trading-days case. **Revision 1 Minor, now
-   stated explicitly:** `test_composer_for_refuses_an_empty_tape`'s
-   `composer_for("series-a", 0)` call also needs the third argument under
-   the new required signature — any value works (e.g. `frozenset()`),
-   since the `start_ms == 0` refusal fires before `trading_dates` is ever
-   read.
+   pass a `trading_dates` argument, AND to unpack the new 2-tuple return
+   (`composer, _funding_instants = policy.composer_for(...)`) — for the
+   two that materialize a dense window with no intentional gaps, passing
+   every date in the window (e.g. `frozenset(anchor.date() +
+   timedelta(days=i) for i in range(N))`) preserves their existing
+   assertions unchanged, proving this ADR does not silently alter
+   ADR-0176's own already-reviewed behavior for the all-trading-days
+   case. **Revision 1 Minor, now stated explicitly:** `test_composer_for_
+   refuses_an_empty_tape`'s `composer_for("series-a", 0)` call also needs
+   the third argument under the new required signature — any value works
+   (e.g. `frozenset()`), since the `start_ms == 0` refusal fires before
+   `trading_dates` is ever read (and before any return value exists to
+   unpack).
+
+5.5. **Revision 3 addition (closes Gap A): `test_the_cash_flow_window_
+   advances_by_exactly_one_tick_each_call` (ADR-0176,
+   `children/intraday_equities/tests/test_replay.py`) is explicitly
+   authorized to be rewritten, not left unedited.** That test pins the
+   PRE-this-ADR invariant that every tick advances
+   `self._cash_flow_window_ms`, which point 1.5's gate deliberately no
+   longer does on a tick that hasn't reached the next funding instant.
+   Replace its assertions with the equivalent invariant for the new
+   mechanism: the window (and `self._cash_flow_funding_index`) advances
+   exactly on the ticks that reach or pass a funding instant, and stays
+   put on every other tick — provable with the same `_WindowSpyingEquity
+   Replay`-style subclass ADR-0176 already established, adapted to also
+   record whether each tick's call was gated (skipped) or not, so the
+   test continues to prove SOMETHING is being checked correctly on every
+   tick even when no state changes.
 
 ### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
 
@@ -21773,23 +21866,45 @@ proven transitively via a full `EquityReplay`/`ReplayAdapter` run whose
 ledger is inspected, the same technique ADR-0176's own end-to-end test
 already established. Run the full existing child replay suite (57 tests
 as of ADR-0177's close) unedited except for the three call-site updates
-named in Decision point 5, plus ADR-0176/0177's own tests, to prove no
+named in Decision point 5 and the one authorized rewrite named in
+Decision point 5.5, plus ADR-0176/0177's own tests, to prove no
 interaction regression.
 
+**Revision 3 addition (required — proves Gap B is genuinely closed, not
+merely reasoned about).** Reproduce the exact counter-scenario that
+broke Revision 2's gate: an anchor time-of-day later than a subsequent
+trading day's own first tick (e.g. anchor Monday 10:00 in the policy
+timezone; later trading days with bars starting at 09:30, before the
+anchor's hour). Assert every such day's contribution is still funded in
+full, exactly once, including on the tape's LAST day (the specific case
+where Revision 2 could lose a contribution permanently, not merely
+defer it) — read back the ledger via the same `_CapturingEquityReplay`
+technique ADR-0176 established. This row exists because Decision point
+1.5's own worked trace, however careful, is prose reasoning by the ADR's
+author; only an executed test closes it.
+
 **Scale test (Revision 2: new row, required — closes the Major
-finding).** Directly reproduce the Revision 1 reviewer's own benchmark
-methodology (a multi-hundred-tick run against the real
+finding; Revision 3: assertion corrected from exact equality to an
+upper bound).** Directly reproduce the Revision 1 reviewer's own
+benchmark methodology (a multi-hundred-tick run against the real
 `RecurringCashFlowSchedule`/`ReplayCashFlowComposer` classes, not a mock)
 under BOTH point 1.5's fix and a realistic override count (weekends over
 at least a full quarter, ideally a full year, so the override count is
 genuinely in the ~60-200 range the Major finding measured against), and
 demonstrate empirically — timed, with the number asserted or printed,
-not merely claimed — that `due()` is called at most once per distinct
+not merely claimed — that `due()` is called AT MOST once per distinct
 trading date actually present in the tape (assert the call count, e.g.
-via a spy/counter on `composer.due`, equals `len(trading_dates)`, not the
-tick count — this call-count assertion is the actual gate; it alone
-would have caught Revision 1's defect and is not gameable by a favorable
-but coincidental timing run). **Revision 2 Phase-0 Minor #1, corrected:**
+via a spy/counter on `composer.due`, is `<= len(trading_dates)` — NOT
+exact equality, per Decision point 1.5's corrected call-count bound; use
+a construction where every trading day's ticks are at or after that
+day's own funding instant, e.g. a market-open anchor, so the count is
+exactly `len(trading_dates)` in THIS particular test even though the
+bound is `<=` in general — and separately, in the Gap-B-reproduction row
+above, confirm the call count can legitimately be LOWER without any
+funding being lost), not the tick count — this call-count assertion is
+the actual gate; it alone would have caught Revision 1's defect and is
+not gameable by a favorable but coincidental timing run). **Revision 2
+Phase-0 Minor #1, corrected:**
 the wall-clock figure is NOT "well under a second" — `_recurrences`' own
 `last_target`-driven walk (see Decision point 1.5's Nit) makes every
 `due()` call cost roughly the same regardless of call frequency, so the
