@@ -20495,38 +20495,44 @@ all.
    mutated tuple refuses before any digest derived from it is used.
 
 2. **The capability is proven to belong to the supplied root, not merely
-   asserted.** `_prepare_synthetic_v2_projection_input(raw_proof,
+   asserted, using MORE of ADR-0172's reviewed machinery than the raw
+   consume alone.** `_prepare_synthetic_v2_projection_input(raw_proof,
    raw_proof_bytes)` mints one fresh second capability from the caller's
    exact `(raw_proof, raw_proof_bytes)` — explicitly permitted by ADR-0172
    Decision point 4 ("Preparing another capability from the same
    still-fresh proof is allowed because this bridge is nonauthorizing and
    projection is pure; each capability remains one-shot"). Both the fresh
-   second capability and the caller-supplied `capability` are consumed
-   (`consume_v2_projection_input`, unedited); their `(events, policy)`
-   results are required byte-/value-equal before either is used further. A
-   `capability` minted from any *other* root produces different events and
-   different policy bindings BY CONSTRUCTION — not a probabilistic
-   argument: `consume_v2_projection_input`'s payload is the exact retained
-   event tuple and derived policy of the root it was minted from
-   (ADR-0172's own payload derivation), so two capabilities from two
-   different roots compare equal only if the two roots' retained events
-   and policy are themselves value-identical, which is a fact about the
-   test/synthetic fixtures supplied, not a probability this function
-   relies on. It refuses the equality check rather than silently
-   proceeding — closing exactly the gap Revision 1 left open, using only
-   machinery ADR-0172 already reviewed and closed.
+   second capability and the caller-supplied `capability` are passed
+   through the existing `_project_verified_synthetic_v2_input` (unedited —
+   the full ADR-0172 consume-then-project composition, including its own
+   recursive executable-dependency-closure guard), never through a bare
+   `consume_v2_projection_input` call followed by a hand-rolled projection
+   step; the two resulting ordered envelope-bytes tuples are required
+   byte-equal before either is used further. A `capability` minted from any
+   *other* root produces different envelope bytes BY CONSTRUCTION — not a
+   probabilistic argument: the envelope bytes are a pure, deterministic
+   function of the exact retained event tuple and derived policy of the
+   root the capability was minted from (ADR-0172's own payload derivation),
+   so two capabilities from two different roots produce equal envelope
+   bytes only if the two roots' retained events and policy are themselves
+   value-identical, which is a fact about the test/synthetic fixtures
+   supplied, not a probability this function relies on. It refuses the
+   equality check rather than silently proceeding — closing exactly the
+   gap Revision 1 left open, using strictly more of the machinery ADR-0172
+   already reviewed and closed than a raw events/policy comparison would.
 
 3. **`ordered_envelope_bytes` is the equality-checked payload, spent
    exactly once per capability, and the spend is NOT retryable on
    refusal.** Both the caller-supplied `capability` and the fresh second
-   capability are consumed (ADR-0172's one-shot rule, unchanged, applied
-   twice, to two independently-tracked capabilities) BEFORE the equality
-   check runs — `consume_v2_projection_input` already spends its argument
-   as part of returning a value, per ADR-0172. If the equality check then
-   fails, both capabilities are already spent; there is no retry path, by
-   the same terminal-failure rule ADR-0172 Decision point 4 already
-   establishes for a post-removal failure. A caller who mismatches
-   `(raw_proof, raw_proof_bytes)` against `capability` therefore always
+   capability are consumed as part of the `_project_verified_synthetic_v2_input`
+   calls above (ADR-0172's one-shot rule, unchanged, applied twice, to two
+   independently-tracked capabilities) BEFORE the equality check runs —
+   consuming is part of what that function already does, per ADR-0172. If
+   the equality check then fails, both capabilities are already spent;
+   there is no retry path, by the same terminal-failure rule ADR-0172
+   Decision point 4 already establishes for a post-removal failure. A
+   caller who mismatches `(raw_proof, raw_proof_bytes)` against
+   `capability` therefore always
    loses `capability` on that one attempt, whether or not the mismatch was
    deliberate. `_compose_v2_replay_tape` never mints a third capability and
    never re-derives events outside these two consumptions.
@@ -20540,17 +20546,23 @@ all.
    member read, and requires it identical across every envelope before use
    — a tape must not mix source-rank policies mid-tape.
 
-5. **Effects are bounded to two ADR-0172 capability life cycles, nothing
-   else.** No P4 authority, `record`, `session`, `published`, or WORM member
-   read exists on this path at all — not reused, not touched. The only
-   observable effects are exactly two mint+consume cycles' worth of
-   ADR-0172's own already-reviewed verifier-only effects (each is `raw_proof.
-   verify(...)` called twice, per ADR-0172's own accounting — see
+5. **Effects are bounded to exactly three `raw_proof.verify(...)` calls
+   within this function, nothing else.** No P4 authority, `record`,
+   `session`, `published`, or WORM member read exists on this path at all —
+   not reused, not touched. `capability`'s own mint (its `prepare` call)
+   already happened before this function was ever invoked, so it is not
+   this function's effect to count; within `_compose_v2_replay_tape`
+   itself the only effects are: one `prepare` for the fresh second
+   capability (one `raw_proof.verify(...)` call, via `payload()`) and two
+   `_project_verified_synthetic_v2_input` calls, one per capability (one
+   `raw_proof.verify(...)` call each, via each call's internal `consume`) —
+   three verify calls total, each with exactly the provider/cache effects
    `tests/pipeline/test_v2_projection_input.py`'s
-   `test_prepare_and_consume_have_exactly_the_direct_raw_verify_effects`).
-   No new WORM write, no new provider read, no new lifecycle transition, no
-   new SQL/reserve effect, no new registry. `CapturedReplayTape._build`,
-   `.parse`, and `verify_causal_order` are called unedited, exactly as
+   `test_prepare_and_consume_have_exactly_the_direct_raw_verify_effects`
+   already established for one such call. No new WORM write, no new
+   provider read, no new lifecycle transition, no new SQL/reserve effect,
+   no new registry. `CapturedReplayTape._build`, `.parse`, and
+   `verify_causal_order` are called unedited, exactly as
    `compose_replay_tape` calls them — `compose_replay_tape` itself is not
    edited, not branched inside, and not deprecated.
 
@@ -20598,9 +20610,11 @@ returns a partial or wrong tape). Prove no P4/WORM/provider/SQL/reserve
 effect exists at all on this path (before/after snapshot, same idiom
 `tests/pipeline/test_v2_raw_publication.py::_effect_snapshot` and
 `tests/pipeline/test_v2_projection_input.py`'s structural-effect-parity
-test already established), and that the *only* effects are two capability
-life cycles' worth of ADR-0172's own bounded effects (count them: exactly
-four `raw_proof.verify(...)` calls total — two per capability). Run the
+test already established), and that the *only* effects within this
+function are exactly three `raw_proof.verify(...)` calls (one fresh
+`prepare`, two `_project_verified_synthetic_v2_input` calls), per Decision
+point 5 — `capability`'s own prior mint is outside this function's effect
+accounting. Run the
 existing `compose_replay_tape` test suite unedited to prove it is
 untouched, plus ADR-0145/0146/0169…0173, trust, capture, and purity
 regressions.
