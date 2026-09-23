@@ -39,7 +39,18 @@
       "append exactly one fixed nondeployment tape-pair scope projection and replace its fixed test certificate key/signature"
     ],
     "preapproval_recheck": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
-    "status": "clean preapproval recheck; awaiting explicit owner reapproval"
+    "status": "owner explicitly reapproved amended ADR at commit 2421ffd; final fresh Phase 0 pending"
+  },
+  "amended_owner_approval": "2026-09-22 explicit yes to amended ADR-0168 at commit 2421ffd",
+  "final_fresh_phase0": {
+    "reviewed_commit": "2421ffde4c4ad5e4230c26edc362fc34ee481d3c",
+    "reviewed_trust_blob": "d0892076a70390f1ff4efb255f84cccc3a86794a",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "focused_existing_p4_tests": "46 passed",
+    "result": "GO for bounded ADR-0168 RED; no replay, backtest, or deployment approval"
   },
   "already_available": [
     "recurring cash-flow schedule and fold",
@@ -48,7 +59,6 @@
     "cost-aware developmental fill replay"
   ],
   "remaining_sequence": [
-    "fresh Phase 0 recheck of the approved unchanged ADR-0168 blob",
     "ADR-0168 RED-GREEN and two final skeptic lenses",
     "remaining bounded F3 derivation, v2 wire and writer slices to F3 ReviewExit",
     "F5b and final release gates",

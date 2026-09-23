@@ -19400,15 +19400,12 @@ lenses before delivery. Favorable design review is not owner approval.
 
 ## ADR-0168 — bounded F3 replay `CapturedPortSet`
 
-**Status:** AMENDED PROPOSAL — DO NOT IMPLEMENT. The owner approved the prior
-text on 2026-09-22 at commit `9237a39`, but its required post-approval Phase 0
-found two Major feasibility gaps: exact frozen handles were not retained, and no
-fixed synthetic policy authorized the tape pair. Decision points 2 and 3 below
-correct them materially, so the prior approval does not authorize RED. Explicit
-owner approval of this amended text, a fresh Phase 0, RED-to-GREEN, and two clean
-final lenses are required. This remains deterministic synthetic TDD only;
-`deployment_eligible` is always `false`, and no capture, replay, or backtest is
-authorized by this proposal.
+**Status:** ACCEPTED 2026-09-22. The owner explicitly reapproved the amended
+text by replying "yes" to commit `2421ffd`; the prior `9237a39` approval had
+been invalidated by two post-approval Phase-0 Majors. A final fresh Phase 0,
+RED-to-GREEN, and two clean final lenses remain required. This authorizes only
+deterministic synthetic TDD; `deployment_eligible` is always `false`, and no
+capture, replay, or backtest is authorized by acceptance alone.
 
 **Context.** `ReplayRun`'s already-landed document grammar requires exactly
 `tape_manifest` and `tape_data`. A committed P4
