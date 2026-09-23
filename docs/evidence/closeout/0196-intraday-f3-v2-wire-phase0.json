@@ -51,6 +51,29 @@
     "focused_baseline": "1314 passed, 1 documented unrelated ADR-0157 xfail",
     "result": "GO for deterministic synthetic ADR-0169 RED/TDD only"
   },
-  "implementation_status": "post-approval Phase 0 clean; RED/TDD authorized for ADR-0169 only",
-  "non_authority": "This evidence does not authorize RED, implementation, capture, market data, replay, backtest, HPO, refit, release, paper trading, or live trading."
+  "implementation": {
+    "red_commit": "77194cfd0e30e26ff30ab84195a8dec635726ce8",
+    "implementation_commit": "b19bf7933d03709c974270c3ab3542d96f9acc9d",
+    "inventory_closeout_commit": "4fe63109232e84081d536cbac839d24ab6c1278b",
+    "focused_matrix": "85 passed",
+    "related_regression": "1602 passed, 1 documented unrelated ADR-0157 xfail",
+    "purity": "43 passed",
+    "ruff": "clean",
+    "diff_check": "clean",
+    "final_lens_a": {
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "final_lens_b": {
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "result": "bounded ADR-0169 v2 raw-event wire implemented; v2 publication, derivation, replay, and backtest remain fail-closed"
+  },
+  "implementation_status": "complete for bounded deterministic synthetic ADR-0169 scope",
+  "non_authority": "This implementation does not authorize raw-dataset v2 publication, derivation, external or real-data capture, replay, backtest, HPO, refit, release, paper trading, or live trading."
 }
