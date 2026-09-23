@@ -7585,7 +7585,8 @@ def _build_synthetic_environment_broker():
             return object.__new__(cls)
 
         def __init__(self, token=None):
-            del token
+            if token is not mint_token:
+                raise TypeError("broker-issued synthetic environment identity required")
             for key, value in payload.items():
                 object.__setattr__(self, "_" + key, value)
             issued.add(self)
