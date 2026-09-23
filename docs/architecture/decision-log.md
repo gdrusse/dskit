@@ -20155,12 +20155,15 @@ authorization.scope.tzdata_version_sha256)`. Wrong/forged/copied identity,
 wrong digest, v1 proof, mixed authority, changed proof fact, or replacement of
 the exact environment dispatch refuses without effect.
 
-3. **Reuse one writer, no parallel semantics.** After the v2-only gate, call
-one private closure-pinned common writer shared with legacy `publish`.
+3. **Reuse one writer, no parallel semantics.** Capture one private raw writer
+and delete its class surface. Legacy `publish` calls that captured writer
+directly, preserving its exact pre-refactor order; the separate v2 entry calls
+an entry-fixed v2 schema/binding gate and then the same captured raw writer.
 Mechanical extraction preserves the exact v1 sequence, messages, quarantine,
 crash/fault behavior, manifest/root/receipt bytes, and lifecycle transitions.
-The common writer receives an internally fixed expected schema; callers cannot
-reach it. V2 writes the same manifest/root/receipt families with
+No caller-supplied schema or route selector exists; callers cannot reach the
+raw writer through a class/module surface. V2 writes the same
+manifest/root/receipt families with
 `event_schema=dskit.raw-event/v2` and the already verified twelve-key member
 bytes. No envelope bytes are derived.
 

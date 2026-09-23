@@ -63,6 +63,15 @@ def test_publish_v2_is_private_positional_only_and_not_exported():
     assert "_publish_common" not in trust._SyntheticRawPublisher.__dict__
     direct_closure = inspect.getclosurevars(method).nonlocals
     assert set(direct_closure) == {"authorized_publish_v2"}
+    legacy_closure = inspect.getclosurevars(
+        trust._SyntheticRawPublisher.publish
+    ).nonlocals
+    assert set(legacy_closure) == {"authorized_publish"}
+    legacy_impl = inspect.getclosurevars(
+        legacy_closure["authorized_publish"]
+    ).nonlocals
+    assert "raw_writer" in legacy_impl
+    assert "v2_writer" not in legacy_impl
 
 
 def test_publish_v2_refuses_wrong_environment_before_any_effect(tmp_path):
@@ -138,7 +147,7 @@ def test_captured_common_writer_refuses_v2_without_provisional_binding(
         tuple(raw_publisher._broker._member_events),
     )
     with pytest.raises(TypeError):
-        closure["common_writer"](
+        closure["v2_writer"](
             raw_publisher,
             fixture,
             signed,
@@ -146,7 +155,7 @@ def test_captured_common_writer_refuses_v2_without_provisional_binding(
             "dskit.raw-event/v1",
         )
     with pytest.raises(ValueError, match="provisional.*binding"):
-        closure["common_writer"](
+        closure["v2_writer"](
             raw_publisher,
             fixture,
             signed,

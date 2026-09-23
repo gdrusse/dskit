@@ -8983,20 +8983,12 @@ def _build_synthetic_v2_raw_publication():
         "dskit.dataset-capture-authorization/v1"
     ]
 
-    def common_writer(self, proof, signed, roster):
-        expected_event_schema = object_getattribute(
-            proof, "_event_schema"
-        )
-        if expected_event_schema == v1_event_schema:
-            return raw_writer(self, proof, signed, roster)
+    def v2_writer(self, proof, signed, roster):
         refuse(
-            expected_event_schema == v2_event_schema
-            and object_getattribute(proof, "_event_schema")
-            == expected_event_schema
-            and parser(signed[0]).get("event_schema")
-            == expected_event_schema
-            and parser(roster[0]).get("event_schema")
-            == expected_event_schema,
+            object_getattribute(proof, "_event_schema")
+            == v2_event_schema
+            and parser(signed[0]).get("event_schema") == v2_event_schema
+            and parser(roster[0]).get("event_schema") == v2_event_schema,
             "raw common writer schema gate refused",
         )
         record = records.get(self)
@@ -9125,7 +9117,7 @@ def _build_synthetic_v2_raw_publication():
                 and not has_schema(bootstrap, v2_roster_schema),
                 "raw publisher is v1-only",
             )
-        return common_writer(
+        return raw_writer(
             self,
             proof,
             (authorization_bytes, g1, g2, attestation),
@@ -9247,7 +9239,7 @@ def _build_synthetic_v2_raw_publication():
                 "synthetic v2 raw binding changed",
             )
             writer_invoked = True
-            result = common_writer(self, proof, signed, roster)
+            result = v2_writer(self, proof, signed, roster)
             require_dispatch()
             refuse(
                 records.get(self) is record
