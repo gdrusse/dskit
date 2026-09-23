@@ -12,8 +12,10 @@ from tests.pipeline import test_captured_authorization as cases
 from tests.pipeline.test_event_wire_v2 import _v2_case
 
 
-def _case(tmp_path):
-    roster_publisher, preflight, source, signed, roster = _v2_case(tmp_path)
+def _case(tmp_path, **changes):
+    roster_publisher, preflight, source, signed, roster = _v2_case(
+        tmp_path, **changes
+    )
     fixture = preflight.verify(*signed, *roster)
     raw_publisher = trust._SyntheticRawPublisher(preflight)
     environment = trust._synthetic_environment_identity()
@@ -305,7 +307,10 @@ def test_v2_root_proof_refuses_environment_identity_substitution(
 
 def test_v2_root_proof_refuses_cross_publisher_record_rewire(tmp_path):
     first = _case(tmp_path / "first")
-    second = _case(tmp_path / "second")
+    second = _case(
+        tmp_path / "second",
+        dataset_changes={"authorization_id": "raw-authorization-v2-2"},
+    )
     (
         _first_roster,
         first_publisher,
@@ -423,6 +428,13 @@ def test_writer_failure_terminalizes_private_binding(tmp_path, monkeypatch):
         )
     assert failed_fixture._used is True
     assert failed_publisher._retained is None
+    closure = _binding_authority()
+    failed_record = closure["records"][failed_publisher]
+    assert closure["anchors"][failed_publisher] is failed_record
+    assert failed_record[2] is closure["failed"]
+    assert closure["binding_seals"][id(failed_record)] == (
+        failed_record, failed_environment,
+    )
 
     monkeypatch.setattr(broker_type, "produce", original_produce)
     (
@@ -442,6 +454,81 @@ def test_writer_failure_terminalizes_private_binding(tmp_path, monkeypatch):
     forged = trust.NonAuthorizingRawRootProof(trust._MAKE, failed_publisher)
     with pytest.raises(ValueError, match="committed.*binding"):
         forged.verify(*good_signed, *good_roster, *good_output)
+
+
+def test_v2_root_proof_verifies_under_existing_writer_transaction(tmp_path):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    output = raw_publisher.publish_v2(
+        fixture, environment, *signed, *roster
+    )
+    connection = roster_publisher._reserve._connection
+    connection.execute("BEGIN")
+    try:
+        facts = raw_publisher.proof().verify(
+            *signed, *roster, *output, _under_writer_lock=True
+        )
+        assert connection.in_transaction is True
+    finally:
+        connection.execute("ROLLBACK")
+    assert facts["event_count"] == 1
+    assert facts["authorizing"] is False
+    assert facts["deployment_eligible"] is False
+
+
+def test_v2_root_proof_under_writer_lock_refuses_cross_originals_before_read(
+    tmp_path,
+):
+    first = _case(tmp_path / "first")
+    second = _case(
+        tmp_path / "second",
+        dataset_changes={"authorization_id": "raw-authorization-v2-2"},
+    )
+    (
+        first_roster_publisher,
+        first_publisher,
+        first_fixture,
+        first_environment,
+        first_signed,
+        first_roster,
+        _first_source,
+    ) = first
+    (
+        _second_roster_publisher,
+        second_publisher,
+        second_fixture,
+        second_environment,
+        second_signed,
+        second_roster,
+        _second_source,
+    ) = second
+    first_publisher.publish_v2(
+        first_fixture, first_environment, *first_signed, *first_roster
+    )
+    second_output = second_publisher.publish_v2(
+        second_fixture, second_environment, *second_signed, *second_roster
+    )
+    before = tuple(first_publisher._broker._member_events)
+    connection = first_roster_publisher._reserve._connection
+    connection.execute("BEGIN")
+    try:
+        with pytest.raises(ValueError, match="originals mismatch"):
+            first_publisher.proof().verify(
+                *second_signed,
+                *second_roster,
+                *second_output,
+                _under_writer_lock=True,
+            )
+    finally:
+        connection.execute("ROLLBACK")
+    assert tuple(first_publisher._broker._member_events) == before
 
 
 def test_retained_v2_root_stops_before_root_pis_construction_effect(
