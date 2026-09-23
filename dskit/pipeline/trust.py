@@ -8416,21 +8416,24 @@ class _SyntheticRawPublisher:
                 "raw publisher is v1-only",
             )
         else:
-            try:
-                supplied_authorization = _hs_parse_canonical(
+            def has_schema(raw, schema):
+                try:
+                    value = _hs_parse_canonical(raw)
+                except (TypeError, ValueError):
+                    return False
+                return type(value) is dict and value.get("schema_version") == schema
+
+            _hs_refuse(
+                not has_schema(
                     authorization_bytes,
+                    "dskit.dataset-capture-authorization/v2",
                 )
-                supplied_bootstrap = _hs_parse_canonical(bootstrap)
-            except (TypeError, ValueError):
-                pass
-            else:
-                _hs_refuse(
-                    supplied_authorization.get("schema_version")
-                    != "dskit.dataset-capture-authorization/v2"
-                    and supplied_bootstrap.get("schema_version")
-                    != "dskit.roster-bootstrap-authorization/v2",
-                    "raw publisher is v1-only",
-                )
+                and not has_schema(
+                    bootstrap,
+                    "dskit.roster-bootstrap-authorization/v2",
+                ),
+                "raw publisher is v1-only",
+            )
         object.__setattr__(proof, "_used", True)
         signed = (authorization_bytes, g1, g2, attestation)
         roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)

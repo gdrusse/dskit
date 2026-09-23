@@ -452,9 +452,18 @@ def test_adr169_v2_raw_proof_refuses_caller_schema_downgrade_without_effect(
     ).fetchone() == ("RAW_READ_STARTED",)
 
 
-@pytest.mark.parametrize("target", ["authorization", "g1", "bootstrap"])
+@pytest.mark.parametrize(
+    ("target", "replacement"),
+    [
+        ("authorization", None),
+        ("authorization", b"[]"),
+        ("g1", None),
+        ("bootstrap", None),
+        ("bootstrap", b"[]"),
+    ],
+)
 def test_adr169_v1_raw_publication_substitution_semantics_stay_frozen(
-    tmp_path, monkeypatch, target,
+    tmp_path, monkeypatch, target, replacement,
 ):
     _path, publisher, roster, signed, members = cases._adr132_raw_case(
         tmp_path, monkeypatch,
@@ -467,13 +476,16 @@ def test_adr169_v1_raw_publication_substitution_semantics_stay_frozen(
     changed = list(signed)
     changed_roster = list(roster)
     if target == "authorization":
-        changed[0] += b" "
+        changed[0] = changed[0] + b" " if replacement is None else replacement
     elif target == "g1":
         changed[1] += b" "
     else:
-        changed_roster[0] += b" "
+        changed_roster[0] = (
+            changed_roster[0] + b" " if replacement is None else replacement
+        )
     before = publisher._reserve._connection.total_changes
-    with pytest.raises(ValueError, match="non-canonical JSON"):
+    expected = ValueError if replacement is None else (TypeError, ValueError)
+    with pytest.raises(expected):
         raw_publisher.publish(proof, *changed, *changed_roster)
     assert publisher._reserve._connection.total_changes > before
     assert proof._used is True
@@ -500,6 +512,32 @@ def test_adr169_v1_proof_refuses_genuine_v2_authorities_without_effect(
     before = v1_publisher._reserve._connection.total_changes
     with pytest.raises(ValueError, match="v1-only"):
         raw_publisher.publish(proof, *v2_signed, *v2_roster)
+    assert v1_publisher._reserve._connection.total_changes == before
+    assert proof._used is False
+    assert v1_publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RAW_READ_STARTED",)
+
+
+def test_adr169_v1_proof_detects_v2_authority_with_malformed_peer(
+    tmp_path, monkeypatch,
+):
+    (tmp_path / "v1").mkdir()
+    _path, v1_publisher, v1_roster, v1_signed, members = cases._adr132_raw_case(
+        tmp_path / "v1", monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        v1_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*v1_signed, *v1_roster)
+    raw_publisher = trust._SyntheticRawPublisher(preflight)
+    _v2_publisher, _v2_preflight, _source, v2_signed, _v2_roster = _v2_case(
+        tmp_path / "v2",
+    )
+    malformed_roster = (b"{", *v1_roster[1:])
+    before = v1_publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="v1-only"):
+        raw_publisher.publish(proof, *v2_signed, *malformed_roster)
     assert v1_publisher._reserve._connection.total_changes == before
     assert proof._used is False
     assert v1_publisher._reserve._connection.execute(
