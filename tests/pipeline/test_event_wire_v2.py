@@ -195,7 +195,8 @@ def test_adr169_wire_is_stdlib_only_and_not_pipeline_reexported():
     }
     assert imports <= {"types"}
     import dskit.pipeline as pipeline
-    assert not hasattr(pipeline, "event_wire")
+    assert "event_wire" not in getattr(pipeline, "__all__", ())
+    assert "RAW_EVENT_FIELDS" not in getattr(pipeline, "__all__", ())
 
 
 def test_adr169_v2_preflight_accepts_exact_signed_fixture(tmp_path):
