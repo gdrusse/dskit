@@ -28,6 +28,7 @@ all three of its inputs. Its knobs are stdlib-typed, so it does check
 them.
 """
 
+import gc
 import hashlib
 import json
 from abc import ABC, abstractmethod
@@ -535,6 +536,16 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
     policy_fields = {"schema_version", "sources", "policy_sha256"}
     source_fields = {"source_id", "rank"}
 
+    def inert_mapping(value, label):
+        if type(value) is not MappingProxyType:
+            problems.append(f"{label} must be an exact mappingproxy")
+            return None
+        referents = gc.get_referents(value)
+        if len(referents) != 1 or type(referents[0]) is not dict:
+            problems.append(f"{label} must have exact dict backing")
+            return None
+        return referents[0]
+
     if type(events) is not tuple:
         problems.append("events must be an exact tuple")
         event_values = ()
@@ -547,11 +558,12 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
     ranks = {}
     policy_digest = None
     policy_shape_ok = False
-    if type(source_rank_policy) is not MappingProxyType:
-        problems.append("source_rank_policy must be an exact mappingproxy")
+    policy_value = inert_mapping(source_rank_policy, "source_rank_policy")
+    sources_input_is_tuple = False
+    if policy_value is None:
         sources = ()
     else:
-        policy_keys = tuple(source_rank_policy)
+        policy_keys = tuple(policy_value)
         exact_policy_keys = {
             name for name in policy_keys if type(name) is str
         }
@@ -574,35 +586,43 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         )
         for name in sorted(missing):
             problems.append(f"source_rank_policy is missing field {name!r}")
-        policy_version = source_rank_policy.get("schema_version")
-        if type(policy_version) is not str or policy_version != policy_schema:
-            problems.append(f"source_rank_policy.schema_version must be {policy_schema!r}")
-        sources = source_rank_policy.get("sources")
-        if type(sources) is not tuple:
-            problems.append("source_rank_policy.sources must be an exact tuple")
+        if not policy_shape_ok:
             sources = ()
-        elif not sources:
-            problems.append("source_rank_policy.sources must be nonempty")
-        policy_digest = source_rank_policy.get("policy_sha256")
-        if type(policy_digest) is not str:
-            problems.append(
-                "source_rank_policy.policy_sha256 must be an exact str"
-            )
         else:
-            digest_problems = []
-            check_digest(digest_problems, "policy_sha256", policy_digest)
-            problems.extend(
-                f"source_rank_policy.{problem}" for problem in digest_problems
-            )
+            policy_version = policy_value["schema_version"]
+            if type(policy_version) is not str or policy_version != policy_schema:
+                problems.append(
+                    "source_rank_policy.schema_version must be "
+                    f"{policy_schema!r}"
+                )
+            sources = policy_value["sources"]
+            if type(sources) is not tuple:
+                problems.append("source_rank_policy.sources must be an exact tuple")
+                sources = ()
+            else:
+                sources_input_is_tuple = True
+                if not sources:
+                    problems.append("source_rank_policy.sources must be nonempty")
+            policy_digest = policy_value["policy_sha256"]
+            if type(policy_digest) is not str:
+                problems.append(
+                    "source_rank_policy.policy_sha256 must be an exact str"
+                )
+            else:
+                digest_problems = []
+                check_digest(digest_problems, "policy_sha256", policy_digest)
+                problems.extend(
+                    f"source_rank_policy.{problem}" for problem in digest_problems
+                )
 
     source_preimage = []
     previous_source_id = None
     for index, item in enumerate(sources):
         prefix = f"source_rank_policy.sources[{index}]"
-        if type(item) is not MappingProxyType:
-            problems.append(f"{prefix} must be an exact mappingproxy")
+        item_value = inert_mapping(item, prefix)
+        if item_value is None:
             continue
-        item_keys = tuple(item)
+        item_keys = tuple(item_value)
         exact_item_keys = {name for name in item_keys if type(name) is str}
         non_string_item_keys = tuple(
             name for name in item_keys if type(name) is not str
@@ -620,8 +640,10 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         item_shape_ok = not unknown and not missing and not non_string_item_keys
         for name in sorted(missing):
             problems.append(f"{prefix} is missing field {name!r}")
-        source_id = item.get("source_id")
-        rank = item.get("rank")
+        if not item_shape_ok:
+            continue
+        source_id = item_value["source_id"]
+        rank = item_value["rank"]
         source_ok = type(source_id) is str and bool(source_id)
         rank_ok = type(rank) is int and rank >= 0
         if not source_ok:
@@ -642,9 +664,9 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
                 ranks[source_id] = rank
 
     if (
-            type(source_rank_policy) is MappingProxyType
+            policy_value is not None
             and policy_shape_ok
-            and type(source_rank_policy.get("sources")) is tuple
+            and sources_input_is_tuple
         and len(source_preimage) == len(sources)
         and type(policy_digest) is str
     ):
@@ -664,10 +686,10 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
     )
     for index, event in enumerate(event_values):
         prefix = f"event[{index}]"
-        if type(event) is not MappingProxyType:
-            problems.append(f"{prefix} must be an exact mappingproxy")
+        event_value = inert_mapping(event, prefix)
+        if event_value is None:
             continue
-        event_keys = tuple(event)
+        event_keys = tuple(event_value)
         exact_event_keys = {name for name in event_keys if type(name) is str}
         non_string_event_keys = tuple(
             name for name in event_keys if type(name) is not str
@@ -686,29 +708,31 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         event_shape_ok = not unknown and not missing and not non_string_event_keys
         for name in sorted(missing):
             problems.append(f"{prefix} is missing raw-event field {name!r}")
-        event_schema = event.get("schema_version")
+        if not event_shape_ok:
+            continue
+        event_schema = event_value["schema_version"]
         if type(event_schema) is not str or event_schema != raw_schema:
             problems.append(f"{prefix}.schema_version must be {raw_schema!r}")
 
         for name in ("source_id", "event_id", "source_provenance_tag",
                      "source_timezone_tag"):
-            if type(event.get(name)) is not str or not event.get(name):
+            if type(event_value[name]) is not str or not event_value[name]:
                 problems.append(f"{prefix}.{name} must be an exact nonempty str")
         for name in ("source_sequence", "availability_ms", "exchange_ms",
                      "receive_ms", "correction_position"):
-            value = event.get(name)
+            value = event_value[name]
             if type(value) is not int or value < 0:
                 problems.append(f"{prefix}.{name} must be an exact non-negative int")
 
-        exchange_ms = event.get("exchange_ms")
-        receive_ms = event.get("receive_ms")
+        exchange_ms = event_value["exchange_ms"]
+        receive_ms = event_value["receive_ms"]
         if (
             type(exchange_ms) is int
             and type(receive_ms) is int
             and receive_ms < exchange_ms
         ):
             problems.append(f"{prefix}.receive_ms must be >= exchange_ms")
-        payload_digest = event.get("payload_sha256")
+        payload_digest = event_value["payload_sha256"]
         if type(payload_digest) is not str:
             problems.append(f"{prefix}.payload_sha256 must be an exact str")
         else:
@@ -716,17 +740,17 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
             check_digest(digest_problems, "payload_sha256", payload_digest)
             problems.extend(f"{prefix}.{problem}" for problem in digest_problems)
 
-        event_id = event.get("event_id")
+        event_id = event_value["event_id"]
         if type(event_id) is str and event_id:
             if event_id in seen_event_ids:
                 problems.append(f"{prefix}.event_id {event_id!r} is a duplicate")
             seen_event_ids.add(event_id)
-        source_id = event.get("source_id")
+        source_id = event_value["source_id"]
         if type(source_id) is str and source_id and source_id not in ranks:
             problems.append(f"{prefix}.source_id {source_id!r} is absent from policy")
 
-        correction_position = event.get("correction_position")
-        corrects_event_id = event.get("corrects_event_id")
+        correction_position = event_value["correction_position"]
+        corrects_event_id = event_value["corrects_event_id"]
         if type(correction_position) is int and correction_position >= 0:
             if correction_position == 0:
                 if corrects_event_id is not None:
@@ -748,7 +772,7 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         ):
             envelope = {
                 "schema_version": CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA,
-                **{name: event[name] for name in copied_event_fields},
+                **{name: event_value[name] for name in copied_event_fields},
                 "source_rank": ranks[source_id],
                 "source_rank_policy_sha256": policy_digest,
             }

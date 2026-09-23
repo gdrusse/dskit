@@ -38,6 +38,45 @@ class _EqualSourceIdKey:
         return other == "source_id"
 
 
+class _RaisingEqualKey:
+    def __init__(self, target):
+        self.target = target
+
+    def __hash__(self):
+        return hash(self.target)
+
+    def __eq__(self, _other):
+        raise RuntimeError("hostile equality callback")
+
+
+class _ActiveDict(dict):
+    def __init__(self, value):
+        super().__init__(value)
+        self.calls = 0
+
+    def _called(self):
+        self.calls += 1
+        raise RuntimeError("active mapping callback")
+
+    def __iter__(self):
+        return self._called()
+
+    def __getitem__(self, key):
+        return self._called()
+
+    def get(self, key, default=None):
+        return self._called()
+
+    def keys(self):
+        return self._called()
+
+    def items(self):
+        return self._called()
+
+    def values(self):
+        return self._called()
+
+
 def _event(**changes):
     value = {
         "schema_version": _RAW_SCHEMA,
@@ -347,6 +386,59 @@ def test_projection_refuses_keys_that_masquerade_as_exact_schema_fields():
     })
     with pytest.raises(bundles.ProductionError):
         _project((_event(),), false_row_policy)
+
+
+@pytest.mark.parametrize("level", ["event", "policy", "source"])
+def test_projection_refuses_hostile_equal_keys_without_invoking_them(level):
+    if level == "event":
+        value = dict(_event())
+        original = value.pop("source_id")
+        value[_RaisingEqualKey("source_id")] = original
+        events = (MappingProxyType(value),)
+        policy = _policy()
+    elif level == "policy":
+        value = dict(_policy())
+        original = value.pop("schema_version")
+        value[_RaisingEqualKey("schema_version")] = original
+        events = (_event(),)
+        policy = MappingProxyType(value)
+    else:
+        row = {"rank": 0, _RaisingEqualKey("source_id"): "alpha"}
+        good = _policy(rows=(("alpha", 0),))
+        policy = MappingProxyType({
+            "schema_version": _POLICY_SCHEMA,
+            "sources": (MappingProxyType(row),),
+            "policy_sha256": good["policy_sha256"],
+        })
+        events = (_event(),)
+
+    with pytest.raises(bundles.ProductionError):
+        _project(events, policy)
+
+
+@pytest.mark.parametrize("level", ["event", "policy", "source"])
+def test_projection_refuses_active_mapping_backing_without_callbacks(level):
+    if level == "event":
+        active = _ActiveDict(dict(_event()))
+        events = (MappingProxyType(active),)
+        policy = _policy()
+    elif level == "policy":
+        active = _ActiveDict(dict(_policy()))
+        events = (_event(),)
+        policy = MappingProxyType(active)
+    else:
+        active = _ActiveDict({"source_id": "alpha", "rank": 0})
+        good = _policy(rows=(("alpha", 0),))
+        policy = MappingProxyType({
+            "schema_version": _POLICY_SCHEMA,
+            "sources": (MappingProxyType(active),),
+            "policy_sha256": good["policy_sha256"],
+        })
+        events = (_event(),)
+
+    with pytest.raises(bundles.ProductionError):
+        _project(events, policy)
+    assert active.calls == 0
 
 
 def test_projection_refuses_policy_container_entry_and_field_shape_defects():

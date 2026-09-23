@@ -19835,15 +19835,18 @@ rank, or policy digest. `compose_replay_tape`, v1 constants, public APIs, and
 trust code are unchanged.
 
 2. **Closed nonauthorizing inputs.** `events` is an exact nonempty tuple of
-exact `MappingProxyType` values, each with exactly `RAW_EVENT_FIELDS[
+exact `MappingProxyType` values with exact built-in-dict backing (active dict
+subclasses and other callback-bearing backing mappings refuse without callback),
+each with exactly `RAW_EVENT_FIELDS[
 "dskit.raw-event/v2"]`; every field is revalidated with ADR-0169's intrinsic
 exact types and nonnegative bounds plus `receive_ms >= exchange_ms`, lowercase
 SHA-256 payload, unique
 nonempty event IDs, and correction invariants (`corrects_event_id is None` iff
 position zero; otherwise a nonempty different event ID). `source_rank_policy`
-is an exact `MappingProxyType` with exactly `schema_version`, `sources`, and
+is likewise exact-dict-backed `MappingProxyType` with exactly
+`schema_version`, `sources`, and
 `policy_sha256`; schema is `dskit.source-rank-policy/v1`; `sources` is an exact
-tuple of exact two-key mapping proxies, nonempty, every source ID an exact
+tuple of exact-dict-backed two-key mapping proxies, nonempty, every source ID an exact
 nonempty string, IDs sorted and unique, and every rank an exact nonnegative int
 equal to tuple position (booleans and int subclasses refuse). Recompute the
 policy digest over the canonical two-key JSON object with `sources` projected
@@ -19893,7 +19896,8 @@ lifecycle effect.
 ### Required Phase-0 matrix
 
 Pin the exact private signature and absence from exports. Prove empty/list/
-iterator/dict events refuse; non-mapping-proxy members refuse; every missing,
+iterator/dict events refuse; non-mapping-proxy members and active/non-dict
+mapping-proxy backing refuse without callbacks; every missing,
 extra, mistyped, negative, nonlowercase, duplicate, and correction-invalid raw
 field refuses; malformed/forged/reordered/gapped/duplicate/wrong-digest policy
 refuses; unknown source refuses; all fourteen non-prior envelope fields equal
