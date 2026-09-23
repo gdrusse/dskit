@@ -5257,7 +5257,7 @@ _P4_PORT_SET_STATE = (
 
 
 def _p4_port_set_state_integrity():
-    """Hold the three private weak state domains by exact identity."""
+    """Hold the four private weak state domains by exact identity."""
     current = (
         _P4_CAPTURE_HANDLES, _P4_CAPTURE_STATE_PINS, _P4_PORT_SET_VIEWS,
         _P4_PORT_READERS,
