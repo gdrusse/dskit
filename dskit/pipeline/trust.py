@@ -23,7 +23,7 @@ from abc import ABC, abstractmethod
 from functools import wraps
 from threading import RLock
 from types import MappingProxyType
-from weakref import WeakKeyDictionary, ref as weakref_ref
+from weakref import WeakKeyDictionary, WeakSet, ref as weakref_ref
 
 from dskit.pipeline.event_wire import (
     AUTHORIZATION_SCOPE_FIELDS,
@@ -7545,6 +7545,121 @@ class NonAuthorizingRosterRootProof:
             "authorizing": False,
             "deployment_eligible": False,
         })
+
+
+def _build_synthetic_environment_broker():
+    """Build one closure-owned, nondeployment environment fact broker."""
+    mapping_proxy = MappingProxyType
+    weak_map = WeakKeyDictionary
+    weak_set = WeakSet
+    weak_ref = weakref_ref
+    canonical_bytes = _canonical_bytes
+    digest = _digest
+
+    payload = mapping_proxy({
+        "schema_version": "dskit.synthetic-environment-fact/v1",
+        "environment_id": "dskit.synthetic-environment/v1",
+        "tzdata_version": "synthetic-2026a",
+        "tzdata_version_sha256":
+            "cd690e4a500811dbc1ca0a79f0e5a8d9eb99debd5dc3c8d9bef5e278bf350cd0",
+        "deployment_eligible": False,
+    })
+    payload_digest = digest(canonical_bytes(dict(payload)))
+    state_domain_digest = digest(canonical_bytes({
+        "schema_version": "dskit.synthetic-environment-state-domain/v1",
+        "payload_sha256": payload_digest,
+    }))
+    mint_token = object()
+    issued = weak_set()
+    records = weak_map()
+
+    class _SyntheticEnvironmentIdentity:
+        __slots__ = (
+            "_schema_version", "_environment_id", "_tzdata_version",
+            "_tzdata_version_sha256", "_deployment_eligible", "__weakref__",
+        )
+
+        def __new__(cls, token=None):
+            if cls is not _SyntheticEnvironmentIdentity or token is not mint_token:
+                raise TypeError("broker-issued synthetic environment identity required")
+            return object.__new__(cls)
+
+        def __init__(self, token=None):
+            del token
+            for key, value in payload.items():
+                object.__setattr__(self, "_" + key, value)
+            issued.add(self)
+            records[self] = (
+                weak_ref(self), payload, payload_digest, state_domain_digest,
+            )
+
+        def __init_subclass__(cls, **kwargs):
+            del cls, kwargs
+            raise TypeError("the synthetic environment identity is final")
+
+        def __setattr__(self, name, value):
+            del self, name, value
+            raise AttributeError("synthetic environment identity is frozen")
+
+        def __reduce__(self):
+            raise TypeError("synthetic environment identity cannot be serialized")
+
+        def __reduce_ex__(self, protocol):
+            del protocol
+            raise TypeError("synthetic environment identity cannot be serialized")
+
+    identity_type = _SyntheticEnvironmentIdentity
+    expected_slots = tuple(("_" + key, value) for key, value in payload.items())
+
+    def synthetic_environment_identity():
+        return identity_type(mint_token)
+
+    def synthetic_environment_facts(identity):
+        valid = type(identity) is identity_type and identity in issued
+        try:
+            record = records[identity] if valid else None
+        except (KeyError, TypeError):
+            record = None
+        valid = (
+            valid
+            and type(record) is tuple
+            and len(record) == 4
+            and type(record[0]) is weak_ref
+            and record[0]() is identity
+            and record[1] is payload
+            and record[2] == payload_digest
+            and record[3] == state_domain_digest
+            and all(getattr(identity, slot, object()) == value
+                    for slot, value in expected_slots)
+        )
+        if not valid:
+            raise ValueError("synthetic environment identity refused")
+        return mapping_proxy(dict(payload))
+
+    def require_synthetic_tzdata(identity, signed_tzdata_version_sha256):
+        facts = synthetic_environment_facts(identity)
+        expected = facts["tzdata_version_sha256"]
+        if not (
+            type(signed_tzdata_version_sha256) is str
+            and len(signed_tzdata_version_sha256) == 64
+            and signed_tzdata_version_sha256 == signed_tzdata_version_sha256.lower()
+            and signed_tzdata_version_sha256 == expected
+        ):
+            raise ValueError("synthetic tzdata identity refused")
+
+    return (
+        identity_type, synthetic_environment_identity,
+        synthetic_environment_facts, require_synthetic_tzdata,
+    )
+
+
+(
+    _SyntheticEnvironmentIdentity,
+    _synthetic_environment_identity,
+    _synthetic_environment_facts,
+    _require_synthetic_tzdata,
+) = _build_synthetic_environment_broker()
+del _build_synthetic_environment_broker
 
 
 _SYNTHETIC_EMPTY_CORRECTION_METADATA = _hs_canonical_bytes({
