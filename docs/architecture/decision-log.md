@@ -19806,12 +19806,14 @@ configured into one.
 
 ## ADR-0171 — bounded pure v2 envelope projection
 
-**Status:** PROPOSAL — DO NOT IMPLEMENT. This is the next independently
-reviewable dependency after implemented ADR-0170. It requires clean fresh
-Phase 0, explicit owner approval of the reviewed text, RED-to-GREEN, and two
-sequential fresh clean final lenses. It authorizes one private pure projection
-function only. No trust capability, environment comparison, publication,
-derivation hop, replay, external read, or backtest is enabled.
+**Status:** IMPLEMENTED AND CLEANLY REVIEWED 2026-09-23 at
+`1102d2e7e10bd4dd8bdc8dc02f37d38aa9bb4d5e`. Clean Phase 0 and explicit
+owner approval preceded RED-to-GREEN. Two sequential fresh final lenses on the
+exact implementation commit were 0C/0M/0m/0N. Evidence:
+`docs/evidence/closeout/0199-intraday-f3-v2-envelope-projection-red-green.json`.
+This authorizes one private pure projection function only. No trust capability,
+environment comparison, publication, derivation hop, replay, external read, or
+backtest is enabled.
 
 **Context.** ADR-0169 verifies and retains closed signed
 `dskit.raw-event/v2` values; ADR-0170 supplies the private comparison seam a
