@@ -656,6 +656,41 @@ def test_publish_v2_refuses_publisher_comparison_callback_before_effect(
     ) == before
 
 
+@pytest.mark.parametrize("method_name", ("__hash__", "__eq__"))
+def test_publish_v2_refuses_fixture_comparison_callback_before_effect(
+    tmp_path, monkeypatch, method_name,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    entry = raw_publisher.publish_v2
+    calls = []
+
+    def replacement(*_args):
+        calls.append(method_name)
+        return 11 if method_name == "__hash__" else True
+
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    monkeypatch.setattr(
+        trust.VerifiedSyntheticDatasetFixture,
+        method_name,
+        replacement,
+        raising=False,
+    )
+    with pytest.raises(ValueError, match="dispatch changed"):
+        entry(fixture, environment, *signed, *roster)
+    assert calls == []
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
+
+
 def test_captured_common_writer_refuses_v2_without_provisional_binding(
     tmp_path,
 ):
