@@ -15,7 +15,7 @@ from tests.pipeline import test_captured_authorization as cases
 from tests.pipeline import test_trust as f4
 
 
-TZDATA_SHA256 = "7" * 64
+TZDATA_SHA256 = "cd690e4a500811dbc1ca0a79f0e5a8d9eb99debd5dc3c8d9bef5e278bf350cd0"
 
 
 def _wire():
