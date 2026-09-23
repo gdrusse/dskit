@@ -19673,13 +19673,12 @@ trusted execution-environment evidence; this ADR does not weaken that gate.
 
 ## ADR-0170 — bounded synthetic environment identity
 
-**Status:** PROPOSAL — DO NOT IMPLEMENT. This is the next independently
-reviewable dependency after implemented ADR-0169. It requires a clean fresh
-Phase 0, explicit owner approval of the reviewed text, RED-to-GREEN, and two
-sequential fresh clean final lenses. It authorizes one deterministic synthetic
-environment fact only. `deployment_eligible` remains `false`; no raw-event
-projection, writer, derivation, publication, replay, external read, or backtest
-is enabled.
+**Status:** IMPLEMENTED FOR SYNTHETIC USE. Clean Phase 0, owner approval,
+RED-to-GREEN, adversarial hardening, and two sequential fresh clean final lenses
+are recorded in closeout evidence 0197. This authorizes one deterministic
+synthetic environment fact only. `deployment_eligible` remains `false`; no
+raw-event projection, writer, derivation, publication, replay, external read,
+or backtest is enabled.
 
 **Context.** ADR-0169 admits and retains a signed v2 raw fixture but deliberately
 stops before publication. Its final non-goal requires a later writer to compare
