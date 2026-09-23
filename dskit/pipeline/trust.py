@@ -7578,12 +7578,15 @@ class _SyntheticFixtureSource:
         return value
 
 
+_SYNTHETIC_RAW_FIXTURE_FACTS = WeakKeyDictionary()
+
+
 class VerifiedSyntheticDatasetFixture:
     """Opaque one-process validated fixture facts, without publication authority."""
 
     __slots__ = ("_owner", "_intent", "_members", "_events", "_event_schema",
                  "_used", "event_count", "member_names", "deployment_eligible",
-                 "_locked")
+                 "_locked", "__weakref__")
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("the validated synthetic fixture is final")
@@ -7601,6 +7604,9 @@ class VerifiedSyntheticDatasetFixture:
         object.__setattr__(self, "member_names", tuple(name for name, _ in members))
         object.__setattr__(self, "deployment_eligible", False)
         object.__setattr__(self, "_locked", True)
+        _SYNTHETIC_RAW_FIXTURE_FACTS[self] = (
+            weakref_ref(self), owner, event_schema, _digest(intent),
+        )
 
     def __setattr__(self, name, value):
         if getattr(self, "_locked", False):
@@ -8379,9 +8385,24 @@ class _SyntheticRawPublisher:
                    and self._preflight._publisher is self._roster_publisher
                    and not proof._used,
                    "unused own raw fixture proof required")
-        if proof._event_schema == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+        fixture_facts = _SYNTHETIC_RAW_FIXTURE_FACTS.get(proof)
+        _hs_refuse(
+            type(fixture_facts) is tuple
+            and len(fixture_facts) == 4
+            and fixture_facts[0]() is proof
+            and fixture_facts[1] is self._preflight,
+            "raw fixture proof facts changed",
+        )
+        proof_event_schema = fixture_facts[2]
+        if proof_event_schema == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
             "dskit.dataset-capture-authorization/v2"
         ]:
+            _hs_refuse(
+                proof._event_schema == proof_event_schema
+                and type(proof._intent) is bytes
+                and _digest(proof._intent) == fixture_facts[3],
+                "raw fixture proof facts changed",
+            )
             intent = _hs_parse_canonical(proof._intent)
             bound_authorities = (
                 ("dataset_authorization_sha256", authorization_bytes),

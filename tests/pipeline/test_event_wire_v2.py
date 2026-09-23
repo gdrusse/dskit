@@ -452,6 +452,27 @@ def test_adr169_v2_raw_proof_refuses_caller_schema_downgrade_without_effect(
     ).fetchone() == ("RAW_READ_STARTED",)
 
 
+@pytest.mark.parametrize("mutation", ["event-schema", "intent"])
+def test_adr169_v2_raw_proof_facts_cannot_select_legacy_path(
+    tmp_path, mutation,
+):
+    publisher, preflight, _source, signed, roster = _v2_case(tmp_path)
+    proof = preflight.verify(*signed, *roster)
+    raw_publisher = trust._SyntheticRawPublisher(preflight)
+    if mutation == "event-schema":
+        object.__setattr__(proof, "_event_schema", "dskit.raw-event/v1")
+    else:
+        object.__setattr__(proof, "_intent", proof._intent + b" ")
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="proof facts changed"):
+        raw_publisher.publish(proof, *signed, *roster)
+    assert publisher._reserve._connection.total_changes == before
+    assert proof._used is False
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RAW_READ_STARTED",)
+
+
 @pytest.mark.parametrize(
     ("target", "replacement"),
     [
