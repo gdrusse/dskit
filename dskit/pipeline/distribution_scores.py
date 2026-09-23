@@ -411,9 +411,7 @@ class ThresholdBrier(ScoringRule):
 
     def score(self, dist, y):
         """Score one forecast; see :meth:`ScoringRule.score`."""
-        return sum(
-            (dist.cdf(t) - (1.0 if y <= t else 0.0)) ** 2 for t in self.thresholds
-        ) / len(self.thresholds)
+        return sum(self.per_threshold(dist, y)) / len(self.thresholds)
 
     def per_threshold(self, dist, y):
         """Return the Brier score at each threshold.

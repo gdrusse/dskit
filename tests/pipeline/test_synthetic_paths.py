@@ -39,11 +39,13 @@ def test_path_has_declared_scale_fat_tails_and_leverage():
 
 
 def test_day_zero_is_the_start_level_at_unconditional_variance():
-    first = SynthGjrPaths("m", {"n_days": 3, "s0": 50.0}).run(None, {})["records"][0]
+    records = SynthGjrPaths("m", {"n_days": 3, "s0": 50.0}).run(None, {})["records"]
     d = GJR_DEFAULTS
-    assert first["close"] == 50.0
-    assert first["cond_vol"] == pytest.approx(
-        math.sqrt(d["omega"] / (1 - d["alpha"] - d["gamma"] / 2 - d["beta"])))
+    uncond = math.sqrt(d["omega"] / (1 - d["alpha"] - d["gamma"] / 2 - d["beta"]))
+    assert records[0]["close"] == 50.0
+    assert records[0]["cond_vol"] == pytest.approx(uncond)
+    assert records[1]["cond_vol"] == pytest.approx(uncond)  # no prior shock yet
+    assert records[2]["cond_vol"] != pytest.approx(uncond)
 
 
 def test_drift_moves_the_mean_return():

@@ -1,5 +1,31 @@
 # Re-entry
 
+## Index-options distribution harness landed (2026-09-23, ADR-0168)
+
+Owner locked Path A0001 (model the physical terminal distribution in
+vol-standardized z; distribution-regression challenger; no fixed bins) and
+recorded A0002 (strike-zone twCRPS, censored likelihood, Brier at strikes,
+PIT/Berkowitz, OOS condor P&L/CVaR). Research A0001-A0003 in
+`children/index_options/docs/research/distribution-modeling/`; A0003 is the
+model ladder (R0 naive -> R1 HAR -> R2 GJR/FHS -> R3 QR/DR -> R4 implied).
+
+Built, synthetic only: dskit `distribution_scores` (CRPS, twCRPS, threshold
+Brier, PIT KS, Berkowitz, `ScoreDistributions`, `forecast_pair`),
+`distribution_models.EmpiricalLocationScale` (rung R0a; `relative_scale` is
+the next rung's hook), `synthetic_paths.SynthGjrPaths`, numpy
+`HorizonLogReturn` + `RealizedVolFeatures`; child `CondorGeometry` +
+`CondorDistributionReport` and `configs/run-synthetic-distribution.json`
+(4-fold walk-forward runs). Two review rounds + two delta lenses: 0
+Critical/Major; minor backlog closed. Scoped tests 607 passed. Full-suite
+failures seen here are environmental (optuna/pyomo/sklearn/mlflow absent,
+pyo3 crypto panic, root-permission test). Remaining nit: repeated
+field-name checks across the three nodes.
+
+Next bounded action: R1 — a HAR scale rung subclassing
+`EmpiricalLocationScale.relative_scale` over rv_1/rv_5/rv_22, compared to
+R0a on the same config; then R3 distribution regression. No real data,
+optimizer or trading without separate approval.
+
 ## Index-options free-data feasibility paused (2026-09-22)
 
 Owner wants an ongoing free-only dataset, not trial credits or a paid dependency.

@@ -77,6 +77,18 @@ def test_cvar_counts_the_tail_exactly_at_the_shipped_defaults():
     assert geometry.cvar(list(range(200))) == pytest.approx(4.5)  # worst 10, not 11
 
 
+@pytest.mark.parametrize("field,value", [
+    ("close", float("nan")), ("close", 0.0), ("reference_scale", 0.0),
+    ("reference_scale", -0.05), ("reference_scale", None),
+])
+def test_report_node_skips_a_row_without_a_positive_forward_and_scale(field, value):
+    rows = _rows()
+    rows[11][field] = value
+    out = CondorDistributionReport("condor", dict(PARAMS)).run(
+        SimpleNamespace(splits=_Split()), {"forecasts": rows})
+    assert out["metrics"]["n"] == 9 and out["metrics"]["n_skipped_unscorable"] == 2
+
+
 def test_report_node_skips_a_nan_outcome_like_the_scorer():
     rows = _rows()
     rows[11]["outcome"] = float("nan")

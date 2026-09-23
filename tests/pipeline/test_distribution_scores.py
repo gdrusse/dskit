@@ -168,6 +168,7 @@ def test_forecast_pair_owns_the_scorable_row_rule():
 
 def test_brier_counts_a_tie_as_the_event():
     assert ThresholdBrier([1.0]).score(SampleDistribution([1.0]), 1.0) == 0.0
+    assert ThresholdBrier([1.0]).per_threshold(SampleDistribution([1.0]), 1.0) == [0.0]
 
 
 def test_berkowitz_chi2_tail_matches_known_quantile():

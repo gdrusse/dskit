@@ -8,7 +8,7 @@ from dskit.pipeline.distribution_scores import (
     row_in_split,
 )
 from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
-from dskit.pipeline.records import number_ok
+from dskit.pipeline.records import price_ok
 from dskit.pipeline.split_policy import SPLIT_NAMES
 
 from .contracts import (
@@ -295,7 +295,7 @@ class CondorDistributionReport(Node):
                 continue
             reason, dist, outcome_z = forecast_pair(row, samples, outcome)
             forward, scale = row.get(forward_field), row.get(REFERENCE_SCALE_FIELD)
-            if reason or not (number_ok(forward) and number_ok(scale)):
+            if reason or not (price_ok(forward) and price_ok(scale)):
                 unscored += 1
                 continue
             entries.append(geometry.evaluate(dist.samples, outcome_z, forward, scale))
@@ -319,7 +319,8 @@ class CondorDistributionReport(Node):
         Raises
         ------
         ValueError
-            When no in-split row carries a usable forecast.
+            When no in-split row carries a usable forecast, or a row's
+            draws are not finite numbers (an empty list included).
         """
         geometry, entries, unscored = self._entries(ctx, inputs["forecasts"])
         if not entries:
