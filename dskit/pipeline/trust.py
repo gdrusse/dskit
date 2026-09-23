@@ -7611,6 +7611,10 @@ def _build_synthetic_environment_broker():
 
     identity_type = _SyntheticEnvironmentIdentity
     expected_slots = tuple(("_" + key, value) for key, value in payload.items())
+    expected_descriptors = tuple(
+        (slot, type.__getattribute__(identity_type, "__dict__")[slot])
+        for slot, _value in expected_slots
+    )
 
     def synthetic_environment_identity():
         return identity_type(mint_token)
@@ -7632,6 +7636,11 @@ def _build_synthetic_environment_broker():
             and record[2] == payload_digest
             and type(record[3]) is str
             and record[3] == state_domain_digest
+            and all(
+                type.__getattribute__(identity_type, "__dict__").get(slot)
+                is descriptor
+                for slot, descriptor in expected_descriptors
+            )
             and all(
                 type(object.__getattribute__(identity, slot)) is type(value)
                 and object.__getattribute__(identity, slot) == value

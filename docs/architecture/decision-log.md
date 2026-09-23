@@ -19736,7 +19736,9 @@ constructor requires the lexical mint token. The factory alone creates the
 object and records it in both lexical weak stores. Every accessor requires the
 closure-captured exact class, membership in the issued set, a four-item record,
 a self-resolving weakref, payload object identity, both exact closure-captured
-digests, and exact equality of all five slots to the payload. Therefore
+digests, exact identity of every original slot member descriptor in the
+class dictionary, and exact-type/equality checks of all five values read with
+`object.__getattribute__` against the payload. Therefore
 `object.__new__` plus slot writes is not issued and refuses; replacing any
 same-named module global cannot change the authority consulted by an already
 bound closure; record deletion/substitution, cross-identity wiring, or slot
