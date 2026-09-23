@@ -20649,8 +20649,21 @@ nothing downstream of it; wiring that tape into `ReplayAdapter`/`EquityReplay`
 
 ## ADR-0175 — a runtime `ReplayTape` over verified v2 event envelopes (PROPOSAL)
 
-**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW (2026-09-23). Not
-approved. No implementation exists.
+**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW, REVISION 2
+(2026-09-23). Not approved. No implementation exists. Revision 1 received a
+NO-GO from an independent Phase-0 design skeptic: 2 Critical (grouping
+`FeedResult`s by `availability_ms` alone allegedly "destroys" correction-chain
+order — `correction_position`/`corrects_event_id`/`prior_envelope_sha256` —
+and the matrix had no integration proof against ADR-0174's real output), 3
+Major (the class should stay private, not public; construction-time failure
+semantics needed documenting; the matrix needed more rows), 1 Minor (the
+"mirrors `BarTape`" framing overclaimed). This revision disputes the two
+Critical findings on a verified architectural fact — see the rebuttal at the
+end of this Context section — and accepts and folds in every Major/Minor
+finding regardless of that dispute (Decision points 1, 2, 6 below). Per
+`docs/skills/skeptic-review.md`, a disputed finding goes to a fresh
+independent adjudicator; this revision is that dispute, addressed to a fresh
+reviewer who has not seen Revision 1's verdict.
 
 **Context.** `bundles.ReplayTape` (the ABC `compose.bundles_for(...,
 tape=tape)` consumes, `dskit.production.bundles`) is what "a replay hands the
@@ -20661,12 +20674,34 @@ existing implementation: it takes RAW, UNVERIFIED bar rows directly and
 groups them by `asof_ms` into one `FeedResult`
 (`dskit.production.records.FeedResult`, a plain data record: `status`,
 `acq_id`, `records_added`, `source_config_hash`, `at_ms`) per unique
-timestamp. Critically, `ReplayTape.feed_results()` carries only FETCH
-METADATA (counts, not row content) — the composition root's `Data.feed`
-object is a SEPARATE thing that supplies the actual rows, and `BarTape`
-performs NO verification of its own on the bars it is handed; the "trust the
-caller" posture is already the ABC's own established contract, not something
-this ADR introduces.
+timestamp. `BarTape` performs NO verification of its own on the bars it is
+handed; the "trust the caller" posture is already the ABC's own established
+contract, not something this ADR introduces.
+
+**Rebuttal to Revision 1's Critical findings, with citation.** `FeedResult`
+has no field capable of carrying row content, per-row order, or a
+correction chain — only `status`, `acq_id`, `records_added`,
+`source_config_hash`, `at_ms`. This is not an oversight this ADR must work
+around; it is the ABC's own deliberate contract. `dskit.production.feed.
+ReplayFeed` (the sole consumer of `tape.feed_results()`, reached through
+`compose.py`'s `self._tape.feed_results()`) states its own scope directly in
+its docstring: *"The tape carries results ONLY. An `EntryBatch` is not on it
+because the rows are not the feed's to hold: §5.13 gives `read_entry` to the
+decider, which re-executes the entry against the same immutable onboarding
+root, and the recorded `inputs_digest` is what PROVES the re-read matched —
+a stronger claim than replaying a blob, which can only prove that the blob
+was replayed."* Row content and row/correction order are never the tape's
+responsibility in this architecture, for ANY `ReplayTape` implementation,
+`BarTape` included (`BarTape` itself also collapses every bar at one
+`asof_ms` — across every symbol — into a single count with no per-row
+order retained). `feed_results()` exists to tell `ReplayClock` WHEN pulls
+happened and HOW MANY records arrived, for clock-advancement and audit
+purposes; it was never a channel a decider reads rows or correction
+semantics through. Grouping by `availability_ms` therefore loses nothing
+this ADR's scope was ever responsible for preserving. Non-goals already
+states this explicitly ("no `Data.feed` row-content source"); Revision 2
+makes the citation explicit in Context so a future reader does not have to
+re-derive it.
 
 ADR-0174 closed with `_compose_v2_replay_tape`, which derives
 `ordered_envelope_bytes` (exact, causally-ordered, already reparse/re-encode
@@ -20686,70 +20721,110 @@ reviewed later slice, exactly as ADR-0174's own Non-goals already scoped it.
 
 ### Decision
 
-1. **One new, generic, core-tier class: `CapturedEnvelopeReplayTape`.** Add
-   it to `dskit.production.bundles`, `__all__`, public (unlike ADR-0172/0174's
-   private bridges, this makes no verification or authority claim of its own
-   — it is a plain data adapter, the same tier as `ReplayTape` and
-   `FeedResult` themselves, and `dskit.event-envelope/v2` is a domain-neutral
-   schema, not equity-specific, so it belongs in core per the tiering rule).
-   Subclasses `ReplayTape`. Constructor:
-   `CapturedEnvelopeReplayTape(ordered_envelope_bytes, source_config_hash)` —
-   the exact same two-argument shape `BarTape` already takes (bars,
+1. **One new, generic, core-tier, PRIVATE class: `_CapturedEnvelopeReplayTape`
+   (Revision 2: private, not public — Major finding accepted).** Add it to
+   `dskit.production.bundles`, absent from `__all__`. Revision 1 argued
+   public was justified because the class makes no verification claim of its
+   own; the accepted objection is that a public, generically-named class in
+   core is discoverable and invites a caller to construct it from envelope
+   bytes obtained from somewhere OTHER than ADR-0172/0174's verified chain,
+   reading "no verification claim" as "safe for any input" rather than what
+   it actually means ("verification is the caller's job, already done
+   upstream by the only caller this ADR builds for"). Private keeps that
+   precondition enforced by the language rather than by a comment. Subclasses
+   `ReplayTape`. Constructor:
+   `_CapturedEnvelopeReplayTape(ordered_envelope_bytes, source_config_hash)`
+   — the exact same two-argument shape `BarTape` already takes (bars,
    source_config_hash), substituting ordered envelope bytes for raw bars.
 
-2. **Parse once at construction, reuse the existing parser.** Every element
-   of `ordered_envelope_bytes` is parsed with the existing
-   `_parse_event_envelope` (unedited — the same one ADR-0172's own
-   dependency-closure guard already pins) at `__init__` time; a parse
-   failure raises `ProductionError` immediately, at construction, never
-   deferred into `start_ms`/`feed_results`. No new validation logic is
-   written — `_parse_event_envelope`'s existing default-deny shape check is
-   the only gate.
+2. **Parse once at construction, reuse the existing parser; the failure
+   contract is whole-or-nothing (Revision 2: documented explicitly — Major
+   finding accepted).** Every element of `ordered_envelope_bytes` is parsed
+   with the existing `_parse_event_envelope` (unedited — the same one
+   ADR-0172's own dependency-closure guard already pins) at `__init__` time;
+   a parse failure on ANY element raises `ProductionError` immediately, at
+   construction, before any `FeedResult` is derived from any OTHER element —
+   there is no partial-success state and no way to observe which elements
+   parsed before the failing one. This is deliberate, not an oversight: the
+   sole intended caller supplies `ordered_envelope_bytes` from ADR-0174's own
+   already-verified `_project_verified_synthetic_v2_input` output, where
+   every element is uniformly well-formed or the caller has a defect of its
+   own upstream of this class entirely; whole-or-nothing construction is the
+   correct failure shape for that caller, and this class makes no promise
+   beyond it. No new validation logic is written — `_parse_event_envelope`'s
+   existing default-deny shape check is the only gate.
 
-3. **Group by `availability_ms`, the exact `BarTape` idiom, substituting the
-   v2 tick field for `asof_ms`.** One `FeedResult` per unique
-   `availability_ms` value, `records_added` counting envelopes at that
-   instant, `status="live"`, `acq_id=f"envelope-{availability_ms}"` (mirroring
-   `BarTape`'s `f"bar-{ts}"`), `at_ms=availability_ms`,
-   `source_config_hash` the caller-supplied value, unchecked against the
-   envelopes (exactly as `BarTape` never checks its `source_config_hash`
-   argument against the bars it is handed — the SAME trust posture, not a
-   new one). `start_ms()` returns the earliest `availability_ms`, or 0 when
-   the sequence is empty (matching `BarTape.start_ms()`'s empty-tape
-   fallback). `id_allocations()` returns `()` (matching `BarTape` — a
-   `ReleaseIdSource` allocates live, unchanged).
+3. **Group by `availability_ms` for `FeedResult`'s aggregate fetch-metadata
+   purpose ONLY — not a claim about row or correction order (Revision 2:
+   framing corrected — Minor finding accepted).** This is coarser than "the
+   `BarTape` idiom," not identical to it: `BarTape` collapses same-instant
+   bars because a bar's identity IS its timestamp (one row per symbol per
+   minute); a v2 envelope's identity is its `event_id`, and several
+   envelopes — including a correction and the event it corrects — can
+   legitimately share one `availability_ms`. Grouping by `availability_ms`
+   is still correct HERE specifically because `FeedResult` cannot carry
+   row content or order under any grouping choice (see the Context
+   rebuttal) — so no grouping granularity this class could choose would
+   preserve correction-chain order through `feed_results()`; only a
+   consumer reading the envelope bytes directly (never through
+   `ReplayTape`) can see that order, exactly as `ReplayFeed`'s own
+   docstring already establishes for every existing `ReplayTape`. One
+   `FeedResult` per unique `availability_ms` value, `records_added`
+   counting envelopes at that instant, `status="live"`,
+   `acq_id=f"envelope-{availability_ms}"` (mirroring `BarTape`'s
+   `f"bar-{ts}"`), `at_ms=availability_ms`, `source_config_hash` the
+   caller-supplied value, unchecked against the envelopes (exactly as
+   `BarTape` never checks its `source_config_hash` argument against the
+   bars it is handed — the SAME trust posture, not a new one). `start_ms()`
+   returns the earliest `availability_ms`, or 0 when the sequence is empty
+   (matching `BarTape.start_ms()`'s empty-tape fallback). `id_allocations()`
+   returns `()` (matching `BarTape` — a `ReleaseIdSource` allocates live,
+   unchanged).
 
 4. **No new authority, no new verification, no new effect.** This class
    performs no capability consumption, no WORM read, no P4 interaction, no
    network access, and is not part of any capability's spend accounting —
    it operates entirely on already-in-hand bytes the caller supplies, the
-   same as `BarTape`. It is public because it makes no trust claim that
-   needs hiding behind a private bridge — the VERIFICATION already happened
-   upstream (ADR-0172/0174), before these bytes ever reach this class, and
-   this class does not re-assert or extend that verification.
+   same as `BarTape`. Kept private (Decision point 1) precisely because "no
+   trust claim of its own" is not the same thing as "safe for any caller" —
+   the verification this class relies on happened upstream (ADR-0172/0174),
+   and only `_compose_v2_replay_tape`'s own package may reach for it.
 
-5. **Compatibility.** `bundles.py`'s `__all__` gains one name.
-   `compose_replay_tape`, `_compose_v2_replay_tape`, `BarTape`,
+5. **Compatibility.** `bundles.py` gains one private name, absent from
+   `__all__`. `compose_replay_tape`, `_compose_v2_replay_tape`, `BarTape`,
    `ReplayRun`, and every existing `ReplayTape` consumer are untouched.
 
 ### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
 
-Pin the exact public signature and `__all__` membership. Prove: empty
-sequence yields `start_ms() == 0` and `feed_results() == ()`; a single
-envelope yields exactly one `FeedResult` with the right `at_ms`/
-`acq_id`/`records_added`/`source_config_hash`/`status`; multiple envelopes
-sharing one `availability_ms` collapse into one `FeedResult` with
-`records_added` equal to their count; multiple distinct `availability_ms`
-values yield one `FeedResult` each, and `start_ms()` returns the minimum;
+Pin the exact signature and `__all__` absence (Revision 2: private, per
+Decision point 1). Prove: empty sequence yields `start_ms() == 0` and
+`feed_results() == ()`; a single envelope yields exactly one `FeedResult`
+with the right `at_ms`/`acq_id`/`records_added`/`source_config_hash`/
+`status`; multiple envelopes sharing one `availability_ms` collapse into
+one `FeedResult` with `records_added` equal to their count; multiple
+distinct `availability_ms` values yield one `FeedResult` each, in
+`availability_ms` order, and `start_ms()` returns the minimum;
 `id_allocations()` is always `()`; a malformed envelope (wrong schema,
 missing field, non-bytes) raises `ProductionError` at construction, before
 `start_ms`/`feed_results`/`id_allocations` are ever called, via the reused
-`_parse_event_envelope` — no new error message, no new check invented here.
-Prove `CapturedEnvelopeReplayTape` genuinely `isinstance`-satisfies
-`ReplayTape`. Feed the class the EXACT `ordered_envelope_bytes` a real
+`_parse_event_envelope` — no new error message, no new check invented here;
+a construction failure on element N leaves no partial state observable
+(Decision point 2). **Revision 2 additions responding to Revision 1's
+disputed findings**: a dedicated test constructs a base event and its
+correction (`correction_position=1`, `corrects_event_id` set,
+`prior_envelope_sha256` set) sharing one `availability_ms` and asserts
+`feed_results()` returns exactly one `FeedResult` with `records_added == 2`
+and NO field anywhere on `FeedResult` that could or does encode which of
+the two is the correction — proving by direct inspection, not argument,
+that `feed_results()` structurally cannot carry that distinction under any
+grouping choice; a comment/docstring at that test cites the same
+`ReplayFeed` docstring passage Context quotes. Prove
+`_CapturedEnvelopeReplayTape` genuinely `isinstance`-satisfies `ReplayTape`.
+Feed the class the EXACT `ordered_envelope_bytes` a real
 `_compose_v2_replay_tape` call produces (ADR-0174's own `_mint`/test
 fixtures) as an integration proof that the two ADRs' outputs and inputs
-actually line up byte-for-byte. Run the existing `bundles.py`/`BarTape`
+actually line up byte-for-byte — this is the integration-test gap Revision
+1 flagged, now required explicitly. Run the existing `bundles.py`/`BarTape`
 test suites unedited to prove they are untouched, plus
 ADR-0145/0146/0169…0174, trust, capture, and purity regressions.
 
