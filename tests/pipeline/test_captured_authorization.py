@@ -1109,6 +1109,8 @@ def test_p4_port_set_require_is_single_winner_under_concurrency():
 
 
 def test_p4_port_set_refuses_fabricated_view_and_reader_registry_aliases():
+    import weakref
+
     _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
     view = broker.captured_port_set(record, session)
     fabricated_view = object.__new__(trust.CapturedPortSet)
@@ -1122,15 +1124,22 @@ def test_p4_port_set_refuses_fabricated_view_and_reader_registry_aliases():
         _ = fabricated_reader.lifecycle_captured_receipt_sha256
     with pytest.raises((TypeError, ValueError)):
         fabricated_reader.read_member_bytes("config.json")
+    data_reader = view.require("tape_data")
+    data_state = trust._P4_PORT_READERS[data_reader]
+    trust._P4_PORT_READERS[reader] = (weakref.ref(reader), *data_state[1:])
+    with pytest.raises((TypeError, ValueError)):
+        _ = reader.lifecycle_captured_receipt_sha256
 
 
 def test_p4_port_set_require_refuses_swapped_retained_handle_state():
     _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
     view = broker.captured_port_set(record, session)
-    retained, minted, used = trust._P4_CAPTURE_HANDLES[record]
-    trust._P4_CAPTURE_HANDLES[record] = (
-        tuple(reversed(retained)), minted, used,
-    )
+    retained_state = trust._P4_CAPTURE_HANDLES[record]
+    for name, value in (("_view", None), ("_used", frozenset())):
+        with pytest.raises(AttributeError):
+            setattr(retained_state, name, value)
+    _other_graph, _other_broker, _other_captures, _other_runtime, _other_before, other_record, _other_session = _issue_tape_pair()
+    trust._P4_CAPTURE_HANDLES[record] = trust._P4_CAPTURE_HANDLES[other_record]
     with pytest.raises((TypeError, ValueError)):
         view.require("tape_manifest")
 
