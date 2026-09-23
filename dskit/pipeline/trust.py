@@ -8953,6 +8953,7 @@ class NonAuthorizingRawRootProof:
 def _build_synthetic_v2_raw_publication():
     """Install the environment-bound v2 raw route with private authority."""
     publisher_type = _SyntheticRawPublisher
+    preflight_type = _SyntheticRawPreflight
     proof_type = NonAuthorizingRawRootProof
     fixture_type = VerifiedSyntheticDatasetFixture
     environment_type = _SyntheticEnvironmentIdentity
@@ -8970,6 +8971,23 @@ def _build_synthetic_v2_raw_publication():
             "_published_facts", "_sign", "_check_signed",
             "_issue_receipt", "_quarantine",
         )
+    )
+    publisher_authority_descriptors = tuple(
+        (name, publisher_type.__dict__[name])
+        for name in (
+            "_preflight", "_roster_publisher", "_reserve", "_broker",
+            "_closed", "_retained", "__weakref__",
+        )
+    )
+    fixture_authority_descriptors = tuple(
+        (name, fixture_type.__dict__[name])
+        for name in (
+            "_owner", "_intent", "_members", "_event_schema", "_used",
+        )
+    )
+    preflight_authority_descriptors = tuple(
+        (name, preflight_type.__dict__[name])
+        for name in ("_publisher", "_derive_intent")
     )
     original_verify = proof_type.verify
     object_getattribute = object.__getattribute__
@@ -9007,6 +9025,17 @@ def _build_synthetic_v2_raw_publication():
                 return False
         return True
 
+    def has_exact_authority_descriptors():
+        for owner, descriptors in (
+            (publisher_type, publisher_authority_descriptors),
+            (fixture_type, fixture_authority_descriptors),
+            (preflight_type, preflight_authority_descriptors),
+        ):
+            for name, descriptor in descriptors:
+                if owner.__dict__.get(name) is not descriptor:
+                    return False
+        return True
+
     def v2_writer(self, proof, signed, roster):
         refuse(
             object_getattribute(proof, "_event_schema")
@@ -9041,6 +9070,7 @@ def _build_synthetic_v2_raw_publication():
         )
         refuse(
             _SyntheticRawPublisher is publisher_type
+            and _SyntheticRawPreflight is preflight_type
             and NonAuthorizingRawRootProof is proof_type
             and VerifiedSyntheticDatasetFixture is fixture_type
             and _SyntheticEnvironmentIdentity is environment_type
@@ -9051,6 +9081,7 @@ def _build_synthetic_v2_raw_publication():
             and DATASET_AUTHORIZATION_EVENT_SCHEMAS is schema_table
             and _SYNTHETIC_RAW_FIXTURE_FACTS is fixture_facts_map
             and has_exact_writer_helpers()
+            and has_exact_authority_descriptors()
             and "_publish_common" not in publisher_type.__dict__
             and publisher_type.publish is publish
             and publisher_type.publish_v2 is publish_v2
