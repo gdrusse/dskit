@@ -20857,8 +20857,7 @@ trading, no deployment.
 
 ## ADR-0176 — a configured cash-flow schedule for the child's equity replay
 
-**Status:** PHASE-0 CLEAN (REVISION 3) — ONE FINAL REVIEW LENS CLEAN, ONE
-TEST-GAP FIX APPLIED, AWAITING RE-REVIEW. A fresh independent design
+**Status:** IMPLEMENTED AND CLOSED. A fresh independent design
 skeptic reviewed point 3.5 cold pre-implementation: 0 Critical, 0 Major,
 GO for RED. RED confirmed against the pre-3.5 tree (the three new
 end-to-end tests failed with `AttributeError: no attribute
@@ -20899,8 +20898,24 @@ environment). Bounded regression (the same nine production suites plus
 `tests/pipeline/test_purity.py`): 1131 passed. Ruff and `git diff
 --check`: clean. The implementation file (`replay.py`) is unchanged from
 the reviewed candidate; only the test file gained the new spy/test.
-Awaiting a fresh tests/integration re-review per skeptic-review.md's
-"test changes reset prior clean lenses" rule.
+
+Per skeptic-review.md's "test changes reset prior clean lenses" rule,
+both lenses re-ran fresh against the fixed candidate (`e3095bf`).
+Correctness/authority: 0 Critical/0 Major/0 Minor/0 Nit, GO — confirmed
+`git diff da83d0b e3095bf -- children/intraday_equities/intraday_equities/
+replay.py` and `-- dskit/production/` both empty, re-traced the
+implementation and authorization path cold rather than trusting the
+prior verdict. Tests/integration: GO, 0 Critical/0 Major/0 Minor, 1 Nit —
+re-executed the exact previously-missed mutation live and confirmed
+`test_the_cash_flow_window_advances_by_exactly_one_tick_each_call` now
+fails on it (`(…,X) != (…,X+1)`, the frozen window directly visible);
+re-confirmed the other 3 mutations still caught (no coverage loss); ran
+the full bounded regression clean (1177 passed). The one Nit (a stray
+`_WindowSpyingEquityReplay` docstring cross-reference naming the wrong
+sibling test/class) was fixed directly (now correctly names
+`_CapturingEquityReplay`, "above"). Full child replay suite re-confirmed
+green after the nit fix (46 passed). Closeout evidence:
+`docs/evidence/closeout/0209-intraday-adr0176-review-exit.json`.
 
 **Status history.** Revision 3 adds Decision point 3.5 (below): during Phase-0
 matrix preparation it became clear Revision 2's Decision (composer wired
