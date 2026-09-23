@@ -8415,6 +8415,22 @@ class _SyntheticRawPublisher:
                 and bootstrap_value.get("event_schema") == v1_event_schema,
                 "raw publisher is v1-only",
             )
+        else:
+            try:
+                supplied_authorization = _hs_parse_canonical(
+                    authorization_bytes,
+                )
+                supplied_bootstrap = _hs_parse_canonical(bootstrap)
+            except (TypeError, ValueError):
+                pass
+            else:
+                _hs_refuse(
+                    supplied_authorization.get("schema_version")
+                    != "dskit.dataset-capture-authorization/v2"
+                    and supplied_bootstrap.get("schema_version")
+                    != "dskit.roster-bootstrap-authorization/v2",
+                    "raw publisher is v1-only",
+                )
         object.__setattr__(proof, "_used", True)
         signed = (authorization_bytes, g1, g2, attestation)
         roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)

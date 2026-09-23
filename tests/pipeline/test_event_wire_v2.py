@@ -482,6 +482,31 @@ def test_adr169_v1_raw_publication_substitution_semantics_stay_frozen(
     ).fetchone() == ("QUARANTINED",)
 
 
+def test_adr169_v1_proof_refuses_genuine_v2_authorities_without_effect(
+    tmp_path, monkeypatch,
+):
+    (tmp_path / "v1").mkdir()
+    _path, v1_publisher, v1_roster, v1_signed, members = cases._adr132_raw_case(
+        tmp_path / "v1", monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        v1_publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*v1_signed, *v1_roster)
+    raw_publisher = trust._SyntheticRawPublisher(preflight)
+    _v2_publisher, _v2_preflight, _source, v2_signed, v2_roster = _v2_case(
+        tmp_path / "v2",
+    )
+    before = v1_publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="v1-only"):
+        raw_publisher.publish(proof, *v2_signed, *v2_roster)
+    assert v1_publisher._reserve._connection.total_changes == before
+    assert proof._used is False
+    assert v1_publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RAW_READ_STARTED",)
+
+
 def test_adr169_root_pis_refuses_v2_inputs_before_reserve_spend(tmp_path, monkeypatch):
     (tmp_path / "v1").mkdir()
     v1_publisher, _v1_roster, _v1_signed, v1_output = cases._adr140_published_raw_case(
