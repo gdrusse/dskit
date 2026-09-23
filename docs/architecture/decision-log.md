@@ -21256,3 +21256,162 @@ overrides (or a calendar-aware schedule primitive, if that turns out to be
 the right shape) is explicitly deferred. No `ReplayRun`/P4 wiring (ADR-0176
 does not depend on and is not blocked by that separate, larger, still-open
 question). No backtest launch, no paper/live trading, no deployment.
+
+## ADR-0177 — `EquityReplay` refuses a buy entry it cannot afford
+
+**Status:** PROPOSED — AWAITING PHASE-0 REVIEW. Not yet implemented.
+
+**Context.** ADR-0176 closed named Non-goal #1 — "no insufficient-cash
+handling" — as explicitly deferred to "a separate, later slice touching
+sizing/execution." A dedicated sweep before drafting this ADR (background
+`Explore` agent, read-only) confirmed the gap is real and total: nothing
+in the current replay path checks cash sufficiency at all.
+
+- `EquityReplay.proposals(self, head_outputs, candidates, account,
+  provenance)` (`children/intraday_equities/intraday_equities/
+  replay.py:972-981`) accepts `account` (an `AccountState`, per
+  `dskit.production.records.AccountState` — `dskit/production/
+  records.py:1134`) but never reads it; every `Proposal` it returns is
+  built by `_proposal_for` (`replay.py:1104-1131`) from a queued `meta`
+  whose `qty` came straight from the caller-supplied `decision[qty_field]`
+  (`replay.py:1047`), with zero sizing or capital math.
+- `dskit.production.encumbrance.SettledFundsShortfall` (a `Measure`) plus
+  a `Limit` guard plus `EncumberedAccounting` is the toolkit's one
+  existing cash-sufficiency mechanism, but it is opt-in and structurally
+  unreachable here: `EquityReplay._serve_document` declares `"guards":
+  {}` and `"accounting": {"uses": "paper", ...}` (`replay.py:1274,1276`),
+  and `dskit/production/CLAUDE.md`'s shadow/paper-rung rule pins
+  `accounting` to the `paper` kind by name for exactly this rung — so
+  this replay could not opt into `EncumberedAccounting` even by editing
+  its own document. `PaperAccounting.snapshot` always sets `available ==
+  total` (`dskit/production/accounting.py`, unedited) — raw cash, never
+  reduced by anything.
+- Mechanically, today: a run that loses money on repeated fills has
+  `SeriesState`/the ledger record increasingly negative cash, silently,
+  forever — unlimited effective margin, invalidating any capital-realism
+  claim a full backtest would otherwise make once ADR-0176 funds the
+  account with real dollar amounts.
+- Distinct from `nodes_capital.EquityKellyMIO` (offline, training-time
+  Kelly position sizing, upstream of replay entirely, already
+  capital-aware via its own `portfolio.cash`/`buying_power` inputs) — that
+  node is not part of this replay harness's own fill-acceptance path and
+  is untouched by this ADR.
+- Swept for reuse before drafting: no existing config, override, or
+  partial mechanism for this exists anywhere in `children/
+  intraday_equities` (confirmed by direct reads of `replay.py`'s full
+  propose/evaluate/queue pipeline, quoted above).
+
+**Decision**
+
+1. **Track a running cash balance on `EquityReplay` itself, in `Decimal`,
+   updated synchronously as fills are queued — not read from `Tick.
+   account`.** `_process_entries`/`_process_exits` (`replay.py:1027,
+   1041`) run in the `evaluate` phase (`TICK_PHASES` index 5), strictly
+   BEFORE the `account` phase (index 8) that produces the `account`
+   argument `proposals` receives — so `Tick.account`'s snapshot for this
+   exact tick does not exist yet at the point a fill is queued, and using
+   it would require undoing `HorizonBook.open_lot`'s already-mutated
+   state on a later refusal. A self-tracked balance avoids the phase-order
+   mismatch entirely and needs no new phase, no core module change, and no
+   query against `account` at all. `EquityReplay.__init__` gains
+   `self._cash_balance = Decimal("0")`, unconditionally (harmless — and
+   simpler than a conditional — when no `cash_flow_policy` is configured,
+   since the enforcement in point 3 is what stays gated, not the tracking).
+
+2. **Every queued fill updates the balance, in `_queue_fill`
+   (`replay.py:1086`) — both kinds, both sides, computed once and reused.**
+   `_process_entries` currently computes `fee` AFTER the `_book.open_lot`
+   call succeeds; this ADR moves that one `fee = (policy.costs.
+   buy_per_share(price) if side == "buy" else policy.costs.
+   sell_per_share(price)) * qty` computation earlier, immediately after
+   the existing `below_floor` refusal and before the new check in point 3,
+   so it can be read by both — no duplicate formula, matching this repo's
+   "a value in two places with nothing pinning them" rule. In
+   `_queue_fill`: `cash_delta = Decimal(str(price)) * Decimal(str(qty))`,
+   `fee_d = Decimal(str(fee))`; `side == "buy"` subtracts `cash_delta +
+   fee_d`, else adds `cash_delta - fee_d` — the `Decimal(str(x))` idiom is
+   the one `_proposal_for` already uses for the identical float-price-to-
+   Decimal conversion, not a new convention. This applies to entries AND
+   exits (an override-close exit, a forced exit, a normal profitable or
+   losing exit) uniformly, so the balance stays accurate through every
+   fill `_apply_bar` queues in tick order — including the case where an
+   `override` entry first queues an exit (freeing cash) before the new
+   entry's own affordability is checked, since `_queue_fill` runs
+   synchronously for that exit before `_process_entries` reaches the new
+   entry's check.
+
+3. **`_process_entries` refuses a `side == "buy"` entry whose cost exceeds
+   the balance — enforcement gated by `self._cash_flow_composer is not
+   None`, exactly ADR-0176's existing gate, so every pre-ADR-0177 caller
+   (no `cash_flow_policy`) observes byte-identical behavior.** Inserted
+   immediately after the existing `below_floor` refusal
+   (`replay.py:1069-1073`) and before `_book.open_lot`
+   (`replay.py:1074`): when `self._cash_flow_composer is not None` and
+   `side == "buy"`, compute `cost = Decimal(str(price)) * Decimal(str(qty))
+   + Decimal(str(fee))`; when `cost > self._cash_balance`, append to
+   `self.refused` with `"reason": "insufficient_cash"` (the exact shape
+   every other reason in this dict already uses — `symbol`, `asof_ms`,
+   `lead`, `reason`) and `continue`, never calling `_book.open_lot` and
+   never queuing a fill — so a refused entry leaves no trace in the book,
+   and a later decision on the same `(symbol, lead)` sees no stale
+   `same_lead_open` state. Boundary: `cost > balance` refuses, `cost <=
+   balance` (including exact equality) succeeds.
+
+4. **Never refuses a `side == "sell"` entry (a short) or any exit.** A
+   short entry receives cash rather than spending it (no margin/collateral
+   model exists in this harness at all — modeling that is a separate,
+   larger undertaking this ADR does not open); an exit — forced,
+   override-triggered, or ordinary — must always be able to execute, the
+   same invariant `nodes_capital.EquityKellyMIO` already documents for its
+   own capital boundary ("a catastrophic legacy position below the band
+   can still fully exit", `children/intraday_equities/CLAUDE.md`) —
+   refusing an exit for insufficient cash would strand a position
+   permanently, which is a materially worse failure than letting the fee
+   push the balance slightly negative.
+
+5. **No sizing, no partial fills, no margin, no ADR-0176 change.** This is
+   a binary refuse-or-allow gate on the exact caller-supplied `qty`,
+   never a scaling/rounding algorithm (that remains the separate
+   "position-sizing policy" Non-goal ADR-0176 named, not opened here).
+   `dskit/production/*` is untouched — this is entirely
+   `EquityReplay`-internal bookkeeping, reusing only its own existing
+   `_cash_flow_composer`/`_queue_fill`/`_process_entries` surface.
+   `ReplayAdapter`'s and `EquityReplay.__init__`'s signatures are
+   unchanged (no new constructor parameter — this reuses the existing
+   `cash_flow_policy` gate from ADR-0176 rather than adding a second
+   opt-in knob).
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+A buy entry whose `price*qty+fee` exceeds the running balance refuses
+with `reason == "insufficient_cash"`, opens no lot (a following decision
+on the same `(symbol, lead)` fills normally, proving no stale
+`same_lead_open` state), and queues no fill. The exact boundary
+(`cost == balance` succeeds; `cost == balance + smallest unit` refuses).
+A multi-fill sequence — cash-flow credit, affordable buy (debits balance),
+unaffordable second buy (refused), profitable sell (credits balance
+enough), the same buy now succeeds — proving the running balance is
+accurate across mixed fills, not just a single check. A short entry
+(`side == "sell"`) is never refused for insufficient cash regardless of
+balance. A forced exit (horizon expiry) and an override-triggered exit
+are never refused for insufficient cash even with a deeply negative
+balance. The pre-ADR-0176 regression baseline: with no `cash_flow_policy`
+supplied, a buy that would be refused under this rule still fills exactly
+as it did before this ADR (byte-identical `fills`/`refused`/`skipped`
+output to the existing, unedited test fixtures) — proving the gate is
+`self._cash_flow_composer is not None`, not merely "this ADR's code path
+never executes." Run the full existing child replay suite (`test_replay.
+py`, 46 tests as of ADR-0176's close) unedited, plus ADR-0176's own cash-
+flow/window-advancement tests, to prove no interaction regression between
+the two ADRs' mechanisms (both touch `_queue_fill`'s neighborhood and the
+same `_cash_flow_composer is not None` gate).
+
+### Non-goals
+
+No margin/short-collateral modeling. No partial fills or automatic
+position-size scaling to fit available cash (a rejected buy is refused
+outright, in full, never resized). No interaction with turnover/cost
+policy beyond reusing the existing per-share fee formulas unchanged. No
+`ReplayRun`/P4 wiring. No change to `dskit/production/*`,
+`nodes_capital.py`, or ADR-0176's own cash-flow-policy/composer code. No
+backtest launch, no paper/live trading, no deployment.
