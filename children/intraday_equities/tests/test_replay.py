@@ -1463,3 +1463,155 @@ def test_due_is_called_once_per_trading_date_not_once_per_tick_over_a_full_year(
     )
     # Generous, honest ceiling for the cash-flow bookkeeping alone (ADR-0178 scale row).
     assert replay.bookkeeping_seconds < 60
+
+
+# --- ADR-0179: cash_flow_policy wired through DevelopmentReplay -----------
+
+
+_CF_EVIDENCE_END = "2026-01-05"  # the UTC date of _CF_DAY0_MS, so _cf_bars stay in-window
+_MALFORMED_CASH_FLOW_POLICY_PATHS = (5, [], "")
+
+
+def _shipped_replay_params(**overrides):
+    """The shipped run-development-replay.json node params, optionally overridden."""
+    document = load_document(os.path.join(CONFIGS, "run-development-replay.json"))
+    params = dict(document.pipeline["replay"].params)
+    params.update(overrides)
+    return params
+
+
+def _cash_flow_pair(path="configs/cash-flow-policy.json"):
+    return {
+        "cash_flow_policy": path,
+        "cash_flow_policy_sha256": CashFlowPolicy.from_path(CASH_FLOW_POLICY_PATH).digest(),
+    }
+
+
+def test_development_replay_keeps_five_required_params_and_two_paired_optional_ones():
+    assert DevelopmentReplay._PARAMS == (
+        "deployment_eligible",
+        "evidence_end",
+        "fill_policy",
+        "fill_policy_sha256",
+        "caps",
+    )
+    assert DevelopmentReplay._OPTIONAL_PARAMS == (
+        "cash_flow_policy",
+        "cash_flow_policy_sha256",
+    )
+
+
+def test_the_shipped_document_still_runs_without_a_cash_flow_policy_byte_identically():
+    params = _shipped_replay_params()
+    assert "cash_flow_policy" not in params
+    assert "cash_flow_policy_sha256" not in params
+    assert DevelopmentReplay.validate_params(params) == []
+    node = DevelopmentReplay("replay", params)
+    assert node._cash_flow_policy is None
+    last_day = 1_760_572_800_000  # 2025-10-16T00:00:00Z
+    fill_only = 1_760_659_200_000  # 2025-10-17T00:00:00Z exclusive end
+    bars = [
+        _bar("AAA", last_day, 10.0, 10.5),
+        _bar("AAA", fill_only, 11.0, 11.5),
+        _bar("AAA", fill_only + 60_000, 12.0, 12.5),
+    ]
+    decisions = [_decision("AAA", last_day, lead=1, qty=1_000_000)]
+    out = node.run(None, {"bars": bars, "decisions": decisions})
+    before = ReplayAdapter(FillPolicy.from_path(FILL_POLICY_PATH)).replay(bars, decisions)
+    assert json.dumps(out, sort_keys=True) == json.dumps(before, sort_keys=True)
+    assert out["refused"] == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["configs/cash-flow-policy.json", CASH_FLOW_POLICY_PATH],
+    ids=["relative-to-child-root", "absolute"],
+)
+def test_a_valid_cash_flow_pair_validates_and_builds_the_policy(path):
+    params = _shipped_replay_params(**_cash_flow_pair(path))
+    assert DevelopmentReplay.validate_params(params) == []
+    node = DevelopmentReplay("replay", params)
+    assert isinstance(node._cash_flow_policy, CashFlowPolicy)
+    assert node._cash_flow_policy.digest() == params["cash_flow_policy_sha256"]
+
+
+def test_run_passes_the_cash_flow_policy_through_so_an_unaffordable_buy_refuses():
+    # Balance after day-one funding: 1000 + 20 = 1020. 200 @ 10 = 2000 (+fee) > 1020.
+    # Without the policy threaded into ReplayAdapter, no balance exists and it fills.
+    bars = _cf_bars([10.0] * 6)
+    decisions = [
+        _decision("AAA", _cf_t(0), lead=3, qty=200),
+        _decision("AAA", _cf_t(1), lead=3, qty=50),
+    ]
+    funded = DevelopmentReplay(
+        "replay", _shipped_replay_params(evidence_end=_CF_EVIDENCE_END, **_cash_flow_pair())
+    ).run(None, {"bars": bars, "decisions": decisions})
+    assert funded["refused"] == [{
+        "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 3, "reason": "insufficient_cash",
+    }]
+    assert [(row["kind"], row["qty"], row["asof_ms"]) for row in funded["fills"]] == [
+        ("entry", 50, _cf_t(2)),
+        ("exit", 50, _cf_t(5)),
+    ]
+    direct = ReplayAdapter(_policy(), _cash_flow_policy()).replay(bars, decisions)
+    assert json.dumps(funded, sort_keys=True) == json.dumps(direct, sort_keys=True)
+    unfunded = DevelopmentReplay(
+        "replay", _shipped_replay_params(evidence_end=_CF_EVIDENCE_END)
+    ).run(None, {"bars": bars, "decisions": decisions})
+    assert _cash_reasons(unfunded) == []
+    assert any(row["qty"] == 200 for row in unfunded["fills"])
+
+
+@pytest.mark.parametrize("present", ["cash_flow_policy", "cash_flow_policy_sha256"])
+def test_one_half_of_the_cash_flow_pair_alone_refuses_naming_both(present):
+    params = _shipped_replay_params(**{present: _cash_flow_pair()[present]})
+    message = (
+        "cash_flow_policy and cash_flow_policy_sha256 must both be present or both be absent"
+    )
+    assert DevelopmentReplay.validate_params(params) == [message]
+    with pytest.raises(ConfigError) as caught:
+        DevelopmentReplay("replay", params)
+    assert caught.value.errors == [f"replay: {message}"]
+
+
+@pytest.mark.parametrize(
+    "value", _MALFORMED_CASH_FLOW_POLICY_PATHS, ids=["int", "list", "empty"]
+)
+def test_a_malformed_cash_flow_policy_refuses_cleanly_never_a_type_error(value):
+    params = _shipped_replay_params(**dict(_cash_flow_pair(), cash_flow_policy=value))
+    assert DevelopmentReplay.validate_params(params) == [
+        "cash_flow_policy must be a non-empty path"
+    ]
+    with pytest.raises(ConfigError) as caught:
+        DevelopmentReplay("replay", params)
+    assert caught.value.errors == ["replay: cash_flow_policy must be a non-empty path"]
+
+
+def test_a_missing_cash_flow_policy_path_refuses():
+    params = _shipped_replay_params(**_cash_flow_pair("configs/no-such-cash-flow-policy.json"))
+    expected = [
+        "cash_flow_policy path does not exist: "
+        + os.path.join(CHILD_ROOT, "configs", "no-such-cash-flow-policy.json")
+    ]
+    assert DevelopmentReplay.validate_params(params) == expected
+    with pytest.raises(ConfigError) as caught:
+        DevelopmentReplay("replay", params)
+    assert caught.value.errors == [f"replay: {expected[0]}"]
+
+
+@pytest.mark.parametrize(
+    "digest, expected",
+    [
+        ("0" * 64, "cash_flow_policy_sha256 does not match the loaded cash-flow-policy digest"),
+        (123, "cash_flow_policy_sha256 must be the cash-flow-policy digest"),
+    ],
+    ids=["mismatch", "non-string"],
+)
+def test_a_wrong_cash_flow_policy_digest_refuses(digest, expected):
+    params = _shipped_replay_params(
+        **dict(_cash_flow_pair(), cash_flow_policy_sha256=digest)
+    )
+    assert DevelopmentReplay.validate_params(params) == [expected]
+    with pytest.raises(ConfigError) as caught:
+        DevelopmentReplay("replay", params)
+    assert caught.value.errors == [f"replay: {expected}"]

@@ -1507,6 +1507,10 @@ class DevelopmentReplay(Node):
         (``YYYY-MM-DD``, last included UTC date), ``fill_policy`` (path
         relative to the child root), ``fill_policy_sha256`` (must match
         the loaded document), ``caps`` (must be ``development-only``).
+        Optional, paired (ADR-0179): ``cash_flow_policy`` (path relative to
+        the child root) and ``cash_flow_policy_sha256`` (must match the
+        loaded :class:`CashFlowPolicy` digest) — both present or both
+        absent. Absent means no cash-flow composer, exactly as before.
 
     Examples
     --------
@@ -1533,10 +1537,17 @@ class DevelopmentReplay(Node):
         "fill_policy_sha256",
         "caps",
     )
+    _OPTIONAL_PARAMS = ("cash_flow_policy", "cash_flow_policy_sha256")
 
     def __init__(self, key, params=None, **kwargs):
         super().__init__(key, params, **kwargs)
         self._policy = FillPolicy.from_path(self._resolved_fill_policy_path(self.params))
+        if "cash_flow_policy" in self.params:
+            self._cash_flow_policy = CashFlowPolicy.from_path(
+                self._resolved_cash_flow_policy_path(self.params)
+            )
+        else:
+            self._cash_flow_policy = None
 
     @classmethod
     def serving_effect(cls, params, verified_run_evidence):
@@ -1547,7 +1558,9 @@ class DevelopmentReplay(Node):
     def validate_params(cls, params):
         """Problems with ``params``, empty when none."""
         problems = []
-        reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        reject_unknown_params(
+            problems, params, cls._PARAMS + cls._OPTIONAL_PARAMS + ("notes",)
+        )
         for name in cls._PARAMS:
             if name not in params:
                 problems.append(f"{name} is required")
@@ -1584,12 +1597,42 @@ class DevelopmentReplay(Node):
                     problems.append(
                         "fill_policy_sha256 does not match the loaded fill-policy digest"
                     )
+        has_cash_flow_policy = "cash_flow_policy" in params
+        if has_cash_flow_policy != ("cash_flow_policy_sha256" in params):
+            problems.append(
+                "cash_flow_policy and cash_flow_policy_sha256 must both be present "
+                "or both be absent"
+            )
+        elif has_cash_flow_policy:
+            if not isinstance(params["cash_flow_policy"], str) or not params["cash_flow_policy"]:
+                problems.append("cash_flow_policy must be a non-empty path")
+            else:
+                path = cls._resolved_cash_flow_policy_path(params)
+                if not os.path.isfile(path):
+                    problems.append(f"cash_flow_policy path does not exist: {path}")
+                elif not isinstance(params["cash_flow_policy_sha256"], str):
+                    problems.append("cash_flow_policy_sha256 must be the cash-flow-policy digest")
+                else:
+                    loaded = CashFlowPolicy.from_path(path)
+                    if loaded.digest() != params["cash_flow_policy_sha256"]:
+                        problems.append(
+                            "cash_flow_policy_sha256 does not match the loaded "
+                            "cash-flow-policy digest"
+                        )
         return problems
 
     @classmethod
     def _resolved_fill_policy_path(cls, params):
         """Join a relative fill-policy path onto the child root."""
         path = params["fill_policy"]
+        if os.path.isabs(path):
+            return path
+        return os.path.join(_child_root(), path)
+
+    @classmethod
+    def _resolved_cash_flow_policy_path(cls, params):
+        """Join a relative cash-flow-policy path onto the child root."""
+        path = params["cash_flow_policy"]
         if os.path.isabs(path):
             return path
         return os.path.join(_child_root(), path)
@@ -1669,7 +1712,9 @@ class DevelopmentReplay(Node):
                     f"evidence_end {self.params['evidence_end']!r} excludes "
                     f"bar(s) beyond fill_suffix_bars={suffix_bars}"
                 ])
-        return ReplayAdapter(self._policy).replay(list(inputs["bars"]), list(inputs["decisions"]))
+        return ReplayAdapter(self._policy, self._cash_flow_policy).replay(
+            list(inputs["bars"]), list(inputs["decisions"])
+        )
 
 
 NODE_KINDS = {
