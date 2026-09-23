@@ -19942,33 +19942,45 @@ attributes or accepting caller-created event/policy data.
 
 ### Decision
 
-1. **Opaque trust-owned bridge.** Add final public
-`VerifiedV2ProjectionInput` to `dskit.pipeline.trust` and its explicit
-`__all__`; direct construction, subclassing, copying, serialization, and
-attribute mutation refuse. Only a private broker function
+1. **Opaque trust-owned bridge and exact API.** Add final public
+`VerifiedV2ProjectionInput` and public positional-only
+`consume_v2_projection_input(value, /)` to `dskit.pipeline.trust` and its
+explicit `__all__`; neither is re-exported by `dskit.pipeline`. Direct
+construction, subclassing, copying, serialization, and attribute mutation
+refuse with `TypeError`/`AttributeError`; verification/state defects raise
+`ValueError`. Only a private broker function
 `_prepare_synthetic_v2_projection_input(raw_proof, raw_proof_bytes,
 roster_proof, roster_proof_bytes, environment_identity, /)` can mint it.
-The two byte bundles are exact tuples with the already fixed argument order of
-their respective `verify` methods; no dict/keyword/alias form exists.
+The raw bundle is an exact 12-bytes tuple matching
+`NonAuthorizingRawRootProof.verify` argument order; the roster bundle is an
+exact five-bytes tuple matching `NonAuthorizingRosterRootProof.verify`; require
+`raw_proof_bytes[4:9] == roster_proof_bytes` and exact retained originals.
+No dict/keyword/alias form exists.
 
-2. **Reverify under one retained authority snapshot.** The prepare function
-requires exact `NonAuthorizingRawRootProof` and
-`NonAuthorizingRosterRootProof` objects whose retained publishers share the
-same exact roster publisher and reserve. Under that reserve's writer lock and
-one transaction, call both existing `verify(...,
-_under_writer_lock=True)` methods, require unchanged generation,
-revocation snapshot, and trusted instant, and require both results remain
-`authorizing=False` and `deployment_eligible=False`. Any mismatch rolls
-back and no bridge is minted.
+2. **Exact common transaction.** The prepare function requires exact
+`NonAuthorizingRawRootProof` and `NonAuthorizingRosterRootProof` objects
+whose retained publishers share the same exact roster publisher, reserve, and
+SQLite connection. After Decision 3's metadata-only environment gate, acquire
+that reserve's exact `RLock`, reject a pre-existing transaction, execute
+literal `BEGIN IMMEDIATE`, and record the initial generation, revoked set,
+snapshot digest, and trusted instant. Call raw `verify(...,
+_under_writer_lock=True)` (including its nested roster verification), then the
+supplied roster `verify(..., _under_writer_lock=True)`; require final reserve
+facts exactly equal the initial facts and both results exact nonauthorizing,
+nondeployment mapping proxies. Commit before mint. Roll back on every
+exception, including commit failure. Deferred BEGIN, another connection,
+nested transaction, or close/revoke/generation race refuses.
 
-3. **Environment before projection data.** Parse only the already signed,
-canonical dataset authorization from the exact retained raw proof bytes.
-Require authorization schema `dskit.dataset-capture-authorization/v2` and
-event schema `dskit.raw-event/v2`; obtain its exact
-`scope.tzdata_version_sha256`; invoke ADR-0170
-`_require_synthetic_tzdata` on the exact broker-issued identity before
-copying any retained event or roster value into the bridge. Environment
-failure leaves the bridge registry empty.
+3. **Metadata-only environment gate before event access.** Before any full
+proof `verify`, event-member iteration, or retained `_events` access,
+perform only exact proof/publisher/retained-original identity checks and parse
+the already retained signed dataset authorization bytes. Require authorization
+schema `dskit.dataset-capture-authorization/v2`, event schema
+`dskit.raw-event/v2`, and exact `scope.tzdata_version_sha256`; invoke
+ADR-0170 `_require_synthetic_tzdata` on the exact broker-issued identity.
+This preliminary gate claims no root validity or authority. Failure occurs
+before full verification/event materialization and leaves issuance/spent
+registries empty.
 
 4. **Derive both payloads inside trust.** Reparse the retained canonical roster
 bytes owned by the exact roster publisher, require its root/policy facts equal
@@ -19980,44 +19992,63 @@ availability scope, policy digest, raw-root/roster-root/receipt bindings, and
 event-schema equality before registry insertion. No caller value supplies an
 event field, rank, policy digest, timezone, or provenance.
 
-5. **One-shot, identity-bound consumption.** Add
-`consume_v2_projection_input(value, /)`. It accepts only the exact issued
-object still present in a closure-owned weak registry with matching
-weak-reference, proof identities/digests, frozen descriptors, and unused
-state. Atomically mark used, then return exactly
-`(events, source_rank_policy)`. A second call, copied/forged/subclassed
-object, stale/revoked proof, replaced dispatch, or altered class descriptor
-refuses before returning data. The returned values are closed immutable
-copies suitable only for ADR-0171; the bridge confers no writer, lifecycle,
-publication, replay, or deployment authority.
+5. **Proof-scoped one-shot consumption with live reverify.** The closure owns
+one `RLock` plus strong process-lifetime `issued` and `spent` mappings
+keyed by exact proof object identities, SHA-256 of every byte in both bundles,
+and the environment-identity state digest. Prepare and consume both serialize
+on that lock. A second prepare for the same key refuses even after bridge GC;
+failure after reserving a genuine key terminalizes it in `spent`. Consume
+accepts only the exact registered object and frozen descriptors, then under
+the same reserve lock and literal `BEGIN IMMEDIATE` repeats Decisions 2 and
+3, rederives byte-identical events/policy, and rechecks generation, revocation,
+expiry, roots, receipts, scope, policy, and descriptors. Only after successful
+commit atomically move the key to `spent` and return exactly
+`(events, source_rank_policy)`. Concurrent consume has one winner; all
+second, copied, forged, subclassed, stale, revoked, GC/remint, or
+dispatch-replaced attempts return no data.
 
-6. **Acyclic production composition.** Add private
+6. **Acyclic, closure-pinned production composition.** Add private
 `_project_verified_synthetic_v2_input(value, /)` in
-`dskit.production.verifier`. It calls the exact imported
-`consume_v2_projection_input` once, passes the two returned values directly
-to `bundles._project_v2_event_envelopes`, reparses every returned envelope,
-and returns the exact tuple of bytes. It is private and absent from every
-`__all__`. No callback or caller-supplied projector is accepted. Pipeline
-trust imports no production module; production verifier remains the acyclic
-composition owner.
+`dskit.production.verifier` through a module-initialization closure that
+captures the exact consume function, ADR-0171 projector, parser, canonical
+encoder, and expected class/function descriptors, then deletes its builder.
+Before consuming, identity-check every captured dispatch/descriptor against
+its module definition; replacements before/after mint or during consumption
+refuse. Consume once, invoke the captured projector twice on the same immutable
+pair and require byte-identical results, reparse every output with the captured
+parser, re-encode and byte-compare each value, then return the exact tuple.
+It is private and absent from every `__all__`; no callback or caller-supplied
+projector/parser exists. Pipeline trust imports no production module;
+production verifier remains the acyclic composition owner.
 
-7. **Failure and authority freeze.** Every failure is terminal for that bridge
-object and returns no partial events, policy, or envelopes. Existing proof
-bytes/state/messages, public proof methods, ADR-0171 projector, WORM lifecycle,
-`ReplayRun.run`, and v1 behavior remain unchanged. No filesystem/provider/
-network access occurs: all bytes were retained by earlier authorized capture.
+7. **Effects, failure, and authority freeze.** Every failure is terminal for
+that proof-scoped key and returns no partial events, policy, or envelopes.
+Existing proof bytes/messages, public proof methods, ADR-0171 projector, WORM
+lifecycle, `ReplayRun.run`, and v1 behavior remain unchanged. The bridge is
+explicitly permitted to use only the exact retained publishers' reserve lock,
+SQLite connection, trusted clock, retained WORM/provider members, and existing
+proof verification reads described above. It performs no acquisition,
+network, new provider lookup, new member write, lifecycle transition,
+publication, or external effect.
 
 ### Required Phase-0 matrix
 
-Pin exact public/private surfaces and positional-only signatures; direct
+Pin exact public/private surfaces, `trust.__all__`, absence from pipeline
+re-exports, and positional-only signatures; direct
 construction/subclass/copy/pickle/mutation; wrong proof type/order/count;
-unshared publishers/reserves; stale/revoked/expired/generation-changed proof;
-wrong authorization/event schema; tzdata mismatch before retained projection
-access; root/receipt/policy/source/count/scope substitution; caller-created
-event/policy refusal; v1/v2 cross-use; one-shot/concurrent double consume;
-forged/copied/stale/dispatch-replaced bridge; exact inert mapping shapes;
-byte-identical ADR-0171 output; no partial data on every failure; unchanged
-proof state and no provider/filesystem/network/lifecycle effect. Run
+non-tuple/mistyped bundle members; unequal `raw[4:9]`; unshared
+publishers/reserves/connections; pre-existing/deferred/nested transaction,
+commit failure, second connection, close/revoke/generation race; stale,
+revoked, or expired proof at prepare and consume; wrong authorization/event
+schema; tzdata mismatch before full verify/member/event access; root/receipt/
+policy/source/count/scope substitution; caller-created event/policy refusal;
+v1/v2 cross-use; parallel duplicate prepare and consume; strong spent state
+after GC/remint and genuine-object failure; forged/copied/stale bridge; exact
+inert mapping shapes; replacement of consume/projector/parser/encoder/class
+descriptors before/after mint and during consume; projector/parser exception;
+two byte-identical ADR-0171 computations plus canonical reparse/re-encode; no
+partial data on every failure. Permit only exact retained reserve/provider
+reads and prove no acquisition/network/write/lifecycle effect. Run
 ADR-0145/0146/0169/0170/0171, trust, capture, and all purity suites unedited.
 
 ### Non-goals
