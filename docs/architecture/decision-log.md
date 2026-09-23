@@ -20423,21 +20423,23 @@ deployment.
 
 ## ADR-0174 — v2 captured-tape composition from a verified projection input (PROPOSAL)
 
-**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW, REVISION 2
-(2026-09-23). Not approved. No implementation exists. Revision 1's design
-(reusing an externally-supplied P4 `record`/`session`/`published` capture
-triple for `data_capture_root`/`data_captured_receipt` alongside the
-independently-sourced ADR-0172 capability for the envelope bytes) received a
-NO-GO from an independent Phase-0 design skeptic: **Critical** — nothing
-bound the two inputs together, so a caller could supply a genuine but
-*unrelated* P4 capture (for document D, containing events F1/F2) together
-with a genuine but *unrelated* ADR-0172 capability (from raw root A,
-containing events E1/E2/E3) and receive a `CapturedReplayTape` whose
-`data_capture_root`/`data_captured_receipt` truthfully prove "D was
-captured" while `ordered_envelope_digests` are silently A's events, never
-D's. Both halves verify individually; nothing checks they agree. This
-revision closes that gap by removing the external P4 dependency entirely
-rather than patching it — see Decision point 1.
+**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED (2026-09-23), REVISION
+2. Not yet implemented. Revision 1's design (reusing an externally-supplied
+P4 `record`/`session`/`published` capture triple for `data_capture_root`/
+`data_captured_receipt` alongside the independently-sourced ADR-0172
+capability for the envelope bytes) received a NO-GO from an independent
+Phase-0 design skeptic: **Critical** — nothing bound the two inputs
+together, so a caller could supply a genuine but *unrelated* P4 capture (for
+document D, containing events F1/F2) together with a genuine but
+*unrelated* ADR-0172 capability (from raw root A, containing events
+E1/E2/E3) and receive a `CapturedReplayTape` whose `data_capture_root`/
+`data_captured_receipt` truthfully prove "D was captured" while
+`ordered_envelope_digests` are silently A's events, never D's. Both halves
+verify individually; nothing checks they agree. Revision 2 closes that gap
+by removing the external P4 dependency entirely rather than patching it —
+see Decision point 1. A fresh, independent Phase-0 re-review of Revision 2
+returned 0 Critical, 0 Major (design), GO for RED — every reported finding
+was a documentation clarification, folded into the Decision text below.
 
 **Context.** ADR-0172 closed with a private, one-shot
 `VerifiedV2ProjectionInput` and `_project_verified_synthetic_v2_input`
@@ -20477,14 +20479,20 @@ all.
    shapes ADR-0172's own `_prepare_synthetic_v2_projection_input(raw_proof,
    raw_proof_bytes)` already takes and validates (an exact
    `NonAuthorizingRawRootProof` and its exact twelve-byte tuple, whose last
-   three elements — `raw_proof_bytes[9:12]` — are the `publish_v2` writer's
-   own `(manifest_bytes, basis_bytes, receipt_bytes)`, cryptographically
-   produced for and bound to that exact raw root at publication). `
-   data_capture_root` is `sha256(manifest_bytes).hexdigest()`;
-   `data_captured_receipt` is `sha256(receipt_bytes).hexdigest()`. Both are
-   therefore facts about the *same* verified root the envelope bytes are
-   about — there is no second, independent authority left to mix in, so
-   Revision 1's attack has no input pair to exploit.
+   three elements — `raw_proof_bytes[9:12]` as exactly
+   `(manifest_bytes, basis_bytes, receipt_bytes)` — are the `publish_v2`
+   writer's own output, cryptographically produced for and bound to that
+   exact raw root at publication. `data_capture_root` is
+   `sha256(manifest_bytes).hexdigest()`; `data_captured_receipt` is
+   `sha256(receipt_bytes).hexdigest()`. Both are therefore facts about the
+   *same* verified root the envelope bytes are about — there is no second,
+   independent authority left to mix in, so Revision 1's attack has no
+   input pair to exploit. A caller mutating `raw_proof_bytes[9:12]` after
+   this call begins gains nothing: every one of the three `payload()`
+   re-derivations below (the fresh mint and both consumes) independently
+   re-verifies `raw_proof_bytes` against `raw_proof`'s own retained
+   originals (ADR-0172's existing `payload()` check, unedited), so a
+   mutated tuple refuses before any digest derived from it is used.
 
 2. **The capability is proven to belong to the supplied root, not merely
    asserted.** `_prepare_synthetic_v2_projection_input(raw_proof,
@@ -20496,19 +20504,32 @@ all.
    second capability and the caller-supplied `capability` are consumed
    (`consume_v2_projection_input`, unedited); their `(events, policy)`
    results are required byte-/value-equal before either is used further. A
-   `capability` minted from any *other* root produces different events with
-   overwhelming probability and different policy bindings by construction
-   (ADR-0172's own payload derivation), so it refuses the equality check
-   rather than silently proceeding — closing exactly the gap Revision 1
-   left open, using only machinery ADR-0172 already reviewed and closed.
+   `capability` minted from any *other* root produces different events and
+   different policy bindings BY CONSTRUCTION — not a probabilistic
+   argument: `consume_v2_projection_input`'s payload is the exact retained
+   event tuple and derived policy of the root it was minted from
+   (ADR-0172's own payload derivation), so two capabilities from two
+   different roots compare equal only if the two roots' retained events
+   and policy are themselves value-identical, which is a fact about the
+   test/synthetic fixtures supplied, not a probability this function
+   relies on. It refuses the equality check rather than silently
+   proceeding — closing exactly the gap Revision 1 left open, using only
+   machinery ADR-0172 already reviewed and closed.
 
 3. **`ordered_envelope_bytes` is the equality-checked payload, spent
-   exactly once per capability.** Both the caller-supplied `capability` and
-   the fresh second capability are spent (ADR-0172's one-shot rule,
-   unchanged, applied twice, to two independently-tracked capabilities).
-   Neither is retried after use. `_compose_v2_replay_tape` never mints a
-   third capability and never re-derives events outside these two
-   consumptions.
+   exactly once per capability, and the spend is NOT retryable on
+   refusal.** Both the caller-supplied `capability` and the fresh second
+   capability are consumed (ADR-0172's one-shot rule, unchanged, applied
+   twice, to two independently-tracked capabilities) BEFORE the equality
+   check runs — `consume_v2_projection_input` already spends its argument
+   as part of returning a value, per ADR-0172. If the equality check then
+   fails, both capabilities are already spent; there is no retry path, by
+   the same terminal-failure rule ADR-0172 Decision point 4 already
+   establishes for a post-removal failure. A caller who mismatches
+   `(raw_proof, raw_proof_bytes)` against `capability` therefore always
+   loses `capability` on that one attempt, whether or not the mismatch was
+   deliberate. `_compose_v2_replay_tape` never mints a third capability and
+   never re-derives events outside these two consumptions.
 
 4. **source_rank_policy_sha256 comes from the verified envelopes, not a
    second read.** Every returned envelope already carries its own
