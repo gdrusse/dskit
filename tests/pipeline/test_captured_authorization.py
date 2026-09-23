@@ -1144,6 +1144,25 @@ def test_p4_port_set_require_refuses_swapped_retained_handle_state():
         view.require("tape_manifest")
 
 
+def test_p4_port_set_refuses_object_setattr_mint_and_use_rollback():
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    view = broker.captured_port_set(record, session)
+    retained_state = trust._P4_CAPTURE_HANDLES[record]
+    reader = view.require("tape_manifest")
+    assert reader.lifecycle_captured_receipt_sha256
+    object.__setattr__(retained_state, "_used", frozenset())
+    with pytest.raises((TypeError, ValueError)):
+        view.require("tape_manifest")
+
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    broker.captured_port_set(record, session)
+    retained_state = trust._P4_CAPTURE_HANDLES[record]
+    object.__setattr__(retained_state, "_view", None)
+    object.__setattr__(retained_state, "_view_id", None)
+    with pytest.raises((TypeError, ValueError)):
+        broker.captured_port_set(record, session)
+
+
 def test_p4_port_set_factory_and_require_do_not_call_provider_or_spend_read_budget(monkeypatch):
     _graph, broker, captures, _runtime, before, record, session = _issue_tape_pair()
     reads_before = dict(broker._p4_ledger._p4_reads)

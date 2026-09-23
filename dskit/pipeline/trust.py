@@ -2739,6 +2739,8 @@ def _p4_checked_port_set_dispatch(authority, record, session):
                    "exact committed replay tape pair required")
         view = object.__new__(CapturedPortSet)
         retained_state._mint(_P4_PORT_STATE_MUTATE, view)
+        _P4_CAPTURE_STATE_PINS[retained_state] = _p4_capture_state_seal(
+            authority, ledger, record, retained_state)
         _P4_PORT_SET_VIEWS[view] = (authority, ledger, record, session)
         return view
 
@@ -5105,7 +5107,7 @@ class CapturedAuthorizationRecord(_Opaque):
 class _RetainedP4CaptureState(_Opaque):
     """Private monotonic owner of exact committed handles and local spends."""
 
-    __slots__ = ("_handles", "_view", "_used", "_locked", "__weakref__")
+    __slots__ = ("_handles", "_view", "_view_id", "_used", "_locked", "__weakref__")
 
     def __init__(self, token, handles):
         if token is not _MAKE:
@@ -5113,6 +5115,7 @@ class _RetainedP4CaptureState(_Opaque):
         object.__setattr__(self, "_locked", False)
         object.__setattr__(self, "_handles", handles)
         object.__setattr__(self, "_view", None)
+        object.__setattr__(self, "_view_id", None)
         object.__setattr__(self, "_used", frozenset())
         object.__setattr__(self, "_locked", True)
 
@@ -5120,6 +5123,7 @@ class _RetainedP4CaptureState(_Opaque):
         if token is not _P4_PORT_STATE_MUTATE or self._view is not None:
             raise ValueError("captured port set already minted")
         object.__setattr__(self, "_view", weakref_ref(view))
+        object.__setattr__(self, "_view_id", id(view))
 
     def _use(self, token, view, name):
         if (token is not _P4_PORT_STATE_MUTATE or self._view is None
@@ -5158,6 +5162,7 @@ class CapturedPortSet(_Opaque):
             _hs_refuse(_P4_RECORDS.get(record) is ledger and not session._ended
                        and retained_state._view is not None
                        and retained_state._view() is self
+                       and retained_state._view_id == id(self)
                        and type(retained_state._used) is frozenset,
                        "required captured port refused")
             audit = ledger._audit(record)
@@ -5194,6 +5199,8 @@ class CapturedPortSet(_Opaque):
             seal = _p4_port_reader_seal(authority, reader, reader_state)
             _P4_PORT_READERS[reader] = (*reader_state, seal)
             retained_state._use(_P4_PORT_STATE_MUTATE, self, name)
+            _P4_CAPTURE_STATE_PINS[retained_state] = _p4_capture_state_seal(
+                authority, ledger, record, retained_state)
             return reader
 
     def __new__(cls, *args, **kwargs):
@@ -5262,8 +5269,13 @@ _P4_PORT_SET_STATE_CHECK = _p4_port_set_state_integrity
 def _p4_capture_state_seal(authority, ledger, record, state):
     projection = [[id(published), id(frozen), dict(port)]
                   for published, frozen, port in state._handles]
-    body = _hs_canonical_bytes({"state": id(state), "ledger": id(ledger),
-                                "record": id(record), "captures": projection})
+    body = _hs_canonical_bytes({
+        "state": id(state), "ledger": id(ledger), "record": id(record),
+        "captures": projection,
+        "view_ref": None if state._view is None else id(state._view),
+        "view_id": state._view_id,
+        "used": sorted(state._used),
+    })
     return hmac.new(authority._map_key, b"P4 CapturedPortSet state\x00" + body,
                     hashlib.sha256).hexdigest()
 
