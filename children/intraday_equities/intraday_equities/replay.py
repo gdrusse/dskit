@@ -41,7 +41,11 @@ from dskit.pipeline.records import number_ok
 from dskit.production.base import ProductionError, canonical_hash
 from dskit.production.bundles import Data, Invocation, ReplayTape
 from dskit.production.cadence import Cadence
-from dskit.production.cashflows import RecurringCashFlowSchedule, ReplaceCashFlow
+from dskit.production.cashflows import (
+    RecurringCashFlowSchedule,
+    ReplaceCashFlow,
+    SkipCashFlow,
+)
 from dskit.production.compose import ReplayCashFlowComposer, bundles_for
 from dskit.production.document import ServeDocument
 from dskit.production.executor import PaperExecutor
@@ -339,7 +343,7 @@ class CashFlowPolicy:
         """Identity hash of the cash-flow-policy document (notes stripped)."""
         return config_hash(_HashView(self.to_obj()), exclude=())
 
-    def composer_for(self, series_id, start_ms):
+    def composer_for(self, series_id, start_ms, trading_dates):
         """Build one ``ReplayCashFlowComposer`` anchored to a replay's own tape start.
 
         Parameters
@@ -351,13 +355,22 @@ class CashFlowPolicy:
         start_ms : int
             ``tape.start_ms()`` — epoch milliseconds of the tape's first
             instant.
+        trading_dates : frozenset of datetime.date
+            Local dates (in ``self.timezone``) on which the tape has at
+            least one bar (ADR-0178). Every other date from the anchor's
+            date through ``max(trading_dates)`` gets a ``SkipCashFlow``, so
+            a non-trading day is never funded.
 
         Returns
         -------
-        ReplayCashFlowComposer
-            Anchored so the schedule's first occurrence is
-            ``initial_capital_amount + daily_contribution_amount`` and
-            every later daily occurrence is ``daily_contribution_amount``.
+        tuple
+            ``(composer, funding_instants_ms)``. ``composer`` is the
+            ``ReplayCashFlowComposer``, anchored so the schedule's first
+            occurrence is ``initial_capital_amount +
+            daily_contribution_amount`` and every later funded occurrence is
+            ``daily_contribution_amount``. ``funding_instants_ms`` is a tuple
+            of int epoch milliseconds, ascending, one per trading date: the
+            instant each funded occurrence falls due.
 
         Raises
         ------
@@ -385,6 +398,19 @@ class CashFlowPolicy:
             start_ms / 1000, tz=timezone.utc
         ).astimezone(self.timezone)
         first_amount = self.initial_capital_amount + self.daily_contribution_amount
+        overrides = [ReplaceCashFlow("initial-capital-seed", anchor, first_amount)]
+        funding_instants_ms = []
+        day = anchor.date()
+        last = max(trading_dates)
+        while day <= last:
+            occurrence_at = anchor.replace(year=day.year, month=day.month, day=day.day)
+            if day in trading_dates:
+                funding_instants_ms.append(int(occurrence_at.timestamp() * 1000))
+            else:
+                overrides.append(
+                    SkipCashFlow(f"non-trading-day-{day.isoformat()}", occurrence_at)
+                )
+            day += timedelta(days=1)
         try:
             schedule = RecurringCashFlowSchedule(
                 schedule_id=series_id,
@@ -393,16 +419,14 @@ class CashFlowPolicy:
                 currency=self.currency,
                 amount=self.daily_contribution_amount,
                 timezone=self.timezone,
-                overrides=(
-                    ReplaceCashFlow("initial-capital-seed", anchor, first_amount),
-                ),
+                overrides=tuple(overrides),
             )
         except ValueError as exc:
             raise ConfigError([
                 f"cash-flow policy: could not anchor the schedule at "
                 f"{anchor.isoformat()} ({self.timezone.key}): {exc}"
             ]) from exc
-        return ReplayCashFlowComposer(schedule)
+        return ReplayCashFlowComposer(schedule), tuple(funding_instants_ms)
 
 
 class HorizonBook:
@@ -675,6 +699,8 @@ class EquityReplay:
         self._cash_flow_ledger = None
         self._cash_flow_composer = None
         self._cash_flow_window_ms = None
+        self._cash_flow_funding_instants = ()
+        self._cash_flow_funding_index = 0
         self._cash_balance = Decimal("0")
 
     def run(self, bars, decisions):
@@ -791,8 +817,16 @@ class EquityReplay:
             )
             cash_flow_composer = None
             if self._cash_flow_policy is not None:
-                cash_flow_composer = self._cash_flow_policy.composer_for(
-                    series_id, tape.start_ms()
+                trading_dates = frozenset(
+                    datetime.fromtimestamp(t / 1000, tz=timezone.utc)
+                    .astimezone(self._cash_flow_policy.timezone)
+                    .date()
+                    for t in times
+                )
+                cash_flow_composer, cash_flow_funding_instants = (
+                    self._cash_flow_policy.composer_for(
+                        series_id, tape.start_ms(), trading_dates
+                    )
                 )
             try:
                 schedule, data, decision, safety, execution, recording, observability = bundles_for(
@@ -814,10 +848,14 @@ class EquityReplay:
                 self._cash_flow_ledger = recording.ledger
                 self._cash_flow_composer = cash_flow_composer
                 self._cash_flow_window_ms = tape.start_ms()
+                self._cash_flow_funding_instants = cash_flow_funding_instants
+                self._cash_flow_funding_index = 0
             else:
                 self._cash_flow_ledger = None
                 self._cash_flow_composer = None
                 self._cash_flow_window_ms = None
+                self._cash_flow_funding_instants = ()
+                self._cash_flow_funding_index = 0
             self._venue = _PaperVenue(
                 PaperExecutor(
                     policy.paper_params(),
@@ -837,6 +875,10 @@ class EquityReplay:
                 recording, observability, lock=lock, process_id="replay-1",
             )
             code = loop.run()
+            try:
+                self._flush_cash_flows()
+            except (KeyError, TypeError, ValueError, ArithmeticError, ProductionError) as exc:
+                raise ConfigError([str(exc)]) from exc
             failed = []
             for envelope in recording.ledger.scan(kind="tick"):
                 body = envelope.get("body") or {}
@@ -866,16 +908,36 @@ class EquityReplay:
             shutil.rmtree(work, ignore_errors=True)
 
     def _submit_due_cash_flows(self, tick_at_ms):
-        """Append cash-flow records due in ``[_cash_flow_window_ms, tick_at_ms]`` (ADR-0176)."""
+        """Fund the window once this tick reaches the next funding instant (ADR-0176/0178)."""
         if self._cash_flow_composer is None:
             return
-        window_end_ms = tick_at_ms + 1
+        instants = self._cash_flow_funding_instants
+        index = self._cash_flow_funding_index
+        if index >= len(instants) or tick_at_ms < instants[index]:
+            return
+        self._advance_cash_flow_window(tick_at_ms + 1)
+
+    def _flush_cash_flows(self):
+        """Fund every funding instant no tick reached, once the tape ends (ADR-0178 point 1.6)."""
+        if self._cash_flow_composer is None or not self._cash_flow_funding_instants:
+            return
+        self._advance_cash_flow_window(self._cash_flow_funding_instants[-1] + 1)
+
+    def _advance_cash_flow_window(self, window_end_ms):
+        """Append records due in ``[_cash_flow_window_ms, window_end_ms)``; advance the index."""
+        if window_end_ms <= self._cash_flow_window_ms:
+            return
         start = datetime.fromtimestamp(self._cash_flow_window_ms / 1000, tz=timezone.utc)
         end_exclusive = datetime.fromtimestamp(window_end_ms / 1000, tz=timezone.utc)
         due = self._cash_flow_composer.due(start, end_exclusive)
         if due:
             self._cash_flow_ledger.append_many(due)
             self._cash_balance += sum(Decimal(record["body"]["amount"]) for record in due)
+        instants = self._cash_flow_funding_instants
+        index = self._cash_flow_funding_index
+        while index < len(instants) and instants[index] < window_end_ms:
+            index += 1
+        self._cash_flow_funding_index = index
         self._cash_flow_window_ms = window_end_ms
 
     def read_entry(self, tick_at_ms):

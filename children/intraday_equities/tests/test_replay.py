@@ -11,7 +11,8 @@ import ast
 import copy
 import json
 import os
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -805,10 +806,18 @@ def test_cash_flow_policy_refuses_an_unknown_timezone_or_empty_currency():
         _cash_flow_policy({"currency": ""})
 
 
+def _every_local_date(policy, start_ms, days):
+    """Every calendar date from ``start_ms``'s own local date, ``days`` long (ADR-0178 point 5)."""
+    anchor = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).astimezone(policy.timezone)
+    return frozenset(anchor.date() + timedelta(days=i) for i in range(days))
+
+
 def test_composer_for_folds_initial_capital_into_the_first_daily_occurrence():
     policy = _cash_flow_policy()
     start_ms = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
-    composer = policy.composer_for("series-a", start_ms)
+    composer, _funding_instants = policy.composer_for(
+        "series-a", start_ms, _every_local_date(policy, start_ms, 4)
+    )
     window_end = start_ms + 3 * 86_400_000 + 1
     due = composer.due(
         datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc),
@@ -823,14 +832,16 @@ def test_composer_for_folds_initial_capital_into_the_first_daily_occurrence():
 def test_composer_for_refuses_an_empty_tape():
     policy = _cash_flow_policy()
     with pytest.raises(ConfigError, match="empty"):
-        policy.composer_for("series-a", 0)
+        policy.composer_for("series-a", 0, frozenset())
 
 
 def test_composer_for_materializes_safely_across_a_dst_transition():
     # 2026-03-08 is the US spring-forward date; anchor two days before at 09:30 ET.
     policy = _cash_flow_policy()
     start_ms = int(datetime(2026, 3, 6, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
-    composer = policy.composer_for("series-b", start_ms)
+    composer, _funding_instants = policy.composer_for(
+        "series-b", start_ms, _every_local_date(policy, start_ms, 7)
+    )
     window_end = start_ms + 6 * 86_400_000 + 1
     due = composer.due(
         datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc),
@@ -862,8 +873,26 @@ class _CapturingEquityReplay(EquityReplay):
         return batch
 
 
+class _CountingComposer:
+    """Delegate ``due`` to the replay's real composer, counting only the replay's own calls.
+
+    ``ReplayCashFlowComposer`` is slotted and immutable, and the ledger authorizer bound
+    from it (``_authorizes``) also calls ``due`` once per appended record -- so a
+    class-level patch would count the authorizer's calls too. Wrapping only the replay's
+    own reference counts exactly the bookkeeping calls ADR-0178 bounds.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls = 0
+
+    def due(self, start, end_exclusive):
+        self.calls += 1
+        return self._inner.due(start, end_exclusive)
+
+
 class _WindowSpyingEquityReplay(EquityReplay):
-    """Record the ``(window_start_ms, window_end_ms)`` used on every tick's cash-flow submission.
+    """Record every tick's cash-flow gate decision, window, and funding index (ADR-0176/0178).
 
     ``_CapturingEquityReplay`` (above) proves the final ledger content is right, but the
     ledger's own id-based idempotence (restart safety, ``dskit.production.cashflows``)
@@ -871,17 +900,67 @@ class _WindowSpyingEquityReplay(EquityReplay):
     assertion alone cannot tell "window advanced correctly" apart from "window never
     advanced, but re-submitting the same records every tick was harmless". This subclass
     asserts the window sequence itself, independent of that safety net.
+
+    ADR-0178 point 5.5: each tick also records whether its call reached ``due()``
+    (``gated`` False) or returned at the funding-instant gate (``gated`` True), so a
+    skipped tick is still checked, not invisible. The end-of-tape flush (point 1.6) runs
+    after the last tick, where no per-tick snapshot can see it, so the flush's own
+    ``due()`` calls, final funding index, and the ledger before/after it are recorded.
     """
 
     def __init__(self, policy, cash_flow_policy):
         super().__init__(policy, cash_flow_policy)
-        self.cash_flow_windows = []
+        self.ticks = []
+        self.due_counter = None
+        self.flush_due_calls = None
+        self.flushed_index = None
+        self.flushed_instants = None
+        self.pre_flush_bodies = None
+        self.cash_flow_bodies = None
+        self.bookkeeping_seconds = 0.0
+
+    def _due_calls(self):
+        if self._cash_flow_composer is not None and self.due_counter is None:
+            self.due_counter = _CountingComposer(self._cash_flow_composer)
+            self._cash_flow_composer = self.due_counter
+        return 0 if self.due_counter is None else self.due_counter.calls
+
+    def _ledger_bodies(self):
+        return [
+            dict(envelope.get("body") or {})
+            for envelope in self._cash_flow_ledger.scan(kind="cash_flow")
+        ]
 
     def _submit_due_cash_flows(self, tick_at_ms):
+        calls = self._due_calls()
         window_start_ms = self._cash_flow_window_ms
+        index = getattr(self, "_cash_flow_funding_index", None)
+        started = time.perf_counter()
         super()._submit_due_cash_flows(tick_at_ms)
-        if self._cash_flow_composer is not None:
-            self.cash_flow_windows.append((window_start_ms, self._cash_flow_window_ms))
+        self.bookkeeping_seconds += time.perf_counter() - started
+        if self._cash_flow_composer is None:
+            return
+        made = self._due_calls() - calls
+        self.ticks.append({
+            "at": tick_at_ms,
+            "gated": made == 0,
+            "due_calls": made,
+            "window": (window_start_ms, self._cash_flow_window_ms),
+            "index": (index, getattr(self, "_cash_flow_funding_index", None)),
+        })
+
+    def _flush_cash_flows(self):
+        calls = self._due_calls()
+        if self._cash_flow_ledger is not None:
+            self.pre_flush_bodies = self._ledger_bodies()
+        started = time.perf_counter()
+        super()._flush_cash_flows()
+        self.bookkeeping_seconds += time.perf_counter() - started
+        self.flush_due_calls = self._due_calls() - calls
+        self.flushed_index = self._cash_flow_funding_index
+        self.flushed_instants = self._cash_flow_funding_instants
+        if self._cash_flow_ledger is not None:
+            self.cash_flow_bodies = self._ledger_bodies()
 
 
 _CF_DAY0_MS = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
@@ -889,24 +968,38 @@ _CF_DAY1_MS = _CF_DAY0_MS + 86_400_000
 _CF_DAY2_MS = _CF_DAY0_MS + 2 * 86_400_000
 
 
-def test_the_cash_flow_window_advances_by_exactly_one_tick_each_call():
+def test_the_cash_flow_window_advances_only_on_ticks_that_reach_a_funding_instant():
+    # ADR-0178 point 5.5: authorized rewrite of ADR-0176's
+    # test_the_cash_flow_window_advances_by_exactly_one_tick_each_call. Funding instants
+    # are DAY0 and DAY1 (the anchor's 09:30 ET on each trading date); a tick short of the
+    # next unfunded instant is gated -- no due() call, window and index both stay put.
     policy = _policy()
     replay = _WindowSpyingEquityReplay(policy, _cash_flow_policy())
     bars = [
         _bar("AAA", _CF_DAY0_MS, 10.0, 10.1),
         _bar("AAA", _CF_DAY0_MS + 60_000, 10.1, 10.2),
         _bar("AAA", _CF_DAY1_MS, 11.0, 11.1),
+        _bar("AAA", _CF_DAY1_MS + 60_000, 11.1, 11.2),
     ]
     replay.run(bars, [])
-    assert replay.cash_flow_windows == [
-        (_CF_DAY0_MS, _CF_DAY0_MS + 1),
-        (_CF_DAY0_MS + 1, _CF_DAY0_MS + 60_000 + 1),
-        (_CF_DAY0_MS + 60_000 + 1, _CF_DAY1_MS + 1),
+    assert [
+        (tick["at"], tick["gated"], tick["due_calls"], tick["window"], tick["index"])
+        for tick in replay.ticks
+    ] == [
+        (_CF_DAY0_MS, False, 1, (_CF_DAY0_MS, _CF_DAY0_MS + 1), (0, 1)),
+        (_CF_DAY0_MS + 60_000, True, 0, (_CF_DAY0_MS + 1, _CF_DAY0_MS + 1), (1, 1)),
+        (_CF_DAY1_MS, False, 1, (_CF_DAY0_MS + 1, _CF_DAY1_MS + 1), (1, 2)),
+        (_CF_DAY1_MS + 60_000, True, 0, (_CF_DAY1_MS + 1, _CF_DAY1_MS + 1), (2, 2)),
     ]
-    # Contiguous: each window's end is exactly the next window's start -- no gap, no overlap.
-    windows = replay.cash_flow_windows
+    # Contiguous across the ticks that did call due(): each window's end is exactly the
+    # next window's start -- no gap, no overlap.
+    windows = [tick["window"] for tick in replay.ticks if not tick["gated"]]
     for (_, end), (next_start, _) in zip(windows, windows[1:]):
         assert end == next_start
+    # The per-tick gate already funded both instants, so the flush is a no-op.
+    assert replay.flush_due_calls == 0
+    assert replay.flushed_instants == (_CF_DAY0_MS, _CF_DAY1_MS)
+    assert replay.flushed_index == 2
 
 
 def test_a_full_replay_submits_the_configured_cash_flows_into_its_own_ledger():
@@ -1157,3 +1250,216 @@ def test_without_a_cash_flow_policy_an_unaffordable_buy_still_fills(run):
     ]
     assert out["refused"] == []
     assert out["skipped"] == []
+
+
+# --- ADR-0178: market-calendar-aware cash-flow contribution timing ---------
+
+
+_CF_TZ = CashFlowPolicy.from_path(CASH_FLOW_POLICY_PATH).timezone
+
+
+def _local_ms(year, month, day, hour, minute):
+    """Epoch ms of one wall-clock instant in the shipped cash-flow policy's own timezone."""
+    return int(datetime(year, month, day, hour, minute, tzinfo=_CF_TZ).timestamp() * 1000)
+
+
+def _utc(ms):
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+def _funded(bodies):
+    """``(effective_at_ms, amount)`` per cash-flow record, in effective order."""
+    return sorted(
+        (body["effective_at_ms"], Decimal(body["amount"])) for body in bodies
+    )
+
+
+def test_composer_for_skips_non_trading_dates_and_returns_one_instant_per_trading_date():
+    policy = _cash_flow_policy()
+    friday = _local_ms(2026, 1, 9, 9, 30)
+    monday = _local_ms(2026, 1, 12, 9, 30)
+    composer, instants = policy.composer_for(
+        "series-c", friday, frozenset({date(2026, 1, 9), date(2026, 1, 12)})
+    )
+    assert instants == (friday, monday)
+    due = composer.due(_utc(friday), _utc(monday + 1))
+    assert _funded(record["body"] for record in due) == [
+        (friday, Decimal("1020")), (monday, Decimal("20")),
+    ]
+
+
+def test_a_weekend_is_skipped_friday_funds_the_seed_and_monday_only_its_own_twenty():
+    friday = _local_ms(2026, 1, 9, 9, 30)
+    monday = _local_ms(2026, 1, 12, 9, 30)
+    replay = _CapturingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", friday, 10.0, 10.1),
+        _bar("AAA", friday + 60_000, 10.1, 10.2),
+        _bar("AAA", monday, 11.0, 11.1),
+        _bar("AAA", monday + 60_000, 11.1, 11.2),
+    ], [])
+    # No Saturday/Sunday record, and Monday is exactly $20 -- not $60 of weekend backlog.
+    assert _funded(replay.cash_flow_snapshots) == [
+        (friday, Decimal("1020")), (monday, Decimal("20")),
+    ]
+    assert replay._cash_balance == Decimal("1040")
+
+
+def test_a_single_mid_week_gap_date_is_skipped_and_the_next_day_funds_only_itself():
+    tuesday = _local_ms(2026, 1, 6, 9, 30)
+    thursday = _local_ms(2026, 1, 8, 9, 30)
+    replay = _CapturingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", tuesday, 10.0, 10.1),
+        _bar("AAA", tuesday + 60_000, 10.1, 10.2),
+        _bar("AAA", thursday, 11.0, 11.1),
+    ], [])
+    assert _funded(replay.cash_flow_snapshots) == [
+        (tuesday, Decimal("1020")), (thursday, Decimal("20")),
+    ]
+
+
+def test_the_anchor_date_is_never_skipped_even_on_a_saturday_past_utc_midnight():
+    # Saturday 19:30 local is already Sunday in UTC: a weekday-based or UTC-dated
+    # trading-day rule would each mistake the anchor's own date for a non-trading one.
+    saturday = _local_ms(2026, 1, 10, 19, 30)
+    monday = _local_ms(2026, 1, 12, 19, 30)
+    assert _utc(saturday).astimezone(_CF_TZ).weekday() == 5
+    assert _utc(saturday).date() != _utc(saturday).astimezone(_CF_TZ).date()
+    replay = _CapturingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", saturday, 10.0, 10.1),
+        _bar("AAA", monday, 11.0, 11.1),
+    ], [])
+    assert _funded(replay.cash_flow_snapshots) == [
+        (saturday, Decimal("1020")), (monday, Decimal("20")),
+    ]
+
+
+def test_a_dense_gap_free_tape_funds_exactly_as_adr_0176_did():
+    # Regression baseline: every calendar date has a bar, so nothing is skipped and the
+    # ledger is one record per calendar day at the anchor's local time, as before.
+    days = [_local_ms(2026, 1, 5 + i, 9, 30) for i in range(7)]
+    bars = []
+    for day in days:
+        bars.append(_bar("AAA", day, 10.0, 10.1))
+        bars.append(_bar("AAA", day + 60_000, 10.1, 10.2))
+    replay = _CapturingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run(bars, [])
+    assert _funded(replay.cash_flow_snapshots) == (
+        [(days[0], Decimal("1020"))] + [(day, Decimal("20")) for day in days[1:]]
+    )
+
+
+def test_a_later_tick_on_the_same_day_funds_an_instant_its_first_tick_missed():
+    # Point 1.5 (the Revision-2 counter-scenario): anchor Monday 10:00; Tuesday and
+    # Wednesday open at 09:30, before their own 10:00 instant, but each has a 10:30 bar
+    # that reaches it. The per-tick gate alone funds all three days; the flush is a no-op.
+    monday = _local_ms(2026, 1, 5, 10, 0)
+    tuesday = _local_ms(2026, 1, 6, 10, 0)
+    wednesday = _local_ms(2026, 1, 7, 10, 0)
+    replay = _WindowSpyingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", monday, 10.0, 10.1),
+        _bar("AAA", tuesday - 30 * 60_000, 10.1, 10.2),
+        _bar("AAA", tuesday + 30 * 60_000, 10.2, 10.3),
+        _bar("AAA", wednesday - 30 * 60_000, 10.3, 10.4),
+        _bar("AAA", wednesday + 30 * 60_000, 10.4, 10.5),
+    ], [])
+    assert [tick["gated"] for tick in replay.ticks] == [False, True, False, True, False]
+    assert replay.ticks[-1]["index"] == (2, 3)
+    assert replay.flush_due_calls == 0
+    assert replay.flushed_instants == (monday, tuesday, wednesday)
+    assert replay.flushed_index == len(replay.flushed_instants)
+    assert _funded(replay.cash_flow_bodies) == [
+        (monday, Decimal("1020")), (tuesday, Decimal("20")), (wednesday, Decimal("20")),
+    ]
+    assert replay.pre_flush_bodies == replay.cash_flow_bodies
+
+
+def test_the_end_of_tape_flush_funds_an_early_close_last_day_no_tick_reaches():
+    # Point 1.6 (the Revision-3 counter-scenario): anchor Monday 13:01; Tuesday is a
+    # normal session; Wednesday -- the tape's last day -- closes early with every bar at
+    # or before 13:00, so no tick ever reaches Wednesday's 13:01 instant. Only the flush
+    # can fund it.
+    monday = _local_ms(2026, 1, 5, 13, 1)
+    tuesday = _local_ms(2026, 1, 6, 13, 1)
+    wednesday = _local_ms(2026, 1, 7, 13, 1)
+    wednesday_bars = [
+        _local_ms(2026, 1, 7, 9, 30), _local_ms(2026, 1, 7, 12, 0), _local_ms(2026, 1, 7, 13, 0),
+    ]
+    replay = _WindowSpyingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", monday, 10.0, 10.1),
+        _bar("AAA", _local_ms(2026, 1, 5, 15, 59), 10.1, 10.2),
+        _bar("AAA", _local_ms(2026, 1, 6, 9, 30), 10.2, 10.3),
+        _bar("AAA", tuesday, 10.3, 10.4),
+        _bar("AAA", _local_ms(2026, 1, 6, 15, 59), 10.4, 10.5),
+    ] + [_bar("AAA", at, 10.5, 10.6) for at in wednesday_bars], [])
+    assert all(at < wednesday for at in wednesday_bars)
+    assert [tick["gated"] for tick in replay.ticks] == [
+        False, True, True, False, True, True, True, True,
+    ]
+    # Before the flush Wednesday is unfunded and its instant is still pending ...
+    assert replay.ticks[-1]["index"] == (2, 2)
+    assert wednesday not in [at for at, _ in _funded(replay.pre_flush_bodies)]
+    # ... and the flush alone funds it, with exactly one due() call.
+    assert replay.flush_due_calls == 1
+    assert replay.flushed_instants == (monday, tuesday, wednesday)
+    assert replay.flushed_index == len(replay.flushed_instants)
+    assert _funded(replay.cash_flow_bodies) == [
+        (monday, Decimal("1020")), (tuesday, Decimal("20")), (wednesday, Decimal("20")),
+    ]
+    assert replay._cash_balance == Decimal("1060")
+
+
+def _full_year_trading_dates():
+    """2026 weekdays from Jan 2 through Dec 31, less a representative exchange-holiday set."""
+    holidays = {
+        date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3), date(2026, 5, 25),
+        date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7), date(2026, 11, 26),
+        date(2026, 12, 25),
+    }
+    day, last, found = date(2026, 1, 2), date(2026, 12, 31), []
+    while day <= last:
+        if day.weekday() < 5 and day not in holidays:
+            found.append(day)
+        day += timedelta(days=1)
+    return found
+
+
+def test_due_is_called_once_per_trading_date_not_once_per_tick_over_a_full_year():
+    # Scale row: a full year of trading dates, so ~113 SkipCashFlow overrides (weekends
+    # plus holidays) sit on the real RecurringCashFlowSchedule. A market-open anchor means
+    # every day's first tick reaches its own instant, so due() fires exactly once per
+    # trading date and the flush adds nothing. ServeLoop itself costs ~30 ms/tick, so
+    # the tape carries three bars a day; the due() count is independent of that density.
+    trading = _full_year_trading_dates()
+    assert (trading[-1] - trading[0]).days + 1 - len(trading) >= 60
+    bars = [
+        _bar("AAA", _local_ms(day.year, day.month, day.day, hour, minute), 10.0, 10.1)
+        for day in trading
+        for hour, minute in ((9, 30), (12, 45), (15, 59))
+    ]
+    cash_flow_policy = _cash_flow_policy()
+    replay = _WindowSpyingEquityReplay(_policy(), cash_flow_policy)
+    started = time.perf_counter()
+    replay.run(bars, [])
+    elapsed = time.perf_counter() - started
+    calls = replay.due_counter.calls
+    print(
+        f"\nADR-0178 scale: {len(bars)} ticks, {len(trading)} trading dates, "
+        f"{calls} due() calls, flush {replay.flush_due_calls}, "
+        f"cash-flow bookkeeping {replay.bookkeeping_seconds:.2f}s, run {elapsed:.2f}s"
+    )
+    assert len(replay.ticks) == len(bars)
+    assert calls <= len(trading) + 1
+    assert calls == len(trading)
+    assert replay.flush_due_calls == 0
+    assert replay.flushed_index == len(replay.flushed_instants) == len(trading)
+    assert replay._cash_balance == (
+        cash_flow_policy.initial_capital_amount
+        + cash_flow_policy.daily_contribution_amount * len(trading)
+    )
+    # Generous, honest ceiling for the cash-flow bookkeeping alone (ADR-0178 scale row).
+    assert replay.bookkeeping_seconds < 60
