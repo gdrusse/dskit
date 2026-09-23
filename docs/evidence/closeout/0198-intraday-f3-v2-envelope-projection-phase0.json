@@ -1,0 +1,44 @@
+{
+  "schema_version": "F3V2EnvelopeProjectionPhase0.v1",
+  "deployment_eligible": false,
+  "adr": {
+    "id": "ADR-0171",
+    "path": "docs/architecture/decision-log.md",
+    "scope": "bounded pure v2 event-to-envelope projection only; no trust adapter, writer effect, replay, or backtest",
+    "final_reviewed_commit": "6228468aafb46eedcdcedf99118d9b5bae1fdec1",
+    "final_reviewed_blob": "b2f7b4dc449bee483c583f0637230fc8a8ed9858"
+  },
+  "initial_phase0": {
+    "reviewed_commit": "c03954f0e2b37f4756fc17eabc8ba77972337d40",
+    "critical": 0,
+    "major": 2,
+    "minor": 2,
+    "nit": 0,
+    "findings": [
+      "policy digest field conflicted with canonical SourceRankPolicy.v1",
+      "policy entries lacked exact source-id and rank validation",
+      "signed availability bounds were not present in the pure function input",
+      "positional-only prose did not pin the Python slash signature"
+    ],
+    "disposition": "proposal amended; prior text was not eligible for approval"
+  },
+  "amendments": [
+    "canonical exact policy_sha256 wire and digest preimage",
+    "exact typed sorted unique source entries with positional ranks",
+    "availability scope explicitly remains the later trust adapter's responsibility",
+    "positional-only two-argument signature pinned with slash"
+  ],
+  "final_independent_review": {
+    "reviewed_commit": "6228468aafb46eedcdcedf99118d9b5bae1fdec1",
+    "reviewed_blob": "b2f7b4dc449bee483c583f0637230fc8a8ed9858",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "focused_baseline": "252 passed plus 123 passed",
+    "diff_check": "clean",
+    "result": "GO for explicit owner approval, then RED"
+  },
+  "implementation_status": "not started; explicit owner approval required",
+  "non_authority": "This proposal does not authorize a trust adapter, environment comparison effect, publication, replay, backtest, HPO, refit, paper trading, or live trading."
+}
