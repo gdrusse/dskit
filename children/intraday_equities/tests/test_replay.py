@@ -12,6 +12,7 @@ import copy
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -21,7 +22,9 @@ from dskit.pipeline.node import ConfigError
 
 from intraday_equities.nodes_capital import SchwabCostModel
 from intraday_equities.replay import (
+    CashFlowPolicy,
     DevelopmentReplay,
+    EquityReplay,
     FillPolicy,
     ReplayAdapter,
 )
@@ -29,6 +32,7 @@ from intraday_equities.replay import (
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
 FILL_POLICY_PATH = os.path.join(CONFIGS, "fill-policy.json")
+CASH_FLOW_POLICY_PATH = os.path.join(CONFIGS, "cash-flow-policy.json")
 REPLAY_PY = os.path.join(
     CHILD_ROOT, "intraday_equities", "replay.py"
 )
@@ -744,3 +748,168 @@ def test_mark_source_and_forced_exit_at_are_read():
     assert policy.forced_exit_at == "horizon_expiry"
     exit_row = next(row for row in out["fills"] if row["kind"] == "exit")
     assert exit_row["price"] == pytest.approx(12.0)
+
+
+# --- ADR-0176: a configured cash-flow schedule for the equity replay -----
+
+
+def _raw_cash_flow_policy():
+    with open(CASH_FLOW_POLICY_PATH, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _cash_flow_policy(overrides=None):
+    payload = _raw_cash_flow_policy()
+    if overrides:
+        payload.update(overrides)
+    return CashFlowPolicy(payload)
+
+
+def test_shipped_cash_flow_policy_names_every_knob_and_hashes():
+    raw = _raw_cash_flow_policy()
+    policy = CashFlowPolicy.from_path(CASH_FLOW_POLICY_PATH)
+    assert policy.currency == raw["currency"]
+    assert policy.daily_contribution_amount == Decimal(raw["daily_contribution_amount"])
+    assert policy.initial_capital_amount == Decimal(raw["initial_capital_amount"])
+    assert policy.timezone.key == raw["timezone"]
+    assert policy.digest() == CashFlowPolicy(raw).digest()
+
+
+def test_cash_flow_policy_refuses_a_missing_or_unknown_knob():
+    raw = _raw_cash_flow_policy()
+    missing = dict(raw)
+    del missing["daily_contribution_amount"]
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        CashFlowPolicy(missing)
+    with pytest.raises(ConfigError, match="leverage"):
+        CashFlowPolicy(dict(raw, leverage=2))
+
+
+def test_cash_flow_policy_refuses_a_non_positive_or_unparseable_amount():
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        _cash_flow_policy({"daily_contribution_amount": "0"})
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        _cash_flow_policy({"daily_contribution_amount": "-5"})
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        _cash_flow_policy({"daily_contribution_amount": "not-a-number"})
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        _cash_flow_policy({"daily_contribution_amount": 20})
+    with pytest.raises(ConfigError, match="initial_capital_amount"):
+        _cash_flow_policy({"initial_capital_amount": "0"})
+
+
+def test_cash_flow_policy_refuses_an_unknown_timezone_or_empty_currency():
+    with pytest.raises(ConfigError, match="timezone"):
+        _cash_flow_policy({"timezone": "Not/AZone"})
+    with pytest.raises(ConfigError, match="currency"):
+        _cash_flow_policy({"currency": ""})
+
+
+def test_composer_for_folds_initial_capital_into_the_first_daily_occurrence():
+    policy = _cash_flow_policy()
+    start_ms = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
+    composer = policy.composer_for("series-a", start_ms)
+    window_end = start_ms + 3 * 86_400_000 + 1
+    due = composer.due(
+        datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc),
+        datetime.fromtimestamp(window_end / 1000, tz=timezone.utc),
+    )
+    amounts = [Decimal(record["body"]["amount"]) for record in due]
+    assert amounts == [Decimal("1020"), Decimal("20"), Decimal("20"), Decimal("20")]
+    assert all(record["body"]["currency"] == "USD" for record in due)
+    assert all(record["kind"] == "cash_flow" for record in due)
+
+
+def test_composer_for_refuses_an_empty_tape():
+    policy = _cash_flow_policy()
+    with pytest.raises(ConfigError, match="empty"):
+        policy.composer_for("series-a", 0)
+
+
+def test_composer_for_materializes_safely_across_a_dst_transition():
+    # 2026-03-08 is the US spring-forward date; anchor two days before at 09:30 ET.
+    policy = _cash_flow_policy()
+    start_ms = int(datetime(2026, 3, 6, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
+    composer = policy.composer_for("series-b", start_ms)
+    window_end = start_ms + 6 * 86_400_000 + 1
+    due = composer.due(
+        datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc),
+        datetime.fromtimestamp(window_end / 1000, tz=timezone.utc),
+    )
+    # Crosses the transition; every occurrence must be a real, ascending, positive-amount
+    # instant -- proving safe materialization. .astimezone() always yields a valid instant,
+    # so _valid_local's gap/fold ValueError is unreachable via this exact construction.
+    instants = [record["body"]["effective_at_ms"] for record in due]
+    assert instants == sorted(instants)
+    assert len(instants) == len(set(instants)) == 7
+    assert all(Decimal(record["body"]["amount"]) > 0 for record in due)
+
+
+class _CapturingEquityReplay(EquityReplay):
+    """Snapshot the run's own cash-flow ledger each tick, before ``_run_loop``'s cleanup."""
+
+    def __init__(self, policy, cash_flow_policy):
+        super().__init__(policy, cash_flow_policy)
+        self.cash_flow_snapshots = []
+
+    def read_entry(self, tick_at_ms):
+        batch = super().read_entry(tick_at_ms)
+        if self._cash_flow_ledger is not None:
+            self.cash_flow_snapshots = [
+                dict(envelope.get("body") or {})
+                for envelope in self._cash_flow_ledger.scan(kind="cash_flow")
+            ]
+        return batch
+
+
+_CF_DAY0_MS = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
+_CF_DAY1_MS = _CF_DAY0_MS + 86_400_000
+_CF_DAY2_MS = _CF_DAY0_MS + 2 * 86_400_000
+
+
+def test_a_full_replay_submits_the_configured_cash_flows_into_its_own_ledger():
+    policy = _policy()
+    replay = _CapturingEquityReplay(policy, _cash_flow_policy())
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.5),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.5),
+        _bar("AAA", _CF_DAY2_MS, 12.0, 12.5),
+    ]
+    replay.run(bars, [])
+    bodies = replay.cash_flow_snapshots
+    assert len(bodies) == 3
+    amounts = sorted(Decimal(body["amount"]) for body in bodies)
+    assert amounts == [Decimal("20"), Decimal("20"), Decimal("1020")]
+    assert all(body["currency"] == "USD" for body in bodies)
+    # Every submitted record round-tripped through the real SeriesState._for_replay
+    # authorizer bound from this exact composer -- ServeLoop would have failed the run
+    # (surfaced as a raised error from _run_loop) had any submission been refused.
+
+
+def test_only_one_cash_flow_record_lands_per_calendar_day_despite_many_ticks():
+    policy = _policy()
+    replay = _CapturingEquityReplay(policy, _cash_flow_policy())
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.1),
+        _bar("AAA", _CF_DAY0_MS + 60_000, 10.1, 10.2),
+        _bar("AAA", _CF_DAY0_MS + 120_000, 10.2, 10.3),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.1),
+        _bar("AAA", _CF_DAY1_MS + 60_000, 11.1, 11.2),
+    ]
+    replay.run(bars, [])
+    bodies = replay.cash_flow_snapshots
+    assert len(bodies) == 2
+    assert sorted(Decimal(body["amount"]) for body in bodies) == [Decimal("20"), Decimal("1020")]
+
+
+def test_a_replay_without_a_cash_flow_policy_submits_no_cash_flow_records():
+    policy = _policy()
+    replay = _CapturingEquityReplay(policy, None)
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.5),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.5),
+    ]
+    replay.run(bars, [])
+    assert replay.cash_flow_snapshots == []
+    assert replay._cash_flow_ledger is None
+    assert replay._cash_flow_composer is None

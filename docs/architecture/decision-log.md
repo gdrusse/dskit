@@ -20857,8 +20857,34 @@ trading, no deployment.
 
 ## ADR-0176 — a configured cash-flow schedule for the child's equity replay
 
-**Status:** PROPOSED — AWAITING PHASE-0 REVIEW (REVISION 3). Not yet
-implemented. Revision 3 adds Decision point 3.5 (below): during Phase-0
+**Status:** PHASE-0 CLEAN (REVISION 3) — CANDIDATE IMPLEMENTED, AWAITING
+TWO INDEPENDENT FINAL REVIEWS. A fresh independent design skeptic
+reviewed point 3.5 cold, verified every code claim against the actual
+source (`TICK_PHASES` order, `_TapeCadence` strict ascent, the decider
+install site, `RecurringCashFlowSchedule`/`materialize` DST and
+half-open-window behavior, the `reconcile.py` direct-`Ledger.append`
+precedent, the partition proof): 0 Critical, 0 Major, GO for RED. RED
+confirmed against the pre-3.5 tree (the three new end-to-end tests failed
+with `AttributeError: no attribute '_cash_flow_ledger'`, exactly as
+expected — no other new test changed behavior since points 1–3 were
+already implemented and Phase-0 clean). Minimal implementation added:
+three new `None`-defaulted instance attributes on `EquityReplay.__init__`,
+population of those three inside `_run_loop` right after `bundles_for`
+succeeds, and one new private helper (`_submit_due_cash_flows`) called
+from the first line of the existing `read_entry` decider hook — exactly
+as specified, nothing else touched. Full child replay suite: 44 passed, 1
+skipped (unchanged skip). Bounded regression (`tests/production/test_
+cashflows.py`, `test_compose.py`, `test_state.py`, `test_ledger.py`,
+`test_reconcile.py`, `test_loop.py`, `test_purity.py`, `test_oop.py`,
+`test_producers.py`): 1113 passed. Purity gates
+(`tests/pipeline/test_purity.py`, `tests/production/test_purity.py`): 43
+passed. Ruff and `git diff --check`: clean. The wider child suite showed
+35 unrelated pre-existing failures (pyomo real-solver absence, stale
+`approved_inventory_sha256` fixture pins, MLflow/model-zoo fixture
+drift) — reproduced identically with this ADR's changes stashed out,
+confirming non-regression.
+
+**Status history.** Revision 3 adds Decision point 3.5 (below): during Phase-0
 matrix preparation it became clear Revision 2's Decision (composer wired
 into `bundles_for` purely as a `SeriesState._for_replay` authorization
 gate) could never satisfy Revision 2's OWN "mandatory end-to-end test" row

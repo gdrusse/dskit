@@ -672,6 +672,9 @@ class EquityReplay:
         self._queued = []
         self._pending_by_id = {}
         self._fault = None
+        self._cash_flow_ledger = None
+        self._cash_flow_composer = None
+        self._cash_flow_window_ms = None
 
     def run(self, bars, decisions):
         """Drive ServeLoop over ``bars`` and return fills/skips/refusals."""
@@ -806,6 +809,14 @@ class EquityReplay:
                 )
             except ProductionError as exc:
                 raise ConfigError(list(exc.problems)) from exc
+            if cash_flow_composer is not None:
+                self._cash_flow_ledger = recording.ledger
+                self._cash_flow_composer = cash_flow_composer
+                self._cash_flow_window_ms = tape.start_ms()
+            else:
+                self._cash_flow_ledger = None
+                self._cash_flow_composer = None
+                self._cash_flow_window_ms = None
             self._venue = _PaperVenue(
                 PaperExecutor(
                     policy.paper_params(),
@@ -853,9 +864,22 @@ class EquityReplay:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    def _submit_due_cash_flows(self, tick_at_ms):
+        """Append cash-flow records due in ``[_cash_flow_window_ms, tick_at_ms]`` (ADR-0176)."""
+        if self._cash_flow_composer is None:
+            return
+        window_end_ms = tick_at_ms + 1
+        start = datetime.fromtimestamp(self._cash_flow_window_ms / 1000, tz=timezone.utc)
+        end_exclusive = datetime.fromtimestamp(window_end_ms / 1000, tz=timezone.utc)
+        due = self._cash_flow_composer.due(start, end_exclusive)
+        if due:
+            self._cash_flow_ledger.append_many(due)
+        self._cash_flow_window_ms = window_end_ms
+
     def read_entry(self, tick_at_ms):
         """Freeze every name's bar at this tick as the entry batch."""
         asof = int(tick_at_ms)
+        self._submit_due_cash_flows(asof)
         records = []
         watermarks = {}
         for symbol, seq in self._by_symbol.items():
