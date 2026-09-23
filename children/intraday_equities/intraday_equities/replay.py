@@ -675,6 +675,7 @@ class EquityReplay:
         self._cash_flow_ledger = None
         self._cash_flow_composer = None
         self._cash_flow_window_ms = None
+        self._cash_balance = Decimal("0")
 
     def run(self, bars, decisions):
         """Drive ServeLoop over ``bars`` and return fills/skips/refusals."""
@@ -1071,14 +1072,22 @@ class EquityReplay:
                     "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": "min_price",
                 })
                 continue
+            fee = (
+                policy.costs.buy_per_share(price) if side == "buy" else policy.costs.sell_per_share(price)
+            ) * qty
+            if self._cash_flow_composer is not None and side == "buy":
+                cost = Decimal(str(price)) * Decimal(str(qty)) + Decimal(str(fee))
+                if cost > self._cash_balance:
+                    self.refused.append({
+                        "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead,
+                        "reason": "insufficient_cash",
+                    })
+                    continue
             if not self._book.open_lot(symbol, lead, qty, side, index):
                 self.refused.append({
                     "symbol": symbol, "asof_ms": bar["asof_ms"], "lead": lead, "reason": "same_lead_open",
                 })
                 continue
-            fee = (
-                policy.costs.buy_per_share(price) if side == "buy" else policy.costs.sell_per_share(price)
-            ) * qty
             self._queue_fill(
                 "entry", symbol, lead, side, qty, price, bar["asof_ms"], fee, index
             )
@@ -1100,6 +1109,12 @@ class EquityReplay:
         }
         self._pending_by_id[client_ref] = meta
         self._queued.append(meta)
+        cash_delta = Decimal(str(price)) * Decimal(str(qty))
+        fee_d = Decimal(str(fee))
+        if side == "buy":
+            self._cash_balance -= cash_delta + fee_d
+        else:
+            self._cash_balance += cash_delta - fee_d
 
     def _proposal_for(self, meta, digest, quote_digest):
         """Build the Proposal LegPipeline submits for one queued fill."""

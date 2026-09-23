@@ -955,3 +955,205 @@ def test_a_replay_without_a_cash_flow_policy_submits_no_cash_flow_records():
     assert replay.cash_flow_snapshots == []
     assert replay._cash_flow_ledger is None
     assert replay._cash_flow_composer is None
+
+
+# --- ADR-0177: a buy entry the replay's own running balance cannot afford is refused ---
+
+
+_ZERO_FEES = {"spread_bps": 0.0, "taf_per_share": 0.0, "sec31_bps": 0.0}
+
+
+def _cf_bars(opens, symbol="AAA"):
+    """One bar per minute from ``_CF_DAY0_MS``, one per entry of ``opens``."""
+    return [
+        _bar(symbol, _CF_DAY0_MS + i * 60_000, px, px + 0.5)
+        for i, px in enumerate(opens)
+    ]
+
+
+def _cf_t(index):
+    return _CF_DAY0_MS + index * 60_000
+
+
+def _cash_reasons(out):
+    return [row for row in out["refused"] if row["reason"] == "insufficient_cash"]
+
+
+def test_an_unaffordable_buy_is_refused_opens_no_lot_and_queues_no_fill():
+    # Balance after day-one funding: 1000 + 20 = 1020. 200 @ 10 = 2000 (+fee) > 1020.
+    policy = _policy()
+    bars = _cf_bars([10.0] * 6)
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=3, qty=200),
+        _decision("AAA", _cf_t(1), lead=3, qty=50),
+    ])
+    assert out["refused"] == [{
+        "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 3, "reason": "insufficient_cash",
+    }]
+    assert not any(row["qty"] == 200 for row in out["fills"])
+    # A stale lot from the refused decision would expire at index 4 and make the
+    # later same-lead decision (filling at index 2) refuse as same_lead_open.
+    assert [(row["kind"], row["qty"], row["asof_ms"]) for row in out["fills"]] == [
+        ("entry", 50, _cf_t(2)),
+        ("exit", 50, _cf_t(5)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "fees, initial_capital, fills",
+    [
+        (_ZERO_FEES, "1000", True),      # cost 1020 == balance 1020
+        (_ZERO_FEES, "999.99", False),   # cost 1020 == balance 1019.99 + 0.01
+        ({}, "1000", False),             # 1020 notional + a non-zero buy fee > 1020
+    ],
+    ids=["cost-equals-balance", "cost-one-cent-over", "fee-counts-toward-cost"],
+)
+def test_the_insufficient_cash_boundary_is_cost_strictly_greater_than_balance(
+    fees, initial_capital, fills,
+):
+    policy = _policy(fees)
+    cash = _cash_flow_policy({"initial_capital_amount": initial_capital})
+    bars = _cf_bars([10.0, 10.0, 10.0, 10.0])
+    out = ReplayAdapter(policy, cash).replay(
+        bars, [_decision("AAA", _cf_t(0), lead=1, qty=102)]
+    )
+    entries = [row for row in out["fills"] if row["kind"] == "entry"]
+    if fills:
+        assert [(row["qty"], row["asof_ms"]) for row in entries] == [(102, _cf_t(1))]
+        assert _cash_reasons(out) == []
+    else:
+        assert entries == []
+        assert _cash_reasons(out) == [{
+            "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 1, "reason": "insufficient_cash",
+        }]
+
+
+def test_the_running_balance_tracks_every_fill_across_a_mixed_sequence():
+    # 1020 funded; buy 100 @ 10 leaves ~19.78; a second 100 @ 10 is refused; the
+    # lead-2 lot's forced exit sells 100 @ 15 (+~1499.6); a rebuy of 100 @ 15
+    # (~1500.33) is affordable ONLY because the sell's full proceeds, profit
+    # included, were credited.
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 10.0, 15.0, 15.0, 15.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=2, qty=100),
+        _decision("AAA", _cf_t(1), lead=1, qty=100),
+        _decision("AAA", _cf_t(3), lead=1, qty=100),
+    ])
+    assert [
+        (row["kind"], row["side"], row["lead"], row["asof_ms"]) for row in out["fills"]
+    ] == [
+        ("entry", "buy", 2, _cf_t(1)),
+        ("exit", "sell", 2, _cf_t(3)),
+        ("entry", "buy", 1, _cf_t(4)),
+        ("exit", "sell", 1, _cf_t(5)),
+    ]
+    assert out["refused"] == [{
+        "symbol": "AAA", "asof_ms": _cf_t(2), "lead": 1, "reason": "insufficient_cash",
+    }]
+
+
+def test_a_short_entry_is_never_refused_for_insufficient_cash():
+    # The first short's forced cover (100 @ 100) drives the balance to about
+    # -7980 BEFORE the second short (500 @ 100, 50000 notional) enters on the
+    # same bar; neither short is refused.
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 100.0, 100.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=1, qty=100, side="sell"),
+        _decision("AAA", _cf_t(1), lead=1, qty=500, side="sell"),
+    ])
+    assert [
+        (row["kind"], row["side"], row["qty"], row["asof_ms"]) for row in out["fills"]
+    ] == [
+        ("entry", "sell", 100, _cf_t(1)),
+        ("exit", "buy", 100, _cf_t(2)),
+        ("entry", "sell", 500, _cf_t(2)),
+        ("exit", "buy", 500, _cf_t(3)),
+    ]
+    assert out["refused"] == []
+
+
+def test_a_forced_exit_always_executes_on_a_deeply_negative_balance():
+    # Two shorts of 100 @ 10 fund ~3020; the lead-1 cover at 100 drives the
+    # balance to about -6980; the lead-2 cover (10000 cost) still executes.
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 100.0, 100.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=1, qty=100, side="sell"),
+        _decision("AAA", _cf_t(0), lead=2, qty=100, side="sell"),
+    ])
+    exits = [
+        (row["side"], row["lead"], row["qty"], row["asof_ms"])
+        for row in out["fills"] if row["kind"] == "exit"
+    ]
+    assert exits == [("buy", 1, 100, _cf_t(2)), ("buy", 2, 100, _cf_t(3))]
+    assert out["refused"] == []
+
+
+def test_an_override_exit_always_executes_on_a_deeply_negative_balance():
+    # The lead-1 cover at 100 drives the balance to about -7880; an override on
+    # lead 3 must still buy back its open 10-share short (1000 cost) first.
+    policy = _policy({"same_lead_overlap": "override"})
+    bars = _cf_bars([10.0, 10.0, 100.0, 100.0, 100.0, 100.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=1, qty=100, side="sell"),
+        _decision("AAA", _cf_t(0), lead=3, qty=10, side="sell"),
+        _decision("AAA", _cf_t(1), lead=3, qty=1, side="sell"),
+    ])
+    lead3 = [
+        (row["kind"], row["side"], row["qty"], row["asof_ms"])
+        for row in out["fills"] if row["lead"] == 3
+    ]
+    assert lead3 == [
+        ("entry", "sell", 10, _cf_t(1)),
+        ("exit", "buy", 10, _cf_t(2)),
+        ("entry", "sell", 1, _cf_t(2)),
+        ("exit", "buy", 1, _cf_t(5)),
+    ]
+    assert out["refused"] == []
+
+
+def test_an_override_entry_refused_for_insufficient_cash_still_closes_the_prior_lot():
+    # Accepted pre-existing sequencing (ADR-0177 Decision 4): the override exit is
+    # queued before the new entry's own refusal, so the prior lot stays closed.
+    policy = _policy({"same_lead_overlap": "override"})
+    bars = _cf_bars([10.0, 10.0, 10.0, 10.0, 10.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=2, qty=10, side="sell"),
+        _decision("AAA", _cf_t(1), lead=2, qty=1000),
+    ])
+    assert [
+        (row["kind"], row["side"], row["qty"], row["asof_ms"]) for row in out["fills"]
+    ] == [
+        ("entry", "sell", 10, _cf_t(1)),
+        ("exit", "buy", 10, _cf_t(2)),
+    ]
+    # No lot survives: neither the prior short (natural expiry index 3) nor the
+    # refused buy reaches the end-of-tape expiry_past_tape sweep.
+    assert out["refused"] == [{
+        "symbol": "AAA", "asof_ms": _cf_t(2), "lead": 2, "reason": "insufficient_cash",
+    }]
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        lambda policy, bars, decisions: ReplayAdapter(policy).replay(bars, decisions),
+        lambda policy, bars, decisions: EquityReplay(policy).run(bars, decisions),
+    ],
+    ids=["ReplayAdapter", "EquityReplay"],
+)
+def test_without_a_cash_flow_policy_an_unaffordable_buy_still_fills(run):
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 12.0])
+    out = run(policy, bars, [_decision("AAA", _cf_t(0), lead=1, qty=1_000_000)])
+    assert [
+        (row["kind"], row["side"], row["qty"], row["price"], row["asof_ms"])
+        for row in out["fills"]
+    ] == [
+        ("entry", "buy", 1_000_000, 10.0, _cf_t(1)),
+        ("exit", "sell", 1_000_000, 12.0, _cf_t(2)),
+    ]
+    assert out["refused"] == []
+    assert out["skipped"] == []
