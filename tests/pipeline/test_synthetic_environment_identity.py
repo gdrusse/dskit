@@ -144,6 +144,24 @@ def test_adr170_type_equal_slot_and_getattribute_spoof_refuse(monkeypatch):
     with pytest.raises(ValueError, match="synthetic environment identity"):
         trust._synthetic_environment_facts(identity)
 
+
+def test_adr170_replaced_slot_descriptor_cannot_hide_mutation(monkeypatch):
+    identity = _mint()
+    cls = trust._SyntheticEnvironmentIdentity
+    object.__setattr__(identity, "_tzdata_version", "tampered")
+
+    class SpoofedSlot:
+        def __get__(self, instance, owner=None):
+            del self, instance, owner
+            return EXPECTED["tzdata_version"]
+
+        def __set__(self, instance, value):
+            del self, instance, value
+
+    monkeypatch.setattr(cls, "_tzdata_version", SpoofedSlot())
+    with pytest.raises(ValueError, match="synthetic environment identity"):
+        trust._synthetic_environment_facts(identity)
+
     identity = _mint()
     object.__setattr__(identity, "_tzdata_version", "tampered")
     cls = trust._SyntheticEnvironmentIdentity
