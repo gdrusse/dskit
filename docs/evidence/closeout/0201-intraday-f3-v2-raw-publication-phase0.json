@@ -1,0 +1,16 @@
+{
+  "schema_version": "F3V2RawPublicationPhase0.v1",
+  "deployment_eligible": false,
+  "adr": "ADR-0173",
+  "branch": "codex/intraday-equities-full-backtest-20260922",
+  "final_reviewed_commit": "feeab0d8420ad181c0c43237221164540eefad36",
+  "final_reviewed_adr_blob": "d6b9e66f66361dcf9b6f9a4259fbb6d1cc811058",
+  "owner_approval": "standing autonomous implementation approval in task conversation",
+  "review_history": [
+    {"commit": "99d737f07f9805986fcbe115cb378dcfa4d08f40", "verdict": "0C/1M/3m/0N", "disposition": "amended closure-owned environment binding, writer parity, downstream matrix and binding faults"},
+    {"commit": "2d45ce0380ece3212df3dcc5b00fee4bc2d2a5b5", "verdict": "0C/2M/1m/1N", "disposition": "amended exact binding state machine, v1 routing and finite downstream inventory"},
+    {"commit": "8a9ffc5e60549ca6a1d289fe607e30f5932871a2", "verdict": "1C/3M/1m/0N", "disposition": "resolved quarantine fault polarity, exact list anchors, ownership reads and class name"},
+    {"commit": "feeab0d8420ad181c0c43237221164540eefad36", "verdict": "0C/0M/0m/0N", "tests": "489 passed", "result": "GO for owner approval then RED"}
+  ],
+  "non_authority": "Only deterministic synthetic v2 raw WORM publication/root verification; no root PIS, projection, replay, backtest, live, or deployment authority."
+}

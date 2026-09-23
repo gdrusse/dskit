@@ -20122,9 +20122,11 @@ slices; this bridge is non-authorizing data plumbing only.
 
 ## ADR-0173 — environment-bound synthetic v2 raw publication
 
-**Status:** PROPOSAL — DO NOT IMPLEMENT. This is the missing prerequisite
-discovered after ADR-0172 approval. It requires fresh Phase 0, owner approval,
-RED-to-GREEN, and two sequential fresh clean final lenses.
+**Status:** APPROVED FOR RED-TO-GREEN 2026-09-23 at
+`feeab0d8420ad181c0c43237221164540eefad36`. Fresh Phase 0 was
+0C/0M/0m/0N; the owner's standing autonomous approval applies. Evidence:
+`docs/evidence/closeout/0201-intraday-f3-v2-raw-publication-phase0.json`.
+Two sequential fresh clean final lenses remain required.
 
 **Context.** ADR-0169 intentionally allows a genuine v2 preflight proof but
 requires existing `_SyntheticRawPublisher.publish` and every downstream root
