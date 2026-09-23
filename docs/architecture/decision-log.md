@@ -19534,3 +19534,7 @@ Disclosed, unfixed: the scale rungs' shape uses in-sample predictions
 flat day) drops a row's forecast, so real-data rungs can score different
 row sets. Editing `run-synthetic-distribution.json` moved its hash; earlier
 synthetic runs of it are orphaned (synthetic only).
+Delta lens on `bc80c07`: 0 Critical/Major; all 12 mutations killed. Minor
+backlog: `lgbm_params` values are type-checked only as scalar, not per key
+(a wrong type fails at fit, not plan); no test ties `ALLOWED_LGBM_KEYS` to
+the installed signature; class docstring and one long line to tidy.
