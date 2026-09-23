@@ -478,6 +478,62 @@ def test_projection_refuses_nonstring_keys_without_type_name_callbacks(level):
         _project(events, policy)
 
 
+def test_projection_accumulates_unknown_and_invalid_event_fields():
+    event = MappingProxyType({
+        **dict(_event(source_id="", receive_ms=899)),
+        "unexpected": "refuse",
+    })
+    with pytest.raises(bundles.ProductionError) as caught:
+        _project((event,))
+    message = str(caught.value)
+    assert "unexpected" in message
+    assert "source_id" in message
+    assert "receive_ms" in message
+
+
+def test_projection_accumulates_unknown_and_invalid_policy_fields():
+    policy = MappingProxyType({
+        **dict(_policy()),
+        "schema_version": "wrong",
+        "policy_sha256": "wrong",
+        "unexpected": "refuse",
+    })
+    with pytest.raises(bundles.ProductionError) as caught:
+        _project((_event(),), policy)
+    message = str(caught.value)
+    assert "unexpected" in message
+    assert "schema_version" in message
+    assert "policy_sha256" in message
+
+
+def test_projection_accumulates_unknown_and_invalid_source_fields():
+    good = _policy(rows=(("alpha", 0),))
+    row = MappingProxyType({
+        "source_id": "",
+        "rank": -1,
+        "unexpected": "refuse",
+    })
+    policy = MappingProxyType({
+        "schema_version": _POLICY_SCHEMA,
+        "sources": (row,),
+        "policy_sha256": good["policy_sha256"],
+    })
+    with pytest.raises(bundles.ProductionError) as caught:
+        _project((_event(),), policy)
+    message = str(caught.value)
+    assert "unexpected" in message
+    assert "source_id" in message
+    assert "rank" in message
+
+
+def test_projection_accumulates_both_correction_field_defects():
+    with pytest.raises(bundles.ProductionError) as caught:
+        _project((_event(correction_position=True, corrects_event_id=1),))
+    message = str(caught.value)
+    assert "correction_position" in message
+    assert "corrects_event_id" in message
+
+
 def test_projection_refuses_policy_container_entry_and_field_shape_defects():
     good = _policy()
     with pytest.raises(bundles.ProductionError):

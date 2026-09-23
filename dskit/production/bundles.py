@@ -583,7 +583,8 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         )
         for name in sorted(missing):
             problems.append(f"source_rank_policy is missing field {name!r}")
-        if not policy_shape_ok:
+        policy_readable = not missing and not non_string_policy_keys
+        if not policy_readable:
             sources = ()
         else:
             policy_version = policy_value["schema_version"]
@@ -635,7 +636,8 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         item_shape_ok = not unknown and not missing and not non_string_item_keys
         for name in sorted(missing):
             problems.append(f"{prefix} is missing field {name!r}")
-        if not item_shape_ok:
+        item_readable = not missing and not non_string_item_keys
+        if not item_readable:
             continue
         source_id = item_value["source_id"]
         rank = item_value["rank"]
@@ -700,7 +702,8 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         event_shape_ok = not unknown and not missing and not non_string_event_keys
         for name in sorted(missing):
             problems.append(f"{prefix} is missing raw-event field {name!r}")
-        if not event_shape_ok:
+        event_readable = not missing and not non_string_event_keys
+        if not event_readable:
             continue
         event_schema = event_value["schema_version"]
         if type(event_schema) is not str or event_schema != raw_schema:
@@ -743,6 +746,14 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
 
         correction_position = event_value["correction_position"]
         corrects_event_id = event_value["corrects_event_id"]
+        corrects_ok = (
+            corrects_event_id is None
+            or (type(corrects_event_id) is str and bool(corrects_event_id))
+        )
+        if not corrects_ok:
+            problems.append(
+                f"{prefix}.corrects_event_id must be null or an exact nonempty str"
+            )
         if type(correction_position) is int and correction_position >= 0:
             if correction_position == 0:
                 if corrects_event_id is not None:
@@ -750,7 +761,7 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
                         f"{prefix}.corrects_event_id must be null at position zero"
                     )
             else:
-                if type(corrects_event_id) is not str or not corrects_event_id:
+                if not corrects_ok or corrects_event_id is None:
                     problems.append(
                         f"{prefix}.corrects_event_id must be an exact nonempty str"
                     )
