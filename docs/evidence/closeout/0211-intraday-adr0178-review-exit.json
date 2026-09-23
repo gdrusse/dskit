@@ -1,0 +1,105 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "intraday P19 market-calendar-aware cash-flow contribution timing",
+  "adr": "ADR-0178",
+  "branch": "claude/intraday-equities-backtest-cont-41xqxz",
+  "continuation_of_branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "phase0_history": [
+    {
+      "revision": 1,
+      "design": "naive addition of one SkipCashFlow override per non-trading day (up to ~150-200/year) to the existing per-tick due() call",
+      "verdict": "NO-GO",
+      "finding": "1 Major -- RecurringCashFlowSchedule._recurrences re-walks from occurrence index 0 on every due() call regardless of window start, and per-tick calling combined with the ~150-200x override multiplier produces a benchmarked 6.3x slowdown, extrapolating to tens of minutes to hours for a realistic full-year backtest. 2 Minor (inherited DST risk on new target dates unstated; empty-tape test's call-site update unmentioned), 1 Nit"
+    },
+    {
+      "revision": 2,
+      "design": "gate due() on calendar-date equality (self._cash_flow_window_date) -- call at most once per calendar day instead of once per tick",
+      "verdict": "GO (0C/0M/2m/1N) then rejected before any code landed",
+      "finding": "rejected not by a reviewer but by the opus BUILDER's own cold probing before writing any tests: the calendar-date gate assumed a day's first tick always arrives at or after that day's scheduled contribution instant (the anchor's time-of-day). False whenever a later trading day's session starts earlier in local time than the anchor day's own time-of-day (pre-market data differing across days, or a mid-session tape start) -- probed concretely, could silently lose a day's contribution entirely if that day was also the tape's last day. Also found a documentation gap: the ADR required the existing test suite stay unedited, but ADR-0176's own window-advancement test pins the exact behavior this change deliberately alters."
+    },
+    {
+      "revision": 3,
+      "design": "gate due() on the next unconsumed SCHEDULED FUNDING INSTANT (a precomputed sorted list of exact epoch-ms values plus an advancing index pointer) instead of calendar-date equality",
+      "verdict": "NO-GO",
+      "finding": "1 Critical -- a fresh cold reviewer independently re-derived the worked trace, confirmed it correct as far as it went, then actively hunted for a new counter-example the same way the builder had, and found one: the gate only helps if SOME tick eventually reaches the pending instant; it does nothing if no tick on the entire tape ever does. Concrete counter-example: an anchor late in the session plus the tape's LAST trading day being a real early-close session (every bar at or before the funding instant's time-of-day) silently and permanently loses that day's contribution. Nothing in Revision 3's own Required Phase-0 matrix would have forced discovery of it. 2 Minor, 2 Nit also found and fixed"
+    },
+    {
+      "revision": 4,
+      "design": "adds an unconditional end-of-tape flush (called once after ServeLoop.run() returns, bounded by the LAST scheduled funding instant rather than the last tick) that catches anything the per-tick gate structurally cannot reach; refactors the shared due()/append_many/balance/index logic into one _advance_cash_flow_window helper reused by both the per-tick gate and the flush",
+      "reason": "root fix, not a narrower trigger condition -- addresses the general case (no tick anywhere on the tape reaches the instant) rather than the specific counter-example (an early-close last day)",
+      "verdict": "GO",
+      "review": "third independent design skeptic, cold review, genuinely hunted for a fifth counter-example across six angles (empty funding_instants, off-by-one at the flush boundary, double-submission risk, instance-reuse safety, whether funding_instants itself could be structurally incomplete, interaction with the tick-loop's own exception handling) -- found none: 0 Critical, 0 Major, 2 Minor, 1 Nit, GO. All fixed in place before RED: the flush call wrapped in the same except-tuple -> ConfigError pattern evaluate()/quotes() already use; the shared helper's attribute sourcing stated explicitly rather than left implicit"
+    }
+  ],
+  "reuse_confirmed": {
+    "method": "trading-day derivation is entirely internal to the replay's own tape data (no exchange-calendar library integration); the SkipCashFlow override mechanism, the composer.due() usage pattern, and the ledger/authorization machinery are all pre-existing, unedited ADR-0176 core -- this ADR only changes WHEN and under what filter EquityReplay calls into that existing surface",
+    "action_taken": "swept before drafting (documented in the ADR's Context section): confirmed no existing config/override/partial mechanism for calendar-aware timing existed anywhere in children/intraday_equities or dskit/production"
+  },
+  "matrix_completion": {
+    "candidate_commits": [
+      "ba4e444 (Revision 1 proposal)",
+      "cb7240d (Revision 2: fixes the Major performance finding)",
+      "fbcd363 (Revision 2 Phase-0 clean, GO for RED -- later rejected by builder probing before code landed)",
+      "a4d8ae1 (Revision 3: replaces the gate design entirely)",
+      "8c332a6 (Revision 4: adds the end-of-tape flush)",
+      "52884e3 (Revision 4 Phase-0 clean, GO for RED)",
+      "8ce1c73 (final candidate: full implementation + tests)"
+    ],
+    "implementation_correction": "none needed after Revision 4 Phase-0 approval -- the candidate (8ce1c73) matches the frozen Decision points 1/1.5/1.6/2/3/4/5/5.5 exactly, confirmed by both final-review lenses against the diff since Phase-0 approval",
+    "rows_closed": [
+      "a tape spanning a weekend funds exactly $1,020 Friday (anchor) and $20 Monday, nothing on Sat/Sun",
+      "a single mid-week gap date (simulated holiday) is skipped, the trading day after it funds its own $20 only",
+      "the anchor's own date is never skipped even when constructed to plausibly risk it",
+      "a dense gap-free multi-day tape funds identically to ADR-0176's pre-existing behavior (regression baseline)",
+      "point-1.5-only scenario: an anchor later than a trading day's first tick, but with a later same-day tick that reaches the funding instant -- funds correctly via the per-tick gate alone",
+      "point-1.6 flush scenario (the fix that took 3 revision rounds): an early-close final trading day whose every bar is at or before the funding instant's time-of-day is still funded in full, captured only by the flush -- proven by asserting self._cash_flow_funding_index reaches its final value directly, not merely an aggregate balance check",
+      "the flush is a genuine no-op (zero extra due() calls) whenever the per-tick gate already captured everything",
+      "the rewritten ADR-0176 window-advancement test (authorized by Decision point 5.5) proves the window/index advances exactly on ticks that reach or pass a funding instant and stays put otherwise",
+      "scale test: a full-year tape (251 trading dates, 113 weekend/holiday skip overrides) calls due() exactly 251 times (== len(trading_dates), flush added 0), ~21-22s cash-flow bookkeeping against a 60s ceiling, reproducible across isolated re-runs, not boundary-adjacent",
+      "the 3 existing ADR-0176 composer_for call sites updated for the new required trading_dates parameter and 2-tuple return"
+    ],
+    "disposition": "candidate passed both final review lenses clean on the first pass after four Phase-0 revision rounds; the tests/integration lens's mutation testing specifically targeted the point-1.6 flush (the highest-risk mechanism, having taken 3 rounds to design correctly) and caught all 5 mutations by name"
+  },
+  "commands": {
+    "focused": "PYTHONPATH=$PWD:$PWD/children/intraday_equities python3 -m pytest children/intraday_equities/tests/test_replay.py -q",
+    "focused_result": "65 passed (57 pre-ADR-0178 + 8 new), confirmed twice for determinism (~70s each run, dominated by the scale test)",
+    "ruff": "clean (replay.py, test_replay.py)",
+    "diff_check": "clean",
+    "purity": "clean (tests/pipeline/test_purity.py, tests/production/test_purity.py -- 43 passed)",
+    "bounded_regression": "PYTHONPATH=$PWD python3 -m pytest tests/production/test_cashflows.py tests/production/test_compose.py tests/production/test_state.py tests/production/test_ledger.py tests/production/test_oop.py tests/production/test_producers.py tests/production/test_purity.py tests/pipeline/test_purity.py children/intraday_equities/tests/test_replay.py -q",
+    "bounded_regression_result": "943 passed",
+    "scale_test_reproducibility": "re-run in isolation twice: 251 due() calls / 251 trading dates both times (exact, not merely within the <= len(trading_dates)+1 bound); bookkeeping time 21.30s and 21.22s against a 60s ceiling -- consistent, not flake-prone"
+  },
+  "final_candidate": {
+    "commit": "8ce1c7301cfdfc9a7f53ab78de1bed8bafe20ac1",
+    "blobs": {
+      "children/intraday_equities/intraday_equities/replay.py": "17001a5a820118d11a350503c72efd02418e802d",
+      "children/intraday_equities/tests/test_replay.py": "f66cd748fd3332b7fb0905b0f17f9d2c09cbdac7"
+    }
+  },
+  "two_sequential_clean_final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "model": "Claude Sonnet 5",
+      "candidate": "8ce1c73",
+      "verdict": "0C/0M/1m/0N",
+      "notes": "independently re-verified every Decision point against git diff 52884e3 8ce1c73 (the diff since Phase-0 approval) rather than trusting the ADR's or commit message's claims: confirmed the single date-walk builds both SkipCashFlow overrides and funding_instants_ms with no duplication, confirmed the 2-tuple return and instance-reuse-safe resets in both branches, confirmed _advance_cash_flow_window is a genuine shared helper with success-only state advancement and a bounded index-advance loop, confirmed the flush target is the last funding instant not the last tick, confirmed no dskit/production/* file touched, confirmed backward-compatibility dead-code paths, confirmed the point-1.6 test asserts the funding index directly. 1 Minor: _flush_cash_flows's except-clause omits the self._fault stash evaluate()/quotes() use in their otherwise-identical pattern -- functionally inert (flush is called directly by _run_loop, not through ServeLoop's callback machinery that needs the fault stashed for later re-raise), no consequence demonstrated, accepted as a recorded Minor"
+    },
+    {
+      "lens": "tests/integration",
+      "model": "Claude Sonnet 5",
+      "candidate": "8ce1c73",
+      "verdict": "0C/0M/0m/0N",
+      "tests": "65 passed twice (determinism); 943 passed (bounded regression)",
+      "notes": "active mutation testing specifically targeting the point-1.6 flush -- the highest-risk mechanism, having taken 3 revision rounds to design correctly -- with 5 mutations, all caught by name: removing the flush call entirely (4 tests failed, including the exact scenario it exists to close), an off-by-one at the flush boundary (caught by the funding_index assertion specifically, not masked by aggregate content), a boundary flip in the per-tick gate (5 tests failed, including the rewritten ADR-0176 boundary test), removing the no-op guard (9 tests failed, including a hard ConfigError from a backwards due() window), and inverting the skip/collect branch in composer_for (11 tests failed catastrophically, as expected). Confirmed no vacuous assertions, confirmed the scale test's call count and timing are reproducible across isolated re-runs (not boundary-adjacent), confirmed every test genuinely drives the real ServeLoop/HorizonBook/ledger machinery end-to-end via thin EquityReplay subclasses, never stubs"
+    }
+  ],
+  "files_changed": [
+    "children/intraday_equities/intraday_equities/replay.py",
+    "children/intraday_equities/tests/test_replay.py",
+    "docs/architecture/decision-log.md",
+    "docs/evidence/closeout/0211-intraday-adr0178-review-exit.json"
+  ],
+  "non_authority": "This slice changes only the child-owned EquityReplay cash-flow timing mechanism (ADR-0176). No dskit/production module changed. No new capability, registry entry, or uses: site. No real market-calendar/exchange-calendar library integration (trading days are derived purely from the replay's own tape data). No redirect-to-next-trading-day behavior (an explicit owner decision against it). No change to the funding amount formula, the day-one $1,020 seed, or the ADR-0177 insufficient-cash mechanism. No ReplayRun/P4 wiring. No backtest launch, no paper/live trading, no deployment."
+}

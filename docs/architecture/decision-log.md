@@ -21504,8 +21504,7 @@ backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0178 — market-calendar-aware cash-flow contribution timing
 
-**Status:** PHASE-0 CLEAN (REVISION 4) — OWNER-AUTHORIZED FOR RED. Not
-yet implemented. A third independent design skeptic reviewed Revision 4
+**Status:** IMPLEMENTED AND CLOSED. A third independent design skeptic reviewed Revision 4
 cold and genuinely hunted for a fourth counter-example of the same class
 that broke Revisions 2 and 3 (empty `funding_instants`, an off-by-one at
 the flush boundary, double-submission risk, instance-reuse safety,
@@ -21526,6 +21525,32 @@ that it reads `self._cash_flow_composer`/`self._cash_flow_funding_
 instants`/`self._cash_flow_funding_index` (previously only stated in the
 sibling `_submit_due_cash_flows` paragraph — only one sane reading
 existed, but now it is not left implicit).
+
+**Final review.** Both mandatory lenses ran clean against the completed
+candidate (`8ce1c73`). Correctness/authority: 0 Critical/0 Major/1
+Minor/0 Nit, GO — independently re-verified every Decision point against
+the actual diff since Phase-0 approval (`git diff 52884e3 8ce1c73`),
+confirmed no `dskit/production/*` file touched, confirmed backward
+compatibility (both new code paths are dead code without a configured
+`cash_flow_policy`), and confirmed the point-1.6 flush test directly
+asserts `self._cash_flow_funding_index` reaching its final value rather
+than only an aggregate balance check. The 1 Minor: `_flush_cash_flows`'s
+except-clause omits the `self._fault` stash `evaluate()`/`quotes()` use
+in their otherwise-identical pattern — functionally inert here (the
+flush is called directly by `_run_loop`, not through `ServeLoop`'s
+callback machinery that needs the fault stashed for later re-raise), no
+consequence demonstrated, accepted as a recorded Minor rather than
+requiring a further candidate round. Tests/integration: 0 Critical/0
+Major/0 Minor/0 Nit, GO — ran the full suite twice for determinism (65
+passed both times), applied and caught all 5 mutations targeting the
+point-1.6 flush specifically (the fix that took three revision rounds to
+get right) by name, confirmed no vacuous assertions, ran the bounded
+regression clean (943 passed), re-ran the scale test twice in isolation
+and confirmed its call count (exactly 251, matching `len(trading_dates)`
+precisely) and timing (~21s against a 60s ceiling) are reproducible, not
+boundary-adjacent or flake-prone, and confirmed every test genuinely
+drives the real `ServeLoop`/`HorizonBook`/ledger machinery end-to-end.
+Closeout evidence: `docs/evidence/closeout/0211-intraday-adr0178-review-exit.json`.
 
 **Revision 4 (Revision 3 rejected cold, NO-GO, 1 Critical):** an
 independent design skeptic, reading Revision 3 with no knowledge of any
