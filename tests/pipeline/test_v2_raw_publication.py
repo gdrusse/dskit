@@ -1,6 +1,7 @@
 """ADR-0173: environment-bound synthetic raw-event/v2 publication."""
 
 import gc
+import hashlib
 import inspect
 import json
 import sys
@@ -31,6 +32,31 @@ def _case(tmp_path, **changes):
         signed,
         roster,
         source,
+    )
+
+
+def _effect_snapshot(roster_publisher, raw_publisher, fixture):
+    connection = roster_publisher._reserve._connection
+    return (
+        fixture._used,
+        raw_publisher._closed,
+        raw_publisher._retained,
+        connection.total_changes,
+        tuple(connection.execute(
+            "SELECT * FROM reserve_uses ORDER BY kind,signed_id"
+        )),
+        tuple(connection.execute(
+            "SELECT * FROM reserve_audit ORDER BY seq"
+        )),
+        dict(roster_publisher._broker._storage),
+        tuple(roster_publisher._broker._member_events),
+        tuple(roster_publisher._broker._session_events),
+        frozenset(roster_publisher._broker._nonces),
+        dict(roster_publisher._broker._provider._storage),
+        tuple(roster_publisher._broker._provider._events),
+        tuple(roster_publisher._broker._receipt_store._data),
+        tuple(roster_publisher._outer_receipts.items()),
+        dict(raw_publisher._root_pis_pairs),
     )
 
 
@@ -78,6 +104,62 @@ def test_publish_v2_is_private_positional_only_and_not_exported():
     ).nonlocals
     assert "raw_writer" in legacy_impl
     assert "v2_writer" not in legacy_impl
+    v2_impl = _binding_authority()
+    v2_raw_writer = inspect.getclosurevars(
+        v2_impl["v2_writer"]
+    ).nonlocals["raw_writer"]
+    assert legacy_impl["raw_writer"] is v2_raw_writer
+    assert hashlib.sha256(
+        inspect.getsource(v2_raw_writer).encode("utf-8")
+    ).hexdigest() == (
+        "ad7fd94cbe10d97f90cf99fed459f28f3a7966a8c68e62738c33e65a66a88162"
+    )
+    assert trust._SyntheticRawPublisher.__slots__ == (
+        "_preflight", "_roster_publisher", "_reserve", "_broker",
+        "_closed", "_retained", "_root_pis_pairs", "__weakref__",
+    )
+    assert "__weakref__" in trust._SyntheticRawPublisher.__dict__
+    assert trust.VerifiedSyntheticDatasetFixture.__slots__ == (
+        "_owner", "_intent", "_members", "_events", "_event_schema",
+        "_used", "event_count", "member_names", "deployment_eligible",
+        "_locked", "__weakref__",
+    )
+    assert not hasattr(pipeline, "publish_v2")
+    assert not hasattr(production_verifier, "publish_v2")
+    assert not hasattr(pipeline, "NonAuthorizingRawRootProof")
+    assert production_verifier.NonAuthorizingRawRootProof is (
+        trust.NonAuthorizingRawRootProof
+    )
+
+
+def test_publish_v2_refuses_keywords_before_any_effect(tmp_path):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    with pytest.raises(TypeError, match="positional-only"):
+        raw_publisher.publish_v2(
+            proof=fixture,
+            environment_identity=environment,
+            authorization_bytes=signed[0],
+            g1=signed[1],
+            g2=signed[2],
+            attestation=signed[3],
+            bootstrap=roster[0],
+            bg1=roster[1],
+            bg2=roster[2],
+            roster_basis=roster[3],
+            roster_receipt=roster[4],
+        )
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
 
 
 def test_publish_v2_refuses_wrong_environment_before_any_effect(tmp_path):
@@ -107,6 +189,129 @@ def test_publish_v2_refuses_wrong_environment_before_any_effect(tmp_path):
     )
 
 
+def test_publish_v2_refuses_wrong_and_cross_publisher_proofs_without_effect(
+    tmp_path,
+):
+    first = _case(tmp_path / "first")
+    second = _case(
+        tmp_path / "second",
+        dataset_changes={"authorization_id": "raw-authorization-v2-2"},
+    )
+    (
+        first_roster_publisher,
+        first_publisher,
+        first_fixture,
+        first_environment,
+        first_signed,
+        first_roster,
+        _first_source,
+    ) = first
+    second_fixture = second[2]
+    before = _effect_snapshot(
+        first_roster_publisher, first_publisher, first_fixture
+    )
+    for candidate in (object(), second_fixture):
+        with pytest.raises(ValueError, match="own|v2 raw fixture"):
+            first_publisher.publish_v2(
+                candidate,
+                first_environment,
+                *first_signed,
+                *first_roster,
+            )
+        assert _effect_snapshot(
+            first_roster_publisher, first_publisher, first_fixture
+        ) == before
+        assert second_fixture._used is False
+
+
+def test_publish_v2_refuses_v1_fixture_without_effect(tmp_path, monkeypatch):
+    v1_path = tmp_path / "v1"
+    v1_path.mkdir()
+    _path, roster_publisher, roster, signed, members = cases._adr132_raw_case(
+        v1_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        roster_publisher, trust._SyntheticFixtureSource(members),
+    )
+    fixture = preflight.verify(*signed, *roster)
+    raw_publisher = trust._SyntheticRawPublisher(preflight)
+    environment = trust._synthetic_environment_identity()
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    with pytest.raises(ValueError, match="v2 raw fixture"):
+        raw_publisher.publish_v2(
+            fixture, environment, *signed, *roster
+        )
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
+
+
+@pytest.mark.parametrize("original_index", range(9))
+def test_publish_v2_refuses_each_mutated_original_without_effect(
+    tmp_path, original_index,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    originals = list((*signed, *roster))
+    originals[original_index] += b"\n"
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    with pytest.raises((TypeError, ValueError)):
+        raw_publisher.publish_v2(
+            fixture, environment, *originals
+        )
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
+    authority = _binding_authority()
+    assert raw_publisher not in authority["records"]
+    assert raw_publisher not in authority["anchors"]
+
+
+def test_publish_v2_refuses_swapped_grants_and_changed_fixture_fact(
+    tmp_path,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    swapped = (signed[0], signed[2], signed[1], signed[3])
+    with pytest.raises(ValueError, match="authority"):
+        raw_publisher.publish_v2(
+            fixture, environment, *swapped, *roster
+        )
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
+
+    facts = trust._SYNTHETIC_RAW_FIXTURE_FACTS[fixture]
+    trust._SYNTHETIC_RAW_FIXTURE_FACTS[fixture] = (
+        facts[0], facts[1], facts[2], "0" * 64,
+    )
+    try:
+        with pytest.raises(ValueError, match="v2 raw fixture"):
+            raw_publisher.publish_v2(
+                fixture, environment, *signed, *roster
+            )
+    finally:
+        trust._SYNTHETIC_RAW_FIXTURE_FACTS[fixture] = facts
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
+
+
 def test_publish_v2_refuses_replaced_weakref_dispatch_before_effect(
     tmp_path, monkeypatch,
 ):
@@ -132,6 +337,119 @@ def test_publish_v2_refuses_replaced_weakref_dispatch_before_effect(
     assert fixture._used is False
     assert raw_publisher._retained is None
     assert roster_publisher._reserve._connection.total_changes == before
+
+
+@pytest.mark.parametrize(
+    "global_name",
+    (
+        "_hs_parse_canonical",
+        "_digest",
+        "_hs_refuse",
+        "DATASET_AUTHORIZATION_EVENT_SCHEMAS",
+        "_SYNTHETIC_RAW_FIXTURE_FACTS",
+        "_SyntheticRawPublisher",
+        "_SyntheticRawPreflight",
+        "NonAuthorizingRawRootProof",
+        "VerifiedSyntheticDatasetFixture",
+        "_SyntheticEnvironmentIdentity",
+        "_require_synthetic_tzdata",
+        "weakref_ref",
+    ),
+)
+def test_publish_v2_refuses_each_replaced_captured_global_before_effect(
+    tmp_path, monkeypatch, global_name,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    entry = raw_publisher.publish_v2
+    calls = []
+
+    def replacement(*_args, **_kwargs):
+        calls.append(global_name)
+        return None
+
+    current = getattr(trust, global_name)
+    value = replacement if callable(current) else object()
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    monkeypatch.setattr(trust, global_name, value)
+    with pytest.raises(ValueError, match="dispatch changed"):
+        entry(fixture, environment, *signed, *roster)
+    assert calls == []
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
+
+
+@pytest.mark.parametrize("method_name", ("publish", "publish_v2"))
+def test_captured_publish_v2_refuses_replaced_installed_method(
+    tmp_path, monkeypatch, method_name,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    entry = raw_publisher.publish_v2
+    calls = []
+
+    def replacement(*_args, **_kwargs):
+        calls.append(method_name)
+        return None
+
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    monkeypatch.setattr(
+        trust._SyntheticRawPublisher, method_name, replacement,
+    )
+    with pytest.raises(ValueError, match="dispatch changed"):
+        entry(fixture, environment, *signed, *roster)
+    assert calls == []
+    assert _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    ) == before
+
+
+def test_captured_v2_verifier_refuses_replaced_installed_verify_before_read(
+    tmp_path, monkeypatch,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    output = raw_publisher.publish_v2(
+        fixture, environment, *signed, *roster
+    )
+    proof = raw_publisher.proof()
+    verify = proof.verify
+    calls = []
+
+    def replacement(*_args, **_kwargs):
+        calls.append("called")
+        return None
+
+    before = tuple(raw_publisher._broker._member_events)
+    monkeypatch.setattr(
+        trust.NonAuthorizingRawRootProof, "verify", replacement,
+    )
+    with pytest.raises(ValueError, match="dispatch changed"):
+        verify(*signed, *roster, *output)
+    assert calls == []
+    assert tuple(raw_publisher._broker._member_events) == before
 
 
 @pytest.mark.parametrize(
@@ -357,7 +675,49 @@ def test_publish_v2_writes_raw_root_and_root_proof_reverifies(tmp_path):
         fixture, environment, *signed, *roster
     )
     parsed = json.loads(manifest)
+    authorization = json.loads(signed[0])
+    basis_value = json.loads(basis)
+    receipt_value = json.loads(receipt)
+    auth_sha = hashlib.sha256(signed[0]).hexdigest()
+    root_ref = "synthetic-raw/" + auth_sha
+    assert parsed["schema_version"] == (
+        "dskit.raw-event-dataset-capture/v1"
+    )
     assert parsed["event_schema"] == "dskit.raw-event/v2"
+    assert parsed["scope"] == authorization["scope"]
+    assert parsed["dataset_capture_authorization_sha256"] == auth_sha
+    assert parsed["ordered_member_digests"] == [
+        {
+            "member_name": name,
+            "source_id": json.loads(raw.splitlines()[0])["source_id"]
+            if raw else (
+                "src:B"
+            ),
+            "byte_length": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "media_type": "application/x-ndjson",
+        }
+        for name, raw in fixture._members
+    ]
+    stored = {
+        key[2]: value
+        for key, value in raw_publisher._broker._storage.items()
+        if key[:2] == (root_ref, "v1")
+    }
+    assert stored == {
+        **dict(fixture._members),
+        "raw_event_dataset.json": manifest,
+    }
+    assert basis_value["schema"] == "dskit.issuance-basis/v1"
+    assert basis_value["kind"] == "root-publication"
+    assert receipt_value["schema"] == (
+        "dskit.root-publication-receipt/v1"
+    )
+    assert receipt_value["capture_kind"] == "raw-event-dataset"
+    assert receipt_value["publication_authorization_ref"] == {
+        "kind": "dataset-capture",
+        "dataset_capture_authorization_sha256": auth_sha,
+    }
     assert raw_publisher._closed is True
     assert fixture._used is True
 
@@ -371,6 +731,25 @@ def test_publish_v2_writes_raw_root_and_root_proof_reverifies(tmp_path):
     assert facts["event_count"] == 1
     assert facts["authorizing"] is False
     assert facts["deployment_eligible"] is False
+    assert receipt_value["root_ref"] == root_ref
+    assert receipt_value["snapshot_version"] == "v1"
+    assert receipt_value["producer_node"] == "raw-event-dataset-capture"
+    assert receipt_value["producer_output"] == "raw_event_dataset"
+    assert facts["raw_manifest_sha256"] == hashlib.sha256(
+        manifest
+    ).hexdigest()
+    assert facts["raw_publication_receipt_sha256"] == receipt_value[
+        "root_publication_receipt_sha256"
+    ]
+    assert facts["raw_root_sha256"] == hashlib.sha256(
+        trust._hs_canonical_bytes({
+            field: receipt_value[field]
+            for field in (
+                "root_ref", "root_id", "snapshot_version",
+                "member_manifest_sha256",
+            )
+        })
+    ).hexdigest()
 
 
 def test_v2_root_proof_refuses_replaced_environment_gate_before_member_read(
@@ -428,6 +807,69 @@ def test_v2_root_proof_uses_pinned_slot_reads_before_dispatch_refusal(
         raw_publisher.proof().verify(*signed, *roster, *output)
     assert calls == []
     assert tuple(raw_publisher._broker._member_events) == before
+
+
+def test_v1_and_malformed_root_proof_delegate_immediately_and_exactly(
+    tmp_path, monkeypatch,
+):
+    (tmp_path / "v1").mkdir()
+    publisher, roster, signed, output = cases._adr140_published_raw_case(
+        tmp_path / "v1", monkeypatch,
+    )
+    proof = publisher.proof()
+    installed = trust.NonAuthorizingRawRootProof.verify
+    authorized = inspect.getclosurevars(installed).nonlocals[
+        "authorized_verify"
+    ]
+    closure = inspect.getclosurevars(authorized).nonlocals
+    original = closure["original_verify"]
+    parser = closure["parser"]
+    names = (
+        "authorization_bytes", "g1", "g2", "attestation",
+        "bootstrap", "bg1", "bg2", "roster_basis", "roster_receipt",
+        "manifest_bytes", "basis_bytes", "receipt_bytes",
+    )
+
+    def traced_call(callable_, *args):
+        events = []
+        seen = []
+
+        def trace(frame, event, _arg):
+            if event == "call" and frame.f_code is original.__code__:
+                events.append("original")
+                seen.append(dict(frame.f_locals))
+            elif event == "call" and frame.f_code is parser.__code__:
+                events.append("parser")
+            return trace
+
+        sys.settrace(trace)
+        try:
+            result = callable_(*args, _under_writer_lock=False)
+        finally:
+            sys.settrace(None)
+        return result, events, seen
+
+    values = (*signed, *roster, *output)
+    result, events, seen = traced_call(proof.verify, *values)
+    assert events[0] == "original"
+    assert len(seen) == 1
+    assert all(seen[0][name] is value for name, value in zip(
+        names, values, strict=True
+    ))
+    assert seen[0]["_under_writer_lock"] is False
+    assert result == original(
+        proof, *values, _under_writer_lock=False
+    )
+
+    malformed = publisher._retained
+    publisher._retained = (malformed[0],)
+    before = tuple(publisher._broker._member_events)
+    with pytest.raises(Exception) as wrapped:
+        traced_call(proof.verify, *values)
+    assert tuple(publisher._broker._member_events) == before
+    with pytest.raises(type(wrapped.value)) as direct:
+        original(proof, *values, _under_writer_lock=False)
+    assert str(wrapped.value) == str(direct.value)
 
 
 def test_v2_root_proof_refuses_copied_private_binding_record_before_member_read(
@@ -667,6 +1109,130 @@ def test_writer_failure_terminalizes_private_binding(tmp_path, monkeypatch):
     forged = trust.NonAuthorizingRawRootProof(trust._MAKE, failed_publisher)
     with pytest.raises(ValueError, match="committed.*binding"):
         forged.verify(*good_signed, *good_roster, *good_output)
+
+
+@pytest.mark.parametrize(
+    "fault_site",
+    (
+        "manifest",
+        "before-session-started",
+        "after-session-started",
+        "before-retention",
+        "after-retention",
+        "raw-return",
+        "before-promotion",
+        "after-promotion",
+        "entry-return",
+    ),
+)
+def test_each_v2_writer_boundary_fault_terminalizes_failed(
+    tmp_path, fault_site,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    authority = _binding_authority()
+    raw_writer = inspect.getclosurevars(
+        authority["v2_writer"]
+    ).nonlocals["raw_writer"]
+    entry = inspect.getclosurevars(
+        trust._SyntheticRawPublisher.publish_v2
+    ).nonlocals["authorized_publish_v2"]
+
+    def source_line(function, needle, *, after=None):
+        lines, start = inspect.getsourcelines(function)
+        begin = 0
+        if after is not None:
+            begin = next(
+                index for index, line in enumerate(lines)
+                if after in line
+            ) + 1
+        return start + next(
+            index for index in range(begin, len(lines))
+            if needle in lines[index]
+        )
+
+    targets = {
+        "manifest": (
+            raw_writer,
+            source_line(raw_writer, "manifest_bytes = self._manifest"),
+        ),
+        "before-session-started": (
+            raw_writer,
+            source_line(raw_writer, 'proof, "SESSION_STARTED"'),
+        ),
+        "after-session-started": (
+            raw_writer,
+            source_line(raw_writer, "session = self._broker"),
+        ),
+        "before-retention": (
+            raw_writer,
+            source_line(raw_writer, "self._retained = ("),
+        ),
+        "after-retention": (
+            raw_writer,
+            source_line(raw_writer, "self._closed = True"),
+        ),
+        "raw-return": (
+            raw_writer,
+            source_line(raw_writer, "return manifest_bytes"),
+        ),
+        "before-promotion": (
+            entry,
+            source_line(entry, "record[2] = committed"),
+        ),
+        "after-promotion": (
+            entry,
+            source_line(
+                entry, "require_dispatch()",
+                after="record[2] = committed",
+            ),
+        ),
+        "entry-return": (
+            entry,
+            source_line(entry, "return result"),
+        ),
+    }
+    target_function, target_line = targets[fault_site]
+    fired = False
+
+    def trace(frame, event, _arg):
+        nonlocal fired
+        if (
+            not fired
+            and event == "line"
+            and frame.f_code is target_function.__code__
+            and frame.f_lineno == target_line
+        ):
+            fired = True
+            raise RuntimeError("injected boundary fault: " + fault_site)
+        return trace
+
+    sys.settrace(trace)
+    try:
+        with pytest.raises(RuntimeError, match="boundary fault"):
+            raw_publisher.publish_v2(
+                fixture, environment, *signed, *roster
+            )
+    finally:
+        sys.settrace(None)
+    assert fired is True
+    record = authority["records"][raw_publisher]
+    assert authority["anchors"][raw_publisher] is record
+    assert record[2] is authority["failed"]
+    assert id(record) in authority["writer_invoked_identities"]
+    assert fixture._used is True
+    if raw_publisher._retained is not None:
+        with pytest.raises(ValueError, match="committed.*binding"):
+            raw_publisher.proof().verify(
+                *signed, *roster, *raw_publisher._retained[5:]
+            )
 
 
 def test_pre_writer_fault_removes_provisional_binding(tmp_path):
@@ -977,12 +1543,49 @@ def test_root_pis_issue_rechecks_retained_publisher_before_closing(
         v2_roster,
         _source,
     ) = _case(tmp_path / "v2")
-    v2_publisher.publish_v2(
+    v2_output = v2_publisher.publish_v2(
         fixture, environment, *v2_signed, *v2_roster
     )
+    (
+        _cross_roster_publisher,
+        cross_publisher,
+        cross_fixture,
+        cross_environment,
+        cross_signed,
+        cross_roster,
+        _cross_source,
+    ) = _case(
+        tmp_path / "cross",
+        dataset_changes={"authorization_id": "raw-authorization-v2-2"},
+    )
+    cross_output = cross_publisher.publish_v2(
+        cross_fixture, cross_environment, *cross_signed, *cross_roster
+    )
     issuer._publisher = v2_publisher
-    before = v2_publisher._reserve._connection.total_changes
-    with pytest.raises(ValueError, match="v1-only|retained"):
-        issuer.issue(*v1_signed, *v1_roster, *v1_output)
-    assert issuer._closed is False
-    assert v2_publisher._reserve._connection.total_changes == before
+    swapped_v1 = (
+        v1_signed[0], v1_signed[2], v1_signed[1], v1_signed[3],
+    )
+    candidates = (
+        ("v1", v1_signed, v1_roster, v1_output),
+        ("v2", v2_signed, v2_roster, v2_output),
+        ("malformed", (b"{", *v1_signed[1:]), v1_roster, v1_output),
+        ("swapped", swapped_v1, v1_roster, v1_output),
+        ("cross-v2", cross_signed, cross_roster, cross_output),
+    )
+    before = (
+        v2_publisher._reserve._connection.total_changes,
+        tuple(v2_publisher._broker._member_events),
+        dict(v2_publisher._root_pis_pairs),
+    )
+    for label, candidate_signed, candidate_roster, candidate_output in candidates:
+        with pytest.raises((TypeError, ValueError)):
+            issuer.issue(
+                *candidate_signed, *candidate_roster, *candidate_output
+            )
+        assert issuer._closed is False, label
+        assert issuer._retained is None, label
+        assert before == (
+            v2_publisher._reserve._connection.total_changes,
+            tuple(v2_publisher._broker._member_events),
+            dict(v2_publisher._root_pis_pairs),
+        ), label
