@@ -21504,8 +21504,48 @@ backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0178 — market-calendar-aware cash-flow contribution timing
 
-**Status:** PROPOSED (REVISION 3) — AWAITING PHASE-0 REVIEW. Not yet
+**Status:** PROPOSED (REVISION 4) — AWAITING PHASE-0 REVIEW. Not yet
 implemented.
+
+**Revision 4 (Revision 3 rejected cold, NO-GO, 1 Critical):** an
+independent design skeptic, reading Revision 3 with no knowledge of any
+prior round, re-derived point 1.5's worked trace independently, confirmed
+it correct AS FAR AS IT WENT, then actively hunted for a new
+counter-example the same way the builder had for Revision 2 — and found
+one. **The gate-on-next-instant fix only helps if SOME tick eventually
+reaches the pending instant; it does nothing if no tick on the tape ever
+does.** Concrete counter-example: anchor Monday 13:01 ET (an atypically
+late first bar, same class of scenario Revision 3's own Gap B narrative
+already accepted as reachable); Tuesday a normal session (funds
+correctly, some tick reaches 13:01); Wednesday — the tape's LAST trading
+day — is a real, common early-close day (the session before a market
+holiday) with every bar at or before 13:00 ET, so EVERY Wednesday tick
+has `tick_at_ms < instants[2]` (Wednesday 13:01) and gates to skip, and
+the tape simply ends at 13:00 with Wednesday's $20 never consumed —
+silent, permanent, no error, nothing in the Required Phase-0 matrix as
+worded would have caught it (the matrix's Gap-B row required a day's
+bars to START late, never required one to END before its own funding
+instant). The reviewer confirmed this is a genuine, reachable design gap
+(not an implementation slip) and confirmed `due()`/`materialize()`'s own
+multi-instant catch-up and boundary handling have no bug — the defect is
+structural: nothing anywhere in Decision points 1-5 ever forces
+outstanding instants to be materialized once the tick loop ends.
+
+Fixed by adding an unconditional end-of-tape flush (new Decision point
+1.6, below) that catches every instant still outstanding once
+`ServeLoop.run()` returns, regardless of whether any tick's own
+time-of-day ever reached it — closing the gap in general, not merely
+narrowing when it can occur, the same category of fix (address the root
+cause, not the specific counter-example) Revision 3 already applied once
+before. Also fixes both Minor findings from this round (a DST
+cross-reference gap in the new `funding_instants_ms` collection, and an
+unstated-but-harmless float round-trip note) and adds a Required Phase-0
+matrix row reproducing the exact early-close-last-day scenario as an
+executed test. This revision has not yet been reviewed — a third
+correctness round after two rejections (one by a builder, one by a
+reviewer) warrants a fresh Phase-0 pass before RED; self-certifying a
+third attempt at exactly the class of bug that broke the first two would
+not meet this repo's own bar.
 
 **Revision 3 (self-found during RED preparation, before any code
 landed):** the opus builder, before writing a single test, probed
@@ -21709,14 +21749,36 @@ backtest whose tape spans a weekend or holiday).
    `d` that IS in `trading_dates` (the ones that do NOT get a
    `SkipCashFlow`), that date's own occurrence instant as epoch-ms:
    `int(anchor.replace(year=d.year, month=d.month,
-   day=d.day).timestamp() * 1000)`. Sorted ascending, this becomes
-   `funding_instants_ms` — the second element of `composer_for`'s return
-   value (see the revised signature/return below). No second walk, no
-   second derivation: the existing loop already visits every candidate
-   date exactly once and already knows, per date, whether it is skipped
-   or not — this just collects the "not skipped" branch's instant into a
-   second list alongside appending to `overrides` in the "skipped"
-   branch.
+   day=d.day).timestamp() * 1000)`. Because the date walk is already
+   ascending (point 2's own loop order), this collection is sorted by
+   construction — no explicit `sort()` needed, and none is added. This
+   becomes `funding_instants_ms` — the second element of `composer_for`'s
+   return value (see the revised signature/return below). No second
+   walk, no second derivation: the existing loop already visits every
+   candidate date exactly once and already knows, per date, whether it is
+   skipped or not — this just collects the "not skipped" branch's instant
+   into a second list alongside appending to `overrides` in the "skipped"
+   branch. **Revision 4 Minor #1 (Phase-0 finding on Revision 3),
+   cross-referenced rather than newly mitigated:** this collection
+   itself cannot raise (`.replace()`/`.timestamp()` on a `ZoneInfo`-aware
+   `datetime` silently resolves a DST gap/fold rather than rejecting
+   it), but the SAME inherited risk already named earlier in this point
+   — `RecurringCashFlowSchedule._occurrence` calling `_valid_local` on
+   every occurrence, including a `SkipCashFlow`-targeted one — applies
+   identically to every date collected into `funding_instants_ms`: if
+   `due()` is later asked about a window containing such a date, the
+   `ValueError` still surfaces there, from `_occurrence`, uncaught by
+   `composer_for`'s own try/except (which wraps only schedule
+   construction). No new mitigation is added, for the same reason
+   already given above: practically unreachable for a realistic
+   market-hours anchor, and this ADR does not open core exception-handling
+   changes. **Revision 4 Minor #2:** `funding_instants[0]`'s derivation
+   (`datetime.fromtimestamp` → `.replace()` → `.timestamp()*1000`) is a
+   float round-trip from `tape.start_ms()`, a plain `int`; a ±1ms
+   mismatch is possible in principle. Self-healing by construction — a
+   missed instant on one tick is caught by the very next tick that
+   reaches it, or by point 1.6's flush at the latest — so no explicit
+   handling is added, only noted.
 
 1.5. **Gate `due()` on the next unconsumed SCHEDULED FUNDING INSTANT, not
    on calendar-date equality — Revision 3, replaces Revision 2's point
@@ -21737,23 +21799,29 @@ backtest whose tape spans a weekend or holiday).
    existing three ADR-0176 attribute resets (replacing Revision 2's
    `self._cash_flow_window_date`, which is dropped — no longer needed).
 
+   **Shared helper, introduced in Revision 4 to avoid duplicating this
+   logic with the new flush in point 1.6:** a new private method,
+   `_advance_cash_flow_window(self, window_end_ms)`, holds the actual
+   work — when `window_end_ms <= self._cash_flow_window_ms`, return
+   immediately (nothing new to cover); otherwise call `composer.due(...)`
+   over `[self._cash_flow_window_ms, window_end_ms)`, append/credit
+   exactly as before, then advance `index` past every funding instant now
+   covered (`while index < len(instants) and instants[index] <
+   window_end_ms: index += 1`) and set BOTH
+   `self._cash_flow_funding_index = index` and
+   `self._cash_flow_window_ms = window_end_ms` together, only after the
+   `due()`/`append_many` work succeeds (preserving Revision 2's Minor #2
+   fix: state only advances after the gated work actually completes).
+
    `_submit_due_cash_flows(tick_at_ms)` becomes: after the existing
    `if self._cash_flow_composer is None: return` guard, read
    `instants = self._cash_flow_funding_instants` and
    `index = self._cash_flow_funding_index`; when `index >= len(instants)
-   or tick_at_ms < instants[index]`, return immediately without touching
-   `self._cash_flow_window_ms` or `self._cash_flow_funding_index` (this
-   tick has not yet reached the next instant this replay hasn't already
-   funded — the SAME "don't touch state on a skip" principle Revision 2
-   already established, just gated on the correct condition). Otherwise
-   proceed with the existing `due()`/`append_many`/balance-credit logic
-   unchanged, and only AFTER it succeeds, at the end of the method:
-   advance `index` past every funding instant now covered — `while index
-   < len(instants) and instants[index] < window_end_ms: index += 1` —
-   then set BOTH `self._cash_flow_funding_index = index` and the existing
-   `self._cash_flow_window_ms = window_end_ms` together (preserving
-   Revision 2's Minor #2 fix: state only advances after the gated work
-   actually completes).
+   or tick_at_ms < instants[index]`, return immediately (this tick has
+   not yet reached the next instant this replay hasn't already funded —
+   the SAME "don't touch state on a skip" principle Revision 2 already
+   established, just gated on the correct condition); otherwise call
+   `self._advance_cash_flow_window(tick_at_ms + 1)`.
 
    **Worked trace against the exact scenario that broke Revision 2**
    (anchor Monday 10:00 ET; Tuesday and Wednesday each have bars at 09:30
@@ -21771,22 +21839,77 @@ backtest whose tape spans a weekend or holiday).
    instants[2]` — skip. Tick Wed 10:30 — `tick >= instants[2]` — `due()`
    window `[Tue 10:30+1ms, Wed 10:30+1ms)` contains Wednesday's 10:00
    occurrence — captures Wednesday's $20. All three days funded exactly
-   once, in full, regardless of the anchor/tick time-of-day skew that
-   broke Revision 2 — including on the tape's LAST day, because the fix
-   gates on whether the SCHEDULED INSTANT has been reached by ANY tick,
-   not on whether "today" has already been marked checked.
+   once, in full, in this scenario, because Wednesday happens to have a
+   tick (10:30) past its own funding instant. **Revision 4 correction:**
+   this trace does NOT generalize to every tape — it holds only because
+   some tick, on this or a later day, eventually reaches every pending
+   instant. Point 1.5's gate alone cannot fix a tape whose LAST trading
+   day never has a tick at or after its own funding instant (an
+   early-close session, most concretely) — see point 1.6, which is what
+   actually closes that case.
 
    **Call-count bound, corrected from Revision 2's exact-equality
    claim.** In the common case (every trading day's first tick is at or
    after that day's own funding instant — e.g. a market-open anchor with
    ordinary intraday bars), `due()` fires exactly once per trading day,
    `== len(trading_dates)`, matching Revision 2's original claim. In the
-   pathological case this revision fixes (a day's tick(s) never reach
-   that day's own instant), `due()` can fire on a LATER day's tick and
-   catch up multiple pending instants in one call — fewer total calls,
-   never more. The bound is therefore `<= len(trading_dates)`, and the
-   Required Phase-0 matrix's scale-test row (below) is corrected to
-   assert that inequality, not exact equality.
+   pathological case point 1.5 alone handles (a day's tick(s) never reach
+   that day's own instant, but a LATER day's tick does), `due()` fires on
+   that later tick and catches up multiple pending instants in one call —
+   fewer per-tick calls, never more. Point 1.6's flush adds at most ONE
+   further call, and only in the case it exists to cover. The bound is
+   therefore `<= len(trading_dates) + 1`, and the Required Phase-0
+   matrix's scale-test row (below) is corrected to assert that
+   inequality, not exact equality.
+
+1.6. **Unconditional end-of-tape flush — Revision 4, closes the Critical
+   finding against Revision 3 (see the Status block above): point 1.5's
+   gate alone only helps when SOME tick, on this day or a later one,
+   eventually reaches a pending instant; it does nothing when no tick on
+   the entire tape ever does.** Concrete failure this closes: an anchor
+   whose time-of-day is late relative to a LATER trading day's own
+   session — not merely "later than that day's first tick" (point 1.5
+   already handles that, via a tick further into the same day) but
+   "later than every tick that day has, because the tape's last trading
+   day closes early" (a real, common equities phenomenon: the session
+   before a market holiday). Root fix, not a narrower trigger condition
+   this time: in `_run_loop`, immediately after `code = loop.run()`
+   (before the existing `failed = []` / `recording.ledger.scan(kind=
+   "tick")` post-processing — flush happens regardless of tick outcome,
+   since it is pure bookkeeping independent of trade success, and the
+   whole `work` directory is discarded in `finally` either way if the
+   run goes on to raise), call a new method,
+   `self._flush_cash_flows()`:
+   ```
+   def _flush_cash_flows(self):
+       if self._cash_flow_composer is None or not self._cash_flow_funding_instants:
+           return
+       self._advance_cash_flow_window(self._cash_flow_funding_instants[-1] + 1)
+   ```
+   Reuses point 1.5's shared `_advance_cash_flow_window` helper
+   unchanged — no duplicated `due()`/`append_many`/balance/index logic.
+   The flush target is the LAST scheduled funding instant plus one
+   millisecond (`self._cash_flow_funding_instants[-1]`, the sorted
+   list's own final element — guaranteed to be the maximum, since it is
+   built by an ascending date walk in point 2), never the tape's own
+   last tick time: the two can legitimately differ (an early-close day's
+   nominal contribution instant, inherited from the anchor's time-of-day,
+   can fall chronologically AFTER that day's last bar), and bounding the
+   flush by the LAST FUNDING INSTANT rather than the last TICK is what
+   actually guarantees every trading date's contribution is captured
+   regardless of how that date's own session happened to end. Safe
+   because `funding_instants` is built (point 2) ONLY for dates already
+   confirmed to be in `trading_dates` (i.e., dates the tape's own bars
+   establish as real trading days) — the flush can never fund a date
+   beyond the tape's actual trading window, and
+   `_advance_cash_flow_window`'s own `window_end_ms <=
+   self._cash_flow_window_ms` guard makes the flush a genuine no-op
+   (zero extra `due()` calls) whenever point 1.5's per-tick gate already
+   captured everything, which is the common case. Landing money after
+   the day's own last bar cannot affect that day's trading decisions
+   (no more ticks occur that day to act on it) — economically inert
+   beyond correctly crediting the ledger and `self._cash_balance` before
+   the run's own post-processing and any caller reads them.
 
 3. **No change to `SkipCashFlow`, `RecurringCashFlowSchedule`,
    `ReplayCashFlowComposer`, or any other `dskit/production/*` code.**
@@ -21870,41 +21993,60 @@ named in Decision point 5 and the one authorized rewrite named in
 Decision point 5.5, plus ADR-0176/0177's own tests, to prove no
 interaction regression.
 
-**Revision 3 addition (required — proves Gap B is genuinely closed, not
-merely reasoned about).** Reproduce the exact counter-scenario that
-broke Revision 2's gate: an anchor time-of-day later than a subsequent
-trading day's own first tick (e.g. anchor Monday 10:00 in the policy
-timezone; later trading days with bars starting at 09:30, before the
-anchor's hour). Assert every such day's contribution is still funded in
-full, exactly once, including on the tape's LAST day (the specific case
-where Revision 2 could lose a contribution permanently, not merely
-defer it) — read back the ledger via the same `_CapturingEquityReplay`
-technique ADR-0176 established. This row exists because Decision point
-1.5's own worked trace, however careful, is prose reasoning by the ADR's
-author; only an executed test closes it.
+**Revision 3 addition (required — proves point 1.5's fix is genuinely
+correct within its own scope, not merely reasoned about).** Reproduce
+the exact counter-scenario that broke Revision 2's gate: an anchor
+time-of-day later than a subsequent trading day's own first tick (e.g.
+anchor Monday 10:00 in the policy timezone; later trading days with bars
+starting at 09:30, before the anchor's hour, but ALSO with a later tick
+that DOES reach the funding instant — e.g. a 10:30 bar too). Assert
+every such day's contribution is still funded in full, exactly once —
+read back the ledger via the same `_CapturingEquityReplay` technique
+ADR-0176 established. This row exists because Decision point 1.5's own
+worked trace, however careful, is prose reasoning by the ADR's author;
+only an executed test closes it.
+
+**Revision 4 addition (required — proves point 1.6's flush is genuinely
+correct, the case point 1.5 alone cannot cover).** Reproduce the exact
+counter-scenario that broke Revision 3: an anchor time-of-day late in
+the session (e.g. Monday 13:01 ET), a normal-session earlier trading day
+that funds correctly via point 1.5 alone, and the tape's LAST trading
+day an early-close session whose every bar is AT OR BEFORE the funding
+instant's time-of-day (e.g. every Wednesday bar at or before 13:00 ET,
+none at or after 13:01) — so NO tick that day ever satisfies point 1.5's
+own gate. Assert the last day's contribution is still funded in full,
+captured only by point 1.6's flush (assert this directly — e.g. confirm
+`self._cash_flow_funding_index` reaches `len(funding_instants)` and the
+ledger contains that day's record — not merely that the final balance
+happens to look right, which point 1.6's own no-op guard could mask a
+regression behind if only the aggregate were checked). Also assert the
+flush is a genuine no-op (adds zero `due()` calls) when point 1.5 already
+captured everything — construct one case where it does and one where it
+doesn't, in the same test file, so both branches of
+`_advance_cash_flow_window`'s guard are exercised.
 
 **Scale test (Revision 2: new row, required — closes the Major
 finding; Revision 3: assertion corrected from exact equality to an
-upper bound).** Directly reproduce the Revision 1 reviewer's own
-benchmark methodology (a multi-hundred-tick run against the real
+upper bound; Revision 4: bound widened by one to account for the
+flush).** Directly reproduce the Revision 1 reviewer's own benchmark
+methodology (a multi-hundred-tick run against the real
 `RecurringCashFlowSchedule`/`ReplayCashFlowComposer` classes, not a mock)
-under BOTH point 1.5's fix and a realistic override count (weekends over
-at least a full quarter, ideally a full year, so the override count is
-genuinely in the ~60-200 range the Major finding measured against), and
-demonstrate empirically — timed, with the number asserted or printed,
-not merely claimed — that `due()` is called AT MOST once per distinct
-trading date actually present in the tape (assert the call count, e.g.
-via a spy/counter on `composer.due`, is `<= len(trading_dates)` — NOT
-exact equality, per Decision point 1.5's corrected call-count bound; use
-a construction where every trading day's ticks are at or after that
-day's own funding instant, e.g. a market-open anchor, so the count is
-exactly `len(trading_dates)` in THIS particular test even though the
-bound is `<=` in general — and separately, in the Gap-B-reproduction row
-above, confirm the call count can legitimately be LOWER without any
-funding being lost), not the tick count — this call-count assertion is
-the actual gate; it alone would have caught Revision 1's defect and is
-not gameable by a favorable but coincidental timing run). **Revision 2
-Phase-0 Minor #1, corrected:**
+under BOTH point 1.5/1.6's fix and a realistic override count (weekends
+over at least a full quarter, ideally a full year, so the override count
+is genuinely in the ~60-200 range the Major finding measured against),
+and demonstrate empirically — timed, with the number asserted or
+printed, not merely claimed — that `due()` is called AT MOST
+`len(trading_dates) + 1` times (the `+1` accounts for point 1.6's flush,
+which is a genuine no-op — zero extra calls — whenever point 1.5 already
+captured everything, so a construction where every trading day's ticks
+are at or after that day's own funding instant, e.g. a market-open
+anchor, should still show exactly `len(trading_dates)` calls in THIS
+particular test, proving the flush costs nothing in the common case,
+even though the bound is `+1` in general for the early-close case the
+Revision 4 addition above exercises), not the tick count — this
+call-count assertion is the actual gate; it alone would have caught
+Revision 1's defect and is not gameable by a favorable but coincidental
+timing run. **Revision 2 Phase-0 Minor #1, corrected:**
 the wall-clock figure is NOT "well under a second" — `_recurrences`' own
 `last_target`-driven walk (see Decision point 1.5's Nit) makes every
 `due()` call cost roughly the same regardless of call frequency, so the
