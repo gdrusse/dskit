@@ -49,6 +49,7 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/research/distribution-modeling/2026-09-23-approach.md",
         "docs/research/distribution-modeling/2026-09-23-evaluation.md",
         "docs/research/distribution-modeling/2026-09-23-model-ladder.md",
+        "docs/research/distribution-modeling/2026-09-23-ml-dl-transformers.md",
         "tests/conftest.py", "tests/test_contracts.py", "tests/test_observations.py",
         "tests/test_nodes.py", "tests/test_configs.py", "tests/test_integration.py",
         "tests/test_distribution.py", "tests/test_synthetic_distribution_run.py",
@@ -59,7 +60,7 @@ def test_exact_manifest_and_agent_parity(child_root):
               if p.is_file() and not any(part in ignored or part.endswith(".egg-info")
                                          for part in p.relative_to(child_root).parts)}
     assert actual == expected
-    assert len(actual) == 37  # ADR-0167's 30 + ADR-0168's 4 + 3 journal research notes
+    assert len(actual) == 38  # ADR-0167's 30 + ADR-0168's 4 + 4 journal research notes
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
