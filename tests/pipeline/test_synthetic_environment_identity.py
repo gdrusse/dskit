@@ -1,8 +1,18 @@
 """ADR-0170 RED: one bounded, nondeployment synthetic environment fact."""
 
+import ast
+import builtins
 import copy
 import gc
+import inspect
+import os
+from pathlib import Path
 import pickle
+import random
+import socket
+import subprocess
+import textwrap
+import time
 from types import MappingProxyType
 import weakref
 
@@ -114,6 +124,62 @@ def test_adr170_slot_mutation_refuses(slot, value):
         trust._require_synthetic_tzdata(identity, TZDATA_SHA256)
 
 
+def test_adr170_type_equal_slot_and_getattribute_spoof_refuse(monkeypatch):
+    class EqualString(str):
+        pass
+
+    identity = _mint()
+    object.__setattr__(
+        identity, "_tzdata_version", EqualString(EXPECTED["tzdata_version"]),
+    )
+    with pytest.raises(ValueError, match="synthetic environment identity"):
+        trust._synthetic_environment_facts(identity)
+
+    identity = _mint()
+    object.__setattr__(identity, "_tzdata_version", "tampered")
+    cls = trust._SyntheticEnvironmentIdentity
+    original = cls.__getattribute__
+
+    def spoofed(instance, name):
+        if name == "_tzdata_version":
+            return EXPECTED["tzdata_version"]
+        return original(instance, name)
+
+    monkeypatch.setattr(cls, "__getattribute__", spoofed)
+    with pytest.raises(ValueError, match="synthetic environment identity"):
+        trust._synthetic_environment_facts(identity)
+
+
+def test_adr170_deleted_substituted_and_crosswired_records_refuse():
+    closure = inspect.getclosurevars(
+        trust._synthetic_environment_facts,
+    ).nonlocals
+    records = closure["records"]
+
+    deleted = _mint()
+    del records[deleted]
+    with pytest.raises(ValueError, match="synthetic environment identity"):
+        trust._synthetic_environment_facts(deleted)
+
+    first = _mint()
+    second = _mint()
+    first_record = records[first]
+    records[first] = records[second]
+    with pytest.raises(ValueError, match="synthetic environment identity"):
+        trust._synthetic_environment_facts(first)
+
+    copied = _mint()
+    copied_record = records[copied]
+    records[copied] = (
+        copied_record[0], MappingProxyType(dict(copied_record[1])),
+        copied_record[2], copied_record[3],
+    )
+    with pytest.raises(ValueError, match="synthetic environment identity"):
+        trust._synthetic_environment_facts(copied)
+
+    records[first] = first_record
+
+
 def test_adr170_same_named_module_globals_cannot_replace_closure_state(monkeypatch):
     cls = trust._SyntheticEnvironmentIdentity
     mint = trust._synthetic_environment_identity
@@ -169,3 +235,30 @@ def test_adr170_broker_closures_have_no_ambient_capability_names():
         trust._require_synthetic_tzdata,
     ):
         assert forbidden.isdisjoint(function.__code__.co_names)
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        referenced = {
+            node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+        } | {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        }
+        assert forbidden.isdisjoint(referenced)
+
+
+def test_adr170_broker_has_no_runtime_ambient_effects(monkeypatch):
+    effects = []
+
+    def trap(*args, **kwargs):
+        effects.append((args, kwargs))
+        raise AssertionError("ambient effect attempted")
+
+    monkeypatch.setattr(builtins, "open", trap)
+    monkeypatch.setattr(Path, "open", trap)
+    monkeypatch.setattr(os, "getenv", trap)
+    monkeypatch.setattr(time, "time", trap)
+    monkeypatch.setattr(random, "random", trap)
+    monkeypatch.setattr(socket, "socket", trap)
+    monkeypatch.setattr(subprocess, "run", trap)
+    identity = _mint()
+    assert dict(trust._synthetic_environment_facts(identity)) == EXPECTED
+    assert trust._require_synthetic_tzdata(identity, TZDATA_SHA256) is None
+    assert effects == []
