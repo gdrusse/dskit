@@ -21259,7 +21259,22 @@ question). No backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0177 — `EquityReplay` refuses a buy entry it cannot afford
 
-**Status:** PROPOSED — AWAITING PHASE-0 REVIEW. Not yet implemented.
+**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED. Not yet
+implemented. An independent design skeptic reviewed cold and
+independently verified every code claim (the `account`-ignored claim,
+the fee-computed-after-`open_lot` claim, `TICK_PHASES` ordering,
+`HorizonBook.open_lot`'s no-mutation-on-refusal behavior, the
+`PaperAccounting`/shadow-rung pin, the `Decimal(str(x))` idiom's
+consistency with `_proposal_for`, the ADR-0176 gate's non-interaction
+with existing tests, and the halt-queue retry path's absence of a
+double-`_queue_fill` risk): 0 Critical, 0 Major, 3 Minor, GO. All three
+Minors accepted and fixed in place — Decision point 4's citation
+(corrected from a claimed CLAUDE.md quote to the actual source, a
+pinning test's name) and two Required Phase-0 matrix rows made explicit
+(the short-entry test is genuinely new coverage, not an extension of
+exercised behavior; the override-then-refused-for-insufficient-cash
+sequencing is deliberately tested as accepted pre-existing behavior, not
+left as an accidental side effect).
 
 **Context.** ADR-0176 closed named Non-goal #1 — "no insufficient-cash
 handling" — as explicitly deferred to "a separate, later slice touching
@@ -21362,12 +21377,14 @@ in the current replay path checks cash sufficiency at all.
    model exists in this harness at all — modeling that is a separate,
    larger undertaking this ADR does not open); an exit — forced,
    override-triggered, or ordinary — must always be able to execute, the
-   same invariant `nodes_capital.EquityKellyMIO` already documents for its
-   own capital boundary ("a catastrophic legacy position below the band
-   can still fully exit", `children/intraday_equities/CLAUDE.md`) —
-   refusing an exit for insufficient cash would strand a position
-   permanently, which is a materially worse failure than letting the fee
-   push the balance slightly negative.
+   same invariant `nodes_capital.EquityKellyMIO` already PINS for its own
+   capital boundary via a behavior test named for exactly this property
+   (`test_a_catastrophic_legacy_position_below_the_band_can_still_fully_
+   exit`, `children/intraday_equities/tests/test_nodes_capital.py:698` —
+   Phase-0 correction: this is a pinning test's name, not CLAUDE.md
+   prose) — refusing an exit for insufficient cash would strand a
+   position permanently, which is a materially worse failure than letting
+   the fee push the balance slightly negative.
 
 5. **No sizing, no partial fills, no margin, no ADR-0176 change.** This is
    a binary refuse-or-allow gate on the exact caller-supplied `qty`,
@@ -21393,9 +21410,24 @@ unaffordable second buy (refused), profitable sell (credits balance
 enough), the same buy now succeeds — proving the running balance is
 accurate across mixed fills, not just a single check. A short entry
 (`side == "sell"`) is never refused for insufficient cash regardless of
-balance. A forced exit (horizon expiry) and an override-triggered exit
-are never refused for insufficient cash even with a deeply negative
-balance. The pre-ADR-0176 regression baseline: with no `cash_flow_policy`
+balance — this row is genuinely NEW coverage, not an extension of
+existing behavior: Phase-0 review found `test_replay.py` exercises no
+`side="sell"` entry anywhere today (`_decision()`'s default is `"buy"`),
+so this test establishes the first exercised short-entry baseline in this
+file, not merely a variant of one. A forced exit (horizon expiry) and an
+override-triggered exit are never refused for insufficient cash even with
+a deeply negative balance. **An override entry that is then itself
+refused for insufficient cash still permanently closes the prior lot**
+(Phase-0 finding: this pre-dates this ADR — the existing `below_floor`
+refusal already exhibits the same override-then-refuse sequencing at
+`replay.py:1057-1073` — but this ADR adds a second refusal reason that
+can trigger it, so it must be tested deliberately rather than left as an
+accidental side effect of the multi-fill sequence test): a queued
+override-side_lead entry that overrides an open lot but is then refused
+for insufficient cash leaves the book with the prior lot closed and no
+new lot opened — proving this is accepted, pre-existing, unchanged
+behavior, not a new regression this ADR introduces. The pre-ADR-0176
+regression baseline: with no `cash_flow_policy`
 supplied, a buy that would be refused under this rule still fills exactly
 as it did before this ADR (byte-identical `fills`/`refused`/`skipped`
 output to the existing, unedited test fixtures) — proving the gate is
