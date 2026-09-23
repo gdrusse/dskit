@@ -19977,18 +19977,15 @@ nondeployment mapping proxies. Commit before mint. Roll back on every
 exception, including commit failure. Deferred BEGIN, another connection,
 nested transaction, or close/revoke/generation race refuses.
 
-The trust bridge itself is created by a deleted module-initialization builder
-that closure-captures the exact raw/roster proof classes and `verify`
-functions, `_hs_parse_canonical`, `_require_synthetic_tzdata`, and every
-transitive trust dispatch used by those verifies, including raw/roster
-publisher `proof`, `_check_row`, `_manifest`, `_parse_member`,
-`_published_facts`, `_check_signed`, and their class/static verifier
-helpers. The builder records the exact class descriptors too. Prepare and
-consume identity-check this explicit dependency manifest before and after the
-environment gate, each proof verification, derivation, commit/rollback, and
-registry transition; same-thread/no-callback execution makes each checked
-region indivisible. Calls use captured functions, never caller or replaceable
-instance dispatch. Any manifest change refuses.
+The trust bridge is created by a deleted module-initialization builder that
+closure-captures the exact raw/roster proof classes and top-level `verify`
+functions, `_hs_parse_canonical`, and `_require_synthetic_tzdata`. It
+identity-checks those captures and class descriptors immediately before and
+after each call. Existing proof bodies retain exactly their already-reviewed
+ADR-0169/0170 dispatch and callback threat model; this bridge does not claim
+to make an existing proof call indivisible against transient same-thread
+SQLite callbacks. Tests replace captured top-level dependencies before and
+after calls, not inside existing proof internals.
 
 3. **Metadata-only environment gate before event access.** Before any full
 proof `verify`, event-member iteration, or retained `_events` access,
@@ -20064,11 +20061,12 @@ already perform. “No new provider lookup” means no bridge-added
 `describe`/`open_member` beyond the exact existing raw/roster verify call
 trace at prepare and consume. Before each transaction, snapshot the reserve
 rows/audit, provider storage/events, publisher retained tuples, outer receipt
-store, lifecycle ledgers/session events, and reloadable receipt caches; after
-commit or rollback, require byte/identity equality for every snapshot except
-the specifically enumerated reload-cache slots, whose refreshed values must
-byte-equal the pre-call retained receipt/member bytes. No list/event/receipt
-count may grow and no lifecycle/reserve state may advance. It performs no acquisition,
+store, lifecycle ledgers/session events, and reloadable receipt caches. After
+commit or rollback, require equality except the enumerated reload-cache slots
+and the provider audit-event list. Cache values must byte-equal retained bytes;
+provider events must gain exactly the ordered `describe/open_member` suffix
+implied by the existing raw, nested-roster, and supplied-roster verify traces.
+No receipt or lifecycle/reserve state may advance. It performs no acquisition,
 network, bridge-added provider read, new member write, lifecycle transition,
 publication, or external effect.
 
@@ -20088,18 +20086,19 @@ v1/v2 cross-use; reentrant/sequential duplicate prepare and consume; strong
 spent state after GC/remint and post-reservation genuine-object failure;
 pre-reservation failure leaves registries empty; forged/copied/stale bridge; exact
 inert mapping shapes; proof `__eq__`/`__hash__` replacement and identity
-alias attempts; replacement at every checkpoint of raw/roster verify,
-proof/parser/environment/publisher/preflight/verifier helpers and class
-descriptors; replacement of consume/projector/parser/encoder/class
+alias attempts; replacement before/after calls of captured raw/roster verify,
+parser/environment helpers and class descriptors, while explicitly inheriting
+existing proof-internal dispatch; replacement of consume/projector/parser/encoder/class
 descriptors before/after mint and at every specified mid-call checkpoint;
 projector/parser exception;
 two byte-identical ADR-0171 computations plus canonical reparse/re-encode; no
 partial data on every failure; pre-consume production refusal retry and
 post-consume spent behavior. Assert exact SQL trace (`BEGIN IMMEDIATE`, no
 nested BEGIN, commit/rollback), wrong-thread zero SQLite/registry access, and
-before/after snapshots of every named mutable container. Permit only the
-existing verify provider-read trace and enumerated cache refresh, prove refresh
-equality/no append, and prove no acquisition, network, bridge-added read,
+before/after snapshots of every named mutable container. Require the exact
+provider audit-event suffix for the existing verify trace and exact enumerated
+cache refresh, prove no other append, and prove no acquisition, network,
+bridge-added read,
 member-write, or lifecycle effect. Run
 ADR-0145/0146/0169/0170/0171, trust, capture, and all purity suites unedited.
 
