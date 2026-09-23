@@ -7581,19 +7581,21 @@ class _SyntheticFixtureSource:
 class VerifiedSyntheticDatasetFixture:
     """Opaque one-process validated fixture facts, without publication authority."""
 
-    __slots__ = ("_owner", "_intent", "_members", "_events", "_used",
-                 "event_count", "member_names", "deployment_eligible", "_locked")
+    __slots__ = ("_owner", "_intent", "_members", "_events", "_event_schema",
+                 "_used", "event_count", "member_names", "deployment_eligible",
+                 "_locked")
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("the validated synthetic fixture is final")
 
-    def __init__(self, token, owner, intent, members, events):
+    def __init__(self, token, owner, intent, members, events, event_schema):
         if token is not _MAKE or type(owner) is not _SyntheticRawPreflight:
             raise TypeError("broker-issued synthetic fixture required")
         object.__setattr__(self, "_owner", owner)
         object.__setattr__(self, "_intent", intent)
         object.__setattr__(self, "_members", members)
         object.__setattr__(self, "_events", events)
+        object.__setattr__(self, "_event_schema", event_schema)
         object.__setattr__(self, "_used", False)
         object.__setattr__(self, "event_count", len(events))
         object.__setattr__(self, "member_names", tuple(name for name, _ in members))
@@ -7922,6 +7924,7 @@ class _SyntheticRawPreflight:
             self._closed = True
             return VerifiedSyntheticDatasetFixture(
                 _MAKE, self, intent, tuple(retained), tuple(events),
+                authorization["event_schema"],
             )
         except Exception:
             self._closed = True
@@ -8376,25 +8379,28 @@ class _SyntheticRawPublisher:
                    and self._preflight._publisher is self._roster_publisher
                    and not proof._used,
                    "unused own raw fixture proof required")
-        intent = _hs_parse_canonical(proof._intent)
-        bound_authorities = (
-            ("dataset_authorization_sha256", authorization_bytes),
-            ("dataset_g1_sha256", g1),
-            ("dataset_g2_sha256", g2),
-            ("fixture_attestation_sha256", attestation),
-            ("bootstrap_authorization_sha256", bootstrap),
-            ("bootstrap_g1_sha256", bg1),
-            ("bootstrap_g2_sha256", bg2),
-            ("roster_basis_sha256", roster_basis),
-            ("roster_receipt_sha256", roster_receipt),
-        )
-        _hs_refuse(
-            all(
-                type(raw) is bytes and intent.get(name) == _digest(raw)
-                for name, raw in bound_authorities
-            ),
-            "raw publisher proof authority changed",
-        )
+        if proof._event_schema == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v2"
+        ]:
+            intent = _hs_parse_canonical(proof._intent)
+            bound_authorities = (
+                ("dataset_authorization_sha256", authorization_bytes),
+                ("dataset_g1_sha256", g1),
+                ("dataset_g2_sha256", g2),
+                ("fixture_attestation_sha256", attestation),
+                ("bootstrap_authorization_sha256", bootstrap),
+                ("bootstrap_g1_sha256", bg1),
+                ("bootstrap_g2_sha256", bg2),
+                ("roster_basis_sha256", roster_basis),
+                ("roster_receipt_sha256", roster_receipt),
+            )
+            _hs_refuse(
+                all(
+                    type(raw) is bytes and intent.get(name) == _digest(raw)
+                    for name, raw in bound_authorities
+                ),
+                "raw publisher proof authority changed",
+            )
         authorization = _hs_parse_canonical(authorization_bytes)
         bootstrap_value = _hs_parse_canonical(bootstrap)
         v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[

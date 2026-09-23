@@ -452,6 +452,29 @@ def test_adr169_v2_raw_proof_refuses_caller_schema_downgrade_without_effect(
     ).fetchone() == ("RAW_READ_STARTED",)
 
 
+def test_adr169_v1_raw_publication_substitution_semantics_stay_frozen(
+    tmp_path, monkeypatch,
+):
+    _path, publisher, roster, signed, members = cases._adr132_raw_case(
+        tmp_path, monkeypatch,
+    )
+    preflight = trust._SyntheticRawPreflight(
+        publisher, trust._SyntheticFixtureSource(members),
+    )
+    proof = preflight.verify(*signed, *roster)
+    raw_publisher = trust._SyntheticRawPublisher(preflight)
+    changed = list(signed)
+    changed[1] += b" "
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="non-canonical JSON"):
+        raw_publisher.publish(proof, *changed, *roster)
+    assert publisher._reserve._connection.total_changes > before
+    assert proof._used is True
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("QUARANTINED",)
+
+
 def test_adr169_root_pis_refuses_v2_inputs_before_reserve_spend(tmp_path, monkeypatch):
     (tmp_path / "v1").mkdir()
     v1_publisher, _v1_roster, _v1_signed, v1_output = cases._adr140_published_raw_case(
