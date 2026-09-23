@@ -24,7 +24,8 @@ import uuid
 from collections import defaultdict
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dskit.onboarding import OnboardingRoot
 from dskit.pipeline.base import config_hash, import_ref
@@ -40,7 +41,8 @@ from dskit.pipeline.records import number_ok
 from dskit.production.base import ProductionError, canonical_hash
 from dskit.production.bundles import Data, Invocation, ReplayTape
 from dskit.production.cadence import Cadence
-from dskit.production.compose import bundles_for
+from dskit.production.cashflows import RecurringCashFlowSchedule, ReplaceCashFlow
+from dskit.production.compose import ReplayCashFlowComposer, bundles_for
 from dskit.production.document import ServeDocument
 from dskit.production.executor import PaperExecutor
 from dskit.production.health import InstanceLock
@@ -61,6 +63,7 @@ from .nodes_capital import SchwabCostModel
 
 __all__ = [
     "BarTape",
+    "CashFlowPolicy",
     "DevelopmentReplay",
     "FillPolicy",
     "HorizonBook",
@@ -234,6 +237,172 @@ class FillPolicy:
             },
             "seed": self.seed,
         }
+
+
+def _decimal_param(value, name):
+    """Read a positive ``Decimal`` from a JSON string; refuse anything else."""
+    if not isinstance(value, str):
+        raise ConfigError([f"{name} must be a decimal string, got {value!r}"])
+    try:
+        amount = Decimal(value)
+    except InvalidOperation:
+        raise ConfigError([f"{name} must be a decimal string, got {value!r}"]) from None
+    if not amount.is_finite() or amount <= 0:
+        raise ConfigError([f"{name} must be a positive finite amount, got {value!r}"])
+    return amount
+
+
+class CashFlowPolicy:
+    """Validated replay cash-flow bundle: initial capital plus a daily contribution (ADR-0176).
+
+    Values come from the document, never defaults, mirroring
+    :class:`FillPolicy`. There is no standalone one-time-deposit primitive
+    in ``dskit.production.cashflows`` (only ``WithdrawalCashFlow``, always
+    sign-flipped negative), so :meth:`composer_for` folds the one-time
+    initial capital into the schedule's first daily occurrence via the
+    existing ``ReplaceCashFlow`` override rather than adding a new override
+    type to that safety-critical module.
+
+    Parameters
+    ----------
+    params : dict
+        Every name in :attr:`_PARAMS` is required. ``notes`` is allowed.
+
+    Examples
+    --------
+    Load the shipped P19 backtest bundle::
+
+        policy = CashFlowPolicy.from_path(
+            os.path.join(_child_root(), "configs", "cash-flow-policy.json")
+        )
+        policy.currency  # 'USD' — from the JSON, not a Python default
+    """
+
+    _PARAMS = (
+        "currency",
+        "daily_contribution_amount",
+        "initial_capital_amount",
+        "timezone",
+    )
+
+    def __init__(self, params):
+        problems = self.validate_params(params)
+        if problems:
+            raise ConfigError(problems)
+        self._params = dict(params)
+        self.currency = params["currency"]
+        self.daily_contribution_amount = _decimal_param(
+            params["daily_contribution_amount"], "daily_contribution_amount"
+        )
+        self.initial_capital_amount = _decimal_param(
+            params["initial_capital_amount"], "initial_capital_amount"
+        )
+        self.timezone = ZoneInfo(params["timezone"])
+
+    @classmethod
+    def from_path(cls, path):
+        """Load and validate one JSON cash-flow-policy document."""
+        with open(path, encoding="utf-8") as fh:
+            return cls(json.load(fh))
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none."""
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS + ("notes",))
+        for name in cls._PARAMS:
+            if name not in params:
+                problems.append(f"{name} is required")
+        if problems:
+            return problems
+        if not isinstance(params["currency"], str) or not params["currency"]:
+            problems.append(f"currency must be a non-empty string, got {params['currency']!r}")
+        for name in ("daily_contribution_amount", "initial_capital_amount"):
+            try:
+                _decimal_param(params[name], name)
+            except ConfigError as exc:
+                problems.extend(exc.errors)
+        if not isinstance(params["timezone"], str) or not params["timezone"]:
+            problems.append(f"timezone must be a non-empty string, got {params['timezone']!r}")
+        else:
+            try:
+                ZoneInfo(params["timezone"])
+            except (ZoneInfoNotFoundError, ValueError):
+                problems.append(f"timezone is not a known zoneinfo key: {params['timezone']!r}")
+        return problems
+
+    def to_obj(self):
+        """Return the document mapping this policy was built from."""
+        return dict(self._params)
+
+    def digest(self):
+        """Identity hash of the cash-flow-policy document (notes stripped)."""
+        return config_hash(_HashView(self.to_obj()), exclude=())
+
+    def composer_for(self, series_id, start_ms):
+        """Build one ``ReplayCashFlowComposer`` anchored to a replay's own tape start.
+
+        Parameters
+        ----------
+        series_id : str
+            The replay's own fresh identity (``EquityReplay`` mints one
+            ``uuid.uuid4()`` per run); used verbatim as the schedule's
+            ``schedule_id``, so two replay runs can never collide.
+        start_ms : int
+            ``tape.start_ms()`` — epoch milliseconds of the tape's first
+            instant.
+
+        Returns
+        -------
+        ReplayCashFlowComposer
+            Anchored so the schedule's first occurrence is
+            ``initial_capital_amount + daily_contribution_amount`` and
+            every later daily occurrence is ``daily_contribution_amount``.
+
+        Raises
+        ------
+        ConfigError
+            ``start_ms`` is ``0`` — the documented empty-tape signal
+            (:class:`_CapturedEnvelopeReplayTape`/``BarTape``'s shared
+            ``start_ms()`` fallback, ADR-0175): a cash-flow schedule has
+            nothing to fund over zero bars, so this refuses before
+            constructing anything rather than silently anchoring
+            real-dollar flows at the 1970 epoch.
+        ConfigError
+            The derived anchor is a nonexistent or ambiguous local instant
+            in ``self.timezone`` (a DST gap or fold) — re-raised from
+            ``RecurringCashFlowSchedule``'s own construction-time
+            ``_valid_local`` check, naming this policy and the offending
+            instant rather than surfacing a bare, unattributed
+            ``ValueError``.
+        """
+        if start_ms == 0:
+            raise ConfigError([
+                "cash-flow policy: the replay tape is empty (start_ms == 0); "
+                "there is nothing to fund"
+            ])
+        anchor = datetime.fromtimestamp(
+            start_ms / 1000, tz=timezone.utc
+        ).astimezone(self.timezone)
+        first_amount = self.initial_capital_amount + self.daily_contribution_amount
+        try:
+            schedule = RecurringCashFlowSchedule(
+                schedule_id=series_id,
+                anchor=anchor,
+                interval_days=1,
+                currency=self.currency,
+                amount=self.daily_contribution_amount,
+                timezone=self.timezone,
+                overrides=(
+                    ReplaceCashFlow("initial-capital-seed", anchor, first_amount),
+                ),
+            )
+        except ValueError as exc:
+            raise ConfigError([
+                f"cash-flow policy: could not anchor the schedule at "
+                f"{anchor.isoformat()} ({self.timezone.key}): {exc}"
+            ]) from exc
+        return ReplayCashFlowComposer(schedule)
 
 
 class HorizonBook:
@@ -484,8 +653,9 @@ class _PaperVenue:
 class EquityReplay:
     """Drive compose.bundles_for + ServeLoop around the equity book."""
 
-    def __init__(self, policy):
+    def __init__(self, policy, cash_flow_policy=None):
         self._policy = policy
+        self._cash_flow_policy = cash_flow_policy
         self.proposer = self
         self.serving_hash = policy.digest()
         self.fills = []
@@ -615,6 +785,11 @@ class EquityReplay:
                 armed=False, env_release_hash=None, once=False,
                 max_ticks=max(len(times), 1),
             )
+            cash_flow_composer = None
+            if self._cash_flow_policy is not None:
+                cash_flow_composer = self._cash_flow_policy.composer_for(
+                    series_id, tape.start_ms()
+                )
             try:
                 schedule, data, decision, safety, execution, recording, observability = bundles_for(
                     document,
@@ -627,6 +802,7 @@ class EquityReplay:
                     lock=lock,
                     journal_hook=_journal_noop,
                     tape=tape,
+                    cash_flow_composer=cash_flow_composer,
                 )
             except ProductionError as exc:
                 raise ConfigError(list(exc.problems)) from exc
@@ -1176,6 +1352,10 @@ class ReplayAdapter:
     ----------
     policy : FillPolicy
         The fill-model bundle.
+    cash_flow_policy : CashFlowPolicy, optional
+        The initial-capital/daily-contribution bundle (ADR-0176). ``None``
+        (the default) means no cash-flow composer is bound, matching this
+        class's behavior before ADR-0176 exactly.
 
     Examples
     --------
@@ -1194,8 +1374,9 @@ class ReplayAdapter:
         out["fills"][0]["price"]  # 11.0
     """
 
-    def __init__(self, policy):
+    def __init__(self, policy, cash_flow_policy=None):
         self._policy = policy
+        self._cash_flow_policy = cash_flow_policy
 
     def replay(self, bars, decisions):
         """Replay ``decisions`` over ``bars`` through :class:`ServeLoop`.
@@ -1212,7 +1393,7 @@ class ReplayAdapter:
         dict
             ``fills``, ``skipped``, ``refused``.
         """
-        return EquityReplay(self._policy).run(bars, decisions)
+        return EquityReplay(self._policy, self._cash_flow_policy).run(bars, decisions)
 
 class DevelopmentReplay(Node):
     """Pipeline doorway for developmental replay: ineligible, evidence-bounded.

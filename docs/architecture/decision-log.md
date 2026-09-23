@@ -20857,23 +20857,36 @@ trading, no deployment.
 
 ## ADR-0176 — a configured cash-flow schedule for the child's equity replay
 
-**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED (2026-09-23), REVISION
-2. Not yet implemented. A fresh, independent design skeptic reviewed
-Revision 2 cold, independently verified all seven Revision 1 closure claims
-against the actual code, and confirmed every finding resolved: 0 Critical,
-0 Major, 3 Minor (editorial/precision only — an ambiguous instruction on
-which `ValueError`s to catch when re-raising with policy context, and two
-phrasing imprecisions with no correctness impact), GO for RED. Revision 1
-received a
-NO-GO: 2 Critical (the anchor-derivation step was prose, not a precise
-transformation, with no stated handling for a DST gap/fold; an empty tape's
-`start_ms() == 0` would silently anchor real-dollar cash flows at the 1970
-epoch), 3 Major (no explicitly mandated end-to-end test; `CashFlowPolicy`'s
-shape was under-specified; `schedule_id` uniqueness was asserted, not
-derived), 2 Minor (no DST-transition matrix row; no self-authorization
-round-trip row). Every finding is accepted and folded in below — see
-Decision points 1, 2, and the Required Phase-0 matrix, each marked at the
-point it changed.
+**Status:** PROPOSED — AWAITING PHASE-0 REVIEW (REVISION 3). Not yet
+implemented. Revision 3 adds Decision point 3.5 (below): during Phase-0
+matrix preparation it became clear Revision 2's Decision (composer wired
+into `bundles_for` purely as a `SeriesState._for_replay` authorization
+gate) could never satisfy Revision 2's OWN "mandatory end-to-end test" row
+— nothing in `EquityReplay`'s existing bar/decision loop ever calls
+`Ledger.append` with a `cash_flow` record, so a full run's ledger would
+contain zero cash-flow records regardless of whether a composer is bound;
+the gate would sit permanently unused. Point 4's own "only new observable
+effect... records CAN now be appended... where none could before" was an
+accurate description of what Revision 2 built, but not of what the
+Context section's stated goal ("$1,000 initial capital and a $20/day
+recurring contribution correctly entering the replay ledger") or the
+matrix's own end-to-end row required. Put to the owner as a scope choice
+(narrow the matrix to match Revision 2's wiring-only Decision, or extend
+the Decision to add a real submission mechanism); the owner chose to
+extend. Decision point 3.5 is that extension, scoped to the existing
+decider hook already implemented by `EquityReplay` — no core module,
+`TICK_PHASES` entry, or Leg pipeline step is touched. Revision 2 was
+independently reviewed cold and confirmed 0 Critical / 0 Major / 3 Minor
+(editorial), GO for RED; Revision 1 received a NO-GO (2 Critical: the
+anchor-derivation step was prose, not a precise transformation, with no
+stated handling for a DST gap/fold; an empty tape's `start_ms() == 0`
+would silently anchor real-dollar cash flows at the 1970 epoch. 3 Major:
+no explicitly mandated end-to-end test; `CashFlowPolicy`'s shape was
+under-specified; `schedule_id` uniqueness was asserted, not derived. 2
+Minor: no DST-transition matrix row; no self-authorization round-trip
+row). Every Revision 1/2 finding is accepted and folded in below — see
+Decision points 1, 2, and the Required Phase-0 matrix. Decision point 3.5
+and its matrix row are new in Revision 3 and have not yet been reviewed.
 
 **Context.** `dskit.production.compose.bundles_for(document, release,
 registry, ..., tape=None, cash_flow_composer=None)` (§5.16's composition
@@ -21016,19 +21029,104 @@ occurrence — see Decision point 2.
    value construction (a schedule, an override, a composer) plus one new
    keyword argument at an existing call site. No capability consumption,
    no P4 interaction, no network access. The only NEW observable effect
-   inside a replay run is that `cash_flow` records the schedule
-   authorizes can now be appended to the replay ledger where none could
-   before (`cash_flow_composer=None` today means `_replay_authorizer` is
-   never bound, per `SeriesState._for_replay`'s existing `if
-   cash_flow_composer is not None` guard) — read the exact consequence of
-   that unbound state in `dskit/production/state.py` before RED, to pin
-   the exact before/after ledger-acceptance behavior the matrix must prove.
+   inside a replay run from points 1–3 alone is that `cash_flow` records
+   the schedule authorizes can now be appended to the replay ledger where
+   none could before (`cash_flow_composer=None` today means
+   `_replay_authorizer` is never bound, per `SeriesState._for_replay`'s
+   existing `if cash_flow_composer is not None` guard) — read the exact
+   consequence of that unbound state in `dskit/production/state.py`
+   before RED, to pin the exact before/after ledger-acceptance behavior
+   the matrix must prove. Point 3.5 (below, Revision 3) is what actually
+   submits records against that now-open gate.
+
+3.5. **Submission: `EquityReplay` calls `composer.due(...)` and appends
+   the result itself, once per tick, from its own existing decider hook
+   — new in Revision 3.** `ReplayCashFlowComposer.due`'s own docstring
+   already documents this exact usage: "the replay owner chooses a
+   half-open window and writes the returned records to its scratch
+   ledger" (`dskit/production/compose.py:149-170`, unedited) — this ADR
+   makes `EquityReplay` that replay owner; no new core seam is added, the
+   documented one is finally called. `EquityReplay` is already installed
+   as `bundles_for`'s decider (`data = Data(feed=data.feed, decider=self)`,
+   `replay.py`) and already implements `read_entry(self, tick_at_ms)`,
+   the decider hook `TICK_PHASES` calls once per tick, in strictly
+   ascending `tick_at_ms` order (`_TapeCadence.next_tick` returns "the
+   next tape instant strictly after `after_ms`", `replay.py:520-525`),
+   fourth of ten phases — strictly before `account` (ninth), the phase
+   that computes NAV from `tick.recording.state.snapshot()`. Concretely:
+   - In `_run_loop`, immediately after the existing `bundles_for(...)`
+     call succeeds (still inside the existing `try` block, before
+     `self._venue = ...`): when `cash_flow_composer is not None`, set
+     `self._cash_flow_ledger = recording.ledger`,
+     `self._cash_flow_composer = cash_flow_composer`, and
+     `self._cash_flow_window_ms = tape.start_ms()` (the schedule's own
+     anchor instant, so the very first due occurrence — always exactly at
+     the anchor per Decision point 2 — falls inside the first tick's
+     window rather than before it). When `cash_flow_composer is None`,
+     set all three to `None` (`EquityReplay` instances are reused across
+     `run()` calls in some call sites, so this must reset on every
+     `_run_loop` entry, not rely on `__init__`-time defaults alone).
+   - At the top of `read_entry(self, tick_at_ms)`, before its existing
+     body: when `self._cash_flow_composer is not None` (the None case is
+     an unconditional no-op, matching every other optional-policy guard
+     in this file), compute the half-open window
+     `[self._cash_flow_window_ms, tick_at_ms + 1)`, convert both bounds
+     to aware UTC `datetime`s via the exact
+     `datetime.fromtimestamp(ms / 1000, tz=timezone.utc)` idiom already
+     used elsewhere in this file, call
+     `due = self._cash_flow_composer.due(start, end_exclusive)`, and when
+     `due` is non-empty, `self._cash_flow_ledger.append_many(due)`
+     (`dskit/production/ledger.py:468`, unedited). Then unconditionally
+     set `self._cash_flow_window_ms = tick_at_ms + 1`, regardless of
+     whether `due` was empty, so windows stay contiguous.
+   - **Partition proof (why no record is ever skipped or double-counted).**
+     `_TapeCadence` ticks strictly ascending with no repeats, so
+     consecutive windows `[w0, t1+1), [t1+1, t2+1), [t2+1, t3+1), …` tile
+     `[tape.start_ms(), last_tick_ms + 1)` with no gap and no overlap;
+     every `RecurringCashFlowSchedule` occurrence instant that exists
+     falls inside exactly one tick's half-open window, so it is submitted
+     exactly once, on exactly that tick. `materialize` (called by `due`)
+     raises `ValueError("start must precede end_exclusive")` on
+     `start >= end_exclusive`
+     (`dskit/production/cashflows.py:458-463`, unedited) — this can never
+     fire here because each window's `end_exclusive` is the CURRENT
+     tick's instant plus one and its `start` is the PREVIOUS tick's
+     instant plus one (or the anchor, for the first tick), and ticks
+     strictly increase, so `start < end_exclusive` always holds by
+     construction; no matrix row proves this exception path because it is
+     structurally unreachable, exactly as Decision point 2 already
+     established for the DST-gap `ValueError` on `anchor`.
+   - **Why a direct `Ledger.append` from a decider hook, not the Leg
+     pipeline.** `dskit/production/CLAUDE.md`'s safety spine ("Record
+     before act, checkpoint last... a reduction inserts `authority_use`
+     before `authorization`") governs ORDER submission specifically; it
+     is not a rule about every ledger write. Precedent already exists for
+     `cash_flow` records taking a separate, non-Leg write path:
+     `Reconciler` builds and appends `cash_flow` records
+     (`dskit/production/reconcile.py:1564-1581`, unedited) outside the
+     eight-step `Leg` submission pipeline entirely, because a cash flow is
+     an external funding event, not an act this series takes. This ADR's
+     mechanism follows that same precedent, through the identical
+     `Ledger.append`/`append_many` entry point, for the identical record
+     kind.
+   - **No new authority.** `read_entry` already runs with full access to
+     `self` and the run's own `recording.ledger` (stashed by `_run_loop`,
+     which already builds `recording` before installing `self` as
+     decider); this adds no new capability, no new registry entry, no new
+     `uses:` site, and no change to any object `EquityReplay` did not
+     already construct or receive.
 
 5. **Compatibility.** `dskit.production.compose`/`dskit.production.
-   cashflows`/`dskit.production.state` are untouched. `EquityReplay`'s
+   cashflows`/`dskit.production.state`/`dskit.production.ledger`/
+   `dskit.production.reconcile` are untouched (point 3.5 calls their
+   existing public surface; it edits none of them). `EquityReplay`'s
    existing signature, its other bundle wiring, `BarTape`, `ReplayAdapter`,
-   and `DevelopmentReplay` are untouched. The new config file and class are
-   additive; no existing config or child test fixture changes shape.
+   and `DevelopmentReplay` are untouched. The new config file and class,
+   and `read_entry`'s new leading block (a no-op whenever
+   `cash_flow_policy` is not supplied), are additive; no existing config
+   or child test fixture changes shape, and every existing
+   `EquityReplay`/`ReplayAdapter` caller that never passes
+   `cash_flow_policy` observes byte-identical behavior to today.
 
 ### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
 
@@ -21059,20 +21157,33 @@ November) refuses with a message naming *cash-flow policy* and the
 offending instant, not a bare unattributed `ValueError` (Revision 2:
 Minor finding accepted — this is also the required DST-transition test).
 **Mandatory end-to-end test (Revision 2: Major finding accepted — this row
-is explicitly REQUIRED, not merely named in prose):** a full
-`EquityReplay._run_loop` run, with a real multi-day `BarTape` and the real
-`cash-flow-policy.json` config (not a hand-built schedule/composer in
-isolation), whose replay ledger — read back after the run, through
-whatever accessor the existing `EquityReplay`/`SeriesState` test fixtures
-already use to inspect ledger contents — contains exactly the expected
-cash-flow records (right count, right amounts, right dates, right
-currency) over that window; and the exact prior behavior
-(`cash_flow_composer=None`, no cash records ever authorized) is pinned as a
-regression baseline on the SAME fixture so a future change cannot silently
-re-widen or narrow it. Run the existing child replay test suite unedited to
-prove `FillPolicy`, `BarTape`, `ReplayAdapter`, `DevelopmentReplay`, and
-every other existing `EquityReplay` behavior is untouched, plus
-`dskit.production.cashflows`/`compose`/`state` regressions.
+is explicitly REQUIRED, not merely named in prose; Revision 3: now
+literally achievable per point 3.5's submission mechanism, where Revision
+2's wiring-only Decision could not have satisfied it):** a full
+`EquityReplay._run_loop`/`ReplayAdapter.replay()` run, with a real
+multi-day `BarTape` and the real `cash-flow-policy.json` config (not a
+hand-built schedule/composer in isolation), whose replay ledger — read
+back DURING the run, before `_run_loop`'s `finally: shutil.rmtree(work,
+...)` deletes the scratch `ServeRoot` (e.g. via `recording.ledger.scan(kind
+="cash_flow")`, the same accessor pattern `_run_loop` already uses for
+`kind="tick"` a few lines above the `finally`, reached by a test-only hook
+or subclass that captures ledger contents before cleanup rather than after
+`run()` returns) — contains exactly the expected cash-flow records (right
+count, right amounts, right dates, right currency) over that window; and
+the exact prior behavior (`cash_flow_policy=None`, no cash records ever
+submitted or authorized) is pinned as a regression baseline on the SAME
+fixture so a future change cannot silently re-widen or narrow it. **New in
+Revision 3:** the partition proof itself — every tick's window is disjoint
+and contiguous, so running a multi-day tape produces exactly one `cash_flow`
+record per calendar day covered (no duplicates from re-submission, no gaps
+from a skipped tick) — proven either by the same end-to-end ledger read or
+by a direct unit-level proof over `read_entry`'s sequential window
+tracking. Run the existing child replay test suite unedited to prove
+`FillPolicy`, `BarTape`, `ReplayAdapter`, `DevelopmentReplay`, and every
+other existing `EquityReplay` behavior is untouched (including runs where
+`cash_flow_policy` is not supplied, which must remain byte-identical to
+today), plus `dskit.production.cashflows`/`compose`/`state`/`ledger`/
+`reconcile` regressions.
 
 ### Non-goals
 
