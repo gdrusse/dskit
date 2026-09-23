@@ -6081,6 +6081,10 @@ class NonAuthorizingSyntheticGrantVerifier:
         start, end = scope["availability_start_ms"], scope["availability_end_ms"]
         cls._require(type(start) is int and type(end) is int and start <= end,
                      "dataset availability scope refused")
+        if event_schema == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v2"
+        ]:
+            cls._require(start >= 0, "dataset availability scope refused")
         cls._hash(scope["source_provenance_sha256"])
         if "tzdata_version_sha256" in scope:
             cls._hash(scope["tzdata_version_sha256"])
@@ -6345,6 +6349,10 @@ class NonAuthorizingRosterBootstrapVerifier:
         start, end = scope["availability_start_ms"], scope["availability_end_ms"]
         _hs_refuse(type(start) is int and type(end) is int and start <= end,
                    "roster bootstrap availability refused")
+        if event_schema == ROSTER_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.roster-bootstrap-authorization/v2"
+        ]:
+            _hs_refuse(start >= 0, "roster bootstrap availability refused")
         NonAuthorizingSyntheticGrantVerifier._hash(
             scope["source_provenance_sha256"],
         )

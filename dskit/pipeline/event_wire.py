@@ -2,6 +2,13 @@
 
 from types import MappingProxyType
 
+__all__ = (
+    "AUTHORIZATION_SCOPE_FIELDS",
+    "DATASET_AUTHORIZATION_EVENT_SCHEMAS",
+    "RAW_EVENT_FIELDS",
+    "ROSTER_AUTHORIZATION_EVENT_SCHEMAS",
+)
+
 RAW_EVENT_FIELDS = MappingProxyType({
     "dskit.raw-event/v1": (
         "schema_version",

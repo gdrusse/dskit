@@ -150,6 +150,12 @@ def _v2_case(tmp_path, *, event_changes=None, event_remove=None,
 
 def test_adr169_wire_has_one_immutable_closed_owner():
     wire = _wire()
+    assert wire.__all__ == (
+        "AUTHORIZATION_SCOPE_FIELDS",
+        "DATASET_AUTHORIZATION_EVENT_SCHEMAS",
+        "RAW_EVENT_FIELDS",
+        "ROSTER_AUTHORIZATION_EVENT_SCHEMAS",
+    )
     assert wire.RAW_EVENT_FIELDS == MappingProxyType({
         "dskit.raw-event/v1": (
             "schema_version", "source_id", "event_id", "source_sequence",
@@ -322,6 +328,45 @@ def test_adr169_v2_tzdata_digest_must_be_nonplaceholder(tmp_path):
         )
 
 
+@pytest.mark.parametrize("authority", ["dataset", "roster"])
+def test_adr169_v2_authority_refuses_negative_availability_scope(authority):
+    if authority == "dataset":
+        raw, g1, g2 = cases._synthetic_dataset_grant_fixture()
+        value = json.loads(raw)
+        value.update(
+            schema_version="dskit.dataset-capture-authorization/v2",
+            event_schema="dskit.raw-event/v2",
+        )
+        digest_field = "authorization_sha256"
+        resign = cases._resign_synthetic_grant
+        verifier = trust.NonAuthorizingSyntheticGrantVerifier().verify
+    else:
+        raw, g1, g2, _policy = cases._synthetic_roster_bootstrap_fixture()
+        value = json.loads(raw)
+        value.update(
+            schema_version="dskit.roster-bootstrap-authorization/v2",
+            event_schema="dskit.raw-event/v2",
+        )
+        digest_field = "bootstrap_sha256"
+        resign = cases._resign_roster_bootstrap_grant
+        verifier = trust.NonAuthorizingRosterBootstrapVerifier().verify
+    value["scope"] = {
+        **value["scope"],
+        "availability_start_ms": -2,
+        "availability_end_ms": -1,
+        "tzdata_version_sha256": TZDATA_SHA256,
+    }
+    raw = f4._json_bytes(value)
+    digest = hashlib.sha256(raw).hexdigest()
+    grants = []
+    for grant_raw in (g1, g2):
+        grant = json.loads(grant_raw)
+        grant[digest_field] = digest
+        grants.append(resign(grant))
+    with pytest.raises(ValueError, match="availability"):
+        verifier(raw, *grants)
+
+
 @pytest.mark.parametrize(("auth_schema", "event_schema"), [
     ("dskit.dataset-capture-authorization/v1", "dskit.raw-event/v2"),
     ("dskit.dataset-capture-authorization/v2", "dskit.raw-event/v1"),
@@ -434,12 +479,21 @@ def test_adr169_bundles_imports_v1_owner_and_still_refuses_v2():
 
 
 def test_adr169_raw_literals_and_field_tuples_have_one_owner():
-    wire_source = inspect.getsource(_wire())
-    trust_source = inspect.getsource(trust)
-    bundles_source = inspect.getsource(bundles)
-    assert wire_source.count('"dskit.raw-event/v1"') == 4
-    assert wire_source.count('"dskit.raw-event/v2"') == 4
-    assert '"dskit.raw-event/v1"' not in trust_source
-    assert '"dskit.raw-event/v2"' not in trust_source
-    assert '"dskit.raw-event/v1"' not in bundles_source
-    assert '"dskit.raw-event/v2"' not in bundles_source
+    wire = _wire()
+    forbidden_literals = set(wire.RAW_EVENT_FIELDS)
+    forbidden_shapes = {tuple(fields) for fields in wire.RAW_EVENT_FIELDS.values()}
+    for module in (trust, bundles):
+        tree = ast.parse(inspect.getsource(module))
+        literals = {
+            node.value for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        assert not literals & forbidden_literals
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+                continue
+            values = tuple(
+                item.value for item in node.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            )
+            assert values not in forbidden_shapes
