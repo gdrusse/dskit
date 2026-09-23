@@ -25,6 +25,12 @@ from threading import RLock
 from types import MappingProxyType
 from weakref import WeakKeyDictionary, ref as weakref_ref
 
+from dskit.pipeline.event_wire import (
+    AUTHORIZATION_SCOPE_FIELDS,
+    DATASET_AUTHORIZATION_EVENT_SCHEMAS,
+    RAW_EVENT_FIELDS,
+    ROSTER_AUTHORIZATION_EVENT_SCHEMAS,
+)
 from dskit.pipeline.node import Node, reject_unknown_params
 
 __all__ = [
@@ -6044,7 +6050,11 @@ class NonAuthorizingSyntheticGrantVerifier:
     def _authorization(cls, value):
         cls._require(type(value) is dict and set(value) == _SYNTHETIC_GRANT_AUTH_KEYS,
                      "closed dataset authorization is required")
-        cls._require(value["schema_version"] == "dskit.dataset-capture-authorization/v1",
+        authorization_schema = value["schema_version"]
+        event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS.get(
+            authorization_schema,
+        )
+        cls._require(event_schema is not None,
                      "dataset authorization version refused")
         cls._require(type(value["authorization_id"]) is str
                      and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(
@@ -6063,19 +6073,27 @@ class NonAuthorizingSyntheticGrantVerifier:
         for digest in licenses:
             cls._hash(digest)
         scope = value["scope"]
-        cls._require(type(scope) is dict and set(scope) == {
-            "availability_start_ms", "availability_end_ms", "source_provenance_sha256",
-        }, "closed dataset scope is required")
+        cls._require(
+            type(scope) is dict
+            and set(scope) == set(AUTHORIZATION_SCOPE_FIELDS[event_schema]),
+            "closed dataset scope is required",
+        )
         start, end = scope["availability_start_ms"], scope["availability_end_ms"]
         cls._require(type(start) is int and type(end) is int and start <= end,
                      "dataset availability scope refused")
         cls._hash(scope["source_provenance_sha256"])
+        if "tzdata_version_sha256" in scope:
+            cls._hash(scope["tzdata_version_sha256"])
+            cls._require(
+                scope["tzdata_version_sha256"] != _PLACEHOLDER,
+                "nonplaceholder tzdata version digest required",
+            )
         for name in ("source_roster_root_sha256",
                      "source_roster_publication_receipt_sha256",
                      "source_roster_policy_sha256",
                      "correction_bust_metadata_sha256"):
             cls._hash(value[name])
-        cls._require(value["event_schema"] == "dskit.raw-event/v1"
+        cls._require(value["event_schema"] == event_schema
                      and value["media_type"] == "application/x-ndjson"
                      and type(value["allow_empty_capture"]) is bool,
                      "dataset schema, media or empty policy refused")
@@ -6301,10 +6319,12 @@ class NonAuthorizingRosterBootstrapVerifier:
         _hs_refuse(type(value) is dict
                    and set(value) == _SYNTHETIC_ROSTER_BOOTSTRAP_AUTH_KEYS,
                    "closed roster bootstrap authorization required")
-        _hs_refuse(
-            value["schema_version"] == "dskit.roster-bootstrap-authorization/v1",
-            "roster bootstrap authorization version refused",
+        authorization_schema = value["schema_version"]
+        event_schema = ROSTER_AUTHORIZATION_EVENT_SCHEMAS.get(
+            authorization_schema,
         )
+        _hs_refuse(event_schema is not None,
+                   "roster bootstrap authorization version refused")
         name = value["bootstrap_id"]
         _hs_refuse(type(name) is str
                    and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(name) is not None,
@@ -6317,16 +6337,25 @@ class NonAuthorizingRosterBootstrapVerifier:
                    and sources == sorted(set(sources)),
                    "canonical nonempty source ids required")
         scope = value["scope"]
-        _hs_refuse(type(scope) is dict and set(scope) == {
-            "availability_start_ms", "availability_end_ms",
-            "source_provenance_sha256",
-        }, "closed roster bootstrap scope required")
+        _hs_refuse(
+            type(scope) is dict
+            and set(scope) == set(AUTHORIZATION_SCOPE_FIELDS[event_schema]),
+            "closed roster bootstrap scope required",
+        )
         start, end = scope["availability_start_ms"], scope["availability_end_ms"]
         _hs_refuse(type(start) is int and type(end) is int and start <= end,
                    "roster bootstrap availability refused")
         NonAuthorizingSyntheticGrantVerifier._hash(
             scope["source_provenance_sha256"],
         )
+        if "tzdata_version_sha256" in scope:
+            NonAuthorizingSyntheticGrantVerifier._hash(
+                scope["tzdata_version_sha256"],
+            )
+            _hs_refuse(
+                scope["tzdata_version_sha256"] != _PLACEHOLDER,
+                "nonplaceholder tzdata version digest required",
+            )
         licenses = value["license_digests"]
         _hs_refuse(type(licenses) is list
                    and all(type(item) is str for item in licenses)
@@ -6334,7 +6363,7 @@ class NonAuthorizingRosterBootstrapVerifier:
                    "canonical license digests required")
         for digest in licenses:
             NonAuthorizingSyntheticGrantVerifier._hash(digest)
-        _hs_refuse(value["event_schema"] == "dskit.raw-event/v1"
+        _hs_refuse(value["event_schema"] == event_schema
                    and value["media_type"] == "application/x-ndjson",
                    "roster bootstrap schema or media refused")
         policy = {
@@ -7066,7 +7095,7 @@ class _SyntheticRosterPublisher:
             refs = [
                 {"kind": "roster-bootstrap-authorization",
                  "role": "security-data",
-                 "schema": "dskit.roster-bootstrap-authorization/v1",
+                 "schema": authorization["schema_version"],
                  "sha256": bootstrap_sha256},
                 {"kind": "roster-bootstrap-grant", "role": "G1",
                  "schema": "dskit.roster-bootstrap-grant/v1",
@@ -7410,7 +7439,7 @@ class NonAuthorizingRosterRootProof:
         refs = [
             {"kind": "roster-bootstrap-authorization",
              "role": "security-data",
-             "schema": "dskit.roster-bootstrap-authorization/v1",
+             "schema": authorization["schema_version"],
              "sha256": bootstrap_sha256},
             {"kind": "roster-bootstrap-grant", "role": "G1",
              "schema": "dskit.roster-bootstrap-grant/v1",
@@ -7514,12 +7543,6 @@ _SYNTHETIC_EMPTY_CORRECTION_METADATA = _hs_canonical_bytes({
     "corrections": [],
     "schema_version": "dskit.correction-bust-metadata/v1",
 })
-_SYNTHETIC_RAW_EVENT_KEYS = frozenset({
-    "schema_version", "source_id", "event_id", "source_sequence",
-    "availability_ms", "payload_sha256",
-})
-
-
 class _SyntheticFixtureSource:
     """Trusted host-installed synthetic source; lookup only on admitted read."""
 
@@ -7797,7 +7820,7 @@ class _SyntheticRawPreflight:
             raise
 
     @staticmethod
-    def _parse_member(raw, member, scope, seen):
+    def _parse_member(raw, member, scope, event_schema, seen):
         _hs_refuse(len(raw) == member["byte_length"]
                    and _digest(raw) == member["sha256"],
                    "signed fixture bytes mismatch")
@@ -7808,10 +7831,12 @@ class _SyntheticRawPreflight:
         for line in raw[:-1].split(b"\n"):
             _hs_refuse(bool(line), "empty raw NDJSON line refused")
             event = _hs_parse_canonical(line)
+            fields = RAW_EVENT_FIELDS.get(event_schema)
             _hs_refuse(
                 type(event) is dict
-                and set(event) == _SYNTHETIC_RAW_EVENT_KEYS
-                and event["schema_version"] == "dskit.raw-event/v1"
+                and fields is not None
+                and set(event) == set(fields)
+                and event["schema_version"] == event_schema
                 and event["source_id"] == member["source_id"]
                 and type(event["event_id"]) is str
                 and bool(event["event_id"])
@@ -7823,6 +7848,32 @@ class _SyntheticRawPreflight:
                 <= scope["availability_end_ms"],
                 "closed raw event refused",
             )
+            if event_schema == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+                "dskit.dataset-capture-authorization/v2"
+            ]:
+                _hs_refuse(
+                    all(
+                        type(event[name]) is int and event[name] >= 0
+                        for name in (
+                            "exchange_ms", "receive_ms",
+                            "correction_position",
+                        )
+                    )
+                    and all(
+                        type(event[name]) is str and bool(event[name])
+                        for name in (
+                            "source_provenance_tag", "source_timezone_tag",
+                        )
+                    )
+                    and (
+                        event["corrects_event_id"] is None
+                        or (
+                            type(event["corrects_event_id"]) is str
+                            and bool(event["corrects_event_id"])
+                        )
+                    ),
+                    "closed raw event refused",
+                )
             NonAuthorizingSyntheticGrantVerifier._hash(
                 event["payload_sha256"],
             )
@@ -7855,7 +7906,8 @@ class _SyntheticRawPreflight:
                 raw = self._source._read(name)
                 retained.append((name, raw))
                 events.extend(self._parse_member(
-                    raw, member, authorization["scope"], seen,
+                    raw, member, authorization["scope"],
+                    authorization["event_schema"], seen,
                 ))
             _hs_refuse(authorization["allow_empty_capture"] or events,
                        "nonempty raw capture required")
@@ -8161,7 +8213,7 @@ class _SyntheticRawPublisher:
             refs = [
                 {"kind": "dataset-capture-authorization",
                  "role": "security-data",
-                 "schema": "dskit.dataset-capture-authorization/v1",
+                 "schema": authorization["schema_version"],
                  "sha256": auth_sha},
                 {"kind": "dataset-capture-grant", "role": "G1",
                  "schema": "dskit.dataset-capture-grant/v1",
@@ -8316,6 +8368,20 @@ class _SyntheticRawPublisher:
                    and self._preflight._publisher is self._roster_publisher
                    and not proof._used,
                    "unused own raw fixture proof required")
+        authorization = _hs_parse_canonical(authorization_bytes)
+        bootstrap_value = _hs_parse_canonical(bootstrap)
+        v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v1"
+        ]
+        _hs_refuse(
+            authorization.get("schema_version")
+            == "dskit.dataset-capture-authorization/v1"
+            and bootstrap_value.get("schema_version")
+            == "dskit.roster-bootstrap-authorization/v1"
+            and authorization.get("event_schema") == v1_event_schema
+            and bootstrap_value.get("event_schema") == v1_event_schema,
+            "raw publisher is v1-only",
+        )
         object.__setattr__(proof, "_used", True)
         signed = (authorization_bytes, g1, g2, attestation)
         roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
@@ -8522,7 +8588,8 @@ class NonAuthorizingRawRootProof:
         ):
             parsed_events.extend(
                 _SyntheticRawPreflight._parse_member(
-                    raw, member, authorization["scope"], seen,
+                    raw, member, authorization["scope"],
+                    authorization["event_schema"], seen,
                 )
             )
         _hs_refuse(
@@ -8545,7 +8612,7 @@ class NonAuthorizingRawRootProof:
         refs = [
             {"kind": "dataset-capture-authorization",
              "role": "security-data",
-             "schema": "dskit.dataset-capture-authorization/v1",
+             "schema": authorization["schema_version"],
              "sha256": _digest(authorization_bytes)},
             {"kind": "dataset-capture-grant", "role": "G1",
              "schema": "dskit.dataset-capture-grant/v1",
@@ -8763,15 +8830,17 @@ class _SyntheticRootPisIssuer:
 
     @staticmethod
     def _refs(signed, roster, raw_receipt, roster_receipt):
+        dataset_schema = _hs_parse_canonical(signed[0])["schema_version"]
+        roster_schema = _hs_parse_canonical(roster[0])["schema_version"]
         specs = (
             ("dataset-capture-authorization", "security-data",
-             "dskit.dataset-capture-authorization/v1", _digest(signed[0])),
+             dataset_schema, _digest(signed[0])),
             ("dataset-capture-grant", "G1",
              "dskit.dataset-capture-grant/v1", _digest(signed[1])),
             ("dataset-capture-grant", "G2",
              "dskit.dataset-capture-grant/v1", _digest(signed[2])),
             ("roster-bootstrap-authorization", "security-data",
-             "dskit.roster-bootstrap-authorization/v1", _digest(roster[0])),
+             roster_schema, _digest(roster[0])),
             ("roster-bootstrap-grant", "G1",
              "dskit.roster-bootstrap-grant/v1", _digest(roster[1])),
             ("roster-bootstrap-grant", "G2",
@@ -8832,6 +8901,20 @@ class _SyntheticRootPisIssuer:
     def issue(self, authorization_bytes, g1, g2, attestation,
               bootstrap, bg1, bg2, roster_basis, roster_receipt,
               manifest_bytes, raw_basis, raw_receipt):
+        authorization_value = _hs_parse_canonical(authorization_bytes)
+        bootstrap_value = _hs_parse_canonical(bootstrap)
+        v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v1"
+        ]
+        _hs_refuse(
+            authorization_value.get("schema_version")
+            == "dskit.dataset-capture-authorization/v1"
+            and bootstrap_value.get("schema_version")
+            == "dskit.roster-bootstrap-authorization/v1"
+            and authorization_value.get("event_schema") == v1_event_schema
+            and bootstrap_value.get("event_schema") == v1_event_schema,
+            "root-PIS issuer is v1-only",
+        )
         _hs_refuse(not self._closed, "root-PIS issuer already used")
         self._closed = True
         signed = (authorization_bytes, g1, g2, attestation)
@@ -8882,10 +8965,6 @@ class _SyntheticRootPisIssuer:
             _hs_refuse(
                 now > raw_value["issued_at_ms"],
                 "root-PIS must follow raw receipt clock",
-            )
-            bootstrap_value = _hs_parse_canonical(bootstrap)
-            authorization_value = _hs_parse_canonical(
-                authorization_bytes
             )
             expires = min(
                 _hs_parse_canonical(value)["expires_at_ms"]
@@ -9401,15 +9480,22 @@ class NonAuthorizingDynamicRootGraph:
 
     def _derive_records(self):
         signed, roster, output, pair = self._originals()
+        dataset_schema = _hs_parse_canonical(signed[0])["schema_version"]
+        roster_schema = _hs_parse_canonical(roster[0])["schema_version"]
+        _hs_refuse(
+            dataset_schema == "dskit.dataset-capture-authorization/v1"
+            and roster_schema == "dskit.roster-bootstrap-authorization/v1",
+            "dynamic root graph is v1-only",
+        )
         items = (
             ("dataset-capture-authorization", "security-data",
-             "dskit.dataset-capture-authorization/v1", signed[0], None),
+             dataset_schema, signed[0], None),
             ("dataset-capture-grant", "G1",
              "dskit.dataset-capture-grant/v1", signed[1], None),
             ("dataset-capture-grant", "G2",
              "dskit.dataset-capture-grant/v1", signed[2], None),
             ("roster-bootstrap-authorization", "security-data",
-             "dskit.roster-bootstrap-authorization/v1", roster[0], None),
+             roster_schema, roster[0], None),
             ("roster-bootstrap-grant", "G1",
              "dskit.roster-bootstrap-grant/v1", roster[1], None),
             ("roster-bootstrap-grant", "G2",

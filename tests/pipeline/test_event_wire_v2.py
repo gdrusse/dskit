@@ -35,8 +35,8 @@ def _resign_bootstrap(raw_auth, raw_g1, raw_g2, **changes):
     return raw_auth, *grants
 
 
-def _v2_case(tmp_path, *, event_changes=None, dataset_changes=None,
-             bootstrap_changes=None):
+def _v2_case(tmp_path, *, event_changes=None, event_remove=None,
+             dataset_changes=None, bootstrap_changes=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = str(tmp_path / "adr169-reserve.sqlite")
     trust._SyntheticAuthorizationReserve._provision(path)
@@ -44,12 +44,14 @@ def _v2_case(tmp_path, *, event_changes=None, dataset_changes=None,
     bootstrap, bg1, bg2, _policy = cases._synthetic_roster_bootstrap_fixture()
     bootstrap_value = json.loads(bootstrap)
     scope = {**bootstrap_value["scope"], "tzdata_version_sha256": TZDATA_SHA256}
+    bootstrap_updates = {
+        "schema_version": "dskit.roster-bootstrap-authorization/v2",
+        "event_schema": "dskit.raw-event/v2",
+        "scope": scope,
+    }
+    bootstrap_updates.update(bootstrap_changes or {})
     bootstrap, bg1, bg2 = _resign_bootstrap(
-        bootstrap, bg1, bg2,
-        schema_version="dskit.roster-bootstrap-authorization/v2",
-        event_schema="dskit.raw-event/v2",
-        scope=scope,
-        **(bootstrap_changes or {}),
+        bootstrap, bg1, bg2, **bootstrap_updates,
     )
     _roster, basis, receipt = publisher.publish(bootstrap, bg1, bg2)
     publisher._reserve._advance_clock(600)
@@ -69,6 +71,8 @@ def _v2_case(tmp_path, *, event_changes=None, dataset_changes=None,
         "corrects_event_id": None,
     }
     event.update(event_changes or {})
+    if event_remove is not None:
+        del event[event_remove]
     member_a = f4._json_bytes(event) + b"\n"
     members = {"fixture_A.ndjson": member_a, "fixture_B.ndjson": b""}
     empty_meta = f4._json_bytes({
@@ -233,9 +237,48 @@ def test_adr169_v2_raw_field_types_and_bounds_refuse(tmp_path, field, value):
     assert source.read_names == ("fixture_A.ndjson",)
 
 
-@pytest.mark.parametrize("mutation", ["missing", "unknown", "v1-mixed"])
+@pytest.mark.parametrize("field", (
+    "schema_version", "source_id", "event_id", "source_sequence",
+    "availability_ms", "payload_sha256", "exchange_ms", "receive_ms",
+    "source_provenance_tag", "source_timezone_tag", "correction_position",
+    "corrects_event_id",
+))
+def test_adr169_v2_each_single_missing_key_refuses(tmp_path, field):
+    publisher, preflight, source, signed, roster = _v2_case(
+        tmp_path, event_remove=field,
+    )
+    with pytest.raises(ValueError, match="closed raw event"):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == ("fixture_A.ndjson",)
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RAW_READ_STARTED",)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("source_id", ""),
+    ("source_id", 1),
+    ("event_id", ""),
+    ("event_id", None),
+    ("source_sequence", True),
+    ("source_sequence", -1),
+    ("availability_ms", True),
+    ("availability_ms", 1001),
+    ("payload_sha256", "A" * 64),
+])
+def test_adr169_v2_common_field_types_and_bounds_refuse(
+    tmp_path, field, value,
+):
+    _publisher, preflight, source, signed, roster = _v2_case(
+        tmp_path, event_changes={field: value},
+    )
+    with pytest.raises(ValueError):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == ("fixture_A.ndjson",)
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "v1-mixed"])
 def test_adr169_v2_raw_closed_shape_refuses(tmp_path, mutation):
-    changes = {"receive_ms": None}
     if mutation == "unknown":
         changes = {"unexpected": 1}
     elif mutation == "v1-mixed":
@@ -243,15 +286,6 @@ def test_adr169_v2_raw_closed_shape_refuses(tmp_path, mutation):
     publisher, preflight, source, signed, roster = _v2_case(
         tmp_path, event_changes=changes,
     )
-    if mutation == "missing":
-        raw = json.loads(source._members["fixture_A.ndjson"])
-        del raw["receive_ms"]
-        member = f4._json_bytes(raw) + b"\n"
-        source._members["fixture_A.ndjson"] = member
-        fixture = json.loads(signed[3])
-        fixture["ordered_members"][0]["byte_length"] = len(member)
-        fixture["ordered_members"][0]["sha256"] = hashlib.sha256(member).hexdigest()
-        signed = (*signed[:3], cases._resign_synthetic_fixture_attestation(fixture))
     with pytest.raises(ValueError, match="closed raw event"):
         preflight.verify(*signed, *roster)
     assert source.read_names == ("fixture_A.ndjson",)
@@ -273,6 +307,19 @@ def test_adr169_v2_tzdata_mismatch_refuses_before_member_read(tmp_path):
     with pytest.raises(ValueError, match="equality"):
         preflight.verify(*signed, *roster)
     assert source.read_names == ()
+
+
+def test_adr169_v2_tzdata_digest_must_be_nonplaceholder(tmp_path):
+    with pytest.raises(ValueError, match="tzdata"):
+        _v2_case(
+            tmp_path,
+            bootstrap_changes={"scope": {
+                "availability_start_ms": 0,
+                "availability_end_ms": 1000,
+                "source_provenance_sha256": "1" * 64,
+                "tzdata_version_sha256": "0" * 64,
+            }},
+        )
 
 
 @pytest.mark.parametrize(("auth_schema", "event_schema"), [
@@ -369,8 +416,8 @@ def test_adr169_raw_literals_and_field_tuples_have_one_owner():
     wire_source = inspect.getsource(_wire())
     trust_source = inspect.getsource(trust)
     bundles_source = inspect.getsource(bundles)
-    assert wire_source.count('"dskit.raw-event/v1"') == 3
-    assert wire_source.count('"dskit.raw-event/v2"') == 3
+    assert wire_source.count('"dskit.raw-event/v1"') == 4
+    assert wire_source.count('"dskit.raw-event/v2"') == 4
     assert '"dskit.raw-event/v1"' not in trust_source
     assert '"dskit.raw-event/v2"' not in trust_source
     assert '"dskit.raw-event/v1"' not in bundles_source

@@ -34,6 +34,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 from types import MappingProxyType
 
+from dskit.pipeline.event_wire import (
+    DATASET_AUTHORIZATION_EVENT_SCHEMAS,
+    RAW_EVENT_FIELDS,
+)
 from dskit.production.base import (
     ProductionError,
     canonical_bytes as _canonical_bytes,
@@ -650,15 +654,10 @@ _COMPOSED_TAPE_ROSTER_SCHEMA = "dskit.composed-tape-roster-fixture/v1"
 # ^ Test-only/placeholder fixture shape (ADR-0146 Decision point 3): NOT a
 # real `SourceRosterCapture.v1` and not a claim toward ADR-0130's
 # undelivered broker.
-_RAW_EVENT_V1_SCHEMA = "dskit.raw-event/v1"
-_RAW_EVENT_V1_FIELDS = (
-    "schema_version",
-    "source_id",
-    "event_id",
-    "source_sequence",
-    "availability_ms",
-    "payload_sha256",
-)
+_RAW_EVENT_V1_SCHEMA = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+    "dskit.dataset-capture-authorization/v1"
+]
+_RAW_EVENT_V1_FIELDS = RAW_EVENT_FIELDS[_RAW_EVENT_V1_SCHEMA]
 _RAW_EVENT_MEMBERS_ENTRY_FIELDS = (
     "relative_path",
     "exchange_ms",
