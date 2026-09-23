@@ -189,6 +189,7 @@ def test_projection_refuses_every_missing_raw_field_and_unknown_fields():
     "changes",
     [
         {"schema_version": "dskit.raw-event/v1"},
+        {"schema_version": _StrSubclass(_RAW_SCHEMA)},
         {"source_id": ""},
         {"source_id": _StrSubclass("alpha")},
         {"source_id": 1},
@@ -202,6 +203,7 @@ def test_projection_refuses_every_missing_raw_field_and_unknown_fields():
         {"availability_ms": _IntSubclass(1_000)},
         {"availability_ms": -1},
         {"payload_sha256": "A" * 64},
+        {"payload_sha256": _StrSubclass("a" * 64)},
         {"payload_sha256": "not-a-digest"},
         {"exchange_ms": True},
         {"exchange_ms": _IntSubclass(900)},
@@ -276,10 +278,34 @@ def test_projection_refuses_every_missing_policy_field_and_wrong_schema():
             _project((_event(),), MappingProxyType(malformed))
     for change in (
         {"schema_version": "dskit.source-rank-policy/v0"},
+        {"schema_version": _StrSubclass(_POLICY_SCHEMA)},
         {"policy_sha256": "A" * 64},
+        {"policy_sha256": _StrSubclass(good["policy_sha256"])},
     ):
         with pytest.raises(bundles.ProductionError):
             _project((_event(),), MappingProxyType({**dict(good), **change}))
+
+
+def test_projection_accumulates_heterogeneous_unknown_keys_as_production_error():
+    event = MappingProxyType({**dict(_event()), "extra": 1, 2: "extra"})
+    with pytest.raises(bundles.ProductionError):
+        _project((event,))
+
+    policy = MappingProxyType({**dict(_policy()), "extra": 1, 2: "extra"})
+    with pytest.raises(bundles.ProductionError):
+        _project((_event(),), policy)
+
+    good = _policy()
+    row = MappingProxyType({
+        "source_id": "alpha", "rank": 0, "extra": 1, 2: "extra"
+    })
+    malformed = MappingProxyType({
+        "schema_version": _POLICY_SCHEMA,
+        "sources": (row,),
+        "policy_sha256": good["policy_sha256"],
+    })
+    with pytest.raises(bundles.ProductionError):
+        _project((_event(),), malformed)
 
 
 def test_projection_refuses_policy_container_entry_and_field_shape_defects():

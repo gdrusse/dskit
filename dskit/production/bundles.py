@@ -552,11 +552,19 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
     else:
         unknown = set(source_rank_policy) - policy_fields
         missing = policy_fields - set(source_rank_policy)
-        for name in sorted(unknown):
+        for name in sorted(name for name in unknown if type(name) is str):
             problems.append(f"source_rank_policy has unknown field {name!r}")
+        for name_type in sorted(
+            type(name).__name__ for name in unknown if type(name) is not str
+        ):
+            problems.append(
+                "source_rank_policy has a non-string field name of type "
+                f"{name_type}"
+            )
         for name in sorted(missing):
             problems.append(f"source_rank_policy is missing field {name!r}")
-        if source_rank_policy.get("schema_version") != policy_schema:
+        policy_version = source_rank_policy.get("schema_version")
+        if type(policy_version) is not str or policy_version != policy_schema:
             problems.append(f"source_rank_policy.schema_version must be {policy_schema!r}")
         sources = source_rank_policy.get("sources")
         if type(sources) is not tuple:
@@ -565,11 +573,16 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         elif not sources:
             problems.append("source_rank_policy.sources must be nonempty")
         policy_digest = source_rank_policy.get("policy_sha256")
-        digest_problems = []
-        check_digest(digest_problems, "policy_sha256", policy_digest)
-        problems.extend(
-            f"source_rank_policy.{problem}" for problem in digest_problems
-        )
+        if type(policy_digest) is not str:
+            problems.append(
+                "source_rank_policy.policy_sha256 must be an exact str"
+            )
+        else:
+            digest_problems = []
+            check_digest(digest_problems, "policy_sha256", policy_digest)
+            problems.extend(
+                f"source_rank_policy.{problem}" for problem in digest_problems
+            )
 
     source_preimage = []
     previous_source_id = None
@@ -580,8 +593,14 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
             continue
         unknown = set(item) - source_fields
         missing = source_fields - set(item)
-        for name in sorted(unknown):
+        for name in sorted(name for name in unknown if type(name) is str):
             problems.append(f"{prefix} has unknown field {name!r}")
+        for name_type in sorted(
+            type(name).__name__ for name in unknown if type(name) is not str
+        ):
+            problems.append(
+                f"{prefix} has a non-string field name of type {name_type}"
+            )
         for name in sorted(missing):
             problems.append(f"{prefix} is missing field {name!r}")
         source_id = item.get("source_id")
@@ -632,11 +651,19 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
             continue
         unknown = set(event) - set(raw_fields)
         missing = set(raw_fields) - set(event)
-        for name in sorted(unknown):
+        for name in sorted(name for name in unknown if type(name) is str):
             problems.append(f"{prefix} has unknown raw-event field {name!r}")
+        for name_type in sorted(
+            type(name).__name__ for name in unknown if type(name) is not str
+        ):
+            problems.append(
+                f"{prefix} has a non-string raw-event field name of type "
+                f"{name_type}"
+            )
         for name in sorted(missing):
             problems.append(f"{prefix} is missing raw-event field {name!r}")
-        if event.get("schema_version") != raw_schema:
+        event_schema = event.get("schema_version")
+        if type(event_schema) is not str or event_schema != raw_schema:
             problems.append(f"{prefix}.schema_version must be {raw_schema!r}")
 
         for name in ("source_id", "event_id", "source_provenance_tag",
@@ -657,9 +684,13 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
             and receive_ms < exchange_ms
         ):
             problems.append(f"{prefix}.receive_ms must be >= exchange_ms")
-        digest_problems = []
-        check_digest(digest_problems, "payload_sha256", event.get("payload_sha256"))
-        problems.extend(f"{prefix}.{problem}" for problem in digest_problems)
+        payload_digest = event.get("payload_sha256")
+        if type(payload_digest) is not str:
+            problems.append(f"{prefix}.payload_sha256 must be an exact str")
+        else:
+            digest_problems = []
+            check_digest(digest_problems, "payload_sha256", payload_digest)
+            problems.extend(f"{prefix}.{problem}" for problem in digest_problems)
 
         event_id = event.get("event_id")
         if type(event_id) is str and event_id:
@@ -686,7 +717,12 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
                 elif corrects_event_id == event_id:
                     problems.append(f"{prefix}.corrects_event_id cannot be self")
 
-        if not unknown and not missing and source_id in ranks:
+        if (
+            not unknown
+            and not missing
+            and type(source_id) is str
+            and source_id in ranks
+        ):
             envelope = {
                 "schema_version": CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA,
                 **{name: event[name] for name in copied_event_fields},
