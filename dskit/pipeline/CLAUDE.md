@@ -77,6 +77,12 @@ on it without breaking its rulings.
   `fingerprint()` at resolve and `run()` at execute see one snapshot;
   `scan_stream` is imported inside the scan, never at module top.
 - **Metrics** — `register_metric` (`metrics.py`); `logloss`/`brier` ship.
+- **Distribution forecasts** (ADR-0168) — a forecast is a SAMPLE SET per
+  row (`samples`), scored in the document's reference units by
+  `distribution_scores.ScoreDistributions`. A new model rung subclasses
+  `distribution_models.EmpiricalLocationScale` (a `FittedTransform`) and
+  overrides `relative_scale`; never change `scale_field` between rungs,
+  or they stop sharing outcomes.
 - **Admitting an uncertainty artifact at a decision** —
   `uncertainty_intake.py` (ADR-0165). The producing modules
   (`false_signal`, `mean_interval`, `outcome_interval`) say what a number
@@ -717,6 +723,11 @@ dskit/pipeline/
 │                      FeatureSelector
 ├── conformance.py     conformance_suite + NodeProbe
 ├── synthetic_nodes.py demo/test nodes, private registries only
+├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
+│                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
+├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
+│                      relative_scale hook for later rungs (ADR-0168)
+├── synthetic_paths.py SynthGjrPaths: seeded GJR-GARCH-t price path, known truth (ADR-0168)
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
 ├── stats.py           cluster bootstraps (plain, studentized-t) + correction

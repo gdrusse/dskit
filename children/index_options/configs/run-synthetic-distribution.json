@@ -1,0 +1,64 @@
+{
+  "name": "index-options-synthetic-distribution",
+  "notes": "ADR-0168 harness on synthetic data only: a known GJR-GARCH-t path -> trailing realized vol -> 21-step forward log return -> a sample-set distribution forecast in standardized units z = label / (rv_22 * sqrt(21)) -> proper scores (A0002) and a standardized iron condor. Run: python -m dskit.pipeline walkforward configs/run-synthetic-distribution.json --asof 1978-06-01. Swap the 'model' node's 'uses' for a later rung (research A0003); keep 'score' and 'condor' fixed so rungs compare on one ruler.",
+  "pipeline": {
+    "market": {
+      "uses": "dskit.pipeline.synthetic_paths:SynthGjrPaths",
+      "params": {"n_days": 2000, "seed": 7},
+      "notes": "Known truth: vol clustering, leverage and t(6) tails. Change seed or GJR knobs to stress the model; the real-data source replaces this node later."
+    },
+    "rv": {
+      "uses": "dskit.pipeline.libs.numpy:RealizedVolFeatures",
+      "inputs": {"records": "$market.records"},
+      "params": {
+        "fields": ["close"], "windows": [1, 5, 22], "drop_incomplete": true,
+        "carry_fields": ["instrument", "contract", "asof_ms", "group", "close"]
+      },
+      "notes": "HAR-style daily/weekly/monthly realized vol, backward-only. rv_22 is the reference scale; all three are inputs for a later HAR rung."
+    },
+    "labels": {
+      "uses": "dskit.pipeline.libs.numpy:HorizonLogReturn",
+      "inputs": {"records": "$rv.rows"},
+      "params": {
+        "fields": ["close"], "horizon": 21,
+        "carry_fields": ["instrument", "contract", "asof_ms", "group", "close", "rv_1", "rv_5", "rv_22"]
+      },
+      "notes": "ln(S_{t+21}/S_t): ~30 calendar days of trading. Rows whose horizon runs past the data keep a null label and are forecast but not scored."
+    },
+    "model": {
+      "uses": "dskit.pipeline.distribution_models:EmpiricalLocationScale",
+      "inputs": {"rows": "$labels.rows"},
+      "params": {
+        "fit_split": "train", "label": "label", "scale_field": "rv_22",
+        "scale_multiplier": 4.58257569495584, "n_samples": 200
+      },
+      "notes": "Rung R0a: the train split's empirical z shape, same for every row. scale_multiplier = sqrt(21) turns daily rv_22 into a horizon scale. This reference scale defines z for every rung, so never change it when comparing rungs."
+    },
+    "score": {
+      "uses": "dskit.pipeline.distribution_scores:ScoreDistributions",
+      "inputs": {"forecasts": "$model.rows"},
+      "params": {
+        "split": "val", "weight_intervals": [[-2.5, -0.5], [0.5, 2.5]],
+        "thresholds": [-2.0, -1.0, 1.0, 2.0]
+      },
+      "notes": "Locked A0002 scores: twCRPS on the strike zones |z| in [0.5, 2.5], Brier at the candidate strikes, PIT KS and Berkowitz. Val labels overlap (21-step horizon on daily rows), so the p-values are diagnostics, not tests."
+    },
+    "condor": {
+      "uses": "index_options.nodes:CondorDistributionReport",
+      "inputs": {"forecasts": "$model.rows"},
+      "params": {"split": "val", "strikes_z": [-2.0, -1.0, 1.0, 2.0], "credit_fraction": 0.3},
+      "notes": "Shorts at one reference SD, wings at two, a fixed 30%-of-width credit (no quotes in synthetic data). Forecast vs realized P&L is a sanity check, never a selection criterion (A0003)."
+    }
+  },
+  "walkforward": {
+    "objective": "$score.metrics.twcrps",
+    "select": "min",
+    "first": "1976-01-01",
+    "step_days": 90,
+    "count": 4,
+    "val_days": 90,
+    "embargo_days": 30,
+    "notes": "Expanding train windows. The 30-day embargo exceeds the 21-step label reach, so no train label sees a val price."
+  },
+  "outputs": {"run_root": ""}
+}

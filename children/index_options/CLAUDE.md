@@ -36,14 +36,17 @@ Use README.md for installation, the temporary demo and focused tests.
 ```text
 pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
-index_options/             # __init__.py, contracts.py, observations.py, nodes.py
-configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json
+index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
+                           # distribution.py (condor under a forecast, ADR-0168)
+configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
+                           # run-synthetic-distribution.json (ADR-0168 harness)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
 docs/plans/README.md        # gated research stages
 docs/memos/README.md        # execution-evidence convention
-docs/research/              # README.md, CLI-created .gitkeep; future dated topic notes
+docs/research/              # README.md, .gitkeep; distribution-modeling/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
-                           # configs, integration (.py)
+                           # configs, integration, distribution,
+                           # synthetic_distribution_run (.py)
 ```

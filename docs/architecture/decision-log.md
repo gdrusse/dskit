@@ -19400,7 +19400,7 @@ lenses before delivery. Favorable design review is not owner approval.
 
 ## ADR-0168 — Distribution-forecast harness for index options (synthetic)
 
-**Status:** Proposed 2026-09-23; awaiting owner approval. No code before it.
+**Status:** Approved by Russell 2026-09-23 ("yes I approve the build ... just these things"). Scope is the manifest below; nothing else.
 **Owner:** Russell. **Base:** `claude/index-options-modeling-8b5rbo`.
 
 **Context.** Path A0001 (locked) models the physical terminal distribution in

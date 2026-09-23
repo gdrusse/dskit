@@ -539,7 +539,10 @@ names, so it covers knobs your own subclass invents too. `max_gap` splits each
 ordered group into
 gap-free SEGMENTS before any offset arithmetic, so no lag, lead or return
 spans a session boundary; absent, there is one segment per group and the
-behaviour is what it always was. `ReturnWindows` composes the vectorized ops
+behaviour is what it always was. `HorizonLogReturn` (a cumulative
+forward log-return label, declared lookahead) and `RealizedVolFeatures`
+(trailing realized vol at several windows) are ADR-0168's members.
+`ReturnWindows` composes the vectorized ops
 (`lag`, `lead`, `log_return`, `pct_return`) into lags plus a forward label,
 and a forward-reading column DECLARES its horizon (`lookahead_columns`)
 rather than escaping the causality screen. Lags and the label share ONE
@@ -730,6 +733,11 @@ dskit/pipeline/
 │                      FeatureSelector (the surviving-columns member)
 ├── conformance.py     conformance_suite + NodeProbe — the reusable pack bar
 ├── synthetic_nodes.py every role, deterministic, for demos/tests
+├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
+│                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
+├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
+│                      relative_scale hook for later rungs (ADR-0168)
+├── synthetic_paths.py SynthGjrPaths: seeded GJR-GARCH-t price path, known truth (ADR-0168)
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        per-epoch TrainingCurve + probability metrics (logloss/brier/ECE)
 ├── stats.py           cluster bootstraps (plain, studentized-t); correction

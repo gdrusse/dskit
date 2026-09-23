@@ -1,6 +1,13 @@
 """One thin, non-serving Node binding exact references to condor diagnostics."""
 
+from dskit.pipeline.distribution_models import REFERENCE_SCALE_FIELD
+from dskit.pipeline.distribution_scores import (
+    DEFAULT_OUTCOME_FIELD,
+    DEFAULT_SAMPLES_FIELD,
+    row_in_split,
+)
 from dskit.pipeline.node import JsonArtifact, Node, reject_unknown_params
+from dskit.pipeline.split_policy import SPLIT_NAMES
 
 from .contracts import (
     CashIndexContract,
@@ -13,8 +20,9 @@ from .contracts import (
     _integer,
     _text,
 )
+from .distribution import CondorGeometry
 
-__all__ = ["CondorPayoffDiagnostic"]
+__all__ = ["CondorDistributionReport", "CondorPayoffDiagnostic"]
 
 
 class CondorPayoffDiagnostic(Node):
@@ -182,3 +190,156 @@ class CondorPayoffDiagnostic(Node):
             If any configuration, row or exact reference is invalid.
         """
         return {"report": JsonArtifact(self._position(inputs).evaluate())}
+
+
+class CondorDistributionReport(Node):
+    """Evaluate one standardized condor under every forecast row of a split.
+
+    Reads sample-set forecast rows (draws of standardized log return, the
+    realized value, the reference scale) and a forward level per row, maps
+    the declared ``strikes_z`` to strikes at each entry, and reports mean
+    forecast expected P&L, credit-keep and beyond-wing probabilities and
+    CVaR beside their realized counterparts — all per unit of narrower wing.
+    Role ``score``: it measures, and a synthetic report is never
+    decision-eligible.
+
+    Parameters
+    ----------
+    key : str
+        Pipeline node key.
+    params : dict
+        ``split`` (required), ``strikes_z`` (four increasing numbers,
+        required), ``credit_fraction`` (in (0, 1), required),
+        ``cvar_alpha`` (in (0, 1), default 0.95), ``forward_field``
+        (default ``"close"``), ``samples_field`` / ``outcome_field``
+        (dskit's defaults).
+
+    Examples
+    --------
+    Shorts at one reference standard deviation, wings at two::
+
+        node = CondorDistributionReport("condor", {
+            "split": "val", "strikes_z": [-2.0, -1.0, 1.0, 2.0],
+            "credit_fraction": 0.3,
+        })
+        out = node.run(ctx, {"forecasts": rows})
+    """
+
+    role = "score"
+    outputs = ("metrics", "report")
+    _PARAMS = ("credit_fraction", "cvar_alpha", "forward_field", "outcome_field",
+               "samples_field", "split", "strikes_z")
+    DEFAULT_CVAR_ALPHA = 0.95
+    DEFAULT_FORWARD_FIELD = "close"
+
+    @classmethod
+    def validate_params(cls, params):
+        """Check the declaration; every problem is reported.
+
+        Parameters
+        ----------
+        params : dict
+            The candidate configuration.
+
+        Returns
+        -------
+        list of str
+            All problems; empty when usable.
+        """
+        problems = []
+        reject_unknown_params(problems, params, cls._PARAMS)
+        if params.get("split") not in SPLIT_NAMES:
+            problems.append(f"split must name one of {list(SPLIT_NAMES)}")
+        for knob in ("strikes_z", "credit_fraction"):
+            if knob not in params:
+                problems.append(f"{knob} is required")
+        problems.extend(CondorGeometry.problems(
+            params.get("strikes_z"), params.get("credit_fraction"),
+            params.get("cvar_alpha", cls.DEFAULT_CVAR_ALPHA)))
+        for knob in ("forward_field", "samples_field", "outcome_field"):
+            value = params.get(knob, "x")
+            if not isinstance(value, str) or not value:
+                problems.append(f"{knob} must be a nonempty string")
+        return problems
+
+    def validate_inputs(self, inputs):
+        """Require a list of forecast rows.
+
+        Parameters
+        ----------
+        inputs : dict
+            The wired inputs.
+
+        Returns
+        -------
+        list of str
+            Empty when usable.
+        """
+        if not isinstance(inputs.get("forecasts"), list):
+            return ["forecasts must be a list of forecast rows"]
+        return []
+
+    def _entries(self, ctx, rows):
+        """Evaluate every in-split row that carries a forecast, forward and scale."""
+        geometry = CondorGeometry(self.params["strikes_z"], self.params["credit_fraction"],
+                                  self.params.get("cvar_alpha", self.DEFAULT_CVAR_ALPHA))
+        forward_field = self.params.get("forward_field", self.DEFAULT_FORWARD_FIELD)
+        samples = self.params.get("samples_field", DEFAULT_SAMPLES_FIELD)
+        outcome = self.params.get("outcome_field", DEFAULT_OUTCOME_FIELD)
+        entries = []
+        for row in rows:
+            usable = (row.get(samples) and row.get(REFERENCE_SCALE_FIELD)
+                      and row.get(forward_field))
+            if usable and row_in_split(ctx, row, self.params["split"]):
+                entries.append(geometry.evaluate(row[samples], row.get(outcome),
+                                                 row[forward_field], row[REFERENCE_SCALE_FIELD]))
+        return geometry, entries
+
+    def run(self, ctx, inputs):
+        """Aggregate forecast and realized condor outcomes.
+
+        Parameters
+        ----------
+        ctx : NodeContext or None
+            Its splits decide membership.
+        inputs : dict
+            ``forecasts``: sample-set forecast rows.
+
+        Returns
+        -------
+        dict
+            ``metrics`` (numbers) and ``report`` (a JsonArtifact).
+
+        Raises
+        ------
+        ValueError
+            When no in-split row carries a usable forecast.
+        """
+        geometry, entries = self._entries(ctx, inputs["forecasts"])
+        if not entries:
+            raise ValueError(f"{self.key}: no usable forecast row in split "
+                             f"{self.params['split']!r}")
+        realized = [e["realized_pnl"] for e in entries if e["realized_pnl"] is not None]
+
+        def mean(key):
+            return sum(e[key] for e in entries) / len(entries)
+
+        metrics = {
+            "n": len(entries), "n_realized": len(realized),
+            "forecast_expected_pnl": mean("expected_pnl"),
+            "forecast_p_full_credit": mean("p_full_credit"),
+            "forecast_p_beyond_wings": mean("p_beyond_wings"),
+            "forecast_cvar": mean("cvar"),
+        }
+        if realized:
+            metrics.update({
+                "realized_mean_pnl": sum(realized) / len(realized),
+                "realized_full_credit_rate": sum(
+                    p >= geometry.credit_fraction for p in realized) / len(realized),
+                "realized_cvar": geometry.cvar(realized),
+            })
+        report = {"kind": "synthetic_distribution_diagnostic", "decision_eligible": False,
+                  "units": "narrower wing width", "strikes_z": list(geometry.strikes_z),
+                  "credit_fraction": geometry.credit_fraction,
+                  "cvar_alpha": geometry.cvar_alpha, "metrics": metrics}
+        return {"metrics": metrics, "report": JsonArtifact(report)}
