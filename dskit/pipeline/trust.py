@@ -8963,6 +8963,14 @@ def _build_synthetic_v2_raw_publication():
     schema_table = DATASET_AUTHORIZATION_EVENT_SCHEMAS
     fixture_facts_map = _SYNTHETIC_RAW_FIXTURE_FACTS
     raw_writer = publisher_type._publish_common
+    writer_helper_descriptors = tuple(
+        (name, publisher_type.__dict__[name])
+        for name in (
+            "_manifest", "_identity", "_check_row", "_advance",
+            "_published_facts", "_sign", "_check_signed",
+            "_issue_receipt", "_quarantine",
+        )
+    )
     original_verify = proof_type.verify
     object_getattribute = object.__getattribute__
     weakref_factory = weakref_ref
@@ -8992,6 +9000,12 @@ def _build_synthetic_v2_raw_publication():
             and seal[0] is record
             and seal[1] is environment_identity
         )
+
+    def has_exact_writer_helpers():
+        for name, descriptor in writer_helper_descriptors:
+            if publisher_type.__dict__.get(name) is not descriptor:
+                return False
+        return True
 
     def v2_writer(self, proof, signed, roster):
         refuse(
@@ -9036,6 +9050,7 @@ def _build_synthetic_v2_raw_publication():
             and weakref_ref is weakref_factory
             and DATASET_AUTHORIZATION_EVENT_SCHEMAS is schema_table
             and _SYNTHETIC_RAW_FIXTURE_FACTS is fixture_facts_map
+            and has_exact_writer_helpers()
             and "_publish_common" not in publisher_type.__dict__
             and publisher_type.publish is publish
             and publisher_type.publish_v2 is publish_v2
