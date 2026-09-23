@@ -170,7 +170,9 @@ __all__ = [
     "DEFAULT_ORDER_FIELD",
     "DEFAULT_REQUIRE_FIELDS",
     "DEFAULT_RETURN_KIND",
+    "DEFAULT_FORWARD_VOL_NAME",
     "DEFAULT_VOL_PREFIX",
+    "ForwardRealizedVol",
     "HorizonLogReturn",
     "LogMid",
     "NODE_KINDS",
@@ -249,6 +251,9 @@ DEFAULT_LABEL_NAME = "label"
 
 #: :class:`RealizedVolFeatures`' column prefix: ``rv_<window>``.
 DEFAULT_VOL_PREFIX = "rv_"
+
+#: :class:`ForwardRealizedVol`'s column name.
+DEFAULT_FORWARD_VOL_NAME = "rv_fwd"
 
 
 # ---------------------------------------------------------------------------
@@ -2017,6 +2022,17 @@ def _one_price_field_problems(cls, problems, params):
         )
 
 
+def _horizon_problems(problems, params):
+    """Refuse a missing or non-positive-int ``horizon``."""
+    horizon = params.get("horizon")
+    if "horizon" not in params:
+        problems.append("horizon is required — the label's reach must be stated")
+    elif not is_node_ref(horizon) and (
+        isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1
+    ):
+        problems.append(f"horizon must be an int >= 1, got {horizon!r}")
+
+
 class ReturnWindows(ArrayFeatures):
     """Lagged one-step returns with a forward label — the ops, composed.
 
@@ -2292,13 +2308,7 @@ class HorizonLogReturn(ArrayFeatures):
         """
         problems = super().validate_params(params)
         _one_price_field_problems(cls, problems, params)
-        horizon = params.get("horizon")
-        if "horizon" not in params:
-            problems.append("horizon is required — the label's reach must be stated")
-        elif not is_node_ref(horizon) and (
-            isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1
-        ):
-            problems.append(f"horizon must be an int >= 1, got {horizon!r}")
+        _horizon_problems(problems, params)
         name = params.get("label_name", DEFAULT_LABEL_NAME)
         if not is_node_ref(name) and (not isinstance(name, str) or not name):
             problems.append(f"label_name must be a non-empty string, got {name!r}")
@@ -2326,6 +2336,88 @@ class HorizonLogReturn(ArrayFeatures):
         h = self.horizon()
         return {self.label_name(): lead(log_return(arrays[self.fields()[0]], h), h)}
 
+
+class ForwardRealizedVol(ArrayFeatures):
+    """Realized volatility of the NEXT ``horizon`` one-step log returns.
+
+    ``sqrt(mean of r[t+1]^2 .. r[t+horizon]^2)`` — the per-step volatility
+    that will be realized over a forecast's horizon: the target of a
+    volatility-scale model (ADR-0169), the forward twin of
+    :class:`RealizedVolFeatures`. Declared forward by exactly ``horizon``;
+    NaN (row ``None``) for the last ``horizon`` positions.
+
+    Parameters
+    ----------
+    params : dict
+        ``fields`` (exactly one price field, required), ``horizon`` (int
+        >= 1, required), ``label_name`` (str, default ``"rv_fwd"``), plus
+        :class:`ArrayFeatures`' knobs.
+
+    Examples
+    --------
+    Realized vol over the next 21 steps of ``close``::
+
+        node = ForwardRealizedVol("fwd", {"fields": ["close"], "horizon": 21})
+        out = node.run(ctx, {"records": bars})
+        # -> {"rows": [{"rv_fwd": ...}, ...], "metrics": {...}}
+    """
+
+    _PARAMS = ArrayFeatures._PARAMS + ("horizon", "label_name")
+
+    def horizon(self):
+        """Give how many steps forward the label reads (int >= 1)."""
+        return self.params["horizon"]
+
+    def label_name(self):
+        """Name the emitted column (str)."""
+        return self.params.get("label_name", DEFAULT_FORWARD_VOL_NAME)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = super().validate_params(params)
+        _one_price_field_problems(cls, problems, params)
+        _horizon_problems(problems, params)
+        name = params.get("label_name", DEFAULT_FORWARD_VOL_NAME)
+        if not is_node_ref(name) and (not isinstance(name, str) or not name):
+            problems.append(f"label_name must be a non-empty string, got {name!r}")
+        return problems
+
+    def lookahead_columns(self):
+        """Declare the label and its forward reach."""
+        return {self.label_name(): self.horizon()}
+
+    def apply(self, arrays, params):
+        """Build the forward realized volatility.
+
+        Parameters
+        ----------
+        arrays : dict of str -> numpy.ndarray
+            One segment's arrays; the declared price field is read.
+        params : dict
+            This node's params; read through accessors.
+
+        Returns
+        -------
+        dict of str -> numpy.ndarray
+            ``{label_name: ...}``, NaN where the horizon runs past the data.
+        """
+        import numpy as np
+
+        h = self.horizon()
+        squared = log_return(arrays[self.fields()[0]], 1) ** 2
+        return {self.label_name(): np.sqrt(lead(rolling_sum(squared, h), h) / h)}
 
 class RealizedVolFeatures(ArrayFeatures):
     """Trailing realized volatility of one-step log returns at several windows.

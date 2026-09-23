@@ -1,6 +1,6 @@
 {
-  "name": "index-options-synthetic-distribution",
-  "notes": "ADR-0168 harness on synthetic data only: a known GJR-GARCH-t path -> trailing realized vol -> 21-step forward log return and forward realized vol -> a sample-set distribution forecast in standardized units z = label / (rv_22 * sqrt(21)) -> proper scores (A0002) and a standardized iron condor. Run: python -m dskit.pipeline walkforward configs/run-synthetic-distribution.json --asof 1978-06-01. Swap the 'model' node's 'uses' for a later rung (research A0003); keep 'score' and 'condor' fixed so rungs compare on one ruler.",
+  "name": "index-options-synthetic-lightgbm",
+  "notes": "ADR-0169 zoo rung; identical to run-synthetic-distribution.json except the 'model' node. Run: python -m dskit.pipeline walkforward configs/index-options-synthetic-lightgbm.json --asof 1978-06-01.",
   "pipeline": {
     "market": {
       "uses": "dskit.pipeline.synthetic_paths:SynthGjrPaths",
@@ -83,7 +83,7 @@
       "notes": "Realized per-step vol over the same 21 steps as the label: the target a scale rung (ADR-0169) regresses on. Every rung shares this pipeline so the zoo compares only the model node."
     },
     "model": {
-      "uses": "dskit.pipeline.distribution_models:EmpiricalLocationScale",
+      "uses": "dskit.pipeline.libs.lightgbm:LightGBMScaleLocationScale",
       "inputs": {
         "rows": "$fwd.rows"
       },
@@ -92,9 +92,22 @@
         "label": "label",
         "scale_field": "rv_22",
         "scale_multiplier": 4.58257569495584,
-        "n_samples": 200
+        "n_samples": 200,
+        "scale_target": "rv_fwd",
+        "scale_features": [
+          "rv_1",
+          "rv_5",
+          "rv_22"
+        ],
+        "seed": 0,
+        "lgbm_params": {
+          "n_estimators": 200,
+          "learning_rate": 0.05,
+          "num_leaves": 7,
+          "min_child_samples": 50
+        }
       },
-      "notes": "Rung R0a: the train split's empirical z shape, same for every row. scale_multiplier = sqrt(21) turns daily rv_22 into a horizon scale. This reference scale defines z for every rung, so never change it when comparing rungs."
+      "notes": "Research A0004 candidate #1: a shallow, regularized LightGBM on the same HAR inputs. Small effective samples overfit; keep trees shallow and compare against HAR, not the empirical rung alone."
     },
     "score": {
       "uses": "dskit.pipeline.distribution_scores:ScoreDistributions",

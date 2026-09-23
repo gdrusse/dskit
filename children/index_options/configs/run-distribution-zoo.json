@@ -1,0 +1,116 @@
+{
+  "name": "index-options-distribution-zoo",
+  "notes": "ADR-0169 zoo over the synthetic distribution harness: the empirical rung (R0a), log-HAR (R1) and LightGBM (A0004 #1), identical except the 'model' node (contract_paths pin everything else). Run: python -m dskit.pipeline staged configs/run-distribution-zoo.json --asof 1978-06-01. The first run is plan-only: review the printed inventory, paste its sha256 into approval.approved_inventory_sha256, set approved_by, and run again. Synthetic data only \u2014 a ranking here tests the wiring, not the models.",
+  "pipeline": {
+    "market": {
+      "uses": "dskit.pipeline.synthetic_paths:SynthGjrPaths",
+      "params": {
+        "n_days": 2000,
+        "seed": 7
+      },
+      "notes": "Structural node only; each candidate document owns its own pipeline."
+    }
+  },
+  "stages": {
+    "plan": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkPlan",
+      "params": {
+        "candidates": [
+          {
+            "id": "empirical",
+            "group": "z21",
+            "family": "empirical-location-scale",
+            "representation": "tabular",
+            "feature_policy": "no conditioning: train-split empirical z shape",
+            "seed_policy": "fixed seed 0; deterministic fits",
+            "compute_class": "cpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "path": "run-synthetic-distribution.json"
+          },
+          {
+            "id": "har",
+            "group": "z21",
+            "family": "log-har-ols",
+            "representation": "tabular",
+            "feature_policy": "log rv_1/rv_5/rv_22, train-only OLS",
+            "seed_policy": "fixed seed 0; deterministic fits",
+            "compute_class": "cpu-small",
+            "compute_rank": 1,
+            "enabled": true,
+            "path": "run-synthetic-har.json"
+          },
+          {
+            "id": "lightgbm",
+            "group": "z21",
+            "family": "lightgbm-scale",
+            "representation": "tabular",
+            "feature_policy": "log rv_1/rv_5/rv_22, shallow regularized booster fit on train",
+            "seed_policy": "fixed seed 0; deterministic fits",
+            "compute_class": "cpu-small",
+            "compute_rank": 2,
+            "enabled": true,
+            "path": "run-synthetic-lightgbm.json"
+          }
+        ],
+        "contract_paths": [
+          "pipeline.market",
+          "pipeline.rv",
+          "pipeline.labels",
+          "pipeline.fwd",
+          "pipeline.score",
+          "pipeline.condor",
+          "pipeline.model.inputs",
+          "pipeline.model.params.fit_split",
+          "pipeline.model.params.label",
+          "pipeline.model.params.scale_field",
+          "pipeline.model.params.scale_multiplier",
+          "pipeline.model.params.n_samples",
+          "walkforward"
+        ],
+        "protocol": {
+          "attempt_family": "index-options-distribution-zoo",
+          "primary_score": "mean val threshold-weighted CRPS on |z| in [0.5, 2.5] (lower is better), locked Path A0002",
+          "null_baseline": "empirical location-scale rung (R0a)",
+          "cost_model": "equal fold weight; compute rank declared, not measured",
+          "lockbox": "synthetic only; no real-data lockbox exists yet",
+          "decision_rule": "report paired fold differences; prefer the simplest rung not detectably worse; never auto-promote",
+          "alpha": 0.05,
+          "comparison_hac_lags": 1,
+          "multiplicity_method": "bonferroni_all_pairwise",
+          "indifference_method": "paired_fold_newey_west_no_detectable_difference"
+        }
+      }
+    },
+    "approval": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkApproval",
+      "inputs": {
+        "inventory_sha256": "$plan.inventory_sha256"
+      },
+      "params": {
+        "approved_inventory_sha256": "PENDING-PLAN-REVIEW",
+        "approved_by": "PENDING-PLAN-REVIEW",
+        "approval_note": "First invocation is plan-only. Review the frozen inventory, then replace both PENDING values before any candidate may fit."
+      }
+    },
+    "run": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkRun",
+      "inputs": {
+        "candidates": "$plan.candidates",
+        "approval": "$approval.approval"
+      }
+    },
+    "compare": {
+      "uses": "dskit.pipeline.benchmarks:BenchmarkCompare",
+      "inputs": {
+        "runs": "$run.runs",
+        "protocol": "$plan.protocol",
+        "contracts": "$plan.contracts",
+        "approval": "$approval.approval"
+      }
+    }
+  },
+  "outputs": {
+    "run_root": ""
+  }
+}

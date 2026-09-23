@@ -19477,7 +19477,7 @@ config note on trading-day embargo. Repeated field-name checks remain (nit).
 
 ## ADR-0169 — Conditional-scale rungs (linear/HAR, LightGBM) and a distribution zoo
 
-**Status:** Proposed 2026-09-23; awaiting owner approval. No code before it.
+**Status:** Approved by Russell 2026-09-23 ("Approve the build. Ensure no redone work"). Scope is the manifest below.
 **Owner:** Russell. **Base:** `ff66c30`.
 
 **Context.** Research A0004 ranks a GBM volatility-scale model first, with

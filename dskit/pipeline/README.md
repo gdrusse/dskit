@@ -736,7 +736,8 @@ dskit/pipeline/
 ├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
 │                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
 ├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
-│                      relative_scale hook for later rungs (ADR-0168)
+│                      relative_scale hook (ADR-0168); ScaleModelLocationScale +
+│                      LinearScaleLocationScale (log-HAR) fitted-scale rungs (ADR-0169)
 ├── synthetic_paths.py SynthGjrPaths: seeded GJR-GARCH-t price path, known truth (ADR-0168)
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        per-epoch TrainingCurve + probability metrics (logloss/brier/ECE)
@@ -784,7 +785,7 @@ dskit/pipeline/
 │                      pretrained encode/classify/forecast trio over an
 │                      acquired snapshot, ADR-0083), kronos (frozen causal
 │                      hidden states over two acquired snapshots, ADR-0102),
-│                      optuna, pyomo, sb3,
+│                      optuna, pyomo, sb3, lightgbm (fitted volatility-scale rung, ADR-0169),
 │                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)

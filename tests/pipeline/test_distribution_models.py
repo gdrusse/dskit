@@ -1,5 +1,6 @@
 """EmpiricalLocationScale: the first sample-set model rung (ADR-0168)."""
 
+import math
 import os
 import random
 
@@ -135,4 +136,107 @@ TestEmpiricalLocationScaleConformance = conformance_suite(
     probes=_conformance_probes,
     expected_roles={"distribution-empirical": "fitted_transform"},
     name="TestEmpiricalLocationScaleConformance",
+)
+
+
+# -- ADR-0169: fitted-scale rungs -------------------------------------------
+
+from dskit.pipeline.distribution_models import (  # noqa: E402
+    LinearScaleLocationScale,
+    ScaleModelLocationScale,
+)
+
+HAR = {"fit_split": "train", "label": "y", "scale_field": "vol", "n_samples": 50,
+       "scale_target": "fwd", "scale_features": ["vol", "vol5"]}
+
+
+def _scale_rows(n=200, seed=3):
+    """fwd = exp(0.1) * vol^0.6 * vol5^0.3 exactly; y = fwd * N(0, 1)."""
+    rng = random.Random(seed)
+    out = []
+    for i in range(n):
+        vol, vol5 = rng.uniform(0.005, 0.03), rng.uniform(0.005, 0.03)
+        fwd = math.exp(0.1) * vol ** 0.6 * vol5 ** 0.3
+        out.append({"contract": f"C{i}", "asof_ms": (1 if i < n // 2 else 15) * DAY + i,
+                    "vol": vol, "vol5": vol5, "fwd": fwd, "y": fwd * rng.gauss(0, 1)})
+    return out
+
+
+def test_linear_rung_recovers_log_har_coefficients(ctx):
+    out = LinearScaleLocationScale("har", dict(HAR)).run(ctx, {"rows": _scale_rows()})
+    assert out["transform"].state["model"]["coef"] == pytest.approx([0.1, 0.6, 0.3], abs=1e-9)
+
+
+def test_shape_is_standardized_by_the_prediction_not_the_reference(ctx):
+    rows = _scale_rows()
+    out = LinearScaleLocationScale("har", dict(HAR)).run(ctx, {"rows": rows})
+    z = SampleDistribution([r["y"] / r["fwd"] for r in rows[:100]])
+    assert out["transform"].state["shape"] == pytest.approx(
+        [z.quantile((k + 0.5) / 50) for k in range(50)])
+    row = out["rows"][150]
+    stretch = rows[150]["fwd"] / rows[150]["vol"]
+    assert row["samples"] == pytest.approx([stretch * q for q in out["transform"].state["shape"]])
+
+
+def test_a_row_without_usable_features_gets_no_forecast(ctx):
+    rows = _scale_rows()
+    rows[150]["vol5"] = 0.0
+    out = LinearScaleLocationScale("har", dict(HAR)).run(ctx, {"rows": rows})
+    assert out["rows"][150]["samples"] is None
+
+
+def test_ridge_shrinks_slopes_and_is_described(ctx, tmp_path):
+    plain = LinearScaleLocationScale("a", dict(HAR)).run(ctx, {"rows": _scale_rows()})
+    ridge = LinearScaleLocationScale("b", dict(HAR, ridge_alpha=50.0)).run(
+        ctx, {"rows": _scale_rows()})
+    assert sum(abs(b) for b in ridge["transform"].state["model"]["coef"][1:]) < \
+        sum(abs(b) for b in plain["transform"].state["model"]["coef"][1:])
+    node = LinearScaleLocationScale("a", dict(HAR, scale_features=["vol"]), mode="load",
+                                    artifact=str(tmp_path / "artifacts" / "a"))
+    with pytest.raises(ValueError, match="contradicts"):
+        node.run(ctx, {"rows": _scale_rows()})
+
+
+def test_collinear_features_refuse(ctx):
+    rows = [dict(r, vol5=r["vol"]) for r in _scale_rows()]
+    with pytest.raises(ValueError, match="collinear"):
+        LinearScaleLocationScale("har", dict(HAR)).run(ctx, {"rows": rows})
+
+
+@pytest.mark.parametrize("bad", [
+    {"scale_target": ""}, {"scale_features": []}, {"scale_features": ["a", "a"]},
+    {"ridge_alpha": -1}, {"scale_target": None}, {"scale_features": None},
+])
+def test_scale_rung_invalid_params_refuse(bad):
+    params = {k: v for k, v in dict(HAR, **bad).items() if v is not None}
+    with pytest.raises(ConfigError):
+        LinearScaleLocationScale("m", params)
+
+
+def test_scale_model_base_is_abstract():
+    with pytest.raises(TypeError):
+        ScaleModelLocationScale("m", dict(HAR))
+
+
+def _linear_probes(tmp_path):
+    splits = TimeSplitConfig(train_end_ms=10 * DAY, val_end_ms=20 * DAY, test_end_ms=30 * DAY)
+    fit_ctx = NodeContext(name="c", asof="2026-01-01", run_dir=str(tmp_path / "fit"),
+                          splits=splits, splits_info=splits.to_obj())
+    node = LinearScaleLocationScale("har", dict(HAR))
+    carrier = node.run(fit_ctx, {"rows": _scale_rows()})["transform"]
+    return {"distribution-linear-scale": NodeProbe(
+        params=dict(HAR), required=("label", "scale_field", "scale_target", "scale_features"),
+        inputs={"rows": _scale_rows()}, stream_ports=("rows",), runnable=True, ctx=fit_ctx,
+        load_artifact=os.path.join(node.artifact_dir(fit_ctx), SIDECAR_NAME),
+        verify_loaded=lambda out: (out["metrics"]["n_fit_rows"] == 0
+                                   and out["transform"].state == carrier.state),
+    )}
+
+
+TestLinearScaleConformance = conformance_suite(
+    registry=(("distribution-linear-scale", LinearScaleLocationScale),),
+    module="dskit.pipeline.distribution_models",
+    probes=_linear_probes,
+    expected_roles={"distribution-linear-scale": "fitted_transform"},
+    name="TestLinearScaleConformance",
 )

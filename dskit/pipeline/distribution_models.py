@@ -20,6 +20,9 @@ family's, not re-implemented. Stdlib only.
 
 from __future__ import annotations
 
+import math
+from abc import abstractmethod
+
 
 from dskit.pipeline.distribution_scores import (
     DEFAULT_OUTCOME_FIELD,
@@ -33,9 +36,12 @@ from dskit.pipeline.records import number_ok
 
 __all__ = [
     "DEFAULT_N_SAMPLES",
+    "DEFAULT_RIDGE_ALPHA",
     "DEFAULT_SCALE_MULTIPLIER",
     "EmpiricalLocationScale",
+    "LinearScaleLocationScale",
     "REFERENCE_SCALE_FIELD",
+    "ScaleModelLocationScale",
 ]
 
 #: Draws emitted per forecast row, unless a document says otherwise.
@@ -179,7 +185,8 @@ class EmpiricalLocationScale(FittedTransform):
         Returns
         -------
         float
-            A positive multiplier on the fitted shape.
+            A positive multiplier on the fitted shape, or ``None`` when this
+            row cannot be scaled (it then gets no forecast).
         """
         return 1.0
 
@@ -276,11 +283,345 @@ class EmpiricalLocationScale(FittedTransform):
         out = []
         for row in rows:
             scale = self.reference_scale(row)
-            draws = None
-            if scale is not None:
-                stretch = self.relative_scale(row, state)
-                draws = [stretch * q for q in state["shape"]]
+            stretch = None if scale is None else self.relative_scale(row, state)
+            draws = None if stretch is None else [stretch * q for q in state["shape"]]
             out.append({**row, samples_field: draws,
                         outcome_field: self.standardized_label(row),
                         REFERENCE_SCALE_FIELD: scale})
         return out
+
+
+#: Ridge penalty of :class:`LinearScaleLocationScale`, unless a document says otherwise.
+DEFAULT_RIDGE_ALPHA = 0.0
+
+
+class ScaleModelLocationScale(EmpiricalLocationScale):
+    """A location-scale rung whose scale is a FITTED model of forward volatility.
+
+    Abstract (ADR-0169). On the fit split it regresses
+    ``log(scale_target)`` — the per-step volatility realized over the
+    horizon — on ``log`` of the ``scale_features``, then standardizes each
+    fit label by its PREDICTED horizon scale to learn the shape. A forecast
+    is that shape times ``predicted / reference``, so draws stay in the
+    document's reference units and every rung scores against the same
+    outcomes. Standardizing by the prediction rather than the reference is
+    what stops the shape from double-counting the spread the model explains.
+
+    Log space keeps the scale positive; ``exp`` of a mean log is a median,
+    not a mean, and the fitted shape absorbs that bias because it is
+    standardized by the same predictor. A member supplies :meth:`fit_scale`
+    and :meth:`predict_scale`; the model's state must be JSON.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`EmpiricalLocationScale`'s knobs plus ``scale_target`` (the
+        forward per-step vol field, required) and ``scale_features`` (a
+        non-empty list of positive per-row fields, required).
+
+    Examples
+    --------
+    A member is two hooks::
+
+        class MeanScale(ScaleModelLocationScale):
+            def fit_scale(self, x, y):
+                return {"mean": sum(y) / len(y)}
+
+            def predict_scale(self, model, x):
+                return model["mean"]
+
+        node = MeanScale("m", {"fit_split": "train", "label": "label",
+                              "scale_field": "rv_22", "scale_target": "rv_fwd",
+                              "scale_features": ["rv_22"]})
+    """
+
+    _PARAMS = EmpiricalLocationScale._PARAMS + ("scale_features", "scale_target")
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The base's problems plus the scale model's.
+        """
+        problems = super().validate_params(params)
+        target = params.get("scale_target")
+        if "scale_target" not in params:
+            problems.append("scale_target is required")
+        elif not is_node_ref(target) and (not isinstance(target, str) or not target):
+            problems.append(f"scale_target must be a non-empty string, got {target!r}")
+        features = params.get("scale_features")
+        if "scale_features" not in params:
+            problems.append("scale_features is required")
+        elif not is_node_ref(features) and (
+            not isinstance(features, list) or not features
+            or any(not isinstance(f, str) or not f for f in features)
+            or len(set(features)) != len(features)
+        ):
+            problems.append(
+                f"scale_features must be a non-empty list of distinct field names, got {features!r}"
+            )
+        return problems
+
+    @abstractmethod
+    def fit_scale(self, x, y):
+        """Fit the log-volatility model.
+
+        Parameters
+        ----------
+        x : list of list of float
+            One row of log features per fit row.
+        y : list of float
+            The log forward per-step volatility per fit row.
+
+        Returns
+        -------
+        dict
+            The model, JSON-serializable.
+        """
+
+    @abstractmethod
+    def predict_scale(self, model, x):
+        """Predict one row's log forward per-step volatility.
+
+        Parameters
+        ----------
+        model : dict
+            What :meth:`fit_scale` returned.
+        x : list of float
+            One row of log features.
+
+        Returns
+        -------
+        float
+            The predicted log volatility.
+        """
+
+    def log_features(self, row):
+        """Return the row's log features, or ``None`` when any is not positive.
+
+        Parameters
+        ----------
+        row : dict
+            A feature row.
+
+        Returns
+        -------
+        list of float or None
+            ``log`` of each ``scale_features`` value.
+        """
+        values = [_number(row.get(f)) for f in self.params["scale_features"]]
+        if any(v is None or v <= 0 for v in values):
+            return None
+        return [math.log(v) for v in values]
+
+    def predicted_vol(self, row, model):
+        """Return the model's per-step volatility for one row.
+
+        Parameters
+        ----------
+        row : dict
+            A feature row.
+        model : dict
+            The fitted scale model.
+
+        Returns
+        -------
+        float or None
+            ``exp`` of the predicted log vol; ``None`` without usable features.
+        """
+        x = self.log_features(row)
+        return None if x is None else math.exp(self.predict_scale(model, x))
+
+    def _fit_pairs(self, rows):
+        """Rows usable for fitting: label, reference, positive target and features."""
+        pairs = []
+        for row in rows:
+            x, target = self.log_features(row), _number(row.get(self.params["scale_target"]))
+            label = _number(row.get(self.params["label"]))
+            if x is not None and target is not None and target > 0 and label is not None:
+                pairs.append((row, x, math.log(target), label))
+        return pairs
+
+    def fit(self, rows, params):
+        """Fit the scale model, then the shape of labels standardized by it.
+
+        Parameters
+        ----------
+        rows : list of dict
+            The fit split's rows.
+        params : dict
+            This node's params.
+
+        Returns
+        -------
+        dict
+            ``shape``, ``n_fit``, ``describes`` and the scale ``model``.
+
+        Raises
+        ------
+        ValueError
+            When fewer usable fit rows exist than features + 2.
+        """
+        pairs = self._fit_pairs(rows)
+        if len(pairs) < len(params["scale_features"]) + 2:
+            raise ValueError(
+                f"{self.key}: {len(pairs)} fit row(s) carry a usable label, "
+                f"{params['scale_target']!r} and every scale feature; need >= "
+                f"{len(params['scale_features']) + 2}"
+            )
+        model = self.fit_scale([p[1] for p in pairs], [p[2] for p in pairs])
+        mult = params.get("scale_multiplier", DEFAULT_SCALE_MULTIPLIER)
+        z = [label / (math.exp(self.predict_scale(model, x)) * mult)
+             for _, x, _, label in pairs]
+        dist = SampleDistribution(z)
+        n = params.get("n_samples", DEFAULT_N_SAMPLES)
+        return {"shape": [dist.quantile((k + 0.5) / n) for k in range(n)], "n_fit": len(z),
+                "describes": self.described_knobs(), "model": model}
+
+    def described_knobs(self):
+        """Return the knobs that describe the state, the scale model's included.
+
+        Returns
+        -------
+        dict
+            Knob name to effective value.
+        """
+        return {**super().described_knobs(),
+                "scale_target": self.params["scale_target"],
+                "scale_features": list(self.params["scale_features"])}
+
+    def relative_scale(self, row, state):
+        """Stretch the shape by predicted over reference per-step volatility.
+
+        Parameters
+        ----------
+        row : dict
+            A feature row with a usable reference scale.
+        state : dict
+            The fitted state.
+
+        Returns
+        -------
+        float or None
+            ``predicted / scale_field``; ``None`` without usable features.
+        """
+        predicted = self.predicted_vol(row, state["model"])
+        return None if predicted is None else predicted / _number(row[self.params["scale_field"]])
+
+
+class LinearScaleLocationScale(ScaleModelLocationScale):
+    """Ridge-regularized OLS of log forward vol on log features (HAR in logs).
+
+    With ``scale_features`` ``[rv_1, rv_5, rv_22]`` this is the log-HAR
+    model of Corsi (2009); the intercept is never penalized. Stdlib only:
+    the normal equations are small and solved directly.
+
+    Parameters
+    ----------
+    params : dict
+        :class:`ScaleModelLocationScale`'s knobs plus ``ridge_alpha``
+        (float >= 0, default 0.0).
+
+    Examples
+    --------
+    A log-HAR scale rung::
+
+        node = LinearScaleLocationScale("har", {
+            "fit_split": "train", "label": "label", "scale_field": "rv_22",
+            "scale_multiplier": 4.58257569495584, "scale_target": "rv_fwd",
+            "scale_features": ["rv_1", "rv_5", "rv_22"],
+        })
+        out = node.run(ctx, {"rows": rows})
+    """
+
+    serving_load_audited = False
+
+    _PARAMS = ScaleModelLocationScale._PARAMS + ("ridge_alpha",)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            The base's problems plus the penalty's.
+        """
+        problems = super().validate_params(params)
+        alpha = params.get("ridge_alpha", DEFAULT_RIDGE_ALPHA)
+        if not is_node_ref(alpha) and (_number(alpha) is None or alpha < 0):
+            problems.append(f"ridge_alpha must be a finite number >= 0, got {alpha!r}")
+        return problems
+
+    def described_knobs(self):
+        """Return the describing knobs, the penalty included.
+
+        Returns
+        -------
+        dict
+            Knob name to effective value.
+        """
+        return {**super().described_knobs(),
+                "ridge_alpha": self.params.get("ridge_alpha", DEFAULT_RIDGE_ALPHA)}
+
+    def fit_scale(self, x, y):
+        """Solve the ridge normal equations with an unpenalized intercept.
+
+        Parameters
+        ----------
+        x : list of list of float
+            Log features.
+        y : list of float
+            Log forward volatility.
+
+        Returns
+        -------
+        dict
+            ``{"coef": [intercept, b_1, ...]}``.
+
+        Raises
+        ------
+        ValueError
+            When the normal equations are singular.
+        """
+        alpha = float(self.params.get("ridge_alpha", DEFAULT_RIDGE_ALPHA))
+        design = [[1.0, *row] for row in x]
+        k = len(design[0])
+        gram = [[sum(r[i] * r[j] for r in design) + (alpha if i == j and i else 0.0)
+                 for j in range(k)] for i in range(k)]
+        rhs = [sum(r[i] * t for r, t in zip(design, y)) for i in range(k)]
+        return {"coef": _solve(gram, rhs, self.key)}
+
+    def predict_scale(self, model, x):
+        """Evaluate the linear model; see :meth:`ScaleModelLocationScale.predict_scale`."""
+        coef = model["coef"]
+        return coef[0] + sum(b * v for b, v in zip(coef[1:], x))
+
+
+def _solve(matrix, rhs, key):
+    """Gaussian elimination with partial pivoting; refuses a singular system."""
+    n = len(rhs)
+    a = [list(row) + [b] for row, b in zip(matrix, rhs)]
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(a[r][col]))
+        if abs(a[pivot][col]) < 1e-12:
+            raise ValueError(f"{key}: the scale features are collinear — the fit is singular")
+        a[col], a[pivot] = a[pivot], a[col]
+        for r in range(n):
+            if r != col:
+                factor = a[r][col] / a[col][col]
+                a[r] = [v - factor * w for v, w in zip(a[r], a[col])]
+    return [a[i][n] / a[i][i] for i in range(n)]

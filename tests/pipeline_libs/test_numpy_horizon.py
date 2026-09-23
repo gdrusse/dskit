@@ -9,6 +9,7 @@ np = pytest.importorskip("numpy")
 from dskit.pipeline.base import ConfigError
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.libs.numpy import (
+    ForwardRealizedVol,
     HorizonLogReturn,
     RealizedVolFeatures,
     ReturnWindows,
@@ -50,6 +51,18 @@ def test_horizon_label_passes_the_causality_guard_at_its_declared_reach(tmp_path
     assert set(rows[0]) == {"contract", "close", "fwd"}
 
 
+def test_forward_realized_vol_reads_exactly_the_next_horizon(tmp_path):
+    node = ForwardRealizedVol("f", {"fields": ["close"], "horizon": 3})
+    assert node.lookahead_columns() == {"rv_fwd": 3}
+    rows = node.run(ctx(tmp_path), {"records": records()})["rows"]
+    rets = [math.log(b / a) for a, b in zip(CLOSES, CLOSES[1:])]
+    for t, row in enumerate(rows):
+        if t + 3 < len(CLOSES):
+            assert row["rv_fwd"] == pytest.approx(math.sqrt(sum(r * r for r in rets[t:t + 3]) / 3))
+        else:
+            assert row["rv_fwd"] is None
+
+
 def test_realized_vol_matches_the_definition(tmp_path):
     rows = RealizedVolFeatures("rv", {"fields": ["close"], "windows": [1, 3]}).run(
         ctx(tmp_path), {"records": records()})["rows"]
@@ -77,6 +90,9 @@ def test_features_then_label_chain_carries_features_forward(tmp_path):
     (HorizonLogReturn, {"fields": ["close"], "horizon": 0}),
     (HorizonLogReturn, {"fields": ["a", "b"], "horizon": 2}),
     (HorizonLogReturn, {"fields": ["close"], "horizon": 2, "label_name": ""}),
+    (ForwardRealizedVol, {"fields": ["close"]}),
+    (ForwardRealizedVol, {"fields": ["close"], "horizon": 0}),
+    (ForwardRealizedVol, {"fields": ["close"], "horizon": 2, "label_name": ""}),
     (RealizedVolFeatures, {"fields": ["close"]}),
     (RealizedVolFeatures, {"fields": ["close"], "windows": [2, 2]}),
     (RealizedVolFeatures, {"fields": ["close"], "windows": [0]}),
@@ -94,7 +110,7 @@ def test_shared_one_field_rule_still_governs_return_windows():
 
 
 def test_every_new_knob_with_an_accessor_is_covered():
-    for cls in (HorizonLogReturn, RealizedVolFeatures):
+    for cls in (HorizonLogReturn, RealizedVolFeatures, ForwardRealizedVol):
         for knob in cls._PARAMS:
             if callable(getattr(cls, knob, None)):
                 assert _accessor_owner(cls, knob) is not None, (cls, knob)
@@ -103,6 +119,10 @@ def test_every_new_knob_with_an_accessor_is_covered():
 def _probes(tmp_path):
     return {
         "numpy-horizon-log-return": NodeProbe(
+            params={"fields": ["close"], "horizon": 2}, required=("fields", "horizon"),
+            inputs={"records": records()}, stream_ports=("records",), runnable=True,
+        ),
+        "numpy-forward-realized-vol": NodeProbe(
             params={"fields": ["close"], "horizon": 2}, required=("fields", "horizon"),
             inputs={"records": records()}, stream_ports=("records",), runnable=True,
         ),
@@ -117,9 +137,11 @@ TestHorizonPackConformance = conformance_suite(
     registry=(
         ("numpy-horizon-log-return", HorizonLogReturn),
         ("numpy-realized-vol", RealizedVolFeatures),
+        ("numpy-forward-realized-vol", ForwardRealizedVol),
     ),
     module="dskit.pipeline.libs.numpy",
     probes=_probes,
-    expected_roles={"numpy-horizon-log-return": "tensor", "numpy-realized-vol": "tensor"},
+    expected_roles={"numpy-horizon-log-return": "tensor", "numpy-realized-vol": "tensor",
+                    "numpy-forward-realized-vol": "tensor"},
     name="TestHorizonPackConformance",
 )

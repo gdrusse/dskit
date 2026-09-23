@@ -82,7 +82,10 @@ on it without breaking its rulings.
   `distribution_scores.ScoreDistributions`. A new model rung subclasses
   `distribution_models.EmpiricalLocationScale` (a `FittedTransform`) and
   overrides `relative_scale`; never change `scale_field` between rungs,
-  or they stop sharing outcomes.
+  or they stop sharing outcomes. A FITTED-scale rung subclasses
+  `ScaleModelLocationScale` instead (ADR-0169: `fit_scale`/`predict_scale`
+  in log space) — it standardizes the shape by the PREDICTED scale, which
+  overriding `relative_scale` alone would not, double-counting spread.
 - **Admitting an uncertainty artifact at a decision** —
   `uncertainty_intake.py` (ADR-0165). The producing modules
   (`false_signal`, `mean_interval`, `outcome_interval`) say what a number
@@ -726,7 +729,8 @@ dskit/pipeline/
 ├── distribution_scores.py sample-set forecast scores: CRPS, threshold-weighted CRPS,
 │                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
 ├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
-│                      relative_scale hook for later rungs (ADR-0168)
+│                      relative_scale hook (ADR-0168); ScaleModelLocationScale +
+│                      LinearScaleLocationScale (log-HAR) fitted-scale rungs (ADR-0169)
 ├── synthetic_paths.py SynthGjrPaths: seeded GJR-GARCH-t price path, known truth (ADR-0168)
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        TrainingCurve + probability metrics (declared-model telemetry)
@@ -758,7 +762,8 @@ dskit/pipeline/
 │                      transformers (+ the pretrained encode/classify/forecast
 │                      trio over an acquired snapshot, ADR-0083), kronos
 │                      (frozen causal session states, ADR-0102), optuna,
-│                      pyomo, sb3, matplotlib,
+│                      pyomo, sb3, matplotlib, lightgbm (a fitted volatility-
+│                      scale rung, ADR-0169),
 │                      mlflow (tracking SINK pack, no nodes),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)
 ├── README.md          user-facing docs
