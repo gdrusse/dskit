@@ -19803,3 +19803,113 @@ external/real data, acquisition, HPO, refit, backtest, paper/live action,
 deployment, or recovery claim. A deployment environment identity requires its
 own trust root and ADR; this fixed synthetic fact cannot be promoted or
 configured into one.
+
+## ADR-0171 — bounded pure v2 envelope projection
+
+**Status:** PROPOSAL — DO NOT IMPLEMENT. This is the next independently
+reviewable dependency after implemented ADR-0170. It requires clean fresh
+Phase 0, explicit owner approval of the reviewed text, RED-to-GREEN, and two
+sequential fresh clean final lenses. It authorizes one private pure projection
+function only. No trust capability, environment comparison, publication,
+derivation hop, replay, external read, or backtest is enabled.
+
+**Context.** ADR-0169 verifies and retains closed signed
+`dskit.raw-event/v2` values; ADR-0170 supplies the private comparison seam a
+later hop must invoke before projection. The existing ADR-0145
+`dskit.event-envelope/v2` parser, canonical bytes, ordering key, and causal
+verifier already live in `dskit.production.bundles`. The existing
+`compose_replay_tape` is deliberately unusable for this path because it accepts
+seven caller-supplied per-event metadata fields and reads v1 members. This ADR
+adds only the deterministic v2-to-envelope transform. A later trust-owned hop
+must perform the ADR-0170 environment check and supply verified inputs; this
+pure function neither recognizes nor mints authority.
+
+### Decision
+
+1. **One private owner and signature.** Add private
+`_project_v2_event_envelopes(events, source_rank_policy, /)` beside the existing
+envelope parser/order helpers in `dskit.production.bundles`. It is absent from
+`__all__` and package re-exports. It accepts exactly two positional arguments
+and no keywords for timing, provenance, timezone, correction, prior digest,
+rank, or policy digest. `compose_replay_tape`, v1 constants, public APIs, and
+trust code are unchanged.
+
+2. **Closed nonauthorizing inputs.** `events` is an exact nonempty tuple of
+exact `MappingProxyType` values, each with exactly `RAW_EVENT_FIELDS[
+"dskit.raw-event/v2"]`; every field is revalidated with ADR-0169's intrinsic
+exact types and nonnegative bounds plus `receive_ms >= exchange_ms`, lowercase
+SHA-256 payload, unique
+nonempty event IDs, and correction invariants (`corrects_event_id is None` iff
+position zero; otherwise a nonempty different event ID). `source_rank_policy`
+is an exact `MappingProxyType` with exactly `schema_version`, `sources`, and
+`policy_sha256`; schema is `dskit.source-rank-policy/v1`; `sources` is an exact
+tuple of exact two-key mapping proxies, nonempty, every source ID an exact
+nonempty string, IDs sorted and unique, and every rank an exact nonnegative int
+equal to tuple position (booleans and int subclasses refuse). Recompute the
+policy digest over the canonical two-key JSON object with `sources` projected
+to a list and `policy_sha256` omitted, then require exact equality to the
+supplied lowercase digest. Every event source must occur once in that policy.
+These shapes are data validation only, not proof that a caller passed ADR-0169
+capabilities. The signed authorization's availability-window bound is not
+present in this pure function's inputs and is therefore not re-claimed here;
+the later trust adapter must preserve ADR-0169's already-verified bound.
+
+3. **All fields derived, then canonically sorted.** Project the fourteen
+non-prior envelope fields only from the event and policy: the event supplies
+its twelve fields except raw `schema_version`; envelope schema is exactly
+`dskit.event-envelope/v2`; rank and policy digest come only from the policy.
+No default, override, ambient lookup, or caller metadata exists. Sort projected
+values once by existing `_event_envelope_order_key`: availability, source rank,
+source sequence, correction position, payload digest, event ID. Input order has
+no meaning and two permutations produce byte-identical output.
+
+4. **Prior digest is derived after ordering.** Walk the sorted values once.
+For position zero corrections, set `prior_envelope_sha256=None`. For each
+`correction_position > 0`, require `corrects_event_id` to identify an already
+emitted envelope whose correction position is exactly one less, then set
+`prior_envelope_sha256` to SHA-256 of that exact earlier canonical envelope
+byte string. Forward references, self-reference, missing target, skipped
+position, duplicate IDs, or a target that sorts later refuse. The raw event can
+never supply or override a prior digest.
+
+5. **Closed output and self-verification.** For each completed value, call the
+existing `_check_event_envelope`, encode with existing `_canonical_bytes`, and
+round-trip through `_parse_event_envelope`. Return an exact tuple of bytes and
+nothing else. Reparse every output and require adjacent existing order keys to
+be nondecreasing, event IDs unique, and every correction target/digest exact.
+Any defect raises one `ProductionError` with position-qualified accumulated
+problems; no partial result escapes.
+
+6. **Purity and boundary freeze.** The function performs no filesystem,
+environment, package, clock, random, network, broker, provider, reserve,
+session, capture, publication, replay, or logging operation and mutates no
+argument. ADR-0169 proof state/bytes/messages and ADR-0170 identity state remain
+unchanged. `ReplayRun.run` remains fail-closed. Because this function is pure
+and nonauthorizing, a future hop must still validate the exact ADR-0169 proof,
+invoke `_require_synthetic_tzdata` against its signed scope, derive this
+function's two inputs inside trust, and validate the returned bytes before any
+lifecycle effect.
+
+### Required Phase-0 matrix
+
+Pin the exact private signature and absence from exports. Prove empty/list/
+iterator/dict events refuse; non-mapping-proxy members refuse; every missing,
+extra, mistyped, negative, nonlowercase, duplicate, and correction-invalid raw
+field refuses; malformed/forged/reordered/gapped/duplicate/wrong-digest policy
+refuses; unknown source refuses; all fourteen non-prior envelope fields equal
+their sole approved event/policy origin; input permutation invariance and exact
+six-term ordering; original/correction/multistep chains and exact derived prior
+digests; forward/self/missing/skipped/later-target refusal; immutable inputs;
+exact tuple-of-bytes output; parser round-trip; no partial output; and AST plus
+runtime purity traps. Run ADR-0145/0146 bundle tests, ADR-0169, ADR-0170, trust,
+capture, and purity regressions unedited.
+
+### Non-goals
+
+No opaque projection-input capability, environment check invocation, trust
+adapter, proof consumption, writer injection, `CapturedDerivationHop`, raw root
+publication, manifest/tape construction, `compose_replay_tape` edit,
+`CapturedReplayTape` edit, lifecycle/reserve/session change, replay execution,
+external/real data, acquisition, HPO, refit, backtest, paper/live action,
+deployment, or recovery claim. This pure transform cannot be used as evidence
+that its caller held a verified raw fixture or environment identity.
