@@ -1,0 +1,50 @@
+{
+  "schema_version": "F3SyntheticEnvironmentPhase0.v1",
+  "deployment_eligible": false,
+  "adr": {
+    "id": "ADR-0170",
+    "path": "docs/architecture/decision-log.md",
+    "scope": "bounded deterministic synthetic environment identity only; no writer, replay, runtime, or backtest",
+    "final_reviewed_commit": "279fa050c94c5e58f50525b11782c0f67441b793",
+    "final_reviewed_blob": "9e0f758fd90c8e29c79128fa214814b58993eaf8"
+  },
+  "review_iterations": [
+    {
+      "reviewed_commit": "dbea35b5a8a1dbf74e8684732018375d270f3334",
+      "critical": 0,
+      "major": 3,
+      "minor": 0,
+      "nit": 0,
+      "disposition": "schema collision, unpinned digest, and underspecified state integrity corrected"
+    },
+    {
+      "reviewed_commit": "e5143d04692add4feda1c6f0e5a420a5bd3cb671",
+      "critical": 0,
+      "major": 2,
+      "minor": 0,
+      "nit": 0,
+      "disposition": "canonical-byte digesting and registry-object identity corrected"
+    },
+    {
+      "reviewed_commit": "65d7a7ee98b7df217a121777e59b6ad5aa1d4e55",
+      "critical": 0,
+      "major": 2,
+      "minor": 1,
+      "nit": 0,
+      "disposition": "global-state substitution, exact-class forgery, and vacuous uppercase case corrected by closure-owned broker state and canonical digest"
+    }
+  ],
+  "final_independent_review": {
+    "reviewed_commit": "279fa050c94c5e58f50525b11782c0f67441b793",
+    "reviewed_blob": "9e0f758fd90c8e29c79128fa214814b58993eaf8",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "focused_baseline": "1686 passed, 1 documented unrelated ADR-0157 xfail",
+    "diff_check": "clean",
+    "result": "GO for explicit owner approval, then RED"
+  },
+  "implementation_status": "not started; explicit owner approval required",
+  "non_authority": "This proposal does not authorize projection, writing, publication, replay, backtest, HPO, refit, release, paper trading, or live trading."
+}
