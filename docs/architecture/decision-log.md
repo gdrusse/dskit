@@ -19400,12 +19400,15 @@ lenses before delivery. Favorable design review is not owner approval.
 
 ## ADR-0168 — bounded F3 replay `CapturedPortSet`
 
-**Status:** PROPOSED — no implementation, RED, capture, replay, or backtest is
-authorized by this text. This is a narrow extraction of ADR-0148 decision point
-5 only; it does not revive ADR-0148, whose broader F3 contract remains stopped.
-After explicit owner approval, fresh Phase 0, RED-to-GREEN, and two clean final
-lenses, it authorizes deterministic synthetic TDD only. `deployment_eligible`
-is always `false`.
+**Status:** AMENDED PROPOSAL — DO NOT IMPLEMENT. The owner approved the prior
+text on 2026-09-22 at commit `9237a39`, but its required post-approval Phase 0
+found two Major feasibility gaps: exact frozen handles were not retained, and no
+fixed synthetic policy authorized the tape pair. Decision points 2 and 3 below
+correct them materially, so the prior approval does not authorize RED. Explicit
+owner approval of this amended text, a fresh Phase 0, RED-to-GREEN, and two clean
+final lenses are required. This remains deterministic synthetic TDD only;
+`deployment_eligible` is always `false`, and no capture, replay, or backtest is
+authorized by this proposal.
 
 **Context.** `ReplayRun`'s already-landed document grammar requires exactly
 `tape_manifest` and `tape_data`. A committed P4
@@ -19430,28 +19433,32 @@ to raise its current composed-tape-broker refusal; this ADR adds neither
    record/session/publication/provider/path accessor, and inherits the existing
    copy, deepcopy, pickle, and reconstruction refusals.
 
-2. **Sole factory and owner.** Add
-   `CapturedAuthorizationAuthority.captured_port_set(record, session, captures)`.
+2. **Exact retained provenance, sole factory and owner.** Add a private
+   `_P4_CAPTURE_HANDLES` weak-key map from the committed
+   `CapturedAuthorizationRecord` to strong values containing the exact
+   `(published, frozen, canonical-port)` triples. `commit_p4_batch` populates it
+   immediately after the immutable root becomes the sole logical publication
+   and before the existing `commit-after` and `return` fault points. Thus a
+   committed-but-raised call retains the same handles, an identical retry
+   resolves the same record/session/handles, and Python object-ID reuse cannot
+   substitute a later frozen object. The value never references its weak record
+   key, so collection is not cyclic. No handle is retained before commit.
+
+   Add `CapturedAuthorizationAuthority.captured_port_set(record, session)`.
    Only the exact broker-issued P4 authority that owns `record` may mint it.
-   `captures` is an exact built-in tuple of `(published, frozen, port)` triples.
-   Each `published` and `frozen` must be the identical live opaque handle used by
-   `authorize_capture_set`; each `port` is an exact built-in dictionary whose
-   canonical value must equal the committed signed port. Callers supply no
-   descriptors, roots, receipt digests, or input mapping. The factory reads the
-   committed batch through the existing
-   record-to-ledger association and byte-compares its signed ports and ordered
-   stream identities against those handles and values. No committed ledger
-   entry is claimed to retain the original tuple or port-dictionary identity;
-   an independently allocated but canonically equal port dictionary is accepted.
+   Callers supply no captures, descriptors, roots, receipt digests, or input
+   mapping. The factory reads only the record-to-ledger association and the
+   broker-retained exact handle tuple, and byte-compares the committed request,
+   signed CAS/PCE/port/receipt entries, and ordered stream identities against it.
 
    The factory refuses unless the committed batch is exactly one replay
    consumer's two derived ports, with one frozen consumer document and exactly
    the existing declared names `tape_manifest` and `tape_data`. It derives the
-   name-to-capture association by matching each exact live triple to the
-   committed signed port/stream at the same batch position and refuses missing,
+   name-to-capture association by matching each retained triple to the committed
+   signed port/receipt/stream at the same batch position and refuses missing,
    extra, duplicate, aliased, reordered, substituted, cross-record,
    cross-authority, wrong-session, non-committed session pin, non-replay, or
-   nonidentical publication/frozen handles. It performs no capture, authorization, publication,
+   missing retained provenance. It performs no capture, authorization, publication,
    lifecycle transition, member read, provider call, or ledger write.
 
    Exactly one set may be minted for a committed record/session/capture batch.
@@ -19459,7 +19466,22 @@ to raise its current composed-tape-broker refusal; this ADR adds neither
    refuses rather than resetting local `require` bookkeeping. The underlying
    record-wide P4 member-read budget is therefore shared and unchanged.
 
-3. **Consumption surface.** `CapturedPortSet.require(name)` accepts only the
+3. **One exact additive synthetic policy projection.** Preserve all existing
+   `_P4_APPROVED_SCOPE_PROJECTIONS` byte-for-byte and append only
+   `e2957cc8508ce431ad6fb65c7dfc797bbfa1c578dac909c74b7bd86ee3d4b51c`,
+   the independently reproduced projection of the fixed nondeployment fixture
+   after its shared `bundle`/`second` input contracts are renamed to
+   `tape_manifest`/`tape_data` in both action and replay intents; the selected
+   authority subject remains replay. Update the
+   three fixed external test-certificate public keys/signatures (G1 dataset,
+   G2 dataset, and fixed-owner-policy), because the shared certificate preimage
+   includes the complete projection set for every terminal class. No private
+   key, signer, runtime policy selector, caller-supplied digest, production
+   authority, or dynamic-policy branch is added. Every old
+   projection remains accepted; any other renamed, reordered, extra, or missing
+   contract remains refused.
+
+4. **Consumption surface.** `CapturedPortSet.require(name)` accepts only the
    two exact names and returns an unexported opaque per-input reader. Each name
    may be required once per set; requiring one does not prevent requiring the
    other in either order. The reader retains only its exact committed stream,
@@ -19475,7 +19497,7 @@ to raise its current composed-tape-broker refusal; this ADR adds neither
    document, or receipt. This ADR adds no composed tape, envelope parsing,
    manifest/data comparison, or replay execution.
 
-4. **Finality is already broker-side.** P4 finality remains solely the atomic
+5. **Finality is already broker-side.** P4 finality remains solely the atomic
    successful `commit_p4_batch` inside `authorize_capture_set`, before this
    factory can run. `CapturedPortSet.require` is local view bookkeeping plus
    the existing one-way member read; it does not finalize, release, consume,
@@ -19485,10 +19507,14 @@ to raise its current composed-tape-broker refusal; this ADR adds neither
    described as broker finality. Existing in-memory `_p4_reads` restart
    behavior is unchanged and no durability claim is made.
 
-5. **Compatibility and non-goals.** Do not edit `CapturedBindings`,
+6. **Compatibility and non-goals.** Do not edit `CapturedBindings`,
    `captured_bindings`, `_consume_binding`, legacy `CONSUMED`, P4 admission
-   closure, `authorize_capture_set`, `commit_p4_batch`,
-   `CapturedAuthorizationRecord`'s existing accessors, document grammar,
+   closure, or `CapturedAuthorizationRecord`'s existing accessors. The only
+   `commit_p4_batch` change is the post-publication/pre-fault retained-handle
+   assignment in Decision point 2. The only fixed P4 authority change is the
+   exact additive projection and the three corresponding fixed test certificates in Decision
+   point 3. Do not otherwise edit `authorize_capture_set`, `commit_p4_batch`,
+   document grammar,
    `ReplayRun.run`, `production/bundles.py`, or any child code. No authority,
    execution, terminal tape, tape composition, F3 closure, F5b closure, R1--R5,
    real data, market replay, paper/live action, HPO, refit, release use,
@@ -19497,9 +19523,13 @@ to raise its current composed-tape-broker refusal; this ADR adds neither
 **Required Phase-0 matrix.** Direct construction, subclass, copy/deepcopy,
 pickle, fabricated/cross-authority record or session, and uncommitted records
 refuse without changing P4 audit. One/three/duplicate/aliased inputs,
-non-replay subjects, reordered triples, document/root/stream/port/receipt
-substitutions, and wrong, swapped, or non-committed-pin sessions refuse before a
-set exists. The exact valid pair factory succeeds once; `require` works in
+non-replay subjects, document/root/stream/port/receipt substitutions, and wrong,
+swapped, or non-committed-pin sessions refuse before a set exists. The exact
+valid pair factory succeeds once; all four prior policy projections stay green,
+the one new tape-pair projection succeeds, and every neighboring projection
+refuses. Normal commit plus `commit-after` and `return` committed exceptions all
+retain the exact handles; caller disposal, garbage collection, object-ID reuse,
+and retry cannot substitute them. `require` works in
 either input order, each name is required once, and neither reader can reach the
 other's publication. A repeat factory call refuses without creating a fresh
 view. Duplicate member reads retain P4's existing refusal and receipt values

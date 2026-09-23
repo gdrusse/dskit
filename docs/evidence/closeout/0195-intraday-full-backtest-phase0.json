@@ -19,6 +19,28 @@
     "nit_disposition": "ADR-0168 orders the final fresh Phase 0 after approval; this preapproval recheck found no material issue but does not replace that gate.",
     "result": "implementation remains blocked on explicit owner approval and the required post-approval fresh Phase 0"
   },
+  "postapproval_phase0": {
+    "reviewed_commit": "9237a396881a5cb3f849e4ef1a0ef0876438c9db",
+    "reviewed_adr_blob": "d95d8f410f11902d632fcfc472da390d2e6b3ff5",
+    "critical": 0,
+    "major": 2,
+    "minor": 0,
+    "nit": 0,
+    "findings": [
+      "The committed request retained only id(frozen), allowing a later object-ID reuse to substitute an unretained handle.",
+      "No fixed synthetic scope-policy projection authorized the tape_manifest/tape_data replay pair."
+    ],
+    "disposition": "ADR-0168 materially amended; prior approval no longer authorizes RED"
+  },
+  "amended_adr": {
+    "blob": "4ab6f8956dc9767a1802599ed87b38fdb95376ad",
+    "corrections": [
+      "retain exact committed capture handles after logical publication and before commit-after/return faults",
+      "append exactly one fixed nondeployment tape-pair scope projection and replace its fixed test certificate key/signature"
+    ],
+    "preapproval_recheck": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "status": "clean preapproval recheck; awaiting explicit owner reapproval"
+  },
   "already_available": [
     "recurring cash-flow schedule and fold",
     "one-ledger accounting state",
@@ -26,7 +48,6 @@
     "cost-aware developmental fill replay"
   ],
   "remaining_sequence": [
-    "owner approval of ADR-0168 exact blob",
     "fresh Phase 0 recheck of the approved unchanged ADR-0168 blob",
     "ADR-0168 RED-GREEN and two final skeptic lenses",
     "remaining bounded F3 derivation, v2 wire and writer slices to F3 ReviewExit",
@@ -35,5 +56,6 @@
     "I1 synthetic integration",
     "separately authorized historical study"
   ],
-  "non_authority": "No code, capture, market data, lockbox, replay, backtest, paper/live action, HPO, refit or release use is authorized by this evidence."
+  "owner_approval": "2026-09-22 explicit yes to ADR-0168 at commit 9237a39",
+  "non_authority": "Approval authorizes only bounded synthetic TDD after a clean fresh Phase 0; no capture, market data, lockbox, replay, backtest, paper/live action, HPO, refit or release use is authorized."
 }
