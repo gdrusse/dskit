@@ -557,7 +557,7 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
 
     ranks = {}
     policy_digest = None
-    policy_shape_ok = False
+    policy_readable = False
     policy_value = inert_mapping(source_rank_policy, "source_rank_policy")
     sources_input_is_tuple = False
     if policy_value is None:
@@ -578,9 +578,6 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
             problems.append(
                 "source_rank_policy has a non-string field name"
             )
-        policy_shape_ok = (
-            not unknown and not missing and not non_string_policy_keys
-        )
         for name in sorted(missing):
             problems.append(f"source_rank_policy is missing field {name!r}")
         policy_readable = not missing and not non_string_policy_keys
@@ -633,7 +630,6 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
             problems.append(
                 f"{prefix} has a non-string field name"
             )
-        item_shape_ok = not unknown and not missing and not non_string_item_keys
         for name in sorted(missing):
             problems.append(f"{prefix} is missing field {name!r}")
         item_readable = not missing and not non_string_item_keys
@@ -655,14 +651,14 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
                     f"{prefix}.source_id must be strictly sorted and unique"
                 )
             previous_source_id = source_id
-        if source_ok and rank_ok and item_shape_ok:
+        if source_ok and rank_ok and item_readable:
             source_preimage.append({"source_id": source_id, "rank": rank})
             if source_id not in ranks:
                 ranks[source_id] = rank
 
     if (
             policy_value is not None
-            and policy_shape_ok
+            and policy_readable
             and sources_input_is_tuple
         and len(source_preimage) == len(sources)
         and type(policy_digest) is str
@@ -699,12 +695,12 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
             problems.append(
                 f"{prefix} has a non-string raw-event field name"
             )
-        event_shape_ok = not unknown and not missing and not non_string_event_keys
         for name in sorted(missing):
             problems.append(f"{prefix} is missing raw-event field {name!r}")
         event_readable = not missing and not non_string_event_keys
         if not event_readable:
             continue
+        event_semantic_start = len(problems)
         event_schema = event_value["schema_version"]
         if type(event_schema) is not str or event_schema != raw_schema:
             problems.append(f"{prefix}.schema_version must be {raw_schema!r}")
@@ -765,11 +761,15 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
                     problems.append(
                         f"{prefix}.corrects_event_id must be an exact nonempty str"
                     )
-                elif corrects_event_id == event_id:
+                elif (
+                    type(event_id) is str
+                    and event_id
+                    and corrects_event_id == event_id
+                ):
                     problems.append(f"{prefix}.corrects_event_id cannot be self")
 
         if (
-            event_shape_ok
+            len(problems) == event_semantic_start
             and type(source_id) is str
             and source_id in ranks
         ):
@@ -780,9 +780,6 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
                 "source_rank_policy_sha256": policy_digest,
             }
             projected.append(envelope)
-
-    if problems:
-        raise ProductionError(problems)
 
     projected.sort(key=_event_envelope_order_key)
     output = []

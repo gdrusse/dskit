@@ -88,6 +88,11 @@ class _HostileTypeNameKey(metaclass=_HostileKeyMeta):
     pass
 
 
+class _HostileEqualValue:
+    def __eq__(self, _other):
+        raise RuntimeError("hostile value equality callback")
+
+
 def _event(**changes):
     value = {
         "schema_version": _RAW_SCHEMA,
@@ -532,6 +537,32 @@ def test_projection_accumulates_both_correction_field_defects():
     message = str(caught.value)
     assert "correction_position" in message
     assert "corrects_event_id" in message
+
+
+def test_projection_does_not_compare_correction_to_invalid_event_id():
+    event = _event(
+        event_id=_HostileEqualValue(),
+        correction_position=1,
+        corrects_event_id="event-0",
+    )
+    with pytest.raises(bundles.ProductionError):
+        _project((event,))
+
+
+def test_projection_accumulates_unknown_field_and_safe_causal_defect():
+    event = MappingProxyType({
+        **dict(_event(
+            event_id="correction",
+            correction_position=1,
+            corrects_event_id="missing",
+        )),
+        "unexpected": "refuse",
+    })
+    with pytest.raises(bundles.ProductionError) as caught:
+        _project((event,))
+    message = str(caught.value)
+    assert "unexpected" in message
+    assert "does not identify an earlier envelope" in message
 
 
 def test_projection_refuses_policy_container_entry_and_field_shape_defects():
