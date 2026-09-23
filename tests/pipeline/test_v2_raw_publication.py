@@ -10,6 +10,7 @@ import pytest
 
 import dskit.pipeline as pipeline
 from dskit.pipeline import trust
+from dskit.production import bundles
 from dskit.production import verifier as production_verifier
 from tests.pipeline import test_captured_authorization as cases
 from tests.pipeline.test_event_wire_v2 import _v2_case
@@ -634,7 +635,7 @@ def test_v2_root_proof_verifies_under_existing_writer_transaction(tmp_path):
 
 
 def test_v2_root_proof_under_writer_lock_refuses_cross_originals_before_read(
-    tmp_path,
+    tmp_path, monkeypatch,
 ):
     first = _case(tmp_path / "first")
     second = _case(
@@ -665,20 +666,37 @@ def test_v2_root_proof_under_writer_lock_refuses_cross_originals_before_read(
     second_output = second_publisher.publish_v2(
         second_fixture, second_environment, *second_signed, *second_roster
     )
-    before = tuple(first_publisher._broker._member_events)
+    (tmp_path / "v1").mkdir()
+    _v1_publisher, v1_roster, v1_signed, v1_output = (
+        cases._adr140_published_raw_case(tmp_path / "v1", monkeypatch)
+    )
+    malformed_signed = (b"{", *first_signed[1:])
+    swapped_signed = (
+        first_signed[0], first_signed[2], first_signed[1], first_signed[3],
+    )
+    candidates = (
+        ("cross-v2", second_signed, second_roster, second_output),
+        ("exact-v1", v1_signed, v1_roster, v1_output),
+        ("malformed", malformed_signed, first_roster,
+         first_publisher._retained[5:]),
+        ("swapped", swapped_signed, first_roster,
+         first_publisher._retained[5:]),
+    )
     connection = first_roster_publisher._reserve._connection
-    connection.execute("BEGIN")
-    try:
-        with pytest.raises(ValueError, match="originals mismatch"):
-            first_publisher.proof().verify(
-                *second_signed,
-                *second_roster,
-                *second_output,
-                _under_writer_lock=True,
-            )
-    finally:
-        connection.execute("ROLLBACK")
-    assert tuple(first_publisher._broker._member_events) == before
+    for label, candidate_signed, candidate_roster, candidate_output in candidates:
+        before = tuple(first_publisher._broker._member_events)
+        connection.execute("BEGIN")
+        try:
+            with pytest.raises(ValueError, match="originals mismatch"):
+                first_publisher.proof().verify(
+                    *candidate_signed,
+                    *candidate_roster,
+                    *candidate_output,
+                    _under_writer_lock=True,
+                )
+        finally:
+            connection.execute("ROLLBACK")
+        assert tuple(first_publisher._broker._member_events) == before, label
 
 
 def test_retained_v2_root_stops_before_root_pis_construction_effect(
@@ -738,6 +756,23 @@ def test_retained_v2_root_has_no_downstream_capability_alias(
         production_verifier.HistoricalStudyVerifier(raw_publisher)
     with pytest.raises(TypeError, match="exact HistoricalStudyVerifier"):
         production_verifier.HistoricalStudyCaptureDriver(raw_publisher)
+    assert (
+        production_verifier.NonAuthorizingSyntheticRootPisProof
+        is trust.NonAuthorizingSyntheticRootPisProof
+    )
+    assert (
+        production_verifier.NonAuthorizingDynamicRootGraph
+        is trust.NonAuthorizingDynamicRootGraph
+    )
+    with pytest.raises(bundles.ProductionError, match="published token"):
+        bundles.compose_replay_tape(
+            raw_publisher,
+            raw_publisher,
+            raw_publisher,
+            "0" * 64,
+            "source_roster.json",
+            (),
+        )
     replay = trust.ReplayRun("replay", {})
     with pytest.raises(RuntimeError, match="F3 composed-tape broker"):
         replay.run(None, {"raw_root": raw_publisher})
