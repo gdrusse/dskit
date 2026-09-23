@@ -8983,7 +8983,10 @@ def _build_synthetic_v2_raw_publication():
         "dskit.dataset-capture-authorization/v1"
     ]
 
-    def common_writer(self, proof, signed, roster, expected_event_schema):
+    def common_writer(self, proof, signed, roster):
+        expected_event_schema = object_getattribute(
+            proof, "_event_schema"
+        )
         if expected_event_schema == v1_event_schema:
             return raw_writer(self, proof, signed, roster)
         refuse(
@@ -9127,7 +9130,6 @@ def _build_synthetic_v2_raw_publication():
             proof,
             (authorization_bytes, g1, g2, attestation),
             (bootstrap, bg1, bg2, roster_basis, roster_receipt),
-            v1_event_schema,
         )
 
     def publish_v2(self, proof, environment_identity, authorization_bytes,
@@ -9245,9 +9247,7 @@ def _build_synthetic_v2_raw_publication():
                 "synthetic v2 raw binding changed",
             )
             writer_invoked = True
-            result = common_writer(
-                self, proof, signed, roster, v2_event_schema
-            )
+            result = common_writer(self, proof, signed, roster)
             require_dispatch()
             refuse(
                 records.get(self) is record

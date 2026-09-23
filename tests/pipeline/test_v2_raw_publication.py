@@ -137,13 +137,20 @@ def test_captured_common_writer_refuses_v2_without_provisional_binding(
         fixture._used,
         tuple(raw_publisher._broker._member_events),
     )
+    with pytest.raises(TypeError):
+        closure["common_writer"](
+            raw_publisher,
+            fixture,
+            signed,
+            roster,
+            "dskit.raw-event/v1",
+        )
     with pytest.raises(ValueError, match="provisional.*binding"):
         closure["common_writer"](
             raw_publisher,
             fixture,
             signed,
             roster,
-            "dskit.raw-event/v2",
         )
     assert before == (
         roster_publisher._reserve._connection.total_changes,
@@ -285,6 +292,45 @@ def test_v2_root_proof_refuses_environment_identity_substitution(
     with pytest.raises(ValueError, match="committed.*binding"):
         raw_publisher.proof().verify(*signed, *roster, *output)
     assert tuple(raw_publisher._broker._member_events) == before
+
+
+def test_v2_root_proof_refuses_cross_publisher_record_rewire(tmp_path):
+    first = _case(tmp_path / "first")
+    second = _case(tmp_path / "second")
+    (
+        _first_roster,
+        first_publisher,
+        first_fixture,
+        first_environment,
+        first_signed,
+        first_roster,
+        _first_source,
+    ) = first
+    (
+        _second_roster,
+        second_publisher,
+        second_fixture,
+        second_environment,
+        second_signed,
+        second_roster,
+        _second_source,
+    ) = second
+    first_output = first_publisher.publish_v2(
+        first_fixture, first_environment, *first_signed, *first_roster
+    )
+    second_publisher.publish_v2(
+        second_fixture, second_environment, *second_signed, *second_roster
+    )
+    closure = _binding_authority()
+    other_record = closure["records"][second_publisher]
+    closure["records"][first_publisher] = other_record
+    closure["anchors"][first_publisher] = other_record
+    before = tuple(first_publisher._broker._member_events)
+    with pytest.raises(ValueError, match="committed.*binding"):
+        first_publisher.proof().verify(
+            *first_signed, *first_roster, *first_output
+        )
+    assert tuple(first_publisher._broker._member_events) == before
 
 
 def test_v2_root_proof_refuses_deleted_private_binding_before_member_read(
