@@ -8975,6 +8975,7 @@ def _build_synthetic_v2_raw_publication():
     records = WeakKeyDictionary()
     anchors = WeakKeyDictionary()
     record_identities = set()
+    writer_invoked_identities = set()
     binding_seals = {}
     v2_authorization_schema = "dskit.dataset-capture-authorization/v2"
     v2_roster_schema = "dskit.roster-bootstrap-authorization/v2"
@@ -9005,6 +9006,7 @@ def _build_synthetic_v2_raw_publication():
             "provisional synthetic v2 raw binding required",
         )
         try:
+            writer_invoked_identities.add(id(record))
             return raw_writer(self, proof, signed, roster)
         except BaseException:
             record[2] = failed
@@ -9212,6 +9214,7 @@ def _build_synthetic_v2_raw_publication():
 
         def forget_record(_publisher_ref, identity=record_identity):
             record_identities.discard(identity)
+            writer_invoked_identities.discard(identity)
             binding_seals.pop(identity, None)
 
         record[0] = weakref_factory(self, forget_record)
@@ -9228,7 +9231,6 @@ def _build_synthetic_v2_raw_publication():
             record_identities.discard(record_identity)
             binding_seals.pop(record_identity, None)
             raise
-        writer_invoked = False
         try:
             require_dispatch()
             refuse(
@@ -9243,7 +9245,6 @@ def _build_synthetic_v2_raw_publication():
                 "synthetic v2 raw binding changed",
             )
             result = v2_writer(self, proof, signed, roster)
-            writer_invoked = True
             require_dispatch()
             refuse(
                 records.get(self) is record
@@ -9269,12 +9270,16 @@ def _build_synthetic_v2_raw_publication():
             )
             return result
         except BaseException:
-            if writer_invoked or record[2] is failed:
+            if (
+                id(record) in writer_invoked_identities
+                or record[2] is failed
+            ):
                 record[2] = failed
             else:
                 records.pop(self, None)
                 anchors.pop(self, None)
                 record_identities.discard(record_identity)
+                writer_invoked_identities.discard(record_identity)
                 binding_seals.pop(record_identity, None)
             raise
 

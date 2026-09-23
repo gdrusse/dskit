@@ -20228,7 +20228,10 @@ common writer has been invoked; `FAILED` is terminal. Proof acceptance requires 
 
 After every gate succeeds, insert PROVISIONAL before proof use. If any remaining
 pre-writer step fails, delete both record and anchor. Immediately before calling
-the common writer, cross an explicit closure-local `writer_invoked` boundary;
+the captured raw writer, add the exact record identity to a closure-local
+`writer_invoked_identities` set; the weakref callback removes it on publisher
+GC. This is the explicit `writer_invoked` boundary and is crossed only after
+all v2 wrapper gates;
 from then on every exception marks FAILED, including manifest derivation,
 quarantine, SESSION_STARTED, retention, and return faults. No audit/`_closed`
 heuristic can reverse that conservative polarity. On ordinary writer

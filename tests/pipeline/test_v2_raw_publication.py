@@ -3,6 +3,7 @@
 import gc
 import inspect
 import json
+import sys
 from weakref import ref as weakref_ref
 
 import pytest
@@ -191,6 +192,10 @@ def test_publish_v2_writes_raw_root_and_root_proof_reverifies(tmp_path):
     facts = raw_publisher.proof().verify(
         *signed, *roster, manifest, basis, receipt
     )
+    authority = _binding_authority()
+    committed_record = authority["records"][raw_publisher]
+    assert committed_record[2] is authority["committed"]
+    assert authority["anchors"][raw_publisher] is committed_record
     assert facts["event_count"] == 1
     assert facts["authorizing"] is False
     assert facts["deployment_eligible"] is False
@@ -390,6 +395,8 @@ def test_private_binding_entries_and_identity_anchor_expire_with_publisher(
     gc.collect()
     assert publisher_ref() is None
     assert record_identity not in closure["record_identities"]
+    assert record_identity not in closure["writer_invoked_identities"]
+    assert record_identity not in closure["binding_seals"]
 
 
 def test_legacy_publish_remains_v1_only_after_v2_entry_exists(tmp_path):
@@ -454,6 +461,113 @@ def test_writer_failure_terminalizes_private_binding(tmp_path, monkeypatch):
     forged = trust.NonAuthorizingRawRootProof(trust._MAKE, failed_publisher)
     with pytest.raises(ValueError, match="committed.*binding"):
         forged.verify(*good_signed, *good_roster, *good_output)
+
+
+def test_pre_writer_fault_removes_provisional_binding(tmp_path):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    authority = _binding_authority()
+    v2_writer = authority["v2_writer"]
+    fired = False
+
+    def trace(frame, event, _arg):
+        nonlocal fired
+        if (
+            not fired
+            and event == "line"
+            and frame.f_code is v2_writer.__code__
+        ):
+            fired = True
+            raise RuntimeError("injected pre-writer fault")
+        return trace
+
+    before = (
+        roster_publisher._reserve._connection.total_changes,
+        tuple(raw_publisher._broker._member_events),
+    )
+    sys.settrace(trace)
+    try:
+        with pytest.raises(RuntimeError, match="pre-writer"):
+            raw_publisher.publish_v2(
+                fixture, environment, *signed, *roster
+            )
+    finally:
+        sys.settrace(None)
+    assert fired is True
+    assert raw_publisher not in authority["records"]
+    assert raw_publisher not in authority["anchors"]
+    assert fixture._used is False
+    assert raw_publisher._closed is False
+    assert raw_publisher._retained is None
+    assert before == (
+        roster_publisher._reserve._connection.total_changes,
+        tuple(raw_publisher._broker._member_events),
+    )
+
+
+def test_post_writer_return_fault_marks_binding_failed(tmp_path):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    authority = _binding_authority()
+    authorized = inspect.getclosurevars(
+        trust._SyntheticRawPublisher.publish_v2
+    ).nonlocals["authorized_publish_v2"]
+    lines, start = inspect.getsourcelines(authorized)
+    call_index = next(
+        index for index, line in enumerate(lines)
+        if "result = v2_writer" in line
+    )
+    target_line = start + next(
+        index for index in range(call_index + 1, len(lines))
+        if "require_dispatch()" in lines[index]
+    )
+    fired = False
+
+    def trace(frame, event, _arg):
+        nonlocal fired
+        if (
+            not fired
+            and event == "line"
+            and frame.f_code is authorized.__code__
+            and frame.f_lineno == target_line
+        ):
+            fired = True
+            raise RuntimeError("injected post-writer fault")
+        return trace
+
+    sys.settrace(trace)
+    try:
+        with pytest.raises(RuntimeError, match="post-writer"):
+            raw_publisher.publish_v2(
+                fixture, environment, *signed, *roster
+            )
+    finally:
+        sys.settrace(None)
+    assert fired is True
+    record = authority["records"][raw_publisher]
+    assert record[2] is authority["failed"]
+    assert id(record) in authority["writer_invoked_identities"]
+    assert fixture._used is True
+    assert raw_publisher._closed is True
+    assert raw_publisher._retained is not None
+    with pytest.raises(ValueError, match="committed.*binding"):
+        raw_publisher.proof().verify(
+            *signed, *roster, *raw_publisher._retained[5:]
+        )
 
 
 def test_v2_root_proof_verifies_under_existing_writer_transaction(tmp_path):
