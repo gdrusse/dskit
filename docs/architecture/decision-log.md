@@ -20174,20 +20174,26 @@ including existing commit-after and return faults.
 4. **Closure-owned environment binding and proof gate.** Add `__weakref__`
 to `_SyntheticRawPublisher.__slots__`; this is an intentional observable
 layout change but exports no new callable/data surface.
-One deleted module-bootstrap closure owns the sole `WeakKeyDictionary`; no
-module global exposes it. Each record is
-`(weakref_ref(publisher), exact_environment_identity, state)`, validates the
+One deleted module-bootstrap closure owns sole `WeakKeyDictionary` record and
+anchor maps; no module global exposes either. Each record is the exact mutable
+list `[weakref_ref(publisher), exact_environment_identity, state]`, validates the
 self-reference and exact captured environment class/checker/descriptors, and
-uses only identity comparisons. The closure installs both the exact
+must be the same list object stored in both maps. A copied/rebuilt list is
+never an anchor and refuses even if all elements are identical. Anchor and
+record entries share the publisher's weak lifetime and disappear together on
+GC. The closure installs both the exact
 `publish_v2` method and a wrapper around the original exact
 `NonAuthorizingRawRootProof.verify`; the wrapper delegates v1 byte-for-byte
 and alone can read the map. Replacing a module global cannot replace the
 captured map, checker, original verifier, or identity.
 
-The wrapper discriminates only by reading the retained fixture's exact
-`_event_schema` attribute: exact v1 immediately invokes the captured original
-verifier with identical positional/keyword arguments and performs no parse,
-map lookup, callback, provider, or other read first. For a retained v2
+The wrapper may perform only callback-free `object.__getattribute__` reads
+along the exact `self -> _publisher -> _retained -> fixture ->
+_event_schema` ownership chain. If any owner/type/shape read is malformed or
+the schema is not exact v2, it immediately invokes the captured original
+verifier with identical positional/keyword arguments; it performs no parse,
+map lookup, provider read, or other action first. Thus exact v1 and malformed
+legacy states preserve original error ordering. For exact retained v2
 publication, the wrapper must, before member/provider reads, reparse the exact retained authorization, require
 the map's exact live identity, re-run `_require_synthetic_tzdata`, and then
 perform its existing complete verification. Forged/missing/changed identity or
@@ -20206,18 +20212,17 @@ three unique sentinel objects and one exact mutable three-element list record
 `[weakref_ref(publisher), environment_identity, state]`, allocated only when
 entering `PROVISIONAL`. State transitions are
 `absent -> PROVISIONAL -> COMMITTED` on ordinary success,
-`PROVISIONAL -> absent` only on a proven pre-effect failure, and
-`PROVISIONAL|COMMITTED -> FAILED` for every post-effect or indeterminate
-failure; `FAILED` is terminal. Proof acceptance requires the exact
+`PROVISIONAL -> absent` only if a gate fails before the common writer is
+invoked, and `PROVISIONAL|COMMITTED -> FAILED` for every exception once the
+common writer has been invoked; `FAILED` is terminal. Proof acceptance requires the exact
 `COMMITTED` sentinel and exact record identities.
 
-After every pre-effect gate succeeds, insert PROVISIONAL before proof use. The
-authoritative first effect is a durable raw reserve row/audit state of
-`SESSION_STARTED` or later. On writer exception, inspect that row under the
-existing reserve transaction rules: proven absence/pre-SESSION_STARTED removes
-the record; SESSION_STARTED-or-later, retained/closed state, or any
-indeterminate read marks FAILED. Writer throws at manifest/pre-effect delete;
-throws at/after session-start, retention, or return mark FAILED. On writer
+After every gate succeeds, insert PROVISIONAL before proof use. If any remaining
+pre-writer step fails, delete both record and anchor. Immediately before calling
+the common writer, cross an explicit closure-local `writer_invoked` boundary;
+from then on every exception marks FAILED, including manifest derivation,
+quarantine, SESSION_STARTED, retention, and return faults. No audit/`_closed`
+heuristic can reverse that conservative polarity. On ordinary writer
 return, set COMMITTED in place with no allocation/caller callback; any injected
 exception immediately before or after that assignment is caught and marks
 FAILED. Only ordinary `publish_v2` return leaves COMMITTED.
@@ -20243,10 +20248,12 @@ verification; missing/forged/replaced environment binding refuses before
 member read. Test map/global substitution, record delete/copy/cross-publisher
 rewiring, publisher GC, and alternate minted identities. Prove v1
 common-writer parity at every enumerated boundary and fault point. Test binding
-state/sentinel transition and exact effects for failure at manifest,
-immediately before/after SESSION_STARTED, retention, promotion assignment, and
-return; only ordinary return is COMMITTED and no stale/falsely verifiable root
-exists. Pin v1 proof wrapper immediate delegation and identical kwargs/errors.
+state/sentinel/anchor identity and exact effects for pre-writer gate failure,
+the writer-invoked boundary, manifest, immediately before/after SESSION_STARTED,
+retention, promotion assignment, and return; every writer exception is FAILED,
+only ordinary return is COMMITTED, and no stale/falsely verifiable root exists.
+Attempt record copying/rebuilding/map rewiring and GC. Pin allowed ownership-
+chain reads plus v1/malformed immediate delegation and identical kwargs/errors.
 
 Direct Cartesian tests cross the retained-v2 publisher with exact v1, v2,
 malformed, swapped, and cross-publisher originals only at
@@ -20255,7 +20262,7 @@ malformed, swapped, and cross-publisher originals only at
 and issue must check retained schema/original consistency before setting
 `_closed` or any effect. Separately prove transitive unreachability/effect
 freedom for root-PIS proof, `_SyntheticRootPisIssuer`,
-`_SyntheticRootPisProof`, dynamic graph/authority factories, bundle
+`NonAuthorizingSyntheticRootPisProof`, dynamic graph/authority factories, bundle
 `compose_replay_tape`, `ReplayRun.run`, `HistoricalStudyVerifier`,
 `HistoricalStudyCaptureDriver`, and all aliases visible through
 `trust.__all__`, `dskit.pipeline`, and `dskit.production.verifier`.
