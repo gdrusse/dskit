@@ -19957,11 +19957,17 @@ exact five-bytes tuple matching `NonAuthorizingRosterRootProof.verify`; require
 `raw_proof_bytes[4:9] == roster_proof_bytes` and exact retained originals.
 No dict/keyword/alias form exists.
 
-2. **Exact common transaction.** The prepare function requires exact
+2. **Pinned same-thread common transaction.** Add three construction-only
+frozen pins to the existing synthetic reserve: its original SQLite connection,
+a bridge-only `RLock`, and its creating thread identity. Existing reserve
+methods and connection configuration remain unchanged. Prepare/consume require
+the current connection is the pinned original and the caller is the creating
+thread; every other-thread call refuses before SQLite or registry access. The
+prepare function requires exact
 `NonAuthorizingRawRootProof` and `NonAuthorizingRosterRootProof` objects
 whose retained publishers share the same exact roster publisher, reserve, and
 SQLite connection. After Decision 3's metadata-only environment gate, acquire
-that reserve's exact `RLock`, reject a pre-existing transaction, execute
+that reserve's exact bridge `RLock`, reject a pre-existing transaction, execute
 literal `BEGIN IMMEDIATE`, and record the initial generation, revoked set,
 snapshot digest, and trusted instant. Call raw `verify(...,
 _under_writer_lock=True)` (including its nested roster verification), then the
@@ -19993,18 +19999,21 @@ event-schema equality before registry insertion. No caller value supplies an
 event field, rank, policy digest, timezone, or provenance.
 
 5. **Proof-scoped one-shot consumption with live reverify.** The closure owns
-one `RLock` plus strong process-lifetime `issued` and `spent` mappings
+strong process-lifetime `issued` and `spent` mappings
 keyed by exact proof object identities, SHA-256 of every byte in both bundles,
 and the environment-identity state digest. Prepare and consume both serialize
-on that lock. A second prepare for the same key refuses even after bridge GC;
-failure after reserving a genuine key terminalizes it in `spent`. Consume
+on the pinned bridge lock and creating thread. Shape/type/publisher/environment
+failures before inserting `issued[key] = "reserved"` leave both registries
+unchanged; every failure afterward atomically moves the key to `spent`. A
+second prepare for the same key refuses even after bridge GC. Consume
 accepts only the exact registered object and frozen descriptors, then under
 the same reserve lock and literal `BEGIN IMMEDIATE` repeats Decisions 2 and
 3, rederives byte-identical events/policy, and rechecks generation, revocation,
 expiry, roots, receipts, scope, policy, and descriptors. Only after successful
 commit atomically move the key to `spent` and return exactly
-`(events, source_rank_policy)`. Concurrent consume has one winner; all
-second, copied, forged, subclassed, stale, revoked, GC/remint, or
+`(events, source_rank_policy)`. Reentrant/sequential double consume and all
+cross-thread calls refuse; all second, copied, forged, subclassed, stale,
+revoked, GC/remint, or
 dispatch-replaced attempts return no data.
 
 6. **Acyclic, closure-pinned production composition.** Add private
@@ -20012,8 +20021,10 @@ dispatch-replaced attempts return no data.
 `dskit.production.verifier` through a module-initialization closure that
 captures the exact consume function, ADR-0171 projector, parser, canonical
 encoder, and expected class/function descriptors, then deletes its builder.
-Before consuming, identity-check every captured dispatch/descriptor against
-its module definition; replacements before/after mint or during consumption
+Identity-check every captured dispatch/descriptor against its module
+definition before consume; immediately after consume; before and after each
+projector call; before and after every parse/encode; and immediately before
+return. Replacements before/after mint or at any observable mid-call checkpoint
 refuse. Consume once, invoke the captured projector twice on the same immutable
 pair and require byte-identical results, reparse every output with the captured
 parser, re-encode and byte-compare each value, then return the exact tuple.
@@ -20025,9 +20036,12 @@ production verifier remains the acyclic composition owner.
 that proof-scoped key and returns no partial events, policy, or envelopes.
 Existing proof bytes/messages, public proof methods, ADR-0171 projector, WORM
 lifecycle, `ReplayRun.run`, and v1 behavior remain unchanged. The bridge is
-explicitly permitted to use only the exact retained publishers' reserve lock,
-SQLite connection, trusted clock, retained WORM/provider members, and existing
-proof verification reads described above. It performs no acquisition,
+explicitly permitted to use only the exact retained publishers' bridge lock,
+pinned SQLite connection, trusted clock, retained WORM/provider members,
+existing proof verification reads, and the exact
+`_published_facts`/`_reload_stream` cache refresh mutations those verifies
+already perform. Cache refresh must byte-equal retained state and may not
+append a receipt/event or advance lifecycle. It performs no acquisition,
 network, new provider lookup, new member write, lifecycle transition,
 publication, or external effect.
 
@@ -20037,18 +20051,22 @@ Pin exact public/private surfaces, `trust.__all__`, absence from pipeline
 re-exports, and positional-only signatures; direct
 construction/subclass/copy/pickle/mutation; wrong proof type/order/count;
 non-tuple/mistyped bundle members; unequal `raw[4:9]`; unshared
-publishers/reserves/connections; pre-existing/deferred/nested transaction,
-commit failure, second connection, close/revoke/generation race; stale,
+publishers/reserves/connections; replaced original-connection pin; wrong-thread
+prepare/consume before SQLite/registry access; pre-existing/deferred/nested
+transaction, commit failure, second connection, close/revoke/generation race; stale,
 revoked, or expired proof at prepare and consume; wrong authorization/event
 schema; tzdata mismatch before full verify/member/event access; root/receipt/
 policy/source/count/scope substitution; caller-created event/policy refusal;
-v1/v2 cross-use; parallel duplicate prepare and consume; strong spent state
-after GC/remint and genuine-object failure; forged/copied/stale bridge; exact
+v1/v2 cross-use; reentrant/sequential duplicate prepare and consume; strong
+spent state after GC/remint and post-reservation genuine-object failure;
+pre-reservation failure leaves registries empty; forged/copied/stale bridge; exact
 inert mapping shapes; replacement of consume/projector/parser/encoder/class
-descriptors before/after mint and during consume; projector/parser exception;
+descriptors before/after mint and at every specified mid-call checkpoint;
+projector/parser exception;
 two byte-identical ADR-0171 computations plus canonical reparse/re-encode; no
-partial data on every failure. Permit only exact retained reserve/provider
-reads and prove no acquisition/network/write/lifecycle effect. Run
+partial data on every failure. Permit exact retained reserve/provider reads and
+cache refresh, prove refresh equality/no append, and prove no acquisition,
+network, member-write, or lifecycle effect. Run
 ADR-0145/0146/0169/0170/0171, trust, capture, and all purity suites unedited.
 
 ### Non-goals
