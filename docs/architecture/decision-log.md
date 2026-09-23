@@ -19924,17 +19924,13 @@ that its caller held a verified raw fixture or environment identity.
 
 ## ADR-0172 — one-shot verified synthetic v2 projection input
 
-**Status:** PREREQUISITE SATISFIED — FRESH PHASE-0 RE-REVIEW REQUIRED
-(2026-09-23). ADR-0173 implemented the separately reviewed environment-bound
-v2 raw publication path at
-`80c2bb2d5f467770ef65f6c348264996c2cb6232`; evidence:
-`docs/evidence/closeout/0202-intraday-f3-v2-raw-publication-red-green.json`.
-Evidence 0200 is retained as review history, not current implementation
-authority. Do not implement this ADR until its text is amended against the
-closed ADR-0173 surface and receives a fresh clean Phase-0 review. Its intended
-future scope remains one
-non-authorizing opaque bridge from already retained synthetic v2 roots to the
-pure projector; it performs no WORM write, publication, replay, or backtest.
+**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED (2026-09-23).
+ADR-0173 is closed at `80c2bb2d5f467770ef65f6c348264996c2cb6232`
+and is now the sole environment-bound v2 raw-publication/root-proof authority.
+The final independent re-review of amended ADR blob
+`e6a194c12329813ad81ae2d8615570d0ea6c9502` returned 0C/0M/0m/0N; evidence:
+`docs/evidence/closeout/0204-intraday-f3-v2-projection-input-phase0.json`.
+Evidence 0200 remains historical only.
 
 **Context.** ADR-0169 retains exact verified `raw-event/v2` values inside
 `VerifiedSyntheticDatasetFixture`; `NonAuthorizingRawRootProof.verify`
@@ -19942,11 +19938,102 @@ revalidates those values and returns root facts but intentionally does not
 expose them. The retained roster publisher owns the canonical
 `SourceRankPolicy.v1`. ADR-0170 owns the broker-issued synthetic environment
 identity and tzdata equality check. ADR-0171 owns the pure event projection in
-`dskit.production.bundles`. No current acyclic, capability-safe seam lets a
-later data-capture writer compose those four proofs without reading private
-attributes or accepting caller-created event/policy data.
+`dskit.production.bundles`. The retained root is now genuinely published, and
+its root proof already checks the committed ADR-0173 environment binding and
+nested roster proof. No current acyclic, capability-safe seam exposes the
+already verified event/policy payload to the pure projector without reading
+private attributes or accepting caller data.
 
-### Decision
+### Decision — controlling 2026-09-23 amendment
+
+1. **Opaque per-capability API.** Add final public
+`VerifiedV2ProjectionInput` and positional-only
+`consume_v2_projection_input(value, /)` to `dskit.pipeline.trust.__all__`;
+neither is re-exported by `dskit.pipeline`. Direct construction, subclassing,
+copying, serialization, and mutation refuse. Private positional-only
+`_prepare_synthetic_v2_projection_input(raw_proof, raw_proof_bytes, /)` is the
+sole mint. `raw_proof_bytes` is an exact twelve-byte tuple in
+`NonAuthorizingRawRootProof.verify` order. There is no separate roster proof,
+environment identity, dict, keyword, or alias form.
+
+2. **Reuse ADR-0173 as the authority boundary.** Preparation requires an exact
+`NonAuthorizingRawRootProof` and calls the exact captured installed verifier
+with the exact retained originals. ADR-0173's committed publisher binding,
+environment recheck, and nested roster proof are authoritative. This bridge
+adds no second environment binding, reserve transaction, connection/thread
+pin, or roster verification.
+
+3. **Derive only after successful verification.** After verification, use
+callback-free exact descriptor reads over `raw_proof -> publisher -> retained
+-> fixture/roster publisher`. Require exact retained tuple shapes, v2 schemas,
+original-byte equality, publisher identity, manifest/event count, common
+scope/source universe, and policy/root/receipt bindings. Copy retained events
+into a fresh exact tuple of dict-backed mapping proxies. Derive the exact
+dict-backed `SourceRankPolicy.v1` mapping proxy from the verified retained
+roster authorization and require its digest to equal all signed bindings.
+Caller data supplies no event field, rank, timezone, or provenance.
+
+4. **One-shot capability, not proof-global spend.** A closure-local registry
+keyed by `id(capability)` plus an exact weak reference stores the proof, exact
+byte tuple, and immutable payload. A closure-local lock atomically removes the
+record before consume verification; missing, forged, copied, reentrant,
+sequential, or concurrent consumption refuses. Every post-removal failure is
+terminal. Capability GC removes an unconsumed record. Preparing another
+capability from the same still-fresh proof is allowed because this bridge is
+nonauthorizing and projection is pure; each capability remains one-shot.
+
+5. **Fresh consume and minimal production composition.** Consume reruns the
+captured ADR-0173-aware raw verifier, rederives the payload, and requires
+byte-/value-identical results before returning exactly `(events,
+source_rank_policy)`. Add private positional-only
+`_project_verified_synthetic_v2_input(value, /)` in
+`dskit.production.verifier`; capture the exact consume function, ADR-0171
+projector, and the complete transitive executable-dependency closure reachable
+from them. This is recursive rather than a finite top-level list and includes
+the canonical encoder's `_plain` walk, mapping extraction (`gc.get_referents`),
+JSON encode/decode dispatch, envelope parser/validator/order-key, digest checker
+and SHA-256 dispatch, `ProductionError`, constants, plus identity and immutable
+value snapshots of mutable schema tables. Require every effective module
+resolution and mutable value to equal its capture before consume, after consume
+before projection, and after projection. Consume once and invoke the captured
+projector once. The wrapper is absent from every `__all__`. A dependency or
+dispatch refusal before consume leaves the capability fresh; any failure after
+consume begins leaves it spent.
+
+6. **Effects and compatibility.** The only effects are those of the two
+existing raw-root verifier calls at prepare and consume, including ADR-0173's
+environment check, provider reads/audit entries, and reload-cache refreshes.
+The bridge adds no SQL transaction, reserve field, connection, thread
+restriction, provider lookup, WORM write, receipt, lifecycle transition,
+publication, network access, or authority. Existing v1 entry points, proof
+behavior, bytes, messages, and ADR-0171 projector remain unchanged.
+
+### Required Phase-0 matrix — controlling amendment
+
+Pin exact surfaces, signatures, exports, and unchanged v1 surfaces. Prove a
+genuine ADR-0173 v2 root yields exact ADR-0171 envelope bytes. Refuse wrong
+proof/type/count/order, non-bytes, changed originals, cross-publisher bytes,
+and v1/v2 cross-use. Reuse ADR-0173 evidence for missing/failed/rewired binding
+and environment mismatch before member reads. Cover revocation, expiry,
+generation/root/receipt/policy/event mutation at prepare and consume; direct
+construction, subclass, copy, pickle, mutation, and forged capabilities;
+sequential, reentrant, and concurrent double consume; terminal consume failure;
+retry after pre-consume production-dispatch refusal; and two independent
+capabilities from one still-fresh proof. Assert exact immutable shapes, no
+partial return, replacement or in-place mutation at every depth of the
+projector's executable dependency closure while the top-level projector
+identity remains unchanged (including encoder `_plain`, mapping extraction,
+and JSON dispatch), exact
+fresh/spent behavior at each check boundary, existing verifier-only
+provider/cache effects, and no bridge-added SQL, reserve, WORM, receipt,
+lifecycle, or network effects. Run
+the targeted ADR-0145/0146/0169/0170/0171/0173, trust, capture, and purity
+regressions; no unrelated full-suite run is required.
+
+The design below is retained only as historical review context. It is
+superseded in full and is not implementation authority.
+
+### Superseded design — non-operative
 
 1. **Opaque trust-owned bridge and exact API.** Add final public
 `VerifiedV2ProjectionInput` and public positional-only
