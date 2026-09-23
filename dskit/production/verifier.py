@@ -185,6 +185,7 @@ def _build_verified_v2_projector():
     import hashlib
     import json
     import math
+    from types import FunctionType, MappingProxyType as ExactMappingProxyType, ModuleType
 
     from dskit.pipeline import trust as trust_module
     from dskit.production import base as base_module
@@ -218,9 +219,172 @@ def _build_verified_v2_projector():
         for key, value in bundles_module.RAW_EVENT_FIELDS.items()
     ))
 
+    def capture_executable_graph(*roots):
+        """Snapshot the transitive Python dispatch graph used by ``roots``.
+
+        Function identity alone is not a pin: Python permits in-place changes
+        to ``__code__``, defaults and closure cells.  The projector also
+        reaches helpers and mutable schema tables through module globals.
+        Capture all effective resolutions now, then compare without invoking
+        equality on arbitrary runtime values.
+        """
+        function_records = []
+        resolution_records = []
+        attribute_records = []
+        value_records = []
+        cell_records = []
+        seen_functions = set()
+        seen_values = set()
+        unsupported = object()
+
+        def frozen(value):
+            value_type = type(value)
+            if value is None or value_type in (bool, int, float, str, bytes):
+                return (value_type, value)
+            if value_type in (tuple, list):
+                items = tuple(frozen(item) for item in value)
+                if unsupported in items:
+                    return unsupported
+                return (value_type, items)
+            if value_type is frozenset:
+                items = tuple(sorted((frozen(item) for item in value), key=repr))
+                if unsupported in items:
+                    return unsupported
+                return (value_type, items)
+            if value_type in (dict, ExactMappingProxyType):
+                items = []
+                for key, item in value.items():
+                    key_value = frozen(key)
+                    item_value = frozen(item)
+                    if key_value is unsupported or item_value is unsupported:
+                        return unsupported
+                    items.append((key_value, item_value))
+                return (value_type, tuple(sorted(items, key=repr)))
+            return unsupported
+
+        def capture_value(value):
+            value_id = id(value)
+            if value_id in seen_values:
+                return
+            if type(value) not in (ExactMappingProxyType, tuple, frozenset):
+                return
+            snapshot = frozen(value)
+            if snapshot is not unsupported:
+                seen_values.add(value_id)
+                value_records.append((value, snapshot))
+
+        def resolve_attribute(owner, name):
+            if type(owner) is type:
+                for cls in owner.__mro__:
+                    if name in cls.__dict__:
+                        return cls.__dict__[name]
+                raise AttributeError(name)
+            return getattr(owner, name)
+
+        def capture_attributes(owner, names):
+            for name in names:
+                try:
+                    value = resolve_attribute(owner, name)
+                except AttributeError:
+                    continue
+                attribute_records.append((owner, name, value))
+                capture_value(value)
+                if type(value) is FunctionType:
+                    visit(value)
+
+        def capture_resolutions(code, namespace, builtins):
+            names = frozenset(code.co_names)
+            for name in names:
+                if name in namespace:
+                    value = namespace[name]
+                    resolution_records.append((namespace, name, value))
+                    capture_value(value)
+                    if type(value) is FunctionType:
+                        visit(value)
+                    elif type(value) is ModuleType or type(value) is type:
+                        capture_attributes(value, names)
+                elif name in builtins:
+                    resolution_records.append((builtins, name, builtins[name]))
+            for value in code.co_consts:
+                if type(value) is type(code):
+                    capture_resolutions(value, namespace, builtins)
+
+        def visit(function):
+            if type(function) is not FunctionType or id(function) in seen_functions:
+                return
+            seen_functions.add(id(function))
+            function_records.append((
+                function,
+                function.__code__,
+                frozen(function.__defaults__),
+                frozen(function.__kwdefaults__),
+            ))
+            namespace = function.__globals__
+            names = frozenset(function.__code__.co_names)
+            capture_resolutions(
+                function.__code__, namespace, function.__builtins__
+            )
+            closure = function.__closure__ or ()
+            for cell in closure:
+                try:
+                    value = cell.cell_contents
+                except ValueError:
+                    value = unsupported
+                cell_records.append((cell, value))
+                if value is unsupported:
+                    continue
+                if type(value) is FunctionType:
+                    visit(value)
+                elif type(value) is ModuleType or type(value) is type:
+                    capture_attributes(value, names)
+
+        for root in roots:
+            visit(root)
+        function_records = tuple(function_records)
+        resolution_records = tuple(resolution_records)
+        attribute_records = tuple(attribute_records)
+        value_records = tuple(value_records)
+        cell_records = tuple(cell_records)
+
+        def intact():
+            for function, code, defaults, kwdefaults in function_records:
+                if (
+                    function.__code__ is not code
+                    or frozen(function.__defaults__) != defaults
+                    or frozen(function.__kwdefaults__) != kwdefaults
+                ):
+                    return False
+            for namespace, name, value in resolution_records:
+                if namespace.get(name, unsupported) is not value:
+                    return False
+            for owner, name, value in attribute_records:
+                try:
+                    current = resolve_attribute(owner, name)
+                except AttributeError:
+                    return False
+                if current is not value:
+                    return False
+            for value, snapshot in value_records:
+                if frozen(value) != snapshot:
+                    return False
+            for cell, value in cell_records:
+                try:
+                    current = cell.cell_contents
+                except ValueError:
+                    current = unsupported
+                if current is not value:
+                    return False
+            return True
+
+        return intact
+
+    executable_graph_intact = capture_executable_graph(consume, projector)
+
     def dispatch_ok():
         """Return whether every effective Python-level dependency is intact."""
         return (
+            executable_graph_intact()
+            and
             trust_module.consume_v2_projection_input is consume
             and bundles_module._project_v2_event_envelopes is projector
             and bundles_module._canonical_bytes is canonical_encoder
