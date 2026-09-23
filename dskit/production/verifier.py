@@ -44,6 +44,7 @@ the ``SubmittingExecutor`` contract (§5.7).
 """
 
 import dataclasses
+import hashlib
 import json
 import uuid
 from threading import Lock
@@ -63,7 +64,9 @@ from dskit.pipeline.trust import (
     NonAuthorizingRawRootProof,
     NonAuthorizingSyntheticRootPisProof,
     NonAuthorizingDynamicRootGraph,
+    prepare_v2_projection_input,
 )
+from dskit.production import bundles as _bundles
 from dskit.production.base import GENESIS_HASH, ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
@@ -436,6 +439,80 @@ def _build_verified_v2_projector():
 
 _project_verified_synthetic_v2_input = _build_verified_v2_projector()
 del _build_verified_v2_projector
+
+
+def _compose_v2_replay_tape(raw_proof, raw_proof_bytes, capability, /):
+    """Compose one verified ``CapturedReplayTape`` from an ADR-0172 v2 input (ADR-0174).
+
+    Nonauthorizing, like ADR-0172 itself: this proves the envelope bytes and
+    the capture-root/receipt fields are facts about one single verified v2
+    raw root, and nothing else. It grants no P4 authority, no WORM-lifecycle
+    authority, and no replay or trading authority.
+
+    Parameters
+    ----------
+    raw_proof : NonAuthorizingRawRootProof
+        The exact proof that minted ``capability`` (ADR-0172 shape).
+    raw_proof_bytes : tuple
+        The exact twelve-byte tuple ``prepare_v2_projection_input``
+        already validates; its last three elements are the ``publish_v2``
+        writer's own ``(manifest_bytes, basis_bytes, receipt_bytes)``.
+    capability : VerifiedV2ProjectionInput
+        A still-fresh capability the caller holds. Spent by this call.
+
+    Returns
+    -------
+    CapturedReplayTape
+        The verified, reparsed, causally-ordered tape.
+
+    Raises
+    ------
+    ValueError
+        ``raw_proof``/``raw_proof_bytes`` fail ADR-0172's own prepare
+        checks; ``capability`` is missing, spent, or forged; or
+        ``capability`` does not belong to the exact root
+        ``raw_proof``/``raw_proof_bytes`` name (the envelope bytes the two
+        capabilities project disagree) -- both capabilities are already
+        spent by the time this is raised and neither call is retryable.
+    ProductionError
+        The composed tape fails ``CapturedReplayTape.parse`` or
+        ``verify_causal_order`` -- unreachable for a genuine, self-consistent
+        root, since both are ADR-0172's own already-verified output.
+    """
+    second_capability = prepare_v2_projection_input(
+        raw_proof, raw_proof_bytes
+    )
+    first_envelope_bytes = _project_verified_synthetic_v2_input(capability)
+    second_envelope_bytes = _project_verified_synthetic_v2_input(second_capability)
+    if first_envelope_bytes != second_envelope_bytes:
+        raise ValueError(
+            "v2 projection input does not belong to the supplied raw root"
+        )
+    ordered_envelope_bytes = first_envelope_bytes
+    parsed_envelopes = [
+        _bundles._parse_event_envelope(raw) for raw in ordered_envelope_bytes
+    ]
+    source_rank_policy_sha256 = parsed_envelopes[0]["source_rank_policy_sha256"]
+    if any(
+        envelope["source_rank_policy_sha256"] != source_rank_policy_sha256
+        for envelope in parsed_envelopes
+    ):
+        raise ValueError(
+            "v2 envelope source_rank_policy_sha256 disagree across the tape"
+        )
+    manifest_bytes, _basis_bytes, receipt_bytes = raw_proof_bytes[9:12]
+    data_capture_root = hashlib.sha256(manifest_bytes).hexdigest()
+    data_captured_receipt = hashlib.sha256(receipt_bytes).hexdigest()
+    ordered_envelope_digests = [
+        hashlib.sha256(envelope).hexdigest() for envelope in ordered_envelope_bytes
+    ]
+    tape = _bundles.CapturedReplayTape._build(
+        data_capture_root, data_captured_receipt,
+        source_rank_policy_sha256, ordered_envelope_digests,
+    )
+    reparsed = _bundles.CapturedReplayTape.parse(tape.canonical_bytes())
+    _bundles.verify_causal_order(reparsed, ordered_envelope_bytes)
+    return reparsed
 
 
 class _Refused(Exception):

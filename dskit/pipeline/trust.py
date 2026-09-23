@@ -64,6 +64,7 @@ __all__ = [
     "VerifiedExternalArtifactAnchor",
     "VerifiedV2ProjectionInput",
     "consume_v2_projection_input",
+    "prepare_v2_projection_input",
 ]
 
 _MAKE = object()
@@ -9729,6 +9730,15 @@ def _build_synthetic_v2_projection_input():
     consume_v2_projection_input,
 ) = _build_synthetic_v2_projection_input()
 del _build_synthetic_v2_projection_input
+
+#: ADR-0174: the exact same one-shot mint, reachable under a public name so
+#: a caller outside dskit.pipeline (production's purity gate refuses a
+#: cross-package reach at a private name, even via module-attribute access)
+#: can prepare the second capability ADR-0172 Decision point 4 already
+#: sanctions ("preparing another capability from the same still-fresh proof
+#: is allowed"). Identical object, identical positional-only signature,
+#: identical behavior -- this adds reachability only, not a second mint.
+prepare_v2_projection_input = _prepare_synthetic_v2_projection_input
 
 
 class _SyntheticRootPisIssuer:

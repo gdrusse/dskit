@@ -63,6 +63,7 @@ _PUBLIC_TYPES = {
     "VerifiedExternalArtifactAnchor",
     "VerifiedV2ProjectionInput",
     "consume_v2_projection_input",
+    "prepare_v2_projection_input",
 }
 
 

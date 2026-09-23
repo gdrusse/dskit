@@ -463,3 +463,163 @@ def test_mutable_schema_table_replacement_refuses_before_consume(
         production_verifier._project_verified_synthetic_v2_input(capability)
     monkeypatch.setattr(bundles, attribute, original)
     assert production_verifier._project_verified_synthetic_v2_input(capability)
+
+
+# ---------------------------------------------------------------------------
+# ADR-0174: v2 captured-tape composition from a verified projection input.
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_v2_projection_input_is_the_exact_same_public_mint(tmp_path):
+    """The new public alias is identity-equal to the private mint, not a copy."""
+    assert "prepare_v2_projection_input" in trust.__all__
+    assert trust.prepare_v2_projection_input is trust._prepare_synthetic_v2_projection_input
+    assert not hasattr(pipeline, "prepare_v2_projection_input")
+    assert tuple(inspect.signature(
+        trust.prepare_v2_projection_input
+    ).parameters) == ("raw_proof", "raw_proof_bytes")
+    assert all(
+        parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+        for parameter in inspect.signature(
+            trust.prepare_v2_projection_input
+        ).parameters.values()
+    )
+    _, proof, raw_bytes, _capability = _mint(tmp_path)
+    minted = trust.prepare_v2_projection_input(proof, raw_bytes)
+    assert trust.consume_v2_projection_input(minted)
+
+
+def test_compose_v2_replay_tape_is_private_positional_only_and_not_exported():
+    """The new composer is private, positional-only, and reaches no __all__."""
+    assert "_compose_v2_replay_tape" not in production_verifier.__all__
+    assert not hasattr(pipeline, "_compose_v2_replay_tape")
+    assert not hasattr(bundles, "_compose_v2_replay_tape")
+    assert tuple(inspect.signature(
+        production_verifier._compose_v2_replay_tape
+    ).parameters) == ("raw_proof", "raw_proof_bytes", "capability")
+    assert all(
+        parameter.kind is inspect.Parameter.POSITIONAL_ONLY
+        for parameter in inspect.signature(
+            production_verifier._compose_v2_replay_tape
+        ).parameters.values()
+    )
+
+
+def test_compose_v2_replay_tape_builds_a_genuine_verified_causally_ordered_tape(
+    tmp_path,
+):
+    """A genuine still-fresh root composes a tape bound to that exact root."""
+    _, proof, raw_bytes, capability = _mint(tmp_path)
+    expected_envelope_bytes = bundles._project_v2_event_envelopes(
+        *trust.consume_v2_projection_input(
+            trust._prepare_synthetic_v2_projection_input(proof, raw_bytes)
+        )
+    )
+    tape = production_verifier._compose_v2_replay_tape(
+        proof, raw_bytes, capability
+    )
+    assert isinstance(tape, bundles.CapturedReplayTape)
+    assert tape.data_capture_root == hashlib.sha256(raw_bytes[9]).hexdigest()
+    assert tape.data_captured_receipt == hashlib.sha256(raw_bytes[11]).hexdigest()
+    assert tape.envelope_count == len(expected_envelope_bytes)
+    assert tuple(tape.ordered_envelope_digests) == tuple(
+        hashlib.sha256(envelope).hexdigest()
+        for envelope in expected_envelope_bytes
+    )
+    reparsed = bundles.CapturedReplayTape.parse(tape.canonical_bytes())
+    bundles.verify_causal_order(reparsed, expected_envelope_bytes)
+
+
+def test_compose_v2_replay_tape_refuses_a_capability_from_an_unrelated_root(
+    tmp_path,
+):
+    """The Revision-1 mixing attack: unrelated capability plus genuine root refuses."""
+    _, proof_a, raw_bytes_a, capability_a = _mint(tmp_path / "a")
+    _, proof_b, raw_bytes_b, _capability_b = _mint(
+        tmp_path / "b",
+        event_changes={"payload_sha256": "b" * 64},
+    )
+    with pytest.raises(ValueError):
+        production_verifier._compose_v2_replay_tape(
+            proof_b, raw_bytes_b, capability_a
+        )
+    # The mismatch is terminal: capability_a is spent even though it was
+    # never bound to proof_b/raw_bytes_b (ADR-0174 Decision point 3).
+    with pytest.raises(ValueError, match="spent"):
+        trust.consume_v2_projection_input(capability_a)
+
+
+def test_compose_v2_replay_tape_refuses_every_nonexact_raw_byte_tuple(tmp_path):
+    """Malformed raw_proof_bytes reuses ADR-0172's own prepare refusals."""
+    _, proof, _raw_bytes, capability = _mint(tmp_path)
+    with pytest.raises(ValueError):
+        production_verifier._compose_v2_replay_tape(proof, (), capability)
+
+
+def test_compose_v2_replay_tape_refuses_a_spent_capability(tmp_path):
+    """A capability already consumed elsewhere refuses cleanly."""
+    _, proof, raw_bytes, capability = _mint(tmp_path)
+    trust.consume_v2_projection_input(capability)
+    with pytest.raises(ValueError, match="spent"):
+        production_verifier._compose_v2_replay_tape(proof, raw_bytes, capability)
+
+
+def test_compose_v2_replay_tape_refuses_double_composition(tmp_path):
+    """A second composition from the same capability refuses; the first succeeds."""
+    _, proof, raw_bytes, capability = _mint(tmp_path)
+    first = production_verifier._compose_v2_replay_tape(
+        proof, raw_bytes, capability
+    )
+    assert first is not None
+    with pytest.raises(ValueError, match="spent"):
+        production_verifier._compose_v2_replay_tape(proof, raw_bytes, capability)
+
+
+def test_compose_v2_replay_tape_catches_manifest_or_receipt_tamper_after_mint(
+    tmp_path,
+):
+    """A mutated manifest/receipt byte is caught by ADR-0172's own re-verification."""
+    _, proof, raw_bytes, capability = _mint(tmp_path)
+    tampered = list(raw_bytes)
+    tampered[9] = tampered[9] + b"\n"
+    with pytest.raises(ValueError):
+        production_verifier._compose_v2_replay_tape(
+            proof, tuple(tampered), capability
+        )
+
+
+def test_compose_v2_replay_tape_has_no_effect_beyond_three_raw_verify_calls(
+    tmp_path,
+):
+    """The only effects are exactly three raw_proof.verify(...) calls (ADR-0174 point 5)."""
+    case = _case(tmp_path)
+    roster_publisher, raw_publisher, fixture, environment, signed, roster, _ = case
+    output = raw_publisher.publish_v2(fixture, environment, *signed, *roster)
+    proof = raw_publisher.proof()
+    raw_bytes = (*signed, *roster, *output)
+    capability = trust._prepare_synthetic_v2_projection_input(proof, raw_bytes)
+
+    before = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+    production_verifier._compose_v2_replay_tape(proof, raw_bytes, capability)
+    after_compose = _effect_snapshot(roster_publisher, raw_publisher, fixture)
+
+    proof.verify(*raw_bytes)
+    proof.verify(*raw_bytes)
+    proof.verify(*raw_bytes)
+    after_three_direct_verifies = _effect_snapshot(
+        roster_publisher, raw_publisher, fixture
+    )
+
+    compose_changed = tuple(
+        index for index in range(len(before))
+        if before[index] != after_compose[index]
+    )
+    direct_changed = tuple(
+        index for index in range(len(after_compose))
+        if after_compose[index] != after_three_direct_verifies[index]
+    )
+    assert compose_changed == direct_changed
+    for index in compose_changed:
+        assert len(after_compose[index]) - len(before[index]) == (
+            len(after_three_direct_verifies[index]) - len(after_compose[index])
+        )
