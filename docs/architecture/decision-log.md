@@ -19537,3 +19537,93 @@ invoked, all existing P4 behavior remains authoritative, including provider
 access and a consumed read reservation on an integrity failure; this ADR
 neither strengthens nor weakens that contract. Legacy V1 behavior and messages
 remain byte-identical, and public `ReplayRun.run` remains fail-closed.
+
+## ADR-0169 — bounded F3 versioned raw-event wire
+
+**Status:** PROPOSED — DO NOT IMPLEMENT. This is the first independently
+reviewable remainder split from stopped ADR-0148. It requires a fresh Phase 0,
+explicit owner approval of the reviewed text, RED-to-GREEN, and two fresh clean
+final lenses. It authorizes deterministic synthetic fixtures only;
+`deployment_eligible` remains `false` and it enables no writer, derivation,
+replay execution, market-data read, or backtest.
+
+**Context.** ADR-0148 is explicitly stopped and cannot authorize code. Its DP4
+identified a real closed-wire gap: the captured raw-event path accepts only
+`dskit.raw-event/v1`, whose six fields cannot carry the exchange/receive,
+provenance, timezone, or correction identities required to derive the existing
+`dskit.event-envelope/v2` without caller-supplied metadata. This ADR isolates
+only that wire. ADR-0157's post-reserve crash remains fail-closed and outside
+this slice; a crashed synthetic derivation must restart its study rather than
+guess recovery.
+
+### Decision
+
+1. **One dependency-free wire owner.** Add `dskit.pipeline.event_wire`, a
+stdlib-only data-contract module with immutable closed field tuples for raw
+event v1/v2 and the exact version pairings below. `trust.py` and
+`production/bundles.py` import those declarations; neither restates a raw-event
+schema literal or key set. The module parses nothing, grants nothing, performs
+no I/O, and is not re-exported from `dskit.pipeline`.
+
+2. **V1 is byte-for-byte compatible.** The existing six-key
+`dskit.raw-event/v1`, `dskit.dataset-capture-authorization/v1`, and
+`dskit.roster-bootstrap-authorization/v1` meanings, accepted bytes, signatures,
+messages, fixtures, and `compose_replay_tape` behavior do not change. Moving
+their literals to the shared table is mechanical ownership only. Existing v1
+grant/capture and bundle tests must pass unedited.
+
+3. **Closed v2 raw event.** `dskit.raw-event/v2` has exactly twelve keys:
+v1's `schema_version`, `source_id`, `event_id`, `source_sequence`,
+`availability_ms`, and `payload_sha256`, plus `exchange_ms`, `receive_ms`,
+`source_provenance_tag`, `source_timezone_tag`, `correction_position`, and
+`corrects_event_id`. Times and positions are exact non-negative integers;
+tags are nonempty strings; `corrects_event_id` is `null` or a nonempty string.
+`prior_envelope_sha256` is absent because the ordered writer must derive it
+from prior verified envelopes. Unknown, missing, v1/v2-mixed, boolean-as-int,
+negative, noncanonical, duplicate-ID, and wrong-source members refuse.
+
+4. **Version-paired signed authorities.** Add closed
+`dskit.dataset-capture-authorization/v2` and
+`dskit.roster-bootstrap-authorization/v2`. Each requires
+`event_schema == "dskit.raw-event/v2"`; v1 requires v1. A v2 `scope` is the v1
+scope plus exact nonplaceholder `tzdata_version_sha256`. Both signed authority
+families carry the same value, and raw preflight compares it alongside the
+existing scope, roster root, roster receipt, policy, source, license, media,
+and correction identities before reading a member. This slice claims only
+signed dataset/roster equality for tzdata, not equivalence to the executing
+host; the later writer/execution ADR must bind it to trusted environment
+evidence before v2 bytes can execute.
+
+5. **Default-deny selection, no fallback.** Authorization version selects one
+exact raw-event shape. V1 authorization cannot admit v2 bytes; v2 authorization
+cannot admit v1 bytes; no common-subset, coercion, feature flag, caller schema,
+or best-effort branch exists. G1/G2 grants continue to sign the exact complete
+authorization digest and remain one-use under the existing reserve.
+
+6. **Bundles remains v1-only in this slice.** `compose_replay_tape` and
+`_check_raw_event_member` continue to accept only v1. They obtain the v1 schema
+and fields from `event_wire`, proving single ownership, but v2 is deliberately
+refused. The later DP6 writer gets its own ADR and is the sole future consumer
+of verified v2 fields. No envelope projection, sorting, tape construction, or
+runtime branch is added here.
+
+### Required Phase-0 matrix
+
+Pin every former bare literal/key-set site before edits. Test v1 fixtures and
+messages unedited; exact v2 dataset+roster+member success; all twelve single-key
+missing/unknown/type/bounds families; v1/v2 authority/member cross-product
+refusal; mismatched dataset/roster tzdata; scope/source/license/media/receipt/
+policy/correction substitutions; G1/G2 mutation, expiry, revocation, replay,
+and one-use behavior; no read before complete v2 equality; and bundles refusing
+v2 while still accepting its current v1 fixture. An AST/token scan must prove
+the raw schema literals and field tuples have one owner. Focused tests may use
+only fixed synthetic bytes and the existing reserve/provider spies.
+
+### Non-goals
+
+No `CapturedDerivationHop`, reserve-kind implementation, output root, writer,
+`EnvironmentIdentity` object, `CapturedPortSet` change, composed tape,
+`ReplayRun` execution, child adapter, R1--R5, real data, acquisition, HPO,
+refit, backtest, paper/live action, deployment, or recovery claim. The later
+writer must refuse until it can compare signed `tzdata_version_sha256` with
+trusted execution-environment evidence; this ADR does not weaken that gate.
