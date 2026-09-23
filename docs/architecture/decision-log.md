@@ -19540,12 +19540,16 @@ remain byte-identical, and public `ReplayRun.run` remains fail-closed.
 
 ## ADR-0169 — bounded F3 versioned raw-event wire
 
-**Status:** PROPOSED — DO NOT IMPLEMENT. This is the first independently
+**Status:** AMENDED PROPOSAL — DO NOT IMPLEMENT. The first Phase 0 found one
+Major and one Minor: v2 raw preflight would otherwise flow directly into the
+existing raw publisher/root graph, and exact authorization-schema references
+were not pinned. Decision points 4, 5, and 7 plus the matrix now close those
+gaps. This is the first independently
 reviewable remainder split from stopped ADR-0148. It requires a fresh Phase 0,
 explicit owner approval of the reviewed text, RED-to-GREEN, and two fresh clean
 final lenses. It authorizes deterministic synthetic fixtures only;
-`deployment_eligible` remains `false` and it enables no writer, derivation,
-replay execution, market-data read, or backtest.
+`deployment_eligible` remains `false` and it enables no raw-dataset writer,
+derivation, replay execution, external/real-data read, or backtest.
 
 **Context.** ADR-0148 is explicitly stopped and cannot authorize code. Its DP4
 identified a real closed-wire gap: the captured raw-event path accepts only
@@ -19594,11 +19598,25 @@ signed dataset/roster equality for tzdata, not equivalence to the executing
 host; the later writer/execution ADR must bind it to trusted environment
 evidence before v2 bytes can execute.
 
+   Both v1 and v2 authorizations continue to use the existing fixed
+   `dskit.dataset-capture-grant/v1` and
+   `dskit.roster-bootstrap-grant/v1` signature wires and existing key IDs;
+   this ADR versions the signed authorization payload, not the grant envelope
+   or issuer. Every authorization reference in basis, receipt, intent, proof,
+   and graph fixtures records the exact parsed authorization schema rather
+   than hard-coding `/v1`. All current hard-coded reference sites are pinned
+   before edits and covered by mixed-schema refusal tests.
+
 5. **Default-deny selection, no fallback.** Authorization version selects one
 exact raw-event shape. V1 authorization cannot admit v2 bytes; v2 authorization
 cannot admit v1 bytes; no common-subset, coercion, feature flag, caller schema,
 or best-effort branch exists. G1/G2 grants continue to sign the exact complete
 authorization digest and remain one-use under the existing reserve.
+
+   V2 roster bootstrap may use the existing roster publisher to produce the
+   prerequisite synthetic PUBLISHED roster root/receipt needed for the raw
+   preflight equality check. That is the only newly reachable publication in
+   this slice. It remains nonauthorizing and `deployment_eligible=false`.
 
 6. **Bundles remains v1-only in this slice.** `compose_replay_tape` and
 `_check_raw_event_member` continue to accept only v1. They obtain the v1 schema
@@ -19606,6 +19624,15 @@ and fields from `event_wire`, proving single ownership, but v2 is deliberately
 refused. The later DP6 writer gets its own ADR and is the sole future consumer
 of verified v2 fields. No envelope projection, sorting, tape construction, or
 runtime branch is added here.
+
+7. **Hard stop after v2 raw preflight.** Exact v2 raw preflight may read only
+the fixed signed synthetic fixture after all v2 dataset/roster/tzdata equality
+checks and may return its existing nonauthorizing proof. The existing
+`_SyntheticRawPublisher`, raw PUBLISHED receipt/root, root PIS, dynamic P4
+graph/authority, and every later consumer remain v1-only. Each refuses a v2
+proof or authorization before producer-session creation, `produce`, member
+write, receipt append, root-PIS construction, graph construction, or reserve
+spend. No caller flag or schema downgrade can cross this stop.
 
 ### Required Phase-0 matrix
 
@@ -19615,15 +19642,22 @@ missing/unknown/type/bounds families; v1/v2 authority/member cross-product
 refusal; mismatched dataset/roster tzdata; scope/source/license/media/receipt/
 policy/correction substitutions; G1/G2 mutation, expiry, revocation, replay,
 and one-use behavior; no read before complete v2 equality; and bundles refusing
-v2 while still accepting its current v1 fixture. An AST/token scan must prove
+v2 while still accepting its current v1 fixture. Cover every authorization
+reference site with exact v1/v2 schema assertions. Prove v2 roster publication
+is the sole new publication, then drive a genuine v2 raw proof into each raw
+publisher/root-PIS/dynamic-graph entry and assert refusal before producer
+session, member/write/provider side effect, receipt, root, graph, or reserve
+effect. An AST/token scan must prove
 the raw schema literals and field tuples have one owner. Focused tests may use
 only fixed synthetic bytes and the existing reserve/provider spies.
 
 ### Non-goals
 
-No `CapturedDerivationHop`, reserve-kind implementation, output root, writer,
+No `CapturedDerivationHop`, reserve-kind implementation, v2 raw-dataset output
+root, raw writer,
 `EnvironmentIdentity` object, `CapturedPortSet` change, composed tape,
 `ReplayRun` execution, child adapter, R1--R5, real data, acquisition, HPO,
-refit, backtest, paper/live action, deployment, or recovery claim. The later
+refit, backtest, paper/live action, deployment, or recovery claim. The existing
+synthetic roster publisher is permitted only as Decision point 5 states. The later
 writer must refuse until it can compare signed `tzdata_version_sha256` with
 trusted execution-environment evidence; this ADR does not weaken that gate.
