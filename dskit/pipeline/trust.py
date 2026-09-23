@@ -31,6 +31,7 @@ __all__ = [
     "CapturedAuthorizationAuthority",
     "CapturedAuthorizationRecord",
     "CapturedBindings",
+    "CapturedPortSet",
     "CapturedJsonArtifact",
     "CapturedLifecyclePort",
     "CapturedMemberHandle",
@@ -378,6 +379,12 @@ class CapturedAuthorizationAuthority(LifecycleAuthority):
             runtime_sha256=runtime_sha256,
             transition_nonces=transition_nonces,
         )
+
+    def captured_port_set(self, record, session):
+        """Mint the sole named tape-port view over one committed replay batch."""
+        if _p4_checked_port_set_dispatch is not _P4_PORT_SET_DISPATCH:
+            raise TypeError("P4 port-set dispatch integrity refused")
+        return _P4_PORT_SET_DISPATCH(self, record, session)
 
     def inspect_capture_admission(
         self, captures, admission_ref, *, consumer_run_identity,
@@ -2511,6 +2518,10 @@ class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
             transition_nonces=transition_nonces,
         )
 
+    def captured_port_set(self, record, session):
+        """Mint through the same checked authority and lifecycle ledger."""
+        return CapturedAuthorizationAuthority.captured_port_set(self, record, session)
+
     def _validate_capture_request(self, captures, runtime, nonces):
         """Validate complete live tuples without advancing any lifecycle state."""
         if type(captures) is not tuple or not captures:
@@ -2567,6 +2578,8 @@ class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
 
 _P4_BASE_DISPATCH = CapturedAuthorizationAuthority.authorize_capture_set
 _P4_FINAL_DISPATCH = _SyntheticP4CapturedAuthorizationAuthority.authorize_capture_set
+_P4_BASE_PORT_SET = CapturedAuthorizationAuthority.captured_port_set
+_P4_FINAL_PORT_SET = _SyntheticP4CapturedAuthorizationAuthority.captured_port_set
 _P4_REQUEST_CHECK = _SyntheticP4CapturedAuthorizationAuthority._validate_capture_request
 _P4_RESOLVER_LOOKUP = _FixedWormTrustedArtifactResolver._lookup
 
@@ -2589,8 +2602,11 @@ def _p4_require_issued_authority(authority):
         or authority._p4_resolver is not issued[0]
         or CapturedAuthorizationAuthority.authorize_capture_set is not _P4_BASE_DISPATCH
         or type(authority).authorize_capture_set is not _P4_FINAL_DISPATCH
+        or CapturedAuthorizationAuthority.captured_port_set is not _P4_BASE_PORT_SET
+        or type(authority).captured_port_set is not _P4_FINAL_PORT_SET
         or type(authority)._validate_capture_request is not _P4_REQUEST_CHECK
         or "authorize_capture_set" in authority.__dict__
+        or "captured_port_set" in authority.__dict__
     ):
         raise TypeError("exact broker-issued P4 capability is required")
     resolver = issued[0]
@@ -2623,6 +2639,79 @@ def _p4_checked_dispatch(authority, captures, admission_ref, **runtime):
     if ledger is None or authority._p4_ledger is not ledger or _P4_COMMIT is not _LifecycleAuthorizationLedger.commit_p4_batch:
         raise TypeError("P4 same-domain ledger required")
     return _P4_COMMIT(ledger, captures, admission_ref, runtime)
+
+
+def _p4_checked_port_set_dispatch(authority, record, session):
+    """Mint one non-enumerable tape view from exact committed identities."""
+    if _p4_port_set_state_integrity is not _P4_PORT_SET_STATE_CHECK:
+        raise TypeError("P4 port-set state integrity refused")
+    _P4_PORT_SET_STATE_CHECK()
+    if _p4_require_issued_authority is not _P4_ISSUED_CHECK:
+        raise TypeError("P4 authority identity dispatch integrity refused")
+    _P4_ISSUED_CHECK(authority)
+    if type(record) is not CapturedAuthorizationRecord or type(session) is not LaunchSession:
+        raise TypeError("exact P4 record and session required")
+    ledger = _P4_RECORDS.get(record)
+    if ledger is None or ledger is not _LIFECYCLE_LEDGERS.get(authority) or authority._p4_ledger is not ledger:
+        raise ValueError("P4 committed record required")
+    with ledger._lock:
+        ledger._check()
+        matches = [entry for entry in ledger._p4_entries() if entry[4] is record]
+        _hs_refuse(len(matches) == 1, "P4 committed record required")
+        entry = matches[0]
+        _hs_refuse(session is entry[5] and not session._ended
+                   and _p4_session_pin(session) == entry[6],
+                   "P4 record/session mismatch")
+        seal = hmac.new(authority._map_key,
+                        b"P4 LaunchSession\x00" + _hs_canonical_bytes(dict(session._runtime)),
+                        hashlib.sha256).hexdigest()
+        _hs_refuse(hmac.compare_digest(entry[7], seal), "P4 session seal refused")
+        request = _hs_parse_canonical(entry[2])
+        audit = _hs_parse_canonical(entry[3])
+        _hs_refuse(audit["batch_sha256"] == _digest(_hs_canonical_bytes(
+            {key: value for key, value in audit.items() if key != "batch_sha256"})),
+            "P4 committed batch integrity refused")
+        retained = _P4_CAPTURE_HANDLES.get(record)
+        _hs_refuse(type(retained) is tuple and len(retained) == 2
+                   and len(request["captures"]) == len(audit["streams"]) == 2
+                   and len(audit["ports"]) == len(audit["receipts"]) == 2
+                   and audit["replay"] is not None,
+                   "exact committed replay tape pair required")
+        by_name = {}
+        document_digests = set()
+        for index, (published, frozen, port) in enumerate(retained):
+            projected = request["captures"][index]
+            _hs_refuse(type(published) is _Published and type(frozen) is _Frozen
+                       and type(port) is MappingProxyType
+                       and projected[0] == id(published) and projected[1] == id(frozen)
+                       and projected[2] == dict(port)
+                       and projected[3] == published.descriptor
+                       and projected[4] == _digest(_canonical_bytes(frozen.source)),
+                       "retained P4 capture identity mismatch")
+            name = port.get("consumer_input")
+            document_sha256 = port.get("consumer_document_sha256")
+            _hs_refuse(type(name) is str and type(document_sha256) is str
+                       and name not in by_name, "exact committed replay tape pair required")
+            stream = audit["streams"][index]
+            _entry, _request, _audit, found = ledger._p4_record_capture(
+                record, stream, document_sha256)
+            _hs_refuse(found == index, "retained P4 capture order mismatch")
+            by_name[name] = (published, document_sha256, stream)
+            document_digests.add(document_sha256)
+        _hs_refuse(set(by_name) == {"tape_manifest", "tape_data"}
+                   and len(document_digests) == 1,
+                   "exact committed replay tape pair required")
+        _hs_refuse(record not in _P4_PORT_SET_MINTED,
+                   "captured port set already minted")
+        view = object.__new__(CapturedPortSet)
+        _P4_PORT_SET_MINTED[record] = True
+        _P4_PORT_SET_VIEWS[view] = (
+            authority, ledger, record, session, MappingProxyType(by_name), set(),
+        )
+        return view
+
+
+_P4_PORT_SET_DISPATCH = _p4_checked_port_set_dispatch
 
 
 def _development_p4_broker(*, fixture_facts=None):
@@ -3918,23 +4007,24 @@ class _P4ResolverSnapshot(_Opaque):
 # file/URL lookup, caller policy, or caller-supplied verification flag here.
 _P4_EXTERNAL_RECORDS = (
     ("G1-dataset-authorization",
-     "03e4a325a9adde7fec26ee1835c6cdef9f6b84eea226e7fedfebb351a21a72b4",
-     "48afcac1de36bb1eb45475a66ec4e61563cf66fe4cc10f0e7c8f2d10ddca7a2389"
-     "5fe5238f19b7a008353dcc610d2956c0decea8bb1ad1c6cae5c8c2393b6b01"),
+     "4ad08665610366b70e38ffeeb53a78a8562abcf227e778863aba34838f44271a",
+     "56fe4b8681dced80a8d915e9fcf66ee7f5338cdb3a4128a017891783d3f316d8"
+     "47873e4a82f91b3b1f6d381dfad7e29771d5c1d91e1e0e100f58de3e9a70d30a"),
     ("G2-dataset-authorization",
-     "871ce2c3f83d488b08b3df46b5dac40c7693239904d4e076c08c3d857283d645",
-     "bd6a813d14a6f461ab54d894bd62cc962a4759184b4f812cb46a567d4a7627376c"
-     "c8c27a37fcd5d4caf8c21b48438a91ad11bbd314d1634da4199affd6766100"),
+     "9cfb3c29920873af887dac1473d2c51fa9bb3d8bdddc2973449d678545207114",
+     "277d0654e2269441ed3cce6286ff1d68debb518f0e5c0281829a37e6d006fe733"
+     "8b1188d6bf8a5875bf188725e22279582b668ce35ca3d700858cf931923c006"),
     ("fixed-owner-policy",
-     "456884347696ca39296e2442b21268838ec5b9e728a0c3ca28bf0396a661753e",
-     "5939a9f5b4709563c0be0695083e5abbce3f41f482d2d2b27a984203b733855be"
-     "34792e3d82b9f26ecc1cacf0fc330eb980aaa455434a1846c14fc94c427c904"),
+     "f2aa0e2493c4af124296be128f491fe017637b51f5ea1770d3ddf1e6935de1bc",
+     "705774980ced165d05af2e233d6667963ab8770630c3807a0be38da703b2288d8"
+     "4f21d7cd0e09ee6be9a59719bba33989436b673726bca11c2e0a3ae4ac8cd02"),
 )
 _P4_APPROVED_SCOPE_PROJECTIONS = (
     "e61b568822008c9e9fcbe4f0149d39c3ec2b1196dab7d72caf593b1a848b811f",
     "923fa789dc1051fd8576e6af8588d97731f890f6d1a0f1404494b345a4c566dc",
     "3d125ac8581f1a06b6996697b8277a30481025332bc2df43087ca1d159b3e965",
     "53b0cc17b04c5922e25d6a9629014faf2243ed718b5480cde7a00bac12c9f0b5",
+    "e2957cc8508ce431ad6fb65c7dfc797bbfa1c578dac909c74b7bd86ee3d4b51c",
 )
 _P4_APPROVED_ROOT_PROJECTIONS = (
     "f490ad52c7da54f3d7cffd898e30f535b69457e538ae0be5bb0f74dcc1cc5a0a",
@@ -4980,11 +5070,100 @@ class CapturedAuthorizationRecord(_Opaque):
         raise TypeError("CapturedAuthorizationRecord is final")
 
 
+class CapturedPortSet(_Opaque):
+    """Opaque, non-enumerable two-port view for one committed replay tape."""
+
+    __slots__ = ("__weakref__",)
+
+    def require(self, name):
+        """Return the one reader for an exact required port name."""
+        _P4_PORT_SET_STATE_CHECK()
+        if type(name) is not str:
+            raise TypeError("exact captured port name required")
+        state = _P4_PORT_SET_VIEWS.get(self)
+        if state is None:
+            raise ValueError("issued captured port set required")
+        authority, ledger, record, session, by_name, used = state
+        with ledger._lock:
+            ledger._check()
+            _P4_ISSUED_CHECK(authority)
+            _hs_refuse(_P4_RECORDS.get(record) is ledger
+                       and not session._ended and name in by_name,
+                       "required captured port refused")
+            _hs_refuse(name not in used, "captured port already required")
+            published, document_sha256, stream = by_name[name]
+            ledger._p4_record_capture(record, stream, document_sha256)
+            reader = object.__new__(_CapturedPortReader)
+            _P4_PORT_READERS[reader] = (self, record, session, published,
+                                        document_sha256, stream)
+            used.add(name)
+            return reader
+
+    def __new__(cls, *args, **kwargs):
+        """Refuse construction from public or reconstructed data."""
+        raise TypeError("CapturedPortSet is broker-issued")
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse subtype substitution for the issued port set."""
+        raise TypeError("CapturedPortSet is final")
+
+
+class _CapturedPortReader(_Opaque):
+    """Private one-port read capability; state is held outside the object."""
+
+    __slots__ = ("__weakref__",)
+
+    @property
+    def lifecycle_captured_receipt_sha256(self):
+        _P4_PORT_SET_STATE_CHECK()
+        state = _P4_PORT_READERS.get(self)
+        if state is None:
+            raise ValueError("issued captured port reader required")
+        _view, record, _session, _published, document_sha256, stream = state
+        return record.lifecycle_captured_receipt_sha256(stream, document_sha256)
+
+    def read_member_bytes(self, relative_path):
+        _P4_PORT_SET_STATE_CHECK()
+        state = _P4_PORT_READERS.get(self)
+        if state is None:
+            raise ValueError("issued captured port reader required")
+        _view, record, session, published, document_sha256, _stream = state
+        return record.read_member_bytes(session, published, document_sha256,
+                                        relative_path)
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("captured port reader is broker-issued")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("captured port reader is final")
+
+
 _LIFECYCLE_LEDGERS = WeakKeyDictionary()
 _LIFECYCLE_VIEWS = WeakKeyDictionary()
 _P4_LEDGER_PINS = WeakKeyDictionary()
 _P4_RECORDS = WeakKeyDictionary()
 _P4_PREPARED = WeakKeyDictionary()
+_P4_CAPTURE_HANDLES = WeakKeyDictionary()
+_P4_PORT_SET_MINTED = WeakKeyDictionary()
+_P4_PORT_SET_VIEWS = WeakKeyDictionary()
+_P4_PORT_READERS = WeakKeyDictionary()
+_P4_PORT_SET_STATE = (
+    _P4_CAPTURE_HANDLES, _P4_PORT_SET_MINTED, _P4_PORT_SET_VIEWS,
+    _P4_PORT_READERS,
+)
+
+
+def _p4_port_set_state_integrity():
+    """Hold the four private weak state domains by exact identity."""
+    current = (
+        _P4_CAPTURE_HANDLES, _P4_PORT_SET_MINTED, _P4_PORT_SET_VIEWS,
+        _P4_PORT_READERS,
+    )
+    if not all(value is pinned for value, pinned in zip(current, _P4_PORT_SET_STATE, strict=True)):
+        raise TypeError("P4 port-set state integrity refused")
+
+
+_P4_PORT_SET_STATE_CHECK = _p4_port_set_state_integrity
 _P4_BATCH_USES = MappingProxyType({
     "captured-port": ("dskit.captured-port-authorization/v2", "captured_port_authorization_sha256", "captured-port-authorization"),
     "captured-receipt": ("dskit.lifecycle-captured-receipt/v2", "lifecycle_captured_receipt_sha256", "lifecycle-capture"),
@@ -5547,6 +5726,10 @@ class _LifecycleAuthorizationLedger(_Opaque):
                 # session-start are inseparable fields in this immutable root.
                 self._root, self._pin = root, pin
                 _P4_LEDGER_PINS[self] = pin
+                _P4_CAPTURE_HANDLES[record] = tuple(
+                    (published, frozen, MappingProxyType(dict(port)))
+                    for published, frozen, port in captures
+                )
                 self._fault("commit-after")
                 self._fault("return")
                 return record, session

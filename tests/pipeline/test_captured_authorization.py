@@ -682,7 +682,8 @@ def _graph_live(graph, document, count, input_names=None):
                value["capture_admission_set_sha256"] == selected["capture_admission_set_sha256"])
     by_input = {capture[2]["consumer_input"]: capture for capture in captures}
     captures = tuple(by_input[entry["consumer_input"]] for entry in cas["entries"])
-    before = (tuple(broker._receipt_audit(publication) for publication in publications),
+    before = (tuple(broker._receipt_audit(capture[0])
+                    for capture in sorted(captures, key=lambda item: item[2]["consumer_input"])),
               tuple(broker._session_events), tuple(broker._member_events), frozenset(broker._nonces))
     runtime = dict(_runtime(), transition_nonces=tuple(f"p4-{index}" for index in range(count)))
     return broker, captures, runtime, before
@@ -970,6 +971,9 @@ def _issue_tape_pair():
 
 
 def test_p4_replay_tape_pair_mints_one_opaque_port_set():
+    import gc
+    import weakref
+
     _graph, broker, captures, _runtime, before, record, session = _issue_tape_pair()
     view = broker.captured_port_set(record, session)
     assert type(view) is trust.CapturedPortSet
@@ -978,6 +982,10 @@ def test_p4_replay_tape_pair_mints_one_opaque_port_set():
             operation(view)
     with pytest.raises(TypeError):
         trust.CapturedPortSet()
+    reference = weakref.ref(view)
+    del view
+    gc.collect()
+    assert reference() is None
     with pytest.raises((TypeError, ValueError)):
         broker.captured_port_set(record, session)
     _assert_graph_no_effect(broker, captures, before)
@@ -990,6 +998,12 @@ def test_p4_replay_tape_readers_are_exact_named_one_shot_capabilities():
         view.require("unknown")
     manifest = view.require("tape_manifest")
     data = view.require("tape_data")
+    for reader in (manifest, data):
+        for operation in (copy.copy, copy.deepcopy, pickle.dumps, dict, bytes):
+            with pytest.raises(TypeError):
+                operation(reader)
+        with pytest.raises(TypeError):
+            type(reader)()
     with pytest.raises((TypeError, ValueError)):
         view.require("tape_manifest")
     audit = broker._p4_ledger._audit(record)
