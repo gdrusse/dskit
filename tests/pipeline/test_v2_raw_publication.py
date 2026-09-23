@@ -8,7 +8,9 @@ from weakref import ref as weakref_ref
 
 import pytest
 
+import dskit.pipeline as pipeline
 from dskit.pipeline import trust
+from dskit.production import verifier as production_verifier
 from tests.pipeline import test_captured_authorization as cases
 from tests.pipeline.test_event_wire_v2 import _v2_case
 
@@ -704,6 +706,54 @@ def test_retained_v2_root_stops_before_root_pis_construction_effect(
         dict(raw_publisher._root_pis_pairs),
         tuple(raw_publisher._broker._member_events),
     )
+
+
+def test_retained_v2_root_has_no_downstream_capability_alias(
+    tmp_path,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    raw_publisher.publish_v2(fixture, environment, *signed, *roster)
+    before = (
+        roster_publisher._reserve._connection.total_changes,
+        tuple(raw_publisher._broker._member_events),
+        dict(raw_publisher._root_pis_pairs),
+    )
+    with pytest.raises(TypeError, match="issuer-owned root-PIS"):
+        trust.NonAuthorizingSyntheticRootPisProof(
+            trust._MAKE, raw_publisher
+        )
+    with pytest.raises(TypeError, match="issuer-owned dynamic root"):
+        trust.NonAuthorizingDynamicRootGraph(
+            trust._MAKE, raw_publisher
+        )
+    with pytest.raises(TypeError, match="lifecycle authority"):
+        production_verifier.HistoricalStudyVerifier(raw_publisher)
+    with pytest.raises(TypeError, match="exact HistoricalStudyVerifier"):
+        production_verifier.HistoricalStudyCaptureDriver(raw_publisher)
+    replay = trust.ReplayRun("replay", {})
+    with pytest.raises(RuntimeError, match="F3 composed-tape broker"):
+        replay.run(None, {"raw_root": raw_publisher})
+    assert before == (
+        roster_publisher._reserve._connection.total_changes,
+        tuple(raw_publisher._broker._member_events),
+        dict(raw_publisher._root_pis_pairs),
+    )
+    assert not hasattr(pipeline, "NonAuthorizingSyntheticRootPisProof")
+    assert not hasattr(pipeline, "NonAuthorizingDynamicRootGraph")
+    assert pipeline.ReplayRun is trust.ReplayRun
+    assert {
+        "NonAuthorizingSyntheticRootPisProof",
+        "NonAuthorizingDynamicRootGraph",
+        "ReplayRun",
+    } <= set(trust.__all__)
 
 
 def test_root_pis_issue_rechecks_retained_publisher_before_closing(

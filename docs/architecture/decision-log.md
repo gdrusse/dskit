@@ -20263,6 +20263,19 @@ their direct closure.
 
 ### Required Phase-0 matrix
 
+Evidence is compositional. The unedited ADR-0139 raw-publisher success/fault
+tests and ADR-0140 raw-proof substitution/readback tests are the authoritative
+v1 pre-refactor parity baseline and must pass in the same run; duplicating each
+case in the ADR-0173 file is neither required nor a stronger comparison.
+Likewise, retained-v2 transitive unreachability is proved at the sole
+constructor edge into the downstream chain: `_SyntheticRootPisIssuer` must
+refuse the genuine retained v2 publisher before assignment/effect, and the
+existing ADR-0169 v1-state substitution tests must continue to prove the
+root-PIS proof and dynamic graph are v1-only. Because every later bundle,
+replay, verifier, and driver requires those otherwise-unobtainable exact
+upstream capabilities, tests must inventory those typed edges and public
+aliases but must not fabricate impossible downstream objects.
+
 Pin `inspect.signature`, positional/keyword behavior, `trust.__all__`,
 `dskit.pipeline` re-exports, relevant class dictionaries, publisher
 `__weakref__` layout, and legacy `publish` v2 refusal. RED genuine v2
