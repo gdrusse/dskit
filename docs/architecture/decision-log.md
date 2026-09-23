@@ -19919,3 +19919,111 @@ publication, manifest/tape construction, `compose_replay_tape` edit,
 external/real data, acquisition, HPO, refit, backtest, paper/live action,
 deployment, or recovery claim. This pure transform cannot be used as evidence
 that its caller held a verified raw fixture or environment identity.
+
+---
+
+## ADR-0172 — one-shot verified synthetic v2 projection input
+
+**Status:** PROPOSAL — DO NOT IMPLEMENT. This is the next bounded dependency
+after implemented ADR-0171. It requires fresh Phase 0, owner approval,
+RED-to-GREEN, and two sequential fresh clean final lenses. It adds one
+non-authorizing opaque bridge from already retained synthetic v2 roots to the
+pure projector; it performs no WORM write, publication, replay, or backtest.
+
+**Context.** ADR-0169 retains exact verified `raw-event/v2` values inside
+`VerifiedSyntheticDatasetFixture`; `NonAuthorizingRawRootProof.verify`
+revalidates those values and returns root facts but intentionally does not
+expose them. The retained roster publisher owns the canonical
+`SourceRankPolicy.v1`. ADR-0170 owns the broker-issued synthetic environment
+identity and tzdata equality check. ADR-0171 owns the pure event projection in
+`dskit.production.bundles`. No current acyclic, capability-safe seam lets a
+later data-capture writer compose those four proofs without reading private
+attributes or accepting caller-created event/policy data.
+
+### Decision
+
+1. **Opaque trust-owned bridge.** Add final public
+`VerifiedV2ProjectionInput` to `dskit.pipeline.trust` and its explicit
+`__all__`; direct construction, subclassing, copying, serialization, and
+attribute mutation refuse. Only a private broker function
+`_prepare_synthetic_v2_projection_input(raw_proof, raw_proof_bytes,
+roster_proof, roster_proof_bytes, environment_identity, /)` can mint it.
+The two byte bundles are exact tuples with the already fixed argument order of
+their respective `verify` methods; no dict/keyword/alias form exists.
+
+2. **Reverify under one retained authority snapshot.** The prepare function
+requires exact `NonAuthorizingRawRootProof` and
+`NonAuthorizingRosterRootProof` objects whose retained publishers share the
+same exact roster publisher and reserve. Under that reserve's writer lock and
+one transaction, call both existing `verify(...,
+_under_writer_lock=True)` methods, require unchanged generation,
+revocation snapshot, and trusted instant, and require both results remain
+`authorizing=False` and `deployment_eligible=False`. Any mismatch rolls
+back and no bridge is minted.
+
+3. **Environment before projection data.** Parse only the already signed,
+canonical dataset authorization from the exact retained raw proof bytes.
+Require authorization schema `dskit.dataset-capture-authorization/v2` and
+event schema `dskit.raw-event/v2`; obtain its exact
+`scope.tzdata_version_sha256`; invoke ADR-0170
+`_require_synthetic_tzdata` on the exact broker-issued identity before
+copying any retained event or roster value into the bridge. Environment
+failure leaves the bridge registry empty.
+
+4. **Derive both payloads inside trust.** Reparse the retained canonical roster
+bytes owned by the exact roster publisher, require its root/policy facts equal
+the two proof results and raw manifest bindings, and derive an exact
+dict-backed `MappingProxyType` SourceRankPolicy.v1 with tuple rows. Copy the
+exact retained ADR-0169 events into fresh exact dict-backed mapping proxies and
+an exact nonempty tuple. Revalidate closed shapes, counts, source universe,
+availability scope, policy digest, raw-root/roster-root/receipt bindings, and
+event-schema equality before registry insertion. No caller value supplies an
+event field, rank, policy digest, timezone, or provenance.
+
+5. **One-shot, identity-bound consumption.** Add
+`consume_v2_projection_input(value, /)`. It accepts only the exact issued
+object still present in a closure-owned weak registry with matching
+weak-reference, proof identities/digests, frozen descriptors, and unused
+state. Atomically mark used, then return exactly
+`(events, source_rank_policy)`. A second call, copied/forged/subclassed
+object, stale/revoked proof, replaced dispatch, or altered class descriptor
+refuses before returning data. The returned values are closed immutable
+copies suitable only for ADR-0171; the bridge confers no writer, lifecycle,
+publication, replay, or deployment authority.
+
+6. **Acyclic production composition.** Add private
+`_project_verified_synthetic_v2_input(value, /)` in
+`dskit.production.verifier`. It calls the exact imported
+`consume_v2_projection_input` once, passes the two returned values directly
+to `bundles._project_v2_event_envelopes`, reparses every returned envelope,
+and returns the exact tuple of bytes. It is private and absent from every
+`__all__`. No callback or caller-supplied projector is accepted. Pipeline
+trust imports no production module; production verifier remains the acyclic
+composition owner.
+
+7. **Failure and authority freeze.** Every failure is terminal for that bridge
+object and returns no partial events, policy, or envelopes. Existing proof
+bytes/state/messages, public proof methods, ADR-0171 projector, WORM lifecycle,
+`ReplayRun.run`, and v1 behavior remain unchanged. No filesystem/provider/
+network access occurs: all bytes were retained by earlier authorized capture.
+
+### Required Phase-0 matrix
+
+Pin exact public/private surfaces and positional-only signatures; direct
+construction/subclass/copy/pickle/mutation; wrong proof type/order/count;
+unshared publishers/reserves; stale/revoked/expired/generation-changed proof;
+wrong authorization/event schema; tzdata mismatch before retained projection
+access; root/receipt/policy/source/count/scope substitution; caller-created
+event/policy refusal; v1/v2 cross-use; one-shot/concurrent double consume;
+forged/copied/stale/dispatch-replaced bridge; exact inert mapping shapes;
+byte-identical ADR-0171 output; no partial data on every failure; unchanged
+proof state and no provider/filesystem/network/lifecycle effect. Run
+ADR-0145/0146/0169/0170/0171, trust, capture, and all purity suites unedited.
+
+### Non-goals
+
+No `ReplayTapeDataCapture` writer, mediated WORM output, producer document,
+captured port, lifecycle transition, root publication, manifest construction,
+composed tape, replay, recovery, external/real data, HPO, refit, backtest,
+paper/live trading, or deployment. Those require later separately reviewed
+slices; this bridge is non-authorizing data plumbing only.
