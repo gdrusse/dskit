@@ -15,6 +15,8 @@ synthetic research diagnostic: no quotes, no fills, never decision-eligible.
 
 import math
 
+from dskit.pipeline.records import number_ok
+
 from .contracts import leg_intrinsic
 
 __all__ = ["CondorGeometry", "strike_z"]
@@ -45,8 +47,7 @@ def strike_z(strike, forward, reference_scale):
     """
     for name, value in (("strike", strike), ("forward", forward),
                         ("reference_scale", reference_scale)):
-        if isinstance(value, bool) or not isinstance(value, (int, float)) \
-                or not math.isfinite(value) or value <= 0:
+        if not number_ok(value) or value <= 0:
             raise ValueError(f"{name} must be a positive finite number, got {value!r}")
     return math.log(strike / forward) / reference_scale
 
@@ -94,16 +95,13 @@ class CondorGeometry:
         list of str
             Empty when usable.
         """
-        def real(v):
-            return not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
-
         problems = []
         if not isinstance(strikes_z, (list, tuple)) or len(strikes_z) != 4 \
-                or not all(real(z) for z in strikes_z) \
+                or not all(number_ok(z) for z in strikes_z) \
                 or not all(a < b for a, b in zip(strikes_z, strikes_z[1:])):
             problems.append(f"strikes_z must be four strictly increasing numbers, got {strikes_z!r}")
         for name, value in (("credit_fraction", credit_fraction), ("cvar_alpha", cvar_alpha)):
-            if not real(value) or not 0 < value < 1:
+            if not number_ok(value) or not 0 < value < 1:
                 problems.append(f"{name} must be in (0, 1), got {value!r}")
         return problems
 

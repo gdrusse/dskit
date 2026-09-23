@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.distribution_scores import (
     BerkowitzTest,
     Crps,
@@ -122,6 +123,33 @@ def test_berkowitz_accepts_calibrated_and_rejects_overdispersed_and_dependent():
     assert BerkowitzTest().evaluate([0.5, 0.2])["pvalue"] is None
 
 
+def test_ks_statistic_and_small_lambda_pvalue_are_exact():
+    assert PitCalibration(2).evaluate([0.1, 0.2, 0.9])["statistic"] == pytest.approx(0.2 + 0.8 / 3)
+    grid = [(i + 0.5) / 400 for i in range(400)]
+    assert PitCalibration(10).evaluate(grid)["pvalue"] == pytest.approx(1.0, abs=1e-6)
+    # Kolmogorov Q(lambda): each series branch against a tabulated value
+    m = 100
+    per_lambda = 1.0 / (math.sqrt(m) + 0.12 + 0.11 / math.sqrt(m))
+    assert PitCalibration._pvalue(1.0 * per_lambda, m) == pytest.approx(0.26999967, abs=1e-7)
+    assert PitCalibration._pvalue(1.5 * per_lambda, m) == pytest.approx(0.02221796, abs=1e-7)
+    assert PitCalibration._pvalue(0.3 * per_lambda, m) == pytest.approx(0.99999069, abs=1e-7)
+
+
+def test_berkowitz_statistic_matches_an_independent_likelihood_ratio():
+    from statistics import NormalDist
+    pits = [0.2, 0.7, 0.4, 0.9, 0.1, 0.55, 0.35, 0.8]
+    z = [NormalDist().inv_cdf(u) for u in pits]
+    x, y = z[:-1], z[1:]
+    n = len(y)
+    mx, my = sum(x) / n, sum(y) / n
+    rho = sum((a - mx) * (b - my) for a, b in zip(x, y)) / sum((a - mx) ** 2 for a in x)
+    c = my - rho * mx
+    var = sum((b - c - rho * a) ** 2 for a, b in zip(x, y)) / n
+    l1 = sum(math.log(NormalDist(c + rho * a, math.sqrt(var)).pdf(b)) for a, b in zip(x, y))
+    l0 = sum(math.log(NormalDist().pdf(b)) for b in y)
+    assert BerkowitzTest().evaluate(pits)["statistic"] == pytest.approx(2 * (l1 - l0))
+
+
 def test_berkowitz_chi2_tail_matches_known_quantile():
     assert BerkowitzTest._chi2_sf3(7.814727903) == pytest.approx(0.05, abs=1e-6)
     assert BerkowitzTest._chi2_sf3(0.0) == 1.0
@@ -158,6 +186,12 @@ def test_score_node_reads_only_its_split_and_counts_skips():
     assert set(out["report"].value["brier_by_threshold"]) == {"-1.0", "1.0"}
 
 
+def test_score_node_refuses_a_run_with_no_splits():
+    with pytest.raises(ValueError, match="no splits"):
+        ScoreDistributions("score", dict(PARAMS)).run(
+            SimpleNamespace(splits=None), {"forecasts": _rows()})
+
+
 def test_score_node_refuses_too_few_rows_and_bad_params():
     node = ScoreDistributions("score", dict(PARAMS, min_rows=31))
     with pytest.raises(ValueError, match="min_rows"):
@@ -167,3 +201,20 @@ def test_score_node_refuses_too_few_rows_and_bad_params():
         with pytest.raises(ConfigError):
             ScoreDistributions("score", dict(PARAMS, **bad))
     assert ScoreDistributions("s", dict(PARAMS)).validate_inputs({"forecasts": 3})
+
+
+def _conformance_probes(tmp_path):
+    return {"distribution-score": NodeProbe(
+        params=dict(PARAMS), required=("split", "weight_intervals"),
+        inputs={"forecasts": _rows()}, stream_ports=("forecasts",), runnable=True,
+        ctx=SimpleNamespace(splits=_HalfSplit()),
+    )}
+
+
+TestScoreDistributionsConformance = conformance_suite(
+    registry=(("distribution-score", ScoreDistributions),),
+    module="dskit.pipeline.distribution_scores",
+    probes=_conformance_probes,
+    expected_roles={"distribution-score": "score"},
+    name="TestScoreDistributionsConformance",
+)

@@ -19442,3 +19442,16 @@ censored likelihood (needs densities; later), optimizer, trading.
 
 **Alternatives.** Quantile-set forecasts (lossy at arbitrary strikes);
 child-side scores (violates graduation rule); parametric-only (excludes FHS).
+
+**Implementation notes (2026-09-23).** Beyond the manifest, disclosed:
+`contracts.leg_intrinsic` extracted as the one owner of put/call intrinsic
+(item 6's "reusing payoff rules"); `libs/numpy._one_price_field_problems`
+shared by `ReturnWindows` and the two new members (removes a third copy);
+`distribution_scores.row_in_split` public so the child's report and the
+scorer share one split rule, and it REFUSES a run with no splits; the child
+manifest test also pins the three research notes and ignores the journal
+lock. Conformance suites cover `ScoreDistributions` and
+`EmpiricalLocationScale`; `SynthGjrPaths`, like `SynthEvents`, has none
+(a parameter-seeded generator has no mutable dataset for the data-role
+move/grow probes). `kinds_stats.Validate` and `FittedTransform.frame_of`
+keep their own split-frame code (out of scope).

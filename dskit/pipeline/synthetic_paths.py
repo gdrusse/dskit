@@ -17,6 +17,7 @@ import math
 import random
 
 from dskit.pipeline.node import Node, check_int_param, reject_unknown_params
+from dskit.pipeline.records import number_ok
 
 __all__ = ["GJR_DEFAULTS", "SynthGjrPaths"]
 
@@ -49,7 +50,8 @@ class SynthGjrPaths(Node):
     1{e_{t-1} < 0}) * e_{t-1}^2 + beta * sigma_{t-1}^2`` and ``eta`` a
     unit-variance Student-t with ``nu`` degrees of freedom. Each record
     carries ``close`` and ``cond_vol`` (``sigma_t``, known at ``t - 1``: the
-    oracle scale a test can compare a forecast against).
+    oracle scale a test can compare a forecast against). Day 0 is the
+    starting level at the unconditional variance: it draws no shock.
 
     Parameters
     ----------
@@ -108,8 +110,7 @@ class SynthGjrPaths(Node):
         check_int_param(problems, "start_ms", merged["start_ms"], ge=0)
         if not isinstance(merged["instrument"], str) or not merged["instrument"]:
             problems.append(f"instrument must be a non-empty string, got {merged['instrument']!r}")
-        bad = [k for k in _FLOATS if isinstance(merged[k], bool)
-               or not isinstance(merged[k], (int, float)) or not math.isfinite(merged[k])]
+        bad = [k for k in _FLOATS if not number_ok(merged[k])]
         if bad:
             return problems + [f"{bad} must be finite numbers"]
         if merged["omega"] <= 0 or merged["s0"] <= 0:
@@ -182,10 +183,9 @@ class SynthGjrPaths(Node):
         for day in range(self.knob("n_days")):
             if day:
                 var = omega + (alpha + gamma * (shock_prev < 0)) * shock_prev ** 2 + beta * var
-            sigma = math.sqrt(var)
-            shock_prev = sigma * self.shock(rng)
-            if day:
+                shock_prev = math.sqrt(var) * self.shock(rng)
                 price *= math.exp(self.knob("mu") + shock_prev)
+            sigma = math.sqrt(var)
             records.append({
                 "instrument": name, "contract": f"{name}-{day:06d}", "group": f"{name}:{day}",
                 "asof_ms": self.knob("start_ms") + day * _DAY_MS,

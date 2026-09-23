@@ -20,7 +20,6 @@ family's, not re-implemented. Stdlib only.
 
 from __future__ import annotations
 
-import math
 
 from dskit.pipeline.distribution_scores import (
     DEFAULT_OUTCOME_FIELD,
@@ -30,6 +29,7 @@ from dskit.pipeline.distribution_scores import (
 from dskit.pipeline.fitted import FittedTransform
 from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import check_int_param
+from dskit.pipeline.records import number_ok
 
 __all__ = ["DEFAULT_N_SAMPLES", "EmpiricalLocationScale", "REFERENCE_SCALE_FIELD"]
 
@@ -45,10 +45,8 @@ DEFAULT_SCALE_MULTIPLIER = 1.0
 
 
 def _number(value):
-    """``value`` as a float when it is a finite non-boolean number, else ``None``."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return float(value) if math.isfinite(value) else None
+    """``value`` as a float when :func:`records.number_ok` accepts it, else ``None``."""
+    return float(value) if number_ok(value) else None
 
 
 class EmpiricalLocationScale(FittedTransform):
@@ -208,7 +206,48 @@ class EmpiricalLocationScale(FittedTransform):
             )
         dist = SampleDistribution(z)
         n = params.get("n_samples", DEFAULT_N_SAMPLES)
-        return {"shape": [dist.quantile((k + 0.5) / n) for k in range(n)], "n_fit": len(z)}
+        return {"shape": [dist.quantile((k + 0.5) / n) for k in range(n)], "n_fit": len(z),
+                "describes": self.described_knobs()}
+
+    def described_knobs(self):
+        """Return the knobs that DESCRIBE the fitted state.
+
+        The label, its reference scale and the draw count define what the
+        shape means; a restore under different values would score outcomes
+        in one unit against draws fitted in another.
+
+        Returns
+        -------
+        dict
+            Knob name to effective value.
+        """
+        return {
+            "label": self.params["label"],
+            "scale_field": self.params["scale_field"],
+            "scale_multiplier": self.params.get("scale_multiplier", DEFAULT_SCALE_MULTIPLIER),
+            "n_samples": self.params.get("n_samples", DEFAULT_N_SAMPLES),
+        }
+
+    def state_problems(self, state):
+        """Refuse a restored state fitted under different describing knobs.
+
+        Parameters
+        ----------
+        state : dict
+            The restored state.
+
+        Returns
+        -------
+        list of str
+            One problem per disagreeing knob.
+        """
+        stored = state.get("describes")
+        if not isinstance(stored, dict):
+            return ["restored state does not record the knobs that describe it"]
+        return [
+            f"{knob}={value!r} contradicts the restored state's {stored.get(knob)!r}"
+            for knob, value in self.described_knobs().items() if stored.get(knob) != value
+        ]
 
     def apply_state(self, state, rows, params):
         """Attach draws, the standardized outcome and the divisor to each row.

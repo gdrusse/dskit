@@ -32,9 +32,18 @@ def test_path_has_declared_scale_fat_tails_and_leverage():
     z = [r / rec["cond_vol"] for r, rec in zip(rets, records[1:])]
     kurt = statistics.fmean([v ** 4 for v in z]) / statistics.fmean([v ** 2 for v in z]) ** 2
     assert kurt > 3.5
-    after_down = [records[i + 1]["cond_vol"] for i, r in enumerate(rets[:-1]) if r < -0.01]
-    after_up = [records[i + 1]["cond_vol"] for i, r in enumerate(rets[:-1]) if r > 0.01]
+    # rets[i] is day i+1's shock; the variance it drives is day i+2's
+    after_down = [records[i + 2]["cond_vol"] for i, r in enumerate(rets[:-1]) if r < -0.01]
+    after_up = [records[i + 2]["cond_vol"] for i, r in enumerate(rets[:-1]) if r > 0.01]
     assert statistics.fmean(after_down) > statistics.fmean(after_up)
+
+
+def test_day_zero_is_the_start_level_at_unconditional_variance():
+    first = SynthGjrPaths("m", {"n_days": 3, "s0": 50.0}).run(None, {})["records"][0]
+    d = GJR_DEFAULTS
+    assert first["close"] == 50.0
+    assert first["cond_vol"] == pytest.approx(
+        math.sqrt(d["omega"] / (1 - d["alpha"] - d["gamma"] / 2 - d["beta"])))
 
 
 def test_fingerprint_and_edge_cover_every_knob():

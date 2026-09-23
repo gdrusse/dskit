@@ -19,6 +19,8 @@ def test_leg_intrinsic_owns_both_numeric_types():
     assert leg_intrinsic("put", 100.0, 90.0) == 10.0 and leg_intrinsic("put", 100.0, 110.0) == 0.0
     assert leg_intrinsic("call", Decimal("100"), Decimal("104.5")) == Decimal("4.5")
     assert leg_intrinsic("call", Decimal("100"), Decimal("90")) == Decimal("0")
+    out_of_money = leg_intrinsic("put", Decimal("100"), Decimal("104.25"))
+    assert isinstance(out_of_money, Decimal) and str(out_of_money) == "0"
 
 
 def test_strike_z_inverts_the_geometry():
@@ -52,6 +54,12 @@ def test_evaluate_probabilities_and_realized_outcome():
     assert geometry.evaluate(draws, None, 100.0, 0.05)["realized_pnl"] is None
 
 
+def test_region_bounds_are_inclusive_at_the_strikes():
+    out = CondorGeometry(*GEOM).evaluate([-2.0, 2.0, 0.0, -1.0], None, 100.0, 0.05)
+    assert out["p_beyond_wings"] == pytest.approx(0.5)
+    assert out["p_full_credit"] == pytest.approx(0.5)
+
+
 def test_cvar_is_the_worst_tail_mean():
     geometry = CondorGeometry([-2.0, -1.0, 1.0, 2.0], 0.3, 0.8)
     assert geometry.cvar([5, 1, 2, 3, 4, -1, 0, 6, 7, 8]) == pytest.approx(-0.5)
@@ -76,7 +84,7 @@ def _rows():
     return [{"asof_ms": i, "contract": f"C{i}", "close": 100.0, "reference_scale": 0.05,
              "samples": [-1.5, 0.0, 0.5, 2.5], "outcome": 0.0 if i % 2 else 3.0}
             for i in range(20)] + [{"asof_ms": 30, "contract": "x", "close": 100.0,
-                                    "reference_scale": None, "samples": None, "outcome": None}]
+                                    "reference_scale": 0.05, "samples": [0.0], "outcome": None}]
 
 
 PARAMS = {"split": "val", "strikes_z": GEOM[0], "credit_fraction": 0.3}
@@ -86,16 +94,20 @@ def test_report_node_aggregates_the_split():
     out = CondorDistributionReport("condor", dict(PARAMS)).run(
         SimpleNamespace(splits=_Split()), {"forecasts": _rows()})
     metrics = out["metrics"]
-    assert metrics["n"] == 10 and metrics["n_realized"] == 10
+    assert metrics["n"] == 10 and metrics["n_skipped_unscorable"] == 1
     assert metrics["forecast_p_full_credit"] == pytest.approx(0.5)
     assert metrics["forecast_p_beyond_wings"] == pytest.approx(0.25)
     assert metrics["realized_full_credit_rate"] == pytest.approx(0.5)
+    k = [100.0 * math.exp(0.05 * z) for z in GEOM[0]]
+    call_loss = 0.3 - (k[3] - k[2]) / min(k[1] - k[0], k[3] - k[2])
+    assert metrics["realized_cvar"] == pytest.approx(call_loss)
+    assert metrics["realized_mean_pnl"] == pytest.approx((0.3 + call_loss) / 2)
     assert out["report"].value["decision_eligible"] is False
     assert all(math.isfinite(v) for v in metrics.values())
 
 
 def test_report_node_refuses_empty_split_and_bad_params():
-    with pytest.raises(ValueError, match="no usable forecast"):
+    with pytest.raises(ValueError, match="forecast and an outcome"):
         CondorDistributionReport("c", dict(PARAMS, split="test")).run(
             SimpleNamespace(splits=_Split()), {"forecasts": _rows()})
     for bad in ({"split": "x"}, {"strikes_z": [1, 2]}, {"credit_fraction": 0},

@@ -34,7 +34,7 @@ from abc import ABC, abstractmethod
 from statistics import NormalDist
 from types import SimpleNamespace
 
-from dskit.pipeline.records import cluster_of
+from dskit.pipeline.records import cluster_of, number_ok
 from dskit.pipeline.node import JsonArtifact, Node, check_int_param, reject_unknown_params
 from dskit.pipeline.split_policy import SPLIT_NAMES
 
@@ -42,6 +42,7 @@ __all__ = [
     "BerkowitzTest",
     "CalibrationTest",
     "Crps",
+    "DEFAULT_MIN_ROWS",
     "DEFAULT_OUTCOME_FIELD",
     "DEFAULT_PIT_BINS",
     "DEFAULT_SAMPLES_FIELD",
@@ -63,16 +64,10 @@ DEFAULT_OUTCOME_FIELD = "outcome"
 #: PIT histogram resolution, unless a document says otherwise.
 DEFAULT_PIT_BINS = 10
 
+#: Fewest scorable rows a score node accepts, unless a document says otherwise.
+DEFAULT_MIN_ROWS = 1
+
 _STANDARD_NORMAL = NormalDist()
-
-
-def _finite(value):
-    """Whether ``value`` is a real, finite, non-boolean number."""
-    return (
-        not isinstance(value, bool)
-        and isinstance(value, (int, float))
-        and math.isfinite(value)
-    )
 
 
 def row_in_split(ctx, row, split):
@@ -84,8 +79,8 @@ def row_in_split(ctx, row, split):
 
     Parameters
     ----------
-    ctx : NodeContext or None
-        The run frame; with no splits every row belongs to every split.
+    ctx : NodeContext
+        The run frame; its ``splits`` must be materialized.
     row : dict
         A forecast row.
     split : str
@@ -95,9 +90,18 @@ def row_in_split(ctx, row, split):
     -------
     bool
         Whether the row is in ``split``.
+
+    Raises
+    ------
+    ValueError
+        When the run materialized no splits: scoring "val" over every row
+        would score the fit rows too, the leak the split exists to refuse.
     """
-    if ctx is None or ctx.splits is None:
-        return True
+    if getattr(ctx, "splits", None) is None:
+        raise ValueError(
+            f"split {split!r} was declared but the run materialized no splits — "
+            "every row would be scored, fit rows included"
+        )
     frame = SimpleNamespace(asof_ms=row.get("asof_ms"), cluster=cluster_of(row))
     return ctx.splits.split_of(frame) == split
 
@@ -126,7 +130,7 @@ class SampleDistribution:
         values = list(samples)
         if not values:
             raise ValueError("samples must hold at least one draw")
-        bad = [v for v in values if not _finite(v)]
+        bad = [v for v in values if not number_ok(v)]
         if bad:
             raise ValueError(f"samples must be finite numbers, got {bad[:3]!r}")
         self.samples = tuple(sorted(float(v) for v in values))
@@ -168,7 +172,7 @@ class SampleDistribution:
         ValueError
             When ``p`` is outside ``[0, 1]``.
         """
-        if not _finite(p) or not 0.0 <= p <= 1.0:
+        if not number_ok(p) or not 0.0 <= p <= 1.0:
             raise ValueError(f"p must be in [0, 1], got {p!r}")
         index = max(0, math.ceil(p * len(self.samples)) - 1)
         return self.samples[index]
@@ -365,7 +369,7 @@ class ThresholdBrier(ScoringRule):
 
     def __init__(self, thresholds):
         values = list(thresholds) if isinstance(thresholds, (list, tuple)) else []
-        if not values or any(not _finite(t) for t in values):
+        if not values or any(not number_ok(t) for t in values):
             raise ValueError(
                 f"thresholds must be a non-empty list of finite numbers, got {thresholds!r}"
             )
@@ -467,10 +471,16 @@ class PitCalibration(CalibrationTest):
 
     @staticmethod
     def _pvalue(stat, m):
-        """Stephens' asymptotic Kolmogorov survival probability."""
+        """Stephens-scaled Kolmogorov survival, by the series that converges at each lambda."""
         lam = (math.sqrt(m) + 0.12 + 0.11 / math.sqrt(m)) * stat
-        if lam < 1e-3:
+        if lam <= 0.0:
             return 1.0
+        if lam < 1.18:  # the alternating series converges too slowly here; use its dual
+            cdf = math.sqrt(2.0 * math.pi) / lam * sum(
+                math.exp(-((2 * k - 1) ** 2) * math.pi ** 2 / (8.0 * lam * lam))
+                for k in range(1, 101)
+            )
+            return min(1.0, max(0.0, 1.0 - cdf))
         total = sum(
             (-1) ** (k - 1) * math.exp(-2.0 * k * k * lam * lam) for k in range(1, 101)
         )
@@ -483,6 +493,9 @@ class BerkowitzTest(CalibrationTest):
     Fits ``z_t = c + rho * z_{t-1} + e_t``, ``e ~ N(0, sigma^2)`` by
     conditional maximum likelihood and compares it with ``c = 0, rho = 0,
     sigma = 1``; the statistic is chi-squared with 3 degrees of freedom.
+    Like :class:`PitCalibration` it assumes the PITs are a proper
+    sequence; overlapping-horizon forecasts induce the very dependence
+    ``rho`` detects, so read it as a diagnostic on overlapping rows.
 
     Examples
     --------
@@ -591,7 +604,10 @@ class ScoreDistributions(Node):
             problems.append(
                 f"split must name one of {list(SPLIT_NAMES)}, got {params.get('split')!r}"
             )
-        problems.extend(ThresholdWeightedCrps.interval_problems(params.get("weight_intervals")))
+        if "weight_intervals" not in params:
+            problems.append("weight_intervals is required — the scored region must be stated")
+        else:
+            problems.extend(ThresholdWeightedCrps.interval_problems(params["weight_intervals"]))
         if "thresholds" in params:
             try:
                 ThresholdBrier(params["thresholds"])
@@ -602,7 +618,7 @@ class ScoreDistributions(Node):
             if not isinstance(value, str) or not value:
                 problems.append(f"{knob} must be a non-empty string, got {value!r}")
         check_int_param(problems, "pit_bins", params.get("pit_bins", DEFAULT_PIT_BINS), ge=2)
-        check_int_param(problems, "min_rows", params.get("min_rows", 1), ge=1)
+        check_int_param(problems, "min_rows", params.get("min_rows", DEFAULT_MIN_ROWS), ge=1)
         return problems
 
     def validate_inputs(self, inputs):
@@ -653,7 +669,7 @@ class ScoreDistributions(Node):
         for row in rows:
             if not row_in_split(ctx, row, self.params["split"]):
                 skipped["other_split"] += 1
-            elif not _finite(row.get(outcome_field)):
+            elif not number_ok(row.get(outcome_field)):
                 skipped["no_outcome"] += 1
             elif row.get(samples_field) is None:
                 skipped["no_forecast"] += 1
@@ -682,7 +698,7 @@ class ScoreDistributions(Node):
             When fewer than ``min_rows`` rows are scorable.
         """
         pairs, skipped = self._scored_rows(ctx, inputs["forecasts"])
-        floor = self.params.get("min_rows", 1)
+        floor = self.params.get("min_rows", DEFAULT_MIN_ROWS)
         if len(pairs) < floor:
             raise ValueError(
                 f"{self.key}: {len(pairs)} scorable row(s) in split "

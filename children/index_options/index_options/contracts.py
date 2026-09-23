@@ -101,7 +101,7 @@ def leg_intrinsic(right, strike, level):
         for a call, in the inputs' type.
     """
     gap = strike - level if right == "put" else level - strike
-    return max(gap, gap - gap)  # gap - gap: a zero of the inputs' own type
+    return max(type(gap)(0), gap)
 
 
 def _amount_text(value):

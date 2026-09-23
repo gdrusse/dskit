@@ -1,15 +1,18 @@
 """EmpiricalLocationScale: the first sample-set model rung (ADR-0168)."""
 
+import os
 import random
 
 import pytest
 
 from dskit.pipeline.base import ConfigError, TimeSplitConfig
+from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.distribution_models import (
     REFERENCE_SCALE_FIELD,
     EmpiricalLocationScale,
 )
 from dskit.pipeline.distribution_scores import SampleDistribution
+from dskit.pipeline.fitted import SIDECAR_NAME
 from dskit.pipeline.node import NodeContext
 
 DAY = 24 * 60 * 60 * 1000
@@ -68,12 +71,11 @@ def test_relative_scale_hook_stretches_the_shape(ctx):
     assert doubled[3]["samples"] == pytest.approx([2 * q for q in base[3]["samples"]])
 
 
-def test_shape_quantiles_track_the_fit_distribution(ctx):
-    rows = EmpiricalLocationScale("m", dict(PARAMS, n_samples=200)).run(
+def test_shape_is_exactly_the_fit_splits_midpoint_quantiles(ctx):
+    rows = EmpiricalLocationScale("m", dict(PARAMS, n_samples=8)).run(
         ctx, {"rows": _rows()})["rows"]
-    z = [r["y"] / r["vol"] for r in _rows()[:40]]
-    dist = SampleDistribution(rows[0]["samples"])
-    assert dist.quantile(0.5) == pytest.approx(SampleDistribution(z).quantile(0.5), abs=0.2)
+    z = SampleDistribution([r["y"] / r["vol"] for r in _rows()[:40]])
+    assert rows[0]["samples"] == [z.quantile((k + 0.5) / 8) for k in range(8)]
 
 
 def test_load_mode_restores_the_same_forecasts(ctx, tmp_path):
@@ -83,6 +85,17 @@ def test_load_mode_restores_the_same_forecasts(ctx, tmp_path):
     loaded = EmpiricalLocationScale("model", dict(PARAMS), mode="load",
                                     artifact=str(artifacts)).run(ctx, {"rows": _rows()})
     assert loaded["rows"] == out["rows"]
+
+
+@pytest.mark.parametrize("changed", [
+    {"scale_multiplier": 10.0}, {"n_samples": 7}, {"label": "vol"}, {"scale_field": "y"},
+])
+def test_load_refuses_a_document_that_misdescribes_the_state(ctx, tmp_path, changed):
+    EmpiricalLocationScale("model", dict(PARAMS)).run(ctx, {"rows": _rows()})
+    node = EmpiricalLocationScale("model", dict(PARAMS, **changed), mode="load",
+                                  artifact=str(tmp_path / "artifacts" / "model"))
+    with pytest.raises(ValueError, match="contradicts"):
+        node.run(ctx, {"rows": _rows()})
 
 
 def test_too_few_usable_fit_rows_refuses(ctx):
@@ -99,3 +112,27 @@ def test_invalid_params_refuse(bad):
     params = {k: v for k, v in dict(PARAMS, **bad).items() if v is not None}
     with pytest.raises(ConfigError):
         EmpiricalLocationScale("m", params)
+
+
+def _conformance_probes(tmp_path):
+    splits = TimeSplitConfig(train_end_ms=10 * DAY, val_end_ms=20 * DAY, test_end_ms=30 * DAY)
+    fit_ctx = NodeContext(name="c", asof="2026-01-01", run_dir=str(tmp_path / "fit"),
+                          splits=splits, splits_info=splits.to_obj())
+    node = EmpiricalLocationScale("model", dict(PARAMS))
+    carrier = node.run(fit_ctx, {"rows": _rows()})["transform"]
+    return {"distribution-empirical": NodeProbe(
+        params=dict(PARAMS), required=("label", "scale_field"),
+        inputs={"rows": _rows()}, stream_ports=("rows",), runnable=True, ctx=fit_ctx,
+        load_artifact=os.path.join(node.artifact_dir(fit_ctx), SIDECAR_NAME),
+        verify_loaded=lambda out: (out["metrics"]["n_fit_rows"] == 0
+                                   and out["transform"].state == carrier.state),
+    )}
+
+
+TestEmpiricalLocationScaleConformance = conformance_suite(
+    registry=(("distribution-empirical", EmpiricalLocationScale),),
+    module="dskit.pipeline.distribution_models",
+    probes=_conformance_probes,
+    expected_roles={"distribution-empirical": "fitted_transform"},
+    name="TestEmpiricalLocationScaleConformance",
+)

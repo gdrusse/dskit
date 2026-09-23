@@ -199,7 +199,8 @@ class CondorDistributionReport(Node):
     realized value, the reference scale) and a forward level per row, maps
     the declared ``strikes_z`` to strikes at each entry, and reports mean
     forecast expected P&L, credit-keep and beyond-wing probabilities and
-    CVaR beside their realized counterparts — all per unit of narrower wing.
+    CVaR beside their realized counterparts over the SAME rows (those with
+    an outcome) — all per unit of narrower wing.
     Role ``score``: it measures, and a synthetic report is never
     decision-eligible.
 
@@ -280,20 +281,23 @@ class CondorDistributionReport(Node):
         return []
 
     def _entries(self, ctx, rows):
-        """Evaluate every in-split row that carries a forecast, forward and scale."""
+        """Evaluate every in-split row with a forecast, forward, scale and outcome."""
         geometry = CondorGeometry(self.params["strikes_z"], self.params["credit_fraction"],
                                   self.params.get("cvar_alpha", self.DEFAULT_CVAR_ALPHA))
         forward_field = self.params.get("forward_field", self.DEFAULT_FORWARD_FIELD)
         samples = self.params.get("samples_field", DEFAULT_SAMPLES_FIELD)
         outcome = self.params.get("outcome_field", DEFAULT_OUTCOME_FIELD)
-        entries = []
+        entries, unscored = [], 0
         for row in rows:
-            usable = (row.get(samples) and row.get(REFERENCE_SCALE_FIELD)
-                      and row.get(forward_field))
-            if usable and row_in_split(ctx, row, self.params["split"]):
-                entries.append(geometry.evaluate(row[samples], row.get(outcome),
-                                                 row[forward_field], row[REFERENCE_SCALE_FIELD]))
-        return geometry, entries
+            if not row_in_split(ctx, row, self.params["split"]):
+                continue
+            if not (row.get(samples) and row.get(REFERENCE_SCALE_FIELD)
+                    and row.get(forward_field) and row.get(outcome) is not None):
+                unscored += 1
+                continue
+            entries.append(geometry.evaluate(row[samples], row[outcome],
+                                             row[forward_field], row[REFERENCE_SCALE_FIELD]))
+        return geometry, entries, unscored
 
     def run(self, ctx, inputs):
         """Aggregate forecast and realized condor outcomes.
@@ -315,29 +319,26 @@ class CondorDistributionReport(Node):
         ValueError
             When no in-split row carries a usable forecast.
         """
-        geometry, entries = self._entries(ctx, inputs["forecasts"])
+        geometry, entries, unscored = self._entries(ctx, inputs["forecasts"])
         if not entries:
-            raise ValueError(f"{self.key}: no usable forecast row in split "
-                             f"{self.params['split']!r}")
-        realized = [e["realized_pnl"] for e in entries if e["realized_pnl"] is not None]
+            raise ValueError(f"{self.key}: no in-split row carries a forecast and an "
+                             f"outcome in split {self.params['split']!r}")
+        realized = [e["realized_pnl"] for e in entries]
 
         def mean(key):
             return sum(e[key] for e in entries) / len(entries)
 
         metrics = {
-            "n": len(entries), "n_realized": len(realized),
+            "n": len(entries), "n_skipped_unscorable": unscored,
             "forecast_expected_pnl": mean("expected_pnl"),
             "forecast_p_full_credit": mean("p_full_credit"),
             "forecast_p_beyond_wings": mean("p_beyond_wings"),
             "forecast_cvar": mean("cvar"),
+            "realized_mean_pnl": sum(realized) / len(realized),
+            "realized_full_credit_rate": sum(
+                p >= geometry.credit_fraction for p in realized) / len(realized),
+            "realized_cvar": geometry.cvar(realized),
         }
-        if realized:
-            metrics.update({
-                "realized_mean_pnl": sum(realized) / len(realized),
-                "realized_full_credit_rate": sum(
-                    p >= geometry.credit_fraction for p in realized) / len(realized),
-                "realized_cvar": geometry.cvar(realized),
-            })
         report = {"kind": "synthetic_distribution_diagnostic", "decision_eligible": False,
                   "units": "narrower wing width", "strikes_z": list(geometry.strikes_z),
                   "credit_fraction": geometry.credit_fraction,
