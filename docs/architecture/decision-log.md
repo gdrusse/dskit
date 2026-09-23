@@ -19924,13 +19924,26 @@ that its caller held a verified raw fixture or environment identity.
 
 ## ADR-0172 — one-shot verified synthetic v2 projection input
 
-**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED (2026-09-23).
+**Status:** IMPLEMENTED AND CLOSED 2026-09-23 at
+`b65564416e4fc8b8981f66de209d14e2bf11dea0`. The required Phase-0 matrix
+(evidence `docs/evidence/closeout/0204-intraday-f3-v2-projection-input-phase0.json`)
+was completed with 16 additional adversarial tests covering wrong/v1
+proof refusal, prepare- and consume-time state-mutation tamper via the
+retained event's backing dict, terminal post-consume failure, contended
+concurrent double consume, recursive executable-dependency replacement
+(`json.dumps`, `hashlib.sha256`, `gc.get_referents`, an in-place nested
+non-top-level helper, and wholesale schema-table replacement), and an
+exact structural effect-parity check against two direct raw-verifier
+calls. No implementation file changed — the existing bridge already
+satisfied every new adversarial test. Two fresh, sequential, independent
+final lenses (correctness/authority; tests/integration, including active
+mutation testing) were each 0C/0M/0m/0N; the bounded final regression set
+was 1,978 passed and 1 expected xfail. Evidence:
+`docs/evidence/closeout/0206-intraday-adr0172-review-exit.json`.
 ADR-0173 is closed at `80c2bb2d5f467770ef65f6c348264996c2cb6232`
-and is now the sole environment-bound v2 raw-publication/root-proof authority.
-The final independent re-review of amended ADR blob
-`e6a194c12329813ad81ae2d8615570d0ea6c9502` returned 0C/0M/0m/0N; evidence:
-`docs/evidence/closeout/0204-intraday-f3-v2-projection-input-phase0.json`.
-Evidence 0200 remains historical only.
+and is the sole environment-bound v2 raw-publication/root-proof authority.
+Evidence 0200 remains historical only. This closure grants no
+envelope-writer, replay, backtest, paper/live, or deployment authority.
 
 **Context.** ADR-0169 retains exact verified `raw-event/v2` values inside
 `VerifiedSyntheticDatasetFixture`; `NonAuthorizingRawRootProof.verify`
