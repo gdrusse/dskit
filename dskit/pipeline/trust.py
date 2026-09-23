@@ -9004,7 +9004,11 @@ def _build_synthetic_v2_raw_publication():
             and record[2] is provisional,
             "provisional synthetic v2 raw binding required",
         )
-        return raw_writer(self, proof, signed, roster)
+        try:
+            return raw_writer(self, proof, signed, roster)
+        except BaseException:
+            record[2] = failed
+            raise
 
     def require_dispatch(*, verifying=False):
         refuse(
@@ -9238,8 +9242,8 @@ def _build_synthetic_v2_raw_publication():
                 and record[2] is provisional,
                 "synthetic v2 raw binding changed",
             )
-            writer_invoked = True
             result = v2_writer(self, proof, signed, roster)
+            writer_invoked = True
             require_dispatch()
             refuse(
                 records.get(self) is record
@@ -9265,7 +9269,7 @@ def _build_synthetic_v2_raw_publication():
             )
             return result
         except BaseException:
-            if writer_invoked:
+            if writer_invoked or record[2] is failed:
                 record[2] = failed
             else:
                 records.pop(self, None)
