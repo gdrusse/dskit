@@ -862,9 +862,51 @@ class _CapturingEquityReplay(EquityReplay):
         return batch
 
 
+class _WindowSpyingEquityReplay(EquityReplay):
+    """Record the ``(window_start_ms, window_end_ms)`` used on every tick's cash-flow submission.
+
+    ``test_a_full_replay_submits_the_configured_cash_flows_into_its_own_ledger`` proves the
+    final ledger content is right, but the ledger's own id-based idempotence (restart safety,
+    ``dskit.production.cashflows``) silently absorbs a resubmission of an already-appended
+    record -- so a final-state assertion alone cannot tell "window advanced correctly" apart
+    from "window never advanced, but re-submitting the same records every tick was harmless".
+    This subclass asserts the window sequence itself, independent of that safety net.
+    """
+
+    def __init__(self, policy, cash_flow_policy):
+        super().__init__(policy, cash_flow_policy)
+        self.cash_flow_windows = []
+
+    def _submit_due_cash_flows(self, tick_at_ms):
+        window_start_ms = self._cash_flow_window_ms
+        super()._submit_due_cash_flows(tick_at_ms)
+        if self._cash_flow_composer is not None:
+            self.cash_flow_windows.append((window_start_ms, self._cash_flow_window_ms))
+
+
 _CF_DAY0_MS = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
 _CF_DAY1_MS = _CF_DAY0_MS + 86_400_000
 _CF_DAY2_MS = _CF_DAY0_MS + 2 * 86_400_000
+
+
+def test_the_cash_flow_window_advances_by_exactly_one_tick_each_call():
+    policy = _policy()
+    replay = _WindowSpyingEquityReplay(policy, _cash_flow_policy())
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.1),
+        _bar("AAA", _CF_DAY0_MS + 60_000, 10.1, 10.2),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.1),
+    ]
+    replay.run(bars, [])
+    assert replay.cash_flow_windows == [
+        (_CF_DAY0_MS, _CF_DAY0_MS + 1),
+        (_CF_DAY0_MS + 1, _CF_DAY0_MS + 60_000 + 1),
+        (_CF_DAY0_MS + 60_000 + 1, _CF_DAY1_MS + 1),
+    ]
+    # Contiguous: each window's end is exactly the next window's start -- no gap, no overlap.
+    windows = replay.cash_flow_windows
+    for (_, end), (next_start, _) in zip(windows, windows[1:]):
+        assert end == next_start
 
 
 def test_a_full_replay_submits_the_configured_cash_flows_into_its_own_ledger():

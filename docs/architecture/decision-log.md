@@ -20857,32 +20857,50 @@ trading, no deployment.
 
 ## ADR-0176 — a configured cash-flow schedule for the child's equity replay
 
-**Status:** PHASE-0 CLEAN (REVISION 3) — CANDIDATE IMPLEMENTED, AWAITING
-TWO INDEPENDENT FINAL REVIEWS. A fresh independent design skeptic
-reviewed point 3.5 cold, verified every code claim against the actual
-source (`TICK_PHASES` order, `_TapeCadence` strict ascent, the decider
-install site, `RecurringCashFlowSchedule`/`materialize` DST and
-half-open-window behavior, the `reconcile.py` direct-`Ledger.append`
-precedent, the partition proof): 0 Critical, 0 Major, GO for RED. RED
-confirmed against the pre-3.5 tree (the three new end-to-end tests failed
-with `AttributeError: no attribute '_cash_flow_ledger'`, exactly as
-expected — no other new test changed behavior since points 1–3 were
-already implemented and Phase-0 clean). Minimal implementation added:
-three new `None`-defaulted instance attributes on `EquityReplay.__init__`,
-population of those three inside `_run_loop` right after `bundles_for`
-succeeds, and one new private helper (`_submit_due_cash_flows`) called
-from the first line of the existing `read_entry` decider hook — exactly
-as specified, nothing else touched. Full child replay suite: 44 passed, 1
-skipped (unchanged skip). Bounded regression (`tests/production/test_
-cashflows.py`, `test_compose.py`, `test_state.py`, `test_ledger.py`,
-`test_reconcile.py`, `test_loop.py`, `test_purity.py`, `test_oop.py`,
-`test_producers.py`): 1113 passed. Purity gates
-(`tests/pipeline/test_purity.py`, `tests/production/test_purity.py`): 43
-passed. Ruff and `git diff --check`: clean. The wider child suite showed
-35 unrelated pre-existing failures (pyomo real-solver absence, stale
-`approved_inventory_sha256` fixture pins, MLflow/model-zoo fixture
-drift) — reproduced identically with this ADR's changes stashed out,
-confirming non-regression.
+**Status:** PHASE-0 CLEAN (REVISION 3) — ONE FINAL REVIEW LENS CLEAN, ONE
+TEST-GAP FIX APPLIED, AWAITING RE-REVIEW. A fresh independent design
+skeptic reviewed point 3.5 cold pre-implementation: 0 Critical, 0 Major,
+GO for RED. RED confirmed against the pre-3.5 tree (the three new
+end-to-end tests failed with `AttributeError: no attribute
+'_cash_flow_ledger'`). Minimal implementation: three `None`-defaulted
+instance attributes on `EquityReplay.__init__`, populated in `_run_loop`
+right after `bundles_for` succeeds, and one new private helper
+(`_submit_due_cash_flows`) called from `read_entry`'s first line —
+nothing else touched.
+
+Two independent final-review lenses ran against the first candidate
+(`da83d0b`). Correctness/authority: 0 Critical/0 Major/0 Minor/0 Nit, GO
+— independently traced the authorization path (`Ledger.append_many` →
+`SeriesState.apply` → `_fold_cash_flow` → `_check_replay_cash_flow` →
+`_replay_authorizer`, bound from the exact composer that produced the
+record) and confirmed no core module changed. Tests/integration: NO-GO,
+1 Major — of 4 mutations applied, 3 were caught (window-boundary
+off-by-one, wrong anchor-window start, single-record submission skip)
+but one was not: removing the trailing `self._cash_flow_window_ms =
+window_end_ms` assignment (the window never advances) passed every
+existing test, because the ledger's own id-based idempotence (a
+deliberate restart-safety property of `dskit.production.cashflows`,
+already covered by that module's own tests) silently absorbs the
+resulting resubmission of already-appended records — final-ledger-content
+assertions alone cannot distinguish "window advanced correctly" from
+"window frozen, but harmlessly re-submitting the same records every
+tick". Accepted as a genuine test-coverage gap, not disputed. Fix:
+added `_WindowSpyingEquityReplay` and
+`test_the_cash_flow_window_advances_by_exactly_one_tick_each_call` to
+`children/intraday_equities/tests/test_replay.py`, asserting the exact
+`(window_start_ms, window_end_ms)` sequence directly — independent of
+ledger idempotence. Verified against the missed mutation before fixing
+(genuine catch: the mutated window stayed frozen at
+`(start_ms, start_ms)`), then the mutation was reverted (`git diff`
+confirmed empty on the implementation file) before this fix was written
+up. Full child replay suite: 46 passed (0 skipped — the one prior skip
+was `pytest.importorskip("numpy")`, and numpy is now installed in this
+environment). Bounded regression (the same nine production suites plus
+`tests/pipeline/test_purity.py`): 1131 passed. Ruff and `git diff
+--check`: clean. The implementation file (`replay.py`) is unchanged from
+the reviewed candidate; only the test file gained the new spy/test.
+Awaiting a fresh tests/integration re-review per skeptic-review.md's
+"test changes reset prior clean lenses" rule.
 
 **Status history.** Revision 3 adds Decision point 3.5 (below): during Phase-0
 matrix preparation it became clear Revision 2's Decision (composer wired
