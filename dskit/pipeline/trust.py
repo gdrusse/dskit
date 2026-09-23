@@ -8071,7 +8071,7 @@ class _SyntheticRawPublisher:
     """One-shot synthetic raw F4 publisher from a validated fixture proof."""
 
     __slots__ = ("_preflight", "_roster_publisher", "_reserve", "_broker",
-                 "_closed", "_retained", "_root_pis_pairs")
+                 "_closed", "_retained", "_root_pis_pairs", "__weakref__")
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("the synthetic raw publisher is final")
@@ -8506,6 +8506,85 @@ class _SyntheticRawPublisher:
             if connection.in_transaction:
                 connection.execute("ROLLBACK")
 
+    def _publish_common(self, proof, signed, roster):
+        object.__setattr__(proof, "_used", True)
+        try:
+            manifest_bytes = self._manifest(proof, signed[0])
+            root, producer = self._identity(signed[0])
+            self._advance(signed, roster, proof, "SESSION_STARTED")
+            session = self._broker.start_producer_session(
+                run_identity=producer["run_identity"],
+                process_measurement_sha256=_digest(
+                    b"dskit.synthetic-raw-process/v1"
+                ),
+                runtime_sha256=_digest(
+                    b"dskit.synthetic-raw-runtime/v1"
+                ),
+                plan_sha256=_digest(
+                    b"dskit.synthetic-raw-plan/v1"
+                ),
+            )
+            _hs_refuse(session._run_identity == producer["run_identity"],
+                       "raw F4 run identity mismatch")
+            self._advance(signed, roster, proof, "PRODUCED")
+            members = [{
+                "relative_path": name,
+                "media_type": "application/x-ndjson",
+                "bytes": raw,
+                "file_type": "regular",
+                "link_count": 1,
+            } for name, raw in proof._members]
+            members.append({
+                "relative_path": "raw_event_dataset.json",
+                "media_type": "application/json",
+                "bytes": manifest_bytes,
+                "file_type": "regular",
+                "link_count": 1,
+            })
+            auth_sha = _digest(signed[0])
+            prepared = self._broker.produce(
+                session,
+                producer={key: producer[key] for key in (
+                    "run_identity", "document_sha256", "node", "output",
+                )},
+                root=root, purpose=producer["purpose"],
+                expected_members=tuple(
+                    member["relative_path"] for member in members
+                ),
+                members=members,
+                output_member="raw_event_dataset.json",
+                completed=True, planned=True,
+                transition_nonce="raw-" + auth_sha + "-produced",
+            )
+            self._advance(signed, roster, proof, "SEALED")
+            sealed = self._broker.seal(
+                session, prepared,
+                transition_nonce="raw-" + auth_sha + "-sealed",
+            )
+            self._advance(signed, roster, proof, "PUBLISHED")
+            published = self._broker.publish(
+                session, sealed,
+                transition_nonce="raw-" + auth_sha + "-published",
+            )
+            self._published_facts(
+                published, proof, manifest_bytes, root, producer,
+            )
+            self._advance(signed, roster, proof, "SESSION_ENDED")
+            self._broker.end_session(session)
+            basis_bytes, receipt_bytes = self._issue_receipt(
+                signed, roster, proof, published, manifest_bytes,
+                root, producer,
+            )
+            self._retained = (
+                proof, published, session, signed, roster,
+                manifest_bytes, basis_bytes, receipt_bytes,
+            )
+            self._closed = True
+            return manifest_bytes, basis_bytes, receipt_bytes
+        except Exception:
+            self._quarantine(proof)
+            raise
+
     def publish(self, proof, authorization_bytes, g1, g2, attestation,
                 bootstrap, bg1, bg2, roster_basis, roster_receipt):
         """Publish one raw root or terminalize its signed ID."""
@@ -8585,85 +8664,11 @@ class _SyntheticRawPublisher:
                 ),
                 "raw publisher is v1-only",
             )
-        object.__setattr__(proof, "_used", True)
-        signed = (authorization_bytes, g1, g2, attestation)
-        roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
-        try:
-            manifest_bytes = self._manifest(proof, authorization_bytes)
-            root, producer = self._identity(authorization_bytes)
-            self._advance(signed, roster, proof, "SESSION_STARTED")
-            session = self._broker.start_producer_session(
-                run_identity=producer["run_identity"],
-                process_measurement_sha256=_digest(
-                    b"dskit.synthetic-raw-process/v1"
-                ),
-                runtime_sha256=_digest(
-                    b"dskit.synthetic-raw-runtime/v1"
-                ),
-                plan_sha256=_digest(
-                    b"dskit.synthetic-raw-plan/v1"
-                ),
-            )
-            _hs_refuse(session._run_identity == producer["run_identity"],
-                       "raw F4 run identity mismatch")
-            self._advance(signed, roster, proof, "PRODUCED")
-            members = [{
-                "relative_path": name,
-                "media_type": "application/x-ndjson",
-                "bytes": raw,
-                "file_type": "regular",
-                "link_count": 1,
-            } for name, raw in proof._members]
-            members.append({
-                "relative_path": "raw_event_dataset.json",
-                "media_type": "application/json",
-                "bytes": manifest_bytes,
-                "file_type": "regular",
-                "link_count": 1,
-            })
-            auth_sha = _digest(authorization_bytes)
-            prepared = self._broker.produce(
-                session,
-                producer={key: producer[key] for key in (
-                    "run_identity", "document_sha256", "node", "output",
-                )},
-                root=root, purpose=producer["purpose"],
-                expected_members=tuple(
-                    member["relative_path"] for member in members
-                ),
-                members=members,
-                output_member="raw_event_dataset.json",
-                completed=True, planned=True,
-                transition_nonce="raw-" + auth_sha + "-produced",
-            )
-            self._advance(signed, roster, proof, "SEALED")
-            sealed = self._broker.seal(
-                session, prepared,
-                transition_nonce="raw-" + auth_sha + "-sealed",
-            )
-            self._advance(signed, roster, proof, "PUBLISHED")
-            published = self._broker.publish(
-                session, sealed,
-                transition_nonce="raw-" + auth_sha + "-published",
-            )
-            self._published_facts(
-                published, proof, manifest_bytes, root, producer,
-            )
-            self._advance(signed, roster, proof, "SESSION_ENDED")
-            self._broker.end_session(session)
-            basis_bytes, receipt_bytes = self._issue_receipt(
-                signed, roster, proof, published, manifest_bytes,
-                root, producer,
-            )
-            self._retained = (
-                proof, published, session, signed, roster,
-                manifest_bytes, basis_bytes, receipt_bytes,
-            )
-            self._closed = True
-            return manifest_bytes, basis_bytes, receipt_bytes
-        except Exception:
-            self._quarantine(proof)
-            raise
+        return self._publish_common(
+            proof,
+            (authorization_bytes, g1, g2, attestation),
+            (bootstrap, bg1, bg2, roster_basis, roster_receipt),
+        )
 
     def proof(self):
         """Return only a live read-only proof of retained raw publication."""
@@ -8945,6 +8950,262 @@ class NonAuthorizingRawRootProof:
         })
 
 
+def _build_synthetic_v2_raw_publication():
+    """Install the environment-bound v2 raw route with private authority."""
+    publisher_type = _SyntheticRawPublisher
+    proof_type = NonAuthorizingRawRootProof
+    fixture_type = VerifiedSyntheticDatasetFixture
+    environment_type = _SyntheticEnvironmentIdentity
+    parser = _hs_parse_canonical
+    digest = _digest
+    refuse = _hs_refuse
+    environment_checker = _require_synthetic_tzdata
+    schema_table = DATASET_AUTHORIZATION_EVENT_SCHEMAS
+    fixture_facts_map = _SYNTHETIC_RAW_FIXTURE_FACTS
+    common_writer = publisher_type._publish_common
+    original_verify = proof_type.verify
+    object_getattribute = object.__getattribute__
+    provisional = object()
+    committed = object()
+    failed = object()
+    records = WeakKeyDictionary()
+    anchors = WeakKeyDictionary()
+    v2_authorization_schema = "dskit.dataset-capture-authorization/v2"
+    v2_roster_schema = "dskit.roster-bootstrap-authorization/v2"
+    v2_event_schema = schema_table[v2_authorization_schema]
+
+    def require_dispatch(*, verifying=False):
+        refuse(
+            _require_synthetic_tzdata is environment_checker,
+            "synthetic environment dispatch changed",
+        )
+        refuse(
+            _SyntheticRawPublisher is publisher_type
+            and NonAuthorizingRawRootProof is proof_type
+            and VerifiedSyntheticDatasetFixture is fixture_type
+            and _SyntheticEnvironmentIdentity is environment_type
+            and _hs_parse_canonical is parser
+            and _digest is digest
+            and _hs_refuse is refuse
+            and DATASET_AUTHORIZATION_EVENT_SCHEMAS is schema_table
+            and _SYNTHETIC_RAW_FIXTURE_FACTS is fixture_facts_map
+            and publisher_type._publish_common is common_writer
+            and publisher_type.publish_v2 is publish_v2
+            and (not verifying or proof_type.verify is verify),
+            "synthetic v2 raw publication dispatch changed",
+        )
+
+    def publish_v2(self, proof, environment_identity, authorization_bytes,
+                   g1, g2, attestation, bootstrap, bg1, bg2, roster_basis,
+                   roster_receipt, /):
+        """Publish one environment-bound synthetic raw-event/v2 root."""
+        require_dispatch()
+        refuse(
+            type(self) is publisher_type
+            and not object_getattribute(self, "_closed")
+            and type(proof) is fixture_type
+            and object_getattribute(proof, "_owner")
+            is object_getattribute(self, "_preflight")
+            and object_getattribute(
+                object_getattribute(self, "_preflight"), "_publisher"
+            ) is object_getattribute(self, "_roster_publisher")
+            and not object_getattribute(proof, "_used"),
+            "unused own raw fixture proof required",
+        )
+        fixture_facts = fixture_facts_map.get(proof)
+        refuse(
+            type(fixture_facts) is tuple
+            and len(fixture_facts) == 4
+            and fixture_facts[0]() is proof
+            and fixture_facts[1] is object_getattribute(self, "_preflight")
+            and fixture_facts[2] == v2_event_schema
+            and object_getattribute(proof, "_event_schema") == v2_event_schema
+            and type(object_getattribute(proof, "_intent")) is bytes
+            and digest(object_getattribute(proof, "_intent"))
+            == fixture_facts[3],
+            "exact unused v2 raw fixture proof required",
+        )
+        signed = (authorization_bytes, g1, g2, attestation)
+        roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
+        intent = parser(object_getattribute(proof, "_intent"))
+        names = (
+            "dataset_authorization_sha256", "dataset_g1_sha256",
+            "dataset_g2_sha256", "fixture_attestation_sha256",
+            "bootstrap_authorization_sha256", "bootstrap_g1_sha256",
+            "bootstrap_g2_sha256", "roster_basis_sha256",
+            "roster_receipt_sha256",
+        )
+        refuse(
+            all(
+                type(raw) is bytes and intent.get(name) == digest(raw)
+                for name, raw in zip(
+                    names, (*signed, *roster), strict=True
+                )
+            ),
+            "raw publisher proof authority changed",
+        )
+        authorization = parser(authorization_bytes)
+        bootstrap_value = parser(bootstrap)
+        refuse(
+            type(authorization) is dict
+            and type(bootstrap_value) is dict
+            and authorization.get("schema_version")
+            == v2_authorization_schema
+            and bootstrap_value.get("schema_version") == v2_roster_schema
+            and authorization.get("event_schema") == v2_event_schema
+            and bootstrap_value.get("event_schema") == v2_event_schema
+            and authorization.get("scope") == bootstrap_value.get("scope"),
+            "exact v2 raw publication authorities required",
+        )
+        scope = authorization["scope"]
+        require_dispatch()
+        try:
+            environment_checker(
+                environment_identity, scope["tzdata_version_sha256"]
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(
+                "synthetic environment identity refused"
+            ) from exc
+        require_dispatch()
+        refuse(
+            type(environment_identity) is environment_type
+            and records.get(self) is None
+            and anchors.get(self) is None,
+            "fresh synthetic v2 raw binding required",
+        )
+        record = [weakref_ref(self), environment_identity, provisional]
+        try:
+            records[self] = record
+            anchors[self] = record
+        except BaseException:
+            records.pop(self, None)
+            anchors.pop(self, None)
+            raise
+        writer_invoked = False
+        try:
+            require_dispatch()
+            refuse(
+                records.get(self) is record
+                and anchors.get(self) is record
+                and record[0]() is self
+                and record[1] is environment_identity
+                and record[2] is provisional,
+                "synthetic v2 raw binding changed",
+            )
+            writer_invoked = True
+            result = common_writer(self, proof, signed, roster)
+            require_dispatch()
+            refuse(
+                records.get(self) is record
+                and anchors.get(self) is record
+                and record[0]() is self
+                and record[1] is environment_identity
+                and record[2] is provisional,
+                "synthetic v2 raw binding changed",
+            )
+            record[2] = committed
+            require_dispatch()
+            refuse(
+                records.get(self) is record
+                and anchors.get(self) is record
+                and record[2] is committed,
+                "synthetic v2 raw binding promotion failed",
+            )
+            return result
+        except BaseException:
+            if writer_invoked:
+                record[2] = failed
+            else:
+                records.pop(self, None)
+                anchors.pop(self, None)
+            raise
+
+    def verify(self, authorization_bytes, g1, g2, attestation,
+               bootstrap, bg1, bg2, roster_basis, roster_receipt,
+               manifest_bytes, basis_bytes, receipt_bytes,
+               _under_writer_lock=False):
+        try:
+            publisher = object_getattribute(self, "_publisher")
+            if type(publisher) is not publisher_type:
+                raise TypeError
+            retained = object_getattribute(publisher, "_retained")
+            if type(retained) is not tuple or len(retained) != 8:
+                raise TypeError
+            fixture = retained[0]
+            if type(fixture) is not fixture_type:
+                raise TypeError
+            event_schema = object_getattribute(fixture, "_event_schema")
+        except BaseException:
+            return original_verify(
+                self, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt,
+                manifest_bytes, basis_bytes, receipt_bytes,
+                _under_writer_lock=_under_writer_lock,
+            )
+        if type(event_schema) is not str or event_schema != v2_event_schema:
+            return original_verify(
+                self, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt,
+                manifest_bytes, basis_bytes, receipt_bytes,
+                _under_writer_lock=_under_writer_lock,
+            )
+        require_dispatch(verifying=True)
+        record = records.get(publisher)
+        refuse(
+            type(record) is list
+            and len(record) == 3
+            and anchors.get(publisher) is record
+            and record[0]() is publisher
+            and type(record[1]) is environment_type
+            and record[2] is committed,
+            "committed synthetic v2 raw binding required",
+        )
+        retained_signed = retained[3]
+        refuse(
+            type(retained_signed) is tuple
+            and len(retained_signed) == 4
+            and type(retained_signed[0]) is bytes,
+            "retained v2 raw authority required",
+        )
+        authorization = parser(retained_signed[0])
+        refuse(
+            type(authorization) is dict
+            and authorization.get("schema_version")
+            == v2_authorization_schema
+            and authorization.get("event_schema") == v2_event_schema
+            and type(authorization.get("scope")) is dict
+            and type(
+                authorization["scope"].get("tzdata_version_sha256")
+            ) is str,
+            "retained v2 raw authority required",
+        )
+        require_dispatch(verifying=True)
+        try:
+            environment_checker(
+                record[1],
+                authorization["scope"]["tzdata_version_sha256"],
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(
+                "synthetic environment identity refused"
+            ) from exc
+        require_dispatch(verifying=True)
+        return original_verify(
+            self, authorization_bytes, g1, g2, attestation,
+            bootstrap, bg1, bg2, roster_basis, roster_receipt,
+            manifest_bytes, basis_bytes, receipt_bytes,
+            _under_writer_lock=_under_writer_lock,
+        )
+
+    publisher_type.publish_v2 = publish_v2
+    proof_type.verify = verify
+
+
+_build_synthetic_v2_raw_publication()
+del _build_synthetic_v2_raw_publication
+
+
 class _SyntheticRootPisIssuer:
     """One-shot, nondeployment two-root signed PIS issuer."""
 
@@ -8957,6 +9218,17 @@ class _SyntheticRootPisIssuer:
         _hs_refuse(type(publisher) is _SyntheticRawPublisher
                    and publisher._closed and publisher._retained is not None,
                    "retained raw publisher required")
+        retained = publisher._retained
+        _hs_refuse(
+            type(retained) is tuple
+            and len(retained) == 8
+            and type(retained[0]) is VerifiedSyntheticDatasetFixture
+            and retained[0]._event_schema
+            == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+                "dskit.dataset-capture-authorization/v1"
+            ],
+            "root-PIS issuer is v1-only",
+        )
         self._publisher = publisher
         self._closed = False
         self._retained = None
