@@ -134,6 +134,66 @@ def test_publish_v2_refuses_replaced_weakref_dispatch_before_effect(
     assert roster_publisher._reserve._connection.total_changes == before
 
 
+@pytest.mark.parametrize(
+    "helper_name",
+    (
+        "_manifest",
+        "_identity",
+        "_check_row",
+        "_advance",
+        "_published_facts",
+        "_sign",
+        "_check_signed",
+        "_issue_receipt",
+        "_quarantine",
+    ),
+)
+def test_publish_v2_refuses_replaced_writer_helper_before_any_effect(
+    tmp_path, monkeypatch, helper_name,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    calls = []
+
+    def replacement(*_args, **_kwargs):
+        calls.append(helper_name)
+        return None
+
+    monkeypatch.setattr(
+        trust._SyntheticRawPublisher, helper_name, replacement,
+    )
+    before = (
+        fixture._used,
+        raw_publisher._closed,
+        raw_publisher._retained,
+        roster_publisher._reserve._connection.total_changes,
+        dict(roster_publisher._broker._storage),
+        tuple(roster_publisher._broker._member_events),
+        tuple(roster_publisher._broker._receipt_store._data),
+    )
+    with pytest.raises(ValueError, match="dispatch changed"):
+        raw_publisher.publish_v2(
+            fixture, environment, *signed, *roster
+        )
+    assert calls == []
+    assert before == (
+        fixture._used,
+        raw_publisher._closed,
+        raw_publisher._retained,
+        roster_publisher._reserve._connection.total_changes,
+        dict(roster_publisher._broker._storage),
+        tuple(roster_publisher._broker._member_events),
+        tuple(roster_publisher._broker._receipt_store._data),
+    )
+
+
 def test_captured_common_writer_refuses_v2_without_provisional_binding(
     tmp_path,
 ):
