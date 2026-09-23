@@ -865,12 +865,12 @@ class _CapturingEquityReplay(EquityReplay):
 class _WindowSpyingEquityReplay(EquityReplay):
     """Record the ``(window_start_ms, window_end_ms)`` used on every tick's cash-flow submission.
 
-    ``test_a_full_replay_submits_the_configured_cash_flows_into_its_own_ledger`` proves the
-    final ledger content is right, but the ledger's own id-based idempotence (restart safety,
-    ``dskit.production.cashflows``) silently absorbs a resubmission of an already-appended
-    record -- so a final-state assertion alone cannot tell "window advanced correctly" apart
-    from "window never advanced, but re-submitting the same records every tick was harmless".
-    This subclass asserts the window sequence itself, independent of that safety net.
+    ``_CapturingEquityReplay`` (above) proves the final ledger content is right, but the
+    ledger's own id-based idempotence (restart safety, ``dskit.production.cashflows``)
+    silently absorbs a resubmission of an already-appended record -- so a final-state
+    assertion alone cannot tell "window advanced correctly" apart from "window never
+    advanced, but re-submitting the same records every tick was harmless". This subclass
+    asserts the window sequence itself, independent of that safety net.
     """
 
     def __init__(self, policy, cash_flow_policy):
