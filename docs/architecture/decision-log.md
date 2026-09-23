@@ -21259,8 +21259,7 @@ question). No backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0177 — `EquityReplay` refuses a buy entry it cannot afford
 
-**Status:** PHASE-0 CLEAN (REVISION 2) — OWNER-AUTHORIZED FOR RED. Not
-yet implemented. Revision 1's design skeptic reviewed cold and
+**Status:** IMPLEMENTED AND CLOSED. Revision 1's design skeptic reviewed cold and
 independently verified every code claim (the `account`-ignored claim,
 the fee-computed-after-`open_lot` claim, `TICK_PHASES` ordering,
 `HorizonBook.open_lot`'s no-mutation-on-refusal behavior, the
@@ -21297,6 +21296,24 @@ present and already Phase-0-reviewed in ADR-0176's own
 wiring Revision 1 omitted, so this revision proceeds directly to
 re-verification by the two mandatory final review lenses rather than a
 second fresh Phase-0 design round.
+
+**Final review.** Both mandatory lenses ran clean against the completed
+candidate (`1e061c4`). Correctness/authority: 0 Critical/0 Major/0
+Minor/0 Nit, GO — independently re-verified every Decision point against
+the actual diff (`git diff 62c7987 1e061c4`), confirmed no
+`dskit/production/*` file touched, confirmed the backward-compatibility
+guards (the point-3 check is dead code and the point-1.5 credit line is
+unreachable without a `cash_flow_policy`), and read all 11 new tests for
+non-vacuousness. Tests/integration: 0 Critical/0 Major/0 Minor, 1 Nit
+(two of the five planned mutations were textually identical — harmless
+documentation redundancy, no action needed), GO — ran the full suite
+twice for determinism (57 passed both times), applied and caught all 5
+mutations by name (including reproducing the exact 3 originally-reported
+failures by re-removing the point-1.5 credit line), confirmed no vacuous
+assertions, ran the bounded regression clean (663 passed), and confirmed
+the override-then-refused integration test genuinely exercises the real
+`HorizonBook` path end to end. Closeout evidence:
+`docs/evidence/closeout/0210-intraday-adr0177-review-exit.json`.
 
 **Context.** ADR-0176 closed named Non-goal #1 — "no insufficient-cash
 handling" — as explicitly deferred to "a separate, later slice touching

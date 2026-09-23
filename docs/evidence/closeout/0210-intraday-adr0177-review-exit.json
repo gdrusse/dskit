@@ -1,0 +1,87 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "intraday P19 EquityReplay refuses a buy entry it cannot afford",
+  "adr": "ADR-0177",
+  "branch": "claude/intraday-equities-backtest-cont-41xqxz",
+  "continuation_of_branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "phase0_history": [
+    {
+      "revision": 1,
+      "design": "EquityReplay tracks its own running Decimal cash balance, updated in _queue_fill from every fill (both kinds, both sides); _process_entries refuses a side==\"buy\" entry whose cost exceeds it, gated by the existing self._cash_flow_composer is not None check from ADR-0176",
+      "verdict": "GO",
+      "review": "fresh independent design skeptic, cold review, independently verified every code claim (account-ignored, fee-computed-after-open_lot, TICK_PHASES ordering, HorizonBook.open_lot's no-mutation-on-refusal, the PaperAccounting/shadow-rung pin, the Decimal(str(x)) idiom's consistency with _proposal_for, the ADR-0176 gate's non-interaction with existing tests, the halt-queue retry path's absence of a double-_queue_fill risk): 0 Critical, 0 Major, 3 Minor, GO. All three Minors fixed in place before RED: a wrong citation (Decision point 4 quoted CLAUDE.md prose that does not exist -- it is a pinning test's name, test_nodes_capital.py:698) and two Required Phase-0 matrix rows made explicit (the short-entry test is genuinely new coverage, not an extension of exercised behavior; the override-then-refused-for-insufficient-cash sequencing is deliberately tested as accepted pre-existing behavior)"
+    },
+    {
+      "revision": 2,
+      "design": "adds Decision point 1.5 -- _submit_due_cash_flows also credits self._cash_balance by the sum of each due cash-flow record's amount, inside the existing if due: block, right after append_many",
+      "reason": "self-found during RED/build by the opus builder, before any implementation landed: it wrote the required Phase-0 matrix tests first per TDD and correctly refused to go further when 3 of them could not pass against Revision 1's own Decision text -- Revision 1 tracked the balance from fills only, so the ADR-0176 cash-flow deposits reaching the ledger never reached the balance this ADR gates buys against, meaning every buy would refuse forever whenever a cash_flow_policy was configured. Genuine gap in the approved design, not a builder error.",
+      "verdict": "accepted without a second fresh Phase-0 round -- the one-line addition reuses the exact Decimal-sum idiom already present and already Phase-0-reviewed in ADR-0176's own _submit_due_cash_flows for the identical purpose, introducing no new architecture, so this revision proceeded directly to the two mandatory final review lenses"
+    }
+  ],
+  "reuse_confirmed": {
+    "method": "dedicated pre-drafting sweep via a background read-only Explore agent, covering dskit/production/guards.py, breaker.py, encumbrance.py, leg.py, loop.py, and EquityReplay's own propose/evaluate/queue pipeline in full",
+    "findings": "the toolkit's one existing cash-sufficiency mechanism (encumbrance.SettledFundsShortfall + a Limit guard + EncumberedAccounting) is opt-in and structurally unreachable for this replay -- the shadow/paper rung it declares pins accounting to the paper kind by name (dskit/production/compose.py's _simulated() rung table), under which PaperAccounting.snapshot always sets available == total, so nothing reduces available cash regardless of document edits. EquityReplay.proposals receives the tick's AccountState but never reads it. Nothing else in the replay path checks cash sufficiency at all -- confirmed total, not partial, before drafting a from-scratch child-owned mechanism instead"
+  },
+  "matrix_completion": {
+    "candidate_commits": [
+      "b815c5d (ADR-0177 Revision 1 proposal)",
+      "62c7987 (Revision 1 Phase-0 clean, GO for RED, 3 Minors fixed)",
+      "878fa2a (Revision 2: Decision point 1.5 text amendment)",
+      "a766dad (WIP checkpoint: Decision points 1-4 implemented, 3 of 11 new tests genuinely RED)",
+      "1e061c4 (final candidate: Decision point 1.5 applied, full GREEN)"
+    ],
+    "implementation_correction": "none needed after Revision 2 landed -- the implementation in 1e061c4 matches the amended Decision text exactly; the one correction needed (point 1.5) was caught by the build's own TDD discipline before any candidate was submitted for review, not by a reviewer after the fact",
+    "rows_closed": [
+      "a buy entry whose price*qty+fee exceeds the running balance refuses with reason == \"insufficient_cash\", opens no lot (a following decision on the same (symbol, lead) fills normally, proving no stale same_lead_open state), and queues no fill",
+      "the exact boundary: cost == balance succeeds; cost one cent over balance refuses; fee counts toward cost",
+      "a multi-fill sequence proving the running balance is accurate across mixed fills: cash-flow credit, affordable buy (debits), unaffordable second buy (refused), profitable sell (credits enough), the same buy now succeeds",
+      "a short entry (side == \"sell\") is never refused for insufficient cash regardless of balance -- genuinely new coverage, no existing test used side=\"sell\" as an entry before this ADR",
+      "a forced exit (horizon expiry) and an override-triggered exit always execute even with a deeply negative balance",
+      "an override entry that is itself refused for insufficient cash still permanently closes the prior lot -- deliberately pinned as accepted pre-existing sequencing (the below_floor refusal already exhibited it), not a new regression this ADR introduces",
+      "the pre-ADR-0176/0177 regression baseline: with no cash_flow_policy supplied, a buy that would be refused under this rule still fills exactly as before, via both ReplayAdapter and EquityReplay entry points -- proving the gate is self._cash_flow_composer is not None, not merely code-path avoidance",
+      "existing 46-test child replay suite unedited and green throughout every revision"
+    ],
+    "disposition": "the build's own RED-first discipline caught Revision 1's gap before any candidate reached review; the completed candidate (1e061c4) passed both final lenses clean on the first pass"
+  },
+  "commands": {
+    "focused": "PYTHONPATH=$PWD:$PWD/children/intraday_equities python3 -m pytest children/intraday_equities/tests/test_replay.py -q",
+    "focused_result": "57 passed (46 pre-existing + 11 new), confirmed twice for determinism",
+    "ruff": "clean (replay.py, test_replay.py)",
+    "diff_check": "clean",
+    "purity": "clean (tests/pipeline/test_purity.py, tests/production/test_purity.py -- 43 passed)",
+    "bounded_regression": "PYTHONPATH=$PWD python3 -m pytest tests/production/test_cashflows.py tests/production/test_compose.py tests/production/test_state.py tests/production/test_oop.py tests/production/test_producers.py tests/production/test_purity.py tests/pipeline/test_purity.py -q",
+    "bounded_regression_result": "663 passed -- confirms no ADR-0176/ADR-0177 interaction regression (both touch _queue_fill's neighborhood and the same _cash_flow_composer gate) and dskit/production/* fully untouched"
+  },
+  "final_candidate": {
+    "commit": "1e061c4",
+    "blobs": {
+      "children/intraday_equities/intraday_equities/replay.py": "d2aca7e5761a9cab2f6b05b98b445781cef51d78",
+      "children/intraday_equities/tests/test_replay.py": "01b3cfe70fbbdd23be775b32be07acb8de65401e"
+    }
+  },
+  "two_sequential_clean_final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "model": "Claude Sonnet 5",
+      "candidate": "1e061c4",
+      "verdict": "0C/0M/0m/0N",
+      "notes": "independently re-verified every Decision point against the actual diff (git diff 62c7987 1e061c4) rather than trusting the ADR's or commit messages' claims: fee computed once and reused (not duplicated), boundary is strict cost > balance, _queue_fill updates the balance unconditionally for every fill, the point-1.5 credit line is unreachable without a configured cash_flow_policy, no dskit/production/* file touched, no new authority/capability/registry entry, backward compatibility confirmed both statically and by the no-policy regression test, no Decimal/float mixing bug, no double-_queue_fill risk in the halt-queue retry path, all 11 new tests read and confirmed non-vacuous and matrix-traceable"
+    },
+    {
+      "lens": "tests/integration",
+      "model": "Claude Sonnet 5",
+      "candidate": "1e061c4",
+      "verdict": "0C/0M/0m/1N",
+      "tests": "57 passed twice (determinism); 663 passed (bounded regression)",
+      "notes": "active mutation testing on 5 mutations, all 5 caught by name and cited to the exact test that caught each: (a) boundary >= vs > caught by the cost-equals-balance parametrized case, (b) dropping the side==\"buy\" guard caught by the short-entry-never-refused and override-exit-always-executes tests, (c) skipping the exit-kind balance update in _queue_fill caught by the mixed-sequence test, (d) removing the point-1.5 credit line reproduced the exact 3 originally-reported RED failures, (e) an independent variant of (b) caught the same way. File reverted and git diff confirmed empty after each mutation before the next. 1 Nit: mutations (b) and (e) were textually identical (same target line) -- harmless documentation redundancy in the review plan, no action needed. Confirmed the override-then-refused integration test genuinely exercises the real HorizonBook/ReplayAdapter/EquityReplay path end to end, no mocks or stubs anywhere in it"
+    }
+  ],
+  "files_changed": [
+    "children/intraday_equities/intraday_equities/replay.py",
+    "children/intraday_equities/tests/test_replay.py",
+    "docs/architecture/decision-log.md",
+    "docs/evidence/closeout/0210-intraday-adr0177-review-exit.json"
+  ],
+  "non_authority": "This slice adds a refusal (not a new authority) entirely within EquityReplay's own child-owned bookkeeping. No dskit/production module changed. No new capability, registry entry, or uses: site. No margin/short-collateral modeling, no partial fills or automatic position-size scaling (a refused buy is refused outright, in full, never resized), no interaction with turnover/cost policy beyond reusing the existing unchanged per-share fee formulas, no ReplayRun/P4 wiring, no change to ADR-0176's own cash-flow-policy/composer code. No backtest launch, no paper/live trading, no deployment."
+}
