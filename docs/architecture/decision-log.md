@@ -19397,3 +19397,48 @@ I1–I7 matrix and
 control design evidence. Required next transition: explicit owner approval of
 this ADR and file manifest, then TDD and two fresh independent code-review
 lenses before delivery. Favorable design review is not owner approval.
+
+## ADR-0168 — Distribution-forecast harness for index options (synthetic)
+
+**Status:** Proposed 2026-09-23; awaiting owner approval. No code before it.
+**Owner:** Russell. **Base:** `claude/index-options-modeling-8b5rbo`.
+
+**Context.** Path A0001 (locked) models the physical terminal distribution in
+vol-standardized z; A0002 fixes the scores; research A0003 ranks the models.
+Inventory found no path generator, horizon label, realized-vol features,
+distribution-forecast contract, or proper scores (CRPS/twCRPS/PIT/Berkowitz)
+anywhere in dskit. Those are domain-neutral, so they graduate to dskit.
+
+**Decision proposed.** Forecasts are **sample sets** (a list of draws per
+record); every score reads the empirical CDF, so any model rung plugs in.
+
+dskit (tier 1 stdlib, tier 2 numpy):
+1. `dskit/pipeline/distribution_scores.py` — `SampleDistribution` (cdf,
+   quantile); `ScoringRule` ABC with `Crps`, `ThresholdWeightedCrps(lo,hi)`,
+   `ThresholdBrier(thresholds)`; `PitCalibration` (KS), `BerkowitzTest`;
+   `ScoreDistributions` node (role score).
+2. `dskit/pipeline/synthetic_paths.py` — `SynthGjrPaths` node: seeded
+   GJR-GARCH Student-t daily price path (known truth for tests).
+3. `dskit/pipeline/distribution_models.py` — `EmpiricalLocationScale`
+   TrainableNode: fitted empirical standardized-residual shape × a supplied
+   scale column (rungs R0a/R1; later rungs subclass it).
+4. `dskit/pipeline/libs/numpy.py` (edit) — `HorizonLogReturn` (forward
+   cumulative h-bar label, declared lookahead) and `RealizedVolFeatures`
+   (trailing RV at configured windows; HAR inputs).
+5. Tests: `tests/pipeline/test_distribution_scores.py`,
+   `test_synthetic_paths.py`, `test_distribution_models.py`;
+   `tests/pipeline_libs/test_numpy_horizon.py`. README/CLAUDE trees updated.
+
+Child `index_options` (domain):
+6. `index_options/distribution.py` — strike→z mapping; condor expected P&L,
+   hit rate, CVaR over a sample set (reusing `DefinedRiskCondor` payoff rules).
+7. `index_options/nodes.py` (edit) — `CondorDistributionReport` node.
+8. `configs/run-synthetic-distribution.json` — synth path → features/label →
+   z → model → scores → condor report, walk-forward.
+9. `tests/test_distribution.py`, `tests/test_synthetic_distribution_run.py`.
+
+**Non-goals.** Real data, GARCH/QR/DR/ML rungs, option-implied densities,
+censored likelihood (needs densities; later), optimizer, trading.
+
+**Alternatives.** Quantile-set forecasts (lossy at arbitrary strikes);
+child-side scores (violates graduation rule); parametric-only (excludes FHS).
