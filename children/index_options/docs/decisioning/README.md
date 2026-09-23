@@ -45,6 +45,7 @@ Display only: `actions.csv` remains the complete, append-only journal.
 |---|---|---|---|---|---|---|---|
 | A0001 | research | distribution-modeling/2026-09-23-approach | 2026-09-23T21:05:19+00:00 | Condor distribution modeling approach | docs/research/distribution-modeling/2026-09-23-approach.md | docs/research/distribution-modeling/2026-09-23-approach.md |  |
 | A0002 | research | distribution-modeling/2026-09-23-evaluation | 2026-09-23T21:05:19+00:00 | Distribution forecast evaluation metrics | docs/research/distribution-modeling/2026-09-23-evaluation.md | docs/research/distribution-modeling/2026-09-23-evaluation.md |  |
+| A0003 | research | distribution-modeling/2026-09-23-model-ladder | 2026-09-23T21:16:49+00:00 | Candidate model benchmark ladder | docs/research/distribution-modeling/2026-09-23-model-ladder.md | docs/research/distribution-modeling/2026-09-23-model-ladder.md |  |
 
 ## Path to Production
 
