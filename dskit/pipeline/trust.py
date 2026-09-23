@@ -2677,6 +2677,17 @@ def _p4_checked_port_set_dispatch(authority, record, session):
                    and len(audit["ports"]) == len(audit["receipts"]) == 2
                    and audit["replay"] is not None,
                    "exact committed replay tape pair required")
+        captured_set = audit["set"]
+        replay_evidence = audit["replay"]
+        _p4_verify_local_signed(captured_set, "captured_authorization_set_sha256",
+                                "security-broker", "captured-authorization")
+        _p4_verify_local_signed(replay_evidence,
+                                "replay_capture_admission_evidence_sha256",
+                                "security-broker", "replay-capture-admission")
+        _hs_refuse(len(captured_set["entries"]) == len(replay_evidence["issued_ports"]) == 2
+                   and replay_evidence["captured_authorization_set_sha256"]
+                   == captured_set["captured_authorization_set_sha256"],
+                   "committed replay tape adjacency refused")
         by_name = {}
         document_digests = set()
         for index, (published, frozen, port) in enumerate(retained):
@@ -2693,6 +2704,27 @@ def _p4_checked_port_set_dispatch(authority, record, session):
             _hs_refuse(type(name) is str and type(document_sha256) is str
                        and name not in by_name, "exact committed replay tape pair required")
             stream = audit["streams"][index]
+            signed_port = audit["ports"][index]
+            receipt = audit["receipts"][index]
+            set_entry = captured_set["entries"][index]
+            replay_entry = replay_evidence["issued_ports"][index]
+            _p4_verify_local_signed(signed_port, "captured_port_authorization_sha256",
+                                    "security-broker", "captured-port-authorization")
+            _p4_verify_local_signed(receipt, "lifecycle_captured_receipt_sha256",
+                                    "security-broker", "lifecycle-capture")
+            _hs_refuse(receipt["stream_id"] == stream
+                       and receipt["captured_port_authorization_sha256"]
+                       == signed_port["captured_port_authorization_sha256"]
+                       and all(item["planned_entry_sha256"]
+                               == signed_port["planned_entry_sha256"]
+                               for item in (receipt, set_entry, replay_entry))
+                       and set_entry["captured_port_authorization_sha256"]
+                       == replay_entry["captured_port_authorization_sha256"]
+                       == signed_port["captured_port_authorization_sha256"]
+                       and set_entry["lifecycle_captured_receipt_sha256"]
+                       == replay_entry["lifecycle_captured_receipt_sha256"]
+                       == receipt["lifecycle_captured_receipt_sha256"],
+                       "committed replay tape adjacency refused")
             _entry, _request, _audit, found = ledger._p4_record_capture(
                 record, stream, document_sha256)
             _hs_refuse(found == index, "retained P4 capture order mismatch")
