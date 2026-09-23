@@ -19670,3 +19670,126 @@ refit, backtest, paper/live action, deployment, or recovery claim. The existing
 synthetic roster publisher is permitted only as Decision point 5 states. The later
 writer must refuse until it can compare signed `tzdata_version_sha256` with
 trusted execution-environment evidence; this ADR does not weaken that gate.
+
+## ADR-0170 — bounded synthetic environment identity
+
+**Status:** PROPOSAL — DO NOT IMPLEMENT. This is the next independently
+reviewable dependency after implemented ADR-0169. It requires a clean fresh
+Phase 0, explicit owner approval of the reviewed text, RED-to-GREEN, and two
+sequential fresh clean final lenses. It authorizes one deterministic synthetic
+environment fact only. `deployment_eligible` remains `false`; no raw-event
+projection, writer, derivation, publication, replay, external read, or backtest
+is enabled.
+
+**Context.** ADR-0169 admits and retains a signed v2 raw fixture but deliberately
+stops before publication. Its final non-goal requires a later writer to compare
+the signed dataset/roster `tzdata_version_sha256` with trusted environment
+evidence. No `EnvironmentIdentity` exists in the repository. Caller strings,
+ambient package inspection, and host timezone lookup cannot fill that gap: they
+would make the identity mutable, nondeterministic, or caller-authorized. This ADR
+adds only the fixed nondeployment evidence needed for the next synthetic writer
+slice; it makes no claim about a real host.
+
+### Decision
+
+1. **One private opaque fact.** Add private, final
+`_SyntheticEnvironmentIdentity` and private
+`_synthetic_environment_identity()` in `dskit.pipeline.trust`. Neither is in
+`trust.__all__` nor re-exported. Direct construction, subclassing, copy,
+deepcopy, pickle, forged attributes, and a re-created lookalike refuse. The
+factory takes no arguments and performs no filesystem, package, environment,
+clock, network, provider, broker, reserve, or random access.
+
+2. **Closed fixed payload.** The identity binds exactly the immutable canonical
+facts
+`schema_version=dskit.synthetic-environment-fact/v1`,
+`environment_id=dskit.synthetic-environment/v1`,
+`tzdata_version=synthetic-2026a`,
+`tzdata_version_sha256=cd690e4a500811dbc1ca0a79f0e5a8d9eb99debd5dc3c8d9bef5e278bf350cd0`,
+and `deployment_eligible=false`. The digest is SHA-256 over the exact canonical
+ASCII bytes
+`{"schema_version":"dskit.synthetic-tzdata/v1","tzdata_version":"synthetic-2026a"}`.
+It describes the fixed synthetic test identity only; it is not a digest of
+installed tzdata and makes no host or package claim. This deliberately distinct
+schema cannot collide with or satisfy the full `EnvironmentIdentity.v1`
+contract in the F2 master plan. A private read-only accessor named
+`_synthetic_environment_facts(identity)` returns a fresh `MappingProxyType`
+copy only after exact identity and broker-state validation. There is no generic
+dict/JSON constructor, deserializer, override, alternate digest, or caller
+field.
+
+3. **Closure-owned broker state, not slots or globals, is authoritative.** A
+single import-time bootstrap creates a private lexical state and returns the
+class plus the exact factory, accessor, and comparison closures named in this
+ADR. The bootstrap function is then deleted. The lexical state contains the
+fixed `MappingProxyType` payload, its
+`_digest(_canonical_bytes(dict(payload)))`, the state-domain digest over
+`{"schema_version":"dskit.synthetic-environment-state-domain/v1","payload_sha256":<payload digest>}`,
+an opaque mint token, one `WeakSet` of factory-issued identities, and one
+`WeakKeyDictionary` mapping those identities to exactly
+`(weakref_ref(identity), payload, payload_digest, state_domain_digest)`. None
+of those six authority objects has a module-global binding. The returned class
+has exactly the slots
+`_schema_version`, `_environment_id`, `_tzdata_version`,
+`_tzdata_version_sha256`, `_deployment_eligible`, and `__weakref__`; its
+constructor requires the lexical mint token. The factory alone creates the
+object and records it in both lexical weak stores. Every accessor requires the
+closure-captured exact class, membership in the issued set, a four-item record,
+a self-resolving weakref, payload object identity, both exact closure-captured
+digests, and exact equality of all five slots to the payload. Therefore
+`object.__new__` plus slot writes is not issued and refuses; replacing any
+same-named module global cannot change the authority consulted by an already
+bound closure; record deletion/substitution, cross-identity wiring, or slot
+mutation refuses. Garbage collection clears both weak stores. No state grants
+publication, read, reserve, session, or execution authority.
+
+The adversary boundary is the repository's existing private-capability model:
+callers may invoke private names, bypass constructors with `object.__new__`, and
+mutate reachable attributes/module globals, but arbitrary interpreter memory,
+frame or closure-cell mutation and replacement of function code objects are
+out of scope. Such powers are equivalent to arbitrary in-process code
+execution and cannot be made an authority boundary in Python.
+
+4. **Exact comparison seam, still no writer.** Add one private predicate
+`_require_synthetic_tzdata(identity, signed_tzdata_version_sha256)` that accepts
+only the exact broker-minted identity and an exact lowercase SHA-256 string
+equal to its registered fixed digest. Missing, placeholder, uppercase,
+non-string, bool, altered, or caller-forged values refuse. Success returns
+`None`, creates no new capability, and has no side effect. The later writer/hop
+must invoke this predicate with the already-verified signed scope value before
+projection; that later call and writer remain separately reviewed.
+
+5. **Legacy and boundary freeze.** ADR-0169 v1/v2 parsing, messages, reserve
+rows, registry entries, and all publication/root/graph stops are unchanged.
+Its test-local v2 `TZDATA_SHA256` sentinel changes from all-7 to the canonical
+digest pinned above; v1 fixtures and all production bytes remain unchanged.
+`ReplayRun.run` remains fail-closed. This identity is synthetic evidence, not a
+claim that the executing host has matching tzdata.
+
+### Required Phase-0 matrix
+
+Pin the exact `_synthetic_environment_identity()`,
+`_synthetic_environment_facts(identity)`, and
+`_require_synthetic_tzdata(identity, signed_tzdata_version_sha256)` surface
+before edits. Prove factory
+argument refusal; direct construction/subclass/copy/deepcopy/pickle/lookalike
+refusal; exact closed immutable facts; repeated factories produce distinct
+capabilities with equal facts; `object.__new__` plus exact slot forgery; absence
+of any module-global mint token, issued set, registry, payload, or authoritative
+digest; same-named module-global substitution; slot and reachable-record
+mutation/substitution; cross-identity state; garbage collection;
+placeholder/uppercase/type/wrong digest refusal; exact digest comparison
+success; absence from public exports;
+and an AST/runtime purity gate proving no I/O, environment, package, time,
+random, broker, provider, reserve, session, publication, or replay access.
+Run all ADR-0169, capture, trust, and purity regressions unedited.
+
+### Non-goals
+
+No real/host environment discovery or attestation, tzdata package inspection,
+raw-event projection, envelope writer, `CapturedDerivationHop`, lifecycle or
+reserve change, output root, tape, `ReplayRun` execution, R1--R5, child adapter,
+external/real data, acquisition, HPO, refit, backtest, paper/live action,
+deployment, or recovery claim. A deployment environment identity requires its
+own trust root and ADR; this fixed synthetic fact cannot be promoted or
+configured into one.
