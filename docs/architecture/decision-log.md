@@ -20726,8 +20726,10 @@ reviewed later slice, exactly as ADR-0174's own Non-goals already scoped it.
 ### Decision
 
 1. **One new, generic, core-tier, PRIVATE class: `_CapturedEnvelopeReplayTape`
-   (Revision 2: private, not public — Major finding accepted).** Add it to
-   `dskit.production.bundles`, absent from `__all__`. Revision 1 argued
+   (Revision 2: private, not public — Major finding accepted; IMPLEMENTATION
+   CORRECTION: lives in `dskit.production.feed`, not `dskit.production.bundles`
+   as originally proposed here — see the closeout evidence for why).** Add
+   it, absent from `__all__`. Revision 1 argued
    public was justified because the class makes no verification claim of its
    own; the accepted objection is that a public, generically-named class in
    core is discoverable and invites a caller to construct it from envelope
@@ -20792,10 +20794,12 @@ reviewed later slice, exactly as ADR-0174's own Non-goals already scoped it.
    same as `BarTape`. Kept private (Decision point 1) precisely because "no
    trust claim of its own" is not the same thing as "safe for any caller" —
    the verification this class relies on happened upstream (ADR-0172/0174),
-   and only `_compose_v2_replay_tape`'s own package may reach for it.
+   and only `dskit.production`'s own modules may reach for it.
 
-5. **Compatibility.** `bundles.py` gains one private name, absent from
-   `__all__`. `compose_replay_tape`, `_compose_v2_replay_tape`, `BarTape`,
+5. **Compatibility.** `dskit.production.feed` gains one private name (see
+   the implementation correction on Decision point 1), absent from
+   `__all__`. `bundles.py`, `compose_replay_tape`, `_compose_v2_replay_tape`,
+   `BarTape`,
    `ReplayRun`, and every existing `ReplayTape` consumer are untouched.
 
 ### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
