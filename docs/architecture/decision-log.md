@@ -19745,10 +19745,14 @@ publication, read, reserve, session, or execution authority.
 
 The adversary boundary is the repository's existing private-capability model:
 callers may invoke private names, bypass constructors with `object.__new__`, and
-mutate reachable attributes/module globals, but arbitrary interpreter memory,
-frame or closure-cell mutation and replacement of function code objects are
-out of scope. Such powers are equivalent to arbitrary in-process code
-execution and cannot be made an authority boundary in Python.
+mutate ordinary instance, class, and module-global attributes. Inspection or
+use of interpreter metadata (`function.__closure__`, `cell.cell_contents`,
+frames, `gc` referrer/object walks, code-object replacement, `ctypes`, or
+equivalent reflective access), as well as mutation of that state, is out of
+scope. Extracting the lexical mint token or weak stores through such metadata
+is therefore not a supported caller action. Those powers are equivalent to
+arbitrary in-process code execution and cannot be made an authority boundary
+in Python.
 
 4. **Exact comparison seam, still no writer.** Add one private predicate
 `_require_synthetic_tzdata(identity, signed_tzdata_version_sha256)` that accepts
@@ -19776,8 +19780,13 @@ argument refusal; direct construction/subclass/copy/deepcopy/pickle/lookalike
 refusal; exact closed immutable facts; repeated factories produce distinct
 capabilities with equal facts; `object.__new__` plus exact slot forgery; absence
 of any module-global mint token, issued set, registry, payload, or authoritative
-digest; same-named module-global substitution; slot and reachable-record
-mutation/substitution; cross-identity state; garbage collection;
+digest; same-named module-global substitution; exact-type slot mutation and
+class-level attribute-dispatch spoofing; and white-box deletion,
+copied-payload substitution, and cross-identity wiring of lexical records to
+prove fail-closed validation. The white-box tests do not authorize or claim a
+boundary against extracting the mint token/state and constructing a wholly
+self-consistent record through excluded interpreter metadata. Also prove
+garbage collection;
 placeholder/uppercase/type/wrong digest refusal; exact digest comparison
 success; absence from public exports;
 and an AST/runtime purity gate proving no I/O, environment, package, time,

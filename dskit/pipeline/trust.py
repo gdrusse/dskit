@@ -7628,10 +7628,15 @@ def _build_synthetic_environment_broker():
             and type(record[0]) is weak_ref
             and record[0]() is identity
             and record[1] is payload
+            and type(record[2]) is str
             and record[2] == payload_digest
+            and type(record[3]) is str
             and record[3] == state_domain_digest
-            and all(getattr(identity, slot, object()) == value
-                    for slot, value in expected_slots)
+            and all(
+                type(object.__getattribute__(identity, slot)) is type(value)
+                and object.__getattribute__(identity, slot) == value
+                for slot, value in expected_slots
+            )
         )
         if not valid:
             raise ValueError("synthetic environment identity refused")

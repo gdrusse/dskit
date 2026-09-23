@@ -97,6 +97,15 @@ def test_adr170_object_new_and_exact_slots_do_not_forge_identity():
     with pytest.raises(ValueError, match="synthetic environment identity"):
         trust._require_synthetic_tzdata(forged, TZDATA_SHA256)
 
+    class Lookalike:
+        pass
+
+    lookalike = Lookalike()
+    for key, value in EXPECTED.items():
+        setattr(lookalike, "_" + key, value)
+    with pytest.raises(ValueError, match="synthetic environment identity"):
+        trust._synthetic_environment_facts(lookalike)
+
 
 def test_adr170_object_new_then_direct_init_does_not_mint_identity():
     cls = trust._SyntheticEnvironmentIdentity
@@ -242,6 +251,20 @@ def test_adr170_broker_closures_have_no_ambient_capability_names():
             node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
         }
         assert forbidden.isdisjoint(referenced)
+
+    module_tree = ast.parse(inspect.getsource(trust))
+    bootstrap = next(
+        node for node in module_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_build_synthetic_environment_broker"
+    )
+    bootstrap_references = {
+        node.id for node in ast.walk(bootstrap) if isinstance(node, ast.Name)
+    } | {
+        node.attr for node in ast.walk(bootstrap)
+        if isinstance(node, ast.Attribute)
+    }
+    assert forbidden.isdisjoint(bootstrap_references)
 
 
 def test_adr170_broker_has_no_runtime_ambient_effects(monkeypatch):
