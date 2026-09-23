@@ -21504,8 +21504,28 @@ backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0178 — market-calendar-aware cash-flow contribution timing
 
-**Status:** PROPOSED (REVISION 4) — AWAITING PHASE-0 REVIEW. Not yet
-implemented.
+**Status:** PHASE-0 CLEAN (REVISION 4) — OWNER-AUTHORIZED FOR RED. Not
+yet implemented. A third independent design skeptic reviewed Revision 4
+cold and genuinely hunted for a fourth counter-example of the same class
+that broke Revisions 2 and 3 (empty `funding_instants`, an off-by-one at
+the flush boundary, double-submission risk, instance-reuse safety,
+whether `funding_instants` itself could ever be structurally incomplete)
+— found none: 0 Critical, 0 Major, 2 Minor, 1 Nit, GO. Both Minors and
+the Nit fixed in place — `_flush_cash_flows()`'s call site is now
+wrapped in the same `except (KeyError, TypeError, ValueError,
+ArithmeticError, ProductionError)` → `ConfigError` pattern `evaluate()`/
+`quotes()` already use elsewhere in this file (closing the one real gap
+found: an unmitigated exception from the flush — e.g. the already-named,
+already-accepted DST edge case — would previously have skipped
+`recording.ledger.close()`/`lock.release()` and surfaced a raw exception
+type instead of this file's own `ConfigError` convention; contained
+either way since `work`'s `shutil.rmtree` cleanup is unconditional, but
+now consistent rather than merely harmless), and the shared
+`_advance_cash_flow_window` helper's paragraph now states explicitly
+that it reads `self._cash_flow_composer`/`self._cash_flow_funding_
+instants`/`self._cash_flow_funding_index` (previously only stated in the
+sibling `_submit_due_cash_flows` paragraph — only one sane reading
+existed, but now it is not left implicit).
 
 **Revision 4 (Revision 3 rejected cold, NO-GO, 1 Critical):** an
 independent design skeptic, reading Revision 3 with no knowledge of any
@@ -21802,10 +21822,15 @@ backtest whose tape spans a weekend or holiday).
    **Shared helper, introduced in Revision 4 to avoid duplicating this
    logic with the new flush in point 1.6:** a new private method,
    `_advance_cash_flow_window(self, window_end_ms)`, holds the actual
-   work — when `window_end_ms <= self._cash_flow_window_ms`, return
-   immediately (nothing new to cover); otherwise call `composer.due(...)`
-   over `[self._cash_flow_window_ms, window_end_ms)`, append/credit
-   exactly as before, then advance `index` past every funding instant now
+   work, reading and writing `self._cash_flow_composer`,
+   `self._cash_flow_funding_instants` (as `instants`),
+   `self._cash_flow_funding_index` (as `index`), and
+   `self._cash_flow_window_ms` exactly as `_submit_due_cash_flows` itself
+   did before this refactor — when `window_end_ms <=
+   self._cash_flow_window_ms`, return immediately (nothing new to
+   cover); otherwise call `composer.due(...)` over
+   `[self._cash_flow_window_ms, window_end_ms)`, append/credit exactly
+   as before, then advance `index` past every funding instant now
    covered (`while index < len(instants) and instants[index] <
    window_end_ms: index += 1`) and set BOTH
    `self._cash_flow_funding_index = index` and
@@ -21878,7 +21903,17 @@ backtest whose tape spans a weekend or holiday).
    "tick")` post-processing — flush happens regardless of tick outcome,
    since it is pure bookkeeping independent of trade success, and the
    whole `work` directory is discarded in `finally` either way if the
-   run goes on to raise), call a new method,
+   run goes on to raise), call a new method, wrapped in the exact same
+   `except (KeyError, TypeError, ValueError, ArithmeticError,
+   ProductionError) as exc: raise ConfigError([str(exc)]) from exc`
+   pattern `evaluate()`/`quotes()` already use elsewhere in this file
+   (Phase-0 Revision 4 finding: an unmitigated exception from the flush
+   — the already-named, already-accepted DST edge case, most concretely
+   — would otherwise skip `recording.ledger.close()`/`lock.release()`
+   further down and surface a raw exception type instead of this file's
+   own `ConfigError` convention; harmless either way since `work`'s
+   cleanup is unconditional, but now consistent with how every other
+   `EquityReplay` method already surfaces an unexpected failure):
    `self._flush_cash_flows()`:
    ```
    def _flush_cash_flows(self):
