@@ -14,7 +14,7 @@ from types import MappingProxyType
 from dskit.onboarding.base import parse_utc
 from dskit.pipeline.node import check_int_param, reject_unknown_params
 
-__all__ = ["CashIndexContract", "DefinedRiskCondor"]
+__all__ = ["CashIndexContract", "DefinedRiskCondor", "leg_intrinsic"]
 
 _SCHEMA = "index-options-synthetic-v1"
 _DECIMAL = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
@@ -79,6 +79,29 @@ def _text(value, name):
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a nonempty string")
     return value
+
+
+def leg_intrinsic(right, strike, level):
+    """Return one European cash-settled leg's payoff per unit at ``level``.
+
+    The one owner of the put/call intrinsic rule: exact Decimal cashflows
+    and float scenario payoffs both call it.
+
+    Parameters
+    ----------
+    right : str
+        ``"put"`` or ``"call"``.
+    strike, level : Decimal or float
+        Strike and settlement level, of one numeric type.
+
+    Returns
+    -------
+    Decimal or float
+        ``max(strike - level, 0)`` for a put, ``max(level - strike, 0)``
+        for a call, in the inputs' type.
+    """
+    gap = strike - level if right == "put" else level - strike
+    return max(type(gap)(0), gap)
 
 
 def _amount_text(value):
@@ -365,9 +388,7 @@ class DefinedRiskCondor:
             for contract, quote, sign in zip(self.contracts, self.quotes, self.quantities):
                 data = contract.data
                 strike = _decimal(data["strike"], "strike")
-                intrinsic = max(
-                    Decimal(0), strike - level if data["right"] == "put" else level - strike
-                )
+                intrinsic = leg_intrinsic(data["right"], strike, level)
                 entry = -sign * scale * _decimal(
                     quote.data["ask" if sign > 0 else "bid"], "premium"
                 )

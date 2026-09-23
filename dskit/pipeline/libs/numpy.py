@@ -170,9 +170,12 @@ __all__ = [
     "DEFAULT_ORDER_FIELD",
     "DEFAULT_REQUIRE_FIELDS",
     "DEFAULT_RETURN_KIND",
+    "DEFAULT_VOL_PREFIX",
+    "HorizonLogReturn",
     "LogMid",
     "NODE_KINDS",
     "RETURN_KINDS",
+    "RealizedVolFeatures",
     "ReturnWindows",
     "TrailingReturns",
     "accessor_narrowing_problems",
@@ -243,6 +246,9 @@ DEFAULT_RETURN_KIND = "log"
 DEFAULT_LABEL_LEAD = 1
 DEFAULT_LAG_PREFIX = "lag_"
 DEFAULT_LABEL_NAME = "label"
+
+#: :class:`RealizedVolFeatures`' column prefix: ``rv_<window>``.
+DEFAULT_VOL_PREFIX = "rv_"
 
 
 # ---------------------------------------------------------------------------
@@ -1997,6 +2003,20 @@ def _lag_index(name, prefix):
     return step if step == "0" or step[0] != "0" else None
 
 
+def _one_price_field_problems(cls, problems, params):
+    """Refuse a ``fields`` declaration naming anything but ONE price series."""
+    if "fields" not in cls._PARAMS:
+        return
+    fields = params.get("fields")
+    if not is_node_ref(fields) and (
+        not isinstance(fields, (list, tuple)) or len(fields) != 1
+    ):
+        problems.append(
+            f"fields must name EXACTLY ONE price field — a window is "
+            f"taken of one series, got {fields!r}"
+        )
+
+
 class ReturnWindows(ArrayFeatures):
     """Lagged one-step returns with a forward label — the ops, composed.
 
@@ -2100,15 +2120,7 @@ class ReturnWindows(ArrayFeatures):
             One problem per broken knob.
         """
         problems = super().validate_params(params)
-        if "fields" in cls._PARAMS:
-            fields = params.get("fields")
-            if not is_node_ref(fields) and (
-                not isinstance(fields, (list, tuple)) or len(fields) != 1
-            ):
-                problems.append(
-                    f"fields must name EXACTLY ONE price field — a window is "
-                    f"taken of one series, got {fields!r}"
-                )
+        _one_price_field_problems(cls, problems, params)
         cls._window_problems(problems, params)
         return problems
 
@@ -2227,6 +2239,181 @@ class ReturnWindows(ArrayFeatures):
                 columns[f"y_ahead_{k}"] = lead(returns, k * step)
         return columns
 
+
+
+class HorizonLogReturn(ArrayFeatures):
+    """The cumulative forward log return over ``horizon`` steps.
+
+    ``log(price[t + horizon] / price[t])`` — the label of a horizon
+    distribution forecast (ADR-0168). :class:`ReturnWindows` emits
+    one-step leads; this is their SUM, one column, declared forward by
+    exactly ``horizon`` so the causality guard holds it to that and no
+    further. NaN (row ``None``) for the last ``horizon`` positions.
+
+    Parameters
+    ----------
+    params : dict
+        ``fields`` (exactly one price field, required), ``horizon`` (int
+        >= 1, required), ``label_name`` (str, default ``"label"``), plus
+        :class:`ArrayFeatures`' knobs.
+
+    Examples
+    --------
+    A 21-step forward log return of ``close``::
+
+        node = HorizonLogReturn("label", {"fields": ["close"], "horizon": 21})
+        out = node.run(ctx, {"records": bars})
+        # -> {"rows": [{"label": ...}, ...], "metrics": {...}}
+    """
+
+    _PARAMS = ArrayFeatures._PARAMS + ("horizon", "label_name")
+
+    def horizon(self):
+        """How many steps forward the label reads (int >= 1)."""
+        return self.params["horizon"]
+
+    def label_name(self):
+        """Name the emitted label column (str)."""
+        return self.params.get("label_name", DEFAULT_LABEL_NAME)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = super().validate_params(params)
+        _one_price_field_problems(cls, problems, params)
+        horizon = params.get("horizon")
+        if "horizon" not in params:
+            problems.append("horizon is required — the label's reach must be stated")
+        elif not is_node_ref(horizon) and (
+            isinstance(horizon, bool) or not isinstance(horizon, int) or horizon < 1
+        ):
+            problems.append(f"horizon must be an int >= 1, got {horizon!r}")
+        name = params.get("label_name", DEFAULT_LABEL_NAME)
+        if not is_node_ref(name) and (not isinstance(name, str) or not name):
+            problems.append(f"label_name must be a non-empty string, got {name!r}")
+        return problems
+
+    def lookahead_columns(self):
+        """Declare the label and its forward reach."""
+        return {self.label_name(): self.horizon()}
+
+    def apply(self, arrays, params):
+        """Build the forward cumulative log return.
+
+        Parameters
+        ----------
+        arrays : dict of str -> numpy.ndarray
+            One segment's arrays; the declared price field is read.
+        params : dict
+            This node's params; read through accessors.
+
+        Returns
+        -------
+        dict of str -> numpy.ndarray
+            ``{label_name: ...}``, NaN where the horizon runs past the data.
+        """
+        h = self.horizon()
+        return {self.label_name(): lead(log_return(arrays[self.fields()[0]], h), h)}
+
+
+class RealizedVolFeatures(ArrayFeatures):
+    """Trailing realized volatility of one-step log returns at several windows.
+
+    Column ``<vol_prefix><w>`` is ``sqrt(mean of the last w squared
+    one-step log returns)`` — a per-step volatility (not annualized),
+    backward-only. Several windows side by side are the heterogeneous
+    (HAR-style) inputs a volatility-scale model reads (ADR-0168).
+
+    Parameters
+    ----------
+    params : dict
+        ``fields`` (exactly one price field, required), ``windows``
+        (non-empty list of distinct ints >= 1, required), ``vol_prefix``
+        (str, default ``"rv_"``), plus :class:`ArrayFeatures`' knobs.
+
+    Examples
+    --------
+    Daily, weekly and monthly realized volatility of ``close``::
+
+        node = RealizedVolFeatures("rv", {"fields": ["close"], "windows": [1, 5, 22]})
+        out = node.run(ctx, {"records": bars})
+        # -> {"rows": [{"rv_1": ..., "rv_5": ..., "rv_22": ...}, ...], ...}
+    """
+
+    _PARAMS = ArrayFeatures._PARAMS + ("vol_prefix", "windows")
+
+    def windows(self):
+        """Give the trailing window widths, in steps (tuple of int)."""
+        return tuple(self.params["windows"])
+
+    def vol_prefix(self):
+        """Name the prefix the emitted columns share (str)."""
+        return self.params.get("vol_prefix", DEFAULT_VOL_PREFIX)
+
+    @classmethod
+    def validate_params(cls, params):
+        """Problems with ``params``, empty when none.
+
+        Parameters
+        ----------
+        params : dict
+            The node's declared params.
+
+        Returns
+        -------
+        list of str
+            One problem per broken knob.
+        """
+        problems = super().validate_params(params)
+        _one_price_field_problems(cls, problems, params)
+        windows = params.get("windows")
+        if "windows" not in params:
+            problems.append("windows is required — the trailing widths must be stated")
+        elif not is_node_ref(windows) and (
+            not isinstance(windows, (list, tuple)) or not windows
+            or any(isinstance(w, bool) or not isinstance(w, int) or w < 1 for w in windows)
+            or len(set(windows)) != len(windows)
+        ):
+            problems.append(f"windows must be a non-empty list of distinct ints >= 1, got {windows!r}")
+        prefix = params.get("vol_prefix", DEFAULT_VOL_PREFIX)
+        if not is_node_ref(prefix) and (not isinstance(prefix, str) or not prefix):
+            problems.append(f"vol_prefix must be a non-empty string, got {prefix!r}")
+        return problems
+
+    def apply(self, arrays, params):
+        """Build one realized-volatility column per window.
+
+        Parameters
+        ----------
+        arrays : dict of str -> numpy.ndarray
+            One segment's arrays; the declared price field is read.
+        params : dict
+            This node's params; read through accessors.
+
+        Returns
+        -------
+        dict of str -> numpy.ndarray
+            One column per window, NaN until the window is full.
+        """
+        import numpy as np
+
+        squared = log_return(arrays[self.fields()[0]], 1) ** 2
+        prefix = self.vol_prefix()
+        return {
+            _lag_name(prefix, w): np.sqrt(rolling_sum(squared, w) / w)
+            for w in self.windows()
+        }
 
 
 #: Deliberately EMPTY — this pack registers nothing. The two bases are

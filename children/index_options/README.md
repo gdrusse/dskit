@@ -100,6 +100,14 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   reads new bytes. No defense against hostile Python controlling the interpreter
   is claimed.
 
+- Distribution harness (ADR-0168, synthetic only): `configs/run-synthetic-distribution.json`
+  wires dskit's GJR path, realized-vol features, horizon label, a sample-set
+  model and proper scores to `CondorDistributionReport`, which evaluates a
+  condor declared in standardized strikes (`strikes_z`) under each forecast.
+  Run `python -m dskit.pipeline walkforward configs/run-synthetic-distribution.json --asof 1978-06-01`
+  (journal initialized). Swap the `model` node to test another rung; never
+  decision-eligible.
+
 [Explanation](docs/explanations/README.md) defines the instrument and example.
 [Plan](docs/plans/README.md) describes the separately gated data/ML/MIO work.
 
@@ -108,16 +116,19 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
 ```text
 pyproject.toml; .gitignore; README.md; AGENTS.md; CLAUDE.md
 journal.json
-index_options/             # __init__.py, contracts.py, observations.py, nodes.py
-configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json
+index_options/             # __init__.py, contracts.py, observations.py, nodes.py,
+                           # distribution.py (condor under a forecast, ADR-0168)
+configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
+                           # run-synthetic-distribution.json (ADR-0168 harness)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
 docs/plans/README.md        # gated research stages
 docs/memos/README.md        # execution-evidence convention
-docs/research/              # README.md, CLI-created .gitkeep; future dated topic notes
+docs/research/              # README.md, .gitkeep; distribution-modeling/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
-                           # configs, integration (.py)
+                           # configs, integration, distribution,
+                           # synthetic_distribution_run (.py)
 ```
 
 Journal infrastructure starts empty. Only the human owner changes Path or
