@@ -2741,7 +2741,10 @@ def _p4_checked_port_set_dispatch(authority, record, session):
         retained_state._mint(_P4_PORT_STATE_MUTATE, view)
         _P4_CAPTURE_STATE_PINS[retained_state] = _p4_capture_state_seal(
             authority, ledger, record, retained_state)
-        _P4_PORT_SET_VIEWS[view] = (authority, ledger, record, session)
+        view_state = (authority, ledger, record, session)
+        _P4_PORT_SET_VIEWS[view] = (
+            *view_state, _p4_port_view_seal(authority, view, view_state),
+        )
         return view
 
 
@@ -5150,10 +5153,7 @@ class CapturedPortSet(_Opaque):
         _P4_PORT_SET_STATE_CHECK()
         if type(name) is not str:
             raise TypeError("exact captured port name required")
-        state = _P4_PORT_SET_VIEWS.get(self)
-        if state is None:
-            raise ValueError("issued captured port set required")
-        authority, ledger, record, session = state
+        authority, ledger, record, session, _seal = _p4_checked_port_view(self)
         with ledger._lock:
             ledger._check()
             _P4_ISSUED_CHECK(authority)
@@ -5168,6 +5168,9 @@ class CapturedPortSet(_Opaque):
             audit = ledger._audit(record)
             entries = [entry for entry in ledger._p4_entries() if entry[4] is record]
             _hs_refuse(len(entries) == 1 and len(retained) == len(audit["streams"]) == 2,
+                       "required captured port refused")
+            _hs_refuse(session is entries[0][5]
+                       and _p4_session_pin(session) == entries[0][6],
                        "required captured port refused")
             request = _hs_parse_canonical(entries[0][2])
             for index, (published, frozen, port) in enumerate(retained):
@@ -5302,18 +5305,39 @@ def _p4_port_reader_seal(authority, reader, state):
                     hashlib.sha256).hexdigest()
 
 
+def _p4_port_view_seal(authority, view, state):
+    state_authority, ledger, record, session = state
+    body = _hs_canonical_bytes({
+        "view": id(view), "authority": id(state_authority),
+        "ledger": id(ledger), "record": id(record), "session": id(session),
+    })
+    return hmac.new(authority._map_key, b"P4 captured port view\x00" + body,
+                    hashlib.sha256).hexdigest()
+
+
+def _p4_checked_port_view(view):
+    state = _P4_PORT_SET_VIEWS.get(view)
+    _hs_refuse(type(state) is tuple and len(state) == 5,
+               "issued captured port set required")
+    authority, ledger, record, session, seal = state
+    expected = _p4_port_view_seal(authority, view, state[:-1])
+    _hs_refuse(hmac.compare_digest(seal, expected),
+               "issued captured port set required")
+    return state
+
+
 def _p4_checked_port_reader(reader):
     state = _P4_PORT_READERS.get(reader)
     _hs_refuse(type(state) is tuple and len(state) == 9 and state[0]() is reader,
                "issued captured port reader required")
     _issued, view, record, session, published, document_sha256, stream, name, seal = state
-    view_state = _P4_PORT_SET_VIEWS.get(view)
-    _hs_refuse(type(view_state) is tuple and len(view_state) == 4,
-               "issued captured port reader required")
-    authority, ledger, view_record, view_session = view_state
+    authority, ledger, view_record, view_session, _view_seal = _p4_checked_port_view(view)
     retained = _p4_retained_capture_state(authority, ledger, record)
     expected = _p4_port_reader_seal(authority, reader, state[:-1])
+    entries = [entry for entry in ledger._p4_entries() if entry[4] is record]
     _hs_refuse(view_record is record and view_session is session
+               and len(entries) == 1 and session is entries[0][5]
+               and not session._ended and _p4_session_pin(session) == entries[0][6]
                and retained._view is not None and retained._view() is view
                and name in retained._used and hmac.compare_digest(seal, expected),
                "issued captured port reader required")

@@ -1163,6 +1163,18 @@ def test_p4_port_set_refuses_object_setattr_mint_and_use_rollback():
         broker.captured_port_set(record, session)
 
 
+def test_p4_port_set_require_refuses_view_session_registry_swap():
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    view = broker.captured_port_set(record, session)
+    _other_graph, _other_broker, _other_captures, _other_runtime, _other_before, _other_record, other_session = _issue_complete()
+    authority, ledger, view_record, _view_session, seal = trust._P4_PORT_SET_VIEWS[view]
+    trust._P4_PORT_SET_VIEWS[view] = (
+        authority, ledger, view_record, other_session, seal,
+    )
+    with pytest.raises((TypeError, ValueError)):
+        view.require("tape_manifest")
+
+
 def test_p4_port_set_factory_and_require_do_not_call_provider_or_spend_read_budget(monkeypatch):
     _graph, broker, captures, _runtime, before, record, session = _issue_tape_pair()
     reads_before = dict(broker._p4_ledger._p4_reads)
