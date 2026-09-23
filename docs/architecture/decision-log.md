@@ -20647,10 +20647,10 @@ nothing downstream of it; wiring that tape into `ReplayAdapter`/`EquityReplay`
 
 ---
 
-## ADR-0175 — a runtime `ReplayTape` over verified v2 event envelopes (PROPOSAL)
+## ADR-0175 — a runtime `ReplayTape` over verified v2 event envelopes
 
-**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW, REVISION 2
-(2026-09-23). Not approved. No implementation exists. Revision 1 received a
+**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED (2026-09-23), REVISION
+2. Not yet implemented. Revision 1 received a
 NO-GO from an independent Phase-0 design skeptic: 2 Critical (grouping
 `FeedResult`s by `availability_ms` alone allegedly "destroys" correction-chain
 order — `correction_position`/`corrects_event_id`/`prior_envelope_sha256` —
@@ -20662,8 +20662,12 @@ Critical findings on a verified architectural fact — see the rebuttal at the
 end of this Context section — and accepts and folds in every Major/Minor
 finding regardless of that dispute (Decision points 1, 2, 6 below). Per
 `docs/skills/skeptic-review.md`, a disputed finding goes to a fresh
-independent adjudicator; this revision is that dispute, addressed to a fresh
-reviewer who has not seen Revision 1's verdict.
+independent adjudicator; a fresh reviewer with no knowledge of Revision 1's
+verdict independently reread every cited file (`FeedResult`, the
+`ReplayTape` ABC, `ReplayFeed`'s docstring, `BarTape`, `compose.py`, and the
+decider's `read_entry`/`inputs_digest` path) and confirmed Revision 2's
+rebuttal is architecturally correct: 0 Critical, 0 Major, 0 Minor, 0 Nit,
+GO for RED.
 
 **Context.** `bundles.ReplayTape` (the ABC `compose.bundles_for(...,
 tape=tape)` consumes, `dskit.production.bundles`) is what "a replay hands the
