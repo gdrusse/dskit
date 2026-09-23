@@ -5128,6 +5128,20 @@ class CapturedPortSet(_Opaque):
                        and type(used) is frozenset,
                        "required captured port refused")
             audit = ledger._audit(record)
+            entries = [entry for entry in ledger._p4_entries() if entry[4] is record]
+            _hs_refuse(len(entries) == 1 and len(retained) == len(audit["streams"]) == 2,
+                       "required captured port refused")
+            request = _hs_parse_canonical(entries[0][2])
+            for index, (published, frozen, port) in enumerate(retained):
+                projected = request["captures"][index]
+                _hs_refuse(type(published) is _Published and type(frozen) is _Frozen
+                           and type(port) is MappingProxyType
+                           and projected[0] == id(published)
+                           and projected[1] == id(frozen)
+                           and projected[2] == dict(port)
+                           and projected[3] == published.descriptor
+                           and projected[4] == _digest(_canonical_bytes(frozen.source)),
+                           "required captured port refused")
             by_name = {
                 port["consumer_input"]: (
                     published, port["consumer_document_sha256"],

@@ -1124,6 +1124,17 @@ def test_p4_port_set_refuses_fabricated_view_and_reader_registry_aliases():
         fabricated_reader.read_member_bytes("config.json")
 
 
+def test_p4_port_set_require_refuses_swapped_retained_handle_state():
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    view = broker.captured_port_set(record, session)
+    retained, minted, used = trust._P4_CAPTURE_HANDLES[record]
+    trust._P4_CAPTURE_HANDLES[record] = (
+        tuple(reversed(retained)), minted, used,
+    )
+    with pytest.raises((TypeError, ValueError)):
+        view.require("tape_manifest")
+
+
 def test_p4_port_set_factory_and_require_do_not_call_provider_or_spend_read_budget(monkeypatch):
     _graph, broker, captures, _runtime, before, record, session = _issue_tape_pair()
     reads_before = dict(broker._p4_ledger._p4_reads)
