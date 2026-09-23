@@ -21504,8 +21504,26 @@ backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0178 — market-calendar-aware cash-flow contribution timing
 
-**Status:** PROPOSED (REVISION 2) — AWAITING PHASE-0 REVIEW. Not yet
-implemented. Revision 1's independent design skeptic reviewed cold and
+**Status:** PHASE-0 CLEAN (REVISION 2) — OWNER-AUTHORIZED FOR RED. Not
+yet implemented. A second independent design skeptic reviewed Revision 2
+cold (no knowledge of Revision 1's review) and hand-traced the
+once-per-day mechanism against a concrete multi-tick example, confirmed
+the partition property holds byte-for-byte, confirmed `None == date(...)`
+is always `False` (no spurious first-tick skip), and confirmed the
+performance win is real (roughly 390× fewer calls, netting an
+estimated ~390× improvement over Revision 1's ~2.4h extrapolation down
+to ~22s at ADR-0178's target scale — consistent with, not contradicting,
+the ADR's own "tens of minutes to hours" framing): 0 Critical, 0 Major,
+2 Minor, 1 Nit, GO. Both Minors and the Nit fixed in place — the
+scale-test row's illustrative budget corrected from an unrealistic
+"well under a second" to an honest tens-of-seconds ceiling framed as a
+relative (not absolute) win, `window_date`'s update moved to fire only
+after `due()`/`append_many` succeed (mirroring `window_ms`'s existing
+success-only ordering, closing a currently-inert but latent asymmetry),
+and Decision point 1.5 now states precisely that the win is
+call-frequency reduction against a roughly CONSTANT per-call cost
+(driven by `_recurrences`' `last_target`), not a diminishing one.
+Revision 1's independent design skeptic reviewed cold and
 verified every code claim (the call-site/`times` claims, `_occurrence`'s
 exact field construction, `SkipCashFlow`'s exact-UTC-instant matching and
 lack of gap/fold validation, multiple-override composition, the 3
@@ -21655,18 +21673,42 @@ backtest whose tape spans a weekend or holiday).
    `self._cash_flow_window_ms` (so the NEXT actual check's window still
    starts exactly where the last one left off, preserving the partition
    property byte-for-byte; this is a pure call-frequency reduction, never
-   a correctness change). Otherwise, set `self._cash_flow_window_date =
-   current_date` and proceed exactly as before. Sound because, after
-   Decision points 1-2, every trading day (every day with at least one
-   tick) has exactly one scheduled occurrence and every non-trading day
-   has none — so checking once per FIRST tick of a new calendar date is
-   sufficient by construction; a day's occurrence, once captured by that
-   day's first check, needs no further checking that same day.
+   a correctness change). Otherwise, proceed exactly as before, and only
+   AFTER `due()`/`append_many` succeed, set BOTH
+   `self._cash_flow_window_date = current_date` AND the existing
+   `self._cash_flow_window_ms = window_end_ms` together, at the end of
+   the method (Revision 2 Phase-0 Minor #2: mirror `window_ms`'s existing
+   success-only ordering rather than marking `window_date` consumed
+   before the work it gates has actually completed — currently inert,
+   since `_submit_due_cash_flows` has exactly one call site and nothing
+   retries a tick, but a latent same-day-skipped-forever asymmetry if
+   `due()` ever raised mid-call and something upstream retried the same
+   tick later). Sound because, after Decision points 1-2, every trading
+   day (every day with at least one tick) has exactly one scheduled
+   occurrence and every non-trading day has none — so checking once per
+   FIRST tick of a new calendar date is sufficient by construction; a
+   day's occurrence, once captured by that day's first check, needs no
+   further checking that same day.
    `EquityReplay.__init__` gains `self._cash_flow_window_date = None`;
    `_run_loop` sets it to `None` in both the composer-bound and
    composer-absent branches (parallel to the existing three ADR-0176
    attributes), guaranteeing the very first tick's date can never
-   spuriously match and skip its own check. Reduces `due()` call
+   spuriously match and skip its own check (`None == date(...)` is always
+   `False` in Python — `date.__eq__` returns `NotImplemented` for a
+   non-`date` operand, falling back to identity, never a `TypeError` —
+   confirmed by Phase-0 Revision 2's reviewer). **Revision 2 Phase-0
+   Nit, precision correction:** the win is call-frequency reduction
+   against a per-call cost that is roughly CONSTANT across the whole run,
+   not growing through the year as earlier framing implied —
+   `_recurrences`' own break condition depends on `last_target`, the
+   MAXIMUM target instant across every override in the schedule
+   (`dskit/production/cashflows.py:474-497`, unedited), and because
+   Decision point 2 builds `SkipCashFlow` overrides spanning the whole
+   tape up front, `last_target` sits near the tape's own last day for
+   every call from day one onward — so every `due()` call is already
+   walking close to the full occurrence range, at a roughly constant
+   cost per call, and it is the CALL COUNT reduction alone (not a
+   diminishing per-call cost) that delivers the win. Reduces `due()` call
    frequency by roughly the tick-count-per-trading-day (~390× for
    1-minute bars over a 6.5-hour session), which the Required Phase-0
    matrix's new scale-test row (below) must demonstrate empirically
@@ -21745,11 +21787,22 @@ demonstrate empirically — timed, with the number asserted or printed,
 not merely claimed — that `due()` is called at most once per distinct
 trading date actually present in the tape (assert the call count, e.g.
 via a spy/counter on `composer.due`, equals `len(trading_dates)`, not the
-tick count), and that end-to-end wall-clock cost for cash-flow bookkeeping
-alone stays low enough (a stated, checked-in budget, e.g. well under a
-second for a full year of 1-minute bars) that this ADR is a net
-performance improvement over ADR-0176's own pre-existing per-tick-call
-baseline, not merely "not worse than before this ADR."
+tick count — this call-count assertion is the actual gate; it alone
+would have caught Revision 1's defect and is not gameable by a favorable
+but coincidental timing run). **Revision 2 Phase-0 Minor #1, corrected:**
+the wall-clock figure is NOT "well under a second" — `_recurrences`' own
+`last_target`-driven walk (see Decision point 1.5's Nit) makes every
+`due()` call cost roughly the same regardless of call frequency, so the
+realistic budget, extrapolated from the Revision 1 reviewer's own
+benchmark ratio at ADR-0178's target scale (~365 occurrences × ~200
+overrides, ~250 calls/year), is on the order of tens of seconds — assert
+a generous, honest ceiling (e.g. under 60 seconds) for cash-flow
+bookkeeping alone over a full year of 1-minute bars, framed explicitly
+as a large RELATIVE win (roughly two orders of magnitude versus
+Revision 1's own "tens of minutes to hours" extrapolation for the
+identical override count), not an absolute "fast" claim an implementer
+could either spuriously fail on a correctly-fixed design or silently
+loosen without scrutiny.
 
 ### Non-goals
 
