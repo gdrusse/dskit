@@ -533,13 +533,23 @@ def test_compose_v2_replay_tape_builds_a_genuine_verified_causally_ordered_tape(
 def test_compose_v2_replay_tape_refuses_a_capability_from_an_unrelated_root(
     tmp_path,
 ):
-    """The Revision-1 mixing attack: unrelated capability plus genuine root refuses."""
+    """The Revision-1 mixing attack: unrelated capability plus genuine root refuses.
+
+    Pins the exact refusal reason (``match=``), not merely "raises
+    ValueError" -- a mutant that bypasses ``prepare_v2_projection_input``
+    entirely (e.g. reusing the caller's own capability as its own "fresh"
+    second one) would ALSO raise ValueError, just for the wrong reason
+    ("missing or spent" from the one-shot rule, not "does not belong to
+    the supplied raw root" from the equality check) -- a bare
+    ``pytest.raises(ValueError)`` would pass vacuously against that
+    mutant. Skeptic finding, candidate round.
+    """
     _, proof_a, raw_bytes_a, capability_a = _mint(tmp_path / "a")
-    _, proof_b, raw_bytes_b, _capability_b = _mint(
+    _, proof_b, raw_bytes_b, capability_b = _mint(
         tmp_path / "b",
         event_changes={"payload_sha256": "b" * 64},
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="does not belong"):
         production_verifier._compose_v2_replay_tape(
             proof_b, raw_bytes_b, capability_a
         )
@@ -547,6 +557,16 @@ def test_compose_v2_replay_tape_refuses_a_capability_from_an_unrelated_root(
     # never bound to proof_b/raw_bytes_b (ADR-0174 Decision point 3).
     with pytest.raises(ValueError, match="spent"):
         trust.consume_v2_projection_input(capability_a)
+
+    # Converse: the genuine root paired with a capability from a DIFFERENT
+    # unrelated root (ADR-0174's Required Phase-0 matrix names both
+    # directions explicitly).
+    with pytest.raises(ValueError, match="does not belong"):
+        production_verifier._compose_v2_replay_tape(
+            proof_a, raw_bytes_a, capability_b
+        )
+    with pytest.raises(ValueError, match="spent"):
+        trust.consume_v2_projection_input(capability_b)
 
 
 def test_compose_v2_replay_tape_refuses_every_nonexact_raw_byte_tuple(tmp_path):
