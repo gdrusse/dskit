@@ -39,6 +39,18 @@
     "result": "GO for explicit owner approval, then RED"
   },
   "owner_approval": "2026-09-22 explicit approval to finish and launch the backtest, given in direct response to the ADR-0169 approval gate for commit 79ed8f6 and blob e2976d0",
-  "implementation_status": "owner-approved; blocked pending the required clean fresh post-approval Phase 0",
+  "postapproval_phase0": {
+    "reviewed_commit": "89f94db93b70cb70bb8752b97b3ce6e678a9b5fe",
+    "reviewed_adr_blob": "9165bb450207bface6aabd3d723d9bc3c7088063",
+    "reviewed_trust_blob": "80a20848e04208986c4a6de60bd85a5ef1c9a0d6",
+    "reviewed_bundles_blob": "84da26d5323f6a636373b8475308c9910a62acf3",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "focused_baseline": "1314 passed, 1 documented unrelated ADR-0157 xfail",
+    "result": "GO for deterministic synthetic ADR-0169 RED/TDD only"
+  },
+  "implementation_status": "post-approval Phase 0 clean; RED/TDD authorized for ADR-0169 only",
   "non_authority": "This evidence does not authorize RED, implementation, capture, market data, replay, backtest, HPO, refit, release, paper trading, or live trading."
 }
