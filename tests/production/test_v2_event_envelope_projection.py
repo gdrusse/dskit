@@ -77,6 +77,17 @@ class _ActiveDict(dict):
         return self._called()
 
 
+class _HostileKeyMeta(type):
+    def __getattribute__(cls, name):
+        if name == "__name__":
+            raise RuntimeError("hostile metaclass callback")
+        return type.__getattribute__(cls, name)
+
+
+class _HostileTypeNameKey(metaclass=_HostileKeyMeta):
+    pass
+
+
 def _event(**changes):
     value = {
         "schema_version": _RAW_SCHEMA,
@@ -439,6 +450,32 @@ def test_projection_refuses_active_mapping_backing_without_callbacks(level):
     with pytest.raises(bundles.ProductionError):
         _project(events, policy)
     assert active.calls == 0
+
+
+@pytest.mark.parametrize("level", ["event", "policy", "source"])
+def test_projection_refuses_nonstring_keys_without_type_name_callbacks(level):
+    if level == "event":
+        events = (MappingProxyType({**dict(_event()), _HostileTypeNameKey(): 1}),)
+        policy = _policy()
+    elif level == "policy":
+        events = (_event(),)
+        policy = MappingProxyType({
+            **dict(_policy()), _HostileTypeNameKey(): 1
+        })
+    else:
+        good = _policy(rows=(("alpha", 0),))
+        row = MappingProxyType({
+            "source_id": "alpha", "rank": 0, _HostileTypeNameKey(): 1
+        })
+        events = (_event(),)
+        policy = MappingProxyType({
+            "schema_version": _POLICY_SCHEMA,
+            "sources": (row,),
+            "policy_sha256": good["policy_sha256"],
+        })
+
+    with pytest.raises(bundles.ProductionError):
+        _project(events, policy)
 
 
 def test_projection_refuses_policy_container_entry_and_field_shape_defects():

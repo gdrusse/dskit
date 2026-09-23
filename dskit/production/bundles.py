@@ -574,12 +574,9 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         missing = policy_fields - exact_policy_keys
         for name in sorted(unknown):
             problems.append(f"source_rank_policy has unknown field {name!r}")
-        for name_type in sorted(
-            type(name).__name__ for name in non_string_policy_keys
-        ):
+        for _name in non_string_policy_keys:
             problems.append(
-                "source_rank_policy has a non-string field name of type "
-                f"{name_type}"
+                "source_rank_policy has a non-string field name"
             )
         policy_shape_ok = (
             not unknown and not missing and not non_string_policy_keys
@@ -631,11 +628,9 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         missing = source_fields - exact_item_keys
         for name in sorted(unknown):
             problems.append(f"{prefix} has unknown field {name!r}")
-        for name_type in sorted(
-            type(name).__name__ for name in non_string_item_keys
-        ):
+        for _name in non_string_item_keys:
             problems.append(
-                f"{prefix} has a non-string field name of type {name_type}"
+                f"{prefix} has a non-string field name"
             )
         item_shape_ok = not unknown and not missing and not non_string_item_keys
         for name in sorted(missing):
@@ -698,12 +693,9 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         missing = set(raw_fields) - exact_event_keys
         for name in sorted(unknown):
             problems.append(f"{prefix} has unknown raw-event field {name!r}")
-        for name_type in sorted(
-            type(name).__name__ for name in non_string_event_keys
-        ):
+        for _name in non_string_event_keys:
             problems.append(
-                f"{prefix} has a non-string raw-event field name of type "
-                f"{name_type}"
+                f"{prefix} has a non-string raw-event field name"
             )
         event_shape_ok = not unknown and not missing and not non_string_event_keys
         for name in sorted(missing):
