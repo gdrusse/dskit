@@ -389,6 +389,105 @@ def test_adr169_dataset_authority_version_pairing_is_exact(auth_schema, event_sc
         trust.NonAuthorizingSyntheticGrantVerifier().verify(raw, *grants)
 
 
+@pytest.mark.parametrize(("auth_schema", "event_schema"), [
+    ("dskit.roster-bootstrap-authorization/v1", "dskit.raw-event/v2"),
+    ("dskit.roster-bootstrap-authorization/v2", "dskit.raw-event/v1"),
+])
+def test_adr169_roster_authority_version_pairing_is_exact(auth_schema, event_schema):
+    raw, g1, g2, _policy = cases._synthetic_roster_bootstrap_fixture()
+    value = json.loads(raw)
+    value["schema_version"] = auth_schema
+    value["event_schema"] = event_schema
+    if auth_schema.endswith("/v2"):
+        value["scope"]["tzdata_version_sha256"] = TZDATA_SHA256
+    raw = f4._json_bytes(value)
+    digest = hashlib.sha256(raw).hexdigest()
+    grants = []
+    for grant_raw in (g1, g2):
+        grant = json.loads(grant_raw)
+        grant["bootstrap_sha256"] = digest
+        grants.append(cases._resign_roster_bootstrap_grant(grant))
+    with pytest.raises(ValueError, match="version|schema"):
+        trust.NonAuthorizingRosterBootstrapVerifier().verify(raw, *grants)
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("source_ids", ["src:A"]),
+    ("license_digests", ["9" * 64]),
+    ("media_type", "application/json"),
+    ("source_roster_publication_receipt_sha256", "9" * 64),
+    ("source_roster_policy_sha256", "9" * 64),
+    ("correction_bust_metadata_sha256", "9" * 64),
+])
+def test_adr169_v2_authority_substitutions_refuse_before_member_read(
+    tmp_path, field, value,
+):
+    publisher, preflight, source, signed, roster = _v2_case(
+        tmp_path, dataset_changes={field: value},
+    )
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == ()
+    assert publisher._reserve._connection.total_changes == before
+    assert publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("grant_index", [1, 2])
+def test_adr169_v2_mutated_grant_refuses_before_read_or_spend(
+    tmp_path, grant_index,
+):
+    publisher, preflight, source, signed, roster = _v2_case(tmp_path)
+    changed = list(signed)
+    grant = json.loads(changed[grant_index])
+    grant["signature"] = (
+        ("0" if grant["signature"][0] != "0" else "1")
+        + grant["signature"][1:]
+    )
+    changed[grant_index] = f4._json_bytes(grant)
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError):
+        preflight.verify(*changed, *roster)
+    assert source.read_names == ()
+    assert publisher._reserve._connection.total_changes == before
+
+
+@pytest.mark.parametrize("condition", ["expired", "revoked"])
+def test_adr169_v2_expiry_or_revocation_refuses_before_read_or_spend(
+    tmp_path, condition,
+):
+    publisher, preflight, source, signed, roster = _v2_case(tmp_path)
+    if condition == "expired":
+        publisher._reserve._advance_clock(900)
+    else:
+        publisher._reserve._revoke("G1")
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError):
+        preflight.verify(*signed, *roster)
+    assert source.read_names == ()
+    assert publisher._reserve._connection.total_changes == before
+    assert publisher._reserve._connection.execute(
+        "SELECT COUNT(*) FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == (0,)
+
+
+def test_adr169_v2_signed_id_is_one_use_across_brokers(tmp_path):
+    publisher, first, _source, signed, roster = _v2_case(tmp_path)
+    first.verify(*signed, *roster)
+    second_source = trust._SyntheticFixtureSource({
+        "fixture_A.ndjson": b"unreachable",
+        "fixture_B.ndjson": b"unreachable",
+    })
+    second = trust._SyntheticRawPreflight(publisher, second_source)
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="already spent"):
+        second.verify(*signed, *roster)
+    assert second_source.read_names == ()
+    assert publisher._reserve._connection.total_changes == before
+
+
 def test_adr169_v2_roster_basis_records_exact_authorization_schema(tmp_path):
     _publisher, _preflight, _source, _signed, roster = _v2_case(tmp_path)
     basis = json.loads(roster[3])
@@ -592,8 +691,11 @@ def test_adr169_root_pis_refuses_v2_inputs_before_reserve_spend(tmp_path, monkey
     ).fetchone() == (0,)
 
 
+@pytest.mark.parametrize("substitution", [
+    "outer-v2", "dataset-event-v2", "roster-event-v2",
+])
 def test_adr169_dynamic_graph_refuses_substituted_v2_retained_state(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, substitution,
 ):
     (tmp_path / "v1").mkdir()
     v1_publisher, v1_roster, v1_signed, v1_output = cases._adr140_published_raw_case(
@@ -606,7 +708,20 @@ def test_adr169_dynamic_graph_refuses_substituted_v2_retained_state(
     _v2_publisher, _preflight, _source, v2_signed, v2_roster = _v2_case(
         tmp_path / "v2",
     )
-    issuer._retained = (v2_signed, v2_roster, *retained[2:])
+    if substitution == "outer-v2":
+        substituted_signed, substituted_roster = v2_signed, v2_roster
+    else:
+        substituted_signed = list(v1_signed)
+        substituted_roster = list(v1_roster)
+        target = substituted_signed if substitution == "dataset-event-v2" else substituted_roster
+        value = json.loads(target[0])
+        value["event_schema"] = "dskit.raw-event/v2"
+        target[0] = f4._json_bytes(value)
+        substituted_signed = tuple(substituted_signed)
+        substituted_roster = tuple(substituted_roster)
+    issuer._retained = (
+        substituted_signed, substituted_roster, *retained[2:],
+    )
     before = v1_publisher._reserve._connection.total_changes
     with pytest.raises(ValueError, match="v1-only"):
         trust.NonAuthorizingDynamicRootGraph(trust._MAKE, issuer)

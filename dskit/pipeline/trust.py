@@ -9553,11 +9553,18 @@ class NonAuthorizingDynamicRootGraph:
 
     def _derive_records(self):
         signed, roster, output, pair = self._originals()
-        dataset_schema = _hs_parse_canonical(signed[0])["schema_version"]
-        roster_schema = _hs_parse_canonical(roster[0])["schema_version"]
+        dataset_authorization = _hs_parse_canonical(signed[0])
+        roster_authorization = _hs_parse_canonical(roster[0])
+        dataset_schema = dataset_authorization["schema_version"]
+        roster_schema = roster_authorization["schema_version"]
+        v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v1"
+        ]
         _hs_refuse(
             dataset_schema == "dskit.dataset-capture-authorization/v1"
-            and roster_schema == "dskit.roster-bootstrap-authorization/v1",
+            and roster_schema == "dskit.roster-bootstrap-authorization/v1"
+            and dataset_authorization.get("event_schema") == v1_event_schema
+            and roster_authorization.get("event_schema") == v1_event_schema,
             "dynamic root graph is v1-only",
         )
         items = (
