@@ -19924,12 +19924,14 @@ that its caller held a verified raw fixture or environment identity.
 
 ## ADR-0172 — one-shot verified synthetic v2 projection input
 
-**Status:** APPROVED FOR RED-TO-GREEN 2026-09-23 at
-`368111d3045d4aa1a649cd6f0dfb12b28ed0cb92`. Fresh Phase 0 was
-0C/0M/0m/0N and the owner's standing autonomous implementation approval
-applies. Evidence:
-`docs/evidence/closeout/0200-intraday-f3-v2-projection-bridge-phase0.json`.
-Two sequential fresh clean final lenses remain required. It adds one
+**Status:** STOPPED — DO NOT IMPLEMENT (2026-09-23). Post-approval
+implementation inspection proved its required v2 `NonAuthorizingRawRootProof`
+cannot exist: ADR-0169 Decision 7 deliberately keeps
+`_SyntheticRawPublisher` and raw PUBLISHED roots v1-only. Evidence 0200 is
+retained as review history, not implementation authority. ADR-0173 must first
+add the separately reviewed environment-bound v2 raw publication path. This
+ADR may be amended/re-reviewed only after that prerequisite is implemented.
+Its intended future scope remains one
 non-authorizing opaque bridge from already retained synthetic v2 roots to the
 pure projector; it performs no WORM write, publication, replay, or backtest.
 
@@ -20115,3 +20117,92 @@ captured port, lifecycle transition, root publication, manifest construction,
 composed tape, replay, recovery, external/real data, HPO, refit, backtest,
 paper/live trading, or deployment. Those require later separately reviewed
 slices; this bridge is non-authorizing data plumbing only.
+
+---
+
+## ADR-0173 — environment-bound synthetic v2 raw publication
+
+**Status:** PROPOSAL — DO NOT IMPLEMENT. This is the missing prerequisite
+discovered after ADR-0172 approval. It requires fresh Phase 0, owner approval,
+RED-to-GREEN, and two sequential fresh clean final lenses.
+
+**Context.** ADR-0169 intentionally allows a genuine v2 preflight proof but
+requires existing `_SyntheticRawPublisher.publish` and every downstream root
+consumer to refuse it. ADR-0170 now provides the trusted synthetic environment
+identity needed to compare signed tzdata. This slice opens exactly one new
+route: publish the already verified v2 raw fixture into the existing synthetic
+raw WORM root. It does not open root PIS, dynamic graph, envelope projection,
+replay, or backtest.
+
+### Decision
+
+1. **Separate exact v2 entry.** Add private positional-only
+`_SyntheticRawPublisher.publish_v2(proof, environment_identity,
+authorization_bytes, g1, g2, attestation, bootstrap, bg1, bg2, roster_basis,
+roster_receipt, /)`. Existing `publish(proof, ...)` remains byte-for-byte
+v1-only and continues to refuse v2. No flag, schema fallback, variadic alias,
+or caller-selected implementation exists.
+
+2. **Environment gate before producer effect.** Require the exact unused
+`VerifiedSyntheticDatasetFixture` issued by this publisher's exact preflight,
+exact retained original bytes, v2 authorization/roster/event schemas, and exact
+shared signed scope. Before setting `proof._used`, reserve advancement,
+session creation, WORM write, provider call, or receipt append, invoke
+ADR-0170 `_require_synthetic_tzdata(environment_identity,
+authorization.scope.tzdata_version_sha256)`. Wrong/forged/copied identity,
+wrong digest, v1 proof, mixed authority, changed proof fact, or replacement of
+the exact environment dispatch refuses without effect.
+
+3. **Reuse one writer, no parallel semantics.** After the v2-only gate, call
+one private closure-pinned common writer shared with legacy `publish`.
+Mechanical extraction preserves the exact v1 sequence, messages, quarantine,
+crash/fault behavior, manifest/root/receipt bytes, and lifecycle transitions.
+The common writer receives an internally fixed expected schema; callers cannot
+reach it. V2 writes the same manifest/root/receipt families with
+`event_schema=dskit.raw-event/v2` and the already verified twelve-key member
+bytes. No envelope bytes are derived.
+
+4. **Bind environment to retained v2 root proof.** Retain the exact issued
+environment identity in a private weak identity map keyed by the successful v2
+raw publisher; v1 publishers have no entry. Extend
+`NonAuthorizingRawRootProof.verify` only for a retained v2 publication:
+before member/provider reads, reparse the exact retained authorization, require
+the map's exact live identity, re-run `_require_synthetic_tzdata`, and then
+perform its existing complete verification. Forged/missing/changed identity or
+environment dispatch refuses. Returned facts stay nonauthorizing and
+nondeployment and gain no environment field.
+
+5. **Downstream stop moves exactly one edge.** A genuine v2 raw publisher,
+PUBLISHED root/receipt, and `NonAuthorizingRawRootProof.verify` may now
+succeed. `_SyntheticRootPisIssuer`, dynamic root graph/authority,
+`compose_replay_tape`, `ReplayRun`, and every other consumer remain v1-only
+and refuse the v2 retained state before their current effects. ADR-0172 remains
+stopped until this slice closes.
+
+6. **Dispatch and compatibility.** Build the v2 entry through a deleted
+module-initialization closure capturing exact environment checker, parser,
+schema tables, common writer, and proof descriptors. Identity-check before and
+after the environment gate and immediately before the first effect; existing
+proof-internal callback semantics are inherited, not strengthened. Neither the
+method nor any helper/type is exported. Existing v1 tests/messages/bytes and
+public surfaces remain unchanged.
+
+### Required Phase-0 matrix
+
+Pin signatures/exports and legacy `publish` v2 refusal. RED genuine v2
+`publish_v2` success; every wrong proof/identity/schema/scope/tzdata/original
+byte/fact/dispatch case refuses before proof use, reserve/session/provider/WORM/
+receipt effect. Prove exact v2 manifest/member/root/receipt and fresh root-proof
+verification; missing/forged/replaced environment binding refuses before
+member read. Prove v1 common-writer behavior byte/message/fault/quarantine
+compatible. Re-run ADR-0169 hard-stop tests amended only where this ADR moves
+the raw-publication/root-proof edge; root PIS/dynamic graph/bundles/replay stops
+remain green and effect-free. Run ADR-0145/0146/0169/0170/0171, trust, capture,
+and all purity suites.
+
+### Non-goals
+
+No root PIS/dynamic authority for v2, projection input, envelope writer,
+`ReplayTapeDataCapture`, manifest/tape composition, replay, recovery,
+external/real data, acquisition, HPO, refit, backtest, paper/live trading, or
+deployment.
