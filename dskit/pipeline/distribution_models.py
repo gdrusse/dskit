@@ -298,7 +298,7 @@ DEFAULT_RIDGE_ALPHA = 0.0
 class ScaleModelLocationScale(EmpiricalLocationScale):
     """A location-scale rung whose scale is a FITTED model of forward volatility.
 
-    Abstract (ADR-0169). On the fit split it regresses
+    Abstract (ADR-0181). On the fit split it regresses
     ``log(scale_target)`` — the per-step volatility realized over the
     horizon — on ``log`` of the ``scale_features``, then standardizes each
     fit label by its PREDICTED horizon scale to learn the shape. A forecast

@@ -107,7 +107,7 @@ python -m pytest tests/test_integration.py::test_public_cli_round_trip_and_posit
   Run `python -m dskit.pipeline walkforward configs/run-synthetic-distribution.json --asof 1978-06-01`
   (journal initialized). Swap the `model` node to test another rung; never
   decision-eligible.
-- Distribution zoo (ADR-0169): `run-synthetic-har.json` (log-HAR scale) and
+- Distribution zoo (ADR-0181): `run-synthetic-har.json` (log-HAR scale) and
   `run-synthetic-lightgbm.json` (needs the `lightgbm` extra) differ from the
   harness only in `model`; `python -m dskit.pipeline staged
   configs/run-distribution-zoo.json --asof 1978-06-01` plans them, waits for
@@ -125,7 +125,7 @@ index_options/             # __init__.py, contracts.py, observations.py, nodes.p
                            # distribution.py (condor under a forecast, ADR-0168)
 configs/                   # source-fixture.json, suite-fixture.json, run-fixture.json,
                            # run-synthetic-distribution.json (ADR-0168 harness),
-                           # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0169)
+                           # run-synthetic-har/-lightgbm.json + run-distribution-zoo.json (ADR-0181)
 fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff

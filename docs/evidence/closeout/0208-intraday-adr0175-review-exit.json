@@ -1,0 +1,88 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "intraday F3 runtime ReplayTape over verified v2 event envelopes",
+  "adr": "ADR-0175",
+  "branch": "claude/intraday-equities-backtest-cont-41xqxz",
+  "continuation_of_branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "phase0_history": [
+    {
+      "revision": 1,
+      "design": "_CapturedEnvelopeReplayTape, public, in dskit.production.bundles, grouping FeedResults by availability_ms",
+      "verdict": "NO-GO",
+      "finding": "2 Critical -- grouping by availability_ms alone allegedly destroys correction-chain order (correction_position/corrects_event_id/prior_envelope_sha256); 3 Major (public visibility footgun, matrix incompleteness, construction-time validation undocumented); 1 Minor (BarTape-mirroring framing overclaimed)"
+    },
+    {
+      "revision": 2,
+      "design": "disputed the 2 Critical findings on a verified architectural fact -- FeedResult has no field capable of carrying row content or correction order under any grouping choice, and dskit.production.feed.ReplayFeed's own docstring states directly that row/correction order is the decider's responsibility via read_entry/inputs_digest, never the tape's, for every ReplayTape implementation including the pre-existing BarTape; accepted and folded in every Major/Minor finding regardless of the dispute (class made private, construction-time whole-or-nothing contract documented, framing corrected, matrix expanded)",
+      "verdict": "GO for RED",
+      "review": "fresh independent design skeptic, cold review with no knowledge of Revision 1's verdict, independently reread every cited file and confirmed the disputed architectural claim is correct: 0 Critical / 0 Major / 0 Minor / 0 Nit"
+    }
+  ],
+  "reuse_confirmed": {
+    "method": "swept for any existing CapturedReplayTape-to-runtime-ReplayTape adapter before drafting; confirmed dskit.pipeline.trust.ReplayRun.run explicitly refuses today (\"replay execution requires the F3 composed-tape broker (follow-on)\"), and BarTape (children/intraday_equities) is the only existing ReplayTape implementation, over raw unverified bars, not verified envelopes",
+    "action_taken": "mirrors BarTape's exact shape and trust posture (grouping by the v2 tick field, availability_ms, instead of asof_ms); compose_replay_tape, BarTape, ReplayRun, and bundles.py itself are all byte-for-byte untouched"
+  },
+  "matrix_completion": {
+    "candidate_commit": "58c33aee0aadbf1393803feda6350f2a1b4621c0",
+    "implementation_correction": "the ADR text originally proposed dskit.production.bundles as the class's home; RED caught a real purity-gate refusal (bundles.py's own test_bundles_imports_no_production_module_but_base_and_vocab correctly refuses importing FeedResult from dskit.production.records -- bundles.py sits ahead of feed.py/compose.py in the build order precisely because it depends on neither). Minimal fix: relocated to dskit.production.feed, which already imports records.FeedResult and already owns ReplayFeed, the tape's sole consumer -- a cleaner home than originally proposed, with no circularity. The ADR text was corrected to match post-hoc.",
+    "rows_closed": [
+      "exact signature, private, absent from __all__",
+      "empty sequence yields start_ms()==0 and feed_results()==()",
+      "single envelope yields one correct FeedResult",
+      "multiple envelopes at one instant collapse into one counted FeedResult",
+      "distinct instants yield one FeedResult each in ascending order; start_ms() is the minimum",
+      "id_allocations() always ()",
+      "malformed envelope raises ProductionError at construction, whole-or-nothing (no partial state)",
+      "a base event and its correction sharing one instant collapse to one FeedResult, with a direct-inspection proof that FeedResult cannot encode which is the correction",
+      "isinstance(tape, ReplayTape) genuinely satisfied",
+      "real ADR-0174 _project_verified_synthetic_v2_input output feeds the class directly (integration proof)",
+      "the produced FeedResults are directly consumable by this module's own ReplayFeed (interoperability proof)"
+    ],
+    "disposition": "candidate committed clean on the first candidate-round pass; no post-candidate correction needed"
+  },
+  "commands": {
+    "focused": "PYTHONPATH=$PWD python3 -m pytest tests/production/test_feed.py tests/production/test_bundles.py tests/pipeline/test_v2_projection_input.py -q",
+    "focused_result": "268 passed",
+    "ruff": "clean (all three changed files)",
+    "diff_check": "clean",
+    "purity": "clean (tests/pipeline/test_purity.py, tests/production/test_purity.py)",
+    "bounded_regression": "PYTHONPATH=$PWD python3 -m pytest tests/pipeline/test_captured_authorization.py tests/pipeline/test_event_wire_v2.py tests/pipeline/test_synthetic_environment_identity.py tests/pipeline/test_v2_raw_publication.py tests/pipeline/test_v2_projection_input.py tests/pipeline/test_trust.py tests/pipeline/test_purity.py tests/production/test_bundles.py tests/production/test_feed.py tests/production/test_capture_lifecycle.py tests/production/test_captured_authorization.py tests/production/test_v2_event_envelope_projection.py tests/production/test_verifier.py tests/production/test_purity.py -q",
+    "bounded_regression_result": "2134 passed, 1 xfailed"
+  },
+  "final_candidate": {
+    "commit": "58c33aee0aadbf1393803feda6350f2a1b4621c0",
+    "blobs": {
+      "dskit/production/feed.py": "a5668783db7f74647588ddfc150501a3b1f8f01c",
+      "tests/production/test_feed.py": "a320382ef2b928d3ded8596cfa3d36fe118be888",
+      "tests/pipeline/test_v2_projection_input.py": "523b54b2f0cc71f34fd0d83851fa9412a159d9a5",
+      "docs/architecture/decision-log.md": "4d6bf8c0622ce4186935c15c394d705eed32527d"
+    }
+  },
+  "two_sequential_clean_final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "model": "Claude Haiku 4.5",
+      "candidate": "58c33aee0aadbf1393803feda6350f2a1b4621c0",
+      "verdict": "0C/0M/0m/0N",
+      "tests": "293 passed",
+      "notes": "confirmed ABC satisfaction, grouping correctness, whole-or-nothing construction, zero new authority/effect, no circular import (bundles.py does not import feed.py), legitimate same-package private-name reach, all dependencies (compose_replay_tape, BarTape, ReplayRun, bundles.py) untouched"
+    },
+    {
+      "lens": "tests/integration",
+      "model": "Claude Haiku 4.5",
+      "candidate": "58c33aee0aadbf1393803feda6350f2a1b4621c0",
+      "verdict": "0C/0M/0m/0N",
+      "tests": "226 passed (production/bundles+feed) + 70 passed (verifier) + 5 repeated determinism runs",
+      "notes": "active mutation testing on 3 distinct mutations (remove grouping, remove sort/ordering, break whole-or-nothing construction) -- all 3 caught by name, each mutation restored and git diff reconfirmed empty; confirmed the ReplayFeed interoperability test is not vacuous (ReplayFeed's own isinstance(entry, FeedResult) check would fail construction if the tape produced the wrong type)"
+    }
+  ],
+  "files_changed": [
+    "dskit/production/feed.py",
+    "tests/production/test_feed.py",
+    "tests/pipeline/test_v2_projection_input.py",
+    "docs/architecture/decision-log.md",
+    "docs/evidence/closeout/0208-intraday-adr0175-review-exit.json"
+  ],
+  "non_authority": "This slice produces a private, nonauthorizing ReplayTape implementation and nothing downstream of it -- no ReplayRun implementation, no P4 tape_manifest/tape_data captured-port wiring, no EquityReplay/ReplayAdapter change, no Data.feed row-content source, no cash-flow or accounting change, no backtest, no paper/live trading, no deployment."
+}

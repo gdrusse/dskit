@@ -1,6 +1,6 @@
 {
   "name": "index-options-distribution-zoo",
-  "notes": "ADR-0169 zoo over the synthetic distribution harness: the empirical rung (R0a), log-HAR (R1) and LightGBM (A0004 #1), identical except the 'model' node (contract_paths pin everything else). Run: python -m dskit.pipeline staged configs/run-distribution-zoo.json --asof 1978-06-01. The first run is plan-only: review the printed inventory, paste its sha256 into approval.approved_inventory_sha256, set approved_by, and run again. Synthetic data only \u2014 a ranking here tests the wiring, not the models.",
+  "notes": "ADR-0181 zoo over the synthetic distribution harness: the empirical rung (R0a), log-HAR (R1) and LightGBM (A0004 #1), identical except the 'model' node (contract_paths pin everything else). Run: python -m dskit.pipeline staged configs/run-distribution-zoo.json --asof 1978-06-01. The first run is plan-only: review the printed inventory, paste its sha256 into approval.approved_inventory_sha256, set approved_by, and run again. Synthetic data only \u2014 a ranking here tests the wiring, not the models.",
   "pipeline": {
     "market": {
       "uses": "dskit.pipeline.synthetic_paths:SynthGjrPaths",

@@ -29,7 +29,7 @@ pyomo = ["pyomo>=6.7", "highspy>=1.7"]
 rl = ["gymnasium>=1.3,<1.4", "stable-baselines3>=2.9,<2.10"]
 # LightGBM ships an sklearn-compatible estimator API, so
 # "lightgbm.LGBMRegressor" resolves straight through the SklearnFit doorway;
-# its one pack (libs/lightgbm.py, ADR-0169) is the volatility-scale rung,
+# its one pack (libs/lightgbm.py, ADR-0181) is the volatility-scale rung,
 # which stores the booster as text in a fitted JSON state. xgboost and
 # catboost would enter through SklearnFit the same way. Self-sufficient like transformers
 # above (which carries torch): the path runs THROUGH SklearnFit, so the

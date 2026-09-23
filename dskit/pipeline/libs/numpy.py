@@ -2347,7 +2347,7 @@ class ForwardRealizedVol(ArrayFeatures):
 
     ``sqrt(mean of r[t+1]^2 .. r[t+horizon]^2)`` — the per-step volatility
     that will be realized over a forecast's horizon: the target of a
-    volatility-scale model (ADR-0169), the forward twin of
+    volatility-scale model (ADR-0181), the forward twin of
     :class:`RealizedVolFeatures`. Declared forward by exactly ``horizon``;
     NaN (row ``None``) for the last ``horizon`` positions.
 

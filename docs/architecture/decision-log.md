@@ -19474,8 +19474,2924 @@ one scorable-row rule both nodes import; two-sided KS, asymmetric Berkowitz,
 asymmetric condor, `fit_split`, `gamma/2`, Brier-tie and drift tests;
 `DEFAULT_SCALE_MULTIPLIER` exported; day 1 keeps the unconditional variance;
 config note on trading-day embargo. Repeated field-name checks remain (nit).
+## ADR-0169 — bounded F3 versioned raw-event wire
 
-## ADR-0169 — Conditional-scale rungs (linear/HAR, LightGBM) and a distribution zoo
+**Status:** IMPLEMENTED FOR SYNTHETIC USE (2026-09-23) at implementation
+commit `b19bf793` with package-inventory closeout at `4fe63109`. Owner approval
+was recorded on 2026-09-22 for reviewed commit `79ed8f6` and decision-log blob
+`e2976d0`.
+The first Phase 0 found one
+Major and one Minor: v2 raw preflight would otherwise flow directly into the
+existing raw publisher/root graph, and exact authorization-schema references
+were not pinned. Decision points 4, 5, and 7 plus the matrix now close those
+gaps. This is the first independently
+reviewable remainder split from stopped ADR-0148. Its fresh post-approval
+Phase 0, RED-to-GREEN, and two sequential fresh clean final lenses are recorded
+in evidence 0196. It authorizes deterministic synthetic fixtures only;
+`deployment_eligible` remains `false` and it enables no raw-dataset writer,
+derivation, replay execution, external/real-data read, or backtest.
+
+**Context.** ADR-0148 is explicitly stopped and cannot authorize code. Its DP4
+identified a real closed-wire gap: the captured raw-event path accepts only
+`dskit.raw-event/v1`, whose six fields cannot carry the exchange/receive,
+provenance, timezone, or correction identities required to derive the existing
+`dskit.event-envelope/v2` without caller-supplied metadata. This ADR isolates
+only that wire. ADR-0157's post-reserve crash remains fail-closed and outside
+this slice; a crashed synthetic derivation must restart its study rather than
+guess recovery.
+
+### Decision
+
+1. **One dependency-free wire owner.** Add `dskit.pipeline.event_wire`, a
+stdlib-only data-contract module with immutable closed field tuples for raw
+event v1/v2 and the exact version pairings below. `trust.py` and
+`production/bundles.py` import those declarations; neither restates a raw-event
+schema literal or key set. The module parses nothing, grants nothing, performs
+no I/O, and is not re-exported from `dskit.pipeline`.
+
+2. **V1 is byte-for-byte compatible.** The existing six-key
+`dskit.raw-event/v1`, `dskit.dataset-capture-authorization/v1`, and
+`dskit.roster-bootstrap-authorization/v1` meanings, accepted bytes, signatures,
+messages, fixtures, and `compose_replay_tape` behavior do not change. Moving
+their literals to the shared table is mechanical ownership only. Existing v1
+grant/capture and bundle tests must pass unedited.
+
+3. **Closed v2 raw event.** `dskit.raw-event/v2` has exactly twelve keys:
+v1's `schema_version`, `source_id`, `event_id`, `source_sequence`,
+`availability_ms`, and `payload_sha256`, plus `exchange_ms`, `receive_ms`,
+`source_provenance_tag`, `source_timezone_tag`, `correction_position`, and
+`corrects_event_id`. Times and positions are exact non-negative integers;
+tags are nonempty strings; `corrects_event_id` is `null` or a nonempty string.
+`prior_envelope_sha256` is absent because the ordered writer must derive it
+from prior verified envelopes. Unknown, missing, v1/v2-mixed, boolean-as-int,
+negative, noncanonical, duplicate-ID, and wrong-source members refuse.
+
+4. **Version-paired signed authorities.** Add closed
+`dskit.dataset-capture-authorization/v2` and
+`dskit.roster-bootstrap-authorization/v2`. Each requires
+`event_schema == "dskit.raw-event/v2"`; v1 requires v1. A v2 `scope` is the v1
+scope plus exact nonplaceholder `tzdata_version_sha256`. Both signed authority
+families carry the same value, and raw preflight compares it alongside the
+existing scope, roster root, roster receipt, policy, source, license, media,
+and correction identities before reading a member. This slice claims only
+signed dataset/roster equality for tzdata, not equivalence to the executing
+host; the later writer/execution ADR must bind it to trusted environment
+evidence before v2 bytes can execute.
+
+   Both v1 and v2 authorizations continue to use the existing fixed
+   `dskit.dataset-capture-grant/v1` and
+   `dskit.roster-bootstrap-grant/v1` signature wires and existing key IDs;
+   this ADR versions the signed authorization payload, not the grant envelope
+   or issuer. Every authorization reference in basis, receipt, intent, proof,
+   and graph fixtures records the exact parsed authorization schema rather
+   than hard-coding `/v1`. All current hard-coded reference sites are pinned
+   before edits and covered by mixed-schema refusal tests.
+
+5. **Default-deny selection, no fallback.** Authorization version selects one
+exact raw-event shape. V1 authorization cannot admit v2 bytes; v2 authorization
+cannot admit v1 bytes; no common-subset, coercion, feature flag, caller schema,
+or best-effort branch exists. G1/G2 grants continue to sign the exact complete
+authorization digest and remain one-use under the existing reserve.
+
+   V2 roster bootstrap may use the existing roster publisher to produce the
+   prerequisite synthetic PUBLISHED roster root/receipt needed for the raw
+   preflight equality check. That is the only newly reachable publication in
+   this slice. It remains nonauthorizing and `deployment_eligible=false`.
+
+6. **Bundles remains v1-only in this slice.** `compose_replay_tape` and
+`_check_raw_event_member` continue to accept only v1. They obtain the v1 schema
+and fields from `event_wire`, proving single ownership, but v2 is deliberately
+refused. The later DP6 writer gets its own ADR and is the sole future consumer
+of verified v2 fields. No envelope projection, sorting, tape construction, or
+runtime branch is added here.
+
+7. **Hard stop after v2 raw preflight.** Exact v2 raw preflight may read only
+the fixed signed synthetic fixture after all v2 dataset/roster/tzdata equality
+checks and may return its existing nonauthorizing proof. The existing
+`_SyntheticRawPublisher`, raw PUBLISHED receipt/root, root PIS, dynamic P4
+graph/authority, and every later consumer remain v1-only. Each refuses a v2
+proof or authorization before producer-session creation, `produce`, member
+write, receipt append, root-PIS construction, graph construction, or reserve
+spend. No caller flag or schema downgrade can cross this stop.
+
+### Required Phase-0 matrix
+
+Pin every former bare literal/key-set site before edits. Test v1 fixtures and
+messages unedited; exact v2 dataset+roster+member success; all twelve single-key
+missing/unknown/type/bounds families; v1/v2 authority/member cross-product
+refusal; mismatched dataset/roster tzdata; scope/source/license/media/receipt/
+policy/correction substitutions; G1/G2 mutation, expiry, revocation, replay,
+and one-use behavior; no read before complete v2 equality; and bundles refusing
+v2 while still accepting its current v1 fixture. Cover every authorization
+reference site with exact v1/v2 schema assertions. Prove v2 roster publication
+is the sole new publication, then drive a genuine v2 raw proof into the raw
+publisher and root-PIS entries and assert refusal before producer session,
+member/write/provider side effect, receipt, or root effect. Prove no
+v2 dynamic graph can be constructed: first by the root-PIS refusal that makes
+the normal path unreachable, then by a substituted retained-issuer-state
+probe that refuses independently. "No reserve effect" at these downstream
+entries means no additional root-PIS/dynamic-authority spend; constructing the
+genuine v2 preflight proof has already consumed its own raw one-use authority
+by design. An AST/token scan must prove
+the raw schema literals and field tuples have one owner. Focused tests may use
+only fixed synthetic bytes and the existing reserve/provider spies.
+
+### Non-goals
+
+No `CapturedDerivationHop`, reserve-kind implementation, v2 raw-dataset output
+root, raw writer,
+`EnvironmentIdentity` object, `CapturedPortSet` change, composed tape,
+`ReplayRun` execution, child adapter, R1--R5, real data, acquisition, HPO,
+refit, backtest, paper/live action, deployment, or recovery claim. The existing
+synthetic roster publisher is permitted only as Decision point 5 states. The later
+writer must refuse until it can compare signed `tzdata_version_sha256` with
+trusted execution-environment evidence; this ADR does not weaken that gate.
+
+## ADR-0170 — bounded synthetic environment identity
+
+**Status:** IMPLEMENTED FOR SYNTHETIC USE. Clean Phase 0, owner approval,
+RED-to-GREEN, adversarial hardening, and two sequential fresh clean final lenses
+are recorded in closeout evidence 0197. This authorizes one deterministic
+synthetic environment fact only. `deployment_eligible` remains `false`; no
+raw-event projection, writer, derivation, publication, replay, external read,
+or backtest is enabled.
+
+**Context.** ADR-0169 admits and retains a signed v2 raw fixture but deliberately
+stops before publication. Its final non-goal requires a later writer to compare
+the signed dataset/roster `tzdata_version_sha256` with trusted environment
+evidence. No `EnvironmentIdentity` exists in the repository. Caller strings,
+ambient package inspection, and host timezone lookup cannot fill that gap: they
+would make the identity mutable, nondeterministic, or caller-authorized. This ADR
+adds only the fixed nondeployment evidence needed for the next synthetic writer
+slice; it makes no claim about a real host.
+
+### Decision
+
+1. **One private opaque fact.** Add private, final
+`_SyntheticEnvironmentIdentity` and private
+`_synthetic_environment_identity()` in `dskit.pipeline.trust`. Neither is in
+`trust.__all__` nor re-exported. Direct construction, subclassing, copy,
+deepcopy, pickle, forged attributes, and a re-created lookalike refuse. The
+factory takes no arguments and performs no filesystem, package, environment,
+clock, network, provider, broker, reserve, or random access.
+
+2. **Closed fixed payload.** The identity binds exactly the immutable canonical
+facts
+`schema_version=dskit.synthetic-environment-fact/v1`,
+`environment_id=dskit.synthetic-environment/v1`,
+`tzdata_version=synthetic-2026a`,
+`tzdata_version_sha256=cd690e4a500811dbc1ca0a79f0e5a8d9eb99debd5dc3c8d9bef5e278bf350cd0`,
+and `deployment_eligible=false`. The digest is SHA-256 over the exact canonical
+ASCII bytes
+`{"schema_version":"dskit.synthetic-tzdata/v1","tzdata_version":"synthetic-2026a"}`.
+It describes the fixed synthetic test identity only; it is not a digest of
+installed tzdata and makes no host or package claim. This deliberately distinct
+schema cannot collide with or satisfy the full `EnvironmentIdentity.v1`
+contract in the F2 master plan. A private read-only accessor named
+`_synthetic_environment_facts(identity)` returns a fresh `MappingProxyType`
+copy only after exact identity and broker-state validation. There is no generic
+dict/JSON constructor, deserializer, override, alternate digest, or caller
+field.
+
+3. **Closure-owned broker state, not slots or globals, is authoritative.** A
+single import-time bootstrap creates a private lexical state and returns the
+class plus the exact factory, accessor, and comparison closures named in this
+ADR. The bootstrap function is then deleted. The lexical state contains the
+fixed `MappingProxyType` payload, its
+`_digest(_canonical_bytes(dict(payload)))`, the state-domain digest over
+`{"schema_version":"dskit.synthetic-environment-state-domain/v1","payload_sha256":<payload digest>}`,
+an opaque mint token, one `WeakSet` of factory-issued identities, and one
+`WeakKeyDictionary` mapping those identities to exactly
+`(weakref_ref(identity), payload, payload_digest, state_domain_digest)`. None
+of those six authority objects has a module-global binding. The returned class
+has exactly the slots
+`_schema_version`, `_environment_id`, `_tzdata_version`,
+`_tzdata_version_sha256`, `_deployment_eligible`, and `__weakref__`; its
+constructor requires the lexical mint token. The factory alone creates the
+object and records it in both lexical weak stores. Every accessor requires the
+closure-captured exact class, membership in the issued set, a four-item record,
+a self-resolving weakref, payload object identity, both exact closure-captured
+digests, exact identity of every original slot member descriptor in the
+class dictionary, and exact-type/equality checks of all five values read with
+`object.__getattribute__` against the payload. Therefore
+`object.__new__` plus slot writes is not issued and refuses; replacing any
+same-named module global cannot change the authority consulted by an already
+bound closure; record deletion/substitution, cross-identity wiring, or slot
+mutation refuses. Garbage collection clears both weak stores. No state grants
+publication, read, reserve, session, or execution authority.
+
+The adversary boundary is the repository's existing private-capability model:
+callers may invoke private names, bypass constructors with `object.__new__`, and
+mutate ordinary instance, class, and module-global attributes. Inspection or
+use of interpreter metadata (`function.__closure__`, `cell.cell_contents`,
+frames, `gc` referrer/object walks, code-object replacement, `ctypes`, or
+equivalent reflective access), as well as mutation of that state, is out of
+scope. Extracting the lexical mint token or weak stores through such metadata
+is therefore not a supported caller action. Those powers are equivalent to
+arbitrary in-process code execution and cannot be made an authority boundary
+in Python.
+
+4. **Exact comparison seam, still no writer.** Add one private predicate
+`_require_synthetic_tzdata(identity, signed_tzdata_version_sha256)` that accepts
+only the exact broker-minted identity and an exact lowercase SHA-256 string
+equal to its registered fixed digest. Missing, placeholder, uppercase,
+non-string, bool, altered, or caller-forged values refuse. Success returns
+`None`, creates no new capability, and has no side effect. The later writer/hop
+must invoke this predicate with the already-verified signed scope value before
+projection; that later call and writer remain separately reviewed.
+
+5. **Legacy and boundary freeze.** ADR-0169 v1/v2 parsing, messages, reserve
+rows, registry entries, and all publication/root/graph stops are unchanged.
+Its test-local v2 `TZDATA_SHA256` sentinel changes from all-7 to the canonical
+digest pinned above; v1 fixtures and all production bytes remain unchanged.
+`ReplayRun.run` remains fail-closed. This identity is synthetic evidence, not a
+claim that the executing host has matching tzdata.
+
+### Required Phase-0 matrix
+
+Pin the exact `_synthetic_environment_identity()`,
+`_synthetic_environment_facts(identity)`, and
+`_require_synthetic_tzdata(identity, signed_tzdata_version_sha256)` surface
+before edits. Prove factory
+argument refusal; direct construction/subclass/copy/deepcopy/pickle/lookalike
+refusal; exact closed immutable facts; repeated factories produce distinct
+capabilities with equal facts; `object.__new__` plus exact slot forgery; absence
+of any module-global mint token, issued set, registry, payload, or authoritative
+digest; same-named module-global substitution; exact-type slot mutation and
+class-level attribute-dispatch spoofing; and white-box deletion,
+copied-payload substitution, and cross-identity wiring of lexical records to
+prove fail-closed validation. The white-box tests do not authorize or claim a
+boundary against extracting the mint token/state and constructing a wholly
+self-consistent record through excluded interpreter metadata. Also prove
+garbage collection;
+placeholder/uppercase/type/wrong digest refusal; exact digest comparison
+success; absence from public exports;
+and an AST/runtime purity gate proving no I/O, environment, package, time,
+random, broker, provider, reserve, session, publication, or replay access.
+Run all ADR-0169, capture, trust, and purity regressions unedited.
+
+### Non-goals
+
+No real/host environment discovery or attestation, tzdata package inspection,
+raw-event projection, envelope writer, `CapturedDerivationHop`, lifecycle or
+reserve change, output root, tape, `ReplayRun` execution, R1--R5, child adapter,
+external/real data, acquisition, HPO, refit, backtest, paper/live action,
+deployment, or recovery claim. A deployment environment identity requires its
+own trust root and ADR; this fixed synthetic fact cannot be promoted or
+configured into one.
+
+## ADR-0171 — bounded pure v2 envelope projection
+
+**Status:** IMPLEMENTED AND CLEANLY REVIEWED 2026-09-23 at
+`1102d2e7e10bd4dd8bdc8dc02f37d38aa9bb4d5e`. Clean Phase 0 and explicit
+owner approval preceded RED-to-GREEN. Two sequential fresh final lenses on the
+exact implementation commit were 0C/0M/0m/0N. Evidence:
+`docs/evidence/closeout/0199-intraday-f3-v2-envelope-projection-red-green.json`.
+This authorizes one private pure projection function only. No trust capability,
+environment comparison, publication, derivation hop, replay, external read, or
+backtest is enabled.
+
+**Context.** ADR-0169 verifies and retains closed signed
+`dskit.raw-event/v2` values; ADR-0170 supplies the private comparison seam a
+later hop must invoke before projection. The existing ADR-0145
+`dskit.event-envelope/v2` parser, canonical bytes, ordering key, and causal
+verifier already live in `dskit.production.bundles`. The existing
+`compose_replay_tape` is deliberately unusable for this path because it accepts
+seven caller-supplied per-event metadata fields and reads v1 members. This ADR
+adds only the deterministic v2-to-envelope transform. A later trust-owned hop
+must perform the ADR-0170 environment check and supply verified inputs; this
+pure function neither recognizes nor mints authority.
+
+### Decision
+
+1. **One private owner and signature.** Add private
+`_project_v2_event_envelopes(events, source_rank_policy, /)` beside the existing
+envelope parser/order helpers in `dskit.production.bundles`. It is absent from
+`__all__` and package re-exports. It accepts exactly two positional arguments
+and no keywords for timing, provenance, timezone, correction, prior digest,
+rank, or policy digest. `compose_replay_tape`, v1 constants, public APIs, and
+trust code are unchanged.
+
+2. **Closed nonauthorizing inputs.** `events` is an exact nonempty tuple of
+exact `MappingProxyType` values with exact built-in-dict backing (active dict
+subclasses and other callback-bearing backing mappings refuse without callback),
+each with exactly `RAW_EVENT_FIELDS[
+"dskit.raw-event/v2"]`; every field is revalidated with ADR-0169's intrinsic
+exact types and nonnegative bounds plus `receive_ms >= exchange_ms`, lowercase
+SHA-256 payload, unique
+nonempty event IDs, and correction invariants (`corrects_event_id is None` iff
+position zero; otherwise a nonempty different event ID). `source_rank_policy`
+is likewise exact-dict-backed `MappingProxyType` with exactly
+`schema_version`, `sources`, and
+`policy_sha256`; schema is `dskit.source-rank-policy/v1`; `sources` is an exact
+tuple of exact-dict-backed two-key mapping proxies, nonempty, every source ID an exact
+nonempty string, IDs sorted and unique, and every rank an exact nonnegative int
+equal to tuple position (booleans and int subclasses refuse). Recompute the
+policy digest over the canonical two-key JSON object with `sources` projected
+to a list and `policy_sha256` omitted, then require exact equality to the
+supplied lowercase digest. Every event source must occur once in that policy.
+These shapes are data validation only, not proof that a caller passed ADR-0169
+capabilities. The signed authorization's availability-window bound is not
+present in this pure function's inputs and is therefore not re-claimed here;
+the later trust adapter must preserve ADR-0169's already-verified bound.
+
+3. **All fields derived, then canonically sorted.** Project the fourteen
+non-prior envelope fields only from the event and policy: the event supplies
+its twelve fields except raw `schema_version`; envelope schema is exactly
+`dskit.event-envelope/v2`; rank and policy digest come only from the policy.
+No default, override, ambient lookup, or caller metadata exists. Sort projected
+values once by existing `_event_envelope_order_key`: availability, source rank,
+source sequence, correction position, payload digest, event ID. Input order has
+no meaning and two permutations produce byte-identical output.
+
+4. **Prior digest is derived after ordering.** Walk the sorted values once.
+For position zero corrections, set `prior_envelope_sha256=None`. For each
+`correction_position > 0`, require `corrects_event_id` to identify an already
+emitted envelope whose correction position is exactly one less, then set
+`prior_envelope_sha256` to SHA-256 of that exact earlier canonical envelope
+byte string. Forward references, self-reference, missing target, skipped
+position, duplicate IDs, or a target that sorts later refuse. The raw event can
+never supply or override a prior digest.
+
+5. **Closed output and self-verification.** For each completed value, call the
+existing `_check_event_envelope`, encode with existing `_canonical_bytes`, and
+round-trip through `_parse_event_envelope`. Return an exact tuple of bytes and
+nothing else. Reparse every output and require adjacent existing order keys to
+be nondecreasing, event IDs unique, and every correction target/digest exact.
+Any defect raises one `ProductionError` with position-qualified accumulated
+problems; no partial result escapes.
+
+6. **Purity and boundary freeze.** The function performs no filesystem,
+environment, package, clock, random, network, broker, provider, reserve,
+session, capture, publication, replay, or logging operation and mutates no
+argument. ADR-0169 proof state/bytes/messages and ADR-0170 identity state remain
+unchanged. `ReplayRun.run` remains fail-closed. Because this function is pure
+and nonauthorizing, a future hop must still validate the exact ADR-0169 proof,
+invoke `_require_synthetic_tzdata` against its signed scope, derive this
+function's two inputs inside trust, and validate the returned bytes before any
+lifecycle effect.
+
+### Required Phase-0 matrix
+
+Pin the exact private signature and absence from exports. Prove empty/list/
+iterator/dict events refuse; non-mapping-proxy members and active/non-dict
+mapping-proxy backing refuse without callbacks; every missing,
+extra, mistyped, negative, nonlowercase, duplicate, and correction-invalid raw
+field refuses; malformed/forged/reordered/gapped/duplicate/wrong-digest policy
+refuses; unknown source refuses; all fourteen non-prior envelope fields equal
+their sole approved event/policy origin; input permutation invariance and exact
+six-term ordering; original/correction/multistep chains and exact derived prior
+digests; forward/self/missing/skipped/later-target refusal; immutable inputs;
+exact tuple-of-bytes output; parser round-trip; no partial output; and AST plus
+runtime purity traps. Run ADR-0145/0146 bundle tests, ADR-0169, ADR-0170, trust,
+capture, and purity regressions unedited.
+
+### Non-goals
+
+No opaque projection-input capability, environment check invocation, trust
+adapter, proof consumption, writer injection, `CapturedDerivationHop`, raw root
+publication, manifest/tape construction, `compose_replay_tape` edit,
+`CapturedReplayTape` edit, lifecycle/reserve/session change, replay execution,
+external/real data, acquisition, HPO, refit, backtest, paper/live action,
+deployment, or recovery claim. This pure transform cannot be used as evidence
+that its caller held a verified raw fixture or environment identity.
+
+---
+
+## ADR-0172 — one-shot verified synthetic v2 projection input
+
+**Status:** IMPLEMENTED AND CLOSED 2026-09-23 at
+`b65564416e4fc8b8981f66de209d14e2bf11dea0`. The required Phase-0 matrix
+(evidence `docs/evidence/closeout/0204-intraday-f3-v2-projection-input-phase0.json`)
+was completed with 16 additional adversarial tests covering wrong/v1
+proof refusal, prepare- and consume-time state-mutation tamper via the
+retained event's backing dict, terminal post-consume failure, contended
+concurrent double consume, recursive executable-dependency replacement
+(`json.dumps`, `hashlib.sha256`, `gc.get_referents`, an in-place nested
+non-top-level helper, and wholesale schema-table replacement), and an
+exact structural effect-parity check against two direct raw-verifier
+calls. No implementation file changed — the existing bridge already
+satisfied every new adversarial test. Two fresh, sequential, independent
+final lenses (correctness/authority; tests/integration, including active
+mutation testing) were each 0C/0M/0m/0N; the bounded final regression set
+was 1,978 passed and 1 expected xfail. Evidence:
+`docs/evidence/closeout/0206-intraday-adr0172-review-exit.json`.
+ADR-0173 is closed at `80c2bb2d5f467770ef65f6c348264996c2cb6232`
+and is the sole environment-bound v2 raw-publication/root-proof authority.
+Evidence 0200 remains historical only. This closure grants no
+envelope-writer, replay, backtest, paper/live, or deployment authority.
+
+**Context.** ADR-0169 retains exact verified `raw-event/v2` values inside
+`VerifiedSyntheticDatasetFixture`; `NonAuthorizingRawRootProof.verify`
+revalidates those values and returns root facts but intentionally does not
+expose them. The retained roster publisher owns the canonical
+`SourceRankPolicy.v1`. ADR-0170 owns the broker-issued synthetic environment
+identity and tzdata equality check. ADR-0171 owns the pure event projection in
+`dskit.production.bundles`. The retained root is now genuinely published, and
+its root proof already checks the committed ADR-0173 environment binding and
+nested roster proof. No current acyclic, capability-safe seam exposes the
+already verified event/policy payload to the pure projector without reading
+private attributes or accepting caller data.
+
+### Decision — controlling 2026-09-23 amendment
+
+1. **Opaque per-capability API.** Add final public
+`VerifiedV2ProjectionInput` and positional-only
+`consume_v2_projection_input(value, /)` to `dskit.pipeline.trust.__all__`;
+neither is re-exported by `dskit.pipeline`. Direct construction, subclassing,
+copying, serialization, and mutation refuse. Private positional-only
+`_prepare_synthetic_v2_projection_input(raw_proof, raw_proof_bytes, /)` is the
+sole mint. `raw_proof_bytes` is an exact twelve-byte tuple in
+`NonAuthorizingRawRootProof.verify` order. There is no separate roster proof,
+environment identity, dict, keyword, or alias form.
+
+2. **Reuse ADR-0173 as the authority boundary.** Preparation requires an exact
+`NonAuthorizingRawRootProof` and calls the exact captured installed verifier
+with the exact retained originals. ADR-0173's committed publisher binding,
+environment recheck, and nested roster proof are authoritative. This bridge
+adds no second environment binding, reserve transaction, connection/thread
+pin, or roster verification.
+
+3. **Derive only after successful verification.** After verification, use
+callback-free exact descriptor reads over `raw_proof -> publisher -> retained
+-> fixture/roster publisher`. Require exact retained tuple shapes, v2 schemas,
+original-byte equality, publisher identity, manifest/event count, common
+scope/source universe, and policy/root/receipt bindings. Copy retained events
+into a fresh exact tuple of dict-backed mapping proxies. Derive the exact
+dict-backed `SourceRankPolicy.v1` mapping proxy from the verified retained
+roster authorization and require its digest to equal all signed bindings.
+Caller data supplies no event field, rank, timezone, or provenance.
+
+4. **One-shot capability, not proof-global spend.** A closure-local registry
+keyed by `id(capability)` plus an exact weak reference stores the proof, exact
+byte tuple, and immutable payload. A closure-local lock atomically removes the
+record before consume verification; missing, forged, copied, reentrant,
+sequential, or concurrent consumption refuses. Every post-removal failure is
+terminal. Capability GC removes an unconsumed record. Preparing another
+capability from the same still-fresh proof is allowed because this bridge is
+nonauthorizing and projection is pure; each capability remains one-shot.
+
+5. **Fresh consume and minimal production composition.** Consume reruns the
+captured ADR-0173-aware raw verifier, rederives the payload, and requires
+byte-/value-identical results before returning exactly `(events,
+source_rank_policy)`. Add private positional-only
+`_project_verified_synthetic_v2_input(value, /)` in
+`dskit.production.verifier`; capture the exact consume function, ADR-0171
+projector, and the complete transitive executable-dependency closure reachable
+from them. This is recursive rather than a finite top-level list and includes
+the canonical encoder's `_plain` walk, mapping extraction (`gc.get_referents`),
+JSON encode/decode dispatch, envelope parser/validator/order-key, digest checker
+and SHA-256 dispatch, `ProductionError`, constants, plus identity and immutable
+value snapshots of mutable schema tables. Require every effective module
+resolution and mutable value to equal its capture before consume, after consume
+before projection, and after projection. Consume once and invoke the captured
+projector once. The wrapper is absent from every `__all__`. A dependency or
+dispatch refusal before consume leaves the capability fresh; any failure after
+consume begins leaves it spent.
+
+6. **Effects and compatibility.** The only effects are those of the two
+existing raw-root verifier calls at prepare and consume, including ADR-0173's
+environment check, provider reads/audit entries, and reload-cache refreshes.
+The bridge adds no SQL transaction, reserve field, connection, thread
+restriction, provider lookup, WORM write, receipt, lifecycle transition,
+publication, network access, or authority. Existing v1 entry points, proof
+behavior, bytes, messages, and ADR-0171 projector remain unchanged.
+
+### Required Phase-0 matrix — controlling amendment
+
+Pin exact surfaces, signatures, exports, and unchanged v1 surfaces. Prove a
+genuine ADR-0173 v2 root yields exact ADR-0171 envelope bytes. Refuse wrong
+proof/type/count/order, non-bytes, changed originals, cross-publisher bytes,
+and v1/v2 cross-use. Reuse ADR-0173 evidence for missing/failed/rewired binding
+and environment mismatch before member reads. Cover revocation, expiry,
+generation/root/receipt/policy/event mutation at prepare and consume; direct
+construction, subclass, copy, pickle, mutation, and forged capabilities;
+sequential, reentrant, and concurrent double consume; terminal consume failure;
+retry after pre-consume production-dispatch refusal; and two independent
+capabilities from one still-fresh proof. Assert exact immutable shapes, no
+partial return, replacement or in-place mutation at every depth of the
+projector's executable dependency closure while the top-level projector
+identity remains unchanged (including encoder `_plain`, mapping extraction,
+and JSON dispatch), exact
+fresh/spent behavior at each check boundary, existing verifier-only
+provider/cache effects, and no bridge-added SQL, reserve, WORM, receipt,
+lifecycle, or network effects. Run
+the targeted ADR-0145/0146/0169/0170/0171/0173, trust, capture, and purity
+regressions; no unrelated full-suite run is required.
+
+The design below is retained only as historical review context. It is
+superseded in full and is not implementation authority.
+
+### Superseded design — non-operative
+
+1. **Opaque trust-owned bridge and exact API.** Add final public
+`VerifiedV2ProjectionInput` and public positional-only
+`consume_v2_projection_input(value, /)` to `dskit.pipeline.trust` and its
+explicit `__all__`; neither is re-exported by `dskit.pipeline`. Direct
+construction, subclassing, copying, serialization, and attribute mutation
+refuse with `TypeError`/`AttributeError`; verification/state defects raise
+`ValueError`. Only a private broker function
+`_prepare_synthetic_v2_projection_input(raw_proof, raw_proof_bytes,
+roster_proof, roster_proof_bytes, environment_identity, /)` can mint it.
+The raw bundle is an exact 12-bytes tuple matching
+`NonAuthorizingRawRootProof.verify` argument order; the roster bundle is an
+exact five-bytes tuple matching `NonAuthorizingRosterRootProof.verify`; require
+`raw_proof_bytes[4:9] == roster_proof_bytes` and exact retained originals.
+No dict/keyword/alias form exists.
+
+2. **Pinned same-thread common transaction.** Add three construction-only
+frozen pins to the existing synthetic reserve: its original SQLite connection,
+a bridge-only `RLock`, and its creating thread identity. Existing reserve
+methods and connection configuration remain unchanged. Prepare/consume require
+the current connection is the pinned original and the caller is the creating
+thread; every other-thread call refuses before SQLite or registry access. The
+prepare function requires exact
+`NonAuthorizingRawRootProof` and `NonAuthorizingRosterRootProof` objects
+whose retained publishers share the same exact roster publisher, reserve, and
+SQLite connection. After Decision 3's metadata-only environment gate, acquire
+that reserve's exact bridge `RLock`, reject a pre-existing transaction, execute
+literal `BEGIN IMMEDIATE`, and record the initial generation, revoked set,
+snapshot digest, and trusted instant. Call raw `verify(...,
+_under_writer_lock=True)` (including its nested roster verification), then the
+supplied roster `verify(..., _under_writer_lock=True)`; require final reserve
+facts exactly equal the initial facts and both results exact nonauthorizing,
+nondeployment mapping proxies. Commit before mint. Roll back on every
+exception, including commit failure. Deferred BEGIN, another connection,
+nested transaction, or close/revoke/generation race refuses.
+
+The trust bridge is created by a deleted module-initialization builder that
+closure-captures the exact raw/roster proof classes and top-level `verify`
+functions, `_hs_parse_canonical`, and `_require_synthetic_tzdata`. It
+identity-checks those captures and class descriptors immediately before and
+after each call. Existing proof bodies retain exactly their already-reviewed
+ADR-0169/0170 dispatch and callback threat model; this bridge does not claim
+to make an existing proof call indivisible against transient same-thread
+SQLite callbacks. Tests replace captured top-level dependencies before and
+after calls, not inside existing proof internals.
+
+3. **Metadata-only environment gate before event access.** Before any full
+proof `verify`, event-member iteration, or retained `_events` access,
+perform only exact proof/publisher/retained-original identity checks and parse
+the already retained signed dataset authorization bytes. Require authorization
+schema `dskit.dataset-capture-authorization/v2`, event schema
+`dskit.raw-event/v2`, and exact `scope.tzdata_version_sha256`; invoke
+ADR-0170 `_require_synthetic_tzdata` on the exact broker-issued identity.
+This preliminary gate claims no root validity or authority. Failure occurs
+before full verification/event materialization and leaves issuance/spent
+registries empty.
+
+4. **Derive both payloads inside trust.** Reparse the retained canonical roster
+bytes owned by the exact roster publisher, require its root/policy facts equal
+the two proof results and raw manifest bindings, and derive an exact
+dict-backed `MappingProxyType` SourceRankPolicy.v1 with tuple rows. Copy the
+exact retained ADR-0169 events into fresh exact dict-backed mapping proxies and
+an exact nonempty tuple. Revalidate closed shapes, counts, source universe,
+availability scope, policy digest, raw-root/roster-root/receipt bindings, and
+event-schema equality before registry insertion. No caller value supplies an
+event field, rank, policy digest, timezone, or provenance.
+
+5. **Proof-scoped one-shot consumption with live reverify.** The closure owns
+strong process-lifetime `issued` and `spent` mappings
+keyed by closure records containing strong proof/environment object references,
+their `id` values, SHA-256 of every byte in both bundles, and the
+environment-identity state digest. Key lookup compares numeric IDs/digests and
+then requires every object by `is`; it never invokes caller-controlled
+`__hash__` or `__eq__`. Prepare and consume both serialize
+on the pinned bridge lock and creating thread. Shape/type/publisher/environment
+failures before inserting `issued[key] = "reserved"` leave both registries
+unchanged; every failure afterward atomically moves the key to `spent`. A
+second prepare for the same key refuses even after bridge GC. Consume
+accepts only the exact registered object and frozen descriptors, then under
+the same reserve lock and literal `BEGIN IMMEDIATE` repeats Decisions 2 and
+3, rederives byte-identical events/policy, and rechecks generation, revocation,
+expiry, roots, receipts, scope, policy, and descriptors. Only after successful
+commit atomically move the key to `spent` and return exactly
+`(events, source_rank_policy)`. Reentrant/sequential double consume and all
+cross-thread calls refuse; all second, copied, forged, subclassed, stale,
+revoked, GC/remint, or
+dispatch-replaced attempts return no data.
+
+6. **Acyclic, closure-pinned production composition.** Add private
+`_project_verified_synthetic_v2_input(value, /)` in
+`dskit.production.verifier` through a module-initialization closure that
+captures the exact consume function, ADR-0171 projector, parser, canonical
+encoder, and expected class/function descriptors, then deletes its builder.
+Identity-check every captured dispatch/descriptor against its module
+definition before consume; immediately after consume; before and after each
+projector call; before and after every parse/encode; and immediately before
+return. Replacements before/after mint or at any observable mid-call checkpoint
+refuse. Consume once, invoke the captured projector twice on the same immutable
+pair and require byte-identical results, reparse every output with the captured
+parser, re-encode and byte-compare each value, then return the exact tuple.
+It is private and absent from every `__all__`; no callback or caller-supplied
+projector/parser exists. Pipeline trust imports no production module;
+production verifier remains the acyclic composition owner.
+
+7. **Effects, failure, and authority freeze.** A trust-side failure after
+`issued[key] = "reserved"` is terminal for that proof-scoped key and returns
+no partial events, policy, or envelopes. A production-composition identity
+refusal before calling consume has released nothing and explicitly permits
+retry after the trusted dispatch is restored; refusal after consume remains
+spent. This is the only retry boundary.
+Existing proof bytes/messages, public proof methods, ADR-0171 projector, WORM
+lifecycle, `ReplayRun.run`, and v1 behavior remain unchanged. The bridge is
+explicitly permitted to use only the exact retained publishers' bridge lock,
+pinned SQLite connection, trusted clock, retained WORM/provider members,
+existing proof verification reads, and the exact
+`_published_facts`/`_reload_stream` cache refresh mutations those verifies
+already perform. “No new provider lookup” means no bridge-added
+`describe`/`open_member` beyond the exact existing raw/roster verify call
+trace at prepare and consume. Before each transaction, snapshot the reserve
+rows/audit, provider storage/events, publisher retained tuples, outer receipt
+store, lifecycle ledgers/session events, and reloadable receipt caches. After
+commit or rollback, require equality except the enumerated reload-cache slots
+and the provider audit-event list. Cache values must byte-equal retained bytes;
+provider events must gain exactly the ordered `open_member` key suffix
+implied by the existing raw, nested-roster, and supplied-roster verify traces;
+separate spies must observe the complete ordered `describe` plus
+`open_member` call trace.
+No receipt or lifecycle/reserve state may advance. It performs no acquisition,
+network, bridge-added provider read, new member write, lifecycle transition,
+publication, or external effect.
+
+### Required Phase-0 matrix
+
+Pin exact public/private surfaces, `trust.__all__`, absence from pipeline
+re-exports, and positional-only signatures; direct
+construction/subclass/copy/pickle/mutation; wrong proof type/order/count;
+non-tuple/mistyped bundle members; unequal `raw[4:9]`; unshared
+publishers/reserves/connections; replaced original-connection pin; wrong-thread
+prepare/consume before SQLite/registry access; pre-existing/deferred/nested
+transaction, commit failure, second connection, close/revoke/generation race; stale,
+revoked, or expired proof at prepare and consume; wrong authorization/event
+schema; tzdata mismatch before full verify/member/event access; root/receipt/
+policy/source/count/scope substitution; caller-created event/policy refusal;
+v1/v2 cross-use; reentrant/sequential duplicate prepare and consume; strong
+spent state after GC/remint and post-reservation genuine-object failure;
+pre-reservation failure leaves registries empty; forged/copied/stale bridge; exact
+inert mapping shapes; proof `__eq__`/`__hash__` replacement and identity
+alias attempts; replacement before/after calls of captured raw/roster verify,
+parser/environment helpers and class descriptors, while explicitly inheriting
+existing proof-internal dispatch; replacement of consume/projector/parser/encoder/class
+descriptors before/after mint and at every specified mid-call checkpoint;
+projector/parser exception;
+two byte-identical ADR-0171 computations plus canonical reparse/re-encode; no
+partial data on every failure; pre-consume production refusal retry and
+post-consume spent behavior. Assert exact SQL trace (`BEGIN IMMEDIATE`, no
+nested BEGIN, commit/rollback), wrong-thread zero SQLite/registry access, and
+before/after snapshots of every named mutable container. Require the exact
+provider `open_member` audit-event suffix plus separately instrumented full
+`describe`/`open_member` trace for the existing verifies and exact
+enumerated cache refresh, prove no other append, and prove no acquisition, network,
+bridge-added read,
+member-write, or lifecycle effect. Run
+ADR-0145/0146/0169/0170/0171, trust, capture, and all purity suites unedited.
+
+### Non-goals
+
+No `ReplayTapeDataCapture` writer, mediated WORM output, producer document,
+captured port, lifecycle transition, root publication, manifest construction,
+composed tape, replay, recovery, external/real data, HPO, refit, backtest,
+paper/live trading, or deployment. Those require later separately reviewed
+slices; this bridge is non-authorizing data plumbing only.
+
+---
+
+## ADR-0173 — environment-bound synthetic v2 raw publication
+
+**Status:** IMPLEMENTED AND CLOSED 2026-09-23 at
+`80c2bb2d5f467770ef65f6c348264996c2cb6232`. Fresh final lenses Q and R
+were each 0C/0M/0m/0N; the bounded final regression set was 1,677 passed and
+1 expected xfail. Evidence:
+`docs/evidence/closeout/0202-intraday-f3-v2-raw-publication-red-green.json`.
+This closure grants no projection-input, envelope-writer, replay, backtest,
+paper/live, or deployment authority.
+
+**Context.** ADR-0169 intentionally allows a genuine v2 preflight proof but
+requires existing `_SyntheticRawPublisher.publish` and every downstream root
+consumer to refuse it. ADR-0170 now provides the trusted synthetic environment
+identity needed to compare signed tzdata. This slice opens exactly one new
+route: publish the already verified v2 raw fixture into the existing synthetic
+raw WORM root. It does not open root PIS, dynamic graph, envelope projection,
+replay, or backtest.
+
+### Decision
+
+1. **Separate exact v2 entry.** Add private positional-only
+`_SyntheticRawPublisher.publish_v2(proof, environment_identity,
+authorization_bytes, g1, g2, attestation, bootstrap, bg1, bg2, roster_basis,
+roster_receipt, /)`. Existing `publish(proof, ...)` remains byte-for-byte
+v1-only and continues to refuse v2. No flag, schema fallback, variadic alias,
+or caller-selected implementation exists.
+
+2. **Environment gate before producer effect.** Require the exact unused
+`VerifiedSyntheticDatasetFixture` issued by this publisher's exact preflight,
+exact retained original bytes, v2 authorization/roster/event schemas, and exact
+shared signed scope. Before setting `proof._used`, reserve advancement,
+session creation, WORM write, provider call, or receipt append, invoke
+ADR-0170 `_require_synthetic_tzdata(environment_identity,
+authorization.scope.tzdata_version_sha256)`. Wrong/forged/copied identity,
+wrong digest, v1 proof, mixed authority, changed proof fact, or replacement of
+the exact environment dispatch refuses without effect.
+
+3. **Reuse one writer, no parallel semantics.** Capture one private raw writer
+and delete its class surface. Legacy `publish` calls that captured writer
+directly, preserving its exact pre-refactor order; the separate v2 entry calls
+an entry-fixed v2 schema/binding gate and then the same captured raw writer.
+Mechanical extraction preserves the exact v1 sequence, messages, quarantine,
+crash/fault behavior, manifest/root/receipt bytes, and lifecycle transitions.
+No caller-supplied schema or route selector exists; callers cannot reach the
+raw writer through a class/module surface. V2 writes the same
+manifest/root/receipt families with
+`event_schema=dskit.raw-event/v2` and the already verified twelve-key member
+bytes. No envelope bytes are derived.
+
+V1 parity is pinned at every boundary: front-door checks, proof-use mutation,
+manifest derivation, each reserve `_advance`, session start, produce, seal,
+publish, session end, receipt transaction/sign/store, retained assignment, and
+return. For success and an injected exception at every boundary, compare exact
+exception type/message, `proof._used`, publisher `_closed`/`_retained`,
+reserve rows/audit/transaction, broker storage/session/member events/receipt
+store, outer receipts, and returned bytes to the pre-refactor baseline,
+including existing commit-after and return faults.
+
+4. **Closure-owned environment binding and proof gate.** Add `__weakref__`
+to `_SyntheticRawPublisher.__slots__`; this is an intentional observable
+layout change but exports no new callable/data surface.
+One deleted module-bootstrap closure owns sole `WeakKeyDictionary` record and
+anchor maps; no module global exposes either. Each record is the exact mutable
+list `[weakref_ref(publisher), exact_environment_identity, state]`, validates the
+self-reference and exact captured environment class/checker/descriptors, and
+must be the same list object stored in both maps. A copied/rebuilt list is
+never an anchor and refuses even if all elements are identical. Anchor and
+record entries share the publisher's weak lifetime and disappear together on
+GC. A closure-owned identity set plus an ordinary dict of
+`id(record) -> (exact_record, exact_environment_identity)` seals the original
+list and identity; the weakref callback removes both. Neither is authoritative
+alone, and verification requires agreement across both weak maps, the identity
+set, and the seal. The closure installs both the exact
+`publish_v2` method and a wrapper around the original exact
+`NonAuthorizingRawRootProof.verify`; the wrapper delegates v1 byte-for-byte
+and alone can read the map. Replacing a module global cannot replace the
+captured map, checker, original verifier, or identity.
+
+The wrapper may perform only callback-free `object.__getattribute__` reads
+along the exact `self -> _publisher -> _retained -> fixture ->
+_event_schema` ownership chain. If any owner/type/shape read is malformed or
+the schema is not exact v2, it immediately invokes the captured original
+verifier with identical positional/keyword arguments; it performs no parse,
+map lookup, provider read, or other action first. Thus exact v1 and malformed
+legacy states preserve original error ordering. For exact retained v2
+publication, the wrapper must, before member/provider reads, reparse the exact retained authorization, require
+the map's exact live identity, re-run `_require_synthetic_tzdata`, and then
+perform its existing complete verification. Forged/missing/changed identity or
+environment dispatch refuses. Returned facts stay nonauthorizing and
+nondeployment and gain no environment field.
+
+5. **Downstream stop moves exactly one edge.** A genuine v2 raw publisher,
+PUBLISHED root/receipt, and `NonAuthorizingRawRootProof.verify` may now
+succeed. `_SyntheticRootPisIssuer`, dynamic root graph/authority,
+`compose_replay_tape`, `ReplayRun`, and every other consumer remain v1-only
+and refuse the v2 retained state before their current effects. ADR-0172 remains
+stopped until this slice closes.
+
+6. **Binding lifecycle, dispatch, and compatibility.** The closure defines
+three unique sentinel objects and one exact mutable three-element list record
+`[weakref_ref(publisher), environment_identity, state]`, allocated only when
+entering `PROVISIONAL`. State transitions are
+`absent -> PROVISIONAL -> COMMITTED` on ordinary success,
+`PROVISIONAL -> absent` only if a gate fails before the common writer is
+invoked, and `PROVISIONAL|COMMITTED -> FAILED` for every exception once the
+common writer has been invoked; `FAILED` is terminal. Proof acceptance requires the exact
+`COMMITTED` sentinel and exact record identities.
+
+After every gate succeeds, insert PROVISIONAL before proof use. If any remaining
+pre-writer step fails, delete both record and anchor. Immediately before calling
+the captured raw writer, add the exact record identity to a closure-local
+`writer_invoked_identities` set; the weakref callback removes it on publisher
+GC. This is the explicit `writer_invoked` boundary and is crossed only after
+all v2 wrapper gates;
+from then on every exception marks FAILED, including manifest derivation,
+quarantine, SESSION_STARTED, retention, and return faults. No audit/`_closed`
+heuristic can reverse that conservative polarity. On ordinary writer
+return, set COMMITTED in place with no allocation/caller callback; any injected
+exception immediately before or after that assignment is caught and marks
+FAILED. Only ordinary `publish_v2` return leaves COMMITTED.
+
+The deleted closure also captures exact parser, schema tables, common writer,
+original proof verifier, environment checker, classes, and descriptors.
+Identity-check before/after the environment gate, binding transitions, writer,
+and proof gate. Existing proof-internal callback semantics are inherited, not
+strengthened. Map/record deletion, copying, cross-publisher rewiring, alternate
+factory identity, or publisher GC cannot substitute authority. Neither method,
+map, nor helper/type is exported. Existing v1 tests/messages/bytes and public
+surfaces remain unchanged.
+
+The security boundary is executable module/class/callable surfaces and
+replaceable globals/descriptors, not arbitrary privileged mutation of Python
+function closure cells. Coordinated recursive `inspect`/`gc` extraction and
+mutation of every closure-owned map, seal, sentinel, captured callable, and
+code object is equivalent to hostile in-process code replacement (the same
+capability can directly replace `_MAKE`, methods, or verifier bytecode) and is
+outside this in-process construction's threat model. White-box tests may expose
+one closure-owned container at a time to inject deletion, copying, state,
+identity, or cross-publisher faults; the remaining independent anchors must
+then refuse. Installed methods themselves contain only one authorized
+implementation callable and expose no writer or mutable authority state in
+their direct closure.
+
+### Required Phase-0 matrix
+
+Evidence is compositional. The unedited ADR-0139 raw-publisher success/fault
+tests and ADR-0140 raw-proof substitution/readback tests are the authoritative
+v1 pre-refactor parity baseline and must pass in the same run; duplicating each
+case in the ADR-0173 file is neither required nor a stronger comparison.
+Likewise, retained-v2 transitive unreachability is proved at the sole
+constructor edge into the downstream chain: `_SyntheticRootPisIssuer` must
+refuse the genuine retained v2 publisher before assignment/effect, and the
+existing ADR-0169 v1-state substitution tests must continue to prove the
+root-PIS proof and dynamic graph are v1-only. Because every later bundle,
+replay, verifier, and driver requires those otherwise-unobtainable exact
+upstream capabilities, tests must inventory those typed edges and public
+aliases but must not fabricate impossible downstream objects.
+
+Pin `inspect.signature`, positional/keyword behavior, `trust.__all__`,
+`dskit.pipeline` re-exports, relevant class dictionaries, publisher
+`__weakref__` layout, and legacy `publish` v2 refusal. RED genuine v2
+`publish_v2` success; every wrong proof/identity/schema/scope/tzdata/original
+byte/fact/dispatch case refuses before proof use, reserve/session/provider/WORM/
+receipt effect. Prove exact v2 manifest/member/root/receipt and fresh root-proof
+verification; missing/forged/replaced environment binding refuses before
+member read. Test map/global substitution, record delete/copy/cross-publisher
+rewiring, publisher GC, and alternate minted identities. Prove v1
+common-writer parity at every enumerated boundary and fault point. Test binding
+state/sentinel/anchor identity and exact effects for pre-writer gate failure,
+the writer-invoked boundary, manifest, immediately before/after SESSION_STARTED,
+retention, promotion assignment, and return; every writer exception is FAILED,
+only ordinary return is COMMITTED, and no stale/falsely verifiable root exists.
+Attempt record copying/rebuilding/map rewiring and GC. Pin allowed ownership-
+chain reads plus v1/malformed immediate delegation and identical kwargs/errors.
+
+Direct Cartesian tests cross the retained-v2 publisher with exact v1, v2,
+malformed, swapped, and cross-publisher originals only at
+`_SyntheticRootPisIssuer` construction/`issue` and raw-root
+`verify(..., _under_writer_lock=True)`; constructor must refuse retained v2,
+and issue must check retained schema/original consistency before setting
+`_closed` or any effect. Separately prove transitive unreachability/effect
+freedom for root-PIS proof, `_SyntheticRootPisIssuer`,
+`NonAuthorizingSyntheticRootPisProof`, dynamic graph/authority factories, bundle
+`compose_replay_tape`, `ReplayRun.run`, `HistoricalStudyVerifier`,
+`HistoricalStudyCaptureDriver`, and all aliases visible through
+`trust.__all__`, `dskit.pipeline`, and `dskit.production.verifier`.
+Pin signatures and keyword behavior. Re-run ADR-0169
+hard-stop tests amended only where this ADR moves raw publication/root proof;
+all later stops remain green. Run ADR-0145/0146/0169/0170/0171, trust, capture,
+and all purity suites.
+
+### Non-goals
+
+No root PIS/dynamic authority for v2, projection input, envelope writer,
+`ReplayTapeDataCapture`, manifest/tape composition, replay, recovery,
+external/real data, acquisition, HPO, refit, backtest, paper/live trading, or
+deployment.
+
+---
+
+## ADR-0174 — v2 captured-tape composition from a verified projection input
+
+**Status:** IMPLEMENTED AND CLOSED 2026-09-23 at
+`22808b0dc6bb059e3b2b4743f1d50f7dddb94e0e`. Revision 1's design (reusing an
+externally-supplied P4 `record`/`session`/`published` capture triple for
+`data_capture_root`/`data_captured_receipt` alongside the
+independently-sourced ADR-0172 capability for the envelope bytes) received a
+NO-GO from an independent Phase-0 design skeptic: **Critical** — nothing
+bound the two inputs together, so a caller could supply a genuine but
+*unrelated* P4 capture (for document D, containing events F1/F2) together
+with a genuine but *unrelated* ADR-0172 capability (from raw root A,
+containing events E1/E2/E3) and receive a `CapturedReplayTape` whose
+`data_capture_root`/`data_captured_receipt` truthfully prove "D was
+captured" while `ordered_envelope_digests` are silently A's events, never
+D's. Both halves verify individually; nothing checks they agree. Revision 2
+closed that gap by removing the external P4 dependency entirely rather than
+patching it — see Decision point 1. A fresh, independent Phase-0 re-review of Revision 2
+returned 0 Critical, 0 Major (design), GO for RED — every reported finding
+was a documentation clarification, folded into the Decision text below.
+The candidate round found one genuine defect (RED caught it): the purity
+gate refused `verifier.py` reaching `trust.py`'s private mint even via
+module-attribute access, fixed by adding `trust.prepare_v2_projection_input`
+as a public, identity-equal alias (zero behavior change). The first pair of
+final lenses found one Major — the Revision-1 attack test asserted only
+`pytest.raises(ValueError)` with no message match, so it passed vacuously
+against a mutant that bypasses the binding proof and fails for an unrelated
+reason — corrected (test-only, `match="does not belong"` plus the converse
+direction) and mutation-verified. Two fresh final lenses on the corrected
+candidate were each 0C/0M/0m/0N; the bounded final regression set was 1,987
+passed and 1 expected xfail. Evidence:
+`docs/evidence/closeout/0207-intraday-adr0174-review-exit.json`. One Minor
+remains an open, disclosed backlog item: no test constructs a multi-envelope
+tape with disagreeing `source_rank_policy_sha256` (unreachable with current
+single-root fixtures; the guard itself is in place and unexercised only by
+that one row). This closure grants no envelope-writer, replay, backtest,
+paper/live, or deployment authority — see Non-goals.
+
+**Context.** ADR-0172 closed with a private, one-shot
+`VerifiedV2ProjectionInput` and `_project_verified_synthetic_v2_input`
+(`dskit.production.verifier`) that returns exact ordered
+`dskit.event-envelope/v2` canonical bytes, causally ordered and reparse/
+re-encode verified, purely from an already-verified v2 raw root. ADR-0172's
+own text records that `compose_replay_tape` "remain[s] v1-only and refuse[s]
+the v2 retained state before its current effects. ADR-0172 remains stopped
+until this slice closes" (ADR-0173 Decision point 5) — this is that slice.
+
+`compose_replay_tape` (`dskit.production.bundles`, ADR-0145/0146, docstring:
+"Bounded synthetic/test use only; not for real replay operations") builds a
+`CapturedReplayTape` via `CapturedReplayTape._build`/`.parse` and
+`verify_causal_order` from a P4 capture's `data_capture_root`/
+`data_captured_receipt` plus `ordered_envelope_bytes` it derives itself by
+reading `dskit.raw-event/v1` WORM members one at a time via
+`record.read_member_bytes` and projecting each with caller-supplied
+per-event metadata. Its P4 binding is sound *because* the events it reads
+come from the files the P4 capture actually captured — the read itself is
+the binding. A v2 path that instead sources
+`ordered_envelope_bytes` from ADR-0172 (a wholly separate, nonauthorizing
+verification chain with no knowledge of any P4 capture) has no such
+built-in binding, which is exactly Revision 1's defect. `CapturedReplayTape`
+itself does not care where `data_capture_root`/`data_captured_receipt` come
+from — `_check_tape` only shape-checks them (confirmed by reading
+`CapturedReplayTape._build`) — so nothing requires them to be P4-sourced at
+all.
+
+### Decision
+
+1. **Drop the P4 dependency; derive both binding fields from the same
+   verified v2 root the envelope bytes come from.** Add
+   `_compose_v2_replay_tape(raw_proof, raw_proof_bytes, capability, /)` to
+   `dskit.production.verifier`, positional-only, private, absent from every
+   `__all__` — no `record`/`session`/`published`/`consumer_document_sha256`
+   parameter exists. `raw_proof`/`raw_proof_bytes` are the exact same
+   shapes ADR-0172's own `_prepare_synthetic_v2_projection_input(raw_proof,
+   raw_proof_bytes)` already takes and validates (an exact
+   `NonAuthorizingRawRootProof` and its exact twelve-byte tuple, whose last
+   three elements — `raw_proof_bytes[9:12]` as exactly
+   `(manifest_bytes, basis_bytes, receipt_bytes)` — are the `publish_v2`
+   writer's own output, cryptographically produced for and bound to that
+   exact raw root at publication. `data_capture_root` is
+   `sha256(manifest_bytes).hexdigest()`; `data_captured_receipt` is
+   `sha256(receipt_bytes).hexdigest()`. Both are therefore facts about the
+   *same* verified root the envelope bytes are about — there is no second,
+   independent authority left to mix in, so Revision 1's attack has no
+   input pair to exploit. A caller mutating `raw_proof_bytes[9:12]` after
+   this call begins gains nothing: every one of the three `payload()`
+   re-derivations below (the fresh mint and both consumes) independently
+   re-verifies `raw_proof_bytes` against `raw_proof`'s own retained
+   originals (ADR-0172's existing `payload()` check, unedited), so a
+   mutated tuple refuses before any digest derived from it is used.
+
+2. **The capability is proven to belong to the supplied root, not merely
+   asserted, using MORE of ADR-0172's reviewed machinery than the raw
+   consume alone.** `_prepare_synthetic_v2_projection_input(raw_proof,
+   raw_proof_bytes)` mints one fresh second capability from the caller's
+   exact `(raw_proof, raw_proof_bytes)` — explicitly permitted by ADR-0172
+   Decision point 4 ("Preparing another capability from the same
+   still-fresh proof is allowed because this bridge is nonauthorizing and
+   projection is pure; each capability remains one-shot"). Both the fresh
+   second capability and the caller-supplied `capability` are passed
+   through the existing `_project_verified_synthetic_v2_input` (unedited —
+   the full ADR-0172 consume-then-project composition, including its own
+   recursive executable-dependency-closure guard), never through a bare
+   `consume_v2_projection_input` call followed by a hand-rolled projection
+   step; the two resulting ordered envelope-bytes tuples are required
+   byte-equal before either is used further. A `capability` minted from any
+   *other* root produces different envelope bytes BY CONSTRUCTION — not a
+   probabilistic argument: the envelope bytes are a pure, deterministic
+   function of the exact retained event tuple and derived policy of the
+   root the capability was minted from (ADR-0172's own payload derivation),
+   so two capabilities from two different roots produce equal envelope
+   bytes only if the two roots' retained events and policy are themselves
+   value-identical, which is a fact about the test/synthetic fixtures
+   supplied, not a probability this function relies on. It refuses the
+   equality check rather than silently proceeding — closing exactly the
+   gap Revision 1 left open, using strictly more of the machinery ADR-0172
+   already reviewed and closed than a raw events/policy comparison would.
+
+3. **`ordered_envelope_bytes` is the equality-checked payload, spent
+   exactly once per capability, and the spend is NOT retryable on
+   refusal.** Both the caller-supplied `capability` and the fresh second
+   capability are consumed as part of the `_project_verified_synthetic_v2_input`
+   calls above (ADR-0172's one-shot rule, unchanged, applied twice, to two
+   independently-tracked capabilities) BEFORE the equality check runs —
+   consuming is part of what that function already does, per ADR-0172. If
+   the equality check then fails, both capabilities are already spent;
+   there is no retry path, by the same terminal-failure rule ADR-0172
+   Decision point 4 already establishes for a post-removal failure. A
+   caller who mismatches `(raw_proof, raw_proof_bytes)` against
+   `capability` therefore always
+   loses `capability` on that one attempt, whether or not the mismatch was
+   deliberate. `_compose_v2_replay_tape` never mints a third capability and
+   never re-derives events outside these two consumptions.
+
+4. **source_rank_policy_sha256 comes from the verified envelopes, not a
+   second read.** Every returned envelope already carries its own
+   `source_rank_policy_sha256` field (ADR-0130/ADR-0145's closed envelope
+   shape); `_compose_v2_replay_tape` reads it off the first parsed envelope
+   after `_check_event_envelope`/`_parse_event_envelope` (reused, not
+   reimplemented) rather than re-deriving a roster digest from a second
+   member read, and requires it identical across every envelope before use
+   — a tape must not mix source-rank policies mid-tape.
+
+5. **Effects are bounded to exactly three `raw_proof.verify(...)` calls
+   within this function, nothing else.** No P4 authority, `record`,
+   `session`, `published`, or WORM member read exists on this path at all —
+   not reused, not touched. `capability`'s own mint (its `prepare` call)
+   already happened before this function was ever invoked, so it is not
+   this function's effect to count; within `_compose_v2_replay_tape`
+   itself the only effects are: one `prepare` for the fresh second
+   capability (one `raw_proof.verify(...)` call, via `payload()`) and two
+   `_project_verified_synthetic_v2_input` calls, one per capability (one
+   `raw_proof.verify(...)` call each, via each call's internal `consume`) —
+   three verify calls total, each with exactly the provider/cache effects
+   `tests/pipeline/test_v2_projection_input.py`'s
+   `test_prepare_and_consume_have_exactly_the_direct_raw_verify_effects`
+   already established for one such call. No new WORM write, no new
+   provider read, no new lifecycle transition, no new SQL/reserve effect,
+   no new registry. `CapturedReplayTape._build`, `.parse`, and
+   `verify_causal_order` are called unedited, exactly as
+   `compose_replay_tape` calls them — `compose_replay_tape` itself is not
+   edited, not branched inside, and not deprecated.
+
+6. **Nonauthorizing, explicitly.** This function produces the same class of
+   artifact ADR-0172 itself produces: a verified but nonauthorizing value.
+   It grants no P4 authority, no WORM-lifecycle authority, no replay or
+   trading authority, and makes no claim that any consumer document,
+   process, or run was ever authorized to see these events — it only proves
+   the envelope bytes and the capture-root/receipt fields are provably
+   facts about one single verified root. A future consumer that needs
+   genuine P4-style authorization over a v2 tape (or needs this tape bound
+   into a real WORM/lifecycle write) is a separately reviewed later slice,
+   exactly as ADR-0172's own non-goals already scope it.
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+Pin the exact signature, positional-only-ness, `__all__` absence, and that no
+`record`/`session`/`published`/`consumer_document_sha256`-shaped parameter
+exists anywhere in the signature. Prove a genuine still-fresh ADR-0172
+capability plus its own `(raw_proof, raw_proof_bytes)` yields a
+`CapturedReplayTape` whose `verify_causal_order` passes, whose
+`data_capture_root`/`data_captured_receipt` are exactly `sha256` of
+`raw_proof_bytes[9]`/`raw_proof_bytes[11]`, and whose
+`ordered_envelope_digests`/`source_rank_policy_sha256` match the verified
+envelope bytes exactly. **The Revision-1 attack must have an explicit
+reproducing test**: mint a capability from root A, supply a genuine
+`(raw_proof, raw_proof_bytes)` pair from unrelated root B, and require a
+refusal (not a silently-wrong tape) — and the converse (genuine root A
+`raw_proof`/`raw_proof_bytes` with a capability from unrelated root B).
+Refuse: a spent, forged, or already-consumed-elsewhere `capability`; a
+`raw_proof`/`raw_proof_bytes` pair that fails ADR-0172's own prepare
+checks (reuse those refusals, do not restate them); a
+`raw_proof_bytes[9:12]` mutated after mint but before this call (must be
+caught by the same re-verification `payload()` already performs); envelopes
+whose `source_rank_policy_sha256` disagree across the tape; every
+`verify_causal_order` violation family `compose_replay_tape`'s own tests
+already cover (duplicate `event_id`, forward/gapped correction chain,
+decreasing order key, length mismatch); double-composition (a second
+`_compose_v2_replay_tape` call reusing either the original `capability` or
+the internally-minted second one must refuse exactly as a spent
+`consume_v2_projection_input` call refuses); partial failure ordering (the
+equality check in Decision point 2 fails *before* either capability's
+events/policy are used to build anything, so a failed composition never
+returns a partial or wrong tape). Prove no P4/WORM/provider/SQL/reserve
+effect exists at all on this path (before/after snapshot, same idiom
+`tests/pipeline/test_v2_raw_publication.py::_effect_snapshot` and
+`tests/pipeline/test_v2_projection_input.py`'s structural-effect-parity
+test already established), and that the *only* effects within this
+function are exactly three `raw_proof.verify(...)` calls (one fresh
+`prepare`, two `_project_verified_synthetic_v2_input` calls), per Decision
+point 5 — `capability`'s own prior mint is outside this function's effect
+accounting. Run the
+existing `compose_replay_tape` test suite unedited to prove it is
+untouched, plus ADR-0145/0146/0169…0173, trust, capture, and purity
+regressions.
+
+### Non-goals
+
+No envelope writer, no new WORM write path, no `ReplayRun`/replay execution
+change, no `HistoricalStudyVerifier`/`HistoricalStudyCaptureDriver` change,
+no cash-flow or accounting change, no backtest, no paper/live trading, no
+deployment. This ADR produces a verified `CapturedReplayTape` value and
+nothing downstream of it; wiring that tape into `ReplayAdapter`/`EquityReplay`
+(the child-side consumer) is a separately reviewed later slice.
+
+---
+
+## ADR-0175 — a runtime `ReplayTape` over verified v2 event envelopes
+
+**Status:** IMPLEMENTED AND CLOSED 2026-09-23 at
+`58c33aee0aadbf1393803feda6350f2a1b4621c0`. Revision 1 received a
+NO-GO from an independent Phase-0 design skeptic: 2 Critical (grouping
+`FeedResult`s by `availability_ms` alone allegedly "destroys" correction-chain
+order — `correction_position`/`corrects_event_id`/`prior_envelope_sha256` —
+and the matrix had no integration proof against ADR-0174's real output), 3
+Major (the class should stay private, not public; construction-time failure
+semantics needed documenting; the matrix needed more rows), 1 Minor (the
+"mirrors `BarTape`" framing overclaimed). This revision disputes the two
+Critical findings on a verified architectural fact — see the rebuttal at the
+end of this Context section — and accepts and folds in every Major/Minor
+finding regardless of that dispute (Decision points 1, 2, 6 below). Per
+`docs/skills/skeptic-review.md`, a disputed finding goes to a fresh
+independent adjudicator; a fresh reviewer with no knowledge of Revision 1's
+verdict independently reread every cited file (`FeedResult`, the
+`ReplayTape` ABC, `ReplayFeed`'s docstring, `BarTape`, `compose.py`, and the
+decider's `read_entry`/`inputs_digest` path) and confirmed Revision 2's
+rebuttal is architecturally correct: 0 Critical, 0 Major, 0 Minor, 0 Nit,
+GO for RED. RED caught one genuine implementation defect: `bundles.py`'s
+own purity gate correctly refused the `FeedResult` import the originally
+proposed placement (`dskit.production.bundles`) needed — relocated to
+`dskit.production.feed`, which already owns `FeedResult`'s import and
+`ReplayFeed`, the tape's sole consumer (see the implementation-correction
+note on Decision point 1). Two fresh, sequential, independent final lenses
+on the corrected candidate were each 0C/0M/0m/0N, including active
+mutation testing on three distinct mutations, all caught; the bounded
+final regression set was 2,134 passed and 1 expected xfail. Evidence:
+`docs/evidence/closeout/0208-intraday-adr0175-review-exit.json`.
+
+**Context.** `bundles.ReplayTape` (the ABC `compose.bundles_for(...,
+tape=tape)` consumes, `dskit.production.bundles`) is what "a replay hands the
+composition root" — three DATA answers (`start_ms`, `feed_results`,
+`id_allocations`), never an object. The child's `BarTape`
+(`children/intraday_equities/intraday_equities/replay.py`) is the only
+existing implementation: it takes RAW, UNVERIFIED bar rows directly and
+groups them by `asof_ms` into one `FeedResult`
+(`dskit.production.records.FeedResult`, a plain data record: `status`,
+`acq_id`, `records_added`, `source_config_hash`, `at_ms`) per unique
+timestamp. `BarTape` performs NO verification of its own on the bars it is
+handed; the "trust the caller" posture is already the ABC's own established
+contract, not something this ADR introduces.
+
+**Rebuttal to Revision 1's Critical findings, with citation.** `FeedResult`
+has no field capable of carrying row content, per-row order, or a
+correction chain — only `status`, `acq_id`, `records_added`,
+`source_config_hash`, `at_ms`. This is not an oversight this ADR must work
+around; it is the ABC's own deliberate contract. `dskit.production.feed.
+ReplayFeed` (the sole consumer of `tape.feed_results()`, reached through
+`compose.py`'s `self._tape.feed_results()`) states its own scope directly in
+its docstring: *"The tape carries results ONLY. An `EntryBatch` is not on it
+because the rows are not the feed's to hold: §5.13 gives `read_entry` to the
+decider, which re-executes the entry against the same immutable onboarding
+root, and the recorded `inputs_digest` is what PROVES the re-read matched —
+a stronger claim than replaying a blob, which can only prove that the blob
+was replayed."* Row content and row/correction order are never the tape's
+responsibility in this architecture, for ANY `ReplayTape` implementation,
+`BarTape` included (`BarTape` itself also collapses every bar at one
+`asof_ms` — across every symbol — into a single count with no per-row
+order retained). `feed_results()` exists to tell `ReplayClock` WHEN pulls
+happened and HOW MANY records arrived, for clock-advancement and audit
+purposes; it was never a channel a decider reads rows or correction
+semantics through. Grouping by `availability_ms` therefore loses nothing
+this ADR's scope was ever responsible for preserving. Non-goals already
+states this explicitly ("no `Data.feed` row-content source"); Revision 2
+makes the citation explicit in Context so a future reader does not have to
+re-derive it.
+
+ADR-0174 closed with `_compose_v2_replay_tape`, which derives
+`ordered_envelope_bytes` (exact, causally-ordered, already reparse/re-encode
+verified `dskit.event-envelope/v2` canonical bytes) as an intermediate value
+on the way to building a `CapturedReplayTape` manifest. `ReplayRun.run`
+(`dskit.pipeline.trust`, role `replay`) explicitly and currently refuses:
+"replay execution requires the F3 composed-tape broker (follow-on); the
+ReplayRun node is declared for its tape-pair grammar only" — confirmed
+unbuilt by reading the code directly, not merely by prose. This ADR is
+scoped to exactly one bounded step of that follow-on: a generic
+`ReplayTape` implementation over an already-ordered v2 envelope-bytes
+sequence, mirroring `BarTape`'s existing shape and trust posture. It does
+NOT touch `ReplayRun`, the P4 `tape_manifest`/`tape_data` captured-port
+system, `EquityReplay`, or `ReplayAdapter` — wiring this tape into an actual
+running replay (decisions, execution, accounting) remains a separately
+reviewed later slice, exactly as ADR-0174's own Non-goals already scoped it.
+
+### Decision
+
+1. **One new, generic, core-tier, PRIVATE class: `_CapturedEnvelopeReplayTape`
+   (Revision 2: private, not public — Major finding accepted; IMPLEMENTATION
+   CORRECTION: lives in `dskit.production.feed`, not `dskit.production.bundles`
+   as originally proposed here — see the closeout evidence for why).** Add
+   it, absent from `__all__`. Revision 1 argued
+   public was justified because the class makes no verification claim of its
+   own; the accepted objection is that a public, generically-named class in
+   core is discoverable and invites a caller to construct it from envelope
+   bytes obtained from somewhere OTHER than ADR-0172/0174's verified chain,
+   reading "no verification claim" as "safe for any input" rather than what
+   it actually means ("verification is the caller's job, already done
+   upstream by the only caller this ADR builds for"). Private keeps that
+   precondition enforced by the language rather than by a comment. Subclasses
+   `ReplayTape`. Constructor:
+   `_CapturedEnvelopeReplayTape(ordered_envelope_bytes, source_config_hash)`
+   — the exact same two-argument shape `BarTape` already takes (bars,
+   source_config_hash), substituting ordered envelope bytes for raw bars.
+
+2. **Parse once at construction, reuse the existing parser; the failure
+   contract is whole-or-nothing (Revision 2: documented explicitly — Major
+   finding accepted).** Every element of `ordered_envelope_bytes` is parsed
+   with the existing `_parse_event_envelope` (unedited — the same one
+   ADR-0172's own dependency-closure guard already pins) at `__init__` time;
+   a parse failure on ANY element raises `ProductionError` immediately, at
+   construction, before any `FeedResult` is derived from any OTHER element —
+   there is no partial-success state and no way to observe which elements
+   parsed before the failing one. This is deliberate, not an oversight: the
+   sole intended caller supplies `ordered_envelope_bytes` from ADR-0174's own
+   already-verified `_project_verified_synthetic_v2_input` output, where
+   every element is uniformly well-formed or the caller has a defect of its
+   own upstream of this class entirely; whole-or-nothing construction is the
+   correct failure shape for that caller, and this class makes no promise
+   beyond it. No new validation logic is written — `_parse_event_envelope`'s
+   existing default-deny shape check is the only gate.
+
+3. **Group by `availability_ms` for `FeedResult`'s aggregate fetch-metadata
+   purpose ONLY — not a claim about row or correction order (Revision 2:
+   framing corrected — Minor finding accepted).** This is coarser than "the
+   `BarTape` idiom," not identical to it: `BarTape` collapses same-instant
+   bars because a bar's identity IS its timestamp (one row per symbol per
+   minute); a v2 envelope's identity is its `event_id`, and several
+   envelopes — including a correction and the event it corrects — can
+   legitimately share one `availability_ms`. Grouping by `availability_ms`
+   is still correct HERE specifically because `FeedResult` cannot carry
+   row content or order under any grouping choice (see the Context
+   rebuttal) — so no grouping granularity this class could choose would
+   preserve correction-chain order through `feed_results()`; only a
+   consumer reading the envelope bytes directly (never through
+   `ReplayTape`) can see that order, exactly as `ReplayFeed`'s own
+   docstring already establishes for every existing `ReplayTape`. One
+   `FeedResult` per unique `availability_ms` value, `records_added`
+   counting envelopes at that instant, `status="live"`,
+   `acq_id=f"envelope-{availability_ms}"` (mirroring `BarTape`'s
+   `f"bar-{ts}"`), `at_ms=availability_ms`, `source_config_hash` the
+   caller-supplied value, unchecked against the envelopes (exactly as
+   `BarTape` never checks its `source_config_hash` argument against the
+   bars it is handed — the SAME trust posture, not a new one). `start_ms()`
+   returns the earliest `availability_ms`, or 0 when the sequence is empty
+   (matching `BarTape.start_ms()`'s empty-tape fallback). `id_allocations()`
+   returns `()` (matching `BarTape` — a `ReleaseIdSource` allocates live,
+   unchanged).
+
+4. **No new authority, no new verification, no new effect.** This class
+   performs no capability consumption, no WORM read, no P4 interaction, no
+   network access, and is not part of any capability's spend accounting —
+   it operates entirely on already-in-hand bytes the caller supplies, the
+   same as `BarTape`. Kept private (Decision point 1) precisely because "no
+   trust claim of its own" is not the same thing as "safe for any caller" —
+   the verification this class relies on happened upstream (ADR-0172/0174),
+   and only `dskit.production`'s own modules may reach for it.
+
+5. **Compatibility.** `dskit.production.feed` gains one private name (see
+   the implementation correction on Decision point 1), absent from
+   `__all__`. `bundles.py`, `compose_replay_tape`, `_compose_v2_replay_tape`,
+   `BarTape`,
+   `ReplayRun`, and every existing `ReplayTape` consumer are untouched.
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+Pin the exact signature and `__all__` absence (Revision 2: private, per
+Decision point 1). Prove: empty sequence yields `start_ms() == 0` and
+`feed_results() == ()`; a single envelope yields exactly one `FeedResult`
+with the right `at_ms`/`acq_id`/`records_added`/`source_config_hash`/
+`status`; multiple envelopes sharing one `availability_ms` collapse into
+one `FeedResult` with `records_added` equal to their count; multiple
+distinct `availability_ms` values yield one `FeedResult` each, in
+`availability_ms` order, and `start_ms()` returns the minimum;
+`id_allocations()` is always `()`; a malformed envelope (wrong schema,
+missing field, non-bytes) raises `ProductionError` at construction, before
+`start_ms`/`feed_results`/`id_allocations` are ever called, via the reused
+`_parse_event_envelope` — no new error message, no new check invented here;
+a construction failure on element N leaves no partial state observable
+(Decision point 2). **Revision 2 additions responding to Revision 1's
+disputed findings**: a dedicated test constructs a base event and its
+correction (`correction_position=1`, `corrects_event_id` set,
+`prior_envelope_sha256` set) sharing one `availability_ms` and asserts
+`feed_results()` returns exactly one `FeedResult` with `records_added == 2`
+and NO field anywhere on `FeedResult` that could or does encode which of
+the two is the correction — proving by direct inspection, not argument,
+that `feed_results()` structurally cannot carry that distinction under any
+grouping choice; a comment/docstring at that test cites the same
+`ReplayFeed` docstring passage Context quotes. Prove
+`_CapturedEnvelopeReplayTape` genuinely `isinstance`-satisfies `ReplayTape`.
+Feed the class the EXACT `ordered_envelope_bytes` a real
+`_compose_v2_replay_tape` call produces (ADR-0174's own `_mint`/test
+fixtures) as an integration proof that the two ADRs' outputs and inputs
+actually line up byte-for-byte — this is the integration-test gap Revision
+1 flagged, now required explicitly. Run the existing `bundles.py`/`BarTape`
+test suites unedited to prove they are untouched, plus
+ADR-0145/0146/0169…0174, trust, capture, and purity regressions.
+
+### Non-goals
+
+No `ReplayRun` implementation, no P4 `tape_manifest`/`tape_data` captured-port
+wiring, no `EquityReplay`/`ReplayAdapter` change, no `Data.feed` row-content
+source (this class supplies fetch METADATA only, exactly as `BarTape`
+already does), no cash-flow or accounting change, no backtest, no paper/live
+trading, no deployment.
+
+---
+
+## ADR-0176 — a configured cash-flow schedule for the child's equity replay
+
+**Status:** IMPLEMENTED AND CLOSED. A fresh independent design
+skeptic reviewed point 3.5 cold pre-implementation: 0 Critical, 0 Major,
+GO for RED. RED confirmed against the pre-3.5 tree (the three new
+end-to-end tests failed with `AttributeError: no attribute
+'_cash_flow_ledger'`). Minimal implementation: three `None`-defaulted
+instance attributes on `EquityReplay.__init__`, populated in `_run_loop`
+right after `bundles_for` succeeds, and one new private helper
+(`_submit_due_cash_flows`) called from `read_entry`'s first line —
+nothing else touched.
+
+Two independent final-review lenses ran against the first candidate
+(`da83d0b`). Correctness/authority: 0 Critical/0 Major/0 Minor/0 Nit, GO
+— independently traced the authorization path (`Ledger.append_many` →
+`SeriesState.apply` → `_fold_cash_flow` → `_check_replay_cash_flow` →
+`_replay_authorizer`, bound from the exact composer that produced the
+record) and confirmed no core module changed. Tests/integration: NO-GO,
+1 Major — of 4 mutations applied, 3 were caught (window-boundary
+off-by-one, wrong anchor-window start, single-record submission skip)
+but one was not: removing the trailing `self._cash_flow_window_ms =
+window_end_ms` assignment (the window never advances) passed every
+existing test, because the ledger's own id-based idempotence (a
+deliberate restart-safety property of `dskit.production.cashflows`,
+already covered by that module's own tests) silently absorbs the
+resulting resubmission of already-appended records — final-ledger-content
+assertions alone cannot distinguish "window advanced correctly" from
+"window frozen, but harmlessly re-submitting the same records every
+tick". Accepted as a genuine test-coverage gap, not disputed. Fix:
+added `_WindowSpyingEquityReplay` and
+`test_the_cash_flow_window_advances_by_exactly_one_tick_each_call` to
+`children/intraday_equities/tests/test_replay.py`, asserting the exact
+`(window_start_ms, window_end_ms)` sequence directly — independent of
+ledger idempotence. Verified against the missed mutation before fixing
+(genuine catch: the mutated window stayed frozen at
+`(start_ms, start_ms)`), then the mutation was reverted (`git diff`
+confirmed empty on the implementation file) before this fix was written
+up. Full child replay suite: 46 passed (0 skipped — the one prior skip
+was `pytest.importorskip("numpy")`, and numpy is now installed in this
+environment). Bounded regression (the same nine production suites plus
+`tests/pipeline/test_purity.py`): 1131 passed. Ruff and `git diff
+--check`: clean. The implementation file (`replay.py`) is unchanged from
+the reviewed candidate; only the test file gained the new spy/test.
+
+Per skeptic-review.md's "test changes reset prior clean lenses" rule,
+both lenses re-ran fresh against the fixed candidate (`e3095bf`).
+Correctness/authority: 0 Critical/0 Major/0 Minor/0 Nit, GO — confirmed
+`git diff da83d0b e3095bf -- children/intraday_equities/intraday_equities/
+replay.py` and `-- dskit/production/` both empty, re-traced the
+implementation and authorization path cold rather than trusting the
+prior verdict. Tests/integration: GO, 0 Critical/0 Major/0 Minor, 1 Nit —
+re-executed the exact previously-missed mutation live and confirmed
+`test_the_cash_flow_window_advances_by_exactly_one_tick_each_call` now
+fails on it (`(…,X) != (…,X+1)`, the frozen window directly visible);
+re-confirmed the other 3 mutations still caught (no coverage loss); ran
+the full bounded regression clean (1177 passed). The one Nit (a stray
+`_WindowSpyingEquityReplay` docstring cross-reference naming the wrong
+sibling test/class) was fixed directly (now correctly names
+`_CapturingEquityReplay`, "above"). Full child replay suite re-confirmed
+green after the nit fix (46 passed). Closeout evidence:
+`docs/evidence/closeout/0209-intraday-adr0176-review-exit.json`.
+
+**Status history.** Revision 3 adds Decision point 3.5 (below): during Phase-0
+matrix preparation it became clear Revision 2's Decision (composer wired
+into `bundles_for` purely as a `SeriesState._for_replay` authorization
+gate) could never satisfy Revision 2's OWN "mandatory end-to-end test" row
+— nothing in `EquityReplay`'s existing bar/decision loop ever calls
+`Ledger.append` with a `cash_flow` record, so a full run's ledger would
+contain zero cash-flow records regardless of whether a composer is bound;
+the gate would sit permanently unused. Point 4's own "only new observable
+effect... records CAN now be appended... where none could before" was an
+accurate description of what Revision 2 built, but not of what the
+Context section's stated goal ("$1,000 initial capital and a $20/day
+recurring contribution correctly entering the replay ledger") or the
+matrix's own end-to-end row required. Put to the owner as a scope choice
+(narrow the matrix to match Revision 2's wiring-only Decision, or extend
+the Decision to add a real submission mechanism); the owner chose to
+extend. Decision point 3.5 is that extension, scoped to the existing
+decider hook already implemented by `EquityReplay` — no core module,
+`TICK_PHASES` entry, or Leg pipeline step is touched. Revision 2 was
+independently reviewed cold and confirmed 0 Critical / 0 Major / 3 Minor
+(editorial), GO for RED; Revision 1 received a NO-GO (2 Critical: the
+anchor-derivation step was prose, not a precise transformation, with no
+stated handling for a DST gap/fold; an empty tape's `start_ms() == 0`
+would silently anchor real-dollar cash flows at the 1970 epoch. 3 Major:
+no explicitly mandated end-to-end test; `CashFlowPolicy`'s shape was
+under-specified; `schedule_id` uniqueness was asserted, not derived. 2
+Minor: no DST-transition matrix row; no self-authorization round-trip
+row). Every Revision 1/2 finding is accepted and folded in below — see
+Decision points 1, 2, and the Required Phase-0 matrix. Decision point 3.5
+and its matrix row are new in Revision 3 and have not yet been reviewed.
+
+**Context.** `dskit.production.compose.bundles_for(document, release,
+registry, ..., tape=None, cash_flow_composer=None)` (§5.16's composition
+root, unedited by ADR-0172/0174/0175) already accepts a
+`cash_flow_composer: ReplayCashFlowComposer` keyword — the child's
+`EquityReplay._run_loop` (`children/intraday_equities/intraday_equities/
+replay.py`) already calls this exact function today, but never passes
+`cash_flow_composer`, so it defaults to `None`. `dskit.production.state.
+SeriesState._for_replay(series_id, tape, cash_flow_composer, max_history)`
+already type-checks `cash_flow_composer` (exact `ReplayCashFlowComposer` or
+`None`) and, when supplied, binds
+`state._replay_authorizer = cash_flow_composer._authorizes` — the gate that
+decides which `cash_flow` ledger records a replay may accept. None of this
+is new: `ReplayCashFlowComposer`, `RecurringCashFlowSchedule`, and every
+`CashFlowOverride` member (`SkipCashFlow`, `MoveCashFlow`, `ReplaceCashFlow`,
+`WithdrawalCashFlow`, `CorrectCashFlow`) are already built, tested core
+(`dskit.production.compose`/`dskit.production.cashflows`). Swept before
+drafting: no existing config, schedule, or composer construction exists
+anywhere in `children/intraday_equities` today (confirmed by direct
+search — `cash_flow_composer` is referenced only in core and only ever
+passed `None` by this child). The task's full "extend the equity replay
+path" ask names seven sub-concerns (contribution timing, insufficient cash,
+integer/fractional sizing, costs, turnover, horizon overlap, market-calendar
+handling) beyond the schedule itself — this ADR is bounded to exactly the
+first bounded increment other ADRs in this lineage have each taken: get
+`$1,000` initial capital and a `$20`/day recurring contribution correctly
+entering the replay ledger through the existing, unedited composition root.
+Insufficient-cash handling, sizing policy, cost/turnover interaction, and
+market-calendar-aware (as opposed to plain calendar-day) contribution timing
+are explicitly out of scope — see Non-goals.
+
+**No standalone one-time deposit primitive exists in `cashflows.py`** —
+only `WithdrawalCashFlow` produces a standalone flow, and its docstring is
+explicit that materialization always signs it negative (a withdrawal, never
+a deposit); `CorrectCashFlow` supersedes a *prior* flow rather than seeding
+a fresh one. Given `production/CLAUDE.md`'s explicit safety-spine warning
+that "`cash_flow` and `tick.nav` are unrecoverable after the fact... Get
+this wrong and an adopted deposit turns a trading loss into headroom under
+a `halt` guard," this ADR does not add a new override type to that
+safety-critical module. Instead it uses the existing, already-reviewed
+`ReplaceCashFlow` ("replace one recurrence amount while preserving its
+identity") to fold the one-time seed into the schedule's first regular
+occurrence — see Decision point 2.
+
+### Decision
+
+1. **One new config-driven child class, `CashFlowPolicy`, mirroring
+   `FillPolicy`'s exact pattern (Revision 2: shape fully specified — Major
+   finding accepted).** Add it to
+   `children/intraday_equities/intraday_equities/replay.py`:
+   `_PARAMS = ("currency", "daily_contribution_amount",
+   "initial_capital_amount", "timezone")` — `currency` a nonempty `str`;
+   `daily_contribution_amount`/`initial_capital_amount` positive `Decimal`
+   (parsed from a JSON string, the same `Decimal(str(...))` idiom
+   `cashflows.py`'s own `_amount` helper already establishes as the
+   convention for money-from-JSON in this package); `timezone` a nonempty
+   `str` naming a real `zoneinfo.ZoneInfo` key, resolved via
+   `ZoneInfo(value)` and refusing an unresolvable name. Default-deny via
+   the existing `reject_unknown_params` (imported, never copied, per root
+   CLAUDE.md's duplication rule) — an unknown or missing key refuses; no
+   Python-side default value for any of the four, matching `FillPolicy`'s
+   "Values come from the document, never defaults." A new config,
+   `children/intraday_equities/configs/cash-flow-policy.json`:
+   ```jsonc
+   {
+     "currency": "USD",
+     "daily_contribution_amount": "20",
+     "initial_capital_amount": "1000",
+     "timezone": "America/New_York",
+     "notes": "P19 full backtest: $1,000 seed folded into day one via ReplaceCashFlow, $20/day after (ADR-0176)."
+   }
+   ```
+   the $1,000/$20 values as DATA, not code, per this repo's "JSON is the
+   interface" rule. `CashFlowPolicy.from_path(path)` parses and validates
+   it, the same `from_path`/`from_obj` shape `FillPolicy` already has.
+
+2. **The schedule and composer are built once per replay run, from the
+   tape's own start, using only existing core primitives — with the exact
+   transformation and its two refusal cases specified (Revision 2: both
+   Critical findings accepted).** `EquityReplay._run_loop` (the exact
+   function that already calls `bundles_for`) computes:
+   `start_ms = tape.start_ms()`; refuses immediately, before constructing
+   anything, if `start_ms == 0` — this is unambiguously "the tape is
+   empty" per ADR-0175 Decision point 3's own documented empty-tape
+   fallback, never a genuine 1970-01-01 replay instant, and a cash-flow
+   schedule has nothing to fund over zero bars. Otherwise:
+   `anchor = datetime.fromtimestamp(start_ms / 1000,
+   tz=timezone.utc).astimezone(policy.timezone)` — the exact
+   epoch-ms-to-aware-datetime idiom `EquityReplay` itself already uses
+   elsewhere in this file (`_halt_flag`/`_fill_row`'s
+   `datetime.fromtimestamp(asof_ms / 1000, tz=timezone.utc)`), extended by
+   one `.astimezone` call into the policy's configured zone.
+   `RecurringCashFlowSchedule.__post_init__` already calls
+   `_valid_local(self.anchor, self.timezone, "anchor")`
+   (`dskit/production/cashflows.py`, unedited) and raises `ValueError`
+   naming `"anchor"` on a nonexistent DST gap or ambiguous fold — this ADR
+   adds no separate pre-check, but requires the construction call to be
+   wrapped so a `ValueError` from this exact path is re-raised naming
+   *cash-flow policy* and the offending tape instant, not left to surface
+   as a bare `ValueError` an operator would have to trace back through
+   three layers of construction to attribute correctly. Then:
+   `schedule_id = series_id` (the `uuid.uuid4()` string
+   `EquityReplay._run_loop` already mints fresh for every replay run,
+   `replay.py:601` — Revision 2: this closes the uniqueness finding
+   directly; a schedule can never collide across replay runs because no
+   two runs ever share a `series_id`, and `RecurringCashFlowSchedule`
+   derives every `flow_id` from `schedule_id` plus the occurrence instant,
+   so identical `series_id` would be required for a collision, which
+   `EquityReplay` already structurally prevents). Then build:
+   `RecurringCashFlowSchedule(schedule_id=series_id, anchor=anchor,
+   interval_days=1, currency=policy.currency,
+   amount=policy.daily_contribution_amount, timezone=policy.timezone,
+   overrides=(ReplaceCashFlow("initial-capital-seed", anchor,
+   policy.initial_capital_amount + policy.daily_contribution_amount),))` —
+   folding the one-time $1,000 seed into day one's contribution ($1,020 on
+   day one, $20 every day after; `ReplaceCashFlow.apply` matches on exact
+   UTC instant VALUE equality against `occurrence.effective_at` — the
+   schedule derives its own first occurrence from `anchor` internally
+   (`_occurrence(0)`, a fresh `datetime` with the same date/time/zone) and
+   compares it, after UTC normalization, against the override's
+   `occurrence_at`; the same `anchor` value is passed to both the schedule
+   and the override constructor calls, so the two sides are never
+   independently derived and cannot drift apart, even though the schedule's
+   internal occurrence object is not the identical Python object), auditable via
+   the override's own `override_id` ("initial-capital-seed") and the
+   record's `evidence.flow_id`, both of which `ReplayCashFlowComposer._record`
+   already carries into the ledger body unedited. `ReplayCashFlowComposer`
+   itself is constructed unedited from this schedule.
+
+3. **Pass the composer through the existing seam, nothing else changes.**
+   `EquityReplay._run_loop`'s existing `bundles_for(document, release,
+   None, serve_root=serve, secrets={}, invocation=invocation,
+   process_id="replay-1", lock=lock, journal_hook=_journal_noop,
+   tape=tape)` call gains exactly one new keyword,
+   `cash_flow_composer=composer`. No other argument, call site, or
+   downstream bundle changes. `SeriesState._for_replay` is not edited;
+   its existing type check and `_replay_authorizer` binding do the rest.
+
+4. **No new authority, no new WORM/capability effect.** This is plain
+   value construction (a schedule, an override, a composer) plus one new
+   keyword argument at an existing call site. No capability consumption,
+   no P4 interaction, no network access. The only NEW observable effect
+   inside a replay run from points 1–3 alone is that `cash_flow` records
+   the schedule authorizes can now be appended to the replay ledger where
+   none could before (`cash_flow_composer=None` today means
+   `_replay_authorizer` is never bound, per `SeriesState._for_replay`'s
+   existing `if cash_flow_composer is not None` guard) — read the exact
+   consequence of that unbound state in `dskit/production/state.py`
+   before RED, to pin the exact before/after ledger-acceptance behavior
+   the matrix must prove. Point 3.5 (below, Revision 3) is what actually
+   submits records against that now-open gate.
+
+3.5. **Submission: `EquityReplay` calls `composer.due(...)` and appends
+   the result itself, once per tick, from its own existing decider hook
+   — new in Revision 3.** `ReplayCashFlowComposer.due`'s own docstring
+   already documents this exact usage: "the replay owner chooses a
+   half-open window and writes the returned records to its scratch
+   ledger" (`dskit/production/compose.py:149-170`, unedited) — this ADR
+   makes `EquityReplay` that replay owner; no new core seam is added, the
+   documented one is finally called. `EquityReplay` is already installed
+   as `bundles_for`'s decider (`data = Data(feed=data.feed, decider=self)`,
+   `replay.py`) and already implements `read_entry(self, tick_at_ms)`,
+   the decider hook `TICK_PHASES` calls once per tick, in strictly
+   ascending `tick_at_ms` order (`_TapeCadence.next_tick` returns "the
+   next tape instant strictly after `after_ms`", `replay.py:520-525`),
+   fourth of ten phases — strictly before `account` (ninth), the phase
+   that computes NAV from `tick.recording.state.snapshot()`. Concretely:
+   - In `_run_loop`, immediately after the existing `bundles_for(...)`
+     call succeeds (still inside the existing `try` block, before
+     `self._venue = ...`): when `cash_flow_composer is not None`, set
+     `self._cash_flow_ledger = recording.ledger`,
+     `self._cash_flow_composer = cash_flow_composer`, and
+     `self._cash_flow_window_ms = tape.start_ms()` (the schedule's own
+     anchor instant, so the very first due occurrence — always exactly at
+     the anchor per Decision point 2 — falls inside the first tick's
+     window rather than before it). When `cash_flow_composer is None`,
+     set all three to `None` (`EquityReplay` instances are reused across
+     `run()` calls in some call sites, so this must reset on every
+     `_run_loop` entry, not rely on `__init__`-time defaults alone).
+   - At the top of `read_entry(self, tick_at_ms)`, before its existing
+     body: when `self._cash_flow_composer is not None` (the None case is
+     an unconditional no-op, matching every other optional-policy guard
+     in this file), compute the half-open window
+     `[self._cash_flow_window_ms, tick_at_ms + 1)`, convert both bounds
+     to aware UTC `datetime`s via the exact
+     `datetime.fromtimestamp(ms / 1000, tz=timezone.utc)` idiom already
+     used elsewhere in this file, call
+     `due = self._cash_flow_composer.due(start, end_exclusive)`, and when
+     `due` is non-empty, `self._cash_flow_ledger.append_many(due)`
+     (`dskit/production/ledger.py:468`, unedited). Then unconditionally
+     set `self._cash_flow_window_ms = tick_at_ms + 1`, regardless of
+     whether `due` was empty, so windows stay contiguous.
+   - **Partition proof (why no record is ever skipped or double-counted).**
+     `_TapeCadence` ticks strictly ascending with no repeats, so
+     consecutive windows `[w0, t1+1), [t1+1, t2+1), [t2+1, t3+1), …` tile
+     `[tape.start_ms(), last_tick_ms + 1)` with no gap and no overlap;
+     every `RecurringCashFlowSchedule` occurrence instant that exists
+     falls inside exactly one tick's half-open window, so it is submitted
+     exactly once, on exactly that tick. `materialize` (called by `due`)
+     raises `ValueError("start must precede end_exclusive")` on
+     `start >= end_exclusive`
+     (`dskit/production/cashflows.py:458-463`, unedited) — this can never
+     fire here because each window's `end_exclusive` is the CURRENT
+     tick's instant plus one and its `start` is the PREVIOUS tick's
+     instant plus one (or the anchor, for the first tick), and ticks
+     strictly increase, so `start < end_exclusive` always holds by
+     construction; no matrix row proves this exception path because it is
+     structurally unreachable, exactly as Decision point 2 already
+     established for the DST-gap `ValueError` on `anchor`.
+   - **Why a direct `Ledger.append` from a decider hook, not the Leg
+     pipeline.** `dskit/production/CLAUDE.md`'s safety spine ("Record
+     before act, checkpoint last... a reduction inserts `authority_use`
+     before `authorization`") governs ORDER submission specifically; it
+     is not a rule about every ledger write. Precedent already exists for
+     `cash_flow` records taking a separate, non-Leg write path:
+     `Reconciler` builds and appends `cash_flow` records
+     (`dskit/production/reconcile.py:1564-1581`, unedited) outside the
+     eight-step `Leg` submission pipeline entirely, because a cash flow is
+     an external funding event, not an act this series takes. This ADR's
+     mechanism follows that same precedent, through the identical
+     `Ledger.append`/`append_many` entry point, for the identical record
+     kind.
+   - **No new authority.** `read_entry` already runs with full access to
+     `self` and the run's own `recording.ledger` (stashed by `_run_loop`,
+     which already builds `recording` before installing `self` as
+     decider); this adds no new capability, no new registry entry, no new
+     `uses:` site, and no change to any object `EquityReplay` did not
+     already construct or receive.
+
+5. **Compatibility.** `dskit.production.compose`/`dskit.production.
+   cashflows`/`dskit.production.state`/`dskit.production.ledger`/
+   `dskit.production.reconcile` are untouched (point 3.5 calls their
+   existing public surface; it edits none of them). `EquityReplay`'s
+   existing signature, its other bundle wiring, `BarTape`, `ReplayAdapter`,
+   and `DevelopmentReplay` are untouched. The new config file and class,
+   and `read_entry`'s new leading block (a no-op whenever
+   `cash_flow_policy` is not supplied), are additive; no existing config
+   or child test fixture changes shape, and every existing
+   `EquityReplay`/`ReplayAdapter` caller that never passes
+   `cash_flow_policy` observes byte-identical behavior to today.
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+Pin `CashFlowPolicy._PARAMS`, default-deny (an unknown, missing, or
+wrong-type key refuses — including an unresolvable `timezone` string and a
+non-positive/non-numeric-string amount), and `from_path`/`from_obj` parity
+with `FillPolicy`'s own pattern. Prove: the built schedule's `materialize`
+over the full replay window yields exactly one `$1,020` (or whatever the
+configured `initial_capital_amount + daily_contribution_amount` sums to)
+flow on the anchor day and exactly one `$<daily_contribution_amount>` flow
+every subsequent calendar day through the window's end, in the configured
+currency; `ReplayCashFlowComposer._authorizes` accepts exactly those
+records and refuses every other (wrong amount, wrong day, wrong currency,
+forged `evidence`); **every record `composer.due(...)` itself emits passes
+`composer._authorizes` on that exact record** (Revision 2: Minor finding
+accepted — a self-authorization round-trip, proving the composer never
+manufactures a record it would then refuse); `SeriesState._for_replay`
+accepts the built composer (type check passes) and binds
+`_replay_authorizer`. **Refusals (Revision 2 additions, both Critical
+findings):** an empty tape (`start_ms() == 0`) refuses schedule
+construction before any `RecurringCashFlowSchedule`/`ReplayCashFlowComposer`
+object is built, with a message naming the empty tape, not a downstream
+`ValueError` from unrelated validation; an `anchor` landing in a named
+timezone's DST gap or ambiguous fold (construct the matrix's test tape so
+its first bar's `availability_ms` lands there for at least one real IANA
+zone with an active transition, e.g. `America/New_York` in March or
+November) refuses with a message naming *cash-flow policy* and the
+offending instant, not a bare unattributed `ValueError` (Revision 2:
+Minor finding accepted — this is also the required DST-transition test).
+**Mandatory end-to-end test (Revision 2: Major finding accepted — this row
+is explicitly REQUIRED, not merely named in prose; Revision 3: now
+literally achievable per point 3.5's submission mechanism, where Revision
+2's wiring-only Decision could not have satisfied it):** a full
+`EquityReplay._run_loop`/`ReplayAdapter.replay()` run, with a real
+multi-day `BarTape` and the real `cash-flow-policy.json` config (not a
+hand-built schedule/composer in isolation), whose replay ledger — read
+back DURING the run, before `_run_loop`'s `finally: shutil.rmtree(work,
+...)` deletes the scratch `ServeRoot` (e.g. via `recording.ledger.scan(kind
+="cash_flow")`, the same accessor pattern `_run_loop` already uses for
+`kind="tick"` a few lines above the `finally`, reached by a test-only hook
+or subclass that captures ledger contents before cleanup rather than after
+`run()` returns) — contains exactly the expected cash-flow records (right
+count, right amounts, right dates, right currency) over that window; and
+the exact prior behavior (`cash_flow_policy=None`, no cash records ever
+submitted or authorized) is pinned as a regression baseline on the SAME
+fixture so a future change cannot silently re-widen or narrow it. **New in
+Revision 3:** the partition proof itself — every tick's window is disjoint
+and contiguous, so running a multi-day tape produces exactly one `cash_flow`
+record per calendar day covered (no duplicates from re-submission, no gaps
+from a skipped tick) — proven either by the same end-to-end ledger read or
+by a direct unit-level proof over `read_entry`'s sequential window
+tracking. Run the existing child replay test suite unedited to prove
+`FillPolicy`, `BarTape`, `ReplayAdapter`, `DevelopmentReplay`, and every
+other existing `EquityReplay` behavior is untouched (including runs where
+`cash_flow_policy` is not supplied, which must remain byte-identical to
+today), plus `dskit.production.cashflows`/`compose`/`state`/`ledger`/
+`reconcile` regressions.
+
+### Non-goals
+
+No insufficient-cash handling (what happens when a fill would exceed
+available cash is a separate, later slice touching sizing/execution, not
+this one). No integer/fractional position-sizing policy. No cost or
+turnover interaction with cash flows. No horizon-overlap handling. No
+market-calendar-aware contribution timing — `interval_days=1` is a plain
+calendar-day recurrence; skipping weekends/holidays via `SkipCashFlow`
+overrides (or a calendar-aware schedule primitive, if that turns out to be
+the right shape) is explicitly deferred. No `ReplayRun`/P4 wiring (ADR-0176
+does not depend on and is not blocked by that separate, larger, still-open
+question). No backtest launch, no paper/live trading, no deployment.
+
+## ADR-0177 — `EquityReplay` refuses a buy entry it cannot afford
+
+**Status:** IMPLEMENTED AND CLOSED. Revision 1's design skeptic reviewed cold and
+independently verified every code claim (the `account`-ignored claim,
+the fee-computed-after-`open_lot` claim, `TICK_PHASES` ordering,
+`HorizonBook.open_lot`'s no-mutation-on-refusal behavior, the
+`PaperAccounting`/shadow-rung pin, the `Decimal(str(x))` idiom's
+consistency with `_proposal_for`, the ADR-0176 gate's non-interaction
+with existing tests, and the halt-queue retry path's absence of a
+double-`_queue_fill` risk): 0 Critical, 0 Major, 3 Minor, GO. All three
+Minors accepted and fixed in place — Decision point 4's citation
+(corrected from a claimed CLAUDE.md quote to the actual source, a
+pinning test's name) and two Required Phase-0 matrix rows made explicit
+(the short-entry test is genuinely new coverage, not an extension of
+exercised behavior; the override-then-refused-for-insufficient-cash
+sequencing is deliberately tested as accepted pre-existing behavior, not
+left as an accidental side effect).
+
+**Revision 2 (self-found during RED/build, before any implementation
+landed):** the opus builder wrote the required Phase-0 matrix tests
+first, per TDD, and correctly refused to go further when 3 of them could
+not pass against Revision 1's own Decision text — Revision 1 tracked
+`self._cash_balance` from fills only (Decision point 2, below); nothing
+in points 1-5 ever credited it from the ADR-0176 cash-flow deposits
+`_submit_due_cash_flows` already appends to the ledger. The $1,020
+day-one funding would reach the ledger but never reach the balance this
+ADR gates buys against — meaning every buy refuses forever whenever a
+`cash_flow_policy` is configured, which is not "insufficient-cash
+handling", it is "no buy is ever affordable", defeating the feature this
+ADR exists to add. Genuine gap in the approved design, not a builder
+error — the builder correctly declined to patch around it. Fixed by
+adding Decision point 1.5 below. This one-line addition reuses the exact
+`sum(Decimal(record["body"]["amount"]) for record in due)` idiom already
+present and already Phase-0-reviewed in ADR-0176's own
+`_submit_due_cash_flows` (it already sums `due` there to call
+`append_many`); it introduces no new architecture, only completes the
+wiring Revision 1 omitted, so this revision proceeds directly to
+re-verification by the two mandatory final review lenses rather than a
+second fresh Phase-0 design round.
+
+**Final review.** Both mandatory lenses ran clean against the completed
+candidate (`1e061c4`). Correctness/authority: 0 Critical/0 Major/0
+Minor/0 Nit, GO — independently re-verified every Decision point against
+the actual diff (`git diff 62c7987 1e061c4`), confirmed no
+`dskit/production/*` file touched, confirmed the backward-compatibility
+guards (the point-3 check is dead code and the point-1.5 credit line is
+unreachable without a `cash_flow_policy`), and read all 11 new tests for
+non-vacuousness. Tests/integration: 0 Critical/0 Major/0 Minor, 1 Nit
+(two of the five planned mutations were textually identical — harmless
+documentation redundancy, no action needed), GO — ran the full suite
+twice for determinism (57 passed both times), applied and caught all 5
+mutations by name (including reproducing the exact 3 originally-reported
+failures by re-removing the point-1.5 credit line), confirmed no vacuous
+assertions, ran the bounded regression clean (663 passed), and confirmed
+the override-then-refused integration test genuinely exercises the real
+`HorizonBook` path end to end. Closeout evidence:
+`docs/evidence/closeout/0210-intraday-adr0177-review-exit.json`.
+
+**Context.** ADR-0176 closed named Non-goal #1 — "no insufficient-cash
+handling" — as explicitly deferred to "a separate, later slice touching
+sizing/execution." A dedicated sweep before drafting this ADR (background
+`Explore` agent, read-only) confirmed the gap is real and total: nothing
+in the current replay path checks cash sufficiency at all.
+
+- `EquityReplay.proposals(self, head_outputs, candidates, account,
+  provenance)` (`children/intraday_equities/intraday_equities/
+  replay.py:972-981`) accepts `account` (an `AccountState`, per
+  `dskit.production.records.AccountState` — `dskit/production/
+  records.py:1134`) but never reads it; every `Proposal` it returns is
+  built by `_proposal_for` (`replay.py:1104-1131`) from a queued `meta`
+  whose `qty` came straight from the caller-supplied `decision[qty_field]`
+  (`replay.py:1047`), with zero sizing or capital math.
+- `dskit.production.encumbrance.SettledFundsShortfall` (a `Measure`) plus
+  a `Limit` guard plus `EncumberedAccounting` is the toolkit's one
+  existing cash-sufficiency mechanism, but it is opt-in and structurally
+  unreachable here: `EquityReplay._serve_document` declares `"guards":
+  {}` and `"accounting": {"uses": "paper", ...}` (`replay.py:1274,1276`),
+  and `dskit/production/CLAUDE.md`'s shadow/paper-rung rule pins
+  `accounting` to the `paper` kind by name for exactly this rung — so
+  this replay could not opt into `EncumberedAccounting` even by editing
+  its own document. `PaperAccounting.snapshot` always sets `available ==
+  total` (`dskit/production/accounting.py`, unedited) — raw cash, never
+  reduced by anything.
+- Mechanically, today: a run that loses money on repeated fills has
+  `SeriesState`/the ledger record increasingly negative cash, silently,
+  forever — unlimited effective margin, invalidating any capital-realism
+  claim a full backtest would otherwise make once ADR-0176 funds the
+  account with real dollar amounts.
+- Distinct from `nodes_capital.EquityKellyMIO` (offline, training-time
+  Kelly position sizing, upstream of replay entirely, already
+  capital-aware via its own `portfolio.cash`/`buying_power` inputs) — that
+  node is not part of this replay harness's own fill-acceptance path and
+  is untouched by this ADR.
+- Swept for reuse before drafting: no existing config, override, or
+  partial mechanism for this exists anywhere in `children/
+  intraday_equities` (confirmed by direct reads of `replay.py`'s full
+  propose/evaluate/queue pipeline, quoted above).
+
+**Decision**
+
+1. **Track a running cash balance on `EquityReplay` itself, in `Decimal`,
+   updated synchronously as fills are queued — not read from `Tick.
+   account`.** `_process_entries`/`_process_exits` (`replay.py:1027,
+   1041`) run in the `evaluate` phase (`TICK_PHASES` index 5), strictly
+   BEFORE the `account` phase (index 8) that produces the `account`
+   argument `proposals` receives — so `Tick.account`'s snapshot for this
+   exact tick does not exist yet at the point a fill is queued, and using
+   it would require undoing `HorizonBook.open_lot`'s already-mutated
+   state on a later refusal. A self-tracked balance avoids the phase-order
+   mismatch entirely and needs no new phase, no core module change, and no
+   query against `account` at all. `EquityReplay.__init__` gains
+   `self._cash_balance = Decimal("0")`, unconditionally (harmless — and
+   simpler than a conditional — when no `cash_flow_policy` is configured,
+   since the enforcement in point 3 is what stays gated, not the tracking).
+
+1.5. **Cash-flow deposits credit the balance too, not just fills —
+   Revision 2, added after RED found points 1-5 never wired this.** In
+   `_submit_due_cash_flows` (`replay.py`, ADR-0176), immediately after the
+   existing `if due: self._cash_flow_ledger.append_many(due)`, add
+   `self._cash_balance += sum(Decimal(record["body"]["amount"]) for
+   record in due)` — unconditional within that `if due:` block (the
+   surrounding method already no-ops entirely when
+   `self._cash_flow_composer is None`, so this line only ever runs when a
+   `cash_flow_policy` is configured, the same implicit gate every other
+   line in that method already has). This is the SAME summation ADR-0176
+   already performs implicitly by passing `due` to `append_many` — no new
+   idiom, no new reviewed surface, just completing the wiring so the
+   dollars that reach the ledger also reach the balance this ADR's checks
+   read.
+
+2. **Every queued fill updates the balance, in `_queue_fill`
+   (`replay.py:1086`) — both kinds, both sides, computed once and reused.**
+   `_process_entries` currently computes `fee` AFTER the `_book.open_lot`
+   call succeeds; this ADR moves that one `fee = (policy.costs.
+   buy_per_share(price) if side == "buy" else policy.costs.
+   sell_per_share(price)) * qty` computation earlier, immediately after
+   the existing `below_floor` refusal and before the new check in point 3,
+   so it can be read by both — no duplicate formula, matching this repo's
+   "a value in two places with nothing pinning them" rule. In
+   `_queue_fill`: `cash_delta = Decimal(str(price)) * Decimal(str(qty))`,
+   `fee_d = Decimal(str(fee))`; `side == "buy"` subtracts `cash_delta +
+   fee_d`, else adds `cash_delta - fee_d` — the `Decimal(str(x))` idiom is
+   the one `_proposal_for` already uses for the identical float-price-to-
+   Decimal conversion, not a new convention. This applies to entries AND
+   exits (an override-close exit, a forced exit, a normal profitable or
+   losing exit) uniformly, so the balance stays accurate through every
+   fill `_apply_bar` queues in tick order — including the case where an
+   `override` entry first queues an exit (freeing cash) before the new
+   entry's own affordability is checked, since `_queue_fill` runs
+   synchronously for that exit before `_process_entries` reaches the new
+   entry's check.
+
+3. **`_process_entries` refuses a `side == "buy"` entry whose cost exceeds
+   the balance — enforcement gated by `self._cash_flow_composer is not
+   None`, exactly ADR-0176's existing gate, so every pre-ADR-0177 caller
+   (no `cash_flow_policy`) observes byte-identical behavior.** Inserted
+   immediately after the existing `below_floor` refusal
+   (`replay.py:1069-1073`) and before `_book.open_lot`
+   (`replay.py:1074`): when `self._cash_flow_composer is not None` and
+   `side == "buy"`, compute `cost = Decimal(str(price)) * Decimal(str(qty))
+   + Decimal(str(fee))`; when `cost > self._cash_balance`, append to
+   `self.refused` with `"reason": "insufficient_cash"` (the exact shape
+   every other reason in this dict already uses — `symbol`, `asof_ms`,
+   `lead`, `reason`) and `continue`, never calling `_book.open_lot` and
+   never queuing a fill — so a refused entry leaves no trace in the book,
+   and a later decision on the same `(symbol, lead)` sees no stale
+   `same_lead_open` state. Boundary: `cost > balance` refuses, `cost <=
+   balance` (including exact equality) succeeds.
+
+4. **Never refuses a `side == "sell"` entry (a short) or any exit.** A
+   short entry receives cash rather than spending it (no margin/collateral
+   model exists in this harness at all — modeling that is a separate,
+   larger undertaking this ADR does not open); an exit — forced,
+   override-triggered, or ordinary — must always be able to execute, the
+   same invariant `nodes_capital.EquityKellyMIO` already PINS for its own
+   capital boundary via a behavior test named for exactly this property
+   (`test_a_catastrophic_legacy_position_below_the_band_can_still_fully_
+   exit`, `children/intraday_equities/tests/test_nodes_capital.py:698` —
+   Phase-0 correction: this is a pinning test's name, not CLAUDE.md
+   prose) — refusing an exit for insufficient cash would strand a
+   position permanently, which is a materially worse failure than letting
+   the fee push the balance slightly negative.
+
+5. **No sizing, no partial fills, no margin, no ADR-0176 change.** This is
+   a binary refuse-or-allow gate on the exact caller-supplied `qty`,
+   never a scaling/rounding algorithm (that remains the separate
+   "position-sizing policy" Non-goal ADR-0176 named, not opened here).
+   `dskit/production/*` is untouched — this is entirely
+   `EquityReplay`-internal bookkeeping, reusing only its own existing
+   `_cash_flow_composer`/`_queue_fill`/`_process_entries` surface.
+   `ReplayAdapter`'s and `EquityReplay.__init__`'s signatures are
+   unchanged (no new constructor parameter — this reuses the existing
+   `cash_flow_policy` gate from ADR-0176 rather than adding a second
+   opt-in knob).
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+A buy entry whose `price*qty+fee` exceeds the running balance refuses
+with `reason == "insufficient_cash"`, opens no lot (a following decision
+on the same `(symbol, lead)` fills normally, proving no stale
+`same_lead_open` state), and queues no fill. The exact boundary
+(`cost == balance` succeeds; `cost == balance + smallest unit` refuses).
+A multi-fill sequence — cash-flow credit, affordable buy (debits balance),
+unaffordable second buy (refused), profitable sell (credits balance
+enough), the same buy now succeeds — proving the running balance is
+accurate across mixed fills, not just a single check. A short entry
+(`side == "sell"`) is never refused for insufficient cash regardless of
+balance — this row is genuinely NEW coverage, not an extension of
+existing behavior: Phase-0 review found `test_replay.py` exercises no
+`side="sell"` entry anywhere today (`_decision()`'s default is `"buy"`),
+so this test establishes the first exercised short-entry baseline in this
+file, not merely a variant of one. A forced exit (horizon expiry) and an
+override-triggered exit are never refused for insufficient cash even with
+a deeply negative balance. **An override entry that is then itself
+refused for insufficient cash still permanently closes the prior lot**
+(Phase-0 finding: this pre-dates this ADR — the existing `below_floor`
+refusal already exhibits the same override-then-refuse sequencing at
+`replay.py:1057-1073` — but this ADR adds a second refusal reason that
+can trigger it, so it must be tested deliberately rather than left as an
+accidental side effect of the multi-fill sequence test): a queued
+override-side_lead entry that overrides an open lot but is then refused
+for insufficient cash leaves the book with the prior lot closed and no
+new lot opened — proving this is accepted, pre-existing, unchanged
+behavior, not a new regression this ADR introduces. The pre-ADR-0176
+regression baseline: with no `cash_flow_policy`
+supplied, a buy that would be refused under this rule still fills exactly
+as it did before this ADR (byte-identical `fills`/`refused`/`skipped`
+output to the existing, unedited test fixtures) — proving the gate is
+`self._cash_flow_composer is not None`, not merely "this ADR's code path
+never executes." Run the full existing child replay suite (`test_replay.
+py`, 46 tests as of ADR-0176's close) unedited, plus ADR-0176's own cash-
+flow/window-advancement tests, to prove no interaction regression between
+the two ADRs' mechanisms (both touch `_queue_fill`'s neighborhood and the
+same `_cash_flow_composer is not None` gate).
+
+### Non-goals
+
+No margin/short-collateral modeling. No partial fills or automatic
+position-size scaling to fit available cash (a rejected buy is refused
+outright, in full, never resized). No interaction with turnover/cost
+policy beyond reusing the existing per-share fee formulas unchanged. No
+`ReplayRun`/P4 wiring. No change to `dskit/production/*`,
+`nodes_capital.py`, or ADR-0176's own cash-flow-policy/composer code. No
+backtest launch, no paper/live trading, no deployment.
+
+## ADR-0178 — market-calendar-aware cash-flow contribution timing
+
+**Status:** IMPLEMENTED AND CLOSED. A third independent design skeptic reviewed Revision 4
+cold and genuinely hunted for a fourth counter-example of the same class
+that broke Revisions 2 and 3 (empty `funding_instants`, an off-by-one at
+the flush boundary, double-submission risk, instance-reuse safety,
+whether `funding_instants` itself could ever be structurally incomplete)
+— found none: 0 Critical, 0 Major, 2 Minor, 1 Nit, GO. Both Minors and
+the Nit fixed in place — `_flush_cash_flows()`'s call site is now
+wrapped in the same `except (KeyError, TypeError, ValueError,
+ArithmeticError, ProductionError)` → `ConfigError` pattern `evaluate()`/
+`quotes()` already use elsewhere in this file (closing the one real gap
+found: an unmitigated exception from the flush — e.g. the already-named,
+already-accepted DST edge case — would previously have skipped
+`recording.ledger.close()`/`lock.release()` and surfaced a raw exception
+type instead of this file's own `ConfigError` convention; contained
+either way since `work`'s `shutil.rmtree` cleanup is unconditional, but
+now consistent rather than merely harmless), and the shared
+`_advance_cash_flow_window` helper's paragraph now states explicitly
+that it reads `self._cash_flow_composer`/`self._cash_flow_funding_
+instants`/`self._cash_flow_funding_index` (previously only stated in the
+sibling `_submit_due_cash_flows` paragraph — only one sane reading
+existed, but now it is not left implicit).
+
+**Final review.** Both mandatory lenses ran clean against the completed
+candidate (`8ce1c73`). Correctness/authority: 0 Critical/0 Major/1
+Minor/0 Nit, GO — independently re-verified every Decision point against
+the actual diff since Phase-0 approval (`git diff 52884e3 8ce1c73`),
+confirmed no `dskit/production/*` file touched, confirmed backward
+compatibility (both new code paths are dead code without a configured
+`cash_flow_policy`), and confirmed the point-1.6 flush test directly
+asserts `self._cash_flow_funding_index` reaching its final value rather
+than only an aggregate balance check. The 1 Minor: `_flush_cash_flows`'s
+except-clause omits the `self._fault` stash `evaluate()`/`quotes()` use
+in their otherwise-identical pattern — functionally inert here (the
+flush is called directly by `_run_loop`, not through `ServeLoop`'s
+callback machinery that needs the fault stashed for later re-raise), no
+consequence demonstrated, accepted as a recorded Minor rather than
+requiring a further candidate round. Tests/integration: 0 Critical/0
+Major/0 Minor/0 Nit, GO — ran the full suite twice for determinism (65
+passed both times), applied and caught all 5 mutations targeting the
+point-1.6 flush specifically (the fix that took three revision rounds to
+get right) by name, confirmed no vacuous assertions, ran the bounded
+regression clean (943 passed), re-ran the scale test twice in isolation
+and confirmed its call count (exactly 251, matching `len(trading_dates)`
+precisely) and timing (~21s against a 60s ceiling) are reproducible, not
+boundary-adjacent or flake-prone, and confirmed every test genuinely
+drives the real `ServeLoop`/`HorizonBook`/ledger machinery end-to-end.
+Closeout evidence: `docs/evidence/closeout/0211-intraday-adr0178-review-exit.json`.
+
+**Revision 4 (Revision 3 rejected cold, NO-GO, 1 Critical):** an
+independent design skeptic, reading Revision 3 with no knowledge of any
+prior round, re-derived point 1.5's worked trace independently, confirmed
+it correct AS FAR AS IT WENT, then actively hunted for a new
+counter-example the same way the builder had for Revision 2 — and found
+one. **The gate-on-next-instant fix only helps if SOME tick eventually
+reaches the pending instant; it does nothing if no tick on the tape ever
+does.** Concrete counter-example: anchor Monday 13:01 ET (an atypically
+late first bar, same class of scenario Revision 3's own Gap B narrative
+already accepted as reachable); Tuesday a normal session (funds
+correctly, some tick reaches 13:01); Wednesday — the tape's LAST trading
+day — is a real, common early-close day (the session before a market
+holiday) with every bar at or before 13:00 ET, so EVERY Wednesday tick
+has `tick_at_ms < instants[2]` (Wednesday 13:01) and gates to skip, and
+the tape simply ends at 13:00 with Wednesday's $20 never consumed —
+silent, permanent, no error, nothing in the Required Phase-0 matrix as
+worded would have caught it (the matrix's Gap-B row required a day's
+bars to START late, never required one to END before its own funding
+instant). The reviewer confirmed this is a genuine, reachable design gap
+(not an implementation slip) and confirmed `due()`/`materialize()`'s own
+multi-instant catch-up and boundary handling have no bug — the defect is
+structural: nothing anywhere in Decision points 1-5 ever forces
+outstanding instants to be materialized once the tick loop ends.
+
+Fixed by adding an unconditional end-of-tape flush (new Decision point
+1.6, below) that catches every instant still outstanding once
+`ServeLoop.run()` returns, regardless of whether any tick's own
+time-of-day ever reached it — closing the gap in general, not merely
+narrowing when it can occur, the same category of fix (address the root
+cause, not the specific counter-example) Revision 3 already applied once
+before. Also fixes both Minor findings from this round (a DST
+cross-reference gap in the new `funding_instants_ms` collection, and an
+unstated-but-harmless float round-trip note) and adds a Required Phase-0
+matrix row reproducing the exact early-close-last-day scenario as an
+executed test. This revision has not yet been reviewed — a third
+correctness round after two rejections (one by a builder, one by a
+reviewer) warrants a fresh Phase-0 pass before RED; self-certifying a
+third attempt at exactly the class of bug that broke the first two would
+not meet this repo's own bar.
+
+**Revision 3 (self-found during RED preparation, before any code
+landed):** the opus builder, before writing a single test, probed
+Revision 2's Decision point 1.5 against a concrete counter-scenario and
+found it unsound — not merely imprecise, genuinely wrong. Two gaps:
+
+- **Gap A.** The ADR required running the existing 57-test suite
+  "unedited except for the three call-site updates," but ADR-0176's own
+  `test_the_cash_flow_window_advances_by_exactly_one_tick_each_call`
+  pins the window advancing on EVERY tick — which point 1.5 deliberately
+  stops doing on same-day ticks. That test must fail under any working
+  once-per-day gate, and Revision 2 never authorized editing it.
+- **Gap B (correctness, not merely a missing test-suite carve-out).**
+  Point 1.5's calendar-date gate assumed a day's FIRST tick always
+  arrives at or after that day's scheduled contribution instant (the
+  anchor's time-of-day, on that date). This is false whenever a later
+  day's session starts earlier in local time than the day the anchor was
+  taken from — pre-market data appearing on later days that the tape's
+  first bar didn't have, or a tape that happens to start mid-session.
+  Probed concretely: anchor Monday 10:00 ET (the tape's first bar,
+  atypically late), Tuesday and Wednesday each with bars at 09:30 and
+  10:30 ET. Tuesday's first tick (09:30) marks the date "checked" before
+  Tuesday's own 10:00 contribution instant has been reached, so it is
+  silently SKIPPED that day (deferred to whenever a later date's first
+  tick finally reaches it — here, Wednesday) — and if the deferred day
+  turns out to be the tape's LAST day with no later date to catch it up,
+  that day's contribution is never submitted at all, not merely late.
+  Reachable, not a corner case: any tape that starts mid-session or has
+  inconsistent pre-market coverage across days triggers it.
+
+Fixed by replacing point 1.5 entirely: gate on the next SCHEDULED
+FUNDING INSTANT (a precomputed, sorted list of exact epoch-ms values,
+one per trading date), not on calendar-date equality — see the rewritten
+Decision point 1.5 below. Hand-traced against the exact same Mon/Tue/Wed
+counter-scenario that broke Revision 2 (worked example inline in point
+1.5) to confirm all three days are now funded exactly once each, in the
+correct amount, with nothing lost regardless of anchor/tick time-of-day
+skew. Decision points 2-5 (the `SkipCashFlow`/`trading_dates` mechanism
+itself) were never in question — Gaps A and B are entirely about point
+1.5's gate, not about which days get skipped. This revision has NOT yet
+been reviewed; a second gate redesign after one already failed cold
+probing warrants a fresh Phase-0 round before RED, not a self-certified
+pass-through.
+
+Revision 2's independent design skeptic reviewed Revision 1's fixes
+cold (no knowledge of Revision 1's review) and hand-traced the
+once-per-day mechanism against a concrete multi-tick example, confirmed
+the partition property holds byte-for-byte, confirmed `None == date(...)`
+is always `False` (no spurious first-tick skip), and confirmed the
+performance win is real (roughly 390× fewer calls, netting an
+estimated ~390× improvement over Revision 1's ~2.4h extrapolation down
+to ~22s at ADR-0178's target scale — consistent with, not contradicting,
+the ADR's own "tens of minutes to hours" framing): 0 Critical, 0 Major,
+2 Minor, 1 Nit, GO. Both Minors and the Nit fixed in place — the
+scale-test row's illustrative budget corrected from an unrealistic
+"well under a second" to an honest tens-of-seconds ceiling framed as a
+relative (not absolute) win, `window_date`'s update moved to fire only
+after `due()`/`append_many` succeed (mirroring `window_ms`'s existing
+success-only ordering, closing a currently-inert but latent asymmetry),
+and Decision point 1.5 now states precisely that the win is
+call-frequency reduction against a roughly CONSTANT per-call cost
+(driven by `_recurrences`' `last_target`), not a diminishing one.
+Revision 1's independent design skeptic reviewed cold and
+verified every code claim (the call-site/`times` claims, `_occurrence`'s
+exact field construction, `SkipCashFlow`'s exact-UTC-instant matching and
+lack of gap/fold validation, multiple-override composition, the 3
+existing test call sites): NO-GO — 0 Critical, 1 Major, 2 Minor, 1 Nit.
+
+**Revision 1's Major finding (accepted, not disputed):** `Recurring
+CashFlowSchedule._recurrences` (`dskit/production/cashflows.py:474-497`,
+unedited, pre-existing since ADR-0176) re-walks from occurrence index 0
+on every `due()` call regardless of the requested window's `start` —
+only `end_utc` bounds the loop, and `materialize` filters the *result* by
+`start`, not the walk itself. Per-occurrence cost is additionally
+`O(len(overrides))`. `_submit_due_cash_flows` (ADR-0176 point 3.5) calls
+`due()` on every tick, not once per day. Revision 1 turns the override
+count from 1 (`ReplaceCashFlow` only) into up to ~150-200
+(`SkipCashFlow` per weekend/holiday over a year), directly multiplying
+the per-tick cost of an already-non-linear walk. The reviewer benchmarked
+this against the real class: 250-day span, 5,000 ticks — 1 override:
+17.8s (3.56ms/tick); 73 overrides (weekends only): 111.4s (22.3ms/tick),
+a measured 6.3× slowdown, extrapolating to tens of minutes to hours for
+a realistic full-year, 1-minute-bar backtest — a material failure for a
+harness whose value is fast research iteration. Fixed by Decision point
+1.5 below: call `due()` at most once per calendar day, not once per
+tick, cutting call frequency by roughly the tick-per-day count
+(~390× for 1-minute bars over a 6.5-hour session) — more than offsetting
+the override-count multiplier the reviewer measured (roughly 390× fewer
+calls against roughly 6× more expensive per call, per the reviewer's own
+benchmark ratio, nets a large overall win, not a wash).
+
+**Revision 1's two Minor findings (accepted, fixed in place):** (1) the
+DST-occurrence risk (`_occurrence` calls `_valid_local` on every
+occurrence before any override runs, so a `SkipCashFlow` gives no
+protection if its own target date is also a DST gap/fold day) is
+pre-existing and unchanged by this ADR, and practically unreachable for
+a market-hours anchor — but Revision 1 never said so explicitly despite
+now deliberately constructing ~150-200 additional target dates; stated
+explicitly in Decision point 2 below. (2) Decision point 5's call-site
+update list didn't mention `test_composer_for_refuses_an_empty_tape`'s
+own 2-argument call needing the same 3-argument update (trivial — any
+`trading_dates` value works, since the `start_ms == 0` refusal fires
+first) — added explicitly below. The 1 Nit (none of substance) needs no
+change.
+
+**Context.** ADR-0176 closed named Non-goal: "No market-calendar-aware
+contribution timing — `interval_days=1` is a plain calendar-day
+recurrence; skipping weekends/holidays via `SkipCashFlow` overrides (or
+a calendar-aware schedule primitive, if that turns out to be the right
+shape) is explicitly deferred." Owner decision on this ADR's shape
+(asked directly, ahead of drafting): a scheduled occurrence on a
+non-trading day is SKIPPED entirely (no contribution that day, total
+funding over a backtest becomes `$20 × trading days`, not `$20 ×
+calendar days`) — not redirected to the next trading day. This
+matches `SkipCashFlow`'s own semantics (suppress an occurrence outright;
+there is no "accumulate and redirect" primitive in `cashflows.py` short
+of composing `MoveCashFlow`, which the owner did not choose) and is a
+smaller, more literal reading of the deferred Non-goal text, which named
+`SkipCashFlow` specifically.
+
+Today: `CashFlowPolicy.composer_for(series_id, start_ms)` builds a
+`RecurringCashFlowSchedule` with `interval_days=1` and no market-calendar
+awareness at all — a contribution is scheduled for literally every
+calendar day from the anchor forward, including weekends and holidays.
+`_submit_due_cash_flows`'s per-tick window mechanism (ADR-0176 point
+3.5) does not filter these out: a tick following a weekend submits every
+occurrence in `[prev_window_end, tick+1)`, including the weekend
+occurrences that window now spans — so today a Monday tick can submit
+Saturday's, Sunday's, and Monday's $20 contributions together (a real
+behavior gap, not a cosmetic one: it means "$20/day" quietly means "$20
+per elapsed calendar day, batched onto whichever tick's window it falls
+in" rather than "$20 per market day", inflating total funding on any
+backtest whose tape spans a weekend or holiday).
+
+**Decision**
+
+1. **`EquityReplay._run_loop` derives the tape's own trading-date set
+   before building the composer — no new calendar library, no
+   `dskit.production.libs.exchange_calendars` dependency.** Right before
+   the existing `cash_flow_composer = self._cash_flow_policy.composer_for(
+   series_id, tape.start_ms())` call (`replay.py:792-796`), compute:
+   `trading_dates = frozenset(datetime.fromtimestamp(t / 1000,
+   tz=timezone.utc).astimezone(self._cash_flow_policy.timezone).date()
+   for t in times)` — the exact `.astimezone()` idiom this file already
+   uses everywhere else for epoch-ms-to-local conversion, applied to
+   `times` (`tape._times`, already in scope at this point, already the
+   union of every symbol's distinct bar instants — the same list
+   `_TapeCadence` itself ticks on). A day is a "trading day" for funding
+   purposes iff the replay's own tape has at least one bar on it, in the
+   policy's configured timezone — self-consistent with the data actually
+   driving the replay, never a separate market-calendar source that could
+   disagree with it.
+
+2. **`composer_for` gains a required third parameter, `trading_dates`,
+   and builds one `SkipCashFlow` override per non-trading date between
+   the anchor and the tape's last trading date.** New signature:
+   `composer_for(self, series_id, start_ms, trading_dates)`. After the
+   existing `anchor`/`first_amount` computation
+   (`replay.py:current composer_for body`, unedited by this point),
+   before constructing `RecurringCashFlowSchedule`: walk every calendar
+   date from `anchor.date()` through `max(trading_dates)` inclusive
+   (ordinary `date` + `timedelta(days=1)` iteration — bounded by the
+   tape's own last trading date, since no tick ever occurs after it, so
+   no occurrence beyond it is ever queried by `_submit_due_cash_flows`
+   regardless of whether it's skipped); for each date `d` not in
+   `trading_dates`, build `occurrence_at = anchor.replace(year=d.year,
+   month=d.month, day=d.day)` — the exact same
+   `(day.year, day.month, day.day, anchor.hour, anchor.minute,
+   anchor.second, anchor.microsecond, tzinfo=self.timezone)` fields
+   `RecurringCashFlowSchedule._occurrence(index)` itself already
+   constructs internally (`dskit/production/cashflows.py:509-516`,
+   unedited) — `.replace()` on `anchor` produces the identical
+   `datetime` by construction, so a skip override's `occurrence_at`
+   always matches the schedule's own occurrence for that date exactly
+   (`SkipCashFlow.apply` matches by exact UTC instant equality,
+   `dskit/production/cashflows.py:184-188`, unedited — the same
+   value-equality pattern ADR-0176 already established for
+   `ReplaceCashFlow`). Append `SkipCashFlow(f"non-trading-day-{
+   d.isoformat()}", occurrence_at)` for each such date to the existing
+   `overrides` tuple, alongside the unedited `ReplaceCashFlow(
+   "initial-capital-seed", anchor, first_amount)`. The anchor's own date
+   is structurally guaranteed to be in `trading_dates` (it is derived
+   from `tape.start_ms()`, itself a real bar instant), so day-one funding
+   can never be accidentally skipped. **Inherited, unchanged risk
+   (Revision 1 Minor, now stated explicitly):**
+   `RecurringCashFlowSchedule._occurrence(index)` calls `_valid_local` on
+   EVERY occurrence it constructs, before any override (including a
+   `SkipCashFlow`) is applied (`dskit/production/cashflows.py:509-516`,
+   unedited) — so a `SkipCashFlow` gives no protection if its own target
+   date also happens to be a DST gap/fold day; `due()`/`materialize()`
+   would still raise `ValueError` from `_occurrence` itself. This is
+   pre-existing ADR-0176 behavior, not introduced or worsened by this
+   ADR's mechanism, and practically unreachable for a realistic
+   market-hours anchor (ADR-0176's own DST test already established this
+   empirically for the anchor instant) — but this ADR does deliberately
+   construct ~150-200 additional target dates across a full year where
+   Revision 1 left the inherited exposure unstated. No mitigation is
+   proposed here; it is named so a future incident is traced to this ADR
+   rather than treated as new. **Revision 3 addition:** while building
+   this same override list, `composer_for` ALSO collects, for every date
+   `d` that IS in `trading_dates` (the ones that do NOT get a
+   `SkipCashFlow`), that date's own occurrence instant as epoch-ms:
+   `int(anchor.replace(year=d.year, month=d.month,
+   day=d.day).timestamp() * 1000)`. Because the date walk is already
+   ascending (point 2's own loop order), this collection is sorted by
+   construction — no explicit `sort()` needed, and none is added. This
+   becomes `funding_instants_ms` — the second element of `composer_for`'s
+   return value (see the revised signature/return below). No second
+   walk, no second derivation: the existing loop already visits every
+   candidate date exactly once and already knows, per date, whether it is
+   skipped or not — this just collects the "not skipped" branch's instant
+   into a second list alongside appending to `overrides` in the "skipped"
+   branch. **Revision 4 Minor #1 (Phase-0 finding on Revision 3),
+   cross-referenced rather than newly mitigated:** this collection
+   itself cannot raise (`.replace()`/`.timestamp()` on a `ZoneInfo`-aware
+   `datetime` silently resolves a DST gap/fold rather than rejecting
+   it), but the SAME inherited risk already named earlier in this point
+   — `RecurringCashFlowSchedule._occurrence` calling `_valid_local` on
+   every occurrence, including a `SkipCashFlow`-targeted one — applies
+   identically to every date collected into `funding_instants_ms`: if
+   `due()` is later asked about a window containing such a date, the
+   `ValueError` still surfaces there, from `_occurrence`, uncaught by
+   `composer_for`'s own try/except (which wraps only schedule
+   construction). No new mitigation is added, for the same reason
+   already given above: practically unreachable for a realistic
+   market-hours anchor, and this ADR does not open core exception-handling
+   changes. **Revision 4 Minor #2:** `funding_instants[0]`'s derivation
+   (`datetime.fromtimestamp` → `.replace()` → `.timestamp()*1000`) is a
+   float round-trip from `tape.start_ms()`, a plain `int`; a ±1ms
+   mismatch is possible in principle. Self-healing by construction — a
+   missed instant on one tick is caught by the very next tick that
+   reaches it, or by point 1.6's flush at the latest — so no explicit
+   handling is added, only noted.
+
+1.5. **Gate `due()` on the next unconsumed SCHEDULED FUNDING INSTANT, not
+   on calendar-date equality — Revision 3, replaces Revision 2's point
+   1.5 entirely (rejected by Phase-0 cold probing before RED, see the
+   Status block above).** `composer_for`'s signature becomes
+   `composer_for(self, series_id, start_ms, trading_dates)` returning a
+   2-tuple `(composer, funding_instants_ms)` (`funding_instants_ms` from
+   point 2's Revision 3 addition — a sorted tuple of epoch-ms values, one
+   per trading date from the anchor's date through the tape's last
+   trading date). `_run_loop`'s call site becomes `cash_flow_composer,
+   cash_flow_funding_instants = self._cash_flow_policy.composer_for(
+   series_id, tape.start_ms(), trading_dates)`. `EquityReplay.__init__`
+   gains `self._cash_flow_funding_instants = ()` and
+   `self._cash_flow_funding_index = 0`; `_run_loop` sets
+   `self._cash_flow_funding_instants = cash_flow_funding_instants` (or
+   `()` when no policy is configured) and
+   `self._cash_flow_funding_index = 0` in both branches, alongside the
+   existing three ADR-0176 attribute resets (replacing Revision 2's
+   `self._cash_flow_window_date`, which is dropped — no longer needed).
+
+   **Shared helper, introduced in Revision 4 to avoid duplicating this
+   logic with the new flush in point 1.6:** a new private method,
+   `_advance_cash_flow_window(self, window_end_ms)`, holds the actual
+   work, reading and writing `self._cash_flow_composer`,
+   `self._cash_flow_funding_instants` (as `instants`),
+   `self._cash_flow_funding_index` (as `index`), and
+   `self._cash_flow_window_ms` exactly as `_submit_due_cash_flows` itself
+   did before this refactor — when `window_end_ms <=
+   self._cash_flow_window_ms`, return immediately (nothing new to
+   cover); otherwise call `composer.due(...)` over
+   `[self._cash_flow_window_ms, window_end_ms)`, append/credit exactly
+   as before, then advance `index` past every funding instant now
+   covered (`while index < len(instants) and instants[index] <
+   window_end_ms: index += 1`) and set BOTH
+   `self._cash_flow_funding_index = index` and
+   `self._cash_flow_window_ms = window_end_ms` together, only after the
+   `due()`/`append_many` work succeeds (preserving Revision 2's Minor #2
+   fix: state only advances after the gated work actually completes).
+
+   `_submit_due_cash_flows(tick_at_ms)` becomes: after the existing
+   `if self._cash_flow_composer is None: return` guard, read
+   `instants = self._cash_flow_funding_instants` and
+   `index = self._cash_flow_funding_index`; when `index >= len(instants)
+   or tick_at_ms < instants[index]`, return immediately (this tick has
+   not yet reached the next instant this replay hasn't already funded —
+   the SAME "don't touch state on a skip" principle Revision 2 already
+   established, just gated on the correct condition); otherwise call
+   `self._advance_cash_flow_window(tick_at_ms + 1)`.
+
+   **Worked trace against the exact scenario that broke Revision 2**
+   (anchor Monday 10:00 ET; Tuesday and Wednesday each have bars at 09:30
+   and 10:30 ET; `funding_instants = [Mon 10:00, Tue 10:00, Wed 10:00]`):
+   tick Mon 10:00 — `tick >= instants[0]` (equal) — `due()` captures
+   Monday's $1,020; index→1. Tick Tue 09:30 — `tick < instants[1]`
+   (Tue 10:00) — skip, no state change. Tick Tue 10:30 — `tick >=
+   instants[1]` — `due()` window is `[Mon 10:00+1ms, Tue 10:30+1ms)`,
+   which DOES contain Tuesday's 10:00 occurrence — captures Tuesday's
+   $20 correctly (later than the naive "first tick of the day" instant,
+   but not lost, and NAV correctly excludes it for the 09:30 tick, which
+   is economically correct — the money is not yet due at 09:30). index
+   advances past `instants[1]` only (not `instants[2]`, since Wed 10:00
+   is not yet `< Tue 10:30+1ms`) →2. Tick Wed 09:30 — `tick <
+   instants[2]` — skip. Tick Wed 10:30 — `tick >= instants[2]` — `due()`
+   window `[Tue 10:30+1ms, Wed 10:30+1ms)` contains Wednesday's 10:00
+   occurrence — captures Wednesday's $20. All three days funded exactly
+   once, in full, in this scenario, because Wednesday happens to have a
+   tick (10:30) past its own funding instant. **Revision 4 correction:**
+   this trace does NOT generalize to every tape — it holds only because
+   some tick, on this or a later day, eventually reaches every pending
+   instant. Point 1.5's gate alone cannot fix a tape whose LAST trading
+   day never has a tick at or after its own funding instant (an
+   early-close session, most concretely) — see point 1.6, which is what
+   actually closes that case.
+
+   **Call-count bound, corrected from Revision 2's exact-equality
+   claim.** In the common case (every trading day's first tick is at or
+   after that day's own funding instant — e.g. a market-open anchor with
+   ordinary intraday bars), `due()` fires exactly once per trading day,
+   `== len(trading_dates)`, matching Revision 2's original claim. In the
+   pathological case point 1.5 alone handles (a day's tick(s) never reach
+   that day's own instant, but a LATER day's tick does), `due()` fires on
+   that later tick and catches up multiple pending instants in one call —
+   fewer per-tick calls, never more. Point 1.6's flush adds at most ONE
+   further call, and only in the case it exists to cover. The bound is
+   therefore `<= len(trading_dates) + 1`, and the Required Phase-0
+   matrix's scale-test row (below) is corrected to assert that
+   inequality, not exact equality.
+
+1.6. **Unconditional end-of-tape flush — Revision 4, closes the Critical
+   finding against Revision 3 (see the Status block above): point 1.5's
+   gate alone only helps when SOME tick, on this day or a later one,
+   eventually reaches a pending instant; it does nothing when no tick on
+   the entire tape ever does.** Concrete failure this closes: an anchor
+   whose time-of-day is late relative to a LATER trading day's own
+   session — not merely "later than that day's first tick" (point 1.5
+   already handles that, via a tick further into the same day) but
+   "later than every tick that day has, because the tape's last trading
+   day closes early" (a real, common equities phenomenon: the session
+   before a market holiday). Root fix, not a narrower trigger condition
+   this time: in `_run_loop`, immediately after `code = loop.run()`
+   (before the existing `failed = []` / `recording.ledger.scan(kind=
+   "tick")` post-processing — flush happens regardless of tick outcome,
+   since it is pure bookkeeping independent of trade success, and the
+   whole `work` directory is discarded in `finally` either way if the
+   run goes on to raise), call a new method, wrapped in the exact same
+   `except (KeyError, TypeError, ValueError, ArithmeticError,
+   ProductionError) as exc: raise ConfigError([str(exc)]) from exc`
+   pattern `evaluate()`/`quotes()` already use elsewhere in this file
+   (Phase-0 Revision 4 finding: an unmitigated exception from the flush
+   — the already-named, already-accepted DST edge case, most concretely
+   — would otherwise skip `recording.ledger.close()`/`lock.release()`
+   further down and surface a raw exception type instead of this file's
+   own `ConfigError` convention; harmless either way since `work`'s
+   cleanup is unconditional, but now consistent with how every other
+   `EquityReplay` method already surfaces an unexpected failure):
+   `self._flush_cash_flows()`:
+   ```
+   def _flush_cash_flows(self):
+       if self._cash_flow_composer is None or not self._cash_flow_funding_instants:
+           return
+       self._advance_cash_flow_window(self._cash_flow_funding_instants[-1] + 1)
+   ```
+   Reuses point 1.5's shared `_advance_cash_flow_window` helper
+   unchanged — no duplicated `due()`/`append_many`/balance/index logic.
+   The flush target is the LAST scheduled funding instant plus one
+   millisecond (`self._cash_flow_funding_instants[-1]`, the sorted
+   list's own final element — guaranteed to be the maximum, since it is
+   built by an ascending date walk in point 2), never the tape's own
+   last tick time: the two can legitimately differ (an early-close day's
+   nominal contribution instant, inherited from the anchor's time-of-day,
+   can fall chronologically AFTER that day's last bar), and bounding the
+   flush by the LAST FUNDING INSTANT rather than the last TICK is what
+   actually guarantees every trading date's contribution is captured
+   regardless of how that date's own session happened to end. Safe
+   because `funding_instants` is built (point 2) ONLY for dates already
+   confirmed to be in `trading_dates` (i.e., dates the tape's own bars
+   establish as real trading days) — the flush can never fund a date
+   beyond the tape's actual trading window, and
+   `_advance_cash_flow_window`'s own `window_end_ms <=
+   self._cash_flow_window_ms` guard makes the flush a genuine no-op
+   (zero extra `due()` calls) whenever point 1.5's per-tick gate already
+   captured everything, which is the common case. Landing money after
+   the day's own last bar cannot affect that day's trading decisions
+   (no more ticks occur that day to act on it) — economically inert
+   beyond correctly crediting the ledger and `self._cash_balance` before
+   the run's own post-processing and any caller reads them.
+
+3. **No change to `SkipCashFlow`, `RecurringCashFlowSchedule`,
+   `ReplayCashFlowComposer`, or any other `dskit/production/*` code.**
+   This ADR is entirely `CashFlowPolicy.composer_for`'s own body and
+   return shape, one new computation at its sole call site in `_run_loop`,
+   and (per Revision 3's point 1.5) `_submit_due_cash_flows`'s own gating
+   condition — all `EquityReplay`-internal, child-owned code.
+   `composer.due(...)`'s own behavior and signature (ADR-0176) are
+   unedited and unaware this is happening — it still just gets called
+   with a window and returns whatever is due in it; a non-trading day's
+   occurrence never appears in its output at all once its `SkipCashFlow`
+   is in place, and it is now asked less often, on a correctness-verified
+   schedule rather than a calendar-date proxy.
+
+4. **Union across all symbols, not per-symbol.** A day counts as trading
+   iff ANY symbol in the tape has a bar that day — matching how `times`
+   (and `_TapeCadence`) already treat the tape as one unified instant
+   sequence, never a per-symbol one. Funding is an account-level concept,
+   not a per-symbol one, so this is the only sound reading.
+
+5. **The 3 existing ADR-0176 tests that call `composer_for` directly
+   must update their call sites** (`test_composer_for_folds_initial_
+   capital_into_the_first_daily_occurrence`, `test_composer_for_refuses_
+   an_empty_tape`, `test_composer_for_materializes_safely_across_a_dst_
+   transition`, `children/intraday_equities/tests/test_replay.py`) to
+   pass a `trading_dates` argument, AND to unpack the new 2-tuple return
+   (`composer, _funding_instants = policy.composer_for(...)`) — for the
+   two that materialize a dense window with no intentional gaps, passing
+   every date in the window (e.g. `frozenset(anchor.date() +
+   timedelta(days=i) for i in range(N))`) preserves their existing
+   assertions unchanged, proving this ADR does not silently alter
+   ADR-0176's own already-reviewed behavior for the all-trading-days
+   case. **Revision 1 Minor, now stated explicitly:** `test_composer_for_
+   refuses_an_empty_tape`'s `composer_for("series-a", 0)` call also needs
+   the third argument under the new required signature — any value works
+   (e.g. `frozenset()`), since the `start_ms == 0` refusal fires before
+   `trading_dates` is ever read (and before any return value exists to
+   unpack).
+
+5.5. **Revision 3 addition (closes Gap A): `test_the_cash_flow_window_
+   advances_by_exactly_one_tick_each_call` (ADR-0176,
+   `children/intraday_equities/tests/test_replay.py`) is explicitly
+   authorized to be rewritten, not left unedited.** That test pins the
+   PRE-this-ADR invariant that every tick advances
+   `self._cash_flow_window_ms`, which point 1.5's gate deliberately no
+   longer does on a tick that hasn't reached the next funding instant.
+   Replace its assertions with the equivalent invariant for the new
+   mechanism: the window (and `self._cash_flow_funding_index`) advances
+   exactly on the ticks that reach or pass a funding instant, and stays
+   put on every other tick — provable with the same `_WindowSpyingEquity
+   Replay`-style subclass ADR-0176 already established, adapted to also
+   record whether each tick's call was gated (skipped) or not, so the
+   test continues to prove SOMETHING is being checked correctly on every
+   tick even when no state changes.
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+A tape spanning a weekend (bars on a Friday and the following Monday,
+none on Saturday/Sunday) funds exactly $1,020 on Friday (anchor day) and
+$20 on Monday — no Saturday or Sunday `cash_flow` record, and Monday's
+record is exactly $20 (not $60, proving no weekend accumulation leaks
+through). A tape with a single mid-week gap date (simulating a holiday
+between two trading days) skips exactly that date, funds the trading day
+after it for its own $20 only. The anchor day itself is never skipped
+(structural proof, not just the absence of a counterexample: construct a
+case where the anchor's own weekday would plausibly be mistaken for
+non-trading and confirm funding still occurs there). A dense, gap-free
+multi-day tape (every calendar day in range has a bar) funds identically
+to ADR-0176's own pre-existing behavior — the regression baseline,
+proving this ADR is a pure narrowing (fewer or equal funded days), never
+a behavior change for the no-gap case. `composer_for`'s existing
+empty-tape refusal and DST-transition-safety tests continue to pass with
+an updated call site (three-argument form). Self-authorization round
+trip still holds: every record the composer's `due(...)` now emits
+(with non-trading days already absent) still passes `_authorizes` —
+proven transitively via a full `EquityReplay`/`ReplayAdapter` run whose
+ledger is inspected, the same technique ADR-0176's own end-to-end test
+already established. Run the full existing child replay suite (57 tests
+as of ADR-0177's close) unedited except for the three call-site updates
+named in Decision point 5 and the one authorized rewrite named in
+Decision point 5.5, plus ADR-0176/0177's own tests, to prove no
+interaction regression.
+
+**Revision 3 addition (required — proves point 1.5's fix is genuinely
+correct within its own scope, not merely reasoned about).** Reproduce
+the exact counter-scenario that broke Revision 2's gate: an anchor
+time-of-day later than a subsequent trading day's own first tick (e.g.
+anchor Monday 10:00 in the policy timezone; later trading days with bars
+starting at 09:30, before the anchor's hour, but ALSO with a later tick
+that DOES reach the funding instant — e.g. a 10:30 bar too). Assert
+every such day's contribution is still funded in full, exactly once —
+read back the ledger via the same `_CapturingEquityReplay` technique
+ADR-0176 established. This row exists because Decision point 1.5's own
+worked trace, however careful, is prose reasoning by the ADR's author;
+only an executed test closes it.
+
+**Revision 4 addition (required — proves point 1.6's flush is genuinely
+correct, the case point 1.5 alone cannot cover).** Reproduce the exact
+counter-scenario that broke Revision 3: an anchor time-of-day late in
+the session (e.g. Monday 13:01 ET), a normal-session earlier trading day
+that funds correctly via point 1.5 alone, and the tape's LAST trading
+day an early-close session whose every bar is AT OR BEFORE the funding
+instant's time-of-day (e.g. every Wednesday bar at or before 13:00 ET,
+none at or after 13:01) — so NO tick that day ever satisfies point 1.5's
+own gate. Assert the last day's contribution is still funded in full,
+captured only by point 1.6's flush (assert this directly — e.g. confirm
+`self._cash_flow_funding_index` reaches `len(funding_instants)` and the
+ledger contains that day's record — not merely that the final balance
+happens to look right, which point 1.6's own no-op guard could mask a
+regression behind if only the aggregate were checked). Also assert the
+flush is a genuine no-op (adds zero `due()` calls) when point 1.5 already
+captured everything — construct one case where it does and one where it
+doesn't, in the same test file, so both branches of
+`_advance_cash_flow_window`'s guard are exercised.
+
+**Scale test (Revision 2: new row, required — closes the Major
+finding; Revision 3: assertion corrected from exact equality to an
+upper bound; Revision 4: bound widened by one to account for the
+flush).** Directly reproduce the Revision 1 reviewer's own benchmark
+methodology (a multi-hundred-tick run against the real
+`RecurringCashFlowSchedule`/`ReplayCashFlowComposer` classes, not a mock)
+under BOTH point 1.5/1.6's fix and a realistic override count (weekends
+over at least a full quarter, ideally a full year, so the override count
+is genuinely in the ~60-200 range the Major finding measured against),
+and demonstrate empirically — timed, with the number asserted or
+printed, not merely claimed — that `due()` is called AT MOST
+`len(trading_dates) + 1` times (the `+1` accounts for point 1.6's flush,
+which is a genuine no-op — zero extra calls — whenever point 1.5 already
+captured everything, so a construction where every trading day's ticks
+are at or after that day's own funding instant, e.g. a market-open
+anchor, should still show exactly `len(trading_dates)` calls in THIS
+particular test, proving the flush costs nothing in the common case,
+even though the bound is `+1` in general for the early-close case the
+Revision 4 addition above exercises), not the tick count — this
+call-count assertion is the actual gate; it alone would have caught
+Revision 1's defect and is not gameable by a favorable but coincidental
+timing run. **Revision 2 Phase-0 Minor #1, corrected:**
+the wall-clock figure is NOT "well under a second" — `_recurrences`' own
+`last_target`-driven walk (see Decision point 1.5's Nit) makes every
+`due()` call cost roughly the same regardless of call frequency, so the
+realistic budget, extrapolated from the Revision 1 reviewer's own
+benchmark ratio at ADR-0178's target scale (~365 occurrences × ~200
+overrides, ~250 calls/year), is on the order of tens of seconds — assert
+a generous, honest ceiling (e.g. under 60 seconds) for cash-flow
+bookkeeping alone over a full year of 1-minute bars, framed explicitly
+as a large RELATIVE win (roughly two orders of magnitude versus
+Revision 1's own "tens of minutes to hours" extrapolation for the
+identical override count), not an absolute "fast" claim an implementer
+could either spuriously fail on a correctly-fixed design or silently
+loosen without scrutiny.
+
+### Non-goals
+
+No real market-calendar/holiday-calendar library integration (`dskit.
+production.libs.exchange_calendars` or any exchange-calendar dependency)
+— trading days are derived purely from the replay's own tape data, never
+an external calendar source; a tape that happens to omit a real trading
+day (e.g. a data gap) is indistinguishable from a genuine holiday under
+this ADR, which is accepted as correct for THIS harness's purpose (fund
+only the days it can actually trade on) rather than a defect. No
+redirect-to-next-trading-day behavior (explicitly decided against per
+the Context section's owner decision). No change to the funding AMOUNT
+formula, the day-one $1,020 seed, or any ADR-0177 insufficient-cash
+mechanism. No `ReplayRun`/P4 wiring. No backtest launch, no paper/live
+trading, no deployment.
+
+## ADR-0179 — wire `cash_flow_policy` into `DevelopmentReplay`, the pipeline-invokable node
+
+**Status:** IMPLEMENTED AND CLOSED. An independent
+design skeptic reviewed cold and verified every code citation against
+actual source (the `reject_unknown_params` call, the required-param
+loop, the `fill_policy`/`fill_policy_sha256` block shape, `run()`'s
+exact final line, `ReplayAdapter`'s `cash_flow_policy=None` default,
+`CashFlowPolicy.from_path`/`.digest()`, the shipped document's own
+params, and — critically — that pipeline document identity hashing
+depends only on the document's own declared `params`, never the node
+class's `_PARAMS`/allowed-params tuple, so widening the class's
+allow-list genuinely cannot move any existing document's identity):
+0 Critical, 1 Major, 1 Minor, 1 Nit, NO-GO. Fixed before proceeding: the
+Major (Decision point 1's XOR block skipped the type/non-empty guard the
+mirrored `fill_policy` block has, which would crash with an unhandled
+`TypeError` via `_resolved_cash_flow_policy_path`'s `os.path.isabs`
+rather than refuse cleanly with a `ConfigError` — violates `dskit/
+pipeline/CLAUDE.md`'s own "errors accumulate, never raise on the first"
+invariant), the Minor (added the malformed-type case as its own required
+matrix row, so the fix is exercised by a test, not merely present in
+prose), and the Nit (`CashFlowPolicy` is DEFINED in this file, not
+imported — corrected). A one-clause fix, not a redesign; proceeded
+directly to RED rather than a second fresh Phase-0 round.
+
+**Final review.** Both mandatory lenses ran clean against the completed
+candidate (`2d79a9e`). Correctness/authority: 0 Critical/0 Major/0
+Minor/0 Nit, GO — independently re-verified every Decision point against
+the actual diff since Phase-0 approval (`git diff 2b45189 2d79a9e`),
+confirmed the Phase-0 fix is genuine (the type/non-empty guard runs
+BEFORE `_resolved_cash_flow_policy_path`/`os.path.isfile`, in the
+correct order), confirmed no `dskit/production/*` or shipped-document
+file touched, confirmed `role`/`serving_effect` unchanged, and confirmed
+the wiring-proof test isolates the effect (same inputs, cash-flow pair
+present vs. absent, only the pair's presence changes the outcome).
+Tests/integration: 0 Critical/0 Major/0 Minor/0 Nit, GO — ran the full
+suite twice for determinism (78 passed both times), applied and caught
+all 5 mutations by name, including one specifically confirming that the
+type guard's ORDER (not merely its presence) is what the fix requires
+— swapping it after the path-exists check still crashes with a raw
+`TypeError`, exactly as ADR-0179 predicted — confirmed no vacuous
+assertions, and confirmed the regression-baseline test is a genuine
+byte-identical equality proof, not a smoke test. Closeout evidence:
+`docs/evidence/closeout/0212-intraday-adr0179-review-exit.json`.
+
+**Context.** ADR-0176/0177/0178 built and closed a complete,
+independently-verified cash-flow story (funding, insufficient-cash
+refusal, market-calendar-aware timing) entirely on `EquityReplay`/
+`ReplayAdapter`/`CashFlowPolicy` — the classes a test, a notebook, or a
+bespoke script can call directly. Before proposing this ADR, the owner
+asked directly whether that work was reachable from a real backtest run
+once switched to an environment with real market data. A dedicated,
+exhaustive sweep (repo-wide grep for every `cash_flow_policy` reference,
+every `NODE_KINDS` registration across all three files in this child
+that declare one, and `replay.py`'s full `git log`) found a real gap:
+`DevelopmentReplay` (`children/intraday_equities/intraday_equities/
+replay.py`, registered as `intraday_equities-development-replay` in
+`NODE_KINDS` — the ONLY replay-capable pipeline `Node`, and the one a
+real `python -m dskit.pipeline run <doc.json> --adapter
+intraday_equities` invocation would actually use) has never been
+touched by any of the three ADRs (confirmed by `git log` — its only
+touching commits are the ADR-0176/0177/0178 commits themselves, none of
+which edited its `_PARAMS`, `__init__`, or `run()`). Its `run()` method's
+final line is `return ReplayAdapter(self._policy).replay(list(inputs[
+"bars"]), list(inputs["decisions"]))` — no second argument, meaning a
+pipeline-document-driven replay today gets zero cash-flow funding, zero
+insufficient-cash refusal, and zero calendar-aware timing, regardless of
+how the document is configured, because the node has no knob for any of
+it. A user running a real backtest via the pipeline document (rather
+than calling `ReplayAdapter` directly in a bespoke script) would
+silently get the pre-ADR-0176 behavior.
+
+**Decision**
+
+1. **`DevelopmentReplay` gains two new OPTIONAL params,
+   `cash_flow_policy` and `cash_flow_policy_sha256`, mirroring the
+   existing REQUIRED `fill_policy`/`fill_policy_sha256` pair exactly,
+   but paired-optional rather than required** — per this repo's
+   "a new document key is OPTIONAL or it moves every identity" rule: the
+   shipped `configs/run-development-replay.json` document's existing
+   identity/behavior must be unaffected by this change, since it
+   declares neither name today. A new `_OPTIONAL_PARAMS = (
+   "cash_flow_policy", "cash_flow_policy_sha256")` tuple is added
+   (distinct from `_PARAMS`, which stays exactly the five existing
+   required names, unedited); `validate_params`'s existing
+   `reject_unknown_params(problems, params, cls._PARAMS + ("notes",))`
+   call becomes `reject_unknown_params(problems, params, cls._PARAMS +
+   cls._OPTIONAL_PARAMS + ("notes",))` (the required-name loop right
+   below it stays iterating `cls._PARAMS` only, so the two new names are
+   never required). New validation, appended after the existing
+   `fill_policy`/`fill_policy_sha256` block: when exactly one of
+   `"cash_flow_policy" in params` / `"cash_flow_policy_sha256" in
+   params` is true (an XOR), refuse — "`cash_flow_policy` and
+   `cash_flow_policy_sha256` must both be present or both be absent";
+   when both are present, FIRST apply the exact same type/non-empty
+   guard the mirrored `fill_policy` block already applies before its own
+   path-exists check (`not isinstance(params["cash_flow_policy"], str)
+   or not params["cash_flow_policy"]` → refuse "cash_flow_policy must be
+   a non-empty path", `return`/`continue` to the next check rather than
+   falling through) — **Phase-0 Major finding, fixed here:** the
+   original Revision 1 text skipped straight to the path-exists check,
+   and `_resolved_cash_flow_policy_path` (mirroring
+   `_resolved_fill_policy_path`, which calls `os.path.isabs(path)`)
+   raises an unhandled `TypeError` on a non-string value — `Node.
+   __init__` and `planner.py` call `validate_params` with no
+   try/except, so a document with e.g. `"cash_flow_policy": 5` would
+   crash `plan`/`validate`/`run` with a raw `TypeError` instead of a
+   clean `ConfigError` problem list, violating `dskit/pipeline/
+   CLAUDE.md`'s own stated invariant that errors accumulate and never
+   raise on the first. Only once the type guard passes: validate the
+   path exists and the digest matches the loaded `CashFlowPolicy`'s own
+   `.digest()`, via a new `_resolved_cash_flow_policy_path` classmethod
+   mirroring `_resolved_fill_policy_path` field-for-field (join onto
+   `_child_root()`
+   unless already absolute).
+
+2. **`__init__` conditionally builds a `CashFlowPolicy`.** Immediately
+   after the existing `self._policy = FillPolicy.from_path(...)` line:
+   when `"cash_flow_policy" in self.params`, set `self._cash_flow_policy
+   = CashFlowPolicy.from_path(self._resolved_cash_flow_policy_path(
+   self.params))`; else `self._cash_flow_policy = None`. `CashFlowPolicy`
+   is already DEFINED in this file (ADR-0176, not imported from
+   elsewhere — Phase-0 Nit, corrected) — no new import or definition
+   needed either way.
+
+3. **`run()`'s existing final line gains the second argument, nothing
+   else changes.** `return ReplayAdapter(self._policy,
+   self._cash_flow_policy).replay(list(inputs["bars"]),
+   list(inputs["decisions"]))` — `ReplayAdapter.__init__` already accepts
+   `cash_flow_policy=None` as its default (ADR-0176), so this is a
+   backward-compatible widening of an existing call, not a new contract.
+
+4. **No change to the shipped `configs/run-development-replay.json`
+   document, `dskit/production/*`, or `EquityReplay`/`ReplayAdapter`/
+   `CashFlowPolicy` themselves.** This ADR only makes `DevelopmentReplay`
+   CAPABLE of accepting the two new optional keys; whether any specific
+   document actually declares them (opting into cash-flow funding for a
+   real run) is a separate, later config-only decision the shipped
+   document's own owner makes — not opened here, and not required for
+   this ADR to close.
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+The shipped `run-development-replay.json` document (or an equivalent
+params dict built from it) still validates and runs identically to
+today, with `self._cash_flow_policy is None` and `run()`'s output
+byte-identical to before this ADR — the regression baseline, proving
+optionality is real, not merely documented. A `DevelopmentReplay`
+document that DOES declare a valid `cash_flow_policy`/
+`cash_flow_policy_sha256` pair constructs a real `CashFlowPolicy`, and a
+`.run(ctx, {"bars": ..., "decisions": ...})` call produces a replay
+whose ledger reflects funding/refusal/calendar-timing exactly as
+`ReplayAdapter`/`EquityReplay` already prove directly (via the same
+`_CapturingEquityReplay`-style technique, driven THROUGH the node this
+time, not by constructing `ReplayAdapter` directly) — proving the wiring
+itself, not re-proving ADR-0176/0177/0178's own already-closed
+mechanism. Every documented refusal case: `cash_flow_policy` present
+without `cash_flow_policy_sha256` (and the converse) refuses with a
+message naming both; **`cash_flow_policy` present as a non-string or
+empty value (an int, a list, `""`) refuses with a clean `ConfigError`
+naming `cash_flow_policy`, never a raw `TypeError`** (Phase-0 Major
+finding — this row exists specifically to exercise the fix in Decision
+point 1, so a regression that drops the type guard again fails this
+test, not merely a code-review re-read); a `cash_flow_policy` path that
+doesn't exist refuses; a `cash_flow_policy_sha256` that doesn't match
+the loaded policy's digest refuses — each mirroring the EXISTING,
+already-covered `fill_policy`/`fill_policy_sha256` refusal tests
+structurally, proving parity between the required and optional pairs'
+validation rigor. Run the full existing child replay suite unedited (65
+tests as of ADR-0178's close) to prove no regression, plus purity gates.
+
+### Non-goals
+
+No change to the shipped `configs/run-development-replay.json` document
+— enabling cash-flow funding for a real run is a config edit the
+document's own owner makes later, not part of this ADR. No new
+`cash-flow-policy.json` config variant. No `ReplayRun`/P4 wiring. No
+change to position-sizing/scaling policy (still explicitly deferred,
+ADR-0177's own Non-goal). No backtest launch, no paper/live trading, no
+deployment.
+## ADR-0180 — bounded F3 replay `CapturedPortSet`
+
+**Status:** IMPLEMENTED AND CLEANLY REVIEWED 2026-09-22 at `0d9cfd7`. The
+owner explicitly reapproved the amended text by replying "yes" to commit
+`2421ffd`; final fresh Phase 0 was clean, RED-to-GREEN completed from
+`5decae2`, and two sequential fresh final lenses reported 0/0/0/0. This is
+only deterministic synthetic TDD; `deployment_eligible` is always `false`,
+and no capture, replay execution, or backtest is authorized by this closeout.
+
+**Context.** `ReplayRun`'s already-landed document grammar requires exactly
+`tape_manifest` and `tape_data`. A committed P4
+`CapturedAuthorizationAuthority.authorize_capture_set(...)` already returns
+one opaque `CapturedAuthorizationRecord` and one P4 `LaunchSession`; its record
+already provides `lifecycle_captured_receipt_sha256(stream,
+consumer_document_sha256)` and `read_member_bytes(session, published,
+consumer_document_sha256, relative_path)`. Those APIs are the only member and
+receipt source this ADR uses.
+
+`CapturedBindings` cannot represent this use: it owns one stream and its first
+`require` appends the legacy terminal `CONSUMED` transition. It, its factory,
+and legacy consumption semantics remain unchanged. `ReplayRun.run` continues
+to raise its current composed-tape-broker refusal; this ADR adds neither
+`ReplayRun._run_captured` nor any runnable replay route.
+
+### Decision
+
+1. **One opaque, replay-shaped P4 view.** Add final opaque
+   `CapturedPortSet` in `dskit.pipeline.trust`, exported only as a type, not as
+   a constructible capability. It is neither a mapping nor iterable, has no
+   record/session/publication/provider/path accessor, and inherits the existing
+   copy, deepcopy, pickle, and reconstruction refusals.
+
+2. **Exact retained provenance, sole factory and owner.** Add a private
+   `_P4_CAPTURE_HANDLES` weak-key map from the committed
+   `CapturedAuthorizationRecord` to strong values containing the exact
+   `(published, frozen, canonical-port)` triples. `commit_p4_batch` populates it
+   immediately after the immutable root becomes the sole logical publication
+   and before the existing `commit-after` and `return` fault points. Thus a
+   committed-but-raised call retains the same handles, an identical retry
+   resolves the same record/session/handles, and Python object-ID reuse cannot
+   substitute a later frozen object. The value never references its weak record
+   key, so collection is not cyclic. No handle is retained before commit.
+
+   Add `CapturedAuthorizationAuthority.captured_port_set(record, session)`.
+   Only the exact broker-issued P4 authority that owns `record` may mint it.
+   Callers supply no captures, descriptors, roots, receipt digests, or input
+   mapping. The factory reads only the record-to-ledger association and the
+   broker-retained exact handle tuple, and byte-compares the committed request,
+   signed CAS/PCE/port/receipt entries, and ordered stream identities against it.
+
+   The factory refuses unless the committed batch is exactly one replay
+   consumer's two derived ports, with one frozen consumer document and exactly
+   the existing declared names `tape_manifest` and `tape_data`. It derives the
+   name-to-capture association by matching each retained triple to the committed
+   signed port/receipt/stream at the same batch position and refuses missing,
+   extra, duplicate, aliased, reordered, substituted, cross-record,
+   cross-authority, wrong-session, non-committed session pin, non-replay, or
+   missing retained provenance. It performs no capture, authorization, publication,
+   lifecycle transition, member read, provider call, or ledger write.
+
+   Exactly one set may be minted for a committed record/session/capture batch.
+   A broker-private weak identity map interns that set; a repeat factory call
+   refuses rather than resetting local `require` bookkeeping. The underlying
+   record-wide P4 member-read budget is therefore shared and unchanged.
+
+3. **One exact additive synthetic policy projection.** Preserve all existing
+   `_P4_APPROVED_SCOPE_PROJECTIONS` byte-for-byte and append only
+   `e2957cc8508ce431ad6fb65c7dfc797bbfa1c578dac909c74b7bd86ee3d4b51c`,
+   the independently reproduced projection of the fixed nondeployment fixture
+   after its shared `bundle`/`second` input contracts are renamed to
+   `tape_manifest`/`tape_data` in both action and replay intents; the selected
+   authority subject remains replay. Update the
+   three fixed external test-certificate public keys/signatures (G1 dataset,
+   G2 dataset, and fixed-owner-policy), because the shared certificate preimage
+   includes the complete projection set for every terminal class. No private
+   key, signer, runtime policy selector, caller-supplied digest, production
+   authority, or dynamic-policy branch is added. Every old
+   projection remains accepted; any other renamed, reordered, extra, or missing
+   contract remains refused.
+
+4. **Consumption surface.** `CapturedPortSet.require(name)` accepts only the
+   two exact names and returns an unexported opaque per-input reader. Each name
+   may be required once per set; requiring one does not prevent requiring the
+   other in either order. The reader retains only its exact committed stream,
+   publication, frozen document, record, and session internally. It exposes:
+
+   - `read_member_bytes(relative_path)`, delegated only to the existing
+     record's exact session-bound P4 member-read API; therefore the existing
+     per-`(stream, relative_path)` one-way read rule remains the authority.
+   - `lifecycle_captured_receipt_sha256`, delegated only to the existing
+     committed-record receipt accessor for that exact stream/document.
+
+   No reader may select another declared input, publication, record, session,
+   document, or receipt. This ADR adds no composed tape, envelope parsing,
+   manifest/data comparison, or replay execution.
+
+5. **Finality is already broker-side.** P4 finality remains solely the atomic
+   successful `commit_p4_batch` inside `authorize_capture_set`, before this
+   factory can run. `CapturedPortSet.require` is local view bookkeeping plus
+   the existing one-way member read; it does not finalize, release, consume,
+   unconsume, revoke, or commit a broker transaction. This ADR intentionally
+   adds no `release()` method: the current P4 session has no corresponding
+   lifecycle-release transition, and a local teardown API must not be
+   described as broker finality. Existing in-memory `_p4_reads` restart
+   behavior is unchanged and no durability claim is made.
+
+6. **Compatibility and non-goals.** Do not edit `CapturedBindings`,
+   `captured_bindings`, `_consume_binding`, legacy `CONSUMED`, P4 admission
+   closure, or `CapturedAuthorizationRecord`'s existing accessors. The only
+   `commit_p4_batch` change is the post-publication/pre-fault retained-handle
+   assignment in Decision point 2. The only fixed P4 authority change is the
+   exact additive projection and the three corresponding fixed test certificates in Decision
+   point 3. Do not otherwise edit `authorize_capture_set`, `commit_p4_batch`,
+   document grammar,
+   `ReplayRun.run`, `production/bundles.py`, or any child code. No authority,
+   execution, terminal tape, tape composition, F3 closure, F5b closure, R1--R5,
+   real data, market replay, paper/live action, HPO, refit, release use,
+   lockbox read, or backtest follows.
+
+**Required Phase-0 matrix.** Direct construction, subclass, copy/deepcopy,
+pickle, fabricated/cross-authority record or session, and uncommitted records
+refuse without changing P4 audit. One/three/duplicate/aliased inputs,
+non-replay subjects, document/root/stream/port/receipt substitutions, and wrong,
+swapped, or non-committed-pin sessions refuse before a set exists. The exact
+valid pair factory succeeds once; all four prior policy projections stay green,
+the one new tape-pair projection succeeds, and every neighboring projection
+refuses. Normal commit plus `commit-after` and `return` committed exceptions all
+retain the exact handles; caller disposal, garbage collection, object-ID reuse,
+and retry cannot substitute them. `require` works in
+either input order, each name is required once, and neither reader can reach the
+other's publication. A repeat factory call refuses without creating a fresh
+view. Duplicate member reads retain P4's existing refusal and receipt values
+come only from the existing accessor. Factory and `require` success or refusal
+never read a member, call a provider, execute replay, alter P4 finality, or
+change existing `_p4_reads`. Once a reader's `read_member_bytes` is explicitly
+invoked, all existing P4 behavior remains authoritative, including provider
+access and a consumed read reservation on an integrity failure; this ADR
+neither strengthens nor weakens that contract. Legacy V1 behavior and messages
+remain byte-identical, and public `ReplayRun.run` remains fail-closed.
+
+## ADR-0181 — Conditional-scale rungs (linear/HAR, LightGBM) and a distribution zoo
 
 **Status:** Approved by Russell 2026-09-23 ("Approve the build. Ensure no redone work"). Scope is the manifest below.
 **Owner:** Russell. **Base:** `ff66c30`.

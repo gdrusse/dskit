@@ -44,6 +44,7 @@ the ``SubmittingExecutor`` contract (§5.7).
 """
 
 import dataclasses
+import hashlib
 import json
 import uuid
 from threading import Lock
@@ -63,7 +64,9 @@ from dskit.pipeline.trust import (
     NonAuthorizingRawRootProof,
     NonAuthorizingSyntheticRootPisProof,
     NonAuthorizingDynamicRootGraph,
+    prepare_v2_projection_input,
 )
+from dskit.production import bundles as _bundles
 from dskit.production.base import GENESIS_HASH, ProductionError, canonical_hash, pin_members
 from dskit.production.coordination import scope_equal
 from dskit.production.decider import DEFAULT_MAX_ARTIFACT_AGE
@@ -177,6 +180,339 @@ _SUBMIT = pin_members("verifier.py's operation", ("submit",), OPERATIONS)[0]
 #: The weakest guard verdict that refuses at the gate: an amendment here
 #: describes an order nobody planned, recorded or authorised.
 _AMEND_RANK = VERDICT_ORDER["amend"]
+
+
+def _build_verified_v2_projector():
+    """Close the ADR-0172 projector over its effective executable surface."""
+    import gc
+    import hashlib
+    import json
+    import math
+    from types import FunctionType, MappingProxyType as ExactMappingProxyType, ModuleType
+
+    from dskit.pipeline import trust as trust_module
+    from dskit.production import base as base_module
+    from dskit.production import bundles as bundles_module
+
+    consume = trust_module.consume_v2_projection_input
+    projector = bundles_module._project_v2_event_envelopes
+    canonical_encoder = bundles_module._canonical_bytes
+    parser = bundles_module._parse_event_envelope
+    validator = bundles_module._check_event_envelope
+    order_key = bundles_module._event_envelope_order_key
+    digest_checker = bundles_module.check_digest
+    production_error = bundles_module.ProductionError
+    base_plain = base_module._plain
+    base_json = base_module.json
+    base_math = base_module.math
+    base_decimal = base_module.Decimal
+    base_digest_pattern = base_module._HEX_DIGEST
+    json_dumps = json.dumps
+    json_loads = json.loads
+    sha256 = hashlib.sha256
+    get_referents = gc.get_referents
+    isfinite = math.isfinite
+    envelope_schema = bundles_module.CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA
+    envelope_fields = frozenset(bundles_module._EVENT_ENVELOPE_FIELDS)
+    authorization_schemas = tuple(sorted(
+        bundles_module.DATASET_AUTHORIZATION_EVENT_SCHEMAS.items()
+    ))
+    raw_fields = tuple(sorted(
+        (key, tuple(value))
+        for key, value in bundles_module.RAW_EVENT_FIELDS.items()
+    ))
+
+    def capture_executable_graph(*roots):
+        """Snapshot the transitive Python dispatch graph used by ``roots``.
+
+        Function identity alone is not a pin: Python permits in-place changes
+        to ``__code__``, defaults and closure cells.  The projector also
+        reaches helpers and mutable schema tables through module globals.
+        Capture all effective resolutions now, then compare without invoking
+        equality on arbitrary runtime values.
+        """
+        function_records = []
+        resolution_records = []
+        attribute_records = []
+        value_records = []
+        cell_records = []
+        seen_functions = set()
+        seen_values = set()
+        unsupported = object()
+
+        def frozen(value):
+            value_type = type(value)
+            if value is None or value_type in (bool, int, float, str, bytes):
+                return (value_type, value)
+            if value_type in (tuple, list):
+                items = tuple(frozen(item) for item in value)
+                if unsupported in items:
+                    return unsupported
+                return (value_type, items)
+            if value_type is frozenset:
+                items = tuple(sorted((frozen(item) for item in value), key=repr))
+                if unsupported in items:
+                    return unsupported
+                return (value_type, items)
+            if value_type in (dict, ExactMappingProxyType):
+                items = []
+                for key, item in value.items():
+                    key_value = frozen(key)
+                    item_value = frozen(item)
+                    if key_value is unsupported or item_value is unsupported:
+                        return unsupported
+                    items.append((key_value, item_value))
+                return (value_type, tuple(sorted(items, key=repr)))
+            return unsupported
+
+        def capture_value(value):
+            value_id = id(value)
+            if value_id in seen_values:
+                return
+            if type(value) not in (ExactMappingProxyType, tuple, frozenset):
+                return
+            snapshot = frozen(value)
+            if snapshot is not unsupported:
+                seen_values.add(value_id)
+                value_records.append((value, snapshot))
+
+        def resolve_attribute(owner, name):
+            if type(owner) is type:
+                for cls in owner.__mro__:
+                    if name in cls.__dict__:
+                        return cls.__dict__[name]
+                raise AttributeError(name)
+            return getattr(owner, name)
+
+        def capture_attributes(owner, names):
+            for name in names:
+                try:
+                    value = resolve_attribute(owner, name)
+                except AttributeError:
+                    continue
+                attribute_records.append((owner, name, value))
+                capture_value(value)
+                if type(value) is FunctionType:
+                    visit(value)
+
+        def capture_resolutions(code, namespace, builtins):
+            names = frozenset(code.co_names)
+            for name in names:
+                if name in namespace:
+                    value = namespace[name]
+                    resolution_records.append((namespace, name, value))
+                    capture_value(value)
+                    if type(value) is FunctionType:
+                        visit(value)
+                    elif type(value) is ModuleType or type(value) is type:
+                        capture_attributes(value, names)
+                elif name in builtins:
+                    resolution_records.append((builtins, name, builtins[name]))
+            for value in code.co_consts:
+                if type(value) is type(code):
+                    capture_resolutions(value, namespace, builtins)
+
+        def visit(function):
+            if type(function) is not FunctionType or id(function) in seen_functions:
+                return
+            seen_functions.add(id(function))
+            function_records.append((
+                function,
+                function.__code__,
+                frozen(function.__defaults__),
+                frozen(function.__kwdefaults__),
+            ))
+            namespace = function.__globals__
+            names = frozenset(function.__code__.co_names)
+            capture_resolutions(
+                function.__code__, namespace, function.__builtins__
+            )
+            closure = function.__closure__ or ()
+            for cell in closure:
+                try:
+                    value = cell.cell_contents
+                except ValueError:
+                    value = unsupported
+                cell_records.append((cell, value))
+                if value is unsupported:
+                    continue
+                if type(value) is FunctionType:
+                    visit(value)
+                elif type(value) is ModuleType or type(value) is type:
+                    capture_attributes(value, names)
+
+        for root in roots:
+            visit(root)
+        function_records = tuple(function_records)
+        resolution_records = tuple(resolution_records)
+        attribute_records = tuple(attribute_records)
+        value_records = tuple(value_records)
+        cell_records = tuple(cell_records)
+
+        def intact():
+            for function, code, defaults, kwdefaults in function_records:
+                if (
+                    function.__code__ is not code
+                    or frozen(function.__defaults__) != defaults
+                    or frozen(function.__kwdefaults__) != kwdefaults
+                ):
+                    return False
+            for namespace, name, value in resolution_records:
+                if namespace.get(name, unsupported) is not value:
+                    return False
+            for owner, name, value in attribute_records:
+                try:
+                    current = resolve_attribute(owner, name)
+                except AttributeError:
+                    return False
+                if current is not value:
+                    return False
+            for value, snapshot in value_records:
+                if frozen(value) != snapshot:
+                    return False
+            for cell, value in cell_records:
+                try:
+                    current = cell.cell_contents
+                except ValueError:
+                    current = unsupported
+                if current is not value:
+                    return False
+            return True
+
+        return intact
+
+    executable_graph_intact = capture_executable_graph(consume, projector)
+
+    def dispatch_ok():
+        """Return whether every effective Python-level dependency is intact."""
+        return (
+            executable_graph_intact()
+            and
+            trust_module.consume_v2_projection_input is consume
+            and bundles_module._project_v2_event_envelopes is projector
+            and bundles_module._canonical_bytes is canonical_encoder
+            and bundles_module._parse_event_envelope is parser
+            and bundles_module._check_event_envelope is validator
+            and bundles_module._event_envelope_order_key is order_key
+            and bundles_module.check_digest is digest_checker
+            and bundles_module.ProductionError is production_error
+            and base_module.canonical_bytes is canonical_encoder
+            and base_module._plain is base_plain
+            and base_module.json is base_json is json
+            and base_module.math is base_math is math
+            and base_module.Decimal is base_decimal
+            and base_module._HEX_DIGEST is base_digest_pattern
+            and bundles_module.json is json
+            and bundles_module.hashlib is hashlib
+            and bundles_module.gc is gc
+            and json.dumps is json_dumps
+            and json.loads is json_loads
+            and hashlib.sha256 is sha256
+            and gc.get_referents is get_referents
+            and math.isfinite is isfinite
+            and bundles_module.CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA
+            == envelope_schema
+            and frozenset(bundles_module._EVENT_ENVELOPE_FIELDS)
+            == envelope_fields
+            and tuple(sorted(
+                bundles_module.DATASET_AUTHORIZATION_EVENT_SCHEMAS.items()
+            )) == authorization_schemas
+            and tuple(sorted(
+                (key, tuple(value))
+                for key, value in bundles_module.RAW_EVENT_FIELDS.items()
+            )) == raw_fields
+        )
+
+    def project(value, /):
+        if not dispatch_ok():
+            raise ValueError("v2 projector executable dependency changed")
+        payload = consume(value)
+        if not dispatch_ok():
+            raise ValueError("v2 projector executable dependency changed")
+        result = projector(*payload)
+        if not dispatch_ok():
+            raise ValueError("v2 projector executable dependency changed")
+        return result
+
+    return project
+
+
+_project_verified_synthetic_v2_input = _build_verified_v2_projector()
+del _build_verified_v2_projector
+
+
+def _compose_v2_replay_tape(raw_proof, raw_proof_bytes, capability, /):
+    """Compose one verified ``CapturedReplayTape`` from an ADR-0172 v2 input (ADR-0174).
+
+    Nonauthorizing, like ADR-0172 itself: this proves the envelope bytes and
+    the capture-root/receipt fields are facts about one single verified v2
+    raw root, and nothing else. It grants no P4 authority, no WORM-lifecycle
+    authority, and no replay or trading authority.
+
+    Parameters
+    ----------
+    raw_proof : NonAuthorizingRawRootProof
+        The exact proof that minted ``capability`` (ADR-0172 shape).
+    raw_proof_bytes : tuple
+        The exact twelve-byte tuple ``prepare_v2_projection_input``
+        already validates; its last three elements are the ``publish_v2``
+        writer's own ``(manifest_bytes, basis_bytes, receipt_bytes)``.
+    capability : VerifiedV2ProjectionInput
+        A still-fresh capability the caller holds. Spent by this call.
+
+    Returns
+    -------
+    CapturedReplayTape
+        The verified, reparsed, causally-ordered tape.
+
+    Raises
+    ------
+    ValueError
+        ``raw_proof``/``raw_proof_bytes`` fail ADR-0172's own prepare
+        checks; ``capability`` is missing, spent, or forged; or
+        ``capability`` does not belong to the exact root
+        ``raw_proof``/``raw_proof_bytes`` name (the envelope bytes the two
+        capabilities project disagree) -- both capabilities are already
+        spent by the time this is raised and neither call is retryable.
+    ProductionError
+        The composed tape fails ``CapturedReplayTape.parse`` or
+        ``verify_causal_order`` -- unreachable for a genuine, self-consistent
+        root, since both are ADR-0172's own already-verified output.
+    """
+    second_capability = prepare_v2_projection_input(
+        raw_proof, raw_proof_bytes
+    )
+    first_envelope_bytes = _project_verified_synthetic_v2_input(capability)
+    second_envelope_bytes = _project_verified_synthetic_v2_input(second_capability)
+    if first_envelope_bytes != second_envelope_bytes:
+        raise ValueError(
+            "v2 projection input does not belong to the supplied raw root"
+        )
+    ordered_envelope_bytes = first_envelope_bytes
+    parsed_envelopes = [
+        _bundles._parse_event_envelope(raw) for raw in ordered_envelope_bytes
+    ]
+    source_rank_policy_sha256 = parsed_envelopes[0]["source_rank_policy_sha256"]
+    if any(
+        envelope["source_rank_policy_sha256"] != source_rank_policy_sha256
+        for envelope in parsed_envelopes
+    ):
+        raise ValueError(
+            "v2 envelope source_rank_policy_sha256 disagree across the tape"
+        )
+    manifest_bytes, _basis_bytes, receipt_bytes = raw_proof_bytes[9:12]
+    data_capture_root = hashlib.sha256(manifest_bytes).hexdigest()
+    data_captured_receipt = hashlib.sha256(receipt_bytes).hexdigest()
+    ordered_envelope_digests = [
+        hashlib.sha256(envelope).hexdigest() for envelope in ordered_envelope_bytes
+    ]
+    tape = _bundles.CapturedReplayTape._build(
+        data_capture_root, data_captured_receipt,
+        source_rank_policy_sha256, ordered_envelope_digests,
+    )
+    reparsed = _bundles.CapturedReplayTape.parse(tape.canonical_bytes())
+    _bundles.verify_causal_order(reparsed, ordered_envelope_bytes)
+    return reparsed
 
 
 class _Refused(Exception):

@@ -1,0 +1,18 @@
+{
+  "schema_version": "F3V2ProjectionBridgePhase0.v1",
+  "deployment_eligible": false,
+  "adr": "ADR-0172",
+  "branch": "codex/intraday-equities-full-backtest-20260922",
+  "final_reviewed_commit": "368111d3045d4aa1a649cd6f0dfb12b28ed0cb92",
+  "scope": "one-shot verified synthetic v2 projection input and private production composition only",
+  "owner_approval": "standing autonomous implementation approval in task conversation",
+  "review_history": [
+    {"commit": "d349435b32b8109316baca6877719f743b03269a", "verdict": "0C/5M/3m/0N", "disposition": "amended environment order, effects, live reverify, one-shot domain, transactions, API and dispatch"},
+    {"commit": "3f01c3a9a9152e24e28927b858513f9bd126736a", "verdict": "0C/2M/2m/0N", "disposition": "amended same-thread reserve pins, checkpoint guards, failure boundary and cache effects"},
+    {"commit": "a3854c12a1abe62f1d888d84fd394ff554a0582b", "verdict": "0C/2M/1m/0N", "disposition": "amended identity-safe keys, trust dispatch and retry/effect wording"},
+    {"commit": "f214a782cc72850f06d324b787ba96d3b3cd70be", "verdict": "1C/1M/0m/0N", "disposition": "corrected provider audit growth and inherited existing-proof callback threat model"},
+    {"commit": "bff3aa7199d4d078bab60f401d8a83b04bf06740", "verdict": "0C/1M/0m/0N", "disposition": "split open_member audit suffix from full spied provider call trace"},
+    {"commit": "368111d3045d4aa1a649cd6f0dfb12b28ed0cb92", "verdict": "0C/0M/0m/0N", "tests": "1852 passed, 1 expected xfail", "result": "GO for owner approval and RED"}
+  ],
+  "non_authority": "No writer, lifecycle transition, publication, replay, backtest, paper/live trading, or deployment authority."
+}

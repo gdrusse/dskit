@@ -1,0 +1,27 @@
+{
+  "adr": "ADR-0172",
+  "branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "final_reviewed_adr_blob": "e6a194c12329813ad81ae2d8615570d0ea6c9502",
+  "owner_approval": "standing autonomous implementation approval in task conversation",
+  "review_history": [
+    {
+      "adr_blob": "41aee0aa469cdb277d765b439b224037089e476f",
+      "disposition": "capture the projector executable dependencies",
+      "verdict": "0C/1M/0m/0N"
+    },
+    {
+      "adr_blob": "2678e491b616ac4fcc0d0cc627c1ae05758c6dd7",
+      "disposition": "make executable-dependency capture recursive through transitive helpers",
+      "verdict": "0C/1M/0m/0N"
+    },
+    {
+      "adr_blob": "e6a194c12329813ad81ae2d8615570d0ea6c9502",
+      "result": "GO for RED",
+      "verdict": "0C/0M/0m/0N"
+    }
+  ],
+  "schema_version": "F3V2ProjectionInputPhase0.v2",
+  "scope": "one-shot nonauthorizing synthetic v2 projection input and private pure projection composition",
+  "supersedes": "docs/evidence/closeout/0200-intraday-f3-v2-projection-input-phase0.json"
+}

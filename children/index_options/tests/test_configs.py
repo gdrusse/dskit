@@ -62,7 +62,7 @@ def test_exact_manifest_and_agent_parity(child_root):
               if p.is_file() and not any(part in ignored or part.endswith(".egg-info")
                                          for part in p.relative_to(child_root).parts)}
     assert actual == expected
-    assert len(actual) == 42  # ADR-0167's 30 + ADR-0168's 4 + ADR-0169's 4 + 4 research notes
+    assert len(actual) == 42  # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 

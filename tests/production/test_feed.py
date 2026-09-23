@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import inspect
 import time
 
@@ -43,6 +44,8 @@ import pytest
 import dskit.onboarding.acquire as acquire_mod
 import dskit.onboarding.observations as observations_mod
 from dskit.pipeline.libs.observations import ObservationRows
+from dskit.production import bundles as bundles_module
+from dskit.production import feed as feed_module
 from dskit.production.base import ProductionError, canonical_hash
 from dskit.production.clock import ManualTime, ReplayClock, TestClock
 from dskit.production.feed import (
@@ -1533,3 +1536,151 @@ class TestDatedUniverse:
         tmp path in it, so it is reproducible."""
         spec = FeedSpec.from_obj(copy.deepcopy(FLAT_SPEC_OBJ))
         assert canonical_hash(spec.to_obj()) == FLAT_FEED_SPEC_DIGEST
+
+
+# ---------------------------------------------------------------------------
+# ADR-0175: a private runtime ReplayTape over verified v2 event envelopes.
+# ---------------------------------------------------------------------------
+
+
+def _envelope(**changes):
+    """Build one closed ``dskit.event-envelope/v2`` dict for direct encoding."""
+    envelope = {
+        "schema_version": "dskit.event-envelope/v2",
+        "source_id": "src:A",
+        "event_id": "event-a",
+        "source_sequence": 0,
+        "payload_sha256": "a" * 64,
+        "availability_ms": 500,
+        "exchange_ms": 490,
+        "receive_ms": 495,
+        "source_provenance_tag": "fixture",
+        "source_timezone_tag": "America/New_York",
+        "source_rank": 0,
+        "source_rank_policy_sha256": "b" * 64,
+        "correction_position": 0,
+        "corrects_event_id": None,
+        "prior_envelope_sha256": None,
+    }
+    envelope.update(changes)
+    return envelope
+
+
+def _envelope_bytes(**changes):
+    """Encode one closed v2 envelope as its own canonical bytes."""
+    return bundles_module._canonical_bytes(_envelope(**changes))
+
+
+def test_captured_envelope_replay_tape_is_private_and_isinstance_replaytape():
+    """The class is private, absent from __all__, and genuinely a ReplayTape."""
+    assert "_CapturedEnvelopeReplayTape" not in feed_module.__all__
+    tape = feed_module._CapturedEnvelopeReplayTape((), "a" * 64)
+    assert isinstance(tape, bundles_module.ReplayTape)
+
+
+def test_captured_envelope_replay_tape_empty_sequence():
+    """An empty tape starts at 0 and has no feed results or allocations."""
+    tape = feed_module._CapturedEnvelopeReplayTape((), "a" * 64)
+    assert tape.start_ms() == 0
+    assert tape.feed_results() == ()
+    assert tape.id_allocations() == ()
+
+
+def test_captured_envelope_replay_tape_single_envelope():
+    """One envelope yields exactly one FeedResult naming its instant."""
+    source_hash = "c" * 64
+    tape = feed_module._CapturedEnvelopeReplayTape(
+        (_envelope_bytes(availability_ms=1_000),), source_hash,
+    )
+    assert tape.start_ms() == 1_000
+    results = tape.feed_results()
+    assert len(results) == 1
+    result = results[0]
+    assert type(result) is FeedResult
+    assert result.status == "live"
+    assert result.acq_id == "envelope-1000"
+    assert result.records_added == 1
+    assert result.source_config_hash == source_hash
+    assert result.at_ms == 1_000
+    assert tape.id_allocations() == ()
+
+
+def test_captured_envelope_replay_tape_groups_by_availability_ms():
+    """Multiple envelopes at one instant collapse into one counted FeedResult."""
+    tape = feed_module._CapturedEnvelopeReplayTape(
+        (
+            _envelope_bytes(event_id="event-a", availability_ms=1_000),
+            _envelope_bytes(event_id="event-b", availability_ms=1_000),
+            _envelope_bytes(event_id="event-c", availability_ms=1_000),
+        ),
+        "d" * 64,
+    )
+    results = tape.feed_results()
+    assert len(results) == 1
+    assert results[0].records_added == 3
+    assert results[0].at_ms == 1_000
+
+
+def test_captured_envelope_replay_tape_distinct_instants_order_and_minimum():
+    """Distinct instants yield one FeedResult each, in order; start_ms is the minimum."""
+    tape = feed_module._CapturedEnvelopeReplayTape(
+        (
+            _envelope_bytes(event_id="event-b", availability_ms=2_000),
+            _envelope_bytes(event_id="event-a", availability_ms=1_000),
+        ),
+        "e" * 64,
+    )
+    assert tape.start_ms() == 1_000
+    results = tape.feed_results()
+    assert [result.at_ms for result in results] == [1_000, 2_000]
+    assert all(result.records_added == 1 for result in results)
+
+
+def test_captured_envelope_replay_tape_correction_pair_shares_one_feed_result():
+    """A base event and its correction sharing one instant collapse to one count.
+
+    Proves by direct inspection -- not argument -- that FeedResult cannot
+    and does not encode which of the two envelopes is the correction:
+    ReplayFeed's own docstring (this module) states "the tape carries
+    results ONLY... the rows are not the feed's to hold" -- row and
+    correction-chain order (correction_position/corrects_event_id/
+    prior_envelope_sha256) are the decider's responsibility via
+    read_entry/inputs_digest, never the tape's, for every ReplayTape
+    implementation (BarTape included). ADR-0175 Phase-0, Revision 2.
+    """
+    base = _envelope_bytes(
+        event_id="event-a", availability_ms=1_000, correction_position=0,
+    )
+    correction = _envelope_bytes(
+        event_id="event-b", availability_ms=1_000, correction_position=1,
+        corrects_event_id="event-a",
+        prior_envelope_sha256=hashlib.sha256(base).hexdigest(),
+    )
+    tape = feed_module._CapturedEnvelopeReplayTape((base, correction), "f" * 64)
+    results = tape.feed_results()
+    assert len(results) == 1
+    assert results[0].records_added == 2
+    assert not any(
+        "correct" in field.name or "prior" in field.name
+        for field in dataclasses.fields(FeedResult)
+    )
+
+
+def test_captured_envelope_replay_tape_refuses_malformed_envelope_at_construction():
+    """A parse failure on any element raises at construction, before any use."""
+    with pytest.raises(ProductionError):
+        feed_module._CapturedEnvelopeReplayTape((b"not json",), "a" * 64)
+    good = _envelope_bytes(availability_ms=1_000)
+    bad = _envelope_bytes(availability_ms=2_000, schema_version="wrong")
+    with pytest.raises(ProductionError):
+        feed_module._CapturedEnvelopeReplayTape((good, bad), "a" * 64)
+
+
+def test_captured_envelope_replay_tape_feeds_replayfeed_directly():
+    """The produced FeedResults are directly consumable by this module's ReplayFeed."""
+    tape = feed_module._CapturedEnvelopeReplayTape(
+        (_envelope_bytes(availability_ms=1_000),), "a" * 64,
+    )
+    feed = ReplayFeed({}, tape=tape.feed_results())
+    result = feed.pull(1_000)
+    assert result is tape.feed_results()[0]

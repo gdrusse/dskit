@@ -1,0 +1,57 @@
+{
+  "schema_version": "RedGreenEvidence.v1",
+  "slice_id": "intraday F3 bounded pure raw-event/v2 envelope projection",
+  "adr": "ADR-0171",
+  "branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "phase0_evidence": "docs/evidence/closeout/0198-intraday-f3-v2-envelope-projection-phase0.json",
+  "owner_approval": {
+    "received": true,
+    "channel": "task conversation",
+    "instruction": "yes; use your best judgement; work autonomously",
+    "scope": "implement the reviewed bounded dependency with TDD and skeptic review"
+  },
+  "red": {
+    "commit": "34adcd66cd7d14440182a35b73996c94dec4a33b",
+    "result": "45 failed because _project_v2_event_envelopes was absent",
+    "test": "tests/production/test_v2_event_envelope_projection.py"
+  },
+  "green_and_corrections": [
+    {"commit": "3ac06847ba4642eafff29629a3529b4153003304", "description": "initial pure v2 envelope projection"},
+    {"commit": "7f8ba3b965ba2948e00874b03d7404c0dd1ad994", "description": "exact scalar types and heterogeneous-key refusal"},
+    {"commit": "24d9830e8652a8a0bcb200f8a8e9cd4042f3339d", "description": "exact schema-field keys"},
+    {"commit": "01b07dcfceed804a9cc963311876a412e53e883e", "description": "exact-dict-backed inert mapping proxies and callback-free malformed-shape handling"},
+    {"commit": "0cbf001b6ce3a7f57ce1bcb5d9e7a0751da96eb5", "description": "constant rejected-key diagnostics without hostile metaclass callbacks"},
+    {"commit": "f9645b4a590e999799b28b757d113e029db5b1f8", "description": "safe complete intrinsic defect accumulation"},
+    {"commit": "1102d2e7e10bd4dd8bdc8dc02f37d38aa9bb4d5e", "description": "guard hostile event-id equality and accumulate safe causal defects"}
+  ],
+  "final_candidate": {
+    "commit": "1102d2e7e10bd4dd8bdc8dc02f37d38aa9bb4d5e",
+    "blobs": {
+      "dskit/production/bundles.py": "b63d8f4ec0260107084cd13d2fdab03ebd510bae",
+      "tests/production/test_v2_event_envelope_projection.py": "a40373913d095aa18d7b8594217a358ea8bbb0ce"
+    },
+    "focused_result": "410 passed",
+    "ruff": "clean",
+    "diff_check": "clean"
+  },
+  "skeptic_history": [
+    {"candidate": "3ac06847ba4642eafff29629a3529b4153003304", "verdict": "0C/1M/1m/0N", "disposition": "corrected exact scalar/digest types and heterogeneous keys"},
+    {"candidate": "7f8ba3b965ba2948e00874b03d7404c0dd1ad994", "verdict": "0C/1M/0m/0N", "disposition": "corrected exact key identity"},
+    {"candidate": "24d9830e8652a8a0bcb200f8a8e9cd4042f3339d", "verdict": "0C/2M/0m/0N", "disposition": "corrected hostile equality and active backing callbacks"},
+    {"candidate": "01b07dcfceed804a9cc963311876a412e53e883e", "verdict": "0C/0M/0m/0N then 0C/1M/0m/0N", "disposition": "second lens found and correction removed hostile metaclass type-name callback"},
+    {"candidate": "0cbf001b6ce3a7f57ce1bcb5d9e7a0751da96eb5", "verdict": "0C/0M/1m/0N", "disposition": "corrected safe defect accumulation"},
+    {"candidate": "f9645b4a590e999799b28b757d113e029db5b1f8", "verdict": "0C/1M/1m/0N", "disposition": "corrected hostile event-id equality and unknown-field causal accumulation"}
+  ],
+  "two_sequential_clean_final_lenses": [
+    {"lens": "H", "candidate": "1102d2e7e10bd4dd8bdc8dc02f37d38aa9bb4d5e", "verdict": "0C/0M/0m/0N", "tests": "1811 passed, 1 expected xfail"},
+    {"lens": "I", "candidate": "1102d2e7e10bd4dd8bdc8dc02f37d38aa9bb4d5e", "verdict": "0C/0M/0m/0N", "tests": "1944 passed, 1 expected xfail"}
+  ],
+  "files_changed": [
+    "dskit/production/bundles.py",
+    "tests/production/test_v2_event_envelope_projection.py",
+    "docs/architecture/decision-log.md",
+    "docs/evidence/closeout/0199-intraday-f3-v2-envelope-projection-red-green.json"
+  ],
+  "non_authority": "The private projector recognizes no trust and enables no capture writer, publication, replay, backtest, HPO, paper trading, deployment, or live trading. A separately reviewed trust-owned adapter remains required."
+}

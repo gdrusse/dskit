@@ -472,7 +472,7 @@ classes: `examples/pipeline/model-sweep.json` plus the pack docstring's
 estimator table; `examples/pipeline/selection-demo.json` is the selector
 cookbook — fit on train, then sweep two estimators that read
 `$select.features`; `lightgbm.LGBMRegressor` joins via the `lightgbm` extra
-(its pack, `libs/lightgbm.py`, is only the ADR-0169 volatility-scale rung); `write_bundle`/`load_bundle`/`EstimatorBundle` (ADR-0114
+(its pack, `libs/lightgbm.py`, is only the ADR-0181 volatility-scale rung); `write_bundle`/`load_bundle`/`EstimatorBundle` (ADR-0114
 Phase 2) are a PLAIN VALUE API, not a node kind — one joblib file plus one
 JSON manifest for a caller-named, ORDERED mapping of many fitted estimators
 ("heads"), hash-verified the same S2-A way as the single-estimator artifact
@@ -698,6 +698,7 @@ dskit/pipeline/
 │                      RunAttestation + content_identity (ADR-0119);
 │                      attested_output + row_set_identity (ADR-0166)
 ├── stages.py          journal-backed staged DAG execution and resume
+├── event_wire.py      closed shared raw-event v1/v2 wire declarations (ADR-0169)
 ├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        per-(unit,horizon) quality gate: contiguous horizon cap
@@ -737,7 +738,7 @@ dskit/pipeline/
 │                      Brier at thresholds, PIT KS, Berkowitz; ScoreDistributions node (ADR-0168)
 ├── distribution_models.py EmpiricalLocationScale: fitted standardized-label shape,
 │                      relative_scale hook (ADR-0168); ScaleModelLocationScale +
-│                      LinearScaleLocationScale (log-HAR) fitted-scale rungs (ADR-0169)
+│                      LinearScaleLocationScale (log-HAR) fitted-scale rungs (ADR-0181)
 ├── synthetic_paths.py SynthGjrPaths: seeded GJR-GARCH-t price path, known truth (ADR-0168)
 ├── metrics.py         logloss / brier / squared_error / absolute_error / pinball + register_metric
 ├── trainlog.py        per-epoch TrainingCurve + probability metrics (logloss/brier/ECE)
@@ -785,7 +786,7 @@ dskit/pipeline/
 │                      pretrained encode/classify/forecast trio over an
 │                      acquired snapshot, ADR-0083), kronos (frozen causal
 │                      hidden states over two acquired snapshots, ADR-0102),
-│                      optuna, pyomo, sb3, lightgbm (fitted volatility-scale rung, ADR-0169),
+│                      optuna, pyomo, sb3, lightgbm (fitted volatility-scale rung, ADR-0181),
 │                      matplotlib, mlflow (the tracking SINK pack —
 │                      registers into SINK_KINDS, no node kinds),
 │                      observations (the `observations` data kind over the onboarding read seam, ADR-0077)

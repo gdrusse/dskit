@@ -11,7 +11,9 @@ import ast
 import copy
 import json
 import os
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -21,7 +23,9 @@ from dskit.pipeline.node import ConfigError
 
 from intraday_equities.nodes_capital import SchwabCostModel
 from intraday_equities.replay import (
+    CashFlowPolicy,
     DevelopmentReplay,
+    EquityReplay,
     FillPolicy,
     ReplayAdapter,
 )
@@ -29,6 +33,7 @@ from intraday_equities.replay import (
 CHILD_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIGS = os.path.join(CHILD_ROOT, "configs")
 FILL_POLICY_PATH = os.path.join(CONFIGS, "fill-policy.json")
+CASH_FLOW_POLICY_PATH = os.path.join(CONFIGS, "cash-flow-policy.json")
 REPLAY_PY = os.path.join(
     CHILD_ROOT, "intraday_equities", "replay.py"
 )
@@ -744,3 +749,869 @@ def test_mark_source_and_forced_exit_at_are_read():
     assert policy.forced_exit_at == "horizon_expiry"
     exit_row = next(row for row in out["fills"] if row["kind"] == "exit")
     assert exit_row["price"] == pytest.approx(12.0)
+
+
+# --- ADR-0176: a configured cash-flow schedule for the equity replay -----
+
+
+def _raw_cash_flow_policy():
+    with open(CASH_FLOW_POLICY_PATH, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def _cash_flow_policy(overrides=None):
+    payload = _raw_cash_flow_policy()
+    if overrides:
+        payload.update(overrides)
+    return CashFlowPolicy(payload)
+
+
+def test_shipped_cash_flow_policy_names_every_knob_and_hashes():
+    raw = _raw_cash_flow_policy()
+    policy = CashFlowPolicy.from_path(CASH_FLOW_POLICY_PATH)
+    assert policy.currency == raw["currency"]
+    assert policy.daily_contribution_amount == Decimal(raw["daily_contribution_amount"])
+    assert policy.initial_capital_amount == Decimal(raw["initial_capital_amount"])
+    assert policy.timezone.key == raw["timezone"]
+    assert policy.digest() == CashFlowPolicy(raw).digest()
+
+
+def test_cash_flow_policy_refuses_a_missing_or_unknown_knob():
+    raw = _raw_cash_flow_policy()
+    missing = dict(raw)
+    del missing["daily_contribution_amount"]
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        CashFlowPolicy(missing)
+    with pytest.raises(ConfigError, match="leverage"):
+        CashFlowPolicy(dict(raw, leverage=2))
+
+
+def test_cash_flow_policy_refuses_a_non_positive_or_unparseable_amount():
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        _cash_flow_policy({"daily_contribution_amount": "0"})
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        _cash_flow_policy({"daily_contribution_amount": "-5"})
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        _cash_flow_policy({"daily_contribution_amount": "not-a-number"})
+    with pytest.raises(ConfigError, match="daily_contribution_amount"):
+        _cash_flow_policy({"daily_contribution_amount": 20})
+    with pytest.raises(ConfigError, match="initial_capital_amount"):
+        _cash_flow_policy({"initial_capital_amount": "0"})
+
+
+def test_cash_flow_policy_refuses_an_unknown_timezone_or_empty_currency():
+    with pytest.raises(ConfigError, match="timezone"):
+        _cash_flow_policy({"timezone": "Not/AZone"})
+    with pytest.raises(ConfigError, match="currency"):
+        _cash_flow_policy({"currency": ""})
+
+
+def _every_local_date(policy, start_ms, days):
+    """Every calendar date from ``start_ms``'s own local date, ``days`` long (ADR-0178 point 5)."""
+    anchor = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc).astimezone(policy.timezone)
+    return frozenset(anchor.date() + timedelta(days=i) for i in range(days))
+
+
+def test_composer_for_folds_initial_capital_into_the_first_daily_occurrence():
+    policy = _cash_flow_policy()
+    start_ms = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
+    composer, _funding_instants = policy.composer_for(
+        "series-a", start_ms, _every_local_date(policy, start_ms, 4)
+    )
+    window_end = start_ms + 3 * 86_400_000 + 1
+    due = composer.due(
+        datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc),
+        datetime.fromtimestamp(window_end / 1000, tz=timezone.utc),
+    )
+    amounts = [Decimal(record["body"]["amount"]) for record in due]
+    assert amounts == [Decimal("1020"), Decimal("20"), Decimal("20"), Decimal("20")]
+    assert all(record["body"]["currency"] == "USD" for record in due)
+    assert all(record["kind"] == "cash_flow" for record in due)
+
+
+def test_composer_for_refuses_an_empty_tape():
+    policy = _cash_flow_policy()
+    with pytest.raises(ConfigError, match="empty"):
+        policy.composer_for("series-a", 0, frozenset())
+
+
+def test_composer_for_materializes_safely_across_a_dst_transition():
+    # 2026-03-08 is the US spring-forward date; anchor two days before at 09:30 ET.
+    policy = _cash_flow_policy()
+    start_ms = int(datetime(2026, 3, 6, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
+    composer, _funding_instants = policy.composer_for(
+        "series-b", start_ms, _every_local_date(policy, start_ms, 7)
+    )
+    window_end = start_ms + 6 * 86_400_000 + 1
+    due = composer.due(
+        datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc),
+        datetime.fromtimestamp(window_end / 1000, tz=timezone.utc),
+    )
+    # Crosses the transition; every occurrence must be a real, ascending, positive-amount
+    # instant -- proving safe materialization. .astimezone() always yields a valid instant,
+    # so _valid_local's gap/fold ValueError is unreachable via this exact construction.
+    instants = [record["body"]["effective_at_ms"] for record in due]
+    assert instants == sorted(instants)
+    assert len(instants) == len(set(instants)) == 7
+    assert all(Decimal(record["body"]["amount"]) > 0 for record in due)
+
+
+class _CapturingEquityReplay(EquityReplay):
+    """Snapshot the run's own cash-flow ledger each tick, before ``_run_loop``'s cleanup."""
+
+    def __init__(self, policy, cash_flow_policy):
+        super().__init__(policy, cash_flow_policy)
+        self.cash_flow_snapshots = []
+
+    def read_entry(self, tick_at_ms):
+        batch = super().read_entry(tick_at_ms)
+        if self._cash_flow_ledger is not None:
+            self.cash_flow_snapshots = [
+                dict(envelope.get("body") or {})
+                for envelope in self._cash_flow_ledger.scan(kind="cash_flow")
+            ]
+        return batch
+
+
+class _CountingComposer:
+    """Delegate ``due`` to the replay's real composer, counting only the replay's own calls.
+
+    ``ReplayCashFlowComposer`` is slotted and immutable, and the ledger authorizer bound
+    from it (``_authorizes``) also calls ``due`` once per appended record -- so a
+    class-level patch would count the authorizer's calls too. Wrapping only the replay's
+    own reference counts exactly the bookkeeping calls ADR-0178 bounds.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.calls = 0
+
+    def due(self, start, end_exclusive):
+        self.calls += 1
+        return self._inner.due(start, end_exclusive)
+
+
+class _WindowSpyingEquityReplay(EquityReplay):
+    """Record every tick's cash-flow gate decision, window, and funding index (ADR-0176/0178).
+
+    ``_CapturingEquityReplay`` (above) proves the final ledger content is right, but the
+    ledger's own id-based idempotence (restart safety, ``dskit.production.cashflows``)
+    silently absorbs a resubmission of an already-appended record -- so a final-state
+    assertion alone cannot tell "window advanced correctly" apart from "window never
+    advanced, but re-submitting the same records every tick was harmless". This subclass
+    asserts the window sequence itself, independent of that safety net.
+
+    ADR-0178 point 5.5: each tick also records whether its call reached ``due()``
+    (``gated`` False) or returned at the funding-instant gate (``gated`` True), so a
+    skipped tick is still checked, not invisible. The end-of-tape flush (point 1.6) runs
+    after the last tick, where no per-tick snapshot can see it, so the flush's own
+    ``due()`` calls, final funding index, and the ledger before/after it are recorded.
+    """
+
+    def __init__(self, policy, cash_flow_policy):
+        super().__init__(policy, cash_flow_policy)
+        self.ticks = []
+        self.due_counter = None
+        self.flush_due_calls = None
+        self.flushed_index = None
+        self.flushed_instants = None
+        self.pre_flush_bodies = None
+        self.cash_flow_bodies = None
+        self.bookkeeping_seconds = 0.0
+
+    def _due_calls(self):
+        if self._cash_flow_composer is not None and self.due_counter is None:
+            self.due_counter = _CountingComposer(self._cash_flow_composer)
+            self._cash_flow_composer = self.due_counter
+        return 0 if self.due_counter is None else self.due_counter.calls
+
+    def _ledger_bodies(self):
+        return [
+            dict(envelope.get("body") or {})
+            for envelope in self._cash_flow_ledger.scan(kind="cash_flow")
+        ]
+
+    def _submit_due_cash_flows(self, tick_at_ms):
+        calls = self._due_calls()
+        window_start_ms = self._cash_flow_window_ms
+        index = getattr(self, "_cash_flow_funding_index", None)
+        started = time.perf_counter()
+        super()._submit_due_cash_flows(tick_at_ms)
+        self.bookkeeping_seconds += time.perf_counter() - started
+        if self._cash_flow_composer is None:
+            return
+        made = self._due_calls() - calls
+        self.ticks.append({
+            "at": tick_at_ms,
+            "gated": made == 0,
+            "due_calls": made,
+            "window": (window_start_ms, self._cash_flow_window_ms),
+            "index": (index, getattr(self, "_cash_flow_funding_index", None)),
+        })
+
+    def _flush_cash_flows(self):
+        calls = self._due_calls()
+        if self._cash_flow_ledger is not None:
+            self.pre_flush_bodies = self._ledger_bodies()
+        started = time.perf_counter()
+        super()._flush_cash_flows()
+        self.bookkeeping_seconds += time.perf_counter() - started
+        self.flush_due_calls = self._due_calls() - calls
+        self.flushed_index = self._cash_flow_funding_index
+        self.flushed_instants = self._cash_flow_funding_instants
+        if self._cash_flow_ledger is not None:
+            self.cash_flow_bodies = self._ledger_bodies()
+
+
+_CF_DAY0_MS = int(datetime(2026, 1, 5, 14, 30, tzinfo=timezone.utc).timestamp() * 1000)
+_CF_DAY1_MS = _CF_DAY0_MS + 86_400_000
+_CF_DAY2_MS = _CF_DAY0_MS + 2 * 86_400_000
+
+
+def test_the_cash_flow_window_advances_only_on_ticks_that_reach_a_funding_instant():
+    # ADR-0178 point 5.5: authorized rewrite of ADR-0176's
+    # test_the_cash_flow_window_advances_by_exactly_one_tick_each_call. Funding instants
+    # are DAY0 and DAY1 (the anchor's 09:30 ET on each trading date); a tick short of the
+    # next unfunded instant is gated -- no due() call, window and index both stay put.
+    policy = _policy()
+    replay = _WindowSpyingEquityReplay(policy, _cash_flow_policy())
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.1),
+        _bar("AAA", _CF_DAY0_MS + 60_000, 10.1, 10.2),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.1),
+        _bar("AAA", _CF_DAY1_MS + 60_000, 11.1, 11.2),
+    ]
+    replay.run(bars, [])
+    assert [
+        (tick["at"], tick["gated"], tick["due_calls"], tick["window"], tick["index"])
+        for tick in replay.ticks
+    ] == [
+        (_CF_DAY0_MS, False, 1, (_CF_DAY0_MS, _CF_DAY0_MS + 1), (0, 1)),
+        (_CF_DAY0_MS + 60_000, True, 0, (_CF_DAY0_MS + 1, _CF_DAY0_MS + 1), (1, 1)),
+        (_CF_DAY1_MS, False, 1, (_CF_DAY0_MS + 1, _CF_DAY1_MS + 1), (1, 2)),
+        (_CF_DAY1_MS + 60_000, True, 0, (_CF_DAY1_MS + 1, _CF_DAY1_MS + 1), (2, 2)),
+    ]
+    # Contiguous across the ticks that did call due(): each window's end is exactly the
+    # next window's start -- no gap, no overlap.
+    windows = [tick["window"] for tick in replay.ticks if not tick["gated"]]
+    for (_, end), (next_start, _) in zip(windows, windows[1:]):
+        assert end == next_start
+    # The per-tick gate already funded both instants, so the flush is a no-op.
+    assert replay.flush_due_calls == 0
+    assert replay.flushed_instants == (_CF_DAY0_MS, _CF_DAY1_MS)
+    assert replay.flushed_index == 2
+
+
+def test_a_full_replay_submits_the_configured_cash_flows_into_its_own_ledger():
+    policy = _policy()
+    replay = _CapturingEquityReplay(policy, _cash_flow_policy())
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.5),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.5),
+        _bar("AAA", _CF_DAY2_MS, 12.0, 12.5),
+    ]
+    replay.run(bars, [])
+    bodies = replay.cash_flow_snapshots
+    assert len(bodies) == 3
+    amounts = sorted(Decimal(body["amount"]) for body in bodies)
+    assert amounts == [Decimal("20"), Decimal("20"), Decimal("1020")]
+    assert all(body["currency"] == "USD" for body in bodies)
+    # Every submitted record round-tripped through the real SeriesState._for_replay
+    # authorizer bound from this exact composer -- ServeLoop would have failed the run
+    # (surfaced as a raised error from _run_loop) had any submission been refused.
+
+
+def test_only_one_cash_flow_record_lands_per_calendar_day_despite_many_ticks():
+    policy = _policy()
+    replay = _CapturingEquityReplay(policy, _cash_flow_policy())
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.1),
+        _bar("AAA", _CF_DAY0_MS + 60_000, 10.1, 10.2),
+        _bar("AAA", _CF_DAY0_MS + 120_000, 10.2, 10.3),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.1),
+        _bar("AAA", _CF_DAY1_MS + 60_000, 11.1, 11.2),
+    ]
+    replay.run(bars, [])
+    bodies = replay.cash_flow_snapshots
+    assert len(bodies) == 2
+    assert sorted(Decimal(body["amount"]) for body in bodies) == [Decimal("20"), Decimal("1020")]
+
+
+def test_a_replay_without_a_cash_flow_policy_submits_no_cash_flow_records():
+    policy = _policy()
+    replay = _CapturingEquityReplay(policy, None)
+    bars = [
+        _bar("AAA", _CF_DAY0_MS, 10.0, 10.5),
+        _bar("AAA", _CF_DAY1_MS, 11.0, 11.5),
+    ]
+    replay.run(bars, [])
+    assert replay.cash_flow_snapshots == []
+    assert replay._cash_flow_ledger is None
+    assert replay._cash_flow_composer is None
+
+
+# --- ADR-0177: a buy entry the replay's own running balance cannot afford is refused ---
+
+
+_ZERO_FEES = {"spread_bps": 0.0, "taf_per_share": 0.0, "sec31_bps": 0.0}
+
+
+def _cf_bars(opens, symbol="AAA"):
+    """One bar per minute from ``_CF_DAY0_MS``, one per entry of ``opens``."""
+    return [
+        _bar(symbol, _CF_DAY0_MS + i * 60_000, px, px + 0.5)
+        for i, px in enumerate(opens)
+    ]
+
+
+def _cf_t(index):
+    return _CF_DAY0_MS + index * 60_000
+
+
+def _cash_reasons(out):
+    return [row for row in out["refused"] if row["reason"] == "insufficient_cash"]
+
+
+def test_an_unaffordable_buy_is_refused_opens_no_lot_and_queues_no_fill():
+    # Balance after day-one funding: 1000 + 20 = 1020. 200 @ 10 = 2000 (+fee) > 1020.
+    policy = _policy()
+    bars = _cf_bars([10.0] * 6)
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=3, qty=200),
+        _decision("AAA", _cf_t(1), lead=3, qty=50),
+    ])
+    assert out["refused"] == [{
+        "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 3, "reason": "insufficient_cash",
+    }]
+    assert not any(row["qty"] == 200 for row in out["fills"])
+    # A stale lot from the refused decision would expire at index 4 and make the
+    # later same-lead decision (filling at index 2) refuse as same_lead_open.
+    assert [(row["kind"], row["qty"], row["asof_ms"]) for row in out["fills"]] == [
+        ("entry", 50, _cf_t(2)),
+        ("exit", 50, _cf_t(5)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "fees, initial_capital, fills",
+    [
+        (_ZERO_FEES, "1000", True),      # cost 1020 == balance 1020
+        (_ZERO_FEES, "999.99", False),   # cost 1020 == balance 1019.99 + 0.01
+        ({}, "1000", False),             # 1020 notional + a non-zero buy fee > 1020
+    ],
+    ids=["cost-equals-balance", "cost-one-cent-over", "fee-counts-toward-cost"],
+)
+def test_the_insufficient_cash_boundary_is_cost_strictly_greater_than_balance(
+    fees, initial_capital, fills,
+):
+    policy = _policy(fees)
+    cash = _cash_flow_policy({"initial_capital_amount": initial_capital})
+    bars = _cf_bars([10.0, 10.0, 10.0, 10.0])
+    out = ReplayAdapter(policy, cash).replay(
+        bars, [_decision("AAA", _cf_t(0), lead=1, qty=102)]
+    )
+    entries = [row for row in out["fills"] if row["kind"] == "entry"]
+    if fills:
+        assert [(row["qty"], row["asof_ms"]) for row in entries] == [(102, _cf_t(1))]
+        assert _cash_reasons(out) == []
+    else:
+        assert entries == []
+        assert _cash_reasons(out) == [{
+            "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 1, "reason": "insufficient_cash",
+        }]
+
+
+def test_the_running_balance_tracks_every_fill_across_a_mixed_sequence():
+    # 1020 funded; buy 100 @ 10 leaves ~19.78; a second 100 @ 10 is refused; the
+    # lead-2 lot's forced exit sells 100 @ 15 (+~1499.6); a rebuy of 100 @ 15
+    # (~1500.33) is affordable ONLY because the sell's full proceeds, profit
+    # included, were credited.
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 10.0, 15.0, 15.0, 15.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=2, qty=100),
+        _decision("AAA", _cf_t(1), lead=1, qty=100),
+        _decision("AAA", _cf_t(3), lead=1, qty=100),
+    ])
+    assert [
+        (row["kind"], row["side"], row["lead"], row["asof_ms"]) for row in out["fills"]
+    ] == [
+        ("entry", "buy", 2, _cf_t(1)),
+        ("exit", "sell", 2, _cf_t(3)),
+        ("entry", "buy", 1, _cf_t(4)),
+        ("exit", "sell", 1, _cf_t(5)),
+    ]
+    assert out["refused"] == [{
+        "symbol": "AAA", "asof_ms": _cf_t(2), "lead": 1, "reason": "insufficient_cash",
+    }]
+
+
+def test_a_short_entry_is_never_refused_for_insufficient_cash():
+    # The first short's forced cover (100 @ 100) drives the balance to about
+    # -7980 BEFORE the second short (500 @ 100, 50000 notional) enters on the
+    # same bar; neither short is refused.
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 100.0, 100.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=1, qty=100, side="sell"),
+        _decision("AAA", _cf_t(1), lead=1, qty=500, side="sell"),
+    ])
+    assert [
+        (row["kind"], row["side"], row["qty"], row["asof_ms"]) for row in out["fills"]
+    ] == [
+        ("entry", "sell", 100, _cf_t(1)),
+        ("exit", "buy", 100, _cf_t(2)),
+        ("entry", "sell", 500, _cf_t(2)),
+        ("exit", "buy", 500, _cf_t(3)),
+    ]
+    assert out["refused"] == []
+
+
+def test_a_forced_exit_always_executes_on_a_deeply_negative_balance():
+    # Two shorts of 100 @ 10 fund ~3020; the lead-1 cover at 100 drives the
+    # balance to about -6980; the lead-2 cover (10000 cost) still executes.
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 100.0, 100.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=1, qty=100, side="sell"),
+        _decision("AAA", _cf_t(0), lead=2, qty=100, side="sell"),
+    ])
+    exits = [
+        (row["side"], row["lead"], row["qty"], row["asof_ms"])
+        for row in out["fills"] if row["kind"] == "exit"
+    ]
+    assert exits == [("buy", 1, 100, _cf_t(2)), ("buy", 2, 100, _cf_t(3))]
+    assert out["refused"] == []
+
+
+def test_an_override_exit_always_executes_on_a_deeply_negative_balance():
+    # The lead-1 cover at 100 drives the balance to about -7880; an override on
+    # lead 3 must still buy back its open 10-share short (1000 cost) first.
+    policy = _policy({"same_lead_overlap": "override"})
+    bars = _cf_bars([10.0, 10.0, 100.0, 100.0, 100.0, 100.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=1, qty=100, side="sell"),
+        _decision("AAA", _cf_t(0), lead=3, qty=10, side="sell"),
+        _decision("AAA", _cf_t(1), lead=3, qty=1, side="sell"),
+    ])
+    lead3 = [
+        (row["kind"], row["side"], row["qty"], row["asof_ms"])
+        for row in out["fills"] if row["lead"] == 3
+    ]
+    assert lead3 == [
+        ("entry", "sell", 10, _cf_t(1)),
+        ("exit", "buy", 10, _cf_t(2)),
+        ("entry", "sell", 1, _cf_t(2)),
+        ("exit", "buy", 1, _cf_t(5)),
+    ]
+    assert out["refused"] == []
+
+
+def test_an_override_entry_refused_for_insufficient_cash_still_closes_the_prior_lot():
+    # Accepted pre-existing sequencing (ADR-0177 Decision 4): the override exit is
+    # queued before the new entry's own refusal, so the prior lot stays closed.
+    policy = _policy({"same_lead_overlap": "override"})
+    bars = _cf_bars([10.0, 10.0, 10.0, 10.0, 10.0])
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("AAA", _cf_t(0), lead=2, qty=10, side="sell"),
+        _decision("AAA", _cf_t(1), lead=2, qty=1000),
+    ])
+    assert [
+        (row["kind"], row["side"], row["qty"], row["asof_ms"]) for row in out["fills"]
+    ] == [
+        ("entry", "sell", 10, _cf_t(1)),
+        ("exit", "buy", 10, _cf_t(2)),
+    ]
+    # No lot survives: neither the prior short (natural expiry index 3) nor the
+    # refused buy reaches the end-of-tape expiry_past_tape sweep.
+    assert out["refused"] == [{
+        "symbol": "AAA", "asof_ms": _cf_t(2), "lead": 2, "reason": "insufficient_cash",
+    }]
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        lambda policy, bars, decisions: ReplayAdapter(policy).replay(bars, decisions),
+        lambda policy, bars, decisions: EquityReplay(policy).run(bars, decisions),
+    ],
+    ids=["ReplayAdapter", "EquityReplay"],
+)
+def test_without_a_cash_flow_policy_an_unaffordable_buy_still_fills(run):
+    policy = _policy()
+    bars = _cf_bars([10.0, 10.0, 12.0])
+    out = run(policy, bars, [_decision("AAA", _cf_t(0), lead=1, qty=1_000_000)])
+    assert [
+        (row["kind"], row["side"], row["qty"], row["price"], row["asof_ms"])
+        for row in out["fills"]
+    ] == [
+        ("entry", "buy", 1_000_000, 10.0, _cf_t(1)),
+        ("exit", "sell", 1_000_000, 12.0, _cf_t(2)),
+    ]
+    assert out["refused"] == []
+    assert out["skipped"] == []
+
+
+# --- ADR-0178: market-calendar-aware cash-flow contribution timing ---------
+
+
+_CF_TZ = CashFlowPolicy.from_path(CASH_FLOW_POLICY_PATH).timezone
+
+
+def _local_ms(year, month, day, hour, minute):
+    """Epoch ms of one wall-clock instant in the shipped cash-flow policy's own timezone."""
+    return int(datetime(year, month, day, hour, minute, tzinfo=_CF_TZ).timestamp() * 1000)
+
+
+def _utc(ms):
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+def _funded(bodies):
+    """``(effective_at_ms, amount)`` per cash-flow record, in effective order."""
+    return sorted(
+        (body["effective_at_ms"], Decimal(body["amount"])) for body in bodies
+    )
+
+
+def test_composer_for_skips_non_trading_dates_and_returns_one_instant_per_trading_date():
+    policy = _cash_flow_policy()
+    friday = _local_ms(2026, 1, 9, 9, 30)
+    monday = _local_ms(2026, 1, 12, 9, 30)
+    composer, instants = policy.composer_for(
+        "series-c", friday, frozenset({date(2026, 1, 9), date(2026, 1, 12)})
+    )
+    assert instants == (friday, monday)
+    due = composer.due(_utc(friday), _utc(monday + 1))
+    assert _funded(record["body"] for record in due) == [
+        (friday, Decimal("1020")), (monday, Decimal("20")),
+    ]
+
+
+def test_a_weekend_is_skipped_friday_funds_the_seed_and_monday_only_its_own_twenty():
+    friday = _local_ms(2026, 1, 9, 9, 30)
+    monday = _local_ms(2026, 1, 12, 9, 30)
+    replay = _CapturingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", friday, 10.0, 10.1),
+        _bar("AAA", friday + 60_000, 10.1, 10.2),
+        _bar("AAA", monday, 11.0, 11.1),
+        _bar("AAA", monday + 60_000, 11.1, 11.2),
+    ], [])
+    # No Saturday/Sunday record, and Monday is exactly $20 -- not $60 of weekend backlog.
+    assert _funded(replay.cash_flow_snapshots) == [
+        (friday, Decimal("1020")), (monday, Decimal("20")),
+    ]
+    assert replay._cash_balance == Decimal("1040")
+
+
+def test_a_single_mid_week_gap_date_is_skipped_and_the_next_day_funds_only_itself():
+    tuesday = _local_ms(2026, 1, 6, 9, 30)
+    thursday = _local_ms(2026, 1, 8, 9, 30)
+    replay = _CapturingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", tuesday, 10.0, 10.1),
+        _bar("AAA", tuesday + 60_000, 10.1, 10.2),
+        _bar("AAA", thursday, 11.0, 11.1),
+    ], [])
+    assert _funded(replay.cash_flow_snapshots) == [
+        (tuesday, Decimal("1020")), (thursday, Decimal("20")),
+    ]
+
+
+def test_the_anchor_date_is_never_skipped_even_on_a_saturday_past_utc_midnight():
+    # Saturday 19:30 local is already Sunday in UTC: a weekday-based or UTC-dated
+    # trading-day rule would each mistake the anchor's own date for a non-trading one.
+    saturday = _local_ms(2026, 1, 10, 19, 30)
+    monday = _local_ms(2026, 1, 12, 19, 30)
+    assert _utc(saturday).astimezone(_CF_TZ).weekday() == 5
+    assert _utc(saturday).date() != _utc(saturday).astimezone(_CF_TZ).date()
+    replay = _CapturingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", saturday, 10.0, 10.1),
+        _bar("AAA", monday, 11.0, 11.1),
+    ], [])
+    assert _funded(replay.cash_flow_snapshots) == [
+        (saturday, Decimal("1020")), (monday, Decimal("20")),
+    ]
+
+
+def test_a_dense_gap_free_tape_funds_exactly_as_adr_0176_did():
+    # Regression baseline: every calendar date has a bar, so nothing is skipped and the
+    # ledger is one record per calendar day at the anchor's local time, as before.
+    days = [_local_ms(2026, 1, 5 + i, 9, 30) for i in range(7)]
+    bars = []
+    for day in days:
+        bars.append(_bar("AAA", day, 10.0, 10.1))
+        bars.append(_bar("AAA", day + 60_000, 10.1, 10.2))
+    replay = _CapturingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run(bars, [])
+    assert _funded(replay.cash_flow_snapshots) == (
+        [(days[0], Decimal("1020"))] + [(day, Decimal("20")) for day in days[1:]]
+    )
+
+
+def test_a_later_tick_on_the_same_day_funds_an_instant_its_first_tick_missed():
+    # Point 1.5 (the Revision-2 counter-scenario): anchor Monday 10:00; Tuesday and
+    # Wednesday open at 09:30, before their own 10:00 instant, but each has a 10:30 bar
+    # that reaches it. The per-tick gate alone funds all three days; the flush is a no-op.
+    monday = _local_ms(2026, 1, 5, 10, 0)
+    tuesday = _local_ms(2026, 1, 6, 10, 0)
+    wednesday = _local_ms(2026, 1, 7, 10, 0)
+    replay = _WindowSpyingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", monday, 10.0, 10.1),
+        _bar("AAA", tuesday - 30 * 60_000, 10.1, 10.2),
+        _bar("AAA", tuesday + 30 * 60_000, 10.2, 10.3),
+        _bar("AAA", wednesday - 30 * 60_000, 10.3, 10.4),
+        _bar("AAA", wednesday + 30 * 60_000, 10.4, 10.5),
+    ], [])
+    assert [tick["gated"] for tick in replay.ticks] == [False, True, False, True, False]
+    assert replay.ticks[-1]["index"] == (2, 3)
+    assert replay.flush_due_calls == 0
+    assert replay.flushed_instants == (monday, tuesday, wednesday)
+    assert replay.flushed_index == len(replay.flushed_instants)
+    assert _funded(replay.cash_flow_bodies) == [
+        (monday, Decimal("1020")), (tuesday, Decimal("20")), (wednesday, Decimal("20")),
+    ]
+    assert replay.pre_flush_bodies == replay.cash_flow_bodies
+
+
+def test_the_end_of_tape_flush_funds_an_early_close_last_day_no_tick_reaches():
+    # Point 1.6 (the Revision-3 counter-scenario): anchor Monday 13:01; Tuesday is a
+    # normal session; Wednesday -- the tape's last day -- closes early with every bar at
+    # or before 13:00, so no tick ever reaches Wednesday's 13:01 instant. Only the flush
+    # can fund it.
+    monday = _local_ms(2026, 1, 5, 13, 1)
+    tuesday = _local_ms(2026, 1, 6, 13, 1)
+    wednesday = _local_ms(2026, 1, 7, 13, 1)
+    wednesday_bars = [
+        _local_ms(2026, 1, 7, 9, 30), _local_ms(2026, 1, 7, 12, 0), _local_ms(2026, 1, 7, 13, 0),
+    ]
+    replay = _WindowSpyingEquityReplay(_policy(), _cash_flow_policy())
+    replay.run([
+        _bar("AAA", monday, 10.0, 10.1),
+        _bar("AAA", _local_ms(2026, 1, 5, 15, 59), 10.1, 10.2),
+        _bar("AAA", _local_ms(2026, 1, 6, 9, 30), 10.2, 10.3),
+        _bar("AAA", tuesday, 10.3, 10.4),
+        _bar("AAA", _local_ms(2026, 1, 6, 15, 59), 10.4, 10.5),
+    ] + [_bar("AAA", at, 10.5, 10.6) for at in wednesday_bars], [])
+    assert all(at < wednesday for at in wednesday_bars)
+    assert [tick["gated"] for tick in replay.ticks] == [
+        False, True, True, False, True, True, True, True,
+    ]
+    # Before the flush Wednesday is unfunded and its instant is still pending ...
+    assert replay.ticks[-1]["index"] == (2, 2)
+    assert wednesday not in [at for at, _ in _funded(replay.pre_flush_bodies)]
+    # ... and the flush alone funds it, with exactly one due() call.
+    assert replay.flush_due_calls == 1
+    assert replay.flushed_instants == (monday, tuesday, wednesday)
+    assert replay.flushed_index == len(replay.flushed_instants)
+    assert _funded(replay.cash_flow_bodies) == [
+        (monday, Decimal("1020")), (tuesday, Decimal("20")), (wednesday, Decimal("20")),
+    ]
+    assert replay._cash_balance == Decimal("1060")
+
+
+def _full_year_trading_dates():
+    """2026 weekdays from Jan 2 through Dec 31, less a representative exchange-holiday set."""
+    holidays = {
+        date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3), date(2026, 5, 25),
+        date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7), date(2026, 11, 26),
+        date(2026, 12, 25),
+    }
+    day, last, found = date(2026, 1, 2), date(2026, 12, 31), []
+    while day <= last:
+        if day.weekday() < 5 and day not in holidays:
+            found.append(day)
+        day += timedelta(days=1)
+    return found
+
+
+def test_due_is_called_once_per_trading_date_not_once_per_tick_over_a_full_year():
+    # Scale row: a full year of trading dates, so ~113 SkipCashFlow overrides (weekends
+    # plus holidays) sit on the real RecurringCashFlowSchedule. A market-open anchor means
+    # every day's first tick reaches its own instant, so due() fires exactly once per
+    # trading date and the flush adds nothing. ServeLoop itself costs ~30 ms/tick, so
+    # the tape carries three bars a day; the due() count is independent of that density.
+    trading = _full_year_trading_dates()
+    assert (trading[-1] - trading[0]).days + 1 - len(trading) >= 60
+    bars = [
+        _bar("AAA", _local_ms(day.year, day.month, day.day, hour, minute), 10.0, 10.1)
+        for day in trading
+        for hour, minute in ((9, 30), (12, 45), (15, 59))
+    ]
+    cash_flow_policy = _cash_flow_policy()
+    replay = _WindowSpyingEquityReplay(_policy(), cash_flow_policy)
+    started = time.perf_counter()
+    replay.run(bars, [])
+    elapsed = time.perf_counter() - started
+    calls = replay.due_counter.calls
+    print(
+        f"\nADR-0178 scale: {len(bars)} ticks, {len(trading)} trading dates, "
+        f"{calls} due() calls, flush {replay.flush_due_calls}, "
+        f"cash-flow bookkeeping {replay.bookkeeping_seconds:.2f}s, run {elapsed:.2f}s"
+    )
+    assert len(replay.ticks) == len(bars)
+    assert calls <= len(trading) + 1
+    assert calls == len(trading)
+    assert replay.flush_due_calls == 0
+    assert replay.flushed_index == len(replay.flushed_instants) == len(trading)
+    assert replay._cash_balance == (
+        cash_flow_policy.initial_capital_amount
+        + cash_flow_policy.daily_contribution_amount * len(trading)
+    )
+    # Generous, honest ceiling for the cash-flow bookkeeping alone (ADR-0178 scale row).
+    assert replay.bookkeeping_seconds < 60
+
+
+# --- ADR-0179: cash_flow_policy wired through DevelopmentReplay -----------
+
+
+_CF_EVIDENCE_END = "2026-01-05"  # the UTC date of _CF_DAY0_MS, so _cf_bars stay in-window
+_MALFORMED_CASH_FLOW_POLICY_PATHS = (5, [], "")
+
+
+def _shipped_replay_params(**overrides):
+    """The shipped run-development-replay.json node params, optionally overridden."""
+    document = load_document(os.path.join(CONFIGS, "run-development-replay.json"))
+    params = dict(document.pipeline["replay"].params)
+    params.update(overrides)
+    return params
+
+
+def _cash_flow_pair(path="configs/cash-flow-policy.json"):
+    return {
+        "cash_flow_policy": path,
+        "cash_flow_policy_sha256": CashFlowPolicy.from_path(CASH_FLOW_POLICY_PATH).digest(),
+    }
+
+
+def test_development_replay_keeps_five_required_params_and_two_paired_optional_ones():
+    assert DevelopmentReplay._PARAMS == (
+        "deployment_eligible",
+        "evidence_end",
+        "fill_policy",
+        "fill_policy_sha256",
+        "caps",
+    )
+    assert DevelopmentReplay._OPTIONAL_PARAMS == (
+        "cash_flow_policy",
+        "cash_flow_policy_sha256",
+    )
+
+
+def test_the_shipped_document_still_runs_without_a_cash_flow_policy_byte_identically():
+    params = _shipped_replay_params()
+    assert "cash_flow_policy" not in params
+    assert "cash_flow_policy_sha256" not in params
+    assert DevelopmentReplay.validate_params(params) == []
+    node = DevelopmentReplay("replay", params)
+    assert node._cash_flow_policy is None
+    last_day = 1_760_572_800_000  # 2025-10-16T00:00:00Z
+    fill_only = 1_760_659_200_000  # 2025-10-17T00:00:00Z exclusive end
+    bars = [
+        _bar("AAA", last_day, 10.0, 10.5),
+        _bar("AAA", fill_only, 11.0, 11.5),
+        _bar("AAA", fill_only + 60_000, 12.0, 12.5),
+    ]
+    decisions = [_decision("AAA", last_day, lead=1, qty=1_000_000)]
+    out = node.run(None, {"bars": bars, "decisions": decisions})
+    before = ReplayAdapter(FillPolicy.from_path(FILL_POLICY_PATH)).replay(bars, decisions)
+    assert json.dumps(out, sort_keys=True) == json.dumps(before, sort_keys=True)
+    assert out["refused"] == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["configs/cash-flow-policy.json", CASH_FLOW_POLICY_PATH],
+    ids=["relative-to-child-root", "absolute"],
+)
+def test_a_valid_cash_flow_pair_validates_and_builds_the_policy(path):
+    params = _shipped_replay_params(**_cash_flow_pair(path))
+    assert DevelopmentReplay.validate_params(params) == []
+    node = DevelopmentReplay("replay", params)
+    assert isinstance(node._cash_flow_policy, CashFlowPolicy)
+    assert node._cash_flow_policy.digest() == params["cash_flow_policy_sha256"]
+
+
+def test_run_passes_the_cash_flow_policy_through_so_an_unaffordable_buy_refuses():
+    # Balance after day-one funding: 1000 + 20 = 1020. 200 @ 10 = 2000 (+fee) > 1020.
+    # Without the policy threaded into ReplayAdapter, no balance exists and it fills.
+    bars = _cf_bars([10.0] * 6)
+    decisions = [
+        _decision("AAA", _cf_t(0), lead=3, qty=200),
+        _decision("AAA", _cf_t(1), lead=3, qty=50),
+    ]
+    funded = DevelopmentReplay(
+        "replay", _shipped_replay_params(evidence_end=_CF_EVIDENCE_END, **_cash_flow_pair())
+    ).run(None, {"bars": bars, "decisions": decisions})
+    assert funded["refused"] == [{
+        "symbol": "AAA", "asof_ms": _cf_t(1), "lead": 3, "reason": "insufficient_cash",
+    }]
+    assert [(row["kind"], row["qty"], row["asof_ms"]) for row in funded["fills"]] == [
+        ("entry", 50, _cf_t(2)),
+        ("exit", 50, _cf_t(5)),
+    ]
+    direct = ReplayAdapter(_policy(), _cash_flow_policy()).replay(bars, decisions)
+    assert json.dumps(funded, sort_keys=True) == json.dumps(direct, sort_keys=True)
+    unfunded = DevelopmentReplay(
+        "replay", _shipped_replay_params(evidence_end=_CF_EVIDENCE_END)
+    ).run(None, {"bars": bars, "decisions": decisions})
+    assert _cash_reasons(unfunded) == []
+    assert any(row["qty"] == 200 for row in unfunded["fills"])
+
+
+@pytest.mark.parametrize("present", ["cash_flow_policy", "cash_flow_policy_sha256"])
+def test_one_half_of_the_cash_flow_pair_alone_refuses_naming_both(present):
+    params = _shipped_replay_params(**{present: _cash_flow_pair()[present]})
+    message = (
+        "cash_flow_policy and cash_flow_policy_sha256 must both be present or both be absent"
+    )
+    assert DevelopmentReplay.validate_params(params) == [message]
+    with pytest.raises(ConfigError) as caught:
+        DevelopmentReplay("replay", params)
+    assert caught.value.errors == [f"replay: {message}"]
+
+
+@pytest.mark.parametrize(
+    "value", _MALFORMED_CASH_FLOW_POLICY_PATHS, ids=["int", "list", "empty"]
+)
+def test_a_malformed_cash_flow_policy_refuses_cleanly_never_a_type_error(value):
+    params = _shipped_replay_params(**dict(_cash_flow_pair(), cash_flow_policy=value))
+    assert DevelopmentReplay.validate_params(params) == [
+        "cash_flow_policy must be a non-empty path"
+    ]
+    with pytest.raises(ConfigError) as caught:
+        DevelopmentReplay("replay", params)
+    assert caught.value.errors == ["replay: cash_flow_policy must be a non-empty path"]
+
+
+def test_a_missing_cash_flow_policy_path_refuses():
+    params = _shipped_replay_params(**_cash_flow_pair("configs/no-such-cash-flow-policy.json"))
+    expected = [
+        "cash_flow_policy path does not exist: "
+        + os.path.join(CHILD_ROOT, "configs", "no-such-cash-flow-policy.json")
+    ]
+    assert DevelopmentReplay.validate_params(params) == expected
+    with pytest.raises(ConfigError) as caught:
+        DevelopmentReplay("replay", params)
+    assert caught.value.errors == [f"replay: {expected[0]}"]
+
+
+@pytest.mark.parametrize(
+    "digest, expected",
+    [
+        ("0" * 64, "cash_flow_policy_sha256 does not match the loaded cash-flow-policy digest"),
+        (123, "cash_flow_policy_sha256 must be the cash-flow-policy digest"),
+    ],
+    ids=["mismatch", "non-string"],
+)
+def test_a_wrong_cash_flow_policy_digest_refuses(digest, expected):
+    params = _shipped_replay_params(
+        **dict(_cash_flow_pair(), cash_flow_policy_sha256=digest)
+    )
+    assert DevelopmentReplay.validate_params(params) == [expected]
+    with pytest.raises(ConfigError) as caught:
+        DevelopmentReplay("replay", params)
+    assert caught.value.errors == [f"replay: {expected}"]

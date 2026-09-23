@@ -36,6 +36,7 @@ _PUBLIC_TYPES = {
     "CapturedAuthorizationAuthority",
     "CapturedAuthorizationRecord",
     "CapturedBindings",
+    "CapturedPortSet",
     "CapturedJsonArtifact",
     "CapturedLifecyclePort",
     "CapturedMemberHandle",
@@ -60,6 +61,9 @@ _PUBLIC_TYPES = {
     "TrustedRuntimeVerifier",
     "VerifiedCapture",
     "VerifiedExternalArtifactAnchor",
+    "VerifiedV2ProjectionInput",
+    "consume_v2_projection_input",
+    "prepare_v2_projection_input",
 }
 
 

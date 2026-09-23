@@ -1,0 +1,78 @@
+{
+  "schema_version": "RedGreenEvidence.v1",
+  "slice_id": "intraday F3 environment-bound synthetic raw-event/v2 publication",
+  "adr": "ADR-0173",
+  "branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "phase0_evidence": "docs/evidence/closeout/0201-intraday-f3-v2-raw-publication-phase0.json",
+  "owner_approval": {
+    "received": true,
+    "channel": "task conversation",
+    "instruction": "yes; use your best judgement; work autonomously",
+    "scope": "implement the reviewed bounded dependency with TDD and independent skeptic review"
+  },
+  "red": {
+    "commit": "6734b64",
+    "result": "genuine environment-bound raw-event/v2 publication was absent",
+    "test": "tests/pipeline/test_v2_raw_publication.py"
+  },
+  "green_and_corrections": [
+    {"commit": "b26290c", "description": "initial environment-bound v2 raw publication route"},
+    {"commit": "df7b9fe", "description": "remove callable writer bypasses and add private binding authority"},
+    {"commit": "700532a", "description": "seal binding identity and writer route"},
+    {"commit": "aa1fb2f", "description": "derive writer schema from the retained fixture"},
+    {"commit": "ae81351", "description": "separate fixed v1 and v2 entry routing"},
+    {"commit": "70afa4b", "description": "align conservative writer-invoked failure polarity"},
+    {"commit": "e72ef70", "description": "expand binding, transaction and downstream evidence"},
+    {"commit": "ae44860", "description": "seal the exact writer-invoked boundary"},
+    {"commit": "23c47ce", "description": "require exact environment seal identity"},
+    {"commit": "5327969", "description": "prove the downstream root-PIS constructor cut"},
+    {"commit": "cff3c1a", "description": "complete under-lock Cartesian and alias evidence"},
+    {"commit": "dfc1650", "description": "RED: expose raw-writer helper dispatch bypasses"},
+    {"commit": "b018e06", "description": "seal all reachable raw-writer helper descriptors"},
+    {"commit": "076914d", "description": "RED: expose v2 authority descriptor bypasses"},
+    {"commit": "105e1c5", "description": "seal publisher, fixture and preflight authority descriptors"},
+    {"commit": "7ebc78d", "description": "complete direct v2 publication evidence matrix"},
+    {"commit": "71a46ad", "description": "RED: expose binding-state revival and comparison callbacks"},
+    {"commit": "aaa46d3", "description": "seal exact terminal state, weak self-reference and publisher comparison dispatch"},
+    {"commit": "fc86407", "description": "RED: expose fixture comparison callbacks"},
+    {"commit": "80c2bb2", "description": "pin fixture hash/equality dispatch before weak-map access"}
+  ],
+  "final_candidate": {
+    "commit": "80c2bb2d5f467770ef65f6c348264996c2cb6232",
+    "blobs": {
+      "dskit/pipeline/trust.py": "7e199e657f773a986392f4c2dad89f09e8e255ea",
+      "tests/pipeline/test_v2_raw_publication.py": "ffdd76428db07619454e5751dbcfb50967cdf38e",
+      "docs/architecture/decision-log.md": "c272ac0b9f068d5d970730a96bdd86be786a18ef"
+    },
+    "dedicated_result": "87 passed",
+    "bounded_final_result": "1677 passed, 1 expected xfail",
+    "ruff": "clean",
+    "diff_check": "clean"
+  },
+  "skeptic_history": [
+    {"candidate": "b26290c", "verdict": "NO-GO", "disposition": "closed direct common-writer, weak-record, descriptor and lifecycle gaps"},
+    {"candidate": "df7b9fe", "verdict": "NO-GO", "disposition": "closed closure-writer and forged-map bypasses"},
+    {"candidate": "700532a", "verdict": "NO-GO", "disposition": "removed caller-selected schema routing"},
+    {"candidate": "aa1fb2f", "verdict": "NO-GO", "disposition": "made v1/v2 routing entry-fixed"},
+    {"candidate": "ae81351", "verdict": "NO-GO", "disposition": "moved writer-invoked boundary after all v2 gates"},
+    {"candidate": "e72ef70", "verdict": "NO-GO", "disposition": "covered post-return faults with an explicit invocation ledger"},
+    {"candidate": "23c47ce", "verdict": "NO-GO", "disposition": "replaced equality-based seal comparison with exact identity"},
+    {"candidate": "cff3c1a", "verdict": "NO-GO", "disposition": "sealed all dynamically reached raw-writer helpers"},
+    {"candidate": "b018e06", "verdict": "NO-GO", "disposition": "sealed the complete v2 ownership descriptor chain"},
+    {"candidate": "105e1c5", "verdict": "NO-GO", "disposition": "filled direct authority, dispatch, lifecycle, delegation and downstream evidence gaps"},
+    {"candidate": "7ebc78d", "verdict": "NO-GO", "disposition": "independently sealed terminal state, weak self-reference and publisher comparison dispatch"},
+    {"candidate": "aaa46d3", "verdict": "NO-GO", "disposition": "pinned fixture comparison dispatch before weak-map access"}
+  ],
+  "two_sequential_clean_final_lenses": [
+    {"lens": "Q", "candidate": "80c2bb2d5f467770ef65f6c348264996c2cb6232", "verdict": "0C/0M/0m/0N", "tests": "87 passed"},
+    {"lens": "R", "candidate": "80c2bb2d5f467770ef65f6c348264996c2cb6232", "verdict": "0C/0M/0m/0N", "tests": "1755 passed, 1 expected xfail"}
+  ],
+  "files_changed": [
+    "dskit/pipeline/trust.py",
+    "tests/pipeline/test_v2_raw_publication.py",
+    "docs/architecture/decision-log.md",
+    "docs/evidence/closeout/0202-intraday-f3-v2-raw-publication-red-green.json"
+  ],
+  "non_authority": "This slice opens only genuine environment-bound synthetic raw-event/v2 publication and nonauthorizing root proof. Projection input, envelope writing, composed tape, replay, backtest, HPO, paper/live trading and deployment remain unauthorized."
+}

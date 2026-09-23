@@ -1,0 +1,7 @@
+{
+  "currency": "USD",
+  "daily_contribution_amount": "20",
+  "initial_capital_amount": "1000",
+  "timezone": "America/New_York",
+  "notes": "P19 full backtest (ADR-0176): $1,000 initial capital folded into day one via ReplayCashFlowComposer's ReplaceCashFlow override, then $20/day every day after. Anchored to the replay's own tape start; schedule_id is the replay's own fresh series_id, so no two runs can collide."
+}

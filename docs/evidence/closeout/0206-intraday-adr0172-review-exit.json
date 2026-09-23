@@ -1,0 +1,83 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "intraday F3 one-shot verified synthetic v2 projection input",
+  "adr": "ADR-0172",
+  "branch": "claude/intraday-equities-backtest-cont-41xqxz",
+  "continuation_of_branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "phase0_evidence": "docs/evidence/closeout/0204-intraday-f3-v2-projection-input-phase0.json",
+  "continuation_handoff": "docs/evidence/closeout/0205-intraday-full-backtest-claude-continuation.md",
+  "required_starting_commit": "4834c9b7c672129b06533f803c0019163c77b2ed",
+  "owner_approval": {
+    "received": true,
+    "channel": "task conversation",
+    "scope": "continue the existing ADR-0172 implementation through the paste-ready prompt in evidence 0205; do not rewrite, replace, or redesign existing code"
+  },
+  "reuse_confirmed": {
+    "method": "read-before-write sweep of dskit/pipeline/trust.py (_build_synthetic_v2_projection_input) and dskit/production/verifier.py (_build_verified_v2_projector) confirmed VerifiedV2ProjectionInput, _prepare_synthetic_v2_projection_input, consume_v2_projection_input, and _project_verified_synthetic_v2_input with its recursive executable-dependency-graph capture already existed and were fully wired at the required starting commit",
+    "action_taken": "no implementation file touched; only the required Phase-0 matrix test rows were added"
+  },
+  "prior_state": {
+    "focused_result_at_9f32a72": "16 passed in 3.03s",
+    "open_gap": "item 3 of evidence 0205's independent skeptic state: the required Phase-0 matrix was incomplete"
+  },
+  "matrix_completion": {
+    "commit": "b655644",
+    "file": "tests/pipeline/test_v2_projection_input.py",
+    "new_tests_added": 16,
+    "total_tests_in_file": 32,
+    "rows_closed": [
+      "wrong/non-exact proof type at prepare",
+      "genuine v1 proof refusal with explicit v1 parity",
+      "tampered raw-byte tuple at every position",
+      "state mutation at prepare (retained event backing-dict tamper before mint)",
+      "state mutation at consume (retained event backing-dict tamper between mint and consume)",
+      "terminal post-consume failure (spend is final even after the tampered value is restored)",
+      "concurrent double consume (single winner under contended access)",
+      "recursive dependency replacement: json.dumps, hashlib.sha256, gc.get_referents",
+      "in-place mutation of a nested (non-top-level) helper reached transitively (base._plain.__code__)",
+      "mutable schema-table replacement (DATASET_AUTHORIZATION_EVENT_SCHEMAS, RAW_EVENT_FIELDS)",
+      "exact provider/cache effects and no bridge-added SQL/reserve/WORM/receipt/lifecycle/network effect (structural effect-delta parity against two direct raw_proof.verify() calls)"
+    ],
+    "disposition": "all 32 tests pass against the existing implementation unmodified; no defect found; no implementation file changed"
+  },
+  "commands": {
+    "focused": "PYTHONPATH=$PWD python3 -m pytest tests/pipeline/test_v2_projection_input.py -q",
+    "focused_result": "32 passed",
+    "ruff": "clean (tests/pipeline/test_v2_projection_input.py)",
+    "diff_check": "clean",
+    "bounded_regression": "PYTHONPATH=$PWD python3 -m pytest tests/pipeline/test_captured_authorization.py tests/pipeline/test_event_wire_v2.py tests/pipeline/test_synthetic_environment_identity.py tests/pipeline/test_v2_raw_publication.py tests/pipeline/test_v2_projection_input.py tests/pipeline/test_trust.py tests/pipeline/test_purity.py tests/production/test_bundles.py tests/production/test_capture_lifecycle.py tests/production/test_captured_authorization.py tests/production/test_v2_event_envelope_projection.py tests/production/test_verifier.py tests/production/test_purity.py -q",
+    "bounded_regression_result": "1978 passed, 1 xfailed in 161.60s"
+  },
+  "final_candidate": {
+    "commit": "b65564416e4fc8b8981f66de209d14e2bf11dea0",
+    "blobs": {
+      "dskit/pipeline/trust.py": "bae15c6b13eae9793aed00069ed62c92e57c05a2",
+      "dskit/production/verifier.py": "0d67761419b1bee8d44d0ed239a2075649cd7ad9",
+      "tests/pipeline/test_v2_projection_input.py": "f36471e755edcf44c7949848556975e4987a88b6"
+    }
+  },
+  "two_sequential_clean_final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "model": "Claude Haiku 4.5",
+      "candidate": "b65564416e4fc8b8981f66de209d14e2bf11dea0",
+      "verdict": "0C/0M/0m/0N",
+      "tests": "32 passed",
+      "notes": "confirmed authority-boundary reuse, one-shot semantics, recursive dependency-closure genuineness, and opacity/finality; found no vacuous assertions"
+    },
+    {
+      "lens": "tests/integration",
+      "model": "Claude Haiku 4.5",
+      "candidate": "b65564416e4fc8b8981f66de209d14e2bf11dea0",
+      "verdict": "0C/0M/0m/0N",
+      "tests": "1978 passed, 1 xfailed (full bounded regression) + 32 passed (focused)",
+      "notes": "confirmed all 23 required-matrix clauses map to a specific test, no cross-test coupling, concurrent test deterministic across 5 repeated runs, active mutation testing (disabling the registry delete guard) turned a targeted test RED and was reverted; ruff and git diff --check re-verified independently"
+    }
+  ],
+  "files_changed": [
+    "tests/pipeline/test_v2_projection_input.py",
+    "docs/evidence/closeout/0206-intraday-adr0172-review-exit.json"
+  ],
+  "non_authority": "This slice closes only the ADR-0172 required Phase-0 matrix. It grants no envelope-writer, replay, backtest, paper/live trading, or deployment authority. Projection-input bridge behavior, bytes, and effects are unchanged from the prior candidate."
+}

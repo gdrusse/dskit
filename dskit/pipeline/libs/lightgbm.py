@@ -1,4 +1,4 @@
-"""The tier-2 LightGBM pack — a gradient-boosted volatility-scale rung (ADR-0169).
+"""The tier-2 LightGBM pack — a gradient-boosted volatility-scale rung (ADR-0181).
 
 :class:`LightGBMScaleLocationScale` is a
 :class:`~dskit.pipeline.distribution_models.ScaleModelLocationScale` whose

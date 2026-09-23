@@ -139,7 +139,7 @@ TestEmpiricalLocationScaleConformance = conformance_suite(
 )
 
 
-# -- ADR-0169: fitted-scale rungs -------------------------------------------
+# -- ADR-0181: fitted-scale rungs -------------------------------------------
 
 from dskit.pipeline.distribution_models import (  # noqa: E402
     LinearScaleLocationScale,

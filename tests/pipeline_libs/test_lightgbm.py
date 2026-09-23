@@ -1,4 +1,4 @@
-"""LightGBM volatility-scale rung (ADR-0169)."""
+"""LightGBM volatility-scale rung (ADR-0181)."""
 
 import math
 import os

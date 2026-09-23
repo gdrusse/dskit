@@ -1,0 +1,81 @@
+{
+  "schema_version": "BacktestGapPhase0.v1",
+  "renumbering_note": "originally recorded as ADR-0168; renumbered to ADR-0180 during the 2026-09-23 merge to main, which resolved an independent-lane ADR number collision (main's own ADR-0168 is the distribution-forecast harness for index_options, an unrelated decision). Every occurrence in this file was updated for consistency; no evidence content, blob hash, or commit reference changed.",
+  "base_commit": "b66c3ab8c5beb891674bbfc7a5022d93a935ff33",
+  "deployment_eligible": false,
+  "plan_correction": {
+    "path": "docs/plans/2026-09-12-json-pipeline-historical-backtester-tdd.md",
+    "blob": "b087b8248345c4fa848005b3e721b8568fe11914",
+    "accepted_source": "ADR-0159@ed75d1bd117cb8ba7b78e20d2e32beb6594af0c6",
+    "review_1": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "review_2": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "result": "clean; V2 plan conflict removed"
+  },
+  "bounded_adr": {
+    "id": "ADR-0180",
+    "path": "docs/architecture/decision-log.md",
+    "blob": "6855d644d8248aa4b1499a129832a05ebb8bdee4",
+    "scope": "F3 decision point 5 only: opaque replay CapturedPortSet over an already committed P4 batch",
+    "phase0_recheck": {"critical": 0, "major": 0, "minor": 0, "nit": 1},
+    "nit_disposition": "ADR-0180 orders the final fresh Phase 0 after approval; this preapproval recheck found no material issue but does not replace that gate.",
+    "result": "implementation remains blocked on explicit owner approval and the required post-approval fresh Phase 0"
+  },
+  "postapproval_phase0": {
+    "reviewed_commit": "9237a396881a5cb3f849e4ef1a0ef0876438c9db",
+    "reviewed_adr_blob": "d95d8f410f11902d632fcfc472da390d2e6b3ff5",
+    "critical": 0,
+    "major": 2,
+    "minor": 0,
+    "nit": 0,
+    "findings": [
+      "The committed request retained only id(frozen), allowing a later object-ID reuse to substitute an unretained handle.",
+      "No fixed synthetic scope-policy projection authorized the tape_manifest/tape_data replay pair."
+    ],
+    "disposition": "ADR-0180 materially amended; prior approval no longer authorizes RED"
+  },
+  "amended_adr": {
+    "blob": "4ab6f8956dc9767a1802599ed87b38fdb95376ad",
+    "corrections": [
+      "retain exact committed capture handles after logical publication and before commit-after/return faults",
+      "append exactly one fixed nondeployment tape-pair scope projection and replace its fixed test certificate key/signature"
+    ],
+    "preapproval_recheck": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "status": "owner explicitly reapproved amended ADR at commit 2421ffd; final fresh Phase 0 pending"
+  },
+  "amended_owner_approval": "2026-09-22 explicit yes to amended ADR-0180 at commit 2421ffd",
+  "final_fresh_phase0": {
+    "reviewed_commit": "2421ffde4c4ad5e4230c26edc362fc34ee481d3c",
+    "reviewed_trust_blob": "d0892076a70390f1ff4efb255f84cccc3a86794a",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "focused_existing_p4_tests": "46 passed",
+    "result": "GO for bounded ADR-0180 RED; no replay, backtest, or deployment approval"
+  },
+  "adr0180_implementation": {
+    "red_commit": "5decae25b953b0f262f0abcd09c07503719b8731",
+    "clean_head": "0d9cfd7b952244c1ba36728ae40407307db67278",
+    "affected_tests": "1437 passed, 1 expected xfail",
+    "ruff": "clean",
+    "diff_check": "clean",
+    "final_lens_1": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "final_lens_2": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "result": "bounded ADR-0180 F3 decision point 5 complete; ReplayRun remains fail-closed and no historical backtest is authorized"
+  },
+  "already_available": [
+    "recurring cash-flow schedule and fold",
+    "one-ledger accounting state",
+    "NAV, TWR and MWR performance reporting",
+    "cost-aware developmental fill replay"
+  ],
+  "remaining_sequence": [
+    "remaining bounded F3 derivation, v2 wire and writer slices to F3 ReviewExit",
+    "F5b and final release gates",
+    "R1-R5 V2 replay runtime",
+    "I1 synthetic integration",
+    "separately authorized historical study"
+  ],
+  "owner_approval": "2026-09-22 explicit yes to ADR-0180 at commit 9237a39",
+  "non_authority": "Approval authorizes only bounded synthetic TDD after a clean fresh Phase 0; no capture, market data, lockbox, replay, backtest, paper/live action, HPO, refit or release use is authorized."
+}

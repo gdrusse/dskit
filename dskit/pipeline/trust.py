@@ -23,14 +23,21 @@ from abc import ABC, abstractmethod
 from functools import wraps
 from threading import RLock
 from types import MappingProxyType
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, WeakSet, ref as weakref_ref
 
+from dskit.pipeline.event_wire import (
+    AUTHORIZATION_SCOPE_FIELDS,
+    DATASET_AUTHORIZATION_EVENT_SCHEMAS,
+    RAW_EVENT_FIELDS,
+    ROSTER_AUTHORIZATION_EVENT_SCHEMAS,
+)
 from dskit.pipeline.node import Node, reject_unknown_params
 
 __all__ = [
     "CapturedAuthorizationAuthority",
     "CapturedAuthorizationRecord",
     "CapturedBindings",
+    "CapturedPortSet",
     "CapturedJsonArtifact",
     "CapturedLifecyclePort",
     "CapturedMemberHandle",
@@ -55,9 +62,13 @@ __all__ = [
     "TrustedRuntimeVerifier",
     "VerifiedCapture",
     "VerifiedExternalArtifactAnchor",
+    "VerifiedV2ProjectionInput",
+    "consume_v2_projection_input",
+    "prepare_v2_projection_input",
 ]
 
 _MAKE = object()
+_P4_PORT_STATE_MUTATE = object()
 _DEV_KEY = b"dskit.lifecycle-dev/v1"
 _HEX64 = 64
 _PLACEHOLDER = "0" * _HEX64
@@ -378,6 +389,12 @@ class CapturedAuthorizationAuthority(LifecycleAuthority):
             runtime_sha256=runtime_sha256,
             transition_nonces=transition_nonces,
         )
+
+    def captured_port_set(self, record, session):
+        """Mint the sole named tape-port view over one committed replay batch."""
+        if _p4_checked_port_set_dispatch is not _P4_PORT_SET_DISPATCH:
+            raise TypeError("P4 port-set dispatch integrity refused")
+        return _P4_PORT_SET_DISPATCH(self, record, session)
 
     def inspect_capture_admission(
         self, captures, admission_ref, *, consumer_run_identity,
@@ -2511,6 +2528,10 @@ class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
             transition_nonces=transition_nonces,
         )
 
+    def captured_port_set(self, record, session):
+        """Mint through the same checked authority and lifecycle ledger."""
+        return CapturedAuthorizationAuthority.captured_port_set(self, record, session)
+
     def _validate_capture_request(self, captures, runtime, nonces):
         """Validate complete live tuples without advancing any lifecycle state."""
         if type(captures) is not tuple or not captures:
@@ -2567,6 +2588,8 @@ class _SyntheticP4CapturedAuthorizationAuthority(_DevelopmentBroker,
 
 _P4_BASE_DISPATCH = CapturedAuthorizationAuthority.authorize_capture_set
 _P4_FINAL_DISPATCH = _SyntheticP4CapturedAuthorizationAuthority.authorize_capture_set
+_P4_BASE_PORT_SET = CapturedAuthorizationAuthority.captured_port_set
+_P4_FINAL_PORT_SET = _SyntheticP4CapturedAuthorizationAuthority.captured_port_set
 _P4_REQUEST_CHECK = _SyntheticP4CapturedAuthorizationAuthority._validate_capture_request
 _P4_RESOLVER_LOOKUP = _FixedWormTrustedArtifactResolver._lookup
 
@@ -2589,8 +2612,11 @@ def _p4_require_issued_authority(authority):
         or authority._p4_resolver is not issued[0]
         or CapturedAuthorizationAuthority.authorize_capture_set is not _P4_BASE_DISPATCH
         or type(authority).authorize_capture_set is not _P4_FINAL_DISPATCH
+        or CapturedAuthorizationAuthority.captured_port_set is not _P4_BASE_PORT_SET
+        or type(authority).captured_port_set is not _P4_FINAL_PORT_SET
         or type(authority)._validate_capture_request is not _P4_REQUEST_CHECK
         or "authorize_capture_set" in authority.__dict__
+        or "captured_port_set" in authority.__dict__
     ):
         raise TypeError("exact broker-issued P4 capability is required")
     resolver = issued[0]
@@ -2623,6 +2649,115 @@ def _p4_checked_dispatch(authority, captures, admission_ref, **runtime):
     if ledger is None or authority._p4_ledger is not ledger or _P4_COMMIT is not _LifecycleAuthorizationLedger.commit_p4_batch:
         raise TypeError("P4 same-domain ledger required")
     return _P4_COMMIT(ledger, captures, admission_ref, runtime)
+
+
+def _p4_checked_port_set_dispatch(authority, record, session):
+    """Mint one non-enumerable tape view from exact committed identities."""
+    if _p4_port_set_state_integrity is not _P4_PORT_SET_STATE_CHECK:
+        raise TypeError("P4 port-set state integrity refused")
+    _P4_PORT_SET_STATE_CHECK()
+    if _p4_require_issued_authority is not _P4_ISSUED_CHECK:
+        raise TypeError("P4 authority identity dispatch integrity refused")
+    _P4_ISSUED_CHECK(authority)
+    if type(record) is not CapturedAuthorizationRecord or type(session) is not LaunchSession:
+        raise TypeError("exact P4 record and session required")
+    ledger = _P4_RECORDS.get(record)
+    if ledger is None or ledger is not _LIFECYCLE_LEDGERS.get(authority) or authority._p4_ledger is not ledger:
+        raise ValueError("P4 committed record required")
+    with ledger._lock:
+        ledger._check()
+        matches = [entry for entry in ledger._p4_entries() if entry[4] is record]
+        _hs_refuse(len(matches) == 1, "P4 committed record required")
+        entry = matches[0]
+        _hs_refuse(session is entry[5] and not session._ended
+                   and _p4_session_pin(session) == entry[6],
+                   "P4 record/session mismatch")
+        seal = hmac.new(authority._map_key,
+                        b"P4 LaunchSession\x00" + _hs_canonical_bytes(dict(session._runtime)),
+                        hashlib.sha256).hexdigest()
+        _hs_refuse(hmac.compare_digest(entry[7], seal), "P4 session seal refused")
+        request = _hs_parse_canonical(entry[2])
+        audit = _hs_parse_canonical(entry[3])
+        _hs_refuse(audit["batch_sha256"] == _digest(_hs_canonical_bytes(
+            {key: value for key, value in audit.items() if key != "batch_sha256"})),
+            "P4 committed batch integrity refused")
+        retained_state = _p4_retained_capture_state(authority, ledger, record)
+        retained = retained_state._handles
+        _hs_refuse(type(retained) is tuple and len(retained) == 2
+                   and retained_state._view is None
+                   and retained_state._used == frozenset()
+                   and len(request["captures"]) == len(audit["streams"]) == 2
+                   and len(audit["ports"]) == len(audit["receipts"]) == 2
+                   and audit["replay"] is not None,
+                   "exact committed replay tape pair required")
+        captured_set = audit["set"]
+        replay_evidence = audit["replay"]
+        _p4_verify_local_signed(captured_set, "captured_authorization_set_sha256",
+                                "security-broker", "captured-authorization")
+        _p4_verify_local_signed(replay_evidence,
+                                "replay_capture_admission_evidence_sha256",
+                                "security-broker", "replay-capture-admission")
+        _hs_refuse(len(captured_set["entries"]) == len(replay_evidence["issued_ports"]) == 2
+                   and replay_evidence["captured_authorization_set_sha256"]
+                   == captured_set["captured_authorization_set_sha256"],
+                   "committed replay tape adjacency refused")
+        by_name = {}
+        document_digests = set()
+        for index, (published, frozen, port) in enumerate(retained):
+            projected = request["captures"][index]
+            _hs_refuse(type(published) is _Published and type(frozen) is _Frozen
+                       and type(port) is MappingProxyType
+                       and projected[0] == id(published) and projected[1] == id(frozen)
+                       and projected[2] == dict(port)
+                       and projected[3] == published.descriptor
+                       and projected[4] == _digest(_canonical_bytes(frozen.source)),
+                       "retained P4 capture identity mismatch")
+            name = port.get("consumer_input")
+            document_sha256 = port.get("consumer_document_sha256")
+            _hs_refuse(type(name) is str and type(document_sha256) is str
+                       and name not in by_name, "exact committed replay tape pair required")
+            stream = audit["streams"][index]
+            signed_port = audit["ports"][index]
+            receipt = audit["receipts"][index]
+            set_entry = captured_set["entries"][index]
+            replay_entry = replay_evidence["issued_ports"][index]
+            _p4_verify_local_signed(signed_port, "captured_port_authorization_sha256",
+                                    "security-broker", "captured-port-authorization")
+            _p4_verify_local_signed(receipt, "lifecycle_captured_receipt_sha256",
+                                    "security-broker", "lifecycle-capture")
+            _hs_refuse(receipt["stream_id"] == stream
+                       and receipt["captured_port_authorization_sha256"]
+                       == signed_port["captured_port_authorization_sha256"]
+                       and all(item["planned_entry_sha256"]
+                               == signed_port["planned_entry_sha256"]
+                               for item in (receipt, set_entry, replay_entry))
+                       and set_entry["captured_port_authorization_sha256"]
+                       == replay_entry["captured_port_authorization_sha256"]
+                       == signed_port["captured_port_authorization_sha256"]
+                       and set_entry["lifecycle_captured_receipt_sha256"]
+                       == replay_entry["lifecycle_captured_receipt_sha256"]
+                       == receipt["lifecycle_captured_receipt_sha256"],
+                       "committed replay tape adjacency refused")
+            _entry, _request, _audit, found = ledger._p4_record_capture(
+                record, stream, document_sha256)
+            _hs_refuse(found == index, "retained P4 capture order mismatch")
+            by_name[name] = (published, document_sha256, stream)
+            document_digests.add(document_sha256)
+        _hs_refuse(set(by_name) == {"tape_manifest", "tape_data"}
+                   and len(document_digests) == 1,
+                   "exact committed replay tape pair required")
+        view = object.__new__(CapturedPortSet)
+        retained_state._mint(_P4_PORT_STATE_MUTATE, view)
+        _P4_CAPTURE_STATE_PINS[retained_state] = _p4_capture_state_seal(
+            authority, ledger, record, retained_state)
+        view_state = (authority, ledger, record, session)
+        _P4_PORT_SET_VIEWS[view] = (
+            *view_state, _p4_port_view_seal(authority, view, view_state),
+        )
+        return view
+
+
+_P4_PORT_SET_DISPATCH = _p4_checked_port_set_dispatch
 
 
 def _development_p4_broker(*, fixture_facts=None):
@@ -3918,23 +4053,24 @@ class _P4ResolverSnapshot(_Opaque):
 # file/URL lookup, caller policy, or caller-supplied verification flag here.
 _P4_EXTERNAL_RECORDS = (
     ("G1-dataset-authorization",
-     "03e4a325a9adde7fec26ee1835c6cdef9f6b84eea226e7fedfebb351a21a72b4",
-     "48afcac1de36bb1eb45475a66ec4e61563cf66fe4cc10f0e7c8f2d10ddca7a2389"
-     "5fe5238f19b7a008353dcc610d2956c0decea8bb1ad1c6cae5c8c2393b6b01"),
+     "4ad08665610366b70e38ffeeb53a78a8562abcf227e778863aba34838f44271a",
+     "56fe4b8681dced80a8d915e9fcf66ee7f5338cdb3a4128a017891783d3f316d8"
+     "47873e4a82f91b3b1f6d381dfad7e29771d5c1d91e1e0e100f58de3e9a70d30a"),
     ("G2-dataset-authorization",
-     "871ce2c3f83d488b08b3df46b5dac40c7693239904d4e076c08c3d857283d645",
-     "bd6a813d14a6f461ab54d894bd62cc962a4759184b4f812cb46a567d4a7627376c"
-     "c8c27a37fcd5d4caf8c21b48438a91ad11bbd314d1634da4199affd6766100"),
+     "9cfb3c29920873af887dac1473d2c51fa9bb3d8bdddc2973449d678545207114",
+     "277d0654e2269441ed3cce6286ff1d68debb518f0e5c0281829a37e6d006fe733"
+     "8b1188d6bf8a5875bf188725e22279582b668ce35ca3d700858cf931923c006"),
     ("fixed-owner-policy",
-     "456884347696ca39296e2442b21268838ec5b9e728a0c3ca28bf0396a661753e",
-     "5939a9f5b4709563c0be0695083e5abbce3f41f482d2d2b27a984203b733855be"
-     "34792e3d82b9f26ecc1cacf0fc330eb980aaa455434a1846c14fc94c427c904"),
+     "f2aa0e2493c4af124296be128f491fe017637b51f5ea1770d3ddf1e6935de1bc",
+     "705774980ced165d05af2e233d6667963ab8770630c3807a0be38da703b2288d8"
+     "4f21d7cd0e09ee6be9a59719bba33989436b673726bca11c2e0a3ae4ac8cd02"),
 )
 _P4_APPROVED_SCOPE_PROJECTIONS = (
     "e61b568822008c9e9fcbe4f0149d39c3ec2b1196dab7d72caf593b1a848b811f",
     "923fa789dc1051fd8576e6af8588d97731f890f6d1a0f1404494b345a4c566dc",
     "3d125ac8581f1a06b6996697b8277a30481025332bc2df43087ca1d159b3e965",
     "53b0cc17b04c5922e25d6a9629014faf2243ed718b5480cde7a00bac12c9f0b5",
+    "e2957cc8508ce431ad6fb65c7dfc797bbfa1c578dac909c74b7bd86ee3d4b51c",
 )
 _P4_APPROVED_ROOT_PROJECTIONS = (
     "f490ad52c7da54f3d7cffd898e30f535b69457e538ae0be5bb0f74dcc1cc5a0a",
@@ -4980,11 +5116,245 @@ class CapturedAuthorizationRecord(_Opaque):
         raise TypeError("CapturedAuthorizationRecord is final")
 
 
+class _RetainedP4CaptureState(_Opaque):
+    """Private monotonic owner of exact committed handles and local spends."""
+
+    __slots__ = ("_handles", "_view", "_view_id", "_used", "_locked", "__weakref__")
+
+    def __init__(self, token, handles):
+        if token is not _MAKE:
+            raise TypeError("retained P4 capture state is private")
+        object.__setattr__(self, "_locked", False)
+        object.__setattr__(self, "_handles", handles)
+        object.__setattr__(self, "_view", None)
+        object.__setattr__(self, "_view_id", None)
+        object.__setattr__(self, "_used", frozenset())
+        object.__setattr__(self, "_locked", True)
+
+    def _mint(self, token, view):
+        if token is not _P4_PORT_STATE_MUTATE or self._view is not None:
+            raise ValueError("captured port set already minted")
+        object.__setattr__(self, "_view", weakref_ref(view))
+        object.__setattr__(self, "_view_id", id(view))
+
+    def _use(self, token, view, name):
+        if (token is not _P4_PORT_STATE_MUTATE or self._view is None
+                or self._view() is not view or name in self._used):
+            raise ValueError("captured port already required")
+        object.__setattr__(self, "_used", self._used | frozenset((name,)))
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_locked", False):
+            raise AttributeError("retained P4 capture state is frozen")
+        object.__setattr__(self, name, value)
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("retained P4 capture state is final")
+
+
+class CapturedPortSet(_Opaque):
+    """Opaque, non-enumerable two-port view for one committed replay tape."""
+
+    __slots__ = ("__weakref__",)
+
+    def require(self, name):
+        """Return the one reader for an exact required port name."""
+        _P4_PORT_SET_STATE_CHECK()
+        if type(name) is not str:
+            raise TypeError("exact captured port name required")
+        authority, ledger, record, session, _seal = _p4_checked_port_view(self)
+        with ledger._lock:
+            ledger._check()
+            _P4_ISSUED_CHECK(authority)
+            retained_state = _p4_retained_capture_state(authority, ledger, record)
+            retained = retained_state._handles
+            _hs_refuse(_P4_RECORDS.get(record) is ledger and not session._ended
+                       and retained_state._view is not None
+                       and retained_state._view() is self
+                       and retained_state._view_id == id(self)
+                       and type(retained_state._used) is frozenset,
+                       "required captured port refused")
+            audit = ledger._audit(record)
+            entries = [entry for entry in ledger._p4_entries() if entry[4] is record]
+            _hs_refuse(len(entries) == 1 and len(retained) == len(audit["streams"]) == 2,
+                       "required captured port refused")
+            _hs_refuse(session is entries[0][5]
+                       and _p4_session_pin(session) == entries[0][6],
+                       "required captured port refused")
+            request = _hs_parse_canonical(entries[0][2])
+            for index, (published, frozen, port) in enumerate(retained):
+                projected = request["captures"][index]
+                _hs_refuse(type(published) is _Published and type(frozen) is _Frozen
+                           and type(port) is MappingProxyType
+                           and projected[0] == id(published)
+                           and projected[1] == id(frozen)
+                           and projected[2] == dict(port)
+                           and projected[3] == published.descriptor
+                           and projected[4] == _digest(_canonical_bytes(frozen.source)),
+                           "required captured port refused")
+            by_name = {
+                port["consumer_input"]: (
+                    published, port["consumer_document_sha256"],
+                    audit["streams"][index],
+                )
+                for index, (published, _frozen, port) in enumerate(retained)
+            }
+            _hs_refuse(set(by_name) == {"tape_manifest", "tape_data"}
+                       and name in by_name, "required captured port refused")
+            _hs_refuse(name not in retained_state._used,
+                       "captured port already required")
+            published, document_sha256, stream = by_name[name]
+            ledger._p4_record_capture(record, stream, document_sha256)
+            reader = object.__new__(_CapturedPortReader)
+            reader_state = (weakref_ref(reader), self, record, session,
+                            published, document_sha256, stream, name)
+            seal = _p4_port_reader_seal(authority, reader, reader_state)
+            _P4_PORT_READERS[reader] = (*reader_state, seal)
+            retained_state._use(_P4_PORT_STATE_MUTATE, self, name)
+            _P4_CAPTURE_STATE_PINS[retained_state] = _p4_capture_state_seal(
+                authority, ledger, record, retained_state)
+            return reader
+
+    def __new__(cls, *args, **kwargs):
+        """Refuse construction from public or reconstructed data."""
+        raise TypeError("CapturedPortSet is broker-issued")
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse subtype substitution for the issued port set."""
+        raise TypeError("CapturedPortSet is final")
+
+
+class _CapturedPortReader(_Opaque):
+    """Private one-port read capability; state is held outside the object."""
+
+    __slots__ = ("__weakref__",)
+
+    @property
+    def lifecycle_captured_receipt_sha256(self):
+        _P4_PORT_SET_STATE_CHECK()
+        state = _p4_checked_port_reader(self)
+        _issued, _view, record, _session, _published, document_sha256, stream, _name, _seal = state
+        return record.lifecycle_captured_receipt_sha256(stream, document_sha256)
+
+    def read_member_bytes(self, relative_path):
+        _P4_PORT_SET_STATE_CHECK()
+        state = _p4_checked_port_reader(self)
+        _issued, _view, record, session, published, document_sha256, _stream, _name, _seal = state
+        return record.read_member_bytes(session, published, document_sha256,
+                                        relative_path)
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("captured port reader is broker-issued")
+
+    def __init_subclass__(cls, **kwargs):
+        raise TypeError("captured port reader is final")
+
+
 _LIFECYCLE_LEDGERS = WeakKeyDictionary()
 _LIFECYCLE_VIEWS = WeakKeyDictionary()
 _P4_LEDGER_PINS = WeakKeyDictionary()
 _P4_RECORDS = WeakKeyDictionary()
 _P4_PREPARED = WeakKeyDictionary()
+_P4_CAPTURE_HANDLES = WeakKeyDictionary()
+_P4_CAPTURE_STATE_PINS = WeakKeyDictionary()
+_P4_PORT_SET_VIEWS = WeakKeyDictionary()
+_P4_PORT_READERS = WeakKeyDictionary()
+_P4_PORT_SET_STATE = (
+    _P4_CAPTURE_HANDLES, _P4_CAPTURE_STATE_PINS, _P4_PORT_SET_VIEWS,
+    _P4_PORT_READERS,
+)
+
+
+def _p4_port_set_state_integrity():
+    """Hold the four private weak state domains by exact identity."""
+    current = (
+        _P4_CAPTURE_HANDLES, _P4_CAPTURE_STATE_PINS, _P4_PORT_SET_VIEWS,
+        _P4_PORT_READERS,
+    )
+    if not all(value is pinned for value, pinned in zip(current, _P4_PORT_SET_STATE, strict=True)):
+        raise TypeError("P4 port-set state integrity refused")
+
+
+_P4_PORT_SET_STATE_CHECK = _p4_port_set_state_integrity
+
+
+def _p4_capture_state_seal(authority, ledger, record, state):
+    projection = [[id(published), id(frozen), dict(port)]
+                  for published, frozen, port in state._handles]
+    body = _hs_canonical_bytes({
+        "state": id(state), "ledger": id(ledger), "record": id(record),
+        "captures": projection,
+        "view_ref": None if state._view is None else id(state._view),
+        "view_id": state._view_id,
+        "used": sorted(state._used),
+    })
+    return hmac.new(authority._map_key, b"P4 CapturedPortSet state\x00" + body,
+                    hashlib.sha256).hexdigest()
+
+
+def _p4_retained_capture_state(authority, ledger, record):
+    state = _P4_CAPTURE_HANDLES.get(record)
+    _hs_refuse(type(state) is _RetainedP4CaptureState,
+               "retained P4 capture state refused")
+    expected = _p4_capture_state_seal(authority, ledger, record, state)
+    _hs_refuse(hmac.compare_digest(_P4_CAPTURE_STATE_PINS.get(state, ""), expected),
+               "retained P4 capture state refused")
+    return state
+
+
+def _p4_port_reader_seal(authority, reader, state):
+    issued, view, record, session, published, document_sha256, stream, name = state
+    body = _hs_canonical_bytes({
+        "reader": id(reader), "view": id(view), "record": id(record),
+        "session": id(session), "published": id(published),
+        "document_sha256": document_sha256, "stream": stream, "name": name,
+        "issued_ref": id(issued),
+    })
+    return hmac.new(authority._map_key, b"P4 captured port reader\x00" + body,
+                    hashlib.sha256).hexdigest()
+
+
+def _p4_port_view_seal(authority, view, state):
+    state_authority, ledger, record, session = state
+    body = _hs_canonical_bytes({
+        "view": id(view), "authority": id(state_authority),
+        "ledger": id(ledger), "record": id(record), "session": id(session),
+    })
+    return hmac.new(authority._map_key, b"P4 captured port view\x00" + body,
+                    hashlib.sha256).hexdigest()
+
+
+def _p4_checked_port_view(view):
+    state = _P4_PORT_SET_VIEWS.get(view)
+    _hs_refuse(type(state) is tuple and len(state) == 5,
+               "issued captured port set required")
+    authority, ledger, record, session, seal = state
+    expected = _p4_port_view_seal(authority, view, state[:-1])
+    _hs_refuse(hmac.compare_digest(seal, expected),
+               "issued captured port set required")
+    return state
+
+
+def _p4_checked_port_reader(reader):
+    state = _P4_PORT_READERS.get(reader)
+    _hs_refuse(type(state) is tuple and len(state) == 9 and state[0]() is reader,
+               "issued captured port reader required")
+    _issued, view, record, session, published, document_sha256, stream, name, seal = state
+    authority, ledger, view_record, view_session, _view_seal = _p4_checked_port_view(view)
+    retained = _p4_retained_capture_state(authority, ledger, record)
+    expected = _p4_port_reader_seal(authority, reader, state[:-1])
+    entries = [entry for entry in ledger._p4_entries() if entry[4] is record]
+    _hs_refuse(view_record is record and view_session is session
+               and len(entries) == 1 and session is entries[0][5]
+               and not session._ended and _p4_session_pin(session) == entries[0][6]
+               and retained._view is not None and retained._view() is view
+               and name in retained._used and hmac.compare_digest(seal, expected),
+               "issued captured port reader required")
+    _hs_refuse(any(candidate is published and port["consumer_input"] == name
+                   and port["consumer_document_sha256"] == document_sha256
+                   for candidate, _frozen, port in retained._handles),
+               "issued captured port reader required")
+    return state
 _P4_BATCH_USES = MappingProxyType({
     "captured-port": ("dskit.captured-port-authorization/v2", "captured_port_authorization_sha256", "captured-port-authorization"),
     "captured-receipt": ("dskit.lifecycle-captured-receipt/v2", "lifecycle_captured_receipt_sha256", "lifecycle-capture"),
@@ -5547,6 +5917,12 @@ class _LifecycleAuthorizationLedger(_Opaque):
                 # session-start are inseparable fields in this immutable root.
                 self._root, self._pin = root, pin
                 _P4_LEDGER_PINS[self] = pin
+                retained = tuple((published, frozen, MappingProxyType(dict(port)))
+                                 for published, frozen, port in captures)
+                retained_state = _RetainedP4CaptureState(_MAKE, retained)
+                _P4_CAPTURE_HANDLES[record] = retained_state
+                _P4_CAPTURE_STATE_PINS[retained_state] = _p4_capture_state_seal(
+                    authority, self, record, retained_state)
                 self._fault("commit-after")
                 self._fault("return")
                 return record, session
@@ -5677,7 +6053,11 @@ class NonAuthorizingSyntheticGrantVerifier:
     def _authorization(cls, value):
         cls._require(type(value) is dict and set(value) == _SYNTHETIC_GRANT_AUTH_KEYS,
                      "closed dataset authorization is required")
-        cls._require(value["schema_version"] == "dskit.dataset-capture-authorization/v1",
+        authorization_schema = value["schema_version"]
+        event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS.get(
+            authorization_schema,
+        )
+        cls._require(event_schema is not None,
                      "dataset authorization version refused")
         cls._require(type(value["authorization_id"]) is str
                      and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(
@@ -5696,19 +6076,31 @@ class NonAuthorizingSyntheticGrantVerifier:
         for digest in licenses:
             cls._hash(digest)
         scope = value["scope"]
-        cls._require(type(scope) is dict and set(scope) == {
-            "availability_start_ms", "availability_end_ms", "source_provenance_sha256",
-        }, "closed dataset scope is required")
+        cls._require(
+            type(scope) is dict
+            and set(scope) == set(AUTHORIZATION_SCOPE_FIELDS[event_schema]),
+            "closed dataset scope is required",
+        )
         start, end = scope["availability_start_ms"], scope["availability_end_ms"]
         cls._require(type(start) is int and type(end) is int and start <= end,
                      "dataset availability scope refused")
+        if event_schema == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v2"
+        ]:
+            cls._require(start >= 0, "dataset availability scope refused")
         cls._hash(scope["source_provenance_sha256"])
+        if "tzdata_version_sha256" in scope:
+            cls._hash(scope["tzdata_version_sha256"])
+            cls._require(
+                scope["tzdata_version_sha256"] != _PLACEHOLDER,
+                "nonplaceholder tzdata version digest required",
+            )
         for name in ("source_roster_root_sha256",
                      "source_roster_publication_receipt_sha256",
                      "source_roster_policy_sha256",
                      "correction_bust_metadata_sha256"):
             cls._hash(value[name])
-        cls._require(value["event_schema"] == "dskit.raw-event/v1"
+        cls._require(value["event_schema"] == event_schema
                      and value["media_type"] == "application/x-ndjson"
                      and type(value["allow_empty_capture"]) is bool,
                      "dataset schema, media or empty policy refused")
@@ -5934,10 +6326,12 @@ class NonAuthorizingRosterBootstrapVerifier:
         _hs_refuse(type(value) is dict
                    and set(value) == _SYNTHETIC_ROSTER_BOOTSTRAP_AUTH_KEYS,
                    "closed roster bootstrap authorization required")
-        _hs_refuse(
-            value["schema_version"] == "dskit.roster-bootstrap-authorization/v1",
-            "roster bootstrap authorization version refused",
+        authorization_schema = value["schema_version"]
+        event_schema = ROSTER_AUTHORIZATION_EVENT_SCHEMAS.get(
+            authorization_schema,
         )
+        _hs_refuse(event_schema is not None,
+                   "roster bootstrap authorization version refused")
         name = value["bootstrap_id"]
         _hs_refuse(type(name) is str
                    and _SYNTHETIC_GRANT_SOURCE_ID.fullmatch(name) is not None,
@@ -5950,16 +6344,29 @@ class NonAuthorizingRosterBootstrapVerifier:
                    and sources == sorted(set(sources)),
                    "canonical nonempty source ids required")
         scope = value["scope"]
-        _hs_refuse(type(scope) is dict and set(scope) == {
-            "availability_start_ms", "availability_end_ms",
-            "source_provenance_sha256",
-        }, "closed roster bootstrap scope required")
+        _hs_refuse(
+            type(scope) is dict
+            and set(scope) == set(AUTHORIZATION_SCOPE_FIELDS[event_schema]),
+            "closed roster bootstrap scope required",
+        )
         start, end = scope["availability_start_ms"], scope["availability_end_ms"]
         _hs_refuse(type(start) is int and type(end) is int and start <= end,
                    "roster bootstrap availability refused")
+        if event_schema == ROSTER_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.roster-bootstrap-authorization/v2"
+        ]:
+            _hs_refuse(start >= 0, "roster bootstrap availability refused")
         NonAuthorizingSyntheticGrantVerifier._hash(
             scope["source_provenance_sha256"],
         )
+        if "tzdata_version_sha256" in scope:
+            NonAuthorizingSyntheticGrantVerifier._hash(
+                scope["tzdata_version_sha256"],
+            )
+            _hs_refuse(
+                scope["tzdata_version_sha256"] != _PLACEHOLDER,
+                "nonplaceholder tzdata version digest required",
+            )
         licenses = value["license_digests"]
         _hs_refuse(type(licenses) is list
                    and all(type(item) is str for item in licenses)
@@ -5967,7 +6374,7 @@ class NonAuthorizingRosterBootstrapVerifier:
                    "canonical license digests required")
         for digest in licenses:
             NonAuthorizingSyntheticGrantVerifier._hash(digest)
-        _hs_refuse(value["event_schema"] == "dskit.raw-event/v1"
+        _hs_refuse(value["event_schema"] == event_schema
                    and value["media_type"] == "application/x-ndjson",
                    "roster bootstrap schema or media refused")
         policy = {
@@ -6699,7 +7106,7 @@ class _SyntheticRosterPublisher:
             refs = [
                 {"kind": "roster-bootstrap-authorization",
                  "role": "security-data",
-                 "schema": "dskit.roster-bootstrap-authorization/v1",
+                 "schema": authorization["schema_version"],
                  "sha256": bootstrap_sha256},
                 {"kind": "roster-bootstrap-grant", "role": "G1",
                  "schema": "dskit.roster-bootstrap-grant/v1",
@@ -7043,7 +7450,7 @@ class NonAuthorizingRosterRootProof:
         refs = [
             {"kind": "roster-bootstrap-authorization",
              "role": "security-data",
-             "schema": "dskit.roster-bootstrap-authorization/v1",
+             "schema": authorization["schema_version"],
              "sha256": bootstrap_sha256},
             {"kind": "roster-bootstrap-grant", "role": "G1",
              "schema": "dskit.roster-bootstrap-grant/v1",
@@ -7143,16 +7550,140 @@ class NonAuthorizingRosterRootProof:
         })
 
 
+def _build_synthetic_environment_broker():
+    """Build one closure-owned, nondeployment environment fact broker."""
+    mapping_proxy = MappingProxyType
+    weak_map = WeakKeyDictionary
+    weak_set = WeakSet
+    weak_ref = weakref_ref
+    canonical_bytes = _canonical_bytes
+    digest = _digest
+
+    payload = mapping_proxy({
+        "schema_version": "dskit.synthetic-environment-fact/v1",
+        "environment_id": "dskit.synthetic-environment/v1",
+        "tzdata_version": "synthetic-2026a",
+        "tzdata_version_sha256":
+            "cd690e4a500811dbc1ca0a79f0e5a8d9eb99debd5dc3c8d9bef5e278bf350cd0",
+        "deployment_eligible": False,
+    })
+    payload_digest = digest(canonical_bytes(dict(payload)))
+    state_domain_digest = digest(canonical_bytes({
+        "schema_version": "dskit.synthetic-environment-state-domain/v1",
+        "payload_sha256": payload_digest,
+    }))
+    mint_token = object()
+    issued = weak_set()
+    records = weak_map()
+
+    class _SyntheticEnvironmentIdentity:
+        __slots__ = (
+            "_schema_version", "_environment_id", "_tzdata_version",
+            "_tzdata_version_sha256", "_deployment_eligible", "__weakref__",
+        )
+
+        def __new__(cls, token=None):
+            if cls is not _SyntheticEnvironmentIdentity or token is not mint_token:
+                raise TypeError("broker-issued synthetic environment identity required")
+            return object.__new__(cls)
+
+        def __init__(self, token=None):
+            if token is not mint_token:
+                raise TypeError("broker-issued synthetic environment identity required")
+            for key, value in payload.items():
+                object.__setattr__(self, "_" + key, value)
+            issued.add(self)
+            records[self] = (
+                weak_ref(self), payload, payload_digest, state_domain_digest,
+            )
+
+        def __init_subclass__(cls, **kwargs):
+            del cls, kwargs
+            raise TypeError("the synthetic environment identity is final")
+
+        def __setattr__(self, name, value):
+            del self, name, value
+            raise AttributeError("synthetic environment identity is frozen")
+
+        def __reduce__(self):
+            raise TypeError("synthetic environment identity cannot be serialized")
+
+        def __reduce_ex__(self, protocol):
+            del protocol
+            raise TypeError("synthetic environment identity cannot be serialized")
+
+    identity_type = _SyntheticEnvironmentIdentity
+    expected_slots = tuple(("_" + key, value) for key, value in payload.items())
+    expected_descriptors = tuple(
+        (slot, type.__getattribute__(identity_type, "__dict__")[slot])
+        for slot, _value in expected_slots
+    )
+
+    def synthetic_environment_identity():
+        return identity_type(mint_token)
+
+    def synthetic_environment_facts(identity):
+        valid = type(identity) is identity_type and identity in issued
+        try:
+            record = records[identity] if valid else None
+        except (KeyError, TypeError):
+            record = None
+        valid = (
+            valid
+            and type(record) is tuple
+            and len(record) == 4
+            and type(record[0]) is weak_ref
+            and record[0]() is identity
+            and record[1] is payload
+            and type(record[2]) is str
+            and record[2] == payload_digest
+            and type(record[3]) is str
+            and record[3] == state_domain_digest
+            and all(
+                type.__getattribute__(identity_type, "__dict__").get(slot)
+                is descriptor
+                for slot, descriptor in expected_descriptors
+            )
+            and all(
+                type(object.__getattribute__(identity, slot)) is type(value)
+                and object.__getattribute__(identity, slot) == value
+                for slot, value in expected_slots
+            )
+        )
+        if not valid:
+            raise ValueError("synthetic environment identity refused")
+        return mapping_proxy(dict(payload))
+
+    def require_synthetic_tzdata(identity, signed_tzdata_version_sha256):
+        facts = synthetic_environment_facts(identity)
+        expected = facts["tzdata_version_sha256"]
+        if not (
+            type(signed_tzdata_version_sha256) is str
+            and len(signed_tzdata_version_sha256) == 64
+            and signed_tzdata_version_sha256 == signed_tzdata_version_sha256.lower()
+            and signed_tzdata_version_sha256 == expected
+        ):
+            raise ValueError("synthetic tzdata identity refused")
+
+    return (
+        identity_type, synthetic_environment_identity,
+        synthetic_environment_facts, require_synthetic_tzdata,
+    )
+
+
+(
+    _SyntheticEnvironmentIdentity,
+    _synthetic_environment_identity,
+    _synthetic_environment_facts,
+    _require_synthetic_tzdata,
+) = _build_synthetic_environment_broker()
+del _build_synthetic_environment_broker
+
+
 _SYNTHETIC_EMPTY_CORRECTION_METADATA = _hs_canonical_bytes({
     "corrections": [],
     "schema_version": "dskit.correction-bust-metadata/v1",
 })
-_SYNTHETIC_RAW_EVENT_KEYS = frozenset({
-    "schema_version", "source_id", "event_id", "source_sequence",
-    "availability_ms", "payload_sha256",
-})
-
-
 class _SyntheticFixtureSource:
     """Trusted host-installed synthetic source; lookup only on admitted read."""
 
@@ -7180,27 +7711,35 @@ class _SyntheticFixtureSource:
         return value
 
 
+_SYNTHETIC_RAW_FIXTURE_FACTS = WeakKeyDictionary()
+
+
 class VerifiedSyntheticDatasetFixture:
     """Opaque one-process validated fixture facts, without publication authority."""
 
-    __slots__ = ("_owner", "_intent", "_members", "_events", "_used",
-                 "event_count", "member_names", "deployment_eligible", "_locked")
+    __slots__ = ("_owner", "_intent", "_members", "_events", "_event_schema",
+                 "_used", "event_count", "member_names", "deployment_eligible",
+                 "_locked", "__weakref__")
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("the validated synthetic fixture is final")
 
-    def __init__(self, token, owner, intent, members, events):
+    def __init__(self, token, owner, intent, members, events, event_schema):
         if token is not _MAKE or type(owner) is not _SyntheticRawPreflight:
             raise TypeError("broker-issued synthetic fixture required")
         object.__setattr__(self, "_owner", owner)
         object.__setattr__(self, "_intent", intent)
         object.__setattr__(self, "_members", members)
         object.__setattr__(self, "_events", events)
+        object.__setattr__(self, "_event_schema", event_schema)
         object.__setattr__(self, "_used", False)
         object.__setattr__(self, "event_count", len(events))
         object.__setattr__(self, "member_names", tuple(name for name, _ in members))
         object.__setattr__(self, "deployment_eligible", False)
         object.__setattr__(self, "_locked", True)
+        _SYNTHETIC_RAW_FIXTURE_FACTS[self] = (
+            weakref_ref(self), owner, event_schema, _digest(intent),
+        )
 
     def __setattr__(self, name, value):
         if getattr(self, "_locked", False):
@@ -7430,7 +7969,7 @@ class _SyntheticRawPreflight:
             raise
 
     @staticmethod
-    def _parse_member(raw, member, scope, seen):
+    def _parse_member(raw, member, scope, event_schema, seen):
         _hs_refuse(len(raw) == member["byte_length"]
                    and _digest(raw) == member["sha256"],
                    "signed fixture bytes mismatch")
@@ -7441,10 +7980,12 @@ class _SyntheticRawPreflight:
         for line in raw[:-1].split(b"\n"):
             _hs_refuse(bool(line), "empty raw NDJSON line refused")
             event = _hs_parse_canonical(line)
+            fields = RAW_EVENT_FIELDS.get(event_schema)
             _hs_refuse(
                 type(event) is dict
-                and set(event) == _SYNTHETIC_RAW_EVENT_KEYS
-                and event["schema_version"] == "dskit.raw-event/v1"
+                and fields is not None
+                and set(event) == set(fields)
+                and event["schema_version"] == event_schema
                 and event["source_id"] == member["source_id"]
                 and type(event["event_id"]) is str
                 and bool(event["event_id"])
@@ -7456,6 +7997,32 @@ class _SyntheticRawPreflight:
                 <= scope["availability_end_ms"],
                 "closed raw event refused",
             )
+            if event_schema == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+                "dskit.dataset-capture-authorization/v2"
+            ]:
+                _hs_refuse(
+                    all(
+                        type(event[name]) is int and event[name] >= 0
+                        for name in (
+                            "exchange_ms", "receive_ms",
+                            "correction_position",
+                        )
+                    )
+                    and all(
+                        type(event[name]) is str and bool(event[name])
+                        for name in (
+                            "source_provenance_tag", "source_timezone_tag",
+                        )
+                    )
+                    and (
+                        event["corrects_event_id"] is None
+                        or (
+                            type(event["corrects_event_id"]) is str
+                            and bool(event["corrects_event_id"])
+                        )
+                    ),
+                    "closed raw event refused",
+                )
             NonAuthorizingSyntheticGrantVerifier._hash(
                 event["payload_sha256"],
             )
@@ -7488,13 +8055,15 @@ class _SyntheticRawPreflight:
                 raw = self._source._read(name)
                 retained.append((name, raw))
                 events.extend(self._parse_member(
-                    raw, member, authorization["scope"], seen,
+                    raw, member, authorization["scope"],
+                    authorization["event_schema"], seen,
                 ))
             _hs_refuse(authorization["allow_empty_capture"] or events,
                        "nonempty raw capture required")
             self._closed = True
             return VerifiedSyntheticDatasetFixture(
                 _MAKE, self, intent, tuple(retained), tuple(events),
+                authorization["event_schema"],
             )
         except Exception:
             self._closed = True
@@ -7505,7 +8074,7 @@ class _SyntheticRawPublisher:
     """One-shot synthetic raw F4 publisher from a validated fixture proof."""
 
     __slots__ = ("_preflight", "_roster_publisher", "_reserve", "_broker",
-                 "_closed", "_retained", "_root_pis_pairs")
+                 "_closed", "_retained", "_root_pis_pairs", "__weakref__")
 
     def __init_subclass__(cls, **kwargs):
         raise TypeError("the synthetic raw publisher is final")
@@ -7794,7 +8363,7 @@ class _SyntheticRawPublisher:
             refs = [
                 {"kind": "dataset-capture-authorization",
                  "role": "security-data",
-                 "schema": "dskit.dataset-capture-authorization/v1",
+                 "schema": authorization["schema_version"],
                  "sha256": auth_sha},
                 {"kind": "dataset-capture-grant", "role": "G1",
                  "schema": "dskit.dataset-capture-grant/v1",
@@ -7940,21 +8509,11 @@ class _SyntheticRawPublisher:
             if connection.in_transaction:
                 connection.execute("ROLLBACK")
 
-    def publish(self, proof, authorization_bytes, g1, g2, attestation,
-                bootstrap, bg1, bg2, roster_basis, roster_receipt):
-        """Publish one raw root or terminalize its signed ID."""
-        _hs_refuse(not self._closed
-                   and type(proof) is VerifiedSyntheticDatasetFixture
-                   and proof._owner is self._preflight
-                   and self._preflight._publisher is self._roster_publisher
-                   and not proof._used,
-                   "unused own raw fixture proof required")
+    def _publish_common(self, proof, signed, roster):
         object.__setattr__(proof, "_used", True)
-        signed = (authorization_bytes, g1, g2, attestation)
-        roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
         try:
-            manifest_bytes = self._manifest(proof, authorization_bytes)
-            root, producer = self._identity(authorization_bytes)
+            manifest_bytes = self._manifest(proof, signed[0])
+            root, producer = self._identity(signed[0])
             self._advance(signed, roster, proof, "SESSION_STARTED")
             session = self._broker.start_producer_session(
                 run_identity=producer["run_identity"],
@@ -7985,7 +8544,7 @@ class _SyntheticRawPublisher:
                 "file_type": "regular",
                 "link_count": 1,
             })
-            auth_sha = _digest(authorization_bytes)
+            auth_sha = _digest(signed[0])
             prepared = self._broker.produce(
                 session,
                 producer={key: producer[key] for key in (
@@ -8028,6 +8587,91 @@ class _SyntheticRawPublisher:
         except Exception:
             self._quarantine(proof)
             raise
+
+    def publish(self, proof, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt):
+        """Publish one raw root or terminalize its signed ID."""
+        _hs_refuse(not self._closed
+                   and type(proof) is VerifiedSyntheticDatasetFixture
+                   and proof._owner is self._preflight
+                   and self._preflight._publisher is self._roster_publisher
+                   and not proof._used,
+                   "unused own raw fixture proof required")
+        fixture_facts = _SYNTHETIC_RAW_FIXTURE_FACTS.get(proof)
+        _hs_refuse(
+            type(fixture_facts) is tuple
+            and len(fixture_facts) == 4
+            and fixture_facts[0]() is proof
+            and fixture_facts[1] is self._preflight,
+            "raw fixture proof facts changed",
+        )
+        proof_event_schema = fixture_facts[2]
+        if proof_event_schema == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v2"
+        ]:
+            _hs_refuse(
+                proof._event_schema == proof_event_schema
+                and type(proof._intent) is bytes
+                and _digest(proof._intent) == fixture_facts[3],
+                "raw fixture proof facts changed",
+            )
+            intent = _hs_parse_canonical(proof._intent)
+            bound_authorities = (
+                ("dataset_authorization_sha256", authorization_bytes),
+                ("dataset_g1_sha256", g1),
+                ("dataset_g2_sha256", g2),
+                ("fixture_attestation_sha256", attestation),
+                ("bootstrap_authorization_sha256", bootstrap),
+                ("bootstrap_g1_sha256", bg1),
+                ("bootstrap_g2_sha256", bg2),
+                ("roster_basis_sha256", roster_basis),
+                ("roster_receipt_sha256", roster_receipt),
+            )
+            _hs_refuse(
+                all(
+                    type(raw) is bytes and intent.get(name) == _digest(raw)
+                    for name, raw in bound_authorities
+                ),
+                "raw publisher proof authority changed",
+            )
+            authorization = _hs_parse_canonical(authorization_bytes)
+            bootstrap_value = _hs_parse_canonical(bootstrap)
+            v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+                "dskit.dataset-capture-authorization/v1"
+            ]
+            _hs_refuse(
+                authorization.get("schema_version")
+                == "dskit.dataset-capture-authorization/v1"
+                and bootstrap_value.get("schema_version")
+                == "dskit.roster-bootstrap-authorization/v1"
+                and authorization.get("event_schema") == v1_event_schema
+                and bootstrap_value.get("event_schema") == v1_event_schema,
+                "raw publisher is v1-only",
+            )
+        else:
+            def has_schema(raw, schema):
+                try:
+                    value = _hs_parse_canonical(raw)
+                except Exception:
+                    return False
+                return type(value) is dict and value.get("schema_version") == schema
+
+            _hs_refuse(
+                not has_schema(
+                    authorization_bytes,
+                    "dskit.dataset-capture-authorization/v2",
+                )
+                and not has_schema(
+                    bootstrap,
+                    "dskit.roster-bootstrap-authorization/v2",
+                ),
+                "raw publisher is v1-only",
+            )
+        return self._publish_common(
+            proof,
+            (authorization_bytes, g1, g2, attestation),
+            (bootstrap, bg1, bg2, roster_basis, roster_receipt),
+        )
 
     def proof(self):
         """Return only a live read-only proof of retained raw publication."""
@@ -8155,7 +8799,8 @@ class NonAuthorizingRawRootProof:
         ):
             parsed_events.extend(
                 _SyntheticRawPreflight._parse_member(
-                    raw, member, authorization["scope"], seen,
+                    raw, member, authorization["scope"],
+                    authorization["event_schema"], seen,
                 )
             )
         _hs_refuse(
@@ -8178,7 +8823,7 @@ class NonAuthorizingRawRootProof:
         refs = [
             {"kind": "dataset-capture-authorization",
              "role": "security-data",
-             "schema": "dskit.dataset-capture-authorization/v1",
+             "schema": authorization["schema_version"],
              "sha256": _digest(authorization_bytes)},
             {"kind": "dataset-capture-grant", "role": "G1",
              "schema": "dskit.dataset-capture-grant/v1",
@@ -8308,6 +8953,794 @@ class NonAuthorizingRawRootProof:
         })
 
 
+def _build_synthetic_v2_raw_publication():
+    """Install the environment-bound v2 raw route with private authority."""
+    publisher_type = _SyntheticRawPublisher
+    preflight_type = _SyntheticRawPreflight
+    proof_type = NonAuthorizingRawRootProof
+    fixture_type = VerifiedSyntheticDatasetFixture
+    environment_type = _SyntheticEnvironmentIdentity
+    parser = _hs_parse_canonical
+    digest = _digest
+    refuse = _hs_refuse
+    environment_checker = _require_synthetic_tzdata
+    schema_table = DATASET_AUTHORIZATION_EVENT_SCHEMAS
+    fixture_facts_map = _SYNTHETIC_RAW_FIXTURE_FACTS
+    raw_writer = publisher_type._publish_common
+    writer_helper_descriptors = tuple(
+        (name, publisher_type.__dict__[name])
+        for name in (
+            "_manifest", "_identity", "_check_row", "_advance",
+            "_published_facts", "_sign", "_check_signed",
+            "_issue_receipt", "_quarantine",
+        )
+    )
+    publisher_authority_descriptors = tuple(
+        (name, publisher_type.__dict__[name])
+        for name in (
+            "_preflight", "_roster_publisher", "_reserve", "_broker",
+            "_closed", "_retained", "__weakref__",
+        )
+    )
+    publisher_comparison_descriptors = tuple(
+        (
+            name,
+            name in publisher_type.__dict__,
+            publisher_type.__dict__.get(name),
+        )
+        for name in ("__hash__", "__eq__")
+    )
+    fixture_comparison_descriptors = tuple(
+        (
+            name,
+            name in fixture_type.__dict__,
+            fixture_type.__dict__.get(name),
+        )
+        for name in ("__hash__", "__eq__")
+    )
+    fixture_authority_descriptors = tuple(
+        (name, fixture_type.__dict__[name])
+        for name in (
+            "_owner", "_intent", "_members", "_event_schema", "_used",
+        )
+    )
+    preflight_authority_descriptors = tuple(
+        (name, preflight_type.__dict__[name])
+        for name in ("_publisher", "_derive_intent")
+    )
+    original_verify = proof_type.verify
+    object_getattribute = object.__getattribute__
+    weakref_factory = weakref_ref
+    proof_publisher_descriptor = proof_type.__dict__["_publisher"]
+    publisher_retained_descriptor = publisher_type.__dict__["_retained"]
+    fixture_schema_descriptor = fixture_type.__dict__["_event_schema"]
+    provisional = object()
+    committed = object()
+    failed = object()
+    records = WeakKeyDictionary()
+    anchors = WeakKeyDictionary()
+    record_identities = set()
+    writer_invoked_identities = set()
+    binding_seals = {}
+    v2_authorization_schema = "dskit.dataset-capture-authorization/v2"
+    v2_roster_schema = "dskit.roster-bootstrap-authorization/v2"
+    v2_event_schema = schema_table[v2_authorization_schema]
+    v1_event_schema = schema_table[
+        "dskit.dataset-capture-authorization/v1"
+    ]
+
+    def has_exact_seal(record, environment_identity):
+        seal = binding_seals.get(id(record))
+        return (
+            type(seal) is tuple
+            and len(seal) == 4
+            and seal[0] is record
+            and seal[1] is environment_identity
+            and record[1] is environment_identity
+            and seal[2] is record[0]
+            and seal[3] is record[2]
+        )
+
+    def has_exact_writer_helpers():
+        for name, descriptor in writer_helper_descriptors:
+            if publisher_type.__dict__.get(name) is not descriptor:
+                return False
+        return True
+
+    def has_exact_authority_descriptors():
+        for owner, descriptors in (
+            (publisher_type, publisher_comparison_descriptors),
+            (fixture_type, fixture_comparison_descriptors),
+        ):
+            for name, present, descriptor in descriptors:
+                if (
+                    (name in owner.__dict__) is not present
+                    or owner.__dict__.get(name) is not descriptor
+                ):
+                    return False
+        for owner, descriptors in (
+            (publisher_type, publisher_authority_descriptors),
+            (fixture_type, fixture_authority_descriptors),
+            (preflight_type, preflight_authority_descriptors),
+        ):
+            for name, descriptor in descriptors:
+                if owner.__dict__.get(name) is not descriptor:
+                    return False
+        return True
+
+    def v2_writer(self, proof, signed, roster):
+        refuse(
+            object_getattribute(proof, "_event_schema")
+            == v2_event_schema
+            and parser(signed[0]).get("event_schema") == v2_event_schema
+            and parser(roster[0]).get("event_schema") == v2_event_schema,
+            "raw common writer schema gate refused",
+        )
+        record = records.get(self)
+        refuse(
+            type(record) is list
+            and len(record) == 3
+            and anchors.get(self) is record
+            and id(record) in record_identities
+            and has_exact_seal(record, record[1])
+            and record[0]() is self
+            and type(record[1]) is environment_type
+            and record[2] is provisional,
+            "provisional synthetic v2 raw binding required",
+        )
+        try:
+            writer_invoked_identities.add(id(record))
+            return raw_writer(self, proof, signed, roster)
+        except BaseException:
+            seal = binding_seals.get(id(record))
+            sealed_environment = (
+                seal[1]
+                if type(seal) is tuple
+                and len(seal) == 4
+                and seal[0] is record
+                else None
+            )
+            sealed_reference = (
+                seal[2]
+                if type(seal) is tuple
+                and len(seal) == 4
+                and seal[0] is record
+                else None
+            )
+            record[2] = failed
+            binding_seals[id(record)] = (
+                record, sealed_environment, sealed_reference, failed,
+            )
+            raise
+
+    def require_dispatch(*, verifying=False):
+        refuse(
+            _require_synthetic_tzdata is environment_checker,
+            "synthetic environment dispatch changed",
+        )
+        refuse(
+            _SyntheticRawPublisher is publisher_type
+            and _SyntheticRawPreflight is preflight_type
+            and NonAuthorizingRawRootProof is proof_type
+            and VerifiedSyntheticDatasetFixture is fixture_type
+            and _SyntheticEnvironmentIdentity is environment_type
+            and _hs_parse_canonical is parser
+            and _digest is digest
+            and _hs_refuse is refuse
+            and weakref_ref is weakref_factory
+            and DATASET_AUTHORIZATION_EVENT_SCHEMAS is schema_table
+            and _SYNTHETIC_RAW_FIXTURE_FACTS is fixture_facts_map
+            and has_exact_writer_helpers()
+            and has_exact_authority_descriptors()
+            and "_publish_common" not in publisher_type.__dict__
+            and publisher_type.publish is publish
+            and publisher_type.publish_v2 is publish_v2
+            and proof_type.__dict__.get("_publisher")
+            is proof_publisher_descriptor
+            and publisher_type.__dict__.get("_retained")
+            is publisher_retained_descriptor
+            and fixture_type.__dict__.get("_event_schema")
+            is fixture_schema_descriptor
+            and (not verifying or proof_type.verify is verify),
+            "synthetic v2 raw publication dispatch changed",
+        )
+
+    def publish(self, proof, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt):
+        """Publish one legacy v1 raw root through the captured writer."""
+        refuse(
+            type(self) is publisher_type
+            and not object_getattribute(self, "_closed")
+            and type(proof) is fixture_type
+            and object_getattribute(proof, "_owner")
+            is object_getattribute(self, "_preflight")
+            and object_getattribute(
+                object_getattribute(self, "_preflight"), "_publisher"
+            ) is object_getattribute(self, "_roster_publisher")
+            and not object_getattribute(proof, "_used"),
+            "unused own raw fixture proof required",
+        )
+        fixture_facts = fixture_facts_map.get(proof)
+        refuse(
+            type(fixture_facts) is tuple
+            and len(fixture_facts) == 4
+            and fixture_facts[0]() is proof
+            and fixture_facts[1] is object_getattribute(self, "_preflight"),
+            "raw fixture proof facts changed",
+        )
+        proof_event_schema = fixture_facts[2]
+        if proof_event_schema == v2_event_schema:
+            refuse(
+                object_getattribute(proof, "_event_schema")
+                == proof_event_schema
+                and type(object_getattribute(proof, "_intent")) is bytes
+                and digest(object_getattribute(proof, "_intent"))
+                == fixture_facts[3],
+                "raw fixture proof facts changed",
+            )
+            intent = parser(object_getattribute(proof, "_intent"))
+            bound_authorities = (
+                ("dataset_authorization_sha256", authorization_bytes),
+                ("dataset_g1_sha256", g1),
+                ("dataset_g2_sha256", g2),
+                ("fixture_attestation_sha256", attestation),
+                ("bootstrap_authorization_sha256", bootstrap),
+                ("bootstrap_g1_sha256", bg1),
+                ("bootstrap_g2_sha256", bg2),
+                ("roster_basis_sha256", roster_basis),
+                ("roster_receipt_sha256", roster_receipt),
+            )
+            refuse(
+                all(
+                    type(raw) is bytes
+                    and intent.get(name) == digest(raw)
+                    for name, raw in bound_authorities
+                ),
+                "raw publisher proof authority changed",
+            )
+            authorization = parser(authorization_bytes)
+            bootstrap_value = parser(bootstrap)
+            refuse(
+                authorization.get("schema_version")
+                == "dskit.dataset-capture-authorization/v1"
+                and bootstrap_value.get("schema_version")
+                == "dskit.roster-bootstrap-authorization/v1"
+                and authorization.get("event_schema") == v1_event_schema
+                and bootstrap_value.get("event_schema") == v1_event_schema,
+                "raw publisher is v1-only",
+            )
+        else:
+            def has_schema(raw, schema):
+                try:
+                    value = parser(raw)
+                except Exception:
+                    return False
+                return (
+                    type(value) is dict
+                    and value.get("schema_version") == schema
+                )
+
+            refuse(
+                not has_schema(
+                    authorization_bytes, v2_authorization_schema,
+                )
+                and not has_schema(bootstrap, v2_roster_schema),
+                "raw publisher is v1-only",
+            )
+        return raw_writer(
+            self,
+            proof,
+            (authorization_bytes, g1, g2, attestation),
+            (bootstrap, bg1, bg2, roster_basis, roster_receipt),
+        )
+
+    def publish_v2(self, proof, environment_identity, authorization_bytes,
+                   g1, g2, attestation, bootstrap, bg1, bg2, roster_basis,
+                   roster_receipt, /):
+        """Publish one environment-bound synthetic raw-event/v2 root."""
+        require_dispatch()
+        refuse(
+            type(self) is publisher_type
+            and not object_getattribute(self, "_closed")
+            and type(proof) is fixture_type
+            and object_getattribute(proof, "_owner")
+            is object_getattribute(self, "_preflight")
+            and object_getattribute(
+                object_getattribute(self, "_preflight"), "_publisher"
+            ) is object_getattribute(self, "_roster_publisher")
+            and not object_getattribute(proof, "_used"),
+            "unused own raw fixture proof required",
+        )
+        fixture_facts = fixture_facts_map.get(proof)
+        refuse(
+            type(fixture_facts) is tuple
+            and len(fixture_facts) == 4
+            and fixture_facts[0]() is proof
+            and fixture_facts[1] is object_getattribute(self, "_preflight")
+            and fixture_facts[2] == v2_event_schema
+            and object_getattribute(proof, "_event_schema") == v2_event_schema
+            and type(object_getattribute(proof, "_intent")) is bytes
+            and digest(object_getattribute(proof, "_intent"))
+            == fixture_facts[3],
+            "exact unused v2 raw fixture proof required",
+        )
+        signed = (authorization_bytes, g1, g2, attestation)
+        roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
+        intent = parser(object_getattribute(proof, "_intent"))
+        names = (
+            "dataset_authorization_sha256", "dataset_g1_sha256",
+            "dataset_g2_sha256", "fixture_attestation_sha256",
+            "bootstrap_authorization_sha256", "bootstrap_g1_sha256",
+            "bootstrap_g2_sha256", "roster_basis_sha256",
+            "roster_receipt_sha256",
+        )
+        refuse(
+            all(
+                type(raw) is bytes and intent.get(name) == digest(raw)
+                for name, raw in zip(
+                    names, (*signed, *roster), strict=True
+                )
+            ),
+            "raw publisher proof authority changed",
+        )
+        authorization = parser(authorization_bytes)
+        bootstrap_value = parser(bootstrap)
+        refuse(
+            type(authorization) is dict
+            and type(bootstrap_value) is dict
+            and authorization.get("schema_version")
+            == v2_authorization_schema
+            and bootstrap_value.get("schema_version") == v2_roster_schema
+            and authorization.get("event_schema") == v2_event_schema
+            and bootstrap_value.get("event_schema") == v2_event_schema
+            and authorization.get("scope") == bootstrap_value.get("scope"),
+            "exact v2 raw publication authorities required",
+        )
+        scope = authorization["scope"]
+        require_dispatch()
+        try:
+            environment_checker(
+                environment_identity, scope["tzdata_version_sha256"]
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(
+                "synthetic environment identity refused"
+            ) from exc
+        require_dispatch()
+        refuse(
+            type(environment_identity) is environment_type
+            and records.get(self) is None
+            and anchors.get(self) is None,
+            "fresh synthetic v2 raw binding required",
+        )
+        record = [None, environment_identity, provisional]
+        record_identity = id(record)
+
+        def forget_record(_publisher_ref, identity=record_identity):
+            record_identities.discard(identity)
+            writer_invoked_identities.discard(identity)
+            binding_seals.pop(identity, None)
+
+        publisher_reference = weakref_factory(self, forget_record)
+        record[0] = publisher_reference
+        try:
+            records[self] = record
+            anchors[self] = record
+            record_identities.add(record_identity)
+            binding_seals[record_identity] = (
+                record, environment_identity, publisher_reference,
+                provisional,
+            )
+        except BaseException:
+            records.pop(self, None)
+            anchors.pop(self, None)
+            record_identities.discard(record_identity)
+            binding_seals.pop(record_identity, None)
+            raise
+        try:
+            require_dispatch()
+            refuse(
+                records.get(self) is record
+                and anchors.get(self) is record
+                and id(record) in record_identities
+                and has_exact_seal(record, environment_identity)
+                and record[0]() is self
+                and record[1] is environment_identity
+                and record[2] is provisional,
+                "synthetic v2 raw binding changed",
+            )
+            result = v2_writer(self, proof, signed, roster)
+            require_dispatch()
+            refuse(
+                records.get(self) is record
+                and anchors.get(self) is record
+                and id(record) in record_identities
+                and has_exact_seal(record, environment_identity)
+                and record[0]() is self
+                and record[1] is environment_identity
+                and record[2] is provisional,
+                "synthetic v2 raw binding changed",
+            )
+            record[2] = committed
+            binding_seals[record_identity] = (
+                record, environment_identity, publisher_reference,
+                committed,
+            )
+            require_dispatch()
+            refuse(
+                records.get(self) is record
+                and anchors.get(self) is record
+                and id(record) in record_identities
+                and has_exact_seal(record, environment_identity)
+                and record[2] is committed,
+                "synthetic v2 raw binding promotion failed",
+            )
+            return result
+        except BaseException:
+            if (
+                id(record) in writer_invoked_identities
+                or record[2] is failed
+            ):
+                record[2] = failed
+                binding_seals[record_identity] = (
+                    record, environment_identity, publisher_reference,
+                    failed,
+                )
+            else:
+                records.pop(self, None)
+                anchors.pop(self, None)
+                record_identities.discard(record_identity)
+                writer_invoked_identities.discard(record_identity)
+                binding_seals.pop(record_identity, None)
+            raise
+
+    def verify(self, authorization_bytes, g1, g2, attestation,
+               bootstrap, bg1, bg2, roster_basis, roster_receipt,
+               manifest_bytes, basis_bytes, receipt_bytes,
+               _under_writer_lock=False):
+        try:
+            publisher = proof_publisher_descriptor.__get__(self, proof_type)
+            if type(publisher) is not publisher_type:
+                raise TypeError
+            retained = publisher_retained_descriptor.__get__(
+                publisher, publisher_type
+            )
+            if type(retained) is not tuple or len(retained) != 8:
+                raise TypeError
+            fixture = retained[0]
+            if type(fixture) is not fixture_type:
+                raise TypeError
+            event_schema = fixture_schema_descriptor.__get__(
+                fixture, fixture_type
+            )
+        except BaseException:
+            return original_verify(
+                self, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt,
+                manifest_bytes, basis_bytes, receipt_bytes,
+                _under_writer_lock=_under_writer_lock,
+            )
+        if type(event_schema) is not str or event_schema != v2_event_schema:
+            return original_verify(
+                self, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt,
+                manifest_bytes, basis_bytes, receipt_bytes,
+                _under_writer_lock=_under_writer_lock,
+            )
+        require_dispatch(verifying=True)
+        record = records.get(publisher)
+        refuse(
+            type(record) is list
+            and len(record) == 3
+            and anchors.get(publisher) is record
+            and id(record) in record_identities
+            and has_exact_seal(record, record[1])
+            and record[0]() is publisher
+            and type(record[1]) is environment_type
+            and record[2] is committed,
+            "committed synthetic v2 raw binding required",
+        )
+        retained_signed = retained[3]
+        refuse(
+            type(retained_signed) is tuple
+            and len(retained_signed) == 4
+            and type(retained_signed[0]) is bytes,
+            "retained v2 raw authority required",
+        )
+        authorization = parser(retained_signed[0])
+        refuse(
+            type(authorization) is dict
+            and authorization.get("schema_version")
+            == v2_authorization_schema
+            and authorization.get("event_schema") == v2_event_schema
+            and type(authorization.get("scope")) is dict
+            and type(
+                authorization["scope"].get("tzdata_version_sha256")
+            ) is str,
+            "retained v2 raw authority required",
+        )
+        require_dispatch(verifying=True)
+        try:
+            environment_checker(
+                record[1],
+                authorization["scope"]["tzdata_version_sha256"],
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(
+                "synthetic environment identity refused"
+            ) from exc
+        require_dispatch(verifying=True)
+        return original_verify(
+            self, authorization_bytes, g1, g2, attestation,
+            bootstrap, bg1, bg2, roster_basis, roster_receipt,
+            manifest_bytes, basis_bytes, receipt_bytes,
+            _under_writer_lock=_under_writer_lock,
+        )
+
+    authorized_publish = publish
+    authorized_publish_v2 = publish_v2
+    authorized_verify = verify
+
+    def publish(self, proof, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt):
+        return authorized_publish(
+            self, proof, authorization_bytes, g1, g2, attestation,
+            bootstrap, bg1, bg2, roster_basis, roster_receipt,
+        )
+
+    def publish_v2(self, proof, environment_identity, authorization_bytes,
+                   g1, g2, attestation, bootstrap, bg1, bg2, roster_basis,
+                   roster_receipt, /):
+        return authorized_publish_v2(
+            self, proof, environment_identity, authorization_bytes,
+            g1, g2, attestation, bootstrap, bg1, bg2, roster_basis,
+            roster_receipt,
+        )
+
+    def verify(self, authorization_bytes, g1, g2, attestation,
+               bootstrap, bg1, bg2, roster_basis, roster_receipt,
+               manifest_bytes, basis_bytes, receipt_bytes,
+               _under_writer_lock=False):
+        return authorized_verify(
+            self, authorization_bytes, g1, g2, attestation,
+            bootstrap, bg1, bg2, roster_basis, roster_receipt,
+            manifest_bytes, basis_bytes, receipt_bytes,
+            _under_writer_lock=_under_writer_lock,
+        )
+
+    publisher_type.publish = publish
+    publisher_type.publish_v2 = publish_v2
+    proof_type.verify = verify
+    delattr(publisher_type, "_publish_common")
+
+
+_build_synthetic_v2_raw_publication()
+del _build_synthetic_v2_raw_publication
+
+
+def _build_synthetic_v2_projection_input():
+    """Build the one-shot ADR-0172 payload bridge behind opaque capabilities."""
+    proof_type = NonAuthorizingRawRootProof
+    fixture_type = VerifiedSyntheticDatasetFixture
+    publisher_type = _SyntheticRawPublisher
+    roster_publisher_type = _SyntheticRosterPublisher
+    raw_verify = proof_type.verify
+    mapping_proxy = MappingProxyType
+    parser = _hs_parse_canonical
+    canonical_bytes = _hs_canonical_bytes
+    digest = _digest
+    refuse = _hs_refuse
+    v2_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+        "dskit.dataset-capture-authorization/v2"
+    ]
+    capability_token = object()
+    records = {}
+    registry_lock = RLock()
+
+    class VerifiedV2ProjectionInput:
+        """Opaque one-shot access to one freshly verified v2 projection payload.
+
+        Examples
+        --------
+        The trusted synthetic broker is the sole mint::
+
+            # _prepare_synthetic_v2_projection_input(raw_proof, raw_bytes)
+        """
+
+        __slots__ = ("__weakref__",)
+
+        def __new__(cls, token=None):
+            if cls is not VerifiedV2ProjectionInput or token is not capability_token:
+                raise TypeError("broker-issued v2 projection input required")
+            return object.__new__(cls)
+
+        def __init_subclass__(cls, **kwargs):
+            del cls, kwargs
+            raise TypeError("the verified v2 projection input is final")
+
+        def __setattr__(self, name, value):
+            del self, name, value
+            raise AttributeError("verified v2 projection input is frozen")
+
+        def __reduce__(self):
+            raise TypeError("verified v2 projection input cannot be serialized")
+
+        def __reduce_ex__(self, protocol):
+            del protocol
+            raise TypeError("verified v2 projection input cannot be serialized")
+
+    capability_type = VerifiedV2ProjectionInput
+
+    def payload(raw_proof, raw_proof_bytes):
+        """Reverify and derive immutable events/policy from retained originals."""
+        refuse(type(raw_proof) is proof_type, "exact raw-root proof required")
+        refuse(
+            type(raw_proof_bytes) is tuple
+            and len(raw_proof_bytes) == 12
+            and all(type(value) is bytes for value in raw_proof_bytes),
+            "exact twelve-byte raw proof tuple required",
+        )
+        refuse(proof_type.verify is raw_verify, "raw-root verifier dispatch changed")
+        facts = raw_verify(raw_proof, *raw_proof_bytes)
+        publisher = object.__getattribute__(raw_proof, "_publisher")
+        retained = object.__getattribute__(publisher, "_retained")
+        refuse(
+            type(publisher) is publisher_type
+            and type(retained) is tuple
+            and len(retained) == 8,
+            "exact retained raw publication required",
+        )
+        fixture, _published, _session, signed, roster = retained[:5]
+        output = retained[5:]
+        refuse(
+            type(fixture) is fixture_type
+            and type(signed) is tuple and len(signed) == 4
+            and type(roster) is tuple and len(roster) == 5
+            and (*signed, *roster, *output) == raw_proof_bytes
+            and fixture._event_schema == v2_event_schema
+            and facts["event_count"] == len(fixture._events),
+            "retained v2 raw proof originals changed",
+        )
+        raw_authorization = parser(signed[0])
+        roster_authorization = parser(roster[0])
+        manifest = parser(output[0])
+        roster_publisher = object.__getattribute__(publisher, "_roster_publisher")
+        refuse(
+            type(roster_publisher) is roster_publisher_type,
+            "exact retained roster publisher required",
+        )
+        roster_retained = roster_publisher._retained.get(
+            roster_authorization["bootstrap_id"]
+        )
+        refuse(
+            type(roster_retained) is tuple
+            and len(roster_retained) == 9
+            and (roster_retained[4], roster_retained[5], roster_retained[6],
+                 roster_retained[2], roster_retained[3]) == roster,
+            "retained roster originals changed",
+        )
+        roster_value = parser(roster_retained[1])
+        policy_value = roster_value.get("policy")
+        refuse(
+            type(policy_value) is dict
+            and set(policy_value) == {
+                "schema_version", "sources", "policy_sha256"
+            }
+            and policy_value["schema_version"]
+            == "dskit.source-rank-policy/v1",
+            "closed source-rank policy required",
+        )
+        sources = policy_value["sources"]
+        expected_sources = [
+            {"source_id": source_id, "rank": rank}
+            for rank, source_id in enumerate(roster_authorization["source_ids"])
+        ]
+        policy_body = {
+            "schema_version": policy_value["schema_version"],
+            "sources": sources,
+        }
+        policy_sha256 = digest(canonical_bytes(policy_body))
+        refuse(
+            sources == expected_sources
+            and policy_value["policy_sha256"] == policy_sha256
+            and raw_authorization["source_ids"]
+            == roster_authorization["source_ids"]
+            == roster_value["source_ids"]
+            and raw_authorization["scope"]
+            == roster_authorization["scope"]
+            == roster_value["scope"]
+            and raw_authorization["source_roster_policy_sha256"]
+            == roster_authorization["source_rank_policy_sha256"]
+            == manifest["source_roster_policy_sha256"]
+            == policy_sha256,
+            "v2 source-rank policy binding changed",
+        )
+        events = tuple(mapping_proxy(dict(event)) for event in fixture._events)
+        refuse(
+            events
+            and all(
+                type(event) is mapping_proxy
+                and event["source_id"] in raw_authorization["source_ids"]
+                for event in events
+            ),
+            "exact retained v2 events required",
+        )
+        policy = mapping_proxy({
+            "schema_version": policy_value["schema_version"],
+            "sources": tuple(
+                mapping_proxy(dict(source)) for source in sources
+            ),
+            "policy_sha256": policy_sha256,
+        })
+        payload_bytes = canonical_bytes({
+            "events": [dict(event) for event in events],
+            "source_rank_policy": {
+                "schema_version": policy["schema_version"],
+                "sources": [dict(source) for source in policy["sources"]],
+                "policy_sha256": policy["policy_sha256"],
+            },
+        })
+        return events, policy, payload_bytes
+
+    def prepare(raw_proof, raw_proof_bytes, /):
+        """Mint one one-shot capability after fresh ADR-0173 verification."""
+        events, policy, payload_bytes = payload(raw_proof, raw_proof_bytes)
+        capability = capability_type(capability_token)
+        key = id(capability)
+
+        def forget(reference):
+            with registry_lock:
+                record = records.get(key)
+                if record is not None and record[0] is reference:
+                    del records[key]
+
+        reference = weakref_ref(capability, forget)
+        with registry_lock:
+            refuse(key not in records, "v2 projection capability identity collision")
+            records[key] = (
+                reference, raw_proof, raw_proof_bytes, events, policy,
+                payload_bytes,
+            )
+        return capability
+
+    def consume(value, /):
+        """Spend one exact capability and return a freshly reverified payload."""
+        with registry_lock:
+            key = id(value)
+            record = records.get(key)
+            refuse(
+                type(value) is capability_type
+                and type(record) is tuple
+                and len(record) == 6
+                and record[0]() is value,
+                "v2 projection input missing or spent",
+            )
+            del records[key]
+        _reference, raw_proof, raw_proof_bytes, _events, _policy, expected = record
+        events, policy, observed = payload(raw_proof, raw_proof_bytes)
+        refuse(observed == expected, "v2 projection payload changed")
+        return events, policy
+
+    return capability_type, prepare, consume
+
+
+(
+    VerifiedV2ProjectionInput,
+    _prepare_synthetic_v2_projection_input,
+    consume_v2_projection_input,
+) = _build_synthetic_v2_projection_input()
+del _build_synthetic_v2_projection_input
+
+#: ADR-0174: the exact same one-shot mint, reachable under a public name so
+#: a caller outside dskit.pipeline (production's purity gate refuses a
+#: cross-package reach at a private name, even via module-attribute access)
+#: can prepare the second capability ADR-0172 Decision point 4 already
+#: sanctions ("preparing another capability from the same still-fresh proof
+#: is allowed"). Identical object, identical positional-only signature,
+#: identical behavior -- this adds reachability only, not a second mint.
+prepare_v2_projection_input = _prepare_synthetic_v2_projection_input
+
+
 class _SyntheticRootPisIssuer:
     """One-shot, nondeployment two-root signed PIS issuer."""
 
@@ -8320,6 +9753,27 @@ class _SyntheticRootPisIssuer:
         _hs_refuse(type(publisher) is _SyntheticRawPublisher
                    and publisher._closed and publisher._retained is not None,
                    "retained raw publisher required")
+        retained = publisher._retained
+        _hs_refuse(
+            type(retained) is tuple
+            and len(retained) == 8
+            and type(retained[0]) is VerifiedSyntheticDatasetFixture
+            and retained[0]._event_schema
+            == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+                "dskit.dataset-capture-authorization/v1"
+            ]
+            and type(retained[3]) is tuple
+            and len(retained[3]) == 4
+            and type(retained[4]) is tuple
+            and len(retained[4]) == 5
+            and _hs_parse_canonical(retained[3][0]).get(
+                "schema_version"
+            ) == "dskit.dataset-capture-authorization/v1"
+            and _hs_parse_canonical(retained[4][0]).get(
+                "schema_version"
+            ) == "dskit.roster-bootstrap-authorization/v1",
+            "root-PIS issuer is v1-only",
+        )
         self._publisher = publisher
         self._closed = False
         self._retained = None
@@ -8396,15 +9850,17 @@ class _SyntheticRootPisIssuer:
 
     @staticmethod
     def _refs(signed, roster, raw_receipt, roster_receipt):
+        dataset_schema = _hs_parse_canonical(signed[0])["schema_version"]
+        roster_schema = _hs_parse_canonical(roster[0])["schema_version"]
         specs = (
             ("dataset-capture-authorization", "security-data",
-             "dskit.dataset-capture-authorization/v1", _digest(signed[0])),
+             dataset_schema, _digest(signed[0])),
             ("dataset-capture-grant", "G1",
              "dskit.dataset-capture-grant/v1", _digest(signed[1])),
             ("dataset-capture-grant", "G2",
              "dskit.dataset-capture-grant/v1", _digest(signed[2])),
             ("roster-bootstrap-authorization", "security-data",
-             "dskit.roster-bootstrap-authorization/v1", _digest(roster[0])),
+             roster_schema, _digest(roster[0])),
             ("roster-bootstrap-grant", "G1",
              "dskit.roster-bootstrap-grant/v1", _digest(roster[1])),
             ("roster-bootstrap-grant", "G2",
@@ -8465,8 +9921,21 @@ class _SyntheticRootPisIssuer:
     def issue(self, authorization_bytes, g1, g2, attestation,
               bootstrap, bg1, bg2, roster_basis, roster_receipt,
               manifest_bytes, raw_basis, raw_receipt):
+        authorization_value = _hs_parse_canonical(authorization_bytes)
+        bootstrap_value = _hs_parse_canonical(bootstrap)
+        v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v1"
+        ]
+        _hs_refuse(
+            authorization_value.get("schema_version")
+            == "dskit.dataset-capture-authorization/v1"
+            and bootstrap_value.get("schema_version")
+            == "dskit.roster-bootstrap-authorization/v1"
+            and authorization_value.get("event_schema") == v1_event_schema
+            and bootstrap_value.get("event_schema") == v1_event_schema,
+            "root-PIS issuer is v1-only",
+        )
         _hs_refuse(not self._closed, "root-PIS issuer already used")
-        self._closed = True
         signed = (authorization_bytes, g1, g2, attestation)
         roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
         output = (manifest_bytes, raw_basis, raw_receipt)
@@ -8474,6 +9943,19 @@ class _SyntheticRootPisIssuer:
                        (*signed, *roster, *output)),
                    "exact retained root-PIS originals required")
         publisher = self._publisher
+        retained = publisher._retained
+        _hs_refuse(
+            type(publisher) is _SyntheticRawPublisher
+            and type(retained) is tuple
+            and len(retained) == 8
+            and type(retained[0]) is VerifiedSyntheticDatasetFixture
+            and retained[0]._event_schema == v1_event_schema
+            and retained[3] == signed
+            and retained[4] == roster
+            and retained[5:] == output,
+            "exact retained v1 root-PIS originals required",
+        )
+        self._closed = True
         reserve = publisher._reserve
         connection = reserve._connection
         bootstrap_id = _hs_parse_canonical(bootstrap)["bootstrap_id"]
@@ -8515,10 +9997,6 @@ class _SyntheticRootPisIssuer:
             _hs_refuse(
                 now > raw_value["issued_at_ms"],
                 "root-PIS must follow raw receipt clock",
-            )
-            bootstrap_value = _hs_parse_canonical(bootstrap)
-            authorization_value = _hs_parse_canonical(
-                authorization_bytes
             )
             expires = min(
                 _hs_parse_canonical(value)["expires_at_ms"]
@@ -9034,15 +10512,29 @@ class NonAuthorizingDynamicRootGraph:
 
     def _derive_records(self):
         signed, roster, output, pair = self._originals()
+        dataset_authorization = _hs_parse_canonical(signed[0])
+        roster_authorization = _hs_parse_canonical(roster[0])
+        dataset_schema = dataset_authorization["schema_version"]
+        roster_schema = roster_authorization["schema_version"]
+        v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+            "dskit.dataset-capture-authorization/v1"
+        ]
+        _hs_refuse(
+            dataset_schema == "dskit.dataset-capture-authorization/v1"
+            and roster_schema == "dskit.roster-bootstrap-authorization/v1"
+            and dataset_authorization.get("event_schema") == v1_event_schema
+            and roster_authorization.get("event_schema") == v1_event_schema,
+            "dynamic root graph is v1-only",
+        )
         items = (
             ("dataset-capture-authorization", "security-data",
-             "dskit.dataset-capture-authorization/v1", signed[0], None),
+             dataset_schema, signed[0], None),
             ("dataset-capture-grant", "G1",
              "dskit.dataset-capture-grant/v1", signed[1], None),
             ("dataset-capture-grant", "G2",
              "dskit.dataset-capture-grant/v1", signed[2], None),
             ("roster-bootstrap-authorization", "security-data",
-             "dskit.roster-bootstrap-authorization/v1", roster[0], None),
+             roster_schema, roster[0], None),
             ("roster-bootstrap-grant", "G1",
              "dskit.roster-bootstrap-grant/v1", roster[1], None),
             ("roster-bootstrap-grant", "G2",

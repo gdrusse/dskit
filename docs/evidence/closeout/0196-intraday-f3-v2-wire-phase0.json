@@ -1,0 +1,79 @@
+{
+  "schema_version": "F3V2WirePhase0.v1",
+  "deployment_eligible": false,
+  "adr": {
+    "id": "ADR-0169",
+    "path": "docs/architecture/decision-log.md",
+    "scope": "bounded F3 versioned raw-event wire only; no writer, replay, backtest, or runtime",
+    "initial_proposal_commit": "e3ce685",
+    "gated_proposal_commit": "6d2ef3c",
+    "clarified_proposal_commit": "d510d5c",
+    "final_reviewed_commit": "79ed8f6f662706a798f181cb9d2575bfea040e31",
+    "final_reviewed_blob": "e2976d09fbe94704b73e28bb82e0c05f8573ddc1"
+  },
+  "initial_phase0": {
+    "critical": 0,
+    "major": 1,
+    "minor": 1,
+    "nit": 0,
+    "findings": [
+      "enabling v2 raw preflight would otherwise feed the existing raw publisher and downstream v1-only graph",
+      "every authorization reference must pin the exact parsed schema while preserving existing v1 envelopes and key identities"
+    ],
+    "disposition": "proposal amended; prior text was not eligible for approval"
+  },
+  "amendments": [
+    "v2 roster bootstrap is the sole newly reachable publication",
+    "v2 raw preflight may verify and read the fixed fixture, but raw publisher, root-PIS, and dynamic P4 graph remain v1-only",
+    "all authorization references record exact parsed v1/v2 schemas without changing existing v1 envelopes or key identities",
+    "downstream refusal tests distinguish normal graph unreachability from a substituted retained-issuer-state probe",
+    "no downstream reserve effect means no additional spend after the raw preflight reserve"
+  ],
+  "final_independent_review": {
+    "reviewed_commit": "79ed8f6f662706a798f181cb9d2575bfea040e31",
+    "reviewed_blob": "e2976d09fbe94704b73e28bb82e0c05f8573ddc1",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "result": "GO for explicit owner approval, then RED"
+  },
+  "owner_approval": "2026-09-22 explicit approval to finish and launch the backtest, given in direct response to the ADR-0169 approval gate for commit 79ed8f6 and blob e2976d0",
+  "postapproval_phase0": {
+    "reviewed_commit": "89f94db93b70cb70bb8752b97b3ce6e678a9b5fe",
+    "reviewed_adr_blob": "9165bb450207bface6aabd3d723d9bc3c7088063",
+    "reviewed_trust_blob": "80a20848e04208986c4a6de60bd85a5ef1c9a0d6",
+    "reviewed_bundles_blob": "84da26d5323f6a636373b8475308c9910a62acf3",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "focused_baseline": "1314 passed, 1 documented unrelated ADR-0157 xfail",
+    "result": "GO for deterministic synthetic ADR-0169 RED/TDD only"
+  },
+  "implementation": {
+    "red_commit": "77194cfd0e30e26ff30ab84195a8dec635726ce8",
+    "implementation_commit": "b19bf7933d03709c974270c3ab3542d96f9acc9d",
+    "inventory_closeout_commit": "4fe63109232e84081d536cbac839d24ab6c1278b",
+    "focused_matrix": "85 passed",
+    "related_regression": "1602 passed, 1 documented unrelated ADR-0157 xfail",
+    "purity": "43 passed",
+    "ruff": "clean",
+    "diff_check": "clean",
+    "final_lens_a": {
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "final_lens_b": {
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "result": "bounded ADR-0169 v2 raw-event wire implemented; v2 publication, derivation, replay, and backtest remain fail-closed"
+  },
+  "implementation_status": "complete for bounded deterministic synthetic ADR-0169 scope",
+  "non_authority": "This implementation does not authorize raw-dataset v2 publication, derivation, external or real-data capture, replay, backtest, HPO, refit, release, paper trading, or live trading."
+}

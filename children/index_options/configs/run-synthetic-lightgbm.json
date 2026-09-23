@@ -1,6 +1,6 @@
 {
   "name": "index-options-synthetic-lightgbm",
-  "notes": "ADR-0169 zoo rung; identical to run-synthetic-distribution.json except the 'model' node. Run: python -m dskit.pipeline walkforward configs/index-options-synthetic-lightgbm.json --asof 1978-06-01.",
+  "notes": "ADR-0181 zoo rung; identical to run-synthetic-distribution.json except the 'model' node. Run: python -m dskit.pipeline walkforward configs/index-options-synthetic-lightgbm.json --asof 1978-06-01.",
   "pipeline": {
     "market": {
       "uses": "dskit.pipeline.synthetic_paths:SynthGjrPaths",
@@ -80,7 +80,7 @@
           "label"
         ]
       },
-      "notes": "Realized per-step vol over the same 21 steps as the label: the target a scale rung (ADR-0169) regresses on. Every rung shares this pipeline so the zoo compares only the model node."
+      "notes": "Realized per-step vol over the same 21 steps as the label: the target a scale rung (ADR-0181) regresses on. Every rung shares this pipeline so the zoo compares only the model node."
     },
     "model": {
       "uses": "dskit.pipeline.libs.lightgbm:LightGBMScaleLocationScale",

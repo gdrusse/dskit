@@ -1,4 +1,4 @@
-"""ADR-0169 zoo: rung configs share one pipeline; the staged zoo plans and runs."""
+"""ADR-0181 zoo: rung configs share one pipeline; the staged zoo plans and runs."""
 
 import copy
 import json

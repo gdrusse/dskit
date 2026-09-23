@@ -1,0 +1,89 @@
+{
+  "schema_version": "F3SyntheticEnvironmentPhase0.v1",
+  "deployment_eligible": false,
+  "adr": {
+    "id": "ADR-0170",
+    "path": "docs/architecture/decision-log.md",
+    "scope": "bounded deterministic synthetic environment identity only; no writer, replay, runtime, or backtest",
+    "final_reviewed_commit": "279fa050c94c5e58f50525b11782c0f67441b793",
+    "final_reviewed_blob": "9e0f758fd90c8e29c79128fa214814b58993eaf8"
+  },
+  "review_iterations": [
+    {
+      "reviewed_commit": "dbea35b5a8a1dbf74e8684732018375d270f3334",
+      "critical": 0,
+      "major": 3,
+      "minor": 0,
+      "nit": 0,
+      "disposition": "schema collision, unpinned digest, and underspecified state integrity corrected"
+    },
+    {
+      "reviewed_commit": "e5143d04692add4feda1c6f0e5a420a5bd3cb671",
+      "critical": 0,
+      "major": 2,
+      "minor": 0,
+      "nit": 0,
+      "disposition": "canonical-byte digesting and registry-object identity corrected"
+    },
+    {
+      "reviewed_commit": "65d7a7ee98b7df217a121777e59b6ad5aa1d4e55",
+      "critical": 0,
+      "major": 2,
+      "minor": 1,
+      "nit": 0,
+      "disposition": "global-state substitution, exact-class forgery, and vacuous uppercase case corrected by closure-owned broker state and canonical digest"
+    }
+  ],
+  "final_independent_review": {
+    "reviewed_commit": "279fa050c94c5e58f50525b11782c0f67441b793",
+    "reviewed_blob": "9e0f758fd90c8e29c79128fa214814b58993eaf8",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "focused_baseline": "1686 passed, 1 documented unrelated ADR-0157 xfail",
+    "diff_check": "clean",
+    "result": "GO for explicit owner approval, then RED"
+  },
+  "owner_approval": "2026-09-23 direct continuation instruction in response to the exact ADR-0170 approval gate for commit 279fa050 and blob 9e0f758",
+  "postapproval_phase0": {
+    "reviewed_commit": "f242d8f1c516c38685ca870e4d23bdce908453eb",
+    "reviewed_adr_blob": "9e0f758fd90c8e29c79128fa214814b58993eaf8",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "focused_baseline": "1723 passed, 1 documented unrelated ADR-0157 xfail",
+    "result": "GO for ADR-0170 RED only"
+  },
+  "implementation": {
+    "red_commit": "d7db2748a5e938d2c59d8439c59c3147ce1bd3ae",
+    "initial_implementation_commit": "c2d0a2bf907742690df95b1f56c3243c5eea0a41",
+    "constructor_bypass_red_commit": "eba0cf470e9e1ecb82f7eff183bb5b30fe128e65",
+    "constructor_bypass_fix_commit": "68f39b62167396b2fee33c0439a2c84ebaeecee3",
+    "hardening_red_commit": "baf0837068a02dfc1dcae1c4f06d43543b8d138f",
+    "hardening_fix_commit": "6e6359b0411052699a9d38a469cee79e9efc5f8d",
+    "descriptor_spoof_red_commit": "d87be3ba906a197de8beeb48e5b031b6b7ca17ad",
+    "final_implementation_commit": "85d20c1df9a49a4a0dbc54702879e74c6cec256d",
+    "final_adr_blob": "8b978eeb348713a6297c3124c9e5ced3e9a15cb0",
+    "focused_matrix": "110 passed",
+    "related_regression": "1602 passed, 1 documented unrelated ADR-0157 xfail",
+    "ruff": "clean",
+    "diff_check": "clean",
+    "final_lens_a": {
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "final_lens_b": {
+      "critical": 0,
+      "major": 0,
+      "minor": 0,
+      "nit": 0
+    },
+    "result": "bounded ADR-0170 synthetic environment identity implemented; writer, publication, replay, and backtest remain fail-closed"
+  },
+  "implementation_status": "complete for bounded deterministic synthetic ADR-0170 scope",
+  "non_authority": "This implementation does not authorize projection, writing, publication, replay, backtest, HPO, refit, release, paper trading, or live trading."
+}

@@ -512,6 +512,7 @@ dskit/pipeline/
 │                      RunAttestation + content_identity (ADR-0119);
 │                      attested_output + row_set_identity (ADR-0166)
 ├── stages.py          journal-backed staged DAG execution and resume (ADR-0081)
+├── event_wire.py      closed shared raw-event v1/v2 wire declarations (ADR-0169)
 ├── trust.py           opaque capture handles + WORM lifecycle (ADR-0122/0123 F4)
 ├── benchmarks.py      JSON model-zoo plan/run/paired-compare stages (ADR-0097)
 ├── conquest.py        HorizonConquest: per-(unit,horizon) contiguous cap over
