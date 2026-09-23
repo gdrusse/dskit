@@ -1,11 +1,14 @@
 """ADR-0173: environment-bound synthetic raw-event/v2 publication."""
 
+import gc
 import inspect
 import json
+from weakref import ref as weakref_ref
 
 import pytest
 
 from dskit.pipeline import trust
+from tests.pipeline import test_captured_authorization as cases
 from tests.pipeline.test_event_wire_v2 import _v2_case
 
 
@@ -39,6 +42,7 @@ def test_publish_v2_is_private_positional_only_and_not_exported():
     )
     assert "publish_v2" not in trust.__all__
     assert not hasattr(trust, "_SYNTHETIC_V2_RAW_ENVIRONMENTS")
+    assert "_publish_common" not in trust._SyntheticRawPublisher.__dict__
 
 
 def test_publish_v2_refuses_wrong_environment_before_any_effect(tmp_path):
@@ -55,6 +59,11 @@ def test_publish_v2_refuses_wrong_environment_before_any_effect(tmp_path):
     )
     with pytest.raises(ValueError, match="environment"):
         raw_publisher.publish_v2(fixture, object(), *signed, *roster)
+    closure = inspect.getclosurevars(
+        trust._SyntheticRawPublisher.publish_v2
+    ).nonlocals
+    assert raw_publisher not in closure["records"]
+    assert raw_publisher not in closure["anchors"]
     assert before == (
         fixture._used,
         raw_publisher._closed,
@@ -113,6 +122,84 @@ def test_v2_root_proof_refuses_replaced_environment_gate_before_member_read(
             *signed, *roster, manifest, basis, receipt
         )
     assert tuple(raw_publisher._broker._member_events) == before
+
+
+def test_v2_root_proof_refuses_copied_private_binding_record_before_member_read(
+    tmp_path,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    output = raw_publisher.publish_v2(
+        fixture, environment, *signed, *roster
+    )
+    closure = inspect.getclosurevars(
+        trust._SyntheticRawPublisher.publish_v2
+    ).nonlocals
+    records = closure["records"]
+    anchors = closure["anchors"]
+    copied = list(records[raw_publisher])
+    records[raw_publisher] = copied
+    anchors[raw_publisher] = copied
+    before = tuple(raw_publisher._broker._member_events)
+    with pytest.raises(ValueError, match="committed.*binding"):
+        raw_publisher.proof().verify(*signed, *roster, *output)
+    assert tuple(raw_publisher._broker._member_events) == before
+
+
+def test_v2_root_proof_refuses_deleted_private_binding_before_member_read(
+    tmp_path,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    output = raw_publisher.publish_v2(
+        fixture, environment, *signed, *roster
+    )
+    closure = inspect.getclosurevars(
+        trust._SyntheticRawPublisher.publish_v2
+    ).nonlocals
+    del closure["records"][raw_publisher]
+    before = tuple(raw_publisher._broker._member_events)
+    with pytest.raises(ValueError, match="committed.*binding"):
+        raw_publisher.proof().verify(*signed, *roster, *output)
+    assert tuple(raw_publisher._broker._member_events) == before
+
+
+def test_private_binding_entries_and_identity_anchor_expire_with_publisher(
+    tmp_path,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    raw_publisher.publish_v2(fixture, environment, *signed, *roster)
+    closure = inspect.getclosurevars(
+        trust._SyntheticRawPublisher.publish_v2
+    ).nonlocals
+    record_identity = id(closure["records"][raw_publisher])
+    publisher_ref = weakref_ref(raw_publisher)
+    del raw_publisher
+    gc.collect()
+    assert publisher_ref() is None
+    assert record_identity not in closure["record_identities"]
 
 
 def test_legacy_publish_remains_v1_only_after_v2_entry_exists(tmp_path):
@@ -197,3 +284,31 @@ def test_retained_v2_root_stops_before_root_pis_construction_effect(
         dict(raw_publisher._root_pis_pairs),
         tuple(raw_publisher._broker._member_events),
     )
+
+
+def test_root_pis_issue_rechecks_retained_publisher_before_closing(
+    tmp_path, monkeypatch,
+):
+    (tmp_path / "v1").mkdir()
+    v1_publisher, v1_roster, v1_signed, v1_output = (
+        cases._adr140_published_raw_case(tmp_path / "v1", monkeypatch)
+    )
+    issuer = trust._SyntheticRootPisIssuer(v1_publisher)
+    (
+        _roster_publisher,
+        v2_publisher,
+        fixture,
+        environment,
+        v2_signed,
+        v2_roster,
+        _source,
+    ) = _case(tmp_path / "v2")
+    v2_publisher.publish_v2(
+        fixture, environment, *v2_signed, *v2_roster
+    )
+    issuer._publisher = v2_publisher
+    before = v2_publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="v1-only|retained"):
+        issuer.issue(*v1_signed, *v1_roster, *v1_output)
+    assert issuer._closed is False
+    assert v2_publisher._reserve._connection.total_changes == before

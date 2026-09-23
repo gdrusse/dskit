@@ -8965,11 +8965,16 @@ def _build_synthetic_v2_raw_publication():
     common_writer = publisher_type._publish_common
     original_verify = proof_type.verify
     object_getattribute = object.__getattribute__
+    weakref_factory = weakref_ref
+    proof_publisher_descriptor = proof_type.__dict__["_publisher"]
+    publisher_retained_descriptor = publisher_type.__dict__["_retained"]
+    fixture_schema_descriptor = fixture_type.__dict__["_event_schema"]
     provisional = object()
     committed = object()
     failed = object()
     records = WeakKeyDictionary()
     anchors = WeakKeyDictionary()
+    record_identities = set()
     v2_authorization_schema = "dskit.dataset-capture-authorization/v2"
     v2_roster_schema = "dskit.roster-bootstrap-authorization/v2"
     v2_event_schema = schema_table[v2_authorization_schema]
@@ -8987,12 +8992,112 @@ def _build_synthetic_v2_raw_publication():
             and _hs_parse_canonical is parser
             and _digest is digest
             and _hs_refuse is refuse
+            and weakref_ref is weakref_factory
             and DATASET_AUTHORIZATION_EVENT_SCHEMAS is schema_table
             and _SYNTHETIC_RAW_FIXTURE_FACTS is fixture_facts_map
-            and publisher_type._publish_common is common_writer
+            and "_publish_common" not in publisher_type.__dict__
+            and publisher_type.publish is publish
             and publisher_type.publish_v2 is publish_v2
+            and proof_type.__dict__.get("_publisher")
+            is proof_publisher_descriptor
+            and publisher_type.__dict__.get("_retained")
+            is publisher_retained_descriptor
+            and fixture_type.__dict__.get("_event_schema")
+            is fixture_schema_descriptor
             and (not verifying or proof_type.verify is verify),
             "synthetic v2 raw publication dispatch changed",
+        )
+
+    def publish(self, proof, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt):
+        """Publish one legacy v1 raw root through the captured writer."""
+        refuse(
+            type(self) is publisher_type
+            and not object_getattribute(self, "_closed")
+            and type(proof) is fixture_type
+            and object_getattribute(proof, "_owner")
+            is object_getattribute(self, "_preflight")
+            and object_getattribute(
+                object_getattribute(self, "_preflight"), "_publisher"
+            ) is object_getattribute(self, "_roster_publisher")
+            and not object_getattribute(proof, "_used"),
+            "unused own raw fixture proof required",
+        )
+        fixture_facts = fixture_facts_map.get(proof)
+        refuse(
+            type(fixture_facts) is tuple
+            and len(fixture_facts) == 4
+            and fixture_facts[0]() is proof
+            and fixture_facts[1] is object_getattribute(self, "_preflight"),
+            "raw fixture proof facts changed",
+        )
+        proof_event_schema = fixture_facts[2]
+        if proof_event_schema == v2_event_schema:
+            refuse(
+                object_getattribute(proof, "_event_schema")
+                == proof_event_schema
+                and type(object_getattribute(proof, "_intent")) is bytes
+                and digest(object_getattribute(proof, "_intent"))
+                == fixture_facts[3],
+                "raw fixture proof facts changed",
+            )
+            intent = parser(object_getattribute(proof, "_intent"))
+            bound_authorities = (
+                ("dataset_authorization_sha256", authorization_bytes),
+                ("dataset_g1_sha256", g1),
+                ("dataset_g2_sha256", g2),
+                ("fixture_attestation_sha256", attestation),
+                ("bootstrap_authorization_sha256", bootstrap),
+                ("bootstrap_g1_sha256", bg1),
+                ("bootstrap_g2_sha256", bg2),
+                ("roster_basis_sha256", roster_basis),
+                ("roster_receipt_sha256", roster_receipt),
+            )
+            refuse(
+                all(
+                    type(raw) is bytes
+                    and intent.get(name) == digest(raw)
+                    for name, raw in bound_authorities
+                ),
+                "raw publisher proof authority changed",
+            )
+            authorization = parser(authorization_bytes)
+            bootstrap_value = parser(bootstrap)
+            v1_event_schema = schema_table[
+                "dskit.dataset-capture-authorization/v1"
+            ]
+            refuse(
+                authorization.get("schema_version")
+                == "dskit.dataset-capture-authorization/v1"
+                and bootstrap_value.get("schema_version")
+                == "dskit.roster-bootstrap-authorization/v1"
+                and authorization.get("event_schema") == v1_event_schema
+                and bootstrap_value.get("event_schema") == v1_event_schema,
+                "raw publisher is v1-only",
+            )
+        else:
+            def has_schema(raw, schema):
+                try:
+                    value = parser(raw)
+                except Exception:
+                    return False
+                return (
+                    type(value) is dict
+                    and value.get("schema_version") == schema
+                )
+
+            refuse(
+                not has_schema(
+                    authorization_bytes, v2_authorization_schema,
+                )
+                and not has_schema(bootstrap, v2_roster_schema),
+                "raw publisher is v1-only",
+            )
+        return common_writer(
+            self,
+            proof,
+            (authorization_bytes, g1, g2, attestation),
+            (bootstrap, bg1, bg2, roster_basis, roster_receipt),
         )
 
     def publish_v2(self, proof, environment_identity, authorization_bytes,
@@ -9074,13 +9179,21 @@ def _build_synthetic_v2_raw_publication():
             and anchors.get(self) is None,
             "fresh synthetic v2 raw binding required",
         )
-        record = [weakref_ref(self), environment_identity, provisional]
+        record = [None, environment_identity, provisional]
+        record_identity = id(record)
+
+        def forget_record(_publisher_ref, identity=record_identity):
+            record_identities.discard(identity)
+
+        record[0] = weakref_factory(self, forget_record)
         try:
             records[self] = record
             anchors[self] = record
+            record_identities.add(record_identity)
         except BaseException:
             records.pop(self, None)
             anchors.pop(self, None)
+            record_identities.discard(record_identity)
             raise
         writer_invoked = False
         try:
@@ -9088,6 +9201,7 @@ def _build_synthetic_v2_raw_publication():
             refuse(
                 records.get(self) is record
                 and anchors.get(self) is record
+                and id(record) in record_identities
                 and record[0]() is self
                 and record[1] is environment_identity
                 and record[2] is provisional,
@@ -9099,6 +9213,7 @@ def _build_synthetic_v2_raw_publication():
             refuse(
                 records.get(self) is record
                 and anchors.get(self) is record
+                and id(record) in record_identities
                 and record[0]() is self
                 and record[1] is environment_identity
                 and record[2] is provisional,
@@ -9109,6 +9224,7 @@ def _build_synthetic_v2_raw_publication():
             refuse(
                 records.get(self) is record
                 and anchors.get(self) is record
+                and id(record) in record_identities
                 and record[2] is committed,
                 "synthetic v2 raw binding promotion failed",
             )
@@ -9119,6 +9235,7 @@ def _build_synthetic_v2_raw_publication():
             else:
                 records.pop(self, None)
                 anchors.pop(self, None)
+                record_identities.discard(record_identity)
             raise
 
     def verify(self, authorization_bytes, g1, g2, attestation,
@@ -9126,16 +9243,20 @@ def _build_synthetic_v2_raw_publication():
                manifest_bytes, basis_bytes, receipt_bytes,
                _under_writer_lock=False):
         try:
-            publisher = object_getattribute(self, "_publisher")
+            publisher = proof_publisher_descriptor.__get__(self, proof_type)
             if type(publisher) is not publisher_type:
                 raise TypeError
-            retained = object_getattribute(publisher, "_retained")
+            retained = publisher_retained_descriptor.__get__(
+                publisher, publisher_type
+            )
             if type(retained) is not tuple or len(retained) != 8:
                 raise TypeError
             fixture = retained[0]
             if type(fixture) is not fixture_type:
                 raise TypeError
-            event_schema = object_getattribute(fixture, "_event_schema")
+            event_schema = fixture_schema_descriptor.__get__(
+                fixture, fixture_type
+            )
         except BaseException:
             return original_verify(
                 self, authorization_bytes, g1, g2, attestation,
@@ -9156,6 +9277,7 @@ def _build_synthetic_v2_raw_publication():
             type(record) is list
             and len(record) == 3
             and anchors.get(publisher) is record
+            and id(record) in record_identities
             and record[0]() is publisher
             and type(record[1]) is environment_type
             and record[2] is committed,
@@ -9198,8 +9320,10 @@ def _build_synthetic_v2_raw_publication():
             _under_writer_lock=_under_writer_lock,
         )
 
+    publisher_type.publish = publish
     publisher_type.publish_v2 = publish_v2
     proof_type.verify = verify
+    delattr(publisher_type, "_publish_common")
 
 
 _build_synthetic_v2_raw_publication()
@@ -9226,7 +9350,17 @@ class _SyntheticRootPisIssuer:
             and retained[0]._event_schema
             == DATASET_AUTHORIZATION_EVENT_SCHEMAS[
                 "dskit.dataset-capture-authorization/v1"
-            ],
+            ]
+            and type(retained[3]) is tuple
+            and len(retained[3]) == 4
+            and type(retained[4]) is tuple
+            and len(retained[4]) == 5
+            and _hs_parse_canonical(retained[3][0]).get(
+                "schema_version"
+            ) == "dskit.dataset-capture-authorization/v1"
+            and _hs_parse_canonical(retained[4][0]).get(
+                "schema_version"
+            ) == "dskit.roster-bootstrap-authorization/v1",
             "root-PIS issuer is v1-only",
         )
         self._publisher = publisher
@@ -9391,7 +9525,6 @@ class _SyntheticRootPisIssuer:
             "root-PIS issuer is v1-only",
         )
         _hs_refuse(not self._closed, "root-PIS issuer already used")
-        self._closed = True
         signed = (authorization_bytes, g1, g2, attestation)
         roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
         output = (manifest_bytes, raw_basis, raw_receipt)
@@ -9399,6 +9532,19 @@ class _SyntheticRootPisIssuer:
                        (*signed, *roster, *output)),
                    "exact retained root-PIS originals required")
         publisher = self._publisher
+        retained = publisher._retained
+        _hs_refuse(
+            type(publisher) is _SyntheticRawPublisher
+            and type(retained) is tuple
+            and len(retained) == 8
+            and type(retained[0]) is VerifiedSyntheticDatasetFixture
+            and retained[0]._event_schema == v1_event_schema
+            and retained[3] == signed
+            and retained[4] == roster
+            and retained[5:] == output,
+            "exact retained v1 root-PIS originals required",
+        )
+        self._closed = True
         reserve = publisher._reserve
         connection = reserve._connection
         bootstrap_id = _hs_parse_canonical(bootstrap)["bootstrap_id"]
