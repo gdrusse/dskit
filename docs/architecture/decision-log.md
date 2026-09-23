@@ -22135,3 +22135,120 @@ the Context section's owner decision). No change to the funding AMOUNT
 formula, the day-one $1,020 seed, or any ADR-0177 insufficient-cash
 mechanism. No `ReplayRun`/P4 wiring. No backtest launch, no paper/live
 trading, no deployment.
+
+## ADR-0179 — wire `cash_flow_policy` into `DevelopmentReplay`, the pipeline-invokable node
+
+**Status:** PROPOSED — AWAITING PHASE-0 REVIEW. Not yet implemented.
+
+**Context.** ADR-0176/0177/0178 built and closed a complete,
+independently-verified cash-flow story (funding, insufficient-cash
+refusal, market-calendar-aware timing) entirely on `EquityReplay`/
+`ReplayAdapter`/`CashFlowPolicy` — the classes a test, a notebook, or a
+bespoke script can call directly. Before proposing this ADR, the owner
+asked directly whether that work was reachable from a real backtest run
+once switched to an environment with real market data. A dedicated,
+exhaustive sweep (repo-wide grep for every `cash_flow_policy` reference,
+every `NODE_KINDS` registration across all three files in this child
+that declare one, and `replay.py`'s full `git log`) found a real gap:
+`DevelopmentReplay` (`children/intraday_equities/intraday_equities/
+replay.py`, registered as `intraday_equities-development-replay` in
+`NODE_KINDS` — the ONLY replay-capable pipeline `Node`, and the one a
+real `python -m dskit.pipeline run <doc.json> --adapter
+intraday_equities` invocation would actually use) has never been
+touched by any of the three ADRs (confirmed by `git log` — its only
+touching commits are the ADR-0176/0177/0178 commits themselves, none of
+which edited its `_PARAMS`, `__init__`, or `run()`). Its `run()` method's
+final line is `return ReplayAdapter(self._policy).replay(list(inputs[
+"bars"]), list(inputs["decisions"]))` — no second argument, meaning a
+pipeline-document-driven replay today gets zero cash-flow funding, zero
+insufficient-cash refusal, and zero calendar-aware timing, regardless of
+how the document is configured, because the node has no knob for any of
+it. A user running a real backtest via the pipeline document (rather
+than calling `ReplayAdapter` directly in a bespoke script) would
+silently get the pre-ADR-0176 behavior.
+
+**Decision**
+
+1. **`DevelopmentReplay` gains two new OPTIONAL params,
+   `cash_flow_policy` and `cash_flow_policy_sha256`, mirroring the
+   existing REQUIRED `fill_policy`/`fill_policy_sha256` pair exactly,
+   but paired-optional rather than required** — per this repo's
+   "a new document key is OPTIONAL or it moves every identity" rule: the
+   shipped `configs/run-development-replay.json` document's existing
+   identity/behavior must be unaffected by this change, since it
+   declares neither name today. A new `_OPTIONAL_PARAMS = (
+   "cash_flow_policy", "cash_flow_policy_sha256")` tuple is added
+   (distinct from `_PARAMS`, which stays exactly the five existing
+   required names, unedited); `validate_params`'s existing
+   `reject_unknown_params(problems, params, cls._PARAMS + ("notes",))`
+   call becomes `reject_unknown_params(problems, params, cls._PARAMS +
+   cls._OPTIONAL_PARAMS + ("notes",))` (the required-name loop right
+   below it stays iterating `cls._PARAMS` only, so the two new names are
+   never required). New validation, appended after the existing
+   `fill_policy`/`fill_policy_sha256` block: when exactly one of
+   `"cash_flow_policy" in params` / `"cash_flow_policy_sha256" in
+   params` is true (an XOR), refuse — "`cash_flow_policy` and
+   `cash_flow_policy_sha256` must both be present or both be absent";
+   when both are present, validate the path exists and the digest
+   matches the loaded `CashFlowPolicy`'s own `.digest()`, via a new
+   `_resolved_cash_flow_policy_path` classmethod mirroring
+   `_resolved_fill_policy_path` field-for-field (join onto `_child_root()`
+   unless already absolute).
+
+2. **`__init__` conditionally builds a `CashFlowPolicy`.** Immediately
+   after the existing `self._policy = FillPolicy.from_path(...)` line:
+   when `"cash_flow_policy" in self.params`, set `self._cash_flow_policy
+   = CashFlowPolicy.from_path(self._resolved_cash_flow_policy_path(
+   self.params))`; else `self._cash_flow_policy = None`. `CashFlowPolicy`
+   is already imported in this file (ADR-0176) — no new import.
+
+3. **`run()`'s existing final line gains the second argument, nothing
+   else changes.** `return ReplayAdapter(self._policy,
+   self._cash_flow_policy).replay(list(inputs["bars"]),
+   list(inputs["decisions"]))` — `ReplayAdapter.__init__` already accepts
+   `cash_flow_policy=None` as its default (ADR-0176), so this is a
+   backward-compatible widening of an existing call, not a new contract.
+
+4. **No change to the shipped `configs/run-development-replay.json`
+   document, `dskit/production/*`, or `EquityReplay`/`ReplayAdapter`/
+   `CashFlowPolicy` themselves.** This ADR only makes `DevelopmentReplay`
+   CAPABLE of accepting the two new optional keys; whether any specific
+   document actually declares them (opting into cash-flow funding for a
+   real run) is a separate, later config-only decision the shipped
+   document's own owner makes — not opened here, and not required for
+   this ADR to close.
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+The shipped `run-development-replay.json` document (or an equivalent
+params dict built from it) still validates and runs identically to
+today, with `self._cash_flow_policy is None` and `run()`'s output
+byte-identical to before this ADR — the regression baseline, proving
+optionality is real, not merely documented. A `DevelopmentReplay`
+document that DOES declare a valid `cash_flow_policy`/
+`cash_flow_policy_sha256` pair constructs a real `CashFlowPolicy`, and a
+`.run(ctx, {"bars": ..., "decisions": ...})` call produces a replay
+whose ledger reflects funding/refusal/calendar-timing exactly as
+`ReplayAdapter`/`EquityReplay` already prove directly (via the same
+`_CapturingEquityReplay`-style technique, driven THROUGH the node this
+time, not by constructing `ReplayAdapter` directly) — proving the wiring
+itself, not re-proving ADR-0176/0177/0178's own already-closed
+mechanism. Every documented refusal case: `cash_flow_policy` present
+without `cash_flow_policy_sha256` (and the converse) refuses with a
+message naming both; a `cash_flow_policy` path that doesn't exist
+refuses; a `cash_flow_policy_sha256` that doesn't match the loaded
+policy's digest refuses — each mirroring the EXISTING, already-covered
+`fill_policy`/`fill_policy_sha256` refusal tests structurally, proving
+parity between the required and optional pairs' validation rigor. Run
+the full existing child replay suite unedited (65 tests as of ADR-0178's
+close) to prove no regression, plus purity gates.
+
+### Non-goals
+
+No change to the shipped `configs/run-development-replay.json` document
+— enabling cash-flow funding for a real run is a config edit the
+document's own owner makes later, not part of this ADR. No new
+`cash-flow-policy.json` config variant. No `ReplayRun`/P4 wiring. No
+change to position-sizing/scaling policy (still explicitly deferred,
+ADR-0177's own Non-goal). No backtest launch, no paper/live trading, no
+deployment.
