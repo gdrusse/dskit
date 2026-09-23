@@ -88,6 +88,16 @@ def test_adr170_object_new_and_exact_slots_do_not_forge_identity():
         trust._require_synthetic_tzdata(forged, TZDATA_SHA256)
 
 
+def test_adr170_object_new_then_direct_init_does_not_mint_identity():
+    cls = trust._SyntheticEnvironmentIdentity
+    for args in ((), (object(),)):
+        forged = object.__new__(cls)
+        with pytest.raises(TypeError, match="broker-issued"):
+            forged.__init__(*args)
+        with pytest.raises(ValueError, match="synthetic environment identity"):
+            trust._synthetic_environment_facts(forged)
+
+
 @pytest.mark.parametrize(("slot", "value"), [
     ("_schema_version", "dskit.synthetic-environment-fact/v2"),
     ("_environment_id", "caller"),
