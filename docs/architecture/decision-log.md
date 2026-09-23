@@ -20852,3 +20852,150 @@ wiring, no `EquityReplay`/`ReplayAdapter` change, no `Data.feed` row-content
 source (this class supplies fetch METADATA only, exactly as `BarTape`
 already does), no cash-flow or accounting change, no backtest, no paper/live
 trading, no deployment.
+
+---
+
+## ADR-0176 — a configured cash-flow schedule for the child's equity replay (PROPOSAL)
+
+**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW (2026-09-23). Not
+approved. No implementation exists.
+
+**Context.** `dskit.production.compose.bundles_for(document, release,
+registry, ..., tape=None, cash_flow_composer=None)` (§5.16's composition
+root, unedited by ADR-0172/0174/0175) already accepts a
+`cash_flow_composer: ReplayCashFlowComposer` keyword — the child's
+`EquityReplay._run_loop` (`children/intraday_equities/intraday_equities/
+replay.py`) already calls this exact function today, but never passes
+`cash_flow_composer`, so it defaults to `None`. `dskit.production.state.
+SeriesState._for_replay(series_id, tape, cash_flow_composer, max_history)`
+already type-checks `cash_flow_composer` (exact `ReplayCashFlowComposer` or
+`None`) and, when supplied, binds
+`state._replay_authorizer = cash_flow_composer._authorizes` — the gate that
+decides which `cash_flow` ledger records a replay may accept. None of this
+is new: `ReplayCashFlowComposer`, `RecurringCashFlowSchedule`, and every
+`CashFlowOverride` member (`SkipCashFlow`, `MoveCashFlow`, `ReplaceCashFlow`,
+`WithdrawalCashFlow`, `CorrectCashFlow`) are already built, tested core
+(`dskit.production.compose`/`dskit.production.cashflows`). Swept before
+drafting: no existing config, schedule, or composer construction exists
+anywhere in `children/intraday_equities` today (confirmed by direct
+search — `cash_flow_composer` is referenced only in core and only ever
+passed `None` by this child). The task's full "extend the equity replay
+path" ask names seven sub-concerns (contribution timing, insufficient cash,
+integer/fractional sizing, costs, turnover, horizon overlap, market-calendar
+handling) beyond the schedule itself — this ADR is bounded to exactly the
+first bounded increment other ADRs in this lineage have each taken: get
+`$1,000` initial capital and a `$20`/day recurring contribution correctly
+entering the replay ledger through the existing, unedited composition root.
+Insufficient-cash handling, sizing policy, cost/turnover interaction, and
+market-calendar-aware (as opposed to plain calendar-day) contribution timing
+are explicitly out of scope — see Non-goals.
+
+**No standalone one-time deposit primitive exists in `cashflows.py`** —
+only `WithdrawalCashFlow` produces a standalone flow, and its docstring is
+explicit that materialization always signs it negative (a withdrawal, never
+a deposit); `CorrectCashFlow` supersedes a *prior* flow rather than seeding
+a fresh one. Given `production/CLAUDE.md`'s explicit safety-spine warning
+that "`cash_flow` and `tick.nav` are unrecoverable after the fact... Get
+this wrong and an adopted deposit turns a trading loss into headroom under
+a `halt` guard," this ADR does not add a new override type to that
+safety-critical module. Instead it uses the existing, already-reviewed
+`ReplaceCashFlow` ("replace one recurrence amount while preserving its
+identity") to fold the one-time seed into the schedule's first regular
+occurrence — see Decision point 2.
+
+### Decision
+
+1. **One new config-driven child class, `CashFlowPolicy`, mirroring
+   `FillPolicy`'s exact pattern.** Add it to
+   `children/intraday_equities/intraday_equities/replay.py`: `_PARAMS =
+   ("currency", "daily_contribution_amount", "initial_capital_amount",
+   "timezone")`, default-deny (`reject_unknown_params`), every value from
+   the document — no Python-side default amount, matching `FillPolicy`'s
+   "Values come from the document, never defaults." A new config,
+   `children/intraday_equities/configs/cash-flow-policy.json`, declares the
+   $1,000/$20 values as DATA, not code, per this repo's "JSON is the
+   interface" rule — the exact numbers are never hardcoded in Python.
+   `CashFlowPolicy.from_path(path)` parses and validates it, the same
+   `from_path`/`from_obj` shape `FillPolicy` already has.
+
+2. **The schedule and composer are built once per replay run, from the
+   tape's own start, using only existing core primitives.**
+   `EquityReplay._run_loop` (the exact function that already calls
+   `bundles_for`) derives `anchor` from `tape.start_ms()` (the same
+   instant `_serve_document`/`_release_for` already read there for other
+   purposes) converted to the policy's configured `timezone`, and builds:
+   `RecurringCashFlowSchedule(schedule_id=<derived from series_id>,
+   anchor=anchor, interval_days=1, currency=policy.currency,
+   amount=policy.daily_contribution_amount, timezone=policy.timezone,
+   overrides=(ReplaceCashFlow("initial-capital-seed", anchor,
+   policy.initial_capital_amount + policy.daily_contribution_amount),))` —
+   folding the one-time $1,000 seed into day one's contribution ($1,020 on
+   day one, $20 every day after), auditable via the override's own
+   `override_id` ("initial-capital-seed") and the record's
+   `evidence.flow_id`, both of which `ReplayCashFlowComposer._record`
+   already carries into the ledger body unedited. `ReplayCashFlowComposer`
+   itself is constructed unedited from this schedule.
+
+3. **Pass the composer through the existing seam, nothing else changes.**
+   `EquityReplay._run_loop`'s existing `bundles_for(document, release,
+   None, serve_root=serve, secrets={}, invocation=invocation,
+   process_id="replay-1", lock=lock, journal_hook=_journal_noop,
+   tape=tape)` call gains exactly one new keyword,
+   `cash_flow_composer=composer`. No other argument, call site, or
+   downstream bundle changes. `SeriesState._for_replay` is not edited;
+   its existing type check and `_replay_authorizer` binding do the rest.
+
+4. **No new authority, no new WORM/capability effect.** This is plain
+   value construction (a schedule, an override, a composer) plus one new
+   keyword argument at an existing call site. No capability consumption,
+   no P4 interaction, no network access. The only NEW observable effect
+   inside a replay run is that `cash_flow` records the schedule
+   authorizes can now be appended to the replay ledger where none could
+   before (`cash_flow_composer=None` today means `_replay_authorizer` is
+   never bound, per `SeriesState._for_replay`'s existing `if
+   cash_flow_composer is not None` guard) — read the exact consequence of
+   that unbound state in `dskit/production/state.py` before RED, to pin
+   the exact before/after ledger-acceptance behavior the matrix must prove.
+
+5. **Compatibility.** `dskit.production.compose`/`dskit.production.
+   cashflows`/`dskit.production.state` are untouched. `EquityReplay`'s
+   existing signature, its other bundle wiring, `BarTape`, `ReplayAdapter`,
+   and `DevelopmentReplay` are untouched. The new config file and class are
+   additive; no existing config or child test fixture changes shape.
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+Pin `CashFlowPolicy._PARAMS`, default-deny (an unknown or missing key
+refuses), and `from_path`/`from_obj` parity with `FillPolicy`'s own pattern.
+Prove: the built schedule's `materialize` over the full replay window
+yields exactly one `$1,020` (or whatever the configured
+`initial_capital_amount + daily_contribution_amount` sums to) flow on the
+anchor day and exactly one `$<daily_contribution_amount>` flow every
+subsequent calendar day through the window's end, in the configured
+currency; `ReplayCashFlowComposer._authorizes` accepts exactly those
+records and refuses every other (wrong amount, wrong day, wrong currency,
+forged `evidence`); `SeriesState._for_replay` accepts the built composer
+(type check passes) and binds `_replay_authorizer`; a full
+`EquityReplay._run_loop` run with a real tape and the real policy config
+produces a replay whose ledger contains exactly the expected cash-flow
+records over a multi-day window (an end-to-end proof, not merely a unit
+proof of the schedule/composer in isolation); the exact prior behavior
+(`cash_flow_composer=None`, no cash records ever authorized) is pinned as a
+regression baseline so a future change cannot silently re-widen or narrow
+it. Run the existing child replay test suite unedited to prove
+`FillPolicy`, `BarTape`, `ReplayAdapter`, `DevelopmentReplay`, and every
+other existing `EquityReplay` behavior is untouched, plus
+`dskit.production.cashflows`/`compose`/`state` regressions.
+
+### Non-goals
+
+No insufficient-cash handling (what happens when a fill would exceed
+available cash is a separate, later slice touching sizing/execution, not
+this one). No integer/fractional position-sizing policy. No cost or
+turnover interaction with cash flows. No horizon-overlap handling. No
+market-calendar-aware contribution timing — `interval_days=1` is a plain
+calendar-day recurrence; skipping weekends/holidays via `SkipCashFlow`
+overrides (or a calendar-aware schedule primitive, if that turns out to be
+the right shape) is explicitly deferred. No `ReplayRun`/P4 wiring (ADR-0176
+does not depend on and is not blocked by that separate, larger, still-open
+question). No backtest launch, no paper/live trading, no deployment.
