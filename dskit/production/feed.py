@@ -73,6 +73,8 @@ from dskit.production.base import (
     pin_members,
     reject_unknown_params,
 )
+from dskit.production import bundles as _bundles
+from dskit.production.bundles import ReplayTape
 from dskit.production.clock import ManualTime
 from dskit.production.records import (
     EntryBatch,
@@ -1100,6 +1102,80 @@ class ReplayFeed(Feed):
         if self._time is not None:
             self._time.set(result.at_ms)
         return result
+
+
+class _CapturedEnvelopeReplayTape(ReplayTape):
+    """A runtime ``ReplayTape`` over an already-ordered v2 envelope sequence (ADR-0175).
+
+    Mirrors the child's ``BarTape`` shape and its "trust the caller"
+    posture: this class performs no verification of its own, the same as
+    every ``ReplayTape`` implementation. Verification is the caller's
+    responsibility, already done upstream by ADR-0172/0174 before these
+    bytes ever reach this class — which is exactly why this class stays
+    private, unlike ``BarTape`` itself, which is child-facing.
+
+    ``feed_results()`` returns aggregate fetch metadata only (one
+    ``FeedResult`` per unique ``availability_ms``, grouping any envelopes
+    that share one instant, including a correction and the event it
+    corrects) — never row content or correction-chain order, which was
+    never a ``ReplayTape`` responsibility for any implementation (this
+    module's own ``ReplayFeed``, above: "the rows are not the feed's to
+    hold").
+
+    Parameters
+    ----------
+    ordered_envelope_bytes : tuple of bytes
+        Closed ``dskit.event-envelope/v2`` canonical bytes, one per
+        envelope. Every element is parsed at construction with the
+        existing ``bundles._parse_event_envelope``; a parse failure on ANY
+        element raises immediately, before any ``FeedResult`` is derived
+        from any other element — there is no partial-success state.
+    source_config_hash : str
+        Recorded verbatim on every derived ``FeedResult``, unchecked
+        against the envelopes (the same trust posture ``BarTape`` already
+        has for its own ``source_config_hash`` argument).
+
+    Examples
+    --------
+    A tape over one already-verified envelope::
+
+        tape = _CapturedEnvelopeReplayTape((envelope_bytes,), "a" * 64)
+        tape.start_ms() == parsed_availability_ms
+        # -> True
+    """
+
+    def __init__(self, ordered_envelope_bytes, source_config_hash):
+        parsed = [
+            _bundles._parse_event_envelope(raw) for raw in ordered_envelope_bytes
+        ]
+        by_instant = {}
+        for envelope in parsed:
+            by_instant[envelope["availability_ms"]] = (
+                by_instant.get(envelope["availability_ms"], 0) + 1
+            )
+        self._times = tuple(sorted(by_instant))
+        self._results = tuple(
+            FeedResult(
+                status="live",
+                acq_id=f"envelope-{instant}",
+                records_added=by_instant[instant],
+                source_config_hash=source_config_hash,
+                at_ms=instant,
+            )
+            for instant in self._times
+        )
+
+    def start_ms(self):
+        """Return the earliest ``availability_ms``, or 0 when the tape is empty."""
+        return self._times[0] if self._times else 0
+
+    def feed_results(self):
+        """Return one ``FeedResult`` per unique ``availability_ms``, in order."""
+        return self._results
+
+    def id_allocations(self):
+        """Return no recorded ids — ``ReleaseIdSource`` allocates live."""
+        return ()
 
 
 # ---------------------------------------------------------------------------

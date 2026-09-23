@@ -16,6 +16,7 @@ import dskit.pipeline as pipeline
 from dskit.pipeline import trust
 from dskit.production import base
 from dskit.production import bundles
+from dskit.production import feed as production_feed
 from dskit.production import verifier as production_verifier
 from tests.pipeline.test_captured_authorization import _adr132_raw_case
 from tests.pipeline.test_v2_raw_publication import _case, _effect_snapshot
@@ -643,3 +644,26 @@ def test_compose_v2_replay_tape_has_no_effect_beyond_three_raw_verify_calls(
         assert len(after_compose[index]) - len(before[index]) == (
             len(after_three_direct_verifies[index]) - len(after_compose[index])
         )
+
+
+def test_captured_envelope_replay_tape_accepts_real_adr0174_projected_bytes(
+    tmp_path,
+):
+    """ADR-0175's tape genuinely consumes ADR-0174's real projected output (integration)."""
+    _, proof, raw_bytes, capability = _mint(tmp_path)
+    ordered_envelope_bytes = production_verifier._project_verified_synthetic_v2_input(
+        capability
+    )
+    tape = production_feed._CapturedEnvelopeReplayTape(
+        ordered_envelope_bytes, hashlib.sha256(raw_bytes[9]).hexdigest(),
+    )
+    results = tape.feed_results()
+    assert sum(result.records_added for result in results) == len(
+        ordered_envelope_bytes
+    )
+    parsed_instants = {
+        bundles._parse_event_envelope(raw)["availability_ms"]
+        for raw in ordered_envelope_bytes
+    }
+    assert {result.at_ms for result in results} == parsed_instants
+    assert tape.start_ms() == min(parsed_instants)
