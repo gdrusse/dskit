@@ -393,6 +393,27 @@ def test_adr169_root_pis_refuses_v2_inputs_before_reserve_spend(tmp_path, monkey
     ).fetchone() == (0,)
 
 
+def test_adr169_dynamic_graph_refuses_substituted_v2_retained_state(
+    tmp_path, monkeypatch,
+):
+    (tmp_path / "v1").mkdir()
+    v1_publisher, v1_roster, v1_signed, v1_output = cases._adr140_published_raw_case(
+        tmp_path / "v1", monkeypatch,
+    )
+    v1_publisher._reserve._advance_clock(601)
+    issuer = trust._SyntheticRootPisIssuer(v1_publisher)
+    issuer.issue(*v1_signed, *v1_roster, *v1_output)
+    retained = issuer._retained
+    _v2_publisher, _preflight, _source, v2_signed, v2_roster = _v2_case(
+        tmp_path / "v2",
+    )
+    issuer._retained = (v2_signed, v2_roster, *retained[2:])
+    before = v1_publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="v1-only"):
+        trust.NonAuthorizingDynamicRootGraph(trust._MAKE, issuer)
+    assert v1_publisher._reserve._connection.total_changes == before
+
+
 def test_adr169_bundles_imports_v1_owner_and_still_refuses_v2():
     wire = _wire()
     assert bundles._RAW_EVENT_V1_SCHEMA == "dskit.raw-event/v1"
