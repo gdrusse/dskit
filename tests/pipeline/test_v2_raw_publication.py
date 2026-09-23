@@ -28,6 +28,24 @@ def _case(tmp_path):
     )
 
 
+def _binding_authority():
+    pending = [trust._SyntheticRawPublisher.publish_v2]
+    seen = set()
+    while pending:
+        function = pending.pop()
+        if id(function) in seen:
+            continue
+        seen.add(id(function))
+        nonlocals = inspect.getclosurevars(function).nonlocals
+        if {"records", "anchors", "record_identities"} <= set(nonlocals):
+            return nonlocals
+        pending.extend(
+            value for value in nonlocals.values()
+            if inspect.isfunction(value)
+        )
+    raise AssertionError("v2 binding authority closure not found")
+
+
 def test_publish_v2_is_private_positional_only_and_not_exported():
     method = trust._SyntheticRawPublisher.publish_v2
     signature = inspect.signature(method)
@@ -43,6 +61,8 @@ def test_publish_v2_is_private_positional_only_and_not_exported():
     assert "publish_v2" not in trust.__all__
     assert not hasattr(trust, "_SYNTHETIC_V2_RAW_ENVIRONMENTS")
     assert "_publish_common" not in trust._SyntheticRawPublisher.__dict__
+    direct_closure = inspect.getclosurevars(method).nonlocals
+    assert set(direct_closure) == {"authorized_publish_v2"}
 
 
 def test_publish_v2_refuses_wrong_environment_before_any_effect(tmp_path):
@@ -59,9 +79,7 @@ def test_publish_v2_refuses_wrong_environment_before_any_effect(tmp_path):
     )
     with pytest.raises(ValueError, match="environment"):
         raw_publisher.publish_v2(fixture, object(), *signed, *roster)
-    closure = inspect.getclosurevars(
-        trust._SyntheticRawPublisher.publish_v2
-    ).nonlocals
+    closure = _binding_authority()
     assert raw_publisher not in closure["records"]
     assert raw_publisher not in closure["anchors"]
     assert before == (
@@ -71,6 +89,66 @@ def test_publish_v2_refuses_wrong_environment_before_any_effect(tmp_path):
         roster_publisher._reserve._connection.total_changes,
         dict(roster_publisher._broker._storage),
         tuple(roster_publisher._broker._receipt_store._data),
+    )
+
+
+def test_publish_v2_refuses_replaced_weakref_dispatch_before_effect(
+    tmp_path, monkeypatch,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        trust, "weakref_ref", lambda *_args: calls.append("called")
+    )
+    before = roster_publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="dispatch changed"):
+        raw_publisher.publish_v2(
+            fixture, environment, *signed, *roster
+        )
+    assert calls == []
+    assert fixture._used is False
+    assert raw_publisher._retained is None
+    assert roster_publisher._reserve._connection.total_changes == before
+
+
+def test_captured_common_writer_refuses_v2_without_provisional_binding(
+    tmp_path,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        _environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    closure = _binding_authority()
+    before = (
+        roster_publisher._reserve._connection.total_changes,
+        fixture._used,
+        tuple(raw_publisher._broker._member_events),
+    )
+    with pytest.raises(ValueError, match="provisional.*binding"):
+        closure["common_writer"](
+            raw_publisher,
+            fixture,
+            signed,
+            roster,
+            "dskit.raw-event/v2",
+        )
+    assert before == (
+        roster_publisher._reserve._connection.total_changes,
+        fixture._used,
+        tuple(raw_publisher._broker._member_events),
     )
 
 
@@ -124,6 +202,39 @@ def test_v2_root_proof_refuses_replaced_environment_gate_before_member_read(
     assert tuple(raw_publisher._broker._member_events) == before
 
 
+def test_v2_root_proof_uses_pinned_slot_reads_before_dispatch_refusal(
+    tmp_path, monkeypatch,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    output = raw_publisher.publish_v2(
+        fixture, environment, *signed, *roster
+    )
+    calls = []
+
+    def replaced_schema(_self):
+        calls.append("called")
+        return "dskit.raw-event/v2"
+
+    monkeypatch.setattr(
+        trust.VerifiedSyntheticDatasetFixture,
+        "_event_schema",
+        property(replaced_schema),
+    )
+    before = tuple(raw_publisher._broker._member_events)
+    with pytest.raises(ValueError, match="dispatch changed"):
+        raw_publisher.proof().verify(*signed, *roster, *output)
+    assert calls == []
+    assert tuple(raw_publisher._broker._member_events) == before
+
+
 def test_v2_root_proof_refuses_copied_private_binding_record_before_member_read(
     tmp_path,
 ):
@@ -139,14 +250,37 @@ def test_v2_root_proof_refuses_copied_private_binding_record_before_member_read(
     output = raw_publisher.publish_v2(
         fixture, environment, *signed, *roster
     )
-    closure = inspect.getclosurevars(
-        trust._SyntheticRawPublisher.publish_v2
-    ).nonlocals
+    closure = _binding_authority()
     records = closure["records"]
     anchors = closure["anchors"]
     copied = list(records[raw_publisher])
     records[raw_publisher] = copied
     anchors[raw_publisher] = copied
+    before = tuple(raw_publisher._broker._member_events)
+    with pytest.raises(ValueError, match="committed.*binding"):
+        raw_publisher.proof().verify(*signed, *roster, *output)
+    assert tuple(raw_publisher._broker._member_events) == before
+
+
+def test_v2_root_proof_refuses_environment_identity_substitution(
+    tmp_path,
+):
+    (
+        _roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    output = raw_publisher.publish_v2(
+        fixture, environment, *signed, *roster
+    )
+    closure = _binding_authority()
+    closure["records"][raw_publisher][1] = (
+        trust._synthetic_environment_identity()
+    )
     before = tuple(raw_publisher._broker._member_events)
     with pytest.raises(ValueError, match="committed.*binding"):
         raw_publisher.proof().verify(*signed, *roster, *output)
@@ -168,9 +302,7 @@ def test_v2_root_proof_refuses_deleted_private_binding_before_member_read(
     output = raw_publisher.publish_v2(
         fixture, environment, *signed, *roster
     )
-    closure = inspect.getclosurevars(
-        trust._SyntheticRawPublisher.publish_v2
-    ).nonlocals
+    closure = _binding_authority()
     del closure["records"][raw_publisher]
     before = tuple(raw_publisher._broker._member_events)
     with pytest.raises(ValueError, match="committed.*binding"):
@@ -191,9 +323,7 @@ def test_private_binding_entries_and_identity_anchor_expire_with_publisher(
         _source,
     ) = _case(tmp_path)
     raw_publisher.publish_v2(fixture, environment, *signed, *roster)
-    closure = inspect.getclosurevars(
-        trust._SyntheticRawPublisher.publish_v2
-    ).nonlocals
+    closure = _binding_authority()
     record_identity = id(closure["records"][raw_publisher])
     publisher_ref = weakref_ref(raw_publisher)
     del raw_publisher

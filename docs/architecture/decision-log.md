@@ -20183,7 +20183,11 @@ self-reference and exact captured environment class/checker/descriptors, and
 must be the same list object stored in both maps. A copied/rebuilt list is
 never an anchor and refuses even if all elements are identical. Anchor and
 record entries share the publisher's weak lifetime and disappear together on
-GC. The closure installs both the exact
+GC. A closure-owned identity set plus an ordinary dict of
+`id(record) -> (exact_record, exact_environment_identity)` seals the original
+list and identity; the weakref callback removes both. Neither is authoritative
+alone, and verification requires agreement across both weak maps, the identity
+set, and the seal. The closure installs both the exact
 `publish_v2` method and a wrapper around the original exact
 `NonAuthorizingRawRootProof.verify`; the wrapper delegates v1 byte-for-byte
 and alone can read the map. Replacing a module global cannot replace the
@@ -20237,6 +20241,19 @@ strengthened. Map/record deletion, copying, cross-publisher rewiring, alternate
 factory identity, or publisher GC cannot substitute authority. Neither method,
 map, nor helper/type is exported. Existing v1 tests/messages/bytes and public
 surfaces remain unchanged.
+
+The security boundary is executable module/class/callable surfaces and
+replaceable globals/descriptors, not arbitrary privileged mutation of Python
+function closure cells. Coordinated recursive `inspect`/`gc` extraction and
+mutation of every closure-owned map, seal, sentinel, captured callable, and
+code object is equivalent to hostile in-process code replacement (the same
+capability can directly replace `_MAKE`, methods, or verifier bytecode) and is
+outside this in-process construction's threat model. White-box tests may expose
+one closure-owned container at a time to inject deletion, copying, state,
+identity, or cross-publisher faults; the remaining independent anchors must
+then refuse. Installed methods themselves contain only one authorized
+implementation callable and expose no writer or mutable authority state in
+their direct closure.
 
 ### Required Phase-0 matrix
 

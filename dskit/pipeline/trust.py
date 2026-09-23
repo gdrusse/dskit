@@ -8962,7 +8962,7 @@ def _build_synthetic_v2_raw_publication():
     environment_checker = _require_synthetic_tzdata
     schema_table = DATASET_AUTHORIZATION_EVENT_SCHEMAS
     fixture_facts_map = _SYNTHETIC_RAW_FIXTURE_FACTS
-    common_writer = publisher_type._publish_common
+    raw_writer = publisher_type._publish_common
     original_verify = proof_type.verify
     object_getattribute = object.__getattribute__
     weakref_factory = weakref_ref
@@ -8975,9 +8975,41 @@ def _build_synthetic_v2_raw_publication():
     records = WeakKeyDictionary()
     anchors = WeakKeyDictionary()
     record_identities = set()
+    binding_seals = {}
     v2_authorization_schema = "dskit.dataset-capture-authorization/v2"
     v2_roster_schema = "dskit.roster-bootstrap-authorization/v2"
     v2_event_schema = schema_table[v2_authorization_schema]
+    v1_event_schema = schema_table[
+        "dskit.dataset-capture-authorization/v1"
+    ]
+
+    def common_writer(self, proof, signed, roster, expected_event_schema):
+        if expected_event_schema == v1_event_schema:
+            return raw_writer(self, proof, signed, roster)
+        refuse(
+            expected_event_schema == v2_event_schema
+            and object_getattribute(proof, "_event_schema")
+            == expected_event_schema
+            and parser(signed[0]).get("event_schema")
+            == expected_event_schema
+            and parser(roster[0]).get("event_schema")
+            == expected_event_schema,
+            "raw common writer schema gate refused",
+        )
+        record = records.get(self)
+        refuse(
+            type(record) is list
+            and len(record) == 3
+            and anchors.get(self) is record
+            and id(record) in record_identities
+            and binding_seals.get(id(record))
+            == (record, record[1])
+            and record[0]() is self
+            and type(record[1]) is environment_type
+            and record[2] is provisional,
+            "provisional synthetic v2 raw binding required",
+        )
+        return raw_writer(self, proof, signed, roster)
 
     def require_dispatch(*, verifying=False):
         refuse(
@@ -9063,9 +9095,6 @@ def _build_synthetic_v2_raw_publication():
             )
             authorization = parser(authorization_bytes)
             bootstrap_value = parser(bootstrap)
-            v1_event_schema = schema_table[
-                "dskit.dataset-capture-authorization/v1"
-            ]
             refuse(
                 authorization.get("schema_version")
                 == "dskit.dataset-capture-authorization/v1"
@@ -9098,6 +9127,7 @@ def _build_synthetic_v2_raw_publication():
             proof,
             (authorization_bytes, g1, g2, attestation),
             (bootstrap, bg1, bg2, roster_basis, roster_receipt),
+            v1_event_schema,
         )
 
     def publish_v2(self, proof, environment_identity, authorization_bytes,
@@ -9184,16 +9214,21 @@ def _build_synthetic_v2_raw_publication():
 
         def forget_record(_publisher_ref, identity=record_identity):
             record_identities.discard(identity)
+            binding_seals.pop(identity, None)
 
         record[0] = weakref_factory(self, forget_record)
         try:
             records[self] = record
             anchors[self] = record
             record_identities.add(record_identity)
+            binding_seals[record_identity] = (
+                record, environment_identity,
+            )
         except BaseException:
             records.pop(self, None)
             anchors.pop(self, None)
             record_identities.discard(record_identity)
+            binding_seals.pop(record_identity, None)
             raise
         writer_invoked = False
         try:
@@ -9202,18 +9237,24 @@ def _build_synthetic_v2_raw_publication():
                 records.get(self) is record
                 and anchors.get(self) is record
                 and id(record) in record_identities
+                and binding_seals.get(id(record))
+                == (record, environment_identity)
                 and record[0]() is self
                 and record[1] is environment_identity
                 and record[2] is provisional,
                 "synthetic v2 raw binding changed",
             )
             writer_invoked = True
-            result = common_writer(self, proof, signed, roster)
+            result = common_writer(
+                self, proof, signed, roster, v2_event_schema
+            )
             require_dispatch()
             refuse(
                 records.get(self) is record
                 and anchors.get(self) is record
                 and id(record) in record_identities
+                and binding_seals.get(id(record))
+                == (record, environment_identity)
                 and record[0]() is self
                 and record[1] is environment_identity
                 and record[2] is provisional,
@@ -9225,6 +9266,8 @@ def _build_synthetic_v2_raw_publication():
                 records.get(self) is record
                 and anchors.get(self) is record
                 and id(record) in record_identities
+                and binding_seals.get(id(record))
+                == (record, environment_identity)
                 and record[2] is committed,
                 "synthetic v2 raw binding promotion failed",
             )
@@ -9236,6 +9279,7 @@ def _build_synthetic_v2_raw_publication():
                 records.pop(self, None)
                 anchors.pop(self, None)
                 record_identities.discard(record_identity)
+                binding_seals.pop(record_identity, None)
             raise
 
     def verify(self, authorization_bytes, g1, g2, attestation,
@@ -9278,6 +9322,8 @@ def _build_synthetic_v2_raw_publication():
             and len(record) == 3
             and anchors.get(publisher) is record
             and id(record) in record_identities
+            and binding_seals.get(id(record))
+            == (record, record[1])
             and record[0]() is publisher
             and type(record[1]) is environment_type
             and record[2] is committed,
@@ -9314,6 +9360,37 @@ def _build_synthetic_v2_raw_publication():
             ) from exc
         require_dispatch(verifying=True)
         return original_verify(
+            self, authorization_bytes, g1, g2, attestation,
+            bootstrap, bg1, bg2, roster_basis, roster_receipt,
+            manifest_bytes, basis_bytes, receipt_bytes,
+            _under_writer_lock=_under_writer_lock,
+        )
+
+    authorized_publish = publish
+    authorized_publish_v2 = publish_v2
+    authorized_verify = verify
+
+    def publish(self, proof, authorization_bytes, g1, g2, attestation,
+                bootstrap, bg1, bg2, roster_basis, roster_receipt):
+        return authorized_publish(
+            self, proof, authorization_bytes, g1, g2, attestation,
+            bootstrap, bg1, bg2, roster_basis, roster_receipt,
+        )
+
+    def publish_v2(self, proof, environment_identity, authorization_bytes,
+                   g1, g2, attestation, bootstrap, bg1, bg2, roster_basis,
+                   roster_receipt, /):
+        return authorized_publish_v2(
+            self, proof, environment_identity, authorization_bytes,
+            g1, g2, attestation, bootstrap, bg1, bg2, roster_basis,
+            roster_receipt,
+        )
+
+    def verify(self, authorization_bytes, g1, g2, attestation,
+               bootstrap, bg1, bg2, roster_basis, roster_receipt,
+               manifest_bytes, basis_bytes, receipt_bytes,
+               _under_writer_lock=False):
+        return authorized_verify(
             self, authorization_bytes, g1, g2, attestation,
             bootstrap, bg1, bg2, roster_basis, roster_receipt,
             manifest_bytes, basis_bytes, receipt_bytes,
