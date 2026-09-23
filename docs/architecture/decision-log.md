@@ -19455,3 +19455,15 @@ lock. Conformance suites cover `ScoreDistributions` and
 (a parameter-seeded generator has no mutable dataset for the data-role
 move/grow probes). `kinds_stats.Validate` and `FittedTransform.frame_of`
 keep their own split-frame code (out of scope).
+
+**Review lock (2026-09-23).** Candidate `a2f9b87`: two fresh final lenses
+(correctness; test-quality with 59 mutations, 51 killed) report 0 Critical /
+0 Major. Recorded Minor backlog, unfixed: CVaR tail count float off-by-one
+(`ceil((1-0.95)*200)` = 11); condor report's scorable-row rule is a second
+copy of the scorer's (NaN outcome slips through); KS D+-only, Berkowitz
+`z[:-1]`, reflected condor draws, `fit_split="val"` in the config and the
+GJR `gamma/2` stationarity term survive mutation; child test imports private
+`_DAY_MS`. Nits: `DEFAULT_SCALE_MULTIPLIER` not in `__all__`; day-1 variance
+is `omega + beta*v`; repeated field-name checks; config note on
+trading-day embargo. Unrelated suite failures (missing optuna/pyomo/sklearn/
+mlflow, a pyo3 crypto panic, a root-permission test) are environmental.
