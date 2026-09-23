@@ -21501,3 +21501,157 @@ policy beyond reusing the existing per-share fee formulas unchanged. No
 `ReplayRun`/P4 wiring. No change to `dskit/production/*`,
 `nodes_capital.py`, or ADR-0176's own cash-flow-policy/composer code. No
 backtest launch, no paper/live trading, no deployment.
+
+## ADR-0178 — market-calendar-aware cash-flow contribution timing
+
+**Status:** PROPOSED — AWAITING PHASE-0 REVIEW. Not yet implemented.
+
+**Context.** ADR-0176 closed named Non-goal: "No market-calendar-aware
+contribution timing — `interval_days=1` is a plain calendar-day
+recurrence; skipping weekends/holidays via `SkipCashFlow` overrides (or
+a calendar-aware schedule primitive, if that turns out to be the right
+shape) is explicitly deferred." Owner decision on this ADR's shape
+(asked directly, ahead of drafting): a scheduled occurrence on a
+non-trading day is SKIPPED entirely (no contribution that day, total
+funding over a backtest becomes `$20 × trading days`, not `$20 ×
+calendar days`) — not redirected to the next trading day. This
+matches `SkipCashFlow`'s own semantics (suppress an occurrence outright;
+there is no "accumulate and redirect" primitive in `cashflows.py` short
+of composing `MoveCashFlow`, which the owner did not choose) and is a
+smaller, more literal reading of the deferred Non-goal text, which named
+`SkipCashFlow` specifically.
+
+Today: `CashFlowPolicy.composer_for(series_id, start_ms)` builds a
+`RecurringCashFlowSchedule` with `interval_days=1` and no market-calendar
+awareness at all — a contribution is scheduled for literally every
+calendar day from the anchor forward, including weekends and holidays.
+`_submit_due_cash_flows`'s per-tick window mechanism (ADR-0176 point
+3.5) does not filter these out: a tick following a weekend submits every
+occurrence in `[prev_window_end, tick+1)`, including the weekend
+occurrences that window now spans — so today a Monday tick can submit
+Saturday's, Sunday's, and Monday's $20 contributions together (a real
+behavior gap, not a cosmetic one: it means "$20/day" quietly means "$20
+per elapsed calendar day, batched onto whichever tick's window it falls
+in" rather than "$20 per market day", inflating total funding on any
+backtest whose tape spans a weekend or holiday).
+
+**Decision**
+
+1. **`EquityReplay._run_loop` derives the tape's own trading-date set
+   before building the composer — no new calendar library, no
+   `dskit.production.libs.exchange_calendars` dependency.** Right before
+   the existing `cash_flow_composer = self._cash_flow_policy.composer_for(
+   series_id, tape.start_ms())` call (`replay.py:792-796`), compute:
+   `trading_dates = frozenset(datetime.fromtimestamp(t / 1000,
+   tz=timezone.utc).astimezone(self._cash_flow_policy.timezone).date()
+   for t in times)` — the exact `.astimezone()` idiom this file already
+   uses everywhere else for epoch-ms-to-local conversion, applied to
+   `times` (`tape._times`, already in scope at this point, already the
+   union of every symbol's distinct bar instants — the same list
+   `_TapeCadence` itself ticks on). A day is a "trading day" for funding
+   purposes iff the replay's own tape has at least one bar on it, in the
+   policy's configured timezone — self-consistent with the data actually
+   driving the replay, never a separate market-calendar source that could
+   disagree with it.
+
+2. **`composer_for` gains a required third parameter, `trading_dates`,
+   and builds one `SkipCashFlow` override per non-trading date between
+   the anchor and the tape's last trading date.** New signature:
+   `composer_for(self, series_id, start_ms, trading_dates)`. After the
+   existing `anchor`/`first_amount` computation
+   (`replay.py:current composer_for body`, unedited by this point),
+   before constructing `RecurringCashFlowSchedule`: walk every calendar
+   date from `anchor.date()` through `max(trading_dates)` inclusive
+   (ordinary `date` + `timedelta(days=1)` iteration — bounded by the
+   tape's own last trading date, since no tick ever occurs after it, so
+   no occurrence beyond it is ever queried by `_submit_due_cash_flows`
+   regardless of whether it's skipped); for each date `d` not in
+   `trading_dates`, build `occurrence_at = anchor.replace(year=d.year,
+   month=d.month, day=d.day)` — the exact same
+   `(day.year, day.month, day.day, anchor.hour, anchor.minute,
+   anchor.second, anchor.microsecond, tzinfo=self.timezone)` fields
+   `RecurringCashFlowSchedule._occurrence(index)` itself already
+   constructs internally (`dskit/production/cashflows.py:509-516`,
+   unedited) — `.replace()` on `anchor` produces the identical
+   `datetime` by construction, so a skip override's `occurrence_at`
+   always matches the schedule's own occurrence for that date exactly
+   (`SkipCashFlow.apply` matches by exact UTC instant equality,
+   `dskit/production/cashflows.py:184-188`, unedited — the same
+   value-equality pattern ADR-0176 already established for
+   `ReplaceCashFlow`). Append `SkipCashFlow(f"non-trading-day-{
+   d.isoformat()}", occurrence_at)` for each such date to the existing
+   `overrides` tuple, alongside the unedited `ReplaceCashFlow(
+   "initial-capital-seed", anchor, first_amount)`. The anchor's own date
+   is structurally guaranteed to be in `trading_dates` (it is derived
+   from `tape.start_ms()`, itself a real bar instant), so day-one funding
+   can never be accidentally skipped.
+
+3. **No change to `SkipCashFlow`, `RecurringCashFlowSchedule`,
+   `ReplayCashFlowComposer`, or any other `dskit/production/*` code.**
+   This ADR is entirely `CashFlowPolicy.composer_for`'s own body plus one
+   new computation at its sole call site in `_run_loop`. `_submit_due_
+   cash_flows`'s window mechanism (ADR-0176) is unedited and unaware this
+   is happening — it still just calls `composer.due(...)` and appends
+   whatever comes back; a non-trading day's occurrence never appears in
+   `due`'s output at all once its `SkipCashFlow` is in place, so there is
+   nothing new for that method to filter.
+
+4. **Union across all symbols, not per-symbol.** A day counts as trading
+   iff ANY symbol in the tape has a bar that day — matching how `times`
+   (and `_TapeCadence`) already treat the tape as one unified instant
+   sequence, never a per-symbol one. Funding is an account-level concept,
+   not a per-symbol one, so this is the only sound reading.
+
+5. **The 3 existing ADR-0176 tests that call `composer_for` directly
+   must update their call sites** (`test_composer_for_folds_initial_
+   capital_into_the_first_daily_occurrence`, `test_composer_for_refuses_
+   an_empty_tape`, `test_composer_for_materializes_safely_across_a_dst_
+   transition`, `children/intraday_equities/tests/test_replay.py`) to
+   pass a `trading_dates` argument — for the two that materialize a
+   dense window with no intentional gaps, passing every date in the
+   window (e.g. `frozenset(anchor.date() + timedelta(days=i) for i in
+   range(N))`) preserves their existing assertions unchanged, proving
+   this ADR does not silently alter ADR-0176's own already-reviewed
+   behavior for the all-trading-days case.
+
+### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
+
+A tape spanning a weekend (bars on a Friday and the following Monday,
+none on Saturday/Sunday) funds exactly $1,020 on Friday (anchor day) and
+$20 on Monday — no Saturday or Sunday `cash_flow` record, and Monday's
+record is exactly $20 (not $60, proving no weekend accumulation leaks
+through). A tape with a single mid-week gap date (simulating a holiday
+between two trading days) skips exactly that date, funds the trading day
+after it for its own $20 only. The anchor day itself is never skipped
+(structural proof, not just the absence of a counterexample: construct a
+case where the anchor's own weekday would plausibly be mistaken for
+non-trading and confirm funding still occurs there). A dense, gap-free
+multi-day tape (every calendar day in range has a bar) funds identically
+to ADR-0176's own pre-existing behavior — the regression baseline,
+proving this ADR is a pure narrowing (fewer or equal funded days), never
+a behavior change for the no-gap case. `composer_for`'s existing
+empty-tape refusal and DST-transition-safety tests continue to pass with
+an updated call site (three-argument form). Self-authorization round
+trip still holds: every record the composer's `due(...)` now emits
+(with non-trading days already absent) still passes `_authorizes` —
+proven transitively via a full `EquityReplay`/`ReplayAdapter` run whose
+ledger is inspected, the same technique ADR-0176's own end-to-end test
+already established. Run the full existing child replay suite (57 tests
+as of ADR-0177's close) unedited except for the three call-site updates
+named in Decision point 5, plus ADR-0176/0177's own tests, to prove no
+interaction regression.
+
+### Non-goals
+
+No real market-calendar/holiday-calendar library integration (`dskit.
+production.libs.exchange_calendars` or any exchange-calendar dependency)
+— trading days are derived purely from the replay's own tape data, never
+an external calendar source; a tape that happens to omit a real trading
+day (e.g. a data gap) is indistinguishable from a genuine holiday under
+this ADR, which is accepted as correct for THIS harness's purpose (fund
+only the days it can actually trade on) rather than a defect. No
+redirect-to-next-trading-day behavior (explicitly decided against per
+the Context section's owner decision). No change to the funding AMOUNT
+formula, the day-one $1,020 seed, or any ADR-0177 insufficient-cash
+mechanism. No `ReplayRun`/P4 wiring. No backtest launch, no paper/live
+trading, no deployment.
