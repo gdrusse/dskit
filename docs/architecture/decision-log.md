@@ -20162,10 +20162,28 @@ reach it. V2 writes the same manifest/root/receipt families with
 `event_schema=dskit.raw-event/v2` and the already verified twelve-key member
 bytes. No envelope bytes are derived.
 
-4. **Bind environment to retained v2 root proof.** Retain the exact issued
-environment identity in a private weak identity map keyed by the successful v2
-raw publisher; v1 publishers have no entry. Extend
-`NonAuthorizingRawRootProof.verify` only for a retained v2 publication:
+V1 parity is pinned at every boundary: front-door checks, proof-use mutation,
+manifest derivation, each reserve `_advance`, session start, produce, seal,
+publish, session end, receipt transaction/sign/store, retained assignment, and
+return. For success and an injected exception at every boundary, compare exact
+exception type/message, `proof._used`, publisher `_closed`/`_retained`,
+reserve rows/audit/transaction, broker storage/session/member events/receipt
+store, outer receipts, and returned bytes to the pre-refactor baseline,
+including existing commit-after and return faults.
+
+4. **Closure-owned environment binding and proof gate.** Add `__weakref__`
+to `_SyntheticRawPublisher.__slots__` without changing its public surface.
+One deleted module-bootstrap closure owns the sole `WeakKeyDictionary`; no
+module global exposes it. Each record is
+`(weakref_ref(publisher), exact_environment_identity, state)`, validates the
+self-reference and exact captured environment class/checker/descriptors, and
+uses only identity comparisons. The closure installs both the exact
+`publish_v2` method and a wrapper around the original exact
+`NonAuthorizingRawRootProof.verify`; the wrapper delegates v1 byte-for-byte
+and alone can read the map. Replacing a module global cannot replace the
+captured map, checker, original verifier, or identity.
+
+For a retained v2 publication, the wrapper
 before member/provider reads, reparse the exact retained authorization, require
 the map's exact live identity, re-run `_require_synthetic_tzdata`, and then
 perform its existing complete verification. Forged/missing/changed identity or
@@ -20179,25 +20197,46 @@ succeed. `_SyntheticRootPisIssuer`, dynamic root graph/authority,
 and refuse the v2 retained state before their current effects. ADR-0172 remains
 stopped until this slice closes.
 
-6. **Dispatch and compatibility.** Build the v2 entry through a deleted
-module-initialization closure capturing exact environment checker, parser,
-schema tables, common writer, and proof descriptors. Identity-check before and
-after the environment gate and immediately before the first effect; existing
-proof-internal callback semantics are inherited, not strengthened. Neither the
-method nor any helper/type is exported. Existing v1 tests/messages/bytes and
-public surfaces remain unchanged.
+6. **Binding lifecycle, dispatch, and compatibility.** After every pre-effect
+gate succeeds, insert a `PROVISIONAL` binding before proof use. A failure
+before the first reserve/lifecycle/provider/WORM/receipt effect removes it. A
+failure at or after the first effect marks it permanently `FAILED`; even if
+the common writer has already set `_retained`/`_closed`, the proof wrapper
+refuses it. After the common writer returns successfully, atomically promote
+the existing record to `COMMITTED` before returning bytes. Promotion performs
+no allocation/caller callback; any injected before/after-promotion fault has a
+pinned outcome and can never leave a falsely verifiable root.
+
+The deleted closure also captures exact parser, schema tables, common writer,
+original proof verifier, environment checker, classes, and descriptors.
+Identity-check before/after the environment gate, binding transitions, writer,
+and proof gate. Existing proof-internal callback semantics are inherited, not
+strengthened. Map/record deletion, copying, cross-publisher rewiring, alternate
+factory identity, or publisher GC cannot substitute authority. Neither method,
+map, nor helper/type is exported. Existing v1 tests/messages/bytes and public
+surfaces remain unchanged.
 
 ### Required Phase-0 matrix
 
-Pin signatures/exports and legacy `publish` v2 refusal. RED genuine v2
+Pin `inspect.signature`, positional/keyword behavior, exports, publisher
+`__weakref__` layout, and legacy `publish` v2 refusal. RED genuine v2
 `publish_v2` success; every wrong proof/identity/schema/scope/tzdata/original
 byte/fact/dispatch case refuses before proof use, reserve/session/provider/WORM/
 receipt effect. Prove exact v2 manifest/member/root/receipt and fresh root-proof
 verification; missing/forged/replaced environment binding refuses before
-member read. Prove v1 common-writer behavior byte/message/fault/quarantine
-compatible. Re-run ADR-0169 hard-stop tests amended only where this ADR moves
-the raw-publication/root-proof edge; root PIS/dynamic graph/bundles/replay stops
-remain green and effect-free. Run ADR-0145/0146/0169/0170/0171, trust, capture,
+member read. Test map/global substitution, record delete/copy/cross-publisher
+rewiring, publisher GC, and alternate minted identities. Prove v1
+common-writer parity at every enumerated boundary and fault point. Test binding
+state and exact effects for failure immediately before/after first effect,
+retention, promotion, and return; no stale or falsely verifiable root.
+
+For every downstream entry, test retained-v2 publisher crossed with exact v1,
+v2, malformed, swapped, and cross-publisher originals; refuse before its
+`_closed`, reserve/audit, proof/provider/storage/receipt effect. Include
+issuer construction/issue, proof verify under writer lock, root PIS, dynamic
+graph, bundles/compose, `ReplayRun`, and public facades. Re-run ADR-0169
+hard-stop tests amended only where this ADR moves raw publication/root proof;
+all later stops remain green. Run ADR-0145/0146/0169/0170/0171, trust, capture,
 and all purity suites.
 
 ### Non-goals
