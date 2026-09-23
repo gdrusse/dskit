@@ -19924,14 +19924,15 @@ that its caller held a verified raw fixture or environment identity.
 
 ## ADR-0172 — one-shot verified synthetic v2 projection input
 
-**Status:** STOPPED — DO NOT IMPLEMENT (2026-09-23). Post-approval
-implementation inspection proved its required v2 `NonAuthorizingRawRootProof`
-cannot exist: ADR-0169 Decision 7 deliberately keeps
-`_SyntheticRawPublisher` and raw PUBLISHED roots v1-only. Evidence 0200 is
-retained as review history, not implementation authority. ADR-0173 must first
-add the separately reviewed environment-bound v2 raw publication path. This
-ADR may be amended/re-reviewed only after that prerequisite is implemented.
-Its intended future scope remains one
+**Status:** PREREQUISITE SATISFIED — FRESH PHASE-0 RE-REVIEW REQUIRED
+(2026-09-23). ADR-0173 implemented the separately reviewed environment-bound
+v2 raw publication path at
+`80c2bb2d5f467770ef65f6c348264996c2cb6232`; evidence:
+`docs/evidence/closeout/0202-intraday-f3-v2-raw-publication-red-green.json`.
+Evidence 0200 is retained as review history, not current implementation
+authority. Do not implement this ADR until its text is amended against the
+closed ADR-0173 surface and receives a fresh clean Phase-0 review. Its intended
+future scope remains one
 non-authorizing opaque bridge from already retained synthetic v2 roots to the
 pure projector; it performs no WORM write, publication, replay, or backtest.
 
@@ -20122,11 +20123,13 @@ slices; this bridge is non-authorizing data plumbing only.
 
 ## ADR-0173 — environment-bound synthetic v2 raw publication
 
-**Status:** APPROVED FOR RED-TO-GREEN 2026-09-23 at
-`feeab0d8420ad181c0c43237221164540eefad36`. Fresh Phase 0 was
-0C/0M/0m/0N; the owner's standing autonomous approval applies. Evidence:
-`docs/evidence/closeout/0201-intraday-f3-v2-raw-publication-phase0.json`.
-Two sequential fresh clean final lenses remain required.
+**Status:** IMPLEMENTED AND CLOSED 2026-09-23 at
+`80c2bb2d5f467770ef65f6c348264996c2cb6232`. Fresh final lenses Q and R
+were each 0C/0M/0m/0N; the bounded final regression set was 1,677 passed and
+1 expected xfail. Evidence:
+`docs/evidence/closeout/0202-intraday-f3-v2-raw-publication-red-green.json`.
+This closure grants no projection-input, envelope-writer, replay, backtest,
+paper/live, or deployment authority.
 
 **Context.** ADR-0169 intentionally allows a genuine v2 preflight proof but
 requires existing `_SyntheticRawPublisher.publish` and every downstream root
