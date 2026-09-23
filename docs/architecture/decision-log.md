@@ -21504,7 +21504,49 @@ backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0178 — market-calendar-aware cash-flow contribution timing
 
-**Status:** PROPOSED — AWAITING PHASE-0 REVIEW. Not yet implemented.
+**Status:** PROPOSED (REVISION 2) — AWAITING PHASE-0 REVIEW. Not yet
+implemented. Revision 1's independent design skeptic reviewed cold and
+verified every code claim (the call-site/`times` claims, `_occurrence`'s
+exact field construction, `SkipCashFlow`'s exact-UTC-instant matching and
+lack of gap/fold validation, multiple-override composition, the 3
+existing test call sites): NO-GO — 0 Critical, 1 Major, 2 Minor, 1 Nit.
+
+**Revision 1's Major finding (accepted, not disputed):** `Recurring
+CashFlowSchedule._recurrences` (`dskit/production/cashflows.py:474-497`,
+unedited, pre-existing since ADR-0176) re-walks from occurrence index 0
+on every `due()` call regardless of the requested window's `start` —
+only `end_utc` bounds the loop, and `materialize` filters the *result* by
+`start`, not the walk itself. Per-occurrence cost is additionally
+`O(len(overrides))`. `_submit_due_cash_flows` (ADR-0176 point 3.5) calls
+`due()` on every tick, not once per day. Revision 1 turns the override
+count from 1 (`ReplaceCashFlow` only) into up to ~150-200
+(`SkipCashFlow` per weekend/holiday over a year), directly multiplying
+the per-tick cost of an already-non-linear walk. The reviewer benchmarked
+this against the real class: 250-day span, 5,000 ticks — 1 override:
+17.8s (3.56ms/tick); 73 overrides (weekends only): 111.4s (22.3ms/tick),
+a measured 6.3× slowdown, extrapolating to tens of minutes to hours for
+a realistic full-year, 1-minute-bar backtest — a material failure for a
+harness whose value is fast research iteration. Fixed by Decision point
+1.5 below: call `due()` at most once per calendar day, not once per
+tick, cutting call frequency by roughly the tick-per-day count
+(~390× for 1-minute bars over a 6.5-hour session) — more than offsetting
+the override-count multiplier the reviewer measured (roughly 390× fewer
+calls against roughly 6× more expensive per call, per the reviewer's own
+benchmark ratio, nets a large overall win, not a wash).
+
+**Revision 1's two Minor findings (accepted, fixed in place):** (1) the
+DST-occurrence risk (`_occurrence` calls `_valid_local` on every
+occurrence before any override runs, so a `SkipCashFlow` gives no
+protection if its own target date is also a DST gap/fold day) is
+pre-existing and unchanged by this ADR, and practically unreachable for
+a market-hours anchor — but Revision 1 never said so explicitly despite
+now deliberately constructing ~150-200 additional target dates; stated
+explicitly in Decision point 2 below. (2) Decision point 5's call-site
+update list didn't mention `test_composer_for_refuses_an_empty_tape`'s
+own 2-argument call needing the same 3-argument update (trivial — any
+`trading_dates` value works, since the `start_ms == 0` refusal fires
+first) — added explicitly below. The 1 Nit (none of substance) needs no
+change.
 
 **Context.** ADR-0176 closed named Non-goal: "No market-calendar-aware
 contribution timing — `interval_days=1` is a plain calendar-day
@@ -21584,17 +21626,63 @@ backtest whose tape spans a weekend or holiday).
    "initial-capital-seed", anchor, first_amount)`. The anchor's own date
    is structurally guaranteed to be in `trading_dates` (it is derived
    from `tape.start_ms()`, itself a real bar instant), so day-one funding
-   can never be accidentally skipped.
+   can never be accidentally skipped. **Inherited, unchanged risk
+   (Revision 1 Minor, now stated explicitly):**
+   `RecurringCashFlowSchedule._occurrence(index)` calls `_valid_local` on
+   EVERY occurrence it constructs, before any override (including a
+   `SkipCashFlow`) is applied (`dskit/production/cashflows.py:509-516`,
+   unedited) — so a `SkipCashFlow` gives no protection if its own target
+   date also happens to be a DST gap/fold day; `due()`/`materialize()`
+   would still raise `ValueError` from `_occurrence` itself. This is
+   pre-existing ADR-0176 behavior, not introduced or worsened by this
+   ADR's mechanism, and practically unreachable for a realistic
+   market-hours anchor (ADR-0176's own DST test already established this
+   empirically for the anchor instant) — but this ADR does deliberately
+   construct ~150-200 additional target dates across a full year where
+   Revision 1 left the inherited exposure unstated. No mitigation is
+   proposed here; it is named so a future incident is traced to this ADR
+   rather than treated as new.
+
+1.5. **Call `due()` at most once per calendar day, not once per tick —
+   Revision 2, added to close the Major performance finding.** In
+   `_submit_due_cash_flows` (`replay.py`, ADR-0176 point 3.5): at the very
+   top, when `self._cash_flow_composer is not None`, compute
+   `current_date = datetime.fromtimestamp(tick_at_ms / 1000,
+   tz=timezone.utc).astimezone(self._cash_flow_policy.timezone).date()`;
+   when it equals `self._cash_flow_window_date` (a new instance attribute,
+   parallel to `self._cash_flow_window_ms`), return immediately —
+   skipping the `composer.due(...)` call entirely, without touching
+   `self._cash_flow_window_ms` (so the NEXT actual check's window still
+   starts exactly where the last one left off, preserving the partition
+   property byte-for-byte; this is a pure call-frequency reduction, never
+   a correctness change). Otherwise, set `self._cash_flow_window_date =
+   current_date` and proceed exactly as before. Sound because, after
+   Decision points 1-2, every trading day (every day with at least one
+   tick) has exactly one scheduled occurrence and every non-trading day
+   has none — so checking once per FIRST tick of a new calendar date is
+   sufficient by construction; a day's occurrence, once captured by that
+   day's first check, needs no further checking that same day.
+   `EquityReplay.__init__` gains `self._cash_flow_window_date = None`;
+   `_run_loop` sets it to `None` in both the composer-bound and
+   composer-absent branches (parallel to the existing three ADR-0176
+   attributes), guaranteeing the very first tick's date can never
+   spuriously match and skip its own check. Reduces `due()` call
+   frequency by roughly the tick-count-per-trading-day (~390× for
+   1-minute bars over a 6.5-hour session), which the Required Phase-0
+   matrix's new scale-test row (below) must demonstrate empirically
+   against the reviewer's own benchmark methodology, not merely assert.
 
 3. **No change to `SkipCashFlow`, `RecurringCashFlowSchedule`,
    `ReplayCashFlowComposer`, or any other `dskit/production/*` code.**
-   This ADR is entirely `CashFlowPolicy.composer_for`'s own body plus one
-   new computation at its sole call site in `_run_loop`. `_submit_due_
-   cash_flows`'s window mechanism (ADR-0176) is unedited and unaware this
-   is happening — it still just calls `composer.due(...)` and appends
-   whatever comes back; a non-trading day's occurrence never appears in
-   `due`'s output at all once its `SkipCashFlow` is in place, so there is
-   nothing new for that method to filter.
+   This ADR is entirely `CashFlowPolicy.composer_for`'s own body, one new
+   computation at its sole call site in `_run_loop`, and (per Revision
+   2's point 1.5) `_submit_due_cash_flows`'s own calling frequency — all
+   `EquityReplay`-internal, child-owned code. `composer.due(...)`'s own
+   behavior and signature (ADR-0176) are unedited and unaware this is
+   happening — it still just gets called with a window and returns
+   whatever is due in it; a non-trading day's occurrence never appears in
+   its output at all once its `SkipCashFlow` is in place, and it is now
+   simply asked less often.
 
 4. **Union across all symbols, not per-symbol.** A day counts as trading
    iff ANY symbol in the tape has a bar that day — matching how `times`
@@ -21612,7 +21700,12 @@ backtest whose tape spans a weekend or holiday).
    window (e.g. `frozenset(anchor.date() + timedelta(days=i) for i in
    range(N))`) preserves their existing assertions unchanged, proving
    this ADR does not silently alter ADR-0176's own already-reviewed
-   behavior for the all-trading-days case.
+   behavior for the all-trading-days case. **Revision 1 Minor, now
+   stated explicitly:** `test_composer_for_refuses_an_empty_tape`'s
+   `composer_for("series-a", 0)` call also needs the third argument under
+   the new required signature — any value works (e.g. `frozenset()`),
+   since the `start_ms == 0` refusal fires before `trading_dates` is ever
+   read.
 
 ### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
 
@@ -21640,6 +21733,23 @@ already established. Run the full existing child replay suite (57 tests
 as of ADR-0177's close) unedited except for the three call-site updates
 named in Decision point 5, plus ADR-0176/0177's own tests, to prove no
 interaction regression.
+
+**Scale test (Revision 2: new row, required — closes the Major
+finding).** Directly reproduce the Revision 1 reviewer's own benchmark
+methodology (a multi-hundred-tick run against the real
+`RecurringCashFlowSchedule`/`ReplayCashFlowComposer` classes, not a mock)
+under BOTH point 1.5's fix and a realistic override count (weekends over
+at least a full quarter, ideally a full year, so the override count is
+genuinely in the ~60-200 range the Major finding measured against), and
+demonstrate empirically — timed, with the number asserted or printed,
+not merely claimed — that `due()` is called at most once per distinct
+trading date actually present in the tape (assert the call count, e.g.
+via a spy/counter on `composer.due`, equals `len(trading_dates)`, not the
+tick count), and that end-to-end wall-clock cost for cash-flow bookkeeping
+alone stays low enough (a stated, checked-in budget, e.g. well under a
+second for a full year of 1-minute bars) that this ADR is a net
+performance improvement over ADR-0176's own pre-existing per-tick-call
+baseline, not merely "not worse than before this ADR."
 
 ### Non-goals
 
