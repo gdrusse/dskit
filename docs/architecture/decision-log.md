@@ -21259,8 +21259,8 @@ question). No backtest launch, no paper/live trading, no deployment.
 
 ## ADR-0177 — `EquityReplay` refuses a buy entry it cannot afford
 
-**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED. Not yet
-implemented. An independent design skeptic reviewed cold and
+**Status:** PHASE-0 CLEAN (REVISION 2) — OWNER-AUTHORIZED FOR RED. Not
+yet implemented. Revision 1's design skeptic reviewed cold and
 independently verified every code claim (the `account`-ignored claim,
 the fee-computed-after-`open_lot` claim, `TICK_PHASES` ordering,
 `HorizonBook.open_lot`'s no-mutation-on-refusal behavior, the
@@ -21275,6 +21275,28 @@ pinning test's name) and two Required Phase-0 matrix rows made explicit
 exercised behavior; the override-then-refused-for-insufficient-cash
 sequencing is deliberately tested as accepted pre-existing behavior, not
 left as an accidental side effect).
+
+**Revision 2 (self-found during RED/build, before any implementation
+landed):** the opus builder wrote the required Phase-0 matrix tests
+first, per TDD, and correctly refused to go further when 3 of them could
+not pass against Revision 1's own Decision text — Revision 1 tracked
+`self._cash_balance` from fills only (Decision point 2, below); nothing
+in points 1-5 ever credited it from the ADR-0176 cash-flow deposits
+`_submit_due_cash_flows` already appends to the ledger. The $1,020
+day-one funding would reach the ledger but never reach the balance this
+ADR gates buys against — meaning every buy refuses forever whenever a
+`cash_flow_policy` is configured, which is not "insufficient-cash
+handling", it is "no buy is ever affordable", defeating the feature this
+ADR exists to add. Genuine gap in the approved design, not a builder
+error — the builder correctly declined to patch around it. Fixed by
+adding Decision point 1.5 below. This one-line addition reuses the exact
+`sum(Decimal(record["body"]["amount"]) for record in due)` idiom already
+present and already Phase-0-reviewed in ADR-0176's own
+`_submit_due_cash_flows` (it already sums `due` there to call
+`append_many`); it introduces no new architecture, only completes the
+wiring Revision 1 omitted, so this revision proceeds directly to
+re-verification by the two mandatory final review lenses rather than a
+second fresh Phase-0 design round.
 
 **Context.** ADR-0176 closed named Non-goal #1 — "no insufficient-cash
 handling" — as explicitly deferred to "a separate, later slice touching
@@ -21332,6 +21354,21 @@ in the current replay path checks cash sufficiency at all.
    `self._cash_balance = Decimal("0")`, unconditionally (harmless — and
    simpler than a conditional — when no `cash_flow_policy` is configured,
    since the enforcement in point 3 is what stays gated, not the tracking).
+
+1.5. **Cash-flow deposits credit the balance too, not just fills —
+   Revision 2, added after RED found points 1-5 never wired this.** In
+   `_submit_due_cash_flows` (`replay.py`, ADR-0176), immediately after the
+   existing `if due: self._cash_flow_ledger.append_many(due)`, add
+   `self._cash_balance += sum(Decimal(record["body"]["amount"]) for
+   record in due)` — unconditional within that `if due:` block (the
+   surrounding method already no-ops entirely when
+   `self._cash_flow_composer is None`, so this line only ever runs when a
+   `cash_flow_policy` is configured, the same implicit gate every other
+   line in that method already has). This is the SAME summation ADR-0176
+   already performs implicitly by passing `due` to `append_many` — no new
+   idiom, no new reviewed surface, just completing the wiring so the
+   dollars that reach the ledger also reach the balance this ADR's checks
+   read.
 
 2. **Every queued fill updates the balance, in `_queue_fill`
    (`replay.py:1086`) — both kinds, both sides, computed once and reused.**
