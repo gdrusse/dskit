@@ -52,6 +52,16 @@
     "focused_existing_p4_tests": "46 passed",
     "result": "GO for bounded ADR-0168 RED; no replay, backtest, or deployment approval"
   },
+  "adr0168_implementation": {
+    "red_commit": "5decae25b953b0f262f0abcd09c07503719b8731",
+    "clean_head": "0d9cfd7b952244c1ba36728ae40407307db67278",
+    "affected_tests": "1437 passed, 1 expected xfail",
+    "ruff": "clean",
+    "diff_check": "clean",
+    "final_lens_1": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "final_lens_2": {"critical": 0, "major": 0, "minor": 0, "nit": 0},
+    "result": "bounded ADR-0168 F3 decision point 5 complete; ReplayRun remains fail-closed and no historical backtest is authorized"
+  },
   "already_available": [
     "recurring cash-flow schedule and fold",
     "one-ledger accounting state",
@@ -59,7 +69,6 @@
     "cost-aware developmental fill replay"
   ],
   "remaining_sequence": [
-    "ADR-0168 RED-GREEN and two final skeptic lenses",
     "remaining bounded F3 derivation, v2 wire and writer slices to F3 ReviewExit",
     "F5b and final release gates",
     "R1-R5 V2 replay runtime",

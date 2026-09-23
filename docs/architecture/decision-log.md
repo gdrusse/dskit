@@ -19400,12 +19400,12 @@ lenses before delivery. Favorable design review is not owner approval.
 
 ## ADR-0168 — bounded F3 replay `CapturedPortSet`
 
-**Status:** ACCEPTED 2026-09-22. The owner explicitly reapproved the amended
-text by replying "yes" to commit `2421ffd`; the prior `9237a39` approval had
-been invalidated by two post-approval Phase-0 Majors. A final fresh Phase 0,
-RED-to-GREEN, and two clean final lenses remain required. This authorizes only
-deterministic synthetic TDD; `deployment_eligible` is always `false`, and no
-capture, replay, or backtest is authorized by acceptance alone.
+**Status:** IMPLEMENTED AND CLEANLY REVIEWED 2026-09-22 at `0d9cfd7`. The
+owner explicitly reapproved the amended text by replying "yes" to commit
+`2421ffd`; final fresh Phase 0 was clean, RED-to-GREEN completed from
+`5decae2`, and two sequential fresh final lenses reported 0/0/0/0. This is
+only deterministic synthetic TDD; `deployment_eligible` is always `false`,
+and no capture, replay execution, or backtest is authorized by this closeout.
 
 **Context.** `ReplayRun`'s already-landed document grammar requires exactly
 `tape_manifest` and `tape_data`. A committed P4
