@@ -982,6 +982,9 @@ def test_p4_replay_tape_pair_mints_one_opaque_port_set():
             operation(view)
     with pytest.raises(TypeError):
         trust.CapturedPortSet()
+    with pytest.raises(TypeError):
+        class _ForgedPortSet(trust.CapturedPortSet):
+            pass
     reference = weakref.ref(view)
     del view
     gc.collect()
@@ -1004,16 +1007,21 @@ def test_p4_replay_tape_readers_are_exact_named_one_shot_capabilities():
                 operation(reader)
         with pytest.raises(TypeError):
             type(reader)()
+    with pytest.raises(TypeError):
+        class _ForgedPortReader(type(manifest)):
+            pass
     with pytest.raises((TypeError, ValueError)):
         view.require("tape_manifest")
     audit = broker._p4_ledger._audit(record)
     receipts = [json.loads(raw)["lifecycle_captured_receipt_sha256"] for raw in audit["receipts"]]
     assert manifest.lifecycle_captured_receipt_sha256 == receipts[0]
     assert data.lifecycle_captured_receipt_sha256 == receipts[1]
-    assert manifest.read_member_bytes("config.json") == f4._json_bytes({"name": "producer"})
-    assert data.read_member_bytes("config.json") == f4._json_bytes({"name": "producer"})
+    assert manifest.read_member_bytes("artifacts/bundle.json") == f4._json_bytes(
+        {"rows": [{"id": "one", "value": 7}]})
+    assert data.read_member_bytes("artifacts/bundle.json") == f4._json_bytes(
+        {"rows": [{"id": "BBB-SUBSTITUTED"}]})
     with pytest.raises((TypeError, ValueError)):
-        manifest.read_member_bytes("config.json")
+        manifest.read_member_bytes("artifacts/bundle.json")
     assert len(broker._member_events) == len(before[2]) + 2
 
 
