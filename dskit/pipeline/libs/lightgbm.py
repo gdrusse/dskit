@@ -48,7 +48,8 @@ DEFAULT_LGBM_PARAMS = {
 #: Keys the pack sets itself; a document naming one is refused.
 FORCED_LGBM_KEYS = ("deterministic", "n_jobs", "random_state", "seed", "verbosity")
 
-#: The ONLY ``LGBMRegressor`` keywords a document may set, with each one's type, — its named
+#: The ONLY ``LGBMRegressor`` keywords a document may set, and each one's
+#: type — its named
 #: constructor arguments less the forced ones and the classifier-only
 #: ``class_weight``. Default-deny: LightGBM silently ignores an unknown key
 #: and honors aliases (``num_threads``, ``random_seed``) that would override
