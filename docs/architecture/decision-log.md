@@ -20172,7 +20172,8 @@ store, outer receipts, and returned bytes to the pre-refactor baseline,
 including existing commit-after and return faults.
 
 4. **Closure-owned environment binding and proof gate.** Add `__weakref__`
-to `_SyntheticRawPublisher.__slots__` without changing its public surface.
+to `_SyntheticRawPublisher.__slots__`; this is an intentional observable
+layout change but exports no new callable/data surface.
 One deleted module-bootstrap closure owns the sole `WeakKeyDictionary`; no
 module global exposes it. Each record is
 `(weakref_ref(publisher), exact_environment_identity, state)`, validates the
@@ -20183,8 +20184,11 @@ uses only identity comparisons. The closure installs both the exact
 and alone can read the map. Replacing a module global cannot replace the
 captured map, checker, original verifier, or identity.
 
-For a retained v2 publication, the wrapper
-before member/provider reads, reparse the exact retained authorization, require
+The wrapper discriminates only by reading the retained fixture's exact
+`_event_schema` attribute: exact v1 immediately invokes the captured original
+verifier with identical positional/keyword arguments and performs no parse,
+map lookup, callback, provider, or other read first. For a retained v2
+publication, the wrapper must, before member/provider reads, reparse the exact retained authorization, require
 the map's exact live identity, re-run `_require_synthetic_tzdata`, and then
 perform its existing complete verification. Forged/missing/changed identity or
 environment dispatch refuses. Returned facts stay nonauthorizing and
@@ -20197,15 +20201,26 @@ succeed. `_SyntheticRootPisIssuer`, dynamic root graph/authority,
 and refuse the v2 retained state before their current effects. ADR-0172 remains
 stopped until this slice closes.
 
-6. **Binding lifecycle, dispatch, and compatibility.** After every pre-effect
-gate succeeds, insert a `PROVISIONAL` binding before proof use. A failure
-before the first reserve/lifecycle/provider/WORM/receipt effect removes it. A
-failure at or after the first effect marks it permanently `FAILED`; even if
-the common writer has already set `_retained`/`_closed`, the proof wrapper
-refuses it. After the common writer returns successfully, atomically promote
-the existing record to `COMMITTED` before returning bytes. Promotion performs
-no allocation/caller callback; any injected before/after-promotion fault has a
-pinned outcome and can never leave a falsely verifiable root.
+6. **Binding lifecycle, dispatch, and compatibility.** The closure defines
+three unique sentinel objects and one exact mutable three-element list record
+`[weakref_ref(publisher), environment_identity, state]`, allocated only when
+entering `PROVISIONAL`. State transitions are
+`absent -> PROVISIONAL -> COMMITTED` on ordinary success,
+`PROVISIONAL -> absent` only on a proven pre-effect failure, and
+`PROVISIONAL|COMMITTED -> FAILED` for every post-effect or indeterminate
+failure; `FAILED` is terminal. Proof acceptance requires the exact
+`COMMITTED` sentinel and exact record identities.
+
+After every pre-effect gate succeeds, insert PROVISIONAL before proof use. The
+authoritative first effect is a durable raw reserve row/audit state of
+`SESSION_STARTED` or later. On writer exception, inspect that row under the
+existing reserve transaction rules: proven absence/pre-SESSION_STARTED removes
+the record; SESSION_STARTED-or-later, retained/closed state, or any
+indeterminate read marks FAILED. Writer throws at manifest/pre-effect delete;
+throws at/after session-start, retention, or return mark FAILED. On writer
+return, set COMMITTED in place with no allocation/caller callback; any injected
+exception immediately before or after that assignment is caught and marks
+FAILED. Only ordinary `publish_v2` return leaves COMMITTED.
 
 The deleted closure also captures exact parser, schema tables, common writer,
 original proof verifier, environment checker, classes, and descriptors.
@@ -20218,7 +20233,8 @@ surfaces remain unchanged.
 
 ### Required Phase-0 matrix
 
-Pin `inspect.signature`, positional/keyword behavior, exports, publisher
+Pin `inspect.signature`, positional/keyword behavior, `trust.__all__`,
+`dskit.pipeline` re-exports, relevant class dictionaries, publisher
 `__weakref__` layout, and legacy `publish` v2 refusal. RED genuine v2
 `publish_v2` success; every wrong proof/identity/schema/scope/tzdata/original
 byte/fact/dispatch case refuses before proof use, reserve/session/provider/WORM/
@@ -20227,14 +20243,23 @@ verification; missing/forged/replaced environment binding refuses before
 member read. Test map/global substitution, record delete/copy/cross-publisher
 rewiring, publisher GC, and alternate minted identities. Prove v1
 common-writer parity at every enumerated boundary and fault point. Test binding
-state and exact effects for failure immediately before/after first effect,
-retention, promotion, and return; no stale or falsely verifiable root.
+state/sentinel transition and exact effects for failure at manifest,
+immediately before/after SESSION_STARTED, retention, promotion assignment, and
+return; only ordinary return is COMMITTED and no stale/falsely verifiable root
+exists. Pin v1 proof wrapper immediate delegation and identical kwargs/errors.
 
-For every downstream entry, test retained-v2 publisher crossed with exact v1,
-v2, malformed, swapped, and cross-publisher originals; refuse before its
-`_closed`, reserve/audit, proof/provider/storage/receipt effect. Include
-issuer construction/issue, proof verify under writer lock, root PIS, dynamic
-graph, bundles/compose, `ReplayRun`, and public facades. Re-run ADR-0169
+Direct Cartesian tests cross the retained-v2 publisher with exact v1, v2,
+malformed, swapped, and cross-publisher originals only at
+`_SyntheticRootPisIssuer` construction/`issue` and raw-root
+`verify(..., _under_writer_lock=True)`; constructor must refuse retained v2,
+and issue must check retained schema/original consistency before setting
+`_closed` or any effect. Separately prove transitive unreachability/effect
+freedom for root-PIS proof, `_SyntheticRootPisIssuer`,
+`_SyntheticRootPisProof`, dynamic graph/authority factories, bundle
+`compose_replay_tape`, `ReplayRun.run`, `HistoricalStudyVerifier`,
+`HistoricalStudyCaptureDriver`, and all aliases visible through
+`trust.__all__`, `dskit.pipeline`, and `dskit.production.verifier`.
+Pin signatures and keyword behavior. Re-run ADR-0169
 hard-stop tests amended only where this ADR moves raw publication/root proof;
 all later stops remain green. Run ADR-0145/0146/0169/0170/0171, trust, capture,
 and all purity suites.
