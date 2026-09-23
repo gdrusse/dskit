@@ -21,10 +21,13 @@ from __future__ import annotations
 import hashlib
 
 from dskit.pipeline.distribution_models import ScaleModelLocationScale
+from dskit.pipeline.document import is_node_ref
 from dskit.pipeline.node import check_int_param
+from dskit.pipeline.records import number_ok
 
 __all__ = [
     "DEFAULT_LGBM_PARAMS",
+    "ALLOWED_LGBM_KEYS",
     "FORCED_LGBM_KEYS",
     "LightGBMScaleLocationScale",
     "NODE_KINDS",
@@ -43,6 +46,19 @@ DEFAULT_LGBM_PARAMS = {
 
 #: Keys the pack sets itself; a document naming one is refused.
 FORCED_LGBM_KEYS = ("deterministic", "n_jobs", "random_state", "seed", "verbosity")
+
+#: The ONLY ``LGBMRegressor`` keywords a document may set — its named
+#: constructor arguments less the forced ones and the classifier-only
+#: ``class_weight``. Default-deny: LightGBM silently ignores an unknown key
+#: and honors aliases (``num_threads``, ``random_seed``) that would override
+#: the forced settings, so anything else is refused. Stated here rather than
+#: read from the library so a document plans with LightGBM absent.
+ALLOWED_LGBM_KEYS = (
+    "boosting_type", "colsample_bytree", "importance_type", "learning_rate",
+    "max_depth", "min_child_samples", "min_child_weight", "min_split_gain",
+    "n_estimators", "num_leaves", "objective", "reg_alpha", "reg_lambda",
+    "subsample", "subsample_for_bin", "subsample_freq",
+)
 
 
 class LightGBMScaleLocationScale(ScaleModelLocationScale):
@@ -88,17 +104,24 @@ class LightGBMScaleLocationScale(ScaleModelLocationScale):
             The base's problems plus the booster knobs'.
         """
         problems = super().validate_params(params)
-        check_int_param(problems, "seed", params.get("seed", 0), ge=0)
+        seed = params.get("seed", 0)
+        if not is_node_ref(seed):
+            check_int_param(problems, "seed", seed, ge=0)
         extra = params.get("lgbm_params", {})
         if not isinstance(extra, dict) or any(not isinstance(k, str) for k in extra):
             return problems + [f"lgbm_params must be a dict with string keys, got {extra!r}"]
         forced = sorted(set(extra) & set(FORCED_LGBM_KEYS))
         if forced:
             problems.append(f"lgbm_params may not set {forced} — the pack forces them")
+        unknown = sorted(set(extra) - set(ALLOWED_LGBM_KEYS) - set(FORCED_LGBM_KEYS))
+        if unknown:
+            problems.append(
+                f"lgbm_params does not accept {unknown} — allowed: {list(ALLOWED_LGBM_KEYS)}"
+            )
         bad = [k for k, v in extra.items()
-               if v is not None and not isinstance(v, (bool, int, float, str))]
+               if not (isinstance(v, str) or number_ok(v) or isinstance(v, bool))]
         if bad:
-            problems.append(f"lgbm_params values must be JSON scalars, not for {bad}")
+            problems.append(f"lgbm_params values must be finite numbers, bools or strings: {bad}")
         return problems
 
     def booster_params(self):

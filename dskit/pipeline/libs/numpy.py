@@ -2033,6 +2033,13 @@ def _horizon_problems(problems, params):
         problems.append(f"horizon must be an int >= 1, got {horizon!r}")
 
 
+def _label_name_problems(problems, params, default):
+    """Refuse a ``label_name`` that is not a non-empty string."""
+    name = params.get("label_name", default)
+    if not is_node_ref(name) and (not isinstance(name, str) or not name):
+        problems.append(f"label_name must be a non-empty string, got {name!r}")
+
+
 class ReturnWindows(ArrayFeatures):
     """Lagged one-step returns with a forward label — the ops, composed.
 
@@ -2309,9 +2316,7 @@ class HorizonLogReturn(ArrayFeatures):
         problems = super().validate_params(params)
         _one_price_field_problems(cls, problems, params)
         _horizon_problems(problems, params)
-        name = params.get("label_name", DEFAULT_LABEL_NAME)
-        if not is_node_ref(name) and (not isinstance(name, str) or not name):
-            problems.append(f"label_name must be a non-empty string, got {name!r}")
+        _label_name_problems(problems, params, DEFAULT_LABEL_NAME)
         return problems
 
     def lookahead_columns(self):
@@ -2389,9 +2394,7 @@ class ForwardRealizedVol(ArrayFeatures):
         problems = super().validate_params(params)
         _one_price_field_problems(cls, problems, params)
         _horizon_problems(problems, params)
-        name = params.get("label_name", DEFAULT_FORWARD_VOL_NAME)
-        if not is_node_ref(name) and (not isinstance(name, str) or not name):
-            problems.append(f"label_name must be a non-empty string, got {name!r}")
+        _label_name_problems(problems, params, DEFAULT_FORWARD_VOL_NAME)
         return problems
 
     def lookahead_columns(self):
@@ -2418,6 +2421,7 @@ class ForwardRealizedVol(ArrayFeatures):
         h = self.horizon()
         squared = log_return(arrays[self.fields()[0]], 1) ** 2
         return {self.label_name(): np.sqrt(lead(rolling_sum(squared, h), h) / h)}
+
 
 class RealizedVolFeatures(ArrayFeatures):
     """Trailing realized volatility of one-step log returns at several windows.

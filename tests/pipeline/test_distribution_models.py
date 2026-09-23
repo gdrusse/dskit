@@ -185,16 +185,35 @@ def test_a_row_without_usable_features_gets_no_forecast(ctx):
     assert out["rows"][150]["samples"] is None
 
 
-def test_ridge_shrinks_slopes_and_is_described(ctx, tmp_path):
-    plain = LinearScaleLocationScale("a", dict(HAR)).run(ctx, {"rows": _scale_rows()})
-    ridge = LinearScaleLocationScale("b", dict(HAR, ridge_alpha=50.0)).run(
-        ctx, {"rows": _scale_rows()})
-    assert sum(abs(b) for b in ridge["transform"].state["model"]["coef"][1:]) < \
-        sum(abs(b) for b in plain["transform"].state["model"]["coef"][1:])
-    node = LinearScaleLocationScale("a", dict(HAR, scale_features=["vol"]), mode="load",
+def test_ridge_matches_the_closed_form_with_an_unpenalized_intercept(ctx):
+    rows = _scale_rows()
+    params = dict(HAR, scale_features=["vol"], ridge_alpha=5.0)
+    coef = LinearScaleLocationScale("r", params).run(ctx, {"rows": rows})[
+        "transform"].state["model"]["coef"]
+    fit = rows[:100]
+    x = [math.log(r["vol"]) for r in fit]
+    y = [math.log(r["fwd"]) for r in fit]
+    mx, my = sum(x) / len(x), sum(y) / len(y)
+    slope = sum((a - mx) * (b - my) for a, b in zip(x, y)) / (
+        sum((a - mx) ** 2 for a in x) + 5.0)
+    assert coef == pytest.approx([my - slope * mx, slope], abs=1e-9)
+
+
+@pytest.mark.parametrize("changed", [
+    {"ridge_alpha": 1.0}, {"scale_target": "vol5"}, {"scale_features": ["vol"]},
+])
+def test_scale_rung_load_refuses_a_misdescribed_state(ctx, tmp_path, changed):
+    LinearScaleLocationScale("a", dict(HAR)).run(ctx, {"rows": _scale_rows()})
+    node = LinearScaleLocationScale("a", dict(HAR, **changed), mode="load",
                                     artifact=str(tmp_path / "artifacts" / "a"))
     with pytest.raises(ValueError, match="contradicts"):
         node.run(ctx, {"rows": _scale_rows()})
+
+
+def test_solve_pivots_past_a_zero_leading_diagonal():
+    from dskit.pipeline.distribution_models import _solve
+
+    assert _solve([[0.0, 1.0], [1.0, 1.0]], [2.0, 3.0], "k") == pytest.approx([1.0, 2.0])
 
 
 def test_collinear_features_refuse(ctx):

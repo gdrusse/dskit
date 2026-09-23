@@ -309,7 +309,11 @@ class ScaleModelLocationScale(EmpiricalLocationScale):
 
     Log space keeps the scale positive; ``exp`` of a mean log is a median,
     not a mean, and the fitted shape absorbs that bias because it is
-    standardized by the same predictor. A member supplies :meth:`fit_scale`
+    standardized by the same predictor. The shape uses IN-SAMPLE
+    predictions, so a flexible model (a booster) fits a shape that is too
+    narrow; cross-fitting is the remedy, not yet built. A row whose feature
+    is zero (a flat day's one-step vol) gets no forecast, so on real data
+    rungs can score different row sets — compare the scorer's ``n``. A member supplies :meth:`fit_scale`
     and :meth:`predict_scale`; the model's state must be JSON.
 
     Parameters
@@ -441,7 +445,7 @@ class ScaleModelLocationScale(EmpiricalLocationScale):
         return None if x is None else math.exp(self.predict_scale(model, x))
 
     def _fit_pairs(self, rows):
-        """Rows usable for fitting: label, reference, positive target and features."""
+        """Rows usable for fitting: a label, a positive target and positive features."""
         pairs = []
         for row in rows:
             x, target = self.log_features(row), _number(row.get(self.params["scale_target"]))

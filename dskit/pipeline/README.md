@@ -471,8 +471,8 @@ so a search space over `model.estimator` IS a model sweep, with no per-model
 classes: `examples/pipeline/model-sweep.json` plus the pack docstring's
 estimator table; `examples/pipeline/selection-demo.json` is the selector
 cookbook — fit on train, then sweep two estimators that read
-`$select.features`; `lightgbm.LGBMRegressor` joins via the `lightgbm` extra, not
-a pack of its own; `write_bundle`/`load_bundle`/`EstimatorBundle` (ADR-0114
+`$select.features`; `lightgbm.LGBMRegressor` joins via the `lightgbm` extra
+(its pack, `libs/lightgbm.py`, is only the ADR-0169 volatility-scale rung); `write_bundle`/`load_bundle`/`EstimatorBundle` (ADR-0114
 Phase 2) are a PLAIN VALUE API, not a node kind — one joblib file plus one
 JSON manifest for a caller-named, ORDERED mapping of many fitted estimators
 ("heads"), hash-verified the same S2-A way as the single-estimator artifact

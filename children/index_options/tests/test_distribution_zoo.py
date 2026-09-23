@@ -35,6 +35,12 @@ def test_rungs_differ_only_in_name_notes_and_model(child_root):
             {k: base["pipeline"]["model"]["params"][k] for k in shared}
 
 
+@pytest.mark.parametrize("name", RUNGS)
+def test_forward_vol_and_label_share_one_horizon(child_root, name):
+    pipe = _load(child_root, name)["pipeline"]
+    assert pipe["fwd"]["params"]["horizon"] == pipe["labels"]["params"]["horizon"]
+
+
 def test_zoo_lists_every_rung_and_pins_the_shared_pipeline(child_root):
     zoo = _load(child_root, "run-distribution-zoo.json")
     plan = zoo["stages"]["plan"]["params"]
@@ -81,13 +87,18 @@ def _outputs(stage):
     return stage.get("outputs", stage)
 
 
-def test_zoo_is_plan_only_until_approved_then_compares_every_rung(child_root, tmp_path):
-    pytest.importorskip("lightgbm")
+def test_zoo_is_plan_only_until_approved(child_root, tmp_path):
     planned = _staged(child_root, tmp_path / "plan")
     approval = _outputs(planned["approval"])["approval"]
     assert approval["approved"] is False
     assert {r["state"] for r in _outputs(planned["run"])["runs"]} == {"awaiting_approval"}
-    ran = _staged(child_root, tmp_path / "ran", approved=approval["inventory_sha256"])
+
+
+def test_approved_zoo_compares_every_rung(child_root, tmp_path):
+    pytest.importorskip("lightgbm")
+    planned = _staged(child_root, tmp_path / "plan")
+    digest = _outputs(planned["approval"])["approval"]["inventory_sha256"]
+    ran = _staged(child_root, tmp_path / "ran", approved=digest)
     ranking = _outputs(ran["compare"])["ranking"]
     assert sorted(r["id"] for r in ranking) == ["empirical", "har", "lightgbm"]
     assert all(r["n_scored"] == 4 for r in ranking)

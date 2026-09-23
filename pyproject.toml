@@ -27,10 +27,11 @@ pyomo = ["pyomo>=6.7", "highspy>=1.7"]
 # release that moves either is a break this pack must see before a user
 # does. stable-baselines3 carries torch itself.
 rl = ["gymnasium>=1.3,<1.4", "stable-baselines3>=2.9,<2.10"]
-# No pack of its own: LightGBM ships an sklearn-compatible estimator API, so
-# "lightgbm.LGBMRegressor" resolves straight through the SklearnFit doorway.
-# A wrapper class here would add nothing but a place to drift. xgboost and
-# catboost would enter exactly this way. Self-sufficient like transformers
+# LightGBM ships an sklearn-compatible estimator API, so
+# "lightgbm.LGBMRegressor" resolves straight through the SklearnFit doorway;
+# its one pack (libs/lightgbm.py, ADR-0169) is the volatility-scale rung,
+# which stores the booster as text in a fitted JSON state. xgboost and
+# catboost would enter through SklearnFit the same way. Self-sufficient like transformers
 # above (which carries torch): the path runs THROUGH SklearnFit, so the
 # extra carries that doorway's scikit-learn/joblib runtime too.
 lightgbm = ["lightgbm>=4.0", "scikit-learn>=1.3", "joblib>=1.3"]

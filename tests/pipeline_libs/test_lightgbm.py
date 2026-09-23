@@ -1,5 +1,6 @@
 """LightGBM volatility-scale rung (ADR-0169)."""
 
+import math
 import os
 import random
 
@@ -62,6 +63,25 @@ def test_fit_is_deterministic_and_seed_is_described(ctx, tmp_path):
         node.run(ctx, {"rows": _rows()})
 
 
+def test_the_stored_booster_carries_the_forced_determinism(ctx):
+    out = LightGBMScaleLocationScale("gbm", dict(PARAMS, seed=3)).run(ctx, {"rows": _rows()})
+    text = out["transform"].state["model"]["booster"]
+    for line in ("[seed: 3]", "[deterministic: 1]", "[num_threads: 1]"):
+        assert line in text
+
+
+def test_one_instance_predicts_each_state_with_its_own_booster(ctx):
+    node = LightGBMScaleLocationScale("gbm", dict(PARAMS))
+    a = node.run(ctx, {"rows": _rows(seed=5)})["transform"].state["model"]
+    b = LightGBMScaleLocationScale("other", dict(PARAMS, seed=9)).run(
+        ctx, {"rows": _rows(seed=11)})["transform"].state["model"]
+    x = [math.log(0.01), math.log(0.025)]
+    fresh = LightGBMScaleLocationScale("fresh", dict(PARAMS))
+    assert node.predict_scale(a, x) == fresh.predict_scale(a, x)
+    assert node.predict_scale(b, x) == fresh.predict_scale(b, x)
+    assert node.predict_scale(a, x) != node.predict_scale(b, x)
+
+
 def test_load_restores_identical_forecasts(ctx, tmp_path):
     fitted = LightGBMScaleLocationScale("gbm", dict(PARAMS)).run(ctx, {"rows": _rows()})
     loaded = LightGBMScaleLocationScale("gbm", dict(PARAMS), mode="load",
@@ -72,7 +92,9 @@ def test_load_restores_identical_forecasts(ctx, tmp_path):
 
 @pytest.mark.parametrize("bad", [
     *({"lgbm_params": {k: 1}} for k in FORCED_LGBM_KEYS),
-    {"lgbm_params": {"x": [1]}}, {"lgbm_params": []}, {"seed": -1}, {"typo": 1},
+    {"lgbm_params": {"num_leave": 7}}, {"lgbm_params": {"num_threads": 4}},
+    {"lgbm_params": {"random_seed": 5}}, {"lgbm_params": {"learning_rate": float("nan")}},
+    {"lgbm_params": {"num_leaves": [1]}}, {"lgbm_params": []}, {"seed": -1}, {"typo": 1},
 ])
 def test_invalid_params_refuse(bad):
     with pytest.raises(ConfigError):

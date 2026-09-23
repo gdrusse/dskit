@@ -19522,3 +19522,15 @@ catboost/xgboost extras, optimizer.
 **Alternatives.** A generic "apply signal to rows" node plus SklearnFit
 (a second model-per-row seam; no fit_split; pickled artifacts); scale via
 `relative_scale` only (double-counts spread).
+
+**Review (2026-09-23).** Candidate `6892bee`: correctness lens 1 Major
+(`lgbm_params` not default-deny — typos ignored, `num_threads`/`random_seed`
+aliases override forced settings), fixed by the `ALLOWED_LGBM_KEYS`
+allowlist; test lens 0 Critical/Major. Minors fixed: weak ridge/describe
+tests, untested pivot and forced determinism, unpinned fwd/label horizon,
+stale "no pack of its own" docs, shared `label_name` rule, `seed` ref guard.
+Disclosed, unfixed: the scale rungs' shape uses in-sample predictions
+(boosters under-disperse; cross-fitting is the remedy); a zero feature (a
+flat day) drops a row's forecast, so real-data rungs can score different
+row sets. Editing `run-synthetic-distribution.json` moved its hash; earlier
+synthetic runs of it are orphaned (synthetic only).
