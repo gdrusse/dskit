@@ -194,6 +194,115 @@ def test_publish_v2_refuses_replaced_writer_helper_before_any_effect(
     )
 
 
+@pytest.mark.parametrize(
+    ("owner_name", "descriptor_name"),
+    (
+        *(
+            ("publisher", name)
+            for name in (
+                "_preflight", "_roster_publisher", "_reserve", "_broker",
+                "_closed", "_retained",
+            )
+        ),
+        *(
+            ("fixture", name)
+            for name in (
+                "_owner", "_intent", "_members", "_event_schema", "_used",
+            )
+        ),
+        ("preflight", "_publisher"),
+    ),
+)
+def test_publish_v2_refuses_replaced_authority_descriptor_before_any_effect(
+    tmp_path, monkeypatch, owner_name, descriptor_name,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    owners = {
+        "publisher": trust._SyntheticRawPublisher,
+        "fixture": trust.VerifiedSyntheticDatasetFixture,
+        "preflight": type(raw_publisher._preflight),
+    }
+    owner = owners[owner_name]
+    original = owner.__dict__[descriptor_name]
+    calls = []
+
+    class ForwardingDescriptor:
+        def __get__(self, instance, instance_type=None):
+            calls.append("get")
+            if instance is None:
+                return self
+            return original.__get__(instance, instance_type)
+
+        def __set__(self, instance, value):
+            calls.append("set")
+            return original.__set__(instance, value)
+
+    before = (
+        fixture._used,
+        raw_publisher._closed,
+        raw_publisher._retained,
+        roster_publisher._reserve._connection.total_changes,
+        dict(roster_publisher._broker._storage),
+        tuple(roster_publisher._broker._member_events),
+        tuple(roster_publisher._broker._receipt_store._data),
+    )
+    monkeypatch.setattr(owner, descriptor_name, ForwardingDescriptor())
+    with pytest.raises(ValueError, match="dispatch changed"):
+        raw_publisher.publish_v2(
+            fixture, environment, *signed, *roster
+        )
+    monkeypatch.undo()
+    assert calls == []
+    assert before == (
+        fixture._used,
+        raw_publisher._closed,
+        raw_publisher._retained,
+        roster_publisher._reserve._connection.total_changes,
+        dict(roster_publisher._broker._storage),
+        tuple(roster_publisher._broker._member_events),
+        tuple(roster_publisher._broker._receipt_store._data),
+    )
+
+
+def test_publish_v2_refuses_replaced_preflight_derivation_before_any_effect(
+    tmp_path, monkeypatch,
+):
+    (
+        roster_publisher,
+        raw_publisher,
+        fixture,
+        environment,
+        signed,
+        roster,
+        _source,
+    ) = _case(tmp_path)
+    preflight_type = type(raw_publisher._preflight)
+    calls = []
+
+    def replacement(*_args, **_kwargs):
+        calls.append("called")
+        return None
+
+    monkeypatch.setattr(preflight_type, "_derive_intent", replacement)
+    before = roster_publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="dispatch changed"):
+        raw_publisher.publish_v2(
+            fixture, environment, *signed, *roster
+        )
+    assert calls == []
+    assert fixture._used is False
+    assert raw_publisher._retained is None
+    assert roster_publisher._reserve._connection.total_changes == before
+
+
 def test_captured_common_writer_refuses_v2_without_provisional_binding(
     tmp_path,
 ):
