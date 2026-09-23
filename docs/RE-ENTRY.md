@@ -1,5 +1,58 @@
 # Re-entry
 
+## Intraday equities Gate 5 replay: cash-flow story complete, ADR-0172–0179 closed (2026-09-23)
+
+Branch `claude/intraday-equities-backtest-cont-41xqxz` @ `388a638`, base
+`4834c9b7c672129b06533f803c0019163c77b2ed`. Continuation session; seven ADRs
+closed, each through Phase-0 design review, RED/GREEN TDD, and two fresh
+independent final lenses (correctness/authority + tests/integration) with
+zero unresolved Critical/Major before close.
+
+- **ADR-0172/0174/0175** (F3 lineage): one-shot verified synthetic v2
+  projection input, a composed replay tape from it with no external P4
+  dependency, and a runtime `ReplayTape` over verified v2 envelope bytes.
+  All in `dskit/pipeline/trust.py`/`dskit/production/{verifier,feed}.py`.
+- **ADR-0176** cash-flow funding: `CashFlowPolicy` + `EquityReplay` submits
+  configured cash-flow records (e.g. $1,000 seed + $20/day) into its own
+  replay ledger once per tick via the existing `ReplayCashFlowComposer`
+  seam (no `dskit/production` change). Revision 3 (self-found gap): points
+  1–3 wired authorization only — nothing ever submitted a record — added
+  point 3.5, the actual per-tick submission.
+- **ADR-0177** insufficient-cash refusal: `EquityReplay` tracks its own
+  running Decimal cash balance and refuses a buy it can't afford. Revision 2
+  (self-found by the opus builder before RED): cash-flow deposits never
+  credited the balance, so every buy would refuse forever once configured.
+- **ADR-0178** market-calendar-aware timing (four revisions, three real
+  defects, the hardest slice): Revision 1 rejected for a benchmarked ~6x
+  perf regression; Revision 2's calendar-date gate rejected by the
+  builder's own cold probing before any code was written (could silently
+  and permanently lose a day's funding); Revision 3's fix narrowed but
+  didn't close the same bug class (an early-close final trading day could
+  still lose money); Revision 4 added an unconditional end-of-tape flush
+  bounded by the last scheduled instant, closing it in general.
+- **ADR-0179**: closes a real wiring gap the user caught by asking directly
+  — `DevelopmentReplay`, the only pipeline-invokable replay node, had never
+  been touched by 0176–0178 and never passed `cash_flow_policy` through.
+  Now an optional, paired param, mirroring `fill_policy`/`fill_policy_sha256`.
+
+Full child replay suite 78 passed (was 34 at session start), ruff/purity/
+bounded-regression clean throughout. Closeout evidence for all seven:
+`docs/evidence/closeout/0206`–`0212-intraday-adr01{72,74,75,76,77,78,79}-*.json`.
+
+**What "wiring is done" means today:** a real `python -m dskit.pipeline run`
+over the shipped `run-development-replay.json` gets full cash-flow funding,
+insufficient-cash refusal, and calendar-aware timing IF that document is
+edited to declare `cash_flow_policy`/`cash_flow_policy_sha256` (a config-only
+edit, deliberately left to the document's owner — not made this session).
+No real market data, onboarding root, or completed pipeline run exists in
+this container; a real backtest needs Alpaca/Schwab credentials or an
+uploaded local artifact. `ReplayRun`/P4 pipeline-engine wiring remains
+explicitly out of scope (ADR-0146's own deferral, confirmed still open).
+Position-sizing/scaling (vs. outright refusal) and real market-calendar/
+holiday-library integration remain open Non-goals, judged lower-priority
+by the owner. Next: either provide real data/credentials for a genuine
+backtest, or pick up position-sizing policy as the next bounded slice.
+
 ## Index-options S0 scaffold complete (2026-09-22)
 
 Owner-approved ADR-0167 and S0-v3 produced the standalone, 30-file
