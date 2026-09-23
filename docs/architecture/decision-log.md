@@ -20857,8 +20857,17 @@ trading, no deployment.
 
 ## ADR-0176 — a configured cash-flow schedule for the child's equity replay (PROPOSAL)
 
-**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW (2026-09-23). Not
-approved. No implementation exists.
+**Status:** PROPOSAL — AWAITING PHASE-0 SKEPTIC REVIEW, REVISION 2
+(2026-09-23). Not approved. No implementation exists. Revision 1 received a
+NO-GO: 2 Critical (the anchor-derivation step was prose, not a precise
+transformation, with no stated handling for a DST gap/fold; an empty tape's
+`start_ms() == 0` would silently anchor real-dollar cash flows at the 1970
+epoch), 3 Major (no explicitly mandated end-to-end test; `CashFlowPolicy`'s
+shape was under-specified; `schedule_id` uniqueness was asserted, not
+derived), 2 Minor (no DST-transition matrix row; no self-authorization
+round-trip row). Every finding is accepted and folded in below — see
+Decision points 1, 2, and the Required Phase-0 matrix, each marked at the
+point it changed.
 
 **Context.** `dskit.production.compose.bundles_for(document, release,
 registry, ..., tape=None, cash_flow_composer=None)` (§5.16's composition
@@ -20906,33 +20915,81 @@ occurrence — see Decision point 2.
 ### Decision
 
 1. **One new config-driven child class, `CashFlowPolicy`, mirroring
-   `FillPolicy`'s exact pattern.** Add it to
-   `children/intraday_equities/intraday_equities/replay.py`: `_PARAMS =
-   ("currency", "daily_contribution_amount", "initial_capital_amount",
-   "timezone")`, default-deny (`reject_unknown_params`), every value from
-   the document — no Python-side default amount, matching `FillPolicy`'s
+   `FillPolicy`'s exact pattern (Revision 2: shape fully specified — Major
+   finding accepted).** Add it to
+   `children/intraday_equities/intraday_equities/replay.py`:
+   `_PARAMS = ("currency", "daily_contribution_amount",
+   "initial_capital_amount", "timezone")` — `currency` a nonempty `str`;
+   `daily_contribution_amount`/`initial_capital_amount` positive `Decimal`
+   (parsed from a JSON string, the same `Decimal(str(...))` idiom
+   `cashflows.py`'s own `_amount` helper already establishes as the
+   convention for money-from-JSON in this package); `timezone` a nonempty
+   `str` naming a real `zoneinfo.ZoneInfo` key, resolved via
+   `ZoneInfo(value)` and refusing an unresolvable name. Default-deny via
+   the existing `reject_unknown_params` (imported, never copied, per root
+   CLAUDE.md's duplication rule) — an unknown or missing key refuses; no
+   Python-side default value for any of the four, matching `FillPolicy`'s
    "Values come from the document, never defaults." A new config,
-   `children/intraday_equities/configs/cash-flow-policy.json`, declares the
-   $1,000/$20 values as DATA, not code, per this repo's "JSON is the
-   interface" rule — the exact numbers are never hardcoded in Python.
-   `CashFlowPolicy.from_path(path)` parses and validates it, the same
-   `from_path`/`from_obj` shape `FillPolicy` already has.
+   `children/intraday_equities/configs/cash-flow-policy.json`:
+   ```jsonc
+   {
+     "currency": "USD",
+     "daily_contribution_amount": "20",
+     "initial_capital_amount": "1000",
+     "timezone": "America/New_York",
+     "notes": "P19 full backtest: $1,000 seed folded into day one via ReplaceCashFlow, $20/day after (ADR-0176)."
+   }
+   ```
+   the $1,000/$20 values as DATA, not code, per this repo's "JSON is the
+   interface" rule. `CashFlowPolicy.from_path(path)` parses and validates
+   it, the same `from_path`/`from_obj` shape `FillPolicy` already has.
 
 2. **The schedule and composer are built once per replay run, from the
-   tape's own start, using only existing core primitives.**
-   `EquityReplay._run_loop` (the exact function that already calls
-   `bundles_for`) derives `anchor` from `tape.start_ms()` (the same
-   instant `_serve_document`/`_release_for` already read there for other
-   purposes) converted to the policy's configured `timezone`, and builds:
-   `RecurringCashFlowSchedule(schedule_id=<derived from series_id>,
-   anchor=anchor, interval_days=1, currency=policy.currency,
+   tape's own start, using only existing core primitives — with the exact
+   transformation and its two refusal cases specified (Revision 2: both
+   Critical findings accepted).** `EquityReplay._run_loop` (the exact
+   function that already calls `bundles_for`) computes:
+   `start_ms = tape.start_ms()`; refuses immediately, before constructing
+   anything, if `start_ms == 0` — this is unambiguously "the tape is
+   empty" per ADR-0175 Decision point 3's own documented empty-tape
+   fallback, never a genuine 1970-01-01 replay instant, and a cash-flow
+   schedule has nothing to fund over zero bars. Otherwise:
+   `anchor = datetime.fromtimestamp(start_ms / 1000,
+   tz=timezone.utc).astimezone(policy.timezone)` — the exact
+   epoch-ms-to-aware-datetime idiom `EquityReplay` itself already uses
+   elsewhere in this file (`_halt_flag`/`_fill_row`'s
+   `datetime.fromtimestamp(asof_ms / 1000, tz=timezone.utc)`), extended by
+   one `.astimezone` call into the policy's configured zone.
+   `RecurringCashFlowSchedule.__post_init__` already calls
+   `_valid_local(self.anchor, self.timezone, "anchor")`
+   (`dskit/production/cashflows.py`, unedited) and raises `ValueError`
+   naming `"anchor"` on a nonexistent DST gap or ambiguous fold — this ADR
+   adds no separate pre-check, but requires the construction call to be
+   wrapped so a `ValueError` from this exact path is re-raised naming
+   *cash-flow policy* and the offending tape instant, not left to surface
+   as a bare `ValueError` an operator would have to trace back through
+   three layers of construction to attribute correctly. Then:
+   `schedule_id = series_id` (the `uuid.uuid4()` string
+   `EquityReplay._run_loop` already mints fresh for every replay run,
+   `replay.py:601` — Revision 2: this closes the uniqueness finding
+   directly; a schedule can never collide across replay runs because no
+   two runs ever share a `series_id`, and `RecurringCashFlowSchedule`
+   derives every `flow_id` from `schedule_id` plus the occurrence instant,
+   so identical `series_id` would be required for a collision, which
+   `EquityReplay` already structurally prevents). Then build:
+   `RecurringCashFlowSchedule(schedule_id=series_id, anchor=anchor,
+   interval_days=1, currency=policy.currency,
    amount=policy.daily_contribution_amount, timezone=policy.timezone,
    overrides=(ReplaceCashFlow("initial-capital-seed", anchor,
    policy.initial_capital_amount + policy.daily_contribution_amount),))` —
    folding the one-time $1,000 seed into day one's contribution ($1,020 on
-   day one, $20 every day after), auditable via the override's own
-   `override_id` ("initial-capital-seed") and the record's
-   `evidence.flow_id`, both of which `ReplayCashFlowComposer._record`
+   day one, $20 every day after; `ReplaceCashFlow.apply` matches on exact
+   UTC instant equality against `occurrence.effective_at`, and
+   `anchor` is the SAME object passed as both the schedule's `anchor` and
+   the override's `occurrence_at`, so the match is by construction, not by
+   independently-derived instants that could drift apart), auditable via
+   the override's own `override_id` ("initial-capital-seed") and the
+   record's `evidence.flow_id`, both of which `ReplayCashFlowComposer._record`
    already carries into the ledger body unedited. `ReplayCashFlowComposer`
    itself is constructed unedited from this schedule.
 
@@ -20965,26 +21022,46 @@ occurrence — see Decision point 2.
 
 ### Required Phase-0 matrix (proposed; to be frozen by the design skeptic)
 
-Pin `CashFlowPolicy._PARAMS`, default-deny (an unknown or missing key
-refuses), and `from_path`/`from_obj` parity with `FillPolicy`'s own pattern.
-Prove: the built schedule's `materialize` over the full replay window
-yields exactly one `$1,020` (or whatever the configured
-`initial_capital_amount + daily_contribution_amount` sums to) flow on the
-anchor day and exactly one `$<daily_contribution_amount>` flow every
-subsequent calendar day through the window's end, in the configured
+Pin `CashFlowPolicy._PARAMS`, default-deny (an unknown, missing, or
+wrong-type key refuses — including an unresolvable `timezone` string and a
+non-positive/non-numeric-string amount), and `from_path`/`from_obj` parity
+with `FillPolicy`'s own pattern. Prove: the built schedule's `materialize`
+over the full replay window yields exactly one `$1,020` (or whatever the
+configured `initial_capital_amount + daily_contribution_amount` sums to)
+flow on the anchor day and exactly one `$<daily_contribution_amount>` flow
+every subsequent calendar day through the window's end, in the configured
 currency; `ReplayCashFlowComposer._authorizes` accepts exactly those
 records and refuses every other (wrong amount, wrong day, wrong currency,
-forged `evidence`); `SeriesState._for_replay` accepts the built composer
-(type check passes) and binds `_replay_authorizer`; a full
-`EquityReplay._run_loop` run with a real tape and the real policy config
-produces a replay whose ledger contains exactly the expected cash-flow
-records over a multi-day window (an end-to-end proof, not merely a unit
-proof of the schedule/composer in isolation); the exact prior behavior
+forged `evidence`); **every record `composer.due(...)` itself emits passes
+`composer._authorizes` on that exact record** (Revision 2: Minor finding
+accepted — a self-authorization round-trip, proving the composer never
+manufactures a record it would then refuse); `SeriesState._for_replay`
+accepts the built composer (type check passes) and binds
+`_replay_authorizer`. **Refusals (Revision 2 additions, both Critical
+findings):** an empty tape (`start_ms() == 0`) refuses schedule
+construction before any `RecurringCashFlowSchedule`/`ReplayCashFlowComposer`
+object is built, with a message naming the empty tape, not a downstream
+`ValueError` from unrelated validation; an `anchor` landing in a named
+timezone's DST gap or ambiguous fold (construct the matrix's test tape so
+its first bar's `availability_ms` lands there for at least one real IANA
+zone with an active transition, e.g. `America/New_York` in March or
+November) refuses with a message naming *cash-flow policy* and the
+offending instant, not a bare unattributed `ValueError` (Revision 2:
+Minor finding accepted — this is also the required DST-transition test).
+**Mandatory end-to-end test (Revision 2: Major finding accepted — this row
+is explicitly REQUIRED, not merely named in prose):** a full
+`EquityReplay._run_loop` run, with a real multi-day `BarTape` and the real
+`cash-flow-policy.json` config (not a hand-built schedule/composer in
+isolation), whose replay ledger — read back after the run, through
+whatever accessor the existing `EquityReplay`/`SeriesState` test fixtures
+already use to inspect ledger contents — contains exactly the expected
+cash-flow records (right count, right amounts, right dates, right
+currency) over that window; and the exact prior behavior
 (`cash_flow_composer=None`, no cash records ever authorized) is pinned as a
-regression baseline so a future change cannot silently re-widen or narrow
-it. Run the existing child replay test suite unedited to prove
-`FillPolicy`, `BarTape`, `ReplayAdapter`, `DevelopmentReplay`, and every
-other existing `EquityReplay` behavior is untouched, plus
+regression baseline on the SAME fixture so a future change cannot silently
+re-widen or narrow it. Run the existing child replay test suite unedited to
+prove `FillPolicy`, `BarTape`, `ReplayAdapter`, `DevelopmentReplay`, and
+every other existing `EquityReplay` behavior is untouched, plus
 `dskit.production.cashflows`/`compose`/`state` regressions.
 
 ### Non-goals
