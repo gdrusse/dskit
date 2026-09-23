@@ -19474,3 +19474,51 @@ one scorable-row rule both nodes import; two-sided KS, asymmetric Berkowitz,
 asymmetric condor, `fit_split`, `gamma/2`, Brier-tie and drift tests;
 `DEFAULT_SCALE_MULTIPLIER` exported; day 1 keeps the unconditional variance;
 config note on trading-day embargo. Repeated field-name checks remain (nit).
+
+## ADR-0169 — Conditional-scale rungs (linear/HAR, LightGBM) and a distribution zoo
+
+**Status:** Proposed 2026-09-23; awaiting owner approval. No code before it.
+**Owner:** Russell. **Base:** `ff66c30`.
+
+**Context.** Research A0004 ranks a GBM volatility-scale model first, with
+linear HAR as its baseline; A0001 (locked) keeps the full distribution in z.
+Inventory: `SklearnFit` fits any regressor but emits no per-row prediction
+and has no `fit_split`; no forward-RV label, HAR, or scale rung exists; the
+ADR-0097 benchmark stages exist but no index_options candidates.
+`EmpiricalLocationScale.fit` standardizes by the reference scale only, so a
+rung overriding just `relative_scale` would double-count spread.
+
+**Decision proposed.** A scale rung FITS a model of log forward per-step
+vol from log features on `fit_split`, standardizes each fit label by its
+PREDICTED horizon scale to learn the shape, and forecasts
+`shape x predicted / reference`. Coefficients/booster live in the JSON
+state and are `described_knobs`, so restores refuse a misdescribing doc.
+
+dskit:
+1. `distribution_models.py` (edit) — `ScaleModelLocationScale` (abstract:
+   `fit_scale`, `predict_scale`; overrides `fit`/`relative_scale`) and
+   `LinearScaleLocationScale` (stdlib ridge OLS in log space; HAR =
+   features `rv_1, rv_5, rv_22`).
+2. `libs/lightgbm.py` (new pack) — `LightGBMScaleLocationScale`, booster
+   stored as `model_to_string()` text; library named only inside methods.
+3. `libs/numpy.py` (edit) — `ForwardRealizedVol` (forward per-step RV over
+   h steps, declared lookahead).
+4. Tests: `tests/pipeline/test_distribution_models.py` (edit),
+   `tests/pipeline_libs/test_lightgbm.py` (new, importorskip),
+   `tests/pipeline_libs/test_numpy_horizon.py` (edit). Docs trees.
+
+Child `index_options`:
+5. `configs/run-synthetic-distribution.json` (edit: add forward-RV label so
+   every rung shares one pipeline); `configs/run-synthetic-har.json`,
+   `configs/run-synthetic-lightgbm.json` (new rungs, only `model` differs);
+   `configs/run-distribution-zoo.json` (new ADR-0097 staged plan -> approval
+   -> run -> compare over the three, objective twCRPS, contract_paths pin
+   score/condor/labels/walkforward).
+6. `tests/test_distribution_zoo.py` (new); manifest test updated.
+
+**Non-goals.** Distributional GBMs, conformal, DL/transformers, real data,
+catboost/xgboost extras, optimizer.
+
+**Alternatives.** A generic "apply signal to rows" node plus SklearnFit
+(a second model-per-row seam; no fit_split; pickled artifacts); scale via
+`relative_scale` only (double-counts spread).
