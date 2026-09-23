@@ -171,6 +171,36 @@ def test_preconsume_dependency_refusal_leaves_capability_fresh(
     assert production_verifier._project_verified_synthetic_v2_input(capability)
 
 
+def test_in_place_projector_code_mutation_refuses_before_consume(tmp_path):
+    """Identity-only pinning cannot authorize mutated executable code."""
+    _, _, _, capability = _mint(tmp_path)
+    projector = bundles._project_v2_event_envelopes
+    original_code = projector.__code__
+
+    def forged(events, source_rank_policy, /):
+        del events, source_rank_policy
+        return (b"forged",)
+
+    try:
+        projector.__code__ = forged.__code__
+        with pytest.raises(ValueError, match="dependency changed"):
+            production_verifier._project_verified_synthetic_v2_input(capability)
+    finally:
+        projector.__code__ = original_code
+    assert production_verifier._project_verified_synthetic_v2_input(capability)
+
+
+def test_omitted_projector_global_refuses_before_consume(tmp_path, monkeypatch):
+    """Every effective projector global is pinned before the one-shot spend."""
+    _, _, _, capability = _mint(tmp_path)
+    original = bundles.MappingProxyType
+    monkeypatch.setattr(bundles, "MappingProxyType", object)
+    with pytest.raises(ValueError, match="dependency changed"):
+        production_verifier._project_verified_synthetic_v2_input(capability)
+    monkeypatch.setattr(bundles, "MappingProxyType", original)
+    assert production_verifier._project_verified_synthetic_v2_input(capability)
+
+
 def test_genuine_v2_root_projects_once_to_exact_adr0171_bytes(tmp_path):
     """A genuine ADR-0173 root is the sole input to the pure projector."""
     (
