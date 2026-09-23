@@ -1,0 +1,77 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "intraday P19 wire cash_flow_policy into DevelopmentReplay",
+  "adr": "ADR-0179",
+  "branch": "claude/intraday-equities-backtest-cont-41xqxz",
+  "continuation_of_branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "phase0_history": [
+    {
+      "revision": 1,
+      "design": "two new OPTIONAL, paired params (cash_flow_policy, cash_flow_policy_sha256) on DevelopmentReplay, mirroring the existing REQUIRED fill_policy/fill_policy_sha256 pair, threaded through to ReplayAdapter's second constructor argument",
+      "verdict": "NO-GO",
+      "finding": "0 Critical, 1 Major, 1 Minor, 1 Nit. Major: the XOR validation block skipped the type/non-empty guard the mirrored fill_policy block already has -- a document with a non-string cash_flow_policy value (e.g. an int) would crash validate_params with an unhandled TypeError (via _resolved_cash_flow_policy_path's os.path.isabs) instead of refusing cleanly with a ConfigError, violating dskit/pipeline/CLAUDE.md's own 'errors accumulate, never raise on the first' invariant. Minor: the malformed-type case was missing from the Required Phase-0 matrix as its own row. Nit: an imprecise claim that CashFlowPolicy was imported rather than defined in the file. All three fixed in place before RED; a one-clause fix, not a redesign, so no second fresh Phase-0 round was needed"
+    }
+  ],
+  "reuse_confirmed": {
+    "method": "dedicated, exhaustive sweep prompted by a direct owner question ('is the wiring done for a real backtest once real data is available') -- repo-wide grep for every cash_flow_policy reference, every NODE_KINDS registration across all three files in this child that declare one, and replay.py's full git log",
+    "findings": "confirmed DevelopmentReplay (the only replay-capable pipeline Node, registered as intraday_equities-development-replay) had never been touched by ADR-0176/0177/0178 -- its run() method never passed cash_flow_policy to ReplayAdapter, so a pipeline-document-driven replay got none of that work regardless of document configuration. This ADR closes exactly that gap, wiring the already-built, already-closed EquityReplay/ReplayAdapter/CashFlowPolicy capability into the one entry point a real python -m dskit.pipeline run invocation would actually use"
+  },
+  "matrix_completion": {
+    "candidate_commits": [
+      "a7275d6 (Revision 1 proposal)",
+      "2b45189 (Phase-0 clean, GO for RED, 1 Major + 1 Minor + 1 Nit fixed)",
+      "2d79a9e (final candidate: full implementation + tests)"
+    ],
+    "implementation_correction": "none needed after Phase-0 approval -- the candidate matches the frozen Decision points 1-3 exactly, confirmed by both final-review lenses against the diff since Phase-0 approval, including that the type-guard fix's ORDER (before the path-exists check) was preserved correctly, not merely its presence",
+    "rows_closed": [
+      "regression baseline: the shipped run-development-replay.json-shaped params dict (no cash-flow keys) validates and runs byte-identically to pre-ADR-0179 behavior -- a genuine json.dumps equality proof against an independently constructed ReplayAdapter(FillPolicy...) call, not a smoke test",
+      "XOR refusal: cash_flow_policy present without cash_flow_policy_sha256 (and the converse) refuses naming both",
+      "malformed-type refusal (the row added specifically for the Major finding): cash_flow_policy as int/list/empty-string refuses with a clean ConfigError naming cash_flow_policy, never a raw TypeError",
+      "missing-path refusal",
+      "digest-mismatch refusal (including a non-string digest value)",
+      "positive wiring proof: the SAME bars/decisions run through the node once with a valid cash-flow pair (refuses insufficient_cash, fills only the affordable qty, output byte-identical to a direct ReplayAdapter(policy, cash_flow_policy) call) and once without the pair (fills the full qty, zero cash-flow refusals) -- isolating the effect to the wiring itself"
+    ],
+    "disposition": "candidate passed both final review lenses clean on the first pass -- 0/0/0/0 from both lenses, a clean sweep"
+  },
+  "commands": {
+    "focused": "PYTHONPATH=$PWD:$PWD/children/intraday_equities python3 -m pytest children/intraday_equities/tests/test_replay.py -q",
+    "focused_result": "78 passed (65 pre-ADR-0179 + 13 new), confirmed twice for determinism (~67s each run)",
+    "ruff": "clean (replay.py, test_replay.py)",
+    "diff_check": "clean",
+    "purity": "clean (tests/pipeline/test_purity.py, tests/production/test_purity.py -- 43 passed)",
+    "bounded_regression": "PYTHONPATH=$PWD python3 -m pytest tests/production/test_purity.py tests/pipeline/test_purity.py children/intraday_equities/tests/test_replay.py -q",
+    "bounded_regression_result": "121 passed"
+  },
+  "final_candidate": {
+    "commit": "2d79a9e",
+    "blobs": {
+      "children/intraday_equities/intraday_equities/replay.py": "ef10cfac70a04a852f0d1fcc649ebef72ac6a277",
+      "children/intraday_equities/tests/test_replay.py": "25a29e16e1f690edddca1fa2f78d889caf8248d6"
+    }
+  },
+  "two_sequential_clean_final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "model": "Claude Sonnet 5",
+      "candidate": "2d79a9e",
+      "verdict": "0C/0M/0m/0N",
+      "notes": "independently re-verified every Decision point against git diff 2b45189 2d79a9e rather than trusting the ADR's or commit message's claims: confirmed _PARAMS unedited and the required-param loop stays scoped to it, confirmed the Phase-0 type-guard fix is genuine and in the correct order, confirmed the XOR block's silent-when-both-absent behavior, confirmed _resolved_cash_flow_policy_path mirrors _resolved_fill_policy_path field-for-field, confirmed no dskit/production/* or shipped-document file touched, confirmed role/serving_effect unchanged, confirmed the wiring-proof test isolates the effect via a with/without comparison plus a byte-identical cross-check against direct ReplayAdapter construction"
+    },
+    {
+      "lens": "tests/integration",
+      "model": "Claude Sonnet 5",
+      "candidate": "2d79a9e",
+      "verdict": "0C/0M/0m/0N",
+      "tests": "78 passed twice (determinism); 121 passed (bounded regression)",
+      "notes": "active mutation testing on 5 mutations, all caught by name: removing the type guard entirely, dropping ReplayAdapter's second argument in run(), disabling the XOR check, building CashFlowPolicy unconditionally in __init__, and -- the most precise mutation -- swapping the guard's ORDER (path-exists check before the type guard) to confirm the fix requires correct ordering, not merely the guard's bare presence, which still crashed with a raw TypeError exactly as ADR-0179 predicted. Confirmed no vacuous assertions and confirmed the regression-baseline test is a genuine json.dumps equality proof"
+    }
+  ],
+  "files_changed": [
+    "children/intraday_equities/intraday_equities/replay.py",
+    "children/intraday_equities/tests/test_replay.py",
+    "docs/architecture/decision-log.md",
+    "docs/evidence/closeout/0212-intraday-adr0179-review-exit.json"
+  ],
+  "non_authority": "This slice widens DevelopmentReplay's allowed-params set with two OPTIONAL, paired names and threads an already-built capability through an existing constructor call. No dskit/production module changed. No new capability, registry entry, or uses: site. No change to the shipped configs/run-development-replay.json document, EquityReplay, ReplayAdapter, or CashFlowPolicy themselves -- whether any specific document opts into cash-flow funding for a real run is a separate, later config-only decision this ADR does not make. No ReplayRun/P4 wiring. No backtest launch, no paper/live trading, no deployment."
+}

@@ -22138,7 +22138,7 @@ trading, no deployment.
 
 ## ADR-0179 — wire `cash_flow_policy` into `DevelopmentReplay`, the pipeline-invokable node
 
-**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED. An independent
+**Status:** IMPLEMENTED AND CLOSED. An independent
 design skeptic reviewed cold and verified every code citation against
 actual source (the `reject_unknown_params` call, the required-param
 loop, the `fill_policy`/`fill_policy_sha256` block shape, `run()`'s
@@ -22157,8 +22157,28 @@ pipeline/CLAUDE.md`'s own "errors accumulate, never raise on the first"
 invariant), the Minor (added the malformed-type case as its own required
 matrix row, so the fix is exercised by a test, not merely present in
 prose), and the Nit (`CashFlowPolicy` is DEFINED in this file, not
-imported — corrected). A one-clause fix, not a redesign; proceeding
+imported — corrected). A one-clause fix, not a redesign; proceeded
 directly to RED rather than a second fresh Phase-0 round.
+
+**Final review.** Both mandatory lenses ran clean against the completed
+candidate (`2d79a9e`). Correctness/authority: 0 Critical/0 Major/0
+Minor/0 Nit, GO — independently re-verified every Decision point against
+the actual diff since Phase-0 approval (`git diff 2b45189 2d79a9e`),
+confirmed the Phase-0 fix is genuine (the type/non-empty guard runs
+BEFORE `_resolved_cash_flow_policy_path`/`os.path.isfile`, in the
+correct order), confirmed no `dskit/production/*` or shipped-document
+file touched, confirmed `role`/`serving_effect` unchanged, and confirmed
+the wiring-proof test isolates the effect (same inputs, cash-flow pair
+present vs. absent, only the pair's presence changes the outcome).
+Tests/integration: 0 Critical/0 Major/0 Minor/0 Nit, GO — ran the full
+suite twice for determinism (78 passed both times), applied and caught
+all 5 mutations by name, including one specifically confirming that the
+type guard's ORDER (not merely its presence) is what the fix requires
+— swapping it after the path-exists check still crashes with a raw
+`TypeError`, exactly as ADR-0179 predicted — confirmed no vacuous
+assertions, and confirmed the regression-baseline test is a genuine
+byte-identical equality proof, not a smoke test. Closeout evidence:
+`docs/evidence/closeout/0212-intraday-adr0179-review-exit.json`.
 
 **Context.** ADR-0176/0177/0178 built and closed a complete,
 independently-verified cash-flow story (funding, insufficient-cash
