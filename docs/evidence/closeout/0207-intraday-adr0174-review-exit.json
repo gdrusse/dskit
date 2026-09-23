@@ -1,0 +1,101 @@
+{
+  "schema_version": "ReviewExit.v1",
+  "slice_id": "intraday F3 v2 captured-tape composition from a verified projection input",
+  "adr": "ADR-0174",
+  "branch": "claude/intraday-equities-backtest-cont-41xqxz",
+  "continuation_of_branch": "codex/intraday-equities-full-backtest-20260922",
+  "deployment_eligible": false,
+  "phase0_history": [
+    {
+      "revision": 1,
+      "design": "external P4 record/session/published capture triple for data_capture_root/data_captured_receipt alongside an independently-sourced ADR-0172 capability for the envelope bytes",
+      "verdict": "NO-GO",
+      "finding": "Critical -- nothing bound the two inputs together; a caller could supply a genuine but unrelated P4 capture together with a genuine but unrelated ADR-0172 capability and receive a CapturedReplayTape whose data_capture_root/data_captured_receipt truthfully named one capture while ordered_envelope_digests silently came from a different, unrelated verified root"
+    },
+    {
+      "revision": 2,
+      "design": "dropped the external P4 dependency entirely; data_capture_root/data_captured_receipt derived from the same publish_v2 manifest/receipt bytes (raw_proof_bytes[9]/[11]) that also produced the supplied capability; capability proven to belong to that exact root by minting a second capability from the same (raw_proof, raw_proof_bytes) and requiring both capabilities' projected envelope bytes exactly equal before either is used",
+      "verdict": "GO for RED",
+      "review": "fresh independent design skeptic, cold review, 0 Critical / 0 Major (design); all findings were documentation clarifications, folded into the Decision text"
+    }
+  ],
+  "reuse_confirmed": {
+    "method": "read compose_replay_tape (dskit/production/bundles.py, ADR-0145/0146) and CapturedReplayTape._build/.parse/_check_tape in full before design; confirmed CapturedReplayTape has no semantic requirement that data_capture_root/data_captured_receipt be P4-sourced, only shape-checked",
+    "action_taken": "compose_replay_tape itself is byte-for-byte untouched (confirmed by diff); the new v2 path reuses CapturedReplayTape._build/.parse/verify_causal_order and ADR-0172's _project_verified_synthetic_v2_input unedited"
+  },
+  "matrix_completion": {
+    "candidate_commit": "42577fa911cbf41e589051c743857beb91065c23",
+    "correction_commit": "22808b0dc6bb059e3b2b4743f1d50f7dddb94e0e",
+    "new_public_surface": "trust.prepare_v2_projection_input -- a public alias for the existing private _prepare_synthetic_v2_projection_input (identity-equal object, zero behavior change), added because the purity gate (tests/pipeline/test_purity.py, tests/production/test_purity.py) correctly refused verifier.py (dskit.production) reaching trust.py's (dskit.pipeline) private mint even via module-attribute access -- a genuine defect the RED phase caught, fixed minimally by adding reachability only",
+    "rows_closed": [
+      "exact signature, positional-only, __all__ absence, no record/session/published/consumer_document_sha256 parameter",
+      "genuine still-fresh capability composes a valid causally-ordered tape",
+      "data_capture_root/data_captured_receipt are exactly sha256 of raw_proof_bytes[9]/[11]",
+      "Revision-1 cross-binding attack refused in both directions, with the exact refusal reason pinned (not merely ValueError)",
+      "spent/forged capability refused",
+      "malformed raw_proof_bytes reuses ADR-0172's own prepare refusals",
+      "manifest/receipt tamper after mint caught by ADR-0172's re-verification",
+      "double composition refused, terminal (not retryable)",
+      "effects bounded to exactly three raw_proof.verify(...) calls, no P4/WORM/provider/SQL/reserve effect"
+    ],
+    "deferred_backlog": [
+      {
+        "item": "no test constructs a multi-envelope tape with disagreeing source_rank_policy_sha256 to exercise dskit/production/verifier.py's cross-envelope policy-agreement guard",
+        "severity": "Minor",
+        "rationale": "by construction every envelope from one verified v2 root shares one source roster and therefore one policy digest; the tests/integration final lens attempted to construct a disagreeing-policy fixture and confirmed it is not reachable through the existing single-root fixture helpers without an unrealistic post-hoc envelope edit",
+        "disposition": "left as guard-present, test-absent; revisit if a future slice adds multi-root or multi-roster tape composition"
+      }
+    ],
+    "disposition": "candidate committed, one Major test-vacuity finding corrected (test-only, no implementation change), re-reviewed clean"
+  },
+  "commands": {
+    "focused": "PYTHONPATH=$PWD python3 -m pytest tests/pipeline/test_v2_projection_input.py -q",
+    "focused_result": "41 passed",
+    "ruff": "clean (all four changed files)",
+    "diff_check": "clean",
+    "purity": "clean (tests/pipeline/test_purity.py, tests/production/test_purity.py)",
+    "bounded_regression": "PYTHONPATH=$PWD python3 -m pytest tests/pipeline/test_captured_authorization.py tests/pipeline/test_event_wire_v2.py tests/pipeline/test_synthetic_environment_identity.py tests/pipeline/test_v2_raw_publication.py tests/pipeline/test_v2_projection_input.py tests/pipeline/test_trust.py tests/pipeline/test_purity.py tests/production/test_bundles.py tests/production/test_capture_lifecycle.py tests/production/test_captured_authorization.py tests/production/test_v2_event_envelope_projection.py tests/production/test_verifier.py tests/production/test_purity.py -q",
+    "bounded_regression_result": "1987 passed, 1 xfailed"
+  },
+  "final_candidate": {
+    "commit": "22808b0dc6bb059e3b2b4743f1d50f7dddb94e0e",
+    "blobs": {
+      "dskit/pipeline/trust.py": "a095f4b3ee866e767396cd2a307ca6a4273f99ca",
+      "dskit/production/verifier.py": "5ad69caf0114408e38fc0f7ea36dbe1847c70c6e",
+      "tests/pipeline/test_v2_projection_input.py": "715890ca88260075971e4c5d97e83997c86a8523",
+      "tests/pipeline/test_trust.py": "369c21787f9c06c7b4e983880da2a2f0d48df591",
+      "docs/architecture/decision-log.md": "09b339e757cf0000d8667a83ebe36c92679353e6"
+    }
+  },
+  "candidate_round_history": [
+    {"candidate": "42577fa911cbf41e589051c743857beb91065c23", "lens": "correctness/authority", "verdict": "0C/0M/0m/0N"},
+    {"candidate": "42577fa911cbf41e589051c743857beb91065c23", "lens": "tests/integration", "verdict": "0C/1M/2m/0N", "finding": "Revision-1 attack test asserted bare pytest.raises(ValueError), passing vacuously against a mutant that bypasses the binding proof and fails for an unrelated reason"}
+  ],
+  "two_sequential_clean_final_lenses": [
+    {
+      "lens": "correctness/authority",
+      "model": "Claude Haiku 4.5",
+      "candidate": "22808b0dc6bb059e3b2b4743f1d50f7dddb94e0e",
+      "verdict": "0C/0M/0m/0N",
+      "tests": "330 passed",
+      "notes": "full fresh pass, independently confirmed the implementation diff against 42577fa is byte-identical, confirmed prepare_v2_projection_input identity, confirmed the Revision-1 attack refused in both directions with the pinned message"
+    },
+    {
+      "lens": "tests/integration",
+      "model": "Claude Haiku 4.5",
+      "candidate": "22808b0dc6bb059e3b2b4743f1d50f7dddb94e0e",
+      "verdict": "0C/0M/0m/0N",
+      "tests": "1987 passed, 1 xfailed (bounded regression) + focused suite, 5 repeated runs for determinism",
+      "notes": "independently reproduced the reviewer's own mutation (second_capability = capability), confirmed it turns the test RED with the predicted wrong message, restored and reconfirmed clean; confirmed the converse-direction test is a materially distinct scenario, not a duplicate; confirmed no new vacuity introduced by the match= string"
+    }
+  ],
+  "files_changed": [
+    "dskit/pipeline/trust.py",
+    "dskit/production/verifier.py",
+    "tests/pipeline/test_v2_projection_input.py",
+    "tests/pipeline/test_trust.py",
+    "docs/architecture/decision-log.md",
+    "docs/evidence/closeout/0207-intraday-adr0174-review-exit.json"
+  ],
+  "non_authority": "This slice produces a nonauthorizing CapturedReplayTape value and nothing downstream of it -- no envelope writer, no new WORM write path, no ReplayRun/replay execution change, no HistoricalStudyVerifier/HistoricalStudyCaptureDriver change, no cash-flow or accounting change, no backtest, no paper/live trading, no deployment. Wiring this tape into ReplayAdapter/EquityReplay is a separately reviewed later slice."
+}

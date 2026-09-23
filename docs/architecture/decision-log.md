@@ -20421,25 +20421,42 @@ deployment.
 
 ---
 
-## ADR-0174 — v2 captured-tape composition from a verified projection input (PROPOSAL)
+## ADR-0174 — v2 captured-tape composition from a verified projection input
 
-**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED (2026-09-23), REVISION
-2. Not yet implemented. Revision 1's design (reusing an externally-supplied
-P4 `record`/`session`/`published` capture triple for `data_capture_root`/
-`data_captured_receipt` alongside the independently-sourced ADR-0172
-capability for the envelope bytes) received a NO-GO from an independent
-Phase-0 design skeptic: **Critical** — nothing bound the two inputs
-together, so a caller could supply a genuine but *unrelated* P4 capture (for
-document D, containing events F1/F2) together with a genuine but
-*unrelated* ADR-0172 capability (from raw root A, containing events
-E1/E2/E3) and receive a `CapturedReplayTape` whose `data_capture_root`/
-`data_captured_receipt` truthfully prove "D was captured" while
-`ordered_envelope_digests` are silently A's events, never D's. Both halves
-verify individually; nothing checks they agree. Revision 2 closes that gap
-by removing the external P4 dependency entirely rather than patching it —
-see Decision point 1. A fresh, independent Phase-0 re-review of Revision 2
+**Status:** IMPLEMENTED AND CLOSED 2026-09-23 at
+`22808b0dc6bb059e3b2b4743f1d50f7dddb94e0e`. Revision 1's design (reusing an
+externally-supplied P4 `record`/`session`/`published` capture triple for
+`data_capture_root`/`data_captured_receipt` alongside the
+independently-sourced ADR-0172 capability for the envelope bytes) received a
+NO-GO from an independent Phase-0 design skeptic: **Critical** — nothing
+bound the two inputs together, so a caller could supply a genuine but
+*unrelated* P4 capture (for document D, containing events F1/F2) together
+with a genuine but *unrelated* ADR-0172 capability (from raw root A,
+containing events E1/E2/E3) and receive a `CapturedReplayTape` whose
+`data_capture_root`/`data_captured_receipt` truthfully prove "D was
+captured" while `ordered_envelope_digests` are silently A's events, never
+D's. Both halves verify individually; nothing checks they agree. Revision 2
+closed that gap by removing the external P4 dependency entirely rather than
+patching it — see Decision point 1. A fresh, independent Phase-0 re-review of Revision 2
 returned 0 Critical, 0 Major (design), GO for RED — every reported finding
 was a documentation clarification, folded into the Decision text below.
+The candidate round found one genuine defect (RED caught it): the purity
+gate refused `verifier.py` reaching `trust.py`'s private mint even via
+module-attribute access, fixed by adding `trust.prepare_v2_projection_input`
+as a public, identity-equal alias (zero behavior change). The first pair of
+final lenses found one Major — the Revision-1 attack test asserted only
+`pytest.raises(ValueError)` with no message match, so it passed vacuously
+against a mutant that bypasses the binding proof and fails for an unrelated
+reason — corrected (test-only, `match="does not belong"` plus the converse
+direction) and mutation-verified. Two fresh final lenses on the corrected
+candidate were each 0C/0M/0m/0N; the bounded final regression set was 1,987
+passed and 1 expected xfail. Evidence:
+`docs/evidence/closeout/0207-intraday-adr0174-review-exit.json`. One Minor
+remains an open, disclosed backlog item: no test constructs a multi-envelope
+tape with disagreeing `source_rank_policy_sha256` (unreachable with current
+single-root fixtures; the guard itself is in place and unexercised only by
+that one row). This closure grants no envelope-writer, replay, backtest,
+paper/live, or deployment authority — see Non-goals.
 
 **Context.** ADR-0172 closed with a private, one-shot
 `VerifiedV2ProjectionInput` and `_project_verified_synthetic_v2_input`
