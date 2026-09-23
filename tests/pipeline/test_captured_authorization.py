@@ -338,7 +338,8 @@ class _SignedGraph:
         return self.add(name, kind, value, self_field, role)
 
 
-def _complete_signed_graph(*, replay=False, count=1, nonroot=False, document_name="consumer"):
+def _complete_signed_graph(*, replay=False, count=1, nonroot=False, document_name="consumer",
+                           input_names=None):
     """Construct exact action and replay closure including every signed ancestor.
 
     ``document_name`` names the consumer document so two closures over the same
@@ -355,8 +356,12 @@ def _complete_signed_graph(*, replay=False, count=1, nonroot=False, document_nam
         publications.append(f4._foreign_publish(probe)[0])
     descriptor = probe.descriptor(published, purpose="synthetic")
     document = f4._consumer_document(descriptor, name=document_name)
+    input_names = ("bundle", "second") if input_names is None else input_names
+    assert type(input_names) is tuple and len(input_names) == 2
+    if input_names[0] != "bundle":
+        document["pipeline"]["consume"]["inputs"][input_names[0]] = document["pipeline"]["consume"]["inputs"].pop("bundle")
     if count == 2:
-        document["pipeline"]["consume"]["inputs"]["second"] = {
+        document["pipeline"]["consume"]["inputs"][input_names[1]] = {
             "$captured_artifact": probe.descriptor(publications[1], purpose="synthetic"),
         }
     document_sha = _graph_hash(document)
@@ -394,7 +399,7 @@ def _complete_signed_graph(*, replay=False, count=1, nonroot=False, document_nam
     replays = p3._replay_set()
     contracts = [{
         "binding_id": f"input-{index}", "consumer_node": "consume",
-        "consumer_input": "bundle" if index == 0 else "second",
+        "consumer_input": input_names[index],
         "source_kind": "published-input", "source_ref": f"root-{index}",
         "output_schema": "dskit.synthetic-output/v1", "output_version": "1", "purpose": "synthetic",
     } for index in range(count)]
@@ -659,7 +664,7 @@ def _closure_ready():
     assert callable(method), "Matrix v8 complete recursive closure is missing"
 
 
-def _graph_live(graph, document, count):
+def _graph_live(graph, document, count, input_names=None):
     broker = _factory()(fixture_facts=graph.facts)
     producer, published, _ = f4._publish(broker)
     broker.end_session(producer)
@@ -667,8 +672,9 @@ def _graph_live(graph, document, count):
     if count == 2:
         publications.append(f4._foreign_publish(broker)[0])
     captures = []
+    input_names = ("bundle", "second") if input_names is None else input_names
     for index, publication in enumerate(publications):
-        frozen = broker.freeze_consumer_document(document, "consume", "bundle" if index == 0 else "second", "synthetic")
+        frozen = broker.freeze_consumer_document(document, "consume", input_names[index], "synthetic")
         captures.append((publication, frozen, broker.derive_consumer_port(frozen)))
     selected = next(value for value in graph.values.values() if value.get("schema") == graph.selected["schema"] and
                     value.get("action_execution_admission_sha256", value.get("final_replay_admission_sha256")) == graph.selected["sha256"])
@@ -940,10 +946,10 @@ def _factory():
     return factory
 
 
-def _issue_complete(*, replay=False, count=1):
+def _issue_complete(*, replay=False, count=1, input_names=None):
     """Exercise the real public doorway; incomplete issuance is an assertion RED."""
-    graph, document = _complete_signed_graph(replay=replay, count=count)
-    broker, captures, runtime, before = _graph_live(graph, document, count)
+    graph, document = _complete_signed_graph(replay=replay, count=count, input_names=input_names)
+    broker, captures, runtime, before = _graph_live(graph, document, count, input_names=input_names)
     try:
         result = broker.authorize_capture_set(captures, graph.selected, **runtime)
     except ValueError as exc:
@@ -954,6 +960,88 @@ def _issue_complete(*, replay=False, count=1):
     assert type(session) is trust.LaunchSession
     assert session._kind == "captured-authorization-v2"
     return graph, broker, captures, runtime, before, record, session
+
+
+_TAPE_INPUTS = ("tape_manifest", "tape_data")
+
+
+def _issue_tape_pair():
+    return _issue_complete(replay=True, count=2, input_names=_TAPE_INPUTS)
+
+
+def test_p4_replay_tape_pair_mints_one_opaque_port_set():
+    _graph, broker, captures, _runtime, before, record, session = _issue_tape_pair()
+    view = broker.captured_port_set(record, session)
+    assert type(view) is trust.CapturedPortSet
+    for operation in (copy.copy, copy.deepcopy, pickle.dumps, dict, bytes):
+        with pytest.raises(TypeError):
+            operation(view)
+    with pytest.raises(TypeError):
+        trust.CapturedPortSet()
+    with pytest.raises((TypeError, ValueError)):
+        broker.captured_port_set(record, session)
+    _assert_graph_no_effect(broker, captures, before)
+
+
+def test_p4_replay_tape_readers_are_exact_named_one_shot_capabilities():
+    _graph, broker, captures, _runtime, before, record, session = _issue_tape_pair()
+    view = broker.captured_port_set(record, session)
+    with pytest.raises((TypeError, ValueError)):
+        view.require("unknown")
+    manifest = view.require("tape_manifest")
+    data = view.require("tape_data")
+    with pytest.raises((TypeError, ValueError)):
+        view.require("tape_manifest")
+    audit = broker._p4_ledger._audit(record)
+    receipts = [json.loads(raw)["lifecycle_captured_receipt_sha256"] for raw in audit["receipts"]]
+    assert manifest.lifecycle_captured_receipt_sha256 == receipts[0]
+    assert data.lifecycle_captured_receipt_sha256 == receipts[1]
+    assert manifest.read_member_bytes("config.json") == f4._json_bytes({"name": "producer"})
+    assert data.read_member_bytes("config.json") == f4._json_bytes({"name": "producer"})
+    with pytest.raises((TypeError, ValueError)):
+        manifest.read_member_bytes("config.json")
+    assert len(broker._member_events) == len(before[2]) + 2
+
+
+def test_p4_port_set_factory_refuses_action_and_wrong_session_without_effects():
+    _graph, broker, captures, _runtime, before, record, session = _issue_complete(count=2)
+    for candidate in (session, object()):
+        with pytest.raises((TypeError, ValueError)):
+            broker.captured_port_set(record, candidate)
+    _assert_graph_no_effect(broker, captures, before)
+
+
+@pytest.mark.parametrize("point", ["commit-after", "return"])
+def test_p4_tape_pair_retains_exact_handles_across_postcommit_fault_retry(point):
+    graph, document = _complete_signed_graph(replay=True, count=2, input_names=_TAPE_INPUTS)
+    broker, captures, runtime, before = _graph_live(graph, document, 2, input_names=_TAPE_INPUTS)
+    broker._p4_ledger._test_fault = point
+    with pytest.raises(RuntimeError, match="injected P4"):
+        broker.authorize_capture_set(captures, graph.selected, **runtime)
+    record, session = broker.authorize_capture_set(captures, graph.selected, **runtime)
+    view = broker.captured_port_set(record, session)
+    assert view.require("tape_manifest").lifecycle_captured_receipt_sha256
+    assert view.require("tape_data").lifecycle_captured_receipt_sha256
+    _assert_graph_no_effect(broker, captures, before)
+
+
+def test_p4_port_set_factory_is_singleton_under_concurrency():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    barrier = Barrier(4)
+
+    def contender(_index):
+        barrier.wait(timeout=5)
+        try:
+            return broker.captured_port_set(record, session)
+        except (TypeError, ValueError):
+            return None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(contender, range(4)))
+    assert len([result for result in results if result is not None]) == 1
 
 
 @pytest.mark.parametrize("replay", [False, True])

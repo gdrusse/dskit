@@ -36,6 +36,7 @@ _PUBLIC_TYPES = {
     "CapturedAuthorizationAuthority",
     "CapturedAuthorizationRecord",
     "CapturedBindings",
+    "CapturedPortSet",
     "CapturedJsonArtifact",
     "CapturedLifecyclePort",
     "CapturedMemberHandle",
