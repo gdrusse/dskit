@@ -19538,3 +19538,7 @@ Delta lens on `bc80c07`: 0 Critical/Major; all 12 mutations killed. Minor
 backlog: `lgbm_params` values are type-checked only as scalar, not per key
 (a wrong type fails at fit, not plan); no test ties `ALLOWED_LGBM_KEYS` to
 the installed signature; class docstring and one long line to tidy.
+Backlog closed (owner request): per-key `LGBM_KEY_TYPES` refuse wrong
+types at plan; a test pins `ALLOWED_LGBM_KEYS` to the installed
+`LGBMRegressor` signature; docstrings tidied. Still disclosed, by design:
+in-sample shape predictions and zero-feature row drops (above).

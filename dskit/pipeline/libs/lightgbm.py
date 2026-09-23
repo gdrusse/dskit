@@ -29,6 +29,7 @@ __all__ = [
     "DEFAULT_LGBM_PARAMS",
     "ALLOWED_LGBM_KEYS",
     "FORCED_LGBM_KEYS",
+    "LGBM_KEY_TYPES",
     "LightGBMScaleLocationScale",
     "NODE_KINDS",
 ]
@@ -47,18 +48,31 @@ DEFAULT_LGBM_PARAMS = {
 #: Keys the pack sets itself; a document naming one is refused.
 FORCED_LGBM_KEYS = ("deterministic", "n_jobs", "random_state", "seed", "verbosity")
 
-#: The ONLY ``LGBMRegressor`` keywords a document may set — its named
+#: The ONLY ``LGBMRegressor`` keywords a document may set, with each one's type, — its named
 #: constructor arguments less the forced ones and the classifier-only
 #: ``class_weight``. Default-deny: LightGBM silently ignores an unknown key
 #: and honors aliases (``num_threads``, ``random_seed``) that would override
 #: the forced settings, so anything else is refused. Stated here rather than
-#: read from the library so a document plans with LightGBM absent.
-ALLOWED_LGBM_KEYS = (
-    "boosting_type", "colsample_bytree", "importance_type", "learning_rate",
-    "max_depth", "min_child_samples", "min_child_weight", "min_split_gain",
-    "n_estimators", "num_leaves", "objective", "reg_alpha", "reg_lambda",
-    "subsample", "subsample_for_bin", "subsample_freq",
-)
+#: read from the library so a document plans with LightGBM absent; a test
+#: pins the list to the installed signature.
+LGBM_KEY_TYPES = {
+    "boosting_type": "str", "importance_type": "str", "objective": "str",
+    "max_depth": "int", "min_child_samples": "int", "n_estimators": "int",
+    "num_leaves": "int", "subsample_for_bin": "int", "subsample_freq": "int",
+    "colsample_bytree": "number", "learning_rate": "number", "min_child_weight": "number",
+    "min_split_gain": "number", "reg_alpha": "number", "reg_lambda": "number",
+    "subsample": "number",
+}
+
+#: The allowed key names, derived from :data:`LGBM_KEY_TYPES` (one owner).
+ALLOWED_LGBM_KEYS = tuple(sorted(LGBM_KEY_TYPES))
+
+#: What each declared value type accepts. ``bool`` is never an int here.
+_TYPE_OK = {
+    "str": lambda v: isinstance(v, str) and bool(v),
+    "int": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "number": number_ok,
+}
 
 
 class LightGBMScaleLocationScale(ScaleModelLocationScale):
@@ -118,10 +132,13 @@ class LightGBMScaleLocationScale(ScaleModelLocationScale):
             problems.append(
                 f"lgbm_params does not accept {unknown} — allowed: {list(ALLOWED_LGBM_KEYS)}"
             )
-        bad = [k for k, v in extra.items()
-               if not (isinstance(v, str) or number_ok(v) or isinstance(v, bool))]
+        bad = sorted(k for k, v in extra.items()
+                     if k in LGBM_KEY_TYPES and not _TYPE_OK[LGBM_KEY_TYPES[k]](v))
         if bad:
-            problems.append(f"lgbm_params values must be finite numbers, bools or strings: {bad}")
+            problems.append(
+                f"lgbm_params {bad} have the wrong type — expected "
+                f"{ {k: LGBM_KEY_TYPES[k] for k in bad} }"
+            )
         return problems
 
     def booster_params(self):

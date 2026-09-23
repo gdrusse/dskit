@@ -313,8 +313,10 @@ class ScaleModelLocationScale(EmpiricalLocationScale):
     predictions, so a flexible model (a booster) fits a shape that is too
     narrow; cross-fitting is the remedy, not yet built. A row whose feature
     is zero (a flat day's one-step vol) gets no forecast, so on real data
-    rungs can score different row sets — compare the scorer's ``n``. A member supplies :meth:`fit_scale`
-    and :meth:`predict_scale`; the model's state must be JSON.
+    rungs can score different row sets — compare the scorer's ``n``.
+
+    A member supplies :meth:`fit_scale` and :meth:`predict_scale`; the
+    model's state must be JSON.
 
     Parameters
     ----------

@@ -12,6 +12,7 @@ from dskit.pipeline.base import ConfigError, TimeSplitConfig
 from dskit.pipeline.conformance import NodeProbe, conformance_suite
 from dskit.pipeline.fitted import SIDECAR_NAME
 from dskit.pipeline.libs.lightgbm import (
+    ALLOWED_LGBM_KEYS,
     FORCED_LGBM_KEYS,
     NODE_KINDS,
     LightGBMScaleLocationScale,
@@ -63,6 +64,21 @@ def test_fit_is_deterministic_and_seed_is_described(ctx, tmp_path):
         node.run(ctx, {"rows": _rows()})
 
 
+def test_allowlist_is_the_installed_constructor_less_forced_and_classifier_keys():
+    import inspect
+
+    import lightgbm
+
+    named = set(inspect.signature(lightgbm.LGBMRegressor.__init__).parameters)
+    expected = named - {"self", "kwargs", "class_weight"} - set(FORCED_LGBM_KEYS)
+    assert set(ALLOWED_LGBM_KEYS) == expected
+
+
+def test_valid_typed_params_are_accepted():
+    LightGBMScaleLocationScale("g", dict(PARAMS, lgbm_params={
+        "n_estimators": 10, "learning_rate": 0.1, "reg_lambda": 2, "objective": "l2"}))
+
+
 def test_the_stored_booster_carries_the_forced_determinism(ctx):
     out = LightGBMScaleLocationScale("gbm", dict(PARAMS, seed=3)).run(ctx, {"rows": _rows()})
     text = out["transform"].state["model"]["booster"]
@@ -94,7 +110,10 @@ def test_load_restores_identical_forecasts(ctx, tmp_path):
     *({"lgbm_params": {k: 1}} for k in FORCED_LGBM_KEYS),
     {"lgbm_params": {"num_leave": 7}}, {"lgbm_params": {"num_threads": 4}},
     {"lgbm_params": {"random_seed": 5}}, {"lgbm_params": {"learning_rate": float("nan")}},
-    {"lgbm_params": {"num_leaves": [1]}}, {"lgbm_params": []}, {"seed": -1}, {"typo": 1},
+    {"lgbm_params": {"num_leaves": [1]}}, {"lgbm_params": {"n_estimators": "abc"}},
+    {"lgbm_params": {"max_depth": True}}, {"lgbm_params": {"num_leaves": 7.5}},
+    {"lgbm_params": {"objective": ""}},
+    {"lgbm_params": []}, {"seed": -1}, {"typo": 1},
 ])
 def test_invalid_params_refuse(bad):
     with pytest.raises(ConfigError):
