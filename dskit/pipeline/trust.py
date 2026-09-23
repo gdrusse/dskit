@@ -8401,20 +8401,20 @@ class _SyntheticRawPublisher:
                 ),
                 "raw publisher proof authority changed",
             )
-        authorization = _hs_parse_canonical(authorization_bytes)
-        bootstrap_value = _hs_parse_canonical(bootstrap)
-        v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
-            "dskit.dataset-capture-authorization/v1"
-        ]
-        _hs_refuse(
-            authorization.get("schema_version")
-            == "dskit.dataset-capture-authorization/v1"
-            and bootstrap_value.get("schema_version")
-            == "dskit.roster-bootstrap-authorization/v1"
-            and authorization.get("event_schema") == v1_event_schema
-            and bootstrap_value.get("event_schema") == v1_event_schema,
-            "raw publisher is v1-only",
-        )
+            authorization = _hs_parse_canonical(authorization_bytes)
+            bootstrap_value = _hs_parse_canonical(bootstrap)
+            v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+                "dskit.dataset-capture-authorization/v1"
+            ]
+            _hs_refuse(
+                authorization.get("schema_version")
+                == "dskit.dataset-capture-authorization/v1"
+                and bootstrap_value.get("schema_version")
+                == "dskit.roster-bootstrap-authorization/v1"
+                and authorization.get("event_schema") == v1_event_schema
+                and bootstrap_value.get("event_schema") == v1_event_schema,
+                "raw publisher is v1-only",
+            )
         object.__setattr__(proof, "_used", True)
         signed = (authorization_bytes, g1, g2, attestation)
         roster = (bootstrap, bg1, bg2, roster_basis, roster_receipt)
