@@ -8979,6 +8979,14 @@ def _build_synthetic_v2_raw_publication():
             "_closed", "_retained", "__weakref__",
         )
     )
+    publisher_comparison_descriptors = tuple(
+        (
+            name,
+            name in publisher_type.__dict__,
+            publisher_type.__dict__.get(name),
+        )
+        for name in ("__hash__", "__eq__")
+    )
     fixture_authority_descriptors = tuple(
         (name, fixture_type.__dict__[name])
         for name in (
@@ -9014,9 +9022,12 @@ def _build_synthetic_v2_raw_publication():
         seal = binding_seals.get(id(record))
         return (
             type(seal) is tuple
-            and len(seal) == 2
+            and len(seal) == 4
             and seal[0] is record
             and seal[1] is environment_identity
+            and record[1] is environment_identity
+            and seal[2] is record[0]
+            and seal[3] is record[2]
         )
 
     def has_exact_writer_helpers():
@@ -9026,6 +9037,12 @@ def _build_synthetic_v2_raw_publication():
         return True
 
     def has_exact_authority_descriptors():
+        for name, present, descriptor in publisher_comparison_descriptors:
+            if (
+                (name in publisher_type.__dict__) is not present
+                or publisher_type.__dict__.get(name) is not descriptor
+            ):
+                return False
         for owner, descriptors in (
             (publisher_type, publisher_authority_descriptors),
             (fixture_type, fixture_authority_descriptors),
@@ -9060,7 +9077,25 @@ def _build_synthetic_v2_raw_publication():
             writer_invoked_identities.add(id(record))
             return raw_writer(self, proof, signed, roster)
         except BaseException:
+            seal = binding_seals.get(id(record))
+            sealed_environment = (
+                seal[1]
+                if type(seal) is tuple
+                and len(seal) == 4
+                and seal[0] is record
+                else None
+            )
+            sealed_reference = (
+                seal[2]
+                if type(seal) is tuple
+                and len(seal) == 4
+                and seal[0] is record
+                else None
+            )
             record[2] = failed
+            binding_seals[id(record)] = (
+                record, sealed_environment, sealed_reference, failed,
+            )
             raise
 
     def require_dispatch(*, verifying=False):
@@ -9271,13 +9306,15 @@ def _build_synthetic_v2_raw_publication():
             writer_invoked_identities.discard(identity)
             binding_seals.pop(identity, None)
 
-        record[0] = weakref_factory(self, forget_record)
+        publisher_reference = weakref_factory(self, forget_record)
+        record[0] = publisher_reference
         try:
             records[self] = record
             anchors[self] = record
             record_identities.add(record_identity)
             binding_seals[record_identity] = (
-                record, environment_identity,
+                record, environment_identity, publisher_reference,
+                provisional,
             )
         except BaseException:
             records.pop(self, None)
@@ -9310,6 +9347,10 @@ def _build_synthetic_v2_raw_publication():
                 "synthetic v2 raw binding changed",
             )
             record[2] = committed
+            binding_seals[record_identity] = (
+                record, environment_identity, publisher_reference,
+                committed,
+            )
             require_dispatch()
             refuse(
                 records.get(self) is record
@@ -9326,6 +9367,10 @@ def _build_synthetic_v2_raw_publication():
                 or record[2] is failed
             ):
                 record[2] = failed
+                binding_seals[record_identity] = (
+                    record, environment_identity, publisher_reference,
+                    failed,
+                )
             else:
                 records.pop(self, None)
                 anchors.pop(self, None)

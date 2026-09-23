@@ -1153,9 +1153,12 @@ def test_writer_failure_terminalizes_private_binding(tmp_path, monkeypatch):
     failed_record = closure["records"][failed_publisher]
     assert closure["anchors"][failed_publisher] is failed_record
     assert failed_record[2] is closure["failed"]
-    assert closure["binding_seals"][id(failed_record)] == (
-        failed_record, failed_environment,
-    )
+    failed_seal = closure["binding_seals"][id(failed_record)]
+    assert len(failed_seal) == 4
+    assert failed_seal[0] is failed_record
+    assert failed_seal[1] is failed_environment
+    assert failed_seal[2] is failed_record[0]
+    assert failed_seal[3] is closure["failed"]
 
     monkeypatch.setattr(broker_type, "produce", original_produce)
     (
