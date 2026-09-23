@@ -19977,6 +19977,19 @@ nondeployment mapping proxies. Commit before mint. Roll back on every
 exception, including commit failure. Deferred BEGIN, another connection,
 nested transaction, or close/revoke/generation race refuses.
 
+The trust bridge itself is created by a deleted module-initialization builder
+that closure-captures the exact raw/roster proof classes and `verify`
+functions, `_hs_parse_canonical`, `_require_synthetic_tzdata`, and every
+transitive trust dispatch used by those verifies, including raw/roster
+publisher `proof`, `_check_row`, `_manifest`, `_parse_member`,
+`_published_facts`, `_check_signed`, and their class/static verifier
+helpers. The builder records the exact class descriptors too. Prepare and
+consume identity-check this explicit dependency manifest before and after the
+environment gate, each proof verification, derivation, commit/rollback, and
+registry transition; same-thread/no-callback execution makes each checked
+region indivisible. Calls use captured functions, never caller or replaceable
+instance dispatch. Any manifest change refuses.
+
 3. **Metadata-only environment gate before event access.** Before any full
 proof `verify`, event-member iteration, or retained `_events` access,
 perform only exact proof/publisher/retained-original identity checks and parse
@@ -20000,8 +20013,11 @@ event field, rank, policy digest, timezone, or provenance.
 
 5. **Proof-scoped one-shot consumption with live reverify.** The closure owns
 strong process-lifetime `issued` and `spent` mappings
-keyed by exact proof object identities, SHA-256 of every byte in both bundles,
-and the environment-identity state digest. Prepare and consume both serialize
+keyed by closure records containing strong proof/environment object references,
+their `id` values, SHA-256 of every byte in both bundles, and the
+environment-identity state digest. Key lookup compares numeric IDs/digests and
+then requires every object by `is`; it never invokes caller-controlled
+`__hash__` or `__eq__`. Prepare and consume both serialize
 on the pinned bridge lock and creating thread. Shape/type/publisher/environment
 failures before inserting `issued[key] = "reserved"` leave both registries
 unchanged; every failure afterward atomically moves the key to `spent`. A
@@ -20032,17 +20048,28 @@ It is private and absent from every `__all__`; no callback or caller-supplied
 projector/parser exists. Pipeline trust imports no production module;
 production verifier remains the acyclic composition owner.
 
-7. **Effects, failure, and authority freeze.** Every failure is terminal for
-that proof-scoped key and returns no partial events, policy, or envelopes.
+7. **Effects, failure, and authority freeze.** A trust-side failure after
+`issued[key] = "reserved"` is terminal for that proof-scoped key and returns
+no partial events, policy, or envelopes. A production-composition identity
+refusal before calling consume has released nothing and explicitly permits
+retry after the trusted dispatch is restored; refusal after consume remains
+spent. This is the only retry boundary.
 Existing proof bytes/messages, public proof methods, ADR-0171 projector, WORM
 lifecycle, `ReplayRun.run`, and v1 behavior remain unchanged. The bridge is
 explicitly permitted to use only the exact retained publishers' bridge lock,
 pinned SQLite connection, trusted clock, retained WORM/provider members,
 existing proof verification reads, and the exact
 `_published_facts`/`_reload_stream` cache refresh mutations those verifies
-already perform. Cache refresh must byte-equal retained state and may not
-append a receipt/event or advance lifecycle. It performs no acquisition,
-network, new provider lookup, new member write, lifecycle transition,
+already perform. “No new provider lookup” means no bridge-added
+`describe`/`open_member` beyond the exact existing raw/roster verify call
+trace at prepare and consume. Before each transaction, snapshot the reserve
+rows/audit, provider storage/events, publisher retained tuples, outer receipt
+store, lifecycle ledgers/session events, and reloadable receipt caches; after
+commit or rollback, require byte/identity equality for every snapshot except
+the specifically enumerated reload-cache slots, whose refreshed values must
+byte-equal the pre-call retained receipt/member bytes. No list/event/receipt
+count may grow and no lifecycle/reserve state may advance. It performs no acquisition,
+network, bridge-added provider read, new member write, lifecycle transition,
 publication, or external effect.
 
 ### Required Phase-0 matrix
@@ -20060,13 +20087,20 @@ policy/source/count/scope substitution; caller-created event/policy refusal;
 v1/v2 cross-use; reentrant/sequential duplicate prepare and consume; strong
 spent state after GC/remint and post-reservation genuine-object failure;
 pre-reservation failure leaves registries empty; forged/copied/stale bridge; exact
-inert mapping shapes; replacement of consume/projector/parser/encoder/class
+inert mapping shapes; proof `__eq__`/`__hash__` replacement and identity
+alias attempts; replacement at every checkpoint of raw/roster verify,
+proof/parser/environment/publisher/preflight/verifier helpers and class
+descriptors; replacement of consume/projector/parser/encoder/class
 descriptors before/after mint and at every specified mid-call checkpoint;
 projector/parser exception;
 two byte-identical ADR-0171 computations plus canonical reparse/re-encode; no
-partial data on every failure. Permit exact retained reserve/provider reads and
-cache refresh, prove refresh equality/no append, and prove no acquisition,
-network, member-write, or lifecycle effect. Run
+partial data on every failure; pre-consume production refusal retry and
+post-consume spent behavior. Assert exact SQL trace (`BEGIN IMMEDIATE`, no
+nested BEGIN, commit/rollback), wrong-thread zero SQLite/registry access, and
+before/after snapshots of every named mutable container. Permit only the
+existing verify provider-read trace and enumerated cache refresh, prove refresh
+equality/no append, and prove no acquisition, network, bridge-added read,
+member-write, or lifecycle effect. Run
 ADR-0145/0146/0169/0170/0171, trust, capture, and all purity suites unedited.
 
 ### Non-goals
