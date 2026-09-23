@@ -1,0 +1,44 @@
+{
+  "schema_version": "F3V2WirePhase0.v1",
+  "deployment_eligible": false,
+  "adr": {
+    "id": "ADR-0169",
+    "path": "docs/architecture/decision-log.md",
+    "scope": "bounded F3 versioned raw-event wire only; no writer, replay, backtest, or runtime",
+    "initial_proposal_commit": "e3ce685",
+    "gated_proposal_commit": "6d2ef3c",
+    "clarified_proposal_commit": "d510d5c",
+    "final_reviewed_commit": "79ed8f6f662706a798f181cb9d2575bfea040e31",
+    "final_reviewed_blob": "e2976d09fbe94704b73e28bb82e0c05f8573ddc1"
+  },
+  "initial_phase0": {
+    "critical": 0,
+    "major": 1,
+    "minor": 1,
+    "nit": 0,
+    "findings": [
+      "enabling v2 raw preflight would otherwise feed the existing raw publisher and downstream v1-only graph",
+      "every authorization reference must pin the exact parsed schema while preserving existing v1 envelopes and key identities"
+    ],
+    "disposition": "proposal amended; prior text was not eligible for approval"
+  },
+  "amendments": [
+    "v2 roster bootstrap is the sole newly reachable publication",
+    "v2 raw preflight may verify and read the fixed fixture, but raw publisher, root-PIS, and dynamic P4 graph remain v1-only",
+    "all authorization references record exact parsed v1/v2 schemas without changing existing v1 envelopes or key identities",
+    "downstream refusal tests distinguish normal graph unreachability from a substituted retained-issuer-state probe",
+    "no downstream reserve effect means no additional spend after the raw preflight reserve"
+  ],
+  "final_independent_review": {
+    "reviewed_commit": "79ed8f6f662706a798f181cb9d2575bfea040e31",
+    "reviewed_blob": "e2976d09fbe94704b73e28bb82e0c05f8573ddc1",
+    "critical": 0,
+    "major": 0,
+    "minor": 0,
+    "nit": 0,
+    "result": "GO for explicit owner approval, then RED"
+  },
+  "owner_approval": null,
+  "implementation_status": "blocked pending explicit owner approval of the exact reviewed commit and blob",
+  "non_authority": "This evidence does not authorize RED, implementation, capture, market data, replay, backtest, HPO, refit, release, paper trading, or live trading."
+}
