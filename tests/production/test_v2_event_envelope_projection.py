@@ -22,6 +22,14 @@ _RAW_SCHEMA = "dskit.raw-event/v2"
 _POLICY_SCHEMA = "dskit.source-rank-policy/v1"
 
 
+class _IntSubclass(int):
+    pass
+
+
+class _StrSubclass(str):
+    pass
+
+
 def _event(**changes):
     value = {
         "schema_version": _RAW_SCHEMA,
@@ -182,21 +190,33 @@ def test_projection_refuses_every_missing_raw_field_and_unknown_fields():
     [
         {"schema_version": "dskit.raw-event/v1"},
         {"source_id": ""},
+        {"source_id": _StrSubclass("alpha")},
+        {"source_id": 1},
         {"event_id": ""},
+        {"event_id": _StrSubclass("event-0")},
+        {"event_id": 1},
         {"source_sequence": True},
+        {"source_sequence": _IntSubclass(0)},
         {"source_sequence": -1},
         {"availability_ms": True},
+        {"availability_ms": _IntSubclass(1_000)},
         {"availability_ms": -1},
         {"payload_sha256": "A" * 64},
         {"payload_sha256": "not-a-digest"},
         {"exchange_ms": True},
+        {"exchange_ms": _IntSubclass(900)},
         {"exchange_ms": -1},
+        {"receive_ms": True},
         {"receive_ms": -1},
         {"exchange_ms": 951, "receive_ms": 950},
         {"source_provenance_tag": ""},
+        {"source_provenance_tag": _StrSubclass("synthetic:fixture-a")},
         {"source_timezone_tag": ""},
+        {"source_timezone_tag": _StrSubclass("America/New_York")},
         {"correction_position": True},
+        {"correction_position": _IntSubclass(0)},
         {"correction_position": -1},
+        {"corrects_event_id": 1},
         {"corrects_event_id": "event-x"},
         {"correction_position": 1, "corrects_event_id": None},
         {"correction_position": 1, "corrects_event_id": "event-0"},
@@ -247,6 +267,21 @@ def test_projection_refuses_malformed_forged_reordered_and_gapped_policy(policy)
         _project((_event(),), policy)
 
 
+def test_projection_refuses_every_missing_policy_field_and_wrong_schema():
+    good = _policy()
+    for field in ("schema_version", "sources", "policy_sha256"):
+        malformed = dict(good)
+        malformed.pop(field)
+        with pytest.raises(bundles.ProductionError):
+            _project((_event(),), MappingProxyType(malformed))
+    for change in (
+        {"schema_version": "dskit.source-rank-policy/v0"},
+        {"policy_sha256": "A" * 64},
+    ):
+        with pytest.raises(bundles.ProductionError):
+            _project((_event(),), MappingProxyType({**dict(good), **change}))
+
+
 def test_projection_refuses_policy_container_entry_and_field_shape_defects():
     good = _policy()
     with pytest.raises(bundles.ProductionError):
@@ -257,7 +292,9 @@ def test_projection_refuses_policy_container_entry_and_field_shape_defects():
         MappingProxyType({"source_id": "alpha"}),
         MappingProxyType({"source_id": "alpha", "rank": 0, "extra": 1}),
         MappingProxyType({"source_id": "", "rank": 0}),
+        MappingProxyType({"source_id": _StrSubclass("alpha"), "rank": 0}),
         MappingProxyType({"source_id": "alpha", "rank": True}),
+        MappingProxyType({"source_id": "alpha", "rank": _IntSubclass(0)}),
     ):
         value = MappingProxyType({
             "schema_version": _POLICY_SCHEMA,
@@ -308,3 +345,30 @@ def test_projection_ast_and_runtime_are_pure(monkeypatch):
     monkeypatch.setattr(random, "random", refused)
     monkeypatch.setattr(Path, "read_bytes", refused)
     assert len(_project((_event(),))) == 1
+
+
+def test_projection_calls_existing_validator_encoder_and_parser(monkeypatch):
+    calls = {"check": 0, "encode": 0, "parse": 0}
+    original_check = bundles._check_event_envelope
+    original_encode = bundles._canonical_bytes
+    original_parse = bundles._parse_event_envelope
+
+    def check(value):
+        calls["check"] += 1
+        return original_check(value)
+
+    def encode(value):
+        calls["encode"] += 1
+        return original_encode(value)
+
+    def parse(raw):
+        calls["parse"] += 1
+        return original_parse(raw)
+
+    monkeypatch.setattr(bundles, "_check_event_envelope", check)
+    monkeypatch.setattr(bundles, "_canonical_bytes", encode)
+    monkeypatch.setattr(bundles, "_parse_event_envelope", parse)
+    assert len(_project((_event(),))) == 1
+    assert calls["check"] >= 1
+    assert calls["encode"] >= 2
+    assert calls["parse"] == 2

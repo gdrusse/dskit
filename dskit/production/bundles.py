@@ -518,6 +518,261 @@ def _event_envelope_order_key(envelope):
     )
 
 
+def _project_v2_event_envelopes(events, source_rank_policy, /):
+    """Purely project closed raw-event/v2 values into canonical envelopes.
+
+    This private transform recognizes no authority.  Its caller must already
+    have verified the raw fixture, authorization scope, and synthetic
+    environment identity.  The deliberately narrow inputs leave every
+    envelope field either event-derived or policy-derived (ADR-0171).
+    """
+    problems = []
+    raw_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
+        "dskit.dataset-capture-authorization/v2"
+    ]
+    raw_fields = RAW_EVENT_FIELDS[raw_schema]
+    policy_schema = "dskit.source-rank-policy/v1"
+    policy_fields = {"schema_version", "sources", "policy_sha256"}
+    source_fields = {"source_id", "rank"}
+
+    if type(events) is not tuple:
+        problems.append("events must be an exact tuple")
+        event_values = ()
+    elif not events:
+        problems.append("events must be nonempty")
+        event_values = ()
+    else:
+        event_values = events
+
+    ranks = {}
+    policy_digest = None
+    if type(source_rank_policy) is not MappingProxyType:
+        problems.append("source_rank_policy must be an exact mappingproxy")
+        sources = ()
+    else:
+        unknown = set(source_rank_policy) - policy_fields
+        missing = policy_fields - set(source_rank_policy)
+        for name in sorted(unknown):
+            problems.append(f"source_rank_policy has unknown field {name!r}")
+        for name in sorted(missing):
+            problems.append(f"source_rank_policy is missing field {name!r}")
+        if source_rank_policy.get("schema_version") != policy_schema:
+            problems.append(f"source_rank_policy.schema_version must be {policy_schema!r}")
+        sources = source_rank_policy.get("sources")
+        if type(sources) is not tuple:
+            problems.append("source_rank_policy.sources must be an exact tuple")
+            sources = ()
+        elif not sources:
+            problems.append("source_rank_policy.sources must be nonempty")
+        policy_digest = source_rank_policy.get("policy_sha256")
+        digest_problems = []
+        check_digest(digest_problems, "policy_sha256", policy_digest)
+        problems.extend(
+            f"source_rank_policy.{problem}" for problem in digest_problems
+        )
+
+    source_preimage = []
+    previous_source_id = None
+    for index, item in enumerate(sources):
+        prefix = f"source_rank_policy.sources[{index}]"
+        if type(item) is not MappingProxyType:
+            problems.append(f"{prefix} must be an exact mappingproxy")
+            continue
+        unknown = set(item) - source_fields
+        missing = source_fields - set(item)
+        for name in sorted(unknown):
+            problems.append(f"{prefix} has unknown field {name!r}")
+        for name in sorted(missing):
+            problems.append(f"{prefix} is missing field {name!r}")
+        source_id = item.get("source_id")
+        rank = item.get("rank")
+        source_ok = type(source_id) is str and bool(source_id)
+        rank_ok = type(rank) is int and rank >= 0
+        if not source_ok:
+            problems.append(f"{prefix}.source_id must be an exact nonempty str")
+        if not rank_ok:
+            problems.append(f"{prefix}.rank must be an exact non-negative int")
+        elif rank != index:
+            problems.append(f"{prefix}.rank must equal its tuple position {index}")
+        if source_ok:
+            if previous_source_id is not None and source_id <= previous_source_id:
+                problems.append(
+                    f"{prefix}.source_id must be strictly sorted and unique"
+                )
+            previous_source_id = source_id
+        if source_ok and rank_ok and not unknown and not missing:
+            source_preimage.append({"source_id": source_id, "rank": rank})
+            if source_id not in ranks:
+                ranks[source_id] = rank
+
+    if (
+        type(source_rank_policy) is MappingProxyType
+        and type(source_rank_policy.get("sources")) is tuple
+        and len(source_preimage) == len(sources)
+        and type(policy_digest) is str
+    ):
+        expected_policy_digest = hashlib.sha256(_canonical_bytes({
+            "schema_version": policy_schema,
+            "sources": source_preimage,
+        })).hexdigest()
+        if policy_digest != expected_policy_digest:
+            problems.append(
+                "source_rank_policy.policy_sha256 does not match canonical policy"
+            )
+
+    projected = []
+    seen_event_ids = set()
+    copied_event_fields = tuple(
+        name for name in raw_fields if name != "schema_version"
+    )
+    for index, event in enumerate(event_values):
+        prefix = f"event[{index}]"
+        if type(event) is not MappingProxyType:
+            problems.append(f"{prefix} must be an exact mappingproxy")
+            continue
+        unknown = set(event) - set(raw_fields)
+        missing = set(raw_fields) - set(event)
+        for name in sorted(unknown):
+            problems.append(f"{prefix} has unknown raw-event field {name!r}")
+        for name in sorted(missing):
+            problems.append(f"{prefix} is missing raw-event field {name!r}")
+        if event.get("schema_version") != raw_schema:
+            problems.append(f"{prefix}.schema_version must be {raw_schema!r}")
+
+        for name in ("source_id", "event_id", "source_provenance_tag",
+                     "source_timezone_tag"):
+            if type(event.get(name)) is not str or not event.get(name):
+                problems.append(f"{prefix}.{name} must be an exact nonempty str")
+        for name in ("source_sequence", "availability_ms", "exchange_ms",
+                     "receive_ms", "correction_position"):
+            value = event.get(name)
+            if type(value) is not int or value < 0:
+                problems.append(f"{prefix}.{name} must be an exact non-negative int")
+
+        exchange_ms = event.get("exchange_ms")
+        receive_ms = event.get("receive_ms")
+        if (
+            type(exchange_ms) is int
+            and type(receive_ms) is int
+            and receive_ms < exchange_ms
+        ):
+            problems.append(f"{prefix}.receive_ms must be >= exchange_ms")
+        digest_problems = []
+        check_digest(digest_problems, "payload_sha256", event.get("payload_sha256"))
+        problems.extend(f"{prefix}.{problem}" for problem in digest_problems)
+
+        event_id = event.get("event_id")
+        if type(event_id) is str and event_id:
+            if event_id in seen_event_ids:
+                problems.append(f"{prefix}.event_id {event_id!r} is a duplicate")
+            seen_event_ids.add(event_id)
+        source_id = event.get("source_id")
+        if type(source_id) is str and source_id and source_id not in ranks:
+            problems.append(f"{prefix}.source_id {source_id!r} is absent from policy")
+
+        correction_position = event.get("correction_position")
+        corrects_event_id = event.get("corrects_event_id")
+        if type(correction_position) is int and correction_position >= 0:
+            if correction_position == 0:
+                if corrects_event_id is not None:
+                    problems.append(
+                        f"{prefix}.corrects_event_id must be null at position zero"
+                    )
+            else:
+                if type(corrects_event_id) is not str or not corrects_event_id:
+                    problems.append(
+                        f"{prefix}.corrects_event_id must be an exact nonempty str"
+                    )
+                elif corrects_event_id == event_id:
+                    problems.append(f"{prefix}.corrects_event_id cannot be self")
+
+        if not unknown and not missing and source_id in ranks:
+            envelope = {
+                "schema_version": CAPTURED_REPLAY_TAPE_ENVELOPE_SCHEMA,
+                **{name: event[name] for name in copied_event_fields},
+                "source_rank": ranks[source_id],
+                "source_rank_policy_sha256": policy_digest,
+            }
+            projected.append(envelope)
+
+    if problems:
+        raise ProductionError(problems)
+
+    projected.sort(key=_event_envelope_order_key)
+    output = []
+    emitted = {}
+    for index, envelope in enumerate(projected):
+        correction_position = envelope["correction_position"]
+        target_id = envelope["corrects_event_id"]
+        if correction_position == 0:
+            envelope["prior_envelope_sha256"] = None
+        else:
+            target = emitted.get(target_id)
+            if target is None:
+                problems.append(
+                    f"envelope[{index}].corrects_event_id {target_id!r} "
+                    "does not identify an earlier envelope"
+                )
+                continue
+            target_position, target_bytes = target
+            if target_position != correction_position - 1:
+                problems.append(
+                    f"envelope[{index}] correction position does not immediately "
+                    "follow its target"
+                )
+                continue
+            envelope["prior_envelope_sha256"] = hashlib.sha256(
+                target_bytes
+            ).hexdigest()
+
+        envelope_problems = _check_event_envelope(envelope)
+        if envelope_problems:
+            problems.extend(
+                f"envelope[{index}]: {problem}" for problem in envelope_problems
+            )
+            continue
+        raw = _canonical_bytes(envelope)
+        try:
+            parsed = _parse_event_envelope(raw)
+        except ProductionError as exc:
+            problems.append(f"envelope[{index}] failed canonical round trip: {exc}")
+            continue
+        output.append(raw)
+        emitted[parsed["event_id"]] = (parsed["correction_position"], raw)
+
+    reparsed = []
+    for index, raw in enumerate(output):
+        try:
+            reparsed.append(_parse_event_envelope(raw))
+        except ProductionError as exc:
+            problems.append(f"output[{index}] failed reparse: {exc}")
+    verified_ids = {}
+    for index, envelope in enumerate(reparsed):
+        event_id = envelope["event_id"]
+        if event_id in verified_ids:
+            problems.append(f"output[{index}] duplicates event_id {event_id!r}")
+        if index and _event_envelope_order_key(reparsed[index - 1]) > (
+            _event_envelope_order_key(envelope)
+        ):
+            problems.append(f"output[{index}] is out of canonical order")
+        if envelope["correction_position"] > 0:
+            target_index = verified_ids.get(envelope["corrects_event_id"])
+            if target_index is None:
+                problems.append(f"output[{index}] correction target is not earlier")
+            else:
+                target = reparsed[target_index]
+                expected = hashlib.sha256(output[target_index]).hexdigest()
+                if target["correction_position"] != envelope["correction_position"] - 1:
+                    problems.append(f"output[{index}] correction position is not contiguous")
+                if envelope["prior_envelope_sha256"] != expected:
+                    problems.append(f"output[{index}] prior envelope digest differs")
+        verified_ids[event_id] = index
+
+    if problems:
+        raise ProductionError(problems)
+    return tuple(output)
+
+
 def verify_causal_order(tape, ordered_envelope_bytes):
     """Verify a resolved envelope-bytes sequence is causally ordered for ``tape``.
 
