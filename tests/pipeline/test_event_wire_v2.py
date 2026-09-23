@@ -418,6 +418,40 @@ def test_adr169_v2_raw_publisher_refuses_before_any_downstream_effect(tmp_path):
     assert proof._used is False
 
 
+def test_adr169_v2_raw_proof_refuses_caller_schema_downgrade_without_effect(
+    tmp_path,
+):
+    publisher, preflight, _source, signed, roster = _v2_case(tmp_path)
+    proof = preflight.verify(*signed, *roster)
+    raw_publisher = trust._SyntheticRawPublisher(preflight)
+    downgraded_signed = list(signed)
+    authorization = json.loads(signed[0])
+    authorization.update(
+        schema_version="dskit.dataset-capture-authorization/v1",
+        event_schema="dskit.raw-event/v1",
+    )
+    del authorization["scope"]["tzdata_version_sha256"]
+    downgraded_signed[0] = f4._json_bytes(authorization)
+    downgraded_roster = list(roster)
+    bootstrap = json.loads(roster[0])
+    bootstrap.update(
+        schema_version="dskit.roster-bootstrap-authorization/v1",
+        event_schema="dskit.raw-event/v1",
+    )
+    del bootstrap["scope"]["tzdata_version_sha256"]
+    downgraded_roster[0] = f4._json_bytes(bootstrap)
+    before = publisher._reserve._connection.total_changes
+    with pytest.raises(ValueError, match="proof authority changed"):
+        raw_publisher.publish(
+            proof, *downgraded_signed, *downgraded_roster,
+        )
+    assert publisher._reserve._connection.total_changes == before
+    assert proof._used is False
+    assert publisher._reserve._connection.execute(
+        "SELECT state FROM reserve_uses WHERE kind='raw-dataset'"
+    ).fetchone() == ("RAW_READ_STARTED",)
+
+
 def test_adr169_root_pis_refuses_v2_inputs_before_reserve_spend(tmp_path, monkeypatch):
     (tmp_path / "v1").mkdir()
     v1_publisher, _v1_roster, _v1_signed, v1_output = cases._adr140_published_raw_case(

@@ -731,9 +731,8 @@ def _check_composed_tape_roster_fixture(value):
 def _check_raw_event_member(value):
     """Accumulate every refusal for one closed ``dskit.raw-event/v1`` six-key object.
 
-    A bounded, ADR-0146-owned restatement of ``trust.py``'s
-    ``_SYNTHETIC_RAW_EVENT_KEYS`` shape (ADR-0132) -- reimplemented, not
-    imported, because ``production/bundles.py`` must not import
+    The v1 schema and field tuple come from the dependency-free shared
+    ``dskit.pipeline.event_wire`` owner. This module still does not import
     ``dskit.pipeline.trust`` (Decision point 10's own layering boundary).
     """
     if not isinstance(value, dict):

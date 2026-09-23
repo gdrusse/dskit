@@ -8376,6 +8376,25 @@ class _SyntheticRawPublisher:
                    and self._preflight._publisher is self._roster_publisher
                    and not proof._used,
                    "unused own raw fixture proof required")
+        intent = _hs_parse_canonical(proof._intent)
+        bound_authorities = (
+            ("dataset_authorization_sha256", authorization_bytes),
+            ("dataset_g1_sha256", g1),
+            ("dataset_g2_sha256", g2),
+            ("fixture_attestation_sha256", attestation),
+            ("bootstrap_authorization_sha256", bootstrap),
+            ("bootstrap_g1_sha256", bg1),
+            ("bootstrap_g2_sha256", bg2),
+            ("roster_basis_sha256", roster_basis),
+            ("roster_receipt_sha256", roster_receipt),
+        )
+        _hs_refuse(
+            all(
+                type(raw) is bytes and intent.get(name) == _digest(raw)
+                for name, raw in bound_authorities
+            ),
+            "raw publisher proof authority changed",
+        )
         authorization = _hs_parse_canonical(authorization_bytes)
         bootstrap_value = _hs_parse_canonical(bootstrap)
         v1_event_schema = DATASET_AUTHORIZATION_EVENT_SCHEMAS[
