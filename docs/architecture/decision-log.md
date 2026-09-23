@@ -20649,8 +20649,8 @@ nothing downstream of it; wiring that tape into `ReplayAdapter`/`EquityReplay`
 
 ## ADR-0175 — a runtime `ReplayTape` over verified v2 event envelopes
 
-**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED (2026-09-23), REVISION
-2. Not yet implemented. Revision 1 received a
+**Status:** IMPLEMENTED AND CLOSED 2026-09-23 at
+`58c33aee0aadbf1393803feda6350f2a1b4621c0`. Revision 1 received a
 NO-GO from an independent Phase-0 design skeptic: 2 Critical (grouping
 `FeedResult`s by `availability_ms` alone allegedly "destroys" correction-chain
 order — `correction_position`/`corrects_event_id`/`prior_envelope_sha256` —
@@ -20667,7 +20667,16 @@ verdict independently reread every cited file (`FeedResult`, the
 `ReplayTape` ABC, `ReplayFeed`'s docstring, `BarTape`, `compose.py`, and the
 decider's `read_entry`/`inputs_digest` path) and confirmed Revision 2's
 rebuttal is architecturally correct: 0 Critical, 0 Major, 0 Minor, 0 Nit,
-GO for RED.
+GO for RED. RED caught one genuine implementation defect: `bundles.py`'s
+own purity gate correctly refused the `FeedResult` import the originally
+proposed placement (`dskit.production.bundles`) needed — relocated to
+`dskit.production.feed`, which already owns `FeedResult`'s import and
+`ReplayFeed`, the tape's sole consumer (see the implementation-correction
+note on Decision point 1). Two fresh, sequential, independent final lenses
+on the corrected candidate were each 0C/0M/0m/0N, including active
+mutation testing on three distinct mutations, all caught; the bounded
+final regression set was 2,134 passed and 1 expected xfail. Evidence:
+`docs/evidence/closeout/0208-intraday-adr0175-review-exit.json`.
 
 **Context.** `bundles.ReplayTape` (the ABC `compose.bundles_for(...,
 tape=tape)` consumes, `dskit.production.bundles`) is what "a replay hands the
