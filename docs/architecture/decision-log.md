@@ -22138,7 +22138,27 @@ trading, no deployment.
 
 ## ADR-0179 — wire `cash_flow_policy` into `DevelopmentReplay`, the pipeline-invokable node
 
-**Status:** PROPOSED — AWAITING PHASE-0 REVIEW. Not yet implemented.
+**Status:** PHASE-0 CLEAN — OWNER-AUTHORIZED FOR RED. An independent
+design skeptic reviewed cold and verified every code citation against
+actual source (the `reject_unknown_params` call, the required-param
+loop, the `fill_policy`/`fill_policy_sha256` block shape, `run()`'s
+exact final line, `ReplayAdapter`'s `cash_flow_policy=None` default,
+`CashFlowPolicy.from_path`/`.digest()`, the shipped document's own
+params, and — critically — that pipeline document identity hashing
+depends only on the document's own declared `params`, never the node
+class's `_PARAMS`/allowed-params tuple, so widening the class's
+allow-list genuinely cannot move any existing document's identity):
+0 Critical, 1 Major, 1 Minor, 1 Nit, NO-GO. Fixed before proceeding: the
+Major (Decision point 1's XOR block skipped the type/non-empty guard the
+mirrored `fill_policy` block has, which would crash with an unhandled
+`TypeError` via `_resolved_cash_flow_policy_path`'s `os.path.isabs`
+rather than refuse cleanly with a `ConfigError` — violates `dskit/
+pipeline/CLAUDE.md`'s own "errors accumulate, never raise on the first"
+invariant), the Minor (added the malformed-type case as its own required
+matrix row, so the fix is exercised by a test, not merely present in
+prose), and the Nit (`CashFlowPolicy` is DEFINED in this file, not
+imported — corrected). A one-clause fix, not a redesign; proceeding
+directly to RED rather than a second fresh Phase-0 round.
 
 **Context.** ADR-0176/0177/0178 built and closed a complete,
 independently-verified cash-flow story (funding, insufficient-cash
@@ -22189,10 +22209,26 @@ silently get the pre-ADR-0176 behavior.
    `"cash_flow_policy" in params` / `"cash_flow_policy_sha256" in
    params` is true (an XOR), refuse — "`cash_flow_policy` and
    `cash_flow_policy_sha256` must both be present or both be absent";
-   when both are present, validate the path exists and the digest
-   matches the loaded `CashFlowPolicy`'s own `.digest()`, via a new
-   `_resolved_cash_flow_policy_path` classmethod mirroring
-   `_resolved_fill_policy_path` field-for-field (join onto `_child_root()`
+   when both are present, FIRST apply the exact same type/non-empty
+   guard the mirrored `fill_policy` block already applies before its own
+   path-exists check (`not isinstance(params["cash_flow_policy"], str)
+   or not params["cash_flow_policy"]` → refuse "cash_flow_policy must be
+   a non-empty path", `return`/`continue` to the next check rather than
+   falling through) — **Phase-0 Major finding, fixed here:** the
+   original Revision 1 text skipped straight to the path-exists check,
+   and `_resolved_cash_flow_policy_path` (mirroring
+   `_resolved_fill_policy_path`, which calls `os.path.isabs(path)`)
+   raises an unhandled `TypeError` on a non-string value — `Node.
+   __init__` and `planner.py` call `validate_params` with no
+   try/except, so a document with e.g. `"cash_flow_policy": 5` would
+   crash `plan`/`validate`/`run` with a raw `TypeError` instead of a
+   clean `ConfigError` problem list, violating `dskit/pipeline/
+   CLAUDE.md`'s own stated invariant that errors accumulate and never
+   raise on the first. Only once the type guard passes: validate the
+   path exists and the digest matches the loaded `CashFlowPolicy`'s own
+   `.digest()`, via a new `_resolved_cash_flow_policy_path` classmethod
+   mirroring `_resolved_fill_policy_path` field-for-field (join onto
+   `_child_root()`
    unless already absolute).
 
 2. **`__init__` conditionally builds a `CashFlowPolicy`.** Immediately
@@ -22200,7 +22236,9 @@ silently get the pre-ADR-0176 behavior.
    when `"cash_flow_policy" in self.params`, set `self._cash_flow_policy
    = CashFlowPolicy.from_path(self._resolved_cash_flow_policy_path(
    self.params))`; else `self._cash_flow_policy = None`. `CashFlowPolicy`
-   is already imported in this file (ADR-0176) — no new import.
+   is already DEFINED in this file (ADR-0176, not imported from
+   elsewhere — Phase-0 Nit, corrected) — no new import or definition
+   needed either way.
 
 3. **`run()`'s existing final line gains the second argument, nothing
    else changes.** `return ReplayAdapter(self._policy,
@@ -22235,13 +22273,18 @@ time, not by constructing `ReplayAdapter` directly) — proving the wiring
 itself, not re-proving ADR-0176/0177/0178's own already-closed
 mechanism. Every documented refusal case: `cash_flow_policy` present
 without `cash_flow_policy_sha256` (and the converse) refuses with a
-message naming both; a `cash_flow_policy` path that doesn't exist
-refuses; a `cash_flow_policy_sha256` that doesn't match the loaded
-policy's digest refuses — each mirroring the EXISTING, already-covered
-`fill_policy`/`fill_policy_sha256` refusal tests structurally, proving
-parity between the required and optional pairs' validation rigor. Run
-the full existing child replay suite unedited (65 tests as of ADR-0178's
-close) to prove no regression, plus purity gates.
+message naming both; **`cash_flow_policy` present as a non-string or
+empty value (an int, a list, `""`) refuses with a clean `ConfigError`
+naming `cash_flow_policy`, never a raw `TypeError`** (Phase-0 Major
+finding — this row exists specifically to exercise the fix in Decision
+point 1, so a regression that drops the type guard again fails this
+test, not merely a code-review re-read); a `cash_flow_policy` path that
+doesn't exist refuses; a `cash_flow_policy_sha256` that doesn't match
+the loaded policy's digest refuses — each mirroring the EXISTING,
+already-covered `fill_policy`/`fill_policy_sha256` refusal tests
+structurally, proving parity between the required and optional pairs'
+validation rigor. Run the full existing child replay suite unedited (65
+tests as of ADR-0178's close) to prove no regression, plus purity gates.
 
 ### Non-goals
 
