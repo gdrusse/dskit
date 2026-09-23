@@ -19542,3 +19542,6 @@ Backlog closed (owner request): per-key `LGBM_KEY_TYPES` refuse wrong
 types at plan; a test pins `ALLOWED_LGBM_KEYS` to the installed
 `LGBMRegressor` signature; docstrings tidied. Still disclosed, by design:
 in-sample shape predictions and zero-feature row drops (above).
+Final lens on `e16e465`: 0 Critical/Major (7 of 9 mutants killed). Minor
+backlog: the signature pin checks key names, not per-key types; defaults are
+not tested against `LGBM_KEY_TYPES`; numeric ranges refuse only at fit.

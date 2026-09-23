@@ -1,5 +1,24 @@
 # Re-entry
 
+## Index-options scale rungs + distribution zoo landed (2026-09-23, ADR-0169)
+
+Research A0004 (ML/DL/transformers): a GBM volatility scale ranks first,
+over log-HAR; DL/transformers deprioritized at a 21-day horizon. Built:
+`distribution_models.ScaleModelLocationScale` (fits log forward vol,
+standardizes the shape by the PREDICTED scale) + `LinearScaleLocationScale`
+(log-HAR, stdlib ridge); `libs/lightgbm.LightGBMScaleLocationScale`
+(text booster in JSON state, allowlisted typed params, forced determinism);
+numpy `ForwardRealizedVol`. Child: `run-synthetic-har/-lightgbm.json` rungs
+(differ only in `model`) and `run-distribution-zoo.json`, driven by the
+existing ADR-0097 benchmark stages (plan -> PENDING approval -> run ->
+compare). Synthetic zoo: all three within ~1% twCRPS (tests wiring, not
+models). Reviews: 1 Major (lgbm_params default-deny) fixed; final lenses 0
+Critical/Major. Backlog in ADR-0169: in-sample shape (boosters
+under-disperse; cross-fit), zero-feature rows lose forecasts, type-pin gaps.
+
+Next bounded action: real data (the paused free-data probe below), or
+cross-fitting the scale rungs before trusting LightGBM's shape.
+
 ## Index-options distribution harness landed (2026-09-23, ADR-0168)
 
 Owner locked Path A0001 (model the physical terminal distribution in
