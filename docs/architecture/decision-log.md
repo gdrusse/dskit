@@ -19646,8 +19646,13 @@ v2 while still accepting its current v1 fixture. Cover every authorization
 reference site with exact v1/v2 schema assertions. Prove v2 roster publication
 is the sole new publication, then drive a genuine v2 raw proof into each raw
 publisher/root-PIS/dynamic-graph entry and assert refusal before producer
-session, member/write/provider side effect, receipt, root, graph, or reserve
-effect. An AST/token scan must prove
+session, member/write/provider side effect, receipt, or root effect. Prove no
+v2 dynamic graph can be constructed: first by the root-PIS refusal that makes
+the normal path unreachable, then by a substituted retained-issuer-state
+probe that refuses independently. "No reserve effect" at these downstream
+entries means no additional root-PIS/dynamic-authority spend; constructing the
+genuine v2 preflight proof has already consumed its own raw one-use authority
+by design. An AST/token scan must prove
 the raw schema literals and field tuples have one owner. Focused tests may use
 only fixed synthetic bytes and the existing reserve/provider spies.
 
