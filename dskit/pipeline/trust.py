@@ -23,7 +23,7 @@ from abc import ABC, abstractmethod
 from functools import wraps
 from threading import RLock
 from types import MappingProxyType
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, ref as weakref_ref
 
 from dskit.pipeline.node import Node, reject_unknown_params
 
@@ -2671,8 +2671,12 @@ def _p4_checked_port_set_dispatch(authority, record, session):
         _hs_refuse(audit["batch_sha256"] == _digest(_hs_canonical_bytes(
             {key: value for key, value in audit.items() if key != "batch_sha256"})),
             "P4 committed batch integrity refused")
-        retained = _P4_CAPTURE_HANDLES.get(record)
+        retained_state = _P4_CAPTURE_HANDLES.get(record)
+        _hs_refuse(type(retained_state) is tuple and len(retained_state) == 3,
+                   "exact committed replay tape pair required")
+        retained, minted, used = retained_state
         _hs_refuse(type(retained) is tuple and len(retained) == 2
+                   and minted is None and used == frozenset()
                    and len(request["captures"]) == len(audit["streams"]) == 2
                    and len(audit["ports"]) == len(audit["receipts"]) == 2
                    and audit["replay"] is not None,
@@ -2733,13 +2737,9 @@ def _p4_checked_port_set_dispatch(authority, record, session):
         _hs_refuse(set(by_name) == {"tape_manifest", "tape_data"}
                    and len(document_digests) == 1,
                    "exact committed replay tape pair required")
-        _hs_refuse(record not in _P4_PORT_SET_MINTED,
-                   "captured port set already minted")
         view = object.__new__(CapturedPortSet)
-        _P4_PORT_SET_MINTED[record] = True
-        _P4_PORT_SET_VIEWS[view] = (
-            authority, ledger, record, session, MappingProxyType(by_name), set(),
-        )
+        _P4_CAPTURE_HANDLES[record] = (retained, weakref_ref(view), frozenset())
+        _P4_PORT_SET_VIEWS[view] = (authority, ledger, record, session)
         return view
 
 
@@ -5115,20 +5115,37 @@ class CapturedPortSet(_Opaque):
         state = _P4_PORT_SET_VIEWS.get(self)
         if state is None:
             raise ValueError("issued captured port set required")
-        authority, ledger, record, session, by_name, used = state
+        authority, ledger, record, session = state
         with ledger._lock:
             ledger._check()
             _P4_ISSUED_CHECK(authority)
-            _hs_refuse(_P4_RECORDS.get(record) is ledger
-                       and not session._ended and name in by_name,
+            retained_state = _P4_CAPTURE_HANDLES.get(record)
+            _hs_refuse(type(retained_state) is tuple and len(retained_state) == 3,
                        "required captured port refused")
+            retained, minted, used = retained_state
+            _hs_refuse(_P4_RECORDS.get(record) is ledger and not session._ended
+                       and type(minted) is weakref_ref and minted() is self
+                       and type(used) is frozenset,
+                       "required captured port refused")
+            audit = ledger._audit(record)
+            by_name = {
+                port["consumer_input"]: (
+                    published, port["consumer_document_sha256"],
+                    audit["streams"][index],
+                )
+                for index, (published, _frozen, port) in enumerate(retained)
+            }
+            _hs_refuse(set(by_name) == {"tape_manifest", "tape_data"}
+                       and name in by_name, "required captured port refused")
             _hs_refuse(name not in used, "captured port already required")
             published, document_sha256, stream = by_name[name]
             ledger._p4_record_capture(record, stream, document_sha256)
             reader = object.__new__(_CapturedPortReader)
-            _P4_PORT_READERS[reader] = (self, record, session, published,
-                                        document_sha256, stream)
-            used.add(name)
+            _P4_PORT_READERS[reader] = (weakref_ref(reader), self, record, session,
+                                        published, document_sha256, stream)
+            _P4_CAPTURE_HANDLES[record] = (
+                retained, minted, used | frozenset((name,)),
+            )
             return reader
 
     def __new__(cls, *args, **kwargs):
@@ -5151,7 +5168,9 @@ class _CapturedPortReader(_Opaque):
         state = _P4_PORT_READERS.get(self)
         if state is None:
             raise ValueError("issued captured port reader required")
-        _view, record, _session, _published, document_sha256, stream = state
+        issued, _view, record, _session, _published, document_sha256, stream = state
+        if issued() is not self:
+            raise ValueError("issued captured port reader required")
         return record.lifecycle_captured_receipt_sha256(stream, document_sha256)
 
     def read_member_bytes(self, relative_path):
@@ -5159,7 +5178,9 @@ class _CapturedPortReader(_Opaque):
         state = _P4_PORT_READERS.get(self)
         if state is None:
             raise ValueError("issued captured port reader required")
-        _view, record, session, published, document_sha256, _stream = state
+        issued, _view, record, session, published, document_sha256, _stream = state
+        if issued() is not self:
+            raise ValueError("issued captured port reader required")
         return record.read_member_bytes(session, published, document_sha256,
                                         relative_path)
 
@@ -5176,20 +5197,17 @@ _P4_LEDGER_PINS = WeakKeyDictionary()
 _P4_RECORDS = WeakKeyDictionary()
 _P4_PREPARED = WeakKeyDictionary()
 _P4_CAPTURE_HANDLES = WeakKeyDictionary()
-_P4_PORT_SET_MINTED = WeakKeyDictionary()
 _P4_PORT_SET_VIEWS = WeakKeyDictionary()
 _P4_PORT_READERS = WeakKeyDictionary()
 _P4_PORT_SET_STATE = (
-    _P4_CAPTURE_HANDLES, _P4_PORT_SET_MINTED, _P4_PORT_SET_VIEWS,
-    _P4_PORT_READERS,
+    _P4_CAPTURE_HANDLES, _P4_PORT_SET_VIEWS, _P4_PORT_READERS,
 )
 
 
 def _p4_port_set_state_integrity():
-    """Hold the four private weak state domains by exact identity."""
+    """Hold the three private weak state domains by exact identity."""
     current = (
-        _P4_CAPTURE_HANDLES, _P4_PORT_SET_MINTED, _P4_PORT_SET_VIEWS,
-        _P4_PORT_READERS,
+        _P4_CAPTURE_HANDLES, _P4_PORT_SET_VIEWS, _P4_PORT_READERS,
     )
     if not all(value is pinned for value, pinned in zip(current, _P4_PORT_SET_STATE, strict=True)):
         raise TypeError("P4 port-set state integrity refused")
@@ -5758,10 +5776,9 @@ class _LifecycleAuthorizationLedger(_Opaque):
                 # session-start are inseparable fields in this immutable root.
                 self._root, self._pin = root, pin
                 _P4_LEDGER_PINS[self] = pin
-                _P4_CAPTURE_HANDLES[record] = tuple(
-                    (published, frozen, MappingProxyType(dict(port)))
-                    for published, frozen, port in captures
-                )
+                retained = tuple((published, frozen, MappingProxyType(dict(port)))
+                                 for published, frozen, port in captures)
+                _P4_CAPTURE_HANDLES[record] = (retained, None, frozenset())
                 self._fault("commit-after")
                 self._fault("return")
                 return record, session

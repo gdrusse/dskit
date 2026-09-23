@@ -1058,6 +1058,87 @@ def test_p4_port_set_factory_is_singleton_under_concurrency():
     assert len([result for result in results if result is not None]) == 1
 
 
+def test_p4_port_set_refuses_cross_authority_record_and_exact_foreign_session():
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    foreign_broker = _factory()()
+    _other_graph, _other_broker, _other_captures, _other_runtime, _other_before, other_record, other_session = _issue_complete()
+    foreign_record = object.__new__(trust.CapturedAuthorizationRecord)
+    for authority, candidate_record, candidate_session in (
+        (foreign_broker, record, session),
+        (broker, other_record, session),
+        (broker, record, other_session),
+        (broker, foreign_record, session),
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            authority.captured_port_set(candidate_record, candidate_session)
+
+
+@pytest.mark.parametrize("order", [
+    ("tape_manifest", "tape_data"),
+    ("tape_data", "tape_manifest"),
+])
+def test_p4_port_set_require_supports_only_either_exact_order(order):
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    view = broker.captured_port_set(record, session)
+    readers = [view.require(name) for name in order]
+    assert all(reader.lifecycle_captured_receipt_sha256 for reader in readers)
+    for name in order:
+        with pytest.raises((TypeError, ValueError)):
+            view.require(name)
+
+
+def test_p4_port_set_require_is_single_winner_under_concurrency():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    view = broker.captured_port_set(record, session)
+    barrier = Barrier(4)
+
+    def contender(_index):
+        barrier.wait(timeout=5)
+        try:
+            return view.require("tape_manifest")
+        except (TypeError, ValueError):
+            return None
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(contender, range(4)))
+    assert len([result for result in results if result is not None]) == 1
+    assert view.require("tape_data").lifecycle_captured_receipt_sha256
+
+
+def test_p4_port_set_refuses_fabricated_view_and_reader_registry_aliases():
+    _graph, broker, _captures, _runtime, _before, record, session = _issue_tape_pair()
+    view = broker.captured_port_set(record, session)
+    fabricated_view = object.__new__(trust.CapturedPortSet)
+    trust._P4_PORT_SET_VIEWS[fabricated_view] = trust._P4_PORT_SET_VIEWS[view]
+    with pytest.raises((TypeError, ValueError)):
+        fabricated_view.require("tape_manifest")
+    reader = view.require("tape_manifest")
+    fabricated_reader = object.__new__(type(reader))
+    trust._P4_PORT_READERS[fabricated_reader] = trust._P4_PORT_READERS[reader]
+    with pytest.raises((TypeError, ValueError)):
+        _ = fabricated_reader.lifecycle_captured_receipt_sha256
+    with pytest.raises((TypeError, ValueError)):
+        fabricated_reader.read_member_bytes("config.json")
+
+
+def test_p4_port_set_factory_and_require_do_not_call_provider_or_spend_read_budget(monkeypatch):
+    _graph, broker, captures, _runtime, before, record, session = _issue_tape_pair()
+    reads_before = dict(broker._p4_ledger._p4_reads)
+
+    def forbidden_provider_call(*_args, **_kwargs):
+        raise AssertionError("port-set factory/require must not call provider")
+
+    monkeypatch.setattr(type(broker._provider), "open_member", forbidden_provider_call)
+    view = broker.captured_port_set(record, session)
+    reader = view.require("tape_manifest")
+    assert reader.lifecycle_captured_receipt_sha256
+    assert broker._p4_ledger._p4_reads == reads_before
+    _assert_graph_no_effect(broker, captures, before)
+
+
 @pytest.mark.parametrize("replay", [False, True])
 @pytest.mark.parametrize("count", [1, 2])
 def test_p4_complete_atomic_record_has_exact_signed_batch_and_one_session(replay, count):
