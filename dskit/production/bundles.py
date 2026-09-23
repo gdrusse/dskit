@@ -546,21 +546,32 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
 
     ranks = {}
     policy_digest = None
+    policy_shape_ok = False
     if type(source_rank_policy) is not MappingProxyType:
         problems.append("source_rank_policy must be an exact mappingproxy")
         sources = ()
     else:
-        unknown = set(source_rank_policy) - policy_fields
-        missing = policy_fields - set(source_rank_policy)
-        for name in sorted(name for name in unknown if type(name) is str):
+        policy_keys = tuple(source_rank_policy)
+        exact_policy_keys = {
+            name for name in policy_keys if type(name) is str
+        }
+        non_string_policy_keys = tuple(
+            name for name in policy_keys if type(name) is not str
+        )
+        unknown = exact_policy_keys - policy_fields
+        missing = policy_fields - exact_policy_keys
+        for name in sorted(unknown):
             problems.append(f"source_rank_policy has unknown field {name!r}")
         for name_type in sorted(
-            type(name).__name__ for name in unknown if type(name) is not str
+            type(name).__name__ for name in non_string_policy_keys
         ):
             problems.append(
                 "source_rank_policy has a non-string field name of type "
                 f"{name_type}"
             )
+        policy_shape_ok = (
+            not unknown and not missing and not non_string_policy_keys
+        )
         for name in sorted(missing):
             problems.append(f"source_rank_policy is missing field {name!r}")
         policy_version = source_rank_policy.get("schema_version")
@@ -591,16 +602,22 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         if type(item) is not MappingProxyType:
             problems.append(f"{prefix} must be an exact mappingproxy")
             continue
-        unknown = set(item) - source_fields
-        missing = source_fields - set(item)
-        for name in sorted(name for name in unknown if type(name) is str):
+        item_keys = tuple(item)
+        exact_item_keys = {name for name in item_keys if type(name) is str}
+        non_string_item_keys = tuple(
+            name for name in item_keys if type(name) is not str
+        )
+        unknown = exact_item_keys - source_fields
+        missing = source_fields - exact_item_keys
+        for name in sorted(unknown):
             problems.append(f"{prefix} has unknown field {name!r}")
         for name_type in sorted(
-            type(name).__name__ for name in unknown if type(name) is not str
+            type(name).__name__ for name in non_string_item_keys
         ):
             problems.append(
                 f"{prefix} has a non-string field name of type {name_type}"
             )
+        item_shape_ok = not unknown and not missing and not non_string_item_keys
         for name in sorted(missing):
             problems.append(f"{prefix} is missing field {name!r}")
         source_id = item.get("source_id")
@@ -619,14 +636,15 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
                     f"{prefix}.source_id must be strictly sorted and unique"
                 )
             previous_source_id = source_id
-        if source_ok and rank_ok and not unknown and not missing:
+        if source_ok and rank_ok and item_shape_ok:
             source_preimage.append({"source_id": source_id, "rank": rank})
             if source_id not in ranks:
                 ranks[source_id] = rank
 
     if (
-        type(source_rank_policy) is MappingProxyType
-        and type(source_rank_policy.get("sources")) is tuple
+            type(source_rank_policy) is MappingProxyType
+            and policy_shape_ok
+            and type(source_rank_policy.get("sources")) is tuple
         and len(source_preimage) == len(sources)
         and type(policy_digest) is str
     ):
@@ -649,17 +667,23 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
         if type(event) is not MappingProxyType:
             problems.append(f"{prefix} must be an exact mappingproxy")
             continue
-        unknown = set(event) - set(raw_fields)
-        missing = set(raw_fields) - set(event)
-        for name in sorted(name for name in unknown if type(name) is str):
+        event_keys = tuple(event)
+        exact_event_keys = {name for name in event_keys if type(name) is str}
+        non_string_event_keys = tuple(
+            name for name in event_keys if type(name) is not str
+        )
+        unknown = exact_event_keys - set(raw_fields)
+        missing = set(raw_fields) - exact_event_keys
+        for name in sorted(unknown):
             problems.append(f"{prefix} has unknown raw-event field {name!r}")
         for name_type in sorted(
-            type(name).__name__ for name in unknown if type(name) is not str
+            type(name).__name__ for name in non_string_event_keys
         ):
             problems.append(
                 f"{prefix} has a non-string raw-event field name of type "
                 f"{name_type}"
             )
+        event_shape_ok = not unknown and not missing and not non_string_event_keys
         for name in sorted(missing):
             problems.append(f"{prefix} is missing raw-event field {name!r}")
         event_schema = event.get("schema_version")
@@ -718,8 +742,7 @@ def _project_v2_event_envelopes(events, source_rank_policy, /):
                     problems.append(f"{prefix}.corrects_event_id cannot be self")
 
         if (
-            not unknown
-            and not missing
+            event_shape_ok
             and type(source_id) is str
             and source_id in ranks
         ):

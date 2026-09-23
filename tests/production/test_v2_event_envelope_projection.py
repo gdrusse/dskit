@@ -30,6 +30,14 @@ class _StrSubclass(str):
     pass
 
 
+class _EqualSourceIdKey:
+    def __hash__(self):
+        return hash("source_id")
+
+    def __eq__(self, other):
+        return other == "source_id"
+
+
 def _event(**changes):
     value = {
         "schema_version": _RAW_SCHEMA,
@@ -306,6 +314,39 @@ def test_projection_accumulates_heterogeneous_unknown_keys_as_production_error()
     })
     with pytest.raises(bundles.ProductionError):
         _project((_event(),), malformed)
+
+
+def test_projection_refuses_keys_that_masquerade_as_exact_schema_fields():
+    for false_key in (_StrSubclass("source_id"), _EqualSourceIdKey()):
+        event = MappingProxyType({
+            (false_key if key == "source_id" else key): value
+            for key, value in dict(_event()).items()
+        })
+        with pytest.raises(bundles.ProductionError):
+            _project((event,))
+
+    policy = _policy()
+    false_policy = MappingProxyType({
+        (_StrSubclass("schema_version") if key == "schema_version" else key): value
+        for key, value in dict(policy).items()
+    })
+    with pytest.raises(bundles.ProductionError):
+        _project((_event(),), false_policy)
+
+    row = MappingProxyType({
+        _StrSubclass("source_id"): "alpha",
+        "rank": 0,
+    })
+    false_row_policy = MappingProxyType({
+        "schema_version": _POLICY_SCHEMA,
+        "sources": (row,),
+        "policy_sha256": hashlib.sha256(bundles._canonical_bytes({
+            "schema_version": _POLICY_SCHEMA,
+            "sources": [{"source_id": "alpha", "rank": 0}],
+        })).hexdigest(),
+    })
+    with pytest.raises(bundles.ProductionError):
+        _project((_event(),), false_row_policy)
 
 
 def test_projection_refuses_policy_container_entry_and_field_shape_defects():
