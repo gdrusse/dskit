@@ -8419,7 +8419,7 @@ class _SyntheticRawPublisher:
             def has_schema(raw, schema):
                 try:
                     value = _hs_parse_canonical(raw)
-                except (TypeError, ValueError):
+                except Exception:
                     return False
                 return type(value) is dict and value.get("schema_version") == schema
 

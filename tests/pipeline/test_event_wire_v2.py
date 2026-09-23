@@ -457,6 +457,7 @@ def test_adr169_v2_raw_proof_refuses_caller_schema_downgrade_without_effect(
     [
         ("authorization", None),
         ("authorization", b"[]"),
+        ("authorization", b"[" * 2000 + b"]" * 2000),
         ("g1", None),
         ("bootstrap", None),
         ("bootstrap", b"[]"),
@@ -484,7 +485,12 @@ def test_adr169_v1_raw_publication_substitution_semantics_stay_frozen(
             changed_roster[0] + b" " if replacement is None else replacement
         )
     before = publisher._reserve._connection.total_changes
-    expected = ValueError if replacement is None else (TypeError, ValueError)
+    if replacement is None:
+        expected = ValueError
+    elif len(replacement) > 1000:
+        expected = RecursionError
+    else:
+        expected = (TypeError, ValueError)
     with pytest.raises(expected):
         raw_publisher.publish(proof, *changed, *changed_roster)
     assert publisher._reserve._connection.total_changes > before
