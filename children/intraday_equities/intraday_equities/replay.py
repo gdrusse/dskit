@@ -875,6 +875,7 @@ class EquityReplay:
         due = self._cash_flow_composer.due(start, end_exclusive)
         if due:
             self._cash_flow_ledger.append_many(due)
+            self._cash_balance += sum(Decimal(record["body"]["amount"]) for record in due)
         self._cash_flow_window_ms = window_end_ms
 
     def read_entry(self, tick_at_ms):
