@@ -19540,13 +19540,15 @@ remain byte-identical, and public `ReplayRun.run` remains fail-closed.
 
 ## ADR-0169 — bounded F3 versioned raw-event wire
 
-**Status:** AMENDED PROPOSAL — DO NOT IMPLEMENT. The first Phase 0 found one
+**Status:** ACCEPTED FOR SYNTHETIC TDD. Owner approval was recorded on
+2026-09-22 for reviewed commit `79ed8f6` and decision-log blob `e2976d0`.
+The first Phase 0 found one
 Major and one Minor: v2 raw preflight would otherwise flow directly into the
 existing raw publisher/root graph, and exact authorization-schema references
 were not pinned. Decision points 4, 5, and 7 plus the matrix now close those
 gaps. This is the first independently
-reviewable remainder split from stopped ADR-0148. It requires a fresh Phase 0,
-explicit owner approval of the reviewed text, RED-to-GREEN, and two fresh clean
+reviewable remainder split from stopped ADR-0148. It requires a fresh
+post-approval Phase 0, RED-to-GREEN, and two fresh clean
 final lenses. It authorizes deterministic synthetic fixtures only;
 `deployment_eligible` remains `false` and it enables no raw-dataset writer,
 derivation, replay execution, external/real-data read, or backtest.

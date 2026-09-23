@@ -38,7 +38,7 @@
     "nit": 0,
     "result": "GO for explicit owner approval, then RED"
   },
-  "owner_approval": null,
-  "implementation_status": "blocked pending explicit owner approval of the exact reviewed commit and blob",
+  "owner_approval": "2026-09-22 explicit approval to finish and launch the backtest, given in direct response to the ADR-0169 approval gate for commit 79ed8f6 and blob e2976d0",
+  "implementation_status": "owner-approved; blocked pending the required clean fresh post-approval Phase 0",
   "non_authority": "This evidence does not authorize RED, implementation, capture, market data, replay, backtest, HPO, refit, release, paper trading, or live trading."
 }
