@@ -20064,8 +20064,10 @@ rows/audit, provider storage/events, publisher retained tuples, outer receipt
 store, lifecycle ledgers/session events, and reloadable receipt caches. After
 commit or rollback, require equality except the enumerated reload-cache slots
 and the provider audit-event list. Cache values must byte-equal retained bytes;
-provider events must gain exactly the ordered `describe/open_member` suffix
-implied by the existing raw, nested-roster, and supplied-roster verify traces.
+provider events must gain exactly the ordered `open_member` key suffix
+implied by the existing raw, nested-roster, and supplied-roster verify traces;
+separate spies must observe the complete ordered `describe` plus
+`open_member` call trace.
 No receipt or lifecycle/reserve state may advance. It performs no acquisition,
 network, bridge-added provider read, new member write, lifecycle transition,
 publication, or external effect.
@@ -20096,8 +20098,9 @@ partial data on every failure; pre-consume production refusal retry and
 post-consume spent behavior. Assert exact SQL trace (`BEGIN IMMEDIATE`, no
 nested BEGIN, commit/rollback), wrong-thread zero SQLite/registry access, and
 before/after snapshots of every named mutable container. Require the exact
-provider audit-event suffix for the existing verify trace and exact enumerated
-cache refresh, prove no other append, and prove no acquisition, network,
+provider `open_member` audit-event suffix plus separately instrumented full
+`describe`/`open_member` trace for the existing verifies and exact
+enumerated cache refresh, prove no other append, and prove no acquisition, network,
 bridge-added read,
 member-write, or lifecycle effect. Run
 ADR-0145/0146/0169/0170/0171, trust, capture, and all purity suites unedited.
