@@ -188,19 +188,19 @@ def test_backtest_books_hand_checked():
     assert report["kind"] == "vix_proxy_condor_backtest" and report["pricing"] == "vix_proxy"
     assert report["decision_eligible"] is False
     assert [e["date"] for e in report["ledger"]] == ["d0", "d3", "d6"]
-    # model shorts: 1000 e^{-0.05} = 951.2 -> 950, 1000 e^{0.05} = 1051.3 -> 1050; wings 25
-    model = (925, 950, 1050, 1075)
-    # implied: s = 0.2 sqrt(21/252); ln(K/F) = -s^2/2 +- s z_0.1 -> 927.1 / 1075.0; wings 25
-    implied = (900, 925, 1075, 1100)
+    # outward rounding (puts down, calls up). model shorts: 1000 e^{-0.05} = 951.2 -> 950,
+    # 1000 e^{0.05} = 1051.3 -> 1055; wings 25 beyond the unrounded shorts
+    model = (925, 950, 1055, 1080)
+    # implied: s = 0.2 sqrt(21/252); ln(K/F) = -s^2/2 +- s z_0.1 -> 927.1 / 1075.003; wings 25
+    implied = (900, 925, 1080, 1105)
     c_model, c_implied = _credit(model), _credit(implied)
     first = report["ledger"][0]["books"]
     assert first["model"]["strikes"] == list(model) == first["always"]["strikes"]
     assert first["implied"]["strikes"] == list(implied)
     assert first["model"]["credit_usd"] == pytest.approx(c_model)
     assert first["implied"]["credit_usd"] == pytest.approx(c_implied)
-    # expected under DRAWS: 951.2 keeps the put, 1051.3 costs 1.27 x 100 on 2 of 10 draws
-    loss = 100 * (1000 * math.exp(0.05) - 1050) * 2 / 10
-    assert report["ledger"][0]["model_expected_pnl_usd"] == pytest.approx(c_model - loss)
+    # expected under DRAWS: every draw (951.2 .. 1051.3) settles inside 950 / 1055
+    assert report["ledger"][0]["model_expected_pnl_usd"] == pytest.approx(c_model)
     model_pnls = [c_model, c_model - 2500, c_model - 1000]  # S_T = 1000, 900, 940
     implied_pnls = [c_implied, c_implied - 2500, c_implied]  # 940 sits above the 925 short
     assert [e["books"]["model"]["pnl_usd"] for e in report["ledger"]] == \
@@ -268,8 +268,8 @@ def test_wing_z_scales_wings_with_each_book():
     out = CondorBacktest("bt", {**{k: v for k, v in BT.items() if k != "wing_points"},
                                 "wing_z": 0.5}).run(CTX, {"forecasts": [_row(0)]})
     books = out["report"].value["ledger"][0]["books"]
-    # model: 1000 e^{0.05 * (-1.5)} = 927.7 -> 930; 1000 e^{0.075} = 1077.9 -> 1080
-    assert books["model"]["strikes"] == [930, 950, 1050, 1080]
+    # model: 1000 e^{0.05 * (-1.5)} = 927.7 -> 925; 1000 e^{0.075} = 1077.9 -> 1080
+    assert books["model"]["strikes"] == [925, 950, 1055, 1080]
 
 
 def test_no_usable_entry_refuses():

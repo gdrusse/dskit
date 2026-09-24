@@ -552,8 +552,10 @@ class CondorBacktest(Node):
             long_put = forward * math.exp(scale * (z_put - wing))
             long_call = forward * math.exp(scale * (z_call + wing))
         step = self.params["strike_increment"]
-        strikes = tuple(round(k / step) * step
-                        for k in (long_put, short_put, short_call, long_call))
+        # outward, never toward the money: puts down, calls up, so a listed
+        # strike is never riskier than the quantile asked for
+        strikes = (math.floor(long_put / step) * step, math.floor(short_put / step) * step,
+                   math.ceil(short_call / step) * step, math.ceil(long_call / step) * step)
         if not 0 < strikes[0] < strikes[1] < strikes[2] < strikes[3]:
             return None
         return strikes
