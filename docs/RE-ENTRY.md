@@ -1,5 +1,33 @@
 # Re-entry
 
+## Intraday-equities production-equivalent simulation landed (2026-09-24, ADR-0184)
+
+The strategy now runs on real bars the way production would, as one pipeline
+document (`configs/run-development-simulation.json`, `--adapter
+intraday_equities`). The graph is bounded bars -> `concat` ->
+`forecast-publisher` (P16 fold OOS predictions + point-in-time calibrated
+uncertainty -> `ForecastBundle`) -> `mio-decider` -> `development-simulation`
+(`EquityReplay` + per-tick `EquityKellyMIO` per lead group, one release per
+fold, $1,000 + $20/day funding, next-bar-open Schwab fills) -> `simulation-report`
+-> writes. The same work also fixed same-bar exit-before-entry cash ordering
+and added an opt-in runtime-inventory memo in `dskit/production/release.py`.
+Real run, folds 2..19 (2022-09-09..2025-10-16): NAV $18,066.16 on $16,580
+contributed, net +$1,486.16 after $1,463.24 fees, 457 round trips. MSTR
+accounts for 74% of the trades and about 90% of P&L came in 2025. The result
+is developmental post-selection and `deployment_eligible=false`. Outputs are
+preserved in `~/dskit/children/intraday_equities/pipeline_runs/`. Memo:
+`children/intraday_equities/docs/memos/2026-09-24-production-equivalent-simulation-results.md`.
+
+Open owner questions (ADR-0184 "Agent-decided questions"): the first is
+(9), settlement/GFV/PDT not modelled. Also open: the retrain = fold schedule
+choice, cadence and one lead per unit, the calibration window, the
+false-signal and coverage floors, the MIO risk placeholders, split-adjusted
+sizing, and no `stat_test` wire into capital.
+
+Next bounded action: owner rules on (9). Then either model T+1 settlement in
+`EquityReplay` cash, or run the same document on an untouched window after
+2025-10-16.
+
 ## Index-options scale rungs + distribution zoo landed (2026-09-23, ADR-0181)
 
 Research A0004 (ML/DL/transformers): a GBM volatility scale ranks first,
