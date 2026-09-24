@@ -31,7 +31,9 @@ import json
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from functools import cached_property
 
+from dskit.evaluation.diagnostics import ForecastDiagnostics
 from dskit.evaluation.narrative import HOW_TO_READ, Narrative
 from dskit.evaluation.svg import (
     BarChart,
@@ -55,6 +57,7 @@ __all__ = [
     "DecisionLogSection",
     "DistributionSection",
     "EquitySection",
+    "InferenceSection",
     "OverviewSection",
     "PeriodSection",
     "ProvenanceSection",
@@ -154,6 +157,11 @@ class ReportContext:
     def format(self, kind, value):
         """Display ``value`` as ``kind`` (see :func:`display`)."""
         return display(kind, value, self.units)
+
+    @cached_property
+    def diagnostics(self):
+        """The log's :class:`~dskit.evaluation.diagnostics.ForecastDiagnostics`, built once."""
+        return ForecastDiagnostics(self.log)
 
 
 # ---------------------------------------------------------------------------
@@ -1035,6 +1043,126 @@ class DistributionSection(Section):
                                     "pnl": "pnl"}, units=units)
 
 
+class InferenceSection(Section):
+    """What the forecasts turned into: calibration, hit rate and rank IC.
+
+    The ONE section that reads ``outcome`` events, through
+    :class:`~dskit.evaluation.diagnostics.ForecastDiagnostics`; it shows
+    forecast/outcome aggregates, never a decision row, so the decision log
+    stays free of look-ahead.
+
+    Examples
+    --------
+    ::
+
+        InferenceSection().render(context)
+    """
+
+    title, anchor = "Inference diagnostics", "inference"
+
+    def html(self, context):
+        """Return the headline, the decile table and charts, and rank IC over time."""
+        diagnostics = context.diagnostics
+        if not diagnostics.pairs:
+            return _note(self._missing(diagnostics))
+        return (self._headline(context) + self._calibration(context)
+                + self._rank_ic(context))
+
+    @staticmethod
+    def _missing(diagnostics):
+        """Say why there is nothing to diagnose."""
+        return (f"No forecast could be scored: {diagnostics.unresolved} scored candidate(s) "
+                "have no outcome event. A producer logs one outcome per candidate "
+                "(decision_id, instrument, realized) once the target is known.")
+
+    @staticmethod
+    def _headline(context):
+        """Return pair counts, hit rates, the pooled rank IC and the calibration slope."""
+        diagnostics = context.diagnostics
+        summary = diagnostics.rank_ic_summary() or {}
+        slope = diagnostics.slope() or {}
+        rows = [
+            {"measure": "scored pairs", "value": count(len(diagnostics.pairs))},
+            {"measure": "candidates without an outcome", "value": count(diagnostics.unresolved)},
+            {"measure": "hit rate, all candidates", "value": percent(diagnostics.hit_rate())},
+            {"measure": "hit rate, chosen only",
+             "value": percent(diagnostics.hit_rate(chosen_only=True))},
+            {"measure": "mean rank IC per instant (HAC t)",
+             "value": f"{ratio(summary.get('ic'), signed=True)} "
+                      f"(t {ratio(summary.get('ic_t'), signed=True)}, "
+                      f"{count(summary.get('n_stamps'))} instants)"},
+            {"measure": "calibration slope (t vs 0 / vs 1)",
+             "value": f"{ratio(slope.get('slope'), signed=True)} "
+                      f"(t {ratio(slope.get('t_vs_0'), signed=True)} / "
+                      f"{ratio(slope.get('t_vs_1'), signed=True)})"},
+        ]
+        note = ""
+        if summary and not summary.get("usable"):
+            note = _note(f"Rank IC is not evidence here: {summary.get('unusable_reason')}")
+        return _html_table(("measure", "value"), rows, css="stats") + note
+
+    @staticmethod
+    def _calibration(context):
+        """Return the calibration chart, the hit-rate bars and the decile table."""
+        buckets = context.diagnostics.calibration()
+        if not buckets:
+            return _note("Calibration needs at least two scored forecasts.")
+        unit = context.units.score_unit
+        points = [(b.mean_score * unit.scale, b.mean_realized * unit.scale) for b in buckets]
+        lo = min(min(p) for p in points)
+        hi = max(max(p) for p in points)
+        chart = LineChart(
+            f"Calibration: mean realised vs mean forecast per bucket ({unit.suffix or 'raw'})",
+            [Series("realised", tuple(points), "s0"),
+             Series("perfect calibration", ((lo, lo), (hi, hi)), "s2")],
+            y_label=unit.suffix, gap_ms=False, zero_line=True)
+        hits = BarChart("Hit rate by forecast bucket (lowest forecasts first)",
+                        [f"B{b.index + 1}" for b in buckets], [b.hit_rate for b in buckets],
+                        y_label="hit rate")
+        rows = [{"bucket": f"B{b.index + 1}", "n": b.n, "score_lo": b.score_lo,
+                 "score_hi": b.score_hi, "mean_score": b.mean_score,
+                 "mean_realized": b.mean_realized, "hit_rate": b.hit_rate}
+                for b in buckets]
+        table = _html_table(
+            ("bucket", "n", "score_lo", "score_hi", "mean_score", "mean_realized", "hit_rate"),
+            rows, formats={"score_lo": "score", "score_hi": "score", "mean_score": "score",
+                           "mean_realized": "edge", "hit_rate": "percent"},
+            units=context.units)
+        return "<h3>Calibration by forecast bucket</h3>" + chart.render() + hits.render() + table
+
+    @staticmethod
+    def _rank_ic(context):
+        """Return rank IC per instant and per day."""
+        diagnostics = context.diagnostics
+        cs = diagnostics.rank_ic()
+        if not cs["rho"]:
+            return _note(f"No instant had enough names to rank ({cs['n_skipped']} skipped).")
+        line = LineChart("Rank IC per decision instant",
+                         [Series("rank IC", tuple(zip(cs["stamps"], cs["rho"])), "s0")],
+                         local=context.local, y_label="Spearman", zero_line=True)
+        days = diagnostics.rank_ic_by_day(context.local)
+        bars = BarChart("Mean rank IC per day", [d[5:] for d, _, _ in days],
+                        [rho for _, rho, _ in days], y_label="Spearman")
+        rows = [{"day": d, "mean_rank_ic": rho, "instants": n} for d, rho, n in days]
+        note = (_note(f"{cs['n_skipped']} instant(s) had too few names to rank.")
+                if cs["n_skipped"] else "")
+        return ("<h3>Rank IC over time</h3>" + line.render() + bars.render()
+                + _html_table(("day", "mean_rank_ic", "instants"), rows,
+                              formats={"mean_rank_ic": "ratio"}, units=context.units) + note)
+
+    def markdown(self, context):
+        """Return one line: pairs, hit rate and the pooled rank IC."""
+        diagnostics = context.diagnostics
+        if not diagnostics.pairs:
+            return ["", f"**Inference:** {self._missing(diagnostics)}"]
+        summary = diagnostics.rank_ic_summary() or {}
+        return ["", f"**Inference:** {count(len(diagnostics.pairs))} scored forecasts; hit rate "
+                    f"{percent(diagnostics.hit_rate())} (chosen "
+                    f"{percent(diagnostics.hit_rate(chosen_only=True))}); mean rank IC "
+                    f"{ratio(summary.get('ic'), signed=True)} "
+                    f"(t {ratio(summary.get('ic_t'), signed=True)})."]
+
+
 class PeriodSection(Section):
     """Per session day: P&L, fees, flows, return, fills and trips.
 
@@ -1134,5 +1262,5 @@ class ProvenanceSection(Section):
 
 #: The default section order — the reader's order.
 DEFAULT_SECTIONS = (OverviewSection, SummarySection, EquitySection, TradesOnPriceSection,
-                    DecisionLogSection, CashSection, DistributionSection, PeriodSection,
-                    ProvenanceSection)
+                    DecisionLogSection, CashSection, DistributionSection, InferenceSection,
+                    PeriodSection, ProvenanceSection)

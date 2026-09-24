@@ -88,3 +88,47 @@ def test_slope_and_empty_log():
 def test_value_objects():
     assert ForecastPair(1, "A", 0.1, -0.1, False).hit is False
     assert Bucket(0, 1, 0.0, 0.0, 0.3, 0.1, 1.0).gap == pytest.approx(0.2)
+
+
+# --- InferenceSection: the one reader of outcomes -------------------------
+
+
+def _without_outcomes(log):
+    kept = [e.to_obj() for e in log.events if e.kind != "outcome"]
+    for seq, event in enumerate(kept):
+        event["seq"] = seq
+    return EventLog(kept)
+
+
+def test_section_renders_deciles_hit_rate_and_rank_ic():
+    from dskit.evaluation.report import BacktestReport
+    from dskit.evaluation.sections import InferenceSection
+
+    report = BacktestReport(_log(stamps=6))
+    body = InferenceSection().html(report.context)
+    assert "Calibration by forecast bucket" in body
+    assert "Hit rate by forecast bucket" in body
+    assert "Rank IC over time" in body and "2026-09-01" in body
+    assert "<svg" in body
+    assert "InferenceSection" not in body
+    assert any("**Inference:** 30 scored forecasts" in line
+               for line in InferenceSection().markdown(report.context))
+    assert 'id="inference"' in report.html()
+
+
+def test_section_says_why_when_nothing_is_scored():
+    from dskit.evaluation.report import BacktestReport
+    from dskit.evaluation.sections import InferenceSection
+
+    report = BacktestReport(_without_outcomes(_log()))
+    body = InferenceSection().html(report.context)
+    assert "No forecast could be scored: 20 scored candidate(s) have no outcome" in body
+
+
+def test_outcomes_never_reach_the_decision_rows():
+    from dskit.evaluation.report import BacktestReport
+
+    log = _log()
+    with_outcomes = BacktestReport(log)
+    without = BacktestReport(_without_outcomes(log))
+    assert with_outcomes.decisions_csv() == without.decisions_csv()
