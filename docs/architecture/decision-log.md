@@ -22917,6 +22917,17 @@ drops findings. Neither unmerged branch overlaps.
 
 Non-goals unchanged; no trading or serving behaviour changes.
 
+*Build note (same day).* Built as above, with: `compose.guard_chain` made
+public (the replay validates guards through it, no copy); `ReplayAdapter`
+also returns `findings`/`ledger`; a hard guard stores each finding twice per
+leg (proposal + final re-check) and the decision log shows/counts it once
+per order. **`keep_ledger` ships `false`**: a five-session synthetic
+end-to-end run kept a 4.1 GB ledger (per-tick accounting `snapshot` records,
+~450 KB each and growing with every fill — O(ticks x fills), ~10x gzip),
+while the findings are read before the scratch copy goes, so the report
+has them either way. Reviews (Sonnet): correctness 0 Critical/Major (1
+Minor, fixed: size bound pinned against `dec_qty`); tests/reuse 0 findings.
+
 ## ADR-0184 — Production-equivalent historical simulation for intraday_equities
 
 **Status:** accepted and built 2026-09-24 (S1-S7 built and reviewed; S8

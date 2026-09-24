@@ -1483,7 +1483,7 @@ def test_run_replay_report_wires_select_and_replay_into_the_evaluator(tmp_path):
     # and it scores the label the model was fitted to.
     assert events["params"]["outcome_lead_bars"] == pipe["window"]["params"]["label_lead"]
     assert events["params"]["realized_field"] == pipe["qhat"]["params"]["label"]
-    assert params["keep_ledger"] is True
+    assert params["keep_ledger"] is False  # ~4 GB per five-session run; see its notes
     assert {g["params"]["measure"] for g in params["guards"].values()} == {"quantity", "notional"}
     # The observational size guard never binds: every order is dec_qty's one value.
     qty = [case["value"] for case in pipe["dec_qty"]["params"]["cases"]]
