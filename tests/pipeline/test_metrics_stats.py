@@ -772,3 +772,35 @@ class TestPerformanceEstimators:
     def test_trade_ratio_refusals(self, fn, values):
         with pytest.raises(ValueError):
             fn(values)
+
+
+# --- ADR-0183 phase 2: the one owner of the equal-count bucket rule --------
+
+
+def test_quantile_edges_are_equal_count_cut_points():
+    from dskit.pipeline.stats import quantile_bin, quantile_edges
+
+    values = list(range(1, 101))
+    edges = quantile_edges(values, 10)
+    assert len(edges) == 9
+    counts = [0] * 10
+    for value in values:
+        counts[quantile_bin(value, edges)] += 1
+    assert counts == [10] * 10
+    assert quantile_edges([1.0], 10) == []
+    assert quantile_edges(values, 1) == []
+
+
+def test_quantile_bin_puts_a_cut_point_in_the_bucket_above():
+    from dskit.pipeline.stats import quantile_bin
+
+    assert quantile_bin(2.0, [1.0, 2.0, 3.0]) == 2
+    assert quantile_bin(0.5, [1.0, 2.0, 3.0]) == 0
+    assert quantile_bin(9.0, [1.0, 2.0, 3.0]) == 3
+    assert quantile_bin(1.0, []) == 0
+
+
+def test_monitors_bin_through_the_pipeline_owner():
+    from dskit.production import monitors
+
+    assert not hasattr(monitors, "_quantile_edges")

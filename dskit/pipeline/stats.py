@@ -55,9 +55,11 @@ Import cost: stdlib only.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import math
 import random
+import statistics
 from statistics import NormalDist
 
 from dskit.pipeline.records import number_ok
@@ -87,6 +89,8 @@ __all__ = [
     "payoff_ratio",
     "probabilistic_sharpe_ratio",
     "profit_factor",
+    "quantile_bin",
+    "quantile_edges",
     "register_correction",
     "regularized_incomplete_beta",
     "sharpe_ratio",
@@ -1715,6 +1719,48 @@ def payoff_ratio(pnls):
         return None
     return (sum(wins) / len(wins)) / (-sum(losses) / len(losses))
 
+
+
+def quantile_edges(values, bins):
+    """Return the ``bins - 1`` interior equal-count cut points of ``values``.
+
+    The one owner of the equal-count bucket rule (ADR-0183 phase 2):
+    ``statistics.quantiles`` (``exclusive`` method) over the sample, so a
+    decile table and a drift monitor cut the same way.
+
+    Parameters
+    ----------
+    values : sequence of float
+    bins : int
+        The number of buckets wanted.
+
+    Returns
+    -------
+    list of float
+        Ascending interior cut points; empty below two values or two bins.
+    """
+    if len(values) < 2 or bins < 2:
+        return []
+    return statistics.quantiles(values, n=bins)
+
+
+def quantile_bin(value, edges):
+    """Return the bucket index of ``value`` given interior ``edges``.
+
+    A value equal to a cut point belongs to the bucket ABOVE it.
+
+    Parameters
+    ----------
+    value : float
+    edges : sequence of float
+        Ascending interior cut points (see :func:`quantile_edges`).
+
+    Returns
+    -------
+    int
+        ``0 .. len(edges)``.
+    """
+    return bisect.bisect_right(edges, value)
 
 def correction(name):
     """Look up a registered correction entry, loudly."""

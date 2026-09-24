@@ -386,18 +386,11 @@ def _reference_sites(problems, site):
     return tuple(pair for pair in resolved if pair is not None)
 
 
-def _quantile_edges(values, bins):
-    """Return the ``bins - 1`` interior quantile cut points of ``values`` (none below two values)."""
-    if len(values) < 2 or bins < 2:
-        return []
-    return statistics.quantiles(values, n=bins)
-
-
 def _bin_counts(values, interior):
     """Count ``values`` into the bins the interior cut points delimit (a cut point belongs above)."""
     counts = [0] * (len(interior) + 1)
     for value in values:
-        counts[bisect.bisect_right(interior, value)] += 1
+        counts[pipeline_stats.quantile_bin(value, interior)] += 1
     return counts
 
 
@@ -1799,7 +1792,7 @@ class Profile:
             "top_k": _top(values, top_k),
         }
         if values and all(number_ok(value) for value in values):
-            interior = _quantile_edges(values, bins)
+            interior = pipeline_stats.quantile_edges(values, bins)
             summary.update(
                 min=min(values),
                 max=max(values),
@@ -3357,7 +3350,7 @@ class _BinnedMonitor(DistributionMonitor):
 
     def _counts(self, reference, window):
         """Return both samples' bin counts over the reference's own quantile cuts."""
-        interior = _quantile_edges(reference, self._bins)
+        interior = pipeline_stats.quantile_edges(reference, self._bins)
         return _bin_counts(reference, interior), _bin_counts(window, interior)
 
 
