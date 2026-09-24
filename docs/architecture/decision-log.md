@@ -22633,3 +22633,8 @@ separate later kind (`pivot`).
   `date`, value `close`) -> `market` (`Join`, port `iv_index`) and add
   `iv_ceiling: 2.0`; `run-real-zoo.json` pins `pipeline.vix_by_date`. The
   six stay identical outside `model` (tested). Manifest 55 -> 54 files.
+Tier-refactor review (Sonnet, `12646c0`): 0 Critical/Major. `iv_ceiling`
+2.0 is a sanity bound: at the backtest's traded strikes (|z| <= ~3 in VIX
+units) IV stays ~1.1 even at VIX 80; it would first bind near VIX 90 with
+z = -4 (IV 1.996). The put-wing branch of the smile negativity check is
+vacuous while `put_skew_per_z >= 0` (kept for symmetry).

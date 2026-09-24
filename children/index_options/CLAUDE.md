@@ -57,8 +57,8 @@ fixtures/                  # contracts.jsonl, quotes.jsonl, settlements.jsonl
 docs/decisioning/           # actions.csv, owner path.csv, generated README.md
 docs/explanations/README.md # glossary and worked synthetic payoff
 docs/plans/README.md        # gated research stages
-docs/memos/README.md        # execution-evidence convention
-docs/research/              # README.md, .gitkeep; distribution-modeling/ notes
+docs/memos/README.md        # execution-evidence convention; 2026-09-24 real-data closeout
+docs/research/              # README.md, .gitkeep; distribution-modeling/, real-data-backtest/ notes
 tests/                     # conftest.py; test_contracts, observations, nodes,
                            # configs, integration, distribution,
                            # synthetic_distribution_run, distribution_zoo, real_data (.py)

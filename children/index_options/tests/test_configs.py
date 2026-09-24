@@ -57,6 +57,8 @@ def test_exact_manifest_and_agent_parity(child_root):
         "docs/research/distribution-modeling/2026-09-23-evaluation.md",
         "docs/research/distribution-modeling/2026-09-23-model-ladder.md",
         "docs/research/distribution-modeling/2026-09-23-ml-dl-transformers.md",
+        "docs/research/real-data-backtest/2026-09-24-zoo-vs-vix.md",
+        "docs/memos/2026-09-24-real-data-backtest-and-recorder.md",
         "tests/conftest.py", "tests/test_contracts.py", "tests/test_observations.py",
         "tests/test_nodes.py", "tests/test_configs.py", "tests/test_integration.py",
         "tests/test_distribution.py", "tests/test_synthetic_distribution_run.py",
@@ -70,7 +72,7 @@ def test_exact_manifest_and_agent_parity(child_root):
     assert actual == expected
     # ADR-0167's 30 + ADR-0168's 4 + ADR-0181's 4 + 4 research notes + ADR-0182's 8,
     # less pricing.py (moved to dskit.pipeline.option_pricing, ADR-0182 tier placement)
-    assert len(actual) == 54
+    assert len(actual) == 56
     assert (child_root / "AGENTS.md").read_bytes() == (child_root / "CLAUDE.md").read_bytes()
 
 
