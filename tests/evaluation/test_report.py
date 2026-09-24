@@ -378,3 +378,11 @@ def test_an_exact_repeat_finding_shows_and_counts_once():
     rows = {r["decision_id"]: r for r in DecisionLogSection().rows(BacktestReport(log).context)}
     assert rows["d2"]["findings"] == "size quantity 4/100 allow"
     assert DecisionLogSection.findings_summary(log)[0]["count"] == 2  # o1 and o2, once each
+
+
+def test_findings_table_numbers_stay_numeric_cells():
+    from dskit.evaluation.report import BacktestReport
+    from dskit.evaluation.sections import DecisionLogSection
+
+    body = DecisionLogSection().html(BacktestReport(EventLog(_with_findings())).context)
+    assert "<td class=num>100</td>" in body and "<td class=num>4</td>" in body

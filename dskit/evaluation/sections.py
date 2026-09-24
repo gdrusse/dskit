@@ -180,7 +180,7 @@ def display(kind, value, units):
     kind : str or None
         ``money``, ``pnl`` (signed money), ``count``, ``ratio``,
         ``percent``, ``minutes``, ``score``, ``edge`` (signed score),
-        ``bp``, ``text``; None picks by type.
+        ``bp``, ``number`` (whole numbers plain), ``text``; None picks by type.
     value : object
     units : Units
 
@@ -202,6 +202,7 @@ def display(kind, value, units):
         "score": lambda v: units.score(v),
         "edge": lambda v: units.score(v, signed=True),
         "bp": lambda v: f"{sig(v, 3)} bp",
+        "number": lambda v: count(v) if float(v).is_integer() else ratio(v),
         "text": str,
     }
     if kind in formats and not isinstance(value, str):
@@ -317,9 +318,7 @@ def _distinct(findings):
 
 def _finding_number(value):
     """Return a finding's value or bound as text: a whole number without decimals."""
-    if value is None:
-        return DASH
-    return count(value) if float(value).is_integer() else ratio(value)
+    return display("number", value, None)
 
 
 def _finding_text(finding):
@@ -1007,10 +1006,9 @@ class DecisionLogSection(Section):
         if not rows:
             return _note("No guard findings: the producer recorded no pre-trade checks "
                          "(no guards declared, or no ledger mapped into the log).")
-        shown = [dict(row, **{key: _finding_number(row[key])
-                              for key in ("min_value", "max_value", "bound")}) for row in rows]
         return _html_table(("guard", "measure", "verdict", "count", "min_value", "max_value",
-                            "bound"), shown, units=context.units)
+                            "bound"), rows, units=context.units,
+                           formats=dict.fromkeys(("min_value", "max_value", "bound"), "number"))
 
     def _compact(self, context, rows):
         """Render the full log as a light table: formatted cells, no per-cell attributes."""
