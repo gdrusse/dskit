@@ -1761,7 +1761,7 @@ class TestTheUncertaintyPortIsRefusedByNameNotWalked:
 
 
 # ---------------------------------------------------------------------------
-# ADR-0182 Revision 2: the declared developmental switch
+# ADR-0184 Revision 2: the declared developmental switch
 # ``cap_evidence_look_ahead``. It skips exactly the two cap-timing refusals
 # ("cap is from the future", "cap.generated_ms ... after bundle
 # decision_ts"), is legal only in development mode, and is disclosed in the

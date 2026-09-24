@@ -1,6 +1,6 @@
 {
   "name": "intraday-equities-development-simulation-smoke",
-  "notes": "ADR-0182 S8 one-segment smoke: run-development-simulation.json with fold 2 only (2022-09-09..2022-11-10) and the bars bounded to that segment; nothing else moves (pinned by test_config_validates_and_is_ineligible). Run it first under /usr/bin/time -v to extrapolate wall time and RSS to folds 2..19. DEVELOPMENTAL POST-SELECTION, deployment_eligible=false. Run from the child root: python -m dskit.pipeline run configs/run-development-simulation-smoke.json --adapter intraday_equities.",
+  "notes": "ADR-0184 S8 one-segment smoke: run-development-simulation.json with fold 2 only (2022-09-09..2022-11-10) and the bars bounded to that segment; nothing else moves (pinned by test_config_validates_and_is_ineligible). Run it first under /usr/bin/time -v to extrapolate wall time and RSS to folds 2..19. DEVELOPMENTAL POST-SELECTION, deployment_eligible=false. Run from the child root: python -m dskit.pipeline run configs/run-development-simulation-smoke.json --adapter intraday_equities.",
   "pipeline": {
     "bars_a": {
       "uses": "intraday_equities-bars",
@@ -99,7 +99,7 @@
           "cap_evidence_look_ahead": true
         }
       },
-      "notes": "EquityKellyMIO base params, sized per tick inside simulate on live cash; bundle/cap pins and Schwab cost knobs are bound per tick (from the publisher and fill-policy.json). ADR-0182 development placeholders, not owner rulings."
+      "notes": "EquityKellyMIO base params, sized per tick inside simulate on live cash; bundle/cap pins and Schwab cost knobs are bound per tick (from the publisher and fill-policy.json). ADR-0184 development placeholders, not owner rulings."
     },
     "simulate": {
       "uses": "intraday_equities-development-simulation",
@@ -140,7 +140,7 @@
       },
       "params": {
         "path": "pipeline_runs/development-simulation-smoke-fills.jsonl",
-        "source": "ADR-0182 development simulation fills (developmental post-selection, not deployment evidence)"
+        "source": "ADR-0184 development simulation fills (developmental post-selection, not deployment evidence)"
       }
     },
     "write_refused": {
@@ -150,7 +150,7 @@
       },
       "params": {
         "path": "pipeline_runs/development-simulation-smoke-refused.jsonl",
-        "source": "ADR-0182 development simulation refusals"
+        "source": "ADR-0184 development simulation refusals"
       }
     },
     "write_daily": {
@@ -160,7 +160,7 @@
       },
       "params": {
         "path": "pipeline_runs/development-simulation-smoke-daily.jsonl",
-        "source": "ADR-0182 development simulation daily NAV/P&L"
+        "source": "ADR-0184 development simulation daily NAV/P&L"
       }
     },
     "write_summary": {
@@ -170,7 +170,7 @@
       },
       "params": {
         "path": "pipeline_runs/development-simulation-smoke-summary.json",
-        "source": "ADR-0182 development simulation summary and run metadata"
+        "source": "ADR-0184 development simulation summary and run metadata"
       }
     }
   }

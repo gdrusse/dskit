@@ -707,7 +707,7 @@ class BarsFromStore(Node):
         where the data is read, mirroring the ``end`` bound ADR-0063 put
         where the data is fetched. It is part of the cache key and the
         fingerprint, so two windows can never share one identity.
-        ``end_ms`` is the optional EXCLUSIVE upper bound (ADR-0182),
+        ``end_ms`` is the optional EXCLUSIVE upper bound (ADR-0184),
         applied at the same intake hook as the session bound; it enters
         the cache key and fingerprint only when declared, so no
         undeclared read's identity moves. It bounds bars only, not an
@@ -921,7 +921,7 @@ class BarsFromStore(Node):
             The tag is derived HERE because the bound needs it here, and
             a record derives it once either way: it rides into the
             emitted record exactly as it did when a second pass wrote
-            it. ``end_ms`` (exclusive, ADR-0182) is answered from the
+            it. ``end_ms`` (exclusive, ADR-0184) is answered from the
             reader's own epoch-ms stamp before the tag is derived.
             """
             if end_ms is not None and epoch_ms is not None and epoch_ms >= end_ms:

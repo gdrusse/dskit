@@ -689,7 +689,7 @@ class EquityReplay:
     cash_flow_policy : CashFlowPolicy, optional
         Funding (ADR-0176); ``None`` binds no composer.
     decider : object, optional
-        A per-tick strategy (ADR-0182 S6) with ``decide(asof_ms,
+        A per-tick strategy (ADR-0184 S6) with ``decide(asof_ms,
         portfolio) -> list of decision rows``. After each tick's exits and
         entries, it is called with :meth:`_portfolio`'s live account state
         and its rows are queued exactly like upfront ``decisions`` (same
@@ -769,7 +769,7 @@ class EquityReplay:
         if not self._by_symbol:
             return self._result()
         # One process mints this release and re-verifies it every tick: the
-        # inventory is re-read only when it moved (ADR-0182 S7(d)).
+        # inventory is re-read only when it moved (ADR-0184 S7(d)).
         with runtime_capture_memo():
             self._run_loop(bars)
         last = {symbol: seq[-1]["asof_ms"] for symbol, seq in self._by_symbol.items()}
@@ -822,7 +822,7 @@ class EquityReplay:
         self._pending[symbol][fill_index].append(decision)
 
     def _portfolio(self, asof):
-        """Live account state at tick ``asof`` for a per-tick decider (ADR-0182 S6).
+        """Live account state at tick ``asof`` for a per-tick decider (ADR-0184 S6).
 
         ``cash`` = ``buying_power`` = the running cash balance after this
         tick's funding, exits and entries; ``positions`` holds the signed
@@ -1126,7 +1126,7 @@ class EquityReplay:
         """Apply halt skip/queue or forced exits at one fill bar; True when live.
 
         Every symbol's exits run before any symbol's entries on the same
-        tick (ADR-0182 S1), so a same-bar sale funds a same-bar buy.
+        tick (ADR-0184 S1), so a same-bar sale funds a same-bar buy.
         """
         policy = self._policy
         halted = self._halted(bar)
@@ -1771,7 +1771,7 @@ class DevelopmentReplay(Node):
     def _refuse_out_of_window(self, bars, decisions):
         """Refuse decisions at/after ``evidence_end`` and bars past the fill suffix.
 
-        Shared by this node and ``DevelopmentSimulation`` (ADR-0182 S7), so
+        Shared by this node and ``DevelopmentSimulation`` (ADR-0184 S7), so
         the evidence window is enforced by one gate.
 
         Parameters

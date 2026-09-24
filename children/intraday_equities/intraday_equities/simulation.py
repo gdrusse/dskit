@@ -1,4 +1,4 @@
-"""Development simulation nodes (ADR-0182): publisher, per-tick MIO decider, simulation, report.
+"""Development simulation nodes (ADR-0184): publisher, per-tick MIO decider, simulation, report.
 
 The simulation replays the P16 walk-forward as production would have run
 it: each outer fold is one model RELEASE, retrained on the calendar's
@@ -405,7 +405,7 @@ class ForecastPublisher(Node):
     """Publish per-release caps and attested uncertainty, and per-tick forecast bundles.
 
     The ``intraday_equities-forecast-publisher`` kind (role ``data``,
-    ADR-0182 S5). Reads the sha256-pinned P16 gate inventory and gate
+    ADR-0184 S5). Reads the sha256-pinned P16 gate inventory and gate
     artifact, verifies every fold against the program calendar's fold
     schedule, restricts to the gate-admitted units at their capped
     horizons, and emits JSON only:
@@ -909,7 +909,7 @@ _BOUND_PLACEHOLDERS = {
 
 
 class MioDecider:
-    """Per-tick ``EquityKellyMIO`` strategy an ``EquityReplay`` calls (ADR-0182 S6).
+    """Per-tick ``EquityKellyMIO`` strategy an ``EquityReplay`` calls (ADR-0184 S6).
 
     Holds one release's JSON (``ForecastPublisher``'s ``releases`` entry)
     and that release's tick bundles. At a decision instant it drops every
@@ -996,7 +996,7 @@ class MioDecider:
                     "cash": cash,
                     "buying_power": cash,
                     # Held units were dropped above, so the MIO sees an empty
-                    # book: its inventory path is not exercised (ADR-0182).
+                    # book: its inventory path is not exercised (ADR-0184).
                     "positions": {},
                     "mark_prices": portfolio["mark_prices"],
                     "gross_limit": portfolio["gross_limit"],
@@ -1037,7 +1037,7 @@ class MioDecider:
 
 
 class MioDeciderNode(Node):
-    """Carry the validated per-tick MIO params to the simulation (ADR-0182 S6, Revision 3).
+    """Carry the validated per-tick MIO params to the simulation (ADR-0184 S6, Revision 3).
 
     The ``intraday_equities-mio-decider`` kind. It sizes nothing: a DAG
     node runs once, while the MIO must run per tick on live cash, so this
@@ -1046,7 +1046,7 @@ class MioDeciderNode(Node):
     ``simulate`` node's :class:`MioDecider`. Role ``transform``, not
     ``capital``: the planner's capital rule requires a ``stat_test`` wire,
     and this document's survivor set is the pinned gate admission carried
-    on each release (ADR-0182 Revision 1), never a new test.
+    on each release (ADR-0184 Revision 1), never a new test.
 
     Parameters
     ----------
@@ -1087,7 +1087,7 @@ class MioDeciderNode(Node):
         if mio.get("cap_evidence_look_ahead") is not True:
             problems.append(
                 "mio.cap_evidence_look_ahead must be declared true: the gate caps use "
-                "post-selection evidence (ADR-0182 Revision 2)"
+                "post-selection evidence (ADR-0184 Revision 2)"
             )
         problems.extend(
             f"mio: {problem}"
@@ -1115,7 +1115,7 @@ class MioDeciderNode(Node):
 
 
 #: Stamped on every ``simulate``/``report`` row, the summary and the run
-#: metadata (ADR-0182 S7, Revision 2): nothing here is deployment evidence.
+#: metadata (ADR-0184 S7, Revision 2): nothing here is deployment evidence.
 DISCLOSURE = {
     "deployment_eligible": False,
     "evidence_scope": "development_replay_post_selection",
@@ -1152,7 +1152,7 @@ class _DayCloses:
 
 
 class DevelopmentSimulation(DevelopmentReplay):
-    """Run every release's segment through ``EquityReplay`` with the per-tick MIO (ADR-0182 S7).
+    """Run every release's segment through ``EquityReplay`` with the per-tick MIO (ADR-0184 S7).
 
     The ``intraday_equities-development-simulation`` kind (role
     ``transform``). A :class:`~intraday_equities.replay.DevelopmentReplay`
@@ -1397,7 +1397,7 @@ class DevelopmentSimulation(DevelopmentReplay):
 
 
 class SimulationReport(Node):
-    """Fold the simulation's fills into a daily NAV/P&L report (ADR-0182 S7).
+    """Fold the simulation's fills into a daily NAV/P&L report (ADR-0184 S7).
 
     The ``intraday_equities-simulation-report`` kind (role ``report``). It
     reads only its wires. Every fill becomes one ``records.Fill`` folded

@@ -719,7 +719,7 @@ def test_verify_release_refuses_source_config_drift(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# runtime_capture_memo — a historical replay's opt-in reuse (ADR-0182 S7(d))
+# runtime_capture_memo — a historical replay's opt-in reuse (ADR-0184 S7(d))
 # --------------------------------------------------------------------------
 
 

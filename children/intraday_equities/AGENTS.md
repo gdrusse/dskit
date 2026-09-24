@@ -55,7 +55,7 @@ Agent orientation — see README.md for operator commands.
   (`intraday_equities`). HPO maximizes `$select.metrics.rank_ic`.
   `configs/run-development-replay.json` is not a market-data run: no
   tracking sink, `deployment_eligible=false`, fill knobs in
-  `configs/fill-policy.json`. Neither are ADR-0182's
+  `configs/fill-policy.json`. Neither are ADR-0184's
   `configs/run-development-simulation.json` (folds 2..19) and its one-segment
   `-smoke` twin: developmental post-selection, no tracking sink.
 - The stopped asset-local P13 remains reproducible in

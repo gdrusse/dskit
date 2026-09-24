@@ -22462,13 +22462,23 @@ Final lens on `e16e465`: 0 Critical/Major (7 of 9 mutants killed). Minor
 backlog: the signature pin checks key names, not per-key types; defaults are
 not tested against `LGBM_KEY_TYPES`; numeric ranges refuse only at fit.
 
-## ADR-0182 — Production-equivalent historical simulation for intraday_equities
+## ADR-0184 — Production-equivalent historical simulation for intraday_equities
 
-**Status:** proposed 2026-09-23 (Phase 0 design only; no code until the owner
-approves). **Owner:** Russell. **Base:** `3204d2b`. **Branch:**
-`claude/prod-sim-20260923`. Every decision below that the brief left open was
-taken by the agent conservatively while the owner was unavailable; each is
-listed under **Agent-decided questions** for ruling.
+**Status:** accepted and built 2026-09-24 (S1-S7 built and reviewed; S8
+real-data run complete; proposed 2026-09-23 as a Phase 0 design). Renumbered
+from ADR-0182 before merge: 0182 is the index-options ADR on main and 0183 is
+claimed by `origin/claude/backtest-evaluator`. **Owner:** Russell. **Base:**
+`3204d2b`. **Branch:** `claude/prod-sim-20260923`. Every decision below that
+the brief left open was taken by the agent conservatively while the owner was
+unavailable; each is listed under **Agent-decided questions** and remains
+open for owner ruling.
+
+**Results (S8, 2026-09-24).** See
+`children/intraday_equities/docs/memos/2026-09-24-production-equivalent-simulation-results.md`.
+Folds 2..19 (2022-09-09..2025-10-16), run from `bb1ef42`: final NAV
+$18,066.16 on $16,580 contributed, net +$1,486.16 after $1,463.24 fees,
+457 round trips. The evidence is developmental post-selection and
+`deployment_eligible` is false.
 
 **Revision 1 (2026-09-23, after two Phase-0 lenses on `4ad520c`).**
 Orchestrator ruling, from owner intent in

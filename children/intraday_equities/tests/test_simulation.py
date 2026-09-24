@@ -1,4 +1,4 @@
-"""ADR-0182 S5/S6: the forecast publisher and the per-tick MIO decider on a synthetic walk.
+"""ADR-0184 S5/S6: the forecast publisher and the per-tick MIO decider on a synthetic walk.
 
 The fixture is a miniature P16 walk written with the real writers
 (``PredictionWriter``, ``write_feature_cache``) and the real universe
@@ -521,12 +521,12 @@ def test_outputs_are_json_and_the_kind_is_registered(fx):
     assert ForecastPublisher.validate_params(fx["params"]) == []
 
 
-# --- ADR-0182 S6: the per-tick MIO decider inside EquityReplay --------------
+# --- ADR-0184 S6: the per-tick MIO decider inside EquityReplay --------------
 
 CONFIGS = os.path.join(_child_root(), "configs")
 FILL_POLICY = FillPolicy.from_path(os.path.join(CONFIGS, "fill-policy.json"))
 CASH_POLICY = CashFlowPolicy.from_path(os.path.join(CONFIGS, "cash-flow-policy.json"))
-#: ADR-0182's development placeholders, except ``hfdr_q`` 0.9 and
+#: ADR-0184's development placeholders, except ``hfdr_q`` 0.9 and
 #: ``uncertainty_min_coverage`` 0.05: the three-fold fixture's widened
 #: false-signal rates (0.66-1.0) and short-window coverage would otherwise
 #: forbid every trade, and these tests need trades to check.
@@ -815,7 +815,7 @@ def test_decide_node_refuses_bound_or_undeclared_params():
     assert check({"mio": MIO, "extra": 1})
 
 
-# --- ADR-0182 S7: the simulate and report nodes, and the pipeline document --
+# --- ADR-0184 S7: the simulate and report nodes, and the pipeline document --
 
 SIM_KIND = "intraday_equities-development-simulation"
 REPORT_KIND = "intraday_equities-simulation-report"

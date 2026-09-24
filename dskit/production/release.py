@@ -18,7 +18,7 @@ refuses one older than the document's ``max_artifact_age`` with the
 :data:`ARTIFACT_EXPIRED` reason, recaptures the runtime fingerprint and
 refuses drift, and (when the feed reports one) refuses a source-config
 hash the release did not bind. The one exception is opt-in and
-replay-only: inside :func:`runtime_capture_memo` (ADR-0182 S7(d)) the
+replay-only: inside :func:`runtime_capture_memo` (ADR-0184 S7(d)) the
 distribution inventory is re-read only when its stat identity moved.
 :class:`ReleaseReader` is the only
 capability a ``release_read`` node receives — ``get`` (digest-checked
@@ -328,7 +328,7 @@ class Distribution:
 #: :func:`_inventory_identity`'s key.
 _INVENTORY_FILES = ("", "METADATA", "PKG-INFO", "RECORD", "direct_url.json")
 
-#: Set only inside :func:`runtime_capture_memo` (ADR-0182 S7(d)). ``None``
+#: Set only inside :func:`runtime_capture_memo` (ADR-0184 S7(d)). ``None``
 #: everywhere else, so every capture outside that block re-reads the bytes.
 #: A ``ContextVar``, not a module global: the block's memo is visible only
 #: in the context that entered it, never to another thread or task.
@@ -339,7 +339,7 @@ _INVENTORY_MEMO = ContextVar("dskit_production_inventory_memo", default=None)
 def runtime_capture_memo():
     """Reuse an unchanged distribution inventory across captures, inside this block only.
 
-    A historical replay (ADR-0182) mints its own release and then re-verifies
+    A historical replay (ADR-0184) mints its own release and then re-verifies
     it on every simulated tick, in one process, thousands of times a
     segment; each ``RuntimeFingerprint.capture`` re-reads and re-parses the
     metadata of every installed distribution. Inside this block a capture

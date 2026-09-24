@@ -2491,7 +2491,7 @@ def _bars_node(tmp_path, **extra):
 
 
 def test_bars_from_store_end_ms_excludes_at_and_after(tmp_path):
-    """ADR-0182 S4: ``end_ms`` is an EXCLUSIVE upper bound applied at the read."""
+    """ADR-0184 S4: ``end_ms`` is an EXCLUSIVE upper bound applied at the read."""
     import intraday_equities.nodes as nodes
 
     whole = _bars_node(tmp_path).run(_ctx(tmp_path), {})["records"]
@@ -2529,7 +2529,7 @@ def test_bars_from_store_end_ms_excludes_at_and_after(tmp_path):
 
 
 def test_bars_from_store_without_end_ms_fingerprint_unchanged(tmp_path):
-    """ADR-0182 S4: an undeclared ``end_ms`` moves no existing identity."""
+    """ADR-0184 S4: an undeclared ``end_ms`` moves no existing identity."""
     plain = _bars_node(tmp_path)
     assert set(plain.fingerprint()) == {"kind", "rows", "sha256", "universe", "start_ms"}
     assert len(plain._cache_key()) == 14

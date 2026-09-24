@@ -1253,7 +1253,7 @@ def test_without_a_cash_flow_policy_an_unaffordable_buy_still_fills(run):
     assert out["skipped"] == []
 
 
-# --- ADR-0182 S1: exits before entries across every symbol of one tick -----
+# --- ADR-0184 S1: exits before entries across every symbol of one tick -----
 
 
 def test_same_bar_exit_on_later_symbol_funds_entry_on_earlier_symbol():
@@ -1308,7 +1308,7 @@ def test_halted_symbol_exit_skip_unchanged_by_two_pass():
     assert out["refused"] == []
 
 
-# --- ADR-0182 S2: BarTape is built in one pass over the bars ----------------
+# --- ADR-0184 S2: BarTape is built in one pass over the bars ----------------
 
 
 class _CountingBars(list):
@@ -1355,7 +1355,7 @@ def test_bar_tape_records_added_per_timestamp():
     assert BarTape([], "src").start_ms() == 0
 
 
-# --- ADR-0182 S6: the upfront-decisions path is unchanged by the decider hook
+# --- ADR-0184 S6: the upfront-decisions path is unchanged by the decider hook
 
 
 def test_run_with_explicit_decisions_unchanged():
@@ -1409,7 +1409,7 @@ def test_run_with_explicit_decisions_unchanged():
     assert ReplayAdapter(policy, cash).replay(bars, decisions) == expected
 
 
-# --- ADR-0182 S7(d): one runtime-inventory read per replay run, not per tick
+# --- ADR-0184 S7(d): one runtime-inventory read per replay run, not per tick
 
 
 def test_replay_reads_the_runtime_inventory_once_per_run_not_per_tick(monkeypatch):

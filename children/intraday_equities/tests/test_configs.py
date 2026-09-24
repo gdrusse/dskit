@@ -614,7 +614,7 @@ def _run_docs():
 # Gate 5 developmental replay is not a market-data training document:
 # no universe node, no tracking sink, no bars read (ADR-0120). Cohort,
 # MLflow, and store pins do not apply to it.
-# The ADR-0182 development simulation is not a training document either:
+# The ADR-0184 development simulation is not a training document either:
 # it fits nothing and tracks nothing, and it reads the split-adjusted
 # sources that hold the gate-admitted names over the replay window only
 # (checked in test_every_run_reads_the_split_adjusted_store_...).
@@ -1424,7 +1424,7 @@ def test_run_development_replay_forces_ineligible_caps_and_pins_fill_policy():
     assert document.hash
 
 
-# ADR-0182's pinned P16 evidence: the gate inventory manifest fa061189 and
+# ADR-0184's pinned P16 evidence: the gate inventory manifest fa061189 and
 # the gate artifact 77a7ab08 (the development_outer fold walk behind them).
 _P16_RUNS = "/home/russell/dskit/children/intraday_equities/pipeline_runs"
 _P16_INVENTORY = (
@@ -1438,7 +1438,7 @@ _P16_GATES = (
 
 
 def test_config_validates_and_is_ineligible():
-    """ADR-0182 S7: the simulation documents plan, pin P16, and can never be deployment evidence."""
+    """ADR-0184 S7: the simulation documents plan, pin P16, and can never be deployment evidence."""
     from dskit.pipeline.planner import plan
 
     from intraday_equities.replay import CashFlowPolicy, FillPolicy

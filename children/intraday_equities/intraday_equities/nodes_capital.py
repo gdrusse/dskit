@@ -166,7 +166,7 @@ REQUIRED_INTAKES = (
 DEFAULT_LOT_SIZE = 1
 
 #: What the ``evidence`` output records when the declared developmental
-#: switch ``cap_evidence_look_ahead`` is true (ADR-0182 Revision 2).
+#: switch ``cap_evidence_look_ahead`` is true (ADR-0184 Revision 2).
 CAP_LOOK_AHEAD_DISCLOSURE = "caps use post-selection evidence (look-ahead disclosed)"
 
 #: How far a bound-setting envelope is padded past the bundle's own observed
@@ -543,7 +543,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
         change (an integer lot-count variable, not this knob) and is not
         built here). ``cap_evidence_look_ahead`` (optional JSON bool,
         default false; true only with ``deployment_mode`` false —
-        ADR-0182 Revision 2): the declared developmental switch that skips
+        ADR-0184 Revision 2): the declared developmental switch that skips
         exactly the two cap-timing refusals ("cap is from the future" and
         ``cap.generated_ms`` after the bundle's ``decision_ts``) for a cap
         whose TRUE stamps postdate the tick; staleness still applies when
@@ -896,7 +896,7 @@ class EquityKellyMIO(ScenarioUtilitySolve):
                 problems.append(
                     "cap.deployment_eligible must be false in development mode"
                 )
-            # ADR-0182 Revision 2: the declared developmental switch skips
+            # ADR-0184 Revision 2: the declared developmental switch skips
             # exactly the two cap-timing refusals below; staleness still
             # applies whenever age_ms >= 0.
             look_ahead = self.params.get("cap_evidence_look_ahead", False) is True

@@ -252,7 +252,7 @@ class TestTheStatistic:
 
 
 class TestSessionFlipNulls:
-    """ADR-0182 S3: the per-cell draws ``max_bar`` computes, handed back."""
+    """ADR-0184 S3: the per-cell draws ``max_bar`` computes, handed back."""
 
     def test_session_flip_nulls_t_matches_max_bar_rows(self):
         cells = _noise_cells(5, 30, 3, seed=21)
