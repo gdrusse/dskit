@@ -1252,6 +1252,61 @@ def test_without_a_cash_flow_policy_an_unaffordable_buy_still_fills(run):
     assert out["skipped"] == []
 
 
+# --- ADR-0182 S1: exits before entries across every symbol of one tick -----
+
+
+def test_same_bar_exit_on_later_symbol_funds_entry_on_earlier_symbol():
+    # 1020 funded. BBB buys 100 @ 10 (balance 20) and force-exits at _cf_t(2);
+    # AAA (inserted first, so iterated first) enters 100 @ 10 at _cf_t(2). The
+    # buy is affordable ONLY with BBB's same-bar sale proceeds credited first.
+    policy = _policy(_ZERO_FEES)
+    bars = _cf_bars([10.0] * 4, symbol="AAA") + _cf_bars([10.0] * 4, symbol="BBB")
+    out = ReplayAdapter(policy, _cash_flow_policy()).replay(bars, [
+        _decision("BBB", _cf_t(0), lead=1, qty=100),
+        _decision("AAA", _cf_t(1), lead=1, qty=100),
+    ])
+    assert _cash_reasons(out) == []
+    assert [
+        (row["kind"], row["symbol"], row["qty"], row["asof_ms"]) for row in out["fills"]
+    ] == [
+        ("entry", "BBB", 100, _cf_t(1)),
+        ("entry", "AAA", 100, _cf_t(2)),
+        ("exit", "BBB", 100, _cf_t(2)),
+        ("exit", "AAA", 100, _cf_t(3)),
+    ]
+
+
+def test_halted_symbol_exit_skip_unchanged_by_two_pass():
+    # AAA's lot expires on a halted bar: its exit is skipped there and taken at
+    # the next live bar, while BBB's same-bar entry still fills normally.
+    policy = _policy()
+    bars = [
+        _bar("AAA", 1_000, 10.0, 10.5),
+        _bar("AAA", 2_000, 11.0, 11.5),
+        _bar("AAA", 3_000, 12.0, 12.5, halted=True),
+        _bar("AAA", 4_000, 13.0, 13.5),
+        _bar("BBB", 2_000, 20.0, 20.5),
+        _bar("BBB", 3_000, 21.0, 21.5),
+        _bar("BBB", 4_000, 22.0, 22.5),
+    ]
+    out = ReplayAdapter(policy).replay(bars, [
+        _decision("AAA", 1_000, lead=1),
+        _decision("BBB", 2_000, lead=1),
+    ])
+    assert out["skipped"] == [
+        {"symbol": "AAA", "asof_ms": 3_000, "lead": 1, "reason": "halted"}
+    ]
+    assert [
+        (row["kind"], row["symbol"], row["asof_ms"], row["price"]) for row in out["fills"]
+    ] == [
+        ("entry", "AAA", 2_000, 11.0),
+        ("entry", "BBB", 3_000, 21.0),
+        ("exit", "AAA", 4_000, 13.0),
+        ("exit", "BBB", 4_000, 22.0),
+    ]
+    assert out["refused"] == []
+
+
 # --- ADR-0178: market-calendar-aware cash-flow contribution timing ---------
 
 
